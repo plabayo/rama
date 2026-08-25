@@ -34,7 +34,7 @@ fn build_dial9_engine(
 
 #[test]
 fn synchronous_app_message_works_with_dial9_runtime() {
-    let temp_dir = tempfile::tempdir().expect("create trace directory");
+    let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
     let mut handler = TestHandler::passthrough();
     handler.app_message_handler = Arc::new(|_| Some(vec![42]));
     let engine = build_dial9_engine(handler, temp_dir.path().join("app-message.bin"));
@@ -49,7 +49,7 @@ fn synchronous_app_message_works_with_dial9_runtime() {
 
 #[test]
 fn external_promote_keeps_engine_dial9_session() {
-    let temp_dir = tempfile::tempdir().expect("create trace directory");
+    let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
     let engine_runtime_id = Arc::new(Mutex::new(None));
     let callback_runtime_id = Arc::clone(&engine_runtime_id);
     let (handle_tx, handle_rx) = std::sync::mpsc::sync_channel(1);

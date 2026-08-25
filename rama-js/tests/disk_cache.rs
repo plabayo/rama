@@ -11,14 +11,14 @@ fn disk_cache_is_materialized_and_process_wide() -> Result<(), Box<dyn std::erro
     assert_eq!(error.kind(), JsErrorKind::Setup);
     assert!(error.message().contains("root must be absolute"));
 
-    let root = tempfile::tempdir()?;
+    let root = rama_utils::fs::tempdir()?;
     let error = JsRuntime::warm_up_with_disk_cache(root.path(), "../escape").unwrap_err();
     assert_eq!(error.kind(), JsErrorKind::Setup);
     assert!(error.message().contains("parent-directory"));
 
     #[cfg(unix)]
     {
-        let outside = tempfile::tempdir()?;
+        let outside = rama_utils::fs::tempdir()?;
         std::os::unix::fs::symlink(outside.path(), root.path().join("link"))?;
         let error = JsRuntime::warm_up_with_disk_cache(root.path(), "link/compiled").unwrap_err();
         assert_eq!(error.kind(), JsErrorKind::Setup);

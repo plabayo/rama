@@ -234,7 +234,7 @@ mod tests {
 
     #[tokio::test]
     async fn serves_local_file() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         std::fs::write(dir.path().join("pac.js"), "DIRECT").unwrap();
         let uri = format!("{}/pac.js", file_uri(dir.path()));
 
@@ -252,7 +252,7 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_extension_falls_back_to_octet_stream() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         std::fs::write(dir.path().join("pac.unknownext"), "DIRECT").unwrap();
         let uri = format!("{}/pac.unknownext", file_uri(dir.path()));
 
@@ -268,7 +268,7 @@ mod tests {
 
     #[tokio::test]
     async fn head_has_no_body() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         std::fs::write(dir.path().join("pac.js"), "DIRECT").unwrap();
         let uri = format!("{}/pac.js", file_uri(dir.path()));
 
@@ -310,7 +310,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_file_errors() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         let uri = format!("{}/nope.js", file_uri(dir.path()));
         let err = get(&service(), &uri).await.unwrap_err().to_string();
 
@@ -323,7 +323,7 @@ mod tests {
 
     #[tokio::test]
     async fn directory_is_not_served() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
 
         for uri in [
@@ -350,7 +350,7 @@ mod tests {
 
     #[tokio::test]
     async fn head_of_a_directory_is_not_a_success() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         let uri = format!("{}/", file_uri(dir.path()));
         let err = service()
             .serve(
@@ -368,7 +368,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn symlink_to_directory_is_not_served() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
         std::os::unix::fs::symlink(dir.path().join("sub"), dir.path().join("link")).unwrap();
 
@@ -381,7 +381,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn no_authority_form_with_dot_segments_is_served() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         std::fs::write(dir.path().join("pac.js"), "DIRECT").unwrap();
 
         let uri = format!("file:{}/sub/../pac.js", dir.path().display());
@@ -391,8 +391,8 @@ mod tests {
 
     #[tokio::test]
     async fn jail_rejects_paths_outside_root() {
-        let root = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
+        let root = rama_utils::fs::tempdir().unwrap();
+        let outside = rama_utils::fs::tempdir().unwrap();
         std::fs::write(outside.path().join("secret"), "leak").unwrap();
         std::fs::write(root.path().join("ok"), "fine").unwrap();
 
@@ -436,7 +436,7 @@ mod tests {
 
     #[tokio::test]
     async fn traversal_is_clamped_to_root() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = rama_utils::fs::tempdir().unwrap();
         std::fs::write(dir.path().join("pac.js"), "DIRECT").unwrap();
         // `..` segments are resolved before the fs is touched
         let uri = format!("{}/sub/../pac.js", file_uri(dir.path()));

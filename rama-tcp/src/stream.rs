@@ -196,6 +196,14 @@ impl Socket for TcpStream {
     }
 }
 
+#[cfg(any(target_os = "windows", target_family = "unix"))]
+impl rama_net::socket::AsSocketRef for TcpStream {
+    #[inline]
+    fn as_socket_ref(&self) -> rama_net::socket::core::SockRef<'_> {
+        rama_net::socket::AsSocketRef::as_socket_ref(&self.stream)
+    }
+}
+
 #[cfg(target_family = "unix")]
 mod unix {
     use super::TcpStream;

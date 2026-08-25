@@ -432,7 +432,7 @@ mod tests {
 
     #[tokio::test]
     async fn file_layers_share_exchange_id_with_request_layer_outermost() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = rama_utils::fs::tempdir().unwrap();
         let executor = Executor::new();
         let request = RequestWriterLayer::file_per_request(
             &executor,
@@ -474,7 +474,7 @@ mod tests {
 
     #[tokio::test]
     async fn file_layers_share_exchange_id_with_response_layer_outermost() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = rama_utils::fs::tempdir().unwrap();
         let executor = Executor::new();
         let request = RequestWriterLayer::file_per_request(
             &executor,
@@ -516,7 +516,7 @@ mod tests {
 
     #[tokio::test]
     async fn prefix_validation_is_platform_conservative() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = rama_utils::fs::tempdir().unwrap();
         for prefix in [
             "",
             "contains space",
@@ -543,7 +543,7 @@ mod tests {
 
     #[tokio::test]
     async fn unique_creation_never_overwrites_an_existing_file() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = rama_utils::fs::tempdir().unwrap();
         let writer = PerMessageFileWriter::try_new(temp.path(), "capture")
             .await
             .unwrap();
@@ -570,7 +570,7 @@ mod tests {
 
     #[tokio::test]
     async fn unique_creation_reports_exhausted_collisions() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = rama_utils::fs::tempdir().unwrap();
         let writer = PerMessageFileWriter::try_new(temp.path(), "capture")
             .await
             .unwrap();
@@ -596,7 +596,7 @@ mod tests {
 
     #[tokio::test]
     async fn unique_creation_propagates_non_collision_errors() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = rama_utils::fs::tempdir().unwrap();
         let directory = temp.path().join("removed");
         let writer = PerMessageFileWriter::try_new(&directory, "capture")
             .await
@@ -612,7 +612,7 @@ mod tests {
 
     #[tokio::test]
     async fn unique_creation_rejects_non_portable_generated_names() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = rama_utils::fs::tempdir().unwrap();
         let writer = PerMessageFileWriter::try_new(temp.path(), "capture")
             .await
             .unwrap();
@@ -638,7 +638,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_and_response_files_stream_independently() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = rama_utils::fs::tempdir().unwrap();
         let writer = PerMessageFileWriter::try_new(temp.path(), "traffic")
             .await
             .unwrap();
@@ -713,7 +713,7 @@ mod tests {
 
     #[tokio::test]
     async fn body_error_flushes_partial_request_capture() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = rama_utils::fs::tempdir().unwrap();
         let writer = PerMessageFileWriter::try_new(temp.path(), "traffic")
             .await
             .unwrap()
@@ -748,7 +748,7 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_request_does_not_create_a_file() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = rama_utils::fs::tempdir().unwrap();
         let writer = PerMessageFileWriter::try_new(temp.path(), "traffic")
             .await
             .unwrap()
@@ -769,7 +769,7 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_response_does_not_create_a_file() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = rama_utils::fs::tempdir().unwrap();
         let writer = PerMessageFileWriter::try_new(temp.path(), "traffic")
             .await
             .unwrap()
@@ -790,7 +790,7 @@ mod tests {
 
     #[tokio::test]
     async fn response_headers_mode_creates_a_file() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = rama_utils::fs::tempdir().unwrap();
         let writer = PerMessageFileWriter::try_new(temp.path(), "traffic")
             .await
             .unwrap()
@@ -821,7 +821,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_and_response_modes_control_file_contents() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = rama_utils::fs::tempdir().unwrap();
         let writer = PerMessageFileWriter::try_new(temp.path(), "modes")
             .await
             .unwrap()
@@ -874,7 +874,7 @@ mod tests {
     async fn capture_files_are_not_group_or_world_accessible() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let temp = tempfile::tempdir().unwrap();
+        let temp = rama_utils::fs::tempdir().unwrap();
         let writer = PerMessageFileWriter::try_new(temp.path(), "traffic")
             .await
             .unwrap();

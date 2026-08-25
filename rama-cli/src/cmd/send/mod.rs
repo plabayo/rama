@@ -6,7 +6,7 @@ use rama::{
 };
 
 use clap::Args;
-use std::path::PathBuf;
+use std::{convert::Infallible, path::PathBuf, str::FromStr};
 
 use super::uri::parse_user_uri;
 
@@ -31,6 +31,24 @@ pub async fn run(cfg: SendCommand) -> Result<(), BoxError> {
     }
     Err(BoxError::from_static_str("scheme is not supported")
         .context_str_field("scheme", scheme.as_str()))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EmulationProfiles {
+    Embedded,
+    File(PathBuf),
+}
+
+impl FromStr for EmulationProfiles {
+    type Err = Infallible;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Ok(if value == "@embedded" {
+            Self::Embedded
+        } else {
+            Self::File(value.into())
+        })
+    }
 }
 
 #[derive(Debug, Args)]
@@ -212,11 +230,18 @@ pub struct SendCommand {
     /// Select JSON response values with JSONPath and print each match on its own line.
     select_json: Vec<JsonPath>,
 
-    #[arg(long)]
-    /// emulate the provided user-agent
+    #[arg(
+        long,
+        value_name = "JSON_FILE",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "@embedded"
+    )]
+    /// Emulate the provided User-Agent using Rama's embedded profiles.
     ///
-    /// (or a random one if no user-agent header is defined)
-    emulate: bool,
+    /// Pass `--emulate=profiles.json` to use a custom exported profile database.
+    /// A random profile is selected when no User-Agent header is defined.
+    emulate: Option<EmulationProfiles>,
 
     #[arg(long = "http0.9")]
     /// (HTTP) force http_version to http/0.9

@@ -595,7 +595,7 @@ mod tests {
 
     #[test]
     fn compile_to_file_streams_and_loads() {
-        let dir = tempfile::tempdir().expect("tempdir");
+        let dir = rama_utils::fs::tempdir().expect("tempdir");
         let path = dir.path().join("country.mmdb");
         let csv = "\"16777216\",\"16777471\",\"BE\",\"Belgium\"\n";
         compile_ip2location_lite_to_file(

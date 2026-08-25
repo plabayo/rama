@@ -466,7 +466,7 @@ mod tests {
 
     #[tokio::test]
     async fn file_constructors_only_enable_response_capture() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = rama_utils::fs::tempdir().unwrap();
         let executor = Executor::new();
         let layer = ResponseWriterLayer::file_per_response(
             &executor,

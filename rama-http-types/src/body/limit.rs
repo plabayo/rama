@@ -1,6 +1,19 @@
 use rama_core::extensions::Extension;
 
-/// Can be used to communicate the desire to limit the size of request/response bodies.
+/// Communicates a hard streaming limit for server-side HTTP request and/or
+/// response bodies.
+///
+/// A [`crate::BodyLimitLayer`] stores this value on a transport's extensions.
+/// Rama's HTTP server copies those extensions into each request and applies the
+/// configured limits while the L7 bodies are polled. A value of zero disables
+/// the corresponding limit.
+///
+/// Crossing a limit does not synthesize an HTTP status. Frames that fit are
+/// forwarded unchanged; the first data frame that would exceed the remaining
+/// budget is discarded and the body yields a
+/// [`crate::body::util::LengthLimitError`]. For a response, headers and earlier
+/// frames may already have been sent, so the HTTP transport terminates or resets
+/// that response according to its protocol.
 #[derive(Debug, Clone, Copy, Extension)]
 #[extension(tags(http))]
 pub struct BodyLimit {

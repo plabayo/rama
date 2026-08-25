@@ -152,6 +152,9 @@ test-doc *ARGS:
 test-datastar-sdk *ARGS:
     bash scripts/test-datastar-sdk.sh {{ARGS}}
 
+test-proxy-dashboard-browser:
+    node --test rama-cli/src/cmd/serve/proxy/dashboard-browser.test.cjs
+
 test-crate CRATE *ARGS:
     @command -v cargo-nextest >/dev/null || cargo install cargo-nextest --locked
     cargo nextest run --all-features -p {{CRATE}} {{ARGS}}

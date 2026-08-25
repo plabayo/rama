@@ -563,7 +563,7 @@ mod tests {
     #[cfg(feature = "dial9")]
     #[test]
     fn client_request_runs_inside_dial9_session() {
-        let temp_dir = tempfile::tempdir().unwrap();
+        let temp_dir = rama_utils::fs::tempdir().unwrap();
         let config = rama_core::telemetry::dial9::Dial9Config::builder()
             .enabled(true)
             .base_path(temp_dir.path().join("blocking-http.bin"))
