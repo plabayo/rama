@@ -678,6 +678,9 @@ async fn test_serve_directory_index_without_trailing_slash_redirect(svc: ServeDi
     assert!(res.headers().get(header::LOCATION).is_none());
     assert_eq!(res.headers()[header::CONTENT_TYPE], "text/html");
     let body = body_into_text(res.into_body()).await;
+    #[cfg(target_os = "windows")]
+    assert_eq!(body, "<b>HTML!</b>\r\n");
+    #[cfg(not(target_os = "windows"))]
     assert_eq!(body, "<b>HTML!</b>\n");
 }
 
