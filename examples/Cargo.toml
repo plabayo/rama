@@ -299,6 +299,17 @@ path = "src/grpc_echo/client.rs"
 required-features = ["grpc", "http-full"]
 
 [[bin]]
+name = "http_grpc_job_server"
+path = "src/http_grpc_job/server.rs"
+required-features = ["grpc", "http-full"]
+
+# Shared by the two binaries: src/http_grpc_job/common.rs and src/http_grpc_job/jobs.rs.
+[[bin]]
+name = "http_grpc_job_client"
+path = "src/http_grpc_job/client.rs"
+required-features = ["grpc", "http-full"]
+
+[[bin]]
 name = "grpc_json_echo_server"
 path = "src/grpc_json_echo/server.rs"
 required-features = ["grpc", "http-full"]

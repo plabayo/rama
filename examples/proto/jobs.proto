@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package rama.examples.jobs.v1;
+
+// Runs background jobs and reports their progress.
+service JobService {
+    // Enqueue a job and return its initial state.
+    rpc SubmitJob(SubmitJobRequest) returns (Job);
+    // Fetch the latest state of a job.
+    rpc GetJob(GetJobRequest) returns (Job);
+    // Follow state changes until the job completes.
+    rpc WatchJob(WatchJobRequest) returns (stream JobEvent);
+}
+
+message SubmitJobRequest {
+    string task = 1;
+}
+
+message GetJobRequest {
+    uint64 id = 1;
+}
+
+message WatchJobRequest {
+    uint64 id = 1;
+}
+
+message Job {
+    uint64 id = 1;
+    string task = 2;
+    JobState state = 3;
+    uint32 progress_percent = 4;
+}
+
+message JobEvent {
+    Job job = 1;
+    string message = 2;
+}
+
+enum JobState {
+    JOB_STATE_UNSPECIFIED = 0;
+    JOB_STATE_QUEUED = 1;
+    JOB_STATE_RUNNING = 2;
+    JOB_STATE_SUCCEEDED = 3;
+}
