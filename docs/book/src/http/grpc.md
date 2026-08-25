@@ -237,6 +237,27 @@ The health example combines:
 
 This is a good real-world pattern because production deployments often need more than a single bare service.
 
+## HTTP and gRPC on One Web Router
+
+An internal service often needs two different interfaces: generated gRPC APIs for machine
+clients, and ordinary HTTP endpoints for operators, infrastructure probes or a small dashboard.
+Rama can serve both from the same `rama_http::service::web::Router` and the same
+`HttpServer::auto` listener.
+
+Import `rama::http::grpc::service::web::RouterExt` to register each generated service
+directly alongside the router's ordinary HTTP routes. Its `with_grpc_service` method consumes
+and returns the router, while `set_grpc_service` is available when building a router mutably.
+
+`with_grpc_service` derives `/<package>.<Service>/{method}` from `NamedService::NAME`.
+It uses a regular POST route so the generated server receives the complete canonical gRPC URI;
+there is no artificial `/grpc` prefix to configure and no nested prefix is stripped.
+
+See the complete job-service example:
+
+- [`examples/proto/jobs.proto`](https://github.com/plabayo/rama/blob/main/examples/proto/jobs.proto): generated job API with unary and server-streaming RPCs
+- [`examples/src/http_grpc_job/server.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_grpc_job/server.rs): HTTP endpoints, job and standard gRPC health services on one router
+- [`examples/src/http_grpc_job/client.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_grpc_job/client.rs): CLI for exploring the ordinary HTTP and generated gRPC APIs
+
 ## Compression and Streaming
 
 gRPC is not only about unary RPCs.
@@ -295,6 +316,8 @@ The most relevant example entry points are:
 - [`examples/grpc/src/helloworld/server.rs`](https://github.com/plabayo/rama/blob/main/examples/grpc/src/helloworld/server.rs): minimal gRPC server
 - [`examples/grpc/src/helloworld/client.rs`](https://github.com/plabayo/rama/blob/main/examples/grpc/src/helloworld/client.rs): minimal gRPC client
 - [`examples/grpc/src/health/server.rs`](https://github.com/plabayo/rama/blob/main/examples/grpc/src/health/server.rs): health reporting and `GrpcRouter`
+- [`examples/src/http_grpc_job/server.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_grpc_job/server.rs): HTTP and multiple gRPC services on one web router and listener
+- [`examples/src/http_grpc_job/client.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_grpc_job/client.rs): unary and server-streaming calls against the mixed router
 - [`examples/grpc/src/compression/server.rs`](https://github.com/plabayo/rama/blob/main/examples/grpc/src/compression/server.rs): compression support
 - [`examples/grpc/src/compression/client.rs`](https://github.com/plabayo/rama/blob/main/examples/grpc/src/compression/client.rs): compression-aware client
 - [`examples/grpc/src/gcp/README.md`](https://github.com/plabayo/rama/blob/main/examples/grpc/src/gcp/README.md): more realistic remote API usage
@@ -304,7 +327,8 @@ If you want to start with the shortest path:
 1. run the hello world server
 2. run the hello world client
 3. inspect the health example
-4. move on to the streaming and compression examples
+4. run the combined HTTP and gRPC job service
+5. move on to the streaming and compression examples
 
 That sequence gives you a practical ramp from "typed RPC over the network" to "production-leaning gRPC service composition in Rama".
 

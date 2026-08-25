@@ -18,6 +18,8 @@ pub mod health;
 mod router;
 pub use router::GrpcRouter;
 
+pub mod web;
+
 pub mod interceptor;
 
 #[cfg(feature = "opentelemetry")]

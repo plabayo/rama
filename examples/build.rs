@@ -24,7 +24,7 @@ fn compile_grpc_example_protos() -> std::io::Result<()> {
     let out = example_proto_out_dir("grpc")?;
     rama_grpc_build::protobuf::configure()
         .with_out_dir(out)
-        .compile_protos(&["proto/echo.proto"], &["proto"])
+        .compile_protos(&["proto/echo.proto", "proto/jobs.proto"], &["proto"])
 }
 
 #[cfg(feature = "ttrpc")]

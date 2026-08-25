@@ -35,6 +35,8 @@ mod http_connect_proxy;
 mod http_declarative_partial_updates;
 #[cfg(feature = "http-full")]
 mod http_form;
+#[cfg(all(feature = "grpc", feature = "http-full"))]
+mod http_grpc_job;
 #[cfg(feature = "http-full")]
 mod http_har_replay;
 #[cfg(feature = "http-full")]

@@ -22,9 +22,11 @@ use super::pb::{HealthCheckRequest, HealthCheckResponse};
 /// A `HealthReporter` is used to update the state of gRPC services.
 ///
 /// A `HealthServer` is a Rama gRPC server for the `grpc.health.v1.Health`,
-/// which can be added to a [`GrpcRouter`] using its `with_service` method.
+/// which can be added to a [`GrpcRouter`] using its `with_service` method or to a Rama web
+/// router using [`RouterExt::with_grpc_service`].
 ///
 /// [`GrpcRouter`]: crate::service::GrpcRouter
+/// [`RouterExt::with_grpc_service`]: crate::service::web::RouterExt::with_grpc_service
 pub fn health_reporter() -> (HealthReporter, HealthServer<HealthService>) {
     let reporter = HealthReporter::new();
     let service = HealthService::new(reporter.statuses.clone());
