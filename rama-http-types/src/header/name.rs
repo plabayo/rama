@@ -1541,11 +1541,46 @@ impl HeaderName {
     /// Returns the standard header represented by this name, if this is a
     /// standard header.
     #[inline]
-    pub fn standard(&self) -> Option<StandardHeader> {
+    pub const fn standard(&self) -> Option<StandardHeader> {
         match self.inner {
             Repr::Standard(v) => Some(v.header),
             Repr::Custom(_) => None,
         }
+    }
+
+    /// Returns whether values for this header are sensitive by default.
+    ///
+    /// This covers standard credential and cookie headers. Custom header
+    /// sensitivity remains application policy and must be marked explicitly
+    /// on the corresponding [`HeaderValue`](super::HeaderValue).
+    #[must_use]
+    #[inline]
+    pub const fn is_sensitive(&self) -> bool {
+        matches!(
+            self.standard(),
+            Some(
+                StandardHeader::Authorization
+                    | StandardHeader::ProxyAuthorization
+                    | StandardHeader::Cookie
+                    | StandardHeader::SetCookie
+            )
+        )
+    }
+
+    /// Returns whether the built-in field policy permits this name in an HTTP
+    /// trailer block.
+    ///
+    /// Standard fields are rejected unless their definitions explicitly allow
+    /// trailer use. Extension fields are accepted here, but their definitions
+    /// still have to permit trailer use. A field named by a `Connection` value
+    /// is also disallowed; that message-local rule is checked separately.
+    #[must_use]
+    #[inline]
+    pub const fn is_allowed_in_trailers(&self) -> bool {
+        matches!(
+            self.standard(),
+            None | Some(StandardHeader::AcceptRanges | StandardHeader::Etag)
+        )
     }
 
     /// Write the original header spelling represented by this name.
@@ -2286,6 +2321,36 @@ mod tests {
         let name = HeaderName::from_static("Vary");
         assert_eq!(name.standard(), Some(Vary));
         assert_eq!(name.to_string(), "Vary");
+    }
+
+    #[test]
+    fn test_sensitive_header_names() {
+        for name in [
+            HeaderName::from_static("Authorization"),
+            HeaderName::from_static("Proxy-Authorization"),
+            HeaderName::from_static("Cookie"),
+            HeaderName::from_static("Set-Cookie"),
+        ] {
+            assert!(name.is_sensitive());
+        }
+        assert!(!HeaderName::from_static("Proxy-Authenticate").is_sensitive());
+        assert!(!HeaderName::from_static("X-Api-Key").is_sensitive());
+    }
+
+    #[test]
+    fn test_http_trailer_field_policy() {
+        for &(standard, _) in TEST_HEADERS {
+            let name = HeaderName::from(standard);
+            assert_eq!(
+                name.is_allowed_in_trailers(),
+                matches!(
+                    standard,
+                    StandardHeader::AcceptRanges | StandardHeader::Etag
+                ),
+                "{name}",
+            );
+        }
+        assert!(HeaderName::from_static("X-Checksum").is_allowed_in_trailers());
     }
 
     #[test]

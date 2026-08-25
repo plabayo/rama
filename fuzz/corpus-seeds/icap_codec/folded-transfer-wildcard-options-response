@@ -1,0 +1,7 @@
+ICAP/1.0 200 OK
+Methods: RESPMOD
+ISTag: "rama"
+Encapsulated: null-body=0
+Transfer-Preview: *,
+ html
+

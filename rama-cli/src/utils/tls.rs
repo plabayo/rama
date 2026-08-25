@@ -3,7 +3,7 @@ use rama::{
         cert::generate_server_auth,
         pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject},
     },
-    error::{BoxError, ErrorContext as _},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     http::tls::CertIssuerHttpClient,
     net::address::Host,
     rt::Executor,
@@ -22,6 +22,7 @@ use rama::{
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
+use std::path::Path;
 
 pub fn try_new_server_config(
     alpn: Option<Vec<ApplicationProtocol>>,
@@ -41,6 +42,43 @@ pub fn try_new_server_config(
         config.set_alpn(alpn.into());
     }
     Ok(config)
+}
+
+pub fn try_new_server_config_with_auth_files(
+    cert_path: Option<&Path>,
+    key_path: Option<&Path>,
+    alpn: Option<Vec<ApplicationProtocol>>,
+    exec: Executor,
+) -> Result<TlsServerConfig, BoxError> {
+    match (cert_path, key_path) {
+        (Some(cert), Some(key)) => {
+            tracing::info!(
+                cert.path = ?cert,
+                key.path = ?key,
+                "loading TLS certificate from files"
+            );
+
+            let cert_chain = CertificateDer::pem_file_iter(cert)
+                .context("parse cert file")?
+                .collect::<Result<Vec<_>, _>>()
+                .context("collect certificates")?;
+            let private_key =
+                PrivateKeyDer::from_pem_file(key).context("parse private key file")?;
+            let mut config = TlsServerConfig::new().with_single_cert(ServerAuthData {
+                cert_chain,
+                private_key,
+                ocsp: None,
+            });
+            if let Some(alpn) = alpn {
+                config.set_alpn(alpn.into());
+            }
+            Ok(config)
+        }
+        (None, None) => try_new_server_config(alpn, exec),
+        _ => Err(BoxError::from_static_str(
+            "both certificate and key must be provided together, or neither",
+        )),
+    }
 }
 
 fn try_new_server_auth() -> Result<ServerAuthData, BoxError> {

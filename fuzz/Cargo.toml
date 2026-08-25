@@ -134,9 +134,23 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "icap_codec"
+path = "fuzz_targets/icap_codec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "icap_codec_roundtrip"
+path = "fuzz_targets/icap_codec_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
-rama = { path = "../", features = ["dns", "ua", "http", "net", "html"] }
+rama = { path = "../", features = ["dns", "ua", "http", "net", "html", "icap"] }
 rama-js = { path = "../rama-js" }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }

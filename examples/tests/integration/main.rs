@@ -48,6 +48,8 @@ mod http_high_level_client;
     feature = "boring",
 ))]
 mod http_https_socks5_and_socks5h_connect_proxy;
+#[cfg(all(feature = "http-full", feature = "icap", feature = "boring"))]
+mod http_icap_proxy;
 #[cfg(feature = "http-full")]
 mod http_k8s_health;
 #[cfg(feature = "http-full")]

@@ -441,6 +441,11 @@ pub struct DomainRef<'a> {
 }
 
 impl<'a> DomainRef<'a> {
+    #[must_use]
+    pub(crate) const fn from_validated_bytes(bytes: &'a [u8]) -> Self {
+        Self { bytes }
+    }
+
     /// Returns the raw bytes (always ASCII).
     #[must_use]
     pub fn as_bytes(&self) -> &'a [u8] {
@@ -497,7 +502,25 @@ impl<'a> DomainRef<'a> {
 
 impl<'a> From<&'a Domain> for DomainRef<'a> {
     fn from(d: &'a Domain) -> Self {
-        Self { bytes: &d.0 }
+        Self::from_validated_bytes(&d.0)
+    }
+}
+
+impl<'a> TryFrom<&'a str> for DomainRef<'a> {
+    type Error = DomainParseError;
+
+    fn try_from(name: &'a str) -> Result<Self, Self::Error> {
+        validate_domain_str(name)?;
+        Ok(Self::from_validated_bytes(name.as_bytes()))
+    }
+}
+
+impl<'a> TryFrom<&'a [u8]> for DomainRef<'a> {
+    type Error = DomainParseError;
+
+    fn try_from(name: &'a [u8]) -> Result<Self, Self::Error> {
+        let name = core::str::from_utf8(name).map_err(DomainParseError::non_utf8)?;
+        Self::try_from(name)
     }
 }
 
@@ -1798,6 +1821,16 @@ mod tests {
         assert!(format!("{err}").contains("UTF-8"), "got: {err}");
         let err = <Domain as TryFrom<&[u8]>>::try_from(bytes.as_slice()).unwrap_err();
         assert!(format!("{err}").contains("UTF-8"), "got: {err}");
+    }
+
+    #[test]
+    fn domain_ref_validates_borrowed_input() {
+        let source = b"EXAMPLE.com";
+        let domain = DomainRef::try_from(source.as_slice()).unwrap();
+        assert_eq!(domain, DomainRef::try_from("example.com").unwrap());
+        assert_eq!(domain.as_bytes().as_ptr(), source.as_ptr());
+        DomainRef::try_from(b"bad..example".as_slice()).unwrap_err();
+        DomainRef::try_from(&[0xff][..]).unwrap_err();
     }
 
     #[test]

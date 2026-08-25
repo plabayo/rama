@@ -1,0 +1,4 @@
+REQMOD icap://icap-server.net/server?arg=87 ICAP/1.0
+Host: icap-server.net
+Encapsulated: req-hdr=0, null-body=170
+

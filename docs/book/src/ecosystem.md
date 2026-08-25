@@ -46,6 +46,7 @@ Here is a list of all `rama` crates:
 - [`rama-socks5`](https://crates.io/crates/rama-socks5): SOCKS5 support for rama
 - [`rama-fastcgi`](https://crates.io/crates/rama-fastcgi): FastCGI support for rama
 - [`rama-haproxy`](https://crates.io/crates/rama-haproxy): rama HaProxy support
+- [`rama-icap`](https://crates.io/crates/rama-icap): ICAP support for rama
 - [`rama-ua`](https://crates.io/crates/rama-ua): User-Agent (UA) support for `rama`
 - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
 - [`rama-http-headers`](https://crates.io/crates/rama-http-headers): typed http headers

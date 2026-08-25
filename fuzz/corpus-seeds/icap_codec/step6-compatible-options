@@ -1,0 +1,9 @@
+ICAP/1.0 200 OK
+Methods: RESPMOD,
+ REQMOD
+ISTag: c-icap-tag
+Preview: invalid
+Options-TTL: 18446744073709551616
+Max-Connections: many
+Transfer-Preview: *
+

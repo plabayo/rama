@@ -170,6 +170,11 @@ pub struct UninterpretedHostRef<'a> {
 }
 
 impl<'a> UninterpretedHostRef<'a> {
+    #[must_use]
+    pub(crate) const fn from_validated_bytes(bytes: &'a [u8], bracketed: bool) -> Self {
+        Self { bracketed, bytes }
+    }
+
     /// Raw on-the-wire bytes — **not** pct-decoded. Brackets (for
     /// IP-literals) are not included.
     #[must_use]

@@ -138,7 +138,7 @@ mod lazy;
 mod owned;
 pub(crate) mod parser;
 
-use crate::address::{AuthorityRef, HostRef, UserInfoRef};
+use crate::address::{AuthorityRef, DomainRef, HostRef, UninterpretedHostRef, UserInfoRef};
 use lazy::{LazyAuthority, LazyUriRef};
 use owned::OwnedUriRef;
 use parser::ParserMode;
@@ -149,6 +149,220 @@ use parser::ParserMode;
 /// `rama_net::uri::util::percent_encoding::…` path.
 pub mod util {
     pub use ::percent_encoding;
+}
+
+/// Borrowed, allocation-free view of a strict absolute URI.
+///
+/// This is the non-retaining counterpart to [`Uri::parse_strict`]. It uses
+/// the same parser and exposes its already-scanned components without copying
+/// the input. Protocol codecs can therefore apply their own URI-shape policy
+/// without reparsing delimiters or taking ownership of a receive buffer.
+///
+/// [`Debug`](core::fmt::Debug) redacts the password portion of userinfo.
+/// [`Display`](core::fmt::Display) preserves the complete wire spelling and
+/// may therefore expose credentials.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct AbsoluteUriRef<'a> {
+    source: &'a str,
+    scheme_end: u16,
+    authority: Option<(u16, u16)>,
+    userinfo: Option<(u16, u16)>,
+    host: AbsoluteHost,
+    port: crate::address::OptPort,
+    path: (u16, u16),
+    query: Option<(u16, u16)>,
+    fragment: Option<(u16, u16)>,
+}
+
+impl<'a> AbsoluteUriRef<'a> {
+    /// Parse a borrowed absolute URI using strict RFC 3986 syntax.
+    pub fn parse_strict(bytes: &'a [u8]) -> Result<Self, ParseError> {
+        parser::parse_absolute_ref(bytes, ParserMode::Strict)
+    }
+
+    /// Return the complete URI bytes.
+    #[must_use]
+    pub const fn as_bytes(self) -> &'a [u8] {
+        self.source.as_bytes()
+    }
+
+    /// Return the complete URI string.
+    #[must_use]
+    pub const fn as_str(self) -> &'a str {
+        self.source
+    }
+
+    /// Return the scheme without its trailing colon.
+    #[must_use]
+    pub fn scheme(self) -> &'a str {
+        &self.source[..usize::from(self.scheme_end)]
+    }
+
+    /// Return the raw authority without the leading `//`, when present.
+    #[must_use]
+    pub fn authority(self) -> Option<&'a str> {
+        self.component(self.authority)
+    }
+
+    /// Return the typed, already-scanned authority, when present.
+    ///
+    /// Unlike [`authority`](Self::authority), this exposes typed host,
+    /// userinfo, and port components. It remains allocation-free and does
+    /// not rescan the authority grammar. Domain and reg-name views borrow
+    /// the source directly; a parser-validated numeric IP literal is
+    /// materialized from its preserved spelling on demand. An RFC-valid
+    /// empty URI authority is preserved and can therefore contain an empty
+    /// host.
+    #[must_use]
+    pub fn authority_ref(self) -> Option<AuthorityRef<'a>> {
+        let host = self.host.as_ref(self.source.as_bytes())?;
+        let userinfo = self
+            .userinfo
+            .map(|range| UserInfoRef::new(self.range(range).as_bytes()));
+        Some(AuthorityRef::new(userinfo, host, self.port))
+    }
+
+    /// Return the userinfo without its trailing `@`, when present.
+    #[must_use]
+    pub fn userinfo(self) -> Option<&'a str> {
+        self.component(self.userinfo)
+    }
+
+    /// Return the host spelling, when an authority is present.
+    ///
+    /// Brackets around an IP literal are retained. An RFC-valid empty host
+    /// is returned as `Some("")`, allowing protocol policy to reject it.
+    #[must_use]
+    pub fn host(self) -> Option<&'a str> {
+        self.component(self.host.range())
+    }
+
+    /// Return the explicit port state from the authority.
+    #[must_use]
+    pub const fn port(self) -> crate::address::OptPort {
+        self.port
+    }
+
+    /// Return the borrowed path component.
+    #[must_use]
+    pub fn path(self) -> PathRef<'a> {
+        PathRef::new(self.range(self.path).as_bytes())
+    }
+
+    /// Return the strict wire spelling of the path component.
+    #[must_use]
+    pub fn path_str(self) -> &'a str {
+        self.range(self.path)
+    }
+
+    /// Return the query without its leading `?`, when present.
+    #[must_use]
+    pub fn query(self) -> Option<QueryRef<'a>> {
+        self.component(self.query)
+            .map(|value| QueryRef::new(value.as_bytes()))
+    }
+
+    /// Return the fragment without its leading `#`, when present.
+    #[must_use]
+    pub fn fragment(self) -> Option<FragmentRef<'a>> {
+        self.component(self.fragment)
+            .map(|value| FragmentRef::new(value.as_bytes()))
+    }
+
+    fn component(self, range: Option<(u16, u16)>) -> Option<&'a str> {
+        range.map(|range| self.range(range))
+    }
+
+    fn range(self, (start, end): (u16, u16)) -> &'a str {
+        &self.source[usize::from(start)..usize::from(end)]
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(in crate::uri) enum AbsoluteHost {
+    None,
+    Empty(u16),
+    Ipv4(u16, u16),
+    Ipv6(u16, u16),
+    IpvFuture(u16, u16),
+    Domain(u16, u16),
+    RegName(u16, u16),
+}
+
+impl AbsoluteHost {
+    const fn range(self) -> Option<(u16, u16)> {
+        match self {
+            Self::None => None,
+            Self::Empty(at) => Some((at, at)),
+            Self::Ipv4(start, end)
+            | Self::Ipv6(start, end)
+            | Self::IpvFuture(start, end)
+            | Self::Domain(start, end)
+            | Self::RegName(start, end) => Some((start, end)),
+        }
+    }
+
+    fn as_ref<'a>(self, source: &'a [u8]) -> Option<HostRef<'a>> {
+        let (start, end) = self.range()?;
+        let host = &source[usize::from(start)..usize::from(end)];
+        Some(match self {
+            Self::None => return None,
+            Self::Empty(_) | Self::RegName(_, _) => {
+                HostRef::Uninterpreted(UninterpretedHostRef::from_validated_bytes(host, false))
+            }
+            Self::Ipv4(_, _) => {
+                let host = core::str::from_utf8(host).ok()?;
+                HostRef::Address(core::net::IpAddr::V4(host.parse().ok()?))
+            }
+            Self::Ipv6(_, _) => {
+                let host = &host[1..host.len() - 1];
+                let host = core::str::from_utf8(host).ok()?;
+                HostRef::Address(core::net::IpAddr::V6(host.parse().ok()?))
+            }
+            Self::IpvFuture(_, _) => HostRef::Uninterpreted(
+                UninterpretedHostRef::from_validated_bytes(&host[1..host.len() - 1], true),
+            ),
+            Self::Domain(_, _) => HostRef::Name(DomainRef::from_validated_bytes(host)),
+        })
+    }
+}
+
+impl<'a> TryFrom<&'a [u8]> for AbsoluteUriRef<'a> {
+    type Error = ParseError;
+
+    fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
+        Self::parse_strict(value)
+    }
+}
+
+impl<'a> TryFrom<&'a str> for AbsoluteUriRef<'a> {
+    type Error = ParseError;
+
+    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        Self::parse_strict(value.as_bytes())
+    }
+}
+
+impl core::fmt::Display for AbsoluteUriRef<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl core::fmt::Debug for AbsoluteUriRef<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("AbsoluteUriRef(\"")?;
+        if let Some((start, end)) = self.userinfo {
+            let start = usize::from(start);
+            let end = usize::from(end);
+            f.write_str(&self.source[..start])?;
+            write_redacted_userinfo(&self.source[start..end], f)?;
+            f.write_str(&self.source[end..])?;
+        } else {
+            f.write_str(self.source)?;
+        }
+        f.write_str("\")")
+    }
 }
 
 /// First-class URI value.
@@ -244,6 +458,28 @@ impl Uri {
     /// Strict variant of [`parse_reference`](Self::parse_reference).
     pub fn parse_reference_strict<T: IntoUriInput>(input: T) -> Result<Self, ParseError> {
         parser::parse_uri_reference(input::into_uri_input(input), ParserMode::Strict)
+    }
+
+    /// Parse an HTTP request-target using the RFC 9112 wire policy.
+    ///
+    /// Set `authority_form` for a `CONNECT` target. That form requires
+    /// exactly `host:port`, without userinfo. Other targets may use
+    /// origin-form, absolute-form, or asterisk-form, but never a fragment.
+    /// The caller remains responsible for restricting asterisk-form to
+    /// `OPTIONS`, because this URI type does not depend on an HTTP method
+    /// type.
+    #[cfg(feature = "http")]
+    pub fn parse_http_request_target<T: IntoUriInput>(
+        input: T,
+        authority_form: bool,
+    ) -> Result<Self, ParseError> {
+        let bytes = input::into_uri_input(input);
+        parser::validate_http_request_target(&bytes, authority_form)?;
+        if authority_form {
+            parser::parse_authority_form(bytes, ParserMode::Strict)
+        } else {
+            parser::parse(bytes, ParserMode::Strict)
+        }
     }
 
     /// Parse a `&'static str` URI, panicking on invalid input. Convenient

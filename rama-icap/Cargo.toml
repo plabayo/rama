@@ -1,0 +1,66 @@
+[package]
+name = "rama-icap"
+description = "Internet Content Adaptation Protocol (ICAP) support for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+keywords = ["icap", "proxy", "async", "network", "rama"]
+categories = ["asynchronous", "network-programming", "web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+exclude = ["tests/oracle/**"]
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-ios",
+    "aarch64-linux-android",
+]
+
+[features]
+default = []
+http = ["std", "dep:rama-http-types", "dep:tokio-util"]
+std = [
+    "dep:itoa",
+    "dep:parking_lot",
+    "dep:rama-core",
+    "dep:tokio",
+    "rama-core/std",
+    "rama-net/std",
+    "rama-utils/std",
+]
+
+[dependencies]
+itoa = { workspace = true, optional = true }
+parking_lot = { workspace = true, optional = true }
+rama-core = { workspace = true, optional = true }
+rama-http-types = { workspace = true, optional = true }
+rama-net = { workspace = true }
+rama-utils = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "sync", "time"], optional = true }
+tokio-util = { workspace = true, optional = true }
+
+[dev-dependencies]
+divan = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[[example]]
+name = "c_icap_oracle_server"
+required-features = ["std"]
+
+[[bench]]
+name = "icap"
+required-features = ["http"]
+harness = false
+
+[lints]
+workspace = true

@@ -77,6 +77,7 @@ where
                 // If they tell us otherwise, we'll downgrade in `read_head`.
                 version: Version::HTTP_11,
                 allow_trailer_fields: false,
+                trailer_forbidden: Default::default(),
             },
             _marker: PhantomData,
         }
@@ -302,6 +303,7 @@ where
         }
 
         self.state.allow_trailer_fields = headers::te_is_trailers(&msg.head.headers);
+        self.state.trailer_forbidden = headers::connection_header_names(&msg.head.headers);
 
         Poll::Ready(Some(Ok((msg.head, msg.decode, wants))))
     }
@@ -366,7 +368,16 @@ where
                             (reading, Poll::Ready(maybe_frame))
                         } else if frame.is_trailers() {
                             debug!("incoming body completed with trailers");
-                            (Reading::KeepAlive, Poll::Ready(Some(Ok(frame))))
+                            let Ok(mut trailers) = frame.into_trailers() else {
+                                unreachable!("a trailer frame must contain trailers")
+                            };
+                            for name in &self.state.trailer_forbidden {
+                                trailers.remove(name);
+                            }
+                            (
+                                Reading::KeepAlive,
+                                Poll::Ready(Some(Ok(Frame::trailers(trailers)))),
+                            )
                         } else {
                             trace!("discarding unknown frame");
                             (Reading::Closed, Poll::Ready(None))
@@ -933,6 +944,8 @@ struct State {
     version: Version,
     /// Flag to track if trailer fields are allowed to be sent.
     allow_trailer_fields: bool,
+    /// Fields nominated by the current inbound message's `Connection` values.
+    trailer_forbidden: headers::ConnectionHeaderNames,
 }
 
 #[derive(Debug)]
@@ -1361,6 +1374,34 @@ mod tests {
                 !conn.can_read_body(),
                 "the complete body must return to head-reading state"
             );
+        });
+    }
+
+    #[test]
+    fn conn_removes_connection_nominated_trailers() {
+        let io = tokio_test::io::Builder::new()
+            .read(
+                b"POST / HTTP/1.1\r\n\
+                  Connection: x-hop\r\n\
+                  Transfer-Encoding: chunked\r\n\r\n\
+                  0\r\n\
+                  x-hop: late\r\n\
+                  x-end: kept\r\n\r\n",
+            )
+            .build();
+        let mut conn = Conn::<_, Bytes, ServerTransaction>::new(TestIo::new(io));
+        let (_, body, _) = ready(poll_head(&mut conn))
+            .expect("request")
+            .expect("valid request");
+        assert_eq!(body, DecodedLength::CHUNKED);
+
+        tokio_test::task::spawn(()).enter(|cx, _| {
+            let frame = ready(conn.poll_read_body(cx))
+                .expect("body frame")
+                .expect("valid body");
+            let trailers = frame.into_trailers().expect("trailer frame");
+            assert!(!trailers.contains_key("x-hop"));
+            assert_eq!(trailers["x-end"], "kept");
         });
     }
 

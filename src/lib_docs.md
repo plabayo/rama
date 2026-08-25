@@ -26,6 +26,7 @@ synchronous applications use the same composed stacks at their boundary.
 | [`Service`], [`Layer`] | Core service and middleware traits |
 | [`BlockingService`], [`rt::blocking`] | Synchronous boundaries for async services, streams, and I/O |
 | [`http`] | HTTP clients, servers, services, layers, WebSockets, gRPC |
+| [`icap`] | Internet Content Adaptation Protocol (ICAP) |
 | [`proxy`] | Proxy primitives, SOCKS5, HAProxy PROXY protocol |
 | [`tcp`], [`udp`], `unix` | Transport listeners, connectors, and streams |
 | [`tls`] | TLS abstractions, Rustls, BoringSSL, ACME |
@@ -48,6 +49,8 @@ synchronous applications use the same composed stacks at their boundary.
 | Use high-level client helpers | [`http::service::client::HttpClientExt`] |
 | Use an HTTP client from synchronous code | [`http::client::BlockingHttpWebClient`] |
 | Build HTTP proxy flows | [`http::proxy`] |
+| Adapt HTTP through ICAP | [`icap::http::layer`] |
+| Build standalone ICAP services | [`icap::client`], [`icap::server`] |
 | Build SOCKS5 proxy flows | [`proxy::socks5`] |
 | Build Linux transparent proxy flows | [`linux_tproxy_tcp.rs`](https://github.com/plabayo/rama/blob/main/examples/src/linux_tproxy_tcp.rs) |
 | Build Apple transparent proxy flows | [`ffi/apple/examples/transparent_proxy`](https://github.com/plabayo/rama/tree/main/ffi/apple/examples/transparent_proxy) |

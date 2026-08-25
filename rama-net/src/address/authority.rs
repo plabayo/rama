@@ -732,8 +732,9 @@ impl TryFrom<&[u8]> for Authority {
 /// [`UserInfoRef`](super::UserInfoRef) pattern for the rest of the
 /// address types.
 ///
-/// Constructed by [`Uri::authority`](crate::uri::Uri::authority) and
-/// — eventually — by [`Authority`]'s own borrow accessor.
+/// Constructed by [`Uri::authority`](crate::uri::Uri::authority),
+/// [`Authority::view`], or parsed without allocation through
+/// [`AuthorityRef::parse_strict`].
 ///
 /// `PartialEq` / `Eq` / `Hash` follow the same component-wise rules as
 /// the owned [`Authority`] (case-insensitive host via `HostRef`'s impl,
@@ -747,6 +748,19 @@ pub struct AuthorityRef<'a> {
 }
 
 impl<'a> AuthorityRef<'a> {
+    /// Parse a borrowed authority using strict RFC 3986 syntax.
+    ///
+    /// The returned value borrows directly from `bytes`; parsing neither
+    /// copies nor allocates. The wire-level distinction between an absent
+    /// port and an empty port (`host:`) is preserved through [`OptPort`].
+    /// Empty hosts are rejected because this address type represents a
+    /// network authority. URI schemes which permit an empty authority can
+    /// obtain one from
+    /// [`AbsoluteUriRef::authority_ref`](crate::uri::AbsoluteUriRef::authority_ref).
+    pub fn parse_strict(bytes: &'a [u8]) -> Result<Self, crate::uri::ParseError> {
+        crate::uri::parser::authority::parse_authority_ref_strict(bytes)
+    }
+
     /// `pub(crate)` constructor — only [`Uri::authority`] and
     /// internal helpers should build one.
     #[must_use]
@@ -769,14 +783,14 @@ impl<'a> AuthorityRef<'a> {
     /// `Some("")` (an empty userinfo before the `@`) is distinct from
     /// `None` — preserved for wire fidelity.
     #[must_use]
-    pub fn userinfo(&self) -> Option<UserInfoRef<'a>> {
+    pub const fn userinfo(&self) -> Option<UserInfoRef<'a>> {
         self.userinfo
     }
 
     /// The host component. Always present — every well-formed
     /// authority has a host.
     #[must_use]
-    pub fn host(&self) -> HostRef<'a> {
+    pub const fn host(&self) -> HostRef<'a> {
         self.host
     }
 
@@ -808,6 +822,22 @@ impl<'a> AuthorityRef<'a> {
                 port: self.port,
             },
         }
+    }
+}
+
+impl<'a> TryFrom<&'a [u8]> for AuthorityRef<'a> {
+    type Error = crate::uri::ParseError;
+
+    fn try_from(value: &'a [u8]) -> Result<Self, Self::Error> {
+        Self::parse_strict(value)
+    }
+}
+
+impl<'a> TryFrom<&'a str> for AuthorityRef<'a> {
+    type Error = crate::uri::ParseError;
+
+    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        Self::parse_strict(value.as_bytes())
     }
 }
 
@@ -1219,5 +1249,56 @@ mod tests {
                 "AuthorityRef Display must match Authority for {input:?}"
             );
         }
+    }
+
+    #[test]
+    fn authority_ref_parses_strict_without_ownership() {
+        let source = b"user:secret@EXAMPLE.com:01344";
+        let authority = AuthorityRef::parse_strict(source).unwrap();
+        assert_eq!(authority.userinfo().unwrap().as_bytes(), b"user:secret");
+        assert_eq!(authority.host().to_str(), "EXAMPLE.com");
+        assert_eq!(authority.port(), OptPort::Set(1344));
+        assert_eq!(authority.host().to_str().as_ptr(), source[12..].as_ptr());
+        assert_eq!(
+            format!("{authority:?}"),
+            "AuthorityRef { userinfo: Some(UserInfo { user: \"user\", password: \"***\" }), host: Name(DomainRef { bytes: [69, 88, 65, 77, 80, 76, 69, 46, 99, 111, 109] }), port: Set(1344) }"
+        );
+    }
+
+    #[test]
+    fn authority_ref_preserves_wire_port_and_typed_host_semantics() {
+        let absent = AuthorityRef::try_from("example.com").unwrap();
+        let empty = AuthorityRef::try_from("example.com:").unwrap();
+        assert_eq!(absent.port(), OptPort::Unset);
+        assert_eq!(empty.port(), OptPort::Empty);
+
+        let expanded = AuthorityRef::try_from("[0:0:0:0:0:0:0:1]:80").unwrap();
+        let compressed = AuthorityRef::try_from("[::1]:080").unwrap();
+        assert_eq!(expanded.host(), compressed.host());
+        assert_eq!(expanded.port(), compressed.port());
+
+        let future = AuthorityRef::try_from("[v1.EXAMPLE]:443").unwrap();
+        assert_eq!(future.host().to_str(), "[v1.EXAMPLE]");
+    }
+
+    #[test]
+    fn authority_ref_rejects_non_network_and_non_strict_inputs() {
+        for input in [
+            "",
+            "user@",
+            ":1344",
+            "host:65536",
+            "host:+1",
+            "host/path",
+            "[::1",
+            "[fe80::1%25en0]",
+            "exa mple.test",
+        ] {
+            assert!(
+                AuthorityRef::try_from(input).is_err(),
+                "accepted invalid authority {input:?}"
+            );
+        }
+        AuthorityRef::parse_strict(&[0xff]).unwrap_err();
     }
 }

@@ -363,6 +363,11 @@ macro_rules! __generate_set_and_with {
             $vis const fn [<with_ $fn_name>](mut $self_token, $($param_name: $param_ty),+) -> Self {
                 $($body)*
             }
+
+            $(#[$outer_doc])*
+            $vis fn [<set_ $fn_name>](&mut $self_token, $($param_name: $param_ty),+) -> &mut Self {
+                $($body)*
+            }
         }
     };
     (
@@ -639,5 +644,30 @@ mod test {
 
         let builder = Builder::default().with_should_execute(AlsoABool(true));
         assert!(builder.should_execute)
+    }
+
+    #[test]
+    fn test_generate_const_with_and_set() {
+        #[derive(Debug, Eq, PartialEq)]
+        struct Builder {
+            value: usize,
+        }
+
+        impl Builder {
+            generate_set_and_with!(
+                /// Configure the value.
+                const fn value(mut self, value: usize) -> Self {
+                    self.value = value;
+                    self
+                }
+            );
+        }
+
+        const BUILDER: Builder = Builder { value: 1 }.with_value(2);
+        assert_eq!(BUILDER.value, 2);
+
+        let mut builder = Builder { value: 3 };
+        builder.set_value(4);
+        assert_eq!(builder.value, 4);
     }
 }

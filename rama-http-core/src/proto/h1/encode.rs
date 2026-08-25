@@ -7,7 +7,7 @@ use rama_core::bytes::{
     {Buf, Bytes},
 };
 use rama_core::telemetry::tracing::{debug, trace};
-use rama_http_types::{HeaderMap, HeaderName, header::StandardHeader};
+use rama_http_types::{HeaderMap, HeaderName};
 
 use super::io::WriteBuf;
 use super::role::{write_headers, write_headers_title_case};
@@ -170,7 +170,7 @@ impl Encoder {
                     };
 
                     if allowed_set.contains(name) {
-                        if is_valid_trailer_field(name) {
+                        if name.is_allowed_in_trailers() {
                             allowed_trailers.append(name, value);
                         } else {
                             debug!("trailer field is not valid: {}", &name);
@@ -248,26 +248,6 @@ impl Encoder {
             }
         }
     }
-}
-
-pub(super) fn is_valid_trailer_field(name: &HeaderName) -> bool {
-    !matches!(
-        name.standard(),
-        Some(
-            StandardHeader::Authorization
-                | StandardHeader::CacheControl
-                | StandardHeader::ContentEncoding
-                | StandardHeader::ContentLength
-                | StandardHeader::ContentRange
-                | StandardHeader::ContentType
-                | StandardHeader::Host
-                | StandardHeader::MaxForwards
-                | StandardHeader::SetCookie
-                | StandardHeader::Trailer
-                | StandardHeader::TransferEncoding
-                | StandardHeader::Te
-        )
-    )
 }
 
 impl<B> Buf for EncodedBuf<B>
@@ -426,8 +406,9 @@ mod tests {
     use rama_http_types::{
         HeaderMap, HeaderName, HeaderValue,
         header::{
-            AUTHORIZATION, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
-            CONTENT_TYPE, HOST, MAX_FORWARDS, SET_COOKIE, TE, TRAILER, TRANSFER_ENCODING,
+            ACCEPT_RANGES, AUTHORIZATION, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH,
+            CONTENT_RANGE, CONTENT_TYPE, ETAG, HOST, MAX_FORWARDS, SET_COOKIE, TE, TRAILER,
+            TRANSFER_ENCODING,
         },
     };
 
@@ -641,6 +622,24 @@ mod tests {
         headers.insert(TE, HeaderValue::from_static("header data"));
 
         assert!(encoder.encode_trailers::<&[u8]>(headers, true).is_none());
+    }
+
+    #[test]
+    fn chunked_with_standard_trailers() {
+        let encoder =
+            Encoder::chunked().into_chunked_with_trailing_fields(vec![ACCEPT_RANGES, ETAG]);
+        let headers = HeaderMap::from_iter([
+            (ACCEPT_RANGES, HeaderValue::from_static("bytes")),
+            (ETAG, HeaderValue::from_static("\"generated-after-body\"")),
+        ]);
+
+        let encoded = encoder.encode_trailers::<&[u8]>(headers, false).unwrap();
+        let mut dst = Vec::new();
+        dst.put(encoded);
+        assert_eq!(
+            dst,
+            b"0\r\naccept-ranges: bytes\r\netag: \"generated-after-body\"\r\n\r\n"
+        );
     }
 
     #[test]

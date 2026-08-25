@@ -1,3 +1,13 @@
+use core::cmp::Ordering;
+
+/// Compare two byte strings lexicographically under ASCII case folding.
+#[must_use]
+pub fn cmp_ignore_ascii_case(lhs: &[u8], rhs: &[u8]) -> Ordering {
+    lhs.iter()
+        .map(u8::to_ascii_lowercase)
+        .cmp(rhs.iter().map(u8::to_ascii_lowercase))
+}
+
 /// Returns `true` if `lhs` and `rhs` are byte-for-byte equal under ASCII
 /// case folding. `const fn`, so usable in `const` contexts where std's
 /// [`<[u8]>::eq_ignore_ascii_case`] isn't yet available.
@@ -204,6 +214,18 @@ where
 
 #[cfg(test)]
 mod tests {
+    use core::cmp::Ordering;
+
+    #[test]
+    fn test_cmp_ignore_ascii_case() {
+        assert_eq!(
+            super::cmp_ignore_ascii_case(b"allow", b"ALLOW"),
+            Ordering::Equal
+        );
+        assert_eq!(super::cmp_ignore_ascii_case(b"a", b"BB"), Ordering::Less);
+        assert_eq!(super::cmp_ignore_ascii_case(b"CC", b"b"), Ordering::Greater);
+    }
+
     use super::*;
 
     #[test]

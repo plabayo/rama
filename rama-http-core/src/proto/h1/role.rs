@@ -234,7 +234,10 @@ impl Http1Transaction for Server {
                     debug!("invalid http1 header: {err:?}");
                 })
                 .map_err(|_e| crate::error::Parse::Internal)?;
-            let value = header_value!(slice.slice(header.value.0..header.value.1));
+            let mut value = header_value!(slice.slice(header.value.0..header.value.1));
+            if name.is_sensitive() {
+                value.set_sensitive(true);
+            }
 
             if name == header::TRANSFER_ENCODING {
                 // RFC 9112 §6.1 / §6.3:
@@ -565,11 +568,12 @@ impl Server {
         };
 
         let mut encoder = Encoder::length(0);
-        let mut allowed_trailer_fields: Option<Vec<HeaderName>> = None;
+        let mut allowed_trailer_fields = headers::trailer_header_names(&msg.head.headers);
         let mut wrote_date = false;
         let mut is_name_written = false;
         let mut must_write_chunked = false;
         let mut prev_con_len = None;
+        let connection_header_names = headers::connection_header_names(&msg.head.headers);
 
         macro_rules! handle_is_name_written {
             () => {{
@@ -751,25 +755,6 @@ impl Server {
                         extend(dst, value.as_bytes());
                     }
 
-                    // Parse the Trailer header value into HeaderNames.
-                    // The value may contain comma-separated names.
-                    // HeaderName equality is case-insensitive, while preserving spelling.
-                    if let Ok(value_str) = value.to_str() {
-                        let names: Vec<HeaderName> = value_str
-                            .split(',')
-                            .filter_map(|s| HeaderName::from_bytes(s.trim().as_bytes()).ok())
-                            .collect();
-
-                        match &mut allowed_trailer_fields {
-                            Some(fields) => {
-                                fields.extend(names);
-                            }
-                            None => {
-                                allowed_trailer_fields = Some(names);
-                            }
-                        }
-                    }
-
                     continue 'headers;
                 }
                 _ => (),
@@ -847,10 +832,12 @@ impl Server {
             extend(dst, b"\r\n");
         }
 
-        if encoder.is_chunked()
-            && let Some(allowed_trailer_fields) = allowed_trailer_fields
-        {
-            encoder = encoder.into_chunked_with_trailing_fields(allowed_trailer_fields);
+        if encoder.is_chunked() {
+            allowed_trailer_fields
+                .retain(|name| !connection_header_names.iter().any(|value| value == name));
+            if !allowed_trailer_fields.is_empty() {
+                encoder = encoder.into_chunked_with_trailing_fields(allowed_trailer_fields);
+            }
         }
 
         Ok(encoder.set_last(is_last))
@@ -965,7 +952,10 @@ impl Http1Transaction for Client {
                         debug!("invalid http1 header: {err:?}");
                     })
                     .map_err(|_e| crate::error::Parse::Internal)?;
-                let value = header_value!(slice.slice(header.value.0..header.value.1));
+                let mut value = header_value!(slice.slice(header.value.0..header.value.1));
+                if name.is_sensitive() {
+                    value.set_sensitive(true);
+                }
 
                 if name == header::CONNECTION {
                     // keep_alive was previously set to default for Version
@@ -1192,6 +1182,7 @@ impl Client {
         // HTTP/1.0 doesn't know about chunked
         let can_chunked = head.version == Version::HTTP_11;
         let headers = &mut head.headers;
+        let connection_header_names = headers::connection_header_names(headers);
 
         // If the user already set specific headers, we should respect them, regardless
         // of what the Body knows about itself. They set them for a reason.
@@ -1274,16 +1265,11 @@ impl Client {
 
         let encoder = encoder.map(|enc| {
             if enc.is_chunked() {
-                // Parse Trailer header values into HeaderNames.
-                // Each Trailer header value may contain comma-separated names.
-                // HeaderName equality is case-insensitive, while preserving spelling.
-                let allowed_trailer_fields: Vec<HeaderName> = headers
-                    .get_all(header::TRAILER)
-                    .iter()
-                    .filter_map(|hv| hv.to_str().ok())
-                    .flat_map(|s| s.split(','))
-                    .filter_map(|s| HeaderName::from_bytes(s.trim().as_bytes()).ok())
-                    .collect();
+                let allowed_trailer_fields: Vec<HeaderName> =
+                    headers::trailer_header_names(headers)
+                        .into_iter()
+                        .filter(|name| !connection_header_names.iter().any(|value| value == name))
+                        .collect();
 
                 if !allowed_trailer_fields.is_empty() {
                     return enc.into_chunked_with_trailing_fields(allowed_trailer_fields);
@@ -1458,12 +1444,7 @@ pub(crate) fn write_headers_title_case(headers: &HeaderMap, dst: &mut Vec<u8>) {
 }
 
 pub(crate) fn write_headers(headers: &HeaderMap, dst: &mut Vec<u8>) {
-    for (name, value) in headers.ordered_iter() {
-        name.write_original(dst);
-        extend(dst, b": ");
-        extend(dst, value.as_bytes());
-        extend(dst, b"\r\n");
-    }
+    rama_http_types::proto::h1::head::encode_header_fields(headers, dst);
 }
 
 fn write_h1_headers(
@@ -1519,33 +1500,14 @@ fn encode_request_target(
     dst: &mut Vec<u8>,
 ) {
     let mut buf = BytesMut::new();
-    let written = if *method == Method::CONNECT {
-        uri.write_http_authority_form(&mut buf)
-    } else if uri.is_asterisk() {
-        buf.extend_from_slice(b"*");
-        Ok(())
-    } else {
-        let via_http_proxy = extensions
-            .get_ref::<rama_net::client::ProxyRoute>()
-            .and_then(rama_net::client::ProxyRoute::proxy_address)
-            .and_then(|proxy| proxy.protocol.as_ref())
-            .map(|protocol| protocol.is_http())
-            .unwrap_or(false);
-        // Same secure/insecure resolution as `req.protocol()` (scheme, inserted
-        // `Protocol`, `Forwarded` client-proto, then a TLS `SecureTransport` marker).
-        let is_insecure =
-            !rama_http_types::protocol_from_uri_or_extensions(extensions, uri).is_secure();
-        if via_http_proxy && is_insecure {
-            uri.write_http_absolute_form(&mut buf)
-        } else {
-            uri.write_http_origin_form(&mut buf)
-        }
-    };
+    let written =
+        rama_http_types::proto::h1::head::encode_request_target(method, uri, extensions, &mut buf);
 
     match written {
         Ok(()) => extend(dst, &buf),
         // defensive: a form mismatch (e.g. authority-form on an URI without authority)
         // falls back to the faithful full form rather than emitting a broken target.
+        Err(_) if uri.is_asterisk() => extend(dst, b"/"),
         Err(_) => uri.encode_to(dst),
     }
 }
@@ -1595,6 +1557,9 @@ mod tests {
 
         // OPTIONS * -> "*"
         assert_eq!(target(&Method::OPTIONS, "*", &none), "*");
+        // The infallible connection encoder coerces an invalid GET * to
+        // origin-form instead of putting an invalid target on the wire.
+        assert_eq!(target(&Method::GET, "*", &none), "/");
 
         // CONNECT -> authority-form
         assert_eq!(
@@ -1673,7 +1638,9 @@ mod tests {
 
     #[test]
     fn test_parse_request() {
-        let mut raw = BytesMut::from("GET /echo HTTP/1.1\r\nHost: ramaproxy.org\r\n\r\n");
+        let mut raw = BytesMut::from(
+            "GET /echo HTTP/1.1\r\nHost: ramaproxy.org\r\nAuthorization: secret\r\n\r\n",
+        );
         let mut method = None;
         let msg = Server::parse(
             &mut raw,
@@ -1692,14 +1659,16 @@ mod tests {
         assert_eq!(msg.head.subject.0, Method::GET);
         assert_eq!(msg.head.subject.1.as_str(), "/echo");
         assert_eq!(msg.head.version, Version::HTTP_11);
-        assert_eq!(msg.head.headers.len(), 1);
+        assert_eq!(msg.head.headers.len(), 2);
         assert_eq!(msg.head.headers["Host"], "ramaproxy.org");
+        assert!(msg.head.headers["Authorization"].is_sensitive());
         assert_eq!(method, Some(Method::GET));
     }
 
     #[test]
     fn test_parse_response() {
-        let mut raw = BytesMut::from("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
+        let mut raw =
+            BytesMut::from("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nSet-Cookie: secret\r\n\r\n");
         let ctx = ParseContext {
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
@@ -1712,8 +1681,9 @@ mod tests {
         assert_eq!(raw.len(), 0);
         assert_eq!(msg.head.subject, StatusCode::OK);
         assert_eq!(msg.head.version, Version::HTTP_11);
-        assert_eq!(msg.head.headers.len(), 1);
+        assert_eq!(msg.head.headers.len(), 2);
         assert_eq!(msg.head.headers["Content-Length"], "0");
+        assert!(msg.head.headers["Set-Cookie"].is_sensitive());
     }
 
     #[test]
@@ -2713,6 +2683,82 @@ mod tests {
             &*vec,
             b"GET / HTTP/1.1\r\nCONTENT-LENGTH: 10\r\nContent-Type: application/json\r\n\r\n"
                 .as_ref(),
+        );
+    }
+
+    #[test]
+    fn connection_nominated_trailers_are_not_encoded() {
+        use crate::proto::BodyLength;
+        use rama_http_types::header::{CONNECTION, HeaderValue, TRAILER};
+
+        fn headers() -> HeaderMap {
+            HeaderMap::from_iter([
+                (CONNECTION, HeaderValue::from_static(" keep-alive,\tX-Hop ")),
+                (TRAILER, HeaderValue::from_static("x-hop")),
+            ])
+        }
+
+        fn trailers() -> HeaderMap {
+            HeaderMap::from_iter([(
+                HeaderName::from_static("x-hop"),
+                HeaderValue::from_static("late"),
+            )])
+        }
+
+        let mut client_head = MessageHead {
+            headers: headers(),
+            ..Default::default()
+        };
+        let mut encoded = Vec::new();
+        let client_encoder = Client::encode(
+            Encode {
+                head: EncodeHead {
+                    version: client_head.version,
+                    subject: client_head.subject,
+                    headers: client_head.headers,
+                    extensions: &mut client_head.extensions,
+                },
+                body: Some(BodyLength::Unknown),
+                keep_alive: true,
+                req_method: &mut None,
+                title_case_headers: false,
+                date_header: false,
+            },
+            &mut encoded,
+        )
+        .unwrap();
+        assert!(
+            client_encoder
+                .encode_trailers::<&[u8]>(trailers(), false)
+                .is_none()
+        );
+
+        let mut server_head = MessageHead {
+            headers: headers(),
+            ..Default::default()
+        };
+        encoded.clear();
+        let server_encoder = Server::encode(
+            Encode {
+                head: EncodeHead {
+                    version: server_head.version,
+                    subject: server_head.subject,
+                    headers: server_head.headers,
+                    extensions: &mut server_head.extensions,
+                },
+                body: Some(BodyLength::Unknown),
+                keep_alive: true,
+                req_method: &mut None,
+                title_case_headers: false,
+                date_header: false,
+            },
+            &mut encoded,
+        )
+        .unwrap();
+        assert!(
+            server_encoder
+                .encode_trailers::<&[u8]>(trailers(), false)
+                .is_none()
         );
     }
 

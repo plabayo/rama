@@ -1,0 +1,14 @@
+ICAP/1.0 200 OK
+Date: Mon, 10 Jan 2000  09:55:21 GMT
+Methods: RESPMOD
+Service: FOO Tech Server 1.0
+ISTag: "W3E4R7U9-L2E4-2"
+Encapsulated: null-body=0
+Max-Connections: 1000
+Options-TTL: 7200
+Allow: 204
+Preview: 2048
+Transfer-Complete: asp, bat, exe, com
+Transfer-Ignore: html
+Transfer-Preview: *
+

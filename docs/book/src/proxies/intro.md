@@ -23,6 +23,7 @@ In specifically we'll discuss:
 - [🚦 Reverse proxies](./reverse.md)
 - [🔓 TLS Termination proxies](./tls.md)
 - [🌐 HTTP(S) proxies](./http.md)
+- [ICAP](./icap.md)
 - [🧦 SOCKS5 proxies](./socks5.md)
 - [🔓 SNI proxies](./sni.md)
 - [🔎 MITM proxies](./mitm.md)

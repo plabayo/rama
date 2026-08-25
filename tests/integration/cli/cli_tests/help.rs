@@ -36,6 +36,17 @@ async fn test_help_echo() {
 
 #[tokio::test]
 #[ignore]
+async fn test_help_icap() {
+    utils::init_tracing();
+
+    let lines = utils::RamaService::run(&["help", "serve", "icap"]).unwrap();
+    assert!(lines.contains("ICAP echo service"));
+    assert!(lines.contains("Usage:"));
+    assert!(lines.contains("Options:"));
+}
+
+#[tokio::test]
+#[ignore]
 async fn test_help_http() {
     utils::init_tracing();
 
