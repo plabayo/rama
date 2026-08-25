@@ -135,6 +135,7 @@ pub(super) async fn open_file(
     req: Request,
     negotiated_encodings: Vec<QualityValue<Encoding>>,
     range_header: Option<&str>,
+    ignore_multi_range_requests: bool,
     buf_chunk_size: usize,
     source: &DirSource,
     precompression_configured: bool,
@@ -143,6 +144,7 @@ pub(super) async fn open_file(
     let mime = match variant {
         ServeVariant::Directory {
             serve_mode,
+            redirect_to_trailing_slash,
             html_as_default_extension,
         } => {
             // Might already at this point know a redirect or not found result should be
@@ -152,6 +154,7 @@ pub(super) async fn open_file(
                 &mut path_to_file,
                 req.uri(),
                 serve_mode,
+                redirect_to_trailing_slash,
                 html_as_default_extension,
                 source,
                 symlink_policy,
@@ -189,7 +192,8 @@ pub(super) async fn open_file(
                     return Ok(output);
                 }
 
-                let maybe_range = try_parse_range(range_header, meta.len());
+                let maybe_range =
+                    try_parse_range(range_header, meta.len(), ignore_multi_range_requests);
 
                 Ok(OpenFileOutput::new_file_opened(
                     FileRequestExtent::Head(meta),
@@ -225,7 +229,8 @@ pub(super) async fn open_file(
                     return Ok(output);
                 }
 
-                let maybe_range = try_parse_range(range_header, content_length);
+                let maybe_range =
+                    try_parse_range(range_header, content_length, ignore_multi_range_requests);
 
                 Ok(OpenFileOutput::new_file_opened(
                     FileRequestExtent::EmbeddedHead(content_length),
@@ -266,7 +271,8 @@ pub(super) async fn open_file(
                     return Ok(output);
                 }
 
-                let maybe_range = try_parse_range(range_header, meta.len());
+                let maybe_range =
+                    try_parse_range(range_header, meta.len(), ignore_multi_range_requests);
                 if let Some(Ok(range)) = maybe_range.as_ref() {
                     file.seek(SeekFrom::Start(*range.start())).await?;
                 }
@@ -306,7 +312,8 @@ pub(super) async fn open_file(
                     return Ok(output);
                 }
 
-                let maybe_range = try_parse_range(range_header, content_length);
+                let maybe_range =
+                    try_parse_range(range_header, content_length, ignore_multi_range_requests);
 
                 let mut content = contents;
                 if let Some(Ok(range)) = maybe_range.as_ref() {
@@ -664,6 +671,7 @@ async fn maybe_serve_directory(
     path_to_file: &mut PathBuf,
     uri: &Uri,
     mode: DirectoryServeMode,
+    redirect_to_trailing_slash: bool,
     html_as_default_extension: bool,
     source: &DirSource,
     symlink_policy: ServeDirSymlinkPolicy,
@@ -697,7 +705,7 @@ async fn maybe_serve_directory(
 
     match mode {
         DirectoryServeMode::AppendIndexHtml => {
-            if uri_path.ends_with('/') {
+            if uri_path.ends_with('/') || !redirect_to_trailing_slash {
                 path_to_file.push("index.html");
                 Ok(None)
             } else {
@@ -725,23 +733,29 @@ async fn maybe_serve_directory(
 fn try_parse_range(
     maybe_range_ref: Option<&str>,
     file_size: u64,
+    ignore_multi_range_requests: bool,
 ) -> Option<Result<RangeInclusive<u64>, RangeError>> {
-    maybe_range_ref.map(|header_value| {
-        let parsed = http_range_header::parse_range_header(header_value)
-            .map_err(|_err| RangeError::Unsatisfiable)?;
+    let header_value = maybe_range_ref?;
+    let Ok(parsed) = http_range_header::parse_range_header(header_value) else {
+        return Some(Err(RangeError::Unsatisfiable));
+    };
 
-        if parsed.ranges.len() > 1 {
-            // ServeDir and ServeFile do not support multipart responses, so
-            // reject multi-range requests before validate() runs overlap checks.
-            return Err(RangeError::MultipleRangesNotSupported);
-        }
+    if parsed.ranges.len() > 1 {
+        // ServeDir and ServeFile do not support multipart responses. Optionally
+        // ignore the Range header before semantic and overlap validation.
+        return if ignore_multi_range_requests {
+            None
+        } else {
+            Some(Err(RangeError::MultipleRangesNotSupported))
+        };
+    }
 
-        let mut ranges = parsed
+    Some(
+        parsed
             .validate(file_size)
-            .map_err(|_err| RangeError::Unsatisfiable)?;
-
-        ranges.pop().ok_or(RangeError::Unsatisfiable)
-    })
+            .map_err(|_err| RangeError::Unsatisfiable)
+            .and_then(|mut ranges| ranges.pop().ok_or(RangeError::Unsatisfiable)),
+    )
 }
 
 /// `Some(true)` => exists and is a directory. `Some(false)` => exists and is
