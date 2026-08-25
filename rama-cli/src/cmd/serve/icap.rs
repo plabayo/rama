@@ -5,6 +5,7 @@ use std::{path::PathBuf, time::Duration};
 use clap::Args;
 use rama::{
     Layer as _,
+    bytes::Bytes,
     combinators::Either,
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     futures::{StreamExt as _, stream},
@@ -15,9 +16,10 @@ use rama::{
     },
     icap::{
         codec::{Header, ResponseLine},
-        http::{HttpService, IncomingRequest},
+        http::IncomingRequest as HttpIncomingRequest,
+        io::BodyEnd,
         proto::{EncapsulatedKind, MethodKind, Preview, StatusCode, header},
-        server::{OptionsResponse, OutgoingResponse, Server, ServerError},
+        server::{IncomingRequest, OptionsResponse, OutgoingResponse, Server, ServerError},
     },
     layer::{
         ConsumeErrLayer, LimitLayer, MapErrLayer, TimeoutLayer,
@@ -112,7 +114,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIcap) -> Result<(), Box
         max_connections: (cfg.concurrent > 0)
             .then(|| u64::try_from(cfg.concurrent).unwrap_or(u64::MAX)),
     };
-    let adaptation = HttpService::new(service_fn(move |request| echo(request, options)));
+    let adaptation = service_fn(move |request| echo(request, options));
     let server = Server::new(adaptation, SERVICE_TAG)?;
     let server = MapErrLayer::new(|error: ServerError| BoxError::from(error)).into_layer(server);
     let service = (
@@ -162,28 +164,29 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandIcap) -> Result<(), Box
 }
 
 async fn echo(
-    request: IncomingRequest,
+    mut request: IncomingRequest,
     options: EchoOptions,
 ) -> Result<OutgoingResponse, BoxError> {
-    let method = request.icap().method();
-    let preview = request.icap().preview();
+    let method = request.request().method();
     match method {
         MethodKind::Options => return options_response(options),
         MethodKind::Extension => {
-            return Ok(request.respond_method_not_allowed(SERVICE_TAG)?);
+            return Ok(
+                HttpIncomingRequest::from_icap(request)?.respond_method_not_allowed(SERVICE_TAG)?
+            );
         }
         MethodKind::Reqmod | MethodKind::Respmod => {}
     }
 
+    let preview = read_preview(&mut request).await?;
+    let request = HttpIncomingRequest::from_icap(request)?;
     let (_icap, encapsulated, body, _extensions) = request.into_parts();
     let (http_request, http_response, body_kind) = encapsulated
         .context("adaptation request has no encapsulated HTTP message")?
         .into_parts();
     let body = match (method, body_kind) {
         (MethodKind::Reqmod, EncapsulatedKind::RequestBody)
-        | (MethodKind::Respmod, EncapsulatedKind::ResponseBody) => {
-            prepare_echo_body(body, preview).await?
-        }
+        | (MethodKind::Respmod, EncapsulatedKind::ResponseBody) => prepend_preview(body, preview),
         (_, EncapsulatedKind::NullBody) => Body::empty(),
         _ => return Err(BoxError::from_static_str("invalid ICAP echo body kind")),
     };
@@ -212,32 +215,36 @@ async fn echo(
     }
 }
 
-async fn prepare_echo_body(mut body: Body, preview: Option<Preview>) -> Result<Body, BoxError> {
-    let Some(preview) = preview else {
-        return Ok(body);
-    };
+async fn read_preview(request: &mut IncomingRequest) -> Result<Vec<Frame<Bytes>>, BoxError> {
+    if request.request().preview().is_none() {
+        return Ok(Vec::new());
+    }
 
-    let mut previewed = 0_u64;
     let mut frames = Vec::new();
-    while let Some(frame) = body.frame().await {
-        let frame = frame?;
-        match frame.into_data() {
-            Ok(data) => {
-                previewed = previewed.saturating_add(u64::try_from(data.len()).unwrap_or(u64::MAX));
-                frames.push(Frame::data(data));
-                if previewed > preview.as_u64() {
-                    break;
-                }
-            }
-            Err(frame) => {
-                frames.push(frame);
-                break;
-            }
+    while let Some(data) = request.body_mut().next_data().await? {
+        frames.push(Frame::data(data));
+    }
+
+    match request.body().body_end() {
+        Some(BodyEnd::Preview) => request.body_mut().continue_preview().await?,
+        Some(BodyEnd::Complete) => {}
+        Some(BodyEnd::PartialContent { .. }) | None => {
+            return Err(BoxError::from_static_str(
+                "invalid ICAP request Preview state",
+            ));
         }
     }
 
+    Ok(frames)
+}
+
+fn prepend_preview(body: Body, frames: Vec<Frame<Bytes>>) -> Body {
+    if frames.is_empty() {
+        return body;
+    }
+
     let prefix = stream::iter(frames.into_iter().map(Ok::<_, BoxError>));
-    Ok(Body::from_frame_stream(prefix.chain(body.into_stream())))
+    Body::from_frame_stream(prefix.chain(body.into_stream()))
 }
 
 fn options_response(options: EchoOptions) -> Result<OutgoingResponse, BoxError> {
