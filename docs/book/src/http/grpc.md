@@ -255,6 +255,8 @@ there is no artificial `/grpc` prefix to configure and no nested prefix is strip
 See the complete job-service example:
 
 - [`examples/proto/jobs.proto`](https://github.com/plabayo/rama/blob/main/examples/proto/jobs.proto): generated job API with unary and server-streaming RPCs
+- [`examples/src/http_grpc_job/jobs.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_grpc_job/jobs.rs): generated protobuf types and service stubs
+- [`examples/src/http_grpc_job/common.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_grpc_job/common.rs): typed HTTP contracts, shared route constants and URI construction
 - [`examples/src/http_grpc_job/server.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_grpc_job/server.rs): HTTP endpoints, job and standard gRPC health services on one router
 - [`examples/src/http_grpc_job/client.rs`](https://github.com/plabayo/rama/blob/main/examples/src/http_grpc_job/client.rs): CLI for exploring the ordinary HTTP and generated gRPC APIs
 

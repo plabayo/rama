@@ -60,15 +60,15 @@ use rama::{
 use serde::Deserialize;
 use tokio::sync::{RwLock, watch};
 
-use rama_examples::http_grpc_job::{
-    common::{
-        EXAMPLE_JOB_PATH, ErrorResponse, HEALTH_PATH, HealthResponse, HealthStatus, INDEX_PATH,
-        JOB_PATH, JobResponse,
-    },
-    jobs::{
-        GetJobRequest, Job, JobEvent, JobState, SubmitJobRequest, WatchJobRequest,
-        job_service_server::{JobService, JobServiceServer},
-    },
+mod common;
+mod jobs;
+use common::{
+    EXAMPLE_JOB_PATH, ErrorResponse, HEALTH_PATH, HealthResponse, HealthStatus, INDEX_PATH,
+    JOB_PATH, JobResponse,
+};
+use jobs::{
+    GetJobRequest, Job, JobEvent, JobState, SubmitJobRequest, WatchJobRequest,
+    job_service_server::{JobService, JobServiceServer},
 };
 
 const ADDR: SocketAddress = SocketAddress::local_ipv4(62073);

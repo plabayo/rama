@@ -32,12 +32,12 @@ use rama::{
     net::uri::Uri,
 };
 
-use rama_examples::http_grpc_job::{
-    common::{ErrorResponse, HealthResponse, JobResponse, default_origin, health_uri, job_uri},
-    jobs::{
-        GetJobRequest, Job, JobState, SubmitJobRequest, WatchJobRequest,
-        job_service_client::JobServiceClient, job_service_server,
-    },
+mod common;
+mod jobs;
+use common::{ErrorResponse, HealthResponse, JobResponse, default_origin, health_uri, job_uri};
+use jobs::{
+    GetJobRequest, Job, JobState, SubmitJobRequest, WatchJobRequest,
+    job_service_client::JobServiceClient, job_service_server,
 };
 
 const DEFAULT_TASK: &str = "rebuild the product search index";

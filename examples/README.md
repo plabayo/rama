@@ -48,7 +48,7 @@ The same `Echo` service, twice, so you can compare both flows:
 
 - [`grpc_echo/server.rs`](./src/grpc_echo/server.rs) + [`grpc_echo/client.rs`](./src/grpc_echo/client.rs) - the classic flow: a [`.proto` contract](./proto/echo.proto) compiled into protobuf stubs by the build script, included by [`grpc_echo/echo.rs`](./src/grpc_echo/echo.rs)
 - [`grpc_json_echo/server.rs`](./src/grpc_json_echo/server.rs) + [`grpc_json_echo/client.rs`](./src/grpc_json_echo/client.rs) - the same service [defined inline in Rust](./src/grpc_json_echo/echo.rs) with messages serialized by serde (no `.proto` file, no build script). JSON is used because you can read it on the wire; any serde format works, and most are a better choice
-- [`http_grpc_job/server.rs`](./src/http_grpc_job/server.rs) + [`http_grpc_job/client.rs`](./src/http_grpc_job/client.rs) - a production-shaped job service where generated gRPC job and health services share one web router, listener and application state with operator-facing HTTP endpoints, plus a CLI for exploring both protocols
+- [`http_grpc_job/server.rs`](./src/http_grpc_job/server.rs) + [`http_grpc_job/client.rs`](./src/http_grpc_job/client.rs) - a production-shaped job service where generated gRPC job and health services share one web router, listener and application state with operator-facing HTTP endpoints, plus a CLI for exploring both protocols; [`common.rs`](./src/http_grpc_job/common.rs) shares the typed HTTP contract and routes, while [`jobs.rs`](./src/http_grpc_job/jobs.rs) includes the generated protobuf API
 
 See also [the gRPC examples README at ./grpc/README.md](./grpc/README.md) for the protobuf-based examples.
 

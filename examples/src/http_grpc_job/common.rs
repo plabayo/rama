@@ -1,25 +1,30 @@
 //! HTTP contracts, routes, and URI construction shared by the client and server.
 
+#![allow(
+    dead_code,
+    reason = "this source module is shared by separate client and server binaries"
+)]
+
 use rama::net::uri::Uri;
 use serde::{Deserialize, Serialize};
 
 use super::jobs::{Job, JobState};
 
-pub const INDEX_PATH: &str = "/";
-pub const HEALTH_PATH: &str = "/healthz";
-pub const JOBS_PATH: &str = "/jobs";
-pub const JOB_PATH: &str = "/jobs/{id}";
-pub const EXAMPLE_JOB_PATH: &str = "/jobs/1";
+pub(crate) const INDEX_PATH: &str = "/";
+pub(crate) const HEALTH_PATH: &str = "/healthz";
+pub(crate) const JOBS_PATH: &str = "/jobs";
+pub(crate) const JOB_PATH: &str = "/jobs/{id}";
+pub(crate) const EXAMPLE_JOB_PATH: &str = "/jobs/1";
 
-pub fn default_origin() -> Uri {
+pub(crate) fn default_origin() -> Uri {
     Uri::from_static("http://127.0.0.1:62073")
 }
 
-pub fn health_uri(origin: &Uri) -> Uri {
+pub(crate) fn health_uri(origin: &Uri) -> Uri {
     origin.clone().with_path(HEALTH_PATH)
 }
 
-pub fn job_uri(origin: &Uri, id: u64) -> Uri {
+pub(crate) fn job_uri(origin: &Uri, id: u64) -> Uri {
     origin
         .clone()
         .with_path(JOBS_PATH)
@@ -28,7 +33,7 @@ pub fn job_uri(origin: &Uri, id: u64) -> Uri {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum HealthStatus {
+pub(crate) enum HealthStatus {
     Ok,
 }
 
@@ -41,12 +46,12 @@ impl std::fmt::Display for HealthStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HealthResponse {
-    pub status: HealthStatus,
+pub(crate) struct HealthResponse {
+    pub(crate) status: HealthStatus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum JobStateResponse {
+pub(crate) enum JobStateResponse {
     #[serde(rename = "JOB_STATE_UNSPECIFIED")]
     Unspecified,
     #[serde(rename = "JOB_STATE_QUEUED")]
@@ -58,7 +63,7 @@ pub enum JobStateResponse {
 }
 
 impl JobStateResponse {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Unspecified => "JOB_STATE_UNSPECIFIED",
             Self::Queued => "JOB_STATE_QUEUED",
@@ -80,11 +85,11 @@ impl From<JobState> for JobStateResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JobResponse {
-    pub id: u64,
-    pub task: String,
-    pub state: JobStateResponse,
-    pub progress_percent: u32,
+pub(crate) struct JobResponse {
+    pub(crate) id: u64,
+    pub(crate) task: String,
+    pub(crate) state: JobStateResponse,
+    pub(crate) progress_percent: u32,
 }
 
 impl From<Job> for JobResponse {
@@ -101,8 +106,8 @@ impl From<Job> for JobResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ErrorResponse {
-    pub error: String,
+pub(crate) struct ErrorResponse {
+    pub(crate) error: String,
 }
 
 #[cfg(test)]
