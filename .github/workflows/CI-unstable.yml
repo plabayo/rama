@@ -76,7 +76,9 @@ jobs:
           - profile: release
             cargo_profile_args: --release
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 150
+    # A cold Windows release build plus its ignored compiletests can exceed
+    # 150 minutes. Keep the wider bound scoped to that combination.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && matrix.profile == 'release' && 180 || 150 }}
     env:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
       RUSTFLAGS: -D warnings --cfg tokio_unstable
@@ -100,7 +102,7 @@ jobs:
           cargo nextest run --all-features ${{ matrix.cargo_profile_args }}
           --workspace
       - name: Run ignored tests (${{ matrix.profile }})
-        timeout-minutes: 80
+        timeout-minutes: ${{ matrix.os == 'windows-latest' && matrix.profile == 'release' && 100 || 80 }}
         run: >-
           cargo nextest run --profile ci --all-features
           ${{ matrix.cargo_profile_args }} --workspace --run-ignored=only
