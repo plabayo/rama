@@ -1,18 +1,17 @@
 use crate::sse::event_data::EventDataLineReader;
-use rama_core::error::BoxErrorExt as _;
 
-use super::parser::{RawEventLine, is_bom, line};
-use super::utf8_stream::Utf8Stream;
+use super::parser::{RawEventLine, parse_line};
 use super::{Event, EventBuildError, EventDataRead};
 
+use memchr::{memchr2, memchr2_iter};
 use pin_project_lite::pin_project;
 use rama_core::error::{BoxError, ErrorContext as _, ErrorExt as _};
 use rama_core::futures::stream::Stream;
 use rama_core::futures::task::{Context, Poll};
 use rama_core::telemetry::tracing;
 use rama_utils::str::smol_str::SmolStr;
+use std::collections::VecDeque;
 use std::fmt;
-use std::marker::PhantomData;
 use std::pin::Pin;
 
 struct EventBuilder<T: EventDataRead> {
@@ -66,29 +65,30 @@ impl<T: EventDataRead> EventBuilder<T> {
     ///
     /// -> Otherwise
     ///    The field is ignored.
-    fn add(&mut self, line: &RawEventLine) -> Result<(), BoxError> {
+    #[inline]
+    fn add(&mut self, line: RawEventLine<'_>) -> Result<(), BoxError> {
         match line {
-            RawEventLine::Field(field, val) => match *field {
+            RawEventLine::Field(field, val) => match field {
+                "data" => {
+                    self.reader.read_line(val.unwrap_or(""))?;
+                }
                 "event" => {
                     // WHATWG: bare `event` (no value) sets the event-type buffer
                     // to the empty string, which then dispatches as the default
                     // `message` event. Modelling that as `None` so the dispatch
                     // path treats it identically to "no event field present".
                     if let Some(v) = val {
-                        self.event.try_set_event(*v).context("set event value")?;
+                        self.event.try_set_event(v).context("set event value")?;
                     } else {
                         self.event.event = None;
                     }
-                }
-                "data" => {
-                    self.reader.read_line(val.unwrap_or(""))?;
                 }
                 "id" => {
                     // WHATWG: bare `id` (no value) sets the last-event-ID buffer
                     // to the empty string; NUL in the id makes the field ignored.
                     if let Some(v) = val {
                         if !v.contains('\u{0000}') {
-                            self.event.try_set_id(*v).context("set event id")?;
+                            self.event.try_set_id(v).context("set event id")?;
                         }
                     } else {
                         self.event.id = Some(SmolStr::default());
@@ -97,7 +97,7 @@ impl<T: EventDataRead> EventBuilder<T> {
                 "retry" => {
                     // WHATWG: retry value MUST consist of only ASCII digits.
                     // `u64::parse` would otherwise accept a leading `+`.
-                    if let Some(v) = *val
+                    if let Some(v) = val
                         && !v.is_empty()
                         && v.bytes().all(|b| b.is_ascii_digit())
                         && let Ok(ms) = v.parse::<u64>()
@@ -111,7 +111,7 @@ impl<T: EventDataRead> EventBuilder<T> {
             },
             RawEventLine::Comment(comment) => {
                 self.event
-                    .try_set_comment(*comment)
+                    .try_set_comment(comment)
                     .context("set event comment")?;
             }
             RawEventLine::Empty => self.is_complete = true,
@@ -149,19 +149,228 @@ impl<T: EventDataRead> EventBuilder<T> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-enum EventStreamState {
-    NotStarted,
-    Started,
-    Terminated,
+const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
+
+/// Incremental SSE decoder state.
+///
+/// Consumes raw body chunks as bytes: complete lines are parsed directly out
+/// of each chunk (one UTF-8 validation pass and one line-terminator scan per
+/// chunk, zero allocations per line); only a line or UTF-8 sequence that
+/// crosses a chunk boundary is buffered in `carry`.
+struct DecodeState<T: EventDataRead> {
+    /// partial line (possibly ending in a partial UTF-8 sequence) from prior chunks
+    carry: Vec<u8>,
+    /// a CR was the last byte seen: an LF at the start of the next chunk
+    /// belongs to that terminator and must be skipped
+    pending_cr: bool,
+    /// leading BOM check has been resolved
+    started: bool,
+    builder: EventBuilder<T>,
+    /// events decoded but not yet yielded (a single chunk can complete several)
+    ready: VecDeque<Event<T>>,
+    last_event_id: Option<SmolStr>,
 }
 
-impl EventStreamState {
-    fn is_terminated(self) -> bool {
-        matches!(self, Self::Terminated)
+impl<T> fmt::Debug for DecodeState<T>
+where
+    T: EventDataRead + fmt::Debug,
+    T::Reader: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DecodeState")
+            .field("carry", &self.carry)
+            .field("pending_cr", &self.pending_cr)
+            .field("started", &self.started)
+            .field("builder", &self.builder)
+            .field("ready", &self.ready)
+            .field("last_event_id", &self.last_event_id)
+            .finish()
     }
-    fn is_started(self) -> bool {
-        matches!(self, Self::Started)
+}
+
+impl<T: EventDataRead> Default for DecodeState<T> {
+    fn default() -> Self {
+        Self {
+            carry: Vec::new(),
+            pending_cr: false,
+            started: false,
+            builder: EventBuilder::default(),
+            ready: VecDeque::new(),
+            last_event_id: None,
+        }
+    }
+}
+
+impl<T: EventDataRead> DecodeState<T> {
+    /// Feed one body chunk into the decoder; completed events queue up in `ready`.
+    fn feed(&mut self, mut input: &[u8]) -> Result<(), BoxError> {
+        if input.is_empty() {
+            return Ok(());
+        }
+        if !self.started {
+            if self.carry.is_empty() && input.len() >= UTF8_BOM.len() {
+                self.started = true;
+                if input[..UTF8_BOM.len()] == UTF8_BOM {
+                    input = &input[UTF8_BOM.len()..];
+                }
+            } else {
+                // tiny first chunk(s): buffer bytes until the BOM question is decided
+                while !self.started {
+                    let Some((&byte, rest)) = input.split_first() else {
+                        return Ok(());
+                    };
+                    input = rest;
+                    self.carry.push(byte);
+                    if self.carry[..] == UTF8_BOM {
+                        self.carry.clear();
+                        self.started = true;
+                    } else if self.carry[..] != UTF8_BOM[..self.carry.len()] {
+                        self.started = true;
+                        // non-BOM prefix: replay it through the regular scanner,
+                        // as it may itself contain line terminators
+                        let mut replay = [0u8; UTF8_BOM.len()];
+                        let n = self.carry.len();
+                        replay[..n].copy_from_slice(&self.carry);
+                        self.carry.clear();
+                        self.scan(&replay[..n])?;
+                    }
+                }
+            }
+        }
+        self.scan(input)
+    }
+
+    /// The underlying stream is exhausted: validate and discard any
+    /// unterminated trailing line, per the WHATWG event stream model.
+    fn finish(&mut self) -> Result<(), BoxError> {
+        if self.carry.is_empty() {
+            return Ok(());
+        }
+        let carry = std::mem::take(&mut self.carry);
+        std::str::from_utf8(&carry)
+            .map_err(|err| err.context("utf8 error: invalid trailing sse bytes"))?;
+        Ok(())
+    }
+
+    fn scan(&mut self, mut input: &[u8]) -> Result<(), BoxError> {
+        if input.is_empty() {
+            return Ok(());
+        }
+
+        if self.pending_cr {
+            self.pending_cr = false;
+            if input[0] == b'\n' {
+                input = &input[1..];
+            }
+        }
+
+        // complete a line left over from previous chunk(s)
+        if !self.carry.is_empty() {
+            match memchr2(b'\r', b'\n', input) {
+                None => {
+                    self.carry.extend_from_slice(input);
+                    return Ok(());
+                }
+                Some(pos) => {
+                    self.carry.extend_from_slice(&input[..pos]);
+                    let is_cr = input[pos] == b'\r';
+                    input = &input[pos + 1..];
+                    if is_cr {
+                        if input.is_empty() {
+                            self.pending_cr = true;
+                        } else if input[0] == b'\n' {
+                            input = &input[1..];
+                        }
+                    }
+                    // take/restore the carry buffer so its allocation is reused,
+                    // while keeping the borrow checker happy about `handle_line`
+                    let line = std::mem::take(&mut self.carry);
+                    let s = std::str::from_utf8(&line)
+                        .map_err(|err| err.context("utf8 error: invalid sse line"))?;
+                    self.handle_line(s)?;
+                    self.carry = line;
+                    self.carry.clear();
+                }
+            }
+        }
+
+        // validate the remaining input once; an incomplete UTF-8 sequence at
+        // the very end is carried over, invalid bytes fail after the valid
+        // prefix has been processed
+        let (valid, utf8_tail, utf8_err) = match std::str::from_utf8(input) {
+            Ok(s) => (s, &[][..], None),
+            Err(err) => {
+                let (head, rest) = input.split_at(err.valid_up_to());
+                // SAFETY: `valid_up_to` guarantees `head` is valid UTF-8
+                let s = unsafe { std::str::from_utf8_unchecked(head) };
+                match err.error_len() {
+                    None => (s, rest, None),
+                    Some(_) => (
+                        s,
+                        &[][..],
+                        Some(err.context("utf8 error: invalid sse bytes")),
+                    ),
+                }
+            }
+        };
+
+        let bytes = valid.as_bytes();
+        let mut start = 0;
+        if memchr::memchr(b'\r', bytes).is_none() {
+            // hot path: no CR anywhere, so every terminator is a lone LF;
+            // a single-needle scan is considerably faster than memchr2
+            for pos in memchr::memchr_iter(b'\n', bytes) {
+                self.handle_line(&valid[start..pos])?;
+                start = pos + 1;
+            }
+        } else {
+            for pos in memchr2_iter(b'\r', b'\n', bytes) {
+                if pos < start {
+                    // the LF half of a CRLF pair
+                    continue;
+                }
+                let line = &valid[start..pos];
+                let mut next = pos + 1;
+                if bytes[pos] == b'\r' {
+                    if next < bytes.len() {
+                        if bytes[next] == b'\n' {
+                            next += 1;
+                        }
+                    } else if utf8_tail.is_empty() && utf8_err.is_none() {
+                        // chunk ends exactly on the CR: an LF may still follow
+                        // (a non-empty tail or invalid byte can never be an LF)
+                        self.pending_cr = true;
+                    }
+                }
+                self.handle_line(line)?;
+                start = next;
+            }
+        }
+
+        if let Some(err) = utf8_err {
+            return Err(err);
+        }
+
+        self.carry.extend_from_slice(&bytes[start..]);
+        self.carry.extend_from_slice(utf8_tail);
+        Ok(())
+    }
+
+    #[inline]
+    fn handle_line(&mut self, line: &str) -> Result<(), BoxError> {
+        self.builder.add(parse_line(line))?;
+        if self.builder.is_complete {
+            let event = self.builder.try_dispatch()?;
+            // WHATWG: the last-event-ID buffer persists across events; only
+            // overwrite it when the dispatched event actually had an id field
+            // (which, post-parse, manifests as `Some(_)` — empty string
+            // included; `None` means no id field was present).
+            if let Some(id) = event.id() {
+                self.last_event_id = Some(SmolStr::new(id));
+            }
+            self.ready.push_back(event);
+        }
+        Ok(())
     }
 }
 
@@ -169,12 +378,10 @@ pin_project! {
     /// A Stream of SSE's used by the client.
     pub struct EventStream<S, T: EventDataRead = String> {
         #[pin]
-        stream: Utf8Stream<S>,
-        buffer: String,
-        builder: EventBuilder<T>,
-        state: EventStreamState,
-        last_event_id: Option<SmolStr>,
-        _event_data: PhantomData<fn() -> T>,
+        stream: S,
+        state: DecodeState<T>,
+        pending_error: Option<BoxError>,
+        done: bool,
     }
 }
 
@@ -182,12 +389,10 @@ impl<S, T: EventDataRead> EventStream<S, T> {
     /// Initialize the EventStream with a Stream
     pub fn new(stream: S) -> Self {
         Self {
-            stream: Utf8Stream::new(stream),
-            buffer: String::new(),
-            builder: EventBuilder::default(),
-            state: EventStreamState::NotStarted,
-            last_event_id: None,
-            _event_data: PhantomData,
+            stream,
+            state: DecodeState::default(),
+            pending_error: None,
+            done: false,
         }
     }
 
@@ -198,43 +403,13 @@ impl<S, T: EventDataRead> EventStream<S, T> {
         if id.contains(['\n', '\r', '\0']) {
             return Err(EventBuildError::invalid_characters(id).into_box_error());
         }
-        self.last_event_id = Some(id);
+        self.state.last_event_id = Some(id);
         Ok(())
     }
 
     /// Get the last event ID of the stream
     pub fn last_event_id(&self) -> Option<&str> {
-        self.last_event_id.as_deref()
-    }
-}
-
-fn parse_event<T: EventDataRead>(
-    buffer: &mut String,
-    builder: &mut EventBuilder<T>,
-) -> Result<Option<Event<T>>, BoxError> {
-    if buffer.is_empty() {
-        return Ok(None);
-    }
-    loop {
-        match line(buffer.as_ref()) {
-            Ok((rem, next_line)) => {
-                builder.add(&next_line)?;
-                let consumed = buffer.len() - rem.len();
-                let rem = buffer.split_off(consumed);
-                *buffer = rem;
-                if builder.is_complete {
-                    return builder.try_dispatch().map(Some);
-                }
-            }
-            Err(nom::Err::Incomplete(_)) => {
-                return Ok(None);
-            }
-            Err(nom::Err::Error(err) | nom::Err::Failure(err)) => {
-                return Err(BoxError::from_static_str("SSE parse error")
-                    .context_debug_field("code", err.code)
-                    .context_str_field("input", err.input));
-            }
-        }
+        self.state.last_event_id.as_deref()
     }
 }
 
@@ -250,65 +425,36 @@ where
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
 
-        match parse_event(this.buffer, this.builder) {
-            Ok(Some(event)) => {
-                // WHATWG: the last-event-ID buffer persists across events; only
-                // overwrite it when the dispatched event actually had an id field
-                // (which, post-parse, manifests as `Some(_)` — empty string
-                // included; `None` means no id field was present).
-                if let Some(id) = event.id() {
-                    *this.last_event_id = Some(SmolStr::new(id));
-                }
+        loop {
+            if let Some(event) = this.state.ready.pop_front() {
                 return Poll::Ready(Some(Ok(event)));
             }
-            Err(err) => return Poll::Ready(Some(Err(err))),
-            _ => {}
-        }
+            if let Some(err) = this.pending_error.take() {
+                // a decode error is fatal: the byte stream can no longer
+                // be interpreted reliably beyond this point
+                *this.done = true;
+                return Poll::Ready(Some(Err(err)));
+            }
+            if *this.done {
+                return Poll::Ready(None);
+            }
 
-        if this.state.is_terminated() {
-            return Poll::Ready(None);
-        }
-
-        loop {
             match this.stream.as_mut().poll_next(cx) {
-                Poll::Ready(Some(Ok(string))) => {
-                    if string.is_empty() {
-                        continue;
-                    }
-
-                    let slice = if this.state.is_started() {
-                        &string
-                    } else {
-                        *this.state = EventStreamState::Started;
-                        if string.chars().next().map(is_bom).unwrap_or_default() {
-                            &string[1..]
-                        } else {
-                            &string
-                        }
-                    };
-                    this.buffer.push_str(slice);
-
-                    match parse_event(this.buffer, this.builder) {
-                        Ok(Some(event)) => {
-                            // WHATWG: the last-event-ID buffer persists across events; only
-                            // overwrite it when the dispatched event actually had an id field
-                            // (which, post-parse, manifests as `Some(_)` — empty string
-                            // included; `None` means no id field was present).
-                            if let Some(id) = event.id() {
-                                *this.last_event_id = Some(SmolStr::new(id));
-                            }
-                            return Poll::Ready(Some(Ok(event)));
-                        }
-                        Err(err) => return Poll::Ready(Some(Err(err))),
-                        _ => {}
+                Poll::Ready(Some(Ok(chunk))) => {
+                    if let Err(err) = this.state.feed(chunk.as_ref()) {
+                        *this.pending_error = Some(err);
                     }
                 }
                 Poll::Ready(Some(Err(err))) => {
-                    return Poll::Ready(Some(Err(err)));
+                    // transport errors pass through without terminating the
+                    // decoder: the caller decides whether to keep polling
+                    return Poll::Ready(Some(Err(err.into())));
                 }
                 Poll::Ready(None) => {
-                    *this.state = EventStreamState::Terminated;
-                    return Poll::Ready(None);
+                    *this.done = true;
+                    if let Err(err) = this.state.finish() {
+                        *this.pending_error = Some(err);
+                    }
                 }
                 Poll::Pending => return Poll::Pending,
             }
@@ -379,6 +525,19 @@ mod tests {
         };
     }
 
+    /// decode a full input in one chunk, expecting at most one event
+    fn parse_single<T: EventDataRead>(input: &str) -> (Option<Event<T>>, DecodeState<T>) {
+        let mut state = DecodeState::<T>::default();
+        state.feed(input.as_bytes()).unwrap();
+        state.finish().unwrap();
+        let event = state.ready.pop_front();
+        assert!(
+            state.ready.is_empty(),
+            "input yielded more than one event: '{input}'"
+        );
+        (event, state)
+    }
+
     #[tokio::test]
     async fn test_string_event_serialize() {
         for (expected, event) in [
@@ -442,18 +601,16 @@ mod tests {
                 )),
             ),
         ] {
-            let mut buffer = input.to_owned();
-            let mut builder = EventBuilder::default();
-            let event_out: Option<Event> = parse_event(&mut buffer, &mut builder).unwrap();
+            let (event_out, state) = parse_single::<String>(input);
             assert!(
-                buffer.is_empty(),
-                "input: '{input}'; buffer: '{buffer}'; builder: '{builder:?}'"
+                state.carry.is_empty(),
+                "input: '{input}'; state: '{state:?}'"
             );
             assert!(
-                !builder.is_complete,
-                "input: '{input}'; builder: '{builder:?}'"
+                !state.builder.is_complete,
+                "input: '{input}'; state: '{state:?}'"
             );
-            assert_eq!(Event::default(), builder.event, "input: '{input}'");
+            assert_eq!(Event::default(), state.builder.event, "input: '{input}'");
             assert_eq!(expected, event_out, "input: '{input}'");
         }
     }
@@ -470,13 +627,12 @@ mod tests {
                 comment = "another comment",
             ),
         ] {
-            let mut buffer = event.serialize().unwrap().try_into_string().await.unwrap();
-            let mut builder = EventBuilder::default();
-            let event_out: Event = parse_event(&mut buffer, &mut builder).unwrap().unwrap();
-            assert!(buffer.is_empty());
-            assert!(!builder.is_complete);
-            assert_eq!(Event::default(), builder.event);
-            assert_eq!(event, event_out);
+            let buffer = event.serialize().unwrap().try_into_string().await.unwrap();
+            let (event_out, state) = parse_single::<String>(&buffer);
+            assert!(state.carry.is_empty());
+            assert!(!state.builder.is_complete);
+            assert_eq!(Event::default(), state.builder.event);
+            assert_eq!(Some(event), event_out);
         }
     }
 
@@ -526,18 +682,20 @@ mod tests {
                 )),
             ),
         ] {
-            let mut buffer = input.to_owned();
-            let mut builder = EventBuilder::default();
-            let event_out: Option<PointsEvent> = parse_event(&mut buffer, &mut builder).unwrap();
+            let (event_out, state) = parse_single::<JsonEventData<Data>>(input);
             assert!(
-                buffer.is_empty(),
-                "input: '{input}'; buffer: '{buffer}'; builder: '{builder:?}'"
+                state.carry.is_empty(),
+                "input: '{input}'; state: '{state:?}'"
             );
             assert!(
-                !builder.is_complete,
-                "input: '{input}'; builder: '{builder:?}'"
+                !state.builder.is_complete,
+                "input: '{input}'; state: '{state:?}'"
             );
-            assert_eq!(PointsEvent::default(), builder.event, "input: '{input}'");
+            assert_eq!(
+                PointsEvent::default(),
+                state.builder.event,
+                "input: '{input}'"
+            );
             assert_eq!(expected, event_out, "input: '{input}'");
         }
     }
@@ -567,13 +725,12 @@ mod tests {
                 comment = " a log",
             ),
         ] {
-            let mut buffer = event.serialize().unwrap().try_into_string().await.unwrap();
-            let mut builder = EventBuilder::default();
-            let event_out: LogEvent = parse_event(&mut buffer, &mut builder).unwrap().unwrap();
-            assert!(buffer.is_empty());
-            assert!(!builder.is_complete);
-            assert_eq!(LogEvent::default(), builder.event);
-            assert_eq!(event, event_out);
+            let buffer = event.serialize().unwrap().try_into_string().await.unwrap();
+            let (event_out, state) = parse_single::<JsonEventData<Log>>(&buffer);
+            assert!(state.carry.is_empty());
+            assert!(!state.builder.is_complete);
+            assert_eq!(LogEvent::default(), state.builder.event);
+            assert_eq!(Some(event), event_out);
         }
     }
 
@@ -603,21 +760,18 @@ mod tests {
                 Some(event!(vec!["a".to_owned(), "b".to_owned()],)),
             ),
         ] {
-            let mut buffer = input.to_owned();
-            let mut builder = EventBuilder::default();
-            let event_out: Option<Event<Vec<String>>> =
-                parse_event(&mut buffer, &mut builder).unwrap();
+            let (event_out, state) = parse_single::<Vec<String>>(input);
             assert!(
-                buffer.is_empty(),
-                "input: '{input}'; buffer: '{buffer}'; builder: '{builder:?}'"
+                state.carry.is_empty(),
+                "input: '{input}'; state: '{state:?}'"
             );
             assert!(
-                !builder.is_complete,
-                "input: '{input}'; builder: '{builder:?}'"
+                !state.builder.is_complete,
+                "input: '{input}'; state: '{state:?}'"
             );
             assert_eq!(
                 Event::<Vec<String>>::default(),
-                builder.event,
+                state.builder.event,
                 "input: '{input}'"
             );
             assert_eq!(expected, event_out, "input: '{input}'");
@@ -638,14 +792,12 @@ mod tests {
                 comment = " a log",
             ),
         ] {
-            let mut buffer = event.serialize().unwrap().try_into_string().await.unwrap();
-            let mut builder = EventBuilder::default();
-            let event_out: MultilineEvent =
-                parse_event(&mut buffer, &mut builder).unwrap().unwrap();
-            assert!(buffer.is_empty());
-            assert!(!builder.is_complete);
-            assert_eq!(MultilineEvent::default(), builder.event);
-            assert_eq!(event, event_out);
+            let buffer = event.serialize().unwrap().try_into_string().await.unwrap();
+            let (event_out, state) = parse_single::<Vec<String>>(&buffer);
+            assert!(state.carry.is_empty());
+            assert!(!state.builder.is_complete);
+            assert_eq!(MultilineEvent::default(), state.builder.event);
+            assert_eq!(Some(event), event_out);
         }
     }
 

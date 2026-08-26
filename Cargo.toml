@@ -645,6 +645,11 @@ required-features = ["ua"]
 harness = false
 
 [[bench]]
+name = "sse_parser"
+required-features = ["http-full"]
+harness = false
+
+[[bench]]
 name = "h2"
 required-features = ["http-full"]
 harness = false

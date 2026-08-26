@@ -40,7 +40,6 @@ md5 = { workspace = true }
 memchr = { workspace = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
-nom = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
@@ -56,7 +55,6 @@ sync_wrapper = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std", "sync"] }
 
 [dev-dependencies]
-futures-util = { workspace = true }
 quickcheck = { workspace = true }
 rand = { workspace = true }
 serde_test = { workspace = true }

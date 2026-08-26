@@ -126,13 +126,23 @@ impl EventDataWrite for String {
 /// [`EventDataLineReader`] for the [`EventDataRead`] implementation of [`String`].
 pub struct EventDataStringReader {
     buf: Option<String>,
+    // size of the previously produced payload: streams tend to carry
+    // similarly-sized events, so pre-reserving it avoids the realloc
+    // ladder (and its copies) while appending line by line
+    size_hint: usize,
 }
 
 impl EventDataLineReader for EventDataStringReader {
     type Data = String;
 
+    #[inline]
     fn read_line(&mut self, line: &str) -> Result<(), BoxError> {
-        let buf = self.buf.get_or_insert_default();
+        let buf = match &mut self.buf {
+            Some(buf) => buf,
+            None => self
+                .buf
+                .insert(String::with_capacity(self.size_hint.max(line.len() + 1))),
+        };
         buf.push_str(line);
         buf.push('\u{000A}');
         Ok(())
@@ -146,6 +156,7 @@ impl EventDataLineReader for EventDataStringReader {
         if data.chars().next_back().map(is_lf).unwrap_or_default() {
             data.pop();
         }
+        self.size_hint = data.len() + 1;
         Ok(Some(data))
     }
 }
@@ -156,6 +167,7 @@ impl EventDataRead for String {
     fn line_reader() -> Self::Reader {
         EventDataStringReader {
             buf: Default::default(),
+            size_hint: 0,
         }
     }
 }

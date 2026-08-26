@@ -179,8 +179,8 @@ mod tests {
     use crate::Body;
     use crate::body::util::{BodyExt, CollectErrorKind};
     use bytes::Bytes;
-    use futures_util::{StreamExt, stream};
     use rama_core::error::BoxError;
+    use rama_core::futures::{StreamExt, stream};
     use std::time::Duration;
 
     fn body_from_chunks(chunks: &[&'static [u8]]) -> Body {

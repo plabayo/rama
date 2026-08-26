@@ -109,7 +109,7 @@ mod tests {
         let mut fused = Fuse::new(empty);
         assert!(fused.inner.is_some());
 
-        let waker = futures_util::task::noop_waker();
+        let waker = rama_core::futures::task::noop_waker();
         let mut cx = Context::from_waker(&waker);
         match Pin::new(&mut fused).poll_frame(&mut cx) {
             Poll::Ready(None) => {}
@@ -139,7 +139,7 @@ mod tests {
         let mut fused = Fuse::new(body);
         assert!(fused.inner.is_some());
 
-        let waker = futures_util::task::noop_waker();
+        let waker = rama_core::futures::task::noop_waker();
         let mut cx = Context::from_waker(&waker);
 
         match Pin::new(&mut fused).poll_frame(&mut cx) {
@@ -172,7 +172,7 @@ mod tests {
         let mut fused = Fuse::new(body);
         assert!(fused.inner.is_some());
 
-        let waker = futures_util::task::noop_waker();
+        let waker = rama_core::futures::task::noop_waker();
         let mut cx = Context::from_waker(&waker);
 
         match Pin::new(&mut fused).poll_frame(&mut cx) {
