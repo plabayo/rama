@@ -1,8 +1,8 @@
 use core::fmt;
 
-#[cfg(feature = "http")]
-use rama_net::uri::Uri;
 use rama_net::{Protocol, address::AuthorityRef, uri::AbsoluteUriRef};
+#[cfg(feature = "http")]
+use rama_net::{address::OptPort, uri::Uri};
 
 use crate::{
     byte_sets::{
@@ -697,18 +697,13 @@ pub(crate) enum RequestLineSource<'a> {
     Prepared {
         method: Method<'a>,
         uri: &'a Uri,
-        host_header: &'a [u8],
     },
 }
 
 impl<'a> RequestLineSource<'a> {
     #[cfg(feature = "http")]
-    pub(crate) const fn prepared(method: Method<'a>, uri: &'a Uri, host_header: &'a [u8]) -> Self {
-        Self::Prepared {
-            method,
-            uri,
-            host_header,
-        }
+    pub(crate) const fn prepared(method: Method<'a>, uri: &'a Uri) -> Self {
+        Self::Prepared { method, uri }
     }
 
     pub(crate) const fn method(self) -> Method<'a> {
@@ -728,11 +723,28 @@ impl<'a> RequestLineSource<'a> {
     }
 
     #[cfg(feature = "std")]
-    pub(crate) fn uri_len(self) -> usize {
+    pub(crate) fn uri_len(self) -> Result<usize, EncodeError> {
         match self {
-            Self::Borrowed(line) => line.uri.as_bytes().len(),
+            Self::Borrowed(line) => Ok(line.uri.as_bytes().len()),
             #[cfg(feature = "http")]
-            Self::Prepared { uri, .. } => uri.as_str().len(),
+            Self::Prepared { uri, .. } => encoded_prepared_uri_len(uri),
+        }
+    }
+
+    #[cfg(feature = "std")]
+    pub(crate) fn prepared_host_len(self) -> Result<Option<usize>, EncodeError> {
+        match self {
+            Self::Borrowed(_) => Ok(None),
+            #[cfg(feature = "http")]
+            Self::Prepared { uri, .. } => encoded_prepared_host_len(uri).map(Some),
+        }
+    }
+
+    const fn has_prepared_host(self) -> bool {
+        match self {
+            Self::Borrowed(_) => false,
+            #[cfg(feature = "http")]
+            Self::Prepared { .. } => true,
         }
     }
 
@@ -743,7 +755,7 @@ impl<'a> RequestLineSource<'a> {
                 .authority_ref()
                 .is_some_and(|authority| authority_matches_host(authority, host)),
             #[cfg(feature = "http")]
-            Self::Prepared { host_header, .. } => host == host_header,
+            Self::Prepared { .. } => false,
         }
     }
 }
@@ -1341,15 +1353,95 @@ fn encode_request_head_fields<'a>(
         RequestLineSource::Borrowed(line) => dst.put(line.uri.as_bytes())?,
         #[cfg(feature = "http")]
         RequestLineSource::Prepared { uri, .. } => {
-            let uri = uri.as_str();
-            dst.put(uri.as_bytes())?;
+            write_prepared_uri(uri, &mut dst)?;
         }
     }
     dst.put(b" ")?;
     dst.put(line.version().as_str().as_bytes())?;
     dst.put(b"\r\n")?;
+    #[cfg(feature = "http")]
+    if let RequestLineSource::Prepared { uri, .. } = line {
+        dst.put(b"Host: ")?;
+        write_prepared_host(uri, &mut dst)?;
+        dst.put(b"\r\n")?;
+    }
     encode_headers(headers, header_encoding, &mut dst)?;
     Ok(dst.len())
+}
+
+#[cfg(feature = "http")]
+fn encoded_prepared_uri_len(uri: &Uri) -> Result<usize, EncodeError> {
+    let mut output = EncodedLen::new();
+    write_prepared_uri(uri, &mut output)?;
+    Ok(output.len())
+}
+
+#[cfg(feature = "http")]
+fn encoded_prepared_host_len(uri: &Uri) -> Result<usize, EncodeError> {
+    let mut output = EncodedLen::new();
+    write_prepared_host(uri, &mut output)?;
+    Ok(output.len())
+}
+
+#[cfg(feature = "http")]
+fn write_prepared_uri(uri: &Uri, output: &mut impl OctetOutput) -> Result<(), EncodeError> {
+    let scheme = uri.scheme().ok_or(EncodeError::InvalidInput)?;
+    if !scheme.is_icap() {
+        return Err(EncodeError::InvalidInput);
+    }
+    let authority = uri.authority().ok_or(EncodeError::InvalidInput)?;
+    let port = icap_wire_port(scheme, authority.port().canonicalize());
+    let mut output = FmtOctetOutput::new(output);
+    uri.write_absolute_form_with_overrides(&Protocol::ICAP, port, &mut output)
+        .map_err(|wire_error| {
+            let encode_error = output.error();
+            rama_core::telemetry::tracing::trace!(
+                ?wire_error,
+                ?encode_error,
+                "failed to write an ICAP service URI",
+            );
+            encode_error
+        })
+}
+
+#[cfg(feature = "http")]
+fn write_prepared_host(uri: &Uri, output: &mut impl OctetOutput) -> Result<(), EncodeError> {
+    let scheme = uri.scheme().ok_or(EncodeError::InvalidInput)?;
+    let authority = uri.authority().ok_or(EncodeError::InvalidInput)?;
+    let port = icap_wire_port(scheme, authority.port().canonicalize());
+    write_prepared_address(output, authority, port)
+}
+
+#[cfg(feature = "http")]
+fn icap_wire_port(configured_protocol: &Protocol, configured_port: OptPort) -> OptPort {
+    // Direct TLS uses an `icaps` configuration scheme, but ICAP request
+    // targets always use `icap`. Preserve the ICAPS default explicitly so the
+    // normalized request target cannot acquire ICAP's port 1344 instead.
+    if configured_protocol == &Protocol::ICAPS && configured_port.as_u16().is_none() {
+        OptPort::Set(Protocol::ICAPS_DEFAULT_PORT)
+    } else {
+        configured_port
+    }
+}
+
+#[cfg(feature = "http")]
+fn write_prepared_address(
+    output: &mut impl OctetOutput,
+    authority: AuthorityRef<'_>,
+    port: OptPort,
+) -> Result<(), EncodeError> {
+    let mut output = FmtOctetOutput::new(output);
+    authority
+        .write_address_with_port(&mut output, port)
+        .map_err(|fmt_error| {
+            let encode_error = output.error();
+            rama_core::telemetry::tracing::trace!(
+                ?fmt_error,
+                ?encode_error,
+                "failed to format an ICAP service authority",
+            );
+            encode_error
+        })
 }
 
 /// Encode an ICAP response line and header block into `dst`.
@@ -1598,8 +1690,8 @@ fn parse_icap_uri(uri: &[u8]) -> Result<AbsoluteUriRef<'_>, ParseError> {
 
 #[cfg(feature = "http")]
 pub(crate) fn validate_icap_uri(uri: &Uri) -> Result<(), ParseError> {
-    if uri.scheme() != Some(&Protocol::ICAP)
-        || uri.host().is_none_or(|host| host.to_str().is_empty())
+    if uri.scheme().is_none_or(|scheme| !scheme.is_icap())
+        || uri.host().is_none_or(|host| host.is_empty())
         || !uri
             .path()
             .is_some_and(|path| path.as_encoded_str().starts_with('/'))
@@ -1827,6 +1919,9 @@ fn validate_request_composition<'a>(
             return Err(InvalidComposition);
         }
         if header.name.eq_ignore_ascii_case(header::HOST) {
+            if line.has_prepared_host() {
+                return Err(InvalidComposition);
+            }
             if core::mem::replace(&mut saw_host, true) {
                 return Err(InvalidComposition);
             }
@@ -1847,7 +1942,7 @@ fn validate_request_composition<'a>(
             encapsulated = Some(parse_encapsulated(value).map_err(|_error| InvalidComposition)?);
         }
     }
-    if !host.is_some_and(|host| line.authority_matches_host(host)) {
+    if !line.has_prepared_host() && !host.is_some_and(|host| line.authority_matches_host(host)) {
         return Err(InvalidComposition);
     }
     let Some(encapsulated) = encapsulated else {
@@ -2185,9 +2280,83 @@ fn put_status(status: StatusCode, dst: &mut Output<'_>) -> Result<(), EncodeErro
     dst.put(&bytes)
 }
 
+#[cfg(feature = "http")]
+trait OctetOutput {
+    fn put(&mut self, value: &[u8]) -> Result<(), EncodeError>;
+}
+
+#[cfg(feature = "http")]
+struct EncodedLen {
+    len: usize,
+}
+
+#[cfg(feature = "http")]
+impl EncodedLen {
+    const fn new() -> Self {
+        Self { len: 0 }
+    }
+
+    const fn len(&self) -> usize {
+        self.len
+    }
+}
+
+#[cfg(feature = "http")]
+impl OctetOutput for EncodedLen {
+    fn put(&mut self, value: &[u8]) -> Result<(), EncodeError> {
+        self.len = self
+            .len
+            .checked_add(value.len())
+            // Overflow describes impossible-to-represent input, not a full
+            // caller-provided output buffer.
+            .ok_or(EncodeError::InvalidInput)?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "http")]
+struct FmtOctetOutput<'a, O> {
+    output: &'a mut O,
+    error: Option<EncodeError>,
+}
+
+#[cfg(feature = "http")]
+impl<'a, O> FmtOctetOutput<'a, O> {
+    const fn new(output: &'a mut O) -> Self {
+        Self {
+            output,
+            error: None,
+        }
+    }
+
+    const fn error(&self) -> EncodeError {
+        match self.error {
+            Some(error) => error,
+            None => EncodeError::InvalidInput,
+        }
+    }
+}
+
+#[cfg(feature = "http")]
+impl<O: OctetOutput> fmt::Write for FmtOctetOutput<'_, O> {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        self.output.put(value.as_bytes()).map_err(|error| {
+            self.error = Some(error);
+            fmt::Error
+        })
+    }
+}
+
 pub(super) struct Output<'a> {
     dst: &'a mut [u8],
     offset: usize,
+}
+
+#[cfg(feature = "http")]
+impl OctetOutput for Output<'_> {
+    fn put(&mut self, value: &[u8]) -> Result<(), EncodeError> {
+        Self::put(self, value)
+    }
 }
 
 impl<'a> Output<'a> {

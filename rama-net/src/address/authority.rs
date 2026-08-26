@@ -823,6 +823,29 @@ impl<'a> AuthorityRef<'a> {
             },
         }
     }
+
+    /// Write the address portion as `host[:port]`, omitting userinfo.
+    ///
+    /// This is the borrowed, allocation-free counterpart to formatting a
+    /// [`HostWithOptPort`]. The supplied `port` allows a protocol encoder to
+    /// preserve, canonicalize, or default the URI's original port without
+    /// first constructing an owned address.
+    pub fn write_address_with_port(
+        self,
+        writer: &mut impl fmt::Write,
+        port: OptPort,
+    ) -> fmt::Result {
+        match self.host {
+            HostRef::Address(IpAddr::V6(ip)) => write!(writer, "[{ip}]")?,
+            _ => write!(writer, "{}", self.host)?,
+        }
+        write!(writer, "{port}")
+    }
+
+    /// Write this authority's address as `host[:port]`, omitting userinfo.
+    pub fn write_address(self, writer: &mut impl fmt::Write) -> fmt::Result {
+        self.write_address_with_port(writer, self.port)
+    }
 }
 
 impl<'a> TryFrom<&'a [u8]> for AuthorityRef<'a> {
@@ -861,11 +884,7 @@ impl fmt::Display for AuthorityRef<'_> {
         if let Some(ui) = self.userinfo {
             write!(f, "{ui}@")?;
         }
-        match self.host {
-            HostRef::Address(IpAddr::V6(ip)) => write!(f, "[{ip}]")?,
-            _ => self.host.fmt(f)?,
-        }
-        self.port.fmt(f)
+        self.write_address(f)
     }
 }
 

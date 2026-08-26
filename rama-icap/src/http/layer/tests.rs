@@ -21,24 +21,32 @@ use rama_http_types::{
     header::{self as http_header, HeaderValue, TRAILER},
 };
 use rama_net::{
-    Protocol, ProtocolInputExt as _, TransportProtocolInputExt as _,
+    ConnectorTargetInputExt as _, Protocol, ProtocolInputExt as _, TransportProtocolInputExt as _,
+    address::Domain,
     client::{
-        ConnectRequest, EstablishedClientConnection,
+        ConnectRequest, ConnectorTarget, EstablishedClientConnection,
         pool::{ConnID, LruDropPool, PooledConnector},
     },
     test_utils::client::{MockConnectorService, MockSocket},
-    transport::TransportProtocol,
 };
+use rama_tls::{
+    SecureTransport,
+    client::{ServerVerifyMode, TlsClientConfig},
+    server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+};
+use rama_tls_rustls::{client::TlsConnector, server::TlsAcceptorLayer};
 
 use super::*;
 use crate::{
-    client::options::{OptionsValidation, ServiceCapabilities},
+    client::options::{OptionsService, OptionsValidation, ServiceCapabilities},
     codec::{HeadParserConfig, Header, HeaderFolding, HeaderSlot, ResponseLine},
     http::{HttpService, IncomingRequest, IncomingRequestParts, OutgoingResponse},
     io::ConnectionOptions,
     message::{EncapsulatedParts, Response as IcapResponse},
     proto::{EncapsulatedKind, Method, MethodKind, Preview, StatusCode, header},
-    server::{BodyFrame, IncomingRequest as RawIncomingRequest, OutgoingBody, Server},
+    server::{
+        BodyFrame, IncomingRequest as RawIncomingRequest, OptionsResponse, OutgoingBody, Server,
+    },
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -149,6 +157,70 @@ fn mock_icap_client<S>(
     crate::client::Client::new(
         MockConnectorService::new(create_server).with_max_buffer_size(max_buffer_size),
     )
+}
+
+#[derive(Clone)]
+struct TlsIcapHandler<S> {
+    adaptation: S,
+}
+
+impl<S> rama_core::Service<RawIncomingRequest> for TlsIcapHandler<S>
+where
+    S: rama_core::Service<RawIncomingRequest, Output = OutgoingResponse, Error = BoxError>,
+{
+    type Output = OutgoingResponse;
+    type Error = BoxError;
+
+    async fn serve(&self, request: RawIncomingRequest) -> Result<OutgoingResponse, BoxError> {
+        assert!(request.extensions().contains::<SecureTransport>());
+        let method = request.request().method();
+        {
+            let mut slots = [HeaderSlot::EMPTY; 16];
+            let head = request.request().parse_head(&mut slots)?;
+            let uri = head.line().uri();
+            assert_eq!(uri.scheme(), &Protocol::ICAP);
+            assert_eq!(uri.host(), Some("icap.test"));
+            assert_eq!(uri.path(), "/scan");
+            assert_eq!(uri.port().as_u16(), Some(Protocol::ICAPS_DEFAULT_PORT));
+            assert_eq!(
+                head.header(header::HOST).and_then(|value| value.as_bytes()),
+                Some(b"icap.test:11344".as_slice()),
+            );
+        }
+        match method {
+            MethodKind::Options => OptionsResponse::new("\"rama-tls\"", "REQMOD, RESPMOD")
+                .build()
+                .map_err(Into::into),
+            MethodKind::Reqmod | MethodKind::Respmod => self.adaptation.serve(request).await,
+            MethodKind::Extension => Err(BoxError::from_static_str(
+                "unexpected ICAP extension method",
+            )),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct TlsIcapConnectionServer<S> {
+    inner: Server<S>,
+}
+
+impl<S> rama_core::Service<rama_tls_rustls::server::TlsStream<MockSocket>>
+    for TlsIcapConnectionServer<S>
+where
+    S: rama_core::Service<RawIncomingRequest, Output = OutgoingResponse, Error = BoxError>,
+{
+    type Output = ();
+    type Error = Infallible;
+
+    async fn serve(
+        &self,
+        io: rama_tls_rustls::server::TlsStream<MockSocket>,
+    ) -> Result<(), Infallible> {
+        if let Err(error) = self.inner.serve_connection(io).await {
+            assert_eq!(error.kind(), crate::server::ServerErrorKind::Connection);
+        }
+        Ok(())
+    }
 }
 
 async fn serve_adaptation(request: IncomingRequest) -> Result<OutgoingResponse, BoxError> {
@@ -304,7 +376,7 @@ async fn detours_request_and_response_with_preview() {
         async move {
             assert_eq!(input.authority.to_string(), "icap.test:1344");
             assert_eq!(input.protocol(), Some(&Protocol::ICAP));
-            assert_eq!(input.transport_protocol(), Some(TransportProtocol::Tcp));
+            assert_eq!(input.transport_protocol(), None);
             connector_connections.fetch_add(1, Ordering::Relaxed);
             transport.serve(input).await
         }
@@ -409,6 +481,116 @@ async fn preserves_ordinary_header_order_and_casing_end_to_end() {
         .unwrap();
 
     assert_header_lines(response.headers(), RESPONSE_HEADER_LINES);
+}
+
+#[tokio::test]
+async fn icaps_endpoint_uses_direct_tls_for_options_reqmod_and_respmod() {
+    let server_auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::generated_ca_for(
+        Domain::from_static("icap.test"),
+    ))
+    .unwrap();
+    let trust_anchor = server_auth.cert_chain.last().unwrap().clone();
+    let tls_config = TlsServerConfig::new().with_single_cert(server_auth);
+    let icap_server = Server::new(
+        TlsIcapHandler {
+            adaptation: HttpService::new(service_fn(serve_adaptation)),
+        },
+        b"\"rama-tls\"",
+    )
+    .unwrap();
+    let icap_server = TlsIcapConnectionServer { inner: icap_server };
+    let server = TlsAcceptorLayer::new(tls_config).into_layer(icap_server);
+    let transport = MockConnectorService::new(move || server.clone()).with_max_buffer_size(4096);
+    let transport = service_fn(move |input: ConnectRequest| {
+        let transport = transport.clone();
+        async move {
+            assert_eq!(input.authority.to_string(), "icap.test:11344");
+            assert_eq!(
+                input.connector_target().unwrap().to_string(),
+                "127.0.0.1:31344",
+            );
+            transport.serve(input).await
+        }
+    });
+    let tls = TlsConnector::auto(transport).with_base_config(
+        TlsClientConfig::new()
+            .with_server_verify(ServerVerifyMode::Auto)
+            .try_with_server_trust_anchors([trust_anchor])
+            .unwrap(),
+    );
+    let client = crate::client::Client::new(tls);
+    let mut endpoint = ServiceEndpoint::new("icaps://icap.test/scan").unwrap();
+    endpoint.insert_connection_extension(ConnectorTarget("127.0.0.1:31344".parse().unwrap()));
+
+    let options_request = endpoint.options_request().unwrap();
+    assert_eq!(options_request.service_uri(), endpoint.uri());
+    assert_eq!(
+        options_request.connect_request().protocol(),
+        Some(&Protocol::ICAPS)
+    );
+    assert_eq!(
+        options_request.connect_request().authority.to_string(),
+        "icap.test:11344"
+    );
+    OptionsService::new(client.clone())
+        .serve(options_request)
+        .await
+        .unwrap();
+
+    let inner = service_fn(async |request: Request<Body>| {
+        assert_eq!(request.headers()["x-reqmod"], "yes");
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(201)
+                .body(Body::from("secure-response"))
+                .unwrap(),
+        )
+    });
+    let service = AdaptationLayer::new(client)
+        .with_request_service(endpoint.clone())
+        .with_response_service(endpoint)
+        .layer(inner);
+    let response = service
+        .serve(
+            Request::builder()
+                .method("POST")
+                .uri("http://origin.test/upload")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 201);
+    assert_eq!(response.headers()["x-respmod"], "yes");
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "secure-response"
+    );
+}
+
+#[tokio::test]
+async fn auto_tls_connector_keeps_icap_endpoint_plaintext() {
+    let transport = MockConnectorService::new(|| {
+        Server::new(
+            HttpService::new(service_fn(serve_adaptation)),
+            b"\"rama-plain\"",
+        )
+        .unwrap()
+    })
+    .with_max_buffer_size(4096);
+    let tls = TlsConnector::auto(transport)
+        .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
+    let client = crate::client::Client::new(tls);
+    let inner = service_fn(async |request: Request<Body>| {
+        assert_eq!(request.headers()["x-reqmod"], "yes");
+        Ok::<_, Infallible>(Response::new(Body::empty()))
+    });
+    let service = AdaptationLayer::new(client)
+        .with_request_service(ServiceEndpoint::new("icap://icap.test/plain").unwrap())
+        .layer(inner);
+
+    service.serve(Request::new(Body::empty())).await.unwrap();
 }
 
 #[tokio::test]
@@ -1329,14 +1511,11 @@ fn endpoint_derives_headers_and_target() {
             .shares_cache_with(&previous_partition)
     );
     assert_eq!(endpoint.uri().as_str(), "icap://[::1]:31344/scan");
-    assert_eq!(endpoint.authority().to_string(), "[::1]:31344");
+    assert_eq!(endpoint.protocol(), Some(&Protocol::ICAP));
+    assert_eq!(endpoint.authority().unwrap().to_string(), "[::1]:31344");
     let fields = endpoint.request_headers(&[]).unwrap();
     assert_eq!(fields[0], Header::new("authorization", b"secret").unwrap());
-    assert_eq!(
-        fields[1],
-        Header::new(header::HOST, b"[::1]:31344").unwrap()
-    );
-    assert_eq!(fields[2], Header::new(header::ALLOW, b"204, 206").unwrap());
+    assert_eq!(fields[1], Header::new(header::ALLOW, b"204, 206").unwrap());
     assert!(!format!("{endpoint:?}").contains("secret"));
     let first_options = endpoint.options_request().unwrap();
     let second_options = endpoint.options_request().unwrap();
@@ -1348,8 +1527,39 @@ fn endpoint_derives_headers_and_target() {
         first_options.service_uri().as_str(),
         "icap://[::1]:31344/scan"
     );
+    let first_connect = first_options.connect_request();
     assert_eq!(
-        first_options
+        first_connect
+            .extensions
+            .get_ref::<EndpointExtension>()
+            .unwrap()
+            .0,
+        "new"
+    );
+    first_connect
+        .extensions
+        .insert(EndpointExtension("attempt-only"));
+    assert_eq!(
+        first_connect
+            .extensions
+            .get_ref::<EndpointExtension>()
+            .unwrap()
+            .0,
+        "attempt-only"
+    );
+    assert_eq!(
+        second_options
+            .connect_request()
+            .extensions
+            .get_ref::<EndpointExtension>()
+            .unwrap()
+            .0,
+        "new"
+    );
+    assert_eq!(
+        endpoint
+            .options_request()
+            .unwrap()
             .connect_request()
             .extensions
             .get_ref::<EndpointExtension>()
@@ -1360,50 +1570,105 @@ fn endpoint_derives_headers_and_target() {
     assert!(!format!("{first_options:?}").contains("secret"));
 
     let userinfo_endpoint = ServiceEndpoint::new("icap://user:secret@icap.test:/scan").unwrap();
-    assert_eq!(userinfo_endpoint.authority().to_string(), "icap.test:1344");
     assert_eq!(
-        userinfo_endpoint.request_headers(&[]).unwrap()[0],
-        Header::new(header::HOST, b"icap.test").unwrap(),
+        userinfo_endpoint.authority().unwrap().to_string(),
+        "icap.test:1344"
+    );
+    let request = userinfo_endpoint.options_request().unwrap();
+    let mut slots = [HeaderSlot::EMPTY; 4];
+    let head = request.request().parse_head(&mut slots).unwrap();
+    assert_eq!(
+        head.line().uri().as_str(),
+        "icap://user:secret@icap.test/scan",
+    );
+    assert_eq!(
+        head.header(header::HOST).and_then(|value| value.as_bytes()),
+        Some(b"icap.test".as_slice()),
     );
     assert!(!format!("{userinfo_endpoint:?}").contains("secret"));
 
-    for (uri, target, host) in [
+    for (uri, protocol, target, wire_uri, host) in [
         (
             "icap://icap.test:01344/scan",
+            &Protocol::ICAP,
             "icap.test:1344",
+            "icap://icap.test:1344/scan",
             "icap.test:1344",
         ),
         (
             "icap://icap.test:031344/scan",
+            &Protocol::ICAP,
             "icap.test:31344",
+            "icap://icap.test:31344/scan",
             "icap.test:31344",
         ),
         (
             "icap://[0:0:0:0:0:0:0:1]:1344/scan",
+            &Protocol::ICAP,
             "[::1]:1344",
+            "icap://[::1]:1344/scan",
             "[::1]:1344",
+        ),
+        (
+            "icap://icap.test:/scan",
+            &Protocol::ICAP,
+            "icap.test:1344",
+            "icap://icap.test/scan",
+            "icap.test",
+        ),
+        (
+            "icaps://icap.test/scan",
+            &Protocol::ICAPS,
+            "icap.test:11344",
+            "icap://icap.test:11344/scan",
+            "icap.test:11344",
+        ),
+        (
+            "icaps://icap.test:/scan",
+            &Protocol::ICAPS,
+            "icap.test:11344",
+            "icap://icap.test:11344/scan",
+            "icap.test:11344",
+        ),
+        (
+            "icaps://icap.test:011344/scan",
+            &Protocol::ICAPS,
+            "icap.test:11344",
+            "icap://icap.test:11344/scan",
+            "icap.test:11344",
+        ),
+        (
+            "icap://icap.test:11344/scan",
+            &Protocol::ICAP,
+            "icap.test:11344",
+            "icap://icap.test:11344/scan",
+            "icap.test:11344",
+        ),
+        (
+            "icaps://icap.test:1344/scan",
+            &Protocol::ICAPS,
+            "icap.test:1344",
+            "icap://icap.test:1344/scan",
+            "icap.test:1344",
         ),
     ] {
         let endpoint = ServiceEndpoint::new(uri).unwrap();
-        assert_eq!(endpoint.authority().to_string(), target);
+        assert_eq!(endpoint.protocol(), Some(protocol));
+        assert_eq!(endpoint.authority().unwrap().to_string(), target);
         let fields = endpoint.request_headers(&[]).unwrap();
-        assert_eq!(
-            fields[0],
-            Header::new(header::HOST, host.as_bytes()).unwrap()
-        );
         let request = crate::message::Request::new_from_source(
-            crate::codec::RequestLineSource::prepared(
-                Method::Options,
-                endpoint.uri(),
-                endpoint.host_header(),
-            ),
+            crate::codec::RequestLineSource::prepared(Method::Options, endpoint.uri()),
             &fields,
             None,
         )
         .unwrap();
         let mut slots = [HeaderSlot::EMPTY; 4];
         let head = request.parse_head(&mut slots).unwrap();
-        assert_eq!(head.line().uri().as_str(), uri);
+        assert_eq!(head.line().uri().as_str(), wire_uri);
+        assert_eq!(
+            head.header(header::HOST).and_then(|value| value.as_bytes()),
+            Some(host.as_bytes()),
+        );
     }
 
     for uri in [
@@ -1433,6 +1698,50 @@ fn endpoint_derives_headers_and_target() {
     validate_success_status(Method::Respmod, StatusCode::PARTIAL_CONTENT).unwrap();
     validate_success_status(Method::Reqmod, StatusCode::PARTIAL_CONTENT).unwrap();
     validate_success_status(Method::Respmod, StatusCode::NOT_FOUND).unwrap_err();
+}
+
+#[test]
+fn connector_target_does_not_replace_logical_service_authority() {
+    let mut endpoint = ServiceEndpoint::new("icaps://icap.test/scan").unwrap();
+    endpoint.insert_connection_extension(ConnectorTarget("127.0.0.1:31344".parse().unwrap()));
+
+    let adaptation = endpoint.connect_request().unwrap();
+    assert_eq!(adaptation.authority.to_string(), "icap.test:11344");
+    assert_eq!(adaptation.protocol(), Some(&Protocol::ICAPS));
+    assert_eq!(
+        adaptation.connector_target().unwrap().to_string(),
+        "127.0.0.1:31344",
+    );
+
+    let options = endpoint.options_request().unwrap();
+    assert_eq!(
+        options.connect_request().authority.to_string(),
+        "icap.test:11344",
+    );
+    assert_eq!(
+        options
+            .connect_request()
+            .connector_target()
+            .unwrap()
+            .to_string(),
+        "127.0.0.1:31344",
+    );
+}
+
+#[test]
+fn application_protocol_separates_plaintext_and_tls_at_same_authority() {
+    let plain = ServiceEndpoint::new("icap://icap.test:11344/scan")
+        .unwrap()
+        .connect_request()
+        .unwrap();
+    let secure = ServiceEndpoint::new("icaps://icap.test:11344/scan")
+        .unwrap()
+        .connect_request()
+        .unwrap();
+
+    assert_eq!(plain.authority, secure.authority);
+    assert_eq!(plain.protocol(), Some(&Protocol::ICAP));
+    assert_eq!(secure.protocol(), Some(&Protocol::ICAPS));
 }
 
 #[test]

@@ -30,8 +30,9 @@
 //!   icap://127.0.0.1:1344/echo
 //! ```
 //!
-//! The external service must support RESPMOD. This makes it easy to replace
-//! the embedded Rama implementation with c-icap or another implementation.
+//! Use an `icaps://` service URI for direct TLS. The external service must
+//! support RESPMOD. This makes it easy to replace the embedded Rama
+//! implementation with c-icap or another implementation.
 //!
 //! # Service flow
 //!
@@ -107,7 +108,7 @@ use rama::{
     service::service_fn,
     tcp::server::TcpListener,
     tls::{
-        boring::proxy::TlsMitmRelay,
+        boring::{client::TlsConnector, proxy::TlsMitmRelay},
         server::{CertificateSubject, PeekTlsClientHelloService, SelfSignedCaConfig},
     },
 };
@@ -152,8 +153,9 @@ async fn main() -> Result<(), BoxError> {
         graceful.spawn_task(listener.serve(server));
     }
 
-    let connector =
-        rama::dns::client::DnsConnector::new(rama::tcp::client::service::TcpConnector::new());
+    let connector = TlsConnector::auto(rama::dns::client::DnsConnector::new(
+        rama::tcp::client::service::TcpConnector::new(),
+    ));
     let icap_client = Arc::new(
         IcapClient::new(connector.clone()).with_options(icap_connection_options(embedded)),
     );

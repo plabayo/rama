@@ -595,7 +595,6 @@ impl ClientRequest {
 
     pub(crate) fn reqmod_for_uri<B>(
         uri: &Uri,
-        host_header: &[u8],
         headers: &[Header<'_>],
         request: HttpRequest<B>,
         preview: Option<Preview>,
@@ -604,7 +603,7 @@ impl ClientRequest {
         B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
         Self::reqmod_with_line(
-            RequestLineSource::prepared(Method::Reqmod, uri, host_header),
+            RequestLineSource::prepared(Method::Reqmod, uri),
             headers,
             request,
             preview,
@@ -665,7 +664,6 @@ impl ClientRequest {
 
     pub(crate) fn respmod_for_uri<R, B>(
         uri: &Uri,
-        host_header: &[u8],
         headers: &[Header<'_>],
         request: &HttpRequest<R>,
         response: HttpResponse<B>,
@@ -675,7 +673,7 @@ impl ClientRequest {
         B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
         Self::respmod_with_line(
-            RequestLineSource::prepared(Method::Respmod, uri, host_header),
+            RequestLineSource::prepared(Method::Respmod, uri),
             headers,
             request,
             response,

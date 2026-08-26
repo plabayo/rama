@@ -10,7 +10,7 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _, ErrorExt as _},
 };
-use rama_net::uri::Uri;
+use rama_net::{Protocol, uri::Uri};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use tokio::{sync::Mutex, time::Instant};
 
@@ -235,6 +235,7 @@ impl FetchState {
 #[derive(Clone, Debug)]
 struct CacheKey {
     uri: Uri,
+    application_protocol: Option<Protocol>,
     partition: super::OptionsCachePartition,
     allow_204_offered: bool,
     allow_206_offered: bool,
@@ -244,6 +245,7 @@ struct CacheKey {
 impl PartialEq for CacheKey {
     fn eq(&self, other: &Self) -> bool {
         self.uri == other.uri
+            && self.application_protocol == other.application_protocol
             && self.partition.shares_cache_with(&other.partition)
             && self.allow_204_offered == other.allow_204_offered
             && self.allow_206_offered == other.allow_206_offered
@@ -257,6 +259,7 @@ impl CacheKey {
     fn from_request(request: &OptionsRequest) -> Self {
         Self {
             uri: request.service_uri().clone(),
+            application_protocol: request.application_protocol().cloned(),
             partition: request.cache_partition().clone(),
             allow_204_offered: request.allow_204_offered(),
             allow_206_offered: request.allow_206_offered(),
@@ -693,6 +696,14 @@ mod tests {
         service_uri: &str,
         partition: &super::super::OptionsCachePartition,
     ) -> OptionsRequest {
+        request_for_protocol(service_uri, None, partition)
+    }
+
+    fn request_for_protocol(
+        service_uri: &str,
+        application_protocol: Option<Protocol>,
+        partition: &super::super::OptionsCachePartition,
+    ) -> OptionsRequest {
         let uri = Uri::parse_strict(service_uri).unwrap();
         let uri_text = uri.as_str();
         let request = Request::new(
@@ -701,12 +712,11 @@ mod tests {
             Some(EncapsulatedParts::null()),
         )
         .unwrap();
-        OptionsRequest::new(
-            ConnectRequest::new("icap.test:1344".parse::<HostWithPort>().unwrap()),
-            request,
-        )
-        .unwrap()
-        .with_cache_partition(partition.clone())
+        let connect = ConnectRequest::new("icap.test:1344".parse::<HostWithPort>().unwrap())
+            .maybe_with_application_protocol(application_protocol);
+        OptionsRequest::new(connect, request)
+            .unwrap()
+            .with_cache_partition(partition.clone())
     }
 
     fn request_with_allow(
@@ -853,6 +863,23 @@ mod tests {
             assert!(Arc::ptr_eq(&first, &second));
         }
         assert_eq!(provider.calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn application_protocol_partitions_cache_entries() {
+        let provider = TestProvider::new(capabilities(None));
+        let cache = OptionsCacheLayer::new().layer(provider.clone());
+        let partition = super::super::OptionsCachePartition::new();
+
+        for protocol in [Protocol::ICAP, Protocol::ICAPS] {
+            let input =
+                request_for_protocol("icap://icap.test/service", Some(protocol), &partition);
+            let first = cache.serve(input.clone()).await.unwrap();
+            let second = cache.serve(input).await.unwrap();
+            assert!(Arc::ptr_eq(&first, &second));
+        }
+
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

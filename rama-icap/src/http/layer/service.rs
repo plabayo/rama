@@ -437,17 +437,14 @@ where
         policy.allow_206,
         policy.allow_icap_trailers,
     )?;
-    let request = ClientRequest::reqmod_for_uri(
-        service.uri(),
-        service.host_header(),
-        &headers,
-        request,
-        preview,
-    )
-    .context("build ICAP REQMOD request")?
-    .with_replay_limits(service.replay_limits());
+    let request = ClientRequest::reqmod_for_uri(service.uri(), &headers, request, preview)
+        .context("build ICAP REQMOD request")?
+        .with_replay_limits(service.replay_limits());
+    let connect = service
+        .connect_request()
+        .context("build ICAP REQMOD connection request")?;
     let EstablishedClientConnection { conn, .. } = client
-        .connect(service.connect_request())
+        .connect(connect)
         .await
         .context("connect to ICAP REQMOD service")?;
     let response = conn
@@ -533,18 +530,15 @@ where
         policy.allow_206,
         policy.allow_icap_trailers,
     )?;
-    let request = ClientRequest::respmod_for_uri(
-        service.uri(),
-        service.host_header(),
-        &headers,
-        &request,
-        response,
-        preview,
-    )
-    .context("build ICAP RESPMOD request")?
-    .with_replay_limits(service.replay_limits());
+    let request =
+        ClientRequest::respmod_for_uri(service.uri(), &headers, &request, response, preview)
+            .context("build ICAP RESPMOD request")?
+            .with_replay_limits(service.replay_limits());
+    let connect = service
+        .connect_request()
+        .context("build ICAP RESPMOD connection request")?;
     let EstablishedClientConnection { conn, .. } = client
-        .connect(service.connect_request())
+        .connect(connect)
         .await
         .context("connect to ICAP RESPMOD service")?;
     let response = conn

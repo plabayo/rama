@@ -1,16 +1,17 @@
 #[cfg(feature = "std")]
 use rama_core::bytes::Bytes;
-#[cfg(feature = "std")]
-use rama_icap::client::options::{MethodSupport, OptionsValidation, ServiceCapabilities};
 use rama_icap::codec::{
     DEFAULT_MAX_HEADERS, HeadParserConfig, HeaderFolding, HeaderSlot, HeaderValue, ParseError,
     ParseStatus, parse_chunk_line, parse_encapsulated, parse_request_head,
     parse_request_head_with_config, parse_response_head, parse_response_head_with_config,
     parse_trailers,
 };
-#[cfg(feature = "std")]
-use rama_icap::message::Response;
 use rama_icap::proto::{EncapsulatedKind, Method, MethodKind, StatusCode};
+#[cfg(feature = "std")]
+use rama_icap::{
+    client::options::{MethodSupport, OptionsValidation, ServiceCapabilities},
+    message::Response,
+};
 
 // Mirror the tracked fuzz seeds inline so the published crate's tests remain
 // self-contained instead of reaching outside the package root.

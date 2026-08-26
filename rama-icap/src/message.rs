@@ -1052,10 +1052,18 @@ fn request_head_len<'a>(
         .method()
         .as_str()
         .len()
-        .checked_add(line.uri_len())
+        .checked_add(line.uri_len()?)
         .and_then(|len| len.checked_add(line.version().as_str().len()))
         .and_then(|len| len.checked_add(REQUEST_LINE_OVERHEAD))
         .ok_or(BuildError::MessageTooLarge)?;
+    let len = match line.prepared_host_len()? {
+        Some(host_len) => len
+            .checked_add(header::HOST.len())
+            .and_then(|len| len.checked_add(host_len))
+            .and_then(|len| len.checked_add(HEADER_FIELD_OVERHEAD))
+            .ok_or(BuildError::MessageTooLarge)?,
+        None => len,
+    };
     head_len_with_headers(len, headers)
 }
 

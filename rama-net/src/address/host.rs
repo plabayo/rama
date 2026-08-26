@@ -144,6 +144,15 @@ impl Host {
         HostRef::from(self).to_str()
     }
 
+    /// Returns `true` when this host has an empty textual representation.
+    ///
+    /// This checks the stored representation directly and never formats an IP
+    /// address or allocates a temporary [`String`].
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.view().is_empty()
+    }
+
     /// Return the RFC 3986 canonical presentation of this host.
     ///
     /// Domain names are ASCII-lowercased. Preserved URI host bytes are first
@@ -284,6 +293,20 @@ impl<'a> HostRef<'a> {
             Self::Address(ip) => ip.to_string().into(),
             Self::Uninterpreted(host) if host.is_bracketed() => host.to_string().into(),
             Self::Uninterpreted(host) => host.as_str().into(),
+        }
+    }
+
+    /// Returns `true` when this host has an empty textual representation.
+    ///
+    /// Typed domain names and IP addresses are never empty. An uninterpreted
+    /// host is empty only when it has no bytes and is not an IP-literal enclosed
+    /// by brackets. This method does not format or allocate.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        match self {
+            Self::Name(domain) => domain.as_str().is_empty(),
+            Self::Address(_) => false,
+            Self::Uninterpreted(host) => !host.is_bracketed() && host.as_str().is_empty(),
         }
     }
 
@@ -939,6 +962,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn empty_check_never_formats_the_host() {
+        let empty = Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
+            rama_core::bytes::Bytes::new(),
+            false,
+        ));
+        assert!(empty.is_empty());
+        assert!(empty.view().is_empty());
+
+        assert!(!Host::EXAMPLE_NAME.is_empty());
+        assert!(!Host::LOCALHOST_IPV6.is_empty());
+
+        let bracketed = Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
+            rama_core::bytes::Bytes::new(),
+            true,
+        ));
+        assert!(!bracketed.is_empty());
+    }
+
+    #[test]
     fn canonicalize_normalizes_each_host_shape() {
         assert_eq!(
             Host::Name(Domain::from_static("EXAMPLE.Com"))
@@ -1417,7 +1459,7 @@ mod tests {
         // Mismatched bytes inside brackets → no match.
         assert!(h != "[v2.fe80::a]");
         // Edge: empty / too-short str inputs.
-        assert!(h != "");
+        assert!(!PartialEq::eq(&h, ""));
         assert!(h != "[]");
     }
 
