@@ -75,7 +75,7 @@ use rama::{
 // everything else is provided by the standard library, community crates or tokio
 
 use std::{convert::Infallible, time::Duration};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::main]
 async fn main() {
@@ -149,6 +149,32 @@ where
         .get_ref::<SocketInfo>()
         .unwrap()
         .peer_addr();
+
+    // Consume the request before closing the connection. In particular,
+    // Windows resets a socket closed with unread data, which can discard the
+    // response before it reaches the client.
+    let mut request_head = [0u8; 8 * 1024];
+    let mut request_head_len = 0;
+    loop {
+        let n = stream
+            .read(&mut request_head[request_head_len..])
+            .await
+            .expect("read request head");
+        assert!(n > 0, "connection closed before request head completed");
+        request_head_len += n;
+
+        if request_head[..request_head_len]
+            .windows(4)
+            .any(|window| window == b"\r\n\r\n")
+        {
+            break;
+        }
+
+        assert!(
+            request_head_len < request_head.len(),
+            "request head exceeds 8 KiB"
+        );
+    }
 
     // create the minimal http response
     let payload = format!(
