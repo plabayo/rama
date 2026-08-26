@@ -26,6 +26,7 @@ use rama_net::{
         ConnectRequest, EstablishedClientConnection,
         pool::{ConnID, LruDropPool, PooledConnector},
     },
+    test_utils::client::MockConnectorService,
     transport::TransportProtocol,
 };
 
@@ -57,6 +58,35 @@ fn endpoint(path: &str) -> ServiceEndpoint {
 
 fn adaptation_response_fields() -> [Header<'static>; 1] {
     [Header::new(header::ISTAG, b"\"layer-test\"").unwrap()]
+}
+
+const REQUEST_HEADER_LINES: &[(&str, &str)] = &[
+    ("X-FOO-bar", "hello"),
+    ("content-type", "text/plain"),
+    ("x-Foo-BAR", "goodbye"),
+];
+
+const RESPONSE_HEADER_LINES: &[(&str, &str)] = &[
+    ("X-Response-FOO", "hello"),
+    ("content-type", "text/plain"),
+    ("x-Response-Foo", "goodbye"),
+];
+
+fn assert_header_lines(headers: &HeaderMap, expected: &[(&str, &str)]) {
+    let actual = headers
+        .ordered_iter()
+        .map(|(name, value)| {
+            (
+                name.as_original_str().into_owned(),
+                value.to_str().unwrap().to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let expected = expected
+        .iter()
+        .map(|&(name, value)| (name.to_owned(), value.to_owned()))
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
 }
 
 fn discovered_capabilities() -> ServiceCapabilities {
@@ -152,6 +182,44 @@ async fn serve_adaptation(request: IncomingRequest) -> Result<OutgoingResponse, 
         }
         _ => Err(BoxError::from_static_str(
             "HTTP adaptation only uses REQMOD and RESPMOD",
+        )),
+    }
+}
+
+async fn serve_header_preserving_adaptation(
+    request: IncomingRequest,
+) -> Result<OutgoingResponse, BoxError> {
+    let method = request.icap().method();
+    let (parts, body) = request.into_parts();
+    let encapsulated = parts.encapsulated.expect("typed HTTP metadata");
+    let body = Body::new(body.collect().await?);
+    let line = ResponseLine::new(StatusCode::OK, b"OK").unwrap();
+    let fields = adaptation_response_fields();
+
+    match method {
+        MethodKind::Reqmod => {
+            let request = encapsulated.request.expect("REQMOD request head");
+            assert_header_lines(request.headers(), REQUEST_HEADER_LINES);
+            OutgoingResponse::from_http_request(
+                line,
+                &fields,
+                Request::from_parts(request.clone_parts(), body),
+            )
+            .map_err(Into::into)
+        }
+        MethodKind::Respmod => {
+            let response = encapsulated.response.expect("RESPMOD response head");
+            assert_header_lines(response.headers(), RESPONSE_HEADER_LINES);
+            OutgoingResponse::from_http_response(
+                MethodKind::Respmod,
+                line,
+                &fields,
+                Response::from_parts(response.clone_parts(), body),
+            )
+            .map_err(Into::into)
+        }
+        _ => Err(BoxError::from_static_str(
+            "header preservation only uses REQMOD and RESPMOD",
         )),
     }
 }
@@ -292,6 +360,51 @@ async fn detours_request_and_response_with_preview() {
     assert!(!response_body.trailers().unwrap().contains_key("x-scan"));
     assert_eq!(response_body.to_bytes(), "response-body");
     assert_eq!(connections.load(Ordering::Relaxed), 2);
+}
+
+#[tokio::test]
+async fn preserves_ordinary_header_order_and_casing_end_to_end() {
+    let connector = crate::client::Client::new(
+        MockConnectorService::new(|| {
+            Server::new(
+                HttpService::new(service_fn(serve_header_preserving_adaptation)),
+                b"\"rama-test\"",
+            )
+            .unwrap()
+        })
+        .with_max_buffer_size(4096),
+    );
+    let inner = service_fn(async |request: Request<Body>| {
+        assert_header_lines(request.headers(), REQUEST_HEADER_LINES);
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header("X-Response-FOO", "hello")
+                .header("content-type", "text/plain")
+                .header("x-Response-Foo", "goodbye")
+                .body(Body::empty())
+                .unwrap(),
+        )
+    });
+    let service = AdaptationLayer::new(connector)
+        .with_request_service(endpoint("reqmod"))
+        .with_response_service(endpoint("respmod"))
+        .layer(inner);
+
+    let response = service
+        .serve(
+            Request::builder()
+                .method("POST")
+                .uri("/upload")
+                .header("X-FOO-bar", "hello")
+                .header("content-type", "text/plain")
+                .header("x-Foo-BAR", "goodbye")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_header_lines(response.headers(), RESPONSE_HEADER_LINES);
 }
 
 #[tokio::test]
