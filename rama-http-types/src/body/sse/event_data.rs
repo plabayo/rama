@@ -122,12 +122,16 @@ impl EventDataWrite for String {
     write_str_data!();
 }
 
+/// Upper bound on the previous-payload capacity hint: one huge event must
+/// not make every following (possibly tiny) payload pre-reserve that much.
+const PAYLOAD_SIZE_HINT_CAP: usize = 1024 * 1024;
+
 #[derive(Debug)]
 /// [`EventDataLineReader`] for the [`EventDataRead`] implementation of [`String`].
 pub struct EventDataStringReader {
     buf: Option<String>,
-    // size of the previously produced payload: streams tend to carry
-    // similarly-sized events, so pre-reserving it avoids the realloc
+    // size of the previously produced payload (capped): streams tend to
+    // carry similarly-sized events, so pre-reserving it avoids the realloc
     // ladder (and its copies) while appending line by line
     size_hint: usize,
 }
@@ -156,7 +160,12 @@ impl EventDataLineReader for EventDataStringReader {
         if data.chars().next_back().map(is_lf).unwrap_or_default() {
             data.pop();
         }
-        self.size_hint = data.len() + 1;
+        self.size_hint = (data.len() + 1).min(PAYLOAD_SIZE_HINT_CAP);
+        // don't hand out a payload retaining a way larger reservation
+        // than it uses (the hint can overshoot on heterogeneous streams)
+        if data.capacity() / 4 > data.len() {
+            data.shrink_to_fit();
+        }
         Ok(Some(data))
     }
 }

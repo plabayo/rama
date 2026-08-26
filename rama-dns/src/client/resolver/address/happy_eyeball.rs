@@ -76,7 +76,15 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
     /// literal host or in AAAA records — canonicalize to the embedded
     /// IPv4 address and classify as IPv4 for the IP modes.
     ///
+    /// `localhost` and `*.localhost` names resolve locally to the loopback
+    /// addresses per [RFC 6761, Section 6.3] — deliberately WITHOUT
+    /// consulting the configured resolver, custom or global: such names
+    /// always denote loopback, and mapping them elsewhere violates the RFC.
+    /// A [`DnsAddresssResolverOverwrite`] extension on the request is the
+    /// explicit per-request escape hatch and keeps full precedence.
+    ///
     /// [RFC 4291, Section 2.5.5.2]: https://datatracker.ietf.org/doc/html/rfc4291#section-2.5.5.2
+    /// [RFC 6761, Section 6.3]: https://datatracker.ietf.org/doc/html/rfc6761#section-6.3
     pub fn lookup_ip(self) -> impl Stream<Item = Result<IpAddr, OpaqueError>> + Send + 'a {
         let ip_mode = self
             .extensions
@@ -455,6 +463,51 @@ mod tests {
                 .collect();
             assert_eq!(expected, ips, "mode: {mode:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn localhost_names_bypass_custom_resolvers() {
+        // RFC 6761, Section 6.3 takes precedence over any configured
+        // resolver: a custom resolver mapping `svc.localhost` elsewhere
+        // is (deliberately) never consulted for localhost names.
+        let custom: std::net::Ipv4Addr = "192.0.2.1".parse().unwrap();
+        let host = Host::Name(rama_net::address::Domain::from_static("svc.localhost"));
+        let stream = custom.happy_eyeballs_resolver(host).lookup_ip();
+        let ips: Vec<_> = rama_core::futures::StreamExt::collect::<Vec<_>>(stream)
+            .await
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            vec![
+                std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            ],
+            ips,
+        );
+    }
+
+    #[tokio::test]
+    async fn dns_overwrite_extension_wins_over_localhost_fast_path() {
+        use crate::client::resolver::address::DnsAddresssResolverOverwrite;
+        use rama_core::extensions::Extensions;
+
+        // the per-request overwrite is the explicit escape hatch: it keeps
+        // full precedence, and the localhost fast path steps aside
+        let overwrite: std::net::Ipv4Addr = "192.0.2.7".parse().unwrap();
+        let ext = Extensions::new();
+        ext.insert(DnsAddresssResolverOverwrite::new(overwrite));
+        let host = Host::Name(rama_net::address::Domain::from_static("svc.localhost"));
+        let stream = EmptyDnsResolver
+            .happy_eyeballs_resolver(host)
+            .with_extensions(&ext)
+            .lookup_ip();
+        let ips: Vec<_> = rama_core::futures::StreamExt::collect::<Vec<_>>(stream)
+            .await
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(vec!["192.0.2.7".parse::<std::net::IpAddr>().unwrap()], ips);
     }
 
     #[tokio::test]

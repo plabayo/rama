@@ -434,3 +434,79 @@ async fn differential_random_streams_and_chunkings() {
         }
     }
 }
+
+/// The public last-event-ID checkpoint must move when an event is
+/// yielded to the caller, never while later events of the same chunk
+/// are still queued: persisting the checkpoint after event 1 and
+/// reconnecting must not skip the unconsumed event 2.
+#[tokio::test]
+async fn last_event_id_advances_only_on_yield() {
+    let input = "id: 1\ndata: a\n\nid: 2\ndata: b\n\nid: 3\ndata: c\n\n";
+    let mut stream = EventStream::<_, String>::new(stream::iter([Ok::<_, Infallible>(input)]));
+
+    assert_eq!(None, stream.last_event_id());
+
+    let first = stream.next().await.unwrap().unwrap();
+    assert_eq!(Some("1"), first.id());
+    assert_eq!(Some("1"), stream.last_event_id());
+
+    // a caller-provided checkpoint between yields must stick until the
+    // NEXT yielded event overrides it, queued events notwithstanding
+    stream.try_set_last_event_id("restored").unwrap();
+    assert_eq!(Some("restored"), stream.last_event_id());
+
+    let second = stream.next().await.unwrap().unwrap();
+    assert_eq!(Some("2"), second.id());
+    assert_eq!(Some("2"), stream.last_event_id());
+
+    let third = stream.next().await.unwrap().unwrap();
+    assert_eq!(Some("3"), third.id());
+    assert_eq!(Some("3"), stream.last_event_id());
+
+    assert!(stream.next().await.is_none());
+    assert_eq!(Some("3"), stream.last_event_id());
+}
+
+/// A single chunk packed with thousands of tiny events exercises the
+/// bounded ready-queue (decode pauses at the soft cap and resumes from
+/// the set-aside remainder): every event must still come out, in order.
+#[tokio::test]
+async fn many_tiny_events_in_one_chunk_decode_in_order() {
+    const EVENTS: usize = 5_000;
+    let mut encoded = String::new();
+    for i in 0..EVENTS {
+        encoded.push_str(&format!("id: {i}\ndata: payload {i}\n\n"));
+    }
+
+    let mut stream =
+        EventStream::<_, String>::new(stream::iter([Ok::<_, Infallible>(encoded.into_bytes())]));
+    for i in 0..EVENTS {
+        let event = stream.next().await.unwrap().unwrap();
+        assert_eq!(Some(format!("{i}").as_str()), event.id(), "event {i}");
+        assert_eq!(Some(&format!("payload {i}")), event.data(), "event {i}");
+        // the checkpoint tracks the yielded event, not decode progress
+        assert_eq!(Some(format!("{i}").as_str()), stream.last_event_id());
+    }
+    assert!(stream.next().await.is_none());
+}
+
+/// A huge event must not make the following tiny event's payload
+/// pre-reserve (and retain) a comparable capacity.
+#[tokio::test]
+async fn huge_event_does_not_inflate_next_payload_capacity() {
+    let big = "x".repeat(8 * 1024 * 1024);
+    let encoded = format!("data: {big}\n\ndata: y\n\n");
+
+    let mut stream =
+        EventStream::<_, String>::new(stream::iter([Ok::<_, Infallible>(encoded.into_bytes())]));
+    let first = stream.next().await.unwrap().unwrap();
+    assert_eq!(big.len(), first.data().unwrap().len());
+    let second = stream.next().await.unwrap().unwrap();
+    let data = second.into_data().unwrap();
+    assert_eq!("y", data);
+    assert!(
+        data.capacity() < 4096,
+        "tiny payload retained {} bytes of capacity",
+        data.capacity()
+    );
+}

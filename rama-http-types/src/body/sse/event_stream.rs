@@ -151,6 +151,20 @@ impl<T: EventDataRead> EventBuilder<T> {
 
 const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 
+/// Decoding pauses once this many events are queued but not yet yielded:
+/// a single upstream chunk full of tiny events would otherwise be decoded
+/// in one `poll_next` call, an input-controlled memory amplification
+/// (and executor monopolization) the chunk size does not bound.
+const READY_EVENTS_SOFT_CAP: usize = 16;
+
+/// At most this many bytes are decoded per `scan` call. This keeps the
+/// per-`poll_next` work bounded for oversized chunks, and — crucially —
+/// keeps draining a set-aside remainder linear: without it every drain
+/// would re-validate the entire remaining tail (quadratic overall).
+/// Real HTTP/1 bodies arrive in chunks well below this, so the regular
+/// path is unaffected.
+const SCAN_BYTES_SOFT_CAP: usize = 1024 * 1024;
+
 /// Incremental SSE decoder state.
 ///
 /// Consumes raw body chunks as bytes: complete lines are parsed directly out
@@ -202,10 +216,14 @@ impl<T: EventDataRead> Default for DecodeState<T> {
 }
 
 impl<T: EventDataRead> DecodeState<T> {
-    /// Feed one body chunk into the decoder; completed events queue up in `ready`.
-    fn feed(&mut self, mut input: &[u8]) -> Result<(), BoxError> {
+    /// Feed one body chunk into the decoder; completed events queue up in
+    /// `ready`. Returns the number of bytes consumed: decoding pauses once
+    /// `ready` holds [`READY_EVENTS_SOFT_CAP`] events, and the caller is
+    /// expected to re-offer the unconsumed remainder once drained.
+    fn feed(&mut self, mut input: &[u8]) -> Result<usize, BoxError> {
+        let full_len = input.len();
         if input.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
         if !self.started {
             if self.carry.is_empty() && input.len() >= UTF8_BOM.len() {
@@ -217,7 +235,7 @@ impl<T: EventDataRead> DecodeState<T> {
                 // tiny first chunk(s): buffer bytes until the BOM question is decided
                 while !self.started {
                     let Some((&byte, rest)) = input.split_first() else {
-                        return Ok(());
+                        return Ok(full_len);
                     };
                     input = rest;
                     self.carry.push(byte);
@@ -232,12 +250,17 @@ impl<T: EventDataRead> DecodeState<T> {
                         let n = self.carry.len();
                         replay[..n].copy_from_slice(&self.carry);
                         self.carry.clear();
-                        self.scan(&replay[..n])?;
+                        let consumed = self.scan(&replay[..n])?;
+                        debug_assert_eq!(
+                            consumed, n,
+                            "a replay of at most 3 bytes cannot hit the ready-event cap"
+                        );
                     }
                 }
             }
         }
-        self.scan(input)
+        let consumed = self.scan(input)?;
+        Ok(full_len - input.len() + consumed)
     }
 
     /// The underlying stream is exhausted: validate and discard any
@@ -252,34 +275,42 @@ impl<T: EventDataRead> DecodeState<T> {
         Ok(())
     }
 
-    fn scan(&mut self, mut input: &[u8]) -> Result<(), BoxError> {
+    /// Scan the input for complete lines; returns the number of bytes
+    /// consumed, which is less than `input.len()` when one of the soft
+    /// caps ([`READY_EVENTS_SOFT_CAP`], [`SCAN_BYTES_SOFT_CAP`]) pauses
+    /// decoding mid-chunk. Every pause point is also a valid chunk
+    /// boundary, so resuming later with the remainder is state-safe.
+    fn scan(&mut self, input: &[u8]) -> Result<usize, BoxError> {
         if input.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
+        let input = &input[..input.len().min(SCAN_BYTES_SOFT_CAP)];
+
+        let mut offset = 0;
 
         if self.pending_cr {
             self.pending_cr = false;
             if input[0] == b'\n' {
-                input = &input[1..];
+                offset += 1;
             }
         }
 
         // complete a line left over from previous chunk(s)
         if !self.carry.is_empty() {
-            match memchr2(b'\r', b'\n', input) {
+            match memchr2(b'\r', b'\n', &input[offset..]) {
                 None => {
-                    self.carry.extend_from_slice(input);
-                    return Ok(());
+                    self.carry.extend_from_slice(&input[offset..]);
+                    return Ok(input.len());
                 }
                 Some(pos) => {
-                    self.carry.extend_from_slice(&input[..pos]);
-                    let is_cr = input[pos] == b'\r';
-                    input = &input[pos + 1..];
+                    self.carry.extend_from_slice(&input[offset..offset + pos]);
+                    let is_cr = input[offset + pos] == b'\r';
+                    offset += pos + 1;
                     if is_cr {
-                        if input.is_empty() {
+                        if offset == input.len() {
                             self.pending_cr = true;
-                        } else if input[0] == b'\n' {
-                            input = &input[1..];
+                        } else if input[offset] == b'\n' {
+                            offset += 1;
                         }
                     }
                     // take/restore the carry buffer so its allocation is reused,
@@ -290,6 +321,9 @@ impl<T: EventDataRead> DecodeState<T> {
                     self.handle_line(s)?;
                     self.carry = line;
                     self.carry.clear();
+                    if self.ready.len() >= READY_EVENTS_SOFT_CAP {
+                        return Ok(offset);
+                    }
                 }
             }
         }
@@ -297,14 +331,15 @@ impl<T: EventDataRead> DecodeState<T> {
         // validate the remaining input once; an incomplete UTF-8 sequence at
         // the very end is carried over, invalid bytes fail after the valid
         // prefix has been processed
-        let (valid, utf8_tail, utf8_err) = match std::str::from_utf8(input) {
+        let rest = &input[offset..];
+        let (valid, utf8_tail, utf8_err) = match std::str::from_utf8(rest) {
             Ok(s) => (s, &[][..], None),
             Err(err) => {
-                let (head, rest) = input.split_at(err.valid_up_to());
+                let (head, tail) = rest.split_at(err.valid_up_to());
                 // SAFETY: `valid_up_to` guarantees `head` is valid UTF-8
                 let s = unsafe { std::str::from_utf8_unchecked(head) };
                 match err.error_len() {
-                    None => (s, rest, None),
+                    None => (s, tail, None),
                     Some(_) => (
                         s,
                         &[][..],
@@ -322,6 +357,9 @@ impl<T: EventDataRead> DecodeState<T> {
             for pos in memchr::memchr_iter(b'\n', bytes) {
                 self.handle_line(&valid[start..pos])?;
                 start = pos + 1;
+                if self.ready.len() >= READY_EVENTS_SOFT_CAP {
+                    return Ok(offset + start);
+                }
             }
         } else {
             for pos in memchr2_iter(b'\r', b'\n', bytes) {
@@ -344,6 +382,9 @@ impl<T: EventDataRead> DecodeState<T> {
                 }
                 self.handle_line(line)?;
                 start = next;
+                if self.ready.len() >= READY_EVENTS_SOFT_CAP {
+                    return Ok(offset + start);
+                }
             }
         }
 
@@ -353,7 +394,7 @@ impl<T: EventDataRead> DecodeState<T> {
 
         self.carry.extend_from_slice(&bytes[start..]);
         self.carry.extend_from_slice(utf8_tail);
-        Ok(())
+        Ok(input.len())
     }
 
     #[inline]
@@ -361,13 +402,6 @@ impl<T: EventDataRead> DecodeState<T> {
         self.builder.add(parse_line(line))?;
         if self.builder.is_complete {
             let event = self.builder.try_dispatch()?;
-            // WHATWG: the last-event-ID buffer persists across events; only
-            // overwrite it when the dispatched event actually had an id field
-            // (which, post-parse, manifests as `Some(_)` — empty string
-            // included; `None` means no id field was present).
-            if let Some(id) = event.id() {
-                self.last_event_id = Some(SmolStr::new(id));
-            }
             self.ready.push_back(event);
         }
         Ok(())
@@ -380,8 +414,14 @@ pin_project! {
         #[pin]
         stream: S,
         state: DecodeState<T>,
+        // unconsumed remainder of an upstream chunk, set aside while
+        // `ready` was at capacity; drained (from `overflow_offset` on)
+        // before the upstream stream is polled again
+        overflow: Vec<u8>,
+        overflow_offset: usize,
         pending_error: Option<BoxError>,
-        done: bool,
+        stream_done: bool,
+        terminated: bool,
     }
 }
 
@@ -391,8 +431,11 @@ impl<S, T: EventDataRead> EventStream<S, T> {
         Self {
             stream,
             state: DecodeState::default(),
+            overflow: Vec::new(),
+            overflow_offset: 0,
             pending_error: None,
-            done: false,
+            stream_done: false,
+            terminated: false,
         }
     }
 
@@ -427,22 +470,65 @@ where
 
         loop {
             if let Some(event) = this.state.ready.pop_front() {
+                // WHATWG: the last-event-ID buffer persists across events;
+                // only overwrite it when the yielded event actually had an
+                // id field (post-parse `Some(_)`, empty string included).
+                // The checkpoint moves when the event is handed to the
+                // caller, never while it still sits in the ready queue.
+                if let Some(id) = event.id() {
+                    this.state.last_event_id = Some(SmolStr::new(id));
+                }
                 return Poll::Ready(Some(Ok(event)));
             }
             if let Some(err) = this.pending_error.take() {
                 // a decode error is fatal: the byte stream can no longer
                 // be interpreted reliably beyond this point
-                *this.done = true;
+                *this.terminated = true;
                 return Poll::Ready(Some(Err(err)));
             }
-            if *this.done {
+            if *this.terminated {
                 return Poll::Ready(None);
+            }
+
+            // refill from a set-aside chunk remainder before polling upstream
+            if *this.overflow_offset < this.overflow.len() {
+                match this.state.scan(&this.overflow[*this.overflow_offset..]) {
+                    Ok(consumed) => {
+                        *this.overflow_offset += consumed;
+                        if *this.overflow_offset >= this.overflow.len() {
+                            this.overflow.clear();
+                            *this.overflow_offset = 0;
+                        }
+                    }
+                    Err(err) => {
+                        this.overflow.clear();
+                        *this.overflow_offset = 0;
+                        *this.pending_error = Some(err);
+                    }
+                }
+                continue;
+            }
+
+            if *this.stream_done {
+                *this.terminated = true;
+                if let Err(err) = this.state.finish() {
+                    *this.pending_error = Some(err);
+                }
+                continue;
             }
 
             match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(chunk))) => {
-                    if let Err(err) = this.state.feed(chunk.as_ref()) {
-                        *this.pending_error = Some(err);
+                    let bytes = chunk.as_ref();
+                    match this.state.feed(bytes) {
+                        Ok(consumed) if consumed < bytes.len() => {
+                            // ready queue is at capacity: set the rest aside
+                            this.overflow.extend_from_slice(&bytes[consumed..]);
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            *this.pending_error = Some(err);
+                        }
                     }
                 }
                 Poll::Ready(Some(Err(err))) => {
@@ -451,10 +537,7 @@ where
                     return Poll::Ready(Some(Err(err.into())));
                 }
                 Poll::Ready(None) => {
-                    *this.done = true;
-                    if let Err(err) = this.state.finish() {
-                        *this.pending_error = Some(err);
-                    }
+                    *this.stream_done = true;
                 }
                 Poll::Pending => return Poll::Pending,
             }
@@ -528,7 +611,11 @@ mod tests {
     /// decode a full input in one chunk, expecting at most one event
     fn parse_single<T: EventDataRead>(input: &str) -> (Option<Event<T>>, DecodeState<T>) {
         let mut state = DecodeState::<T>::default();
-        state.feed(input.as_bytes()).unwrap();
+        let bytes = input.as_bytes();
+        let mut offset = 0;
+        while offset < bytes.len() {
+            offset += state.feed(&bytes[offset..]).unwrap();
+        }
         state.finish().unwrap();
         let event = state.ready.pop_front();
         assert!(
