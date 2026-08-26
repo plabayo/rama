@@ -658,6 +658,44 @@ async fn redirect_to_trailing_slash_on_dir() {
 }
 
 #[tokio::test]
+async fn serve_directory_index_without_trailing_slash_redirect() {
+    let svc = ServeDir::new("../test-files").with_redirect_to_trailing_slash(false);
+    test_serve_directory_index_without_trailing_slash_redirect(svc).await;
+}
+
+#[tokio::test]
+async fn serve_embedded_directory_index_without_trailing_slash_redirect() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR/../test-files");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).with_redirect_to_trailing_slash(false);
+    test_serve_directory_index_without_trailing_slash_redirect(svc).await;
+}
+
+async fn test_serve_directory_index_without_trailing_slash_redirect(svc: ServeDir) {
+    let req = Request::builder().uri("/foo").body(Body::empty()).unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(res.headers().get(header::LOCATION).is_none());
+    assert_eq!(res.headers()[header::CONTENT_TYPE], "text/html");
+    let body = body_into_text(res.into_body()).await;
+    #[cfg(target_os = "windows")]
+    assert_eq!(body, "<b>HTML!</b>\r\n");
+    #[cfg(not(target_os = "windows"))]
+    assert_eq!(body, "<b>HTML!</b>\n");
+}
+
+#[tokio::test]
+async fn disabled_trailing_slash_redirect_respects_directory_serve_mode() {
+    let svc = ServeDir::new("../test-files")
+        .with_directory_serve_mode(DirectoryServeMode::NotFound)
+        .with_redirect_to_trailing_slash(false);
+    let req = Request::builder().uri("/foo").body(Body::empty()).unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn empty_directory_without_index() {
     let svc = ServeDir::new("..").with_directory_serve_mode(DirectoryServeMode::NotFound);
 
@@ -1119,6 +1157,94 @@ async fn test_read_partial_errs_on_bad_range(svc: ServeDir) {
 }
 
 #[tokio::test]
+async fn multipart_range_can_be_ignored() {
+    let svc = ServeDir::new("../rama-http").with_ignore_multi_range_requests(true);
+    test_multipart_range_can_be_ignored(svc).await;
+}
+
+#[tokio::test]
+async fn multipart_range_can_be_ignored_for_embedded_files() {
+    const EMBEDDED_FILES: Dir = include_dir!("$CARGO_MANIFEST_DIR");
+    let svc = ServeDir::new_embedded(EMBEDDED_FILES).with_ignore_multi_range_requests(true);
+    test_multipart_range_can_be_ignored(svc).await;
+}
+
+async fn test_multipart_range_can_be_ignored(svc: ServeDir) {
+    let req = Request::builder()
+        .uri("/README.md")
+        .header(header::RANGE, "bytes=0-0,2-2")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    let file_contents = std::fs::read("../rama-http/README.md").unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers()[header::CONTENT_LENGTH],
+        file_contents.len().to_string()
+    );
+    assert!(res.headers().get(header::CONTENT_RANGE).is_none());
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body.as_ref(), file_contents.as_slice());
+}
+
+#[tokio::test]
+async fn multipart_range_ignore_is_consistent_for_head() {
+    let svc = ServeDir::new("../rama-http").with_ignore_multi_range_requests(true);
+    let req = Request::builder()
+        .method(Method::HEAD)
+        .uri("/README.md")
+        .header(header::RANGE, "bytes=0-0,2-2")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    let file_contents = std::fs::read("../rama-http/README.md").unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert_eq!(
+        res.headers()[header::CONTENT_LENGTH],
+        file_contents.len().to_string()
+    );
+    assert!(res.headers().get(header::CONTENT_RANGE).is_none());
+    assert!(res.into_body().frame().await.is_none());
+}
+
+#[tokio::test]
+async fn multipart_range_ignore_applies_before_semantic_validation() {
+    let svc = ServeDir::new("../rama-http").with_ignore_multi_range_requests(true);
+    for range in ["bytes=0-2,1-3", "bytes=3-1,5-6"] {
+        let req = Request::builder()
+            .uri("/README.md")
+            .header(header::RANGE, range)
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK, "range: {range}");
+        assert!(res.headers().get(header::CONTENT_RANGE).is_none());
+    }
+}
+
+#[tokio::test]
+async fn multipart_range_ignore_keeps_other_range_errors() {
+    let svc = ServeDir::new("../rama-http").with_ignore_multi_range_requests(true);
+    for range in ["bad_format", "bytes=999999999-"] {
+        let req = Request::builder()
+            .uri("/README.md")
+            .header(header::RANGE, range)
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(req).await.unwrap();
+
+        assert_eq!(
+            res.status(),
+            StatusCode::RANGE_NOT_SATISFIABLE,
+            "range: {range}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn multipart_range_valid_returns_multipart_error_body() {
     let svc = ServeDir::new("../rama-http");
     test_multipart_range_returns_multipart_error_body(svc, "bytes=0-0,2-2").await;
@@ -1158,10 +1284,28 @@ async fn test_multipart_range_returns_multipart_error_body(svc: ServeDir, range:
         res.headers()["content-range"],
         &format!("bytes */{}", file_contents.len())
     );
+    assert!(res.headers().get(header::CONTENT_TYPE).is_none());
+    assert!(res.headers().get(header::CONTENT_ENCODING).is_none());
     assert_eq!(
         body_into_text(res.into_body()).await,
         "Cannot serve multipart range requests"
     );
+}
+
+#[tokio::test]
+async fn range_error_does_not_keep_precompressed_representation_headers() {
+    let svc = ServeDir::new("../test-files").with_precompressed_gzip();
+    let req = Request::builder()
+        .uri("/precompressed.txt")
+        .header(header::ACCEPT_ENCODING, "gzip")
+        .header(header::RANGE, "bad_format")
+        .body(Body::empty())
+        .unwrap();
+    let res = svc.serve(req).await.unwrap();
+
+    assert_eq!(res.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert!(res.headers().get(header::CONTENT_TYPE).is_none());
+    assert!(res.headers().get(header::CONTENT_ENCODING).is_none());
 }
 
 #[tokio::test]
@@ -1843,6 +1987,7 @@ fn test_build_and_validate_path_reserved_dos_names() {
 
     let variant = ServeVariant::Directory {
         serve_mode: DirectoryServeMode::AppendIndexHtml,
+        redirect_to_trailing_slash: true,
         html_as_default_extension: false,
     };
     let base = Path::new("/base");

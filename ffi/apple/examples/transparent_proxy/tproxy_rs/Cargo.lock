@@ -212,27 +212,25 @@ dependencies = [
 
 [[package]]
 name = "bon"
-version = "3.9.3"
+version = "3.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a602c73c7b0148ec6d12af6fd5cc7a46e2eacc8878271a999abac56eed12f561"
+checksum = "9e3fac94a66da67200398458a25412bcc3f9b6443b5119a6cad9cf3ccfcd8cc6"
 dependencies = [
  "bon-macros",
- "rustversion",
 ]
 
 [[package]]
 name = "bon-macros"
-version = "3.9.3"
+version = "3.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6dee98b0db6a962de883bf5d20362dee4d7ca0d12fe39a7c6c73c844e1cd7c1f"
+checksum = "d4654961ad0494e4774c5c60b4cb4cd0ae9b9d92d039d901638b1dba97ebebf5"
 dependencies = [
- "darling",
+ "darling 0.24.1",
  "ident_case",
- "prettyplease 0.2.37",
+ "prettyplease 0.3.0",
  "proc-macro2",
  "quote",
- "rustversion",
- "syn 2.0.119",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -289,9 +287,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.4.3"
+version = "1.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "509591b7bcd67f4ef775afad7662703b4935daaa6ec0e5605cfb1090b32a2b6d"
+checksum = "0ad534f4357a5264cce5019c989cf66a4f0dc4e0d1b1d15f8aacec0ff7360273"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -353,9 +351,9 @@ dependencies = [
 
 [[package]]
 name = "combine"
-version = "4.6.7"
+version = "4.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba5a308b75df32fe02788e748662718f03fde005016435c444eea572398219fd"
+checksum = "cfc320937d09e6de266b31b9afb480f197d7a861be86be7cb2ea7e5d1bfffc5e"
 dependencies = [
  "bytes",
  "memchr",
@@ -435,9 +433,9 @@ dependencies = [
 
 [[package]]
 name = "crc32fast"
-version = "1.5.0"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
+checksum = "8498c871161e1742aaa9d52551b2d6ebdd4c3d45a3be423e3728f33b955be550"
 dependencies = [
  "cfg-if",
 ]
@@ -511,8 +509,18 @@ version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25ae13da2f202d56bd7f91c25fba009e7717a1e4a1cc98a76d844b65ae912e9d"
 dependencies = [
- "darling_core",
- "darling_macro",
+ "darling_core 0.23.0",
+ "darling_macro 0.23.0",
+]
+
+[[package]]
+name = "darling"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed17f5901b6630b993ca003def43f2f8ef4014fc13b047b57aad617ff32bc2ec"
+dependencies = [
+ "darling_core 0.24.1",
+ "darling_macro 0.24.1",
 ]
 
 [[package]]
@@ -529,14 +537,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "darling_core"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6837e2cf7485aaae18f86181d2f0e9a7ed297a025e220aeabf63fdebd3a2ddff"
+dependencies = [
+ "ident_case",
+ "proc-macro2",
+ "quote",
+ "strsim",
+ "syn 3.0.4",
+]
+
+[[package]]
 name = "darling_macro"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac3984ec7bd6cfa798e62b4a642426a5be0e68f9401cfc2a01e3fa9ea2fcdb8d"
 dependencies = [
- "darling_core",
+ "darling_core 0.23.0",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "darling_macro"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ac7135c3ef02b2f7833bbeb1be5ba7f966dcde8a87c6b87f65a778d71a02785"
+dependencies = [
+ "darling_core 0.24.1",
+ "quote",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -689,14 +721,14 @@ checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
 name = "either"
-version = "1.17.0"
+version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e5e8f6c15a24b9a3ee5efec809ccd006d3b30e8b3bb63c39af737c7f87daa1d"
+checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
 
 [[package]]
 name = "encoding_rs"
@@ -835,7 +867,7 @@ checksum = "ea5190182e6915eb873ddbc16e23b711b6eb1f9c00a0d0a3a91b5f6228475225"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -925,7 +957,7 @@ checksum = "9fb9654ba8355388abeb8dcb4fc62f511300867002afc858860463bdd9fe0c44"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -1179,9 +1211,9 @@ checksum = "e590f038c1464a96894fd6d10127e90a8be4509f56ff7ecef851b15cee0b7caa"
 
 [[package]]
 name = "icu_provider"
-version = "2.3.0"
+version = "2.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92a7ed671a6aad807a8651a2e1782a6598fda9ce5185dd8158549e95a91c6428"
+checksum = "d27bbb9d3abbefac45d55f647c9de1d44aafcd1186eb91879afef17c396c3e73"
 dependencies = [
  "displaydoc",
  "icu_locale_core",
@@ -1475,9 +1507,9 @@ dependencies = [
 
 [[package]]
 name = "log"
-version = "0.4.33"
+version = "0.4.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
+checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "loom"
@@ -1549,9 +1581,9 @@ dependencies = [
 
 [[package]]
 name = "metrique"
-version = "0.1.30"
+version = "0.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dedbf06ffeef4c37990c73636fbd993aa34fb1948afd736e6114f239220993db"
+checksum = "2b55bfa39e6f5e44a37a59a794915ce36d04371471cf62ae365cd9703f58a5e0"
 dependencies = [
  "itoa",
  "jiff",
@@ -1579,12 +1611,12 @@ dependencies = [
 
 [[package]]
 name = "metrique-macro"
-version = "0.1.21"
+version = "0.1.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4fb1f30185f53f7f6e4c9e46745c1a1350af8e77fda5a88aded44b0637a82e0"
+checksum = "7605c49951713cce25af6bee77ed4432dde0839c5d9935bcb6f9643e6e82c7c3"
 dependencies = [
  "Inflector",
- "darling",
+ "darling 0.23.0",
  "metrique-core",
  "proc-macro2",
  "quote",
@@ -1608,9 +1640,9 @@ checksum = "2faca4e4480069ff02b1763b3b79f5cec7e8628e24d9dc5b6073f53d2577a4d9"
 
 [[package]]
 name = "metrique-writer"
-version = "0.1.26"
+version = "0.1.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "20bd17c1a3ca2719e31f19ce77a853948dc2102f35976b92276c42a64fdc5f3f"
+checksum = "bb97854dd4e2a92fe54b30e6e19976dcc0b2b7d39da3e84e86e2ce1e2ed8ce0d"
 dependencies = [
  "ahash",
  "crossbeam-queue",
@@ -1629,9 +1661,9 @@ dependencies = [
 
 [[package]]
 name = "metrique-writer-core"
-version = "0.1.20"
+version = "0.1.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f1a55b6aae1d85c557c729564c4e2b32a26dc65ba2d90d9647ca01f2bd4854c4"
+checksum = "71c9fc241cff4eedc2b6c3e2edece7f3edab2920e7531f62aac864ce933cdbb6"
 dependencies = [
  "derive-where",
  "itertools 0.14.0",
@@ -1645,7 +1677,7 @@ version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1eef190f855405b9df4166ee0495925162fb2a7985bac62c6ae44f40061fac00"
 dependencies = [
- "darling",
+ "darling 0.23.0",
  "proc-macro2",
  "quote",
  "str_inflector",
@@ -1865,9 +1897,9 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "ordered-float"
-version = "5.3.0"
+version = "5.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7d950ca161dc355eaf28f82b11345ed76c6e1f6eb1f4f4479e0323b9e2fbd0e"
+checksum = "8c7c9e0d9b23589f26070720bac724174bfec1083e82f7854cdd0267518343c0"
 dependencies = [
  "num-traits",
 ]
@@ -1992,7 +2024,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bfe0f4c752e450fc2faf62654f1c134747922825d5b04ca717b8874f41a40c0"
 dependencies = [
  "proc-macro2",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -2130,9 +2162,9 @@ checksum = "95067976aca6421a523e491fce939a3e65249bac4b977adee0ee9771568e8aa3"
 
 [[package]]
 name = "psl"
-version = "2.1.225"
+version = "2.1.226"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d71c4a0dab830345e50e8d0dc881bf219d0a9ff261dd2500d36e7cd24427d1e"
+checksum = "7bc88482eea924ca3a2f56a547454169af58deef35567965eb4fc2392a834841"
 dependencies = [
  "psl-types",
 ]
@@ -2160,9 +2192,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.41.0"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
 dependencies = [
  "memchr",
  "tokio",
@@ -2211,7 +2243,7 @@ dependencies = [
 
 [[package]]
 name = "rama"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ahash",
  "base64",
@@ -2225,6 +2257,7 @@ dependencies = [
  "rama-http",
  "rama-http-backend",
  "rama-http-core",
+ "rama-icap",
  "rama-json",
  "rama-net",
  "rama-net-apple-networkextension",
@@ -2285,7 +2318,7 @@ dependencies = [
 
 [[package]]
 name = "rama-core"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ahash",
  "asynk-strim",
@@ -2310,7 +2343,7 @@ dependencies = [
 
 [[package]]
 name = "rama-crypto"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ahash",
  "base64",
@@ -2333,7 +2366,7 @@ dependencies = [
 
 [[package]]
 name = "rama-dns"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -2358,11 +2391,11 @@ dependencies = [
 
 [[package]]
 name = "rama-error"
-version = "0.4.1"
+version = "0.5.0"
 
 [[package]]
 name = "rama-fastcgi"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "rama-core",
  "rama-http-types",
@@ -2374,7 +2407,7 @@ dependencies = [
 
 [[package]]
 name = "rama-grpc"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "arc-swap",
  "base64",
@@ -2400,7 +2433,7 @@ dependencies = [
 
 [[package]]
 name = "rama-grpc-build"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "prettyplease 0.3.0",
  "proc-macro-crate",
@@ -2410,22 +2443,22 @@ dependencies = [
  "protoc-bin-vendored",
  "quote",
  "rama-utils",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
 name = "rama-grpc-macros"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "proc-macro2",
  "quote",
  "rama-grpc-build",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
 name = "rama-http"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ahash",
  "async-compression",
@@ -2466,7 +2499,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-backend"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "parking_lot",
  "pin-project-lite",
@@ -2486,7 +2519,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-core"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ahash",
  "atomic-waker",
@@ -2510,7 +2543,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-headers"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ahash",
  "base64",
@@ -2529,7 +2562,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-hyperium"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "http",
  "http-body",
@@ -2541,23 +2574,24 @@ dependencies = [
 
 [[package]]
 name = "rama-http-macros"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
 name = "rama-http-types"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "bytes",
  "const_format",
  "fnv",
  "futures-core",
  "hex",
+ "httparse",
  "itoa",
  "md5",
  "memchr",
@@ -2580,8 +2614,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "rama-icap"
+version = "0.5.0"
+dependencies = [
+ "itoa",
+ "parking_lot",
+ "rama-core",
+ "rama-http-types",
+ "rama-net",
+ "rama-utils",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "rama-json"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "itoa",
  "rama-utils",
@@ -2592,17 +2640,17 @@ dependencies = [
 
 [[package]]
 name = "rama-macros"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
 name = "rama-net"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -2641,7 +2689,7 @@ dependencies = [
 
 [[package]]
 name = "rama-net-apple-networkextension"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "atomic-waker",
  "bindgen",
@@ -2661,7 +2709,7 @@ dependencies = [
 
 [[package]]
 name = "rama-net-apple-xpc"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ahash",
  "bindgen",
@@ -2676,7 +2724,7 @@ dependencies = [
 
 [[package]]
 name = "rama-socks5"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "byteorder",
  "dial9-tokio-telemetry",
@@ -2692,7 +2740,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tcp"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "libc",
  "pin-project-lite",
@@ -2705,7 +2753,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ahash",
  "base64",
@@ -2730,7 +2778,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-boring"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ahash",
  "brotli",
@@ -2755,7 +2803,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-rustls"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "dial9-tokio-telemetry",
  "dial9-trace-format",
@@ -2774,7 +2822,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tower"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "http",
  "http-body",
@@ -2788,7 +2836,7 @@ dependencies = [
 
 [[package]]
 name = "rama-ua"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ahash",
  "itertools 0.15.0",
@@ -2805,7 +2853,7 @@ dependencies = [
 
 [[package]]
 name = "rama-udp"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "rama-core",
  "rama-net",
@@ -2816,7 +2864,7 @@ dependencies = [
 
 [[package]]
 name = "rama-unix"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "libc",
  "pin-project-lite",
@@ -2828,7 +2876,7 @@ dependencies = [
 
 [[package]]
 name = "rama-utils"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "const_format",
  "memchr",
@@ -2846,7 +2894,7 @@ dependencies = [
 
 [[package]]
 name = "rama-ws"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "flate2",
  "rama-core",
@@ -3066,9 +3114,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.14"
+version = "0.103.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0527518605e68109d875e248ea259b6758801cf165e4b2c2733ae3b51f12535a"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -3173,7 +3221,7 @@ checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -3374,9 +3422,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "3.0.3"
+version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53e9bae58849f64dfa4f5d5ae372c8341f7305f82a3868709269343628b659a3"
+checksum = "e6275cddf4610d1775e6d1fe9469b2e77d0f39fd98fb7450901b821e0c53649f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3435,7 +3483,7 @@ checksum = "bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -3545,7 +3593,7 @@ checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -3769,9 +3817,9 @@ checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
 
 [[package]]
 name = "uuid"
-version = "1.24.1"
+version = "1.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cefc03fd367c0c6d4305de1b312cf00248c4114f4a0418ce6a6af769e3b0bd9"
+checksum = "f053576934f05a761a402421fbbe3d425d9366f75f978806a037b3ca481abecc"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
@@ -4170,9 +4218,9 @@ dependencies = [
 
 [[package]]
 name = "zerovec"
-version = "0.11.7"
+version = "0.11.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94b5c6b5976d66c1d703c4fd17d3f5e43c8cedaacf604961b171adc7130896d8"
+checksum = "bb0464e17806c1d976d5cba29399c7f08e516e279e2ba493f63123b5fca67dd8"
 dependencies = [
  "yoke",
  "zerofrom",
@@ -4181,13 +4229,13 @@ dependencies = [
 
 [[package]]
 name = "zerovec-derive"
-version = "0.11.5"
+version = "0.11.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f212a141d820099d57ffafb9569be9617a6f27d3dc881fbee8fb56642f917a9"
+checksum = "34df6fc39dbd26ddc9c10e6a2984476e13acce22e64e4487636ef494369225da"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 3.0.3",
+ "syn 3.0.4",
 ]
 
 [[package]]

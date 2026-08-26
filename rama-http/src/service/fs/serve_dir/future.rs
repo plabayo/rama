@@ -164,12 +164,8 @@ fn build_response(output: FileOpened) -> Response {
             let range_size = range.end() - range.start() + 1;
             let body = if let Some(reader) = output.extent.into_reader() {
                 Body::new(
-                    AsyncReadBody::with_capacity_limited(
-                        reader,
-                        output.chunk_size,
-                        range_size,
-                    )
-                    .boxed(),
+                    AsyncReadBody::with_capacity_limited(reader, output.chunk_size, range_size)
+                        .boxed(),
                 )
             } else {
                 Body::empty()
@@ -195,25 +191,35 @@ fn build_response(output: FileOpened) -> Response {
                 })
         }
 
-        Some(Err(RangeError::MultipleRangesNotSupported)) => builder
-            .header(header::CONTENT_RANGE, format!("bytes */{size}"))
-            .status(StatusCode::RANGE_NOT_SATISFIABLE)
-            .body(Body::from(Bytes::from(
-                "Cannot serve multipart range requests",
-            )))
-            .unwrap_or_else(|err| {
-                tracing::debug!("failed to create RANGE_NOT_SATISFIABLE response: {err}; error 500 resp instead...");
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            }),
+        Some(Err(RangeError::MultipleRangesNotSupported)) => {
+            let mut response = builder
+                .header(header::CONTENT_RANGE, format!("bytes */{size}"))
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .body(Body::from(Bytes::from(
+                    "Cannot serve multipart range requests",
+                )))
+                .unwrap_or_else(|err| {
+                    tracing::debug!("failed to create RANGE_NOT_SATISFIABLE response: {err}; error 500 resp instead...");
+                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                });
+            response.headers_mut().remove(header::CONTENT_TYPE);
+            response.headers_mut().remove(header::CONTENT_ENCODING);
+            response
+        }
 
-        Some(Err(RangeError::Unsatisfiable)) => builder
-            .header(header::CONTENT_RANGE, format!("bytes */{size}"))
-            .status(StatusCode::RANGE_NOT_SATISFIABLE)
-            .body(Body::empty())
-            .unwrap_or_else(|err| {
-                tracing::debug!("failed to create RANGE_NOT_SATISFIABLE response: {err}; error 500 resp instead...");
-                StatusCode::INTERNAL_SERVER_ERROR.into_response()
-            }),
+        Some(Err(RangeError::Unsatisfiable)) => {
+            let mut response = builder
+                .header(header::CONTENT_RANGE, format!("bytes */{size}"))
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .body(Body::empty())
+                .unwrap_or_else(|err| {
+                    tracing::debug!("failed to create RANGE_NOT_SATISFIABLE response: {err}; error 500 resp instead...");
+                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                });
+            response.headers_mut().remove(header::CONTENT_TYPE);
+            response.headers_mut().remove(header::CONTENT_ENCODING);
+            response
+        }
 
         // Not a range request
         None => {

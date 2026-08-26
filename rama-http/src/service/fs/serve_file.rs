@@ -113,6 +113,16 @@ impl ServeFile {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Configure whether syntactically valid multi-range requests should be ignored.
+        ///
+        /// See [`ServeDir::with_ignore_multi_range_requests`] for details.
+        pub fn ignore_multi_range_requests(mut self, ignore: bool) -> Self {
+            self.0.set_ignore_multi_range_requests(ignore);
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Set the filesystem symlink policy.
         ///
         /// Defaults to [`ServeDirSymlinkPolicy::RejectAll`].
@@ -219,6 +229,22 @@ mod tests {
         let body = String::from_utf8(body.to_vec()).unwrap();
 
         assert!(body.starts_with("[![rama banner]"));
+    }
+
+    #[tokio::test]
+    async fn multipart_range_can_be_ignored() {
+        let svc = ServeFile::new("../README.md").with_ignore_multi_range_requests(true);
+        let request = Request::builder()
+            .header(header::RANGE, "bytes=0-0,2-2")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(request).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(res.headers().get(header::CONTENT_RANGE).is_none());
+
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body.as_ref(), std::fs::read("../README.md").unwrap());
     }
 
     #[tokio::test]

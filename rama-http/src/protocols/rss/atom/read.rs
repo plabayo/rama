@@ -422,7 +422,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                 self.depth += 1;
                 let ns = classify_ns(&rr);
                 let local_name = e.local_name();
-                let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
+                let local = local_name.as_ref();
                 self.text_buf.clear();
 
                 // Person-construct containment: any non-{name,uri,email}
@@ -604,7 +604,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
             Event::Empty(e) => {
                 let ns = classify_ns(&rr);
                 let local_name = e.local_name();
-                let local = std::str::from_utf8(local_name.as_ref()).unwrap_or("");
+                let local = local_name.as_ref();
 
                 // Same person-construct containment as for Start events.
                 let in_person = self.in_author
@@ -673,16 +673,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                 Ok(Action::Continue)
             }
             Event::CData(e) => {
-                match std::str::from_utf8(e.as_ref()) {
-                    Ok(t) => self.text_buf.push_str(t),
-                    Err(err) => {
-                        if self.strict {
-                            return Err(FeedParseError::new(format!("invalid CDATA: {err}")));
-                        }
-                        tracing::debug!("atom stream CDATA utf8 error (lenient): {err}");
-                        self.text_buf.push_str(&String::from_utf8_lossy(e.as_ref()));
-                    }
-                }
+                self.text_buf.push_str(e.as_ref());
                 Ok(Action::Continue)
             }
             Event::End(e) => {
@@ -1034,21 +1025,21 @@ async fn capture_xhtml_subtree_async<R>(
 where
     R: AsyncBufRead + Unpin,
 {
-    const XHTML_NS_BYTES: &[u8] = crate::protocols::rss::ns::XHTML_NS.as_bytes();
+    const XHTML_NS: &str = crate::protocols::rss::ns::XHTML_NS;
 
     // The outer reader already runs with `trim_text(false)` (see
     // `AtomReader::new`), which is exactly what an xhtml subtree needs — inside
     // it every space matters: `<p>foo</p> <p>bar</p>` and
     // `<p>Hello <em>world</em> there</p>` both lose meaning if inter-element
     // whitespace is trimmed. No toggle needed.
-    capture_xhtml_subtree_inner(nsr, buf, strict, XHTML_NS_BYTES).await
+    capture_xhtml_subtree_inner(nsr, buf, strict, XHTML_NS).await
 }
 
 async fn capture_xhtml_subtree_inner<R>(
     nsr: &mut NsReader<R>,
     buf: &mut Vec<u8>,
     strict: bool,
-    xhtml_ns_bytes: &[u8],
+    xhtml_ns: &str,
 ) -> Result<String, FeedParseError>
 where
     R: AsyncBufRead + Unpin,
@@ -1069,9 +1060,8 @@ where
         match ev {
             Event::Start(e) => {
                 if depth == 0 && !saw_wrapper {
-                    let is_div = e.local_name().as_ref() == elem::DIV.as_bytes();
-                    let in_xhtml_ns =
-                        matches!(rr, ResolveResult::Bound(n) if n.0 == xhtml_ns_bytes);
+                    let is_div = e.local_name().as_ref() == elem::DIV;
+                    let in_xhtml_ns = matches!(rr, ResolveResult::Bound(n) if n.0 == xhtml_ns);
                     if strict && !(is_div && in_xhtml_ns) {
                         return Err(FeedParseError::new(
                             "Atom xhtml content must be wrapped in a single \
@@ -1124,14 +1114,11 @@ where
             }
             Event::Text(e) => {
                 // Non-whitespace text outside the wrapper violates the spec.
-                if depth == 0 && !saw_wrapper && strict {
-                    let s = e.decode().map(|c| c.into_owned()).unwrap_or_default();
-                    if !s.trim().is_empty() {
-                        return Err(FeedParseError::new(
-                            "Atom xhtml content must be wrapped in a single \
-                             XHTML-namespaced <div> (RFC 4287 §3.1.1.3)",
-                        ));
-                    }
+                if depth == 0 && !saw_wrapper && strict && !e.as_ref().trim().is_empty() {
+                    return Err(FeedParseError::new(
+                        "Atom xhtml content must be wrapped in a single \
+                         XHTML-namespaced <div> (RFC 4287 §3.1.1.3)",
+                    ));
                 }
                 writer
                     .write_event(Event::Text(e))

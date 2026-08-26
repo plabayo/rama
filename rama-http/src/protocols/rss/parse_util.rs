@@ -29,8 +29,8 @@ pub(super) type Attrs<'a> = quick_xml::events::BytesStart<'a>;
 /// consumed, dropping its borrow on the reader's read buffer. This avoids the
 /// per-event `String` allocation the borrow-checker would otherwise force on
 /// this hot path. 64 bytes covers every Atom/RSS/extension element name in our
-/// vocabulary; longer or non-UTF-8 names fall through to `""` (which matches
-/// nothing) — same outcome as a heap copy.
+/// vocabulary; longer names are truncated and fall through to a value that
+/// matches nothing — the same outcome as a heap copy.
 ///
 /// The text is trimmed once (the readers run with `trim_text(false)`), dropping
 /// a field's surrounding whitespace while preserving whitespace interior to it.
@@ -39,9 +39,10 @@ pub(in crate::protocols::rss) fn end_event_parts<'b>(
     name_buf: &'b mut [u8; 64],
     text_buf: &mut String,
 ) -> (&'b str, String) {
-    let local_bytes = e.local_name();
-    let n = local_bytes.as_ref().len().min(name_buf.len());
-    name_buf[..n].copy_from_slice(&local_bytes.as_ref()[..n]);
+    let local_name = e.local_name();
+    let local_bytes = local_name.as_ref().as_bytes();
+    let n = local_bytes.len().min(name_buf.len());
+    name_buf[..n].copy_from_slice(&local_bytes[..n]);
     // Done with `e`: drop it to release its read-buffer borrow before we return
     // (so the caller can take `&mut self`).
     drop(e);
@@ -59,10 +60,9 @@ pub(in crate::protocols::rss) fn end_event_parts<'b>(
 /// `None` if absent, malformed, or carrying an unresolvable entity — the
 /// caller treats that the same as "missing".
 pub(super) fn attr_value(e: &Attrs<'_>, name: &str) -> Option<String> {
-    let needle = name.as_bytes();
     e.attributes()
         .filter_map(|a| a.ok())
-        .find(|a| a.key.as_ref() == needle)
+        .find(|a| a.key.as_ref() == name)
         // quick-xml renamed `unescape_value` -> `normalized_value` (the latter
         // also applies XML attribute-value whitespace normalization). `Implicit1_0`
         // preserves the prior behaviour: UTF-8 decode + the five predefined
@@ -154,25 +154,15 @@ pub(super) fn atom_category_from_attrs(e: &Attrs<'_>) -> AtomCategory {
 ///
 /// quick-xml 0.40 stopped expanding entities inside text: a run like
 /// `a &amp; b` now arrives as `Text("a ")`, `GeneralRef("amp")`, `Text(" b")`,
-/// so `decode()` (bytes → str, no entity resolution) yields the literal run and
-/// each entity is appended separately by [`push_general_ref`]. On a decode
-/// error this propagates in strict mode and appends a lossy rendering in
-/// lenient mode — the same split the old `BytesText::unescape` path had.
+/// so the already-decoded event string yields the literal run and each entity
+/// is appended separately by [`push_general_ref`]. Invalid UTF-8 is rejected by
+/// quick-xml while reading the event, before this helper is called.
 pub(super) fn push_text(
     buf: &mut String,
     e: &BytesText<'_>,
-    strict: bool,
+    _strict: bool,
 ) -> Result<(), FeedParseError> {
-    match e.decode() {
-        Ok(t) => buf.push_str(&t),
-        Err(err) => {
-            if strict {
-                return Err(FeedParseError::new(format!("invalid text content: {err}")));
-            }
-            tracing::debug!("rss feed text decode error (lenient): {err}");
-            buf.push_str(&String::from_utf8_lossy(e.as_ref()));
-        }
-    }
+    buf.push_str(e.as_ref());
     Ok(())
 }
 
@@ -203,8 +193,8 @@ pub(super) fn push_general_ref(
             }
         }
     }
-    let name = e.decode().unwrap_or_default();
-    if let Some(replacement) = resolve_predefined_entity(&name) {
+    let name = e.as_ref();
+    if let Some(replacement) = resolve_predefined_entity(name) {
         buf.push_str(replacement);
         return Ok(());
     }
@@ -215,7 +205,7 @@ pub(super) fn push_general_ref(
     }
     tracing::debug!("rss feed unknown entity (lenient): &{name};");
     buf.push('&');
-    buf.push_str(&name);
+    buf.push_str(name);
     buf.push(';');
     Ok(())
 }

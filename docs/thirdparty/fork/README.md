@@ -61,13 +61,13 @@ as a distant relative.
     - Original: <https://github.com/tower-rs/tower/blob/df06d70dbea345facbffb5881fe8647f53bf424d/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower](./licenses/tower)
-- <https://github.com/tower-rs/tower-http/tree/d154adbace6abc98162620ea1b56d88629b40c91>
+- <https://github.com/tower-rs/tower-http/tree/e2582e2fde4ef768caedc1377d07169480d07cc4>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
     <https://github.com/plabayo/tower-async/tree/57798b7baea8e212197a226a2481fa282591dda4>
   - License:
-    - Original: <https://github.com/tower-rs/tower-http/blob/d154adbace6abc98162620ea1b56d88629b40c91/tower-http/LICENSE>
+    - Original: <https://github.com/tower-rs/tower-http/blob/e2582e2fde4ef768caedc1377d07169480d07cc4/tower-http/LICENSE>
     - Type: MIT
     - Copy: [./licenses/tower-http](./licenses/tower-http)
 

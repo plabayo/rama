@@ -54,19 +54,19 @@ pub(in crate::protocols::rss) enum Ns {
 }
 
 /// Resolve a [`ResolveResult`] from `NsReader` into one of the namespaces we
-/// recognise. Comparison is on the namespace URI bytes, so the actual prefix
+/// recognise. Comparison is on the namespace URI, so the actual prefix
 /// the document uses is irrelevant. URIs come from [`super::ns`] so the writer
 /// and parser never disagree on a single byte.
 pub(in crate::protocols::rss) fn classify_ns(rr: &ResolveResult<'_>) -> Ns {
     use crate::protocols::rss::ns;
-    const ATOM: &[u8] = ns::ATOM_NS.as_bytes();
-    const ITUNES: &[u8] = ns::ITUNES_NS.as_bytes();
-    const PODCAST: &[u8] = ns::PODCAST_NS.as_bytes();
-    const DC: &[u8] = ns::DC_NS.as_bytes();
-    const DCTERMS: &[u8] = ns::DCTERMS_NS.as_bytes();
-    const MEDIA: &[u8] = ns::MEDIA_NS.as_bytes();
-    const CONTENT: &[u8] = ns::CONTENT_NS.as_bytes();
-    const PSC: &[u8] = ns::PSC_NS.as_bytes();
+    const ATOM: &str = ns::ATOM_NS;
+    const ITUNES: &str = ns::ITUNES_NS;
+    const PODCAST: &str = ns::PODCAST_NS;
+    const DC: &str = ns::DC_NS;
+    const DCTERMS: &str = ns::DCTERMS_NS;
+    const MEDIA: &str = ns::MEDIA_NS;
+    const CONTENT: &str = ns::CONTENT_NS;
+    const PSC: &str = ns::PSC_NS;
 
     match rr {
         ResolveResult::Unbound => Ns::None,
