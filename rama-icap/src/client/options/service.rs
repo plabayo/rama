@@ -338,8 +338,11 @@ mod tests {
 
     use core::convert::Infallible;
 
-    use rama_core::{ServiceInput, bytes::Bytes, extensions::Extension, service::service_fn};
-    use rama_net::{address::HostWithPort, client::EstablishedClientConnection};
+    use rama_core::{bytes::Bytes, extensions::Extension, service::service_fn};
+    use rama_net::{
+        address::HostWithPort,
+        test_utils::client::{MockConnectorService, MockSocket},
+    };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use crate::{
@@ -434,7 +437,7 @@ mod tests {
         assert!(!debug.contains("ProbeSecret"));
     }
 
-    async fn read_head(io: &mut tokio::io::DuplexStream) -> Vec<u8> {
+    async fn read_head(io: &mut MockSocket) -> Vec<u8> {
         let mut head = Vec::new();
         loop {
             let byte = io.read_u8().await.unwrap();
@@ -447,22 +450,19 @@ mod tests {
 
     fn client_for_response(
         response: &'static [u8],
-    ) -> Client<
-        impl ConnectorService<ConnectRequest, Connection = ServiceInput<tokio::io::DuplexStream>>,
-    > {
-        Client::new(service_fn(move |input: ConnectRequest| async move {
-            let (client, mut server) = tokio::io::duplex(4096);
-            tokio::spawn(async move {
-                let head = read_head(&mut server).await;
-                assert!(head.starts_with(b"OPTIONS icap://icap.test/service ICAP/1.0\r\n"));
-                assert!(head.windows(12).any(|value| value == b"Allow: 206\r\n"));
-                server.write_all(response).await.unwrap();
-            });
-            Ok::<_, Infallible>(EstablishedClientConnection {
-                input,
-                conn: ServiceInput::new(client),
+    ) -> Client<impl ConnectorService<ConnectRequest, Connection = MockSocket>> {
+        Client::new(
+            MockConnectorService::new(move || {
+                service_fn(move |mut server: MockSocket| async move {
+                    let head = read_head(&mut server).await;
+                    assert!(head.starts_with(b"OPTIONS icap://icap.test/service ICAP/1.0\r\n"));
+                    assert!(head.windows(12).any(|value| value == b"Allow: 206\r\n"));
+                    server.write_all(response).await.unwrap();
+                    Ok::<_, Infallible>(())
+                })
             })
-        }))
+            .with_max_buffer_size(4096),
+        )
     }
 
     #[tokio::test]

@@ -26,16 +26,13 @@ use rama_net::{
         ConnectRequest, EstablishedClientConnection,
         pool::{ConnID, LruDropPool, PooledConnector},
     },
-    test_utils::client::MockConnectorService,
+    test_utils::client::{MockConnectorService, MockSocket},
     transport::TransportProtocol,
 };
 
 use super::*;
 use crate::{
-    client::{
-        ClientConnection,
-        options::{OptionsValidation, ServiceCapabilities},
-    },
+    client::options::{OptionsValidation, ServiceCapabilities},
     codec::{HeadParserConfig, Header, HeaderFolding, HeaderSlot, ResponseLine},
     http::{HttpService, IncomingRequest, IncomingRequestParts, OutgoingResponse},
     io::ConnectionOptions,
@@ -143,6 +140,15 @@ struct EndpointExtension(&'static str);
 
 fn test_connection_id(_input: &ConnectRequest) -> Result<TestConnectionId, BoxError> {
     Ok(TestConnectionId)
+}
+
+fn mock_icap_client<S>(
+    create_server: S,
+    max_buffer_size: usize,
+) -> crate::client::Client<MockConnectorService<S>> {
+    crate::client::Client::new(
+        MockConnectorService::new(create_server).with_max_buffer_size(max_buffer_size),
+    )
 }
 
 async fn serve_adaptation(request: IncomingRequest) -> Result<OutgoingResponse, BoxError> {
@@ -284,28 +290,26 @@ async fn serve_blocking_adaptation(request: IncomingRequest) -> Result<OutgoingR
 async fn detours_request_and_response_with_preview() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
+    let transport = MockConnectorService::new(|| {
+        Server::new(
+            HttpService::new(service_fn(serve_adaptation_with_outer_trailers)),
+            b"\"rama-test\"",
+        )
+        .unwrap()
+    })
+    .with_max_buffer_size(256);
     let connector = service_fn(move |input: ConnectRequest| {
         let connector_connections = Arc::clone(&connector_connections);
+        let transport = transport.clone();
         async move {
             assert_eq!(input.authority.to_string(), "icap.test:1344");
             assert_eq!(input.protocol(), Some(&Protocol::ICAP));
             assert_eq!(input.transport_protocol(), Some(TransportProtocol::Tcp));
             connector_connections.fetch_add(1, Ordering::Relaxed);
-            let (client_io, server_io) = tokio::io::duplex(256);
-            tokio::spawn(async move {
-                let server = Server::new(
-                    HttpService::new(service_fn(serve_adaptation_with_outer_trailers)),
-                    b"\"rama-test\"",
-                )
-                .unwrap();
-                server.serve(ServiceInput::new(server_io)).await.unwrap();
-            });
-            Ok::<_, Infallible>(EstablishedClientConnection {
-                input,
-                conn: ClientConnection::new(ServiceInput::new(client_io)),
-            })
+            transport.serve(input).await
         }
     });
+    let connector = crate::client::Client::new(connector);
 
     let inner = service_fn(async |request: Request<Body>| {
         assert_eq!(request.headers()["x-reqmod"], "yes");
@@ -364,15 +368,15 @@ async fn detours_request_and_response_with_preview() {
 
 #[tokio::test]
 async fn preserves_ordinary_header_order_and_casing_end_to_end() {
-    let connector = crate::client::Client::new(
-        MockConnectorService::new(|| {
+    let connector = mock_icap_client(
+        || {
             Server::new(
                 HttpService::new(service_fn(serve_header_preserving_adaptation)),
                 b"\"rama-test\"",
             )
             .unwrap()
-        })
-        .with_max_buffer_size(4096),
+        },
+        4096,
     );
     let inner = service_fn(async |request: Request<Body>| {
         assert_header_lines(request.headers(), REQUEST_HEADER_LINES);
@@ -409,26 +413,18 @@ async fn preserves_ordinary_header_order_and_casing_end_to_end() {
 
 #[tokio::test]
 async fn options_discovery_constrains_ephemeral_adaptation_policy() {
-    let connector = service_fn(move |input: ConnectRequest| async move {
-        let (client_io, server_io) = tokio::io::duplex(256);
-        tokio::spawn(async move {
+    let connector = mock_icap_client(
+        || {
             let adaptation = service_fn(async |request: IncomingRequest| {
                 assert_eq!(request.icap().preview(), Some(Preview::new(2)));
                 assert!(!request.icap().allows_204());
                 assert!(request.icap().allows_206());
                 serve_adaptation(request).await
             });
-            Server::new(HttpService::new(adaptation), b"\"rama-test\"")
-                .unwrap()
-                .serve(ServiceInput::new(server_io))
-                .await
-                .unwrap();
-        });
-        Ok::<_, Infallible>(EstablishedClientConnection {
-            input,
-            conn: ClientConnection::new(ServiceInput::new(client_io)),
-        })
-    });
+            Server::new(HttpService::new(adaptation), b"\"rama-test\"").unwrap()
+        },
+        256,
+    );
     let discoveries = Arc::new(AtomicUsize::new(0));
     let provider_discoveries = Arc::clone(&discoveries);
     let options = service_fn(move |_request| {
@@ -465,16 +461,13 @@ async fn options_discovery_constrains_ephemeral_adaptation_policy() {
 async fn transfer_ignore_bypasses_reqmod_and_respmod() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let connector = service_fn(move |input: ConnectRequest| {
-        connector_connections.fetch_add(1, Ordering::Relaxed);
-        async move {
-            let (client_io, _server_io) = tokio::io::duplex(256);
-            Ok::<_, Infallible>(EstablishedClientConnection {
-                input,
-                conn: ClientConnection::new(ServiceInput::new(client_io)),
-            })
-        }
-    });
+    let connector = mock_icap_client(
+        move || {
+            connector_connections.fetch_add(1, Ordering::Relaxed);
+            service_fn(|_io: MockSocket| async { Ok::<_, Infallible>(()) })
+        },
+        256,
+    );
     let options = service_fn(|_request| async {
         Ok::<_, Infallible>(discovered_transfer_capabilities(b"*", Some(b"html"), None))
     });
@@ -515,28 +508,17 @@ async fn transfer_ignore_bypasses_reqmod_and_respmod() {
 async fn transfer_complete_disables_preview_in_both_directions() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let connector = service_fn(move |input: ConnectRequest| {
-        let connector_connections = Arc::clone(&connector_connections);
-        async move {
+    let connector = mock_icap_client(
+        move || {
             connector_connections.fetch_add(1, Ordering::Relaxed);
-            let (client_io, server_io) = tokio::io::duplex(256);
-            tokio::spawn(async move {
-                let adaptation = service_fn(async |request: IncomingRequest| {
-                    assert_eq!(request.icap().preview(), None);
-                    serve_adaptation(request).await
-                });
-                Server::new(HttpService::new(adaptation), b"\"rama-test\"")
-                    .unwrap()
-                    .serve(ServiceInput::new(server_io))
-                    .await
-                    .unwrap();
+            let adaptation = service_fn(async |request: IncomingRequest| {
+                assert_eq!(request.icap().preview(), None);
+                serve_adaptation(request).await
             });
-            Ok::<_, Infallible>(EstablishedClientConnection {
-                input,
-                conn: ClientConnection::new(ServiceInput::new(client_io)),
-            })
-        }
-    });
+            Server::new(HttpService::new(adaptation), b"\"rama-test\"").unwrap()
+        },
+        256,
+    );
     let options = service_fn(|_request| async {
         Ok::<_, Infallible>(discovered_transfer_capabilities(b"*", None, Some(b"zip")))
     });
@@ -569,21 +551,16 @@ async fn transfer_complete_disables_preview_in_both_directions() {
 
 #[tokio::test]
 async fn preserves_trailer_only_response_declaration() {
-    let connector = service_fn(move |input: ConnectRequest| async move {
-        let (client_io, server_io) = tokio::io::duplex(256);
-        tokio::spawn(async move {
-            let server = Server::new(
+    let connector = mock_icap_client(
+        || {
+            Server::new(
                 HttpService::new(service_fn(serve_adaptation)),
                 b"\"rama-test\"",
             )
-            .unwrap();
-            server.serve(ServiceInput::new(server_io)).await.unwrap();
-        });
-        Ok::<_, Infallible>(EstablishedClientConnection {
-            input,
-            conn: ClientConnection::new(ServiceInput::new(client_io)),
-        })
-    });
+            .unwrap()
+        },
+        256,
+    );
     let inner = service_fn(async |_request: Request<Body>| {
         let mut trailers = HeaderMap::new();
         trailers.insert("x-response-end", HeaderValue::from_static("yes"));
@@ -619,25 +596,15 @@ async fn preserves_trailer_only_response_declaration() {
 async fn reuses_healthy_exclusive_transport_connections() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let transport = service_fn(move |input: ConnectRequest| {
-        let connector_connections = Arc::clone(&connector_connections);
-        async move {
-            connector_connections.fetch_add(1, Ordering::Relaxed);
-            let (client_io, server_io) = tokio::io::duplex(256);
-            tokio::spawn(async move {
-                let server = Server::new(
-                    HttpService::new(service_fn(serve_adaptation)),
-                    b"\"rama-test\"",
-                )
-                .unwrap();
-                server.serve(ServiceInput::new(server_io)).await.unwrap();
-            });
-            Ok::<_, Infallible>(EstablishedClientConnection {
-                input,
-                conn: ServiceInput::new(client_io),
-            })
-        }
-    });
+    let transport = MockConnectorService::new(move || {
+        connector_connections.fetch_add(1, Ordering::Relaxed);
+        Server::new(
+            HttpService::new(service_fn(serve_adaptation)),
+            b"\"rama-test\"",
+        )
+        .unwrap()
+    })
+    .with_max_buffer_size(256);
     let pool = LruDropPool::try_new(1, 1)
         .unwrap()
         .with_drop_connection_if_no_response(false);
@@ -764,25 +731,19 @@ async fn pool_discards_transports_with_preloaded_responses() {
 async fn evicts_transport_when_adapted_body_is_dropped() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let transport = service_fn(move |input: ConnectRequest| {
-        let connector_connections = Arc::clone(&connector_connections);
-        async move {
-            connector_connections.fetch_add(1, Ordering::Relaxed);
-            let (client_io, server_io) = tokio::io::duplex(256);
-            tokio::spawn(async move {
-                let server = Server::new(
-                    HttpService::new(service_fn(serve_adaptation)),
-                    b"\"rama-test\"",
-                )
-                .unwrap();
-                let _result = server.serve(ServiceInput::new(server_io)).await;
-            });
-            Ok::<_, Infallible>(EstablishedClientConnection {
-                input,
-                conn: ServiceInput::new(client_io),
-            })
-        }
-    });
+    let transport = MockConnectorService::new(move || {
+        connector_connections.fetch_add(1, Ordering::Relaxed);
+        service_fn(|server_io: MockSocket| async move {
+            let server = Server::new(
+                HttpService::new(service_fn(serve_adaptation)),
+                b"\"rama-test\"",
+            )
+            .unwrap();
+            let _result = server.serve(server_io).await;
+            Ok::<_, Infallible>(())
+        })
+    })
+    .with_max_buffer_size(256);
     let pool = LruDropPool::try_new(1, 1)
         .unwrap()
         .with_drop_connection_if_no_response(false);
@@ -830,38 +791,28 @@ async fn evicts_transport_when_adapted_body_is_dropped() {
 async fn releases_preview_204_lease_before_original_replay() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let transport = service_fn(move |input: ConnectRequest| {
-        let connector_connections = Arc::clone(&connector_connections);
-        async move {
-            connector_connections.fetch_add(1, Ordering::Relaxed);
-            let (client_io, server_io) = tokio::io::duplex(256);
-            tokio::spawn(async move {
-                let server = Server::new(
-                    service_fn(async |request: RawIncomingRequest| {
-                        let response = IcapResponse::new(
-                            request.request().method(),
-                            ResponseLine::new(
-                                StatusCode::NO_MODIFICATION_NEEDED,
-                                b"No Modification Needed",
-                            )
-                            .unwrap(),
-                            &adaptation_response_fields(),
-                            None,
-                        )
-                        .unwrap();
-                        Ok::<_, Infallible>(OutgoingResponse::without_body(response))
-                    }),
-                    b"\"rama-test\"",
+    let transport = MockConnectorService::new(move || {
+        connector_connections.fetch_add(1, Ordering::Relaxed);
+        Server::new(
+            service_fn(async |request: RawIncomingRequest| {
+                let response = IcapResponse::new(
+                    request.request().method(),
+                    ResponseLine::new(
+                        StatusCode::NO_MODIFICATION_NEEDED,
+                        b"No Modification Needed",
+                    )
+                    .unwrap(),
+                    &adaptation_response_fields(),
+                    None,
                 )
                 .unwrap();
-                server.serve(ServiceInput::new(server_io)).await.unwrap();
-            });
-            Ok::<_, Infallible>(EstablishedClientConnection {
-                input,
-                conn: ServiceInput::new(client_io),
-            })
-        }
-    });
+                Ok::<_, Infallible>(OutgoingResponse::without_body(response))
+            }),
+            b"\"rama-test\"",
+        )
+        .unwrap()
+    })
+    .with_max_buffer_size(256);
     let pool = LruDropPool::try_new(1, 1)
         .unwrap()
         .with_drop_connection_if_no_response(false);
@@ -920,10 +871,9 @@ async fn releases_preview_204_lease_before_original_replay() {
 
 #[tokio::test]
 async fn omits_configured_preview_for_empty_body() {
-    let connector = service_fn(async |input: ConnectRequest| {
-        let (client_io, server_io) = tokio::io::duplex(256);
-        tokio::spawn(async move {
-            let server = Server::new(
+    let connector = mock_icap_client(
+        || {
+            Server::new(
                 service_fn(async |request: RawIncomingRequest| {
                     assert_eq!(request.request().preview(), None);
                     assert_eq!(
@@ -945,14 +895,10 @@ async fn omits_configured_preview_for_empty_body() {
                 }),
                 b"\"rama-test\"",
             )
-            .unwrap();
-            server.serve(ServiceInput::new(server_io)).await.unwrap();
-        });
-        Ok::<_, Infallible>(EstablishedClientConnection {
-            input,
-            conn: ClientConnection::new(ServiceInput::new(client_io)),
-        })
-    });
+            .unwrap()
+        },
+        256,
+    );
     let inner = service_fn(async |request: Request<Body>| {
         assert!(
             request
@@ -974,35 +920,34 @@ async fn omits_configured_preview_for_empty_body() {
 
 #[tokio::test]
 async fn reconstructs_reqmod_partial_content() {
-    let connector = service_fn(async |input: ConnectRequest| {
-        let (client_io, server_io) = tokio::io::duplex(256);
-        tokio::spawn(async move {
-            let mut connection = crate::server::ServerConnection::new(ServiceInput::new(server_io));
-            let mut transaction = connection.accept().await.unwrap().unwrap();
-            assert_eq!(transaction.next_data().await.unwrap().unwrap(), "abcd");
-            assert!(transaction.next_data().await.unwrap().is_none());
-            let parts = EncapsulatedParts::new(
-                Some(Bytes::from_static(b"POST /adapted HTTP/1.1\r\n\r\n")),
-                None,
-                EncapsulatedKind::RequestBody,
-            )
-            .unwrap();
-            let response = IcapResponse::new(
-                MethodKind::Reqmod,
-                ResponseLine::new(StatusCode::PARTIAL_CONTENT, b"Partial Content").unwrap(),
-                &adaptation_response_fields(),
-                Some(parts),
-            )
-            .unwrap();
-            let mut response = transaction.respond(response).await.unwrap();
-            response.write_data(b"XY").await.unwrap();
-            response.finish_partial(3).await.unwrap();
-        });
-        Ok::<_, Infallible>(EstablishedClientConnection {
-            input,
-            conn: ClientConnection::new(ServiceInput::new(client_io)),
-        })
-    });
+    let connector = mock_icap_client(
+        || {
+            service_fn(|server_io: MockSocket| async move {
+                let mut connection = crate::server::ServerConnection::new(server_io);
+                let mut transaction = connection.accept().await.unwrap().unwrap();
+                assert_eq!(transaction.next_data().await.unwrap().unwrap(), "abcd");
+                assert!(transaction.next_data().await.unwrap().is_none());
+                let parts = EncapsulatedParts::new(
+                    Some(Bytes::from_static(b"POST /adapted HTTP/1.1\r\n\r\n")),
+                    None,
+                    EncapsulatedKind::RequestBody,
+                )
+                .unwrap();
+                let response = IcapResponse::new(
+                    MethodKind::Reqmod,
+                    ResponseLine::new(StatusCode::PARTIAL_CONTENT, b"Partial Content").unwrap(),
+                    &adaptation_response_fields(),
+                    Some(parts),
+                )
+                .unwrap();
+                let mut response = transaction.respond(response).await.unwrap();
+                response.write_data(b"XY").await.unwrap();
+                response.finish_partial(3).await.unwrap();
+                Ok::<_, Infallible>(())
+            })
+        },
+        256,
+    );
     let inner = service_fn(async |request: Request<Body>| {
         assert_eq!(request.uri().as_str(), "/adapted");
         assert_eq!(
@@ -1031,25 +976,19 @@ async fn reconstructs_reqmod_partial_content() {
 async fn reqmod_response_bypasses_origin_and_respmod() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let transport = service_fn(move |input: ConnectRequest| {
-        let connector_connections = Arc::clone(&connector_connections);
-        async move {
-            connector_connections.fetch_add(1, Ordering::Relaxed);
-            let (client_io, server_io) = tokio::io::duplex(256);
-            tokio::spawn(async move {
-                let server = Server::new(
-                    HttpService::new(service_fn(serve_blocking_adaptation)),
-                    b"\"rama-test\"",
-                )
-                .unwrap();
-                let _result = server.serve(ServiceInput::new(server_io)).await;
-            });
-            Ok::<_, Infallible>(EstablishedClientConnection {
-                input,
-                conn: ServiceInput::new(client_io),
-            })
-        }
-    });
+    let transport = MockConnectorService::new(move || {
+        connector_connections.fetch_add(1, Ordering::Relaxed);
+        service_fn(|server_io: MockSocket| async move {
+            let server = Server::new(
+                HttpService::new(service_fn(serve_blocking_adaptation)),
+                b"\"rama-test\"",
+            )
+            .unwrap();
+            let _result = server.serve(server_io).await;
+            Ok::<_, Infallible>(())
+        })
+    })
+    .with_max_buffer_size(256);
     let pool = LruDropPool::try_new(1, 1)
         .unwrap()
         .with_drop_connection_if_no_response(false);
@@ -1110,10 +1049,9 @@ async fn reqmod_response_bypasses_origin_and_respmod() {
 
 #[tokio::test]
 async fn preserves_reqmod_proxy_authorization_and_canonical_host() {
-    let connector = service_fn(async |input: ConnectRequest| {
-        let (client_io, server_io) = tokio::io::duplex(512);
-        tokio::spawn(async move {
-            let server = Server::new(
+    let connector = mock_icap_client(
+        || {
+            Server::new(
                 HttpService::new(service_fn(async |request: IncomingRequest| {
                     let mut slots = [HeaderSlot::EMPTY; 8];
                     let head = request.icap().parse_head(&mut slots).unwrap();
@@ -1145,14 +1083,10 @@ async fn preserves_reqmod_proxy_authorization_and_canonical_host() {
                 })),
                 b"\"rama-test\"",
             )
-            .unwrap();
-            server.serve(ServiceInput::new(server_io)).await.unwrap();
-        });
-        Ok::<_, Infallible>(EstablishedClientConnection {
-            input,
-            conn: ClientConnection::new(ServiceInput::new(client_io)),
-        })
-    });
+            .unwrap()
+        },
+        512,
+    );
     let inner = service_fn(async |request: Request<Body>| {
         assert_eq!(request.headers()[http_header::HOST], "origin.example:8080");
         assert_eq!(
@@ -1181,10 +1115,9 @@ async fn preserves_reqmod_proxy_authorization_and_canonical_host() {
 
 #[tokio::test]
 async fn canonicalizes_authority_of_adapted_absolute_request() {
-    let connector = service_fn(async |input: ConnectRequest| {
-        let (client_io, server_io) = tokio::io::duplex(512);
-        tokio::spawn(async move {
-            let server = Server::new(
+    let connector = mock_icap_client(
+        || {
+            Server::new(
                 service_fn(async |request: RawIncomingRequest| {
                     let request_head = Bytes::from_static(
                         b"GET http://[2001:db8::9]:8081/changed HTTP/1.1\r\n\
@@ -1208,14 +1141,10 @@ async fn canonicalizes_authority_of_adapted_absolute_request() {
                 }),
                 b"\"rama-test\"",
             )
-            .unwrap();
-            server.serve(ServiceInput::new(server_io)).await.unwrap();
-        });
-        Ok::<_, Infallible>(EstablishedClientConnection {
-            input,
-            conn: ClientConnection::new(ServiceInput::new(client_io)),
-        })
-    });
+            .unwrap()
+        },
+        512,
+    );
     let inner = service_fn(async |request: Request<Body>| {
         assert_eq!(request.uri().as_str(), "http://[2001:db8::9]:8081/changed",);
         assert_eq!(request.headers()[http_header::HOST], "[2001:db8::9]:8081");
@@ -1239,10 +1168,9 @@ async fn canonicalizes_authority_of_adapted_absolute_request() {
 
 #[tokio::test]
 async fn preserves_respmod_proxy_authenticate_after_204() {
-    let connector = service_fn(async |input: ConnectRequest| {
-        let (client_io, server_io) = tokio::io::duplex(512);
-        tokio::spawn(async move {
-            let server = Server::new(
+    let connector = mock_icap_client(
+        || {
+            Server::new(
                 HttpService::new(service_fn(async |request: IncomingRequest| {
                     let mut slots = [HeaderSlot::EMPTY; 8];
                     let head = request.icap().parse_head(&mut slots).unwrap();
@@ -1274,14 +1202,10 @@ async fn preserves_respmod_proxy_authenticate_after_204() {
                 })),
                 b"\"rama-test\"",
             )
-            .unwrap();
-            server.serve(ServiceInput::new(server_io)).await.unwrap();
-        });
-        Ok::<_, Infallible>(EstablishedClientConnection {
-            input,
-            conn: ClientConnection::new(ServiceInput::new(client_io)),
-        })
-    });
+            .unwrap()
+        },
+        512,
+    );
     let inner = service_fn(async |_request: Request<Body>| {
         Ok::<_, Infallible>(
             Response::builder()
@@ -1305,44 +1229,45 @@ async fn preserves_respmod_proxy_authenticate_after_204() {
 
 #[tokio::test]
 async fn preserves_parser_policy_for_returned_proxy_headers() {
-    let connector = service_fn(async |input: ConnectRequest| {
-        let (client_io, mut server_io) = tokio::io::duplex(512);
-        tokio::spawn(async move {
-            let mut request = Vec::new();
-            while request
-                .windows(4)
-                .filter(|window| *window == b"\r\n\r\n")
-                .count()
-                < 2
-            {
-                let mut buffer = [0; 256];
-                let read = server_io.read(&mut buffer).await.unwrap();
-                assert!(read > 0);
-                request.extend_from_slice(&buffer[..read]);
-                assert!(request.len() < 1024);
-            }
+    let connector = crate::client::Client::new(
+        MockConnectorService::new(|| {
+            service_fn(|mut server_io: MockSocket| async move {
+                let mut request = Vec::new();
+                while request
+                    .windows(4)
+                    .filter(|window| *window == b"\r\n\r\n")
+                    .count()
+                    < 2
+                {
+                    let mut buffer = [0; 256];
+                    let read = server_io.read(&mut buffer).await.unwrap();
+                    assert!(read > 0);
+                    request.extend_from_slice(&buffer[..read]);
+                    assert!(request.len() < 1024);
+                }
 
-            const HTTP_HEAD: &[u8] = b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n";
-            let response = format!(
-                concat!(
-                    "ICAP/1.0 200 OK\r\n",
-                    "ISTag: \"folded-test\"\r\n",
-                    "Proxy-Authenticate: Basic\r\n",
-                    " realm=folded\r\n",
-                    "Encapsulated: res-hdr=0, null-body={}\r\n\r\n",
-                ),
-                HTTP_HEAD.len(),
-            );
-            server_io.write_all(response.as_bytes()).await.unwrap();
-            server_io.write_all(HTTP_HEAD).await.unwrap();
-        });
-        let options = ConnectionOptions::new()
-            .with_head_parser(HeadParserConfig::new().with_header_folding(HeaderFolding::Allow));
-        Ok::<_, Infallible>(EstablishedClientConnection {
-            input,
-            conn: ClientConnection::with_options(ServiceInput::new(client_io), options),
+                const HTTP_HEAD: &[u8] = b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n";
+                let response = format!(
+                    concat!(
+                        "ICAP/1.0 200 OK\r\n",
+                        "ISTag: \"folded-test\"\r\n",
+                        "Proxy-Authenticate: Basic\r\n",
+                        " realm=folded\r\n",
+                        "Encapsulated: res-hdr=0, null-body={}\r\n\r\n",
+                    ),
+                    HTTP_HEAD.len(),
+                );
+                server_io.write_all(response.as_bytes()).await.unwrap();
+                server_io.write_all(HTTP_HEAD).await.unwrap();
+                Ok::<_, Infallible>(())
+            })
         })
-    });
+        .with_max_buffer_size(512),
+    )
+    .with_options(
+        ConnectionOptions::new()
+            .with_head_parser(HeadParserConfig::new().with_header_folding(HeaderFolding::Allow)),
+    );
     let origin_calls = Arc::new(AtomicUsize::new(0));
     let inner_origin_calls = Arc::clone(&origin_calls);
     let inner = service_fn(move |_request: Request<Body>| {
