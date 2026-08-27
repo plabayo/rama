@@ -1,3 +1,4 @@
+use pin_project_lite::pin_project;
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Service,
@@ -8,9 +9,12 @@ use rama_core::{
 use rama_http::StreamingBody;
 use rama_http::io::upgrade::OnUpgrade;
 use rama_http::layer::version_adapter::ensure_valid_request_for_version;
+use rama_http_types::body::{Frame, SizeHint};
 use rama_http_types::{Method, Request, Response, Version};
 use rama_net::conn::ConnectionHealthWatcher;
 use std::fmt;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use tokio::sync::Mutex;
 
 pub(super) enum SendRequest<Body> {
@@ -67,17 +71,28 @@ where
             SendRequest::Http1(sender) => {
                 let mut sender = sender.lock().await;
                 if let Err(err) = sender.ready().await {
-                    mark_broken_if_closed(sender.is_closed(), &self.extensions);
+                    // an h1 sender only fails readiness when its connection is gone
+                    mark_broken(&self.extensions);
                     tracing::debug!(
                         sender_closed = sender.is_closed(),
                         "http1 upstream sender ready failed: {err}"
                     );
                     return Err(err.into());
                 }
-                match sender.send_request(req).await {
-                    Ok(resp) => resp,
+                // Dropping an in-flight h1 request future closes the shared
+                // connection, so mark it broken right here (guard) rather than on
+                // the connection task, which a racing pool checkout can beat.
+                let mut cancel_guard = MarkBrokenGuard::new(self.extensions.clone());
+                let result = sender.send_request(req).await;
+                match result {
+                    Ok(resp) => {
+                        cancel_guard.disarm();
+                        resp
+                    }
                     Err(err) => {
-                        mark_broken_if_closed(sender.is_closed(), &self.extensions);
+                        // h1 has no request-level recovery: any send/receive error
+                        // leaves the connection mid-message or closed.
+                        cancel_guard.fire();
                         tracing::debug!(
                             sender_closed = sender.is_closed(),
                             "http1 upstream send_request failed: {err}"
@@ -110,14 +125,23 @@ where
             }
         };
 
-        // Evict upgraded h1 connections before the response can release its pool lease.
-        if matches!(&self.sender, SendRequest::Http1(_))
-            && resp.extensions().contains::<OnUpgrade>()
-        {
-            mark_broken(&self.extensions);
+        match &self.sender {
+            SendRequest::Http1(_) => {
+                // Evict upgraded h1 connections before the response can release its pool lease.
+                if resp.extensions().contains::<OnUpgrade>() {
+                    mark_broken(&self.extensions);
+                }
+                // An h1 connection is only reusable once its response body is read
+                // to end-of-stream: evict it the moment the body is abandoned or
+                // errors, before the pool can hand it to the next request.
+                let extensions = self.extensions.clone();
+                Ok(resp.map(|body| {
+                    rama_http_types::Body::new(MarkBrokenOnIncompleteBody::new(body, extensions))
+                }))
+            }
+            // h2 recovers per stream: an abandoned body resets only its stream.
+            SendRequest::Http2(_) => Ok(resp.map(rama_http_types::Body::new)),
         }
-
-        Ok(resp.map(rama_http_types::Body::new))
     }
 }
 
@@ -133,6 +157,90 @@ fn mark_broken(extensions: &Extensions) {
         .mark_broken();
 }
 
+/// Marks the connection broken on drop unless disarmed.
+struct MarkBrokenGuard(Option<Extensions>);
+
+impl MarkBrokenGuard {
+    fn new(extensions: Extensions) -> Self {
+        Self(Some(extensions))
+    }
+
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+
+    fn fire(&mut self) {
+        if let Some(extensions) = self.0.take() {
+            mark_broken(&extensions);
+        }
+    }
+}
+
+impl Drop for MarkBrokenGuard {
+    fn drop(&mut self) {
+        self.fire();
+    }
+}
+
+pin_project! {
+    /// h1 response body that marks its connection broken (evicting it from the
+    /// pool) unless the body reaches end-of-stream: dropped mid-stream or an
+    /// error frame both leave the connection mid-message. The h1 dispatcher
+    /// evicts too, but on the spawned connection task, which loses the race
+    /// against an immediate next request checking out the same connection.
+    struct MarkBrokenOnIncompleteBody<B> {
+        #[pin]
+        body: B,
+        guard: MarkBrokenGuard,
+    }
+}
+
+impl<B: StreamingBody> MarkBrokenOnIncompleteBody<B> {
+    fn new(body: B, extensions: Extensions) -> Self {
+        let mut guard = MarkBrokenGuard::new(extensions);
+        if body.is_end_stream() {
+            guard.disarm();
+        }
+        Self { body, guard }
+    }
+}
+
+impl<B: StreamingBody> StreamingBody for MarkBrokenOnIncompleteBody<B> {
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let mut this = self.project();
+        let result = this.body.as_mut().poll_frame(cx);
+        match &result {
+            Poll::Ready(None) => this.guard.disarm(),
+            // fire now: the pool lease is typically released right after this poll
+            Poll::Ready(Some(Err(_))) => this.guard.fire(),
+            Poll::Ready(Some(Ok(_))) => {
+                // e.g. a content-length body whose last bytes were just read
+                if this.body.is_end_stream() {
+                    this.guard.disarm();
+                }
+            }
+            Poll::Pending => {}
+        }
+        result
+    }
+
+    #[inline(always)]
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    #[inline(always)]
+    fn size_hint(&self) -> SizeHint {
+        self.body.size_hint()
+    }
+}
+
 impl<B> ExtensionsRef for HttpClientService<B> {
     fn extensions(&self) -> &Extensions {
         &self.extensions
@@ -141,6 +249,47 @@ impl<B> ExtensionsRef for HttpClientService<B> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use rama_http_types::Body;
+    use rama_http_types::body::util::BodyExt as _;
+    use rama_net::conn::ConnectionHealth;
+
+    fn is_broken(extensions: &Extensions) -> bool {
+        extensions
+            .get_ref::<ConnectionHealthWatcher>()
+            .is_some_and(|watcher| watcher.health() == ConnectionHealth::Broken)
+    }
+
+    #[test]
+    fn incomplete_body_marks_broken_on_early_drop() {
+        let extensions = Extensions::new();
+        drop(MarkBrokenOnIncompleteBody::new(
+            Body::from("hello"),
+            extensions.clone(),
+        ));
+        assert!(is_broken(&extensions));
+    }
+
+    #[tokio::test]
+    async fn consumed_body_does_not_mark_broken() {
+        let extensions = Extensions::new();
+        MarkBrokenOnIncompleteBody::new(Body::from("hello"), extensions.clone())
+            .collect()
+            .await
+            .unwrap();
+        assert!(!is_broken(&extensions));
+    }
+
+    #[test]
+    fn empty_body_does_not_mark_broken_when_never_polled() {
+        let extensions = Extensions::new();
+        drop(MarkBrokenOnIncompleteBody::new(
+            Body::empty(),
+            extensions.clone(),
+        ));
+        assert!(!is_broken(&extensions));
+    }
+
     // Regression: a forwarded request received over a terminated TLS connection
     // (e.g. a MITM proxy upstream hop) arrives in origin-form with no scheme in
     // the URI. Its protocol MUST resolve to HTTPS via the `SecureTransport`

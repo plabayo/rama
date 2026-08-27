@@ -178,8 +178,10 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use rama_core::bytes::Bytes;
     use rama_core::error::{BoxError, BoxErrorExt as _};
     use rama_core::extensions::ExtensionsRef;
+    use rama_core::futures::stream;
     use rama_core::rt::Executor;
     use rama_core::service::service_fn;
     use rama_core::{Layer, Service, ServiceInput};
@@ -587,6 +589,111 @@ mod tests {
             conn_id(&resp2),
             id1,
             "must not reuse an h1 connection whose response body was abandoned mid-stream"
+        );
+    }
+
+    /// Regression test: the h1 dispatcher also evicts a connection whose response
+    /// body was abandoned, but it runs on the spawned connection task. An immediate
+    /// follow-up request used to win that race and get handed the dead connection,
+    /// failing with a closed-channel error. Eviction must be synchronous with
+    /// abandoning the body: no sleeps/yields between the drop and the next request.
+    #[tokio::test]
+    async fn pool_evicts_h1_connection_the_moment_its_streaming_body_is_abandoned() {
+        let conns = Arc::new(AtomicUsize::new(0));
+        let inner =
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
+                let conn_id = conns.fetch_add(1, Ordering::Relaxed);
+                HttpServer::auto(Executor::default()).service(service_fn(
+                    move |_req: Request| async move {
+                        // infinite SSE-like stream: never reaches end-of-stream
+                        let stream = stream::repeat_with(|| {
+                            Ok::<_, Infallible>(Bytes::from_static(b"data: ping\n\n"))
+                        });
+                        let mut resp = Response::new(Body::from_stream(stream));
+                        resp.headers_mut()
+                            .insert("x-conn-id", HeaderValue::from(conn_id as u64));
+                        Ok::<_, Infallible>(resp)
+                    },
+                ))
+            }));
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig {
+                max_total: 4,
+                ..Default::default()
+            },
+            inner,
+        );
+
+        let req = || create_test_request(Version::HTTP_11);
+
+        let est1 = connector.serve(req()).await.unwrap();
+        let resp1 = est1.conn.serve(req()).await.unwrap();
+        drop(est1);
+        let id1 = conn_id(&resp1);
+
+        // Read a few chunks mid-stream, then abandon the body.
+        let mut body1 = resp1.into_body();
+        for _ in 0..2 {
+            body1.frame().await.unwrap().unwrap();
+        }
+        drop(body1);
+
+        let est2 = connector.serve(req()).await.unwrap();
+        let resp2 = est2.conn.serve(req()).await.unwrap();
+
+        assert_eq!(id1, 0);
+        assert_ne!(
+            conn_id(&resp2),
+            id1,
+            "an h1 connection whose streaming body was just abandoned must not serve the next request"
+        );
+    }
+
+    /// Dropping an in-flight h1 request future closes the shared connection: the
+    /// connection must be evicted synchronously with the cancellation, before a
+    /// follow-up request can check it out of the pool.
+    #[tokio::test(start_paused = true)]
+    async fn pool_evicts_h1_connection_when_inflight_request_cancelled() {
+        let conns = Arc::new(AtomicUsize::new(0));
+        let inner =
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
+                let conn_id = conns.fetch_add(1, Ordering::Relaxed);
+                HttpServer::auto(Executor::default()).service(service_fn(
+                    move |_req: Request| async move {
+                        sleep(Duration::from_secs(60)).await;
+                        let mut resp = Response::new(Body::from("ok"));
+                        resp.headers_mut()
+                            .insert("x-conn-id", HeaderValue::from(conn_id as u64));
+                        Ok::<_, Infallible>(resp)
+                    },
+                ))
+            }));
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig {
+                max_total: 4,
+                ..Default::default()
+            },
+            inner,
+        );
+
+        let req = || create_test_request(Version::HTTP_11);
+
+        let est1 = connector.serve(req()).await.unwrap();
+        let send = est1.conn.serve(req());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), send)
+                .await
+                .is_err(),
+            "request should still be in flight when cancelled"
+        );
+        drop(est1);
+
+        let est2 = connector.serve(req()).await.unwrap();
+        let resp2 = est2.conn.serve(req()).await.unwrap();
+        assert_eq!(
+            conn_id(&resp2),
+            1,
+            "a cancelled in-flight h1 request must evict its connection; the next request dials fresh"
         );
     }
 

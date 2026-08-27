@@ -1,3 +1,4 @@
+use rama::http::body::util::BodyExt as _;
 use rama::{
     Layer, Service,
     graceful::Shutdown,
@@ -198,6 +199,50 @@ async fn h2_with_connection_pooling_detects_late_goaway() {
     // again. But our logic should also pick this up and filter this connection
     connection_pooling_detects_closed_connections(Version::HTTP_2, Some(Duration::from_millis(50)))
         .await;
+}
+
+#[tokio::test]
+async fn h1_with_connection_pooling_does_not_reuse_abandoned_streaming_body_connection() {
+    // Regression test (SSE-style): an h1 response body abandoned mid-stream leaves
+    // the connection mid-message. An immediate follow-up request to the same origin
+    // must dial fresh instead of being handed that connection by the pool (it used
+    // to fail with `rama_http_core::Error(ChannelClosed)`).
+    let direct_connection = MockConnectorService::new(move || {
+        HttpServer::new_http1(Executor::default()).service(service_fn(async |_req: Request| {
+            // infinite SSE-like stream: never reaches end-of-stream
+            let stream = rama::futures::stream::repeat_with(|| {
+                Ok::<_, Infallible>(rama::bytes::Bytes::from_static(b"data: ping\n\n"))
+            });
+            Ok::<_, Infallible>(Response::new(Body::from_stream(stream)))
+        }))
+    });
+
+    let client = EasyHttpWebClient::connector_builder()
+        .with_custom_transport_connector(direct_connection)
+        .without_dns_connector()
+        .without_tls_proxy_support()
+        .without_proxy_support()
+        .without_tls_support()
+        .with_default_http_connector(Executor::default())
+        .with_default_connection_pool()
+        .build_client();
+
+    let create_req = || {
+        Request::builder()
+            .uri("http://localhost/events")
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let resp = client.serve(create_req()).await.unwrap();
+    let mut body = resp.into_body();
+    for _ in 0..2 {
+        body.frame().await.unwrap().unwrap();
+    }
+    drop(body);
+
+    // No sleep: the dead connection must already be evicted from the pool.
+    let _resp = client.serve(create_req()).await.unwrap();
 }
 
 // TODO more test for things like resets, hard crashes...
