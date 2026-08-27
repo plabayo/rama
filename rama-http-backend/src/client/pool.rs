@@ -404,9 +404,6 @@ mod tests {
         let id1 = conn_id(&resp1);
         resp1.into_body().collect().await.unwrap();
 
-        // Let the connection task observe the close and update health.
-        sleep(Duration::from_millis(50)).await;
-
         let est2 = connector.serve(req()).await.unwrap();
         let resp2 = est2.conn.serve(req()).await.unwrap();
 

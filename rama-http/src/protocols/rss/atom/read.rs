@@ -27,9 +27,9 @@ use crate::protocols::rss::feed_ext::names::attr;
 use crate::protocols::rss::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use crate::protocols::rss::feed_ext::{DublinCoreTermsFeed, FeedExtensions};
 use crate::protocols::rss::parse_util::{
-    atom_category_from_attrs, atom_link_from_attrs, attr_uri_reference, attr_value,
+    XmlReader, atom_category_from_attrs, atom_link_from_attrs, attr_uri_reference, attr_value,
     end_event_parts, make_atom_text, parse_rfc3339_lax, parse_uri, parse_uri_reference,
-    push_general_ref, push_text,
+    push_general_ref, push_text, xml_reader,
 };
 
 /// Feed-level metadata of an Atom 1.0 document — everything an [`AtomFeed`]
@@ -246,8 +246,8 @@ enum Action {
     Eof,
 }
 
-struct AtomReader<R: AsyncBufRead + Unpin + Send> {
-    nsr: NsReader<R>,
+struct AtomReader {
+    nsr: NsReader<XmlReader>,
     buf: Vec<u8>,
     strict: bool,
 
@@ -295,9 +295,12 @@ struct AtomReader<R: AsyncBufRead + Unpin + Send> {
     current_subtitle_type: String,
 }
 
-impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
-    fn new(reader: R, strict: bool) -> Self {
-        let mut nsr = NsReader::from_reader(reader);
+impl AtomReader {
+    fn new<R>(reader: R, strict: bool) -> Self
+    where
+        R: AsyncBufRead + Unpin + Send + 'static,
+    {
+        let mut nsr = NsReader::from_reader(xml_reader(reader, strict));
         // Do NOT use `trim_text(true)`: quick-xml 0.40 splits a text run around
         // every entity / character reference into separate `Text` and
         // `GeneralRef` events, so per-event trimming strips whitespace that is
@@ -662,7 +665,7 @@ impl<R: AsyncBufRead + Unpin + Send> AtomReader<R> {
                 Ok(Action::Continue)
             }
             Event::Text(e) => {
-                push_text(&mut self.text_buf, &e, self.strict)?;
+                push_text(&mut self.text_buf, &e);
                 Ok(Action::Continue)
             }
             // quick-xml 0.40 surfaces entity references as standalone events

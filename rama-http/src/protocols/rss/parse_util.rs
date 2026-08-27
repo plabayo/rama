@@ -5,12 +5,18 @@
 //! reference (no buffer ownership), parse one attribute or one field, and
 //! return owned data. The streaming readers call them per element.
 
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
+
 use jiff::Timestamp;
 use quick_xml::XmlVersion;
 use quick_xml::escape::resolve_predefined_entity;
 use quick_xml::events::{BytesEnd, BytesRef, BytesText};
 use rama_core::telemetry::tracing;
 use rama_net::uri::Uri;
+use tokio::io::{AsyncBufRead, AsyncRead, BufReader, ReadBuf};
 
 use super::atom::{AtomCategory, AtomLink, AtomText};
 use super::error::FeedParseError;
@@ -19,6 +25,113 @@ use super::rss2::Rss2Enclosure;
 
 /// Short alias kept so attribute-extraction helper signatures fit on a line.
 pub(super) type Attrs<'a> = quick_xml::events::BytesStart<'a>;
+
+pub(super) type XmlReader = Pin<Box<dyn AsyncBufRead + Send>>;
+
+pub(super) fn xml_reader<R>(reader: R, strict: bool) -> XmlReader
+where
+    R: AsyncBufRead + Unpin + Send + 'static,
+{
+    if strict {
+        Box::pin(reader)
+    } else {
+        Box::pin(BufReader::new(LossyUtf8Reader::new(reader)))
+    }
+}
+
+struct LossyUtf8Reader<R> {
+    inner: R,
+    output: Vec<u8>,
+    output_offset: usize,
+    pending: Vec<u8>,
+    eof: bool,
+}
+
+impl<R> LossyUtf8Reader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            output: Vec::new(),
+            output_offset: 0,
+            pending: Vec::with_capacity(4),
+            eof: false,
+        }
+    }
+
+    fn fill_output(&mut self, bytes: &[u8]) {
+        let mut combined = std::mem::take(&mut self.pending);
+        combined.extend_from_slice(bytes);
+        let mut remaining = combined.as_slice();
+        loop {
+            match std::str::from_utf8(remaining) {
+                Ok(_) => {
+                    self.output.extend_from_slice(remaining);
+                    return;
+                }
+                Err(error) => {
+                    let valid = error.valid_up_to();
+                    self.output.extend_from_slice(&remaining[..valid]);
+                    if let Some(invalid) = error.error_len() {
+                        self.output.extend_from_slice("\u{fffd}".as_bytes());
+                        remaining = &remaining[valid + invalid..];
+                    } else {
+                        self.pending.extend_from_slice(&remaining[valid..]);
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<R> AsyncRead for LossyUtf8Reader<R>
+where
+    R: AsyncRead + Unpin,
+{
+    fn poll_read(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        if output.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+        loop {
+            if this.output_offset < this.output.len() {
+                let count = output
+                    .remaining()
+                    .min(this.output.len() - this.output_offset);
+                output.put_slice(&this.output[this.output_offset..this.output_offset + count]);
+                this.output_offset += count;
+                if this.output_offset == this.output.len() {
+                    this.output.clear();
+                    this.output_offset = 0;
+                }
+                return Poll::Ready(Ok(()));
+            }
+            if this.eof {
+                if !this.pending.is_empty() {
+                    this.pending.clear();
+                    this.output.extend_from_slice("\u{fffd}".as_bytes());
+                    continue;
+                }
+                return Poll::Ready(Ok(()));
+            }
+
+            let mut bytes = [0_u8; 8192];
+            let mut read = ReadBuf::new(&mut bytes);
+            match Pin::new(&mut this.inner).poll_read(context, &mut read) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(error)) => return Poll::Ready(Err(error)),
+                Poll::Ready(Ok(())) if read.filled().is_empty() => {
+                    this.eof = true;
+                }
+                Poll::Ready(Ok(())) => this.fill_output(read.filled()),
+            }
+        }
+    }
+}
 
 /// Extract the finished pieces of an `Event::End` — the element's local name
 /// and its reassembled text — so the caller can release the read-buffer borrow
@@ -155,15 +268,10 @@ pub(super) fn atom_category_from_attrs(e: &Attrs<'_>) -> AtomCategory {
 /// quick-xml 0.40 stopped expanding entities inside text: a run like
 /// `a &amp; b` now arrives as `Text("a ")`, `GeneralRef("amp")`, `Text(" b")`,
 /// so the already-decoded event string yields the literal run and each entity
-/// is appended separately by [`push_general_ref`]. Invalid UTF-8 is rejected by
-/// quick-xml while reading the event, before this helper is called.
-pub(super) fn push_text(
-    buf: &mut String,
-    e: &BytesText<'_>,
-    _strict: bool,
-) -> Result<(), FeedParseError> {
+/// is appended separately by [`push_general_ref`]. Lenient readers replace
+/// invalid UTF-8 before it reaches quick-xml; strict readers propagate it.
+pub(super) fn push_text(buf: &mut String, e: &BytesText<'_>) {
     buf.push_str(e.as_ref());
-    Ok(())
 }
 
 /// Append a resolved general entity reference (`Event::GeneralRef`) to `buf`.

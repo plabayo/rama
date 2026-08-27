@@ -5,7 +5,7 @@ use super::{Event, EventBuildError, EventDataRead};
 
 use memchr::{memchr2, memchr2_iter};
 use pin_project_lite::pin_project;
-use rama_core::error::{BoxError, ErrorContext as _, ErrorExt as _};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _};
 use rama_core::futures::stream::Stream;
 use rama_core::futures::task::{Context, Poll};
 use rama_core::telemetry::tracing;
@@ -573,7 +573,14 @@ where
                 let end = (*this.overflow_offset + remaining_budget).min(this.overflow.len());
                 match this.state.scan(&this.overflow[*this.overflow_offset..end]) {
                     Ok(consumed) => {
-                        debug_assert!(consumed > 0, "non-empty overflow scan must make progress");
+                        if consumed == 0 {
+                            this.overflow.clear();
+                            *this.overflow_offset = 0;
+                            *this.pending_error = Some(BoxError::from_static_str(
+                                "SSE decoder made no progress on buffered input",
+                            ));
+                            continue;
+                        }
                         *this.overflow_offset += consumed;
                         decoded_bytes += consumed;
                         if *this.overflow_offset >= this.overflow.len() {

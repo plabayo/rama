@@ -1429,9 +1429,9 @@ where
     /// Return the resulting HTTP request head for a REQMOD transaction.
     ///
     /// A 204 response reuses the retained original head. A body-only adapted
-    /// result also reuses that head, while a headed result uses the
-    /// encapsulated head. Proxy credentials promoted to the outer ICAP
-    /// response are restored on the resulting HTTP request.
+    /// result copies that head without its original `Content-Length`, while a
+    /// headed result uses the encapsulated head. Proxy credentials promoted to
+    /// the outer ICAP response are restored on the resulting HTTP request.
     #[must_use]
     pub fn request(&self) -> Option<&HttpRequest<()>> {
         self.state.request()
@@ -1439,9 +1439,10 @@ where
 
     /// Return the resulting HTTP response head for a RESPMOD transaction.
     ///
-    /// A 204 response or body-only adapted result reuses the retained
-    /// original head. Proxy challenges promoted to the outer ICAP response
-    /// are restored on the resulting HTTP response.
+    /// A 204 response reuses the retained original head. A body-only adapted
+    /// result copies that head without its original `Content-Length`. Proxy
+    /// challenges promoted to the outer ICAP response are restored on the
+    /// resulting HTTP response.
     #[must_use]
     pub fn response(&self) -> Option<&HttpResponse<()>> {
         self.state.response()
@@ -1561,12 +1562,12 @@ fn resolve_result_head(
     ) {
         match (method, encapsulated.map(Encapsulated::body_kind)) {
             (MethodKind::Reqmod, Some(EncapsulatedKind::RequestBody)) => {
-                Some(ResultHead::OriginalRequest)
+                Some(ResultHead::Request(adapted_original_request(original)?))
             }
             (
                 MethodKind::Respmod,
                 Some(EncapsulatedKind::ResponseBody | EncapsulatedKind::NullBody),
-            ) => Some(ResultHead::OriginalResponse),
+            ) => Some(ResultHead::Response(adapted_original_response(original)?)),
             (MethodKind::Reqmod, Some(EncapsulatedKind::ResponseBody)) => {
                 return Err(Error::invalid_sequence(
                     "headless REQMOD response body has no HTTP response head",
@@ -1586,6 +1587,28 @@ fn resolve_result_head(
     selected
         .map(|head| head.with_proxy_context(encapsulated, original, returned))
         .transpose()
+}
+
+fn adapted_original_request(original: &OriginalHead) -> Result<HttpRequest<()>, Error> {
+    let mut request = original
+        .request()
+        .cloned()
+        .ok_or_else(|| Error::invalid_sequence("REQMOD result lost its original HTTP request"))?;
+    request
+        .headers_mut()
+        .remove(rama_http_types::header::CONTENT_LENGTH);
+    Ok(request)
+}
+
+fn adapted_original_response(original: &OriginalHead) -> Result<HttpResponse<()>, Error> {
+    let mut response = original
+        .response()
+        .cloned()
+        .ok_or_else(|| Error::invalid_sequence("RESPMOD result lost its original HTTP response"))?;
+    response
+        .headers_mut()
+        .remove(rama_http_types::header::CONTENT_LENGTH);
+    Ok(response)
 }
 
 impl ResultHead {
@@ -1674,7 +1697,16 @@ impl ResultHead {
                     self
                 }
             }
-            Self::Request(_) | Self::Response(_) => self,
+            Self::Request(request) => Self::Request(request_with_proxy_context(
+                &request,
+                original.request(),
+                returned,
+            )),
+            Self::Response(response) => Self::Response(response_with_proxy_context(
+                &response,
+                original.response(),
+                returned,
+            )),
         })
     }
 }
@@ -2682,10 +2714,11 @@ mod tests {
     }
 
     #[test]
-    fn result_head_reuses_matching_original_for_body_only_results() {
+    fn body_only_result_copies_original_without_content_length() {
         let request = HttpRequest::builder()
             .method("POST")
             .uri("/scan")
+            .header("Content-Length", "100")
             .header("Proxy-Authorization", "Basic original")
             .body(())
             .unwrap();
@@ -2720,11 +2753,43 @@ mod tests {
             output_complete: false,
         };
         assert_eq!(state.request().unwrap().uri().as_str(), "/scan");
+        assert!(
+            !state
+                .request()
+                .unwrap()
+                .headers()
+                .contains_key("content-length")
+        );
         assert_eq!(
             state.request().unwrap().headers()["proxy-authorization"],
             "Basic original"
         );
         assert!(state.response().is_none());
+
+        let original = OriginalHead::Response(
+            HttpResponse::builder()
+                .status(200)
+                .header("Content-Length", "100")
+                .body(())
+                .unwrap(),
+        );
+        let encapsulated = Encapsulated {
+            request: None,
+            response: None,
+            body_kind: EncapsulatedKind::ResponseBody,
+        };
+        let result = resolve_result_head(
+            MethodKind::Respmod,
+            StatusCode::PARTIAL_CONTENT,
+            Some(&encapsulated),
+            &original,
+            &[],
+        )
+        .unwrap();
+        let Some(ResultHead::Response(response)) = result else {
+            panic!("copied response expected");
+        };
+        assert!(!response.headers().contains_key("content-length"));
     }
 
     #[test]

@@ -9,6 +9,7 @@ use rama_http::StreamingBody;
 use rama_http::io::upgrade::OnUpgrade;
 use rama_http::layer::version_adapter::ensure_valid_request_for_version;
 use rama_http_types::body::OnIncompleteBody;
+use rama_http_types::proto::h1::ext::ConnectionClose;
 use rama_http_types::{Method, Request, Response, Version};
 use rama_net::conn::ConnectionHealthWatcher;
 use std::fmt;
@@ -125,7 +126,9 @@ where
         match &self.sender {
             SendRequest::Http1(_) => {
                 // Evict upgraded h1 connections before the response can release its pool lease.
-                if resp.extensions().contains::<OnUpgrade>() {
+                if resp.extensions().contains::<OnUpgrade>()
+                    || resp.extensions().contains::<ConnectionClose>()
+                {
                     mark_broken(&self.extensions);
                 }
                 // An h1 connection is only reusable once its response body is read

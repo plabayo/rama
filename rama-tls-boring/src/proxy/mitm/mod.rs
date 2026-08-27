@@ -910,15 +910,35 @@ where
                 }
             })?;
 
-        let ingress_negotiated_params = maybe_negotiated_params.as_ref().map(|parameters| {
+        let ingress_negotiated_params = {
+            let ssl = ingress_boring_ssl_stream.ssl();
+            let session = ssl.session().ok_or_else(|| {
+                TlsMitmRelayError::config(BoxError::from_static_str(
+                    "tls mitm relay: ingress tls stream has no session",
+                ))
+            })?;
+            let protocol_version =
+                session
+                    .protocol_version()
+                    .rama_try_into()
+                    .map_err(|version| {
+                        TlsMitmRelayError::config(
+                            BoxError::from_static_str(
+                                "tls mitm relay: cast ingress protocol version",
+                            )
+                            .context_field("protocol_version", version),
+                        )
+                    })?;
             NegotiatedTlsParameters {
-                protocol_version: parameters.protocol_version,
-                application_layer_protocol: parameters.application_layer_protocol.clone(),
+                protocol_version,
+                application_layer_protocol: ssl
+                    .selected_alpn_protocol()
+                    .map(ApplicationProtocol::from),
                 // This relay does not request a downstream client certificate.
                 // Never mislabel the upstream server chain as a client chain.
                 peer_certificate_chain: None,
             }
-        });
+        };
         if let Some(negotiated_params) = maybe_negotiated_params {
             #[cfg(feature = "http")]
             if let Some(proto) = negotiated_params.application_layer_protocol.as_ref()
@@ -933,9 +953,9 @@ where
         }
 
         let ingress_tls_stream = TlsStream::new(ingress_boring_ssl_stream);
-        if let Some(negotiated_params) = ingress_negotiated_params {
-            ingress_tls_stream.extensions().insert(negotiated_params);
-        }
+        ingress_tls_stream
+            .extensions()
+            .insert(ingress_negotiated_params);
         ingress_tls_stream.extensions().insert(StreamTransformed {
             by: "rama-tls-boring::TlsMitmRelay",
         });

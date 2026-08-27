@@ -228,9 +228,12 @@ mod tests {
         h2.h2_headers_ws = complete.h2_headers_ws.take();
 
         let mut tls_and_runtime = UserAgentProfileInput::new(user_agent.clone());
-        tls_and_runtime.tls_client_hello = complete.tls_client_hello.take();
-        tls_and_runtime.tls_ws_client_config_overwrites =
-            complete.tls_ws_client_config_overwrites.take();
+        #[cfg(feature = "tls")]
+        {
+            tls_and_runtime.tls_client_hello = complete.tls_client_hello.take();
+            tls_and_runtime.tls_ws_client_config_overwrites =
+                complete.tls_ws_client_config_overwrites.take();
+        }
         tls_and_runtime.js_web_apis = complete.js_web_apis.take();
         tls_and_runtime.source_info = complete.source_info.take();
 

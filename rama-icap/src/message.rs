@@ -291,7 +291,7 @@ impl EncapsulatedParts {
         if request_header
             .iter()
             .chain(response_header.iter())
-            .any(|head| !head.ends_with(b"\r\n\r\n"))
+            .any(|head| !is_exact_http_head(head))
         {
             return Err(BuildError::InvalidEncapsulated);
         }
@@ -428,6 +428,14 @@ impl EncapsulatedParts {
         }
         Self::new(request_header, response_header, body.kind())
     }
+}
+
+fn is_exact_http_head(head: &[u8]) -> bool {
+    const TERMINATOR: &[u8; 4] = b"\r\n\r\n";
+    head.ends_with(TERMINATOR)
+        && !head[..head.len() - TERMINATOR.len()]
+            .windows(TERMINATOR.len())
+            .any(|window| window == TERMINATOR)
 }
 
 /// An owned, validated ICAP request head and encapsulated prefix.
@@ -1177,6 +1185,16 @@ mod tests {
         assert_eq!(
             EncapsulatedParts::new(
                 Some(Bytes::from_static(b"GET / HTTP/1.1\r\n")),
+                None,
+                EncapsulatedKind::NullBody,
+            ),
+            Err(BuildError::InvalidEncapsulated)
+        );
+        assert_eq!(
+            EncapsulatedParts::new(
+                Some(Bytes::from_static(
+                    b"GET / HTTP/1.1\r\n\r\nentity bytes\r\n\r\n",
+                )),
                 None,
                 EncapsulatedKind::NullBody,
             ),

@@ -5,7 +5,7 @@ use rama_core::bytes::BytesMut;
 use rama_core::extensions::Extensions;
 use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
 use rama_http::HeaderName;
-use rama_http::proto::h1::ext::ReasonPhrase;
+use rama_http::proto::h1::ext::{ReasonPhrase, RequestTargetForm};
 use rama_http::proto::{HeaderByteLength, RequestHeaders};
 
 use rama_http_types::header::Entry;
@@ -187,15 +187,15 @@ impl Http1Transaction for Server {
         };
 
         let slice = buf.split_to(len).freeze();
-        let uri = {
+        let (uri, request_target_form) = {
             let uri_bytes = slice.slice_ref(&slice[path_range]);
             // Zero-copy parse of the request-target. `CONNECT` carries an
             // authority-form target (`host:port`); every other method carries
             // origin-/absolute-/asterisk-form, all handled by `parse`.
-            if method == Method::CONNECT {
-                rama_net::uri::Uri::parse_authority_form(uri_bytes)?
+            let uri = if method == Method::CONNECT {
+                rama_net::uri::Uri::parse_authority_form(uri_bytes.clone())?
             } else {
-                let uri = rama_net::uri::Uri::parse(uri_bytes)?;
+                let uri = rama_net::uri::Uri::parse(uri_bytes.clone())?;
                 // A scheme without an authority (opaque `scheme:path`, e.g.
                 // `htt:p//`) is not a valid HTTP request-target — only origin-,
                 // absolute-, and asterisk-form are.
@@ -203,7 +203,17 @@ impl Http1Transaction for Server {
                     return Err(Parse::Uri);
                 }
                 uri
-            }
+            };
+            let form = if uri_bytes.as_ref() == b"*" {
+                RequestTargetForm::Asterisk
+            } else if method == Method::CONNECT {
+                RequestTargetForm::Authority
+            } else if uri.scheme().is_some() {
+                RequestTargetForm::Absolute
+            } else {
+                RequestTargetForm::Origin
+            };
+            (uri, form)
         };
         subject = RequestLine(method, uri);
 
@@ -339,6 +349,7 @@ impl Http1Transaction for Server {
         *ctx.req_method = Some(subject.0.clone());
 
         extensions.insert(HeaderByteLength(len));
+        extensions.insert(request_target_form);
 
         Ok(Some(ParsedMessage {
             head: MessageHead {
@@ -1663,6 +1674,35 @@ mod tests {
         assert_eq!(msg.head.headers["Host"], "ramaproxy.org");
         assert!(msg.head.headers["Authorization"].is_sensitive());
         assert_eq!(method, Some(Method::GET));
+        assert_eq!(
+            msg.head.extensions.get_ref::<RequestTargetForm>(),
+            Some(&RequestTargetForm::Origin),
+        );
+    }
+
+    #[test]
+    fn test_parse_request_records_absolute_target_form() {
+        let mut raw =
+            BytesMut::from("GET http://ramaproxy.org/echo HTTP/1.1\r\nHost: ramaproxy.org\r\n\r\n");
+        let msg = Server::parse(
+            &mut raw,
+            ParseContext {
+                req_method: &mut None,
+                h1_parser_config: Default::default(),
+                h1_max_headers: None,
+                h09_responses: false,
+                on_informational: &mut None,
+                prepared_extensions: &mut Some(Extensions::default()),
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(msg.head.subject.1.as_str(), "http://ramaproxy.org/echo");
+        assert_eq!(
+            msg.head.extensions.get_ref::<RequestTargetForm>(),
+            Some(&RequestTargetForm::Absolute),
+        );
     }
 
     #[test]

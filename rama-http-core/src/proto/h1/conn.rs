@@ -13,7 +13,7 @@ use rama_core::telemetry::tracing::{debug, error, trace};
 use rama_http::io::upgrade;
 use rama_http_types::body::Frame;
 use rama_http_types::header::CONNECTION;
-use rama_http_types::proto::h1::ext::informational::OnInformational;
+use rama_http_types::proto::h1::ext::{ConnectionClose, informational::OnInformational};
 use rama_http_types::{HeaderMap, HeaderValue, Method, Version};
 use rama_net::conn::{ConnectionHealthWatcher, MaxConcurrency};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -254,6 +254,10 @@ where
 
         self.state.h1_header_read_timeout_running = false;
         self.state.h1_header_read_timeout_fut = None;
+
+        if !msg.keep_alive {
+            msg.head.extensions.insert(ConnectionClose);
+        }
 
         // Note: don't deconstruct `msg` into local variables, it appears
         // the optimizer doesn't remove the extra copies.

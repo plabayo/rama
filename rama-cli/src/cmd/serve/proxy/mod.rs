@@ -707,6 +707,7 @@ async fn run_with_dashboard_token(
             .context("get proxy listener local address")?;
         bound.push((listener, local_address, protocols));
     }
+    upstream.set_listener_addresses(bound.iter().map(|(_, address, _)| *address));
 
     let mitm_address = resolve_bound_mitm_address(
         requested_mitm_address,

@@ -1062,6 +1062,86 @@ mod tests {
     }
 
     #[cfg(feature = "http")]
+    #[tokio::test]
+    async fn service_reports_each_side_actual_alpn() {
+        let (cert_chain, private_key) = generate_server_auth(GeneratedServerAuthConfig::default())
+            .expect("generate private upstream identity");
+        let upstream = TlsAcceptorLayer::new(
+            TlsServerConfig::new()
+                .with_single_cert(ServerAuthData {
+                    cert_chain,
+                    private_key,
+                    ocsp: None,
+                })
+                .with_alpn_http_2(),
+        )
+        .into_layer(EchoService::new());
+
+        let relay = TlsMitmRelay::try_new_with_self_signed_issuer(&SelfSignedCaConfig::default())
+            .expect("build MITM relay");
+        let inner = service_fn(
+            |input: BridgeIo<
+                TlsStream<ServiceInput<tokio::io::DuplexStream>>,
+                TlsStream<ServiceInput<tokio::io::DuplexStream>>,
+            >| async move {
+                let ingress = input
+                    .0
+                    .extensions()
+                    .get_ref::<rama_tls::client::NegotiatedTlsParameters>()
+                    .expect("ingress negotiated parameters");
+                let egress = input
+                    .1
+                    .extensions()
+                    .get_ref::<rama_tls::client::NegotiatedTlsParameters>()
+                    .expect("egress negotiated parameters");
+                assert!(ingress.application_layer_protocol.is_none());
+                assert_eq!(
+                    egress.application_layer_protocol,
+                    Some(ApplicationProtocol::HTTP_2),
+                );
+                Ok::<(), BoxError>(())
+            },
+        );
+        let service = TlsMitmRelayService::new(relay, inner);
+
+        let (client_io, relay_ingress) = tokio::io::duplex(usize::MAX);
+        let (relay_egress, upstream_io) = tokio::io::duplex(usize::MAX);
+        let upstream_handle =
+            tokio::spawn(async move { upstream.serve(ServiceInput::new(upstream_io)).await });
+        let ingress = ServiceInput::new(relay_ingress);
+        ingress
+            .extensions()
+            .insert(TargetHttpVersion(Version::HTTP_2));
+        let client_hello = ClientHello::new(
+            ProtocolVersion::TLSv1_3,
+            Vec::new(),
+            Vec::new(),
+            vec![ClientHelloExtension::ApplicationLayerProtocolNegotiation(
+                vec![ApplicationProtocol::HTTP_2],
+            )],
+        );
+
+        let ingress_connector_data = TlsConnectorData::try_from(
+            &TlsClientConfig::new()
+                .with_server_verify(ServerVerifyMode::Disable)
+                .with_keylog(KeyLogIntent::Disabled),
+        )
+        .expect("build ingress TLS client config");
+        let (service_result, ingress_result) = tokio::join!(
+            service.serve(InputWithClientHello {
+                input: BridgeIo(ingress, ServiceInput::new(relay_egress)),
+                client_hello,
+            }),
+            tls_connect(ServiceInput::new(client_io), Some(ingress_connector_data),),
+        );
+        let ingress_tls = ingress_result.expect("ingress TLS succeeds without ALPN");
+        assert!(ingress_tls.ssl_ref().selected_alpn_protocol().is_none());
+        drop(ingress_tls);
+        service_result.expect("relay reports each TLS session independently");
+        drop(upstream_handle.await);
+    }
+
+    #[cfg(feature = "http")]
     #[test]
     fn no_alpn_client_hello_applies_only_matching_fallback() {
         let hello = ClientHello::new(ProtocolVersion::TLSv1_2, Vec::new(), Vec::new(), Vec::new());

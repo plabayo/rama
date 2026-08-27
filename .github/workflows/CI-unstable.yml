@@ -78,7 +78,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     # A cold Windows release build plus its ignored compiletests can exceed
     # 150 minutes. Keep the wider bound scoped to that combination.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && matrix.profile == 'release' && 180 || 150 }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && matrix.profile == 'release' && 210 || 150 }}
     env:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
       RUSTFLAGS: -D warnings --cfg tokio_unstable

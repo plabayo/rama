@@ -290,7 +290,7 @@ impl BypassRule {
         } else if pattern.eq_ignore_ascii_case("<local>") {
             BypassMatcher::LocalName
         } else if let Ok(network) = parse_ip_net(pattern) {
-            BypassMatcher::Network(network)
+            BypassMatcher::Network(canonical_network(network))
         } else if let Ok(address) = pattern
             .strip_prefix('[')
             .and_then(|address| address.strip_suffix(']'))
@@ -357,6 +357,22 @@ impl BypassRule {
             BypassMatcher::Pattern(pattern) => pattern.matches_with_text(host, host_text),
         }
     }
+}
+
+fn canonical_network(network: IpNet) -> IpNet {
+    let IpNet::V6(network) = network else {
+        return network;
+    };
+    let prefix = network.prefix_len();
+    let Some(address) = network.network().to_ipv4_mapped() else {
+        return IpNet::V6(network);
+    };
+    let Some(prefix) = prefix.checked_sub(96) else {
+        return IpNet::V6(network);
+    };
+    crate::address::ip::ipnet::Ipv4Net::new(address, prefix)
+        .map(IpNet::V4)
+        .unwrap_or(IpNet::V6(network))
 }
 
 pub(super) fn matches_any_rule(
@@ -636,6 +652,10 @@ mod tests {
             Host::try_from("::ffff:192.0.2.9").unwrap().view(),
             None
         ));
+
+        let mapped = BypassRule::compile("::ffff:10.0.0.0/104").unwrap();
+        assert!(mapped.matches(None, Host::try_from("10.42.1.9").unwrap().view(), None));
+        assert!(!mapped.matches(None, Host::try_from("11.42.1.9").unwrap().view(), None));
     }
 
     #[test]

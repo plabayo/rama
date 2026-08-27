@@ -1168,14 +1168,21 @@ async fn relay_direction<H, Source>(
         WebSocketRelayDirection::Egress => ("egress", "ingress"),
     };
 
-    match handler
-        .serve(
-            direction,
-            WebSocketRelayEvent::Open,
-            std::mem::take(relay_extensions),
-        )
-        .await
-    {
+    let open_extensions = std::mem::take(relay_extensions);
+    let open_result = tokio::select! {
+        biased;
+        _ = close_control.next() => {
+            return drain_close(
+                direction,
+                source_name,
+                &mut source,
+                &source_writer,
+                &signals,
+            ).await;
+        }
+        result = handler.serve(direction, WebSocketRelayEvent::Open, open_extensions) => result,
+    };
+    match open_result {
         Ok(output) => {
             if !output.messages.is_empty() || output.close.is_some() {
                 tracing::trace!(
@@ -2710,6 +2717,31 @@ mod tests {
         started: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     }
 
+    #[derive(Clone)]
+    struct StallingIngressOpenMiddleware {
+        started: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    }
+
+    impl Service<WebSocketRelayEventInput> for StallingIngressOpenMiddleware {
+        type Output = WebSocketRelayEventOutput;
+        type Error = BoxError;
+
+        async fn serve(
+            &self,
+            input: WebSocketRelayEventInput,
+        ) -> Result<Self::Output, Self::Error> {
+            if input.direction == WebSocketRelayDirection::Ingress
+                && matches!(&input.event, WebSocketRelayEvent::Open)
+            {
+                if let Some(started) = self.started.lock().take() {
+                    _ = started.send(());
+                }
+                return pending().await;
+            }
+            Ok(input.into())
+        }
+    }
+
     impl Service<WebSocketRelayEventInput> for StallingIngressPingMiddleware {
         type Output = WebSocketRelayEventOutput;
         type Error = BoxError;
@@ -2799,6 +2831,57 @@ mod tests {
             .flush()
             .await
             .expect("flush ingress close reply");
+
+        timeout(Duration::from_secs(1), relay)
+            .await
+            .expect("relay close timeout")
+            .expect("relay task join")
+            .expect("relay service result");
+    }
+
+    #[tokio::test]
+    async fn stalled_open_is_cancelled_by_an_opposite_close() {
+        let (relay_ingress_dup, peer_ingress_dup) = duplex(kib(16));
+        let (relay_egress_dup, peer_egress_dup) = duplex(kib(16));
+        let (started_tx, started_rx) = oneshot::channel();
+
+        let service = WebSocketRelayEventService::new(StallingIngressOpenMiddleware {
+            started: Arc::new(Mutex::new(Some(started_tx))),
+        });
+        let relay = tokio::spawn(async move {
+            service
+                .serve(BridgeIo(
+                    MockSocket::new(relay_ingress_dup),
+                    MockSocket::new(relay_egress_dup),
+                ))
+                .await
+        });
+
+        let mut peer_ingress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_ingress_dup), Role::Client, None)
+                .await;
+        let mut peer_egress_ws =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_egress_dup), Role::Server, None)
+                .await;
+        timeout(Duration::from_secs(1), started_rx)
+            .await
+            .expect("open middleware was not called")
+            .expect("open middleware start sender dropped");
+
+        let close_frame = test_close_frame("opposite close during open");
+        peer_egress_ws
+            .send_message(Message::Close(Some(close_frame.clone())))
+            .await
+            .expect("send egress close");
+        assert_eq!(
+            expect_message(&mut peer_egress_ws, "receive egress close reply").await,
+            Message::Close(Some(close_frame.clone()))
+        );
+        assert_eq!(
+            expect_message(&mut peer_ingress_ws, "receive propagated ingress close").await,
+            Message::Close(Some(close_frame))
+        );
+        peer_ingress_ws.flush().await.expect("flush ingress close");
 
         timeout(Duration::from_secs(1), relay)
             .await

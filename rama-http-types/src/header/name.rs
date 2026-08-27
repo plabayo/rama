@@ -109,11 +109,20 @@ pub struct InvalidHeaderName {
     _priv: (),
 }
 
+macro_rules! standard_header_trailer_allowed {
+    () => {
+        false
+    };
+    (trailer) => {
+        true
+    };
+}
+
 macro_rules! standard_headers {
     (
         $(
             $(#[$docs:meta])*
-            ($konst:ident, $upcase:ident, $name_bytes:literal);
+            ($konst:ident, $upcase:ident, $name_bytes:literal $(, $trailer:ident)?);
         )+
     ) => {
         #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
@@ -134,6 +143,14 @@ macro_rules! standard_headers {
         )+
 
         impl StandardHeader {
+            const fn is_allowed_in_trailers(self) -> bool {
+                match self {
+                    $(
+                    StandardHeader::$konst => standard_header_trailer_allowed!($($trailer)?),
+                    )+
+                }
+            }
+
             const fn as_bytes(&self) -> &'static [u8] {
                 match *self {
                     $(
@@ -305,7 +322,7 @@ standard_headers! {
     ///
     /// In presence of an Accept-Ranges header, the browser may try to resume an
     /// interrupted download, rather than to start it from the start again.
-    (AcceptRanges, ACCEPT_RANGES, b"accept-ranges");
+    (AcceptRanges, ACCEPT_RANGES, b"accept-ranges", trailer);
 
     /// Preflight response indicating if the response to the request can be
     /// exposed to the page.
@@ -562,7 +579,7 @@ standard_headers! {
     /// to quickly determine whether two representations of a resource are the
     /// same, but they might also be set to persist indefinitely by a tracking
     /// server.
-    (Etag, ETAG, b"etag");
+    (Etag, ETAG, b"etag", trailer);
 
     /// Indicates expectations that need to be fulfilled by the server in order
     /// to properly handle the request.
@@ -1577,10 +1594,10 @@ impl HeaderName {
     #[must_use]
     #[inline]
     pub const fn is_allowed_in_trailers(&self) -> bool {
-        matches!(
-            self.standard(),
-            None | Some(StandardHeader::AcceptRanges | StandardHeader::Etag)
-        )
+        match self.standard() {
+            Some(header) => header.is_allowed_in_trailers(),
+            None => true,
+        }
     }
 
     /// Write the original header spelling represented by this name.
@@ -2343,10 +2360,7 @@ mod tests {
             let name = HeaderName::from(standard);
             assert_eq!(
                 name.is_allowed_in_trailers(),
-                matches!(
-                    standard,
-                    StandardHeader::AcceptRanges | StandardHeader::Etag
-                ),
+                standard.is_allowed_in_trailers(),
                 "{name}",
             );
         }

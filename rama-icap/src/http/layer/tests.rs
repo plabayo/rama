@@ -74,6 +74,7 @@ const REQUEST_HEADER_LINES: &[(&str, &str)] = &[
     ("X-FOO-bar", "hello"),
     ("content-type", "text/plain"),
     ("x-Foo-BAR", "goodbye"),
+    ("host", "origin.test"),
 ];
 
 const RESPONSE_HEADER_LINES: &[(&str, &str)] = &[
@@ -289,6 +290,7 @@ async fn serve_header_preserving_adaptation(
         MethodKind::Reqmod => {
             let request = encapsulated.request.expect("REQMOD request head");
             assert_header_lines(request.headers(), REQUEST_HEADER_LINES);
+            assert_eq!(request.uri().as_str(), "http://origin.test/upload");
             OutgoingResponse::from_http_request(
                 line,
                 &fields,
@@ -463,6 +465,7 @@ async fn preserves_ordinary_header_order_and_casing_end_to_end() {
     );
     let inner = service_fn(async |request: Request<Body>| {
         assert_header_lines(request.headers(), REQUEST_HEADER_LINES);
+        assert_eq!(request.uri().as_str(), "http://origin.test/upload");
         Ok::<_, Infallible>(
             Response::builder()
                 .header("X-Response-FOO", "hello")
@@ -481,7 +484,8 @@ async fn preserves_ordinary_header_order_and_casing_end_to_end() {
         .serve(
             Request::builder()
                 .method("POST")
-                .uri("/upload")
+                .uri("http://origin.test/upload")
+                .extension(rama_http_types::proto::h1::ext::RequestTargetForm::Absolute)
                 .header("X-FOO-bar", "hello")
                 .header("content-type", "text/plain")
                 .header("x-Foo-BAR", "goodbye")
