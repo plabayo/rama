@@ -44,7 +44,7 @@ pin_project! {
     /// must be marked non-reusable *synchronously*, before whatever guard
     /// releases it (e.g. back into a connection pool) runs — an asynchronous
     /// observer on the connection task loses that race to the next request.
-    #[must_use = "OnIncompleteBody does nothing unless polled as a response body"]
+    #[must_use = "dropping an OnIncompleteBody before it completes invokes its callback; poll it as a response body"]
     pub struct OnIncompleteBody<B, F: FnOnce()> {
         #[pin]
         body: B,
