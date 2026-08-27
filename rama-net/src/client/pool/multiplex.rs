@@ -447,11 +447,54 @@ where
             };
 
             trace!(?id, "multiplex pool: saturated, waiting for capacity");
-            // Wake on a release/create notify, or on a same-id connection's
-            // capacity increase (its `MaxConcurrency` changing)..
+            // Wake on a release/create notify, on a same-id connection's
+            // capacity increase (its `MaxConcurrency` changing), or on a freed
+            // total slot. The semaphore is the only wake-up for slots released
+            // outside a handout drop (e.g. a failed create dropping its
+            // permit), and being a real queued acquire it also cannot lose the
+            // permit to the notify-before-release window of a handout drop.
             tokio::select! {
                 _ = notified => {}
                 _ = cap_changes.next(), if !cap_changes.is_empty() => {}
+                permit = self.total_slots.clone().acquire_owned() => {
+                    let Ok(permit) = permit else {
+                        // the pool never closes its semaphore; treat as spurious
+                        continue;
+                    };
+                    // Prefer reusing a same-id connection that freed capacity in
+                    // the meantime; dropping the permit releases the slot (and
+                    // wakes the next queued waiter).
+                    let storage = self.storage.lock();
+                    if let Some(conn) = select_and_admit(
+                        &storage,
+                        id,
+                        self.selection,
+                        &self.rr_cursor,
+                        self.max_concurrent_streams,
+                    ) {
+                        trace!(?id, "multiplex pool: reusing connection (woken by freed slot)");
+                        #[cfg(feature = "opentelemetry")]
+                        if let Some((metrics, attrs)) = &metrics {
+                            metrics.reused_connections.add(1, attrs);
+                            metrics.streams.add(1, attrs);
+                            metrics
+                                .concurrent_streams
+                                .record(conn.inner.active.load(Ordering::Relaxed) as f64, attrs);
+                            metrics
+                                .active_connection_delay_nanoseconds
+                                .record(start.elapsed().as_nanos() as f64, attrs);
+                        }
+                        return Ok(ConnectionResult::Connection(conn));
+                    }
+                    trace!(?id, "multiplex pool: freed slot acquired, returning create permit");
+                    #[cfg(feature = "opentelemetry")]
+                    if let Some((metrics, attrs)) = &metrics {
+                        metrics
+                            .active_connection_delay_nanoseconds
+                            .record(start.elapsed().as_nanos() as f64, attrs);
+                    }
+                    return Ok(ConnectionResult::CreatePermit(PoolSlot(permit)));
+                }
             }
         }
     }
@@ -532,7 +575,8 @@ mod tests {
     use super::super::PooledConnector;
     use super::*;
     use crate::client::{
-        ConnectionErrorDomain, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
+        ConnectionError, ConnectionErrorDomain, ConnectionErrorKind, ConnectorService,
+        EstablishedClientConnection,
     };
     use rama_core::ServiceInput;
     use std::convert::Infallible;
@@ -1031,6 +1075,98 @@ mod tests {
         // B was evicted -> a new connection is created for id 1.
         drop(connect(&svc, 1).await);
         assert_eq!(created(&svc), 4, "B (LRU) was evicted");
+    }
+
+    /// A create permit dropped by a failed connect must wake a parked waiter
+    /// (through the slots semaphore) instead of stranding it until the pool
+    /// timeout: nothing else notifies when a connect fails before creating.
+    #[tokio::test(start_paused = true)]
+    async fn failed_create_frees_slot_for_parked_waiter() {
+        struct FailFirstConnector {
+            attempts: AtomicUsize,
+        }
+
+        impl Service<ServiceInput<u32>> for FailFirstConnector {
+            type Output = EstablishedClientConnection<Conn, ServiceInput<u32>>;
+            type Error = ConnectionError;
+
+            async fn serve(&self, input: ServiceInput<u32>) -> Result<Self::Output, Self::Error> {
+                if self.attempts.fetch_add(1, Ordering::Relaxed) == 0 {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    return Err(ConnectionError::transport(
+                        BoxError::from_static_str("first connect fails"),
+                        ConnectionErrorKind::Unavailable,
+                    ));
+                }
+                Ok(EstablishedClientConnection {
+                    input,
+                    conn: Conn {
+                        serial: 1,
+                        extensions: Extensions::new(),
+                    },
+                })
+            }
+        }
+
+        let pool = MultiplexPool::try_new(1, 1).unwrap();
+        let svc = Arc::new(
+            PooledConnector::new(
+                FailFirstConnector {
+                    attempts: AtomicUsize::new(0),
+                },
+                pool,
+                id_fn as fn(&ServiceInput<u32>) -> Result<TestId, BoxError>,
+            )
+            .with_wait_for_pool_timeout(Duration::from_secs(120)),
+        );
+
+        // Takes the only slot's create permit, then fails after 50ms.
+        let failing = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.connect(ServiceInput::new(0u32)).await }
+        });
+        tokio::task::yield_now().await;
+        // Parks: no connection to reuse and no free slot.
+        let waiter = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.connect(ServiceInput::new(0u32)).await }
+        });
+
+        let (failed, waited) = tokio::join!(failing, waiter);
+        let _error = failed.unwrap().expect_err("first connect must fail");
+        waited
+            .unwrap()
+            .expect("the slot freed by the failed create must wake the parked waiter");
+    }
+
+    /// A waiter parked on a full pool is woken when the last handle of an
+    /// already-swept (broken) connection drops and its slot frees up.
+    #[tokio::test(start_paused = true)]
+    async fn slot_freed_by_swept_connection_teardown_wakes_waiter() {
+        let pool = MultiplexPool::try_new(1, 1).unwrap();
+        let svc = Arc::new(connector(pool).with_wait_for_pool_timeout(Duration::from_secs(120)));
+
+        let c1 = svc.connect(ServiceInput::new(0u32)).await.unwrap();
+        c1.conn
+            .extensions()
+            .get_ref::<ConnectionHealthWatcher>()
+            .unwrap()
+            .mark_broken();
+
+        // The waiter's own attempt sweeps the broken connection out of storage,
+        // but the slot is still held by c1's live handle: it parks.
+        let waiter = tokio::spawn({
+            let svc = svc.clone();
+            async move { svc.connect(ServiceInput::new(0u32)).await }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        drop(c1);
+
+        let waited = tokio::time::timeout(Duration::from_secs(5), waiter)
+            .await
+            .expect("waiter must be woken by the freed slot");
+        waited.unwrap().unwrap();
     }
 
     #[test]
