@@ -24,7 +24,10 @@ use super::{
 use crate::{
     client::{
         ClientConnection,
-        options::{MethodSupport, OptionsRequest, ServiceCapabilities, TransferDisposition},
+        options::{
+            MethodSupport, OptionsCache, OptionsCacheHandle, OptionsRequest, ServiceCapabilities,
+            TransferDisposition,
+        },
     },
     http::{
         ClientRequest,
@@ -78,6 +81,7 @@ impl RespmodResult {
 pub struct AdaptationLayer<C, D = NoOptionsDiscovery> {
     client: C,
     options: Option<D>,
+    options_cache: Option<OptionsCacheHandle>,
     request_service: Option<ServiceEndpoint>,
     response_service: Option<ServiceEndpoint>,
 }
@@ -91,6 +95,7 @@ where
         Self {
             client: self.client.clone(),
             options: self.options.clone(),
+            options_cache: self.options_cache.clone(),
             request_service: self.request_service.clone(),
             response_service: self.response_service.clone(),
         }
@@ -103,6 +108,7 @@ impl<C> AdaptationLayer<C, NoOptionsDiscovery> {
         Self {
             client,
             options: None,
+            options_cache: None,
             request_service: None,
             response_service: None,
         }
@@ -112,13 +118,33 @@ impl<C> AdaptationLayer<C, NoOptionsDiscovery> {
 impl<C, D> AdaptationLayer<C, D> {
     /// Enable automatic OPTIONS discovery through `options`.
     ///
-    /// Compose an [`OptionsCacheLayer`](crate::client::options::OptionsCacheLayer)
-    /// around an always-fetching service to avoid discovery per request. A
-    /// provider may return either an owned capability snapshot or an `Arc`.
+    /// A provider may return either an owned capability snapshot or an `Arc`.
+    /// Use [`Self::with_options_cache`] for the built-in cache and automatic
+    /// ISTag invalidation.
     pub fn with_options_service<D2>(self, options: D2) -> AdaptationLayer<C, D2> {
         AdaptationLayer {
             client: self.client,
             options: Some(options),
+            options_cache: None,
+            request_service: self.request_service,
+            response_service: self.response_service,
+        }
+    }
+
+    /// Enable cached automatic OPTIONS discovery and ISTag observation.
+    ///
+    /// When a completed adaptation response carries a different ISTag than
+    /// the cached capabilities used for it, the cache is invalidated for
+    /// future transactions. The completed transaction is never retried.
+    pub fn with_options_cache<D2>(
+        self,
+        options: OptionsCache<D2>,
+    ) -> AdaptationLayer<C, OptionsCache<D2>> {
+        let options_cache = Some(options.handle());
+        AdaptationLayer {
+            client: self.client,
+            options: Some(options),
+            options_cache,
             request_service: self.request_service,
             response_service: self.response_service,
         }
@@ -180,6 +206,7 @@ where
             inner,
             client: self.client.clone(),
             options: self.options.clone(),
+            options_cache: self.options_cache.clone(),
             request_service: self.request_service.clone(),
             response_service: self.response_service.clone(),
         }
@@ -190,6 +217,7 @@ where
             inner,
             client: self.client,
             options: self.options,
+            options_cache: self.options_cache,
             request_service: self.request_service,
             response_service: self.response_service,
         }
@@ -202,6 +230,7 @@ pub struct Adaptation<S, C, D = NoOptionsDiscovery> {
     inner: S,
     client: C,
     options: Option<D>,
+    options_cache: Option<OptionsCacheHandle>,
     request_service: Option<ServiceEndpoint>,
     response_service: Option<ServiceEndpoint>,
 }
@@ -217,6 +246,7 @@ where
             inner: self.inner.clone(),
             client: self.client.clone(),
             options: self.options.clone(),
+            options_cache: self.options_cache.clone(),
             request_service: self.request_service.clone(),
             response_service: self.response_service.clone(),
         }
@@ -271,7 +301,14 @@ where
         let request = request.map(Body::new);
         let request = if let Some(service) = &self.request_service {
             let capabilities = discover(self.options.as_ref(), service).await?;
-            adapt_request(&self.client, service, capabilities, request).await?
+            adapt_request(
+                &self.client,
+                self.options_cache.as_ref(),
+                service,
+                capabilities,
+                request,
+            )
+            .await?
         } else {
             ReqmodOutcome::Request(request)
         };
@@ -297,6 +334,7 @@ where
             let capabilities = discover(self.options.as_ref(), service).await?;
             adapt_response(
                 &self.client,
+                self.options_cache.as_ref(),
                 service,
                 capabilities,
                 request_head
@@ -403,6 +441,7 @@ enum ReqmodOutcome {
 
 async fn adapt_request<C, IO>(
     client: &C,
+    options_cache: Option<&OptionsCacheHandle>,
     service: &ServiceEndpoint,
     capabilities: Option<Arc<ServiceCapabilities>>,
     mut request: HttpRequest<Body>,
@@ -419,8 +458,8 @@ where
             .as_deref()
             .unwrap_or(""),
     )?;
-    if let Some(capabilities) = capabilities {
-        request.extensions().insert_arc(capabilities);
+    if let Some(capabilities) = capabilities.as_ref() {
+        request.extensions().insert_arc(Arc::clone(capabilities));
     }
     if !policy.adapt {
         return Ok(ReqmodOutcome::Request(request));
@@ -451,6 +490,13 @@ where
         .send_http_owned(request)
         .await
         .context("execute ICAP REQMOD transaction")?;
+    invalidate_changed_istag(
+        options_cache,
+        service,
+        capabilities.as_deref(),
+        response.icap(),
+    )
+    .await;
     validate_success_status(Method::Reqmod, response.icap().status())?;
     let result = ReqmodResult(response.icap().clone());
     if response.request().is_some() {
@@ -492,6 +538,7 @@ where
 
 async fn adapt_response<C, IO>(
     client: &C,
+    options_cache: Option<&OptionsCacheHandle>,
     service: &ServiceEndpoint,
     capabilities: Option<Arc<ServiceCapabilities>>,
     request: &HttpRequest<()>,
@@ -509,8 +556,8 @@ where
             .as_deref()
             .unwrap_or(""),
     )?;
-    if let Some(capabilities) = capabilities {
-        response.extensions().insert_arc(capabilities);
+    if let Some(capabilities) = capabilities.as_ref() {
+        response.extensions().insert_arc(Arc::clone(capabilities));
     }
     if !policy.adapt {
         return Ok(response);
@@ -545,6 +592,13 @@ where
         .send_http_owned(request)
         .await
         .context("execute ICAP RESPMOD transaction")?;
+    invalidate_changed_istag(
+        options_cache,
+        service,
+        capabilities.as_deref(),
+        response.icap(),
+    )
+    .await;
     validate_success_status(Method::Respmod, response.icap().status())?;
     let result = RespmodResult(response.icap().clone());
     let mut response = response
@@ -561,6 +615,24 @@ where
     );
     response.extensions().insert(result);
     Ok(response)
+}
+
+async fn invalidate_changed_istag(
+    options_cache: Option<&OptionsCacheHandle>,
+    service: &ServiceEndpoint,
+    capabilities: Option<&ServiceCapabilities>,
+    response: &IcapResponse,
+) {
+    let (Some(options_cache), Some(expected), Some(observed)) = (
+        options_cache,
+        capabilities.and_then(ServiceCapabilities::service_tag),
+        response.service_tag(),
+    ) else {
+        return;
+    };
+    if expected != observed {
+        options_cache.invalidate(service.uri()).await;
+    }
 }
 
 pub(super) fn request_target_extension(uri: &rama_net::uri::Uri) -> Option<Cow<'_, str>> {

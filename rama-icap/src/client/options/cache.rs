@@ -182,15 +182,15 @@ impl<S> Layer<S> for OptionsCacheLayer {
         OptionsCache {
             inner,
             config: self.config.clone(),
-            entries: Mutex::new(Vec::new()),
-            refreshes: Mutex::new(Vec::new()),
-            cache_invalidation_epoch: AtomicU64::new(0),
+            entries: Arc::new(Mutex::new(Vec::new())),
+            refreshes: Arc::new(Mutex::new(Vec::new())),
+            cache_invalidation_epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 }
 
 /// Cached OPTIONS discovery service produced by [`OptionsCacheLayer`].
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct OptionsCache<S> {
     inner: S,
     config: OptionsCacheConfig,
@@ -199,11 +199,23 @@ pub struct OptionsCache<S> {
     //
     // Exact LRU makes a hit a short write. An ArcSwap directory would instead
     // copy and publish the entire list on every hit.
-    entries: Mutex<Vec<CacheEntry>>,
+    entries: Arc<Mutex<Vec<CacheEntry>>>,
     // Weak per-key coordinators, never locked during network I/O.
-    refreshes: Mutex<Vec<FetchRegistration>>,
+    refreshes: Arc<Mutex<Vec<FetchRegistration>>>,
     // Generation changed only by invalidating this cache instance.
-    cache_invalidation_epoch: AtomicU64,
+    cache_invalidation_epoch: Arc<AtomicU64>,
+}
+
+/// Cloneable invalidation access to one OPTIONS cache instance.
+///
+/// This handle does not expose the discovery service. It exists so completed
+/// adaptation responses can invalidate future discovery when their ISTag
+/// differs from the capability snapshot used for that transaction.
+#[derive(Clone, Debug)]
+pub struct OptionsCacheHandle {
+    entries: Arc<Mutex<Vec<CacheEntry>>>,
+    refreshes: Arc<Mutex<Vec<FetchRegistration>>>,
+    cache_invalidation_epoch: Arc<AtomicU64>,
 }
 
 /// One weak registry entry for per-key single-flight coordination.
@@ -335,15 +347,7 @@ impl RefreshPlan {
     }
 }
 
-impl<S> OptionsCache<S> {
-    define_inner_service_accessors!();
-
-    /// Return cache policy.
-    #[must_use]
-    pub const fn config(&self) -> &OptionsCacheConfig {
-        &self.config
-    }
-
+impl OptionsCacheHandle {
     /// Invalidate every cached variant of one exact service URI.
     pub async fn invalidate(&self, uri: &Uri) {
         let mut refreshes = self.refreshes.lock().await;
@@ -366,6 +370,36 @@ impl<S> OptionsCache<S> {
         let mut entries = self.entries.lock().await;
         entries.clear();
         self.cache_invalidation_epoch.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+impl<S> OptionsCache<S> {
+    define_inner_service_accessors!();
+
+    /// Return cache policy.
+    #[must_use]
+    pub const fn config(&self) -> &OptionsCacheConfig {
+        &self.config
+    }
+
+    /// Return a cloneable invalidation handle for this cache instance.
+    #[must_use]
+    pub fn handle(&self) -> OptionsCacheHandle {
+        OptionsCacheHandle {
+            entries: Arc::clone(&self.entries),
+            refreshes: Arc::clone(&self.refreshes),
+            cache_invalidation_epoch: Arc::clone(&self.cache_invalidation_epoch),
+        }
+    }
+
+    /// Invalidate every cached variant of one exact service URI.
+    pub async fn invalidate(&self, uri: &Uri) {
+        self.handle().invalidate(uri).await;
+    }
+
+    /// Invalidate all cached OPTIONS snapshots.
+    pub async fn invalidate_all(&self) {
+        self.handle().invalidate_all().await;
     }
 
     async fn cached(&self, key: &CacheKey) -> Cached {
@@ -1040,12 +1074,13 @@ mod tests {
         let provider = TestProvider::new(capabilities(Some(b"60")));
         provider.hold.store(true, Ordering::SeqCst);
         let cache = OptionsCacheLayer::new().layer(provider.clone());
+        let handle = cache.handle();
         let partition = super::super::OptionsCachePartition::new();
         let input = request(&partition);
         let refresh = cache.serve(input.clone());
         let invalidate = async {
             provider.wait_until_held().await;
-            cache.invalidate(input.service_uri()).await;
+            handle.invalidate(input.service_uri()).await;
             provider.release();
         };
         let (result, ()) = tokio::join!(refresh, invalidate);

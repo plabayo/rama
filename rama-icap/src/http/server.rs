@@ -1,4 +1,4 @@
-use core::{convert::Infallible, future::poll_fn, pin::Pin};
+use core::{convert::Infallible, fmt, future::poll_fn, pin::Pin};
 
 use rama_core::futures::stream;
 use rama_http_types::{
@@ -18,6 +18,50 @@ use crate::{
 };
 
 impl IncomingRequest {
+    /// Convert this request into a checked unchanged-response capability.
+    ///
+    /// The conversion selects a negotiated 204 response when legal. Otherwise
+    /// it retains the untouched HTTP message for a streaming 200 echo. If
+    /// mutable access may have changed or consumed data needed by that echo,
+    /// the original request is returned unchanged.
+    pub fn try_into_unchanged(self) -> Result<UnchangedRequest, Self> {
+        let method = self.icap().method();
+        if !matches!(method, MethodKind::Reqmod | MethodKind::Respmod) {
+            return Err(self);
+        }
+        if self.icap().allows_204()
+            || (self.icap().preview().is_some() && !self.body_exposed_mutably)
+        {
+            return Ok(UnchangedRequest {
+                request: self,
+                kind: UnchangedKind::NoModification,
+            });
+        }
+        if self.encapsulated_exposed_mutably || !self.echo_body_is_available() {
+            return Err(self);
+        }
+        Ok(UnchangedRequest {
+            request: self,
+            kind: UnchangedKind::Echo,
+        })
+    }
+
+    fn echo_body_is_available(&self) -> bool {
+        let Some(encapsulated) = self.encapsulated() else {
+            return false;
+        };
+        let valid_head = match self.icap().method() {
+            MethodKind::Reqmod => encapsulated.request.is_some(),
+            MethodKind::Respmod => encapsulated.response.is_some(),
+            MethodKind::Options | MethodKind::Extension => false,
+        };
+        valid_head
+            && (!matches!(
+                encapsulated.body_kind,
+                EncapsulatedKind::RequestBody | EncapsulatedKind::ResponseBody
+            ) || !self.body_exposed_mutably)
+    }
+
     /// Return a 204 response and leave the HTTP message unchanged.
     ///
     /// `service_tag` may be supplied as text or bytes.
@@ -137,6 +181,62 @@ impl IncomingRequest {
                 Ok(OutgoingResponse::without_body(response))
             }
         }
+    }
+}
+
+/// A checked capability for returning an HTTP message unchanged.
+///
+/// Construct this with [`IncomingRequest::try_into_unchanged`]. The selected
+/// response is guaranteed not to rely on caller-managed negotiation or on
+/// HTTP message bytes that may already have been changed or consumed.
+pub struct UnchangedRequest {
+    request: IncomingRequest,
+    kind: UnchangedKind,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum UnchangedKind {
+    NoModification,
+    Echo,
+}
+
+impl UnchangedRequest {
+    /// Build the negotiated 204 or streaming 200 echo response.
+    pub fn respond(self, service_tag: impl AsRef<[u8]>) -> Result<OutgoingResponse, Error> {
+        let method = self.request.icap().method();
+        if matches!(self.kind, UnchangedKind::NoModification) {
+            return response_without_body(
+                method,
+                StatusCode::NO_MODIFICATION_NEEDED,
+                b"No Modification Needed",
+                service_tag.as_ref(),
+            );
+        }
+        let fields = [Header::new(header::ISTAG, service_tag.as_ref()).map_err(BuildError::from)?];
+        match method {
+            MethodKind::Reqmod => OutgoingResponse::from_http_request(
+                ResponseLine::new(StatusCode::OK, b"OK")?,
+                &fields,
+                self.request.into_request()?,
+            ),
+            MethodKind::Respmod => OutgoingResponse::from_http_response(
+                MethodKind::Respmod,
+                ResponseLine::new(StatusCode::OK, b"OK")?,
+                &fields,
+                self.request.into_response()?,
+            ),
+            MethodKind::Options | MethodKind::Extension => Err(Error::invalid_method()),
+        }
+    }
+}
+
+impl fmt::Debug for UnchangedRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("UnchangedRequest")
+            .field("method", &self.request.icap().method())
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
     }
 }
 

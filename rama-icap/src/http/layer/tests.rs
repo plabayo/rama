@@ -43,7 +43,7 @@ use rama_tls_rustls::{client::TlsConnector, server::TlsAcceptorLayer};
 
 use super::*;
 use crate::{
-    client::options::{OptionsService, OptionsValidation, ServiceCapabilities},
+    client::options::{OptionsCacheLayer, OptionsService, OptionsValidation, ServiceCapabilities},
     codec::{HeadParserConfig, Header, HeaderFolding, HeaderSlot, ResponseLine},
     http::{HttpService, IncomingRequest, IncomingRequestParts, OutgoingResponse},
     io::ConnectionOptions,
@@ -67,7 +67,11 @@ fn endpoint(path: &str) -> ServiceEndpoint {
 }
 
 fn adaptation_response_fields() -> [Header<'static>; 1] {
-    [Header::new(header::ISTAG, b"\"layer-test\"").unwrap()]
+    adaptation_response_fields_with_tag(b"\"layer-test\"")
+}
+
+fn adaptation_response_fields_with_tag(service_tag: &'static [u8]) -> [Header<'static>; 1] {
+    [Header::new(header::ISTAG, service_tag).unwrap()]
 }
 
 const REQUEST_HEADER_LINES: &[(&str, &str)] = &[
@@ -236,6 +240,13 @@ where
 }
 
 async fn serve_adaptation(request: IncomingRequest) -> Result<OutgoingResponse, BoxError> {
+    serve_adaptation_with_service_tag(request, b"\"layer-test\"").await
+}
+
+async fn serve_adaptation_with_service_tag(
+    request: IncomingRequest,
+    service_tag: &'static [u8],
+) -> Result<OutgoingResponse, BoxError> {
     let method = request.icap().method();
     let (parts, body) = request.into_parts();
     let IncomingRequestParts { encapsulated, .. } = parts;
@@ -243,7 +254,7 @@ async fn serve_adaptation(request: IncomingRequest) -> Result<OutgoingResponse, 
     let collected = body.collect().await?;
     let body = Body::new(collected);
     let line = ResponseLine::new(StatusCode::OK, b"OK").unwrap();
-    let fields = adaptation_response_fields();
+    let fields = adaptation_response_fields_with_tag(service_tag);
     match method {
         MethodKind::Reqmod => {
             let mut request = encapsulated.request.expect("REQMOD request head");
@@ -917,6 +928,65 @@ async fn options_discovery_constrains_ephemeral_adaptation_policy() {
 
     assert!(response.extensions().contains::<ServiceCapabilities>());
     assert_eq!(discoveries.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn matching_adaptation_istags_preserve_cached_options() {
+    assert_istag_cache_discoveries(b"\"options-test\"", 1).await;
+}
+
+#[tokio::test]
+async fn changed_reqmod_and_respmod_istags_invalidate_cached_options() {
+    assert_istag_cache_discoveries(b"\"changed\"", 4).await;
+}
+
+async fn assert_istag_cache_discoveries(
+    adaptation_tag: &'static [u8],
+    expected_discoveries: usize,
+) {
+    let connector = mock_icap_client(
+        move || {
+            let adaptation = service_fn(move |request: IncomingRequest| {
+                serve_adaptation_with_service_tag(request, adaptation_tag)
+            });
+            Server::new(HttpService::new(adaptation), adaptation_tag).unwrap()
+        },
+        256,
+    );
+    let discoveries = Arc::new(AtomicUsize::new(0));
+    let provider_discoveries = Arc::clone(&discoveries);
+    let options = OptionsCacheLayer::new().layer(service_fn(move |_request| {
+        provider_discoveries.fetch_add(1, Ordering::Relaxed);
+        async { Ok::<_, Infallible>(discovered_capabilities()) }
+    }));
+    let inner = service_fn(async |_request: Request<Body>| {
+        Ok::<_, Infallible>(Response::new(Body::empty()))
+    });
+    let service_endpoint = endpoint("adapt");
+    let service = AdaptationLayer::new(connector)
+        .with_request_service(service_endpoint.clone())
+        .with_response_service(service_endpoint)
+        .with_options_cache(options)
+        .layer(inner);
+
+    for _ in 0..2 {
+        service
+            .serve(
+                Request::builder()
+                    .method("POST")
+                    .uri("http://origin.test/upload")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(discoveries.load(Ordering::Relaxed), expected_discoveries);
 }
 
 #[tokio::test]

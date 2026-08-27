@@ -43,6 +43,7 @@ use self::headers::{
 mod headers;
 pub mod layer;
 mod server;
+pub use server::UnchangedRequest;
 
 /// Default maximum body and trailer bytes retained for ICAP replay.
 pub const DEFAULT_MAX_REPLAY_BYTES: usize = rama_utils::octets::mib(8);
@@ -349,6 +350,8 @@ pub struct IncomingRequest {
     encapsulated: Option<Encapsulated>,
     body: Body,
     extensions: Extensions,
+    encapsulated_exposed_mutably: bool,
+    body_exposed_mutably: bool,
 }
 
 /// Owned components of a typed ICAP service request.
@@ -386,6 +389,8 @@ impl IncomingRequest {
             encapsulated,
             body: Body::from_frame_stream(body),
             extensions,
+            encapsulated_exposed_mutably: false,
+            body_exposed_mutably: false,
         })
     }
 
@@ -402,7 +407,8 @@ impl IncomingRequest {
     }
 
     /// Return the mutable typed HTTP metadata, when present.
-    pub const fn encapsulated_mut(&mut self) -> Option<&mut Encapsulated> {
+    pub fn encapsulated_mut(&mut self) -> Option<&mut Encapsulated> {
+        self.encapsulated_exposed_mutably = true;
         self.encapsulated.as_mut()
     }
 
@@ -412,7 +418,8 @@ impl IncomingRequest {
     }
 
     /// Return the mutable streaming encapsulated entity body.
-    pub const fn body_mut(&mut self) -> &mut Body {
+    pub fn body_mut(&mut self) -> &mut Body {
+        self.body_exposed_mutably = true;
         &mut self.body
     }
 
@@ -3078,6 +3085,8 @@ mod tests {
             encapsulated: Some(Encapsulated::parse(&encoded).unwrap()),
             body: Body::from("request body"),
             extensions: Extensions::new(),
+            encapsulated_exposed_mutably: false,
+            body_exposed_mutably: false,
         }
         .into_request()
         .unwrap();
@@ -3105,6 +3114,8 @@ mod tests {
             encapsulated: Some(Encapsulated::parse(&encoded).unwrap()),
             body: Body::from("response body"),
             extensions: Extensions::new(),
+            encapsulated_exposed_mutably: false,
+            body_exposed_mutably: false,
         }
         .into_response()
         .unwrap();
@@ -3287,6 +3298,155 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn unchanged_request_echoes_an_unread_reqmod_message() {
+        let mut trailers = HeaderMap::new();
+        trailers.insert("x-end", HeaderValue::from_static("yes"));
+        let request = incoming_reqmod(
+            Body::from_frame_stream(stream::iter([
+                Ok::<_, Infallible>(Frame::data(Bytes::from_static(b"request body"))),
+                Ok(Frame::trailers(trailers)),
+            ])),
+            EncapsulatedKind::RequestBody,
+            None,
+            b"",
+        );
+        let mut response = request
+            .try_into_unchanged()
+            .unwrap()
+            .respond(b"\"rama-test\"")
+            .unwrap();
+
+        assert_eq!(response.response().status(), StatusCode::OK);
+        let parsed = Encapsulated::parse(response.response().encapsulated().unwrap()).unwrap();
+        assert_eq!(parsed.request().unwrap().method(), "POST");
+        assert_eq!(parsed.request().unwrap().headers()["x-original"], "yes");
+        assert!(matches!(
+            response.body_mut().next().await.unwrap().unwrap(),
+            crate::server::BodyFrame::Data(data) if data == "request body"
+        ));
+        let crate::server::BodyFrame::Trailers(trailers) =
+            response.body_mut().next().await.unwrap().unwrap()
+        else {
+            panic!("expected echoed HTTP trailers");
+        };
+        let trailers = HeadParser::new().parse_fields(trailers.as_bytes()).unwrap();
+        assert_eq!(trailers["x-end"], "yes");
+        assert!(response.body_mut().next().await.is_none());
+    }
+
+    #[test]
+    fn unchanged_request_uses_preview_time_204() {
+        let request = incoming_respmod(
+            Body::from("response body"),
+            EncapsulatedKind::ResponseBody,
+            Some(Preview::new(4)),
+            b"",
+        );
+        let response = request
+            .try_into_unchanged()
+            .unwrap()
+            .respond(b"\"rama-test\"")
+            .unwrap();
+
+        assert_eq!(
+            response.response().status(),
+            StatusCode::NO_MODIFICATION_NEEDED
+        );
+    }
+
+    #[test]
+    fn unchanged_request_uses_negotiated_204_after_mutable_access() {
+        let mut request = incoming_respmod(
+            Body::from("response body"),
+            EncapsulatedKind::ResponseBody,
+            None,
+            b"204",
+        );
+        let _body = request.body_mut();
+        let response = request
+            .try_into_unchanged()
+            .unwrap()
+            .respond(b"\"rama-test\"")
+            .unwrap();
+
+        assert_eq!(
+            response.response().status(),
+            StatusCode::NO_MODIFICATION_NEEDED
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_unchanged_conversion_returns_the_request() {
+        let mut request = incoming_respmod(
+            Body::from("response body"),
+            EncapsulatedKind::ResponseBody,
+            None,
+            b"",
+        );
+        let _body = request.body_mut();
+        let request = request.try_into_unchanged().unwrap_err();
+        let response = request.into_response().unwrap();
+
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "response body"
+        );
+    }
+
+    #[test]
+    fn unchanged_null_body_can_echo_after_body_access() {
+        let mut request = incoming_respmod(Body::empty(), EncapsulatedKind::NullBody, None, b"");
+        let _body = request.body_mut();
+        let response = request
+            .try_into_unchanged()
+            .unwrap()
+            .respond(b"\"rama-test\"")
+            .unwrap();
+
+        assert_eq!(response.response().status(), StatusCode::OK);
+        let parsed = Encapsulated::parse(response.response().encapsulated().unwrap()).unwrap();
+        assert_eq!(parsed.response().unwrap().status(), 200);
+        assert!(!response.response().encapsulated().unwrap().has_body());
+    }
+
+    fn incoming_reqmod(
+        body: Body,
+        body_kind: EncapsulatedKind,
+        preview: Option<Preview>,
+        allow: &[u8],
+    ) -> IncomingRequest {
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("host", "example.test")
+            .header("x-original", "yes")
+            .body(())
+            .unwrap();
+        let parts = Encapsulated::from_request(&request, body_kind).unwrap();
+        let line = RequestLine::new(Method::Reqmod, "icap://icap.test/adapt").unwrap();
+        let headers = [
+            Header::new(header::HOST, b"icap.test").unwrap(),
+            Header::new(header::ALLOW, allow).unwrap(),
+        ];
+        let icap = match preview {
+            Some(preview) => IcapRequest::with_preview(line, &headers, parts, preview).unwrap(),
+            None => IcapRequest::new(line, &headers, Some(parts)).unwrap(),
+        };
+        IncomingRequest {
+            icap,
+            encapsulated: Some(Encapsulated {
+                request: Some(request),
+                response: None,
+                body_kind,
+            }),
+            body,
+            extensions: Extensions::new(),
+            encapsulated_exposed_mutably: false,
+            body_exposed_mutably: false,
+        }
+    }
+
     fn incoming_respmod(
         body: Body,
         body_kind: EncapsulatedKind,
@@ -3318,6 +3478,8 @@ mod tests {
             }),
             body,
             extensions: Extensions::new(),
+            encapsulated_exposed_mutably: false,
+            body_exposed_mutably: false,
         }
     }
 }

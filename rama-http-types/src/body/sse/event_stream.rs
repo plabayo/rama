@@ -478,6 +478,15 @@ impl<T: EventDataRead> DecodeState<T> {
 
 pin_project! {
     /// A Stream of SSE's used by the client.
+    ///
+    /// `EventStream` intentionally adds no separate line or event-size limit.
+    /// For untrusted HTTP input, apply a body-wide [`BodyLimit`] or
+    /// wrap the body with [`Body::limited`] before converting it into this
+    /// stream. That limit is cumulative, so an intentionally long-lived SSE
+    /// stream terminates once its body budget is exhausted.
+    ///
+    /// [`BodyLimit`]: crate::BodyLimit
+    /// [`Body::limited`]: crate::Body::limited
     pub struct EventStream<S, T: EventDataRead = String> {
         #[pin]
         stream: S,

@@ -4,7 +4,7 @@ mod cache;
 mod capabilities;
 mod service;
 
-pub use cache::{OptionsCache, OptionsCacheConfig, OptionsCacheLayer};
+pub use cache::{OptionsCache, OptionsCacheConfig, OptionsCacheHandle, OptionsCacheLayer};
 pub use capabilities::{
     AllowedFeatures, CapabilitiesError, MethodSupport, ServiceCapabilities, SupportedMethods,
     TransferDisposition, TransferRules,

@@ -5,7 +5,7 @@ use core::fmt;
 use rama_core::bytes::{Bytes, BytesMut};
 
 use crate::{
-    byte_sets::{comma_separated_items, is_token_byte},
+    byte_sets::{comma_separated_items, is_token_byte, trim_ows},
     codec::{
         self, DEFAULT_MAX_HEAD_BYTES, DEFAULT_MAX_HEADERS, EncodeError, HeadParserConfig, Header,
         HeaderSlot, HeaderValue, ParseError, ParseStatus, RequestHead, RequestLine,
@@ -861,6 +861,15 @@ impl Response {
         self.status
     }
 
+    /// Return the service generation tag, including its wire quoting.
+    ///
+    /// Compatible parsing can accept repeated or folded fields. Those do not
+    /// have one contiguous value in the retained wire head and return `None`.
+    #[must_use]
+    pub fn service_tag(&self) -> Option<&[u8]> {
+        single_contiguous_header_value(&self.head.bytes, header::ISTAG)
+    }
+
     /// Return the encapsulated metadata, when present.
     #[must_use]
     pub const fn encapsulated(&self) -> Option<&EncapsulatedParts> {
@@ -1141,6 +1150,36 @@ fn has_header_token(headers: &[Header<'_>], name: &str, expected: &[u8]) -> bool
     })
 }
 
+fn single_contiguous_header_value<'a>(head: &'a [u8], name: &str) -> Option<&'a [u8]> {
+    let mut value = None;
+    let mut lines = head.split(|byte| *byte == b'\n');
+    lines.next()?;
+    let mut target_may_continue = false;
+    for line in lines {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if line.is_empty() {
+            break;
+        }
+        if line.first().is_some_and(u8::is_ascii_whitespace) {
+            if target_may_continue {
+                return None;
+            }
+            continue;
+        }
+        target_may_continue = false;
+        let separator = line.iter().position(|byte| *byte == b':')?;
+        if !line[..separator].eq_ignore_ascii_case(name.as_bytes()) {
+            continue;
+        }
+        if value.is_some() {
+            return None;
+        }
+        value = Some(trim_ows(&line[separator + 1..]));
+        target_may_continue = true;
+    }
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1295,6 +1334,7 @@ mod tests {
                 .headers()
                 .any(|field| field == Header::new("X-Note", b"one two").unwrap())
         );
+        assert_eq!(response.service_tag().unwrap(), b"\"rama\"");
     }
 
     #[test]
