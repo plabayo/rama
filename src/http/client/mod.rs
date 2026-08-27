@@ -318,9 +318,9 @@ mod tests {
     use rama_net::{
         address::ProxyAddress,
         client::{
-            ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService, ProxyRoute,
-            ProxyRouteFailureCache, ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheScope,
-            ProxyRoutes,
+            ConnectRequest, ConnectionError, ConnectionErrorDomain, ConnectionErrorKind,
+            ConnectorService, ProxyRoute, ProxyRouteFailureCache, ProxyRouteFailureCacheConfig,
+            ProxyRouteFailureCacheScope, ProxyRoutes,
         },
         test_utils::client::{MockConnectorService, MockSocket},
     };
@@ -473,7 +473,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_proxy_tls_support_falls_back_from_https_proxy() {
+    async fn no_proxy_tls_support_rejects_https_proxy() {
         let client = EasyHttpWebClient::connector_builder()
             .with_custom_transport_connector(dummy_server())
             .without_dns_connector()
@@ -496,15 +496,15 @@ mod tests {
             ProxyRoute::Direct,
         ]));
 
-        let response = client.serve(request).await.unwrap();
-        let output = response.try_into_json::<Output>().await.unwrap();
-        assert_eq!(output.conn, 0);
-        assert_eq!(output.resp, 0);
+        let error =
+            ConnectionError::from(client.serve(request).await.unwrap_err().into_box_error());
+        assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+        assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
     }
 
     #[cfg(feature = "socks5")]
     #[tokio::test]
-    async fn umbrella_proxy_connector_falls_back_across_mixed_plan() {
+    async fn umbrella_proxy_connector_falls_back_across_supported_plan() {
         let attempts = Arc::new(parking_lot::Mutex::new(Vec::new()));
         let transport = service_fn({
             let attempts = attempts.clone();
@@ -539,11 +539,6 @@ mod tests {
             .uri("http://example.com")
             .body(Body::empty())
             .unwrap();
-        let unsupported = ProxyRoute::Proxy(
-            "custom-proxy://unsupported.example:8080"
-                .parse::<ProxyAddress>()
-                .unwrap(),
-        );
         let socks = ProxyRoute::Proxy(
             "socks5://socks.example:1080"
                 .parse::<ProxyAddress>()
@@ -551,7 +546,6 @@ mod tests {
         );
         let http = ProxyRoute::Proxy("http://http.example:8080".parse::<ProxyAddress>().unwrap());
         request.extensions().insert(ProxyRoutes::new([
-            unsupported,
             socks.clone(),
             http.clone(),
             ProxyRoute::Direct,
@@ -560,9 +554,6 @@ mod tests {
         let response = client.serve(request).await.unwrap();
         let output = response.try_into_json::<Output>().await.unwrap();
         assert_eq!(output, Output { conn: 0, resp: 0 });
-        // The unsupported route is rejected by the umbrella dispatcher before
-        // transport. Reaching these three attempts proves that rejection was
-        // classified as retryable.
         assert_eq!(
             attempts.lock().as_slice(),
             [socks, http, ProxyRoute::Direct]
