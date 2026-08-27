@@ -771,6 +771,76 @@ mod tests {
         );
     }
 
+    /// An h1 chunked response consumed through its terminal trailers frame is
+    /// complete even though the body never reports `is_end_stream`: dropping it
+    /// without polling the final `None` must not poison the connection, and the
+    /// pool must reuse it.
+    #[tokio::test]
+    async fn pool_reuses_h1_connection_after_body_consumed_through_trailers() {
+        let conns = Arc::new(AtomicUsize::new(0));
+        let inner =
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
+                let conn_id = conns.fetch_add(1, Ordering::Relaxed);
+                HttpServer::auto(Executor::default()).service(service_fn(
+                    move |_req: Request| async move {
+                        let mut trailers = rama_http_types::HeaderMap::new();
+                        trailers.insert("x-trailer", HeaderValue::from_static("yes"));
+                        // unknown length -> chunked, so the trailers actually go on the wire
+                        let stream =
+                            stream::iter([Ok::<_, Infallible>(Bytes::from_static(b"hello"))]);
+                        let body = Body::from_stream(stream)
+                            .with_trailers(std::future::ready(Some(Ok(trailers))));
+                        let mut resp = Response::new(Body::new(body));
+                        let headers = resp.headers_mut();
+                        headers.insert("x-conn-id", HeaderValue::from(conn_id as u64));
+                        // the h1 encoder only sends trailer fields declared here
+                        headers.insert("trailer", HeaderValue::from_static("x-trailer"));
+                        Ok::<_, Infallible>(resp)
+                    },
+                ))
+            }));
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig {
+                max_total: 4,
+                ..Default::default()
+            },
+            inner,
+        );
+
+        let req = || {
+            let mut req = create_test_request(Version::HTTP_11);
+            // the h1 server only encodes trailers when the request allows them
+            req.headers_mut()
+                .insert("te", HeaderValue::from_static("trailers"));
+            req
+        };
+
+        let est1 = connector.serve(req()).await.unwrap();
+        let resp1 = est1.conn.serve(req()).await.unwrap();
+        let id1 = conn_id(&resp1);
+        let mut body1 = resp1.into_body();
+        let mut saw_trailers = false;
+        while !saw_trailers {
+            let frame = body1
+                .frame()
+                .await
+                .expect("the response must yield frames up to its trailers")
+                .unwrap();
+            saw_trailers = frame.is_trailers();
+        }
+        // Consumed through the terminal trailers frame; drop before the final `None`.
+        drop(body1);
+
+        let est2 = connector.serve(req()).await.unwrap();
+        let resp2 = est2.conn.serve(req()).await.unwrap();
+        assert_eq!(id1, 0);
+        assert_eq!(
+            conn_id(&resp2),
+            id1,
+            "a connection whose response was consumed through trailers must be reused"
+        );
+    }
+
     #[tokio::test]
     async fn pool_reuses_connection_after_body_consumed() {
         let connector = build_test_connector(

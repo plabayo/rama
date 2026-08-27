@@ -35,8 +35,9 @@ pin_project! {
     /// this fires at error-observation time and treats a body whose
     /// [`StreamingBody::is_end_stream`] already reports completion as complete,
     /// both at construction (e.g. an empty body that is never polled) and after
-    /// its final frame (e.g. a content-length body read to its last byte but
-    /// dropped before the trailing `poll_frame -> Ready(None)`).
+    /// its final frame (e.g. a content-length body read to its last byte, or a
+    /// chunked body whose terminal trailers frame was read, dropped before the
+    /// trailing `poll_frame -> Ready(None)`).
     ///
     /// The closure is called at most once. The motivating use is connection
     /// reuse: a transport whose response was abandoned or errored mid-message
@@ -83,9 +84,11 @@ where
             // fire now: a guard around this body (releasing e.g. a pool lease)
             // typically runs right after this poll returns
             Poll::Ready(Some(Err(_))) => this.guard.fire(),
-            Poll::Ready(Some(Ok(_))) => {
-                // e.g. a content-length body whose last bytes were just read
-                if this.body.is_end_stream() {
+            Poll::Ready(Some(Ok(frame))) => {
+                // trailers are by contract the final frame; also disarm once the
+                // body reports end-of-stream (e.g. a content-length body whose
+                // last bytes were just read)
+                if frame.is_trailers() || this.body.is_end_stream() {
                     this.guard.disarm();
                 }
             }
@@ -144,6 +147,46 @@ mod tests {
         fn is_end_stream(&self) -> bool {
             false
         }
+    }
+
+    /// Yields one data frame, then terminal trailers, then end-of-stream —
+    /// while never reporting `is_end_stream` (like a chunked h1 body).
+    struct DataThenTrailers {
+        polls: usize,
+    }
+
+    impl StreamingBody for DataThenTrailers {
+        type Data = Bytes;
+        type Error = std::io::Error;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            self.polls += 1;
+            match self.polls {
+                1 => Poll::Ready(Some(Ok(Frame::data(Bytes::from("hello"))))),
+                2 => Poll::Ready(Some(Ok(Frame::trailers(crate::HeaderMap::new())))),
+                _ => Poll::Ready(None),
+            }
+        }
+
+        fn is_end_stream(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn does_not_fire_after_terminal_trailers_frame() {
+        let (fired, cb) = make_counter();
+        let mut body = OnIncompleteBody::new(DataThenTrailers { polls: 0 }, cb);
+        body.frame().await.unwrap().unwrap();
+        let trailers = body.frame().await.unwrap().unwrap();
+        assert!(trailers.is_trailers());
+        // dropped after the terminal trailers frame, without polling the final
+        // `None`: the body is fully consumed and must not count as incomplete
+        drop(body);
+        assert_eq!(fired.load(Ordering::Relaxed), 0);
     }
 
     #[test]
