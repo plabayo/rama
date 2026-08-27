@@ -159,14 +159,13 @@ async fn main() -> Result<(), BoxError> {
     let icap_client = Arc::new(
         IcapClient::new(connector.clone()).with_options(icap_connection_options(embedded)),
     );
-    let options =
-        Arc::new(OptionsCacheLayer::new().layer(OptionsService::new(icap_client.clone())));
+    let options = OptionsCacheLayer::new().layer(OptionsService::new(icap_client.clone()));
     let endpoint = ServiceEndpoint::new(icap_uri)?
         .with_preview(Preview::new(1024))
         .with_allow_204(true)
         .with_allow_206(true);
     let adaptation = AdaptationLayer::new(icap_client)
-        .with_options_service(options)
+        .with_options_cache(options)
         .with_response_service(endpoint.clone());
 
     // A non-CONNECT request selects its origin per request. The web client
@@ -233,26 +232,33 @@ async fn adapt_response(
     mut request: IncomingRequest,
     target_host: Arc<Host>,
 ) -> Result<OutgoingResponse, BoxError> {
-    let method = request.icap().method();
-    match method {
-        MethodKind::Options => options_response(request.icap().allows_206()),
-        MethodKind::Respmod => {
-            if !targets_host(&request, &target_host) {
-                return Ok(request.respond_no_modification(SERVICE_TAG)?);
-            }
-
-            request
-                .encapsulated_mut()
-                .and_then(|encapsulated| encapsulated.response_mut())
-                .context("RESPMOD request has no HTTP response")?
-                .headers_mut()
-                .insert("x-rama-icap", HeaderValue::from_static("adapted"));
-            Ok(request.adapt_response_head(SERVICE_TAG).await?)
-        }
-        MethodKind::Reqmod | MethodKind::Extension => {
-            Ok(request.respond_method_not_allowed(SERVICE_TAG)?)
-        }
+    let options = OptionsResponse::new(SERVICE_TAG, "RESPMOD")
+        .with_service("Rama selective response adapter")
+        .with_preview(Preview::new(1024))
+        .with_allow_204(true)
+        .with_allow_206(true)
+        .with_transfer_preview_all(true);
+    if let Some(response) = options.build_for(request.icap())? {
+        return Ok(response);
     }
+
+    if request.icap().method() != MethodKind::Respmod {
+        return Ok(request.respond_method_not_allowed(SERVICE_TAG)?);
+    }
+    if !targets_host(&request, &target_host) {
+        let unchanged = request.try_into_unchanged().map_err(|_request| {
+            std::io::Error::other("RESPMOD request cannot be returned unchanged")
+        })?;
+        return Ok(unchanged.respond(SERVICE_TAG)?);
+    }
+
+    request
+        .encapsulated_mut()
+        .and_then(|encapsulated| encapsulated.response_mut())
+        .context("RESPMOD request has no HTTP response")?
+        .headers_mut()
+        .insert("x-rama-icap", HeaderValue::from_static("adapted"));
+    Ok(request.adapt_response_head(SERVICE_TAG).await?)
 }
 
 fn targets_host(request: &IncomingRequest, target_host: &Host) -> bool {
@@ -265,14 +271,4 @@ fn targets_host(request: &IncomingRequest, target_host: &Host) -> bool {
     request
         .authority()
         .is_some_and(|authority| authority.host == *target_host)
-}
-
-fn options_response(allow_206: bool) -> Result<OutgoingResponse, BoxError> {
-    Ok(OptionsResponse::new(SERVICE_TAG, "RESPMOD")
-        .with_service("Rama selective response adapter")
-        .with_preview(Preview::new(1024))
-        .with_allow_204(true)
-        .with_allow_206(allow_206)
-        .with_transfer_preview_all(true)
-        .build()?)
 }
