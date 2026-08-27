@@ -186,7 +186,7 @@ mod tests {
     use rama_core::service::service_fn;
     use rama_core::{Layer, Service, ServiceInput};
     use rama_http_types::body::util::BodyExt as _;
-    use rama_http_types::{Body, HeaderValue, Request, Response, StatusCode, Version};
+    use rama_http_types::{Body, HeaderValue, Method, Request, Response, StatusCode, Version};
     use rama_net::Protocol;
     use rama_net::address::{HostWithPort, ProxyAddress};
     use rama_net::client::pool::{MultiplexPool, PooledConnector, ReqToConnID};
@@ -200,6 +200,7 @@ mod tests {
     use tokio::time::sleep;
 
     use super::{BasicHttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig};
+    use crate::client::proxy::layer::HttpProxyConnectorLayer;
     use crate::client::{HttpConnectRequestAdapter, HttpConnectorLayer};
     use crate::server::HttpServer;
 
@@ -694,6 +695,79 @@ mod tests {
             conn_id(&resp2),
             1,
             "a cancelled in-flight h1 request must evict its connection; the next request dials fresh"
+        );
+    }
+
+    /// A connection tunneled through an HTTP CONNECT proxy must be reusable: the
+    /// consumed h1 proxy hop is marked broken on upgrade, but the tunnel built on
+    /// top forks that state instead of inheriting it. It used to inherit the
+    /// broken mark (and the hop's MaxConcurrency of 1), evicting every proxied
+    /// connection from the pool after a single request.
+    #[tokio::test]
+    async fn pool_reuses_connection_tunneled_through_connect_proxy() {
+        let tunnels = Arc::new(AtomicUsize::new(0));
+        let mock = MockConnectorService::new({
+            let tunnels = tunnels.clone();
+            move || {
+                let tunnels = tunnels.clone();
+                // CONNECT proxy: reply 200 and serve the "origin" server over the tunnel
+                HttpServer::auto(Executor::default()).service(service_fn(move |req: Request| {
+                    let tunnels = tunnels.clone();
+                    async move {
+                        assert_eq!(req.method(), Method::CONNECT);
+                        let on_upgrade = rama_http::io::upgrade::handle_upgrade(&req);
+                        let conn_id = tunnels.fetch_add(1, Ordering::Relaxed);
+                        _ = tokio::spawn(async move {
+                            let tunnel = on_upgrade.await.unwrap();
+                            let origin = HttpServer::auto(Executor::default()).service(service_fn(
+                                move |_req: Request| async move {
+                                    let mut resp = Response::new(Body::from("ok"));
+                                    resp.headers_mut()
+                                        .insert("x-conn-id", HeaderValue::from(conn_id as u64));
+                                    Ok::<_, Infallible>(resp)
+                                },
+                            ));
+                            _ = origin.serve(tunnel).await;
+                        });
+                        Ok::<_, Infallible>(Response::new(Body::empty()))
+                    }
+                }))
+            }
+        });
+        let inner = HttpConnectorLayer::default()
+            .into_layer(HttpProxyConnectorLayer::required().into_layer(mock));
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig {
+                max_total: 4,
+                ..Default::default()
+            },
+            inner,
+        );
+
+        let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse::<ProxyAddress>().unwrap());
+        let req = || {
+            let req = create_test_request(Version::HTTP_11);
+            req.extensions().insert(proxy.clone());
+            req
+        };
+
+        let est1 = connector.serve(req()).await.unwrap();
+        let resp1 = est1.conn.serve(req()).await.unwrap();
+        assert_eq!(conn_id(&resp1), 0);
+        // Drain to end-of-stream so the tunneled connection returns to the pool.
+        resp1.into_body().collect().await.unwrap();
+
+        let est2 = connector.serve(req()).await.unwrap();
+        let resp2 = est2.conn.serve(req()).await.unwrap();
+        assert_eq!(
+            conn_id(&resp2),
+            0,
+            "second request must reuse the CONNECT tunnel"
+        );
+        assert_eq!(
+            tunnels.load(Ordering::Relaxed),
+            1,
+            "a reused tunnel means a single proxy dial"
         );
     }
 

@@ -134,8 +134,10 @@ where
     ) -> Result<Self, crate::h2::proto::Error> {
         let peer = P::r#dyn();
 
-        extensions.get_ref_or_insert(ConnectionHealthWatcher::default);
-        extensions.get_ref_or_insert(|| MaxConcurrency::new(config.initial_max_send_streams));
+        ConnectionHealthWatcher::install(&extensions);
+        // same install-at-this-level rule: extensions forked off another
+        // connection must not adopt that connection's concurrency limit
+        extensions.self_get_ref_or_insert(|| MaxConcurrency::new(config.initial_max_send_streams));
 
         Ok(Self {
             inner: Inner::try_new(peer, config, extensions)?,

@@ -74,7 +74,7 @@ where
     /// The connection retains the extension store supplied by `io`.
     pub fn with_options(io: IO, options: ConnectionOptions) -> Self {
         let extensions = io.extensions().clone();
-        extensions.get_ref_or_insert(ConnectionHealthWatcher::default);
+        ConnectionHealthWatcher::install(&extensions);
         Self {
             poison: PoisonOnDrop {
                 extensions,

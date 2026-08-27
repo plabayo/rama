@@ -171,16 +171,20 @@ pub fn pending() -> (Pending, OnUpgrade) {
 impl Upgraded {
     /// Create a new [`Upgraded`] from an IO stream and existing buffer.
     ///
-    /// The [`Upgraded`] starts with the io [`Extensions`]s. Message extensions
-    /// are not copied by [`handle_upgrade`]: they can contain structural
-    /// `Ingress` / `Egress` links back to this same io. A protocol-specific
-    /// upgrade handler can explicitly transfer the typed message extensions it
-    /// needs.
+    /// The [`Upgraded`] starts with a fork of the io [`Extensions`]: reads
+    /// still resolve through the io's chain, but inserts land on the upgraded
+    /// stream's own level. This keeps per-connection state of the consumed
+    /// HTTP connection (e.g. its broken `ConnectionHealthWatcher` or its
+    /// `MaxConcurrency`) from bleeding into the new transport built on top.
+    /// Message extensions are not copied by [`handle_upgrade`]: they can
+    /// contain structural `Ingress` / `Egress` links back to this same io. A
+    /// protocol-specific upgrade handler can explicitly transfer the typed
+    /// message extensions it needs.
     pub fn new<T>(io: T, read_buf: Bytes) -> Self
     where
         T: Io + Unpin + ExtensionsRef,
     {
-        let extensions = io.extensions().clone();
+        let extensions = io.extensions().fork();
         extensions.insert(StreamTransformed {
             by: "rama-http::Upgraded",
         });
