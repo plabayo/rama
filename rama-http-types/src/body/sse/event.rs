@@ -68,7 +68,26 @@ impl<T> Event<T> {
 
 impl<T: EventDataWrite> Event<T> {
     pub(super) fn serialize(&self) -> Result<Bytes, BoxError> {
-        let mut buffer = BytesMut::new();
+        // pre-reserve using the exactly-known field sizes; the data hint
+        // gets 1/8 slack for the `data: ` prefixes inserted at inner
+        // newlines (unknown up front), enough for lines of 48+ bytes
+        let mut capacity = 4;
+        for comment in self.comments.iter().flatten() {
+            capacity += comment.len() + 4;
+        }
+        if let Some(ref id) = self.id {
+            capacity += id.len() + 6;
+        }
+        if let Some(ref event) = self.event {
+            capacity += event.len() + 9;
+        }
+        if self.retry.is_some() {
+            capacity += 28;
+        }
+        if let Some(hint) = self.data.as_ref().and_then(|data| data.size_hint()) {
+            capacity += hint + hint / 8 + 8;
+        }
+        let mut buffer = BytesMut::with_capacity(capacity);
 
         let mut serialize = |name, value| {
             buffer.extend_from_slice(name);

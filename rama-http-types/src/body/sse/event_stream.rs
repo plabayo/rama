@@ -163,7 +163,7 @@ const READY_EVENTS_SOFT_CAP: usize = 16;
 /// would re-validate the entire remaining tail (quadratic overall).
 /// Real HTTP/1 bodies arrive in chunks well below this, so the regular
 /// path is unaffected.
-const SCAN_BYTES_SOFT_CAP: usize = 1024 * 1024;
+const SCAN_BYTES_SOFT_CAP: usize = rama_utils::octets::mib(1);
 
 /// Incremental SSE decoder state.
 ///

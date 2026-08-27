@@ -120,3 +120,80 @@ fn sse_decode(bencher: divan::Bencher, chunk_size: usize) {
         .counter(BytesCount::new(encoded_stream().len()))
         .bench_local(|| pollster_block_on(decode(black_box(&chunks))));
 }
+
+/// the server-side counterpart: serialize (encode) events, measuring
+/// `Event::serialize` incl. the `data: ` line-prefix writer
+mod encode {
+    use super::*;
+    use rama::http::StreamingBody as _;
+    use rama::http::sse::Event;
+    use rama::http::sse::server::SseResponseBody;
+    use std::pin::Pin;
+    use std::task::{Context, Poll, Waker};
+
+    fn event_multiline() -> Event<String> {
+        let mut line = String::new();
+        for i in 0..LINE_LEN {
+            line.push(char::from(b'a' + ((i * 7) % 26) as u8));
+        }
+        Event::new().with_data(vec![line.as_str(); LINES].join("\n"))
+    }
+
+    fn event_single_line() -> Event<String> {
+        let mut data = String::new();
+        for i in 0..(LINES * (LINE_LEN + 1) - 1) {
+            data.push(char::from(b'a' + ((i * 7) % 26) as u8));
+        }
+        Event::new().with_data(data)
+    }
+
+    fn serialize(
+        body: &mut SseResponseBody<
+            impl rama::futures::Stream<Item = Result<Event<String>, Infallible>> + Unpin,
+        >,
+    ) -> usize {
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut total = 0;
+        while let Poll::Ready(Some(frame)) = Pin::new(&mut *body).poll_frame(&mut cx) {
+            total += frame
+                .expect("serialize event")
+                .into_data()
+                .expect("data frame")
+                .len();
+        }
+        total
+    }
+
+    fn encoded_len(event: &Event<String>) -> usize {
+        let mut body = SseResponseBody::new(stream::iter([Ok::<_, Infallible>(event.clone())]));
+        serialize(&mut body)
+    }
+
+    /// 100 gigantic events with 3,000-line payloads (the decoder workload,
+    /// reversed): stresses the per-line `data: ` prefix insertion
+    #[divan::bench(sample_count = 30)]
+    fn sse_encode_multiline(bencher: divan::Bencher) {
+        let event = event_multiline();
+        let total: usize = EVENTS * encoded_len(&event);
+        bencher.counter(BytesCount::new(total)).bench_local(|| {
+            let mut body = SseResponseBody::new(stream::iter(
+                std::iter::repeat_n(event.clone(), EVENTS).map(Ok::<_, Infallible>),
+            ));
+            black_box(serialize(black_box(&mut body)))
+        });
+    }
+
+    /// 100 events carrying the same bytes as one single-line payload:
+    /// stresses the raw copy path without prefix insertions
+    #[divan::bench(sample_count = 30)]
+    fn sse_encode_single_line(bencher: divan::Bencher) {
+        let event = event_single_line();
+        let total: usize = EVENTS * encoded_len(&event);
+        bencher.counter(BytesCount::new(total)).bench_local(|| {
+            let mut body = SseResponseBody::new(stream::iter(
+                std::iter::repeat_n(event.clone(), EVENTS).map(Ok::<_, Infallible>),
+            ));
+            black_box(serialize(black_box(&mut body)))
+        });
+    }
+}
