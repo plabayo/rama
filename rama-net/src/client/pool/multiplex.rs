@@ -34,7 +34,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 #[cfg(feature = "opentelemetry")]
 use super::metrics;
@@ -294,6 +294,71 @@ impl<C, ID> MultiplexPool<C, ID> {
     }
 }
 
+impl<C, ID> MultiplexPool<C, ID>
+where
+    C: Send + Sync + ExtensionsRef + 'static,
+    ID: ConnID,
+{
+    /// Drop connections that are no longer eligible for handout: idle past the
+    /// idle timeout, or marked broken (in-flight streams keep a broken
+    /// connection alive via the outstanding handles, but it is no longer
+    /// handed out). Every handout path must sweep before selecting.
+    fn sweep(&self, storage: &mut Vec<Arc<StoredConnection<C, ID>>>) {
+        if let Some(idle_timeout) = self.idle_timeout {
+            storage.retain(|conn| {
+                let drop = conn.is_idle() && conn.last_idle.elapsed() >= idle_timeout;
+                if drop {
+                    trace!(id = ?conn.id, "multiplex pool: dropping idle connection");
+                }
+                !drop
+            });
+        }
+
+        storage.retain(|conn| {
+            let broken = conn
+                .conn
+                .extensions()
+                .get_ref::<ConnectionHealthWatcher>()
+                .is_some_and(|watcher| watcher.health() == ConnectionHealth::Broken);
+            if broken {
+                trace!(id = ?conn.id, "multiplex pool: dropping broken connection");
+            }
+            !broken
+        });
+    }
+
+    /// Turn a freshly acquired total-slot permit into a handout: prefer reusing
+    /// a same-id connection that freed capacity in the meantime (dropping the
+    /// permit releases the slot and wakes the next queued waiter), otherwise
+    /// return the permit as a create permit.
+    fn admit_with_permit(
+        &self,
+        id: &ID,
+        permit: OwnedSemaphorePermit,
+    ) -> ConnectionResult<MultiplexedConnection<C, ID>, PoolSlot> {
+        let mut storage = self.storage.lock();
+        self.sweep(&mut storage);
+        if let Some(conn) = select_and_admit(
+            &storage,
+            id,
+            self.selection,
+            &self.rr_cursor,
+            self.max_concurrent_streams,
+        ) {
+            trace!(
+                ?id,
+                "multiplex pool: reusing connection (woken by freed slot)"
+            );
+            return ConnectionResult::Connection(conn);
+        }
+        trace!(
+            ?id,
+            "multiplex pool: freed slot acquired, returning create permit"
+        );
+        ConnectionResult::CreatePermit(PoolSlot(permit))
+    }
+}
+
 impl<C, ID> Pool<C, ID> for MultiplexPool<C, ID>
 where
     C: Send + Sync + ExtensionsRef + 'static,
@@ -321,31 +386,7 @@ where
         let attempt =
             |want_cap_changes: bool| -> Result<ConnectionResult<_, _>, FuturesUnordered<_>> {
                 let mut storage = self.storage.lock();
-
-                // Drop idle connections past the idle timeout.
-                if let Some(idle_timeout) = self.idle_timeout {
-                    storage.retain(|conn| {
-                        let drop = conn.is_idle() && conn.last_idle.elapsed() >= idle_timeout;
-                        if drop {
-                            trace!(id = ?conn.id, "multiplex pool: dropping idle connection");
-                        }
-                        !drop
-                    });
-                }
-
-                // Drop broken connections (their in-flight streams keep them alive
-                // via the outstanding handles, but they are no longer handed out).
-                storage.retain(|conn| {
-                    let broken = conn
-                        .conn
-                        .extensions()
-                        .get_ref::<ConnectionHealthWatcher>()
-                        .is_some_and(|watcher| watcher.health() == ConnectionHealth::Broken);
-                    if broken {
-                        trace!(id = ?conn.id, "multiplex pool: dropping broken connection");
-                    }
-                    !broken
-                });
+                self.sweep(&mut storage);
 
                 if let Some(conn) = select_and_admit(
                     &storage,
@@ -461,39 +502,31 @@ where
                         // the pool never closes its semaphore; treat as spurious
                         continue;
                     };
-                    // Prefer reusing a same-id connection that freed capacity in
-                    // the meantime; dropping the permit releases the slot (and
-                    // wakes the next queued waiter).
-                    let storage = self.storage.lock();
-                    if let Some(conn) = select_and_admit(
-                        &storage,
-                        id,
-                        self.selection,
-                        &self.rr_cursor,
-                        self.max_concurrent_streams,
-                    ) {
-                        trace!(?id, "multiplex pool: reusing connection (woken by freed slot)");
-                        #[cfg(feature = "opentelemetry")]
-                        if let Some((metrics, attrs)) = &metrics {
-                            metrics.reused_connections.add(1, attrs);
-                            metrics.streams.add(1, attrs);
-                            metrics
-                                .concurrent_streams
-                                .record(conn.inner.active.load(Ordering::Relaxed) as f64, attrs);
-                            metrics
-                                .active_connection_delay_nanoseconds
-                                .record(start.elapsed().as_nanos() as f64, attrs);
+                    match self.admit_with_permit(id, permit) {
+                        ConnectionResult::Connection(conn) => {
+                            #[cfg(feature = "opentelemetry")]
+                            if let Some((metrics, attrs)) = &metrics {
+                                metrics.reused_connections.add(1, attrs);
+                                metrics.streams.add(1, attrs);
+                                metrics
+                                    .concurrent_streams
+                                    .record(conn.inner.active.load(Ordering::Relaxed) as f64, attrs);
+                                metrics
+                                    .active_connection_delay_nanoseconds
+                                    .record(start.elapsed().as_nanos() as f64, attrs);
+                            }
+                            return Ok(ConnectionResult::Connection(conn));
                         }
-                        return Ok(ConnectionResult::Connection(conn));
+                        ConnectionResult::CreatePermit(pool_slot) => {
+                            #[cfg(feature = "opentelemetry")]
+                            if let Some((metrics, attrs)) = &metrics {
+                                metrics
+                                    .active_connection_delay_nanoseconds
+                                    .record(start.elapsed().as_nanos() as f64, attrs);
+                            }
+                            return Ok(ConnectionResult::CreatePermit(pool_slot));
+                        }
                     }
-                    trace!(?id, "multiplex pool: freed slot acquired, returning create permit");
-                    #[cfg(feature = "opentelemetry")]
-                    if let Some((metrics, attrs)) = &metrics {
-                        metrics
-                            .active_connection_delay_nanoseconds
-                            .record(start.elapsed().as_nanos() as f64, attrs);
-                    }
-                    return Ok(ConnectionResult::CreatePermit(PoolSlot(permit)));
                 }
             }
         }
@@ -1137,6 +1170,48 @@ mod tests {
         waited
             .unwrap()
             .expect("the slot freed by the failed create must wake the parked waiter");
+    }
+
+    /// The freed-slot admission path must apply the same broken/idle sweep as
+    /// the regular attempt path: a same-id connection that broke (and gained
+    /// free capacity) while a waiter was parked must not be handed out when a
+    /// freed permit wakes that waiter.
+    #[tokio::test]
+    async fn permit_admission_sweeps_broken_connections() {
+        let pool = MultiplexPool::try_new(2, 2).unwrap();
+        let svc = connector(pool.clone());
+
+        // Connection A (serial 0) for id 0, with free capacity (1 of 2), broken.
+        let c_a = connect(&svc, 0).await;
+        c_a.conn
+            .extensions()
+            .get_ref::<ConnectionHealthWatcher>()
+            .unwrap()
+            .mark_broken();
+
+        let permit = pool.total_slots.clone().try_acquire_owned().unwrap();
+        match pool.admit_with_permit(&TestId(0), permit) {
+            ConnectionResult::CreatePermit(_) => {}
+            ConnectionResult::Connection(_) => {
+                panic!("freed-slot admission handed out a broken connection")
+            }
+        }
+
+        // Healthy counterpart: a same-id connection with free capacity is reused.
+        let c_b = connect(&svc, 1).await;
+        drop(c_a);
+        let permit = pool.total_slots.clone().try_acquire_owned().unwrap();
+        match pool.admit_with_permit(&TestId(1), permit) {
+            ConnectionResult::Connection(conn) => {
+                assert_eq!(
+                    conn.serve(()).await.unwrap(),
+                    c_b.conn.serve(()).await.unwrap()
+                );
+            }
+            ConnectionResult::CreatePermit(_) => {
+                panic!("healthy same-id connection with free capacity must be reused")
+            }
+        }
     }
 
     /// A waiter parked on a full pool is woken when the last handle of an
