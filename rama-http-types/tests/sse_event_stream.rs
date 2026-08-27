@@ -590,3 +590,68 @@ async fn huge_event_does_not_inflate_next_payload_capacity() {
         data.capacity()
     );
 }
+
+/// Floods of bare separators are the densest possible event stream: every
+/// terminator dispatches an (empty) event, hammering the ready-cap pause /
+/// resume path and, past 1 MiB, the per-poll byte budget. Each flavor must
+/// decode completely, one event per separator.
+#[tokio::test]
+async fn dense_separator_floods_decode_completely() {
+    const N: usize = 1024 * 1024 + 3;
+    for (input, expected) in [
+        (vec![b'\n'; N], N),
+        (vec![b'\r'; N], N),
+        (b"\r\n".repeat(N / 2), N / 2),
+    ] {
+        let events = decode(vec![input]).await;
+        assert_eq!(expected, events.len());
+        assert!(events.iter().all(|ev| ev.data().is_none()));
+    }
+}
+
+/// The ready-event cap lands right after a scan block has grown large:
+/// a ~511 KiB data line forces block growth up to the biggest block, then
+/// a burst of empty lines hits the cap at its very start. Decoding must
+/// resume without losing or duplicating events, every repetition.
+#[tokio::test]
+async fn ready_cap_inside_a_grown_scan_block_resumes_correctly() {
+    const LINE_LEN: usize = 511 * 1024;
+    const BURST: usize = 63;
+    const REPS: usize = 4;
+
+    let mut unit = b"data: ".to_vec();
+    unit.extend(std::iter::repeat_n(b'x', LINE_LEN));
+    unit.push(b'\n');
+    unit.extend(std::iter::repeat_n(b'\n', BURST));
+    let mut input = Vec::new();
+    for _ in 0..REPS {
+        input.extend_from_slice(&unit);
+    }
+
+    let events = decode(vec![input]).await;
+    assert_eq!(REPS * BURST, events.len());
+    for (i, event) in events.iter().enumerate() {
+        if i % BURST == 0 {
+            assert_eq!(Some(LINE_LEN), event.data().map(String::len), "event {i}");
+        } else {
+            assert_eq!(None, event.data(), "event {i}");
+        }
+    }
+}
+
+/// One huge line of multibyte characters: incomplete UTF-8 sequences
+/// straddle scan-block edges and the per-poll byte budget alike, and must
+/// reassemble exactly like physical chunk splits do.
+#[tokio::test]
+async fn huge_multibyte_line_reassembles_across_all_boundaries() {
+    const CHARS: usize = 512 * 1024 + 1; // 2 bytes each: > 1 MiB budget
+    let mut input = b"data: ".to_vec();
+    input.extend_from_slice("é".repeat(CHARS).as_bytes());
+    input.extend_from_slice(b"\n\n");
+
+    let events = decode(vec![input]).await;
+    assert_eq!(1, events.len());
+    let data = events[0].data().unwrap();
+    assert_eq!(CHARS * "é".len(), data.len());
+    assert!(data.chars().all(|c| c == 'é'));
+}
