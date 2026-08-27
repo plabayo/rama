@@ -66,6 +66,10 @@ impl<T> Event<T> {
     }
 }
 
+/// Pre-reservation cap for the advisory data size hint; larger payloads
+/// simply grow the buffer from here on.
+const DATA_SIZE_HINT_CAP: usize = rama_utils::octets::mib(1);
+
 impl<T: EventDataWrite> Event<T> {
     pub(super) fn serialize(&self) -> Result<Bytes, BoxError> {
         // pre-reserve using the exactly-known field sizes; the data hint
@@ -85,6 +89,9 @@ impl<T: EventDataWrite> Event<T> {
             capacity += 28;
         }
         if let Some(hint) = self.data.as_ref().and_then(|data| data.size_hint()) {
+            // the hint is advisory (a custom impl can get it wrong): clamp
+            // so it can neither overflow nor drive an absurd reservation
+            let hint = hint.min(DATA_SIZE_HINT_CAP);
             capacity += hint + hint / 8 + 8;
         }
         let mut buffer = BytesMut::with_capacity(capacity);
@@ -358,6 +365,29 @@ mod tests {
                 .unwrap();
             assert_eq!(&bytes[..], expected);
         }
+    }
+
+    /// A wildly wrong custom size hint must stay advisory: serialization
+    /// neither overflows nor pre-reserves anywhere near the claimed size.
+    #[test]
+    fn absurd_data_size_hint_stays_advisory() {
+        struct LyingHint;
+
+        impl EventDataWrite for LyingHint {
+            fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), BoxError> {
+                w.write_all(b"x").map_err(Into::into)
+            }
+
+            fn size_hint(&self) -> Option<usize> {
+                Some(usize::MAX)
+            }
+        }
+
+        let bytes = Event::new().with_data(LyingHint).serialize().unwrap();
+        assert_eq!(&bytes[..], b"data: x\n\n".as_slice());
+
+        // multiline hint aggregation saturates instead of overflowing
+        assert_eq!(Some(usize::MAX), [LyingHint, LyingHint].size_hint());
     }
 
     #[test]

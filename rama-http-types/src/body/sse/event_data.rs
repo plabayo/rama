@@ -207,13 +207,14 @@ macro_rules! write_multiline_data {
         }
 
         fn size_hint(&self) -> Option<usize> {
-            let mut total = 0;
+            // element hints are advisory: saturate rather than overflow
+            let mut total = 0usize;
             let mut lines = 0usize;
             for element in self.iter() {
-                total += element.size_hint()?;
+                total = total.saturating_add(element.size_hint()?);
                 lines += 1;
             }
-            Some(total + lines.saturating_sub(1))
+            Some(total.saturating_add(lines.saturating_sub(1)))
         }
     };
 }
