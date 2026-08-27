@@ -4340,6 +4340,7 @@ dependencies = [
  "rama-http-types",
  "rama-net",
  "rama-tls",
+ "rama-tls-boring",
  "rama-tls-rustls",
  "rama-utils",
  "tokio",

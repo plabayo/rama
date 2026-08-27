@@ -147,8 +147,10 @@ impl<T> SystemProxyPacService for T where
 /// A snapshot of the operating system's proxy configuration.
 ///
 /// HTTP and HTTPS identify the destination scheme, not necessarily the
-/// transport protocol used to reach the proxy. A SOCKS5 proxy is used as a
-/// fallback when no scheme-specific proxy is configured. A PAC URI takes
+/// transport protocol used to reach the proxy. They do not apply to ICAP or
+/// arbitrary custom protocols merely because an HTTP proxy could tunnel those
+/// byte streams. A SOCKS5 proxy is used as a generic fallback when no
+/// scheme-specific proxy is configured. A PAC URI takes
 /// precedence over fixed proxies because it can make a per-request decision;
 /// each platform reader records whether its bypass entries apply before PAC.
 /// System proxy routing always bypasses loopback hosts, including before PAC
@@ -1706,6 +1708,43 @@ mod tests {
                 .to_str(),
             "https.proxy"
         );
+    }
+
+    #[tokio::test]
+    async fn fixed_web_proxies_do_not_expand_to_icap_or_custom_protocols() {
+        let web_only = SystemProxyConfig::default()
+            .with_http_proxy(proxy(Protocol::HTTP, "http.proxy", 8080))
+            .with_https_proxy(proxy(Protocol::HTTP, "https.proxy", 8443));
+        let (inner, seen) = recorder();
+        let service = SystemProxyLayer::from_cached(web_only).into_layer(inner);
+
+        for uri in ["icap://icap.example/scan", "custom://custom.example/"] {
+            service.serve(TestInput::new(uri)).await.unwrap();
+        }
+        assert!(seen.lock().iter().all(Option::is_none));
+
+        let with_socks = SystemProxyConfig::default().with_socks5_proxy(proxy(
+            Protocol::SOCKS5,
+            "socks.proxy",
+            1080,
+        ));
+        let (inner, seen) = recorder();
+        let service = SystemProxyLayer::from_cached(with_socks).into_layer(inner);
+
+        for uri in ["icap://icap.example/scan", "custom://custom.example/"] {
+            service.serve(TestInput::new(uri)).await.unwrap();
+        }
+        for routes in seen.lock().iter() {
+            assert_eq!(
+                routes.as_ref().unwrap().as_slice()[0]
+                    .proxy_address()
+                    .unwrap()
+                    .address
+                    .host
+                    .to_str(),
+                "socks.proxy",
+            );
+        }
     }
 
     #[tokio::test]

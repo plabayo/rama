@@ -13,18 +13,20 @@ use rama_net::client::{
     ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
 };
 use rama_net::extensions::StreamTransformed;
-use rama_net::{AuthorityInputExt, ProtocolInputExt};
+use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
 use rama_tls::client::{
     NegotiatedTlsParameters, ServerVerifyMode, TlsClientConfig, TlsServerCertPinCheck,
     TlsServerCertPins, TlsServerIdentity,
 };
-use rama_tls::{ApplicationProtocol, TlsTunnelMode, resolve_tls_tunnel};
+use rama_tls::{ApplicationProtocol, TlsAlpn, TlsTunnelMode, default_tls_alpn, resolve_tls_tunnel};
 use rama_utils::macros::generate_set_and_with;
 use std::fmt;
 
 #[cfg(feature = "http")]
 use super::set_alpn_with_coupled_alps;
-use super::{AutoTlsStream, BoringTlsConnectorConfig, TlsConnectorData};
+use super::{
+    AutoTlsStream, BoringTlsConnectorConfig, TlsConnectorData, set_alpn_list_with_coupled_alps,
+};
 
 use crate::{TlsStream, types::TlsTunnel};
 #[cfg(feature = "http")]
@@ -221,7 +223,7 @@ where
 
         // Use the authority host as the certificate identity unless overridden.
         let connector_data = self
-            .connector_data(input.extensions(), Some(&authority.host))
+            .connector_data(input.extensions(), app_protocol, Some(&authority.host))
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     .context("TlsConnector(auto): build connector configuration")
@@ -242,11 +244,16 @@ where
         let conn = AutoTlsStream::secure(stream);
 
         #[cfg(feature = "http")]
-        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)
-            .map_err(|error| {
-                ConnectionError::application(error, ConnectionErrorKind::Protocol)
-                    .context("TlsConnector(auto): validate negotiated HTTP version")
-            })?;
+        set_target_http_version(
+            app_protocol,
+            input.extensions(),
+            conn.extensions(),
+            &negotiated_params,
+        )
+        .map_err(|error| {
+            ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                .context("TlsConnector(auto): validate negotiated HTTP version")
+        })?;
 
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -280,8 +287,9 @@ where
             input.protocol(),
         );
 
+        let app_protocol = input.protocol();
         let connector_data = self
-            .connector_data(input.extensions(), Some(&authority.host))
+            .connector_data(input.extensions(), app_protocol, Some(&authority.host))
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     .context("TlsConnector(secure): build connector configuration")
@@ -294,11 +302,16 @@ where
         let conn = TlsStream::new(conn);
 
         #[cfg(feature = "http")]
-        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)
-            .map_err(|error| {
-                ConnectionError::application(error, ConnectionErrorKind::Protocol)
-                    .context("TlsConnector(secure): validate negotiated HTTP version")
-            })?;
+        set_target_http_version(
+            app_protocol,
+            input.extensions(),
+            conn.extensions(),
+            &negotiated_params,
+        )
+        .map_err(|error| {
+            ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                .context("TlsConnector(secure): validate negotiated HTTP version")
+        })?;
 
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -332,8 +345,12 @@ where
             });
         };
 
+        let tunnel_protocol = input
+            .extensions()
+            .get_ref::<TlsTunnel>()
+            .and_then(|tunnel| tunnel.application_protocol.as_ref());
         let connector_data = self
-            .connector_data(input.extensions(), maybe_server_host)
+            .connector_data(input.extensions(), tunnel_protocol, maybe_server_host)
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
                     .context("TlsConnector(tunnel): build connector configuration")
@@ -347,11 +364,16 @@ where
         let conn = AutoTlsStream::secure(stream);
 
         #[cfg(feature = "http")]
-        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)
-            .map_err(|error| {
-                ConnectionError::transport(error, ConnectionErrorKind::Protocol)
-                    .context("TlsConnector(tunnel): validate negotiated HTTP version")
-            })?;
+        set_target_http_version(
+            tunnel_protocol,
+            input.extensions(),
+            conn.extensions(),
+            &negotiated_params,
+        )
+        .map_err(|error| {
+            ConnectionError::transport(error, ConnectionErrorKind::Protocol)
+                .context("TlsConnector(tunnel): validate negotiated HTTP version")
+        })?;
 
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -373,10 +395,14 @@ fn server_identity_for(host: &Host) -> Result<String, BoxError> {
 
 #[cfg(feature = "http")]
 fn set_target_http_version(
+    application_protocol: Option<&Protocol>,
     request_extensions: &Extensions,
     conn_extensions: &Extensions,
     tls_params: &NegotiatedTlsParameters,
 ) -> Result<(), BoxError> {
+    if !application_protocol.is_some_and(Protocol::is_http_based) {
+        return Ok(());
+    }
     if let Some(proto) = tls_params.application_layer_protocol.as_ref() {
         let neg_version: Version = proto.try_into()?;
         if let Some(target_version) = request_extensions.get_ref::<TargetHttpVersion>()
@@ -401,23 +427,27 @@ fn set_target_http_version(
 impl<S, K> TlsConnector<S, K> {
     fn connector_data(
         &self,
-        extensions: &Extensions,
+        request_extensions: &Extensions,
+        application_protocol: Option<&Protocol>,
         maybe_server_host: Option<&Host>,
     ) -> Result<TlsConnectorData, BoxError> {
         // Create new extensions only for this function that also apply the base_config
+        let effective = request_extensions.fork();
         let extensions = if let Some(base) = &self.base_config {
-            &extensions.with_base(base.as_extensions())
+            effective.with_base(base.as_extensions())
         } else {
-            extensions
+            effective
         };
+
+        apply_default_alpn(request_extensions, &extensions, application_protocol);
 
         // When HTTP pins a concrete target version, force the TLS ALPN to match
         // it before the handshake
         #[cfg(feature = "http")]
-        resolve_http_alpn(extensions)?;
+        resolve_http_alpn(&extensions, application_protocol)?;
 
         let mut data =
-            TlsConnectorData::try_from(BoringTlsConnectorConfig::from_extensions(extensions))?;
+            TlsConnectorData::try_from(BoringTlsConnectorConfig::from_extensions(&extensions))?;
 
         // A configured server identity overrides the transport host.
         if data.server_name.is_none() {
@@ -428,11 +458,35 @@ impl<S, K> TlsConnector<S, K> {
     }
 }
 
+fn apply_default_alpn(
+    request_extensions: &Extensions,
+    effective_extensions: &Extensions,
+    application_protocol: Option<&Protocol>,
+) {
+    let alpn = request_extensions
+        .get_ref::<TlsAlpn>()
+        .cloned()
+        .or_else(|| {
+            application_protocol
+                .map(|protocol| default_tls_alpn(protocol).unwrap_or_else(TlsAlpn::empty))
+        });
+    if let Some(alpn) = alpn {
+        let coupling = set_alpn_list_with_coupled_alps(effective_extensions, alpn);
+        tracing::trace!(?coupling, "coupled ALPS to protocol-derived TLS ALPN");
+    }
+}
+
 /// Force the TLS ALPN to match a concrete [`TargetHttpVersion`] when HTTP pins
 /// one. Otherwise protocols like WebSocket can negotiate `h2` even though the
 /// request requires an HTTP/1.1 upgrade.
 #[cfg(feature = "http")]
-fn resolve_http_alpn(ext: &Extensions) -> Result<(), BoxError> {
+fn resolve_http_alpn(
+    ext: &Extensions,
+    application_protocol: Option<&Protocol>,
+) -> Result<(), BoxError> {
+    if application_protocol.is_some_and(|protocol| !protocol.is_http_based()) {
+        return Ok(());
+    }
     let Some(target_version) = ext.get_ref::<TargetHttpVersion>() else {
         return Ok(());
     };
@@ -814,7 +868,7 @@ mod tests {
         let host = Host::from(std::net::Ipv4Addr::LOCALHOST);
 
         let data = connector
-            .connector_data(&extensions, Some(&host))
+            .connector_data(&extensions, None, Some(&host))
             .expect("connector data");
 
         assert_eq!(data.server_name, Some(host));
@@ -858,7 +912,7 @@ mod tests {
         extensions.insert(TlsAlpn::http_auto());
         extensions.insert(FallbackHttpVersion(Version::HTTP_11));
 
-        resolve_http_alpn(&extensions).unwrap();
+        resolve_http_alpn(&extensions, Some(&Protocol::HTTPS)).unwrap();
         assert_eq!(
             extensions.get_ref::<TlsAlpn>().map(|alpn| alpn.0.clone()),
             Some(TlsAlpn::http_auto().0),
@@ -882,7 +936,8 @@ mod tests {
             });
             extensions.insert(TargetHttpVersion(version));
 
-            resolve_http_alpn(&extensions).expect("resolve concrete HTTP ALPN");
+            resolve_http_alpn(&extensions, Some(&Protocol::HTTPS))
+                .expect("resolve concrete HTTP ALPN");
 
             let expected_alpn = ApplicationProtocol::try_from(version).unwrap();
             assert_eq!(
@@ -898,5 +953,49 @@ mod tests {
                 Some((expected_alps.as_slice(), true))
             );
         }
+    }
+
+    #[test]
+    fn icaps_shadows_inherited_http_alpn_and_alps() {
+        use crate::client::BoringAlps;
+
+        let base = Extensions::new();
+        base.insert(TlsAlpn::http_auto());
+        base.insert(BoringAlps {
+            protocols: vec![ApplicationProtocol::HTTP_2],
+            new_codepoint: true,
+        });
+        let request = Extensions::new();
+        let effective = request.fork().with_base(&base);
+
+        apply_default_alpn(&request, &effective, Some(&Protocol::ICAPS));
+
+        assert_eq!(
+            effective.get_ref::<TlsAlpn>().map(|alpn| alpn.0.as_slice()),
+            Some([].as_slice()),
+        );
+        assert_eq!(
+            effective
+                .get_ref::<BoringAlps>()
+                .map(|alps| (alps.protocols.as_slice(), alps.new_codepoint)),
+            Some(([].as_slice(), true)),
+        );
+    }
+
+    #[cfg(feature = "http")]
+    #[test]
+    fn icaps_ignores_http_version_hint() {
+        let extensions = Extensions::new();
+        extensions.insert(TlsAlpn::empty());
+        extensions.insert(TargetHttpVersion(Version::HTTP_2));
+
+        resolve_http_alpn(&extensions, Some(&Protocol::ICAPS)).unwrap();
+
+        assert_eq!(
+            extensions
+                .get_ref::<TlsAlpn>()
+                .map(|alpn| alpn.0.as_slice()),
+            Some([].as_slice()),
+        );
     }
 }

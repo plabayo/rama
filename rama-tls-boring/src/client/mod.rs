@@ -17,7 +17,8 @@ pub use connector::{
 
 mod config;
 #[cfg(feature = "http")]
-pub(crate) use config::{AlpsCoupling, set_alpn_with_coupled_alps};
+pub(crate) use config::set_alpn_with_coupled_alps;
+pub(crate) use config::{AlpsCoupling, set_alpn_list_with_coupled_alps};
 #[doc(inline)]
 pub use config::{
     BoringAlps, BoringCertCompression, BoringCipherSuites, BoringClientConfigExt,

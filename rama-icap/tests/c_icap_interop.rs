@@ -10,8 +10,6 @@ use std::{
     },
 };
 
-#[cfg(feature = "http")]
-use rama_core::{Layer as _, Service as _, service::service_fn};
 use rama_core::{
     ServiceInput,
     bytes::{Bytes, BytesMut},
@@ -29,20 +27,22 @@ use rama_icap::{
     proto::{EncapsulatedKind, Method, MethodKind, Preview, StatusCode},
 };
 use tokio::net::TcpStream;
-
 #[cfg(feature = "http")]
-use rama_http_types::{
-    Body, Request as HttpRequest, Response as HttpResponse,
-    body::{Frame, util::BodyExt as _},
-};
-#[cfg(feature = "http")]
-use rama_icap::http::{
-    ClientRequest as HttpClientRequest, Encapsulated as HttpEncapsulated,
-    layer::{AdaptationLayer, ReqmodResult, RespmodResult, ServiceEndpoint},
-};
-#[cfg(feature = "http")]
-use rama_net::client::{
-    ConnectRequest, ConnectionError, ConnectionErrorKind, EstablishedClientConnection,
+use {
+    rama_core::{Layer as _, Service as _, service::service_fn},
+    rama_http_types::{
+        Body, Request as HttpRequest, Response as HttpResponse,
+        body::{Frame, util::BodyExt as _},
+    },
+    rama_icap::http::{
+        ClientRequest as HttpClientRequest, Encapsulated as HttpEncapsulated,
+        layer::{AdaptationLayer, ReqmodResult, RespmodResult, ServiceEndpoint},
+    },
+    rama_net::client::{
+        ConnectRequest, ConnectionError, ConnectionErrorKind, EstablishedClientConnection,
+    },
+    rama_tls::client::{ServerVerifyMode, TlsClientConfig},
+    rama_tls_boring::client::TlsConnector,
 };
 
 fn oracle_addr(name: &str) -> Option<SocketAddr> {
@@ -1071,5 +1071,64 @@ async fn http_layer_detours_through_c_icap() {
     assert_eq!(
         response.into_body().collect().await.unwrap().to_bytes(),
         "layer response",
+    );
+}
+
+#[cfg(feature = "http")]
+#[tokio::test]
+#[ignore = "requires the pinned TLS-wrapped c-icap Docker oracle"]
+async fn http_layer_detours_through_tls_wrapped_c_icap() {
+    let Some(echo_addr) = oracle_addr("RAMA_ICAP_ORACLE_TLS_ECHO_ADDR") else {
+        return;
+    };
+    let transport = service_fn(async |input: ConnectRequest| {
+        let stream = TcpStream::connect(input.authority.to_string())
+            .await
+            .map_err(|error| ConnectionError::transport(error, ConnectionErrorKind::Unavailable))?;
+        Ok::<_, ConnectionError>(EstablishedClientConnection {
+            input,
+            conn: ServiceInput::new(stream),
+        })
+    });
+    let tls = TlsConnector::auto(transport)
+        .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
+    let client = rama_icap::client::Client::new(tls);
+    let endpoint = ServiceEndpoint::new(format!("icaps://{echo_addr}/echo"))
+        .unwrap()
+        .with_preview(Preview::new(4));
+
+    OptionsService::new(client.clone())
+        .serve(endpoint.options_request().unwrap())
+        .await
+        .unwrap();
+
+    let inner = service_fn(async |request: HttpRequest<Body>| {
+        assert!(request.extensions().contains::<ReqmodResult>());
+        assert_eq!(
+            request.into_body().collect().await.unwrap().to_bytes(),
+            "tls layer request",
+        );
+        Ok::<_, std::convert::Infallible>(HttpResponse::new(Body::from("tls layer response")))
+    });
+    let response = AdaptationLayer::new(client)
+        .with_request_service(endpoint.clone())
+        .with_response_service(endpoint)
+        .layer(inner)
+        .serve(
+            HttpRequest::builder()
+                .method("POST")
+                .uri("/tls-layer")
+                .header("Host", "example.test")
+                .body(Body::from("tls layer request"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert!(response.extensions().contains::<ReqmodResult>());
+    assert!(response.extensions().contains::<RespmodResult>());
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "tls layer response",
     );
 }

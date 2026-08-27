@@ -1,7 +1,7 @@
 use itertools::Itertools;
 use rama_boring::x509::store::X509Store;
 use rama_core::conversion::RamaFrom;
-use rama_core::extensions::{Extension, FromExtensions};
+use rama_core::extensions::{Extension, Extensions, FromExtensions};
 use rama_tls::client::{
     ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsServerCertPins,
     TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
@@ -14,7 +14,7 @@ use rama_utils::macros::generate_set_and_with;
 use std::sync::Arc;
 
 #[cfg(feature = "http")]
-use {rama_core::extensions::Extensions, rama_utils::collections::smallvec::smallvec};
+use rama_utils::collections::smallvec::smallvec;
 
 use crate::RamaTlsBoringCrateMarker;
 
@@ -262,7 +262,6 @@ pub struct BoringAlps {
 }
 
 /// Result of coupling a concrete ALPN offer to mirrored ALPS support.
-#[cfg(feature = "http")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AlpsCoupling {
     /// The config did not contain ALPS.
@@ -271,6 +270,37 @@ pub(crate) enum AlpsCoupling {
     Retained,
     /// ALPS was suppressed because it did not include the selected protocol.
     Suppressed,
+}
+
+/// Set an ALPN offer and keep inherited ALPS protocols within that offer.
+pub(crate) fn set_alpn_list_with_coupled_alps(
+    extensions: &Extensions,
+    alpn: TlsAlpn,
+) -> AlpsCoupling {
+    let offered = alpn.0.clone();
+    extensions.insert(alpn);
+
+    let Some((protocols, new_codepoint)) = extensions
+        .get_ref::<BoringAlps>()
+        .map(|alps| (alps.protocols.clone(), alps.new_codepoint))
+    else {
+        return AlpsCoupling::NotConfigured;
+    };
+
+    let protocols: Vec<_> = protocols
+        .into_iter()
+        .filter(|protocol| offered.contains(protocol))
+        .collect();
+    let coupling = if protocols.is_empty() {
+        AlpsCoupling::Suppressed
+    } else {
+        AlpsCoupling::Retained
+    };
+    extensions.insert(BoringAlps {
+        protocols,
+        new_codepoint,
+    });
+    coupling
 }
 
 /// Offer exactly one ALPN protocol and keep ALPS coherent with that offer.
@@ -297,25 +327,7 @@ pub(crate) fn set_alpn_with_coupled_alps(
     extensions: &Extensions,
     protocol: ApplicationProtocol,
 ) -> AlpsCoupling {
-    extensions.insert(TlsAlpn(smallvec![protocol.clone()]));
-
-    let Some((supports_protocol, new_codepoint)) = extensions
-        .get_ref::<BoringAlps>()
-        .map(|alps| (alps.protocols.contains(&protocol), alps.new_codepoint))
-    else {
-        return AlpsCoupling::NotConfigured;
-    };
-
-    let (protocols, coupling) = if supports_protocol {
-        (vec![protocol], AlpsCoupling::Retained)
-    } else {
-        (Vec::new(), AlpsCoupling::Suppressed)
-    };
-    extensions.insert(BoringAlps {
-        protocols,
-        new_codepoint,
-    });
-    coupling
+    set_alpn_list_with_coupled_alps(extensions, TlsAlpn(smallvec![protocol]))
 }
 
 /// ClientHello extension ordering.

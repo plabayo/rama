@@ -243,6 +243,24 @@ impl Protocol {
         }
     }
 
+    /// Returns `true` for application protocols implemented on top of HTTP.
+    ///
+    /// The HTTP version and transport are orthogonal to this classification:
+    /// HTTP/3 is still HTTP-based even though it runs over QUIC.
+    #[must_use]
+    pub fn is_http_based(&self) -> bool {
+        match &self.0 {
+            ProtocolKind::Http | ProtocolKind::Https | ProtocolKind::Ws | ProtocolKind::Wss => true,
+            ProtocolKind::Icap
+            | ProtocolKind::Icaps
+            | ProtocolKind::Socks5
+            | ProtocolKind::Socks5h
+            | ProtocolKind::File
+            | ProtocolKind::Data
+            | ProtocolKind::Custom(_) => false,
+        }
+    }
+
     /// Returns `true` if this protocol is socks5.
     #[must_use]
     pub fn is_socks5(&self) -> bool {
@@ -757,6 +775,24 @@ mod tests {
         assert!(!Protocol::FILE.is_secure());
         assert!(!Protocol::DATA.is_secure());
         assert!(!Protocol::from_static("custom").is_secure());
+    }
+
+    #[test]
+    fn test_scheme_is_http_based() {
+        for protocol in [Protocol::HTTP, Protocol::HTTPS, Protocol::WS, Protocol::WSS] {
+            assert!(protocol.is_http_based(), "protocol: {protocol}");
+        }
+        for protocol in [
+            Protocol::ICAP,
+            Protocol::ICAPS,
+            Protocol::SOCKS5,
+            Protocol::SOCKS5H,
+            Protocol::FILE,
+            Protocol::DATA,
+            Protocol::from_static("custom"),
+        ] {
+            assert!(!protocol.is_http_based(), "protocol: {protocol}");
+        }
     }
 
     #[test]

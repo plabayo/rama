@@ -13,6 +13,7 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     extensions::{Extension, ExtensionsRef as _},
     futures::{StreamExt as _, stream},
+    io::Io,
     service::service_fn,
 };
 use rama_http_types::{
@@ -34,6 +35,7 @@ use rama_tls::{
     client::{ServerVerifyMode, TlsClientConfig},
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
 };
+use rama_tls_boring::client::TlsConnector as BoringTlsConnector;
 use rama_tls_rustls::{client::TlsConnector, server::TlsAcceptorLayer};
 
 use super::*;
@@ -162,6 +164,8 @@ fn mock_icap_client<S>(
 #[derive(Clone)]
 struct TlsIcapHandler<S> {
     adaptation: S,
+    secure: bool,
+    port: Option<u16>,
 }
 
 impl<S> rama_core::Service<RawIncomingRequest> for TlsIcapHandler<S>
@@ -172,7 +176,10 @@ where
     type Error = BoxError;
 
     async fn serve(&self, request: RawIncomingRequest) -> Result<OutgoingResponse, BoxError> {
-        assert!(request.extensions().contains::<SecureTransport>());
+        assert_eq!(
+            request.extensions().contains::<SecureTransport>(),
+            self.secure,
+        );
         let method = request.request().method();
         {
             let mut slots = [HeaderSlot::EMPTY; 16];
@@ -181,10 +188,14 @@ where
             assert_eq!(uri.scheme(), &Protocol::ICAP);
             assert_eq!(uri.host(), Some("icap.test"));
             assert_eq!(uri.path(), "/scan");
-            assert_eq!(uri.port().as_u16(), Some(Protocol::ICAPS_DEFAULT_PORT));
+            assert_eq!(uri.port().as_u16(), self.port);
+            let expected_host = self.port.map_or_else(
+                || "icap.test".to_owned(),
+                |port| format!("icap.test:{port}"),
+            );
             assert_eq!(
                 head.header(header::HOST).and_then(|value| value.as_bytes()),
-                Some(b"icap.test:11344".as_slice()),
+                Some(expected_host.as_bytes()),
             );
         }
         match method {
@@ -204,18 +215,15 @@ struct TlsIcapConnectionServer<S> {
     inner: Server<S>,
 }
 
-impl<S> rama_core::Service<rama_tls_rustls::server::TlsStream<MockSocket>>
-    for TlsIcapConnectionServer<S>
+impl<S, IO> rama_core::Service<IO> for TlsIcapConnectionServer<S>
 where
+    IO: Io + Unpin + rama_core::extensions::ExtensionsRef,
     S: rama_core::Service<RawIncomingRequest, Output = OutgoingResponse, Error = BoxError>,
 {
     type Output = ();
     type Error = Infallible;
 
-    async fn serve(
-        &self,
-        io: rama_tls_rustls::server::TlsStream<MockSocket>,
-    ) -> Result<(), Infallible> {
+    async fn serve(&self, io: IO) -> Result<(), Infallible> {
         if let Err(error) = self.inner.serve_connection(io).await {
             assert_eq!(error.kind(), crate::server::ServerErrorKind::Connection);
         }
@@ -494,6 +502,8 @@ async fn icaps_endpoint_uses_direct_tls_for_options_reqmod_and_respmod() {
     let icap_server = Server::new(
         TlsIcapHandler {
             adaptation: HttpService::new(service_fn(serve_adaptation)),
+            secure: true,
+            port: Some(Protocol::ICAPS_DEFAULT_PORT),
         },
         b"\"rama-tls\"",
     )
@@ -567,6 +577,89 @@ async fn icaps_endpoint_uses_direct_tls_for_options_reqmod_and_respmod() {
         response.into_body().collect().await.unwrap().to_bytes(),
         "secure-response"
     );
+}
+
+#[tokio::test]
+async fn boring_icaps_interoperates_for_options_reqmod_and_respmod() {
+    let server_auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::generated_ca_for(
+        Domain::from_static("icap.test"),
+    ))
+    .unwrap();
+    let trust_anchor = server_auth.cert_chain.last().unwrap().clone();
+    let tls_config = TlsServerConfig::new().with_single_cert(server_auth);
+    let icap_server = Server::new(
+        TlsIcapHandler {
+            adaptation: HttpService::new(service_fn(serve_adaptation)),
+            secure: true,
+            port: Some(Protocol::ICAPS_DEFAULT_PORT),
+        },
+        b"\"rama-boring\"",
+    )
+    .unwrap();
+    let server = TlsAcceptorLayer::new(tls_config)
+        .into_layer(TlsIcapConnectionServer { inner: icap_server });
+    let transport = MockConnectorService::new(move || server.clone()).with_max_buffer_size(4096);
+    let tls = BoringTlsConnector::auto(transport).with_base_config(
+        TlsClientConfig::new()
+            .with_server_verify(ServerVerifyMode::Auto)
+            .try_with_server_trust_anchors([trust_anchor])
+            .unwrap(),
+    );
+    let client = crate::client::Client::new(tls);
+    let endpoint = ServiceEndpoint::new("icaps://icap.test/scan").unwrap();
+
+    OptionsService::new(client.clone())
+        .serve(endpoint.options_request().unwrap())
+        .await
+        .unwrap();
+
+    let inner = service_fn(async |request: Request<Body>| {
+        assert_eq!(request.headers()["x-reqmod"], "yes");
+        Ok::<_, Infallible>(Response::new(Body::from("boring-response")))
+    });
+    let response = AdaptationLayer::new(client)
+        .with_request_service(endpoint.clone())
+        .with_response_service(endpoint)
+        .layer(inner)
+        .serve(Request::new(Body::from("boring-request")))
+        .await
+        .unwrap();
+
+    assert_eq!(response.headers()["x-respmod"], "yes");
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "boring-response",
+    );
+}
+
+#[tokio::test]
+async fn boring_icaps_rejects_wrong_certificate_identity() {
+    let server_auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::generated_ca_for(
+        Domain::from_static("wrong.test"),
+    ))
+    .unwrap();
+    let trust_anchor = server_auth.cert_chain.last().unwrap().clone();
+    let tls_config = TlsServerConfig::new().with_single_cert(server_auth);
+    let icap_server = Server::new(
+        HttpService::new(service_fn(serve_adaptation)),
+        b"\"rama-wrong-cert\"",
+    )
+    .unwrap();
+    let server = TlsAcceptorLayer::new(tls_config)
+        .into_layer(TlsIcapConnectionServer { inner: icap_server });
+    let transport = MockConnectorService::new(move || server.clone()).with_max_buffer_size(4096);
+    let tls = BoringTlsConnector::auto(transport).with_base_config(
+        TlsClientConfig::new()
+            .with_server_verify(ServerVerifyMode::Auto)
+            .try_with_server_trust_anchors([trust_anchor])
+            .unwrap(),
+    );
+    let endpoint = ServiceEndpoint::new("icaps://icap.test/scan").unwrap();
+
+    OptionsService::new(crate::client::Client::new(tls))
+        .serve(endpoint.options_request().unwrap())
+        .await
+        .unwrap_err();
 }
 
 #[tokio::test]
