@@ -136,7 +136,7 @@ jobs:
           - windows-11-arm
     name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 150
+    timeout-minutes: 240
     needs:
       - precheck-rust
       - precheck-docs

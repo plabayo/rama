@@ -633,12 +633,14 @@ mod upgrades {
                             "inner h1 connection for upgradeable connection was Some above",
                         );
                         let Parts { io, read_buf } = inner.into_parts();
-                        let upgraded = Upgraded::new(io, read_buf);
-                        // An upgraded stream no longer belongs to the HTTP connection pool.
-                        upgraded
-                            .extensions()
+                        // The h1 connection is consumed by the upgrade and no longer
+                        // belongs to the HTTP connection pool. The upgraded stream
+                        // forks these extensions, so it starts with health state of
+                        // its own instead of inheriting this broken mark.
+                        io.extensions()
                             .get_ref_or_insert(ConnectionHealthWatcher::default)
                             .mark_broken();
+                        let upgraded = Upgraded::new(io, read_buf);
                         pending.fulfill(upgraded);
                         Ok(())
                     }

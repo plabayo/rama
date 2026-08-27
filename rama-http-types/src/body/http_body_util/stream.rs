@@ -142,7 +142,7 @@ mod tests {
     use crate::body::http_body::Frame;
     use crate::body::http_body_util::{BodyExt, BodyStream, StreamBody};
     use bytes::Bytes;
-    use futures_util::StreamExt;
+    use rama_core::futures::StreamExt;
     use std::convert::Infallible;
 
     #[tokio::test]
@@ -152,7 +152,7 @@ mod tests {
             Ok(Frame::data(Bytes::from(vec![2]))),
             Ok(Frame::data(Bytes::from(vec![3]))),
         ];
-        let stream = futures_util::stream::iter(chunks);
+        let stream = rama_core::futures::stream::iter(chunks);
         let mut body = StreamBody::new(stream);
 
         assert_eq!(
@@ -196,7 +196,7 @@ mod tests {
             Ok(Frame::data(Bytes::from(vec![2]))),
             Ok(Frame::data(Bytes::from(vec![3]))),
         ];
-        let stream = futures_util::stream::iter(chunks);
+        let stream = rama_core::futures::stream::iter(chunks);
         let body = StreamBody::new(stream);
 
         let mut stream = BodyStream::new(body);

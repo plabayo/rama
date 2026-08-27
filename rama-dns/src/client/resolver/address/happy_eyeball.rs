@@ -76,7 +76,15 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
     /// literal host or in AAAA records — canonicalize to the embedded
     /// IPv4 address and classify as IPv4 for the IP modes.
     ///
+    /// `localhost` and `*.localhost` names resolve locally to the loopback
+    /// addresses per [RFC 6761, Section 6.3] — deliberately WITHOUT
+    /// consulting the configured resolver, custom or global: such names
+    /// always denote loopback, and mapping them elsewhere violates the RFC.
+    /// A [`DnsAddresssResolverOverwrite`] extension on the request is the
+    /// explicit per-request escape hatch and keeps full precedence.
+    ///
     /// [RFC 4291, Section 2.5.5.2]: https://datatracker.ietf.org/doc/html/rfc4291#section-2.5.5.2
+    /// [RFC 6761, Section 6.3]: https://datatracker.ietf.org/doc/html/rfc6761#section-6.3
     pub fn lookup_ip(self) -> impl Stream<Item = Result<IpAddr, OpaqueError>> + Send + 'a {
         let ip_mode = self
             .extensions
@@ -124,6 +132,32 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
             .extensions
             .as_ref()
             .and_then(|ext| ext.get_ref::<DnsAddresssResolverOverwrite>());
+
+        // RFC 6761, Section 6.3: `localhost` (and any `*.localhost` name)
+        // always denotes the loopback address — answer locally instead of
+        // consulting any resolver. An explicit DNS overwrite extension
+        // still takes precedence and keeps the regular path.
+        if maybe_dns_overwrite.is_none() && domain.is_loopback() {
+            let candidates = match dns_mode {
+                DnsResolveIpMode::Dual => vec![
+                    Ok(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)),
+                    Ok(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+                ],
+                DnsResolveIpMode::DualPreferIpV4 => vec![
+                    Ok(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+                    Ok(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)),
+                ],
+                DnsResolveIpMode::SingleIpV4 => {
+                    vec![Ok(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))]
+                }
+                DnsResolveIpMode::SingleIpV6 => {
+                    vec![Ok(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST))]
+                }
+            };
+            return HappyEyeballIpStream::Static {
+                stream: stream::iter(candidates),
+            };
+        }
 
         let make_ipv4_stream = || {
             stream::StreamExt::flatten(stream::iter(
@@ -198,6 +232,10 @@ pin_project! {
             #[pin]
             stream: rama_core::stream::Once<Result<IpAddr,OpaqueError>>,
         },
+        Static {
+            #[pin]
+            stream: stream::Iter<std::vec::IntoIter<Result<IpAddr,OpaqueError>>>,
+        },
         SingleIpV4 {
             #[pin]
             stream: V4,
@@ -219,6 +257,7 @@ impl<V4: Stream<Item = Result<IpAddr, OpaqueError>>, V6: Stream<Item = Result<Ip
             HappyEyeballIpStreamProj::Dual { stream } => stream.poll_next(cx),
             HappyEyeballIpStreamProj::DualPreferIpV4 { stream } => stream.poll_next(cx),
             HappyEyeballIpStreamProj::Once { stream } => stream.poll_next(cx),
+            HappyEyeballIpStreamProj::Static { stream } => stream.poll_next(cx),
             HappyEyeballIpStreamProj::SingleIpV4 { stream } => stream.poll_next(cx),
             HappyEyeballIpStreamProj::SingleIpV6 { stream } => stream.poll_next(cx),
         }
@@ -230,6 +269,7 @@ impl<V4: Stream<Item = Result<IpAddr, OpaqueError>>, V6: Stream<Item = Result<Ip
             Self::Dual { stream } => stream.size_hint(),
             Self::DualPreferIpV4 { stream } => stream.size_hint(),
             Self::Once { stream } => stream.size_hint(),
+            Self::Static { stream } => stream.size_hint(),
             Self::SingleIpV4 { stream } => stream.size_hint(),
             Self::SingleIpV6 { stream } => stream.size_hint(),
         }
@@ -361,6 +401,125 @@ mod tests {
             first.unwrap(),
             "192.0.2.1".parse::<std::net::IpAddr>().unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn localhost_names_resolve_locally_without_dns_lookup() {
+        // RFC 6761, Section 6.3: `localhost` names answer locally. The
+        // empty resolver proves no resolver is consulted: falling through
+        // to the domain path would produce an empty stream.
+        for name in ["localhost", "api.localhost", "a.b.localhost"] {
+            let host = Host::Name(rama_net::address::Domain::from_static(name));
+            let stream = EmptyDnsResolver.happy_eyeballs_resolver(host).lookup_ip();
+            let ips: Vec<_> = rama_core::futures::StreamExt::collect::<Vec<_>>(stream)
+                .await
+                .into_iter()
+                .map(Result::unwrap)
+                .collect();
+            assert_eq!(
+                vec![
+                    std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                ],
+                ips,
+                "name: {name}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn localhost_respects_dns_resolve_ip_mode() {
+        use rama_core::extensions::Extensions;
+        use rama_net::mode::DnsResolveIpMode;
+
+        for (mode, expected) in [
+            (
+                DnsResolveIpMode::SingleIpV4,
+                vec![std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)],
+            ),
+            (
+                DnsResolveIpMode::SingleIpV6,
+                vec![std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)],
+            ),
+            (
+                DnsResolveIpMode::DualPreferIpV4,
+                vec![
+                    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                    std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+                ],
+            ),
+        ] {
+            let ext = Extensions::new();
+            ext.insert(mode);
+            let host = Host::Name(rama_net::address::Domain::from_static("localhost"));
+            let stream = EmptyDnsResolver
+                .happy_eyeballs_resolver(host)
+                .with_extensions(&ext)
+                .lookup_ip();
+            let ips: Vec<_> = rama_core::futures::StreamExt::collect::<Vec<_>>(stream)
+                .await
+                .into_iter()
+                .map(Result::unwrap)
+                .collect();
+            assert_eq!(expected, ips, "mode: {mode:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn localhost_names_bypass_custom_resolvers() {
+        // RFC 6761, Section 6.3 takes precedence over any configured
+        // resolver: a custom resolver mapping `svc.localhost` elsewhere
+        // is (deliberately) never consulted for localhost names.
+        let custom: std::net::Ipv4Addr = "192.0.2.1".parse().unwrap();
+        let host = Host::Name(rama_net::address::Domain::from_static("svc.localhost"));
+        let stream = custom.happy_eyeballs_resolver(host).lookup_ip();
+        let ips: Vec<_> = rama_core::futures::StreamExt::collect::<Vec<_>>(stream)
+            .await
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(
+            vec![
+                std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            ],
+            ips,
+        );
+    }
+
+    #[tokio::test]
+    async fn dns_overwrite_extension_wins_over_localhost_fast_path() {
+        use crate::client::resolver::address::DnsAddresssResolverOverwrite;
+        use rama_core::extensions::Extensions;
+
+        // the per-request overwrite is the explicit escape hatch: it keeps
+        // full precedence, and the localhost fast path steps aside
+        let overwrite: std::net::Ipv4Addr = "192.0.2.7".parse().unwrap();
+        let ext = Extensions::new();
+        ext.insert(DnsAddresssResolverOverwrite::new(overwrite));
+        let host = Host::Name(rama_net::address::Domain::from_static("svc.localhost"));
+        let stream = EmptyDnsResolver
+            .happy_eyeballs_resolver(host)
+            .with_extensions(&ext)
+            .lookup_ip();
+        let ips: Vec<_> = rama_core::futures::StreamExt::collect::<Vec<_>>(stream)
+            .await
+            .into_iter()
+            .map(Result::unwrap)
+            .collect();
+        assert_eq!(vec!["192.0.2.7".parse::<std::net::IpAddr>().unwrap()], ips);
+    }
+
+    #[tokio::test]
+    async fn localhost_like_registrable_domains_still_resolve_via_dns() {
+        // `localhost.example.com` is NOT an RFC 6761 localhost name:
+        // it must go through the regular resolver path (empty here).
+        let host = Host::Name(rama_net::address::Domain::from_static(
+            "localhost.example.com",
+        ));
+        let stream = EmptyDnsResolver.happy_eyeballs_resolver(host).lookup_ip();
+        let ips: Vec<_> = rama_core::futures::StreamExt::collect::<Vec<_>>(stream).await;
+        assert!(ips.is_empty());
     }
 
     #[tokio::test]

@@ -43,33 +43,30 @@ impl<W: std::io::Write> std::io::Write for LinePrefixWriter<'_, W> {
             }
         }
 
+        // jump from terminator to terminator: everything in between is
+        // bulk-written, single-line data in exactly one write
         let mut index = start;
-        while index < buf.len() {
-            match buf[index] {
-                b'\r' => {
-                    self.inner.write_all(&buf[start..=index])?;
-                    index += 1;
-
-                    if index == buf.len() {
-                        self.pending_cr = true;
-                        start = index;
-                    } else {
-                        if buf[index] == b'\n' {
-                            self.inner.write_all(&buf[index..=index])?;
-                            index += 1;
-                        }
-                        self.inner.write_all(self.prefix)?;
-                        start = index;
-                    }
+        while let Some(pos) = memchr::memchr2(b'\r', b'\n', &buf[index..]).map(|p| index + p) {
+            if buf[pos] == b'\r' {
+                let mut end = pos + 1;
+                if end == buf.len() {
+                    // an LF may still follow in the next write call
+                    self.inner.write_all(&buf[start..end])?;
+                    self.pending_cr = true;
+                    return Ok(buf.len());
                 }
-                b'\n' => {
-                    self.inner.write_all(&buf[start..=index])?;
-                    self.inner.write_all(self.prefix)?;
-                    index += 1;
-                    start = index;
+                if buf[end] == b'\n' {
+                    end += 1;
                 }
-                _ => index += 1,
+                self.inner.write_all(&buf[start..end])?;
+                self.inner.write_all(self.prefix)?;
+                index = end;
+            } else {
+                self.inner.write_all(&buf[start..=pos])?;
+                self.inner.write_all(self.prefix)?;
+                index = pos + 1;
             }
+            start = index;
         }
 
         self.inner.write_all(&buf[start..])?;
@@ -84,6 +81,15 @@ impl<W: std::io::Write> std::io::Write for LinePrefixWriter<'_, W> {
 /// Trait that can be implemented for a custom data type that is to be written (by a server).
 pub trait EventDataWrite {
     fn write_data(&self, w: &mut impl std::io::Write) -> Result<(), BoxError>;
+
+    /// Best-effort size in bytes of the data [`write_data`] will produce
+    /// (excluding any `data: ` line prefixes inserted around it), used to
+    /// pre-reserve serialization buffers. `None` when unknown up front.
+    ///
+    /// [`write_data`]: EventDataWrite::write_data
+    fn size_hint(&self) -> Option<usize> {
+        None
+    }
 }
 
 /// Trait that can be implemented for a custom data type that is to be read (by a client).
@@ -107,6 +113,10 @@ macro_rules! write_str_data {
             w.write_all(self.as_bytes())
                 .context("write string event data")
         }
+
+        fn size_hint(&self) -> Option<usize> {
+            Some(self.len())
+        }
     };
 }
 
@@ -122,17 +132,31 @@ impl EventDataWrite for String {
     write_str_data!();
 }
 
+/// Upper bound on the previous-payload capacity hint: one huge event must
+/// not make every following (possibly tiny) payload pre-reserve that much.
+const PAYLOAD_SIZE_HINT_CAP: usize = rama_utils::octets::mib(1);
+
 #[derive(Debug)]
 /// [`EventDataLineReader`] for the [`EventDataRead`] implementation of [`String`].
 pub struct EventDataStringReader {
     buf: Option<String>,
+    // size of the previously produced payload (capped): streams tend to
+    // carry similarly-sized events, so pre-reserving it avoids the realloc
+    // ladder (and its copies) while appending line by line
+    size_hint: usize,
 }
 
 impl EventDataLineReader for EventDataStringReader {
     type Data = String;
 
+    #[inline]
     fn read_line(&mut self, line: &str) -> Result<(), BoxError> {
-        let buf = self.buf.get_or_insert_default();
+        let buf = match &mut self.buf {
+            Some(buf) => buf,
+            None => self
+                .buf
+                .insert(String::with_capacity(self.size_hint.max(line.len() + 1))),
+        };
         buf.push_str(line);
         buf.push('\u{000A}');
         Ok(())
@@ -146,6 +170,12 @@ impl EventDataLineReader for EventDataStringReader {
         if data.chars().next_back().map(is_lf).unwrap_or_default() {
             data.pop();
         }
+        self.size_hint = (data.len() + 1).min(PAYLOAD_SIZE_HINT_CAP);
+        // don't hand out a payload retaining a way larger reservation
+        // than it uses (the hint can overshoot on heterogeneous streams)
+        if data.capacity() / 4 > data.len() {
+            data.shrink_to_fit();
+        }
         Ok(Some(data))
     }
 }
@@ -156,6 +186,7 @@ impl EventDataRead for String {
     fn line_reader() -> Self::Reader {
         EventDataStringReader {
             buf: Default::default(),
+            size_hint: 0,
         }
     }
 }
@@ -173,6 +204,17 @@ macro_rules! write_multiline_data {
                 next.write_data(w)?;
             }
             Ok(())
+        }
+
+        fn size_hint(&self) -> Option<usize> {
+            // element hints are advisory: saturate rather than overflow
+            let mut total = 0usize;
+            let mut lines = 0usize;
+            for element in self.iter() {
+                total = total.saturating_add(element.size_hint()?);
+                lines += 1;
+            }
+            Some(total.saturating_add(lines.saturating_sub(1)))
         }
     };
 }
@@ -322,8 +364,67 @@ macro_rules! impl_either_event_data_write {
                 )+
             }
         }
+
+        fn size_hint(&self) -> Option<usize> {
+            match self {
+                $(
+                    rama_core::combinators::$id::$param(d) => d.size_hint(),
+                )+
+            }
+        }
         }
     };
 }
 
 rama_core::combinators::impl_either!(impl_either_event_data_write);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+
+    fn run(segments: &[&[u8]]) -> String {
+        let mut out = Vec::new();
+        let mut writer = LinePrefixWriter::new(&mut out, b"data: ");
+        for segment in segments {
+            writer.write_all(segment).unwrap();
+        }
+        writer.finish().unwrap();
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn line_prefix_writer_handles_all_terminators_and_split_writes() {
+        for (segments, expected) in [
+            (vec![b"hello".as_slice()], "hello"),
+            (vec![b"".as_slice()], ""),
+            (vec![b"a\nb".as_slice()], "a\ndata: b"),
+            (vec![b"a\r\nb".as_slice()], "a\r\ndata: b"),
+            (vec![b"a\rb".as_slice()], "a\rdata: b"),
+            // a trailing CR leaves the prefix decision to finish()
+            (vec![b"a\r".as_slice()], "a\rdata: "),
+            // ... or to the next write call: LF joins the CR terminator
+            (vec![b"a\r".as_slice(), b"\nb".as_slice()], "a\r\ndata: b"),
+            (vec![b"a\r".as_slice(), b"b".as_slice()], "a\rdata: b"),
+            (
+                vec![b"a\r".as_slice(), b"\rb".as_slice()],
+                "a\rdata: \rdata: b",
+            ),
+            (vec![b"\n\n".as_slice()], "\ndata: \ndata: "),
+            (
+                vec![b"a\r\n".as_slice(), b"\nb".as_slice()],
+                "a\r\ndata: \ndata: b",
+            ),
+            (
+                vec![
+                    b"multi".as_slice(),
+                    b"ple\nwri".as_slice(),
+                    b"tes".as_slice(),
+                ],
+                "multiple\ndata: writes",
+            ),
+        ] {
+            assert_eq!(run(&segments), expected, "segments: {segments:?}");
+        }
+    }
+}

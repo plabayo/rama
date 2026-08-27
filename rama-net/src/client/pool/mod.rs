@@ -200,7 +200,10 @@ where
         // Try to get connection from pool, if no connection is found, we will have to create a new
         // one using the returned create permit
 
-        let pool = if let Some(pool) = input.extensions().get_ref::<P>() {
+        // Resolve once and keep an owned handle: the same pool that minted a
+        // create permit must also receive the created connection.
+        let input_pool = input.extensions().get_arc::<P>();
+        let pool = if let Some(pool) = input_pool.as_deref() {
             trace!("pooled connector: using pool from ctx");
             pool
         } else {
@@ -242,7 +245,6 @@ where
                 trace!(
                     "pooled connector: returning new pooled connection (w/ conn id: {conn_id:?}"
                 );
-                let pool = input.extensions().get_ref::<P>().unwrap_or(&self.pool);
                 let conn = pool.create(conn_id, conn, permit).await;
                 Ok(EstablishedClientConnection { input, conn })
             }

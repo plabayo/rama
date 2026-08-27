@@ -40,6 +40,7 @@ pub struct LeasedConnection<C: ExtensionsRef, ID> {
     active_slot: ActiveSlot,
     returner: ConnReturner<C, ID>,
     got_response: AtomicBool,
+    failed_or_cancelled: AtomicBool,
     drop_connection_if_no_response: bool,
 }
 
@@ -302,6 +303,7 @@ where
                 pooled_conn_taken: false,
                 returner: self.returner.clone(),
                 got_response: AtomicBool::new(false),
+                failed_or_cancelled: AtomicBool::new(false),
                 drop_connection_if_no_response: self.drop_connection_if_no_response,
             }));
         }
@@ -353,6 +355,7 @@ where
             }),
             pooled_conn_taken: false,
             got_response: AtomicBool::new(false),
+            failed_or_cancelled: AtomicBool::new(false),
             drop_connection_if_no_response: self.drop_connection_if_no_response,
         }
     }
@@ -409,8 +412,13 @@ impl<C: ExtensionsRef, ID> AsMut<C> for LeasedConnection<C, ID> {
 impl<C: ExtensionsRef, ID> Drop for LeasedConnection<C, ID> {
     fn drop(&mut self) {
         if !self.pooled_conn_taken {
-            if self.drop_connection_if_no_response && !self.got_response.load(Ordering::Relaxed) {
-                trace!("LRU connection pool: dropping connection that didn't receive a response");
+            if self.drop_connection_if_no_response
+                && (!self.got_response.load(Ordering::Relaxed)
+                    || self.failed_or_cancelled.load(Ordering::Relaxed))
+            {
+                trace!(
+                    "LRU connection pool: dropping connection with no response or a failed request"
+                );
                 unsafe { ManuallyDrop::drop(&mut self.pooled_conn) };
                 return;
             }
@@ -523,12 +531,44 @@ where
     type Error = C::Error;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        self.got_response.store(false, Ordering::Relaxed);
+        // Failure is sticky for the whole lease. A later successful call must
+        // not make a connection reusable after another concurrent or earlier
+        // call failed or was cancelled.
+        let mut failure_guard = FailureGuard::new(&self.failed_or_cancelled);
         let result = self.as_ref().serve(input).await;
         if result.is_ok() {
             self.got_response.store(true, Ordering::Relaxed);
+            failure_guard.disarm();
         }
         result
+    }
+}
+
+/// Marks a leased connection as failed if a request errors or its future is
+/// cancelled before producing a response.
+struct FailureGuard<'a> {
+    failed_or_cancelled: &'a AtomicBool,
+    armed: bool,
+}
+
+impl<'a> FailureGuard<'a> {
+    fn new(failed_or_cancelled: &'a AtomicBool) -> Self {
+        Self {
+            failed_or_cancelled,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for FailureGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.failed_or_cancelled.store(true, Ordering::Relaxed);
+        }
     }
 }
 
@@ -624,6 +664,23 @@ mod tests {
     impl ExtensionsRef for Conn {
         fn extensions(&self) -> &Extensions {
             &self.extensions
+        }
+    }
+
+    impl Service<(bool, Duration)> for Conn {
+        type Output = ();
+        type Error = BoxError;
+
+        async fn serve(
+            &self,
+            (should_error, delay): (bool, Duration),
+        ) -> Result<Self::Output, Self::Error> {
+            tokio::time::sleep(delay).await;
+            if should_error {
+                Err(BoxError::from_static_str("request failed"))
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -910,6 +967,31 @@ mod tests {
             .unwrap();
         assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
         assert_ok!(conn.conn.serve(false).await);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_request_stays_sticky_after_concurrent_success() {
+        let pool = LruDropPool::try_new(1, 1).unwrap();
+        let svc = PooledConnector::new(TestService::default(), pool, StringInputLengthID {});
+
+        let conn = svc.connect(ServiceInput::new(String::new())).await.unwrap();
+
+        // The failure resolves first and the success resolves last. The old
+        // last-writer-wins flag therefore returned this lease to the pool.
+        let (failed, succeeded) = tokio::join!(
+            conn.conn.serve((true, Duration::from_millis(10))),
+            conn.conn.serve((false, Duration::from_millis(20))),
+        );
+        assert!(failed.is_err());
+        assert_ok!(succeeded);
+        drop(conn);
+
+        let _fresh = svc.connect(ServiceInput::new(String::new())).await.unwrap();
+        assert_eq!(
+            svc.inner.created_connection.load(Ordering::Relaxed),
+            2,
+            "any failed request must poison the lease despite a later response"
+        );
     }
 
     #[tokio::test]

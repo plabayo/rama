@@ -48,8 +48,7 @@ where
     T: Http1Transaction,
 {
     pub(crate) fn new(io: I) -> Self {
-        io.extensions()
-            .get_ref_or_insert(ConnectionHealthWatcher::default);
+        ConnectionHealthWatcher::install(io.extensions());
         io.extensions().insert(MaxConcurrency::new(1));
 
         Self {
