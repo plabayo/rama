@@ -21,6 +21,10 @@ mod exclusive;
 #[doc(inline)]
 pub use exclusive::{LeasedConnection, LruDropPool, ReuseStrategy};
 
+mod identifier;
+#[doc(inline)]
+pub use identifier::{BasicConnId, BasicConnIdentifier};
+
 pub mod multiplex;
 #[doc(inline)]
 pub use multiplex::{MultiplexPool, MultiplexedConnection, MuxSelection};

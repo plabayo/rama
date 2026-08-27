@@ -113,7 +113,7 @@ pub type DefaultHttpWebClient<Body = crate::http::Body> = EasyHttpWebClient<
         BindBodyToConn<
             crate::net::client::pool::MultiplexedConnection<
                 HttpClientService<Body>,
-                BasicHttpConId,
+                crate::net::client::pool::BasicConnId,
             >,
         >,
         Request<Body>,

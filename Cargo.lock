@@ -4335,6 +4335,8 @@ dependencies = [
  "itoa",
  "parking_lot",
  "rama-core",
+ "rama-http",
+ "rama-http-backend",
  "rama-http-types",
  "rama-net",
  "rama-tls",

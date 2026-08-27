@@ -3,79 +3,21 @@
 use std::{num::NonZeroUsize, time::Duration};
 
 use rama_core::Layer;
-use rama_core::error::{BoxError, BoxErrorExt as _};
-use rama_core::extensions::ExtensionsRef;
-use rama_net::address::{HostWithOptPort, ProxyAddress};
-use rama_net::client::pool::{ConnID, MultiplexPool, MuxSelection, PooledConnector, ReqToConnID};
-use rama_net::client::{ConnectRequest, ConnectorService, ConnectorTarget, ProxyRoute};
-use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
+use rama_core::error::BoxError;
+use rama_net::client::pool::{
+    BasicConnId, BasicConnIdentifier, MultiplexPool, MuxSelection, PooledConnector,
+};
+use rama_net::client::{ConnectRequest, ConnectorService};
 
 use super::{BindBodyToConnLayer, BindBodyToConnector};
-
-#[derive(Clone, Debug, Default)]
-#[non_exhaustive]
-/// [`BasicHttpConnIdentifier`] can be used together with a [`Pool`](rama_net::client::pool::Pool)
-/// to create a basic http connection pool.
-pub struct BasicHttpConnIdentifier;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-/// Connection Identifier which will match inputs that have the exact same
-/// protocol, authority, proxy address and connector target
-pub struct BasicHttpConId {
-    pub protocol: Option<Protocol>,
-    pub authority: HostWithOptPort,
-    pub proxy_address: Option<ProxyAddress>,
-    pub connector_target: Option<ConnectorTarget>,
-}
-
-impl ConnID for BasicHttpConId {
-    #[cfg(feature = "opentelemetry")]
-    fn attributes(&self) -> impl Iterator<Item = rama_core::telemetry::opentelemetry::KeyValue> {
-        self.protocol
-            .as_ref()
-            .map(|protocol| {
-                rama_core::telemetry::opentelemetry::KeyValue::new("protocol", protocol.to_string())
-            })
-            .into_iter()
-            .chain([rama_core::telemetry::opentelemetry::KeyValue::new(
-                "authority",
-                self.authority.to_string(),
-            )])
-    }
-}
-
-impl<Input> ReqToConnID<Input> for BasicHttpConnIdentifier
-where
-    Input: AuthorityInputExt + ExtensionsRef + ProtocolInputExt,
-{
-    type ID = BasicHttpConId;
-
-    fn id(&self, req: &Input) -> Result<Self::ID, BoxError> {
-        let authority = req
-            .authority()
-            .ok_or_else(|| BoxError::from_static_str("no authority found in connection input"))?;
-        let protocol = req.protocol().cloned();
-
-        Ok(BasicHttpConId {
-            protocol,
-            authority,
-            proxy_address: req
-                .extensions()
-                .get_ref::<ProxyRoute>()
-                .and_then(ProxyRoute::proxy_address)
-                .cloned(),
-            connector_target: req.extensions().get_ref().cloned(),
-        })
-    }
-}
 
 /// Default HTTP pooled connector assembled by
 /// [`HttpPooledConnectorConfig::try_build_connector`].
 pub type HttpPooledConnector<S> = BindBodyToConnector<
     PooledConnector<
         S,
-        MultiplexPool<<S as ConnectorService<ConnectRequest>>::Connection, BasicHttpConId>,
-        BasicHttpConnIdentifier,
+        MultiplexPool<<S as ConnectorService<ConnectRequest>>::Connection, BasicConnId>,
+        BasicConnIdentifier,
     >,
 >;
 
@@ -136,7 +78,7 @@ impl HttpPooledConnectorConfig {
             .with_selection(config.selection)
             .maybe_with_idle_timeout(config.idle_timeout);
 
-        let connector = PooledConnector::new(inner, pool, BasicHttpConnIdentifier)
+        let connector = PooledConnector::new(inner, pool, BasicConnIdentifier::new())
             .maybe_with_wait_for_pool_timeout(config.wait_for_pool_timeout);
 
         BindBodyToConnLayer::new().into_layer(connector)
@@ -164,7 +106,7 @@ impl HttpPooledConnectorConfig {
             .with_selection(self.selection)
             .maybe_with_idle_timeout(self.idle_timeout);
 
-        let connector = PooledConnector::new(inner, pool, BasicHttpConnIdentifier)
+        let connector = PooledConnector::new(inner, pool, BasicConnIdentifier::new())
             .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout);
 
         Ok(BindBodyToConnLayer::new().into_layer(connector))
@@ -189,7 +131,9 @@ mod tests {
     use rama_http_types::{Body, HeaderValue, Method, Request, Response, StatusCode, Version};
     use rama_net::Protocol;
     use rama_net::address::{HostWithPort, ProxyAddress};
-    use rama_net::client::pool::{MultiplexPool, PooledConnector, ReqToConnID};
+    use rama_net::client::pool::{
+        BasicConnIdentifier, MultiplexPool, PooledConnector, ReqToConnID,
+    };
     use rama_net::client::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
         EstablishedClientConnection, ProxyRoute, ProxyRoutes, ProxyRoutesConnector,
@@ -199,7 +143,7 @@ mod tests {
     use rama_utils::octets::kib;
     use tokio::time::sleep;
 
-    use super::{BasicHttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig};
+    use super::{HttpPooledConnector, HttpPooledConnectorConfig};
     use crate::client::proxy::layer::HttpProxyConnectorLayer;
     use crate::client::{HttpConnectRequestAdapter, HttpConnectorLayer};
     use crate::server::HttpServer;
@@ -230,7 +174,7 @@ mod tests {
             .unwrap();
 
         request.extensions().insert(ProxyRoute::Direct);
-        let direct_id = BasicHttpConnIdentifier.id(&request).unwrap();
+        let direct_id = BasicConnIdentifier::new().id(&request).unwrap();
         assert_eq!(direct_id.proxy_address, None);
 
         let proxy_address = ProxyAddress {
@@ -242,7 +186,7 @@ mod tests {
             .extensions()
             .insert(ProxyRoute::Proxy(proxy_address.clone()));
 
-        let proxied_id = BasicHttpConnIdentifier.id(&request).unwrap();
+        let proxied_id = BasicConnIdentifier::new().id(&request).unwrap();
         assert_eq!(proxied_id.proxy_address, Some(proxy_address));
     }
 
@@ -284,7 +228,7 @@ mod tests {
             }
         });
         let pool = MultiplexPool::try_new(10, 10).unwrap();
-        let pooled = PooledConnector::new(inner, pool, BasicHttpConnIdentifier);
+        let pooled = PooledConnector::new(inner, pool, BasicConnIdentifier::new());
         let connector = ProxyRoutesConnector::new(pooled);
 
         let first = ConnectRequest::new(HostWithPort::example_domain_https())

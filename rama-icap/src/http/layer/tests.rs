@@ -14,8 +14,11 @@ use rama_core::{
     extensions::{Extension, ExtensionsRef as _},
     futures::{StreamExt as _, stream},
     io::Io,
-    service::service_fn,
+    rt::Executor,
+    service::{BoxService, service_fn},
 };
+use rama_http::io::upgrade;
+use rama_http_backend::{client::proxy::layer::HttpProxyConnectorLayer, server::HttpServer};
 use rama_http_types::{
     Body, HeaderMap, Request, Response,
     body::{Frame, util::BodyExt as _},
@@ -23,10 +26,10 @@ use rama_http_types::{
 };
 use rama_net::{
     ConnectorTargetInputExt as _, Protocol, ProtocolInputExt as _, TransportProtocolInputExt as _,
-    address::Domain,
+    address::{Domain, ProxyAddress},
     client::{
-        ConnectRequest, ConnectorTarget, EstablishedClientConnection,
-        pool::{ConnID, LruDropPool, PooledConnector},
+        ConnectRequest, ConnectorTarget, EstablishedClientConnection, ProxyRoute,
+        pool::{BasicConnIdentifier, ConnID, LruDropPool, PooledConnector},
     },
     test_utils::client::{MockConnectorService, MockSocket},
 };
@@ -684,6 +687,186 @@ async fn auto_tls_connector_keeps_icap_endpoint_plaintext() {
         .layer(inner);
 
     service.serve(Request::new(Body::empty())).await.unwrap();
+}
+
+#[tokio::test]
+async fn http_connect_tunnel_carries_and_reuses_plain_icap() {
+    let tunnels = Arc::new(AtomicUsize::new(0));
+    let icap_server = TlsIcapConnectionServer {
+        inner: Server::new(
+            TlsIcapHandler {
+                adaptation: HttpService::new(service_fn(serve_adaptation)),
+                secure: false,
+                port: None,
+            },
+            b"\"rama-connect\"",
+        )
+        .unwrap(),
+    };
+    let proxy_server = HttpServer::auto(Executor::default()).service(service_fn({
+        let tunnels = Arc::clone(&tunnels);
+        move |request: Request| {
+            let tunnels = Arc::clone(&tunnels);
+            let icap_server = icap_server.clone();
+            async move {
+                assert_eq!(request.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(
+                    request.uri().authority().unwrap().to_string(),
+                    "icap.test:1344"
+                );
+                let on_upgrade = upgrade::handle_upgrade(&request);
+                tunnels.fetch_add(1, Ordering::Relaxed);
+                tokio::spawn(async move {
+                    let tunnel = on_upgrade.await.unwrap();
+                    icap_server.serve(tunnel).await.unwrap();
+                });
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }
+        }
+    }));
+    let transport =
+        MockConnectorService::new(move || proxy_server.clone()).with_max_buffer_size(4096);
+    let transport = HttpProxyConnectorLayer::required().into_layer(transport);
+    let pool = LruDropPool::try_new(1, 2)
+        .unwrap()
+        .with_drop_connection_if_no_response(false);
+    let client = Arc::new(crate::client::Client::new(PooledConnector::new(
+        transport,
+        pool,
+        BasicConnIdentifier::new(),
+    )));
+    let mut endpoint = ServiceEndpoint::new("icap://icap.test/scan").unwrap();
+    endpoint.insert_connection_extension(ProxyRoute::Proxy(
+        "http://proxy.test:8080".parse::<ProxyAddress>().unwrap(),
+    ));
+
+    Box::pin(OptionsService::new(client.clone()).serve(endpoint.options_request().unwrap()))
+        .await
+        .unwrap();
+    let inner = service_fn(async |request: Request<Body>| {
+        assert_eq!(request.headers()["x-reqmod"], "yes");
+        assert_eq!(
+            request.into_body().collect().await.unwrap().to_bytes(),
+            "plain-connect-request",
+        );
+        Ok::<_, Infallible>(Response::new(Body::from("plain-connect-response")))
+    });
+    let service = AdaptationLayer::new(client)
+        .with_request_service(endpoint.clone())
+        .with_response_service(endpoint)
+        .layer(inner);
+    let response = Box::pin(service.serve(Request::new(Body::from("plain-connect-request"))))
+        .await
+        .unwrap();
+
+    assert_eq!(response.headers()["x-respmod"], "yes");
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "plain-connect-response",
+    );
+    assert_eq!(
+        tunnels.load(Ordering::Relaxed),
+        1,
+        "OPTIONS, REQMOD and RESPMOD must reuse one CONNECT tunnel",
+    );
+}
+
+#[tokio::test]
+async fn http_connect_tunnel_carries_and_reuses_icaps() {
+    let server_auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::generated_ca_for(
+        Domain::from_static("icap.test"),
+    ))
+    .unwrap();
+    let trust_anchor = server_auth.cert_chain.last().unwrap().clone();
+    let tls_config = TlsServerConfig::new().with_single_cert(server_auth);
+    let icap_server = TlsIcapConnectionServer {
+        inner: Server::new(
+            TlsIcapHandler {
+                adaptation: HttpService::new(service_fn(serve_adaptation)),
+                secure: true,
+                port: Some(Protocol::ICAPS_DEFAULT_PORT),
+            },
+            b"\"rama-connect-tls\"",
+        )
+        .unwrap(),
+    };
+    let icap_server = BoxService::<upgrade::Upgraded, (), BoxError>::new(
+        TlsAcceptorLayer::new(tls_config).into_layer(icap_server),
+    );
+    let tunnels = Arc::new(AtomicUsize::new(0));
+    let proxy_server = HttpServer::auto(Executor::default()).service(service_fn({
+        let tunnels = Arc::clone(&tunnels);
+        move |request: Request| {
+            let tunnels = Arc::clone(&tunnels);
+            let icap_server = icap_server.clone();
+            async move {
+                assert_eq!(request.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(
+                    request.uri().authority().unwrap().to_string(),
+                    "icap.test:11344",
+                );
+                let on_upgrade = upgrade::handle_upgrade(&request);
+                tunnels.fetch_add(1, Ordering::Relaxed);
+                tokio::spawn(async move {
+                    let tunnel = on_upgrade.await.unwrap();
+                    let result: Result<(), BoxError> = icap_server.serve(tunnel).await;
+                    result.unwrap();
+                });
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }
+        }
+    }));
+    let transport =
+        MockConnectorService::new(move || proxy_server.clone()).with_max_buffer_size(4096);
+    let transport = HttpProxyConnectorLayer::required().into_layer(transport);
+    let transport = TlsConnector::auto(transport).with_base_config(
+        TlsClientConfig::new()
+            .with_server_verify(ServerVerifyMode::Auto)
+            .try_with_server_trust_anchors([trust_anchor])
+            .unwrap(),
+    );
+    let pool = LruDropPool::try_new(1, 2)
+        .unwrap()
+        .with_drop_connection_if_no_response(false);
+    let client = Arc::new(crate::client::Client::new(PooledConnector::new(
+        transport,
+        pool,
+        BasicConnIdentifier::new(),
+    )));
+    let mut endpoint = ServiceEndpoint::new("icaps://icap.test/scan").unwrap();
+    endpoint.insert_connection_extension(ProxyRoute::Proxy(
+        "http://proxy.test:8080".parse::<ProxyAddress>().unwrap(),
+    ));
+
+    Box::pin(OptionsService::new(client.clone()).serve(endpoint.options_request().unwrap()))
+        .await
+        .unwrap();
+    let inner = service_fn(async |request: Request<Body>| {
+        assert_eq!(request.headers()["x-reqmod"], "yes");
+        assert_eq!(
+            request.into_body().collect().await.unwrap().to_bytes(),
+            "secure-connect-request",
+        );
+        Ok::<_, Infallible>(Response::new(Body::from("secure-connect-response")))
+    });
+    let service = AdaptationLayer::new(client)
+        .with_request_service(endpoint.clone())
+        .with_response_service(endpoint)
+        .layer(inner);
+    let response = Box::pin(service.serve(Request::new(Body::from("secure-connect-request"))))
+        .await
+        .unwrap();
+
+    assert_eq!(response.headers()["x-respmod"], "yes");
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "secure-connect-response",
+    );
+    assert_eq!(
+        tunnels.load(Ordering::Relaxed),
+        1,
+        "OPTIONS, REQMOD and RESPMOD must reuse one TLS CONNECT tunnel",
+    );
 }
 
 #[tokio::test]
