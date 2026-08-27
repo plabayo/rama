@@ -96,7 +96,7 @@ impl<B> Unpin for Collected<B> {}
 mod tests {
     use std::convert::TryInto;
 
-    use futures_util::stream;
+    use rama_core::futures::stream;
 
     use crate::body::http_body_util::{BodyExt, Full, StreamBody};
 
@@ -133,7 +133,7 @@ mod tests {
             tokio::task::yield_now().await;
             Ok::<_, Infallible>(Frame::data(&b"world!"[..]))
         });
-        let stream = futures_util::StreamExt::chain(one, two);
+        let stream = rama_core::futures::StreamExt::chain(one, two);
 
         let body = StreamBody::new(stream);
 
