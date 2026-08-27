@@ -151,6 +151,18 @@ mod tests {
         );
     }
 
+    /// A subscription observes a `set` made after `watch()` but before the
+    /// first `changed()` poll. Waiters that subscribe-then-check rely on this
+    /// (e.g. the multiplex connection pool's `MaxConcurrency` watch): with it,
+    /// a change is either seen by the check or wakes the watcher — never lost.
+    #[tokio::test]
+    async fn set_after_subscribe_is_seen_at_first_poll() {
+        let r = Reactive::<usize>::new(1);
+        let mut w = r.watch();
+        r.set(2);
+        assert_eq!(w.changed().await, Some(2));
+    }
+
     #[tokio::test]
     async fn set_without_watchers_is_a_noop_send() {
         // No watcher subscribed: `set` must still update the value (via the

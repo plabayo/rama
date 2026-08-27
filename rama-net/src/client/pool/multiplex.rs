@@ -388,6 +388,26 @@ where
                 let mut storage = self.storage.lock();
                 self.sweep(&mut storage);
 
+                // Subscribe to same-id capacity changes BEFORE the capacity
+                // check below (subscribe-then-check): the watch cursor only
+                // observes `MaxConcurrency` raises (e.g. h2 SETTINGS) sent
+                // after it was created, so subscribing after the check would
+                // lose a raise landing in between, parking the waiter with no
+                // wake-up.
+                let cap_changes: FuturesUnordered<_> = if want_cap_changes {
+                    storage
+                        .iter()
+                        .filter(|conn| &conn.id == id)
+                        .filter_map(|conn| conn.max_concurrency.clone())
+                        .map(|mc| {
+                            let mut changed = mc.watch();
+                            async move { changed.changed().await }
+                        })
+                        .collect()
+                } else {
+                    FuturesUnordered::new()
+                };
+
                 if let Some(conn) = select_and_admit(
                     &storage,
                     id,
@@ -458,16 +478,6 @@ where
                     return Ok(ConnectionResult::CreatePermit(pool_slot));
                 }
 
-                let cap_changes = if want_cap_changes {
-                    storage
-                        .iter()
-                        .filter(|conn| &conn.id == id)
-                        .filter_map(|conn| conn.max_concurrency.clone())
-                        .map(|mc| async move { mc.watch().changed().await })
-                        .collect()
-                } else {
-                    FuturesUnordered::new()
-                };
                 Err(cap_changes)
             };
 
@@ -788,6 +798,43 @@ mod tests {
         assert!(woke.load(Ordering::Relaxed));
         // c1 is still held; the waiter admitted on the same connection, not a new one.
         assert_eq!(svc.inner.created.load(Ordering::Relaxed), 1);
+    }
+
+    /// A `MaxConcurrency` raise must wake a parked `get_conn` with no other
+    /// wake source and no scheduling slack: the waiter is driven by hand, and
+    /// the raise happens right after the parking poll. The waiter subscribes
+    /// to the capacity watch under the storage lock BEFORE its capacity check
+    /// (subscribe-then-check), so a raise is either seen by the check or wakes
+    /// the watch cursor — a raise landing in between (e.g. an h2 SETTINGS
+    /// update on another thread) can never be lost.
+    #[tokio::test]
+    async fn maxconcurrency_increase_wakes_manually_driven_waiter() {
+        let pool = MultiplexPool::try_new(10, 1).unwrap();
+        let svc = connector_with(pool.clone(), Some(1));
+
+        // Connection A: at its advertised capacity of 1, holding the only slot.
+        let c1 = svc.connect(ServiceInput::new(0u32)).await.unwrap();
+
+        let mut waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0)));
+        assert!(
+            waiter.poll().is_pending(),
+            "waiter must park: A is at capacity"
+        );
+
+        // Raise A's capacity; the watch subscription made while parking must fire.
+        c1.conn
+            .extensions()
+            .get_ref::<MaxConcurrency>()
+            .unwrap()
+            .set(2);
+        assert!(
+            waiter.is_woken(),
+            "a capacity raise must wake the parked waiter"
+        );
+        match waiter.poll() {
+            std::task::Poll::Ready(Ok(ConnectionResult::Connection(_))) => {}
+            other => panic!("waiter must admit on the raised capacity, got: {other:?}"),
+        }
     }
 
     #[tokio::test]
