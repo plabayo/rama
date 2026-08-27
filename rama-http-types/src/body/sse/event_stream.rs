@@ -157,23 +157,34 @@ const UTF8_BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 /// (and executor monopolization) the chunk size does not bound.
 const READY_EVENTS_SOFT_CAP: usize = 16;
 
-/// At most this many bytes are decoded per `scan` call. This keeps the
-/// per-`poll_next` work bounded for oversized chunks, and — crucially —
-/// keeps draining a set-aside remainder linear: without it every drain
-/// would re-validate the entire remaining tail (quadratic overall).
+/// At most this many bytes are decoded per `scan` call.
 /// Real HTTP/1 bodies arrive in chunks well below this, so the regular
 /// path is unaffected.
 const SCAN_BYTES_SOFT_CAP: usize = rama_utils::octets::mib(1);
 
+/// Start each scan in a fixed-size block, then grow blocks exponentially.
+/// If dense events hit the ready cap, at most this fixed prefix was inspected;
+/// sparse input reaches large SIMD-friendly blocks after only a few steps.
+const SCAN_INITIAL_BLOCK_SIZE: usize = 1024;
+
+/// Cooperative budget for parser bytes consumed by one `poll_next` call.
+const POLL_BYTES_SOFT_CAP: usize = SCAN_BYTES_SOFT_CAP;
+
+/// Byte accounting alone cannot bound a stream of ready empty/tiny chunks.
+const POLL_UPSTREAM_ITEMS_SOFT_CAP: usize = 64;
+
 /// Incremental SSE decoder state.
 ///
 /// Consumes raw body chunks as bytes: complete lines are parsed directly out
-/// of each chunk (one UTF-8 validation pass and one line-terminator scan per
-/// chunk, zero allocations per line); only a line or UTF-8 sequence that
+/// of each scan block (one UTF-8 validation pass and one line-terminator scan,
+/// zero allocations per line); only a line or UTF-8 sequence that
 /// crosses a chunk boundary is buffered in `carry`.
 struct DecodeState<T: EventDataRead> {
     /// partial line (possibly ending in a partial UTF-8 sequence) from prior chunks
     carry: Vec<u8>,
+    /// valid UTF-8 prefix of `carry`, always ending at a character boundary;
+    /// the remaining suffix is an incomplete sequence of at most three bytes
+    carry_valid_up_to: usize,
     /// a CR was the last byte seen: an LF at the start of the next chunk
     /// belongs to that terminator and must be skipped
     pending_cr: bool,
@@ -193,6 +204,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DecodeState")
             .field("carry", &self.carry)
+            .field("carry_valid_up_to", &self.carry_valid_up_to)
             .field("pending_cr", &self.pending_cr)
             .field("started", &self.started)
             .field("builder", &self.builder)
@@ -206,6 +218,7 @@ impl<T: EventDataRead> Default for DecodeState<T> {
     fn default() -> Self {
         Self {
             carry: Vec::new(),
+            carry_valid_up_to: 0,
             pending_cr: false,
             started: false,
             builder: EventBuilder::default(),
@@ -250,6 +263,7 @@ impl<T: EventDataRead> DecodeState<T> {
                         let n = self.carry.len();
                         replay[..n].copy_from_slice(&self.carry);
                         self.carry.clear();
+                        self.carry_valid_up_to = 0;
                         let consumed = self.scan(&replay[..n])?;
                         debug_assert_eq!(
                             consumed, n,
@@ -269,9 +283,30 @@ impl<T: EventDataRead> DecodeState<T> {
         if self.carry.is_empty() {
             return Ok(());
         }
-        let carry = std::mem::take(&mut self.carry);
-        std::str::from_utf8(&carry)
+        // `scan` validates carried bytes incrementally. Only the possible
+        // incomplete UTF-8 suffix remains to check at EOF, rather than
+        // re-validating an attacker-sized unterminated line in one poll.
+        std::str::from_utf8(&self.carry[self.carry_valid_up_to..])
             .map_err(|err| err.context("utf8 error: invalid trailing sse bytes"))?;
+        self.carry.clear();
+        self.carry_valid_up_to = 0;
+        Ok(())
+    }
+
+    /// Extend `carry` while validating only bytes not already known valid.
+    fn extend_carry(&mut self, bytes: &[u8]) -> Result<(), BoxError> {
+        let validate_from = self.carry_valid_up_to;
+        self.carry.extend_from_slice(bytes);
+        match std::str::from_utf8(&self.carry[validate_from..]) {
+            Ok(_) => self.carry_valid_up_to = self.carry.len(),
+            Err(err) => {
+                self.carry_valid_up_to = validate_from + err.valid_up_to();
+                if err.error_len().is_some() {
+                    return Err(err.context("utf8 error: invalid sse bytes"));
+                }
+            }
+        }
+        debug_assert!(self.carry.len() - self.carry_valid_up_to <= 3);
         Ok(())
     }
 
@@ -281,10 +316,37 @@ impl<T: EventDataRead> DecodeState<T> {
     /// decoding mid-chunk. Every pause point is also a valid chunk
     /// boundary, so resuming later with the remainder is state-safe.
     fn scan(&mut self, input: &[u8]) -> Result<usize, BoxError> {
+        let input = &input[..input.len().min(SCAN_BYTES_SOFT_CAP)];
+        if input.is_empty() || self.ready.len() >= READY_EVENTS_SOFT_CAP {
+            return Ok(0);
+        }
+
+        // A ready-cap pause can only overlap this fixed initial block on the
+        // next call; fully consumed blocks are never inspected again. This
+        // bounds dense-input amplification by a constant and makes total
+        // overflow-drain work linear, while sparse input quickly reaches the
+        // full scan cap.
+        let mut offset = 0;
+        let mut block_len = SCAN_INITIAL_BLOCK_SIZE;
+        while offset < input.len() {
+            let block_start = offset;
+            let end = (offset + block_len).min(input.len());
+            let consumed = self.scan_block(&input[offset..end])?;
+            offset += consumed;
+            if consumed < end - block_start || self.ready.len() >= READY_EVENTS_SOFT_CAP {
+                break;
+            }
+            block_len = (block_len * 2).min(SCAN_BYTES_SOFT_CAP);
+        }
+        Ok(offset)
+    }
+
+    /// Scan one artificial chunk boundary. The caller grows these blocks
+    /// exponentially until the byte or ready-event cap is reached.
+    fn scan_block(&mut self, input: &[u8]) -> Result<usize, BoxError> {
         if input.is_empty() {
             return Ok(0);
         }
-        let input = &input[..input.len().min(SCAN_BYTES_SOFT_CAP)];
 
         let mut offset = 0;
 
@@ -299,11 +361,11 @@ impl<T: EventDataRead> DecodeState<T> {
         if !self.carry.is_empty() {
             match memchr2(b'\r', b'\n', &input[offset..]) {
                 None => {
-                    self.carry.extend_from_slice(&input[offset..]);
+                    self.extend_carry(&input[offset..])?;
                     return Ok(input.len());
                 }
                 Some(pos) => {
-                    self.carry.extend_from_slice(&input[offset..offset + pos]);
+                    self.extend_carry(&input[offset..offset + pos])?;
                     let is_cr = input[offset + pos] == b'\r';
                     offset += pos + 1;
                     if is_cr {
@@ -316,8 +378,13 @@ impl<T: EventDataRead> DecodeState<T> {
                     // take/restore the carry buffer so its allocation is reused,
                     // while keeping the borrow checker happy about `handle_line`
                     let line = std::mem::take(&mut self.carry);
-                    let s = std::str::from_utf8(&line)
+                    let valid_up_to = std::mem::take(&mut self.carry_valid_up_to);
+                    std::str::from_utf8(&line[valid_up_to..])
                         .map_err(|err| err.context("utf8 error: invalid sse line"))?;
+                    debug_assert_eq!(valid_up_to, line.len());
+                    // SAFETY: `extend_carry` validated the line incrementally,
+                    // and the possible incomplete suffix was checked above.
+                    let s = unsafe { std::str::from_utf8_unchecked(&line) };
                     self.handle_line(s)?;
                     self.carry = line;
                     self.carry.clear();
@@ -394,6 +461,7 @@ impl<T: EventDataRead> DecodeState<T> {
 
         self.carry.extend_from_slice(&bytes[start..]);
         self.carry.extend_from_slice(utf8_tail);
+        self.carry_valid_up_to = bytes.len() - start;
         Ok(input.len())
     }
 
@@ -467,6 +535,8 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Option<Self::Item>> {
         let mut this = self.project();
+        let mut decoded_bytes = 0;
+        let mut upstream_items = 0;
 
         loop {
             if let Some(event) = this.state.ready.pop_front() {
@@ -490,11 +560,22 @@ where
                 return Poll::Ready(None);
             }
 
+            if decoded_bytes >= POLL_BYTES_SOFT_CAP
+                || upstream_items >= POLL_UPSTREAM_ITEMS_SOFT_CAP
+            {
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+
             // refill from a set-aside chunk remainder before polling upstream
             if *this.overflow_offset < this.overflow.len() {
-                match this.state.scan(&this.overflow[*this.overflow_offset..]) {
+                let remaining_budget = POLL_BYTES_SOFT_CAP - decoded_bytes;
+                let end = (*this.overflow_offset + remaining_budget).min(this.overflow.len());
+                match this.state.scan(&this.overflow[*this.overflow_offset..end]) {
                     Ok(consumed) => {
+                        debug_assert!(consumed > 0, "non-empty overflow scan must make progress");
                         *this.overflow_offset += consumed;
+                        decoded_bytes += consumed;
                         if *this.overflow_offset >= this.overflow.len() {
                             this.overflow.clear();
                             *this.overflow_offset = 0;
@@ -519,13 +600,20 @@ where
 
             match this.stream.as_mut().poll_next(cx) {
                 Poll::Ready(Some(Ok(chunk))) => {
+                    upstream_items += 1;
                     let bytes = chunk.as_ref();
-                    match this.state.feed(bytes) {
+                    let remaining_budget = POLL_BYTES_SOFT_CAP - decoded_bytes;
+                    let offered = &bytes[..bytes.len().min(remaining_budget)];
+                    match this.state.feed(offered) {
                         Ok(consumed) if consumed < bytes.len() => {
-                            // ready queue is at capacity: set the rest aside
+                            decoded_bytes += consumed;
+                            // The ready queue or per-poll byte budget stopped
+                            // this chunk; set its unconsumed tail aside once.
                             this.overflow.extend_from_slice(&bytes[consumed..]);
                         }
-                        Ok(_) => {}
+                        Ok(consumed) => {
+                            decoded_bytes += consumed;
+                        }
                         Err(err) => {
                             *this.pending_error = Some(err);
                         }
@@ -559,6 +647,121 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use serde_json::json;
     use std::convert::Infallible;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::task::{Wake, Waker};
+
+    #[derive(Default)]
+    struct WakeCounter(AtomicUsize);
+
+    impl Wake for WakeCounter {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct AlwaysReadyEmpty {
+        polls: Arc<AtomicUsize>,
+    }
+
+    impl Stream for AlwaysReadyEmpty {
+        type Item = Result<Vec<u8>, Infallible>;
+
+        fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+            self.polls.fetch_add(1, Ordering::Relaxed);
+            Poll::Ready(Some(Ok(Vec::new())))
+        }
+    }
+
+    #[test]
+    fn ready_cap_stops_within_the_initial_scan_block() {
+        let mut state = DecodeState::<String> {
+            started: true,
+            ..Default::default()
+        };
+
+        let dense_lf = vec![b'\n'; SCAN_BYTES_SOFT_CAP];
+        assert_eq!(READY_EVENTS_SOFT_CAP, state.scan(&dense_lf).unwrap());
+
+        let mut state = DecodeState::<String> {
+            started: true,
+            ..Default::default()
+        };
+        let dense_crlf = b"\r\n".repeat(READY_EVENTS_SOFT_CAP);
+        assert_eq!(dense_crlf.len(), state.scan(&dense_crlf).unwrap());
+
+        // A leading LF can belong to a CR terminator from the prior window.
+        let mut state = DecodeState::<String> {
+            started: true,
+            pending_cr: true,
+            ..Default::default()
+        };
+        let after_cr = vec![b'\n'; READY_EVENTS_SOFT_CAP + 1];
+        assert_eq!(after_cr.len(), state.scan(&after_cr).unwrap());
+
+        // A carried prefix makes the first terminated line non-empty.
+        let mut state = DecodeState::<String> {
+            started: true,
+            ..Default::default()
+        };
+        state.carry.push(b'x');
+        state.carry_valid_up_to = 1;
+        assert_eq!(after_cr.len(), state.scan(&after_cr).unwrap());
+    }
+
+    #[test]
+    fn one_poll_has_a_cumulative_byte_budget() {
+        let upstream = stream::iter([Ok::<_, Infallible>(vec![b'x'; POLL_BYTES_SOFT_CAP * 2])]);
+        let mut stream = std::pin::pin!(EventStream::<_, String>::new(upstream));
+        let wake_count = Arc::new(WakeCounter::default());
+        let waker = Waker::from(Arc::clone(&wake_count));
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(matches!(stream.as_mut().poll_next(&mut cx), Poll::Pending));
+        assert_eq!(1, wake_count.0.load(Ordering::Relaxed));
+        assert_eq!(POLL_BYTES_SOFT_CAP, stream.state.carry.len());
+        assert_eq!(POLL_BYTES_SOFT_CAP, stream.overflow.len());
+
+        assert!(matches!(stream.as_mut().poll_next(&mut cx), Poll::Pending));
+        assert_eq!(2, wake_count.0.load(Ordering::Relaxed));
+        assert!(matches!(
+            stream.as_mut().poll_next(&mut cx),
+            Poll::Ready(None)
+        ));
+    }
+
+    #[test]
+    fn empty_ready_chunks_have_a_poll_attempt_budget() {
+        let upstream_polls = Arc::new(AtomicUsize::new(0));
+        let upstream = AlwaysReadyEmpty {
+            polls: Arc::clone(&upstream_polls),
+        };
+        let mut stream = std::pin::pin!(EventStream::<_, String>::new(upstream));
+        let wake_count = Arc::new(WakeCounter::default());
+        let waker = Waker::from(Arc::clone(&wake_count));
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(matches!(stream.as_mut().poll_next(&mut cx), Poll::Pending));
+        assert_eq!(
+            POLL_UPSTREAM_ITEMS_SOFT_CAP,
+            upstream_polls.load(Ordering::Relaxed)
+        );
+        assert_eq!(1, wake_count.0.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn carried_utf8_is_validated_incrementally() {
+        let mut state = DecodeState::<String>::default();
+        assert_eq!(7, state.feed(b"data: \xf0").unwrap());
+        assert_eq!(6, state.carry_valid_up_to);
+        state.feed(b"(").unwrap_err();
+    }
 
     macro_rules! event {
         (

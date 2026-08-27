@@ -1,6 +1,5 @@
 #![expect(
     clippy::expect_used,
-    clippy::unreachable,
     reason = "example/test/bench: panic-on-error is the standard pattern for harnesses"
 )]
 
@@ -100,16 +99,17 @@ fn main() {
     divan::main();
 }
 
-/// minimal single-future block-on: the in-memory stream never returns
-/// `Poll::Pending`, so no reactor or waker infrastructure is needed
+/// Minimal single-future block-on. The in-memory decoder can cooperatively
+/// yield between bounded batches, but never waits on external I/O.
 fn pollster_block_on<F: Future>(fut: F) -> F::Output {
     use std::task::{Context, Poll, Waker};
     let mut fut = std::pin::pin!(fut);
     let mut cx = Context::from_waker(Waker::noop());
-    // a single poll completes: the future never awaits anything that pends
-    match fut.as_mut().poll(&mut cx) {
-        Poll::Ready(out) => out,
-        Poll::Pending => unreachable!("in-memory sse stream never pends"),
+    loop {
+        if let Poll::Ready(out) = fut.as_mut().poll(&mut cx) {
+            return out;
+        }
+        std::hint::spin_loop();
     }
 }
 

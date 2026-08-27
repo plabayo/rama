@@ -213,6 +213,47 @@ async fn truncated_utf8_at_stream_end_is_an_error() {
 }
 
 #[tokio::test]
+async fn poll_budget_boundaries_preserve_crlf_and_utf8() {
+    const CAP: usize = 1024 * 1024;
+
+    // The first poll ends exactly on CR; its LF continuation must not be
+    // mistaken for a second, empty line when overflow resumes.
+    let mut crlf = b"data: ".to_vec();
+    crlf.extend(std::iter::repeat_n(b'x', CAP - crlf.len() - 1));
+    crlf.extend_from_slice(b"\r\n\r\n");
+    let events = decode(vec![crlf]).await;
+    assert_eq!(1, events.len());
+    assert_eq!(CAP - b"data: ".len() - 1, events[0].data().unwrap().len());
+
+    // The same artificial boundary may bisect a multibyte UTF-8 character.
+    let mut utf8 = b"data: ".to_vec();
+    utf8.extend(std::iter::repeat_n(b'x', CAP - utf8.len() - 1));
+    utf8.extend_from_slice("é\n\n".as_bytes());
+    let events = decode(vec![utf8]).await;
+    assert_eq!(1, events.len());
+    assert!(events[0].data().unwrap().ends_with('é'));
+}
+
+#[tokio::test]
+async fn invalid_utf8_after_multiple_ready_batches_is_ordered() {
+    const EVENTS: usize = 2 * 16 + 1;
+    let mut bytes = Vec::new();
+    for id in 0..EVENTS {
+        bytes.extend_from_slice(format!("id: {id}\ndata: {id}\n\n").as_bytes());
+    }
+    bytes.push(0xff);
+
+    let mut stream = EventStream::<_, String>::new(stream::iter([Ok::<_, Infallible>(bytes)]));
+    for id in 0..EVENTS {
+        let event = stream.next().await.unwrap().unwrap();
+        assert_eq!(Some(id.to_string().as_str()), event.id());
+        assert_eq!(Some(id.to_string().as_str()), stream.last_event_id());
+    }
+    stream.next().await.unwrap().unwrap_err();
+    assert!(stream.next().await.is_none());
+}
+
+#[tokio::test]
 async fn transport_errors_pass_through_without_terminating() {
     let chunks = vec![
         Ok(b"data: a\n\n".to_vec()),
@@ -227,6 +268,23 @@ async fn transport_errors_pass_through_without_terminating() {
     stream.next().await.unwrap().unwrap_err();
     assert_eq!(
         Some(&"b".to_owned()),
+        stream.next().await.unwrap().unwrap().data()
+    );
+    assert!(stream.next().await.is_none());
+}
+
+#[tokio::test]
+async fn transport_error_after_cooperative_yield_is_nonterminal() {
+    const CAP: usize = 1024 * 1024;
+    let chunks = vec![
+        Ok(b"x\n".repeat(CAP + 1)),
+        Err("boom"),
+        Ok(b"data: after\n\n".to_vec()),
+    ];
+    let mut stream = EventStream::<_, String>::new(stream::iter(chunks));
+    stream.next().await.unwrap().unwrap_err();
+    assert_eq!(
+        Some(&"after".to_owned()),
         stream.next().await.unwrap().unwrap().data()
     );
     assert!(stream.next().await.is_none());
@@ -486,6 +544,28 @@ async fn many_tiny_events_in_one_chunk_decode_in_order() {
         assert_eq!(Some(&format!("payload {i}")), event.data(), "event {i}");
         // the checkpoint tracks the yielded event, not decode progress
         assert_eq!(Some(format!("{i}").as_str()), stream.last_event_id());
+    }
+    assert!(stream.next().await.is_none());
+}
+
+#[tokio::test]
+async fn many_tiny_mixed_terminator_events_decode_in_order() {
+    const EVENTS: usize = 100;
+    let mut encoded = Vec::new();
+    for i in 0..EVENTS {
+        let terminator = [b"\n".as_slice(), b"\r".as_slice(), b"\r\n".as_slice()][i % 3];
+        encoded.extend_from_slice(format!("id: {i}").as_bytes());
+        encoded.extend_from_slice(terminator);
+        encoded.extend_from_slice(format!("data: payload {i}").as_bytes());
+        encoded.extend_from_slice(terminator);
+        encoded.extend_from_slice(terminator);
+    }
+
+    let mut stream = EventStream::<_, String>::new(stream::iter([Ok::<_, Infallible>(encoded)]));
+    for i in 0..EVENTS {
+        let event = stream.next().await.unwrap().unwrap();
+        assert_eq!(Some(i.to_string().as_str()), event.id());
+        assert_eq!(Some(&format!("payload {i}")), event.data());
     }
     assert!(stream.next().await.is_none());
 }
