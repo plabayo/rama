@@ -782,9 +782,6 @@ impl<'a> OptionsResponse<'a> {
 
     rama_utils::macros::generate_set_and_with! {
         /// Advertise support for 204 responses outside Preview.
-        ///
-        /// Prefer [`Self::build_for`] when responding to an incoming request;
-        /// it advertises 204 only when the client offered it.
         pub const fn allow_204(mut self, allow: bool) -> Self {
             self.allow_204 = allow;
             self
@@ -915,15 +912,16 @@ impl<'a> OptionsResponse<'a> {
 
     /// Build a response when `request` is an OPTIONS request.
     ///
-    /// Client-negotiated features are advertised only when both this builder
-    /// and the request enable them. A non-OPTIONS request returns `None` so a
-    /// service can continue with its ordinary adaptation logic.
+    /// Extension features that require bilateral support are advertised only
+    /// when both this builder and the request enable them. `Allow: 204`
+    /// declares a server capability and does not require a matching OPTIONS
+    /// request offer. A non-OPTIONS request returns `None` so a service can
+    /// continue with its ordinary adaptation logic.
     pub fn build_for(self, request: &Request) -> Result<Option<OutgoingResponse>, BuildError> {
         if request.method() != MethodKind::Options {
             return Ok(None);
         }
         let mut response = self;
-        response.allow_204 &= request.allows_204();
         response.allow_206 &= request.allows_206();
         response.allow_icap_trailers &= request.allows_icap_trailers();
         response.build().map(Some)
@@ -1340,7 +1338,7 @@ mod tests {
     }
 
     #[test]
-    fn options_response_omits_unoffered_features() {
+    fn options_response_retains_204_and_omits_unoffered_extensions() {
         let request = Request::new(
             RequestLine::new(Method::Options, "icap://icap.test/echo").unwrap(),
             &[Header::new(header::HOST, b"icap.test").unwrap()],
@@ -1356,7 +1354,10 @@ mod tests {
             .unwrap();
         let mut slots = [HeaderSlot::EMPTY; 8];
         let head = response.response().parse_head(&mut slots).unwrap();
-        assert!(head.header(header::ALLOW).is_none());
+        assert_eq!(
+            head.header(header::ALLOW).unwrap().as_bytes(),
+            Some(b"204".as_slice())
+        );
     }
 
     #[test]
