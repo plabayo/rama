@@ -1019,8 +1019,10 @@ pub enum ParseError {
     InvalidMethod,
     /// The request target is not an absolute ICAP URI.
     InvalidUri,
-    /// The protocol version is malformed or unsupported.
+    /// The protocol version is malformed.
     InvalidVersion,
+    /// The protocol version is well-formed but unsupported.
+    UnsupportedVersion,
     /// The response status is not a three-digit number.
     InvalidStatus,
     /// The response reason phrase contains prohibited bytes.
@@ -1046,6 +1048,7 @@ impl fmt::Display for ParseError {
             Self::InvalidMethod => "invalid ICAP method",
             Self::InvalidUri => "invalid ICAP URI",
             Self::InvalidVersion => "invalid ICAP version",
+            Self::UnsupportedVersion => "unsupported ICAP version",
             Self::InvalidStatus => "invalid ICAP status",
             Self::InvalidReason => "invalid ICAP reason phrase",
             Self::InvalidHeader => "invalid ICAP header field",
@@ -1525,12 +1528,29 @@ fn parse_request_line(line: &[u8]) -> Result<RequestLine<'_>, ParseError> {
 
     let method = Method::from_bytes(method)?;
     let uri = parse_icap_uri(uri)?;
-    let version = Version::from_bytes(version)?;
+    let version = parse_request_version(version)?;
     Ok(RequestLine {
         method,
         uri,
         version,
     })
+}
+
+fn parse_request_version(value: &[u8]) -> Result<Version, ParseError> {
+    if let Ok(version) = Version::from_bytes(value) {
+        return Ok(version);
+    }
+    let Some(value) = value.strip_prefix(b"ICAP/") else {
+        return Err(ParseError::InvalidVersion);
+    };
+    let Some(dot) = value.iter().position(|byte| *byte == b'.') else {
+        return Err(ParseError::InvalidVersion);
+    };
+    let (major, minor) = (&value[..dot], &value[dot + 1..]);
+    if major.is_empty() || minor.is_empty() || !major.iter().chain(minor).all(u8::is_ascii_digit) {
+        return Err(ParseError::InvalidVersion);
+    }
+    Err(ParseError::UnsupportedVersion)
 }
 
 fn parse_response_line(line: &[u8]) -> Result<ResponseLine<'_>, ParseError> {
@@ -3869,6 +3889,20 @@ mod tests {
     }
 
     #[test]
+    fn distinguishes_malformed_and_unsupported_request_versions() {
+        assert_eq!(
+            request_result(b"OPTIONS icap://host/a ICAP/1.1\r\nHost: host\r\n\r\n"),
+            Err(ParseError::UnsupportedVersion),
+        );
+        for version in [b"HTTP/1.0".as_slice(), b"ICAP/1", b"ICAP/a.0"] {
+            let mut request = b"OPTIONS icap://host/a ".to_vec();
+            request.extend_from_slice(version);
+            request.extend_from_slice(b"\r\nHost: host\r\n\r\n");
+            assert_eq!(request_result(&request), Err(ParseError::InvalidVersion));
+        }
+    }
+
+    #[test]
     fn debug_views_do_not_dump_raw_head_buffers() {
         let request = b"OPTIONS icap://host/service?arg=87 ICAP/1.0\r\n\
             X-Secret: request-secret\r\n\
@@ -4048,6 +4082,7 @@ Encapsulated: req-body=0\r\n\r\n"
             (ParseError::InvalidMethod, "invalid ICAP method"),
             (ParseError::InvalidUri, "invalid ICAP URI"),
             (ParseError::InvalidVersion, "invalid ICAP version"),
+            (ParseError::UnsupportedVersion, "unsupported ICAP version"),
             (ParseError::InvalidStatus, "invalid ICAP status"),
             (ParseError::InvalidReason, "invalid ICAP reason phrase"),
             (ParseError::InvalidHeader, "invalid ICAP header field"),

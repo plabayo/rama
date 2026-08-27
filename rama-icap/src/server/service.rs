@@ -7,9 +7,9 @@ use rama_core::{
 };
 
 use crate::{
-    codec::{EncodeError, Header, ResponseLine},
+    codec::{EncodeError, Header, ParseError, ResponseLine},
     io::{ConnectionOptions, Error},
-    message::{BuildError, Response, TrailerBlock},
+    message::{BuildError, EncapsulatedParts, Response, TrailerBlock},
     proto::{MethodKind, StatusCode, header},
 };
 
@@ -33,6 +33,9 @@ const BODY_COMMAND_CAPACITY: usize = 1;
 /// the normal Rama service layers. An outgoing body may retain the incoming
 /// body and transform it incrementally; the connection driver continues
 /// serving body reads while it writes response frames.
+///
+/// Malformed requests receive a closing 400 response, unsupported ICAP
+/// versions receive 505, and unimplemented extension methods receive 501.
 ///
 /// `Server` itself implements [`Service`] for Rama streams with
 /// [`ExtensionsRef`](rama_core::extensions::ExtensionsRef), so it can be
@@ -106,7 +109,46 @@ where
     S: Service<IncomingRequest, Output = OutgoingResponse, Error: Into<BoxError>>,
 {
     let mut connection = ServerConnection::with_options(io, options);
-    while let Some(transaction) = connection.accept().await.map_err(ServerError::connection)? {
+    loop {
+        let transaction = match connection.accept().await {
+            Ok(Some(transaction)) => transaction,
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                let Some((status, reason)) = protocol_error_status(&error) else {
+                    return Err(ServerError::connection(error));
+                };
+                rama_core::telemetry::tracing::debug!(
+                    error = ?error,
+                    status = %status,
+                    "rejecting invalid ICAP request",
+                );
+                let response =
+                    protocol_error_response(MethodKind::Options, status, reason, service_tag)
+                        .map_err(ServerError::connection)?;
+                connection
+                    .send_closing_response(&response)
+                    .await
+                    .map_err(ServerError::connection)?;
+                return Ok(());
+            }
+        };
+        if transaction.request().method() == MethodKind::Extension {
+            let response = protocol_error_response(
+                MethodKind::Extension,
+                StatusCode::NOT_IMPLEMENTED,
+                b"Method Not Implemented",
+                service_tag,
+            )
+            .map_err(ServerError::connection)?;
+            transaction
+                .respond(response)
+                .await
+                .map_err(ServerError::connection)?
+                .finish()
+                .await
+                .map_err(ServerError::connection)?;
+            return Ok(());
+        }
         let request = transaction.request().clone();
         let extensions = transaction.extensions().fork();
         let has_body = request.encapsulated().is_some_and(|parts| parts.has_body());
@@ -134,7 +176,34 @@ where
             )));
         }
     }
-    Ok(())
+}
+
+fn protocol_error_status(error: &Error) -> Option<(StatusCode, &'static [u8])> {
+    match error {
+        Error::Head(ParseError::UnsupportedVersion) => Some((
+            StatusCode::VERSION_NOT_SUPPORTED,
+            b"ICAP Version Not Supported",
+        )),
+        Error::Head(_) | Error::Message(_) | Error::InvalidSequence(_) => {
+            Some((StatusCode::BAD_REQUEST, b"Bad Request"))
+        }
+        Error::Io(_) | Error::ChunkLine(_) | Error::InvalidState(_) => None,
+    }
+}
+
+fn protocol_error_response(
+    method: MethodKind,
+    status: StatusCode,
+    reason: &'static [u8],
+    service_tag: &[u8],
+) -> Result<Response, Error> {
+    let line = ResponseLine::new(status, reason)
+        .map_err(|_error| BuildError::from(EncodeError::InvalidInput))?;
+    let fields = [
+        Header::new(header::ISTAG, service_tag).map_err(BuildError::from)?,
+        Header::new(header::CONNECTION, b"close").map_err(BuildError::from)?,
+    ];
+    Response::new(method, line, &fields, Some(EncapsulatedParts::null())).map_err(Into::into)
 }
 
 async fn drive_transaction<IO, F, E>(
@@ -601,6 +670,95 @@ mod tests {
         Server::new((), b"unquoted").unwrap_err();
         let server = Server::new((), b"\"rama-test\"").unwrap();
         assert_eq!(server.service_tag(), b"\"rama-test\"");
+    }
+
+    async fn assert_protocol_error_response(request: &[u8], status: StatusCode, reason: &str) {
+        let (mut client_io, server_io) = tokio::io::duplex(512);
+        let requests = Arc::new(AtomicUsize::new(0));
+        let service_requests = Arc::clone(&requests);
+        let service = service_fn(move |_request: IncomingRequest| {
+            service_requests.fetch_add(1, Ordering::Relaxed);
+            async { Ok::<_, Infallible>(OutgoingResponse::without_body(options_response())) }
+        });
+        let server_task = tokio::spawn(async move {
+            Server::new(service, b"\"rama-test\"")
+                .unwrap()
+                .serve_connection(ServiceInput::new(server_io))
+                .await
+        });
+
+        client_io.write_all(request).await.unwrap();
+        let mut response = Vec::new();
+        client_io.read_to_end(&mut response).await.unwrap();
+        assert_eq!(
+            response,
+            format!(
+                "ICAP/1.0 {status} {reason}\r\n\
+                 ISTag: \"rama-test\"\r\n\
+                 Connection: close\r\n\
+                 Encapsulated: null-body=0\r\n\r\n"
+            )
+            .into_bytes(),
+        );
+        server_task.await.unwrap().unwrap();
+        assert_eq!(requests.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn rejects_protocol_errors_before_dispatching_to_the_service() {
+        assert_protocol_error_response(
+            b"OPTIONS /relative ICAP/1.0\r\nHost: icap.test\r\n\r\n",
+            StatusCode::BAD_REQUEST,
+            "Bad Request",
+        )
+        .await;
+        assert_protocol_error_response(
+            b"OPTIONS icap://icap.test/echo HTTP/1.0\r\nHost: icap.test\r\n\r\n",
+            StatusCode::BAD_REQUEST,
+            "Bad Request",
+        )
+        .await;
+        assert_protocol_error_response(
+            b"OPTIONS icap://icap.test/echo ICAP/1.1\r\nHost: icap.test\r\n\r\n",
+            StatusCode::VERSION_NOT_SUPPORTED,
+            "ICAP Version Not Supported",
+        )
+        .await;
+        assert_protocol_error_response(
+            b"PING icap://icap.test/echo ICAP/1.0\r\n\
+              Host: icap.test\r\n\
+              Encapsulated: null-body=0\r\n\r\n",
+            StatusCode::NOT_IMPLEMENTED,
+            "Method Not Implemented",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn does_not_respond_to_an_incomplete_request_transport_failure() {
+        let (mut client_io, server_io) = tokio::io::duplex(128);
+        let service = service_fn(async |_request: IncomingRequest| {
+            Ok::<_, Infallible>(OutgoingResponse::without_body(options_response()))
+        });
+        let server_task = tokio::spawn(async move {
+            Server::new(service, b"\"rama-test\"")
+                .unwrap()
+                .serve_connection(ServiceInput::new(server_io))
+                .await
+        });
+
+        client_io
+            .write_all(b"OPTIONS icap://icap.test/echo ICAP/1.0\r\n")
+            .await
+            .unwrap();
+        client_io.shutdown().await.unwrap();
+        let mut response = Vec::new();
+        client_io.read_to_end(&mut response).await.unwrap();
+        assert!(response.is_empty());
+        assert_eq!(
+            server_task.await.unwrap().unwrap_err().kind(),
+            ServerErrorKind::Connection,
+        );
     }
 
     #[tokio::test]
