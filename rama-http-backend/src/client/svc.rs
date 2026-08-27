@@ -1,4 +1,3 @@
-use pin_project_lite::pin_project;
 use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Service,
@@ -9,12 +8,10 @@ use rama_core::{
 use rama_http::StreamingBody;
 use rama_http::io::upgrade::OnUpgrade;
 use rama_http::layer::version_adapter::ensure_valid_request_for_version;
-use rama_http_types::body::{Frame, SizeHint};
+use rama_http_types::body::OnIncompleteBody;
 use rama_http_types::{Method, Request, Response, Version};
 use rama_net::conn::ConnectionHealthWatcher;
 use std::fmt;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 use tokio::sync::Mutex;
 
 pub(super) enum SendRequest<Body> {
@@ -136,7 +133,9 @@ where
                 // errors, before the pool can hand it to the next request.
                 let extensions = self.extensions.clone();
                 Ok(resp.map(|body| {
-                    rama_http_types::Body::new(MarkBrokenOnIncompleteBody::new(body, extensions))
+                    rama_http_types::Body::new(OnIncompleteBody::new(body, move || {
+                        mark_broken(&extensions)
+                    }))
                 }))
             }
             // h2 recovers per stream: an abandoned body resets only its stream.
@@ -182,65 +181,6 @@ impl Drop for MarkBrokenGuard {
     }
 }
 
-pin_project! {
-    /// h1 response body that marks its connection broken (evicting it from the
-    /// pool) unless the body reaches end-of-stream: dropped mid-stream or an
-    /// error frame both leave the connection mid-message. The h1 dispatcher
-    /// evicts too, but on the spawned connection task, which loses the race
-    /// against an immediate next request checking out the same connection.
-    struct MarkBrokenOnIncompleteBody<B> {
-        #[pin]
-        body: B,
-        guard: MarkBrokenGuard,
-    }
-}
-
-impl<B: StreamingBody> MarkBrokenOnIncompleteBody<B> {
-    fn new(body: B, extensions: Extensions) -> Self {
-        let mut guard = MarkBrokenGuard::new(extensions);
-        if body.is_end_stream() {
-            guard.disarm();
-        }
-        Self { body, guard }
-    }
-}
-
-impl<B: StreamingBody> StreamingBody for MarkBrokenOnIncompleteBody<B> {
-    type Data = B::Data;
-    type Error = B::Error;
-
-    fn poll_frame(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        let mut this = self.project();
-        let result = this.body.as_mut().poll_frame(cx);
-        match &result {
-            Poll::Ready(None) => this.guard.disarm(),
-            // fire now: the pool lease is typically released right after this poll
-            Poll::Ready(Some(Err(_))) => this.guard.fire(),
-            Poll::Ready(Some(Ok(_))) => {
-                // e.g. a content-length body whose last bytes were just read
-                if this.body.is_end_stream() {
-                    this.guard.disarm();
-                }
-            }
-            Poll::Pending => {}
-        }
-        result
-    }
-
-    #[inline(always)]
-    fn is_end_stream(&self) -> bool {
-        self.body.is_end_stream()
-    }
-
-    #[inline(always)]
-    fn size_hint(&self) -> SizeHint {
-        self.body.size_hint()
-    }
-}
-
 impl<B> ExtensionsRef for HttpClientService<B> {
     fn extensions(&self) -> &Extensions {
         &self.extensions
@@ -260,20 +200,24 @@ mod tests {
             .is_some_and(|watcher| watcher.health() == ConnectionHealth::Broken)
     }
 
+    fn mark_broken_on_incomplete(body: Body, extensions: &Extensions) -> Body {
+        let extensions = extensions.clone();
+        Body::new(OnIncompleteBody::new(body, move || {
+            mark_broken(&extensions)
+        }))
+    }
+
     #[test]
     fn incomplete_body_marks_broken_on_early_drop() {
         let extensions = Extensions::new();
-        drop(MarkBrokenOnIncompleteBody::new(
-            Body::from("hello"),
-            extensions.clone(),
-        ));
+        drop(mark_broken_on_incomplete(Body::from("hello"), &extensions));
         assert!(is_broken(&extensions));
     }
 
     #[tokio::test]
     async fn consumed_body_does_not_mark_broken() {
         let extensions = Extensions::new();
-        MarkBrokenOnIncompleteBody::new(Body::from("hello"), extensions.clone())
+        mark_broken_on_incomplete(Body::from("hello"), &extensions)
             .collect()
             .await
             .unwrap();
@@ -283,10 +227,7 @@ mod tests {
     #[test]
     fn empty_body_does_not_mark_broken_when_never_polled() {
         let extensions = Extensions::new();
-        drop(MarkBrokenOnIncompleteBody::new(
-            Body::empty(),
-            extensions.clone(),
-        ));
+        drop(mark_broken_on_incomplete(Body::empty(), &extensions));
         assert!(!is_broken(&extensions));
     }
 

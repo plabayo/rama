@@ -20,6 +20,9 @@ pin_project! {
     /// early drop (e.g. a cancelled/aborted read), when this body is dropped.
     #[must_use = "GuardedBody does nothing unless polled as a response body"]
     pub struct GuardedBody<B, G> {
+        // field order is load-bearing: `inner` drops before `guard`, so a body
+        // wrapper reacting to an early drop (e.g. marking the connection
+        // broken) runs before the guard releases the connection to a pool.
         #[pin]
         inner: B,
         guard: Option<G>,

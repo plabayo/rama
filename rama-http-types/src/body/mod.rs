@@ -47,6 +47,9 @@ pub use infinite::InfiniteReader;
 mod on_drop;
 pub use on_drop::OnDropBody;
 
+mod incomplete;
+pub use incomplete::OnIncompleteBody;
+
 mod guarded;
 pub use guarded::GuardedBody;
 
@@ -198,6 +201,19 @@ impl Body {
         F: FnOnce() + Send + Sync + 'static,
     {
         Self::new(OnDropBody::new(self.0, on_drop))
+    }
+
+    /// Wrap this body so that `on_incomplete` is called as soon as it is known
+    /// the body will not complete: an error frame is observed, or the body is
+    /// dropped before end-of-stream.
+    ///
+    /// The closure fires at most once. See [`OnIncompleteBody`] for how this
+    /// differs from [`Self::on_drop`].
+    pub fn on_incomplete<F>(self, on_incomplete: F) -> Self
+    where
+        F: FnOnce() + Send + Sync + 'static,
+    {
+        Self::new(OnIncompleteBody::new(self.0, on_incomplete))
     }
 
     /// Forward this body while asynchronously sending owned frame copies to a sink.
