@@ -178,13 +178,15 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use rama_core::bytes::Bytes;
     use rama_core::error::{BoxError, BoxErrorExt as _};
     use rama_core::extensions::ExtensionsRef;
+    use rama_core::futures::stream;
     use rama_core::rt::Executor;
     use rama_core::service::service_fn;
     use rama_core::{Layer, Service, ServiceInput};
     use rama_http_types::body::util::BodyExt as _;
-    use rama_http_types::{Body, HeaderValue, Request, Response, StatusCode, Version};
+    use rama_http_types::{Body, HeaderValue, Method, Request, Response, StatusCode, Version};
     use rama_net::Protocol;
     use rama_net::address::{HostWithPort, ProxyAddress};
     use rama_net::client::pool::{MultiplexPool, PooledConnector, ReqToConnID};
@@ -198,6 +200,7 @@ mod tests {
     use tokio::time::sleep;
 
     use super::{BasicHttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig};
+    use crate::client::proxy::layer::HttpProxyConnectorLayer;
     use crate::client::{HttpConnectRequestAdapter, HttpConnectorLayer};
     use crate::server::HttpServer;
 
@@ -587,6 +590,254 @@ mod tests {
             conn_id(&resp2),
             id1,
             "must not reuse an h1 connection whose response body was abandoned mid-stream"
+        );
+    }
+
+    /// Regression test: the h1 dispatcher also evicts a connection whose response
+    /// body was abandoned, but it runs on the spawned connection task. An immediate
+    /// follow-up request used to win that race and get handed the dead connection,
+    /// failing with a closed-channel error. Eviction must be synchronous with
+    /// abandoning the body: no sleeps/yields between the drop and the next request.
+    #[tokio::test]
+    async fn pool_evicts_h1_connection_the_moment_its_streaming_body_is_abandoned() {
+        let conns = Arc::new(AtomicUsize::new(0));
+        let inner =
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
+                let conn_id = conns.fetch_add(1, Ordering::Relaxed);
+                HttpServer::auto(Executor::default()).service(service_fn(
+                    move |_req: Request| async move {
+                        // infinite SSE-like stream: never reaches end-of-stream
+                        let stream = stream::repeat_with(|| {
+                            Ok::<_, Infallible>(Bytes::from_static(b"data: ping\n\n"))
+                        });
+                        let mut resp = Response::new(Body::from_stream(stream));
+                        resp.headers_mut()
+                            .insert("x-conn-id", HeaderValue::from(conn_id as u64));
+                        Ok::<_, Infallible>(resp)
+                    },
+                ))
+            }));
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig {
+                max_total: 4,
+                ..Default::default()
+            },
+            inner,
+        );
+
+        let req = || create_test_request(Version::HTTP_11);
+
+        let est1 = connector.serve(req()).await.unwrap();
+        let resp1 = est1.conn.serve(req()).await.unwrap();
+        drop(est1);
+        let id1 = conn_id(&resp1);
+
+        // Read a few chunks mid-stream, then abandon the body.
+        let mut body1 = resp1.into_body();
+        for _ in 0..2 {
+            body1.frame().await.unwrap().unwrap();
+        }
+        drop(body1);
+
+        let est2 = connector.serve(req()).await.unwrap();
+        let resp2 = est2.conn.serve(req()).await.unwrap();
+
+        assert_eq!(id1, 0);
+        assert_ne!(
+            conn_id(&resp2),
+            id1,
+            "an h1 connection whose streaming body was just abandoned must not serve the next request"
+        );
+    }
+
+    /// Dropping an in-flight h1 request future closes the shared connection: the
+    /// connection must be evicted synchronously with the cancellation, before a
+    /// follow-up request can check it out of the pool.
+    #[tokio::test(start_paused = true)]
+    async fn pool_evicts_h1_connection_when_inflight_request_cancelled() {
+        let conns = Arc::new(AtomicUsize::new(0));
+        let inner =
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
+                let conn_id = conns.fetch_add(1, Ordering::Relaxed);
+                HttpServer::auto(Executor::default()).service(service_fn(
+                    move |_req: Request| async move {
+                        sleep(Duration::from_secs(60)).await;
+                        let mut resp = Response::new(Body::from("ok"));
+                        resp.headers_mut()
+                            .insert("x-conn-id", HeaderValue::from(conn_id as u64));
+                        Ok::<_, Infallible>(resp)
+                    },
+                ))
+            }));
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig {
+                max_total: 4,
+                ..Default::default()
+            },
+            inner,
+        );
+
+        let req = || create_test_request(Version::HTTP_11);
+
+        let est1 = connector.serve(req()).await.unwrap();
+        let send = est1.conn.serve(req());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), send)
+                .await
+                .is_err(),
+            "request should still be in flight when cancelled"
+        );
+        drop(est1);
+
+        let est2 = connector.serve(req()).await.unwrap();
+        let resp2 = est2.conn.serve(req()).await.unwrap();
+        assert_eq!(
+            conn_id(&resp2),
+            1,
+            "a cancelled in-flight h1 request must evict its connection; the next request dials fresh"
+        );
+    }
+
+    /// A connection tunneled through an HTTP CONNECT proxy must be reusable: the
+    /// consumed h1 proxy hop is marked broken on upgrade, but the tunnel built on
+    /// top forks that state instead of inheriting it. It used to inherit the
+    /// broken mark (and the hop's MaxConcurrency of 1), evicting every proxied
+    /// connection from the pool after a single request.
+    #[tokio::test]
+    async fn pool_reuses_connection_tunneled_through_connect_proxy() {
+        let tunnels = Arc::new(AtomicUsize::new(0));
+        let mock = MockConnectorService::new({
+            let tunnels = tunnels.clone();
+            move || {
+                let tunnels = tunnels.clone();
+                // CONNECT proxy: reply 200 and serve the "origin" server over the tunnel
+                HttpServer::auto(Executor::default()).service(service_fn(move |req: Request| {
+                    let tunnels = tunnels.clone();
+                    async move {
+                        assert_eq!(req.method(), Method::CONNECT);
+                        let on_upgrade = rama_http::io::upgrade::handle_upgrade(&req);
+                        let conn_id = tunnels.fetch_add(1, Ordering::Relaxed);
+                        _ = tokio::spawn(async move {
+                            let tunnel = on_upgrade.await.unwrap();
+                            let origin = HttpServer::auto(Executor::default()).service(service_fn(
+                                move |_req: Request| async move {
+                                    let mut resp = Response::new(Body::from("ok"));
+                                    resp.headers_mut()
+                                        .insert("x-conn-id", HeaderValue::from(conn_id as u64));
+                                    Ok::<_, Infallible>(resp)
+                                },
+                            ));
+                            _ = origin.serve(tunnel).await;
+                        });
+                        Ok::<_, Infallible>(Response::new(Body::empty()))
+                    }
+                }))
+            }
+        });
+        let inner = HttpConnectorLayer::default()
+            .into_layer(HttpProxyConnectorLayer::required().into_layer(mock));
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig {
+                max_total: 4,
+                ..Default::default()
+            },
+            inner,
+        );
+
+        let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse::<ProxyAddress>().unwrap());
+        let req = || {
+            let req = create_test_request(Version::HTTP_11);
+            req.extensions().insert(proxy.clone());
+            req
+        };
+
+        let est1 = connector.serve(req()).await.unwrap();
+        let resp1 = est1.conn.serve(req()).await.unwrap();
+        assert_eq!(conn_id(&resp1), 0);
+        // Drain to end-of-stream so the tunneled connection returns to the pool.
+        resp1.into_body().collect().await.unwrap();
+
+        let est2 = connector.serve(req()).await.unwrap();
+        let resp2 = est2.conn.serve(req()).await.unwrap();
+        assert_eq!(
+            conn_id(&resp2),
+            0,
+            "second request must reuse the CONNECT tunnel"
+        );
+        assert_eq!(
+            tunnels.load(Ordering::Relaxed),
+            1,
+            "a reused tunnel means a single proxy dial"
+        );
+    }
+
+    /// An h1 chunked response consumed through its terminal trailers frame is
+    /// complete even though the body never reports `is_end_stream`: dropping it
+    /// without polling the final `None` must not poison the connection, and the
+    /// pool must reuse it.
+    #[tokio::test]
+    async fn pool_reuses_h1_connection_after_body_consumed_through_trailers() {
+        let conns = Arc::new(AtomicUsize::new(0));
+        let inner =
+            HttpConnectorLayer::default().into_layer(MockConnectorService::new(move || {
+                let conn_id = conns.fetch_add(1, Ordering::Relaxed);
+                HttpServer::auto(Executor::default()).service(service_fn(
+                    move |_req: Request| async move {
+                        let mut trailers = rama_http_types::HeaderMap::new();
+                        trailers.insert("x-trailer", HeaderValue::from_static("yes"));
+                        // unknown length -> chunked, so the trailers actually go on the wire
+                        let stream =
+                            stream::iter([Ok::<_, Infallible>(Bytes::from_static(b"hello"))]);
+                        let body = Body::from_stream(stream)
+                            .with_trailers(std::future::ready(Some(Ok(trailers))));
+                        let mut resp = Response::new(Body::new(body));
+                        let headers = resp.headers_mut();
+                        headers.insert("x-conn-id", HeaderValue::from(conn_id as u64));
+                        // the h1 encoder only sends trailer fields declared here
+                        headers.insert("trailer", HeaderValue::from_static("x-trailer"));
+                        Ok::<_, Infallible>(resp)
+                    },
+                ))
+            }));
+        let connector = build_test_connector(
+            HttpPooledConnectorConfig {
+                max_total: 4,
+                ..Default::default()
+            },
+            inner,
+        );
+
+        let req = || {
+            let mut req = create_test_request(Version::HTTP_11);
+            // the h1 server only encodes trailers when the request allows them
+            req.headers_mut()
+                .insert("te", HeaderValue::from_static("trailers"));
+            req
+        };
+
+        let est1 = connector.serve(req()).await.unwrap();
+        let resp1 = est1.conn.serve(req()).await.unwrap();
+        let id1 = conn_id(&resp1);
+        let mut body1 = resp1.into_body();
+        let mut saw_trailers = false;
+        while !saw_trailers {
+            let frame = body1
+                .frame()
+                .await
+                .expect("the response must yield frames up to its trailers")
+                .unwrap();
+            saw_trailers = frame.is_trailers();
+        }
+        // Consumed through the terminal trailers frame; drop before the final `None`.
+        drop(body1);
+
+        let est2 = connector.serve(req()).await.unwrap();
+        let resp2 = est2.conn.serve(req()).await.unwrap();
+        assert_eq!(id1, 0);
+        assert_eq!(
+            conn_id(&resp2),
+            id1,
+            "a connection whose response was consumed through trailers must be reused"
         );
     }
 

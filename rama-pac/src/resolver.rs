@@ -226,12 +226,14 @@ struct LoadedScript {
 }
 
 /// What a lookup needs to call into a loaded worker, held past the state
-/// lock so no evaluation runs while it is taken.
+/// lock so no evaluation runs while it is taken. Its activity is reserved
+/// before releasing that lock, so a changed script cannot build another
+/// worker in the gap before this call reaches the worker queue.
 struct CallTarget {
     worker: JsWorker,
     entry_point: &'static str,
     budget: PacBudgetHandle,
-    activity: Arc<WorkerActivityState>,
+    activity: WorkerActivity,
 }
 
 impl CallTarget {
@@ -240,7 +242,7 @@ impl CallTarget {
             worker: loaded.worker.clone(),
             entry_point: loaded.entry_point,
             budget: loaded.budget.clone(),
-            activity: loaded.activity.clone(),
+            activity: WorkerActivity::new(loaded.activity.clone()),
         }
     }
 }
@@ -398,17 +400,19 @@ impl PacResolver {
     /// `dnsResolve` and turning one request into a burst of queries.
     async fn call_entry_point(
         &self,
-        target: &CallTarget,
+        target: CallTarget,
         url: String,
         host: String,
     ) -> Result<rama_js::JsValue, rama_js::JsError> {
-        let budget = target.budget.clone();
-        let activity = WorkerActivity::new(target.activity.clone());
-        let entry_point = target.entry_point;
+        let CallTarget {
+            worker,
+            entry_point,
+            budget,
+            activity,
+        } = target;
         // armed inside the job, so it is this evaluation's budget that this
         // worker's own host functions spend
-        target
-            .worker
+        worker
             .run(move |runtime| {
                 let _activity = activity;
                 budget.arm();
@@ -460,8 +464,9 @@ impl PacResolver {
             }
         };
 
+        let target_worker = target.worker.clone();
         let result = self
-            .call_entry_point(&target, url.clone(), host.clone())
+            .call_entry_point(target, url.clone(), host.clone())
             .await;
 
         let value = match result {
@@ -469,7 +474,7 @@ impl PacResolver {
             // this lookup's own work wedged the worker: retrying it would
             // only wedge the replacement too, so install one for the next
             // caller and let this request fail
-            Err(err) if err.kind() == JsErrorKind::Timeout && target.worker.is_abandoned() => {
+            Err(err) if err.kind() == JsErrorKind::Timeout && target_worker.is_abandoned() => {
                 tracing::warn!("pac js worker wedged by this lookup, replacing it: {err}");
                 let mut state = self.state.lock().await;
                 state.mark_culprit(generation, &host);
@@ -517,7 +522,7 @@ impl PacResolver {
                         }
                     }
                 };
-                self.call_entry_point(&target, url, host)
+                self.call_entry_point(target, url, host)
                     .await
                     .context("call pac entry point after respawn")?
             }
