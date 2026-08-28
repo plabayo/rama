@@ -4,7 +4,11 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll},
 };
-use std::{io, sync::Arc};
+use std::{
+    io,
+    sync::Arc,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use parking_lot::Mutex;
 use rama_core::{
@@ -23,7 +27,7 @@ use crate::{
     codec::{EncodeError, Header, ResponseLine},
     io::{BodyEnd, Error},
     message::{BuildError, EncapsulatedParts, Request, Response, TrailerBlock},
-    proto::{MethodKind, Preview, StatusCode, header, is_token},
+    proto::{Method, MethodKind, Preview, ServiceTag, StatusCode, header, is_token},
 };
 
 type BodyResult<T> = Result<T, BodyError>;
@@ -677,8 +681,8 @@ pub enum OutgoingBodyEnd {
 /// Builder for a standard ICAP OPTIONS response.
 #[derive(Clone, Copy)]
 pub struct OptionsResponse<'a> {
-    service_tag: &'a [u8],
-    methods: &'a [u8],
+    service_tag: ServiceTag,
+    methods: &'a [Method<'a>],
     service: Option<&'a [u8]>,
     service_id: Option<&'a [u8]>,
     preview: Option<Preview>,
@@ -691,7 +695,7 @@ pub struct OptionsResponse<'a> {
     transfer_complete: Option<&'a [u8]>,
     options_ttl: Option<u64>,
     max_connections: Option<u64>,
-    date: Option<&'a [u8]>,
+    date: Option<SystemTime>,
     opt_body_type: Option<&'a [u8]>,
     opt_body: Option<&'a [u8]>,
 }
@@ -722,16 +726,14 @@ impl fmt::Debug for OptionsResponse<'_> {
 impl<'a> OptionsResponse<'a> {
     /// Create an OPTIONS response with its required fields.
     ///
-    /// Both fields are borrowed and may be supplied as text or bytes.
+    /// The service tag is kept unquoted in memory and quoted only when the
+    /// response is encoded. Methods are typed so a misspelled or wrongly-cased
+    /// standard method cannot silently be advertised as an extension method.
     #[must_use]
-    pub fn new<ServiceTag, Methods>(service_tag: &'a ServiceTag, methods: &'a Methods) -> Self
-    where
-        ServiceTag: AsRef<[u8]> + ?Sized,
-        Methods: AsRef<[u8]> + ?Sized,
-    {
+    pub const fn new(service_tag: ServiceTag, methods: &'a [Method<'a>]) -> Self {
         Self {
-            service_tag: service_tag.as_ref(),
-            methods: methods.as_ref(),
+            service_tag,
+            methods,
             service: None,
             service_id: None,
             preview: None,
@@ -887,12 +889,9 @@ impl<'a> OptionsResponse<'a> {
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Set the optional server `Date` field value.
-        pub fn date(
-            mut self,
-            date: &'a (impl AsRef<[u8]> + ?Sized),
-        ) -> Self {
-            self.date = Some(date.as_ref());
+        /// Set the optional server `Date` field from a typed system time.
+        pub const fn date(mut self, date: SystemTime) -> Self {
+            self.date = Some(date);
             self
         }
     }
@@ -929,30 +928,70 @@ impl<'a> OptionsResponse<'a> {
 
     /// Build the complete OPTIONS response.
     pub fn build(self) -> Result<OutgoingResponse, BuildError> {
+        if self.methods.is_empty() {
+            return Err(BuildError::from(EncodeError::InvalidInput));
+        }
+        if self
+            .methods
+            .iter()
+            .any(|method| method.kind() == MethodKind::Options)
+        {
+            return Err(BuildError::from(EncodeError::InvalidInput));
+        }
+        if self
+            .methods
+            .iter()
+            .enumerate()
+            .any(|(index, method)| self.methods[..index].contains(method))
+        {
+            return Err(BuildError::from(EncodeError::InvalidInput));
+        }
+        let mut methods = SmallVec::<[u8; 64]>::new();
+        for method in self.methods {
+            if !methods.is_empty() {
+                methods.extend_from_slice(b", ");
+            }
+            methods.extend_from_slice(method.as_str().as_bytes());
+        }
         let allow_extensions = sorted_token_list(self.allow_extensions)?;
         let transfer_preview = sorted_token_list(self.transfer_preview)?;
         let transfer_ignore = sorted_token_list(self.transfer_ignore)?;
         let transfer_complete = sorted_token_list(self.transfer_complete)?;
-        let has_transfer_policy = self.transfer_preview.is_some()
-            || self.transfer_ignore.is_some()
-            || self.transfer_complete.is_some();
+        let has_transfer_policy = [
+            self.transfer_preview,
+            self.transfer_ignore,
+            self.transfer_complete,
+        ]
+        .into_iter()
+        .any(|value| value.is_some());
         let wildcard_count = [&transfer_preview, &transfer_ignore, &transfer_complete]
             .into_iter()
             .flatten()
             .filter(|token| **token == b"*")
             .count();
-        if self.opt_body_type.is_some_and(|value| !is_token(value))
-            || allow_extensions.iter().any(|token| {
-                token.eq_ignore_ascii_case(b"204")
-                    || token.eq_ignore_ascii_case(b"206")
-                    || token.eq_ignore_ascii_case(b"trailers")
-            })
-            || (self.transfer_preview.is_some() && self.preview.is_none())
-            || (has_transfer_policy && wildcard_count != 1)
-            || sorted_token_lists_overlap(&transfer_preview, &transfer_ignore)
-            || sorted_token_lists_overlap(&transfer_preview, &transfer_complete)
-            || sorted_token_lists_overlap(&transfer_ignore, &transfer_complete)
-        {
+        if self.opt_body_type.is_some_and(|value| !is_token(value)) {
+            return Err(BuildError::from(EncodeError::InvalidInput));
+        }
+        if allow_extensions.iter().any(|token| {
+            token.eq_ignore_ascii_case(b"204")
+                || token.eq_ignore_ascii_case(b"206")
+                || token.eq_ignore_ascii_case(b"trailers")
+        }) {
+            return Err(BuildError::from(EncodeError::InvalidInput));
+        }
+        if self.transfer_preview.is_some() && self.preview.is_none() {
+            return Err(BuildError::from(EncodeError::InvalidInput));
+        }
+        if has_transfer_policy && wildcard_count != 1 {
+            return Err(BuildError::from(EncodeError::InvalidInput));
+        }
+        if sorted_token_lists_overlap(&transfer_preview, &transfer_ignore) {
+            return Err(BuildError::from(EncodeError::InvalidInput));
+        }
+        if sorted_token_lists_overlap(&transfer_preview, &transfer_complete) {
+            return Err(BuildError::from(EncodeError::InvalidInput));
+        }
+        if sorted_token_lists_overlap(&transfer_ignore, &transfer_complete) {
             return Err(BuildError::from(EncodeError::InvalidInput));
         }
         let mut allow = SmallVec::<[u8; 64]>::new();
@@ -973,15 +1012,31 @@ impl<'a> OptionsResponse<'a> {
         let mut preview_buffer = itoa::Buffer::new();
         let mut ttl_buffer = itoa::Buffer::new();
         let mut max_connections_buffer = itoa::Buffer::new();
+        let date = match self.date {
+            Some(date) => {
+                let valid = date
+                    .duration_since(UNIX_EPOCH)
+                    .is_ok_and(|duration| duration < Duration::from_secs(253_402_300_800));
+                if !valid {
+                    return Err(BuildError::from(EncodeError::InvalidInput));
+                }
+                Some(httpdate::fmt_http_date(date))
+            }
+            None => None,
+        };
+        let mut service_tag_buffer = [0_u8; 34];
         let mut fields = SmallVec::<[Header<'_>; 16]>::new();
-        fields.push(Header::new(header::METHODS, self.methods)?);
+        fields.push(Header::new(header::METHODS, methods.as_slice())?);
         if let Some(service) = self.service {
             fields.push(Header::new(header::SERVICE, service)?);
         }
         if let Some(service_id) = self.service_id {
             fields.push(Header::new(header::SERVICE_ID, service_id)?);
         }
-        fields.push(Header::new(header::ISTAG, self.service_tag)?);
+        fields.push(Header::new(
+            header::ISTAG,
+            self.service_tag.quoted_bytes(&mut service_tag_buffer),
+        )?);
         if let Some(preview) = self.preview {
             fields.push(Header::new(
                 header::PREVIEW,
@@ -1012,8 +1067,8 @@ impl<'a> OptionsResponse<'a> {
                 max_connections_buffer.format(max_connections).as_bytes(),
             )?);
         }
-        if let Some(date) = self.date {
-            fields.push(Header::new(header::DATE, date)?);
+        if let Some(date) = date.as_ref() {
+            fields.push(Header::new(header::DATE, date.as_bytes())?);
         }
         if let Some(body_type) = self.opt_body_type {
             fields.push(Header::new(header::OPT_BODY_TYPE, body_type)?);
@@ -1188,12 +1243,13 @@ mod tests {
 
     use super::*;
 
+    const TEST_SERVICE_TAG: ServiceTag = ServiceTag::from_static("rama-test");
+
     #[test]
     fn options_response_builds_standard_fields() {
-        let service_tag = String::from("\"rama-test\"");
-        let methods = b"REQMOD, RESPMOD".to_vec();
+        let methods = [Method::Reqmod, Method::Respmod];
         let service = String::from("Rama test service");
-        let response = OptionsResponse::new(&service_tag, &methods)
+        let response = OptionsResponse::new(TEST_SERVICE_TAG, &methods)
             .with_service(&service)
             .with_service_id("rama")
             .with_preview(Preview::new(1024))
@@ -1203,7 +1259,7 @@ mod tests {
             .with_transfer_preview_all(true)
             .with_options_ttl(3600)
             .with_max_connections(64)
-            .with_date("Wed, 20 Aug 2026 12:00:00 GMT")
+            .with_date(httpdate::parse_http_date("Thu, 20 Aug 2026 12:00:00 GMT").unwrap())
             .build()
             .unwrap();
         let mut slots = [HeaderSlot::EMPTY; 16];
@@ -1239,13 +1295,17 @@ mod tests {
             head.header(header::MAX_CONNECTIONS).unwrap().as_bytes(),
             Some(b"64".as_slice())
         );
+        assert_eq!(
+            head.header(header::DATE).unwrap().as_bytes(),
+            Some(b"Thu, 20 Aug 2026 12:00:00 GMT".as_slice())
+        );
     }
 
     #[tokio::test]
     async fn options_response_streams_a_typed_opt_body() {
         use rama_core::futures::StreamExt as _;
 
-        let builder = OptionsResponse::new("\"rama-test\"", "RESPMOD")
+        let builder = OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Respmod])
             .with_opt_body("opaque", "capabilities");
         assert!(!format!("{builder:?}").contains("capabilities"));
         let response = builder.build().unwrap();
@@ -1269,35 +1329,50 @@ mod tests {
 
     #[test]
     fn options_response_rejects_ambiguous_capability_lists() {
-        OptionsResponse::new("\"rama-test\"", "RESPMOD")
+        OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Respmod])
             .with_preview(Preview::new(1024))
             .with_transfer_preview("jpg, *")
             .with_transfer_ignore("JPG")
             .build()
             .unwrap_err();
-        OptionsResponse::new("\"rama-test\"", "RESPMOD")
+        OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Respmod])
             .with_transfer_preview("*")
             .build()
             .unwrap_err();
-        OptionsResponse::new("\"rama-test\"", "RESPMOD")
+        OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Respmod])
             .with_opt_body("not a token", "body")
             .build()
             .unwrap_err();
         for extensions in ["204", "206", "trailers"] {
-            OptionsResponse::new("\"rama-test\"", "RESPMOD")
+            OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Respmod])
                 .with_allow_extensions(extensions)
                 .build()
                 .unwrap_err();
         }
-        OptionsResponse::new("\"rama-test\"", "RESPMOD")
+        OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Respmod])
             .with_transfer_complete("zip")
             .build()
             .unwrap_err();
+        OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Respmod])
+            .with_transfer_ignore("jpg, *")
+            .with_transfer_complete("JPG")
+            .build()
+            .unwrap_err();
+
+        for builder in [
+            OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Respmod]).with_transfer_ignore("*"),
+            OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Respmod]).with_transfer_complete("*"),
+        ] {
+            builder.build().unwrap();
+            let debug = format!("{builder:?}");
+            assert!(debug.starts_with("OptionsResponse"));
+            assert!(debug.contains("has_transfer_policy: true"));
+        }
     }
 
     #[test]
     fn options_response_canonicalizes_allow_extension_tokens() {
-        let response = OptionsResponse::new("\"rama-test\"", "RESPMOD")
+        let response = OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Respmod])
             .with_allow_204(true)
             .with_allow_icap_trailers(true)
             .with_allow_extensions("X-TRACE, x-trace")
@@ -1322,7 +1397,7 @@ mod tests {
             Some(EncapsulatedParts::null()),
         )
         .unwrap();
-        let response = OptionsResponse::new("\"rama-test\"", "RESPMOD")
+        let response = OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Respmod])
             .with_allow_204(true)
             .with_allow_206(true)
             .with_allow_icap_trailers(true)
@@ -1345,7 +1420,7 @@ mod tests {
             Some(EncapsulatedParts::null()),
         )
         .unwrap();
-        let response = OptionsResponse::new("\"rama-test\"", "RESPMOD")
+        let response = OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Respmod])
             .with_allow_204(true)
             .with_allow_206(true)
             .with_allow_icap_trailers(true)
@@ -1376,10 +1451,45 @@ mod tests {
         )
         .unwrap();
         assert!(
-            OptionsResponse::new("\"rama-test\"", "RESPMOD")
+            OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Respmod])
                 .build_for(&request)
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn options_response_rejects_empty_duplicate_and_options_methods() {
+        OptionsResponse::new(TEST_SERVICE_TAG, &[])
+            .build()
+            .unwrap_err();
+        OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Respmod, Method::Respmod])
+            .build()
+            .unwrap_err();
+        OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Options])
+            .build()
+            .unwrap_err();
+        OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Respmod])
+            .with_date(UNIX_EPOCH - Duration::from_secs(1))
+            .build()
+            .unwrap_err();
+        OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Respmod])
+            .with_date(UNIX_EPOCH + Duration::from_secs(253_402_300_800))
+            .build()
+            .unwrap_err();
+    }
+
+    #[test]
+    fn options_response_encodes_explicit_extension_methods() {
+        let extension = Method::extension("PING").unwrap();
+        let response = OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Reqmod, extension])
+            .build()
+            .unwrap();
+        let mut slots = [HeaderSlot::EMPTY; 8];
+        let head = response.response().parse_head(&mut slots).unwrap();
+        assert_eq!(
+            head.header(header::METHODS).unwrap().as_bytes(),
+            Some(b"REQMOD, PING".as_slice())
         );
     }
 }

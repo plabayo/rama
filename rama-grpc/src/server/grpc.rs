@@ -6,13 +6,13 @@ use rama_core::{
     futures::Stream,
     stream::{self, StreamExt},
 };
+use rama_http::headers::{ContentType, HeaderMapExt as _};
 use rama_http_types::{Body, StreamingBody};
 
 use crate::codec::EncodeBody;
 use crate::codec::compression::{
     CompressionEncoding, EnabledCompressionEncodings, SingleMessageCompressionOverride,
 };
-use crate::metadata::GRPC_CONTENT_TYPE;
 use crate::{
     Request, Status,
     codec::{Codec, Streaming},
@@ -346,10 +346,7 @@ where
 
         let (mut parts, body) = response.into_http().into_parts();
 
-        // Set the content type
-        parts
-            .headers
-            .insert(rama_http_types::header::CONTENT_TYPE, GRPC_CONTENT_TYPE);
+        parts.headers.typed_insert(ContentType::grpc());
 
         #[cfg(feature = "compression")]
         if let Some(encoding) = accept_encoding {

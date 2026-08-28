@@ -2,7 +2,7 @@
 
 mod service;
 #[doc(inline)]
-pub use service::{Server, ServerError, ServerErrorKind};
+pub use service::{ExtensionMethodNotImplemented, Server, ServerError, ServerErrorKind};
 
 mod types;
 #[doc(inline)]

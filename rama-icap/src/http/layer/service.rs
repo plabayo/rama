@@ -479,9 +479,7 @@ where
     let request = ClientRequest::reqmod_for_uri(service.uri(), &headers, request, preview)
         .context("build ICAP REQMOD request")?
         .with_replay_limits(service.replay_limits());
-    let connect = service
-        .connect_request()
-        .context("build ICAP REQMOD connection request")?;
+    let connect = service.connect_request();
     let EstablishedClientConnection { conn, .. } = client
         .connect(connect)
         .await
@@ -581,9 +579,7 @@ where
         ClientRequest::respmod_for_uri(service.uri(), &headers, &request, response, preview)
             .context("build ICAP RESPMOD request")?
             .with_replay_limits(service.replay_limits());
-    let connect = service
-        .connect_request()
-        .context("build ICAP RESPMOD connection request")?;
+    let connect = service.connect_request();
     let EstablishedClientConnection { conn, .. } = client
         .connect(connect)
         .await

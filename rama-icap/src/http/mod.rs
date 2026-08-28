@@ -407,6 +407,10 @@ impl IncomingRequest {
     }
 
     /// Return the mutable typed HTTP metadata, when present.
+    ///
+    /// This conservatively makes a later streaming unchanged echo unavailable,
+    /// even when the caller only reads through the returned reference. Use
+    /// [`Self::encapsulated`] for read-only inspection.
     pub fn encapsulated_mut(&mut self) -> Option<&mut Encapsulated> {
         self.encapsulated_exposed_mutably = true;
         self.encapsulated.as_mut()
@@ -418,6 +422,12 @@ impl IncomingRequest {
     }
 
     /// Return the mutable streaming encapsulated entity body.
+    ///
+    /// This conservatively records the body as exposed because polling through
+    /// the returned handle may consume bytes. A later [`Self::try_into_unchanged`]
+    /// can then neither use Preview's 204 shortcut nor stream an unchanged
+    /// body echo; an independently negotiated outside-Preview 204 remains
+    /// available. Use [`Self::body`] for read-only inspection.
     pub fn body_mut(&mut self) -> &mut Body {
         self.body_exposed_mutably = true;
         &mut self.body

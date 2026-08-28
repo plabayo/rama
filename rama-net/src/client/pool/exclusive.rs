@@ -16,7 +16,7 @@ use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use rama_core::telemetry::tracing::trace;
-use rama_utils::macros::generate_set_and_with;
+use rama_utils::{guard::DropGuard, macros::generate_set_and_with};
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::mem::ManuallyDrop;
@@ -534,41 +534,16 @@ where
         // Failure is sticky for the whole lease. A later successful call must
         // not make a connection reusable after another concurrent or earlier
         // call failed or was cancelled.
-        let mut failure_guard = FailureGuard::new(&self.failed_or_cancelled);
+        let failed_or_cancelled = &self.failed_or_cancelled;
+        let mut failure_guard = DropGuard::new(move || {
+            failed_or_cancelled.store(true, Ordering::Relaxed);
+        });
         let result = self.as_ref().serve(input).await;
         if result.is_ok() {
             self.got_response.store(true, Ordering::Relaxed);
             failure_guard.disarm();
         }
         result
-    }
-}
-
-/// Marks a leased connection as failed if a request errors or its future is
-/// cancelled before producing a response.
-struct FailureGuard<'a> {
-    failed_or_cancelled: &'a AtomicBool,
-    armed: bool,
-}
-
-impl<'a> FailureGuard<'a> {
-    fn new(failed_or_cancelled: &'a AtomicBool) -> Self {
-        Self {
-            failed_or_cancelled,
-            armed: true,
-        }
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for FailureGuard<'_> {
-    fn drop(&mut self) {
-        if self.armed {
-            self.failed_or_cancelled.store(true, Ordering::Relaxed);
-        }
     }
 }
 

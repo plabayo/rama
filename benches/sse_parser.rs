@@ -38,6 +38,7 @@ const CHUNK_SIZES: &[usize] = &[
     1024 * 1024,
     0,
 ];
+const CRLF_CHUNK_SIZES: &[usize] = &[512, 64 * 1024, 0];
 
 fn encoded_stream() -> &'static [u8] {
     static ENCODED: OnceLock<Vec<u8>> = OnceLock::new();
@@ -59,8 +60,31 @@ fn encoded_stream() -> &'static [u8] {
     })
 }
 
+fn encoded_stream_crlf() -> &'static [u8] {
+    static ENCODED: OnceLock<Vec<u8>> = OnceLock::new();
+    ENCODED.get_or_init(|| {
+        let mut line = String::new();
+        for i in 0..LINE_LEN {
+            line.push(char::from(b'a' + ((i * 7) % 26) as u8));
+        }
+        let mut encoded = Vec::new();
+        for _ in 0..EVENTS {
+            for _ in 0..LINES {
+                encoded.extend_from_slice(b"data: ");
+                encoded.extend_from_slice(line.as_bytes());
+                encoded.extend_from_slice(b"\r\n");
+            }
+            encoded.extend_from_slice(b"\r\n");
+        }
+        encoded
+    })
+}
+
 fn chunks_for(chunk_size: usize) -> Vec<Bytes> {
-    let encoded = encoded_stream();
+    chunks_for_encoded(encoded_stream(), chunk_size)
+}
+
+fn chunks_for_encoded(encoded: &[u8], chunk_size: usize) -> Vec<Bytes> {
     let chunk_size = if chunk_size == 0 {
         encoded.len()
     } else {
@@ -118,6 +142,16 @@ fn sse_decode(bencher: divan::Bencher, chunk_size: usize) {
     let chunks = chunks_for(chunk_size);
     bencher
         .counter(BytesCount::new(encoded_stream().len()))
+        .bench_local(|| pollster_block_on(decode(black_box(&chunks))));
+}
+
+/// CRLF coverage for the branch that handles split and paired terminators.
+#[divan::bench(args = CRLF_CHUNK_SIZES, sample_count = 30)]
+fn sse_decode_crlf(bencher: divan::Bencher, chunk_size: usize) {
+    let encoded = encoded_stream_crlf();
+    let chunks = chunks_for_encoded(encoded, chunk_size);
+    bencher
+        .counter(BytesCount::new(encoded.len()))
         .bench_local(|| pollster_block_on(decode(black_box(&chunks))));
 }
 

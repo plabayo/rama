@@ -1,4 +1,4 @@
-use std::{fmt, str::FromStr};
+use std::{fmt, str::FromStr, sync::OnceLock};
 
 use rama_core::telemetry::tracing;
 use rama_http_types::{
@@ -41,22 +41,87 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 ///
 /// let ct = ContentType::json();
 /// ```
-#[derive(Clone, Debug, PartialEq)]
-pub struct ContentType(Mime);
+#[derive(Clone)]
+pub struct ContentType(ContentTypeValue);
+
+#[derive(Clone)]
+enum ContentTypeValue {
+    Parsed(Mime),
+    Static(&'static StaticContentType),
+}
+
+struct StaticContentType {
+    value: &'static str,
+    mime: OnceLock<Mime>,
+}
+
+impl StaticContentType {
+    const fn new(value: &'static str) -> Self {
+        Self {
+            value,
+            mime: OnceLock::new(),
+        }
+    }
+
+    #[expect(
+        clippy::expect_used,
+        reason = "private static MIME values are covered by round-trip tests"
+    )]
+    fn mime(&self) -> &Mime {
+        self.mime
+            .get_or_init(|| self.value.parse().expect("valid static MIME value"))
+    }
+}
+
+// TODO: Collapse this representation when `mime` supports validated static
+// custom media types. Until then it keeps typed hot-path encoding allocation
+// free while preserving `mime()` and `into_mime()` compatibility.
+static GRPC: StaticContentType = StaticContentType::new("application/grpc");
+static GRPC_WEB: StaticContentType = StaticContentType::new("application/grpc-web");
+static GRPC_WEB_PROTO: StaticContentType = StaticContentType::new("application/grpc-web+proto");
+static GRPC_WEB_TEXT_PROTO: StaticContentType =
+    StaticContentType::new("application/grpc-web-text+proto");
+static PROTOBUF: StaticContentType = StaticContentType::new("application/x-protobuf");
+
+impl fmt::Debug for ContentType {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut tuple = formatter.debug_tuple("ContentType");
+        match &self.0 {
+            ContentTypeValue::Parsed(mime) => tuple.field(mime),
+            ContentTypeValue::Static(value) => tuple.field(&value.value),
+        };
+        tuple.finish()
+    }
+}
+
+impl PartialEq for ContentType {
+    fn eq(&self, other: &Self) -> bool {
+        match (&self.0, &other.0) {
+            (ContentTypeValue::Static(lhs), ContentTypeValue::Static(rhs)) => {
+                lhs.value == rhs.value
+            }
+            _ => self.mime() == other.mime(),
+        }
+    }
+}
 
 impl ContentType {
     /// Create a new [`ContentType`] from any [`Mime`].
     #[inline]
     #[must_use]
     pub fn new(mime: Mime) -> Self {
-        Self(mime)
+        Self(ContentTypeValue::Parsed(mime))
+    }
+
+    const fn from_static(value: &'static StaticContentType) -> Self {
+        Self(ContentTypeValue::Static(value))
     }
 
     /// A constructor to easily create a `Content-Type: application/json` header.
     #[inline]
     #[must_use]
     pub fn json() -> Self {
-        Self(mime::APPLICATION_JSON)
+        Self::new(mime::APPLICATION_JSON)
     }
 
     /// A constructor for the registered JSON-LD media type.
@@ -67,7 +132,9 @@ impl ContentType {
             clippy::expect_used,
             reason = "static value which is expected to work, and validated with a unit-test"
         )]
-        Self(Mime::from_str("application/ld+json").expect("application/ld+json to be a valid mime"))
+        Self::new(
+            Mime::from_str("application/ld+json").expect("application/ld+json to be a valid mime"),
+        )
     }
 
     #[inline]
@@ -77,7 +144,7 @@ impl ContentType {
             clippy::expect_used,
             reason = "static value which is expected to work, and validated with a unit-test"
         )]
-        Self(
+        Self::new(
             Mime::from_str("application/x-ndjson")
                 .expect("application/x-ndjson to be a valid mime"),
         )
@@ -87,125 +154,146 @@ impl ContentType {
     #[inline]
     #[must_use]
     pub fn text() -> Self {
-        Self(mime::TEXT_PLAIN)
+        Self::new(mime::TEXT_PLAIN)
     }
 
     /// A constructor to easily create a `Content-Type: text/plain; charset=utf-8` header.
     #[inline]
     #[must_use]
     pub fn text_utf8() -> Self {
-        Self(mime::TEXT_PLAIN_UTF_8)
+        Self::new(mime::TEXT_PLAIN_UTF_8)
     }
 
     /// A constructor to easily create a `Content-Type: text/event-stream` header.
     #[inline]
     #[must_use]
     pub fn text_event_stream() -> Self {
-        Self(mime::TEXT_EVENT_STREAM)
+        Self::new(mime::TEXT_EVENT_STREAM)
     }
 
     /// A constructor to easily create a `Content-Type: text/html` header.
     #[inline]
     #[must_use]
     pub fn html() -> Self {
-        Self(mime::TEXT_HTML)
+        Self::new(mime::TEXT_HTML)
     }
 
     /// A constructor to easily create a `Content-Type: text/html; charset=utf-8` header.
     #[inline]
     #[must_use]
     pub fn html_utf8() -> Self {
-        Self(mime::TEXT_HTML_UTF_8)
+        Self::new(mime::TEXT_HTML_UTF_8)
     }
 
     /// A constructor to easily create a `Content-Type: text/css` header.
     #[inline]
     #[must_use]
     pub fn css() -> Self {
-        Self(mime::TEXT_CSS)
+        Self::new(mime::TEXT_CSS)
     }
 
     /// A constructor to easily create a `text/css; charset=utf-8` header.
     #[inline]
     #[must_use]
     pub fn css_utf8() -> Self {
-        Self(mime::TEXT_CSS_UTF_8)
+        Self::new(mime::TEXT_CSS_UTF_8)
     }
 
     /// A constructor to easily create a `Content-Type: text/xml` header.
     #[inline]
     #[must_use]
     pub fn xml() -> Self {
-        Self(mime::TEXT_XML)
+        Self::new(mime::TEXT_XML)
     }
 
     /// A constructor to easily create a `Content-Type: text/csv` header.
     #[inline]
     #[must_use]
     pub fn csv() -> Self {
-        Self(mime::TEXT_CSV)
+        Self::new(mime::TEXT_CSV)
     }
 
     /// A constructor to easily create a `Content-Type: text/csv; charset=utf-8` header.
     #[inline]
     #[must_use]
     pub fn csv_utf8() -> Self {
-        Self(mime::TEXT_CSV_UTF_8)
+        Self::new(mime::TEXT_CSV_UTF_8)
     }
 
     /// A constructor to easily create a `Content-Type: application/x-www-form-url-encoded` header.
     #[inline]
     #[must_use]
     pub fn form_url_encoded() -> Self {
-        Self(mime::APPLICATION_WWW_FORM_URLENCODED)
+        Self::new(mime::APPLICATION_WWW_FORM_URLENCODED)
     }
     /// A constructor to easily create a `Content-Type: image/jpeg` header.
     #[inline]
     #[must_use]
     pub fn jpeg() -> Self {
-        Self(mime::IMAGE_JPEG)
+        Self::new(mime::IMAGE_JPEG)
     }
 
     /// A constructor to easily create a `Content-Type: image/png` header.
     #[inline]
     #[must_use]
     pub fn png() -> Self {
-        Self(mime::IMAGE_PNG)
+        Self::new(mime::IMAGE_PNG)
     }
 
     /// A constructor to easily create a `Content-Type: application/octet-stream` header.
     #[inline]
     #[must_use]
     pub fn octet_stream() -> Self {
-        Self(mime::APPLICATION_OCTET_STREAM)
+        Self::new(mime::APPLICATION_OCTET_STREAM)
     }
 
     /// A constructor to easily create a `Content-Type: application/javascript` header.
     #[inline]
     #[must_use]
     pub fn javascript() -> Self {
-        Self(mime::APPLICATION_JAVASCRIPT)
+        Self::new(mime::APPLICATION_JAVASCRIPT)
     }
 
     /// A constructor to easily create a `Content-Type: application/grpc` header.
     #[inline]
     #[must_use]
-    pub fn grpc() -> Self {
-        // TOOD: we need to invest in mime, either contribute,
-        // or fork it, to support all our mime needs better...
-        // e.g. we also have similar issues for ndjson and more
-        #[expect(
-            clippy::expect_used,
-            reason = "valid mim,e in future this should be better"
-        )]
-        Self(Mime::from_str("application/grpc").expect("application/grpc to be a valid mime"))
+    pub const fn grpc() -> Self {
+        Self::from_static(&GRPC)
+    }
+
+    /// A constructor to easily create a `Content-Type: application/grpc-web` header.
+    #[inline]
+    #[must_use]
+    pub const fn grpc_web() -> Self {
+        Self::from_static(&GRPC_WEB)
+    }
+
+    /// A constructor for `Content-Type: application/grpc-web+proto`.
+    #[inline]
+    #[must_use]
+    pub const fn grpc_web_proto() -> Self {
+        Self::from_static(&GRPC_WEB_PROTO)
+    }
+
+    /// A constructor for `Content-Type: application/grpc-web-text+proto`.
+    #[inline]
+    #[must_use]
+    pub const fn grpc_web_text_proto() -> Self {
+        Self::from_static(&GRPC_WEB_TEXT_PROTO)
+    }
+
+    /// A constructor for `Content-Type: application/x-protobuf`.
+    #[inline]
+    #[must_use]
+    pub const fn protobuf() -> Self {
+        Self::from_static(&PROTOBUF)
     }
 
     /// A constructor to easily create a `Content-Type: application/javascript; charset=utf-8` header.
     #[inline]
     #[must_use]
     pub fn javascript_utf8() -> Self {
-        Self(mime::APPLICATION_JAVASCRIPT_UTF_8)
+        Self::new(mime::APPLICATION_JAVASCRIPT_UTF_8)
     }
 
     /// A constructor to easily create a `Content-Type: application/rss+xml` header.
@@ -216,7 +304,9 @@ impl ContentType {
             clippy::expect_used,
             reason = "static value which is expected to work, and validated with a unit-test"
         )]
-        Self(Mime::from_str("application/rss+xml").expect("application/rss+xml to be a valid mime"))
+        Self::new(
+            Mime::from_str("application/rss+xml").expect("application/rss+xml to be a valid mime"),
+        )
     }
 
     /// A constructor to easily create a `Content-Type: application/atom+xml` header.
@@ -227,7 +317,7 @@ impl ContentType {
             clippy::expect_used,
             reason = "static value which is expected to work, and validated with a unit-test"
         )]
-        Self(
+        Self::new(
             Mime::from_str("application/atom+xml")
                 .expect("application/atom+xml to be a valid mime"),
         )
@@ -241,7 +331,7 @@ impl ContentType {
             clippy::expect_used,
             reason = "static value which is expected to work, and validated with a unit-test"
         )]
-        Self(
+        Self::new(
             Mime::from_str("application/jose+json")
                 .expect("application/jose+json to be a valid mime"),
         )
@@ -256,7 +346,7 @@ impl ContentType {
             clippy::expect_used,
             reason = "static value which is expected to work, and validated with a unit-test"
         )]
-        Self(
+        Self::new(
             Mime::from_str("application/manifest+json")
                 .expect("application/manifest+json to be a valid mime"),
         )
@@ -272,7 +362,7 @@ impl ContentType {
     #[inline]
     #[must_use]
     pub fn svg() -> Self {
-        Self(mime::IMAGE_SVG)
+        Self::new(mime::IMAGE_SVG)
     }
 
     /// A constructor to easily create a `Content-Type: application/xml; charset=utf-8` header.
@@ -297,7 +387,7 @@ impl ContentType {
             clippy::expect_used,
             reason = "static value which is expected to work, and validated with a unit-test"
         )]
-        Self(
+        Self::new(
             Mime::from_str("application/xml; charset=utf-8")
                 .expect("application/xml; charset=utf-8 to be a valid mime"),
         )
@@ -320,7 +410,7 @@ impl ContentType {
             clippy::expect_used,
             reason = "static value which is expected to work, and validated with a unit-test"
         )]
-        Self(Mime::from_str("application/wasm").expect("application/wasm to be a valid mime"))
+        Self::new(Mime::from_str("application/wasm").expect("application/wasm to be a valid mime"))
     }
 
     /// A constructor to easily create a `Content-Type: font/woff2` header.
@@ -333,7 +423,7 @@ impl ContentType {
     #[inline]
     #[must_use]
     pub fn woff2() -> Self {
-        Self(mime::FONT_WOFF2)
+        Self::new(mime::FONT_WOFF2)
     }
 
     /// A constructor to easily create a `Content-Type: application/manifest+json` header.
@@ -358,13 +448,19 @@ impl ContentType {
     /// Reference to the internal [`Mime`].
     #[must_use]
     pub fn mime(&self) -> &Mime {
-        &self.0
+        match &self.0 {
+            ContentTypeValue::Parsed(mime) => mime,
+            ContentTypeValue::Static(value) => value.mime(),
+        }
     }
 
     /// Consume `self` into the inner [`Mime`].
     #[must_use]
     pub fn into_mime(self) -> Mime {
-        self.0
+        match self.0 {
+            ContentTypeValue::Parsed(mime) => mime,
+            ContentTypeValue::Static(value) => value.mime().clone(),
+        }
     }
 }
 
@@ -379,37 +475,45 @@ impl HeaderDecode for ContentType {
         values
             .next()
             .and_then(|v| v.to_str().ok()?.parse().ok())
-            .map(ContentType)
+            .map(Self::new)
             .ok_or_else(Error::invalid)
     }
 }
 
 impl HeaderEncode for ContentType {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        match self.0.as_ref().parse() {
-            Ok(value) => values.extend(::std::iter::once(value)),
-            Err(err) => {
-                tracing::debug!("failed to encode content-type's mime as header value: {err}");
+        match &self.0 {
+            ContentTypeValue::Static(value) => {
+                values.extend(::std::iter::once(HeaderValue::from_static(value.value)));
             }
+            ContentTypeValue::Parsed(mime) => match mime.as_ref().parse() {
+                Ok(value) => values.extend(::std::iter::once(value)),
+                Err(err) => {
+                    tracing::debug!("failed to encode content-type's mime as header value: {err}");
+                }
+            },
         }
     }
 }
 
 impl From<mime::Mime> for ContentType {
     fn from(m: mime::Mime) -> Self {
-        Self(m)
+        Self::new(m)
     }
 }
 
 impl From<ContentType> for mime::Mime {
     fn from(ct: ContentType) -> Self {
-        ct.0
+        ct.into_mime()
     }
 }
 
 impl fmt::Display for ContentType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
+        match &self.0 {
+            ContentTypeValue::Parsed(mime) => fmt::Display::fmt(mime, f),
+            ContentTypeValue::Static(value) => f.write_str(value.value),
+        }
     }
 }
 
@@ -482,6 +586,41 @@ mod tests {
     #[test]
     fn atom_is_valid() {
         _ = ContentType::atom();
+    }
+
+    #[test]
+    fn grpc_variants_are_valid() {
+        assert_eq!(ContentType::grpc().to_string(), "application/grpc");
+        assert_eq!(ContentType::grpc_web().to_string(), "application/grpc-web");
+        assert_eq!(
+            ContentType::grpc_web_proto().to_string(),
+            "application/grpc-web+proto"
+        );
+        assert_eq!(
+            ContentType::grpc_web_text_proto().to_string(),
+            "application/grpc-web-text+proto"
+        );
+        assert_eq!(
+            ContentType::protobuf().to_string(),
+            "application/x-protobuf"
+        );
+    }
+
+    #[test]
+    fn grpc_variants_expose_their_parsed_mime() {
+        for (content_type, expected) in [
+            (ContentType::grpc(), "application/grpc"),
+            (ContentType::grpc_web(), "application/grpc-web"),
+            (ContentType::grpc_web_proto(), "application/grpc-web+proto"),
+            (
+                ContentType::grpc_web_text_proto(),
+                "application/grpc-web-text+proto",
+            ),
+            (ContentType::protobuf(), "application/x-protobuf"),
+        ] {
+            assert_eq!(content_type.mime().as_ref(), expected);
+            assert_eq!(content_type.into_mime().as_ref(), expected);
+        }
     }
 
     #[test]

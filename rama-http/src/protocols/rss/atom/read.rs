@@ -13,7 +13,7 @@ use rama_core::futures::Stream;
 use rama_core::futures::StreamExt as _;
 use rama_core::futures::async_stream::stream_fn;
 use rama_core::futures::stream::BoxStream;
-use rama_core::telemetry::tracing;
+use rama_core::{io::LossyUtf8Reader, telemetry::tracing};
 use rama_net::uri::Uri;
 use tokio::io::AsyncBufRead;
 
@@ -27,9 +27,9 @@ use crate::protocols::rss::feed_ext::names::attr;
 use crate::protocols::rss::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use crate::protocols::rss::feed_ext::{DublinCoreTermsFeed, FeedExtensions};
 use crate::protocols::rss::parse_util::{
-    XmlReader, atom_category_from_attrs, atom_link_from_attrs, attr_uri_reference, attr_value,
+    atom_category_from_attrs, atom_link_from_attrs, attr_uri_reference, attr_value,
     end_event_parts, make_atom_text, parse_rfc3339_lax, parse_uri, parse_uri_reference,
-    push_general_ref, push_text, xml_reader,
+    push_general_ref, push_text,
 };
 
 /// Feed-level metadata of an Atom 1.0 document — everything an [`AtomFeed`]
@@ -132,7 +132,17 @@ impl AtomFeedStream {
     where
         R: AsyncBufRead + Unpin + Send + 'static,
     {
-        let mut state = AtomReader::new(reader, strict);
+        if strict {
+            Self::from_reader(AtomReader::new(reader, true)).await
+        } else {
+            Self::from_reader(AtomReader::new(LossyUtf8Reader::new(reader), false)).await
+        }
+    }
+
+    async fn from_reader<R>(mut state: AtomReader<R>) -> Result<Self, FeedParseError>
+    where
+        R: AsyncBufRead + Unpin + Send + 'static,
+    {
         let header = state.read_header().await?;
         let entries: BoxStream<'static, Result<AtomEntry, FeedParseError>> =
             Box::pin(stream_fn(move |mut yielder| async move {
@@ -246,8 +256,8 @@ enum Action {
     Eof,
 }
 
-struct AtomReader {
-    nsr: NsReader<XmlReader>,
+struct AtomReader<R> {
+    nsr: NsReader<R>,
     buf: Vec<u8>,
     strict: bool,
 
@@ -295,12 +305,12 @@ struct AtomReader {
     current_subtitle_type: String,
 }
 
-impl AtomReader {
-    fn new<R>(reader: R, strict: bool) -> Self
-    where
-        R: AsyncBufRead + Unpin + Send + 'static,
-    {
-        let mut nsr = NsReader::from_reader(xml_reader(reader, strict));
+impl<R> AtomReader<R>
+where
+    R: AsyncBufRead + Unpin + Send + 'static,
+{
+    fn new(reader: R, strict: bool) -> Self {
+        let mut nsr = NsReader::from_reader(reader);
         // Do NOT use `trim_text(true)`: quick-xml 0.40 splits a text run around
         // every entity / character reference into separate `Text` and
         // `GeneralRef` events, so per-event trimming strips whitespace that is

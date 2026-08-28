@@ -386,8 +386,8 @@ pub struct CliCommandProxy {
     bind: Option<SocketAddress>,
 
     /// Protocols served on --bind; comma-separated values share one peeking
-    /// listener.
-    #[arg(long, value_enum, value_delimiter = ',', default_value = "http")]
+    /// listener. HTTP and SOCKS5 are both enabled by default.
+    #[arg(long, value_enum, value_delimiter = ',', default_value = "http,socks5")]
     protocol: Vec<ProxyProtocol>,
 
     /// Additional HTTP proxy bind. Repeat to use multiple listeners.

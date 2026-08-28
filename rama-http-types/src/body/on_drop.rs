@@ -1,24 +1,9 @@
 use pin_project_lite::pin_project;
+use rama_utils::guard::DropGuard;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use super::{Frame, SizeHint, StreamingBody};
-
-struct DropGuard<F: FnOnce()> {
-    completed: bool,
-    on_drop: Option<F>,
-}
-
-impl<F: FnOnce()> Drop for DropGuard<F> {
-    fn drop(&mut self) {
-        if self.completed {
-            return;
-        }
-        if let Some(f) = self.on_drop.take() {
-            f();
-        }
-    }
-}
 
 pin_project! {
     /// A [`StreamingBody`] wrapper that calls a closure when dropped before the body
@@ -67,10 +52,7 @@ impl<B, F: FnOnce()> OnDropBody<B, F> {
     pub fn new(inner: B, on_drop: F) -> Self {
         Self {
             inner,
-            guard: DropGuard {
-                completed: false,
-                on_drop: Some(on_drop),
-            },
+            guard: DropGuard::new(on_drop),
         }
     }
 }
@@ -91,8 +73,7 @@ where
         let result = this.inner.poll_frame(cx);
         if matches!(result, Poll::Ready(None)) {
             // Stream exhausted normally — disarm the callback.
-            this.guard.completed = true;
-            let _ = this.guard.on_drop.take();
+            this.guard.disarm();
         }
         result
     }

@@ -4,6 +4,10 @@ mod read;
 #[doc(inline)]
 pub use read::{ChainReader, HeapReader, ReplayReader, StackReader, discard};
 
+mod lossy_utf8;
+#[doc(inline)]
+pub use lossy_utf8::LossyUtf8Reader;
+
 mod prefix;
 #[doc(inline)]
 pub use prefix::PrefixedIo;

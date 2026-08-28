@@ -1,11 +1,10 @@
 use rama_core::error::{BoxError, ErrorContext};
 use rama_core::{Layer, Service};
-use rama_http::HeaderValue;
+use rama_http::headers::{ContentType, HeaderMapExt as _};
 use rama_http::layer::version_adapter::adapt_request_version;
-use rama_http_types::{Request, Response, Version, header::CONTENT_TYPE};
+use rama_http_types::{Request, Response, Version};
 
 use super::GrpcWebCall;
-use super::call::content_types::GRPC_WEB;
 
 /// Layer implementing the grpc-web protocol for clients.
 #[derive(Debug, Default, Clone)]
@@ -56,8 +55,7 @@ where
     async fn serve(&self, mut req: Request<B1>) -> Result<Self::Output, Self::Error> {
         adapt_request_version(&mut req, Version::HTTP_11)?;
 
-        req.headers_mut()
-            .insert(CONTENT_TYPE, HeaderValue::from_static(GRPC_WEB));
+        req.headers_mut().typed_insert(ContentType::grpc_web());
 
         let req = req.map(GrpcWebCall::client_request);
 

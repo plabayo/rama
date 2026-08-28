@@ -78,6 +78,7 @@ struct RouteEntry<O, E> {
     /// higher under `Vec`'s ordering = more specific.
     specificity: Vec<SegmentSpecificityRank>,
     handlers: Vec<(HttpMatcher<Body>, BoxService<Request, O, E>)>,
+    fallback_handlers: Vec<(HttpMatcher<Body>, BoxService<Request, O, E>)>,
 }
 
 /// Specificity rank of one segment. Literal beats dynamic beats catch-all; for
@@ -597,6 +598,69 @@ where
                     pattern,
                     specificity,
                     handlers: vec![(matcher, service)],
+                    fallback_handlers: Vec::new(),
+                },
+            );
+        }
+
+        self
+    }
+
+    /// Add a route fallback evaluated after ordinary handlers and mounted
+    /// sub-services for the same request path.
+    ///
+    /// This is useful for protocol-specific error responses that must not
+    /// shadow another handler sharing the path. A matching fallback runs only
+    /// when no ordinary handler or mounted sub-service accepted the request,
+    /// and before the router produces its generic 405 or 404 response.
+    #[inline(always)]
+    #[must_use]
+    pub fn with_fallback_match_route<I, T>(
+        mut self,
+        path: impl AsRef<str>,
+        matcher: HttpMatcher<Body>,
+        service: I,
+    ) -> Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+        L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
+    {
+        self.set_fallback_match_route(path, matcher, service);
+        self
+    }
+
+    /// Add a route fallback evaluated after ordinary handlers and mounted
+    /// sub-services for the same request path.
+    pub fn set_fallback_match_route<I, T>(
+        &mut self,
+        path: impl AsRef<str>,
+        matcher: HttpMatcher<Body>,
+        service: I,
+    ) -> &mut Self
+    where
+        I: IntoEndpointServiceWithState<T, State>,
+        L: Layer<I::Service, Service: Service<Request, Output = O, Error = E>>,
+    {
+        let service = self
+            .layer
+            .layer(service.into_endpoint_service_with_state(self.state.clone()))
+            .boxed();
+        let pattern = compile_pattern(path.as_ref());
+
+        if let Some(entry) = self.routes.iter_mut().find(|e| e.pattern == pattern) {
+            entry.fallback_handlers.push((matcher, service));
+        } else {
+            let specificity = specificity_of(&pattern);
+            let pos = self
+                .routes
+                .partition_point(|entry| entry.specificity >= specificity);
+            self.routes.insert(
+                pos,
+                RouteEntry {
+                    pattern,
+                    specificity,
+                    handlers: Vec::new(),
+                    fallback_handlers: vec![(matcher, service)],
                 },
             );
         }
@@ -694,6 +758,7 @@ where
         // Initialised here so it is visible after the route scan and after
         // sub_services, letting sub_services take priority over a 405.
         let mut allowed_methods: Option<MethodMatcher> = None;
+        let mut fallback_handler = None;
 
         // most-specific-first: the first matching route owns the path
         // (method mismatch -> 405, no fall-through to a vaguer route).
@@ -723,9 +788,17 @@ where
                 }
             }
 
+            for (matcher, service) in entry.fallback_handlers.iter() {
+                let mext = Extensions::new();
+                if matcher.matches(Some(&mext), &req) {
+                    fallback_handler = Some((mext, service));
+                    break;
+                }
+            }
+
             // Path matched but no method matched — collect for a potential 405.
             // Do not return yet: a sub_service may still handle this request.
-            for (matcher, _) in entry.handlers.iter() {
+            for (matcher, _) in entry.handlers.iter().chain(&entry.fallback_handlers) {
                 if let Some(m) = matcher.allowed_methods() {
                     allowed_methods = Some(allowed_methods.map_or(m, |acc| acc.or_method(m)));
                 }
@@ -783,6 +856,11 @@ where
             );
             let req = Request::from_parts(parts, body);
             return sub_svc.svc.serve(req).await;
+        }
+
+        if let Some((extensions, fallback)) = fallback_handler {
+            parts.extensions.extend(&extensions);
+            return fallback.serve(Request::from_parts(parts, body)).await;
         }
 
         // A route matched the path but no registered method matched, and no sub_service
@@ -1265,6 +1343,42 @@ mod tests {
         let res = router.serve(req).await.unwrap();
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body, "first");
+    }
+
+    #[test]
+    fn fallback_registration_reuses_an_existing_path_entry() {
+        let mut router = Router::new().with_get("/same", root_service());
+        router.set_fallback_match_route("/same", HttpMatcher::method_post(), create_user_service());
+
+        assert_eq!(router.routes.len(), 1);
+        assert_eq!(router.routes[0].handlers.len(), 1);
+        assert_eq!(router.routes[0].fallback_handlers.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn fallback_routes_keep_specificity_order() {
+        fn svc(
+            label: &'static str,
+        ) -> impl Service<Request, Output = Response, Error = Infallible> {
+            service_fn(move |_req: Request| async move { Ok(Response::new(Body::from(label))) })
+        }
+
+        let router = Router::new()
+            .with_fallback_match_route(
+                "/assets/{*path}",
+                HttpMatcher::method_get(),
+                svc("catch-all"),
+            )
+            .with_fallback_match_route("/assets/app.js", HttpMatcher::method_get(), svc("static"));
+        let response = router
+            .serve(Request::get("/assets/app.js").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "static"
+        );
     }
 
     #[tokio::test]

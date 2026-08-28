@@ -4332,6 +4332,7 @@ name = "rama-icap"
 version = "0.5.0"
 dependencies = [
  "divan",
+ "httpdate",
  "itoa",
  "parking_lot",
  "rama-core",

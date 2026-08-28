@@ -11,8 +11,9 @@ use rama_core::{
     Service, bytes::BytesMut, error::BoxError, telemetry::opentelemetry::sdk::error::OTelSdkError,
 };
 use rama_http::{
-    Body, HeaderMap, HeaderName, HeaderValue, Method, Request, Response, body::util::BodyExt as _,
-    header::CONTENT_TYPE,
+    Body, HeaderMap, HeaderName, HeaderValue, Method, Request, Response,
+    body::util::BodyExt as _,
+    headers::{ContentType, HeaderMapExt as _},
 };
 use rama_net::uri::Uri;
 use rama_utils::macros::generate_set_and_with;
@@ -23,7 +24,6 @@ pub(super) const DEFAULT_OTLP_HTTP_ENDPOINT: &str = "http://localhost:4318";
 const OTLP_HTTP_TRACE_PATH: &str = "/v1/traces";
 const OTLP_HTTP_METRICS_PATH: &str = "/v1/metrics";
 const OTLP_HTTP_LOGS_PATH: &str = "/v1/logs";
-const PROTOBUF_CONTENT_TYPE: &str = "application/x-protobuf";
 const CONTENT_ENCODING: &str = "content-encoding";
 
 impl HeaderBag for HeaderMap {
@@ -146,10 +146,7 @@ where
             .body(Body::from(body.freeze()))
             .map_err(internal_failure)?;
 
-        request.headers_mut().insert(
-            CONTENT_TYPE,
-            HeaderValue::from_static(PROTOBUF_CONTENT_TYPE),
-        );
+        request.headers_mut().typed_insert(ContentType::protobuf());
         if let Some(compression) = config.compression {
             request.headers_mut().insert(
                 HeaderName::from_static(CONTENT_ENCODING),

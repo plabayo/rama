@@ -30,6 +30,7 @@ targets = [
 default = []
 http = ["std", "dep:rama-http-types", "dep:tokio-util"]
 std = [
+    "dep:httpdate",
     "dep:itoa",
     "dep:parking_lot",
     "dep:rama-core",
@@ -40,6 +41,7 @@ std = [
 ]
 
 [dependencies]
+httpdate = { workspace = true, optional = true }
 itoa = { workspace = true, optional = true }
 parking_lot = { workspace = true, optional = true }
 rama-core = { workspace = true, optional = true }

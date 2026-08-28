@@ -25,7 +25,8 @@ use rama_http_types::{
     header::{self as http_header, HeaderValue, TRAILER},
 };
 use rama_net::{
-    ConnectorTargetInputExt as _, Protocol, ProtocolInputExt as _, TransportProtocolInputExt as _,
+    AuthorityInputExt, ConnectorTargetInputExt as _, Protocol, ProtocolInputExt,
+    TransportProtocolInputExt as _, UriInputExt,
     address::{Domain, ProxyAddress},
     client::{
         ConnectRequest, ConnectorTarget, EstablishedClientConnection, ProxyRoute,
@@ -48,7 +49,7 @@ use crate::{
     http::{HttpService, IncomingRequest, IncomingRequestParts, OutgoingResponse},
     io::ConnectionOptions,
     message::{EncapsulatedParts, Response as IcapResponse},
-    proto::{EncapsulatedKind, Method, MethodKind, Preview, StatusCode, header},
+    proto::{EncapsulatedKind, Method, MethodKind, Preview, ServiceTag, StatusCode, header},
     server::{
         BodyFrame, IncomingRequest as RawIncomingRequest, OptionsResponse, OutgoingBody, Server,
     },
@@ -58,6 +59,8 @@ use tokio::{
     sync::Notify,
     time::timeout,
 };
+
+const TEST_SERVICE_TAG: ServiceTag = ServiceTag::from_static("rama-test");
 
 fn endpoint(path: &str) -> ServiceEndpoint {
     ServiceEndpoint::new(format!("icap://icap.test/{path}"))
@@ -207,9 +210,11 @@ where
             );
         }
         match method {
-            MethodKind::Options => OptionsResponse::new("\"rama-tls\"", "REQMOD, RESPMOD")
-                .build()
-                .map_err(Into::into),
+            MethodKind::Options => {
+                OptionsResponse::new(TEST_SERVICE_TAG, &[Method::Reqmod, Method::Respmod])
+                    .build()
+                    .map_err(Into::into)
+            }
             MethodKind::Reqmod | MethodKind::Respmod => self.adaptation.serve(request).await,
             MethodKind::Extension => Err(BoxError::from_static_str(
                 "unexpected ICAP extension method",
@@ -389,7 +394,7 @@ async fn detours_request_and_response_with_preview() {
     let transport = MockConnectorService::new(|| {
         Server::new(
             HttpService::new(service_fn(serve_adaptation_with_outer_trailers)),
-            b"\"rama-test\"",
+            TEST_SERVICE_TAG,
         )
         .unwrap()
     })
@@ -468,7 +473,7 @@ async fn preserves_ordinary_header_order_and_casing_end_to_end() {
         || {
             Server::new(
                 HttpService::new(service_fn(serve_header_preserving_adaptation)),
-                b"\"rama-test\"",
+                TEST_SERVICE_TAG,
             )
             .unwrap()
         },
@@ -523,7 +528,7 @@ async fn icaps_endpoint_uses_direct_tls_for_options_reqmod_and_respmod() {
             secure: true,
             port: Some(Protocol::ICAPS_DEFAULT_PORT),
         },
-        b"\"rama-tls\"",
+        TEST_SERVICE_TAG,
     )
     .unwrap();
     let icap_server = TlsIcapConnectionServer { inner: icap_server };
@@ -611,7 +616,7 @@ async fn boring_icaps_interoperates_for_options_reqmod_and_respmod() {
             secure: true,
             port: Some(Protocol::ICAPS_DEFAULT_PORT),
         },
-        b"\"rama-boring\"",
+        TEST_SERVICE_TAG,
     )
     .unwrap();
     let server = TlsAcceptorLayer::new(tls_config)
@@ -660,7 +665,7 @@ async fn boring_icaps_rejects_wrong_certificate_identity() {
     let tls_config = TlsServerConfig::new().with_single_cert(server_auth);
     let icap_server = Server::new(
         HttpService::new(service_fn(serve_adaptation)),
-        b"\"rama-wrong-cert\"",
+        TEST_SERVICE_TAG,
     )
     .unwrap();
     let server = TlsAcceptorLayer::new(tls_config)
@@ -685,7 +690,7 @@ async fn auto_tls_connector_keeps_icap_endpoint_plaintext() {
     let transport = MockConnectorService::new(|| {
         Server::new(
             HttpService::new(service_fn(serve_adaptation)),
-            b"\"rama-plain\"",
+            TEST_SERVICE_TAG,
         )
         .unwrap()
     })
@@ -714,7 +719,7 @@ async fn http_connect_tunnel_carries_and_reuses_plain_icap() {
                 secure: false,
                 port: None,
             },
-            b"\"rama-connect\"",
+            TEST_SERVICE_TAG,
         )
         .unwrap(),
     };
@@ -733,7 +738,7 @@ async fn http_connect_tunnel_carries_and_reuses_plain_icap() {
                 tunnels.fetch_add(1, Ordering::Relaxed);
                 tokio::spawn(async move {
                     let tunnel = on_upgrade.await.unwrap();
-                    icap_server.serve(tunnel).await.unwrap();
+                    Box::pin(icap_server.serve(tunnel)).await.unwrap();
                 });
                 Ok::<_, Infallible>(Response::new(Body::empty()))
             }
@@ -801,7 +806,7 @@ async fn http_connect_tunnel_carries_and_reuses_icaps() {
                 secure: true,
                 port: Some(Protocol::ICAPS_DEFAULT_PORT),
             },
-            b"\"rama-connect-tls\"",
+            TEST_SERVICE_TAG,
         )
         .unwrap(),
     };
@@ -894,7 +899,7 @@ async fn options_discovery_constrains_ephemeral_adaptation_policy() {
                 assert!(request.icap().allows_206());
                 serve_adaptation(request).await
             });
-            Server::new(HttpService::new(adaptation), b"\"rama-test\"").unwrap()
+            Server::new(HttpService::new(adaptation), TEST_SERVICE_TAG).unwrap()
         },
         256,
     );
@@ -949,7 +954,7 @@ async fn assert_istag_cache_discoveries(
             let adaptation = service_fn(move |request: IncomingRequest| {
                 serve_adaptation_with_service_tag(request, adaptation_tag)
             });
-            Server::new(HttpService::new(adaptation), adaptation_tag).unwrap()
+            Server::new_raw(HttpService::new(adaptation), adaptation_tag).unwrap()
         },
         256,
     );
@@ -1047,7 +1052,7 @@ async fn transfer_complete_disables_preview_in_both_directions() {
                 assert_eq!(request.icap().preview(), None);
                 serve_adaptation(request).await
             });
-            Server::new(HttpService::new(adaptation), b"\"rama-test\"").unwrap()
+            Server::new(HttpService::new(adaptation), TEST_SERVICE_TAG).unwrap()
         },
         256,
     );
@@ -1087,7 +1092,7 @@ async fn preserves_trailer_only_response_declaration() {
         || {
             Server::new(
                 HttpService::new(service_fn(serve_adaptation)),
-                b"\"rama-test\"",
+                TEST_SERVICE_TAG,
             )
             .unwrap()
         },
@@ -1132,7 +1137,7 @@ async fn reuses_healthy_exclusive_transport_connections() {
         connector_connections.fetch_add(1, Ordering::Relaxed);
         Server::new(
             HttpService::new(service_fn(serve_adaptation)),
-            b"\"rama-test\"",
+            TEST_SERVICE_TAG,
         )
         .unwrap()
     })
@@ -1207,7 +1212,7 @@ async fn pool_discards_transports_with_preloaded_responses() {
                 tokio::spawn(async move {
                     let server = Server::new(
                         HttpService::new(service_fn(serve_adaptation)),
-                        b"\"rama-test\"",
+                        TEST_SERVICE_TAG,
                     )
                     .unwrap();
                     let _result = server.serve(ServiceInput::new(server_io)).await;
@@ -1268,7 +1273,7 @@ async fn evicts_transport_when_adapted_body_is_dropped() {
         service_fn(|server_io: MockSocket| async move {
             let server = Server::new(
                 HttpService::new(service_fn(serve_adaptation)),
-                b"\"rama-test\"",
+                TEST_SERVICE_TAG,
             )
             .unwrap();
             let _result = server.serve(server_io).await;
@@ -1340,7 +1345,7 @@ async fn releases_preview_204_lease_before_original_replay() {
                 .unwrap();
                 Ok::<_, Infallible>(OutgoingResponse::without_body(response))
             }),
-            b"\"rama-test\"",
+            TEST_SERVICE_TAG,
         )
         .unwrap()
     })
@@ -1425,7 +1430,7 @@ async fn omits_configured_preview_for_empty_body() {
                     .unwrap();
                     Ok::<_, Infallible>(OutgoingResponse::without_body(response))
                 }),
-                b"\"rama-test\"",
+                TEST_SERVICE_TAG,
             )
             .unwrap()
         },
@@ -1513,7 +1518,7 @@ async fn reqmod_response_bypasses_origin_and_respmod() {
         service_fn(|server_io: MockSocket| async move {
             let server = Server::new(
                 HttpService::new(service_fn(serve_blocking_adaptation)),
-                b"\"rama-test\"",
+                TEST_SERVICE_TAG,
             )
             .unwrap();
             let _result = server.serve(server_io).await;
@@ -1613,7 +1618,7 @@ async fn preserves_reqmod_proxy_authorization_and_canonical_host() {
                     .unwrap();
                     Ok::<_, Infallible>(OutgoingResponse::without_body(response))
                 })),
-                b"\"rama-test\"",
+                TEST_SERVICE_TAG,
             )
             .unwrap()
         },
@@ -1671,7 +1676,7 @@ async fn canonicalizes_authority_of_adapted_absolute_request() {
                     .unwrap();
                     Ok::<_, Infallible>(OutgoingResponse::without_body(response))
                 }),
-                b"\"rama-test\"",
+                TEST_SERVICE_TAG,
             )
             .unwrap()
         },
@@ -1732,7 +1737,7 @@ async fn preserves_respmod_proxy_authenticate_after_204() {
                     .unwrap();
                     Ok::<_, Infallible>(OutgoingResponse::without_body(response))
                 })),
-                b"\"rama-test\"",
+                TEST_SERVICE_TAG,
             )
             .unwrap()
         },
@@ -1861,12 +1866,25 @@ fn endpoint_derives_headers_and_target() {
             .shares_cache_with(&previous_partition)
     );
     assert_eq!(endpoint.uri().as_str(), "icap://[::1]:31344/scan");
-    assert_eq!(endpoint.protocol(), Some(&Protocol::ICAP));
-    assert_eq!(endpoint.authority().unwrap().to_string(), "[::1]:31344");
+    assert_eq!(endpoint.service_protocol(), &Protocol::ICAP);
+    assert_eq!(endpoint.service_authority().to_string(), "[::1]:31344");
+    assert_eq!(
+        UriInputExt::uri(&endpoint).as_str(),
+        "icap://[::1]:31344/scan"
+    );
+    assert_eq!(
+        AuthorityInputExt::authority(&endpoint).unwrap().to_string(),
+        "[::1]:31344"
+    );
+    assert_eq!(ProtocolInputExt::protocol(&endpoint), Some(&Protocol::ICAP));
     let fields = endpoint.request_headers(&[]).unwrap();
     assert_eq!(fields[0], Header::new("authorization", b"secret").unwrap());
     assert_eq!(fields[1], Header::new(header::ALLOW, b"204, 206").unwrap());
-    assert!(!format!("{endpoint:?}").contains("secret"));
+    let endpoint_debug = format!("{endpoint:?}");
+    assert!(endpoint_debug.starts_with("ServiceEndpoint"));
+    assert!(endpoint_debug.contains("[::1]:31344"));
+    assert!(endpoint_debug.contains("protocol"));
+    assert!(!endpoint_debug.contains("secret"));
     let first_options = endpoint.options_request().unwrap();
     let second_options = endpoint.options_request().unwrap();
     assert_eq!(
@@ -1921,7 +1939,7 @@ fn endpoint_derives_headers_and_target() {
 
     let userinfo_endpoint = ServiceEndpoint::new("icap://user:secret@icap.test:/scan").unwrap();
     assert_eq!(
-        userinfo_endpoint.authority().unwrap().to_string(),
+        userinfo_endpoint.service_authority().to_string(),
         "icap.test:1344"
     );
     let request = userinfo_endpoint.options_request().unwrap();
@@ -2003,8 +2021,8 @@ fn endpoint_derives_headers_and_target() {
         ),
     ] {
         let endpoint = ServiceEndpoint::new(uri).unwrap();
-        assert_eq!(endpoint.protocol(), Some(protocol));
-        assert_eq!(endpoint.authority().unwrap().to_string(), target);
+        assert_eq!(endpoint.service_protocol(), protocol);
+        assert_eq!(endpoint.service_authority().to_string(), target);
         let fields = endpoint.request_headers(&[]).unwrap();
         let request = crate::message::Request::new_from_source(
             crate::codec::RequestLineSource::prepared(Method::Options, endpoint.uri()),
@@ -2055,7 +2073,7 @@ fn connector_target_does_not_replace_logical_service_authority() {
     let mut endpoint = ServiceEndpoint::new("icaps://icap.test/scan").unwrap();
     endpoint.insert_connection_extension(ConnectorTarget("127.0.0.1:31344".parse().unwrap()));
 
-    let adaptation = endpoint.connect_request().unwrap();
+    let adaptation = endpoint.connect_request();
     assert_eq!(adaptation.authority.to_string(), "icap.test:11344");
     assert_eq!(adaptation.protocol(), Some(&Protocol::ICAPS));
     assert_eq!(
@@ -2082,12 +2100,10 @@ fn connector_target_does_not_replace_logical_service_authority() {
 fn application_protocol_separates_plaintext_and_tls_at_same_authority() {
     let plain = ServiceEndpoint::new("icap://icap.test:11344/scan")
         .unwrap()
-        .connect_request()
-        .unwrap();
+        .connect_request();
     let secure = ServiceEndpoint::new("icaps://icap.test:11344/scan")
         .unwrap()
-        .connect_request()
-        .unwrap();
+        .connect_request();
 
     assert_eq!(plain.authority, secure.authority);
     assert_eq!(plain.protocol(), Some(&Protocol::ICAP));

@@ -10,7 +10,7 @@ use crate::{
     codec::{EncodeError, Header, ParseError, ResponseLine},
     io::{ConnectionOptions, Error},
     message::{BuildError, EncapsulatedParts, Response, TrailerBlock},
-    proto::{MethodKind, StatusCode, header},
+    proto::{MethodKind, ServiceTag, StatusCode, header},
 };
 
 use super::{
@@ -24,6 +24,23 @@ use super::{
 
 const BODY_COMMAND_CAPACITY: usize = 1;
 
+/// Signal that an ICAP extension method is not implemented by a service.
+///
+/// Returning this error for an extension request makes [`Server`] send a
+/// closing 501 response. Other service errors retain their ordinary error
+/// semantics and are propagated to the server caller.
+/// The current codec accepts extension methods only for bodyless exchanges.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ExtensionMethodNotImplemented;
+
+impl fmt::Display for ExtensionMethodNotImplemented {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ICAP extension method is not implemented")
+    }
+}
+
+impl std::error::Error for ExtensionMethodNotImplemented {}
+
 /// ICAP server backed by an ordinary Rama request service.
 ///
 /// `Server` owns connection reuse, close handling, Preview decisions, and the
@@ -34,8 +51,12 @@ const BODY_COMMAND_CAPACITY: usize = 1;
 /// body and transform it incrementally; the connection driver continues
 /// serving body reads while it writes response frames.
 ///
-/// Malformed requests receive a closing 400 response, unsupported ICAP
-/// versions receive 505, and unimplemented extension methods receive 501.
+/// Malformed requests receive a closing 400 response and unsupported ICAP
+/// versions receive 505. Extension methods are dispatched to the inner
+/// service; when that service returns [`ExtensionMethodNotImplemented`], the
+/// server sends a closing 501 response.
+/// The current codec accepts extension methods only for bodyless exchanges;
+/// dispatch and fallback remain ready for that restriction to be relaxed.
 ///
 /// `Server` itself implements [`Service`] for Rama streams with
 /// [`ExtensionsRef`](rama_core::extensions::ExtensionsRef), so it can be
@@ -50,7 +71,21 @@ pub struct Server<S> {
 
 impl<S> Server<S> {
     /// Create an ICAP server wrapping `inner`.
-    pub fn new(inner: S, service_tag: impl AsRef<[u8]>) -> Result<Self, BuildError> {
+    pub fn new(inner: S, service_tag: ServiceTag) -> Result<Self, BuildError> {
+        let mut service_tag_buffer = [0_u8; 34];
+        let service_tag = service_tag.quoted_bytes(&mut service_tag_buffer);
+        continue_response(MethodKind::Options, service_tag)?;
+        Ok(Self {
+            inner,
+            options: ConnectionOptions::new(),
+            service_tag: Bytes::copy_from_slice(service_tag),
+        })
+    }
+
+    /// Create a server from an already quoted opaque wire-format service tag.
+    ///
+    /// Prefer [`Self::new`] with [`ServiceTag`] for ordinary token tags.
+    pub fn new_raw(inner: S, service_tag: impl AsRef<[u8]>) -> Result<Self, BuildError> {
         let service_tag = service_tag.as_ref();
         continue_response(MethodKind::Options, service_tag)?;
         Ok(Self {
@@ -132,23 +167,6 @@ where
                 return Ok(());
             }
         };
-        if transaction.request().method() == MethodKind::Extension {
-            let response = protocol_error_response(
-                MethodKind::Extension,
-                StatusCode::NOT_IMPLEMENTED,
-                b"Method Not Implemented",
-                service_tag,
-            )
-            .map_err(ServerError::connection)?;
-            transaction
-                .respond(response)
-                .await
-                .map_err(ServerError::connection)?
-                .finish()
-                .await
-                .map_err(ServerError::connection)?;
-            return Ok(());
-        }
         let request = transaction.request().clone();
         let extensions = transaction.extensions().fork();
         let has_body = request.encapsulated().is_some_and(|parts| parts.has_body());
@@ -218,18 +236,25 @@ where
     F: Future<Output = Result<OutgoingResponse, E>> + Send,
     E: Into<BoxError>,
 {
+    let method = transaction.request().method();
     let mut service = pin!(service);
 
     let (outgoing, pending_command) = loop {
         let command = tokio::select! {
             biased;
             result = &mut service => {
-                break (result.map_err(ServerError::service)?, None);
+                let Some(outgoing) = classify_service_result(method, result)? else {
+                    return write_extension_fallback(transaction, service_tag).await;
+                };
+                break (outgoing, None);
             }
             command = command_rx.recv() => command,
         };
         let Some(command) = command else {
-            break (service.await.map_err(ServerError::service)?, None);
+            let Some(outgoing) = classify_service_result(method, service.await)? else {
+                return write_extension_fallback(transaction, service_tag).await;
+            };
+            break (outgoing, None);
         };
         match command {
             BodyCommand::Next => {
@@ -245,10 +270,10 @@ where
                 };
                 match result {
                     Err(outgoing) => {
-                        break (
-                            outgoing.map_err(ServerError::service)?,
-                            Some(BodyCommand::Next),
-                        );
+                        let Some(outgoing) = classify_service_result(method, outgoing)? else {
+                            return write_extension_fallback(transaction, service_tag).await;
+                        };
+                        break (outgoing, Some(BodyCommand::Next));
                     }
                     Ok(Ok(data)) => {
                         send_body_reply(
@@ -282,10 +307,10 @@ where
                 };
                 match result {
                     Err(outgoing) => {
-                        break (
-                            outgoing.map_err(ServerError::service)?,
-                            Some(BodyCommand::Continue),
-                        );
+                        let Some(outgoing) = classify_service_result(method, outgoing)? else {
+                            return write_extension_fallback(transaction, service_tag).await;
+                        };
+                        break (outgoing, Some(BodyCommand::Continue));
                     }
                     Ok(Ok(())) => {
                         send_body_reply(&reply_tx, Ok(BodyReply::Continued))?;
@@ -301,6 +326,61 @@ where
     };
 
     write_outgoing_response(transaction, outgoing, command_rx, reply_tx, pending_command).await
+}
+
+fn classify_service_result<E>(
+    method: MethodKind,
+    result: Result<OutgoingResponse, E>,
+) -> Result<Option<OutgoingResponse>, ServerError>
+where
+    E: Into<BoxError>,
+{
+    match result {
+        Ok(outgoing) => Ok(Some(outgoing)),
+        Err(error) => {
+            let error = error.into();
+            if method != MethodKind::Extension || !is_extension_method_not_implemented(&*error) {
+                return Err(ServerError::service(error));
+            }
+            rama_core::telemetry::tracing::debug!("ICAP service declined extension method");
+            Ok(None)
+        }
+    }
+}
+
+fn is_extension_method_not_implemented(mut error: &(dyn std::error::Error + 'static)) -> bool {
+    loop {
+        if error.is::<ExtensionMethodNotImplemented>() {
+            return true;
+        }
+        let Some(source) = error.source() else {
+            return false;
+        };
+        error = source;
+    }
+}
+
+async fn write_extension_fallback<IO>(
+    transaction: ServerTransaction<'_, IO>,
+    service_tag: &[u8],
+) -> Result<(), ServerError>
+where
+    IO: Io + Unpin,
+{
+    let response = protocol_error_response(
+        MethodKind::Extension,
+        StatusCode::NOT_IMPLEMENTED,
+        b"Method Not Implemented",
+        service_tag,
+    )
+    .map_err(ServerError::connection)?;
+    let response = if transaction.body_end().is_none() {
+        transaction.respond_early(response).await
+    } else {
+        transaction.respond(response).await
+    }
+    .map_err(ServerError::connection)?;
+    response.finish().await.map_err(ServerError::connection)
 }
 
 fn continue_response(method: MethodKind, service_tag: &[u8]) -> Result<Response, BuildError> {
@@ -569,7 +649,7 @@ mod tests {
     use rama_core::{
         ServiceInput,
         bytes::{Bytes, BytesMut},
-        error::BoxError,
+        error::{BoxError, BoxErrorExt as _, ErrorExt as _},
         extensions::Extension,
         futures::stream,
         layer::MapErr,
@@ -590,6 +670,8 @@ mod tests {
 
     use super::*;
     use crate::server::OutgoingBody;
+
+    const TEST_SERVICE_TAG: ServiceTag = ServiceTag::from_static("rama-test");
 
     #[derive(Debug, Eq, PartialEq)]
     struct Marker(u8);
@@ -655,6 +737,15 @@ mod tests {
         .unwrap()
     }
 
+    fn extension_request(close: bool) -> Request {
+        let line =
+            RequestLine::new(Method::extension("PING").unwrap(), "icap://icap.test/echo").unwrap();
+        let host = Header::new("Host", b"icap.test").unwrap();
+        let connection = close.then(|| Header::new(header::CONNECTION, b"close").unwrap());
+        let fields: Vec<_> = [Some(host), connection].into_iter().flatten().collect();
+        Request::new(line, &fields, Some(EncapsulatedParts::null())).unwrap()
+    }
+
     fn response(method: MethodKind, parts: EncapsulatedParts) -> Response {
         Response::new(
             method,
@@ -667,8 +758,8 @@ mod tests {
 
     #[test]
     fn validates_the_interim_service_tag_at_construction() {
-        Server::new((), b"unquoted").unwrap_err();
-        let server = Server::new((), b"\"rama-test\"").unwrap();
+        Server::new_raw((), b"unquoted").unwrap_err();
+        let server = Server::new((), TEST_SERVICE_TAG).unwrap();
         assert_eq!(server.service_tag(), b"\"rama-test\"");
     }
 
@@ -681,7 +772,7 @@ mod tests {
             async { Ok::<_, Infallible>(OutgoingResponse::without_body(options_response())) }
         });
         let server_task = tokio::spawn(async move {
-            Server::new(service, b"\"rama-test\"")
+            Server::new(service, TEST_SERVICE_TAG)
                 .unwrap()
                 .serve_connection(ServiceInput::new(server_io))
                 .await
@@ -724,14 +815,152 @@ mod tests {
             "ICAP Version Not Supported",
         )
         .await;
-        assert_protocol_error_response(
-            b"PING icap://icap.test/echo ICAP/1.0\r\n\
-              Host: icap.test\r\n\
+    }
+
+    #[tokio::test]
+    async fn dispatches_extension_methods_to_the_service() {
+        let (client_io, server_io) = tokio::io::duplex(256);
+        let called = Arc::new(AtomicBool::new(false));
+        let service_called = called.clone();
+        let service = service_fn(move |request: IncomingRequest| {
+            service_called.store(true, Ordering::Relaxed);
+            async move {
+                assert_eq!(request.request().method(), MethodKind::Extension);
+                Ok::<_, Infallible>(OutgoingResponse::without_body(response(
+                    MethodKind::Extension,
+                    EncapsulatedParts::null(),
+                )))
+            }
+        });
+        let server_task = tokio::spawn(async move {
+            Server::new(service, TEST_SERVICE_TAG)
+                .unwrap()
+                .serve_connection(ServiceInput::new(server_io))
+                .await
+        });
+
+        let mut client = ClientConnection::new(ServiceInput::new(client_io));
+        let response = client
+            .start(extension_request(true))
+            .await
+            .unwrap()
+            .finish()
+            .await
+            .unwrap();
+
+        assert_eq!(response.response().status(), StatusCode::OK);
+        response.into_response().unwrap();
+        server_task.await.unwrap().unwrap();
+        assert!(called.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn returns_501_when_the_service_declines_an_extension_method() {
+        let (mut client_io, server_io) = tokio::io::duplex(512);
+        let service = service_fn(async |_request: IncomingRequest| {
+            Err::<OutgoingResponse, _>(BoxError::from(ExtensionMethodNotImplemented))
+        });
+        let server_task = tokio::spawn(async move {
+            Server::new(service, TEST_SERVICE_TAG)
+                .unwrap()
+                .serve_connection(ServiceInput::new(server_io))
+                .await
+        });
+
+        client_io
+            .write_all(
+                b"PING icap://icap.test/echo ICAP/1.0\r\n\
+                  Host: icap.test\r\n\
+                  Encapsulated: null-body=0\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        client_io.read_to_end(&mut response).await.unwrap();
+
+        assert_eq!(
+            response,
+            b"ICAP/1.0 501 Method Not Implemented\r\n\
+              ISTag: \"rama-test\"\r\n\
+              Connection: close\r\n\
               Encapsulated: null-body=0\r\n\r\n",
-            StatusCode::NOT_IMPLEMENTED,
-            "Method Not Implemented",
+        );
+        server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn returns_501_for_a_context_wrapped_extension_decline() {
+        let (mut client_io, server_io) = tokio::io::duplex(512);
+        let service = service_fn(async |_request: IncomingRequest| {
+            Err::<OutgoingResponse, _>(
+                ExtensionMethodNotImplemented.context("PING is not implemented"),
+            )
+        });
+        let server_task = tokio::spawn(async move {
+            Server::new(service, TEST_SERVICE_TAG)
+                .unwrap()
+                .serve_connection(ServiceInput::new(server_io))
+                .await
+        });
+
+        client_io
+            .write_all(
+                b"PING icap://icap.test/echo ICAP/1.0\r\n\
+                  Host: icap.test\r\n\
+                  Encapsulated: null-body=0\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        client_io.read_to_end(&mut response).await.unwrap();
+
+        assert_eq!(
+            response,
+            b"ICAP/1.0 501 Method Not Implemented\r\n\
+              ISTag: \"rama-test\"\r\n\
+              Connection: close\r\n\
+              Encapsulated: null-body=0\r\n\r\n",
+        );
+        server_task.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn only_the_explicit_extension_decline_marker_becomes_a_fallback() {
+        assert_eq!(
+            ExtensionMethodNotImplemented.to_string(),
+            "ICAP extension method is not implemented"
+        );
+
+        let accepted = classify_service_result::<BoxError>(
+            MethodKind::Extension,
+            Ok(OutgoingResponse::without_body(response(
+                MethodKind::Extension,
+                EncapsulatedParts::null(),
+            ))),
         )
-        .await;
+        .unwrap();
+        assert!(accepted.is_some());
+
+        let declined = classify_service_result(
+            MethodKind::Extension,
+            Err::<OutgoingResponse, _>(BoxError::from(ExtensionMethodNotImplemented)),
+        )
+        .unwrap();
+        assert!(declined.is_none());
+
+        let ordinary = classify_service_result::<BoxError>(
+            MethodKind::Extension,
+            Err(BoxError::from_static_str("service failed")),
+        )
+        .unwrap_err();
+        assert_eq!(ordinary.kind(), ServerErrorKind::Service);
+
+        let standard = classify_service_result::<BoxError>(
+            MethodKind::Reqmod,
+            Err(BoxError::from(ExtensionMethodNotImplemented)),
+        )
+        .unwrap_err();
+        assert_eq!(standard.kind(), ServerErrorKind::Service);
     }
 
     #[tokio::test]
@@ -741,7 +970,7 @@ mod tests {
             Ok::<_, Infallible>(OutgoingResponse::without_body(options_response()))
         });
         let server_task = tokio::spawn(async move {
-            Server::new(service, b"\"rama-test\"")
+            Server::new(service, TEST_SERVICE_TAG)
                 .unwrap()
                 .serve_connection(ServiceInput::new(server_io))
                 .await
@@ -777,7 +1006,7 @@ mod tests {
             }
         });
         let service = MapErr::new(service, |error: Infallible| -> BoxError { match error {} });
-        let server = Server::new(Arc::new(service), b"\"rama-test\"").unwrap();
+        let server = Server::new(Arc::new(service), TEST_SERVICE_TAG).unwrap();
         let server_io = ServiceInput::new(server_io);
         server_io.extensions().insert(Marker(42));
         let server_task = tokio::spawn(async move {
@@ -837,7 +1066,7 @@ mod tests {
             }
         });
         let server_task = tokio::spawn(async move {
-            Server::new(service, b"\"rama-test\"")
+            Server::new(service, TEST_SERVICE_TAG)
                 .unwrap()
                 .serve_connection(ServiceInput::new(server_io))
                 .await
@@ -900,7 +1129,7 @@ mod tests {
             ))
         });
         let server_task = tokio::spawn(async move {
-            Server::new(service, b"\"rama-test\"")
+            Server::new(service, TEST_SERVICE_TAG)
                 .unwrap()
                 .serve_connection(ServiceInput::new(server_io))
                 .await
@@ -957,7 +1186,7 @@ mod tests {
             ))
         });
         let server_task = tokio::spawn(async move {
-            Server::new(service, b"\"rama-test\"")
+            Server::new(service, TEST_SERVICE_TAG)
                 .unwrap()
                 .serve_connection(ServiceInput::new(server_io))
                 .await
@@ -1006,7 +1235,7 @@ mod tests {
             )))
         });
         let server_task = tokio::spawn(async move {
-            Server::new(crate::http::HttpService::new(service), b"\"rama-test\"")
+            Server::new(crate::http::HttpService::new(service), TEST_SERVICE_TAG)
                 .unwrap()
                 .serve_connection(ServiceInput::new(server_io))
                 .await
@@ -1072,7 +1301,7 @@ mod tests {
             }
         });
         let server_task = tokio::spawn(async move {
-            Server::new(service, b"\"rama-test\"")
+            Server::new(service, TEST_SERVICE_TAG)
                 .unwrap()
                 .serve_connection(ServiceInput::new(server_io))
                 .await
@@ -1116,7 +1345,7 @@ mod tests {
             Ok::<_, BoxError>(OutgoingResponse::without_body(response))
         });
         let server_task = tokio::spawn(async move {
-            Server::new(service, b"\"rama-test\"")
+            Server::new(service, TEST_SERVICE_TAG)
                 .unwrap()
                 .serve_connection(ServiceInput::new(server_io))
                 .await
@@ -1158,7 +1387,7 @@ mod tests {
             ))
         });
         let server_task = tokio::spawn(async move {
-            Server::new(service, b"\"rama-test\"")
+            Server::new(service, TEST_SERVICE_TAG)
                 .unwrap()
                 .serve_connection(ServiceInput::new(server_io))
                 .await
@@ -1226,7 +1455,7 @@ mod tests {
             )))
         });
         let server_task = tokio::spawn(async move {
-            Server::new(service, b"\"rama-test\"")
+            Server::new(service, TEST_SERVICE_TAG)
                 .unwrap()
                 .serve_connection(ServiceInput::new(server_io))
                 .await

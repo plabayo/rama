@@ -64,9 +64,10 @@ struct StoredConnection<C, ID> {
     id: ID,
     max_concurrency: Option<Arc<MaxConcurrency>>,
     active: AtomicUsize,
+    capacity_notify: Arc<Notify>,
     notify: Arc<Notify>,
     last_idle: AtomicInstant,
-    _pool_slot: PoolSlot,
+    pool_slot: Mutex<Option<PoolSlot>>,
 }
 
 impl<C, ID> StoredConnection<C, ID> {
@@ -136,9 +137,14 @@ impl<C, ID> Drop for MultiplexedConnection<C, ID> {
         if prev == 1 {
             // last in-flight stream released: the connection just went idle
             self.inner.last_idle.set_now();
+            // An idle connection is globally evictable, so a waiter for any
+            // ID can make progress by claiming its pool slot.
+            self.inner.notify.notify_one();
         }
-        // wake any waiters so they can re-check capacity on this connection
-        self.inner.notify.notify_waiters();
+        // One released handout creates one unit of capacity for this exact
+        // connection ID. Wake one compatible waiter without broadcasting to
+        // unrelated IDs.
+        self.inner.capacity_notify.notify_one();
     }
 }
 
@@ -327,10 +333,9 @@ where
         });
     }
 
-    /// Turn a freshly acquired total-slot permit into a handout: prefer reusing
-    /// a same-id connection that freed capacity in the meantime (dropping the
-    /// permit releases the slot and wakes the next queued waiter), otherwise
-    /// return the permit as a create permit.
+    /// Turn a fairly acquired total-slot permit into a handout. Reuse a
+    /// same-id connection if capacity became available while waiting;
+    /// otherwise return the permit for creating a connection.
     fn admit_with_permit(
         &self,
         id: &ID,
@@ -380,106 +385,124 @@ where
         let start = Instant::now();
 
         // On success returns the connection/permit, when want_caps = true
-        // and we find no connections for the given ID, return a FuturesUnordered
-        // set of which the futures resolve when connections for the given ID
-        // have capacity changes.
-        let attempt =
-            |want_cap_changes: bool| -> Result<ConnectionResult<_, _>, FuturesUnordered<_>> {
-                let mut storage = self.storage.lock();
-                self.sweep(&mut storage);
+        // and we find no connections for the given ID, return subscriptions
+        // for stream-slot releases and advertised capacity changes on the
+        // matching connections.
+        let attempt = |want_cap_changes: bool| -> Result<
+            ConnectionResult<_, _>,
+            (FuturesUnordered<_>, FuturesUnordered<_>),
+        > {
+            let mut storage = self.storage.lock();
+            self.sweep(&mut storage);
 
-                // Subscribe to same-id capacity changes BEFORE the capacity
-                // check below (subscribe-then-check): the watch cursor only
-                // observes `MaxConcurrency` raises (e.g. h2 SETTINGS) sent
-                // after it was created, so subscribing after the check would
-                // lose a raise landing in between, parking the waiter with no
-                // wake-up.
-                let cap_changes: FuturesUnordered<_> = if want_cap_changes {
-                    storage
-                        .iter()
-                        .filter(|conn| &conn.id == id)
-                        .filter_map(|conn| conn.max_concurrency.clone())
-                        .map(|mc| {
-                            let mut changed = mc.watch();
-                            async move { changed.changed().await }
-                        })
-                        .collect()
-                } else {
-                    FuturesUnordered::new()
-                };
-
-                if let Some(conn) = select_and_admit(
-                    &storage,
-                    id,
-                    self.selection,
-                    &self.rr_cursor,
-                    self.max_concurrent_streams,
-                ) {
-                    trace!(?id, "multiplex pool: reusing connection");
-                    #[cfg(feature = "opentelemetry")]
-                    if let Some((metrics, attrs)) = &metrics {
-                        metrics.reused_connections.add(1, attrs);
-                        metrics.streams.add(1, attrs);
-                        metrics
-                            .concurrent_streams
-                            .record(conn.inner.active.load(Ordering::Relaxed) as f64, attrs);
-                        metrics
-                            .active_connection_delay_nanoseconds
-                            .record(start.elapsed().as_nanos() as f64, attrs);
-                    }
-                    return Ok(ConnectionResult::Connection(conn));
-                }
-
-                let saturation = storage.iter().any(|conn| &conn.id == id);
-
-                // Claim a fresh connection slot, evicting the least-recently-used idle
-                // connection (any id) if the pool is at its total capacity.
-                let pool_slot = if let Ok(permit) = self.total_slots.clone().try_acquire_owned() {
-                    Some(PoolSlot(permit))
-                } else {
-                    let lru_idle = storage
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, conn)| conn.is_idle())
-                        .min_by_key(|(_, conn)| conn.last_idle.as_nanos())
-                        .map(|(pos, _)| pos);
-                    if let Some(pos) = lru_idle {
-                        storage.remove(pos);
-                        #[cfg(feature = "opentelemetry")]
-                        if let Some((metrics, attrs)) = &metrics {
-                            metrics.evicted_connections.add(1, attrs);
-                        }
-                        self.total_slots
-                            .clone()
-                            .try_acquire_owned()
-                            .ok()
-                            .map(PoolSlot)
-                    } else {
-                        None
-                    }
-                };
-
-                if let Some(pool_slot) = pool_slot {
-                    trace!(
-                        ?id,
-                        "multiplex pool: no connection with capacity, returning create permit"
-                    );
-                    #[cfg(feature = "opentelemetry")]
-                    if let Some((metrics, attrs)) = &metrics {
-                        if saturation {
-                            metrics.saturation_created_connections.add(1, attrs);
-                        }
-                        metrics
-                            .active_connection_delay_nanoseconds
-                            .record(start.elapsed().as_nanos() as f64, attrs);
-                    }
-                    #[cfg(not(feature = "opentelemetry"))]
-                    let _ = saturation;
-                    return Ok(ConnectionResult::CreatePermit(pool_slot));
-                }
-
-                Err(cap_changes)
+            // Subscribe to same-id notifications BEFORE the capacity
+            // check below (subscribe-then-check), so a handout release or
+            // SETTINGS raise landing between both cannot be lost.
+            let stream_capacity: FuturesUnordered<_> = if want_cap_changes {
+                storage
+                    .iter()
+                    .filter(|conn| &conn.id == id)
+                    .map(|conn| {
+                        let mut notified = Box::pin(conn.capacity_notify.clone().notified_owned());
+                        notified.as_mut().enable();
+                        notified
+                    })
+                    .collect()
+            } else {
+                FuturesUnordered::new()
             };
+            let cap_changes: FuturesUnordered<_> = if want_cap_changes {
+                storage
+                    .iter()
+                    .filter(|conn| &conn.id == id)
+                    .filter_map(|conn| conn.max_concurrency.clone())
+                    .map(|mc| {
+                        let mut changed = mc.watch();
+                        async move { changed.changed().await }
+                    })
+                    .collect()
+            } else {
+                FuturesUnordered::new()
+            };
+
+            if let Some(conn) = select_and_admit(
+                &storage,
+                id,
+                self.selection,
+                &self.rr_cursor,
+                self.max_concurrent_streams,
+            ) {
+                trace!(?id, "multiplex pool: reusing connection");
+                #[cfg(feature = "opentelemetry")]
+                if let Some((metrics, attrs)) = &metrics {
+                    metrics.reused_connections.add(1, attrs);
+                    metrics.streams.add(1, attrs);
+                    metrics
+                        .concurrent_streams
+                        .record(conn.inner.active.load(Ordering::Relaxed) as f64, attrs);
+                    metrics
+                        .active_connection_delay_nanoseconds
+                        .record(start.elapsed().as_nanos() as f64, attrs);
+                }
+                return Ok(ConnectionResult::Connection(conn));
+            }
+
+            let saturation = contains_connection_id(&storage, id);
+
+            // Claim a fresh connection slot, evicting the least-recently-used idle
+            // connection (any id) if the pool is at its total capacity.
+            let pool_slot = if let Ok(permit) = self.total_slots.clone().try_acquire_owned() {
+                Some(PoolSlot(permit))
+            } else {
+                let lru_idle = storage
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, conn)| conn.is_idle())
+                    .min_by_key(|(_, conn)| conn.last_idle.as_nanos())
+                    .map(|(pos, _)| pos);
+                if let Some(pos) = lru_idle {
+                    let evicted = storage.remove(pos);
+                    #[cfg(feature = "opentelemetry")]
+                    if let Some((metrics, attrs)) = &metrics {
+                        metrics.evicted_connections.add(1, attrs);
+                    }
+                    // Transfer the evicted idle connection's permit without
+                    // releasing it to the semaphore queue. This lets the
+                    // evictor make progress without stealing a permit that
+                    // was released for the oldest queued waiter.
+                    evicted.pool_slot.lock().take()
+                } else {
+                    None
+                }
+            };
+
+            if let Some(pool_slot) = pool_slot {
+                trace!(
+                    ?id,
+                    "multiplex pool: no connection with capacity, returning create permit"
+                );
+                #[cfg(feature = "opentelemetry")]
+                if let Some((metrics, attrs)) = &metrics {
+                    if saturation {
+                        metrics.saturation_created_connections.add(1, attrs);
+                    }
+                    metrics
+                        .active_connection_delay_nanoseconds
+                        .record(start.elapsed().as_nanos() as f64, attrs);
+                }
+                #[cfg(not(feature = "opentelemetry"))]
+                let _ = saturation;
+                return Ok(ConnectionResult::CreatePermit(pool_slot));
+            }
+
+            Err((stream_capacity, cap_changes))
+        };
+
+        // Keep one semaphore acquisition alive across unrelated capacity
+        // notifications. Recreating it after every wake would cancel and
+        // requeue this waiter at the back, violating the semaphore's FIFO
+        // admission and allowing a busy connection to starve it indefinitely.
+        let mut total_slot_wait = Box::pin(self.total_slots.clone().acquire_owned());
 
         loop {
             // Fast path: try without registering as a waiter (no caps needed).
@@ -492,22 +515,20 @@ where
             let notified = self.notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            let mut cap_changes = match attempt(true) {
+            let (mut stream_capacity, mut cap_changes) = match attempt(true) {
                 Ok(result) => return Ok(result),
                 Err(cap_changes) => cap_changes,
             };
 
             trace!(?id, "multiplex pool: saturated, waiting for capacity");
-            // Wake on a release/create notify, on a same-id connection's
-            // capacity increase (its `MaxConcurrency` changing), or on a freed
-            // total slot. The semaphore is the only wake-up for slots released
-            // outside a handout drop (e.g. a failed create dropping its
-            // permit), and being a real queued acquire it also cannot lose the
-            // permit to the notify-before-release window of a handout drop.
+            // Queue on the semaphore for FIFO total-slot admission. LRU
+            // eviction transfers its slot directly, so it never releases a
+            // permit that a queued waiter can take from the evicting caller.
             tokio::select! {
                 _ = notified => {}
+                _ = stream_capacity.next(), if !stream_capacity.is_empty() => {}
                 _ = cap_changes.next(), if !cap_changes.is_empty() => {}
-                permit = self.total_slots.clone().acquire_owned() => {
+                permit = &mut total_slot_wait => {
                     let Ok(permit) = permit else {
                         // the pool never closes its semaphore; treat as spurious
                         continue;
@@ -548,9 +569,10 @@ where
             conn,
             id,
             active: AtomicUsize::new(1),
+            capacity_notify: Arc::new(Notify::new()),
             notify: self.notify.clone(),
             last_idle: AtomicInstant::now(),
-            _pool_slot: pool_slot,
+            pool_slot: Mutex::new(Some(pool_slot)),
         });
 
         trace!(id = ?conn.id, "multiplex pool: adding new connection");
@@ -571,6 +593,13 @@ where
 
         MultiplexedConnection { inner: conn }
     }
+}
+
+fn contains_connection_id<C, ID: PartialEq>(
+    storage: &[Arc<StoredConnection<C, ID>>],
+    id: &ID,
+) -> bool {
+    storage.iter().any(|connection| &connection.id == id)
 }
 
 /// Select a same-id connection that still has capacity and admit a stream on it
@@ -762,6 +791,22 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn dropping_a_handout_releases_its_stream_slot_immediately() {
+        let pool = MultiplexPool::try_new(1, 1).unwrap();
+        let svc = connector(pool.clone());
+        let handout = connect(&svc, 0).await;
+        let stored = Arc::clone(&pool.storage.lock()[0]);
+
+        assert_eq!(stored.active.load(Ordering::Relaxed), 1);
+        let previous_idle = stored.last_idle.as_nanos();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        drop(handout);
+        assert_eq!(stored.active.load(Ordering::Relaxed), 0);
+        assert!(stored.is_idle());
+        assert!(stored.last_idle.as_nanos() > previous_idle);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn maxconcurrency_increase_wakes_waiters() {
         let pool = MultiplexPool::try_new(10, 1).unwrap();
@@ -906,6 +951,37 @@ mod tests {
             "a 3rd concurrent handout needs a new connection"
         );
         assert_eq!(c3.conn.serve(()).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn stream_release_wakes_a_waiter_for_the_matching_id() {
+        let pool = MultiplexPool::try_new(2, 2).unwrap();
+        let svc = connector(pool.clone());
+
+        let a1 = connect(&svc, 0).await;
+        let a2 = connect(&svc, 0).await;
+        let b1 = connect(&svc, 1).await;
+        let b2 = connect(&svc, 1).await;
+        assert_eq!(created(&svc), 2);
+
+        // Register B first. A pool-global `notify_one` would wake this
+        // incompatible waiter and strand A even though A gains capacity.
+        let mut b_waiter = tokio_test::task::spawn(pool.get_conn(&TestId(1)));
+        assert!(b_waiter.poll().is_pending());
+        let mut a_waiter = tokio_test::task::spawn(pool.get_conn(&TestId(0)));
+        assert!(a_waiter.poll().is_pending());
+
+        // A remains active, so only an A waiter can use the released stream;
+        // the connection is not globally evictable.
+        drop(a2);
+        assert!(a_waiter.is_woken(), "the matching-ID waiter must wake");
+        match a_waiter.poll() {
+            std::task::Poll::Ready(Ok(ConnectionResult::Connection(_))) => {}
+            other => panic!("matching-ID waiter did not reuse A: {other:?}"),
+        }
+        assert!(b_waiter.poll().is_pending());
+
+        drop((a1, b1, b2));
     }
 
     #[tokio::test]
@@ -1157,8 +1233,90 @@ mod tests {
         assert_eq!(created(&svc), 4, "B (LRU) was evicted");
     }
 
+    #[tokio::test]
+    async fn lru_eviction_keeps_the_freed_slot_with_the_evicting_caller() {
+        let pool = MultiplexPool::try_new(1, 1).unwrap();
+        let svc = connector(pool.clone());
+
+        // Keep the only connection active while another id parks. The former
+        // semaphore-based wait path queued a fair acquire at this point.
+        let active = connect(&svc, 0).await;
+        {
+            let storage = pool.storage.lock();
+            assert!(contains_connection_id(&storage, &TestId(0)));
+            assert!(!contains_connection_id(&storage, &TestId(1)));
+        }
+        let mut parked = tokio_test::task::spawn(pool.get_conn(&TestId(1)));
+        assert!(parked.poll().is_pending());
+
+        // Make connection 0 idle without polling the parked waiter. A caller
+        // for id 2 must be able to evict it and immediately claim that slot.
+        // A queued semaphore waiter used to steal the released permit here.
+        drop(active);
+        let mut evicting = tokio_test::task::spawn(pool.get_conn(&TestId(2)));
+        let evicting_permit = match evicting.poll() {
+            std::task::Poll::Ready(Ok(ConnectionResult::CreatePermit(permit))) => permit,
+            std::task::Poll::Ready(Ok(ConnectionResult::Connection(_))) => {
+                panic!("different-id idle connection was unexpectedly reused")
+            }
+            std::task::Poll::Ready(Err(error)) => panic!("pool lookup failed: {error}"),
+            std::task::Poll::Pending => {
+                panic!("evicting caller lost the released slot to a parked waiter")
+            }
+        };
+
+        // Once the evictor releases its directly transferred slot, the queued
+        // waiter receives it through the semaphore and makes progress.
+        drop(evicting_permit);
+        assert!(parked.is_woken());
+        match parked.poll() {
+            std::task::Poll::Ready(Ok(ConnectionResult::CreatePermit(_))) => {}
+            other => panic!("parked waiter did not receive the released slot: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn total_slot_waiters_are_fifo_and_cancellation_safe() {
+        let pool = MultiplexPool::<Conn, TestId>::try_new(1, 1).unwrap();
+        let held = match pool.get_conn(&TestId(0)).await.unwrap() {
+            ConnectionResult::CreatePermit(permit) => permit,
+            ConnectionResult::Connection(_) => panic!("empty pool unexpectedly reused a slot"),
+        };
+
+        let mut first = tokio_test::task::spawn(pool.get_conn(&TestId(1)));
+        assert!(first.poll().is_pending());
+        let mut cancelled = tokio_test::task::spawn(pool.get_conn(&TestId(2)));
+        assert!(cancelled.poll().is_pending());
+        let mut last = tokio_test::task::spawn(pool.get_conn(&TestId(3)));
+        assert!(last.poll().is_pending());
+        drop(cancelled);
+
+        // A connection-capacity notification must not cancel and requeue the
+        // semaphore acquisitions. Poll newest-first to expose an accidental
+        // loss of the original FIFO positions.
+        pool.notify.notify_waiters();
+        assert!(last.poll().is_pending());
+        assert!(first.poll().is_pending());
+
+        drop(held);
+        assert!(first.is_woken());
+        assert!(!last.is_woken());
+        let first_permit = match first.poll() {
+            std::task::Poll::Ready(Ok(ConnectionResult::CreatePermit(permit))) => permit,
+            other => panic!("oldest waiter did not receive the slot first: {other:?}"),
+        };
+        assert!(last.poll().is_pending());
+
+        drop(first_permit);
+        assert!(last.is_woken());
+        match last.poll() {
+            std::task::Poll::Ready(Ok(ConnectionResult::CreatePermit(_))) => {}
+            other => panic!("remaining waiter did not progress after cancellation: {other:?}"),
+        }
+    }
+
     /// A create permit dropped by a failed connect must wake a parked waiter
-    /// (through the slots semaphore) instead of stranding it until the pool
+    /// through the total-slot semaphore instead of stranding it until the pool
     /// timeout: nothing else notifies when a connect fails before creating.
     #[tokio::test(start_paused = true)]
     async fn failed_create_frees_slot_for_parked_waiter() {
@@ -1217,48 +1375,6 @@ mod tests {
         waited
             .unwrap()
             .expect("the slot freed by the failed create must wake the parked waiter");
-    }
-
-    /// The freed-slot admission path must apply the same broken/idle sweep as
-    /// the regular attempt path: a same-id connection that broke (and gained
-    /// free capacity) while a waiter was parked must not be handed out when a
-    /// freed permit wakes that waiter.
-    #[tokio::test]
-    async fn permit_admission_sweeps_broken_connections() {
-        let pool = MultiplexPool::try_new(2, 2).unwrap();
-        let svc = connector(pool.clone());
-
-        // Connection A (serial 0) for id 0, with free capacity (1 of 2), broken.
-        let c_a = connect(&svc, 0).await;
-        c_a.conn
-            .extensions()
-            .get_ref::<ConnectionHealthWatcher>()
-            .unwrap()
-            .mark_broken();
-
-        let permit = pool.total_slots.clone().try_acquire_owned().unwrap();
-        match pool.admit_with_permit(&TestId(0), permit) {
-            ConnectionResult::CreatePermit(_) => {}
-            ConnectionResult::Connection(_) => {
-                panic!("freed-slot admission handed out a broken connection")
-            }
-        }
-
-        // Healthy counterpart: a same-id connection with free capacity is reused.
-        let c_b = connect(&svc, 1).await;
-        drop(c_a);
-        let permit = pool.total_slots.clone().try_acquire_owned().unwrap();
-        match pool.admit_with_permit(&TestId(1), permit) {
-            ConnectionResult::Connection(conn) => {
-                assert_eq!(
-                    conn.serve(()).await.unwrap(),
-                    c_b.conn.serve(()).await.unwrap()
-                );
-            }
-            ConnectionResult::CreatePermit(_) => {
-                panic!("healthy same-id connection with free capacity must be reused")
-            }
-        }
     }
 
     /// A waiter parked on a full pool is woken when the last handle of an

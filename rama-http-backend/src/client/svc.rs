@@ -12,6 +12,7 @@ use rama_http_types::body::OnIncompleteBody;
 use rama_http_types::proto::h1::ext::ConnectionClose;
 use rama_http_types::{Method, Request, Response, Version};
 use rama_net::conn::ConnectionHealthWatcher;
+use rama_utils::guard::DropGuard;
 use std::fmt;
 use tokio::sync::Mutex;
 
@@ -80,7 +81,8 @@ where
                 // Dropping an in-flight h1 request future closes the shared
                 // connection, so mark it broken right here (guard) rather than on
                 // the connection task, which a racing pool checkout can beat.
-                let mut cancel_guard = MarkBrokenGuard::new(self.extensions.clone());
+                let extensions = self.extensions.clone();
+                let mut cancel_guard = DropGuard::new(move || mark_broken(&extensions));
                 let result = sender.send_request(req).await;
                 match result {
                     Ok(resp) => {
@@ -157,31 +159,6 @@ fn mark_broken(extensions: &Extensions) {
     extensions
         .get_ref_or_insert(ConnectionHealthWatcher::default)
         .mark_broken();
-}
-
-/// Marks the connection broken on drop unless disarmed.
-struct MarkBrokenGuard(Option<Extensions>);
-
-impl MarkBrokenGuard {
-    fn new(extensions: Extensions) -> Self {
-        Self(Some(extensions))
-    }
-
-    fn disarm(&mut self) {
-        self.0 = None;
-    }
-
-    fn fire(&mut self) {
-        if let Some(extensions) = self.0.take() {
-            mark_broken(&extensions);
-        }
-    }
-}
-
-impl Drop for MarkBrokenGuard {
-    fn drop(&mut self) {
-        self.fire();
-    }
 }
 
 impl<B> ExtensionsRef for HttpClientService<B> {

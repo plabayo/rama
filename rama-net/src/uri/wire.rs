@@ -78,15 +78,15 @@ impl Uri {
         let Some(scheme) = self.scheme() else {
             return Err(WireError::NoScheme);
         };
-        write_absolute_form(
-            self,
-            scheme,
-            self.port(),
-            AuthorityUserInfo::Omit,
-            EmptyPath::Slash,
-            &mut BytesMutWriter(buf),
-        )
-        .map_err(|_error| WireError::Output)
+        buf.extend_from_slice(scheme.as_str().as_bytes());
+        buf.extend_from_slice(b":");
+        if let Some(authority) = self.authority() {
+            buf.extend_from_slice(b"//");
+            let result = authority.write_address_with_port(&mut BytesMutWriter(buf), self.port());
+            debug_assert!(result.is_ok(), "BytesMutWriter is infallible");
+        }
+        write_path_query(self, buf);
+        Ok(())
     }
 
     /// Write an absolute-form URI while replacing its scheme and authority
@@ -108,15 +108,7 @@ impl Uri {
         if matches!(self.inner, UriInner::Asterisk) {
             return Err(WireError::AsteriskMismatch);
         }
-        write_absolute_form(
-            self,
-            scheme,
-            port,
-            AuthorityUserInfo::Preserve,
-            EmptyPath::Preserve,
-            writer,
-        )
-        .map_err(|_error| WireError::Output)
+        write_absolute_form(self, scheme, port, writer).map_err(|_error| WireError::Output)
     }
 
     /// HTTP/1.1 authority-form request-target: `host[:port]`.
@@ -205,35 +197,19 @@ fn write_absolute_form(
     uri: &Uri,
     scheme: &Protocol,
     port: OptPort,
-    userinfo: AuthorityUserInfo,
-    empty_path: EmptyPath,
     writer: &mut impl core::fmt::Write,
 ) -> core::fmt::Result {
     writer.write_str(scheme.as_str())?;
     writer.write_str(":")?;
     if let Some(authority) = uri.authority() {
         writer.write_str("//")?;
-        if matches!(userinfo, AuthorityUserInfo::Preserve)
-            && let Some(value) = authority.userinfo()
-        {
+        if let Some(value) = authority.userinfo() {
             writer.write_str(value.as_str())?;
             writer.write_str("@")?;
         }
         authority.write_address_with_port(writer, port)?;
     }
-    write_path_query_fmt(uri, empty_path, writer)
-}
-
-#[derive(Clone, Copy)]
-enum AuthorityUserInfo {
-    Preserve,
-    Omit,
-}
-
-#[derive(Clone, Copy)]
-enum EmptyPath {
-    Preserve,
-    Slash,
+    write_path_query_fmt(uri, writer)
 }
 
 /// [`fmt::Write`] adapter that pushes formatted bytes straight into a
@@ -263,15 +239,9 @@ fn write_path_query(uri: &Uri, buf: &mut BytesMut) {
     }
 }
 
-fn write_path_query_fmt(
-    uri: &Uri,
-    empty_path: EmptyPath,
-    writer: &mut impl core::fmt::Write,
-) -> core::fmt::Result {
+fn write_path_query_fmt(uri: &Uri, writer: &mut impl core::fmt::Write) -> core::fmt::Result {
     if let Some(path) = uri.path().filter(|path| !path.is_empty()) {
         writer.write_fmt(format_args!("{path}"))?;
-    } else if matches!(empty_path, EmptyPath::Slash) {
-        writer.write_str("/")?;
     }
     if let Some(query) = uri.query() {
         writer.write_str("?")?;

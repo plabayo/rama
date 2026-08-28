@@ -49,7 +49,7 @@ fn with_local_address(request: Request, local_address: &str) -> Request {
 }
 
 #[test]
-fn default_is_plain_http_on_loopback_8080() {
+fn default_is_shared_http_and_socks5_on_loopback_8080() {
     let cli = TestCli::parse_from(["test"]);
     let listeners = resolve_listeners(&cli.proxy);
     assert_eq!(
@@ -57,7 +57,10 @@ fn default_is_plain_http_on_loopback_8080() {
             .iter()
             .find(|(address, _)| *address == default_bind())
             .map(|(_, protocols)| protocols),
-        Some(&BTreeSet::from([ProxyProtocol::Http]))
+        Some(&BTreeSet::from([
+            ProxyProtocol::Http,
+            ProxyProtocol::Socks5,
+        ]))
     );
     assert!(!cli.proxy.lazy_connect);
     assert!(cli.proxy.mitm.is_none());
@@ -693,13 +696,7 @@ async fn shared_http_and_socks5_listener_forwards_end_to_end() {
     let (origin, origin_task) = spawn_plain_origin("shared-proxy-ok").await;
     let proxy_address = reserve_loopback_address();
     let proxy_arg = proxy_address.to_string();
-    let cli = TestCli::parse_from([
-        "test",
-        "--bind",
-        proxy_arg.as_str(),
-        "--protocol",
-        "http,socks5",
-    ]);
+    let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str()]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown = rama::graceful::Shutdown::new(async move {
         _ = shutdown_rx.await;
@@ -739,21 +736,22 @@ async fn https_proxy_listener_forwards_end_to_end() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mitm_dashboard_and_http_proxy_share_a_listener_end_to_end() {
+async fn default_mitm_dashboard_http_and_socks5_share_a_listener_end_to_end() {
     let (origin, origin_task) = spawn_plain_origin("shared-dashboard-ok").await;
     let proxy_address = reserve_loopback_address();
     let proxy_arg = proxy_address.to_string();
-    let mitm_arg = format!("--mitm={proxy_address}");
-    let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), mitm_arg.as_str()]);
+    let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), "--mitm"]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown = rama::graceful::Shutdown::new(async move {
         _ = shutdown_rx.await;
     });
     run(shutdown.guard(), cli.proxy).await.unwrap();
 
-    let (status, body) = get_via_proxy(origin, &format!("http://{proxy_address}")).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, "shared-dashboard-ok");
+    for scheme in ["http", "socks5h"] {
+        let (status, body) = get_via_proxy(origin, &format!("{scheme}://{proxy_address}")).await;
+        assert_eq!(status, StatusCode::OK, "proxy scheme {scheme}");
+        assert_eq!(body, "shared-dashboard-ok", "proxy scheme {scheme}");
+    }
 
     let client = EasyHttpWebClient::default();
     let response = client

@@ -17,6 +17,7 @@ use rama_net::{
     address::{Host, ip::IntoCanonicalIpAddr as _},
     mode::{ConnectIpMode, DnsResolveIpMode},
 };
+use rama_utils::collections::smallvec::{self, SmallVec};
 
 use super::DnsAddresssResolverOverwrite;
 use crate::client::resolver::DnsAddressResolver;
@@ -138,20 +139,20 @@ impl<'a, R: crate::client::resolver::DnsAddressResolver> HappyEyeballAddressReso
         // consulting any resolver. An explicit DNS overwrite extension
         // still takes precedence and keeps the regular path.
         if maybe_dns_overwrite.is_none() && domain.is_loopback() {
-            let candidates = match dns_mode {
-                DnsResolveIpMode::Dual => vec![
+            let candidates: SmallVec<[_; 2]> = match dns_mode {
+                DnsResolveIpMode::Dual => smallvec::smallvec![
                     Ok(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)),
                     Ok(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
                 ],
-                DnsResolveIpMode::DualPreferIpV4 => vec![
+                DnsResolveIpMode::DualPreferIpV4 => smallvec::smallvec![
                     Ok(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
                     Ok(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST)),
                 ],
                 DnsResolveIpMode::SingleIpV4 => {
-                    vec![Ok(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))]
+                    smallvec::smallvec![Ok(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))]
                 }
                 DnsResolveIpMode::SingleIpV6 => {
-                    vec![Ok(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST))]
+                    smallvec::smallvec![Ok(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST))]
                 }
             };
             return HappyEyeballIpStream::Static {
@@ -234,7 +235,7 @@ pin_project! {
         },
         Static {
             #[pin]
-            stream: stream::Iter<std::vec::IntoIter<Result<IpAddr,OpaqueError>>>,
+            stream: stream::Iter<smallvec::IntoIter<[Result<IpAddr, OpaqueError>; 2]>>,
         },
         SingleIpV4 {
             #[pin]

@@ -332,6 +332,11 @@ impl<T: EventDataRead> DecodeState<T> {
             let block_start = offset;
             let end = (offset + block_len).min(input.len());
             let consumed = self.scan_block(&input[offset..end])?;
+            if consumed == 0 && end > block_start {
+                return Err(BoxError::from_static_str(
+                    "SSE decoder made no progress on a non-empty scan block",
+                ));
+            }
             offset += consumed;
             if consumed < end - block_start || self.ready.len() >= READY_EVENTS_SOFT_CAP {
                 break;
@@ -418,40 +423,28 @@ impl<T: EventDataRead> DecodeState<T> {
 
         let bytes = valid.as_bytes();
         let mut start = 0;
-        if memchr::memchr(b'\r', bytes).is_none() {
-            // hot path: no CR anywhere, so every terminator is a lone LF;
-            // a single-needle scan is considerably faster than memchr2
-            for pos in memchr::memchr_iter(b'\n', bytes) {
-                self.handle_line(&valid[start..pos])?;
-                start = pos + 1;
-                if self.ready.len() >= READY_EVENTS_SOFT_CAP {
-                    return Ok(offset + start);
+        for pos in memchr2_iter(b'\r', b'\n', bytes) {
+            if pos < start {
+                // the LF half of a CRLF pair
+                continue;
+            }
+            let line = &valid[start..pos];
+            let mut next = pos + 1;
+            if bytes[pos] == b'\r' {
+                if next < bytes.len() {
+                    if bytes[next] == b'\n' {
+                        next += 1;
+                    }
+                } else if utf8_tail.is_empty() && utf8_err.is_none() {
+                    // chunk ends exactly on the CR: an LF may still follow
+                    // (a non-empty tail or invalid byte can never be an LF)
+                    self.pending_cr = true;
                 }
             }
-        } else {
-            for pos in memchr2_iter(b'\r', b'\n', bytes) {
-                if pos < start {
-                    // the LF half of a CRLF pair
-                    continue;
-                }
-                let line = &valid[start..pos];
-                let mut next = pos + 1;
-                if bytes[pos] == b'\r' {
-                    if next < bytes.len() {
-                        if bytes[next] == b'\n' {
-                            next += 1;
-                        }
-                    } else if utf8_tail.is_empty() && utf8_err.is_none() {
-                        // chunk ends exactly on the CR: an LF may still follow
-                        // (a non-empty tail or invalid byte can never be an LF)
-                        self.pending_cr = true;
-                    }
-                }
-                self.handle_line(line)?;
-                start = next;
-                if self.ready.len() >= READY_EVENTS_SOFT_CAP {
-                    return Ok(offset + start);
-                }
+            self.handle_line(line)?;
+            start = next;
+            if self.ready.len() >= READY_EVENTS_SOFT_CAP {
+                return Ok(offset + start);
             }
         }
 
@@ -777,6 +770,15 @@ mod tests {
         assert_eq!(7, state.feed(b"data: \xf0").unwrap());
         assert_eq!(6, state.carry_valid_up_to);
         state.feed(b"(").unwrap_err();
+    }
+
+    #[test]
+    fn invalid_byte_after_cr_does_not_arm_pending_cr() {
+        let mut state = DecodeState::<String>::default();
+
+        state.scan_block(b"\r\xff").unwrap_err();
+
+        assert!(!state.pending_cr);
     }
 
     macro_rules! event {

@@ -40,12 +40,23 @@ fn route_error_context(
     }
 }
 
-fn should_try_next_route(error: &ConnectionError) -> bool {
-    error.domain() == ConnectionErrorDomain::Transport
-        && matches!(
-            error.kind(),
-            ConnectionErrorKind::Unavailable | ConnectionErrorKind::Timeout
-        )
+fn should_try_next_route(error: &ConnectionError, next_route: &ProxyRoute) -> bool {
+    if error.domain() != ConnectionErrorDomain::Transport {
+        return false;
+    }
+
+    match error.kind() {
+        ConnectionErrorKind::Unavailable | ConnectionErrorKind::Timeout => true,
+        // These failures can be specific to a particular proxy implementation
+        // or transport. Rotate to another proxy, but never turn them into an
+        // implicit direct-origin fallback.
+        ConnectionErrorKind::Rejected
+        | ConnectionErrorKind::Protocol
+        | ConnectionErrorKind::Other => matches!(next_route, ProxyRoute::Proxy(_)),
+        ConnectionErrorKind::Authentication
+        | ConnectionErrorKind::InvalidInput
+        | ConnectionErrorKind::Internal => false,
+    }
 }
 
 /// Errors produced by every attempted route of an unsuccessful connection.
@@ -266,15 +277,15 @@ where
 ///
 /// Every route receives an isolated [`Fork`] of the original input with the
 /// selected [`ProxyRoute`] inserted into its extensions. A transport-domain
-/// failure advances to the next route only when the proxy path is unavailable
-/// or times out. Authentication, explicit rejection, protocol, invalid-input,
-/// and internal failures stop fallback even when reported by the transport
-/// domain. Application, local and unclassified failures also stop immediately
-/// because another transport route should not normally change their outcome.
-/// This prevents an intentional proxy rejection from silently falling through
-/// to a later direct route. If multiple attempted routes fail, their
-/// contextualized errors are retained in a
-/// [`ProxyRouteConnectError`].
+/// unavailable or timeout failure advances to any next configured route.
+/// Explicit rejection, protocol, and other transport failures advance only to
+/// another proxy route, never to a direct route. Authentication, invalid-input,
+/// and internal failures stop fallback even in the transport domain.
+/// Application, local, and unclassified failures also stop immediately because
+/// another transport route should not normally change their outcome. This lets
+/// proxy-specific failures rotate without turning an intentional rejection into
+/// an implicit direct-origin fallback. If multiple attempted routes fail, their
+/// contextualized errors are retained in a [`ProxyRouteConnectError`].
 ///
 /// Input route decisions use extension insertion order: the most recently
 /// inserted [`ProxyRoute`] or [`ProxyRoutes`] wins. Configure default or
@@ -366,7 +377,9 @@ impl<S> ProxyRoutesConnector<S> {
                 Ok(established) => return Ok(established),
                 Err(error) => {
                     let error = route_error_context(error, route, index);
-                    let try_next = should_try_next_route(&error) && index + 1 < routes.len();
+                    let try_next = routes
+                        .get(index + 1)
+                        .is_some_and(|next_route| should_try_next_route(&error, next_route));
 
                     if try_next {
                         match route {
@@ -871,6 +884,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn proxy_specific_transport_failures_advance_to_another_proxy() {
+        for kind in [
+            ConnectionErrorKind::Rejected,
+            ConnectionErrorKind::Protocol,
+            ConnectionErrorKind::Other,
+        ] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let inner = service_fn({
+                let attempts = attempts.clone();
+                move |input: ConnectRequest| {
+                    let attempts = attempts.clone();
+                    async move {
+                        if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                            Err(ConnectionError::transport(
+                                BoxError::from_static_str("proxy-specific failure"),
+                                kind,
+                            ))
+                        } else {
+                            Ok(EstablishedClientConnection {
+                                input,
+                                conn: ServiceInput::new(()),
+                            })
+                        }
+                    }
+                }
+            });
+            let connector = ProxyRoutesConnector::new(inner);
+            let input = ConnectRequest::new(HostWithPort::example_domain_https());
+            input
+                .extensions
+                .insert(ProxyRoutes::new([proxy("a"), proxy("b")]));
+
+            connector.serve(input).await.unwrap();
+            assert_eq!(attempts.load(Ordering::SeqCst), 2, "kind: {kind}");
+        }
+    }
+
+    #[tokio::test]
+    async fn proxy_specific_transport_failures_do_not_fall_back_to_direct() {
+        for kind in [
+            ConnectionErrorKind::Rejected,
+            ConnectionErrorKind::Protocol,
+            ConnectionErrorKind::Other,
+        ] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let inner = service_fn({
+                let attempts = attempts.clone();
+                move |_input: ConnectRequest| {
+                    let attempts = attempts.clone();
+                    async move {
+                        attempts.fetch_add(1, Ordering::SeqCst);
+                        Err::<EstablishedClientConnection<ServiceInput<()>, _>, _>(
+                            ConnectionError::transport(
+                                BoxError::from_static_str("proxy-specific failure"),
+                                kind,
+                            ),
+                        )
+                    }
+                }
+            });
+            let connector = ProxyRoutesConnector::new(inner);
+            let input = ConnectRequest::new(HostWithPort::example_domain_https());
+            input
+                .extensions
+                .insert(ProxyRoutes::new([proxy("a"), ProxyRoute::Direct]));
+
+            let error = connector.serve(input).await.unwrap_err();
+            assert_eq!(error.kind(), kind);
+            assert_eq!(attempts.load(Ordering::SeqCst), 1, "kind: {kind}");
+        }
+    }
+
+    #[tokio::test]
     async fn unsafe_failure_classifications_stop_route_fallback() {
         for (domain, kind) in [
             (
@@ -885,15 +971,6 @@ mod tests {
                 ConnectionErrorDomain::Transport,
                 ConnectionErrorKind::Internal,
             ),
-            (
-                ConnectionErrorDomain::Transport,
-                ConnectionErrorKind::Rejected,
-            ),
-            (
-                ConnectionErrorDomain::Transport,
-                ConnectionErrorKind::Protocol,
-            ),
-            (ConnectionErrorDomain::Transport, ConnectionErrorKind::Other),
             (ConnectionErrorDomain::Local, ConnectionErrorKind::Internal),
             (ConnectionErrorDomain::Unknown, ConnectionErrorKind::Other),
         ] {

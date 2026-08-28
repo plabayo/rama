@@ -24,6 +24,9 @@ pub enum HttpProxyError {
     InvalidVersion(Version),
     /// The proxy rejected CONNECT with an unexpected response status.
     Rejected(StatusCode),
+    /// The proxy reached the requested upstream but could not establish the
+    /// tunnel (HTTP 502 or 504).
+    UpstreamFailure(StatusCode),
 }
 
 impl fmt::Display for HttpProxyError {
@@ -44,6 +47,12 @@ impl fmt::Display for HttpProxyError {
             Self::Rejected(status) => {
                 write!(f, "http proxy error: CONNECT rejected with status {status}")
             }
+            Self::UpstreamFailure(status) => {
+                write!(
+                    f,
+                    "http proxy error: CONNECT upstream failed with status {status}"
+                )
+            }
         }
     }
 }
@@ -62,6 +71,13 @@ impl From<HttpProxyError> for ConnectionError {
             HttpProxyError::Rejected(_) => (
                 ConnectionErrorDomain::Transport,
                 ConnectionErrorKind::Rejected,
+            ),
+            // A 502/504 CONNECT response says the selected proxy did reach the
+            // requested upstream. Treat it as destination-scoped so an
+            // ordered proxy plan does not amplify the same origin failure.
+            HttpProxyError::UpstreamFailure(_) => (
+                ConnectionErrorDomain::Application,
+                ConnectionErrorKind::Unavailable,
             ),
             HttpProxyError::InvalidVersion(_) => (
                 ConnectionErrorDomain::Local,
@@ -110,9 +126,20 @@ mod tests {
         assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
         assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
 
-        let error = ConnectionError::from(HttpProxyError::Rejected(StatusCode::BAD_GATEWAY));
+        let error = ConnectionError::from(HttpProxyError::Rejected(StatusCode::FORBIDDEN));
         assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
         assert_eq!(error.kind(), ConnectionErrorKind::Rejected);
+
+        for status in [StatusCode::BAD_GATEWAY, StatusCode::GATEWAY_TIMEOUT] {
+            let proxy_error = HttpProxyError::UpstreamFailure(status);
+            assert_eq!(
+                proxy_error.to_string(),
+                format!("http proxy error: CONNECT upstream failed with status {status}")
+            );
+            let error = ConnectionError::from(proxy_error);
+            assert_eq!(error.domain(), ConnectionErrorDomain::Application);
+            assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+        }
 
         let error = ConnectionError::from(HttpProxyError::InvalidVersion(Version::HTTP_3));
         assert_eq!(error.domain(), ConnectionErrorDomain::Local);

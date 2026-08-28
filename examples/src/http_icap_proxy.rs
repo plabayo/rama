@@ -96,7 +96,7 @@ use rama::{
             layer::{AdaptationLayer, ServiceEndpoint},
         },
         io::ConnectionOptions,
-        proto::{MethodKind, Preview},
+        proto::{Method, MethodKind, Preview, ServiceTag},
         server::{OptionsResponse, OutgoingResponse, Server as IcapServer},
     },
     layer::{ArcLayer, ConsumeErrLayer, MapOutputLayer},
@@ -117,7 +117,7 @@ const PROXY_ADDRESS: &str = "127.0.0.1:62061";
 const ICAP_ADDRESS: &str = "127.0.0.1:62062";
 const DEFAULT_ICAP_URI: &str = "icap://127.0.0.1:62062/adapt";
 const TARGET_HOST: &str = "example.com";
-const SERVICE_TAG: &str = "\"rama-icap-example\"";
+const SERVICE_TAG: ServiceTag = ServiceTag::from_static("rama-icap-example");
 
 #[derive(Debug, Parser)]
 #[command(about = "Run an HTTP proxy through a selective ICAP service")]
@@ -232,7 +232,7 @@ async fn adapt_response(
     mut request: IncomingRequest,
     target_host: Arc<Host>,
 ) -> Result<OutgoingResponse, BoxError> {
-    let options = OptionsResponse::new(SERVICE_TAG, "RESPMOD")
+    let options = OptionsResponse::new(SERVICE_TAG, &[Method::Respmod])
         .with_service("Rama selective response adapter")
         .with_preview(Preview::new(1024))
         .with_allow_204(true)

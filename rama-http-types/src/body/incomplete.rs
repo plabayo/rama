@@ -1,30 +1,9 @@
 use pin_project_lite::pin_project;
+use rama_utils::guard::DropGuard;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use super::{Frame, SizeHint, StreamingBody};
-
-struct IncompleteGuard<F: FnOnce()> {
-    on_incomplete: Option<F>,
-}
-
-impl<F: FnOnce()> IncompleteGuard<F> {
-    fn disarm(&mut self) {
-        self.on_incomplete = None;
-    }
-
-    fn fire(&mut self) {
-        if let Some(f) = self.on_incomplete.take() {
-            f();
-        }
-    }
-}
-
-impl<F: FnOnce()> Drop for IncompleteGuard<F> {
-    fn drop(&mut self) {
-        self.fire();
-    }
-}
 
 pin_project! {
     /// A [`StreamingBody`] wrapper that calls a closure as soon as it is known
@@ -48,7 +27,7 @@ pin_project! {
     pub struct OnIncompleteBody<B, F: FnOnce()> {
         #[pin]
         body: B,
-        guard: IncompleteGuard<F>,
+        guard: DropGuard<F>,
     }
 }
 
@@ -56,11 +35,11 @@ impl<B: StreamingBody, F: FnOnce()> OnIncompleteBody<B, F> {
     /// Wrap `body`, calling `on_incomplete` once if it errors or is abandoned
     /// before end-of-stream.
     pub fn new(body: B, on_incomplete: F) -> Self {
-        let on_incomplete = (!body.is_end_stream()).then_some(on_incomplete);
-        Self {
-            body,
-            guard: IncompleteGuard { on_incomplete },
+        let mut guard = DropGuard::new(on_incomplete);
+        if body.is_end_stream() {
+            guard.disarm();
         }
+        Self { body, guard }
     }
 }
 

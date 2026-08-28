@@ -8,6 +8,7 @@
 
 use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue};
+use rama_utils::byte_set::{set_ascii_alphanum, set_each};
 use std::fmt;
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
@@ -147,12 +148,12 @@ impl ContentDisposition {
     }
 }
 
+const RFC8187_ATTR_CHAR_BYTES: [bool; 256] =
+    set_each(set_ascii_alphanum([false; 256]), b"!#$&+-.^_`|~");
+
+#[inline]
 fn is_rfc8187_attr_char(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric()
-        || matches!(
-            byte,
-            b'!' | b'#' | b'$' | b'&' | b'+' | b'-' | b'.' | b'^' | b'_' | b'`' | b'|' | b'~'
-        )
+    RFC8187_ATTR_CHAR_BYTES[usize::from(byte)]
 }
 
 impl TypedHeader for ContentDisposition {
