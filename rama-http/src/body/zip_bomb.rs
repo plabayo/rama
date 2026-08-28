@@ -4,7 +4,8 @@ use rama_core::error::{BoxError, ErrorContext};
 use rama_core::stream::io::{ReaderStream, SyncIoBridge};
 use rama_core::telemetry::tracing;
 use rama_core::{bytes::Bytes, futures::Stream};
-use rama_http_types::{Body, HeaderValue, Response};
+use rama_http_headers::{ContentDisposition, HeaderMapExt};
+use rama_http_types::{Body, HeaderMap, HeaderValue, Response, header};
 use rama_utils::macros::generate_set_and_with;
 use rama_utils::octets::{kib, mib};
 use rama_utils::str::arcstr::{ArcStr, arcstr};
@@ -104,24 +105,22 @@ impl ZipBomb {
         Body::from_stream(stream)
     }
 
-    fn generate_response_headers(&self) -> [(&'static str, HeaderValue); 4] {
-        [
-            ("Robots", HeaderValue::from_static("none")),
-            (
-                "X-Robots-Tag",
-                HeaderValue::from_static("noindex, nofollow"),
-            ),
-            ("Content-Type", HeaderValue::from_static("application/zip")),
-            (
-                "Content-Disposition",
-                format!("attachment; filename={}.zip", self.filename)
-                    .parse()
-                    .unwrap_or_else(|err| {
-                        tracing::debug!("failed to format ZipBomb's Content-Disposition header: fall back to default: {err}");
-                        HeaderValue::from_static("attachment; filename=data.zip")
-                    }),
-            ),
-        ]
+    fn generate_response_headers(&self) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert("Robots", HeaderValue::from_static("none"));
+        headers.insert(
+            "X-Robots-Tag",
+            HeaderValue::from_static("noindex, nofollow"),
+        );
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/zip"),
+        );
+        headers.typed_insert(ContentDisposition::attachment(&format!(
+            "{}.zip",
+            self.filename
+        )));
+        headers
     }
 
     /// Generate a [`Response`] from the [`ZipBomb`].
@@ -165,6 +164,21 @@ impl From<ZipBomb> for Body {
     #[inline]
     fn from(value: ZipBomb) -> Self {
         value.into_generate_body()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn response_filename_cannot_inject_headers() {
+        let response = ZipBomb::new(ArcStr::from("archive\r\nx-injected: yes")).generate_response();
+        assert_eq!(
+            response.headers()[header::CONTENT_DISPOSITION],
+            "attachment"
+        );
+        assert!(!response.headers().contains_key("x-injected"));
     }
 }
 

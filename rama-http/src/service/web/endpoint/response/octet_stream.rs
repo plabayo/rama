@@ -393,7 +393,7 @@ mod tests {
         assert_eq!(response.headers().get(CONTENT_LENGTH).unwrap(), "5");
         assert_eq!(
             response.headers().get(CONTENT_DISPOSITION).unwrap(),
-            "attachment; filename=test.bin"
+            "attachment; filename=\"test.bin\""
         );
     }
 
@@ -419,7 +419,7 @@ mod tests {
         );
         assert_eq!(
             response.headers().get(CONTENT_DISPOSITION).unwrap(),
-            "attachment; filename=test.bin"
+            "attachment; filename=\"test.bin\""
         );
     }
 
@@ -462,7 +462,7 @@ mod tests {
         // Verify Content-Disposition header with filename
         assert_eq!(
             response.headers().get(CONTENT_DISPOSITION).unwrap(),
-            "attachment; filename=hello.txt"
+            "attachment; filename=\"hello.txt\""
         );
     }
 }

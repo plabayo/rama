@@ -3,7 +3,7 @@
     reason = "macro-generated `#[allow]` attributes whose underlying lints fire only for some expansions"
 )]
 
-use super::{IntoResponseParts, ResponseParts};
+use super::{ForceStatusCode, IntoResponseFailed, IntoResponseParts, ResponseParts};
 use crate::Response;
 use crate::body::{Body, Frame, SizeHint, StreamingBody};
 use crate::service::web::response::Headers;
@@ -53,14 +53,19 @@ macro_rules! impl_into_response_sized_body {
 ///
 /// You generally shouldn't have to implement `IntoResponse` manually, as rama
 /// provides implementations for many common types.
+#[diagnostic::on_unimplemented(
+    note = "See `rama_http::service::web::response::IntoResponse` for supported response types"
+)]
 pub trait IntoResponse {
     /// Create a response.
+    #[must_use]
     fn into_response(self) -> Response;
 }
 
 /// Wrapper that can be used to turn an `IntoResponse` type into
 /// something that implements `Into<Response>`.
 #[derive(Debug, Clone)]
+#[must_use]
 pub struct StaticResponseFactory<T>(pub T);
 
 impl<T: IntoResponse> From<StaticResponseFactory<T>> for Response {
@@ -279,7 +284,9 @@ where
 {
     fn into_response(self) -> Response {
         let mut res = self.1.into_response();
-        *res.status_mut() = self.0;
+        if res.extensions().get_ref::<IntoResponseFailed>().is_none() {
+            *res.status_mut() = self.0;
+        }
         res
     }
 }
@@ -353,17 +360,18 @@ macro_rules! impl_into_response {
                 let ($($ty),*, res) = self;
 
                 let res = res.into_response();
+                let failure_status = res
+                    .extensions()
+                    .get_ref::<IntoResponseFailed>()
+                    .map(|_| res.status());
                 let parts = ResponseParts { res };
-
-                $(
-                    let parts = match $ty.into_response_parts(parts) {
-                        Ok(parts) => parts,
-                        Err(err) => {
-                            return err.into_response();
-                        }
-                    };
-                )*
-
+                let mut parts = match ($($ty,)*).into_response_parts(parts) {
+                    Ok(parts) => parts,
+                    Err(err) => return err.into_response(),
+                };
+                if let Some(status) = failure_status {
+                    *parts.res.status_mut() = status;
+                }
                 parts.res
             }
         }
@@ -378,16 +386,35 @@ macro_rules! impl_into_response {
                 let (status, $($ty),*, res) = self;
 
                 let res = res.into_response();
+                let failure_status = res
+                    .extensions()
+                    .get_ref::<IntoResponseFailed>()
+                    .map(|_| res.status());
                 let parts = ResponseParts { res };
+                let mut parts = match ($($ty,)*).into_response_parts(parts) {
+                    Ok(parts) => parts,
+                    Err(err) => return err.into_response(),
+                };
+                *parts.res.status_mut() = failure_status.unwrap_or(status);
+                parts.res
+            }
+        }
 
-                $(
-                    let parts = match $ty.into_response_parts(parts) {
-                        Ok(parts) => parts,
-                        Err(err) => {
-                            return err.into_response();
-                        }
-                    };
-                )*
+        #[allow(non_snake_case)]
+        impl<R, $($ty,)*> IntoResponse for (ForceStatusCode, $($ty),*, R)
+        where
+            $( $ty: IntoResponseParts, )*
+            R: IntoResponse,
+        {
+            fn into_response(self) -> Response {
+                let (status, $($ty),*, res) = self;
+
+                let res = res.into_response();
+                let parts = ResponseParts { res };
+                let parts = match ($($ty,)*).into_response_parts(parts) {
+                    Ok(parts) => parts,
+                    Err(err) => return err.into_response(),
+                };
 
                 (status, parts.res).into_response()
             }
@@ -403,17 +430,19 @@ macro_rules! impl_into_response {
                 let (outer_parts, $($ty),*, res) = self;
 
                 let res = res.into_response();
+                let failure_status = res
+                    .extensions()
+                    .get_ref::<IntoResponseFailed>()
+                    .map(|_| res.status());
                 let parts = ResponseParts { res };
-                $(
-                    let parts = match $ty.into_response_parts(parts) {
-                        Ok(parts) => parts,
-                        Err(err) => {
-                            return err.into_response();
-                        }
-                    };
-                )*
-
-                (outer_parts, parts.res).into_response()
+                let mut parts = match ($($ty,)*).into_response_parts(parts) {
+                    Ok(parts) => parts,
+                    Err(err) => return err.into_response(),
+                };
+                *parts.res.status_mut() = failure_status.unwrap_or(outer_parts.status);
+                parts.res.headers_mut().extend(outer_parts.headers);
+                parts.res.extensions().extend(&outer_parts.extensions);
+                parts.res
             }
         }
 
@@ -459,6 +488,146 @@ mod tests {
     use rama_core::combinators::Either;
     use rama_http_types::body::util::BodyExt as _;
     use rama_utils::str::arcstr::arcstr;
+    use serde::Serialize;
+
+    #[derive(Debug, Clone, Copy)]
+    struct FailingSerialize;
+
+    impl Serialize for FailingSerialize {
+        fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: serde::Serializer,
+        {
+            Err(serde::ser::Error::custom(
+                "intentional serialization failure",
+            ))
+        }
+    }
+
+    #[test]
+    fn outer_status_does_not_hide_response_conversion_failures() {
+        for response in [
+            (StatusCode::CREATED, super::super::Json(FailingSerialize)).into_response(),
+            (StatusCode::CREATED, super::super::Form(FailingSerialize)).into_response(),
+            (StatusCode::CREATED, super::super::Csv([FailingSerialize])).into_response(),
+        ] {
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            assert!(
+                response
+                    .extensions()
+                    .get_ref::<IntoResponseFailed>()
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn response_parts_survive_inner_failure_without_hiding_status() {
+        #[derive(Debug, Clone, Copy, rama_core::extensions::Extension)]
+        struct TestResponseExtension;
+
+        let extensions = rama_core::extensions::Extensions::new();
+        extensions.insert(TestResponseExtension);
+        let response = (
+            [("x-error-context", "preserved")],
+            extensions,
+            super::super::Json(FailingSerialize),
+        )
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.headers()["x-error-context"], "preserved");
+        assert!(
+            response
+                .extensions()
+                .get_ref::<TestResponseExtension>()
+                .is_some()
+        );
+
+        for response in [
+            (
+                super::super::Redirect::temporary("/next"),
+                super::super::Json(FailingSerialize),
+            )
+                .into_response(),
+            (
+                StatusCode::CREATED,
+                super::super::Redirect::temporary("/next"),
+                super::super::Json(FailingSerialize),
+            )
+                .into_response(),
+        ] {
+            assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+            assert_eq!(response.headers()[crate::header::LOCATION], "/next");
+        }
+
+        let template = Response::builder()
+            .status(StatusCode::CREATED)
+            .header("x-template-context", "preserved")
+            .body(())
+            .unwrap();
+        template.extensions().insert(TestResponseExtension);
+        let response = (template, super::super::Json(FailingSerialize)).into_response();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.headers()["x-template-context"], "preserved");
+        assert!(
+            response
+                .extensions()
+                .get_ref::<TestResponseExtension>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn response_part_failure_is_marked() {
+        let response = (
+            StatusCode::CREATED,
+            [("x-invalid", "line one\nline two")],
+            "body",
+        )
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            response
+                .extensions()
+                .get_ref::<IntoResponseFailed>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn force_status_code_explicitly_overrides_failure() {
+        let response = (
+            ForceStatusCode(StatusCode::IM_A_TEAPOT),
+            [("x-forced", "true")],
+            super::super::Json(FailingSerialize),
+        )
+            .into_response();
+
+        assert_eq!(response.status(), StatusCode::IM_A_TEAPOT);
+        assert_eq!(response.headers()["x-forced"], "true");
+
+        let response = ForceStatusCode(StatusCode::ACCEPTED).into_response();
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+    }
+
+    #[test]
+    fn ordinary_outer_status_still_overrides_success() {
+        let response = (StatusCode::CREATED, "created").into_response();
+        assert_eq!(response.status(), StatusCode::CREATED);
+    }
+
+    #[test]
+    fn response_parts_exposes_status_accessors() {
+        let mut parts = ResponseParts {
+            res: StatusCode::ACCEPTED.into_response(),
+        };
+        assert_eq!(parts.status(), StatusCode::ACCEPTED);
+        *parts.status_mut() = StatusCode::NO_CONTENT;
+        assert_eq!(parts.status(), StatusCode::NO_CONTENT);
+    }
 
     #[test]
     fn test_either_into_response() {

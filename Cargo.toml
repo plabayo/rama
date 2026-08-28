@@ -650,6 +650,10 @@ required-features = ["http-full"]
 harness = false
 
 [[bench]]
+name = "graceful_shutdown"
+harness = false
+
+[[bench]]
 name = "h2"
 required-features = ["http-full"]
 harness = false

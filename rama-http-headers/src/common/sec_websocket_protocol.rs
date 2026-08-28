@@ -1,14 +1,83 @@
 use rama_core::extensions::Extension;
+use rama_http_types::{HeaderName, HeaderValue};
+use rama_utils::collections::NonEmptySmallVec;
 use rama_utils::str::NonEmptyStr;
+use std::fmt;
 
-derive_non_empty_flat_csv_header! {
-    #[header(name = SEC_WEBSOCKET_PROTOCOL, sep = Comma)]
-    /// The `Sec-WebSocket-Protocol` header, containing one or multiple protocols.
-    ///
-    /// Sub protocols are advertised by the client,
-    /// and the server has to match it if defined.
-    #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct SecWebSocketProtocol(pub NonEmptySmallVec<3, NonEmptyStr>);
+/// The `Sec-WebSocket-Protocol` header, containing one or multiple protocols.
+///
+/// Subprotocols are advertised by the client and matched case-sensitively by
+/// the server. Each value must use the HTTP `token` syntax required by RFC 6455.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecWebSocketProtocol(pub NonEmptySmallVec<3, NonEmptyStr>);
+
+/// Error returned for a WebSocket subprotocol that is not an HTTP token.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidWebSocketProtocol {
+    _private: (),
+}
+
+impl fmt::Display for InvalidWebSocketProtocol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("websocket subprotocol is not a valid HTTP token")
+    }
+}
+
+impl std::error::Error for InvalidWebSocketProtocol {}
+
+impl crate::TypedHeader for SecWebSocketProtocol {
+    fn name() -> &'static HeaderName {
+        &rama_http_types::header::SEC_WEBSOCKET_PROTOCOL
+    }
+}
+
+impl crate::HeaderDecode for SecWebSocketProtocol {
+    fn decode<'i, I>(values: &mut I) -> Result<Self, crate::Error>
+    where
+        I: Iterator<Item = &'i HeaderValue>,
+    {
+        let protocols: NonEmptySmallVec<3, NonEmptyStr> =
+            crate::util::try_decode_flat_csv_header_values_as_non_empty_smallvec(
+                values,
+                crate::util::FlatCsvSeparator::Comma,
+            )
+            .map_err(|err| {
+                rama_core::telemetry::tracing::debug!(
+                    "failed to decode Sec-WebSocket-Protocol as a flat CSV header: {err}"
+                );
+                crate::Error::invalid()
+            })?;
+
+        if protocols.iter().all(|protocol| is_http_token(protocol)) {
+            Ok(Self(protocols))
+        } else {
+            rama_core::telemetry::tracing::debug!(
+                "failed to decode Sec-WebSocket-Protocol: invalid protocol token"
+            );
+            Err(crate::Error::invalid())
+        }
+    }
+}
+
+impl crate::HeaderEncode for SecWebSocketProtocol {
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        if !self.0.iter().all(|protocol| is_http_token(protocol)) {
+            rama_core::telemetry::tracing::debug!(
+                "failed to encode Sec-WebSocket-Protocol: invalid protocol token"
+            );
+            return;
+        }
+
+        match crate::util::try_encode_non_empty_smallvec_as_flat_csv_header_value(
+            &self.0,
+            crate::util::FlatCsvSeparator::Comma,
+        ) {
+            Ok(value) => values.extend(std::iter::once(value)),
+            Err(err) => rama_core::telemetry::tracing::debug!(
+                "failed to encode Sec-WebSocket-Protocol as a flat CSV header: {err}"
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
@@ -34,6 +103,23 @@ impl From<AcceptedWebSocketProtocol> for SecWebSocketProtocol {
 }
 
 impl SecWebSocketProtocol {
+    /// Construct a protocol header without validation.
+    ///
+    /// Prefer [`Self::try_new`] when the protocol is not a trusted constant.
+    #[must_use]
+    pub fn new(value: NonEmptyStr) -> Self {
+        Self(NonEmptySmallVec::new(value))
+    }
+
+    /// Construct a protocol header after validating RFC 6455 token syntax.
+    pub fn try_new(value: NonEmptyStr) -> Result<Self, InvalidWebSocketProtocol> {
+        if is_http_token(&value) {
+            Ok(Self::new(value))
+        } else {
+            Err(InvalidWebSocketProtocol { _private: () })
+        }
+    }
+
     #[must_use]
     /// Return the first protocol in this [`SecWebSocketProtocol`] as the [`AcceptedWebSocketProtocol`].
     pub fn accept_first_protocol(&self) -> AcceptedWebSocketProtocol {
@@ -45,10 +131,7 @@ impl SecWebSocketProtocol {
     pub fn contains(&self, protocol: impl AsRef<str>) -> Option<AcceptedWebSocketProtocol> {
         let protocol = protocol.as_ref().trim();
         self.0.iter().find_map(|candidate| {
-            candidate
-                .trim()
-                .eq_ignore_ascii_case(protocol)
-                .then(|| AcceptedWebSocketProtocol(candidate.clone()))
+            (candidate.trim() == protocol).then(|| AcceptedWebSocketProtocol(candidate.clone()))
         })
     }
 
@@ -67,6 +150,30 @@ impl SecWebSocketProtocol {
     pub fn iter(&self) -> impl Iterator<Item = &str> {
         self.0.iter().map(|it| it.as_ref())
     }
+}
+
+fn is_http_token(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
 }
 
 #[cfg(test)]
@@ -90,7 +197,6 @@ mod tests {
         assert_encode_decode_eq(" foo ", false);
         assert_encode_decode_eq("x-foo-123", true);
         assert_encode_decode_eq("X-Foo-Bar", true);
-        assert_encode_decode_eq("a b", true);
     }
 
     #[test]
@@ -116,7 +222,6 @@ mod tests {
         assert_encode_decode_eq(&["foo"], true);
         assert_encode_decode_eq(&["x-foo-123", "foo"], true);
         assert_encode_decode_eq(&["a", "b", "c"], true);
-        assert_encode_decode_eq(&["a b", "c d"], true);
     }
 
     #[test]
@@ -131,11 +236,11 @@ mod tests {
             ("a", "b", None),
             ("a", "a", Some("a")),
             ("a", " a", Some("a")),
-            ("a", "A ", Some("a")),
-            ("a", " A ", Some("a")),
-            ("a, b", " A ", Some("a")),
+            ("a", "A ", None),
+            ("a", " A ", None),
+            ("a, b", " A ", None),
             ("a, b", "b", Some("b")),
-            ("a, b", " B ", Some("b")),
+            ("a, b", " B ", None),
             ("a, b", " c ", None),
         ] {
             let header: SecWebSocketProtocol = test_decode(&[input]).unwrap();
@@ -172,7 +277,7 @@ mod tests {
             Case::new("a", &["b"], None),
             Case::new("a", &["a"], Some("a")),
             Case::new("a", &[" a"], Some("a")),
-            Case::new("a", &[" A "], Some("a")),
+            Case::new("a", &[" A "], None),
             Case::new("a, b", &["b", "a"], Some("b")),
             Case::new("a, b", &["c", "a", "b", "a"], Some("a")),
             Case::new("a, b", &["c", "d"], None),
@@ -190,5 +295,16 @@ mod tests {
                 case.input,
             );
         }
+    }
+
+    #[test]
+    fn rejects_invalid_protocol_tokens() {
+        for value in ["a b", "quoted\"value", "foo/bar", "foo=bar", "(foo)"] {
+            assert!(
+                test_decode::<SecWebSocketProtocol>(&[value]).is_none(),
+                "{value}"
+            );
+        }
+        SecWebSocketProtocol::try_new(NonEmptyStr::try_from("a b").unwrap()).unwrap_err();
     }
 }

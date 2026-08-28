@@ -1354,6 +1354,7 @@ mod tests {
             None,
         )
         .await;
+
         assert_websocket_acceptor_ok(
             request! {
                 "CONNECT" "HTTP/2" "/"
@@ -1494,6 +1495,20 @@ mod tests {
         .await;
 
         // with allowed protocol
+
+        // RFC 6455 subprotocol identifiers are case-sensitive.
+        assert_websocket_acceptor_bad_request(
+            request! {
+                "GET" "HTTP/1.1" "/"
+                "Connection": "upgrade"
+                "Upgrade": "websocket"
+                "Sec-WebSocket-Version": "13"
+                "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ=="
+                "Sec-WebSocket-Protocol": "Foo"
+            },
+            &acceptor,
+        )
+        .await;
 
         assert_websocket_acceptor_ok(
             request! {
