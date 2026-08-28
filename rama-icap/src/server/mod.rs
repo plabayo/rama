@@ -106,6 +106,19 @@ impl<IO> ServerConnection<IO>
 where
     IO: Io + Unpin,
 {
+    pub(super) async fn send_closing_response(&mut self, response: &Response) -> Result<(), Error> {
+        let write_result = async {
+            self.framed.write.write_response(response).await?;
+            self.framed.write.flush().await
+        }
+        .await;
+        let shutdown_result = self.framed.write.shutdown().await;
+        self.closed = true;
+        self.poisoned = true;
+        write_result?;
+        shutdown_result
+    }
+
     /// Read the next ICAP request head and encapsulated HTTP head sections.
     ///
     /// Cancelling this future abandons the connection. This fail-closed rule

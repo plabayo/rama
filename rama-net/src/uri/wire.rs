@@ -8,19 +8,18 @@
 //! forbidden in any URI sent inside an HTTP message (RFC 9110 §4.2.4).
 //!
 //! These writers serialize a [`Uri`] into a caller-provided buffer
-//! according to the rules for each form. They're HTTP-context — other
-//! URI consumers should use [`Display`](core::fmt::Display) for the
-//! canonical full form.
-
-use core::net::IpAddr;
+//! according to the rules for each form. Most are HTTP-context; protocol
+//! gateways can use [`Uri::write_absolute_form_with_overrides`] to translate
+//! a scheme or port without reconstructing the URI themselves.
 
 use super::{Uri, UriInner};
-use crate::address::HostRef;
+use crate::{Protocol, address::OptPort};
 
 use rama_core::bytes::BytesMut;
 
 /// Error returned when a wire-form contract can't be honoured.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WireError {
     /// The URI is the HTTP asterisk-form (`*`), but the requested wire
     /// form requires a richer URI (`write_http_origin_form` / `_absolute_form`
@@ -30,6 +29,8 @@ pub enum WireError {
     NoScheme,
     /// The requested form requires an authority but the URI has none.
     NoAuthority,
+    /// The supplied text writer rejected output.
+    Output,
 }
 
 impl core::fmt::Display for WireError {
@@ -40,6 +41,7 @@ impl core::fmt::Display for WireError {
             }
             Self::NoScheme => f.write_str("requested wire form requires a scheme"),
             Self::NoAuthority => f.write_str("requested wire form requires an authority"),
+            Self::Output => f.write_str("URI wire-form output failed"),
         }
     }
 }
@@ -76,14 +78,45 @@ impl Uri {
         let Some(scheme) = self.scheme() else {
             return Err(WireError::NoScheme);
         };
-        buf.extend_from_slice(scheme.as_str().as_bytes());
-        buf.extend_from_slice(b":");
-        if self.authority().is_some() {
-            buf.extend_from_slice(b"//");
-            write_host_port(self, buf);
+        write_absolute_form(
+            self,
+            scheme,
+            self.port(),
+            AuthorityUserInfo::Omit,
+            EmptyPath::Slash,
+            &mut BytesMutWriter(buf),
+        )
+        .map_err(|_error| WireError::Output)
+    }
+
+    /// Write an absolute-form URI while replacing its scheme and authority
+    /// port.
+    ///
+    /// The URI supplies the complete authority, path, and query. The fragment
+    /// is omitted. Unlike [`write_http_absolute_form`](Self::write_http_absolute_form),
+    /// this protocol-neutral projection preserves userinfo because some URI
+    /// schemes, including ICAP, define it as part of the service identity.
+    /// An empty path remains empty. [`OptPort::Unset`] omits the port,
+    /// [`OptPort::Empty`] emits a trailing `:`, and [`OptPort::Set`] emits its
+    /// numeric value.
+    pub fn write_absolute_form_with_overrides(
+        &self,
+        scheme: &Protocol,
+        port: OptPort,
+        writer: &mut impl core::fmt::Write,
+    ) -> Result<(), WireError> {
+        if matches!(self.inner, UriInner::Asterisk) {
+            return Err(WireError::AsteriskMismatch);
         }
-        write_path_query(self, buf);
-        Ok(())
+        write_absolute_form(
+            self,
+            scheme,
+            port,
+            AuthorityUserInfo::Preserve,
+            EmptyPath::Preserve,
+            writer,
+        )
+        .map_err(|_error| WireError::Output)
     }
 
     /// HTTP/1.1 authority-form request-target: `host[:port]`.
@@ -91,8 +124,8 @@ impl Uri {
     /// Only used for `CONNECT`. Userinfo, scheme, path, query, and
     /// fragment are all stripped.
     ///
-    /// **Wire fidelity**: an [`OptPort::Empty`](crate::address::OptPort::Empty)
-    /// port emits a bare trailing `:` (e.g. `example.com:`), mirroring
+    /// **Wire fidelity**: an [`OptPort::Empty`] port emits a bare trailing `:`
+    /// (e.g. `example.com:`), mirroring
     /// the parser. RFC 3986 §3.2.3 grammar permits this; some peers
     /// may reject. Call [`Uri::canonicalize`](Self::canonicalize)
     /// first if you want the empty marker normalized away.
@@ -103,7 +136,7 @@ impl Uri {
         if self.authority().is_none() {
             return Err(WireError::NoAuthority);
         }
-        write_host_port(self, buf);
+        write_host_port(self, buf)?;
         Ok(())
     }
 
@@ -134,7 +167,7 @@ impl Uri {
         if self.authority().is_none() {
             return Err(WireError::NoAuthority);
         }
-        write_host_port(self, buf);
+        write_host_port(self, buf)?;
         Ok(())
     }
 
@@ -161,57 +194,46 @@ impl Uri {
 ///
 /// IP-address rendering streams through a `fmt::Write` adapter into
 /// `buf` — no `to_string()` allocation per request.
-fn write_host_port(uri: &Uri, buf: &mut BytesMut) {
-    use core::fmt::Write as _;
+fn write_host_port(uri: &Uri, buf: &mut BytesMut) -> Result<(), WireError> {
+    let authority = uri.authority().ok_or(WireError::NoAuthority)?;
+    let result = authority.write_address(&mut BytesMutWriter(buf));
+    debug_assert!(result.is_ok(), "BytesMutWriter is infallible");
+    Ok(())
+}
 
-    if let Some(host) = uri.host() {
-        match host {
-            HostRef::Name(d) => buf.extend_from_slice(d.as_bytes()),
-            HostRef::Address(IpAddr::V4(v4)) => {
-                // `Ipv4Addr` Display goes through `fmt::Write`; route
-                // it straight into the buffer (max 15 bytes, no alloc).
-                // `BytesMutWriter::write_str` is infallible.
-                #[expect(
-                    clippy::let_underscore_must_use,
-                    reason = "BytesMutWriter::write_str is infallible by construction"
-                )]
-                let _ = write!(BytesMutWriter(buf), "{v4}");
-            }
-            HostRef::Address(IpAddr::V6(v6)) => {
-                buf.extend_from_slice(b"[");
-                #[expect(
-                    clippy::let_underscore_must_use,
-                    reason = "BytesMutWriter::write_str is infallible by construction"
-                )]
-                let _ = write!(BytesMutWriter(buf), "{v6}");
-                buf.extend_from_slice(b"]");
-            }
-            HostRef::Uninterpreted(host) => {
-                // Wire-fidelity: emit the preserved bytes exactly as
-                // received. `UninterpretedHost` stores bracketed
-                // IP-literal bodies without the surrounding `[...]`,
-                // so we add them back here to match URI authority syntax.
-                if host.is_bracketed() {
-                    buf.extend_from_slice(b"[");
-                    buf.extend_from_slice(host.as_bytes());
-                    buf.extend_from_slice(b"]");
-                } else {
-                    buf.extend_from_slice(host.as_bytes());
-                }
-            }
+fn write_absolute_form(
+    uri: &Uri,
+    scheme: &Protocol,
+    port: OptPort,
+    userinfo: AuthorityUserInfo,
+    empty_path: EmptyPath,
+    writer: &mut impl core::fmt::Write,
+) -> core::fmt::Result {
+    writer.write_str(scheme.as_str())?;
+    writer.write_str(":")?;
+    if let Some(authority) = uri.authority() {
+        writer.write_str("//")?;
+        if matches!(userinfo, AuthorityUserInfo::Preserve)
+            && let Some(value) = authority.userinfo()
+        {
+            writer.write_str(value.as_str())?;
+            writer.write_str("@")?;
         }
+        authority.write_address_with_port(writer, port)?;
     }
-    match uri.port() {
-        crate::address::OptPort::Unset => {}
-        crate::address::OptPort::Empty => {
-            buf.extend_from_slice(b":");
-        }
-        crate::address::OptPort::Set(port) => {
-            buf.extend_from_slice(b":");
-            let mut itoa = itoa::Buffer::new();
-            buf.extend_from_slice(itoa.format(port).as_bytes());
-        }
-    }
+    write_path_query_fmt(uri, empty_path, writer)
+}
+
+#[derive(Clone, Copy)]
+enum AuthorityUserInfo {
+    Preserve,
+    Omit,
+}
+
+#[derive(Clone, Copy)]
+enum EmptyPath {
+    Preserve,
+    Slash,
 }
 
 /// [`fmt::Write`] adapter that pushes formatted bytes straight into a
@@ -239,4 +261,21 @@ fn write_path_query(uri: &Uri, buf: &mut BytesMut) {
         buf.extend_from_slice(b"?");
         q.write_encoded_to(buf);
     }
+}
+
+fn write_path_query_fmt(
+    uri: &Uri,
+    empty_path: EmptyPath,
+    writer: &mut impl core::fmt::Write,
+) -> core::fmt::Result {
+    if let Some(path) = uri.path().filter(|path| !path.is_empty()) {
+        writer.write_fmt(format_args!("{path}"))?;
+    } else if matches!(empty_path, EmptyPath::Slash) {
+        writer.write_str("/")?;
+    }
+    if let Some(query) = uri.query() {
+        writer.write_str("?")?;
+        writer.write_fmt(format_args!("{query}"))?;
+    }
+    Ok(())
 }

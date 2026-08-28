@@ -764,7 +764,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2282,9 +2282,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring"
-version = "0.6.7"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d52afb3aef6c83a049a276652ac205ed8b5e2fefa812180a5dfefb44ced3f63d"
+checksum = "4bf149c9fd6100914e0f7f527f27cc8f7a4514090df35df7283ace3b4f244cfb"
 dependencies = [
  "bitflags 2.13.1",
  "foreign-types",
@@ -2295,9 +2295,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.6.7"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca9d41c329bc70673878e71a0b7142e565679484b842d25637c3cd0ca743c1df"
+checksum = "1ed7bbe1130aa53e8e4cd7996e472a4814f7253f3246137d5514a6fd492919fb"
 dependencies = [
  "bindgen",
  "cmake",
@@ -2307,9 +2307,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.6.7"
+version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9585c0d88da5ad0782a39d9c0013760db4ae030635a609e983f3861c8ad8ad2"
+checksum = "134f0f4a7f8f63fa30e6b0ab13ea13e53ba0f2866cfbd9fd566b2ff00260b6e9"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",
@@ -2597,7 +2597,6 @@ dependencies = [
  "memchr",
  "mime",
  "mime_guess",
- "nom 8.0.0",
  "parking_lot",
  "pin-project-lite",
  "rama-core",
@@ -3086,7 +3085,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3463,7 +3462,7 @@ dependencies = [
  "fastrand",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3982,7 +3981,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

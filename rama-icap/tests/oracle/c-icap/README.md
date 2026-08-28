@@ -61,7 +61,8 @@ The smaller readiness check is available as `just icap-oracle-smoke`.
 `just icap-oracle-test` runs every currently automated cell. The C client and direct
 wire probes run inside the pinned image. The local Rama server launcher uses
 `host.docker.internal` and verifies that its child remains alive while waiting
-for readiness.
+for readiness. The TLS c-icap case runs `rama serve stunnel exit` from the
+current workspace in front of the pinned plaintext server.
 
 The Rust oracle tests run when these endpoint variables are set. The complete
 runner also sets `RAMA_ICAP_ORACLE_REQUIRED=1`, making a missing endpoint a
@@ -71,6 +72,7 @@ jobs where the external oracle is unavailable:
 ```text
 RAMA_ICAP_ORACLE_ECHO_ADDR=127.0.0.1:1345
 RAMA_ICAP_ORACLE_204_ADDR=127.0.0.1:1346
+RAMA_ICAP_ORACLE_TLS_ECHO_ADDR=127.0.0.1:11344
 ```
 
 To run the C client matrix against a Rama server listening on another host or
@@ -92,7 +94,7 @@ just icap-oracle-up
 just icap-oracle-down
 ```
 
-Override published ports with `RAMA_ICAP_C_ICAP_PORT` and
-`RAMA_ICAP_C_ICAP_204_PORT`. Rama server ports can be overridden with
-`RAMA_ICAP_RAMA_PORT` and `RAMA_ICAP_RAMA_204_PORT`; all `just` recipes honor
-the overrides.
+Override the oracle ports with `RAMA_ICAP_C_ICAP_PORT`,
+`RAMA_ICAP_C_ICAP_204_PORT`, and `RAMA_ICAP_C_ICAP_TLS_PORT`. Rama server ports
+can be overridden with `RAMA_ICAP_RAMA_PORT` and `RAMA_ICAP_RAMA_204_PORT`; all
+`just` recipes honor the overrides.

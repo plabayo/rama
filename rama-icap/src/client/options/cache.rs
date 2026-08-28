@@ -10,7 +10,7 @@ use rama_core::{
     Layer, Service,
     error::{BoxError, BoxErrorExt as _, ErrorExt as _},
 };
-use rama_net::uri::Uri;
+use rama_net::{Protocol, uri::Uri};
 use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 use tokio::{sync::Mutex, time::Instant};
 
@@ -182,15 +182,15 @@ impl<S> Layer<S> for OptionsCacheLayer {
         OptionsCache {
             inner,
             config: self.config.clone(),
-            entries: Mutex::new(Vec::new()),
-            refreshes: Mutex::new(Vec::new()),
-            cache_invalidation_epoch: AtomicU64::new(0),
+            entries: Arc::new(Mutex::new(Vec::new())),
+            refreshes: Arc::new(Mutex::new(Vec::new())),
+            cache_invalidation_epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 }
 
 /// Cached OPTIONS discovery service produced by [`OptionsCacheLayer`].
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct OptionsCache<S> {
     inner: S,
     config: OptionsCacheConfig,
@@ -199,11 +199,23 @@ pub struct OptionsCache<S> {
     //
     // Exact LRU makes a hit a short write. An ArcSwap directory would instead
     // copy and publish the entire list on every hit.
-    entries: Mutex<Vec<CacheEntry>>,
+    entries: Arc<Mutex<Vec<CacheEntry>>>,
     // Weak per-key coordinators, never locked during network I/O.
-    refreshes: Mutex<Vec<FetchRegistration>>,
+    refreshes: Arc<Mutex<Vec<FetchRegistration>>>,
     // Generation changed only by invalidating this cache instance.
-    cache_invalidation_epoch: AtomicU64,
+    cache_invalidation_epoch: Arc<AtomicU64>,
+}
+
+/// Cloneable invalidation access to one OPTIONS cache instance.
+///
+/// This handle does not expose the discovery service. It exists so completed
+/// adaptation responses can invalidate future discovery when their ISTag
+/// differs from the capability snapshot used for that transaction.
+#[derive(Clone, Debug)]
+pub struct OptionsCacheHandle {
+    entries: Arc<Mutex<Vec<CacheEntry>>>,
+    refreshes: Arc<Mutex<Vec<FetchRegistration>>>,
+    cache_invalidation_epoch: Arc<AtomicU64>,
 }
 
 /// One weak registry entry for per-key single-flight coordination.
@@ -235,6 +247,7 @@ impl FetchState {
 #[derive(Clone, Debug)]
 struct CacheKey {
     uri: Uri,
+    application_protocol: Option<Protocol>,
     partition: super::OptionsCachePartition,
     allow_204_offered: bool,
     allow_206_offered: bool,
@@ -244,6 +257,7 @@ struct CacheKey {
 impl PartialEq for CacheKey {
     fn eq(&self, other: &Self) -> bool {
         self.uri == other.uri
+            && self.application_protocol == other.application_protocol
             && self.partition.shares_cache_with(&other.partition)
             && self.allow_204_offered == other.allow_204_offered
             && self.allow_206_offered == other.allow_206_offered
@@ -257,6 +271,7 @@ impl CacheKey {
     fn from_request(request: &OptionsRequest) -> Self {
         Self {
             uri: request.service_uri().clone(),
+            application_protocol: request.application_protocol().cloned(),
             partition: request.cache_partition().clone(),
             allow_204_offered: request.allow_204_offered(),
             allow_206_offered: request.allow_206_offered(),
@@ -332,15 +347,7 @@ impl RefreshPlan {
     }
 }
 
-impl<S> OptionsCache<S> {
-    define_inner_service_accessors!();
-
-    /// Return cache policy.
-    #[must_use]
-    pub const fn config(&self) -> &OptionsCacheConfig {
-        &self.config
-    }
-
+impl OptionsCacheHandle {
     /// Invalidate every cached variant of one exact service URI.
     pub async fn invalidate(&self, uri: &Uri) {
         let mut refreshes = self.refreshes.lock().await;
@@ -363,6 +370,36 @@ impl<S> OptionsCache<S> {
         let mut entries = self.entries.lock().await;
         entries.clear();
         self.cache_invalidation_epoch.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+impl<S> OptionsCache<S> {
+    define_inner_service_accessors!();
+
+    /// Return cache policy.
+    #[must_use]
+    pub const fn config(&self) -> &OptionsCacheConfig {
+        &self.config
+    }
+
+    /// Return a cloneable invalidation handle for this cache instance.
+    #[must_use]
+    pub fn handle(&self) -> OptionsCacheHandle {
+        OptionsCacheHandle {
+            entries: Arc::clone(&self.entries),
+            refreshes: Arc::clone(&self.refreshes),
+            cache_invalidation_epoch: Arc::clone(&self.cache_invalidation_epoch),
+        }
+    }
+
+    /// Invalidate every cached variant of one exact service URI.
+    pub async fn invalidate(&self, uri: &Uri) {
+        self.handle().invalidate(uri).await;
+    }
+
+    /// Invalidate all cached OPTIONS snapshots.
+    pub async fn invalidate_all(&self) {
+        self.handle().invalidate_all().await;
     }
 
     async fn cached(&self, key: &CacheKey) -> Cached {
@@ -693,6 +730,14 @@ mod tests {
         service_uri: &str,
         partition: &super::super::OptionsCachePartition,
     ) -> OptionsRequest {
+        request_for_protocol(service_uri, None, partition)
+    }
+
+    fn request_for_protocol(
+        service_uri: &str,
+        application_protocol: Option<Protocol>,
+        partition: &super::super::OptionsCachePartition,
+    ) -> OptionsRequest {
         let uri = Uri::parse_strict(service_uri).unwrap();
         let uri_text = uri.as_str();
         let request = Request::new(
@@ -701,12 +746,11 @@ mod tests {
             Some(EncapsulatedParts::null()),
         )
         .unwrap();
-        OptionsRequest::new(
-            ConnectRequest::new("icap.test:1344".parse::<HostWithPort>().unwrap()),
-            request,
-        )
-        .unwrap()
-        .with_cache_partition(partition.clone())
+        let connect = ConnectRequest::new("icap.test:1344".parse::<HostWithPort>().unwrap())
+            .maybe_with_application_protocol(application_protocol);
+        OptionsRequest::new(connect, request)
+            .unwrap()
+            .with_cache_partition(partition.clone())
     }
 
     fn request_with_allow(
@@ -853,6 +897,23 @@ mod tests {
             assert!(Arc::ptr_eq(&first, &second));
         }
         assert_eq!(provider.calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn application_protocol_partitions_cache_entries() {
+        let provider = TestProvider::new(capabilities(None));
+        let cache = OptionsCacheLayer::new().layer(provider.clone());
+        let partition = super::super::OptionsCachePartition::new();
+
+        for protocol in [Protocol::ICAP, Protocol::ICAPS] {
+            let input =
+                request_for_protocol("icap://icap.test/service", Some(protocol), &partition);
+            let first = cache.serve(input.clone()).await.unwrap();
+            let second = cache.serve(input).await.unwrap();
+            assert!(Arc::ptr_eq(&first, &second));
+        }
+
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -1013,12 +1074,13 @@ mod tests {
         let provider = TestProvider::new(capabilities(Some(b"60")));
         provider.hold.store(true, Ordering::SeqCst);
         let cache = OptionsCacheLayer::new().layer(provider.clone());
+        let handle = cache.handle();
         let partition = super::super::OptionsCachePartition::new();
         let input = request(&partition);
         let refresh = cache.serve(input.clone());
         let invalidate = async {
             provider.wait_until_held().await;
-            cache.invalidate(input.service_uri()).await;
+            handle.invalidate(input.service_uri()).await;
             provider.release();
         };
         let (result, ()) = tokio::join!(refresh, invalidate);

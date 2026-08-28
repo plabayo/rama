@@ -9,10 +9,9 @@ use rama_core::{
 };
 use rama_http_types::HeaderMap;
 use rama_net::{
-    Protocol,
+    AuthorityInputExt, Protocol, ProtocolInputExt, UriInputExt,
     address::{HostWithOptPort, HostWithPort},
     client::ConnectRequest,
-    transport::TransportProtocol,
     uri::{IntoUriInput, ParseError as UriParseError, Uri},
 };
 use rama_utils::macros::generate_set_and_with;
@@ -63,6 +62,9 @@ impl std::error::Error for ServiceEndpointError {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ServiceEndpointRequestError {
+    /// The private endpoint URI no longer satisfies its construction-time
+    /// connection invariants.
+    InvalidEndpoint,
     /// Additional endpoint headers contain a field managed by ICAP.
     ManagedHeader,
     /// A configured header is not valid ICAP syntax.
@@ -78,6 +80,7 @@ pub enum ServiceEndpointRequestError {
 impl fmt::Display for ServiceEndpointRequestError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::InvalidEndpoint => "ICAP service endpoint cannot form a connection request",
             Self::ManagedHeader => "additional ICAP headers contain a managed field",
             Self::Header(_) => "invalid additional ICAP request header",
             Self::Message(_) => "invalid ICAP OPTIONS request",
@@ -90,7 +93,7 @@ impl fmt::Display for ServiceEndpointRequestError {
 impl std::error::Error for ServiceEndpointRequestError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::ManagedHeader | Self::InitializationRace => None,
+            Self::InvalidEndpoint | Self::ManagedHeader | Self::InitializationRace => None,
             Self::Header(error) => Some(error),
             Self::Message(error) => Some(error),
             Self::Options(error) => Some(error),
@@ -117,11 +120,21 @@ impl From<OptionsRequestError> for ServiceEndpointRequestError {
 }
 
 /// Configuration for one ICAP adaptation service URI.
+///
+/// Connection pools serving both `icap` and `icaps` endpoints must include
+/// the application [`Protocol`] in their connection identity. An authority
+/// alone does not distinguish plaintext from direct TLS when both schemes use
+/// the same explicit port.
+///
+/// An `icaps` endpoint requests direct TLS and defaults to port 11344. The
+/// connector supplied to the ICAP client must provide TLS support; the ICAP
+/// request target itself is normalized to the RFC-defined `icap` scheme.
+/// URI userinfo is part of that request target and is therefore sent on every
+/// exchange. Avoid putting credentials in the URI, especially over plaintext
+/// `icap` connections.
 #[derive(Clone)]
 pub struct ServiceEndpoint {
     uri: Uri,
-    authority: HostWithPort,
-    host_header: Arc<str>,
     preview: Option<Preview>,
     allow_204: bool,
     allow_206: bool,
@@ -138,7 +151,6 @@ impl fmt::Debug for ServiceEndpoint {
         formatter
             .debug_struct("ServiceEndpoint")
             .field("uri", &self.uri)
-            .field("authority", &self.authority)
             .field("preview", &self.preview)
             .field("allow_204", &self.allow_204)
             .field("allow_206", &self.allow_206)
@@ -150,24 +162,14 @@ impl fmt::Debug for ServiceEndpoint {
 }
 
 impl ServiceEndpoint {
-    /// Parse an absolute ICAP service URI and derive its connector target.
+    /// Parse an absolute ICAP or direct-TLS ICAPS service URI.
     pub fn new(uri: impl IntoUriInput) -> Result<Self, ServiceEndpointError> {
         let uri = Uri::parse_strict(uri).map_err(ServiceEndpointError::Uri)?;
         validate_icap_uri(&uri).map_err(ServiceEndpointError::IcapUri)?;
-        let uri_authority = uri
-            .authority()
+        uri.authority()
             .ok_or(ServiceEndpointError::MissingAuthority)?;
-        let host = HostWithOptPort {
-            host: uri_authority.host().into_owned(),
-            port: uri_authority.port(),
-        }
-        .canonicalize();
-        let host_header: Arc<str> = Arc::from(host.to_string());
-        let authority = host.into_host_with_port_or(Protocol::ICAP_DEFAULT_PORT);
         Ok(Self {
             uri,
-            authority,
-            host_header,
             preview: None,
             allow_204: false,
             allow_206: false,
@@ -180,20 +182,38 @@ impl ServiceEndpoint {
         })
     }
 
-    /// Return the absolute ICAP service URI.
+    /// Return the configured ICAP service identity.
+    ///
+    /// Direct-TLS endpoints retain their `icaps` scheme here even though
+    /// requests use the RFC `icap` scheme on the wire.
     #[must_use]
     pub const fn uri(&self) -> &Uri {
         &self.uri
     }
 
-    pub(super) fn host_header(&self) -> &[u8] {
-        self.host_header.as_bytes()
+    /// Return the logical ICAP service authority used for TLS identity and
+    /// connection pooling.
+    ///
+    /// A configured [`rama_net::client::ConnectorTarget`] remains a separate
+    /// physical dial override in the connection extensions.
+    #[must_use]
+    pub fn authority(&self) -> Option<HostWithPort> {
+        let authority = self.uri.authority()?;
+        let default_port = self.uri.scheme()?.default_port()?;
+        Some(
+            HostWithOptPort {
+                host: authority.host().into_owned(),
+                port: authority.port(),
+            }
+            .canonicalize()
+            .into_host_with_port_or(default_port),
+        )
     }
 
-    /// Return the ICAP server transport target.
+    /// Return the configured ICAP application protocol.
     #[must_use]
-    pub const fn authority(&self) -> &HostWithPort {
-        &self.authority
+    pub fn protocol(&self) -> Option<&Protocol> {
+        self.uri.scheme()
     }
 
     /// Return additional ICAP request headers.
@@ -357,23 +377,21 @@ impl ServiceEndpoint {
             self.allow_icap_trailers,
         )?;
         let request = Request::new_from_source(
-            RequestLineSource::prepared(Method::Options, &self.uri, self.host_header()),
+            RequestLineSource::prepared(Method::Options, self.uri()),
             &headers,
             Some(EncapsulatedParts::null()),
         )?;
-        let request = OptionsRequest::new_in_partition(
-            self.options_connect_request(),
+        let request = OptionsRequest::new_for_service_uri_in_partition(
+            self.uri().clone(),
+            self.options_connect_request()?,
             request,
             self.options_partition.clone(),
         )?;
-        match self.options_request.set(request.clone()) {
-            Ok(()) => Ok(request),
-            Err(_request) => self
-                .options_request
-                .get()
-                .cloned()
-                .ok_or(ServiceEndpointRequestError::InitializationRace),
-        }
+        let _request = self.options_request.set(request);
+        self.options_request
+            .get()
+            .cloned()
+            .ok_or(ServiceEndpointRequestError::InitializationRace)
     }
 
     pub(super) fn adaptation_headers<'a>(
@@ -412,7 +430,8 @@ impl ServiceEndpoint {
             self.headers
                 .len()
                 .saturating_add(forwarded.len())
-                .saturating_add(2),
+                // Reserve the sole optional managed field added below: Allow.
+                .saturating_add(1),
         );
         for (name, value) in &self.headers {
             if [
@@ -433,7 +452,6 @@ impl ServiceEndpoint {
         for field in forwarded {
             fields.push(Header::new(field.name, field.value.as_bytes())?);
         }
-        fields.push(Header::new(header::HOST, self.host_header.as_bytes())?);
         let allow = match (allow_204, allow_206, allow_icap_trailers) {
             (true, true, true) => Some(b"204, 206, trailers".as_slice()),
             (true, true, false) => Some(b"204, 206".as_slice()),
@@ -450,19 +468,52 @@ impl ServiceEndpoint {
         Ok(fields)
     }
 
-    pub(super) fn connect_request(&self) -> ConnectRequest {
-        ConnectRequest::new_with_extensions(self.authority.clone(), self.extensions.fork())
-            .with_application_protocol(Protocol::ICAP)
-            .with_transport_protocol(TransportProtocol::Tcp)
+    pub(super) fn connect_request(&self) -> Result<ConnectRequest, ServiceEndpointRequestError> {
+        self.connect_request_with_extensions(self.extensions.fork())
     }
 
-    fn options_connect_request(&self) -> ConnectRequest {
-        ConnectRequest::new_with_extensions(self.authority.clone(), self.extensions.clone())
-            .with_application_protocol(Protocol::ICAP)
-            .with_transport_protocol(TransportProtocol::Tcp)
+    fn options_connect_request(&self) -> Result<ConnectRequest, ServiceEndpointRequestError> {
+        // OPTIONS stores a reusable template, so retain the configured
+        // extension root without allocating a per-attempt child yet. Endpoint
+        // mutation always forks and invalidates this template; public access
+        // to the template and OptionsService both return per-attempt forks.
+        self.connect_request_with_extensions(self.extensions.clone())
+    }
+
+    fn connect_request_with_extensions(
+        &self,
+        extensions: Extensions,
+    ) -> Result<ConnectRequest, ServiceEndpointRequestError> {
+        let authority = self
+            .authority()
+            .ok_or(ServiceEndpointRequestError::InvalidEndpoint)?;
+        let protocol = self
+            .protocol()
+            .cloned()
+            .ok_or(ServiceEndpointRequestError::InvalidEndpoint)?;
+        Ok(ConnectRequest::new_with_extensions(authority, extensions)
+            .with_application_protocol(protocol))
     }
 
     fn reset_options_request(&mut self) {
         self.options_request = Arc::new(OnceLock::new());
+    }
+}
+
+impl UriInputExt for ServiceEndpoint {
+    fn uri(&self) -> &Uri {
+        self.uri()
+    }
+}
+
+impl AuthorityInputExt for ServiceEndpoint {
+    fn authority(&self) -> Option<HostWithOptPort> {
+        self.authority().map(Into::into)
+    }
+}
+
+impl ProtocolInputExt for ServiceEndpoint {
+    fn protocol(&self) -> Option<&rama_net::Protocol> {
+        self.protocol()
     }
 }

@@ -11,6 +11,8 @@
 //! client/server I/O, or `http` for typed HTTP adaptation (`http` implies
 //! `std`). Live connections use compatible parsing by default; strict parser
 //! policies remain available through [`io::ConnectionOptions`].
+//! HTTP endpoints accept plaintext `icap` and direct-TLS `icaps` service URIs;
+//! the client connector must include TLS support to use `icaps`.
 //!
 //! See the complete HTTP(S) proxy and embedded ICAP server in Rama's
 //! [`http_icap_proxy` example][example].

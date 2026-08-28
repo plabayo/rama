@@ -1,5 +1,5 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use parking_lot::RwLock;
+use parking_lot::{Mutex as SyncMutex, RwLock};
 use rama::{
     Layer, Service,
     bytes::Bytes,
@@ -54,6 +54,7 @@ const FILE_MAGIC: &[u8; 8] = b"RMCAP\0\x01\0";
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 const BINARY_HEADER_VALUE_PREFIX: &str = "rama-capture-base64:";
+const MAX_CACHED_SEARCHES: usize = 16;
 
 mod model;
 
@@ -147,6 +148,7 @@ struct CapturedExchange {
     response_stored: AtomicU64,
     budget: Arc<CaptureBudget>,
     stored_bytes: AtomicU64,
+    search_revision: AtomicU64,
 }
 
 impl Drop for CapturedExchange {
@@ -159,6 +161,7 @@ impl Drop for CapturedExchange {
 struct EncryptedCaptureFile {
     file: File,
     len: u64,
+    needs_recovery: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -302,12 +305,67 @@ struct CaptureStoreInner {
     body_limit: u64,
     budget: Arc<CaptureBudget>,
     changes: watch::Sender<u64>,
+    search_caches: SyncMutex<SearchCaches>,
     ua_db: Arc<UserAgentDatabase>,
     #[cfg(test)]
     append_test_hook: Mutex<Option<Arc<AppendTestHook>>>,
+    #[cfg(test)]
+    record_reads: AtomicUsize,
     // Keep this last so exchange files and their cleanup guards drop before the
     // directory performs its synchronous best-effort shutdown cleanup.
     temp_dir: TempDir,
+}
+
+struct SearchCaches {
+    entries: VecDeque<SearchCache>,
+    max_results_per_query: usize,
+}
+
+struct SearchCache {
+    needle: String,
+    matches: BTreeMap<u64, (u64, bool)>,
+}
+
+impl SearchCaches {
+    fn new(max_results_per_query: usize) -> Self {
+        Self {
+            entries: VecDeque::new(),
+            max_results_per_query,
+        }
+    }
+
+    fn get(&self, needle: &str, exchange_id: u64, revision: u64) -> Option<bool> {
+        self.entries
+            .iter()
+            .find(|cache| cache.needle == needle)
+            .and_then(|cache| cache.matches.get(&exchange_id))
+            .and_then(|(cached_revision, matched)| {
+                (*cached_revision == revision).then_some(*matched)
+            })
+    }
+
+    fn insert(&mut self, needle: &str, exchange_id: u64, revision: u64, matched: bool) {
+        let index = self.entries.iter().position(|cache| cache.needle == needle);
+        let new_cache = || SearchCache {
+            needle: needle.to_owned(),
+            matches: BTreeMap::new(),
+        };
+        let mut cache = match index {
+            Some(index) => self.entries.remove(index).unwrap_or_else(new_cache),
+            None => SearchCache {
+                needle: needle.to_owned(),
+                matches: BTreeMap::new(),
+            },
+        };
+        cache.matches.insert(exchange_id, (revision, matched));
+        while cache.matches.len() > self.max_results_per_query {
+            cache.matches.pop_first();
+        }
+        self.entries.push_back(cache);
+        if self.entries.len() > MAX_CACHED_SEARCHES {
+            self.entries.pop_front();
+        }
+    }
 }
 
 struct CaptureBudget {
@@ -612,9 +670,12 @@ impl CaptureStore {
                 used: AtomicU64::new(0),
             }),
             changes,
+            search_caches: SyncMutex::new(SearchCaches::new(max_exchanges.max(1))),
             ua_db,
             #[cfg(test)]
             append_test_hook: Mutex::new(None),
+            #[cfg(test)]
+            record_reads: AtomicUsize::new(0),
             temp_dir,
         })))
     }
@@ -1173,6 +1234,7 @@ impl CaptureStore {
             file: Mutex::new(EncryptedCaptureFile {
                 file,
                 len: FILE_MAGIC.len() as u64,
+                needs_recovery: false,
             }),
             path,
             metadata_records: RwLock::new(Vec::new()),
@@ -1185,6 +1247,7 @@ impl CaptureStore {
             response_stored: AtomicU64::new(0),
             budget: self.0.budget.clone(),
             stored_bytes: AtomicU64::new(0),
+            search_revision: AtomicU64::new(0),
         });
         initial_budget.commit(&entry);
         let request_head = self
@@ -1338,26 +1401,33 @@ impl CaptureStore {
         let mut capture_file = entry.file.lock().await;
         let committed_len = capture_file.len;
 
-        // A canceled Tokio file write may finish after its future is dropped.
-        // Complete any such write, discard every byte beyond the published
-        // offset, and restore the cursor before starting the next record.
-        let previous_flush = capture_file.file.flush().await;
-        capture_file
-            .file
-            .set_len(committed_len)
-            .await
-            .context("truncate uncommitted MITM capture tail")?;
-        capture_file
-            .file
-            .seek(std::io::SeekFrom::Start(committed_len))
-            .await
-            .context("restore MITM capture write cursor")?;
-        previous_flush.context("complete previous encrypted capture write")?;
+        if capture_file.needs_recovery {
+            // A canceled Tokio file write may finish after its future is
+            // dropped. Recover only after such an interrupted append; normal
+            // frames can start at the already-published cursor.
+            capture_file
+                .file
+                .flush()
+                .await
+                .context("complete interrupted encrypted capture write")?;
+            capture_file
+                .file
+                .set_len(committed_len)
+                .await
+                .context("truncate uncommitted MITM capture tail")?;
+            capture_file
+                .file
+                .seek(std::io::SeekFrom::Start(committed_len))
+                .await
+                .context("restore MITM capture write cursor")?;
+            capture_file.needs_recovery = false;
+        }
 
         let location = RecordLocation {
             offset: committed_len,
             len: framed.len() as u64,
         };
+        capture_file.needs_recovery = true;
         if let Err(error) = capture_file.file.write_all(&framed).await {
             rollback_capture_file(&mut capture_file, committed_len).await;
             return Err(error).context("append encrypted MITM capture record");
@@ -1374,6 +1444,7 @@ impl CaptureStore {
         capture_file.len = committed_len
             .checked_add(location.len)
             .context("encrypted MITM capture length overflow")?;
+        capture_file.needs_recovery = false;
         match record {
             StoredRecord::RequestBody { .. } => entry.request_body_records.write().push(location),
             StoredRecord::ResponseBody { .. } => {
@@ -1385,6 +1456,7 @@ impl CaptureStore {
             _ => entry.metadata_records.write().push(location),
         }
         budget.commit(entry);
+        entry.search_revision.fetch_add(1, Ordering::Release);
         Ok(true)
     }
 
@@ -1978,13 +2050,12 @@ impl CaptureStore {
                     if !filter.matches_dimensions(&summary) {
                         continue;
                     }
-                    if !filter.search_matches_summary(&summary) {
-                        let Ok(records) = self.read_records(&exchange).await else {
-                            continue;
-                        };
-                        if !records_match_search(&records, &filter.search) {
-                            continue;
-                        }
+                    if !filter.search_matches_summary(&summary)
+                        && !self
+                            .exchange_matches_search(&exchange, &filter.search)
+                            .await
+                    {
+                        continue;
                     }
                     matching_connections.insert(summary.connection_id);
                     if !selected_connections.is_empty()
@@ -2070,6 +2141,33 @@ impl CaptureStore {
             bytes_in,
             bytes_out,
         }
+    }
+
+    async fn exchange_matches_search(&self, exchange: &CapturedExchange, needle: &str) -> bool {
+        let revision = exchange.search_revision.load(Ordering::Acquire);
+        if let Some(matched) =
+            self.0
+                .search_caches
+                .lock()
+                .get(needle, exchange.summary_template.id, revision)
+        {
+            return matched;
+        }
+
+        let Ok(records) = self.read_records(exchange).await else {
+            return false;
+        };
+        let matched = records_match_search(&records, needle);
+        let current_revision = exchange.search_revision.load(Ordering::Acquire);
+        if current_revision == revision {
+            self.0.search_caches.lock().insert(
+                needle,
+                exchange.summary_template.id,
+                revision,
+                matched,
+            );
+        }
+        matched
     }
 
     pub(super) async fn details(&self, id: u64) -> Result<CaptureDetails, BoxError> {
@@ -2252,6 +2350,8 @@ impl CaptureStore {
     }
 
     async fn read_records(&self, entry: &CapturedExchange) -> Result<Vec<StoredRecord>, BoxError> {
+        #[cfg(test)]
+        self.0.record_reads.fetch_add(1, Ordering::Relaxed);
         let (mut reader, mut remaining, _) = self.snapshot_reader(entry).await?;
         let mut records = Vec::new();
         while let Some(record) = read_record(

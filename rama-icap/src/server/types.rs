@@ -684,6 +684,7 @@ pub struct OptionsResponse<'a> {
     preview: Option<Preview>,
     allow_204: bool,
     allow_206: bool,
+    allow_icap_trailers: bool,
     allow_extensions: Option<&'a [u8]>,
     transfer_preview: Option<&'a [u8]>,
     transfer_ignore: Option<&'a [u8]>,
@@ -704,6 +705,7 @@ impl fmt::Debug for OptionsResponse<'_> {
             .field("preview", &self.preview)
             .field("allow_204", &self.allow_204)
             .field("allow_206", &self.allow_206)
+            .field("allow_icap_trailers", &self.allow_icap_trailers)
             .field(
                 "has_transfer_policy",
                 &(self.transfer_preview.is_some()
@@ -735,6 +737,7 @@ impl<'a> OptionsResponse<'a> {
             preview: None,
             allow_204: false,
             allow_206: false,
+            allow_icap_trailers: false,
             allow_extensions: None,
             transfer_preview: None,
             transfer_ignore: None,
@@ -788,8 +791,8 @@ impl<'a> OptionsResponse<'a> {
     rama_utils::macros::generate_set_and_with! {
         /// Advertise support for the 206 Partial Content extension.
         ///
-        /// RFC negotiation requires the OPTIONS request to offer 206. Pass
-        /// `false` when the current request did not offer it.
+        /// RFC negotiation requires the OPTIONS request to offer 206. Prefer
+        /// [`Self::build_for`] to apply that negotiation automatically.
         pub const fn allow_206(mut self, allow: bool) -> Self {
             self.allow_206 = allow;
             self
@@ -797,11 +800,22 @@ impl<'a> OptionsResponse<'a> {
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Advertise support for the ICAP trailers extension.
+        ///
+        /// RFC negotiation requires the OPTIONS request to offer `trailers`.
+        /// Prefer [`Self::build_for`] when responding to an incoming request;
+        /// it applies that negotiation automatically.
+        pub const fn allow_icap_trailers(mut self, allow: bool) -> Self {
+            self.allow_icap_trailers = allow;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Set additional comma-separated `Allow` feature tokens.
         ///
-        /// For example, `trailers` advertises the ICAP trailers extension.
-        /// The managed `204` and `206` tokens are rejected; use their
-        /// dedicated setters so negotiation cannot be bypassed.
+        /// The managed `204`, `206`, and `trailers` tokens are rejected; use
+        /// their dedicated setters so negotiation cannot be bypassed.
         pub fn allow_extensions(
             mut self,
             extensions: &'a (impl AsRef<[u8]> + ?Sized),
@@ -896,6 +910,23 @@ impl<'a> OptionsResponse<'a> {
         }
     }
 
+    /// Build a response when `request` is an OPTIONS request.
+    ///
+    /// Extension features that require bilateral support are advertised only
+    /// when both this builder and the request enable them. `Allow: 204`
+    /// declares a server capability and does not require a matching OPTIONS
+    /// request offer. A non-OPTIONS request returns `None` so a service can
+    /// continue with its ordinary adaptation logic.
+    pub fn build_for(self, request: &Request) -> Result<Option<OutgoingResponse>, BuildError> {
+        if request.method() != MethodKind::Options {
+            return Ok(None);
+        }
+        let mut response = self;
+        response.allow_206 &= request.allows_206();
+        response.allow_icap_trailers &= request.allows_icap_trailers();
+        response.build().map(Some)
+    }
+
     /// Build the complete OPTIONS response.
     pub fn build(self) -> Result<OutgoingResponse, BuildError> {
         let allow_extensions = sorted_token_list(self.allow_extensions)?;
@@ -912,7 +943,9 @@ impl<'a> OptionsResponse<'a> {
             .count();
         if self.opt_body_type.is_some_and(|value| !is_token(value))
             || allow_extensions.iter().any(|token| {
-                token.eq_ignore_ascii_case(b"204") || token.eq_ignore_ascii_case(b"206")
+                token.eq_ignore_ascii_case(b"204")
+                    || token.eq_ignore_ascii_case(b"206")
+                    || token.eq_ignore_ascii_case(b"trailers")
             })
             || (self.transfer_preview.is_some() && self.preview.is_none())
             || (has_transfer_policy && wildcard_count != 1)
@@ -926,6 +959,7 @@ impl<'a> OptionsResponse<'a> {
         for feature in [
             self.allow_204.then_some(b"204".as_slice()),
             self.allow_206.then_some(b"206".as_slice()),
+            self.allow_icap_trailers.then_some(b"trailers".as_slice()),
         ]
         .into_iter()
         .flatten()
@@ -1147,7 +1181,10 @@ impl From<Response> for OutgoingResponse {
 
 #[cfg(test)]
 mod tests {
-    use crate::codec::HeaderSlot;
+    use crate::{
+        codec::{HeaderSlot, RequestLine},
+        proto::Method,
+    };
 
     use super::*;
 
@@ -1162,7 +1199,7 @@ mod tests {
             .with_preview(Preview::new(1024))
             .with_allow_204(true)
             .with_allow_206(true)
-            .with_allow_extensions("trailers")
+            .with_allow_icap_trailers(true)
             .with_transfer_preview_all(true)
             .with_options_ttl(3600)
             .with_max_connections(64)
@@ -1246,7 +1283,7 @@ mod tests {
             .with_opt_body("not a token", "body")
             .build()
             .unwrap_err();
-        for extensions in ["204", "trailers, 206"] {
+        for extensions in ["204", "206", "trailers"] {
             OptionsResponse::new("\"rama-test\"", "RESPMOD")
                 .with_allow_extensions(extensions)
                 .build()
@@ -1262,14 +1299,87 @@ mod tests {
     fn options_response_canonicalizes_allow_extension_tokens() {
         let response = OptionsResponse::new("\"rama-test\"", "RESPMOD")
             .with_allow_204(true)
-            .with_allow_extensions("trailers, X-TRACE, TRAILERS")
+            .with_allow_icap_trailers(true)
+            .with_allow_extensions("X-TRACE, x-trace")
             .build()
             .unwrap();
         let mut slots = [HeaderSlot::EMPTY; 8];
         let head = response.response().parse_head(&mut slots).unwrap();
         assert_eq!(
             head.header(header::ALLOW).unwrap().as_bytes(),
-            Some(b"204, TRAILERS, X-TRACE".as_slice())
+            Some(b"204, trailers, X-TRACE".as_slice())
+        );
+    }
+
+    #[test]
+    fn options_response_intersects_negotiated_features() {
+        let request = Request::new(
+            RequestLine::new(Method::Options, "icap://icap.test/echo").unwrap(),
+            &[
+                Header::new(header::HOST, b"icap.test").unwrap(),
+                Header::new(header::ALLOW, b"204, 206, trailers").unwrap(),
+            ],
+            Some(EncapsulatedParts::null()),
+        )
+        .unwrap();
+        let response = OptionsResponse::new("\"rama-test\"", "RESPMOD")
+            .with_allow_204(true)
+            .with_allow_206(true)
+            .with_allow_icap_trailers(true)
+            .build_for(&request)
+            .unwrap()
+            .unwrap();
+        let mut slots = [HeaderSlot::EMPTY; 8];
+        let head = response.response().parse_head(&mut slots).unwrap();
+        assert_eq!(
+            head.header(header::ALLOW).unwrap().as_bytes(),
+            Some(b"204, 206, trailers".as_slice())
+        );
+    }
+
+    #[test]
+    fn options_response_retains_204_and_omits_unoffered_extensions() {
+        let request = Request::new(
+            RequestLine::new(Method::Options, "icap://icap.test/echo").unwrap(),
+            &[Header::new(header::HOST, b"icap.test").unwrap()],
+            Some(EncapsulatedParts::null()),
+        )
+        .unwrap();
+        let response = OptionsResponse::new("\"rama-test\"", "RESPMOD")
+            .with_allow_204(true)
+            .with_allow_206(true)
+            .with_allow_icap_trailers(true)
+            .build_for(&request)
+            .unwrap()
+            .unwrap();
+        let mut slots = [HeaderSlot::EMPTY; 8];
+        let head = response.response().parse_head(&mut slots).unwrap();
+        assert_eq!(
+            head.header(header::ALLOW).unwrap().as_bytes(),
+            Some(b"204".as_slice())
+        );
+    }
+
+    #[test]
+    fn options_response_ignores_non_options_requests() {
+        let request = Request::new(
+            RequestLine::new(Method::Reqmod, "icap://icap.test/echo").unwrap(),
+            &[Header::new(header::HOST, b"icap.test").unwrap()],
+            Some(
+                EncapsulatedParts::new(
+                    Some(Bytes::from_static(b"GET / HTTP/1.1\r\n\r\n")),
+                    None,
+                    crate::proto::EncapsulatedKind::NullBody,
+                )
+                .unwrap(),
+            ),
+        )
+        .unwrap();
+        assert!(
+            OptionsResponse::new("\"rama-test\"", "RESPMOD")
+                .build_for(&request)
+                .unwrap()
+                .is_none()
         );
     }
 }

@@ -1,0 +1,187 @@
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _},
+    extensions::ExtensionsRef,
+};
+
+use crate::{
+    AuthorityInputExt, Protocol, ProtocolInputExt,
+    address::{HostWithOptPort, ProxyAddress},
+    client::{ConnectorTarget, ProxyRoute},
+};
+
+use super::{ConnID, ReqToConnID};
+
+/// Basic connection-pool identifier derived from connection input.
+///
+/// Inputs share a pool identity only when their application protocol, logical
+/// authority, selected proxy and physical connector target all match.
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+pub struct BasicConnIdentifier;
+
+impl BasicConnIdentifier {
+    /// Create a basic connection-pool identifier.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+/// Connection identity produced by [`BasicConnIdentifier`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BasicConnId {
+    pub protocol: Option<Protocol>,
+    pub authority: HostWithOptPort,
+    pub proxy_address: Option<ProxyAddress>,
+    pub connector_target: Option<ConnectorTarget>,
+}
+
+impl ConnID for BasicConnId {
+    #[cfg(feature = "opentelemetry")]
+    fn attributes(&self) -> impl Iterator<Item = rama_core::telemetry::opentelemetry::KeyValue> {
+        self.protocol
+            .as_ref()
+            .map(|protocol| {
+                rama_core::telemetry::opentelemetry::KeyValue::new("protocol", protocol.to_string())
+            })
+            .into_iter()
+            .chain([rama_core::telemetry::opentelemetry::KeyValue::new(
+                "authority",
+                self.authority.to_string(),
+            )])
+    }
+}
+
+impl<Input> ReqToConnID<Input> for BasicConnIdentifier
+where
+    Input: AuthorityInputExt + ExtensionsRef + ProtocolInputExt,
+{
+    type ID = BasicConnId;
+
+    fn id(&self, input: &Input) -> Result<Self::ID, BoxError> {
+        let authority = input
+            .authority()
+            .ok_or_else(|| BoxError::from_static_str("no authority found in connection input"))?;
+
+        Ok(BasicConnId {
+            protocol: input.protocol().cloned(),
+            authority,
+            proxy_address: input
+                .extensions()
+                .get_ref::<ProxyRoute>()
+                .and_then(ProxyRoute::proxy_address)
+                .cloned(),
+            connector_target: input.extensions().get_ref().cloned(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::convert::Infallible;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use rama_core::{Service as _, ServiceInput, service::service_fn};
+
+    use super::*;
+    use crate::{
+        address::HostWithPort,
+        client::{ConnectRequest, EstablishedClientConnection, ProxyRoute},
+    };
+
+    #[test]
+    fn separates_application_protocols() {
+        let authority = "icap.test:11344".parse::<HostWithPort>().unwrap();
+        let plain =
+            ConnectRequest::new(authority.clone()).with_application_protocol(Protocol::ICAP);
+        let secure = ConnectRequest::new(authority).with_application_protocol(Protocol::ICAPS);
+
+        assert_ne!(
+            BasicConnIdentifier::new().id(&plain).unwrap(),
+            BasicConnIdentifier::new().id(&secure).unwrap(),
+        );
+    }
+
+    #[test]
+    fn separates_logical_and_physical_targets() {
+        let authority = "icap.test:11344".parse::<HostWithPort>().unwrap();
+        let first = ConnectRequest::new(authority.clone());
+        first.extensions.insert(ConnectorTarget(
+            "127.0.0.1:11344".parse::<HostWithPort>().unwrap(),
+        ));
+        let second = ConnectRequest::new(authority);
+        second.extensions.insert(ConnectorTarget(
+            "127.0.0.1:11345".parse::<HostWithPort>().unwrap(),
+        ));
+
+        assert_ne!(
+            BasicConnIdentifier::new().id(&first).unwrap(),
+            BasicConnIdentifier::new().id(&second).unwrap(),
+        );
+    }
+
+    #[test]
+    fn uses_only_selected_proxy_route() {
+        let request = ConnectRequest::new(HostWithPort::example_domain_https());
+        request.extensions.insert(ProxyRoute::Direct);
+        assert_eq!(
+            BasicConnIdentifier::new()
+                .id(&request)
+                .unwrap()
+                .proxy_address,
+            None,
+        );
+
+        let proxy_address = "http://proxy.example:8080".parse::<ProxyAddress>().unwrap();
+        request
+            .extensions
+            .insert(ProxyRoute::Proxy(proxy_address.clone()));
+        assert_eq!(
+            BasicConnIdentifier::new()
+                .id(&request)
+                .unwrap()
+                .proxy_address,
+            Some(proxy_address),
+        );
+    }
+
+    #[tokio::test]
+    async fn pool_reuses_each_protocol_without_crossing_protocols() {
+        let dials = Arc::new(AtomicUsize::new(0));
+        let inner = service_fn({
+            let dials = Arc::clone(&dials);
+            move |input| {
+                dials.fetch_add(1, Ordering::Relaxed);
+                async move {
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        input,
+                        conn: ServiceInput::new(()),
+                    })
+                }
+            }
+        });
+        let pool = super::super::LruDropPool::try_new(1, 2)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let connector = super::super::PooledConnector::new(inner, pool, BasicConnIdentifier::new());
+        let authority = "icap.test:11344".parse::<HostWithPort>().unwrap();
+
+        for protocol in [
+            Protocol::ICAP,
+            Protocol::ICAP,
+            Protocol::ICAPS,
+            Protocol::ICAPS,
+        ] {
+            let established = connector
+                .serve(ConnectRequest::new(authority.clone()).with_application_protocol(protocol))
+                .await
+                .unwrap();
+            drop(established.conn);
+        }
+
+        assert_eq!(dials.load(Ordering::Relaxed), 2);
+    }
+}

@@ -5,7 +5,7 @@ use core::fmt;
 use rama_core::bytes::{Bytes, BytesMut};
 
 use crate::{
-    byte_sets::{comma_separated_items, is_token_byte},
+    byte_sets::{comma_separated_items, is_token_byte, trim_ows},
     codec::{
         self, DEFAULT_MAX_HEAD_BYTES, DEFAULT_MAX_HEADERS, EncodeError, HeadParserConfig, Header,
         HeaderSlot, HeaderValue, ParseError, ParseStatus, RequestHead, RequestLine,
@@ -291,7 +291,7 @@ impl EncapsulatedParts {
         if request_header
             .iter()
             .chain(response_header.iter())
-            .any(|head| !head.ends_with(b"\r\n\r\n"))
+            .any(|head| !is_exact_http_head(head))
         {
             return Err(BuildError::InvalidEncapsulated);
         }
@@ -428,6 +428,14 @@ impl EncapsulatedParts {
         }
         Self::new(request_header, response_header, body.kind())
     }
+}
+
+fn is_exact_http_head(head: &[u8]) -> bool {
+    const TERMINATOR: &[u8; 4] = b"\r\n\r\n";
+    head.ends_with(TERMINATOR)
+        && !head[..head.len() - TERMINATOR.len()]
+            .windows(TERMINATOR.len())
+            .any(|window| window == TERMINATOR)
 }
 
 /// An owned, validated ICAP request head and encapsulated prefix.
@@ -853,6 +861,15 @@ impl Response {
         self.status
     }
 
+    /// Return the service generation tag, including its wire quoting.
+    ///
+    /// Compatible parsing can accept repeated or folded fields. Those do not
+    /// have one contiguous value in the retained wire head and return `None`.
+    #[must_use]
+    pub fn service_tag(&self) -> Option<&[u8]> {
+        single_contiguous_header_value(&self.head.bytes, header::ISTAG)
+    }
+
     /// Return the encapsulated metadata, when present.
     #[must_use]
     pub const fn encapsulated(&self) -> Option<&EncapsulatedParts> {
@@ -1052,10 +1069,18 @@ fn request_head_len<'a>(
         .method()
         .as_str()
         .len()
-        .checked_add(line.uri_len())
+        .checked_add(line.uri_len()?)
         .and_then(|len| len.checked_add(line.version().as_str().len()))
         .and_then(|len| len.checked_add(REQUEST_LINE_OVERHEAD))
         .ok_or(BuildError::MessageTooLarge)?;
+    let len = match line.prepared_host_len()? {
+        Some(host_len) => len
+            .checked_add(header::HOST.len())
+            .and_then(|len| len.checked_add(host_len))
+            .and_then(|len| len.checked_add(HEADER_FIELD_OVERHEAD))
+            .ok_or(BuildError::MessageTooLarge)?,
+        None => len,
+    };
     head_len_with_headers(len, headers)
 }
 
@@ -1125,6 +1150,36 @@ fn has_header_token(headers: &[Header<'_>], name: &str, expected: &[u8]) -> bool
     })
 }
 
+fn single_contiguous_header_value<'a>(head: &'a [u8], name: &str) -> Option<&'a [u8]> {
+    let mut value = None;
+    let mut lines = head.split(|byte| *byte == b'\n');
+    lines.next()?;
+    let mut target_may_continue = false;
+    for line in lines {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if line.is_empty() {
+            break;
+        }
+        if line.first().is_some_and(u8::is_ascii_whitespace) {
+            if target_may_continue {
+                return None;
+            }
+            continue;
+        }
+        target_may_continue = false;
+        let separator = line.iter().position(|byte| *byte == b':')?;
+        if !line[..separator].eq_ignore_ascii_case(name.as_bytes()) {
+            continue;
+        }
+        if value.is_some() {
+            return None;
+        }
+        value = Some(trim_ows(&line[separator + 1..]));
+        target_may_continue = true;
+    }
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1169,6 +1224,16 @@ mod tests {
         assert_eq!(
             EncapsulatedParts::new(
                 Some(Bytes::from_static(b"GET / HTTP/1.1\r\n")),
+                None,
+                EncapsulatedKind::NullBody,
+            ),
+            Err(BuildError::InvalidEncapsulated)
+        );
+        assert_eq!(
+            EncapsulatedParts::new(
+                Some(Bytes::from_static(
+                    b"GET / HTTP/1.1\r\n\r\nentity bytes\r\n\r\n",
+                )),
                 None,
                 EncapsulatedKind::NullBody,
             ),
@@ -1269,6 +1334,7 @@ mod tests {
                 .headers()
                 .any(|field| field == Header::new("X-Note", b"one two").unwrap())
         );
+        assert_eq!(response.service_tag().unwrap(), b"\"rama\"");
     }
 
     #[test]

@@ -34,3 +34,20 @@ default and can target c-icap through a command-line service URI.
 Use [`codec`](https://docs.rs/rama-icap/latest/rama_icap/codec/) for borrowed
 wire syntax, the streaming `client` and `server` modules for standalone ICAP,
 and `http::layer::AdaptationLayer` to detour HTTP requests or responses.
+
+## Direct TLS
+
+`ServiceEndpoint` accepts both `icap://` and `icaps://` service URIs. The
+`icaps` convention selects direct TLS and defaults to port 11344; ICAP request
+targets are still encoded with the RFC-defined `icap` scheme. This is direct
+TLS from the start of the connection, not an in-band TLS upgrade.
+
+The connector supplied to the ICAP client must include a TLS connector, such
+as an auto-mode Rama Rustls or BoringSSL connector around the TCP/DNS
+transport. Auto mode leaves `icap` plaintext and negotiates TLS for `icaps`.
+Connection pools must include the application protocol as well as the logical
+authority in their identity so plaintext and TLS connections cannot mix.
+
+URI userinfo is preserved in the ICAP request target but omitted from the
+`Host` header. Because it is sent on every exchange, avoid embedding
+credentials in the service URI, especially for plaintext `icap` endpoints.

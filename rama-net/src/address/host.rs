@@ -14,6 +14,7 @@ use super::domain::{DomainLabelIter, DomainLabels, Label};
 use super::{Domain, UninterpretedHost, UninterpretedHostRef, parse_utils};
 use crate::address::ip::{
     IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,
+    IntoCanonicalIpAddr as _,
 };
 
 use rama_core::bytes::BytesMut;
@@ -142,6 +143,15 @@ impl Host {
     #[must_use]
     pub fn to_str(&self) -> crate::std::borrow::Cow<'_, str> {
         HostRef::from(self).to_str()
+    }
+
+    /// Returns `true` when this host has an empty textual representation.
+    ///
+    /// This checks the stored representation directly and never formats an IP
+    /// address or allocates a temporary [`String`].
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.view().is_empty()
     }
 
     /// Return the RFC 3986 canonical presentation of this host.
@@ -287,6 +297,20 @@ impl<'a> HostRef<'a> {
         }
     }
 
+    /// Returns `true` when this host has an empty textual representation.
+    ///
+    /// Typed domain names and IP addresses are never empty. An uninterpreted
+    /// host is empty only when it has no bytes and is not an IP-literal enclosed
+    /// by brackets. This method does not format or allocate.
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        match self {
+            Self::Name(domain) => domain.as_str().is_empty(),
+            Self::Address(_) => false,
+            Self::Uninterpreted(host) => !host.is_bracketed() && host.as_str().is_empty(),
+        }
+    }
+
     /// Returns the Unicode (display) form of this host. See
     /// [`Host::as_unicode`] for the full contract.
     #[cfg(feature = "idna")]
@@ -312,15 +336,16 @@ impl<'a> HostRef<'a> {
     /// or the `localhost` name also return `true`. Bracketed IPvFuture
     /// literals have no typed counterpart and are never loopback.
     ///
-    /// This is **not** browser-style normalization: alternate IPv4
+    /// IPv4-mapped IPv6 addresses are canonicalized before this check, so
+    /// `::ffff:127.0.0.1` is recognized as loopback. This is **not**
+    /// browser-style normalization: alternate IPv4
     /// spellings that parse as a [`Name`](Self::Name) (`0177.0.0.1`,
     /// `2130706433`, …) report as non-loopback — see the [`Host`] type
-    /// docs (SSRF awareness). IPv4-mapped IPv6 (`::ffff:127.0.0.1`)
-    /// follows std and is likewise not loopback.
+    /// docs (SSRF awareness).
     #[must_use]
     pub fn is_loopback(self) -> bool {
         match self {
-            Self::Address(ip) => ip.is_loopback(),
+            Self::Address(ip) => ip.into_canonical_ip_addr().is_loopback(),
             Self::Name(domain) => domain.is_loopback(),
             // Bridge pct-encoded / alternate bytes through their decoded
             // form, decoded once: a loopback IP literal, else the
@@ -331,7 +356,7 @@ impl<'a> HostRef<'a> {
                 let decoded = host.as_unicode();
                 decoded
                     .parse::<IpAddr>()
-                    .map(|ip| ip.is_loopback())
+                    .map(|ip| ip.into_canonical_ip_addr().is_loopback())
                     .unwrap_or_else(|_| super::domain::is_loopback_name(&decoded))
             }
         }
@@ -939,6 +964,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn empty_check_never_formats_the_host() {
+        let empty = Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
+            rama_core::bytes::Bytes::new(),
+            false,
+        ));
+        assert!(empty.is_empty());
+        assert!(empty.view().is_empty());
+
+        assert!(!Host::EXAMPLE_NAME.is_empty());
+        assert!(!Host::LOCALHOST_IPV6.is_empty());
+
+        let bracketed = Host::Uninterpreted(UninterpretedHost::from_validated_bytes(
+            rama_core::bytes::Bytes::new(),
+            true,
+        ));
+        assert!(!bracketed.is_empty());
+    }
+
+    #[test]
     fn canonicalize_normalizes_each_host_shape() {
         assert_eq!(
             Host::Name(Domain::from_static("EXAMPLE.Com"))
@@ -1126,9 +1170,10 @@ mod tests {
                 "{s} should not be loopback",
             );
         }
-        // IPv4-mapped IPv6 loopback follows std semantics: not loopback.
+        // Security-sensitive host classification treats mapped IPv4
+        // addresses like their canonical IPv4 counterpart.
         let mapped = Host::Address(IpAddr::V6("::ffff:127.0.0.1".parse().unwrap()));
-        assert!(!mapped.is_loopback());
+        assert!(mapped.is_loopback());
     }
 
     #[test]
@@ -1417,7 +1462,7 @@ mod tests {
         // Mismatched bytes inside brackets → no match.
         assert!(h != "[v2.fe80::a]");
         // Edge: empty / too-short str inputs.
-        assert!(h != "");
+        assert!(!PartialEq::eq(&h, ""));
         assert!(h != "[]");
     }
 

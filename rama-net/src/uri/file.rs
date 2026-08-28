@@ -127,7 +127,7 @@ fn is_local_authority(authority: AuthorityRef<'_>) -> bool {
     }
     let host = authority.host();
     // host equality is canonical, so `LOCALHOST` compares equal too
-    host.to_str().is_empty() || host == Host::Name(Domain::tld_localhost()).view()
+    host.is_empty() || host == Host::Name(Domain::tld_localhost()).view()
 }
 
 /// On windows `file:///C:/x` parses with path `/C:/x`; the leading slash

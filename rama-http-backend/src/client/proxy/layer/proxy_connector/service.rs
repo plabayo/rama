@@ -65,8 +65,8 @@ impl<S> HttpProxyConnector<S> {
     generate_set_and_with! {
         /// Set whether the inner connector supports TLS to an HTTPS proxy.
         ///
-        /// When disabled, selecting an HTTPS proxy produces a retryable
-        /// route-specific protocol error instead of sending plaintext to it.
+        /// When disabled, selecting an HTTPS proxy produces a route-specific
+        /// protocol error instead of sending plaintext to it.
         pub fn tls_proxy_support(mut self, supported: bool) -> Self {
             self.tls_proxy_supported = supported;
             self
@@ -207,6 +207,7 @@ where
             );
             input.extensions().insert(TlsTunnel {
                 server_identity: Some(proxy_info.address.host.clone()),
+                application_protocol: Some(Protocol::HTTPS),
             });
         }
 
@@ -224,15 +225,12 @@ where
             "http proxy connector: connected to proxy",
         );
 
-        if !app_protocol
+        if app_protocol
             .as_ref()
-            .map(|p| p.is_secure())
-            // TODO: re-evaluate this fallback at some point... seems pretty flawed to me
-            .unwrap_or_else(|| authority.port.as_u16() == Some(Protocol::HTTPS_DEFAULT_PORT))
+            .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure())
         {
-            // unless the scheme is not secure, in such a case no handshake is required...
-            // we do however need to add authorization headers if credentials are present
-            // => for this the user has to use another middleware as we do not have access to that here
+            // Protocols supporting plaintext forward-proxy form can reuse the
+            // proxy stream. Other byte-stream protocols require a tunnel.
             return Ok(EstablishedClientConnection {
                 input,
                 conn: MaybeHttpProxiedConnection::proxied(conn),
@@ -524,7 +522,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unsupported_proxy_routes_fall_back_to_direct() {
+    async fn unsupported_proxy_routes_do_not_fall_back_to_direct() {
         for protocol in [Protocol::SOCKS5, Protocol::HTTPS] {
             let inner = MockConnectorService::new(|| {
                 service_fn(async |_socket: MockSocket| Ok::<_, Infallible>(()))
@@ -541,13 +539,69 @@ mod tests {
                 ProxyRoute::Direct,
             ]));
 
-            let established = Box::pin(connector.connect(input)).await.unwrap();
-            assert_eq!(
-                established.input.extensions.get_ref::<ProxyRoute>(),
-                Some(&ProxyRoute::Direct),
-                "protocol: {protocol}",
-            );
+            let error = Box::pin(connector.connect(input)).await.unwrap_err();
+            assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+            assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
         }
+    }
+
+    #[tokio::test]
+    async fn plaintext_non_http_protocol_uses_connect() {
+        for protocol in [Protocol::ICAP, Protocol::from_static("custom")] {
+            let http_server = HttpServer::auto(Executor::default()).service(service_fn(
+                async move |req: Request| {
+                    assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                    Ok::<_, Infallible>(Response::new(Body::empty()))
+                },
+            ));
+            let proxy_connector = HttpProxyConnectorLayer::required()
+                .into_layer(MockConnectorService::new(move || http_server.clone()));
+            let request = ConnectRequest::new(HostWithPort::example_domain_http())
+                .with_application_protocol(protocol.clone());
+            request.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
+                address: HostWithPort::example_domain_http(),
+                credential: None,
+                protocol: Some(Protocol::HTTP),
+            }));
+
+            let established = proxy_connector
+                .serve(request)
+                .await
+                .expect("plaintext non-HTTP application uses CONNECT");
+            assert!(matches!(
+                established.conn.inner,
+                Connection::UpgradedProxy { .. }
+            ));
+        }
+    }
+
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn https_proxy_tunnel_declares_http_as_its_tls_protocol() {
+        let http_server =
+            HttpServer::auto(Executor::default()).service(service_fn(async |req: Request| {
+                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }));
+        let transport = MockConnectorService::new(move || http_server.clone());
+        let transport = service_fn(move |input: ConnectRequest| {
+            let transport = transport.clone();
+            async move {
+                let tunnel = input.extensions.get_ref::<TlsTunnel>().unwrap();
+                assert_eq!(tunnel.application_protocol.as_ref(), Some(&Protocol::HTTPS),);
+                transport.serve(input).await
+            }
+        });
+        let connector = HttpProxyConnectorLayer::required().into_layer(transport);
+        let input = ConnectRequest::new(HostWithPort::example_domain_https())
+            .with_application_protocol(Protocol::ICAPS);
+        input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
+            address: HostWithPort::example_domain_https(),
+            credential: None,
+            protocol: Some(Protocol::HTTPS),
+        }));
+
+        connector.serve(input).await.unwrap();
     }
 
     #[tokio::test]

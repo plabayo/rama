@@ -31,4 +31,10 @@
 mod reason_phrase;
 pub use reason_phrase::{InvalidReasonPhrase, ReasonPhrase};
 
+mod connection_close;
+pub use connection_close::ConnectionClose;
+
+mod request_target_form;
+pub use request_target_form::RequestTargetForm;
+
 pub mod informational;

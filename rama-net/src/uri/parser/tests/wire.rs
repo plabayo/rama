@@ -1,7 +1,11 @@
 //! HTTP wire-form writers on [`Uri`].
 
 use super::parse_graceful;
-use crate::uri::{PathRef, QueryRef, Uri, WireError};
+use crate::{
+    Protocol,
+    address::OptPort,
+    uri::{PathRef, QueryRef, Uri, WireError},
+};
 
 use rama_core::bytes::BytesMut;
 
@@ -19,6 +23,16 @@ fn write_absolute(uri: &Uri) -> Result<String, WireError> {
     let mut b = buf();
     uri.write_http_absolute_form(&mut b)?;
     Ok(String::from_utf8(b.to_vec()).unwrap())
+}
+
+fn write_absolute_with_overrides(
+    uri: &Uri,
+    scheme: &Protocol,
+    port: OptPort,
+) -> Result<String, WireError> {
+    let mut output = String::new();
+    uri.write_absolute_form_with_overrides(scheme, port, &mut output)?;
+    Ok(output)
 }
 
 fn write_authority(uri: &Uri) -> Result<String, WireError> {
@@ -148,6 +162,59 @@ fn absolute_form_encodes_owned_raw_query_component_text() {
     assert_eq!(
         write_absolute(&uri).unwrap(),
         "https://example.com/p?a=1%0D%0AInjected:%20yes%20%23frag",
+    );
+}
+
+#[test]
+fn absolute_form_overrides_scheme_and_port_without_rebuilding_uri() {
+    let uri: Uri = parse_graceful("icaps://user:pw@example.com/service?q=1#fragment").unwrap();
+
+    assert_eq!(
+        write_absolute_with_overrides(
+            &uri,
+            &Protocol::ICAP,
+            OptPort::Set(Protocol::ICAPS_DEFAULT_PORT),
+        )
+        .unwrap(),
+        "icap://user:pw@example.com:11344/service?q=1",
+    );
+}
+
+#[test]
+fn absolute_form_overrides_preserve_empty_paths_and_port_markers() {
+    let scheme = Protocol::from_static("bar");
+    for (input, port, expected) in [
+        ("foo:", OptPort::Unset, "bar:"),
+        ("foo:?q", OptPort::Unset, "bar:?q"),
+        ("foo://example.com", OptPort::Unset, "bar://example.com"),
+        ("foo://example.com", OptPort::Empty, "bar://example.com:"),
+    ] {
+        let uri: Uri = parse_graceful(input).unwrap();
+        assert_eq!(
+            write_absolute_with_overrides(&uri, &scheme, port).unwrap(),
+            expected,
+        );
+    }
+}
+
+#[test]
+fn absolute_form_override_reports_writer_failure() {
+    struct RejectOutput;
+
+    impl core::fmt::Write for RejectOutput {
+        fn write_str(&mut self, _value: &str) -> core::fmt::Result {
+            Err(core::fmt::Error)
+        }
+    }
+
+    let uri: Uri = parse_graceful("icaps://example.com/service").unwrap();
+    assert_eq!(
+        uri.write_absolute_form_with_overrides(
+            &Protocol::ICAP,
+            OptPort::Set(Protocol::ICAPS_DEFAULT_PORT),
+            &mut RejectOutput,
+        ),
+        Err(WireError::Output),
     );
 }
 

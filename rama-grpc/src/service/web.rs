@@ -1,9 +1,14 @@
 //! Integration between gRPC services and Rama's web [`Router`].
 
 use rama_core::{Layer, Service};
-use rama_http::{Request, service::web::Router};
+use rama_http::{
+    Body, Request,
+    header::CONTENT_TYPE,
+    matcher::{HttpMatcher, VersionMatcher},
+    service::web::Router,
+};
 
-use crate::server::NamedService;
+use crate::{metadata::GRPC_CONTENT_TYPE, server::NamedService};
 
 /// Sealed extension methods for registering generated gRPC services on a web [`Router`].
 ///
@@ -14,8 +19,10 @@ use crate::server::NamedService;
 pub trait RouterExt<State, L, O, E>: private::Sealed {
     /// Register a generated gRPC service and return the updated router.
     ///
-    /// gRPC requests use `POST /<service-name>/<method>`. Unlike mounting a nested service,
-    /// this route does not strip the service name from the URI before forwarding the request.
+    /// Native gRPC requests use HTTP/2, `Content-Type: application/grpc`, and
+    /// `POST /<service-name>/<method>`. Unlike mounting a nested service, this
+    /// route does not strip the service name from the URI before forwarding
+    /// the request.
     #[must_use]
     fn with_grpc_service<S>(self, service: S) -> Self
     where
@@ -24,8 +31,10 @@ pub trait RouterExt<State, L, O, E>: private::Sealed {
 
     /// Register a generated gRPC service on this router.
     ///
-    /// gRPC requests use `POST /<service-name>/<method>`. Unlike mounting a nested service,
-    /// this route does not strip the service name from the URI before forwarding the request.
+    /// Native gRPC requests use HTTP/2, `Content-Type: application/grpc`, and
+    /// `POST /<service-name>/<method>`. Unlike mounting a nested service, this
+    /// route does not strip the service name from the URI before forwarding
+    /// the request.
     fn set_grpc_service<S>(&mut self, service: S) -> &mut Self
     where
         S: Service<Request> + NamedService,
@@ -42,7 +51,7 @@ where
         S: Service<Request> + NamedService,
         L: Layer<S, Service: Service<Request, Output = O, Error = E>>,
     {
-        self.with_post::<S, (S,)>(grpc_service_route::<S>(), service)
+        self.with_match_route::<S, (S,)>(grpc_service_route::<S>(), grpc_service_matcher(), service)
     }
 
     #[inline]
@@ -51,13 +60,20 @@ where
         S: Service<Request> + NamedService,
         L: Layer<S, Service: Service<Request, Output = O, Error = E>>,
     {
-        self.set_post::<S, (S,)>(grpc_service_route::<S>(), service)
+        self.set_match_route::<S, (S,)>(grpc_service_route::<S>(), grpc_service_matcher(), service)
     }
 }
 
 #[inline]
 fn grpc_service_route<S: NamedService>() -> String {
     format!("/{}/{{method}}", S::NAME)
+}
+
+#[inline]
+fn grpc_service_matcher() -> HttpMatcher<Body> {
+    HttpMatcher::method_post()
+        .and_version(VersionMatcher::HTTP_2)
+        .and_header(CONTENT_TYPE, GRPC_CONTENT_TYPE)
 }
 
 mod private {
@@ -74,7 +90,7 @@ mod tests {
     use std::convert::Infallible;
 
     use rama_http::{
-        Body, Method, Response, StatusCode, layer::trace::TraceLayer,
+        Body, Method, Response, StatusCode, Version, layer::trace::TraceLayer,
         service::web::router::RouterError,
     };
 
@@ -109,6 +125,8 @@ mod tests {
         Request::builder()
             .method(method)
             .uri(path)
+            .version(Version::HTTP_2)
+            .header(CONTENT_TYPE, GRPC_CONTENT_TYPE)
             .body(Body::empty())
             .expect("valid request")
     }
@@ -145,6 +163,36 @@ mod tests {
             .serve(request(Method::POST, "/example.v1.OtherService/Call"))
             .await;
         assert!(matches!(unknown_service, Err(RouterError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn rejects_non_native_grpc_transport_and_content_type() {
+        let service = Router::new().with_grpc_service(TestGrpcService);
+
+        let http_1 = service
+            .serve(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/example.v1.TestService/Call")
+                    .version(Version::HTTP_11)
+                    .header(CONTENT_TYPE, GRPC_CONTENT_TYPE)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert!(matches!(http_1, Err(RouterError::MethodNotAllowed(_))));
+
+        for content_type in [None, Some("text/plain"), Some("application/grpc+proto")] {
+            let mut request = Request::builder()
+                .method(Method::POST)
+                .uri("/example.v1.TestService/Call")
+                .version(Version::HTTP_2);
+            if let Some(content_type) = content_type {
+                request = request.header(CONTENT_TYPE, content_type);
+            }
+            let response = service.serve(request.body(Body::empty()).unwrap()).await;
+            assert!(matches!(response, Err(RouterError::MethodNotAllowed(_))));
+        }
     }
 
     #[tokio::test]

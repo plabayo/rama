@@ -8,6 +8,7 @@ use rama_core::{
     io::Io,
 };
 use rama_net::{
+    Protocol,
     client::{ConnectRequest, ConnectorService, EstablishedClientConnection},
     uri::{ParseError as UriParseError, Uri},
 };
@@ -118,6 +119,11 @@ impl OptionsRequest {
     /// The request starts in a fresh cache partition. Clone this request or
     /// set a stable [`OptionsCachePartition`] when independently constructed
     /// requests should share cached state.
+    ///
+    /// This constructor derives the cache identity from the encoded request
+    /// target. A transport-specific configuration scheme such as `icaps` is
+    /// therefore unavailable here after its request target is normalized to
+    /// `icap`; high-level ICAP endpoints retain that configured identity.
     pub fn new(connect: ConnectRequest, request: Request) -> Result<Self, OptionsRequestError> {
         Self::new_in_partition(connect, request, OptionsCachePartition::new())
     }
@@ -131,6 +137,18 @@ impl OptionsRequest {
             return Err(OptionsRequestError::Method);
         }
         let service_uri = service_uri_from_request(&request)?;
+        Self::new_for_service_uri_in_partition(service_uri, connect, request, partition)
+    }
+
+    pub(crate) fn new_for_service_uri_in_partition(
+        service_uri: Uri,
+        connect: ConnectRequest,
+        request: Request,
+        partition: OptionsCachePartition,
+    ) -> Result<Self, OptionsRequestError> {
+        if request.method() != MethodKind::Options {
+            return Err(OptionsRequestError::Method);
+        }
         let allow_204_offered = request.allows_204();
         let allow_206_offered = request.allows_206();
         let allow_icap_trailers_offered = request.allows_icap_trailers();
@@ -162,13 +180,15 @@ impl OptionsRequest {
         &self.service_uri
     }
 
-    /// Return the transport connection request template.
+    /// Return an isolated transport connection request derived from the
+    /// reusable template.
     ///
-    /// A discovery provider must fork this template for each connection
-    /// attempt. [`OptionsService`] does so automatically.
+    /// Connection-local extension mutations cannot affect this OPTIONS
+    /// request or sibling attempts. [`OptionsService`] performs the same fork
+    /// internally before each connection.
     #[must_use]
-    pub const fn connect_request(&self) -> &ConnectRequest {
-        &self.connect
+    pub fn connect_request(&self) -> ConnectRequest {
+        self.connect.fork()
     }
 
     /// Return the encoded ICAP OPTIONS request.
@@ -191,6 +211,10 @@ impl OptionsRequest {
 
     pub(super) const fn cache_partition(&self) -> &OptionsCachePartition {
         &self.partition
+    }
+
+    pub(super) fn application_protocol(&self) -> Option<&Protocol> {
+        self.connect.application_protocol.as_ref()
     }
 }
 
@@ -338,8 +362,11 @@ mod tests {
 
     use core::convert::Infallible;
 
-    use rama_core::{ServiceInput, bytes::Bytes, extensions::Extension, service::service_fn};
-    use rama_net::{address::HostWithPort, client::EstablishedClientConnection};
+    use rama_core::{bytes::Bytes, extensions::Extension, service::service_fn};
+    use rama_net::{
+        address::HostWithPort,
+        test_utils::client::{MockConnectorService, MockSocket},
+    };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use crate::{
@@ -424,7 +451,7 @@ mod tests {
         let request = request();
         assert_eq!(request.service_uri().as_str(), "icap://icap.test/service");
 
-        let connect = request.connect_request().clone();
+        let connect = request.connect_request();
         connect.extensions.insert(ProbeSecret);
         let request = OptionsRequest::new(connect, request.request().clone()).unwrap();
         let debug = format!("{request:?}");
@@ -434,7 +461,7 @@ mod tests {
         assert!(!debug.contains("ProbeSecret"));
     }
 
-    async fn read_head(io: &mut tokio::io::DuplexStream) -> Vec<u8> {
+    async fn read_head(io: &mut MockSocket) -> Vec<u8> {
         let mut head = Vec::new();
         loop {
             let byte = io.read_u8().await.unwrap();
@@ -447,22 +474,19 @@ mod tests {
 
     fn client_for_response(
         response: &'static [u8],
-    ) -> Client<
-        impl ConnectorService<ConnectRequest, Connection = ServiceInput<tokio::io::DuplexStream>>,
-    > {
-        Client::new(service_fn(move |input: ConnectRequest| async move {
-            let (client, mut server) = tokio::io::duplex(4096);
-            tokio::spawn(async move {
-                let head = read_head(&mut server).await;
-                assert!(head.starts_with(b"OPTIONS icap://icap.test/service ICAP/1.0\r\n"));
-                assert!(head.windows(12).any(|value| value == b"Allow: 206\r\n"));
-                server.write_all(response).await.unwrap();
-            });
-            Ok::<_, Infallible>(EstablishedClientConnection {
-                input,
-                conn: ServiceInput::new(client),
+    ) -> Client<impl ConnectorService<ConnectRequest, Connection = MockSocket>> {
+        Client::new(
+            MockConnectorService::new(move || {
+                service_fn(move |mut server: MockSocket| async move {
+                    let head = read_head(&mut server).await;
+                    assert!(head.starts_with(b"OPTIONS icap://icap.test/service ICAP/1.0\r\n"));
+                    assert!(head.windows(12).any(|value| value == b"Allow: 206\r\n"));
+                    server.write_all(response).await.unwrap();
+                    Ok::<_, Infallible>(())
+                })
             })
-        }))
+            .with_max_buffer_size(4096),
+        )
     }
 
     #[tokio::test]

@@ -1972,6 +1972,16 @@ async fn search_reads_encrypted_headers_and_payload_from_disk() {
     assert_eq!(snapshot.total_requests, 0);
     assert!(snapshot.exchanges.is_empty());
     assert!(snapshot.connections.is_empty());
+
+    let reads = store.0.record_reads.load(Ordering::Relaxed);
+    let snapshot = store
+        .snapshot(&CaptureFilter {
+            search: "absent-private-value".to_owned(),
+            ..Default::default()
+        })
+        .await;
+    assert!(snapshot.exchanges.is_empty());
+    assert_eq!(store.0.record_reads.load(Ordering::Relaxed), reads);
 }
 
 #[tokio::test]

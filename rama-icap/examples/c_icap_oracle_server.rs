@@ -10,8 +10,8 @@ use rama_icap::{
     codec::{Header, HeaderSlot, ResponseLine},
     io::BodyEnd,
     message::{EncapsulatedParts, IcapTrailerNames, Response, TrailerBlock},
-    proto::{EncapsulatedKind, MethodKind, StatusCode, header},
-    server::{BodyFrame, IncomingRequest, OutgoingBody, OutgoingResponse, Server},
+    proto::{EncapsulatedKind, MethodKind, Preview, StatusCode, header},
+    server::{BodyFrame, IncomingRequest, OptionsResponse, OutgoingBody, OutgoingResponse, Server},
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
@@ -89,8 +89,15 @@ async fn serve_request(
     let allow_206 = request.request().allows_206();
     let allow_icap_trailers = request.request().allows_icap_trailers();
 
-    if method == MethodKind::Options {
-        return Ok(OutgoingResponse::without_body(options_response()?));
+    let options = OptionsResponse::new("\"rama-oracle\"", "REQMOD, RESPMOD")
+        .with_service("Rama ICAP oracle")
+        .with_preview(Preview::new(1024))
+        .with_allow_204(true)
+        .with_allow_206(true)
+        .with_allow_icap_trailers(true)
+        .with_transfer_preview_all(true);
+    if let Some(response) = options.build_for(request.request())? {
+        return Ok(response);
     }
 
     let incoming = request.request().encapsulated().cloned();
@@ -188,23 +195,6 @@ fn streaming_response(
     .flatten()
     .map(Ok::<_, Infallible>);
     OutgoingResponse::new(response, OutgoingBody::from_frames(stream::iter(frames)))
-}
-
-fn options_response() -> Result<Response, BoxError> {
-    let fields = [
-        Header::new(header::METHODS, b"REQMOD, RESPMOD")?,
-        Header::new("Service", b"Rama ICAP oracle")?,
-        Header::new(header::ISTAG, b"\"rama-oracle\"")?,
-        Header::new(header::PREVIEW, b"1024")?,
-        Header::new("Allow", b"204, 206, trailers")?,
-        Header::new(header::TRANSFER_PREVIEW, b"*")?,
-    ];
-    Ok(Response::new(
-        MethodKind::Options,
-        ResponseLine::new(StatusCode::OK, b"OK")?,
-        &fields,
-        Some(EncapsulatedParts::null()),
-    )?)
 }
 
 fn status_response(

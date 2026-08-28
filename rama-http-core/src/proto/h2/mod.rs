@@ -240,6 +240,7 @@ where
                             Ok(trailers) => {
                                 // no more DATA, so give any capacity back
                                 me.body_tx.reserve_capacity(0);
+                                let trailers = filter_allowed_trailers(&trailers);
                                 me.body_tx
                                     .send_trailers(trailers)
                                     .map_err(crate::Error::new_body_write)?;
@@ -261,6 +262,18 @@ where
             }
         }
     }
+}
+
+fn filter_allowed_trailers(trailers: &HeaderMap) -> HeaderMap {
+    let mut filtered = HeaderMap::with_capacity(trailers.len());
+    for (name, value) in trailers.ordered_iter() {
+        if name.is_allowed_in_trailers() {
+            filtered.append(name.clone(), value.clone());
+        } else {
+            debug!("dropping disallowed HTTP/2 trailer field: {name:?}");
+        }
+    }
+    filtered
 }
 
 trait SendStreamExt {
@@ -329,5 +342,25 @@ impl<B: Buf> Buf for SendBuf<B> {
             Self::Cursor(c) => c.chunks_vectored(dst),
             Self::None => 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_http_types::HeaderValue;
+
+    #[test]
+    fn filters_h2_trailers_with_the_shared_field_policy() {
+        let mut trailers = HeaderMap::new();
+        trailers.insert("content-type", HeaderValue::from_static("text/plain"));
+        trailers.insert("etag", HeaderValue::from_static("\"v1\""));
+        trailers.insert("grpc-status", HeaderValue::from_static("0"));
+
+        let filtered = filter_allowed_trailers(&trailers);
+
+        assert!(!filtered.contains_key("content-type"));
+        assert_eq!(filtered["etag"], "\"v1\"");
+        assert_eq!(filtered["grpc-status"], "0");
     }
 }

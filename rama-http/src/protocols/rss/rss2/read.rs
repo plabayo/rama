@@ -27,8 +27,8 @@ use crate::protocols::rss::feed_ext::names::attr;
 use crate::protocols::rss::feed_ext::parse::{FeedExtAcc, ItemExtAcc, Ns, classify_ns};
 use crate::protocols::rss::feed_ext::{DublinCoreTermsFeed, FeedExtensions};
 use crate::protocols::rss::parse_util::{
-    attr_uri, attr_value, enclosure_from_attrs, end_event_parts, parse_rss2_date, parse_uri,
-    push_general_ref, push_text,
+    XmlReader, attr_uri, attr_value, enclosure_from_attrs, end_event_parts, parse_rss2_date,
+    parse_uri, push_general_ref, push_text, xml_reader,
 };
 
 /// Channel-level metadata of an RSS 2.0 feed — everything an [`Rss2Feed`]
@@ -279,8 +279,8 @@ enum Action {
     Eof,
 }
 
-struct Rss2Reader<R: AsyncBufRead + Unpin + Send> {
-    nsr: NsReader<R>,
+struct Rss2Reader {
+    nsr: NsReader<XmlReader>,
     buf: Vec<u8>,
     strict: bool,
 
@@ -313,9 +313,12 @@ struct Rss2Reader<R: AsyncBufRead + Unpin + Send> {
     pending_source_url: Option<Uri>,
 }
 
-impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
-    fn new(reader: R, strict: bool) -> Self {
-        let mut nsr = NsReader::from_reader(reader);
+impl Rss2Reader {
+    fn new<R>(reader: R, strict: bool) -> Self
+    where
+        R: AsyncBufRead + Unpin + Send + 'static,
+    {
+        let mut nsr = NsReader::from_reader(xml_reader(reader, strict));
         // Do NOT use `trim_text(true)`: quick-xml 0.40 splits a text run around
         // every entity / character reference into separate `Text` and
         // `GeneralRef` events, so per-event trimming strips whitespace interior
@@ -550,7 +553,7 @@ impl<R: AsyncBufRead + Unpin + Send> Rss2Reader<R> {
                 Ok(Action::Continue)
             }
             Event::Text(e) => {
-                push_text(&mut self.text_buf, &e, self.strict)?;
+                push_text(&mut self.text_buf, &e);
                 Ok(Action::Continue)
             }
             // quick-xml 0.40 surfaces entity references as standalone events

@@ -44,11 +44,7 @@ fn should_try_next_route(error: &ConnectionError) -> bool {
     error.domain() == ConnectionErrorDomain::Transport
         && matches!(
             error.kind(),
-            ConnectionErrorKind::Unavailable
-                | ConnectionErrorKind::Timeout
-                | ConnectionErrorKind::Rejected
-                | ConnectionErrorKind::Protocol
-                | ConnectionErrorKind::Other
+            ConnectionErrorKind::Unavailable | ConnectionErrorKind::Timeout
         )
 }
 
@@ -270,12 +266,14 @@ where
 ///
 /// Every route receives an isolated [`Fork`] of the original input with the
 /// selected [`ProxyRoute`] inserted into its extensions. A transport-domain
-/// failure advances to the next route only when its kind indicates that another
-/// route can plausibly help. Authentication, invalid-input and internal failures
-/// stop fallback even when reported by the transport domain. Application, local
-/// and unclassified failures also stop immediately because another transport
-/// route should not normally change their outcome. If multiple attempted routes
-/// fail, their contextualized errors are retained in a
+/// failure advances to the next route only when the proxy path is unavailable
+/// or times out. Authentication, explicit rejection, protocol, invalid-input,
+/// and internal failures stop fallback even when reported by the transport
+/// domain. Application, local and unclassified failures also stop immediately
+/// because another transport route should not normally change their outcome.
+/// This prevents an intentional proxy rejection from silently falling through
+/// to a later direct route. If multiple attempted routes fail, their
+/// contextualized errors are retained in a
 /// [`ProxyRouteConnectError`].
 ///
 /// Input route decisions use extension insertion order: the most recently
@@ -738,13 +736,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retryable_transport_kinds_advance_to_next_route() {
+    async fn unavailable_and_timeout_transport_failures_advance() {
         for kind in [
             ConnectionErrorKind::Unavailable,
             ConnectionErrorKind::Timeout,
-            ConnectionErrorKind::Rejected,
-            ConnectionErrorKind::Protocol,
-            ConnectionErrorKind::Other,
         ] {
             let attempts = Arc::new(AtomicUsize::new(0));
             let inner = service_fn({
@@ -890,6 +885,15 @@ mod tests {
                 ConnectionErrorDomain::Transport,
                 ConnectionErrorKind::Internal,
             ),
+            (
+                ConnectionErrorDomain::Transport,
+                ConnectionErrorKind::Rejected,
+            ),
+            (
+                ConnectionErrorDomain::Transport,
+                ConnectionErrorKind::Protocol,
+            ),
+            (ConnectionErrorDomain::Transport, ConnectionErrorKind::Other),
             (ConnectionErrorDomain::Local, ConnectionErrorKind::Internal),
             (ConnectionErrorDomain::Unknown, ConnectionErrorKind::Other),
         ] {

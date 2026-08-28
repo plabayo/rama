@@ -15,7 +15,10 @@ use rama_net::uri::Uri;
 
 use crate::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
-    proto::{HeaderByteLength, h1::ext::ReasonPhrase},
+    proto::{
+        HeaderByteLength,
+        h1::ext::{ReasonPhrase, RequestTargetForm},
+    },
 };
 
 /// Default maximum number of HTTP header fields in one standalone head.
@@ -70,12 +73,22 @@ impl HeadParser {
         if target.as_ref() == b"*" && method != Method::OPTIONS {
             return Err(HeadError::new(HeadErrorKind::InvalidTarget));
         }
-        let uri = Uri::parse_http_request_target(target, method == Method::CONNECT)
+        let uri = Uri::parse_http_request_target(target.clone(), method == Method::CONNECT)
             .map_err(|_error| HeadError::new(HeadErrorKind::InvalidTarget))?;
+        let target_form = if target.as_ref() == b"*" {
+            RequestTargetForm::Asterisk
+        } else if method == Method::CONNECT {
+            RequestTargetForm::Authority
+        } else if uri.scheme().is_some() {
+            RequestTargetForm::Absolute
+        } else {
+            RequestTargetForm::Origin
+        };
         let version = parse_version(parsed.version)?;
         let headers = parse_headers(input, parsed.headers)?;
         let extensions = Extensions::new();
         extensions.insert(HeaderByteLength(input.len()));
+        extensions.insert(target_form);
 
         Ok(Request::from_parts(
             crate::request::Parts {
@@ -109,13 +122,14 @@ impl HeadParser {
         let headers = parse_headers(input, parsed.headers)?;
         let extensions = Extensions::new();
         extensions.insert(HeaderByteLength(input.len()));
-        if let Some(reason) = parsed.reason
-            && Some(reason) != status.canonical_reason()
+        let reason = raw_response_reason(input)?;
+        if status
+            .canonical_reason()
+            .is_none_or(|canonical| reason != canonical.as_bytes())
         {
-            let reason = input.slice_ref(reason.as_bytes());
-            // SAFETY: `httparse` accepted the complete response line and
-            // validated the reason-phrase byte class.
-            extensions.insert(unsafe { ReasonPhrase::from_bytes_unchecked(reason) });
+            let reason = ReasonPhrase::try_from(reason)
+                .map_err(|_error| HeadError::new(HeadErrorKind::InvalidStatus))?;
+            extensions.insert(reason);
         }
 
         Ok(Response::from_parts(
@@ -144,6 +158,23 @@ impl HeadParser {
         }
         parse_headers(input, fields)
     }
+}
+
+fn raw_response_reason(input: &Bytes) -> Result<Bytes, HeadError> {
+    let line_end = input
+        .windows(2)
+        .position(|window| window == b"\r\n")
+        .ok_or_else(|| HeadError::new(HeadErrorKind::Incomplete))?;
+    let line = &input[..line_end];
+    let suffix = line
+        .get(12..)
+        .ok_or_else(|| HeadError::new(HeadErrorKind::InvalidStatus))?;
+    let reason_start = match suffix.first() {
+        Some(b' ') => 13,
+        None => 12,
+        Some(_) => return Err(HeadError::new(HeadErrorKind::InvalidStatus)),
+    };
+    Ok(input.slice(reason_start..line_end))
 }
 
 impl Default for HeadParser {
@@ -201,7 +232,7 @@ pub fn encode_request<T>(request: &Request<T>) -> Result<Bytes, HeadError> {
     let mut output = BytesMut::with_capacity(32 + request.headers().len().saturating_mul(32));
     output.extend_from_slice(request.method().as_str().as_bytes());
     output.extend_from_slice(b" ");
-    encode_request_target(
+    encode_request_target_preserving_form(
         request.method(),
         request.uri(),
         request.extensions(),
@@ -248,6 +279,34 @@ fn encode_version(version: Version, output: &mut BytesMut) -> Result<(), HeadErr
         _ => return Err(HeadError::new(HeadErrorKind::UnsupportedVersion)),
     }
     Ok(())
+}
+
+fn encode_request_target_preserving_form(
+    method: &Method,
+    uri: &Uri,
+    extensions: &Extensions,
+    output: &mut BytesMut,
+) -> Result<(), HeadError> {
+    if let Some(form) = extensions.get_ref::<RequestTargetForm>() {
+        let result = match form {
+            RequestTargetForm::Origin if *method != Method::CONNECT && !uri.is_asterisk() => {
+                uri.write_http_origin_form(output)
+            }
+            RequestTargetForm::Absolute if *method != Method::CONNECT && !uri.is_asterisk() => {
+                uri.write_http_absolute_form(output)
+            }
+            RequestTargetForm::Authority if *method == Method::CONNECT => {
+                uri.write_http_authority_form(output)
+            }
+            RequestTargetForm::Asterisk if *method == Method::OPTIONS && uri.is_asterisk() => {
+                output.extend_from_slice(b"*");
+                Ok(())
+            }
+            _ => Err(rama_net::uri::WireError::AsteriskMismatch),
+        };
+        return result.map_err(|_error| HeadError::new(HeadErrorKind::InvalidTarget));
+    }
+    encode_request_target(method, uri, extensions, output)
 }
 
 /// Encode the HTTP/1 request-target selected by Rama connection metadata.
@@ -408,6 +467,37 @@ mod tests {
             encode_response(&response).unwrap().as_ref(),
             b"HTTP/1.0 299 Adapted\r\nX-First: one\r\nX-Second: two\r\n\r\n"
         );
+    }
+
+    #[test]
+    fn request_round_trip_preserves_target_form() {
+        for wire in [
+            b"GET /path?q=1 HTTP/1.1\r\nHost: example.test\r\n\r\n".as_slice(),
+            b"GET http://example.test/path?q=1 HTTP/1.1\r\nHost: example.test\r\n\r\n",
+            b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n",
+            b"OPTIONS * HTTP/1.1\r\nHost: example.test\r\n\r\n",
+        ] {
+            let request = HeadParser::new()
+                .parse_request(&Bytes::copy_from_slice(wire))
+                .unwrap();
+            assert_eq!(encode_request(&request).unwrap().as_ref(), wire);
+        }
+    }
+
+    #[test]
+    fn response_round_trip_preserves_obs_text_reason() {
+        let wire = Bytes::from_static(b"HTTP/1.1 200 Caf\xe9\r\nHost: example.test\r\n\r\n");
+        let response = HeadParser::new().parse_response(&wire).unwrap();
+
+        assert_eq!(
+            response
+                .extensions()
+                .get_ref::<ReasonPhrase>()
+                .unwrap()
+                .as_bytes(),
+            b"Caf\xe9",
+        );
+        assert_eq!(encode_response(&response).unwrap(), wire);
     }
 
     #[test]

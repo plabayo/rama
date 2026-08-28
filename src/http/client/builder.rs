@@ -708,7 +708,7 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage<true>> {
     ///
     /// This will create a [`MultiplexPool`](crate::net::client::pool::MultiplexPool)
     /// using the provided limits and will use
-    /// [`BasicHttpConnIdentifier`](super::BasicHttpConnIdentifier) to group connections
+    /// [`BasicConnIdentifier`](crate::net::client::pool::BasicConnIdentifier) to group connections
     /// on protocol, authority and the selected singular proxy route, which should
     /// cover most common use cases. The default proxy-route failure cache is
     /// installed behind the pool, so reusable connections bypass negative-cache

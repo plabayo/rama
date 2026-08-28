@@ -43,6 +43,7 @@ use self::headers::{
 mod headers;
 pub mod layer;
 mod server;
+pub use server::UnchangedRequest;
 
 /// Default maximum body and trailer bytes retained for ICAP replay.
 pub const DEFAULT_MAX_REPLAY_BYTES: usize = rama_utils::octets::mib(8);
@@ -349,6 +350,8 @@ pub struct IncomingRequest {
     encapsulated: Option<Encapsulated>,
     body: Body,
     extensions: Extensions,
+    encapsulated_exposed_mutably: bool,
+    body_exposed_mutably: bool,
 }
 
 /// Owned components of a typed ICAP service request.
@@ -386,6 +389,8 @@ impl IncomingRequest {
             encapsulated,
             body: Body::from_frame_stream(body),
             extensions,
+            encapsulated_exposed_mutably: false,
+            body_exposed_mutably: false,
         })
     }
 
@@ -402,7 +407,8 @@ impl IncomingRequest {
     }
 
     /// Return the mutable typed HTTP metadata, when present.
-    pub const fn encapsulated_mut(&mut self) -> Option<&mut Encapsulated> {
+    pub fn encapsulated_mut(&mut self) -> Option<&mut Encapsulated> {
+        self.encapsulated_exposed_mutably = true;
         self.encapsulated.as_mut()
     }
 
@@ -412,7 +418,8 @@ impl IncomingRequest {
     }
 
     /// Return the mutable streaming encapsulated entity body.
-    pub const fn body_mut(&mut self) -> &mut Body {
+    pub fn body_mut(&mut self) -> &mut Body {
+        self.body_exposed_mutably = true;
         &mut self.body
     }
 
@@ -595,7 +602,6 @@ impl ClientRequest {
 
     pub(crate) fn reqmod_for_uri<B>(
         uri: &Uri,
-        host_header: &[u8],
         headers: &[Header<'_>],
         request: HttpRequest<B>,
         preview: Option<Preview>,
@@ -604,7 +610,7 @@ impl ClientRequest {
         B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
         Self::reqmod_with_line(
-            RequestLineSource::prepared(Method::Reqmod, uri, host_header),
+            RequestLineSource::prepared(Method::Reqmod, uri),
             headers,
             request,
             preview,
@@ -665,7 +671,6 @@ impl ClientRequest {
 
     pub(crate) fn respmod_for_uri<R, B>(
         uri: &Uri,
-        host_header: &[u8],
         headers: &[Header<'_>],
         request: &HttpRequest<R>,
         response: HttpResponse<B>,
@@ -675,7 +680,7 @@ impl ClientRequest {
         B: StreamingBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
         Self::respmod_with_line(
-            RequestLineSource::prepared(Method::Respmod, uri, host_header),
+            RequestLineSource::prepared(Method::Respmod, uri),
             headers,
             request,
             response,
@@ -1431,9 +1436,9 @@ where
     /// Return the resulting HTTP request head for a REQMOD transaction.
     ///
     /// A 204 response reuses the retained original head. A body-only adapted
-    /// result also reuses that head, while a headed result uses the
-    /// encapsulated head. Proxy credentials promoted to the outer ICAP
-    /// response are restored on the resulting HTTP request.
+    /// result copies that head without its original `Content-Length`, while a
+    /// headed result uses the encapsulated head. Proxy credentials promoted to
+    /// the outer ICAP response are restored on the resulting HTTP request.
     #[must_use]
     pub fn request(&self) -> Option<&HttpRequest<()>> {
         self.state.request()
@@ -1441,9 +1446,10 @@ where
 
     /// Return the resulting HTTP response head for a RESPMOD transaction.
     ///
-    /// A 204 response or body-only adapted result reuses the retained
-    /// original head. Proxy challenges promoted to the outer ICAP response
-    /// are restored on the resulting HTTP response.
+    /// A 204 response reuses the retained original head. A body-only adapted
+    /// result copies that head without its original `Content-Length`. Proxy
+    /// challenges promoted to the outer ICAP response are restored on the
+    /// resulting HTTP response.
     #[must_use]
     pub fn response(&self) -> Option<&HttpResponse<()>> {
         self.state.response()
@@ -1563,12 +1569,12 @@ fn resolve_result_head(
     ) {
         match (method, encapsulated.map(Encapsulated::body_kind)) {
             (MethodKind::Reqmod, Some(EncapsulatedKind::RequestBody)) => {
-                Some(ResultHead::OriginalRequest)
+                Some(ResultHead::Request(adapted_original_request(original)?))
             }
             (
                 MethodKind::Respmod,
                 Some(EncapsulatedKind::ResponseBody | EncapsulatedKind::NullBody),
-            ) => Some(ResultHead::OriginalResponse),
+            ) => Some(ResultHead::Response(adapted_original_response(original)?)),
             (MethodKind::Reqmod, Some(EncapsulatedKind::ResponseBody)) => {
                 return Err(Error::invalid_sequence(
                     "headless REQMOD response body has no HTTP response head",
@@ -1588,6 +1594,28 @@ fn resolve_result_head(
     selected
         .map(|head| head.with_proxy_context(encapsulated, original, returned))
         .transpose()
+}
+
+fn adapted_original_request(original: &OriginalHead) -> Result<HttpRequest<()>, Error> {
+    let mut request = original
+        .request()
+        .cloned()
+        .ok_or_else(|| Error::invalid_sequence("REQMOD result lost its original HTTP request"))?;
+    request
+        .headers_mut()
+        .remove(rama_http_types::header::CONTENT_LENGTH);
+    Ok(request)
+}
+
+fn adapted_original_response(original: &OriginalHead) -> Result<HttpResponse<()>, Error> {
+    let mut response = original
+        .response()
+        .cloned()
+        .ok_or_else(|| Error::invalid_sequence("RESPMOD result lost its original HTTP response"))?;
+    response
+        .headers_mut()
+        .remove(rama_http_types::header::CONTENT_LENGTH);
+    Ok(response)
 }
 
 impl ResultHead {
@@ -1676,7 +1704,16 @@ impl ResultHead {
                     self
                 }
             }
-            Self::Request(_) | Self::Response(_) => self,
+            Self::Request(request) => Self::Request(request_with_proxy_context(
+                &request,
+                original.request(),
+                returned,
+            )),
+            Self::Response(response) => Self::Response(response_with_proxy_context(
+                &response,
+                original.response(),
+                returned,
+            )),
         })
     }
 }
@@ -2684,10 +2721,11 @@ mod tests {
     }
 
     #[test]
-    fn result_head_reuses_matching_original_for_body_only_results() {
+    fn body_only_result_copies_original_without_content_length() {
         let request = HttpRequest::builder()
             .method("POST")
             .uri("/scan")
+            .header("Content-Length", "100")
             .header("Proxy-Authorization", "Basic original")
             .body(())
             .unwrap();
@@ -2722,11 +2760,43 @@ mod tests {
             output_complete: false,
         };
         assert_eq!(state.request().unwrap().uri().as_str(), "/scan");
+        assert!(
+            !state
+                .request()
+                .unwrap()
+                .headers()
+                .contains_key("content-length")
+        );
         assert_eq!(
             state.request().unwrap().headers()["proxy-authorization"],
             "Basic original"
         );
         assert!(state.response().is_none());
+
+        let original = OriginalHead::Response(
+            HttpResponse::builder()
+                .status(200)
+                .header("Content-Length", "100")
+                .body(())
+                .unwrap(),
+        );
+        let encapsulated = Encapsulated {
+            request: None,
+            response: None,
+            body_kind: EncapsulatedKind::ResponseBody,
+        };
+        let result = resolve_result_head(
+            MethodKind::Respmod,
+            StatusCode::PARTIAL_CONTENT,
+            Some(&encapsulated),
+            &original,
+            &[],
+        )
+        .unwrap();
+        let Some(ResultHead::Response(response)) = result else {
+            panic!("copied response expected");
+        };
+        assert!(!response.headers().contains_key("content-length"));
     }
 
     #[test]
@@ -3015,6 +3085,8 @@ mod tests {
             encapsulated: Some(Encapsulated::parse(&encoded).unwrap()),
             body: Body::from("request body"),
             extensions: Extensions::new(),
+            encapsulated_exposed_mutably: false,
+            body_exposed_mutably: false,
         }
         .into_request()
         .unwrap();
@@ -3042,6 +3114,8 @@ mod tests {
             encapsulated: Some(Encapsulated::parse(&encoded).unwrap()),
             body: Body::from("response body"),
             extensions: Extensions::new(),
+            encapsulated_exposed_mutably: false,
+            body_exposed_mutably: false,
         }
         .into_response()
         .unwrap();
@@ -3224,6 +3298,155 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn unchanged_request_echoes_an_unread_reqmod_message() {
+        let mut trailers = HeaderMap::new();
+        trailers.insert("x-end", HeaderValue::from_static("yes"));
+        let request = incoming_reqmod(
+            Body::from_frame_stream(stream::iter([
+                Ok::<_, Infallible>(Frame::data(Bytes::from_static(b"request body"))),
+                Ok(Frame::trailers(trailers)),
+            ])),
+            EncapsulatedKind::RequestBody,
+            None,
+            b"",
+        );
+        let mut response = request
+            .try_into_unchanged()
+            .unwrap()
+            .respond(b"\"rama-test\"")
+            .unwrap();
+
+        assert_eq!(response.response().status(), StatusCode::OK);
+        let parsed = Encapsulated::parse(response.response().encapsulated().unwrap()).unwrap();
+        assert_eq!(parsed.request().unwrap().method(), "POST");
+        assert_eq!(parsed.request().unwrap().headers()["x-original"], "yes");
+        assert!(matches!(
+            response.body_mut().next().await.unwrap().unwrap(),
+            crate::server::BodyFrame::Data(data) if data == "request body"
+        ));
+        let crate::server::BodyFrame::Trailers(trailers) =
+            response.body_mut().next().await.unwrap().unwrap()
+        else {
+            panic!("expected echoed HTTP trailers");
+        };
+        let trailers = HeadParser::new().parse_fields(trailers.as_bytes()).unwrap();
+        assert_eq!(trailers["x-end"], "yes");
+        assert!(response.body_mut().next().await.is_none());
+    }
+
+    #[test]
+    fn unchanged_request_uses_preview_time_204() {
+        let request = incoming_respmod(
+            Body::from("response body"),
+            EncapsulatedKind::ResponseBody,
+            Some(Preview::new(4)),
+            b"",
+        );
+        let response = request
+            .try_into_unchanged()
+            .unwrap()
+            .respond(b"\"rama-test\"")
+            .unwrap();
+
+        assert_eq!(
+            response.response().status(),
+            StatusCode::NO_MODIFICATION_NEEDED
+        );
+    }
+
+    #[test]
+    fn unchanged_request_uses_negotiated_204_after_mutable_access() {
+        let mut request = incoming_respmod(
+            Body::from("response body"),
+            EncapsulatedKind::ResponseBody,
+            None,
+            b"204",
+        );
+        let _body = request.body_mut();
+        let response = request
+            .try_into_unchanged()
+            .unwrap()
+            .respond(b"\"rama-test\"")
+            .unwrap();
+
+        assert_eq!(
+            response.response().status(),
+            StatusCode::NO_MODIFICATION_NEEDED
+        );
+    }
+
+    #[tokio::test]
+    async fn unavailable_unchanged_conversion_returns_the_request() {
+        let mut request = incoming_respmod(
+            Body::from("response body"),
+            EncapsulatedKind::ResponseBody,
+            None,
+            b"",
+        );
+        let _body = request.body_mut();
+        let request = request.try_into_unchanged().unwrap_err();
+        let response = request.into_response().unwrap();
+
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "response body"
+        );
+    }
+
+    #[test]
+    fn unchanged_null_body_can_echo_after_body_access() {
+        let mut request = incoming_respmod(Body::empty(), EncapsulatedKind::NullBody, None, b"");
+        let _body = request.body_mut();
+        let response = request
+            .try_into_unchanged()
+            .unwrap()
+            .respond(b"\"rama-test\"")
+            .unwrap();
+
+        assert_eq!(response.response().status(), StatusCode::OK);
+        let parsed = Encapsulated::parse(response.response().encapsulated().unwrap()).unwrap();
+        assert_eq!(parsed.response().unwrap().status(), 200);
+        assert!(!response.response().encapsulated().unwrap().has_body());
+    }
+
+    fn incoming_reqmod(
+        body: Body,
+        body_kind: EncapsulatedKind,
+        preview: Option<Preview>,
+        allow: &[u8],
+    ) -> IncomingRequest {
+        let request = HttpRequest::builder()
+            .method("POST")
+            .uri("/upload")
+            .header("host", "example.test")
+            .header("x-original", "yes")
+            .body(())
+            .unwrap();
+        let parts = Encapsulated::from_request(&request, body_kind).unwrap();
+        let line = RequestLine::new(Method::Reqmod, "icap://icap.test/adapt").unwrap();
+        let headers = [
+            Header::new(header::HOST, b"icap.test").unwrap(),
+            Header::new(header::ALLOW, allow).unwrap(),
+        ];
+        let icap = match preview {
+            Some(preview) => IcapRequest::with_preview(line, &headers, parts, preview).unwrap(),
+            None => IcapRequest::new(line, &headers, Some(parts)).unwrap(),
+        };
+        IncomingRequest {
+            icap,
+            encapsulated: Some(Encapsulated {
+                request: Some(request),
+                response: None,
+                body_kind,
+            }),
+            body,
+            extensions: Extensions::new(),
+            encapsulated_exposed_mutably: false,
+            body_exposed_mutably: false,
+        }
+    }
+
     fn incoming_respmod(
         body: Body,
         body_kind: EncapsulatedKind,
@@ -3255,6 +3478,8 @@ mod tests {
             }),
             body,
             extensions: Extensions::new(),
+            encapsulated_exposed_mutably: false,
+            body_exposed_mutably: false,
         }
     }
 }

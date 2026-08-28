@@ -13,34 +13,45 @@ use rama_core::{
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     extensions::{Extension, ExtensionsRef as _},
     futures::{StreamExt as _, stream},
-    service::service_fn,
+    io::Io,
+    rt::Executor,
+    service::{BoxService, service_fn},
 };
+use rama_http::io::upgrade;
+use rama_http_backend::{client::proxy::layer::HttpProxyConnectorLayer, server::HttpServer};
 use rama_http_types::{
     Body, HeaderMap, Request, Response,
     body::{Frame, util::BodyExt as _},
     header::{self as http_header, HeaderValue, TRAILER},
 };
 use rama_net::{
-    Protocol, ProtocolInputExt as _, TransportProtocolInputExt as _,
+    ConnectorTargetInputExt as _, Protocol, ProtocolInputExt as _, TransportProtocolInputExt as _,
+    address::{Domain, ProxyAddress},
     client::{
-        ConnectRequest, EstablishedClientConnection,
-        pool::{ConnID, LruDropPool, PooledConnector},
+        ConnectRequest, ConnectorTarget, EstablishedClientConnection, ProxyRoute,
+        pool::{BasicConnIdentifier, ConnID, LruDropPool, PooledConnector},
     },
-    transport::TransportProtocol,
+    test_utils::client::{MockConnectorService, MockSocket},
 };
+use rama_tls::{
+    SecureTransport,
+    client::{ServerVerifyMode, TlsClientConfig},
+    server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+};
+use rama_tls_boring::client::TlsConnector as BoringTlsConnector;
+use rama_tls_rustls::{client::TlsConnector, server::TlsAcceptorLayer};
 
 use super::*;
 use crate::{
-    client::{
-        ClientConnection,
-        options::{OptionsValidation, ServiceCapabilities},
-    },
+    client::options::{OptionsCacheLayer, OptionsService, OptionsValidation, ServiceCapabilities},
     codec::{HeadParserConfig, Header, HeaderFolding, HeaderSlot, ResponseLine},
     http::{HttpService, IncomingRequest, IncomingRequestParts, OutgoingResponse},
     io::ConnectionOptions,
     message::{EncapsulatedParts, Response as IcapResponse},
     proto::{EncapsulatedKind, Method, MethodKind, Preview, StatusCode, header},
-    server::{BodyFrame, IncomingRequest as RawIncomingRequest, OutgoingBody, Server},
+    server::{
+        BodyFrame, IncomingRequest as RawIncomingRequest, OptionsResponse, OutgoingBody, Server,
+    },
 };
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -56,7 +67,41 @@ fn endpoint(path: &str) -> ServiceEndpoint {
 }
 
 fn adaptation_response_fields() -> [Header<'static>; 1] {
-    [Header::new(header::ISTAG, b"\"layer-test\"").unwrap()]
+    adaptation_response_fields_with_tag(b"\"layer-test\"")
+}
+
+fn adaptation_response_fields_with_tag(service_tag: &'static [u8]) -> [Header<'static>; 1] {
+    [Header::new(header::ISTAG, service_tag).unwrap()]
+}
+
+const REQUEST_HEADER_LINES: &[(&str, &str)] = &[
+    ("X-FOO-bar", "hello"),
+    ("content-type", "text/plain"),
+    ("x-Foo-BAR", "goodbye"),
+    ("host", "origin.test"),
+];
+
+const RESPONSE_HEADER_LINES: &[(&str, &str)] = &[
+    ("X-Response-FOO", "hello"),
+    ("content-type", "text/plain"),
+    ("x-Response-Foo", "goodbye"),
+];
+
+fn assert_header_lines(headers: &HeaderMap, expected: &[(&str, &str)]) {
+    let actual = headers
+        .ordered_iter()
+        .map(|(name, value)| {
+            (
+                name.as_original_str().into_owned(),
+                value.to_str().unwrap().to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let expected = expected
+        .iter()
+        .map(|&(name, value)| (name.to_owned(), value.to_owned()))
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected);
 }
 
 fn discovered_capabilities() -> ServiceCapabilities {
@@ -115,7 +160,93 @@ fn test_connection_id(_input: &ConnectRequest) -> Result<TestConnectionId, BoxEr
     Ok(TestConnectionId)
 }
 
+fn mock_icap_client<S>(
+    create_server: S,
+    max_buffer_size: usize,
+) -> crate::client::Client<MockConnectorService<S>> {
+    crate::client::Client::new(
+        MockConnectorService::new(create_server).with_max_buffer_size(max_buffer_size),
+    )
+}
+
+#[derive(Clone)]
+struct TlsIcapHandler<S> {
+    adaptation: S,
+    secure: bool,
+    port: Option<u16>,
+}
+
+impl<S> rama_core::Service<RawIncomingRequest> for TlsIcapHandler<S>
+where
+    S: rama_core::Service<RawIncomingRequest, Output = OutgoingResponse, Error = BoxError>,
+{
+    type Output = OutgoingResponse;
+    type Error = BoxError;
+
+    async fn serve(&self, request: RawIncomingRequest) -> Result<OutgoingResponse, BoxError> {
+        assert_eq!(
+            request.extensions().contains::<SecureTransport>(),
+            self.secure,
+        );
+        let method = request.request().method();
+        {
+            let mut slots = [HeaderSlot::EMPTY; 16];
+            let head = request.request().parse_head(&mut slots)?;
+            let uri = head.line().uri();
+            assert_eq!(uri.scheme(), &Protocol::ICAP);
+            assert_eq!(uri.host(), Some("icap.test"));
+            assert_eq!(uri.path(), "/scan");
+            assert_eq!(uri.port().as_u16(), self.port);
+            let expected_host = self.port.map_or_else(
+                || "icap.test".to_owned(),
+                |port| format!("icap.test:{port}"),
+            );
+            assert_eq!(
+                head.header(header::HOST).and_then(|value| value.as_bytes()),
+                Some(expected_host.as_bytes()),
+            );
+        }
+        match method {
+            MethodKind::Options => OptionsResponse::new("\"rama-tls\"", "REQMOD, RESPMOD")
+                .build()
+                .map_err(Into::into),
+            MethodKind::Reqmod | MethodKind::Respmod => self.adaptation.serve(request).await,
+            MethodKind::Extension => Err(BoxError::from_static_str(
+                "unexpected ICAP extension method",
+            )),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct TlsIcapConnectionServer<S> {
+    inner: Server<S>,
+}
+
+impl<S, IO> rama_core::Service<IO> for TlsIcapConnectionServer<S>
+where
+    IO: Io + Unpin + rama_core::extensions::ExtensionsRef,
+    S: rama_core::Service<RawIncomingRequest, Output = OutgoingResponse, Error = BoxError>,
+{
+    type Output = ();
+    type Error = Infallible;
+
+    async fn serve(&self, io: IO) -> Result<(), Infallible> {
+        if let Err(error) = self.inner.serve_connection(io).await {
+            assert_eq!(error.kind(), crate::server::ServerErrorKind::Connection);
+        }
+        Ok(())
+    }
+}
+
 async fn serve_adaptation(request: IncomingRequest) -> Result<OutgoingResponse, BoxError> {
+    serve_adaptation_with_service_tag(request, b"\"layer-test\"").await
+}
+
+async fn serve_adaptation_with_service_tag(
+    request: IncomingRequest,
+    service_tag: &'static [u8],
+) -> Result<OutgoingResponse, BoxError> {
     let method = request.icap().method();
     let (parts, body) = request.into_parts();
     let IncomingRequestParts { encapsulated, .. } = parts;
@@ -123,7 +254,7 @@ async fn serve_adaptation(request: IncomingRequest) -> Result<OutgoingResponse, 
     let collected = body.collect().await?;
     let body = Body::new(collected);
     let line = ResponseLine::new(StatusCode::OK, b"OK").unwrap();
-    let fields = adaptation_response_fields();
+    let fields = adaptation_response_fields_with_tag(service_tag);
     match method {
         MethodKind::Reqmod => {
             let mut request = encapsulated.request.expect("REQMOD request head");
@@ -152,6 +283,45 @@ async fn serve_adaptation(request: IncomingRequest) -> Result<OutgoingResponse, 
         }
         _ => Err(BoxError::from_static_str(
             "HTTP adaptation only uses REQMOD and RESPMOD",
+        )),
+    }
+}
+
+async fn serve_header_preserving_adaptation(
+    request: IncomingRequest,
+) -> Result<OutgoingResponse, BoxError> {
+    let method = request.icap().method();
+    let (parts, body) = request.into_parts();
+    let encapsulated = parts.encapsulated.expect("typed HTTP metadata");
+    let body = Body::new(body.collect().await?);
+    let line = ResponseLine::new(StatusCode::OK, b"OK").unwrap();
+    let fields = adaptation_response_fields();
+
+    match method {
+        MethodKind::Reqmod => {
+            let request = encapsulated.request.expect("REQMOD request head");
+            assert_header_lines(request.headers(), REQUEST_HEADER_LINES);
+            assert_eq!(request.uri().as_str(), "http://origin.test/upload");
+            OutgoingResponse::from_http_request(
+                line,
+                &fields,
+                Request::from_parts(request.clone_parts(), body),
+            )
+            .map_err(Into::into)
+        }
+        MethodKind::Respmod => {
+            let response = encapsulated.response.expect("RESPMOD response head");
+            assert_header_lines(response.headers(), RESPONSE_HEADER_LINES);
+            OutgoingResponse::from_http_response(
+                MethodKind::Respmod,
+                line,
+                &fields,
+                Response::from_parts(response.clone_parts(), body),
+            )
+            .map_err(Into::into)
+        }
+        _ => Err(BoxError::from_static_str(
+            "header preservation only uses REQMOD and RESPMOD",
         )),
     }
 }
@@ -216,28 +386,26 @@ async fn serve_blocking_adaptation(request: IncomingRequest) -> Result<OutgoingR
 async fn detours_request_and_response_with_preview() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
+    let transport = MockConnectorService::new(|| {
+        Server::new(
+            HttpService::new(service_fn(serve_adaptation_with_outer_trailers)),
+            b"\"rama-test\"",
+        )
+        .unwrap()
+    })
+    .with_max_buffer_size(256);
     let connector = service_fn(move |input: ConnectRequest| {
         let connector_connections = Arc::clone(&connector_connections);
+        let transport = transport.clone();
         async move {
             assert_eq!(input.authority.to_string(), "icap.test:1344");
             assert_eq!(input.protocol(), Some(&Protocol::ICAP));
-            assert_eq!(input.transport_protocol(), Some(TransportProtocol::Tcp));
+            assert_eq!(input.transport_protocol(), None);
             connector_connections.fetch_add(1, Ordering::Relaxed);
-            let (client_io, server_io) = tokio::io::duplex(256);
-            tokio::spawn(async move {
-                let server = Server::new(
-                    HttpService::new(service_fn(serve_adaptation_with_outer_trailers)),
-                    b"\"rama-test\"",
-                )
-                .unwrap();
-                server.serve(ServiceInput::new(server_io)).await.unwrap();
-            });
-            Ok::<_, Infallible>(EstablishedClientConnection {
-                input,
-                conn: ClientConnection::new(ServiceInput::new(client_io)),
-            })
+            transport.serve(input).await
         }
     });
+    let connector = crate::client::Client::new(connector);
 
     let inner = service_fn(async |request: Request<Body>| {
         assert_eq!(request.headers()["x-reqmod"], "yes");
@@ -295,27 +463,441 @@ async fn detours_request_and_response_with_preview() {
 }
 
 #[tokio::test]
+async fn preserves_ordinary_header_order_and_casing_end_to_end() {
+    let connector = mock_icap_client(
+        || {
+            Server::new(
+                HttpService::new(service_fn(serve_header_preserving_adaptation)),
+                b"\"rama-test\"",
+            )
+            .unwrap()
+        },
+        4096,
+    );
+    let inner = service_fn(async |request: Request<Body>| {
+        assert_header_lines(request.headers(), REQUEST_HEADER_LINES);
+        assert_eq!(request.uri().as_str(), "http://origin.test/upload");
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header("X-Response-FOO", "hello")
+                .header("content-type", "text/plain")
+                .header("x-Response-Foo", "goodbye")
+                .body(Body::empty())
+                .unwrap(),
+        )
+    });
+    let service = AdaptationLayer::new(connector)
+        .with_request_service(endpoint("reqmod"))
+        .with_response_service(endpoint("respmod"))
+        .layer(inner);
+
+    let response = service
+        .serve(
+            Request::builder()
+                .method("POST")
+                .uri("http://origin.test/upload")
+                .extension(rama_http_types::proto::h1::ext::RequestTargetForm::Absolute)
+                .header("X-FOO-bar", "hello")
+                .header("content-type", "text/plain")
+                .header("x-Foo-BAR", "goodbye")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_header_lines(response.headers(), RESPONSE_HEADER_LINES);
+}
+
+#[tokio::test]
+async fn icaps_endpoint_uses_direct_tls_for_options_reqmod_and_respmod() {
+    let server_auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::generated_ca_for(
+        Domain::from_static("icap.test"),
+    ))
+    .unwrap();
+    let trust_anchor = server_auth.cert_chain.last().unwrap().clone();
+    let tls_config = TlsServerConfig::new().with_single_cert(server_auth);
+    let icap_server = Server::new(
+        TlsIcapHandler {
+            adaptation: HttpService::new(service_fn(serve_adaptation)),
+            secure: true,
+            port: Some(Protocol::ICAPS_DEFAULT_PORT),
+        },
+        b"\"rama-tls\"",
+    )
+    .unwrap();
+    let icap_server = TlsIcapConnectionServer { inner: icap_server };
+    let server = TlsAcceptorLayer::new(tls_config).into_layer(icap_server);
+    let transport = MockConnectorService::new(move || server.clone()).with_max_buffer_size(4096);
+    let transport = service_fn(move |input: ConnectRequest| {
+        let transport = transport.clone();
+        async move {
+            assert_eq!(input.authority.to_string(), "icap.test:11344");
+            assert_eq!(
+                input.connector_target().unwrap().to_string(),
+                "127.0.0.1:31344",
+            );
+            transport.serve(input).await
+        }
+    });
+    let tls = TlsConnector::auto(transport).with_base_config(
+        TlsClientConfig::new()
+            .with_server_verify(ServerVerifyMode::Auto)
+            .try_with_server_trust_anchors([trust_anchor])
+            .unwrap(),
+    );
+    let client = crate::client::Client::new(tls);
+    let mut endpoint = ServiceEndpoint::new("icaps://icap.test/scan").unwrap();
+    endpoint.insert_connection_extension(ConnectorTarget("127.0.0.1:31344".parse().unwrap()));
+
+    let options_request = endpoint.options_request().unwrap();
+    assert_eq!(options_request.service_uri(), endpoint.uri());
+    assert_eq!(
+        options_request.connect_request().protocol(),
+        Some(&Protocol::ICAPS)
+    );
+    assert_eq!(
+        options_request.connect_request().authority.to_string(),
+        "icap.test:11344"
+    );
+    OptionsService::new(client.clone())
+        .serve(options_request)
+        .await
+        .unwrap();
+
+    let inner = service_fn(async |request: Request<Body>| {
+        assert_eq!(request.headers()["x-reqmod"], "yes");
+        Ok::<_, Infallible>(
+            Response::builder()
+                .status(201)
+                .body(Body::from("secure-response"))
+                .unwrap(),
+        )
+    });
+    let service = AdaptationLayer::new(client)
+        .with_request_service(endpoint.clone())
+        .with_response_service(endpoint)
+        .layer(inner);
+    let response = service
+        .serve(
+            Request::builder()
+                .method("POST")
+                .uri("http://origin.test/upload")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 201);
+    assert_eq!(response.headers()["x-respmod"], "yes");
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "secure-response"
+    );
+}
+
+#[tokio::test]
+async fn boring_icaps_interoperates_for_options_reqmod_and_respmod() {
+    let server_auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::generated_ca_for(
+        Domain::from_static("icap.test"),
+    ))
+    .unwrap();
+    let trust_anchor = server_auth.cert_chain.last().unwrap().clone();
+    let tls_config = TlsServerConfig::new().with_single_cert(server_auth);
+    let icap_server = Server::new(
+        TlsIcapHandler {
+            adaptation: HttpService::new(service_fn(serve_adaptation)),
+            secure: true,
+            port: Some(Protocol::ICAPS_DEFAULT_PORT),
+        },
+        b"\"rama-boring\"",
+    )
+    .unwrap();
+    let server = TlsAcceptorLayer::new(tls_config)
+        .into_layer(TlsIcapConnectionServer { inner: icap_server });
+    let transport = MockConnectorService::new(move || server.clone()).with_max_buffer_size(4096);
+    let tls = BoringTlsConnector::auto(transport).with_base_config(
+        TlsClientConfig::new()
+            .with_server_verify(ServerVerifyMode::Auto)
+            .try_with_server_trust_anchors([trust_anchor])
+            .unwrap(),
+    );
+    let client = crate::client::Client::new(tls);
+    let endpoint = ServiceEndpoint::new("icaps://icap.test/scan").unwrap();
+
+    OptionsService::new(client.clone())
+        .serve(endpoint.options_request().unwrap())
+        .await
+        .unwrap();
+
+    let inner = service_fn(async |request: Request<Body>| {
+        assert_eq!(request.headers()["x-reqmod"], "yes");
+        Ok::<_, Infallible>(Response::new(Body::from("boring-response")))
+    });
+    let response = AdaptationLayer::new(client)
+        .with_request_service(endpoint.clone())
+        .with_response_service(endpoint)
+        .layer(inner)
+        .serve(Request::new(Body::from("boring-request")))
+        .await
+        .unwrap();
+
+    assert_eq!(response.headers()["x-respmod"], "yes");
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "boring-response",
+    );
+}
+
+#[tokio::test]
+async fn boring_icaps_rejects_wrong_certificate_identity() {
+    let server_auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::generated_ca_for(
+        Domain::from_static("wrong.test"),
+    ))
+    .unwrap();
+    let trust_anchor = server_auth.cert_chain.last().unwrap().clone();
+    let tls_config = TlsServerConfig::new().with_single_cert(server_auth);
+    let icap_server = Server::new(
+        HttpService::new(service_fn(serve_adaptation)),
+        b"\"rama-wrong-cert\"",
+    )
+    .unwrap();
+    let server = TlsAcceptorLayer::new(tls_config)
+        .into_layer(TlsIcapConnectionServer { inner: icap_server });
+    let transport = MockConnectorService::new(move || server.clone()).with_max_buffer_size(4096);
+    let tls = BoringTlsConnector::auto(transport).with_base_config(
+        TlsClientConfig::new()
+            .with_server_verify(ServerVerifyMode::Auto)
+            .try_with_server_trust_anchors([trust_anchor])
+            .unwrap(),
+    );
+    let endpoint = ServiceEndpoint::new("icaps://icap.test/scan").unwrap();
+
+    OptionsService::new(crate::client::Client::new(tls))
+        .serve(endpoint.options_request().unwrap())
+        .await
+        .unwrap_err();
+}
+
+#[tokio::test]
+async fn auto_tls_connector_keeps_icap_endpoint_plaintext() {
+    let transport = MockConnectorService::new(|| {
+        Server::new(
+            HttpService::new(service_fn(serve_adaptation)),
+            b"\"rama-plain\"",
+        )
+        .unwrap()
+    })
+    .with_max_buffer_size(4096);
+    let tls = TlsConnector::auto(transport)
+        .with_base_config(TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
+    let client = crate::client::Client::new(tls);
+    let inner = service_fn(async |request: Request<Body>| {
+        assert_eq!(request.headers()["x-reqmod"], "yes");
+        Ok::<_, Infallible>(Response::new(Body::empty()))
+    });
+    let service = AdaptationLayer::new(client)
+        .with_request_service(ServiceEndpoint::new("icap://icap.test/plain").unwrap())
+        .layer(inner);
+
+    service.serve(Request::new(Body::empty())).await.unwrap();
+}
+
+#[tokio::test]
+async fn http_connect_tunnel_carries_and_reuses_plain_icap() {
+    let tunnels = Arc::new(AtomicUsize::new(0));
+    let icap_server = TlsIcapConnectionServer {
+        inner: Server::new(
+            TlsIcapHandler {
+                adaptation: HttpService::new(service_fn(serve_adaptation)),
+                secure: false,
+                port: None,
+            },
+            b"\"rama-connect\"",
+        )
+        .unwrap(),
+    };
+    let proxy_server = HttpServer::auto(Executor::default()).service(service_fn({
+        let tunnels = Arc::clone(&tunnels);
+        move |request: Request| {
+            let tunnels = Arc::clone(&tunnels);
+            let icap_server = icap_server.clone();
+            async move {
+                assert_eq!(request.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(
+                    request.uri().authority().unwrap().to_string(),
+                    "icap.test:1344"
+                );
+                let on_upgrade = upgrade::handle_upgrade(&request);
+                tunnels.fetch_add(1, Ordering::Relaxed);
+                tokio::spawn(async move {
+                    let tunnel = on_upgrade.await.unwrap();
+                    icap_server.serve(tunnel).await.unwrap();
+                });
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }
+        }
+    }));
+    let transport =
+        MockConnectorService::new(move || proxy_server.clone()).with_max_buffer_size(4096);
+    let transport = HttpProxyConnectorLayer::required().into_layer(transport);
+    let pool = LruDropPool::try_new(1, 2)
+        .unwrap()
+        .with_drop_connection_if_no_response(false);
+    let client = Arc::new(crate::client::Client::new(PooledConnector::new(
+        transport,
+        pool,
+        BasicConnIdentifier::new(),
+    )));
+    let mut endpoint = ServiceEndpoint::new("icap://icap.test/scan").unwrap();
+    endpoint.insert_connection_extension(ProxyRoute::Proxy(
+        "http://proxy.test:8080".parse::<ProxyAddress>().unwrap(),
+    ));
+
+    Box::pin(OptionsService::new(client.clone()).serve(endpoint.options_request().unwrap()))
+        .await
+        .unwrap();
+    let inner = service_fn(async |request: Request<Body>| {
+        assert_eq!(request.headers()["x-reqmod"], "yes");
+        assert_eq!(
+            request.into_body().collect().await.unwrap().to_bytes(),
+            "plain-connect-request",
+        );
+        Ok::<_, Infallible>(Response::new(Body::from("plain-connect-response")))
+    });
+    let service = AdaptationLayer::new(client)
+        .with_request_service(endpoint.clone())
+        .with_response_service(endpoint)
+        .layer(inner);
+    let response = Box::pin(service.serve(Request::new(Body::from("plain-connect-request"))))
+        .await
+        .unwrap();
+
+    assert_eq!(response.headers()["x-respmod"], "yes");
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "plain-connect-response",
+    );
+    assert_eq!(
+        tunnels.load(Ordering::Relaxed),
+        1,
+        "OPTIONS, REQMOD and RESPMOD must reuse one CONNECT tunnel",
+    );
+}
+
+#[tokio::test]
+async fn http_connect_tunnel_carries_and_reuses_icaps() {
+    let server_auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::generated_ca_for(
+        Domain::from_static("icap.test"),
+    ))
+    .unwrap();
+    let trust_anchor = server_auth.cert_chain.last().unwrap().clone();
+    let tls_config = TlsServerConfig::new().with_single_cert(server_auth);
+    let icap_server = TlsIcapConnectionServer {
+        inner: Server::new(
+            TlsIcapHandler {
+                adaptation: HttpService::new(service_fn(serve_adaptation)),
+                secure: true,
+                port: Some(Protocol::ICAPS_DEFAULT_PORT),
+            },
+            b"\"rama-connect-tls\"",
+        )
+        .unwrap(),
+    };
+    let icap_server = BoxService::<upgrade::Upgraded, (), BoxError>::new(
+        TlsAcceptorLayer::new(tls_config).into_layer(icap_server),
+    );
+    let tunnels = Arc::new(AtomicUsize::new(0));
+    let proxy_server = HttpServer::auto(Executor::default()).service(service_fn({
+        let tunnels = Arc::clone(&tunnels);
+        move |request: Request| {
+            let tunnels = Arc::clone(&tunnels);
+            let icap_server = icap_server.clone();
+            async move {
+                assert_eq!(request.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(
+                    request.uri().authority().unwrap().to_string(),
+                    "icap.test:11344",
+                );
+                let on_upgrade = upgrade::handle_upgrade(&request);
+                tunnels.fetch_add(1, Ordering::Relaxed);
+                tokio::spawn(async move {
+                    let tunnel = on_upgrade.await.unwrap();
+                    let result: Result<(), BoxError> = icap_server.serve(tunnel).await;
+                    result.unwrap();
+                });
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }
+        }
+    }));
+    let transport =
+        MockConnectorService::new(move || proxy_server.clone()).with_max_buffer_size(4096);
+    let transport = HttpProxyConnectorLayer::required().into_layer(transport);
+    let transport = TlsConnector::auto(transport).with_base_config(
+        TlsClientConfig::new()
+            .with_server_verify(ServerVerifyMode::Auto)
+            .try_with_server_trust_anchors([trust_anchor])
+            .unwrap(),
+    );
+    let pool = LruDropPool::try_new(1, 2)
+        .unwrap()
+        .with_drop_connection_if_no_response(false);
+    let client = Arc::new(crate::client::Client::new(PooledConnector::new(
+        transport,
+        pool,
+        BasicConnIdentifier::new(),
+    )));
+    let mut endpoint = ServiceEndpoint::new("icaps://icap.test/scan").unwrap();
+    endpoint.insert_connection_extension(ProxyRoute::Proxy(
+        "http://proxy.test:8080".parse::<ProxyAddress>().unwrap(),
+    ));
+
+    Box::pin(OptionsService::new(client.clone()).serve(endpoint.options_request().unwrap()))
+        .await
+        .unwrap();
+    let inner = service_fn(async |request: Request<Body>| {
+        assert_eq!(request.headers()["x-reqmod"], "yes");
+        assert_eq!(
+            request.into_body().collect().await.unwrap().to_bytes(),
+            "secure-connect-request",
+        );
+        Ok::<_, Infallible>(Response::new(Body::from("secure-connect-response")))
+    });
+    let service = AdaptationLayer::new(client)
+        .with_request_service(endpoint.clone())
+        .with_response_service(endpoint)
+        .layer(inner);
+    let response = Box::pin(service.serve(Request::new(Body::from("secure-connect-request"))))
+        .await
+        .unwrap();
+
+    assert_eq!(response.headers()["x-respmod"], "yes");
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "secure-connect-response",
+    );
+    assert_eq!(
+        tunnels.load(Ordering::Relaxed),
+        1,
+        "OPTIONS, REQMOD and RESPMOD must reuse one TLS CONNECT tunnel",
+    );
+}
+
+#[tokio::test]
 async fn options_discovery_constrains_ephemeral_adaptation_policy() {
-    let connector = service_fn(move |input: ConnectRequest| async move {
-        let (client_io, server_io) = tokio::io::duplex(256);
-        tokio::spawn(async move {
+    let connector = mock_icap_client(
+        || {
             let adaptation = service_fn(async |request: IncomingRequest| {
                 assert_eq!(request.icap().preview(), Some(Preview::new(2)));
                 assert!(!request.icap().allows_204());
                 assert!(request.icap().allows_206());
                 serve_adaptation(request).await
             });
-            Server::new(HttpService::new(adaptation), b"\"rama-test\"")
-                .unwrap()
-                .serve(ServiceInput::new(server_io))
-                .await
-                .unwrap();
-        });
-        Ok::<_, Infallible>(EstablishedClientConnection {
-            input,
-            conn: ClientConnection::new(ServiceInput::new(client_io)),
-        })
-    });
+            Server::new(HttpService::new(adaptation), b"\"rama-test\"").unwrap()
+        },
+        256,
+    );
     let discoveries = Arc::new(AtomicUsize::new(0));
     let provider_discoveries = Arc::clone(&discoveries);
     let options = service_fn(move |_request| {
@@ -349,19 +931,75 @@ async fn options_discovery_constrains_ephemeral_adaptation_policy() {
 }
 
 #[tokio::test]
+async fn matching_adaptation_istags_preserve_cached_options() {
+    assert_istag_cache_discoveries(b"\"options-test\"", 1).await;
+}
+
+#[tokio::test]
+async fn changed_reqmod_and_respmod_istags_invalidate_cached_options() {
+    assert_istag_cache_discoveries(b"\"changed\"", 4).await;
+}
+
+async fn assert_istag_cache_discoveries(
+    adaptation_tag: &'static [u8],
+    expected_discoveries: usize,
+) {
+    let connector = mock_icap_client(
+        move || {
+            let adaptation = service_fn(move |request: IncomingRequest| {
+                serve_adaptation_with_service_tag(request, adaptation_tag)
+            });
+            Server::new(HttpService::new(adaptation), adaptation_tag).unwrap()
+        },
+        256,
+    );
+    let discoveries = Arc::new(AtomicUsize::new(0));
+    let provider_discoveries = Arc::clone(&discoveries);
+    let options = OptionsCacheLayer::new().layer(service_fn(move |_request| {
+        provider_discoveries.fetch_add(1, Ordering::Relaxed);
+        async { Ok::<_, Infallible>(discovered_capabilities()) }
+    }));
+    let inner = service_fn(async |_request: Request<Body>| {
+        Ok::<_, Infallible>(Response::new(Body::empty()))
+    });
+    let service_endpoint = endpoint("adapt");
+    let service = AdaptationLayer::new(connector)
+        .with_request_service(service_endpoint.clone())
+        .with_response_service(service_endpoint)
+        .with_options_cache(options)
+        .layer(inner);
+
+    for _ in 0..2 {
+        service
+            .serve(
+                Request::builder()
+                    .method("POST")
+                    .uri("http://origin.test/upload")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(discoveries.load(Ordering::Relaxed), expected_discoveries);
+}
+
+#[tokio::test]
 async fn transfer_ignore_bypasses_reqmod_and_respmod() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let connector = service_fn(move |input: ConnectRequest| {
-        connector_connections.fetch_add(1, Ordering::Relaxed);
-        async move {
-            let (client_io, _server_io) = tokio::io::duplex(256);
-            Ok::<_, Infallible>(EstablishedClientConnection {
-                input,
-                conn: ClientConnection::new(ServiceInput::new(client_io)),
-            })
-        }
-    });
+    let connector = mock_icap_client(
+        move || {
+            connector_connections.fetch_add(1, Ordering::Relaxed);
+            service_fn(|_io: MockSocket| async { Ok::<_, Infallible>(()) })
+        },
+        256,
+    );
     let options = service_fn(|_request| async {
         Ok::<_, Infallible>(discovered_transfer_capabilities(b"*", Some(b"html"), None))
     });
@@ -402,28 +1040,17 @@ async fn transfer_ignore_bypasses_reqmod_and_respmod() {
 async fn transfer_complete_disables_preview_in_both_directions() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let connector = service_fn(move |input: ConnectRequest| {
-        let connector_connections = Arc::clone(&connector_connections);
-        async move {
+    let connector = mock_icap_client(
+        move || {
             connector_connections.fetch_add(1, Ordering::Relaxed);
-            let (client_io, server_io) = tokio::io::duplex(256);
-            tokio::spawn(async move {
-                let adaptation = service_fn(async |request: IncomingRequest| {
-                    assert_eq!(request.icap().preview(), None);
-                    serve_adaptation(request).await
-                });
-                Server::new(HttpService::new(adaptation), b"\"rama-test\"")
-                    .unwrap()
-                    .serve(ServiceInput::new(server_io))
-                    .await
-                    .unwrap();
+            let adaptation = service_fn(async |request: IncomingRequest| {
+                assert_eq!(request.icap().preview(), None);
+                serve_adaptation(request).await
             });
-            Ok::<_, Infallible>(EstablishedClientConnection {
-                input,
-                conn: ClientConnection::new(ServiceInput::new(client_io)),
-            })
-        }
-    });
+            Server::new(HttpService::new(adaptation), b"\"rama-test\"").unwrap()
+        },
+        256,
+    );
     let options = service_fn(|_request| async {
         Ok::<_, Infallible>(discovered_transfer_capabilities(b"*", None, Some(b"zip")))
     });
@@ -456,21 +1083,16 @@ async fn transfer_complete_disables_preview_in_both_directions() {
 
 #[tokio::test]
 async fn preserves_trailer_only_response_declaration() {
-    let connector = service_fn(move |input: ConnectRequest| async move {
-        let (client_io, server_io) = tokio::io::duplex(256);
-        tokio::spawn(async move {
-            let server = Server::new(
+    let connector = mock_icap_client(
+        || {
+            Server::new(
                 HttpService::new(service_fn(serve_adaptation)),
                 b"\"rama-test\"",
             )
-            .unwrap();
-            server.serve(ServiceInput::new(server_io)).await.unwrap();
-        });
-        Ok::<_, Infallible>(EstablishedClientConnection {
-            input,
-            conn: ClientConnection::new(ServiceInput::new(client_io)),
-        })
-    });
+            .unwrap()
+        },
+        256,
+    );
     let inner = service_fn(async |_request: Request<Body>| {
         let mut trailers = HeaderMap::new();
         trailers.insert("x-response-end", HeaderValue::from_static("yes"));
@@ -506,25 +1128,15 @@ async fn preserves_trailer_only_response_declaration() {
 async fn reuses_healthy_exclusive_transport_connections() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let transport = service_fn(move |input: ConnectRequest| {
-        let connector_connections = Arc::clone(&connector_connections);
-        async move {
-            connector_connections.fetch_add(1, Ordering::Relaxed);
-            let (client_io, server_io) = tokio::io::duplex(256);
-            tokio::spawn(async move {
-                let server = Server::new(
-                    HttpService::new(service_fn(serve_adaptation)),
-                    b"\"rama-test\"",
-                )
-                .unwrap();
-                server.serve(ServiceInput::new(server_io)).await.unwrap();
-            });
-            Ok::<_, Infallible>(EstablishedClientConnection {
-                input,
-                conn: ServiceInput::new(client_io),
-            })
-        }
-    });
+    let transport = MockConnectorService::new(move || {
+        connector_connections.fetch_add(1, Ordering::Relaxed);
+        Server::new(
+            HttpService::new(service_fn(serve_adaptation)),
+            b"\"rama-test\"",
+        )
+        .unwrap()
+    })
+    .with_max_buffer_size(256);
     let pool = LruDropPool::try_new(1, 1)
         .unwrap()
         .with_drop_connection_if_no_response(false);
@@ -651,25 +1263,19 @@ async fn pool_discards_transports_with_preloaded_responses() {
 async fn evicts_transport_when_adapted_body_is_dropped() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let transport = service_fn(move |input: ConnectRequest| {
-        let connector_connections = Arc::clone(&connector_connections);
-        async move {
-            connector_connections.fetch_add(1, Ordering::Relaxed);
-            let (client_io, server_io) = tokio::io::duplex(256);
-            tokio::spawn(async move {
-                let server = Server::new(
-                    HttpService::new(service_fn(serve_adaptation)),
-                    b"\"rama-test\"",
-                )
-                .unwrap();
-                let _result = server.serve(ServiceInput::new(server_io)).await;
-            });
-            Ok::<_, Infallible>(EstablishedClientConnection {
-                input,
-                conn: ServiceInput::new(client_io),
-            })
-        }
-    });
+    let transport = MockConnectorService::new(move || {
+        connector_connections.fetch_add(1, Ordering::Relaxed);
+        service_fn(|server_io: MockSocket| async move {
+            let server = Server::new(
+                HttpService::new(service_fn(serve_adaptation)),
+                b"\"rama-test\"",
+            )
+            .unwrap();
+            let _result = server.serve(server_io).await;
+            Ok::<_, Infallible>(())
+        })
+    })
+    .with_max_buffer_size(256);
     let pool = LruDropPool::try_new(1, 1)
         .unwrap()
         .with_drop_connection_if_no_response(false);
@@ -717,38 +1323,28 @@ async fn evicts_transport_when_adapted_body_is_dropped() {
 async fn releases_preview_204_lease_before_original_replay() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let transport = service_fn(move |input: ConnectRequest| {
-        let connector_connections = Arc::clone(&connector_connections);
-        async move {
-            connector_connections.fetch_add(1, Ordering::Relaxed);
-            let (client_io, server_io) = tokio::io::duplex(256);
-            tokio::spawn(async move {
-                let server = Server::new(
-                    service_fn(async |request: RawIncomingRequest| {
-                        let response = IcapResponse::new(
-                            request.request().method(),
-                            ResponseLine::new(
-                                StatusCode::NO_MODIFICATION_NEEDED,
-                                b"No Modification Needed",
-                            )
-                            .unwrap(),
-                            &adaptation_response_fields(),
-                            None,
-                        )
-                        .unwrap();
-                        Ok::<_, Infallible>(OutgoingResponse::without_body(response))
-                    }),
-                    b"\"rama-test\"",
+    let transport = MockConnectorService::new(move || {
+        connector_connections.fetch_add(1, Ordering::Relaxed);
+        Server::new(
+            service_fn(async |request: RawIncomingRequest| {
+                let response = IcapResponse::new(
+                    request.request().method(),
+                    ResponseLine::new(
+                        StatusCode::NO_MODIFICATION_NEEDED,
+                        b"No Modification Needed",
+                    )
+                    .unwrap(),
+                    &adaptation_response_fields(),
+                    None,
                 )
                 .unwrap();
-                server.serve(ServiceInput::new(server_io)).await.unwrap();
-            });
-            Ok::<_, Infallible>(EstablishedClientConnection {
-                input,
-                conn: ServiceInput::new(client_io),
-            })
-        }
-    });
+                Ok::<_, Infallible>(OutgoingResponse::without_body(response))
+            }),
+            b"\"rama-test\"",
+        )
+        .unwrap()
+    })
+    .with_max_buffer_size(256);
     let pool = LruDropPool::try_new(1, 1)
         .unwrap()
         .with_drop_connection_if_no_response(false);
@@ -807,10 +1403,9 @@ async fn releases_preview_204_lease_before_original_replay() {
 
 #[tokio::test]
 async fn omits_configured_preview_for_empty_body() {
-    let connector = service_fn(async |input: ConnectRequest| {
-        let (client_io, server_io) = tokio::io::duplex(256);
-        tokio::spawn(async move {
-            let server = Server::new(
+    let connector = mock_icap_client(
+        || {
+            Server::new(
                 service_fn(async |request: RawIncomingRequest| {
                     assert_eq!(request.request().preview(), None);
                     assert_eq!(
@@ -832,14 +1427,10 @@ async fn omits_configured_preview_for_empty_body() {
                 }),
                 b"\"rama-test\"",
             )
-            .unwrap();
-            server.serve(ServiceInput::new(server_io)).await.unwrap();
-        });
-        Ok::<_, Infallible>(EstablishedClientConnection {
-            input,
-            conn: ClientConnection::new(ServiceInput::new(client_io)),
-        })
-    });
+            .unwrap()
+        },
+        256,
+    );
     let inner = service_fn(async |request: Request<Body>| {
         assert!(
             request
@@ -861,35 +1452,34 @@ async fn omits_configured_preview_for_empty_body() {
 
 #[tokio::test]
 async fn reconstructs_reqmod_partial_content() {
-    let connector = service_fn(async |input: ConnectRequest| {
-        let (client_io, server_io) = tokio::io::duplex(256);
-        tokio::spawn(async move {
-            let mut connection = crate::server::ServerConnection::new(ServiceInput::new(server_io));
-            let mut transaction = connection.accept().await.unwrap().unwrap();
-            assert_eq!(transaction.next_data().await.unwrap().unwrap(), "abcd");
-            assert!(transaction.next_data().await.unwrap().is_none());
-            let parts = EncapsulatedParts::new(
-                Some(Bytes::from_static(b"POST /adapted HTTP/1.1\r\n\r\n")),
-                None,
-                EncapsulatedKind::RequestBody,
-            )
-            .unwrap();
-            let response = IcapResponse::new(
-                MethodKind::Reqmod,
-                ResponseLine::new(StatusCode::PARTIAL_CONTENT, b"Partial Content").unwrap(),
-                &adaptation_response_fields(),
-                Some(parts),
-            )
-            .unwrap();
-            let mut response = transaction.respond(response).await.unwrap();
-            response.write_data(b"XY").await.unwrap();
-            response.finish_partial(3).await.unwrap();
-        });
-        Ok::<_, Infallible>(EstablishedClientConnection {
-            input,
-            conn: ClientConnection::new(ServiceInput::new(client_io)),
-        })
-    });
+    let connector = mock_icap_client(
+        || {
+            service_fn(|server_io: MockSocket| async move {
+                let mut connection = crate::server::ServerConnection::new(server_io);
+                let mut transaction = connection.accept().await.unwrap().unwrap();
+                assert_eq!(transaction.next_data().await.unwrap().unwrap(), "abcd");
+                assert!(transaction.next_data().await.unwrap().is_none());
+                let parts = EncapsulatedParts::new(
+                    Some(Bytes::from_static(b"POST /adapted HTTP/1.1\r\n\r\n")),
+                    None,
+                    EncapsulatedKind::RequestBody,
+                )
+                .unwrap();
+                let response = IcapResponse::new(
+                    MethodKind::Reqmod,
+                    ResponseLine::new(StatusCode::PARTIAL_CONTENT, b"Partial Content").unwrap(),
+                    &adaptation_response_fields(),
+                    Some(parts),
+                )
+                .unwrap();
+                let mut response = transaction.respond(response).await.unwrap();
+                response.write_data(b"XY").await.unwrap();
+                response.finish_partial(3).await.unwrap();
+                Ok::<_, Infallible>(())
+            })
+        },
+        256,
+    );
     let inner = service_fn(async |request: Request<Body>| {
         assert_eq!(request.uri().as_str(), "/adapted");
         assert_eq!(
@@ -918,25 +1508,19 @@ async fn reconstructs_reqmod_partial_content() {
 async fn reqmod_response_bypasses_origin_and_respmod() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
-    let transport = service_fn(move |input: ConnectRequest| {
-        let connector_connections = Arc::clone(&connector_connections);
-        async move {
-            connector_connections.fetch_add(1, Ordering::Relaxed);
-            let (client_io, server_io) = tokio::io::duplex(256);
-            tokio::spawn(async move {
-                let server = Server::new(
-                    HttpService::new(service_fn(serve_blocking_adaptation)),
-                    b"\"rama-test\"",
-                )
-                .unwrap();
-                let _result = server.serve(ServiceInput::new(server_io)).await;
-            });
-            Ok::<_, Infallible>(EstablishedClientConnection {
-                input,
-                conn: ServiceInput::new(client_io),
-            })
-        }
-    });
+    let transport = MockConnectorService::new(move || {
+        connector_connections.fetch_add(1, Ordering::Relaxed);
+        service_fn(|server_io: MockSocket| async move {
+            let server = Server::new(
+                HttpService::new(service_fn(serve_blocking_adaptation)),
+                b"\"rama-test\"",
+            )
+            .unwrap();
+            let _result = server.serve(server_io).await;
+            Ok::<_, Infallible>(())
+        })
+    })
+    .with_max_buffer_size(256);
     let pool = LruDropPool::try_new(1, 1)
         .unwrap()
         .with_drop_connection_if_no_response(false);
@@ -997,10 +1581,9 @@ async fn reqmod_response_bypasses_origin_and_respmod() {
 
 #[tokio::test]
 async fn preserves_reqmod_proxy_authorization_and_canonical_host() {
-    let connector = service_fn(async |input: ConnectRequest| {
-        let (client_io, server_io) = tokio::io::duplex(512);
-        tokio::spawn(async move {
-            let server = Server::new(
+    let connector = mock_icap_client(
+        || {
+            Server::new(
                 HttpService::new(service_fn(async |request: IncomingRequest| {
                     let mut slots = [HeaderSlot::EMPTY; 8];
                     let head = request.icap().parse_head(&mut slots).unwrap();
@@ -1032,14 +1615,10 @@ async fn preserves_reqmod_proxy_authorization_and_canonical_host() {
                 })),
                 b"\"rama-test\"",
             )
-            .unwrap();
-            server.serve(ServiceInput::new(server_io)).await.unwrap();
-        });
-        Ok::<_, Infallible>(EstablishedClientConnection {
-            input,
-            conn: ClientConnection::new(ServiceInput::new(client_io)),
-        })
-    });
+            .unwrap()
+        },
+        512,
+    );
     let inner = service_fn(async |request: Request<Body>| {
         assert_eq!(request.headers()[http_header::HOST], "origin.example:8080");
         assert_eq!(
@@ -1068,10 +1647,9 @@ async fn preserves_reqmod_proxy_authorization_and_canonical_host() {
 
 #[tokio::test]
 async fn canonicalizes_authority_of_adapted_absolute_request() {
-    let connector = service_fn(async |input: ConnectRequest| {
-        let (client_io, server_io) = tokio::io::duplex(512);
-        tokio::spawn(async move {
-            let server = Server::new(
+    let connector = mock_icap_client(
+        || {
+            Server::new(
                 service_fn(async |request: RawIncomingRequest| {
                     let request_head = Bytes::from_static(
                         b"GET http://[2001:db8::9]:8081/changed HTTP/1.1\r\n\
@@ -1095,14 +1673,10 @@ async fn canonicalizes_authority_of_adapted_absolute_request() {
                 }),
                 b"\"rama-test\"",
             )
-            .unwrap();
-            server.serve(ServiceInput::new(server_io)).await.unwrap();
-        });
-        Ok::<_, Infallible>(EstablishedClientConnection {
-            input,
-            conn: ClientConnection::new(ServiceInput::new(client_io)),
-        })
-    });
+            .unwrap()
+        },
+        512,
+    );
     let inner = service_fn(async |request: Request<Body>| {
         assert_eq!(request.uri().as_str(), "http://[2001:db8::9]:8081/changed",);
         assert_eq!(request.headers()[http_header::HOST], "[2001:db8::9]:8081");
@@ -1126,10 +1700,9 @@ async fn canonicalizes_authority_of_adapted_absolute_request() {
 
 #[tokio::test]
 async fn preserves_respmod_proxy_authenticate_after_204() {
-    let connector = service_fn(async |input: ConnectRequest| {
-        let (client_io, server_io) = tokio::io::duplex(512);
-        tokio::spawn(async move {
-            let server = Server::new(
+    let connector = mock_icap_client(
+        || {
+            Server::new(
                 HttpService::new(service_fn(async |request: IncomingRequest| {
                     let mut slots = [HeaderSlot::EMPTY; 8];
                     let head = request.icap().parse_head(&mut slots).unwrap();
@@ -1161,14 +1734,10 @@ async fn preserves_respmod_proxy_authenticate_after_204() {
                 })),
                 b"\"rama-test\"",
             )
-            .unwrap();
-            server.serve(ServiceInput::new(server_io)).await.unwrap();
-        });
-        Ok::<_, Infallible>(EstablishedClientConnection {
-            input,
-            conn: ClientConnection::new(ServiceInput::new(client_io)),
-        })
-    });
+            .unwrap()
+        },
+        512,
+    );
     let inner = service_fn(async |_request: Request<Body>| {
         Ok::<_, Infallible>(
             Response::builder()
@@ -1192,44 +1761,45 @@ async fn preserves_respmod_proxy_authenticate_after_204() {
 
 #[tokio::test]
 async fn preserves_parser_policy_for_returned_proxy_headers() {
-    let connector = service_fn(async |input: ConnectRequest| {
-        let (client_io, mut server_io) = tokio::io::duplex(512);
-        tokio::spawn(async move {
-            let mut request = Vec::new();
-            while request
-                .windows(4)
-                .filter(|window| *window == b"\r\n\r\n")
-                .count()
-                < 2
-            {
-                let mut buffer = [0; 256];
-                let read = server_io.read(&mut buffer).await.unwrap();
-                assert!(read > 0);
-                request.extend_from_slice(&buffer[..read]);
-                assert!(request.len() < 1024);
-            }
+    let connector = crate::client::Client::new(
+        MockConnectorService::new(|| {
+            service_fn(|mut server_io: MockSocket| async move {
+                let mut request = Vec::new();
+                while request
+                    .windows(4)
+                    .filter(|window| *window == b"\r\n\r\n")
+                    .count()
+                    < 2
+                {
+                    let mut buffer = [0; 256];
+                    let read = server_io.read(&mut buffer).await.unwrap();
+                    assert!(read > 0);
+                    request.extend_from_slice(&buffer[..read]);
+                    assert!(request.len() < 1024);
+                }
 
-            const HTTP_HEAD: &[u8] = b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n";
-            let response = format!(
-                concat!(
-                    "ICAP/1.0 200 OK\r\n",
-                    "ISTag: \"folded-test\"\r\n",
-                    "Proxy-Authenticate: Basic\r\n",
-                    " realm=folded\r\n",
-                    "Encapsulated: res-hdr=0, null-body={}\r\n\r\n",
-                ),
-                HTTP_HEAD.len(),
-            );
-            server_io.write_all(response.as_bytes()).await.unwrap();
-            server_io.write_all(HTTP_HEAD).await.unwrap();
-        });
-        let options = ConnectionOptions::new()
-            .with_head_parser(HeadParserConfig::new().with_header_folding(HeaderFolding::Allow));
-        Ok::<_, Infallible>(EstablishedClientConnection {
-            input,
-            conn: ClientConnection::with_options(ServiceInput::new(client_io), options),
+                const HTTP_HEAD: &[u8] = b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n";
+                let response = format!(
+                    concat!(
+                        "ICAP/1.0 200 OK\r\n",
+                        "ISTag: \"folded-test\"\r\n",
+                        "Proxy-Authenticate: Basic\r\n",
+                        " realm=folded\r\n",
+                        "Encapsulated: res-hdr=0, null-body={}\r\n\r\n",
+                    ),
+                    HTTP_HEAD.len(),
+                );
+                server_io.write_all(response.as_bytes()).await.unwrap();
+                server_io.write_all(HTTP_HEAD).await.unwrap();
+                Ok::<_, Infallible>(())
+            })
         })
-    });
+        .with_max_buffer_size(512),
+    )
+    .with_options(
+        ConnectionOptions::new()
+            .with_head_parser(HeadParserConfig::new().with_header_folding(HeaderFolding::Allow)),
+    );
     let origin_calls = Arc::new(AtomicUsize::new(0));
     let inner_origin_calls = Arc::clone(&origin_calls);
     let inner = service_fn(move |_request: Request<Body>| {
@@ -1291,14 +1861,11 @@ fn endpoint_derives_headers_and_target() {
             .shares_cache_with(&previous_partition)
     );
     assert_eq!(endpoint.uri().as_str(), "icap://[::1]:31344/scan");
-    assert_eq!(endpoint.authority().to_string(), "[::1]:31344");
+    assert_eq!(endpoint.protocol(), Some(&Protocol::ICAP));
+    assert_eq!(endpoint.authority().unwrap().to_string(), "[::1]:31344");
     let fields = endpoint.request_headers(&[]).unwrap();
     assert_eq!(fields[0], Header::new("authorization", b"secret").unwrap());
-    assert_eq!(
-        fields[1],
-        Header::new(header::HOST, b"[::1]:31344").unwrap()
-    );
-    assert_eq!(fields[2], Header::new(header::ALLOW, b"204, 206").unwrap());
+    assert_eq!(fields[1], Header::new(header::ALLOW, b"204, 206").unwrap());
     assert!(!format!("{endpoint:?}").contains("secret"));
     let first_options = endpoint.options_request().unwrap();
     let second_options = endpoint.options_request().unwrap();
@@ -1310,8 +1877,39 @@ fn endpoint_derives_headers_and_target() {
         first_options.service_uri().as_str(),
         "icap://[::1]:31344/scan"
     );
+    let first_connect = first_options.connect_request();
     assert_eq!(
-        first_options
+        first_connect
+            .extensions
+            .get_ref::<EndpointExtension>()
+            .unwrap()
+            .0,
+        "new"
+    );
+    first_connect
+        .extensions
+        .insert(EndpointExtension("attempt-only"));
+    assert_eq!(
+        first_connect
+            .extensions
+            .get_ref::<EndpointExtension>()
+            .unwrap()
+            .0,
+        "attempt-only"
+    );
+    assert_eq!(
+        second_options
+            .connect_request()
+            .extensions
+            .get_ref::<EndpointExtension>()
+            .unwrap()
+            .0,
+        "new"
+    );
+    assert_eq!(
+        endpoint
+            .options_request()
+            .unwrap()
             .connect_request()
             .extensions
             .get_ref::<EndpointExtension>()
@@ -1322,50 +1920,105 @@ fn endpoint_derives_headers_and_target() {
     assert!(!format!("{first_options:?}").contains("secret"));
 
     let userinfo_endpoint = ServiceEndpoint::new("icap://user:secret@icap.test:/scan").unwrap();
-    assert_eq!(userinfo_endpoint.authority().to_string(), "icap.test:1344");
     assert_eq!(
-        userinfo_endpoint.request_headers(&[]).unwrap()[0],
-        Header::new(header::HOST, b"icap.test").unwrap(),
+        userinfo_endpoint.authority().unwrap().to_string(),
+        "icap.test:1344"
+    );
+    let request = userinfo_endpoint.options_request().unwrap();
+    let mut slots = [HeaderSlot::EMPTY; 4];
+    let head = request.request().parse_head(&mut slots).unwrap();
+    assert_eq!(
+        head.line().uri().as_str(),
+        "icap://user:secret@icap.test/scan",
+    );
+    assert_eq!(
+        head.header(header::HOST).and_then(|value| value.as_bytes()),
+        Some(b"icap.test".as_slice()),
     );
     assert!(!format!("{userinfo_endpoint:?}").contains("secret"));
 
-    for (uri, target, host) in [
+    for (uri, protocol, target, wire_uri, host) in [
         (
             "icap://icap.test:01344/scan",
+            &Protocol::ICAP,
             "icap.test:1344",
+            "icap://icap.test:1344/scan",
             "icap.test:1344",
         ),
         (
             "icap://icap.test:031344/scan",
+            &Protocol::ICAP,
             "icap.test:31344",
+            "icap://icap.test:31344/scan",
             "icap.test:31344",
         ),
         (
             "icap://[0:0:0:0:0:0:0:1]:1344/scan",
+            &Protocol::ICAP,
             "[::1]:1344",
+            "icap://[::1]:1344/scan",
             "[::1]:1344",
+        ),
+        (
+            "icap://icap.test:/scan",
+            &Protocol::ICAP,
+            "icap.test:1344",
+            "icap://icap.test/scan",
+            "icap.test",
+        ),
+        (
+            "icaps://icap.test/scan",
+            &Protocol::ICAPS,
+            "icap.test:11344",
+            "icap://icap.test:11344/scan",
+            "icap.test:11344",
+        ),
+        (
+            "icaps://icap.test:/scan",
+            &Protocol::ICAPS,
+            "icap.test:11344",
+            "icap://icap.test:11344/scan",
+            "icap.test:11344",
+        ),
+        (
+            "icaps://icap.test:011344/scan",
+            &Protocol::ICAPS,
+            "icap.test:11344",
+            "icap://icap.test:11344/scan",
+            "icap.test:11344",
+        ),
+        (
+            "icap://icap.test:11344/scan",
+            &Protocol::ICAP,
+            "icap.test:11344",
+            "icap://icap.test:11344/scan",
+            "icap.test:11344",
+        ),
+        (
+            "icaps://icap.test:1344/scan",
+            &Protocol::ICAPS,
+            "icap.test:1344",
+            "icap://icap.test:1344/scan",
+            "icap.test:1344",
         ),
     ] {
         let endpoint = ServiceEndpoint::new(uri).unwrap();
-        assert_eq!(endpoint.authority().to_string(), target);
+        assert_eq!(endpoint.protocol(), Some(protocol));
+        assert_eq!(endpoint.authority().unwrap().to_string(), target);
         let fields = endpoint.request_headers(&[]).unwrap();
-        assert_eq!(
-            fields[0],
-            Header::new(header::HOST, host.as_bytes()).unwrap()
-        );
         let request = crate::message::Request::new_from_source(
-            crate::codec::RequestLineSource::prepared(
-                Method::Options,
-                endpoint.uri(),
-                endpoint.host_header(),
-            ),
+            crate::codec::RequestLineSource::prepared(Method::Options, endpoint.uri()),
             &fields,
             None,
         )
         .unwrap();
         let mut slots = [HeaderSlot::EMPTY; 4];
         let head = request.parse_head(&mut slots).unwrap();
-        assert_eq!(head.line().uri().as_str(), uri);
+        assert_eq!(head.line().uri().as_str(), wire_uri);
+        assert_eq!(
+            head.header(header::HOST).and_then(|value| value.as_bytes()),
+            Some(host.as_bytes()),
+        );
     }
 
     for uri in [
@@ -1395,6 +2048,50 @@ fn endpoint_derives_headers_and_target() {
     validate_success_status(Method::Respmod, StatusCode::PARTIAL_CONTENT).unwrap();
     validate_success_status(Method::Reqmod, StatusCode::PARTIAL_CONTENT).unwrap();
     validate_success_status(Method::Respmod, StatusCode::NOT_FOUND).unwrap_err();
+}
+
+#[test]
+fn connector_target_does_not_replace_logical_service_authority() {
+    let mut endpoint = ServiceEndpoint::new("icaps://icap.test/scan").unwrap();
+    endpoint.insert_connection_extension(ConnectorTarget("127.0.0.1:31344".parse().unwrap()));
+
+    let adaptation = endpoint.connect_request().unwrap();
+    assert_eq!(adaptation.authority.to_string(), "icap.test:11344");
+    assert_eq!(adaptation.protocol(), Some(&Protocol::ICAPS));
+    assert_eq!(
+        adaptation.connector_target().unwrap().to_string(),
+        "127.0.0.1:31344",
+    );
+
+    let options = endpoint.options_request().unwrap();
+    assert_eq!(
+        options.connect_request().authority.to_string(),
+        "icap.test:11344",
+    );
+    assert_eq!(
+        options
+            .connect_request()
+            .connector_target()
+            .unwrap()
+            .to_string(),
+        "127.0.0.1:31344",
+    );
+}
+
+#[test]
+fn application_protocol_separates_plaintext_and_tls_at_same_authority() {
+    let plain = ServiceEndpoint::new("icap://icap.test:11344/scan")
+        .unwrap()
+        .connect_request()
+        .unwrap();
+    let secure = ServiceEndpoint::new("icaps://icap.test:11344/scan")
+        .unwrap()
+        .connect_request()
+        .unwrap();
+
+    assert_eq!(plain.authority, secure.authority);
+    assert_eq!(plain.protocol(), Some(&Protocol::ICAP));
+    assert_eq!(secure.protocol(), Some(&Protocol::ICAPS));
 }
 
 #[test]

@@ -1017,6 +1017,55 @@ async fn typed_stream_header_visible_before_items_and_drain_works() {
     assert_eq!(first.title.value, "Hello, world");
 }
 
+#[tokio::test]
+async fn lenient_rss_keeps_parsing_after_invalid_utf8_text() {
+    let bytes = b"<?xml version=\"1.0\"?><rss version=\"2.0\"><channel>\
+        <title>feed</title><link>https://example.com</link><description>feed</description>\
+        <item><title>before \xff after</title></item>\
+        <item><title>later</title></item>\
+        </channel></rss>"
+        .to_vec();
+    let reader = tokio::io::BufReader::new(std::io::Cursor::new(bytes));
+
+    let feed = Rss2FeedStream::new(reader)
+        .await
+        .expect("lenient RSS header")
+        .collect()
+        .await
+        .expect("lenient RSS body");
+
+    assert_eq!(feed.items.len(), 2);
+    assert_eq!(
+        feed.items[0].title.as_deref(),
+        Some("before \u{fffd} after")
+    );
+    assert_eq!(feed.items[1].title.as_deref(), Some("later"));
+}
+
+#[tokio::test]
+async fn lenient_atom_keeps_parsing_after_invalid_utf8_text() {
+    let bytes = b"<?xml version=\"1.0\"?><feed xmlns=\"http://www.w3.org/2005/Atom\">\
+        <id>urn:feed</id><title>feed</title><updated>2026-08-27T00:00:00Z</updated>\
+        <entry><id>urn:before</id><title>before \xff after</title>\
+        <updated>2026-08-27T00:00:00Z</updated></entry>\
+        <entry><id>urn:later</id><title>later</title>\
+        <updated>2026-08-27T00:00:00Z</updated></entry>\
+        </feed>"
+        .to_vec();
+    let reader = tokio::io::BufReader::new(std::io::Cursor::new(bytes));
+
+    let feed = AtomFeedStream::new(reader)
+        .await
+        .expect("lenient Atom header")
+        .collect()
+        .await
+        .expect("lenient Atom body");
+
+    assert_eq!(feed.entries.len(), 2);
+    assert_eq!(feed.entries[0].title.value, "before \u{fffd} after");
+    assert_eq!(feed.entries[1].title.value, "later");
+}
+
 /// `collect_filtered` must keep only items the predicate accepts, drop the
 /// rest, and still return a complete `Rss2Feed` with the header intact.
 #[tokio::test]

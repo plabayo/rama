@@ -4,7 +4,7 @@ use crate::dep::tokio_rustls::TlsConnector as RustlsConnector;
 use crate::types::TlsTunnel;
 use rama_core::conversion::{RamaInto, RamaTryFrom};
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
-use rama_core::extensions::ExtensionsRef;
+use rama_core::extensions::{Extensions, ExtensionsRef};
 use rama_core::io::Io;
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
@@ -13,17 +13,16 @@ use rama_net::client::{
     ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
 };
 use rama_net::extensions::StreamTransformed;
-use rama_net::{AuthorityInputExt, ProtocolInputExt};
+use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
 use rama_tls::client::{NegotiatedTlsParameters, TlsClientConfig};
-use rama_tls::{ApplicationProtocol, TlsTunnelMode, resolve_tls_tunnel};
+use rama_tls::{ApplicationProtocol, TlsAlpn, TlsTunnelMode, default_tls_alpn, resolve_tls_tunnel};
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 
 #[cfg(feature = "http")]
 use ::{
-    rama_core::{error::ErrorExt, extensions::Extensions},
+    rama_core::error::ErrorExt,
     rama_net::http::{TargetHttpVersion, Version},
-    rama_tls::TlsAlpn,
 };
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
@@ -219,10 +218,12 @@ where
             app_protocol,
         );
 
-        let connector_data = self.connector_data(&input).map_err(|error| {
-            ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-                .context("TlsConnector(auto): build connector configuration")
-        })?;
+        let connector_data = self
+            .connector_data(input.extensions(), app_protocol)
+            .map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                    .context("TlsConnector(auto): build connector configuration")
+            })?;
 
         let (stream, negotiated_params) = self
             .handshake(connector_data, Some(server_host), conn)
@@ -241,11 +242,16 @@ where
 
         let conn = AutoTlsStream::secure(stream);
         #[cfg(feature = "http")]
-        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)
-            .map_err(|error| {
-                ConnectionError::application(error, ConnectionErrorKind::Protocol)
-                    .context("TlsConnector(auto): validate negotiated HTTP version")
-            })?;
+        set_target_http_version(
+            app_protocol,
+            input.extensions(),
+            conn.extensions(),
+            &negotiated_params,
+        )
+        .map_err(|error| {
+            ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                .context("TlsConnector(auto): validate negotiated HTTP version")
+        })?;
 
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -281,10 +287,13 @@ where
 
         let server_host = &authority.host;
 
-        let connector_data = self.connector_data(&input).map_err(|error| {
-            ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-                .context("TlsConnector(secure): build connector configuration")
-        })?;
+        let app_protocol = input.protocol();
+        let connector_data = self
+            .connector_data(input.extensions(), app_protocol)
+            .map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                    .context("TlsConnector(secure): build connector configuration")
+            })?;
 
         let (conn, negotiated_params) = self
             .handshake(connector_data, Some(server_host), conn)
@@ -296,11 +305,16 @@ where
 
         let conn = TlsStream::new(conn);
         #[cfg(feature = "http")]
-        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)
-            .map_err(|error| {
-                ConnectionError::application(error, ConnectionErrorKind::Protocol)
-                    .context("TlsConnector(secure): validate negotiated HTTP version")
-            })?;
+        set_target_http_version(
+            app_protocol,
+            input.extensions(),
+            conn.extensions(),
+            &negotiated_params,
+        )
+        .map_err(|error| {
+            ConnectionError::application(error, ConnectionErrorKind::Protocol)
+                .context("TlsConnector(secure): validate negotiated HTTP version")
+        })?;
 
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -335,10 +349,16 @@ where
             });
         };
 
-        let connector_data = self.connector_data(&input).map_err(|error| {
-            ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
-                .context("TlsConnector(tunnel): build connector configuration")
-        })?;
+        let tunnel_protocol = input
+            .extensions()
+            .get_ref::<TlsTunnel>()
+            .and_then(|tunnel| tunnel.application_protocol.as_ref());
+        let connector_data = self
+            .connector_data(input.extensions(), tunnel_protocol)
+            .map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::InvalidInput)
+                    .context("TlsConnector(tunnel): build connector configuration")
+            })?;
 
         let (conn, negotiated_params) = self
             .handshake(connector_data, maybe_server_host, conn)
@@ -350,11 +370,16 @@ where
         let conn = AutoTlsStream::secure(conn);
 
         #[cfg(feature = "http")]
-        set_target_http_version(input.extensions(), conn.extensions(), &negotiated_params)
-            .map_err(|error| {
-                ConnectionError::transport(error, ConnectionErrorKind::Protocol)
-                    .context("TlsConnector(tunnel): validate negotiated HTTP version")
-            })?;
+        set_target_http_version(
+            tunnel_protocol,
+            input.extensions(),
+            conn.extensions(),
+            &negotiated_params,
+        )
+        .map_err(|error| {
+            ConnectionError::transport(error, ConnectionErrorKind::Protocol)
+                .context("TlsConnector(tunnel): validate negotiated HTTP version")
+        })?;
 
         conn.extensions().insert(negotiated_params);
         conn.extensions().insert(StreamTransformed {
@@ -366,22 +391,26 @@ where
 }
 
 impl<S, K> TlsConnector<S, K> {
-    fn connector_data<Input>(&self, input: &Input) -> Result<TlsConnectorData, BoxError>
-    where
-        Input: ExtensionsRef,
-    {
+    fn connector_data(
+        &self,
+        request_extensions: &Extensions,
+        application_protocol: Option<&Protocol>,
+    ) -> Result<TlsConnectorData, BoxError> {
+        let effective = request_extensions.fork();
         let extensions = if let Some(base) = &self.base_config {
-            &input.extensions().with_base(base.as_extensions())
+            effective.with_base(base.as_extensions())
         } else {
-            input.extensions()
+            effective
         };
+
+        apply_default_alpn(request_extensions, &extensions, application_protocol);
 
         // When HTTP pins a concrete target version, force the TLS ALPN to match
         // it before the handshake
         #[cfg(feature = "http")]
-        resolve_http_alpn(extensions)?;
+        resolve_http_alpn(&extensions, application_protocol)?;
 
-        let config = RustlsTlsConnectorConfig::from_extensions(extensions);
+        let config = RustlsTlsConnectorConfig::from_extensions(&extensions);
         TlsConnectorData::try_from(config)
     }
 
@@ -459,11 +488,32 @@ impl<S, K> TlsConnector<S, K> {
     }
 }
 
+fn apply_default_alpn(
+    request_extensions: &Extensions,
+    effective_extensions: &Extensions,
+    application_protocol: Option<&Protocol>,
+) {
+    if request_extensions.get_ref::<TlsAlpn>().is_some() {
+        return;
+    }
+    let Some(protocol) = application_protocol else {
+        return;
+    };
+
+    effective_extensions.insert(default_tls_alpn(protocol).unwrap_or_else(TlsAlpn::empty));
+}
+
 /// Force the TLS ALPN to match a concrete [`TargetHttpVersion`] when HTTP pins
 /// one. Otherwise protocols like WebSocket can negotiate `h2` even though the
 /// request requires an HTTP/1.1 upgrade.
 #[cfg(feature = "http")]
-fn resolve_http_alpn(ext: &Extensions) -> Result<(), BoxError> {
+fn resolve_http_alpn(
+    ext: &Extensions,
+    application_protocol: Option<&Protocol>,
+) -> Result<(), BoxError> {
+    if application_protocol.is_some_and(|protocol| !protocol.is_http_based()) {
+        return Ok(());
+    }
     let Some(target_version) = ext.get_ref::<TargetHttpVersion>() else {
         return Ok(());
     };
@@ -481,10 +531,14 @@ fn resolve_http_alpn(ext: &Extensions) -> Result<(), BoxError> {
 
 #[cfg(feature = "http")]
 fn set_target_http_version(
+    application_protocol: Option<&Protocol>,
     request_extensions: &Extensions,
     conn_extensions: &Extensions,
     tls_params: &NegotiatedTlsParameters,
 ) -> Result<(), BoxError> {
+    if !application_protocol.is_some_and(Protocol::is_http_based) {
+        return Ok(());
+    }
     if let Some(proto) = tls_params.application_layer_protocol.as_ref() {
         let neg_version: Version = proto.try_into()?;
         if let Some(target_version) = request_extensions.get_ref::<TargetHttpVersion>()
@@ -569,7 +623,7 @@ mod tests {
             let ext = Extensions::new();
             ext.insert(TargetHttpVersion(Version::HTTP_11));
 
-            resolve_http_alpn(&ext).unwrap();
+            resolve_http_alpn(&ext, Some(&Protocol::HTTPS)).unwrap();
             assert_eq!(alpn_of(&ext), Some(vec![ApplicationProtocol::HTTP_11]));
         }
 
@@ -578,14 +632,14 @@ mod tests {
             let ext = Extensions::new();
             ext.insert(TargetHttpVersion(Version::HTTP_2));
 
-            resolve_http_alpn(&ext).unwrap();
+            resolve_http_alpn(&ext, Some(&Protocol::HTTPS)).unwrap();
             assert_eq!(alpn_of(&ext), Some(vec![ApplicationProtocol::HTTP_2]));
         }
 
         #[test]
         fn leaves_alpn_untouched_without_target_version() {
             let ext = Extensions::new();
-            resolve_http_alpn(&ext).unwrap();
+            resolve_http_alpn(&ext, Some(&Protocol::HTTPS)).unwrap();
             assert_eq!(alpn_of(&ext), None);
         }
 
@@ -595,7 +649,7 @@ mod tests {
             ext.insert(TlsAlpn::http_auto());
             ext.insert(FallbackHttpVersion(Version::HTTP_11));
 
-            resolve_http_alpn(&ext).unwrap();
+            resolve_http_alpn(&ext, Some(&Protocol::HTTPS)).unwrap();
             assert_eq!(
                 alpn_of(&ext),
                 Some(vec![
@@ -611,8 +665,47 @@ mod tests {
             ext.insert(TlsAlpn::http_auto());
             ext.insert(TargetHttpVersion(Version::HTTP_11));
 
-            resolve_http_alpn(&ext).unwrap();
+            resolve_http_alpn(&ext, Some(&Protocol::HTTPS)).unwrap();
             assert_eq!(alpn_of(&ext), Some(vec![ApplicationProtocol::HTTP_11]));
+        }
+
+        #[test]
+        fn icaps_shadows_inherited_http_alpn() {
+            let base = Extensions::new();
+            base.insert(TlsAlpn::http_auto());
+            let request = Extensions::new();
+            let effective = request.fork().with_base(&base);
+
+            apply_default_alpn(&request, &effective, Some(&Protocol::ICAPS));
+
+            assert_eq!(alpn_of(&effective), Some(Vec::new()));
+        }
+
+        #[test]
+        fn explicit_request_alpn_wins_for_icaps() {
+            let base = Extensions::new();
+            base.insert(TlsAlpn::http_auto());
+            let request = Extensions::new();
+            request.insert(TlsAlpn::http_1());
+            let effective = request.fork().with_base(&base);
+
+            apply_default_alpn(&request, &effective, Some(&Protocol::ICAPS));
+
+            assert_eq!(
+                alpn_of(&effective),
+                Some(vec![ApplicationProtocol::HTTP_11])
+            );
+        }
+
+        #[test]
+        fn icaps_ignores_http_version_hint() {
+            let ext = Extensions::new();
+            ext.insert(TlsAlpn::empty());
+            ext.insert(TargetHttpVersion(Version::HTTP_2));
+
+            resolve_http_alpn(&ext, Some(&Protocol::ICAPS)).unwrap();
+
+            assert_eq!(alpn_of(&ext), Some(Vec::new()));
         }
     }
 }
