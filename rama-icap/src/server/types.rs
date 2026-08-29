@@ -1024,7 +1024,7 @@ impl<'a> OptionsResponse<'a> {
             }
             None => None,
         };
-        let mut service_tag_buffer = [0_u8; 34];
+        let service_tag = self.service_tag.to_wire();
         let mut fields = SmallVec::<[Header<'_>; 16]>::new();
         fields.push(Header::new(header::METHODS, methods.as_slice())?);
         if let Some(service) = self.service {
@@ -1033,10 +1033,7 @@ impl<'a> OptionsResponse<'a> {
         if let Some(service_id) = self.service_id {
             fields.push(Header::new(header::SERVICE_ID, service_id)?);
         }
-        fields.push(Header::new(
-            header::ISTAG,
-            self.service_tag.quoted_bytes(&mut service_tag_buffer),
-        )?);
+        fields.push(Header::new(header::ISTAG, service_tag.as_bytes())?);
         if let Some(preview) = self.preview {
             fields.push(Header::new(
                 header::PREVIEW,
@@ -1298,6 +1295,21 @@ mod tests {
         assert_eq!(
             head.header(header::DATE).unwrap().as_bytes(),
             Some(b"Thu, 20 Aug 2026 12:00:00 GMT".as_slice())
+        );
+    }
+
+    #[test]
+    fn options_response_quotes_and_escapes_the_logical_service_tag() {
+        let tag = ServiceTag::new(r#"rama "test"\options"#).unwrap();
+        let response = OptionsResponse::new(tag, &[Method::Respmod])
+            .build()
+            .unwrap();
+        let mut slots = [HeaderSlot::EMPTY; 8];
+        let head = response.response().parse_head(&mut slots).unwrap();
+
+        assert_eq!(
+            head.header(header::ISTAG).unwrap().as_bytes(),
+            Some(br#""rama \"test\"\\options""#.as_slice())
         );
     }
 

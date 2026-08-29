@@ -20,6 +20,40 @@ pub(super) struct ForwardedIcapHeader {
     pub(super) value: HeaderValue,
 }
 
+#[derive(Clone, Default)]
+pub(super) struct PreservedUpgradeHeaders {
+    upgrade: Vec<HeaderValue>,
+}
+
+pub(super) fn preserve_upgrade_headers(headers: &HeaderMap) -> PreservedUpgradeHeaders {
+    if !headers.contains_key(&http_header::UPGRADE)
+        || !connection_header_names(headers).any(|name| name == http_header::UPGRADE)
+    {
+        return PreservedUpgradeHeaders::default();
+    }
+    PreservedUpgradeHeaders {
+        upgrade: headers
+            .get_all(http_header::UPGRADE)
+            .iter()
+            .cloned()
+            .collect(),
+    }
+}
+
+pub(super) fn restore_upgrade_headers(
+    headers: &mut HeaderMap,
+    preserved: &PreservedUpgradeHeaders,
+) {
+    headers.remove(&http_header::CONNECTION);
+    headers.remove(&http_header::UPGRADE);
+    if !preserved.upgrade.is_empty() {
+        headers.insert(http_header::CONNECTION, HeaderValue::from_static("upgrade"));
+        for value in &preserved.upgrade {
+            headers.append(http_header::UPGRADE, value.clone());
+        }
+    }
+}
+
 pub(super) fn sanitize_http_headers(headers: &mut HeaderMap) -> Vec<ForwardedIcapHeader> {
     sanitize_http_headers_with_nominated(headers).0
 }
@@ -205,6 +239,56 @@ mod tests {
             names.iter().map(HeaderName::as_str).collect::<Vec<_>>(),
             ["keep-alive", "X-Hop", "upgrade"]
         );
+    }
+
+    #[test]
+    fn upgrade_headers_round_trip_around_sanitization() {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            http_header::CONNECTION,
+            HeaderValue::from_static("keep-alive, Upgrade"),
+        );
+        headers.append(http_header::CONNECTION, HeaderValue::from_static("x-hop"));
+        headers.append(http_header::UPGRADE, HeaderValue::from_static("websocket"));
+        headers.insert("x-hop", HeaderValue::from_static("secret"));
+        let preserved = preserve_upgrade_headers(&headers);
+
+        sanitize_http_headers(&mut headers);
+        restore_upgrade_headers(&mut headers, &preserved);
+
+        assert_eq!(headers[http_header::CONNECTION], "upgrade");
+        assert_eq!(headers[http_header::UPGRADE], "websocket");
+        assert!(!headers.contains_key("x-hop"));
+
+        let mut ordinary = HeaderMap::new();
+        ordinary.insert(
+            http_header::CONNECTION,
+            HeaderValue::from_static("keep-alive"),
+        );
+        let preserved = preserve_upgrade_headers(&ordinary);
+        sanitize_http_headers(&mut ordinary);
+        restore_upgrade_headers(&mut ordinary, &preserved);
+        assert!(!ordinary.contains_key(http_header::CONNECTION));
+
+        let mut missing_connection = HeaderMap::new();
+        missing_connection.insert(http_header::UPGRADE, HeaderValue::from_static("websocket"));
+        let preserved = preserve_upgrade_headers(&missing_connection);
+        sanitize_http_headers(&mut missing_connection);
+        restore_upgrade_headers(&mut missing_connection, &preserved);
+        assert!(!missing_connection.contains_key(http_header::CONNECTION));
+        assert!(!missing_connection.contains_key(http_header::UPGRADE));
+
+        let mut missing_upgrade_token = HeaderMap::new();
+        missing_upgrade_token.insert(
+            http_header::CONNECTION,
+            HeaderValue::from_static("keep-alive"),
+        );
+        missing_upgrade_token.insert(http_header::UPGRADE, HeaderValue::from_static("websocket"));
+        let preserved = preserve_upgrade_headers(&missing_upgrade_token);
+        sanitize_http_headers(&mut missing_upgrade_token);
+        restore_upgrade_headers(&mut missing_upgrade_token, &preserved);
+        assert!(!missing_upgrade_token.contains_key(http_header::CONNECTION));
+        assert!(!missing_upgrade_token.contains_key(http_header::UPGRADE));
     }
 
     #[test]

@@ -1682,11 +1682,12 @@ async fn owned_response_releases_verified_206_before_replay_end() {
         let connection = ClientConnection::new(ServiceInput::new(client_io));
         let mut response = connection.send_http_owned(request).await.unwrap();
         assert_eq!(response.next_data().await.unwrap().unwrap(), "XY");
-        assert_eq!(response.next_data().await.unwrap().unwrap(), "def");
+        assert_eq!(response.next_data().await.unwrap().unwrap(), "d");
         assert_eq!(response.original_body_offset_is_verified(), Some(true));
         timeout(Duration::from_secs(1), released.notified())
             .await
             .expect("verified 206 retained its completed ICAP transport");
+        assert_eq!(response.next_data().await.unwrap().unwrap(), "ef");
         assert!(response.next_data().await.unwrap().is_none());
     };
 

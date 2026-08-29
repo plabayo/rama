@@ -23,7 +23,7 @@ use portal::PortalService;
 use rama::{
     Layer, Service,
     combinators::Either,
-    error::{BoxError, ErrorContext},
+    error::{BoxError, BoxErrorExt as _, ErrorContext},
     extensions::ExtensionsRef as _,
     graceful::ShutdownGuard,
     http::{
@@ -57,12 +57,29 @@ use rama::{
             layer::har::HARWebSocketLayer,
         },
     },
+    icap::{
+        client::{
+            Client as IcapClient,
+            options::{
+                MethodSupport, OptionsCache, OptionsCacheLayer, OptionsRequest, OptionsService,
+                ServiceCapabilities,
+            },
+        },
+        http::layer::{AdaptationLayer, ServiceEndpoint, UnsupportedMethodPolicy},
+        proto::{MethodKind as IcapMethodKind, Preview},
+    },
+    io::timeout::TimeoutIo,
     layer::{
         ArcLayer, ConsumeErrLayer, HijackLayer, LimitLayer, MapOutputLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
     },
     net::{
         address::{Authority, AuthorityRef, Domain, ProxyAddress, SocketAddress},
+        client::{
+            ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
+            EstablishedClientConnection,
+            pool::{BasicConnId, BasicConnIdentifier, LruDropPool, PooledConnector},
+        },
         http::server::HttpPeekRouter,
         proxy::IoForwardService,
         socket::{SocketOptions, opts::TcpKeepAlive},
@@ -73,11 +90,16 @@ use rama::{
         server::{Connector as Socks5Connector, Socks5PeekRouter},
     },
     rt::Executor,
-    service::service_fn,
+    service::{BoxService, service_fn},
     tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing,
     tls::{
-        boring::{proxy::TlsMitmRelay, server::TlsAcceptorService},
+        boring::{
+            client::{AutoTlsStream, TlsConnector as IcapTlsConnector},
+            proxy::TlsMitmRelay,
+            server::TlsAcceptorService,
+        },
+        client::{ServerVerifyMode, TlsClientConfig},
         server::{
             CertificateSubject, GeneratedServerAuthConfig, InputWithClientHello, LeafCertRequest,
             PeekTlsClientHelloService, SelfSignedCaConfig, ServerAuthData, TlsPeekRouter,
@@ -88,8 +110,19 @@ use rama::{
     utils::octets::mib_u64,
 };
 use std::{
-    collections::BTreeSet, convert::Infallible, future::Future as _, path::PathBuf, sync::Arc,
-    task::Poll, time::Duration,
+    collections::BTreeSet,
+    convert::Infallible,
+    future::Future as _,
+    num::NonZeroU64,
+    path::PathBuf,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore},
 };
 use upstream::UpstreamProxyConfig;
 
@@ -104,6 +137,513 @@ const TEST_DASHBOARD_TOKEN: &str =
 const DEFAULT_TCP_KEEPALIVE_IDLE_SECS: u64 = 15;
 const DEFAULT_TCP_KEEPALIVE_INTERVAL_SECS: u64 = 5;
 const DEFAULT_TCP_KEEPALIVE_PROBES: u32 = 3;
+const DEFAULT_ICAP_PREVIEW_BYTES: u64 = 1024;
+const DEFAULT_ICAP_CONNECTIONS: usize = 64;
+const DEFAULT_ICAP_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_ICAP_IDLE_TIMEOUT_SECS: u64 = 60;
+
+type IcapTcpConnector = rama::tcp::client::service::TcpConnector<Arc<SocketOptions>>;
+type IcapDnsConnector = rama::dns::client::DnsConnector<IcapTcpConnector>;
+type IcapRawConnector = IcapTlsConnector<IcapDnsConnector>;
+type IcapConnectTimeoutConnector = rama::layer::timeout::DefaultTimeout<IcapRawConnector>;
+type IcapTimedConnector = IcapIoTimeoutConnector<IcapConnectTimeoutConnector>;
+type IcapTransport = IcapTimeoutIo<AutoTlsStream<rama::tcp::TcpStream>>;
+type IcapTransportPool = LruDropPool<IcapTransport, BasicConnId>;
+type IcapPooledConnector =
+    PooledConnector<IcapTimedConnector, IcapTransportPool, BasicConnIdentifier>;
+type IcapRotatingConnector = ConnectorGeneration<IcapPooledConnector, IcapTransportPool>;
+type IcapLimitedConnector = ConnectionLimitConnector<IcapRotatingConnector>;
+type ProxyIcapClient = IcapClient<IcapLimitedConnector>;
+type ProxyIcapOptions = ConnectionLimitOptions<OptionsCache<OptionsService<Arc<ProxyIcapClient>>>>;
+type RawProxyIcapLayer = AdaptationLayer<Arc<ProxyIcapClient>, ProxyIcapOptions>;
+
+struct IcapTimeoutIo<IO> {
+    inner: Pin<Box<TimeoutIo<IO>>>,
+}
+
+impl<IO> IcapTimeoutIo<IO>
+where
+    IO: AsyncRead + AsyncWrite,
+{
+    fn new(inner: IO, timeout: Duration) -> Self {
+        Self {
+            inner: Box::pin(
+                TimeoutIo::new(inner)
+                    .with_read_timeout(timeout)
+                    .with_write_timeout(timeout),
+            ),
+        }
+    }
+}
+
+impl<IO> rama::extensions::ExtensionsRef for IcapTimeoutIo<IO>
+where
+    IO: rama::extensions::ExtensionsRef + AsyncRead + AsyncWrite,
+{
+    fn extensions(&self) -> &rama::extensions::Extensions {
+        self.inner.as_ref().get_ref().get_ref().extensions()
+    }
+}
+
+impl<IO: AsyncRead + AsyncWrite + Unpin> AsyncRead for IcapTimeoutIo<IO> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        self.get_mut().inner.as_mut().poll_read(context, buffer)
+    }
+}
+
+impl<IO: AsyncRead + AsyncWrite + Unpin> AsyncWrite for IcapTimeoutIo<IO> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        self.get_mut().inner.as_mut().poll_write(context, buffer)
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        self.get_mut().inner.as_mut().poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        self.get_mut().inner.as_mut().poll_shutdown(context)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffers: &[std::io::IoSlice<'_>],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        self.get_mut()
+            .inner
+            .as_mut()
+            .poll_write_vectored(context, buffers)
+    }
+}
+
+#[derive(Clone)]
+struct IcapIoTimeoutConnector<S> {
+    inner: S,
+    timeout: Duration,
+}
+
+impl<S> IcapIoTimeoutConnector<S> {
+    const fn new(inner: S, timeout: Duration) -> Self {
+        Self { inner, timeout }
+    }
+}
+
+impl<S, IO> Service<ConnectRequest> for IcapIoTimeoutConnector<S>
+where
+    S: ConnectorService<ConnectRequest, Connection = IO>,
+    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    type Output = EstablishedClientConnection<IcapTimeoutIo<IO>, ConnectRequest>;
+    type Error = ConnectionError;
+
+    async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
+        let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
+        Ok(EstablishedClientConnection {
+            input,
+            conn: IcapTimeoutIo::new(conn, self.timeout),
+        })
+    }
+}
+
+trait RetirePool {
+    fn retire(&self);
+}
+
+impl<C, ID> RetirePool for LruDropPool<C, ID> {
+    fn retire(&self) {
+        Self::retire(self);
+    }
+}
+
+struct ConnectorGenerationState<S, P> {
+    limit: usize,
+    connector: Arc<S>,
+    pool: P,
+}
+
+struct ConnectorGeneration<S, P> {
+    state: Arc<RwLock<ConnectorGenerationState<S, P>>>,
+}
+
+impl<S, P> Clone for ConnectorGeneration<S, P> {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+        }
+    }
+}
+
+impl<S, P> ConnectorGeneration<S, P>
+where
+    P: RetirePool + Send + Sync + 'static,
+{
+    fn new(limit: usize, connector: S, pool: P) -> Self {
+        Self {
+            state: Arc::new(RwLock::new(ConnectorGenerationState {
+                limit,
+                connector: Arc::new(connector),
+                pool,
+            })),
+        }
+    }
+
+    async fn replace(&self, limit: usize, connector: S, pool: P) {
+        let mut state = self.state.write().await;
+        if state.limit != limit {
+            state.pool.retire();
+            state.limit = limit;
+            state.connector = Arc::new(connector);
+            state.pool = pool;
+        }
+    }
+
+    async fn limit(&self) -> usize {
+        self.state.read().await.limit
+    }
+}
+
+impl<Input, S, P> Service<Input> for ConnectorGeneration<S, P>
+where
+    Input: Send + 'static,
+    S: Service<Input>,
+    P: RetirePool + Send + Sync + 'static,
+{
+    type Output = S::Output;
+    type Error = S::Error;
+
+    async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let connector = self.state.read().await.connector.clone();
+        connector.serve(input).await
+    }
+}
+
+#[derive(Clone)]
+struct IcapPoolController {
+    connector: IcapRotatingConnector,
+    inner: IcapTimedConnector,
+    wait_timeout: Option<Duration>,
+    idle_timeout: Duration,
+}
+
+impl IcapPoolController {
+    async fn update(&self, limit: usize) -> Result<(), BoxError> {
+        if self.connector.limit().await == limit {
+            return Ok(());
+        }
+        let (connector, pool) = build_icap_pool(
+            self.inner.clone(),
+            limit,
+            self.wait_timeout,
+            self.idle_timeout,
+        )?;
+        self.connector.replace(limit, connector, pool).await;
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct ConnectionLimiter {
+    semaphore: Arc<Semaphore>,
+    reserved: Arc<Mutex<Option<OwnedSemaphorePermit>>>,
+    local_max: usize,
+    wait_timeout: Option<Duration>,
+}
+
+impl ConnectionLimiter {
+    fn new(local_max: usize, wait_timeout: Option<Duration>) -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(local_max)),
+            reserved: Arc::new(Mutex::new(None)),
+            local_max,
+            wait_timeout,
+        }
+    }
+
+    async fn update(&self, peer_max: Option<u64>) -> Result<usize, BoxError> {
+        let peer_max = match peer_max {
+            Some(0) => {
+                let reserved = self.reserved.lock().await;
+                let effective = self.local_max
+                    - reserved
+                        .as_ref()
+                        .map_or(0, OwnedSemaphorePermit::num_permits);
+                tracing::warn!(
+                    effective,
+                    "ignoring invalid ICAP Max-Connections value of zero"
+                );
+                return Ok(effective);
+            }
+            Some(value) => usize::try_from(value).unwrap_or(usize::MAX),
+            None => self.local_max,
+        };
+        let effective = self.local_max.min(peer_max);
+        let target_reserved = self.local_max - effective;
+        let mut reserved = self.reserved.lock().await;
+        let current_reserved = reserved
+            .as_ref()
+            .map_or(0, OwnedSemaphorePermit::num_permits);
+        match target_reserved.cmp(&current_reserved) {
+            std::cmp::Ordering::Greater => {
+                let count = u32::try_from(target_reserved - current_reserved)
+                    .context("convert reserved ICAP connection capacity")?;
+                let permit = match self.semaphore.clone().try_acquire_many_owned(count) {
+                    Ok(permit) => permit,
+                    Err(tokio::sync::TryAcquireError::NoPermits) => {
+                        // Capacity discovery runs on the request path. Do not put a
+                        // multi-permit waiter ahead of live transactions: retain the
+                        // last fully applied limit and retry on the next request.
+                        return Ok(self.local_max - current_reserved);
+                    }
+                    Err(error) => return Err(Box::new(error)),
+                };
+                if let Some(reserved) = reserved.as_mut() {
+                    reserved.merge(permit);
+                } else {
+                    *reserved = Some(permit);
+                }
+            }
+            std::cmp::Ordering::Less => {
+                let released = reserved
+                    .as_mut()
+                    .and_then(|permit| permit.split(current_reserved - target_reserved))
+                    .ok_or_else(|| {
+                        BoxError::from_static_str(
+                            "reserved ICAP connection permits do not match the tracked limit",
+                        )
+                    })?;
+                drop(released);
+                if target_reserved == 0 {
+                    *reserved = None;
+                }
+            }
+            std::cmp::Ordering::Equal => {}
+        }
+        Ok(effective)
+    }
+
+    async fn acquire(&self) -> Result<OwnedSemaphorePermit, ConnectionError> {
+        let acquire = self.semaphore.clone().acquire_owned();
+        match self.wait_timeout {
+            Some(duration) => tokio::time::timeout(duration, acquire)
+                .await
+                .map_err(|error| {
+                    ConnectionError::local(error, ConnectionErrorKind::Timeout)
+                        .context("wait for ICAP peer connection capacity")
+                })?
+                .map_err(|error| {
+                    ConnectionError::local(error, ConnectionErrorKind::Internal)
+                        .context("acquire ICAP peer connection capacity")
+                }),
+            None => acquire.await.map_err(|error| {
+                ConnectionError::local(error, ConnectionErrorKind::Internal)
+                    .context("acquire ICAP peer connection capacity")
+            }),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ConnectionLimitConnector<S> {
+    inner: S,
+    limit: ConnectionLimiter,
+}
+
+impl<S> Service<ConnectRequest> for ConnectionLimitConnector<S>
+where
+    S: ConnectorService<ConnectRequest>,
+    S::Connection: AsyncRead + AsyncWrite + Unpin,
+{
+    type Output = EstablishedClientConnection<LimitedConnection<S::Connection>, ConnectRequest>;
+    type Error = ConnectionError;
+
+    async fn serve(&self, input: ConnectRequest) -> Result<Self::Output, Self::Error> {
+        let permit = self.limit.acquire().await?;
+        let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
+        Ok(EstablishedClientConnection {
+            input,
+            conn: LimitedConnection {
+                inner: conn,
+                _permit: permit,
+            },
+        })
+    }
+}
+
+struct LimitedConnection<C> {
+    inner: C,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl<C: rama::extensions::ExtensionsRef> rama::extensions::ExtensionsRef for LimitedConnection<C> {
+    fn extensions(&self) -> &rama::extensions::Extensions {
+        self.inner.extensions()
+    }
+}
+
+impl<C: AsyncRead + Unpin> AsyncRead for LimitedConnection<C> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_read(context, buffer)
+    }
+}
+
+impl<C: AsyncWrite + Unpin> AsyncWrite for LimitedConnection<C> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(context, buffer)
+    }
+
+    fn poll_flush(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(context)
+    }
+
+    fn poll_shutdown(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(context)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffers: &[std::io::IoSlice<'_>],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        Pin::new(&mut self.get_mut().inner).poll_write_vectored(context, buffers)
+    }
+}
+
+#[derive(Clone)]
+struct ConnectionLimitOptions<S> {
+    inner: S,
+    limit: ConnectionLimiter,
+    pool: IcapPoolController,
+    update: Arc<Mutex<()>>,
+    request_enabled: bool,
+    response_enabled: bool,
+}
+
+impl<S> Service<OptionsRequest> for ConnectionLimitOptions<S>
+where
+    S: Service<OptionsRequest>,
+    S::Output: Into<Arc<ServiceCapabilities>>,
+    S::Error: Into<BoxError>,
+{
+    type Output = Arc<ServiceCapabilities>;
+    type Error = BoxError;
+
+    async fn serve(&self, input: OptionsRequest) -> Result<Self::Output, Self::Error> {
+        let capabilities: Arc<ServiceCapabilities> = self
+            .inner
+            .serve(input)
+            .await
+            .map_err(Into::into)
+            .context("discover ICAP service connection capacity")?
+            .into();
+        let supported = (self.request_enabled
+            && capabilities.methods().support(IcapMethodKind::Reqmod) == MethodSupport::Supported)
+            || (self.response_enabled
+                && capabilities.methods().support(IcapMethodKind::Respmod)
+                    == MethodSupport::Supported);
+        if !supported {
+            return Err(BoxError::from_static_str(
+                "ICAP service advertises none of the enabled adaptation methods",
+            ));
+        }
+        let _update = self.update.lock().await;
+        let effective = self.limit.update(capabilities.max_connections()).await?;
+        // The semaphore drains active leases before a lower limit lands. A
+        // fresh pool generation then drops every idle transport from the old
+        // generation; active old leases cannot return and close on release.
+        self.pool.update(effective).await?;
+        Ok(capabilities)
+    }
+}
+
+#[derive(Clone)]
+struct ProxyIcapLayer(RawProxyIcapLayer);
+
+#[cfg(test)]
+impl ProxyIcapLayer {
+    fn request_service(&self) -> Option<&ServiceEndpoint> {
+        self.0.request_service()
+    }
+
+    fn response_service(&self) -> Option<&ServiceEndpoint> {
+        self.0.response_service()
+    }
+
+    async fn physical_connection_limit(&self) -> Result<usize, BoxError> {
+        let options = self
+            .0
+            .options_service()
+            .context("ICAP OPTIONS service is missing")?;
+        Ok(options.pool.connector.limit().await)
+    }
+
+    async fn update_physical_connection_limit(&self, limit: usize) -> Result<(), BoxError> {
+        let options = self
+            .0
+            .options_service()
+            .context("ICAP OPTIONS service is missing")?;
+        options.pool.update(limit).await
+    }
+
+    fn physical_idle_timeout(&self) -> Result<Duration, BoxError> {
+        let options = self
+            .0
+            .options_service()
+            .context("ICAP OPTIONS service is missing")?;
+        Ok(options.pool.idle_timeout)
+    }
+}
+
+impl<S> Layer<S> for ProxyIcapLayer
+where
+    RawProxyIcapLayer: Layer<S>,
+    <RawProxyIcapLayer as Layer<S>>::Service: Service<Request, Output = Response, Error = BoxError>,
+{
+    type Service = BoxService<Request, Response, BoxError>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        BoxService::new(self.0.layer(inner))
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        BoxService::new(self.0.into_layer(inner))
+    }
+}
 
 fn default_bind() -> SocketAddress {
     SocketAddress::local_ipv4(8080)
@@ -269,7 +809,7 @@ impl<Body> rama::matcher::Matcher<Request<Body>> for MitmPortalMatcher {
 }
 
 macro_rules! build_mitm_service {
-    ($exec:expr, $capture:expr, $inspection:expr, $har:expr, $portal:expr, $certificate:expr, $private_key:expr, $peek_timeout:expr, $mitm_policy:expr) => {{
+    ($exec:expr, $capture:expr, $inspection:expr, $har:expr, $portal:expr, $certificate:expr, $private_key:expr, $peek_timeout:expr, $mitm_policy:expr, $icap:expr) => {{
         let capture = $capture;
         let inspection = $inspection;
         let har = $har;
@@ -277,6 +817,12 @@ macro_rules! build_mitm_service {
         let portal = $portal;
         let peek_timeout = $peek_timeout;
         let mitm_policy = $mitm_policy;
+        let icap = $icap;
+        let error_level = if icap.is_some() {
+            tracing::Level::WARN
+        } else {
+            tracing::Level::DEBUG
+        };
         let websocket_relay = WebSocketRelayIoLayer::new().into_layer(
             CaptureWebSocketLayer::new(Some(capture.clone())).into_layer(
                 HARWebSocketLayer::new().into_layer(
@@ -293,7 +839,7 @@ macro_rules! build_mitm_service {
             HttpWebSocketRelayServiceRequestMatcher::new(websocket_relay),
         );
         let http_mitm_relay = HttpMitmRelay::new(exec.clone()).with_http_middleware((
-            ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
+            ConsumeErrLayer::trace_as(error_level).with_response(DefaultErrorResponse::new()),
             MapResponseBodyLayer::new_boxed_streaming_body(),
             StreamCompressionLayer::new()
                 .with_compress_predicate(MirrorDecompressed::new())
@@ -302,8 +848,11 @@ macro_rules! build_mitm_service {
                 MitmPortalMatcher::http(inspection.clone(), mitm_policy.clone()),
                 portal,
             ),
-            CaptureHttpLayer::new(Some(capture)),
             websocket_layer,
+            RemoveResponseHeaderLayer::exact(rama::http::header::PROXY_AUTHENTICATE),
+            icap,
+            RemoveRequestHeaderLayer::exact(rama::http::header::PROXY_AUTHORIZATION),
+            CaptureHttpLayer::new(Some(capture)),
             HARExportLayer::new(har.clone(), har),
             DecompressionLayer::new()
                 .with_insert_accept_encoding_header(false)
@@ -335,7 +884,7 @@ macro_rules! build_mitm_service {
         let application = PeekTlsClientHelloService::new(tls)
             .maybe_with_peek_timeout(peek_timeout)
             .with_fallback(non_tls);
-        let inspect = ConsumeErrLayer::trace_as_debug().into_layer(application);
+        let inspect = ConsumeErrLayer::trace_as(error_level).into_layer(application);
         Arc::new(MitmTargetPolicyService {
             inspect,
             passthrough,
@@ -464,6 +1013,51 @@ pub struct CliCommandProxy {
     #[arg(long, default_value_t = 30)]
     connect_timeout: u64,
 
+    /// Adapt visible HTTP requests and responses through this ICAP or ICAPS
+    /// service. CONNECT and SOCKS5 streams bypass adaptation unless --mitm
+    /// classifies them as HTTP.
+    #[arg(long)]
+    icap: Option<String>,
+
+    /// Enable ICAP request adaptation.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set, requires = "icap")]
+    icap_reqmod: bool,
+
+    /// Enable ICAP response adaptation.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set, requires = "icap")]
+    icap_respmod: bool,
+
+    /// Body bytes offered to the ICAP service as a Preview (0 = disabled).
+    #[arg(long, default_value_t = DEFAULT_ICAP_PREVIEW_BYTES, requires = "icap")]
+    icap_preview: u64,
+
+    /// Permit ICAP 204 responses after the Preview phase. This retains the
+    /// original body within Rama's bounded replay limits.
+    #[arg(long, requires = "icap")]
+    icap_allow_204: bool,
+
+    /// Permit the ICAP 206 partial-content extension when advertised by the
+    /// service.
+    #[arg(long, requires = "icap")]
+    icap_allow_206: bool,
+
+    /// Maximum persistent connections to the configured ICAP service.
+    #[arg(long, default_value_t = DEFAULT_ICAP_CONNECTIONS, requires = "icap")]
+    icap_connections: usize,
+
+    /// Maximum ICAP read, write, and pool-wait inactivity in seconds.
+    #[arg(long, default_value_t = NonZeroU64::new(DEFAULT_ICAP_TIMEOUT_SECS).unwrap(), requires = "icap")]
+    icap_timeout: NonZeroU64,
+
+    /// Idle seconds before a pooled ICAP connection is discarded (0 = no
+    /// reuse).
+    #[arg(long, default_value_t = DEFAULT_ICAP_IDLE_TIMEOUT_SECS, requires = "icap")]
+    icap_idle_timeout: u64,
+
+    /// Disable certificate verification for an ICAPS service.
+    #[arg(long, requires = "icap")]
+    icap_insecure: bool,
+
     /// Rate-limit new connections per second (0 = no limit).
     #[arg(long, default_value_t = 0)]
     rate: u64,
@@ -577,6 +1171,121 @@ fn mitm_portal_tls_config(
         .with_alpn_http_auto())
 }
 
+fn build_icap_pool(
+    connector: IcapTimedConnector,
+    limit: usize,
+    wait_timeout: Option<Duration>,
+    idle_timeout: Duration,
+) -> Result<(IcapPooledConnector, IcapTransportPool), BoxError> {
+    let pool = LruDropPool::try_new(limit, limit)?
+        .with_idle_timeout(idle_timeout)
+        .with_drop_connection_if_no_response(false);
+    let connector = PooledConnector::new(connector, pool.clone(), BasicConnIdentifier::new())
+        .maybe_with_wait_for_pool_timeout(wait_timeout);
+    Ok((connector, pool))
+}
+
+fn build_icap_adaptation(
+    cfg: &CliCommandProxy,
+    tcp_options: Arc<SocketOptions>,
+    connect_timeout: Option<Duration>,
+) -> Result<Option<ProxyIcapLayer>, BoxError> {
+    let Some(uri) = cfg.icap.as_deref() else {
+        return Ok(None);
+    };
+    if !cfg.icap_reqmod && !cfg.icap_respmod {
+        return Err(BoxError::from_static_str(
+            "at least one of ICAP REQMOD and RESPMOD must be enabled",
+        ));
+    }
+    if cfg.icap_connections == 0 {
+        return Err(BoxError::from_static_str(
+            "ICAP connection limit must be greater than zero",
+        ));
+    }
+    if cfg.icap_connections > Semaphore::MAX_PERMITS {
+        return Err(BoxError::from_static_str(
+            "ICAP connection limit exceeds the supported semaphore capacity",
+        ));
+    }
+
+    let endpoint = ServiceEndpoint::new(uri).context("configure ICAP service endpoint")?;
+    if cfg.icap_allow_206 && !cfg.icap_allow_204 {
+        return Err(BoxError::from_static_str(
+            "--icap-allow-206 requires --icap-allow-204",
+        ));
+    }
+    if endpoint.service_protocol() == &rama::net::Protocol::ICAP
+        && endpoint.uri().userinfo().is_some()
+    {
+        tracing::warn!(
+            service = ?endpoint.uri(),
+            "ICAP URI credentials will be sent over a plaintext connection"
+        );
+    }
+    let icap_timeout = Duration::from_secs(cfg.icap_timeout.get());
+    let idle_timeout = Duration::from_secs(cfg.icap_idle_timeout);
+    let tls_config = cfg
+        .icap_insecure
+        .then(|| TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable));
+    // This is intentionally a dedicated ICAP connector. In particular, it
+    // does not inherit the HTTP egress client's default ALPN configuration.
+    let connector = IcapTlsConnector::auto(rama::dns::client::DnsConnector::new(
+        rama::tcp::client::service::TcpConnector::new().with_connector(tcp_options),
+    ))
+    .maybe_with_base_config(tls_config);
+    let connector = connect_timeout
+        .map_or_else(TimeoutLayer::never, TimeoutLayer::new)
+        .into_layer(connector);
+    let connector = IcapIoTimeoutConnector::new(connector, icap_timeout);
+    let (pooled, pooled_storage) = build_icap_pool(
+        connector.clone(),
+        cfg.icap_connections,
+        Some(icap_timeout),
+        idle_timeout,
+    )?;
+    let rotating = ConnectorGeneration::new(cfg.icap_connections, pooled, pooled_storage);
+    let pool = IcapPoolController {
+        connector: rotating.clone(),
+        inner: connector,
+        wait_timeout: Some(icap_timeout),
+        idle_timeout,
+    };
+    let limit = ConnectionLimiter::new(cfg.icap_connections, Some(icap_timeout));
+    let connector = ConnectionLimitConnector {
+        inner: rotating,
+        limit: limit.clone(),
+    };
+    let client = Arc::new(IcapClient::new(connector));
+    // Cache only the network discovery. Applying a live capacity change after
+    // the cache returns keeps connection draining out of its single-flight
+    // critical section.
+    let options_cache = OptionsCacheLayer::new().layer(OptionsService::new(client.clone()));
+    let options_cache_handle = options_cache.handle();
+    let options = ConnectionLimitOptions {
+        inner: options_cache,
+        limit,
+        pool,
+        update: Arc::new(Mutex::new(())),
+        request_enabled: cfg.icap_reqmod,
+        response_enabled: cfg.icap_respmod,
+    };
+    let endpoint = endpoint
+        .maybe_with_preview((cfg.icap_preview > 0).then(|| Preview::new(cfg.icap_preview)))
+        .with_allow_204(cfg.icap_allow_204)
+        .with_allow_206(cfg.icap_allow_206);
+    let mut adaptation = AdaptationLayer::new(client)
+        .with_options_service_and_cache_handle(options, options_cache_handle)
+        .with_unsupported_method_policy(UnsupportedMethodPolicy::Bypass);
+    if cfg.icap_reqmod {
+        adaptation.set_request_service(endpoint.clone());
+    }
+    if cfg.icap_respmod {
+        adaptation.set_response_service(endpoint);
+    }
+    Ok(Some(ProxyIcapLayer(adaptation)))
+}
+
 /// Run the Rama proxy service.
 pub async fn run(graceful: ShutdownGuard, cfg: CliCommandProxy) -> Result<(), BoxError> {
     run_with_dashboard_token(graceful, cfg, None).await
@@ -596,7 +1305,15 @@ async fn run_with_dashboard_token(
     let inherited_mitm_listener =
         inherited_mitm_listener_index(&cfg, &listeners, requested_mitm_address);
     let mitm_enabled = requested_mitm_address.is_some();
+    if cfg.icap.is_some() && !mitm_enabled {
+        tracing::warn!(
+            "ICAP adaptation covers visible HTTP only; CONNECT and SOCKS5 streams bypass it without --mitm"
+        );
+    }
     let tcp_options = tcp_socket_options(&cfg);
+    let connect_timeout =
+        (cfg.connect_timeout > 0).then(|| Duration::from_secs(cfg.connect_timeout));
+    let icap = build_icap_adaptation(&cfg, tcp_options.clone(), connect_timeout)?;
     let upstream = UpstreamProxyConfig::new(
         cfg.upstream_proxy.clone(),
         cfg.system_proxy,
@@ -765,10 +1482,10 @@ async fn run_with_dashboard_token(
             har: har.clone(),
             portal: portal.clone(),
             tcp_options: tcp_options.clone(),
-            connect_timeout: (cfg.connect_timeout > 0)
-                .then(|| Duration::from_secs(cfg.connect_timeout)),
+            connect_timeout,
             mitm_policy: mitm_policy.clone(),
             upstream: upstream.clone(),
+            icap: icap.clone(),
         });
 
         let plain_handler = proxy_request_dispatcher(
@@ -795,7 +1512,8 @@ async fn run_with_dashboard_token(
                     certificate.clone(),
                     private_key.clone(),
                     peek_timeout,
-                    mitm_policy.clone()
+                    mitm_policy.clone(),
+                    icap.clone()
                 ))
             }
             _ => Either::B(ConsumeErrLayer::trace_as_debug().into_layer(
@@ -813,9 +1531,7 @@ async fn run_with_dashboard_token(
                 .with_proxy_support()
                 .build_connector();
             let connector = upstream.connector_service(connector);
-            (cfg.connect_timeout > 0)
-                .then(|| TimeoutLayer::new(Duration::from_secs(cfg.connect_timeout)))
-                .into_layer(connector)
+            connect_timeout.map(TimeoutLayer::new).into_layer(connector)
         };
         let make_upgrade = || {
             let connector = make_egress_connector();
@@ -891,7 +1607,8 @@ async fn run_with_dashboard_token(
                     certificate.clone(),
                     private_key.clone(),
                     peek_timeout,
-                    mitm_policy.clone()
+                    mitm_policy.clone(),
+                    icap.clone()
                 ))
             }
             _ => Either::B(ConsumeErrLayer::trace_as_debug().into_layer(
@@ -1221,6 +1938,7 @@ struct ProxyClientConfig {
     connect_timeout: Option<Duration>,
     mitm_policy: MitmPolicy,
     upstream: UpstreamProxyConfig,
+    icap: Option<ProxyIcapLayer>,
 }
 
 fn new_proxy_client(
@@ -1236,7 +1954,13 @@ fn new_proxy_client(
         connect_timeout,
         mitm_policy,
         upstream,
+        icap,
     } = config;
+    let error_level = if icap.is_some() {
+        tracing::Level::WARN
+    } else {
+        tracing::Level::DEBUG
+    };
     let tls_config = rama::tls::client::TlsClientConfig::default_http();
     let client = EasyHttpWebClient::connector_builder()
         .with_custom_transport_connector(
@@ -1253,6 +1977,7 @@ fn new_proxy_client(
     let client = upstream.http_service(client);
     let base = require_request_service(
         (
+            CaptureHttpLayer::new(capture.clone()),
             HARExportLayer::new(har.clone(), har),
             DecompressionLayer::new()
                 .with_insert_accept_encoding_header(false)
@@ -1261,32 +1986,34 @@ fn new_proxy_client(
         )
             .into_layer(client),
     );
-    let ordinary = require_request_service(
-        CaptureHttpLayer::new(capture.clone()).into_layer(
-            (
-                RemoveResponseHeaderLayer::hop_by_hop(),
-                RemoveRequestHeaderLayer::hop_by_hop(),
-            )
-                .into_layer(base.clone()),
-        ),
-    );
+    // Let ICAP see proxy authentication metadata, but never forward it to
+    // the origin or downstream client. Splitting the two removal layers puts
+    // adaptation between their request and response directions.
+    let ordinary = RemoveRequestHeaderLayer::hop_by_hop().into_layer(base.clone());
+    let ordinary = icap.clone().into_layer(ordinary);
+    let ordinary = RemoveResponseHeaderLayer::hop_by_hop().into_layer(ordinary);
+    let ordinary = require_request_service(ordinary);
     let websocket_relay = WebSocketRelayIoLayer::new().into_layer(
         CaptureWebSocketLayer::new(capture.clone()).into_layer(
             HARWebSocketLayer::new().into_layer(
-                WebSocketRelayEventService::new(service_fn({
-                    let capture = capture.clone();
-                    move |input| inspect_websocket_event(capture.clone(), input)
+                WebSocketRelayEventService::new(service_fn(move |input| {
+                    inspect_websocket_event(capture.clone(), input)
                 }))
                 .with_message_injection(true),
             ),
         ),
     );
+    let websocket =
+        RemoveRequestHeaderLayer::exact(rama::http::header::PROXY_AUTHORIZATION).into_layer(base);
+    let websocket = icap.into_layer(websocket);
+    let websocket = RemoveResponseHeaderLayer::exact(rama::http::header::PROXY_AUTHENTICATE)
+        .into_layer(websocket);
     let websocket = require_request_service(
         HttpUpgradeMitmRelayLayer::new(
             exec,
             HttpWebSocketRelayServiceRequestMatcher::new(websocket_relay),
         )
-        .into_layer(CaptureHttpLayer::new(capture).into_layer(base)),
+        .into_layer(websocket),
     );
     let proxy = require_request_service(
         rama::layer::HijackLayer::new(
@@ -1302,7 +2029,7 @@ fn new_proxy_client(
         .with_compress_predicate(MirrorDecompressed::new())
         .with_enforce_not_acceptable(false)
         .into_layer(proxy);
-    ConsumeErrLayer::trace_as_debug()
+    ConsumeErrLayer::trace_as(error_level)
         .with_response(DefaultErrorResponse::new())
         .into_layer(MapResponseBodyLayer::new_boxed_streaming_body().into_layer(proxy))
 }

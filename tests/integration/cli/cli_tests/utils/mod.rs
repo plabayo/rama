@@ -340,6 +340,44 @@ impl RamaService {
         Self { process }
     }
 
+    /// Start the rama proxy service with ICAP request and response adaptation.
+    pub(super) fn serve_proxy_icap(port: u16, icap_uri: &str, insecure: bool) -> Self {
+        let mut builder = escargot::CargoBuild::new()
+            .package("rama-cli")
+            .bin("rama")
+            .target_dir("./target/")
+            .run()
+            .unwrap()
+            .command();
+
+        builder
+            .stderr(std::process::Stdio::piped())
+            .arg("serve")
+            .arg("proxy")
+            .arg("--bind")
+            .arg(format!("127.0.0.1:{port}"))
+            .arg("--icap")
+            .arg(icap_uri)
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            );
+        if insecure {
+            builder.arg("--icap-insecure");
+        }
+
+        let mut process = builder.spawn().unwrap();
+        let stderr = process.stderr.take().unwrap();
+        wait_for_tcp_listener(&mut process, port, "ICAP proxy");
+        thread::spawn(move || {
+            for line in BufReader::new(stderr).lines() {
+                println!("rama ICAP proxy >> {}", line.unwrap());
+            }
+        });
+
+        Self { process }
+    }
+
     /// Start the rama MITM proxy and inspector on separate loopback ports.
     pub(super) fn serve_proxy_mitm(proxy_port: u16, inspector_port: u16) -> (Self, String) {
         let mut builder = escargot::CargoBuild::new()

@@ -77,6 +77,58 @@ async fn test_https_proxy_echo() {
     assert!(lines.contains(r##""method":"GET""##), "lines: {lines:?}");
 }
 
+async fn assert_icap_proxy_echo(tls: utils::IcapTlsMode) {
+    let origin_port = utils::reserve_loopback_port();
+    let icap_port = utils::reserve_loopback_port();
+    let proxy_port = utils::reserve_loopback_port();
+    let _origin = utils::RamaService::serve_echo(origin_port, utils::EchoMode::Http);
+    let _icap = utils::RamaService::serve_icap(icap_port, tls);
+    let scheme = match tls {
+        utils::IcapTlsMode::Plain => "icap",
+        utils::IcapTlsMode::SelfSigned | utils::IcapTlsMode::Files => "icaps",
+    };
+    let icap_uri = format!("{scheme}://127.0.0.1:{icap_port}/echo");
+    let _proxy = utils::RamaService::serve_proxy_icap(
+        proxy_port,
+        &icap_uri,
+        !matches!(tls, utils::IcapTlsMode::Plain),
+    );
+    let origin = format!("http://127.0.0.1:{origin_port}/icap-e2e");
+    let proxy = format!("http://127.0.0.1:{proxy_port}");
+    let (ok, stdout, stderr) = utils::RamaService::run_capture_isolated(
+        &[
+            "send",
+            "--max-time",
+            REQUEST_TIMEOUT_SECS,
+            "--proxy",
+            &proxy,
+            &origin,
+        ],
+        None,
+    )
+    .unwrap();
+    assert!(
+        ok,
+        "ICAP-adapted proxy request failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(stdout.contains(r##""method":"GET""##), "{stdout}");
+    assert!(stdout.contains("/icap-e2e"), "{stdout}");
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_proxy_icap_echo() {
+    utils::init_tracing();
+    assert_icap_proxy_echo(utils::IcapTlsMode::Plain).await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_proxy_icaps_echo() {
+    utils::init_tracing();
+    assert_icap_proxy_echo(utils::IcapTlsMode::SelfSigned).await;
+}
+
 #[tokio::test]
 #[ignore]
 async fn test_mitm_capture_export_and_direct_cli_emulation() {

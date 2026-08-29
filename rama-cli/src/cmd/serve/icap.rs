@@ -180,7 +180,8 @@ async fn echo(
 
     let request = HttpIncomingRequest::from_icap(request)?;
     let line = ResponseLine::new(StatusCode::OK, b"OK")?;
-    let fields = [Header::new(header::ISTAG, SERVICE_TAG.as_bytes())?];
+    let service_tag = SERVICE_TAG.to_wire();
+    let fields = [Header::new(header::ISTAG, service_tag.as_bytes())?];
 
     match method {
         MethodKind::Reqmod => {

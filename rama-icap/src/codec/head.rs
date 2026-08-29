@@ -1786,20 +1786,28 @@ fn valid_istag(value: &[u8], syntax: ServiceTagSyntax) -> bool {
             && value.len() <= 32
             && is_token(value);
     };
-    if value.len() > 32 {
-        return false;
-    }
     let mut escaped = false;
+    let mut decoded_len = 0;
     for byte in value.iter().copied() {
         if escaped {
+            if !is_field_value_byte(byte) {
+                return false;
+            }
             escaped = false;
-            continue;
+        } else {
+            match byte {
+                b'\\' => {
+                    escaped = true;
+                    continue;
+                }
+                b'"' => return false,
+                _ if is_field_value_byte(byte) => {}
+                _ => return false,
+            }
         }
-        match byte {
-            b'\\' => escaped = true,
-            b'"' => return false,
-            _ if is_field_value_byte(byte) => {}
-            _ => return false,
+        decoded_len += 1;
+        if decoded_len > 32 {
+            return false;
         }
     }
     !escaped
@@ -3031,6 +3039,15 @@ mod tests {
         Header::new("ISTag", b"\"has spaces & !@#\"").unwrap();
         Header::new("ISTag", b"\"12345678901234567890123456789012\"").unwrap();
         assert!(!valid_istag(b"\"bad\0\"", ServiceTagSyntax::Quoted));
+        assert!(!valid_istag(b"\"bad\\\0\"", ServiceTagSyntax::Quoted));
+        let mut escaped = Vec::from(b"\"".as_slice());
+        for _ in 0..32 {
+            escaped.extend_from_slice(b"\\\"");
+        }
+        escaped.push(b'"');
+        Header::new("ISTag", &escaped).unwrap();
+        escaped.splice(escaped.len() - 1..escaped.len() - 1, *b"\\\"");
+        assert_eq!(Header::new("ISTag", &escaped), Err(InvalidHeader));
         for value in [
             b"unquoted".as_slice(),
             b"\"unterminated".as_slice(),

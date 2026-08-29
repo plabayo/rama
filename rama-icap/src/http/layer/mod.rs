@@ -5,7 +5,10 @@ pub(in crate::http) mod headers;
 mod service;
 
 pub use endpoint::{ServiceEndpoint, ServiceEndpointError, ServiceEndpointRequestError};
-pub use service::{Adaptation, AdaptationLayer, NoOptionsDiscovery, ReqmodResult, RespmodResult};
+pub use service::{
+    Adaptation, AdaptationLayer, NoOptionsDiscovery, ReqmodResult, RespmodResult,
+    UnsupportedMethodPolicy,
+};
 
 #[cfg(test)]
 use crate::http::headers::sanitize_http_headers;

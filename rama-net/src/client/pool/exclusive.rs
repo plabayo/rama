@@ -81,6 +81,7 @@ impl<C: ExtensionsRef, ID> ExtensionsRef for PooledConnection<C, ID> {
 /// Connection pool that uses LRU to evict connections
 pub struct LruDropPool<C, ID> {
     storage: Arc<Mutex<VecDeque<PooledConnection<C, ID>>>>,
+    retired: Arc<AtomicBool>,
     total_slots: Arc<Semaphore>,
     active_slots: Arc<Semaphore>,
     idle_timeout: Option<Duration>,
@@ -101,22 +102,30 @@ pub enum ReuseStrategy {
 
 struct ConnReturner<C, ID> {
     weak_storage: Weak<Mutex<VecDeque<PooledConnection<C, ID>>>>,
+    retired: Arc<AtomicBool>,
 }
 
 impl<C, ID> Clone for ConnReturner<C, ID> {
     fn clone(&self) -> Self {
         Self {
             weak_storage: self.weak_storage.clone(),
+            retired: self.retired.clone(),
         }
     }
 }
 
 impl<C, ID> ConnReturner<C, ID> {
     fn return_conn(&self, mut conn: PooledConnection<C, ID>) {
+        if self.retired.load(Ordering::Acquire) {
+            return;
+        }
         if let Some(storage) = self.weak_storage.upgrade() {
             // Ensure correct ordering by locking storage before loading the
             // last used time.
             let mut storage = storage.lock();
+            if self.retired.load(Ordering::Acquire) {
+                return;
+            }
             conn.last_used = Instant::now();
             storage.push_front(conn);
         }
@@ -127,6 +136,7 @@ impl<C, ID> Clone for LruDropPool<C, ID> {
     fn clone(&self) -> Self {
         Self {
             storage: self.storage.clone(),
+            retired: self.retired.clone(),
             total_slots: self.total_slots.clone(),
             active_slots: self.active_slots.clone(),
             returner: self.returner.clone(),
@@ -157,9 +167,14 @@ impl<C, ID> LruDropPool<C, ID> {
         }
         let storage = Arc::new(Mutex::new(VecDeque::with_capacity(max_total)));
         let weak_storage = Arc::downgrade(&storage);
+        let retired = Arc::new(AtomicBool::new(false));
         Ok(Self {
             storage,
-            returner: ConnReturner { weak_storage },
+            retired: retired.clone(),
+            returner: ConnReturner {
+                weak_storage,
+                retired,
+            },
             total_slots: Arc::new(Semaphore::const_new(max_total)),
             active_slots: Arc::new(Semaphore::const_new(max_active)),
             idle_timeout: None,
@@ -168,6 +183,16 @@ impl<C, ID> LruDropPool<C, ID> {
             #[cfg(feature = "opentelemetry")]
             metrics: None,
         })
+    }
+
+    /// Retire this pool generation and close every idle connection.
+    ///
+    /// Connections that are currently leased are closed when returned. New
+    /// acquisitions fail, including acquisitions through another clone of
+    /// this pool.
+    pub fn retire(&self) {
+        self.retired.store(true, Ordering::Release);
+        self.storage.lock().clear();
     }
 
     generate_set_and_with! {
@@ -222,6 +247,11 @@ where
         &self,
         id: &ID,
     ) -> Result<ConnectionResult<Self::Connection, Self::CreatePermit>, BoxError> {
+        if self.retired.load(Ordering::Acquire) {
+            return Err(BoxError::from_static_str(
+                "connection pool has been retired",
+            ));
+        }
         #[cfg(feature = "opentelemetry")]
         let metrics = self
             .metrics
@@ -247,6 +277,11 @@ where
         };
 
         let mut storage = self.storage.lock();
+        if self.retired.load(Ordering::Acquire) {
+            return Err(BoxError::from_static_str(
+                "connection pool has been retired",
+            ));
+        }
 
         if let Some(timeout) = self.idle_timeout {
             // Since new connections are always returned to the front of the
@@ -808,6 +843,37 @@ mod tests {
             .connect(ServiceInput::new(String::from("aaa")))
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn retired_pool_closes_idle_and_rejects_returned_connections() {
+        let pool = LruDropPool::try_new(2, 2)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let svc =
+            PooledConnector::new(TestService::default(), pool.clone(), StringInputLengthID {});
+
+        let idle = svc
+            .connect(ServiceInput::new(String::from("a")))
+            .await
+            .unwrap()
+            .conn;
+        drop(idle);
+        let active = svc
+            .connect(ServiceInput::new(String::from("bb")))
+            .await
+            .unwrap()
+            .conn;
+        assert_eq!(pool.storage.lock().len(), 1);
+
+        pool.retire();
+        assert!(pool.storage.lock().is_empty());
+        drop(active);
+        assert!(pool.storage.lock().is_empty());
+        match svc.connect(ServiceInput::new(String::from("ccc"))).await {
+            Err(_) => {}
+            Ok(_) => panic!("a retired pool accepted a new acquisition"),
+        }
     }
 
     #[derive(Default)]

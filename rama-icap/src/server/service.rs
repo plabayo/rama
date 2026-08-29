@@ -72,26 +72,12 @@ pub struct Server<S> {
 impl<S> Server<S> {
     /// Create an ICAP server wrapping `inner`.
     pub fn new(inner: S, service_tag: ServiceTag) -> Result<Self, BuildError> {
-        let mut service_tag_buffer = [0_u8; 34];
-        let service_tag = service_tag.quoted_bytes(&mut service_tag_buffer);
-        continue_response(MethodKind::Options, service_tag)?;
+        let service_tag = service_tag.to_wire();
+        continue_response(MethodKind::Options, service_tag.as_bytes())?;
         Ok(Self {
             inner,
             options: ConnectionOptions::new(),
-            service_tag: Bytes::copy_from_slice(service_tag),
-        })
-    }
-
-    /// Create a server from an already quoted opaque wire-format service tag.
-    ///
-    /// Prefer [`Self::new`] with [`ServiceTag`] for ordinary token tags.
-    pub fn new_raw(inner: S, service_tag: impl AsRef<[u8]>) -> Result<Self, BuildError> {
-        let service_tag = service_tag.as_ref();
-        continue_response(MethodKind::Options, service_tag)?;
-        Ok(Self {
-            inner,
-            options: ConnectionOptions::new(),
-            service_tag: Bytes::copy_from_slice(service_tag),
+            service_tag: Bytes::copy_from_slice(service_tag.as_bytes()),
         })
     }
 
@@ -757,10 +743,10 @@ mod tests {
     }
 
     #[test]
-    fn validates_the_interim_service_tag_at_construction() {
-        Server::new_raw((), b"unquoted").unwrap_err();
-        let server = Server::new((), TEST_SERVICE_TAG).unwrap();
-        assert_eq!(server.service_tag(), b"\"rama-test\"");
+    fn encodes_the_interim_service_tag_at_construction() {
+        let tag = ServiceTag::new(r#"rama "test"\server"#).unwrap();
+        let server = Server::new((), tag).unwrap();
+        assert_eq!(server.service_tag(), br#""rama \"test\"\\server""#);
     }
 
     async fn assert_protocol_error_response(request: &[u8], status: StatusCode, reason: &str) {
