@@ -1009,12 +1009,9 @@ fn reserve_loopback_address() -> std::net::SocketAddr {
 async fn spawn_plain_origin(
     response_body: &'static str,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind_address(
-        SocketAddress::from(reserve_loopback_address()),
-        Executor::default(),
-    )
-    .await
-    .unwrap();
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .unwrap();
     let address = listener.local_addr().unwrap();
     let task = tokio::spawn(
         listener.serve(HttpServer::auto(Executor::default()).service(service_fn(
@@ -1143,12 +1140,9 @@ async fn proxy_test_icap_service(
 async fn spawn_proxy_test_icap_with_state(
     state: Arc<ProxyTestIcapState>,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind_address(
-        SocketAddress::from(reserve_loopback_address()),
-        Executor::default(),
-    )
-    .await
-    .unwrap();
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .unwrap();
     let address = listener.local_addr().unwrap();
     let server = IcapServer::new(
         service_fn(move |request| proxy_test_icap_service(request, state.clone())),
@@ -1172,12 +1166,10 @@ async fn spawn_proxy_test_icap() -> (
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn forward_client_applies_icap_reqmod_and_respmod() {
     let (icap_address, icap_task, _icap_state) = spawn_proxy_test_icap().await;
-    let origin_listener = TcpListener::bind_address(
-        SocketAddress::from(reserve_loopback_address()),
-        Executor::default(),
-    )
-    .await
-    .unwrap();
+    let origin_listener =
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+            .await
+            .unwrap();
     let origin_address = origin_listener.local_addr().unwrap();
     let origin_task = tokio::spawn(origin_listener.serve(
         HttpServer::auto(Executor::default()).service(service_fn(|request: Request| async move {
@@ -1302,9 +1294,7 @@ async fn default_icap_directions_follow_single_method_capabilities() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stalled_icap_options_is_bounded_for_all_waiters() {
-    let listener = tokio::net::TcpListener::bind(reserve_loopback_address())
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let icap_address = listener.local_addr().unwrap();
     let icap_task = tokio::spawn(async move {
         let (_connection, _) = listener.accept().await.unwrap();
@@ -1419,12 +1409,9 @@ async fn peer_max_connections_clamps_concurrent_icap_transactions() {
 }
 
 async fn spawn_websocket_origin() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind_address(
-        SocketAddress::from(reserve_loopback_address()),
-        Executor::default(),
-    )
-    .await
-    .unwrap();
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .unwrap();
     let address = listener.local_addr().unwrap();
     let websocket = WebSocketAcceptor::new().into_echo_service();
     let websocket = service_fn(move |request: Request| {
@@ -1448,12 +1435,9 @@ async fn spawn_websocket_origin() -> (std::net::SocketAddr, tokio::task::JoinHan
 }
 
 async fn spawn_tls_websocket_origin() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind_address(
-        SocketAddress::from(reserve_loopback_address()),
-        Executor::default(),
-    )
-    .await
-    .unwrap();
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .unwrap();
     let address = listener.local_addr().unwrap();
     let tls = TlsServerConfig::new()
         .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
@@ -2651,12 +2635,10 @@ async fn live_har_controller_records_proxy_traffic_end_to_end() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn https_connect_is_mitm_relayed_end_to_end() {
-    let origin_listener = TcpListener::bind_address(
-        SocketAddress::from(reserve_loopback_address()),
-        Executor::default(),
-    )
-    .await
-    .unwrap();
+    let origin_listener =
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+            .await
+            .unwrap();
     let origin_address = origin_listener.local_addr().unwrap();
     let origin_tls = TlsServerConfig::new()
         .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
@@ -2717,12 +2699,10 @@ async fn https_connect_is_mitm_relayed_end_to_end() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
     let (icap_address, icap_task, icap_state) = spawn_proxy_test_icap().await;
-    let origin_listener = TcpListener::bind_address(
-        SocketAddress::from(reserve_loopback_address()),
-        Executor::default(),
-    )
-    .await
-    .unwrap();
+    let origin_listener =
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+            .await
+            .unwrap();
     let origin_address = origin_listener.local_addr().unwrap();
     let origin_tls = TlsServerConfig::new()
         .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
@@ -2827,12 +2807,10 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pausing_disables_new_mitm_and_capture_until_resumed() {
-    let origin_listener = TcpListener::bind_address(
-        SocketAddress::from(reserve_loopback_address()),
-        Executor::default(),
-    )
-    .await
-    .unwrap();
+    let origin_listener =
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+            .await
+            .unwrap();
     let origin_address = origin_listener.local_addr().unwrap();
     let origin_tls = TlsServerConfig::new()
         .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
