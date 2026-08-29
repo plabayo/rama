@@ -171,6 +171,10 @@ fn icap_cli_can_select_one_adaptation_direction() {
 #[test]
 fn icap_cli_rejects_unusable_configuration() {
     assert!(
+        TestCli::try_parse_from(["test", "--icap", "icap://[::1/echo"]).is_err(),
+        "--icap is parsed as a typed URI by clap"
+    );
+    assert!(
         TestCli::try_parse_from(["test", "--icap-preview", "1"]).is_err(),
         "ICAP-specific flags require --icap"
     );

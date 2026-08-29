@@ -20,7 +20,7 @@ use rama_core::{
 use rama_http::io::upgrade;
 use rama_http_backend::{client::proxy::layer::HttpProxyConnectorLayer, server::HttpServer};
 use rama_http_types::{
-    Body, HeaderMap, Request, Response,
+    Body, HeaderMap, Request, Response, Version,
     body::{Frame, util::BodyExt as _},
     header::{self as http_header, HeaderValue, TRAILER},
 };
@@ -1131,6 +1131,151 @@ async fn preserves_trailer_only_response_declaration() {
 }
 
 #[tokio::test]
+async fn reqmod_rejects_late_connection_nominated_trailer() {
+    let connector = mock_icap_client(
+        || {
+            Server::new(
+                HttpService::new(service_fn(serve_adaptation)),
+                TEST_SERVICE_TAG,
+            )
+            .unwrap()
+        },
+        256,
+    );
+    let origin_calls = Arc::new(AtomicUsize::new(0));
+    let inner_origin_calls = Arc::clone(&origin_calls);
+    let inner = service_fn(move |_request: Request<Body>| {
+        let inner_origin_calls = Arc::clone(&inner_origin_calls);
+        async move {
+            inner_origin_calls.fetch_add(1, Ordering::Relaxed);
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }
+    });
+    let service = AdaptationLayer::new(connector)
+        .with_request_service(
+            ServiceEndpoint::new("icap://icap.test/reqmod")
+                .unwrap()
+                .with_preview(Preview::new(4)),
+        )
+        .layer(inner);
+    let mut trailers = HeaderMap::new();
+    trailers.insert("x-hop", HeaderValue::from_static("secret"));
+
+    let error = timeout(
+        Duration::from_secs(1),
+        service.serve(
+            Request::builder()
+                .method("POST")
+                .uri("/upload")
+                .header(http_header::CONNECTION, "x-hop")
+                .body(Body::from_frame_stream(stream::iter([
+                    Ok::<_, Infallible>(Frame::data(Bytes::from_static(b"body"))),
+                    Ok(Frame::trailers(trailers)),
+                ])))
+                .unwrap(),
+        ),
+    )
+    .await
+    .expect("REQMOD validation stalled")
+    .unwrap_err();
+
+    assert!(
+        format!("{error:?}").contains("Connection-nominated field"),
+        "unexpected error: {error:?}",
+    );
+    assert_eq!(origin_calls.load(Ordering::Relaxed), 0);
+}
+
+#[tokio::test]
+async fn respmod_204_replay_rejects_late_connection_nominated_trailer() {
+    struct ExactFrames {
+        frames: std::collections::VecDeque<Frame<Bytes>>,
+        data_len: u64,
+    }
+
+    impl rama_http_types::body::StreamingBody for ExactFrames {
+        type Data = Bytes;
+        type Error = Infallible;
+
+        fn poll_frame(
+            mut self: std::pin::Pin<&mut Self>,
+            _context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+            std::task::Poll::Ready(self.frames.pop_front().map(Ok))
+        }
+
+        fn size_hint(&self) -> rama_http_types::body::SizeHint {
+            rama_http_types::body::SizeHint::with_exact(self.data_len)
+        }
+    }
+
+    let connector = mock_icap_client(
+        || {
+            Server::new(
+                service_fn(async |request: RawIncomingRequest| {
+                    assert_eq!(request.request().preview(), Some(Preview::new(4)));
+                    assert!(request.request().allows_204());
+                    let response = IcapResponse::new(
+                        MethodKind::Respmod,
+                        ResponseLine::new(
+                            StatusCode::NO_MODIFICATION_NEEDED,
+                            b"No Modification Needed",
+                        )
+                        .unwrap(),
+                        &adaptation_response_fields(),
+                        None,
+                    )
+                    .unwrap();
+                    Ok::<_, Infallible>(OutgoingResponse::without_body(response))
+                }),
+                TEST_SERVICE_TAG,
+            )
+            .unwrap()
+        },
+        256,
+    );
+    let inner = service_fn(async |_request: Request<Body>| {
+        let mut trailers = HeaderMap::new();
+        trailers.insert("x-hop", HeaderValue::from_static("secret"));
+        Ok::<_, Infallible>(
+            Response::builder()
+                .header(http_header::CONNECTION, "x-hop")
+                .body(Body::new(ExactFrames {
+                    frames: [
+                        Frame::data(Bytes::from_static(b"body")),
+                        Frame::trailers(trailers),
+                    ]
+                    .into(),
+                    data_len: 4,
+                }))
+                .unwrap(),
+        )
+    });
+    let service = AdaptationLayer::new(connector)
+        .with_response_service(
+            ServiceEndpoint::new("icap://icap.test/respmod")
+                .unwrap()
+                .with_preview(Preview::new(4))
+                .with_allow_204(true),
+        )
+        .layer(inner);
+
+    let response = timeout(
+        Duration::from_secs(1),
+        service.serve(Request::new(Body::empty())),
+    )
+    .await
+    .expect("RESPMOD 204 response stalled")
+    .unwrap();
+    let error = response.into_body().collect().await.unwrap_err();
+
+    assert!(
+        format!("{error:?}").contains("Connection-nominated field"),
+        "unexpected error: {error:?}",
+    );
+}
+
+#[tokio::test]
 async fn reuses_healthy_exclusive_transport_connections() {
     let connections = Arc::new(AtomicUsize::new(0));
     let connector_connections = Arc::clone(&connections);
@@ -1866,7 +2011,7 @@ async fn preserves_upgrade_request_fields_around_reqmod_sanitization() {
         512,
     );
     let inner = service_fn(async |request: Request<Body>| {
-        assert_eq!(request.headers()[http_header::CONNECTION], "upgrade");
+        assert_eq!(request.headers()[http_header::CONNECTION], "Upgrade");
         assert_eq!(request.headers()[http_header::UPGRADE], "websocket");
         assert!(!request.headers().contains_key("x-hop"));
         Ok::<_, Infallible>(Response::new(Body::empty()))
@@ -2049,7 +2194,7 @@ async fn preserves_upgrade_response_fields_around_respmod_sanitization() {
 
     let response = service.serve(Request::new(Body::empty())).await.unwrap();
     assert_eq!(response.status(), 101);
-    assert_eq!(response.headers()[http_header::CONNECTION], "upgrade");
+    assert_eq!(response.headers()[http_header::CONNECTION], "Upgrade");
     assert_eq!(response.headers()[http_header::UPGRADE], "websocket");
     assert!(!response.headers().contains_key("x-hop"));
 }
@@ -2676,12 +2821,14 @@ fn separates_proxy_credentials_and_removes_hop_headers() {
     );
     headers.insert("x-end-to-end", HeaderValue::from_static("keep"));
 
-    let forwarded = sanitize_http_headers(&mut headers);
+    let sanitized = SanitizedHttpHead::take(&mut headers, Version::HTTP_11);
     assert_eq!(headers.len(), 1);
     assert_eq!(headers["x-end-to-end"], "keep");
 
     let endpoint = ServiceEndpoint::new("icap://icap.test/scan").unwrap();
-    let fields = endpoint.request_headers(&forwarded).unwrap();
+    let fields = endpoint
+        .request_headers(sanitized.forwarded_icap_headers())
+        .unwrap();
     assert!(fields.contains(&Header::new(header::PROXY_AUTHORIZATION, b"Basic secret").unwrap()));
     assert!(
         fields.contains(&Header::new(header::PROXY_AUTHENTICATE, b"Basic realm=test").unwrap())

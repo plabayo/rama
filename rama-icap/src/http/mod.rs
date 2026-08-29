@@ -36,8 +36,8 @@ use crate::{
 };
 
 use self::headers::{
-    ForwardedIcapHeader, connection_nominated_headers, response_proxy_headers,
-    sanitize_http_headers_with_nominated, validate_http_trailers,
+    ForwardedIcapHeader, SanitizedHttpHead, connection_nominated_headers, response_proxy_headers,
+    validate_http_trailers,
 };
 
 mod headers;
@@ -766,6 +766,15 @@ impl ClientRequest {
     #[must_use]
     pub const fn replay_limits(&self) -> ReplayLimits {
         self.replay_limits
+    }
+
+    pub(crate) fn with_additional_trailer_forbidden(mut self, names: &[HeaderName]) -> Self {
+        for name in names {
+            if !self.trailer_forbidden.contains(name) {
+                self.trailer_forbidden.push(name.clone());
+            }
+        }
+        self
     }
 
     /// Return the original HTTP request head for REQMOD.
@@ -2220,7 +2229,9 @@ fn prepare_request_head<T>(
     request: &HttpRequest<T>,
 ) -> (HttpRequest<()>, Vec<ForwardedIcapHeader>, Vec<HeaderName>) {
     let mut request = HttpRequest::from_parts(request.clone_parts(), ());
-    let (promoted, trailer_forbidden) = sanitize_http_headers_with_nominated(request.headers_mut());
+    let version = request.version();
+    let (promoted, trailer_forbidden) =
+        SanitizedHttpHead::take(request.headers_mut(), version).into_forwarded_and_nominated();
     (request, promoted, trailer_forbidden)
 }
 
@@ -2228,8 +2239,9 @@ fn prepare_response_head<T>(
     response: &HttpResponse<T>,
 ) -> (HttpResponse<()>, Vec<ForwardedIcapHeader>, Vec<HeaderName>) {
     let mut response = HttpResponse::from_parts(response.clone_parts(), ());
+    let version = response.version();
     let (promoted, trailer_forbidden) =
-        sanitize_http_headers_with_nominated(response.headers_mut());
+        SanitizedHttpHead::take(response.headers_mut(), version).into_forwarded_and_nominated();
     (response, promoted, trailer_forbidden)
 }
 

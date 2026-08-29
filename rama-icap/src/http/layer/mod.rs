@@ -11,7 +11,7 @@ pub use service::{
 };
 
 #[cfg(test)]
-use crate::http::headers::sanitize_http_headers;
+use crate::http::headers::SanitizedHttpHead;
 #[cfg(test)]
 use headers::normalize_request_authority;
 #[cfg(test)]

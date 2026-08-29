@@ -3,7 +3,7 @@ use rama_core::{
     error::{BoxError, ErrorContext as _},
 };
 use rama_http_types::{
-    HeaderMap,
+    HeaderMap, Version,
     header::{self as http_header, HeaderName, HeaderValue},
 };
 
@@ -20,83 +20,142 @@ pub(super) struct ForwardedIcapHeader {
     pub(super) value: HeaderValue,
 }
 
-#[derive(Clone, Default)]
-pub(super) struct PreservedUpgradeHeaders {
-    upgrade: Vec<HeaderValue>,
+// Upgrade is hop-by-hop and therefore never belongs in the encapsulated HTTP
+// head. Keep only the intent needed to originate the corresponding next hop,
+// preserving its wire spelling while dropping unrelated connection options.
+struct UpgradeIntent {
+    fields: Vec<(HeaderName, HeaderValue)>,
 }
 
-pub(super) fn preserve_upgrade_headers(headers: &HeaderMap) -> PreservedUpgradeHeaders {
-    if !headers.contains_key(&http_header::UPGRADE)
-        || !connection_header_names(headers).any(|name| name == http_header::UPGRADE)
-    {
-        return PreservedUpgradeHeaders::default();
-    }
-    PreservedUpgradeHeaders {
-        upgrade: headers
-            .get_all(http_header::UPGRADE)
-            .iter()
-            .cloned()
-            .collect(),
-    }
+#[derive(Default)]
+pub(super) struct SanitizedHttpHead {
+    forwarded_icap_headers: Vec<ForwardedIcapHeader>,
+    nominated_headers: Vec<HeaderName>,
+    trailer_fields: Vec<(HeaderName, HeaderValue)>,
+    upgrade_intent: Option<UpgradeIntent>,
 }
 
-pub(super) fn restore_upgrade_headers(
-    headers: &mut HeaderMap,
-    preserved: &PreservedUpgradeHeaders,
-) {
-    headers.remove(&http_header::CONNECTION);
-    headers.remove(&http_header::UPGRADE);
-    if !preserved.upgrade.is_empty() {
-        headers.insert(http_header::CONNECTION, HeaderValue::from_static("upgrade"));
-        for value in &preserved.upgrade {
-            headers.append(http_header::UPGRADE, value.clone());
+impl SanitizedHttpHead {
+    /// Scan every field once to collect adaptation metadata and exact upgrade
+    /// intent; the subsequent removals are keyed lookups rather than rescans.
+    pub(super) fn take(headers: &mut HeaderMap, version: Version) -> Self {
+        let preserve_upgrade = version == Version::HTTP_11;
+        let mut sanitized = Self::default();
+        let mut upgrade_fields = Vec::new();
+        let mut saw_connection_upgrade = false;
+        let mut saw_upgrade = false;
+
+        for (name, value) in headers.ordered_iter() {
+            if name == http_header::PROXY_AUTHENTICATE {
+                let mut value = value.clone();
+                value.set_sensitive(true);
+                sanitized.forwarded_icap_headers.push(ForwardedIcapHeader {
+                    name: header::PROXY_AUTHENTICATE,
+                    value,
+                });
+            } else if name == http_header::PROXY_AUTHORIZATION {
+                let mut value = value.clone();
+                value.set_sensitive(true);
+                sanitized.forwarded_icap_headers.push(ForwardedIcapHeader {
+                    name: header::PROXY_AUTHORIZATION,
+                    value,
+                });
+            } else if name == http_header::CONNECTION {
+                for token in
+                    comma_separated_items(value.as_bytes()).filter(|token| !token.is_empty())
+                {
+                    let Ok(nominated) = HeaderName::from_bytes(token) else {
+                        continue;
+                    };
+                    if preserve_upgrade
+                        && nominated == http_header::UPGRADE
+                        && let Ok(value) = HeaderValue::from_bytes(token)
+                    {
+                        saw_connection_upgrade = true;
+                        upgrade_fields.push((name.clone(), value));
+                    }
+                    sanitized.nominated_headers.push(nominated);
+                }
+            } else if name == http_header::TRAILER {
+                sanitized.trailer_fields.push((name.clone(), value.clone()));
+            } else if preserve_upgrade && name == http_header::UPGRADE {
+                saw_upgrade = true;
+                upgrade_fields.push((name.clone(), value.clone()));
+            }
+        }
+
+        if saw_connection_upgrade && saw_upgrade {
+            sanitized.upgrade_intent = Some(UpgradeIntent {
+                fields: upgrade_fields,
+            });
+        }
+        if sanitized.nominated_headers.contains(&http_header::TRAILER) {
+            sanitized.trailer_fields.clear();
+        }
+
+        for name in [
+            &http_header::CONNECTION,
+            &http_header::KEEP_ALIVE,
+            &http_header::PROXY_AUTHENTICATE,
+            &http_header::PROXY_AUTHORIZATION,
+            &http_header::PROXY_CONNECTION,
+            &http_header::TE,
+            &http_header::TRAILER,
+            &http_header::TRANSFER_ENCODING,
+            &http_header::UPGRADE,
+        ] {
+            headers.remove(name);
+        }
+        for name in &sanitized.nominated_headers {
+            headers.remove(name);
+        }
+
+        sanitized
+    }
+
+    pub(super) fn forwarded_icap_headers(&self) -> &[ForwardedIcapHeader] {
+        &self.forwarded_icap_headers
+    }
+
+    pub(super) fn nominated_headers(&self) -> &[HeaderName] {
+        &self.nominated_headers
+    }
+
+    pub(super) fn into_forwarded_and_nominated(
+        self,
+    ) -> (Vec<ForwardedIcapHeader>, Vec<HeaderName>) {
+        (self.forwarded_icap_headers, self.nominated_headers)
+    }
+
+    pub(super) fn restore_trailers(&self, headers: &mut HeaderMap) {
+        if headers.contains_key(http_header::TRAILER) {
+            return;
+        }
+        for (name, value) in &self.trailer_fields {
+            headers.append(name.clone(), value.clone());
         }
     }
-}
 
-pub(super) fn sanitize_http_headers(headers: &mut HeaderMap) -> Vec<ForwardedIcapHeader> {
-    sanitize_http_headers_with_nominated(headers).0
-}
-
-pub(super) fn sanitize_http_headers_with_nominated(
-    headers: &mut HeaderMap,
-) -> (Vec<ForwardedIcapHeader>, Vec<HeaderName>) {
-    let mut forwarded = Vec::new();
-    for (name, icap_name) in [
-        (&http_header::PROXY_AUTHENTICATE, header::PROXY_AUTHENTICATE),
-        (
-            &http_header::PROXY_AUTHORIZATION,
-            header::PROXY_AUTHORIZATION,
-        ),
-    ] {
-        forwarded.extend(headers.get_all(name).iter().cloned().map(|mut value| {
-            if name.is_sensitive() {
-                value.set_sensitive(true);
+    pub(super) fn restore(
+        &self,
+        headers: &mut HeaderMap,
+        version: Version,
+        adapted_nominations: &[HeaderName],
+    ) {
+        if !adapted_nominations.contains(&http_header::TRAILER) {
+            self.restore_trailers(headers);
+        }
+        headers.remove(&http_header::CONNECTION);
+        headers.remove(&http_header::UPGRADE);
+        if version != Version::HTTP_11 {
+            return;
+        }
+        if let Some(intent) = &self.upgrade_intent {
+            for (name, value) in &intent.fields {
+                headers.append(name.clone(), value.clone());
             }
-            ForwardedIcapHeader {
-                name: icap_name,
-                value,
-            }
-        }));
-        headers.remove(name);
+        }
     }
-
-    let nominated = connection_header_names(headers).collect::<Vec<_>>();
-    for name in [
-        &http_header::CONNECTION,
-        &http_header::KEEP_ALIVE,
-        &http_header::PROXY_CONNECTION,
-        &http_header::TE,
-        &http_header::TRAILER,
-        &http_header::TRANSFER_ENCODING,
-        &http_header::UPGRADE,
-    ] {
-        headers.remove(name);
-    }
-    for name in &nominated {
-        headers.remove(name);
-    }
-    (forwarded, nominated)
 }
 
 pub(super) fn connection_nominated_headers(headers: &HeaderMap) -> Vec<HeaderName> {
@@ -242,39 +301,60 @@ mod tests {
     }
 
     #[test]
-    fn upgrade_headers_round_trip_around_sanitization() {
+    fn http1_upgrade_intent_round_trips_original_spelling() {
         let mut headers = HeaderMap::new();
         headers.append(
-            http_header::CONNECTION,
-            HeaderValue::from_static("keep-alive, Upgrade"),
+            HeaderName::from_bytes(b"CoNnEcTiOn").unwrap(),
+            HeaderValue::from_static("keep-alive, UpGrAdE"),
         );
-        headers.append(http_header::CONNECTION, HeaderValue::from_static("x-hop"));
-        headers.append(http_header::UPGRADE, HeaderValue::from_static("websocket"));
+        headers.append(
+            HeaderName::from_bytes(b"cOnNeCtIoN").unwrap(),
+            HeaderValue::from_static("UPGRADE, x-hop"),
+        );
+        headers.append(
+            HeaderName::from_bytes(b"UpGrAdE").unwrap(),
+            HeaderValue::from_static("WebSocket"),
+        );
+        headers.append(
+            HeaderName::from_bytes(b"uPgRaDe").unwrap(),
+            HeaderValue::from_static("example/1"),
+        );
         headers.insert("x-hop", HeaderValue::from_static("secret"));
-        let preserved = preserve_upgrade_headers(&headers);
 
-        sanitize_http_headers(&mut headers);
-        restore_upgrade_headers(&mut headers, &preserved);
+        let sanitized = SanitizedHttpHead::take(&mut headers, Version::HTTP_11);
+        sanitized.restore(&mut headers, Version::HTTP_11, &[]);
 
-        assert_eq!(headers[http_header::CONNECTION], "upgrade");
-        assert_eq!(headers[http_header::UPGRADE], "websocket");
         assert!(!headers.contains_key("x-hop"));
+        let restored = headers
+            .ordered_iter()
+            .map(|(name, value)| (name.as_original_str().into_owned(), value.to_str().unwrap()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            restored,
+            [
+                ("CoNnEcTiOn".to_owned(), "UpGrAdE"),
+                ("cOnNeCtIoN".to_owned(), "UPGRADE"),
+                ("UpGrAdE".to_owned(), "WebSocket"),
+                ("uPgRaDe".to_owned(), "example/1"),
+            ]
+        );
+    }
 
+    #[test]
+    fn upgrade_intent_requires_http1_connection_nomination() {
         let mut ordinary = HeaderMap::new();
         ordinary.insert(
             http_header::CONNECTION,
             HeaderValue::from_static("keep-alive"),
         );
-        let preserved = preserve_upgrade_headers(&ordinary);
-        sanitize_http_headers(&mut ordinary);
-        restore_upgrade_headers(&mut ordinary, &preserved);
+        let sanitized = SanitizedHttpHead::take(&mut ordinary, Version::HTTP_11);
+        sanitized.restore(&mut ordinary, Version::HTTP_11, &[]);
         assert!(!ordinary.contains_key(http_header::CONNECTION));
 
         let mut missing_connection = HeaderMap::new();
         missing_connection.insert(http_header::UPGRADE, HeaderValue::from_static("websocket"));
-        let preserved = preserve_upgrade_headers(&missing_connection);
-        sanitize_http_headers(&mut missing_connection);
-        restore_upgrade_headers(&mut missing_connection, &preserved);
+        let sanitized = SanitizedHttpHead::take(&mut missing_connection, Version::HTTP_11);
+        sanitized.restore(&mut missing_connection, Version::HTTP_11, &[]);
         assert!(!missing_connection.contains_key(http_header::CONNECTION));
         assert!(!missing_connection.contains_key(http_header::UPGRADE));
 
@@ -284,11 +364,79 @@ mod tests {
             HeaderValue::from_static("keep-alive"),
         );
         missing_upgrade_token.insert(http_header::UPGRADE, HeaderValue::from_static("websocket"));
-        let preserved = preserve_upgrade_headers(&missing_upgrade_token);
-        sanitize_http_headers(&mut missing_upgrade_token);
-        restore_upgrade_headers(&mut missing_upgrade_token, &preserved);
+        let sanitized = SanitizedHttpHead::take(&mut missing_upgrade_token, Version::HTTP_11);
+        sanitized.restore(&mut missing_upgrade_token, Version::HTTP_11, &[]);
         assert!(!missing_upgrade_token.contains_key(http_header::CONNECTION));
         assert!(!missing_upgrade_token.contains_key(http_header::UPGRADE));
+    }
+
+    #[test]
+    fn h2_never_restores_http1_upgrade_fields() {
+        fn upgrade_headers() -> HeaderMap {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                HeaderName::from_bytes(b"Connection").unwrap(),
+                HeaderValue::from_static("Upgrade"),
+            );
+            headers.insert(
+                HeaderName::from_bytes(b"Upgrade").unwrap(),
+                HeaderValue::from_static("websocket"),
+            );
+            headers
+        }
+
+        let mut h2_source = upgrade_headers();
+        let sanitized = SanitizedHttpHead::take(&mut h2_source, Version::HTTP_2);
+        sanitized.restore(&mut h2_source, Version::HTTP_11, &[]);
+        assert!(h2_source.is_empty());
+
+        let mut http1_source = upgrade_headers();
+        let sanitized = SanitizedHttpHead::take(&mut http1_source, Version::HTTP_11);
+        sanitized.restore(&mut http1_source, Version::HTTP_2, &[]);
+        assert!(http1_source.is_empty());
+    }
+
+    #[test]
+    fn connection_nomination_suppresses_trailer_declaration() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_bytes(b"Connection").unwrap(),
+            HeaderValue::from_static("Trailer"),
+        );
+        headers.insert(
+            HeaderName::from_bytes(b"TrAiLeR").unwrap(),
+            HeaderValue::from_static("x-checksum"),
+        );
+
+        let sanitized = SanitizedHttpHead::take(&mut headers, Version::HTTP_11);
+        sanitized.restore(&mut headers, Version::HTTP_11, &[]);
+
+        assert!(!headers.contains_key(http_header::CONNECTION));
+        assert!(!headers.contains_key(http_header::TRAILER));
+    }
+
+    #[test]
+    fn adapted_nomination_suppresses_original_trailer_declaration() {
+        let mut original = HeaderMap::new();
+        original.insert(
+            HeaderName::from_bytes(b"TrAiLeR").unwrap(),
+            HeaderValue::from_static("x-original"),
+        );
+        let original = SanitizedHttpHead::take(&mut original, Version::HTTP_11);
+
+        let mut adapted = HeaderMap::new();
+        adapted.insert(http_header::CONNECTION, HeaderValue::from_static("Trailer"));
+        adapted.insert(http_header::TRAILER, HeaderValue::from_static("x-adapted"));
+        let adapted_head = SanitizedHttpHead::take(&mut adapted, Version::HTTP_11);
+        adapted_head.restore_trailers(&mut adapted);
+        original.restore(
+            &mut adapted,
+            Version::HTTP_11,
+            adapted_head.nominated_headers(),
+        );
+
+        assert!(!adapted.contains_key(http_header::CONNECTION));
+        assert!(!adapted.contains_key(http_header::TRAILER));
     }
 
     #[test]

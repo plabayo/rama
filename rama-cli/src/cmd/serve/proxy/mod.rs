@@ -84,6 +84,7 @@ use rama::{
         proxy::IoForwardService,
         socket::{SocketOptions, opts::TcpKeepAlive},
         stream::layer::{TcpStreamOptionsLayer, ThrottleLayer, ThrottleMode},
+        uri::Uri,
     },
     proxy::socks5::{
         Socks5Acceptor,
@@ -1017,7 +1018,7 @@ pub struct CliCommandProxy {
     /// service. CONNECT and SOCKS5 streams bypass adaptation unless --mitm
     /// classifies them as HTTP.
     #[arg(long)]
-    icap: Option<String>,
+    icap: Option<Uri>,
 
     /// Enable ICAP request adaptation.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set, requires = "icap")]
@@ -1190,7 +1191,7 @@ fn build_icap_adaptation(
     tcp_options: Arc<SocketOptions>,
     connect_timeout: Option<Duration>,
 ) -> Result<Option<ProxyIcapLayer>, BoxError> {
-    let Some(uri) = cfg.icap.as_deref() else {
+    let Some(uri) = cfg.icap.as_ref() else {
         return Ok(None);
     };
     if !cfg.icap_reqmod && !cfg.icap_respmod {
@@ -1209,7 +1210,8 @@ fn build_icap_adaptation(
         ));
     }
 
-    let endpoint = ServiceEndpoint::new(uri).context("configure ICAP service endpoint")?;
+    let uri = uri.as_str();
+    let endpoint = ServiceEndpoint::new(uri.as_ref()).context("configure ICAP service endpoint")?;
     if cfg.icap_allow_206 && !cfg.icap_allow_204 {
         return Err(BoxError::from_static_str(
             "--icap-allow-206 requires --icap-allow-204",

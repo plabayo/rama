@@ -18,10 +18,7 @@ use rama_utils::macros::{define_inner_service_accessors, generate_set_and_with};
 
 use super::{
     endpoint::ServiceEndpoint,
-    headers::{
-        normalize_request_authority, restore_trailer_header, sanitize_adapted_http_headers,
-        trailer_header_values,
-    },
+    headers::{normalize_request_authority, sanitize_adapted_http_headers},
 };
 use crate::{
     client::{
@@ -33,10 +30,7 @@ use crate::{
     },
     http::{
         ClientRequest, ReplayLimits,
-        headers::{
-            preserve_upgrade_headers, restore_proxy_header, restore_upgrade_headers,
-            sanitize_http_headers,
-        },
+        headers::{SanitizedHttpHead, restore_proxy_header},
     },
     message::Response as IcapResponse,
     proto::{Method, header},
@@ -542,9 +536,8 @@ where
     if !policy.adapt {
         return Ok(ReqmodOutcome::Request(request));
     }
-    let original_trailers = trailer_header_values(request.headers());
-    let original_upgrade = preserve_upgrade_headers(request.headers());
-    let forwarded = sanitize_http_headers(request.headers_mut());
+    let version = request.version();
+    let original_head = SanitizedHttpHead::take(request.headers_mut(), version);
     normalize_request_authority(&mut request)?;
     let preview = (!request.body().is_end_stream())
         .then_some(policy.preview)
@@ -561,10 +554,15 @@ where
     };
     let allow_204 = policy.allow_204 && replayable;
     let allow_206 = policy.allow_206 && replayable && (preview.is_some() || allow_204);
-    let headers =
-        service.adaptation_headers(&forwarded, allow_204, allow_206, policy.allow_icap_trailers)?;
+    let headers = service.adaptation_headers(
+        original_head.forwarded_icap_headers(),
+        allow_204,
+        allow_206,
+        policy.allow_icap_trailers,
+    )?;
     let request = ClientRequest::reqmod_for_uri(service.uri(), &headers, request, preview)
         .context("build ICAP REQMOD request")?
+        .with_additional_trailer_forbidden(original_head.nominated_headers())
         .with_replay_limits(service.replay_limits());
     let connect = service.connect_request();
     let EstablishedClientConnection { conn, .. } = client
@@ -588,16 +586,20 @@ where
         let mut request = response
             .into_request()
             .context("decode ICAP REQMOD request result")?;
-        let effective_proxy_headers = sanitize_adapted_http_headers(request.headers_mut());
-        restore_trailer_header(request.headers_mut(), &original_trailers);
-        restore_upgrade_headers(request.headers_mut(), &original_upgrade);
+        let version = request.version();
+        let effective_head = sanitize_adapted_http_headers(request.headers_mut(), version);
+        original_head.restore(
+            request.headers_mut(),
+            version,
+            effective_head.nominated_headers(),
+        );
         normalize_request_authority(&mut request)?;
         restore_proxy_header(
             request.headers_mut(),
             &http_header::PROXY_AUTHORIZATION,
             header::PROXY_AUTHORIZATION,
-            &forwarded,
-            &effective_proxy_headers,
+            original_head.forwarded_icap_headers(),
+            effective_head.forwarded_icap_headers(),
         );
         request.extensions().insert(result);
         Ok(ReqmodOutcome::Request(request))
@@ -605,13 +607,14 @@ where
         let mut response = response
             .into_response()
             .context("decode ICAP REQMOD response result")?;
-        let effective_proxy_headers = sanitize_adapted_http_headers(response.headers_mut());
+        let version = response.version();
+        let effective_head = sanitize_adapted_http_headers(response.headers_mut(), version);
         restore_proxy_header(
             response.headers_mut(),
             &http_header::PROXY_AUTHENTICATE,
             header::PROXY_AUTHENTICATE,
             &[],
-            &effective_proxy_headers,
+            effective_head.forwarded_icap_headers(),
         );
         response.extensions().insert(result);
         Ok(ReqmodOutcome::Response(response))
@@ -651,12 +654,13 @@ where
         return Ok(response);
     }
     let mut request = HttpRequest::from_parts(request.clone_parts(), ());
-    let mut forwarded = sanitize_http_headers(request.headers_mut());
-    let original_trailers = trailer_header_values(response.headers());
+    let request_version = request.version();
+    let request_head = SanitizedHttpHead::take(request.headers_mut(), request_version);
     normalize_request_authority(&mut request)?;
-    let original_upgrade = preserve_upgrade_headers(response.headers());
-    let original_response_headers = sanitize_http_headers(response.headers_mut());
-    forwarded.extend(original_response_headers.iter().cloned());
+    let response_version = response.version();
+    let original_response_head = SanitizedHttpHead::take(response.headers_mut(), response_version);
+    let mut forwarded = request_head.forwarded_icap_headers().to_vec();
+    forwarded.extend_from_slice(original_response_head.forwarded_icap_headers());
     let preview = (!response.body().is_end_stream())
         .then_some(policy.preview)
         .flatten()
@@ -679,6 +683,7 @@ where
     let request =
         ClientRequest::respmod_for_uri(service.uri(), &headers, &request, response, preview)
             .context("build ICAP RESPMOD request")?
+            .with_additional_trailer_forbidden(original_response_head.nominated_headers())
             .with_replay_limits(service.replay_limits());
     let connect = service.connect_request();
     let EstablishedClientConnection { conn, .. } = client
@@ -701,15 +706,19 @@ where
     let mut response = response
         .into_response()
         .context("decode ICAP RESPMOD result")?;
-    let effective_proxy_headers = sanitize_adapted_http_headers(response.headers_mut());
-    restore_trailer_header(response.headers_mut(), &original_trailers);
-    restore_upgrade_headers(response.headers_mut(), &original_upgrade);
+    let version = response.version();
+    let effective_head = sanitize_adapted_http_headers(response.headers_mut(), version);
+    original_response_head.restore(
+        response.headers_mut(),
+        version,
+        effective_head.nominated_headers(),
+    );
     restore_proxy_header(
         response.headers_mut(),
         &http_header::PROXY_AUTHENTICATE,
         header::PROXY_AUTHENTICATE,
-        &original_response_headers,
-        &effective_proxy_headers,
+        original_response_head.forwarded_icap_headers(),
+        effective_head.forwarded_icap_headers(),
     );
     response.extensions().insert(result);
     Ok(response)
