@@ -1091,9 +1091,13 @@ async fn proxy_test_icap_service(
     let line = ResponseLine::new(IcapStatusCode::OK, b"OK")?;
     let tag = TEST_ICAP_SERVICE_TAG.to_wire();
     let fields = [Header::new(icap_header::ISTAG, tag.as_bytes())?];
+    // This echo response depends on every input byte. Finish the bounded
+    // request before returning instead of advertising a dependent response
+    // while the client is still transmitting its Preview.
     match method {
         IcapMethodKind::Reqmod => {
-            let mut request = request.into_request()?;
+            let (parts, body) = request.into_request()?.into_parts();
+            let mut request = Request::from_parts(parts, Body::new(body.collect().await?));
             request.headers_mut().insert(
                 "x-rama-icap-reqmod",
                 rama::http::HeaderValue::from_static("yes"),
@@ -1109,7 +1113,8 @@ async fn proxy_test_icap_service(
             )?)
         }
         IcapMethodKind::Respmod => {
-            let mut response = request.into_response()?;
+            let (parts, body) = request.into_response()?.into_parts();
+            let mut response = Response::from_parts(parts, Body::new(body.collect().await?));
             response.headers_mut().insert(
                 "x-rama-icap-respmod",
                 rama::http::HeaderValue::from_static("yes"),
