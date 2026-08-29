@@ -79,6 +79,9 @@ use std::{convert::Infallible, fmt};
 ///     SetHeader("x-foo", "custom")
 /// }
 /// ```
+#[diagnostic::on_unimplemented(
+    note = "See `rama_http::service::web::response::IntoResponseParts` for supported response parts"
+)]
 pub trait IntoResponseParts {
     /// The type returned in the event of an error.
     ///
@@ -113,6 +116,17 @@ pub struct ResponseParts {
 }
 
 impl ResponseParts {
+    /// Gets the response status.
+    #[must_use]
+    pub fn status(&self) -> StatusCode {
+        self.res.status()
+    }
+
+    /// Gets a mutable reference to the response status.
+    pub fn status_mut(&mut self) -> &mut StatusCode {
+        self.res.status_mut()
+    }
+
     /// Gets a reference to the response headers.
     #[must_use]
     pub fn headers(&self) -> &HeaderMap {
@@ -256,7 +270,9 @@ macro_rules! impl_into_response_parts {
                     let res = match $ty.into_response_parts(res) {
                         Ok(res) => res,
                         Err(err) => {
-                            return Err(err.into_response());
+                            let err_res = err.into_response();
+                            err_res.extensions().insert(super::IntoResponseFailed);
+                            return Err(err_res);
                         }
                     };
                 )*

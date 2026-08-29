@@ -1,4 +1,4 @@
-use super::IntoResponse;
+use super::{IntoResponse, IntoResponseFailed};
 use crate::Body;
 use crate::Response;
 use crate::StatusCode;
@@ -85,7 +85,7 @@ where
                 }
                 Err(err) => {
                     tracing::error!("response error: {err:?}");
-                    StatusCode::INTERNAL_SERVER_ERROR.into_response()
+                    (StatusCode::INTERNAL_SERVER_ERROR, IntoResponseFailed, ()).into_response()
                 }
             }
         }

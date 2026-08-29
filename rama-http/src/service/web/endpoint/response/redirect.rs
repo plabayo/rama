@@ -1,10 +1,11 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, convert::Infallible};
 
-use super::IntoResponse;
-use crate::{HeaderValue, Response, StatusCode, header};
+use super::{IntoResponse, IntoResponseParts, ResponseParts};
+use crate::{HeaderValue, Response, StatusCode, header, header::InvalidHeaderValue};
 
 #[derive(Debug, Clone)]
 /// Utility struct to easily create a redirect response.
+#[must_use = "a redirect has no effect unless returned or converted into a response"]
 pub struct Redirect {
     loc: HeaderValue,
     status: StatusCode,
@@ -57,6 +58,11 @@ impl Redirect {
         Self::with_status_code(StatusCode::SEE_OTHER, loc)
     }
 
+    /// Create a `303 See Other` redirect from a runtime string.
+    pub fn try_to(loc: impl AsRef<str>) -> Result<Self, InvalidHeaderValue> {
+        Self::try_with_status_code(StatusCode::SEE_OTHER, loc)
+    }
+
     /// Create a new found (301) redirect response.
     ///
     /// Used if a resource is permanently moved.
@@ -64,6 +70,11 @@ impl Redirect {
     /// Use [`Self::permanent`] in case you wish to respect the original HTTP Method.
     pub fn moved(loc: impl IntoRedirectLoc) -> Self {
         Self::with_status_code(StatusCode::MOVED_PERMANENTLY, loc)
+    }
+
+    /// Create a `301 Moved Permanently` redirect from a runtime string.
+    pub fn try_moved(loc: impl AsRef<str>) -> Result<Self, InvalidHeaderValue> {
+        Self::try_with_status_code(StatusCode::MOVED_PERMANENTLY, loc)
     }
 
     /// Create a new found (302) redirect response.
@@ -74,14 +85,29 @@ impl Redirect {
         Self::with_status_code(StatusCode::FOUND, loc)
     }
 
+    /// Create a `302 Found` redirect from a runtime string.
+    pub fn try_found(loc: impl AsRef<str>) -> Result<Self, InvalidHeaderValue> {
+        Self::try_with_status_code(StatusCode::FOUND, loc)
+    }
+
     /// Create a new temporary (307) redirect response.
     pub fn temporary(loc: impl IntoRedirectLoc) -> Self {
         Self::with_status_code(StatusCode::TEMPORARY_REDIRECT, loc)
     }
 
+    /// Create a `307 Temporary Redirect` from a runtime string.
+    pub fn try_temporary(loc: impl AsRef<str>) -> Result<Self, InvalidHeaderValue> {
+        Self::try_with_status_code(StatusCode::TEMPORARY_REDIRECT, loc)
+    }
+
     /// Create a new permanent (308) redirect response.
     pub fn permanent(loc: impl IntoRedirectLoc) -> Self {
         Self::with_status_code(StatusCode::PERMANENT_REDIRECT, loc)
+    }
+
+    /// Create a `308 Permanent Redirect` from a runtime string.
+    pub fn try_permanent(loc: impl AsRef<str>) -> Result<Self, InvalidHeaderValue> {
+        Self::try_with_status_code(StatusCode::PERMANENT_REDIRECT, loc)
     }
 
     // This is intentionally not public since other kinds of redirects might not
@@ -94,6 +120,17 @@ impl Redirect {
             status,
             loc: loc.into_redirect_loc(),
         }
+    }
+
+    fn try_with_status_code(
+        status: StatusCode,
+        loc: impl AsRef<str>,
+    ) -> Result<Self, InvalidHeaderValue> {
+        debug_assert!(status.is_redirection());
+        Ok(Self {
+            status,
+            loc: HeaderValue::try_from(loc.as_ref())?,
+        })
     }
 
     /// Returns the HTTP status code of the `Redirect`.
@@ -117,14 +154,25 @@ impl Redirect {
 
 impl IntoResponse for Redirect {
     fn into_response(self) -> Response {
-        ([(header::LOCATION, self.loc)], self.status).into_response()
+        (self, ()).into_response()
+    }
+}
+
+impl IntoResponseParts for Redirect {
+    type Error = Infallible;
+
+    fn into_response_parts(self, mut res: ResponseParts) -> Result<ResponseParts, Self::Error> {
+        *res.status_mut() = self.status;
+        res.headers_mut().insert(header::LOCATION, self.loc);
+        Ok(res)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Redirect;
-    use rama_http_types::{HeaderValue, StatusCode};
+    use crate::service::web::response::IntoResponse;
+    use rama_http_types::{HeaderValue, StatusCode, header};
 
     const EXAMPLE_URL: HeaderValue = HeaderValue::from_static("https://example.com");
 
@@ -135,6 +183,11 @@ mod tests {
         assert_eq!(
             StatusCode::SEE_OTHER,
             Redirect::to(EXAMPLE_URL).status_code()
+        );
+
+        assert_eq!(
+            StatusCode::MOVED_PERMANENTLY,
+            Redirect::moved(EXAMPLE_URL).status_code()
         );
 
         assert_eq!(
@@ -161,5 +214,56 @@ mod tests {
             "/redirect",
             Redirect::permanent(HeaderValue::from_static("/redirect")).location_str()
         )
+    }
+
+    #[test]
+    fn accepts_owned_runtime_location() {
+        for redirect in [
+            Redirect::try_to(String::from("/users/42")).unwrap(),
+            Redirect::try_moved(String::from("/users/42")).unwrap(),
+            Redirect::try_found(String::from("/users/42")).unwrap(),
+            Redirect::try_temporary(String::from("/users/42")).unwrap(),
+            Redirect::try_permanent(String::from("/users/42")).unwrap(),
+        ] {
+            assert_eq!(redirect.location(), "/users/42");
+        }
+
+        assert_eq!(
+            Redirect::try_to("/see-other").unwrap().status_code(),
+            StatusCode::SEE_OTHER
+        );
+        assert_eq!(
+            Redirect::try_moved("/moved").unwrap().status_code(),
+            StatusCode::MOVED_PERMANENTLY
+        );
+        assert_eq!(
+            Redirect::try_found("/found").unwrap().status_code(),
+            StatusCode::FOUND
+        );
+        assert_eq!(
+            Redirect::try_temporary("/temporary").unwrap().status_code(),
+            StatusCode::TEMPORARY_REDIRECT
+        );
+        assert_eq!(
+            Redirect::try_permanent("/permanent").unwrap().status_code(),
+            StatusCode::PERMANENT_REDIRECT
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_runtime_location() {
+        let invalid = "/safe\r\nx-injected: true";
+        Redirect::try_to(invalid).unwrap_err();
+        Redirect::try_moved(invalid).unwrap_err();
+        Redirect::try_found(invalid).unwrap_err();
+        Redirect::try_temporary(invalid).unwrap_err();
+        Redirect::try_permanent(invalid).unwrap_err();
+    }
+
+    #[test]
+    fn composes_as_response_parts() {
+        let response = (Redirect::temporary("/next"), "redirecting").into_response();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(response.headers()[header::LOCATION], "/next");
     }
 }

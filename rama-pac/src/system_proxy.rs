@@ -488,7 +488,11 @@ mod tests {
             });
         }
 
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        // Resolver construction runs on Tokio's blocking pool. A saturated
+        // workspace test run can delay that task without violating the
+        // single-build invariant this test exercises, so keep this timeout
+        // as a deadlock guard rather than a scheduling-performance assertion.
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
             barrier.wait().await;
             let first = tasks.join_next().await.unwrap().unwrap();
             while let Some(result) = tasks.join_next().await {

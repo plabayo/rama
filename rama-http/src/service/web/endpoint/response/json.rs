@@ -1,4 +1,4 @@
-use super::IntoResponse;
+use super::{IntoResponse, IntoResponseFailed};
 use crate::headers::ContentType;
 use crate::{Body, Response, StatusCode};
 use rama_core::bytes::{BufMut, BytesMut};
@@ -75,6 +75,7 @@ where
                 Err(err) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Headers::single(ContentType::text_utf8()),
+                    IntoResponseFailed,
                     err.to_string(),
                 )
                     .into_response(),

@@ -439,7 +439,7 @@ impl<S, K> TlsConnector<S, K> {
             effective
         };
 
-        apply_default_alpn(request_extensions, &extensions, application_protocol);
+        apply_default_alpn(&extensions, application_protocol);
 
         // When HTTP pins a concrete target version, force the TLS ALPN to match
         // it before the handshake
@@ -458,12 +458,10 @@ impl<S, K> TlsConnector<S, K> {
     }
 }
 
-fn apply_default_alpn(
-    request_extensions: &Extensions,
-    effective_extensions: &Extensions,
-    application_protocol: Option<&Protocol>,
-) {
-    let alpn = request_extensions
+fn apply_default_alpn(effective_extensions: &Extensions, application_protocol: Option<&Protocol>) {
+    // Any ALPN in the effective chain is explicit connector policy, whether
+    // supplied by the request or inherited from a base configuration.
+    let alpn = effective_extensions
         .get_ref::<TlsAlpn>()
         .cloned()
         .or_else(|| {
@@ -956,7 +954,7 @@ mod tests {
     }
 
     #[test]
-    fn icaps_shadows_inherited_http_alpn_and_alps() {
+    fn inherited_alpn_and_alps_are_preserved_for_any_application_protocol() {
         use crate::client::BoringAlps;
 
         let base = Extensions::new();
@@ -968,17 +966,125 @@ mod tests {
         let request = Extensions::new();
         let effective = request.fork().with_base(&base);
 
-        apply_default_alpn(&request, &effective, Some(&Protocol::ICAPS));
+        apply_default_alpn(&effective, Some(&Protocol::ICAPS));
+
+        assert_eq!(
+            effective.get_ref::<TlsAlpn>().map(|alpn| alpn.0.as_slice()),
+            Some([ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11].as_slice()),
+        );
+        assert_eq!(
+            effective
+                .get_ref::<BoringAlps>()
+                .map(|alps| (alps.protocols.as_slice(), alps.new_codepoint)),
+            Some(([ApplicationProtocol::HTTP_2].as_slice(), true)),
+        );
+    }
+
+    #[test]
+    fn derives_empty_alpn_for_icaps_without_explicit_policy() {
+        let effective = Extensions::new();
+
+        apply_default_alpn(&effective, Some(&Protocol::ICAPS));
 
         assert_eq!(
             effective.get_ref::<TlsAlpn>().map(|alpn| alpn.0.as_slice()),
             Some([].as_slice()),
+        );
+    }
+
+    #[test]
+    fn inherited_http_alpn_and_alps_survive_for_https() {
+        use crate::client::BoringAlps;
+
+        let base = Extensions::new();
+        base.insert(TlsAlpn::http_auto());
+        base.insert(BoringAlps {
+            protocols: vec![ApplicationProtocol::HTTP_2],
+            new_codepoint: true,
+        });
+        let request = Extensions::new();
+        let effective = request.fork().with_base(&base);
+
+        apply_default_alpn(&effective, Some(&Protocol::HTTPS));
+
+        assert_eq!(
+            effective.get_ref::<TlsAlpn>().map(|alpn| alpn.0.as_slice()),
+            Some([ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11].as_slice()),
+        );
+        assert_eq!(
+            effective
+                .get_ref::<BoringAlps>()
+                .map(|alps| (alps.protocols.as_slice(), alps.new_codepoint)),
+            Some(([ApplicationProtocol::HTTP_2].as_slice(), true)),
+        );
+    }
+
+    #[test]
+    fn inherited_http_alpn_suppresses_incompatible_alps() {
+        use crate::client::BoringAlps;
+
+        let base = Extensions::new();
+        base.insert(TlsAlpn::http_1());
+        base.insert(BoringAlps {
+            protocols: vec![ApplicationProtocol::HTTP_2],
+            new_codepoint: true,
+        });
+        let request = Extensions::new();
+        let effective = request.fork().with_base(&base);
+
+        apply_default_alpn(&effective, Some(&Protocol::HTTPS));
+
+        assert_eq!(
+            effective.get_ref::<TlsAlpn>().map(|alpn| alpn.0.as_slice()),
+            Some([ApplicationProtocol::HTTP_11].as_slice()),
         );
         assert_eq!(
             effective
                 .get_ref::<BoringAlps>()
                 .map(|alps| (alps.protocols.as_slice(), alps.new_codepoint)),
             Some(([].as_slice(), true)),
+        );
+    }
+
+    #[test]
+    fn request_alpn_overrides_base_and_recouples_alps() {
+        use crate::client::BoringAlps;
+
+        let base = Extensions::new();
+        base.insert(TlsAlpn::http_auto());
+        base.insert(BoringAlps {
+            protocols: vec![ApplicationProtocol::HTTP_2],
+            new_codepoint: true,
+        });
+        let request = Extensions::new();
+        request.insert(TlsAlpn::http_1());
+        let effective = request.with_base(&base);
+
+        apply_default_alpn(&effective, Some(&Protocol::HTTPS));
+
+        assert_eq!(
+            effective.get_ref::<TlsAlpn>().map(|alpn| alpn.0.as_slice()),
+            Some([ApplicationProtocol::HTTP_11].as_slice()),
+        );
+        assert_eq!(
+            effective
+                .get_ref::<BoringAlps>()
+                .map(|alps| alps.protocols.as_slice()),
+            Some([].as_slice()),
+        );
+    }
+
+    #[test]
+    fn inherited_alpn_survives_without_application_protocol() {
+        let base = Extensions::new();
+        base.insert(TlsAlpn::http_1());
+        let effective = Extensions::new().with_base(&base);
+
+        apply_default_alpn(&effective, None);
+
+        assert_eq!(
+            effective.get_ref::<TlsAlpn>().map(|alpn| alpn.0.as_slice()),
+            Some([ApplicationProtocol::HTTP_11].as_slice()),
         );
     }
 

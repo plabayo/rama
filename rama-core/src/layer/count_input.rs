@@ -27,7 +27,7 @@ use crate::{
     extensions::{Extension, ExtensionsRef},
 };
 
-use rama_utils::macros::define_inner_service_accessors;
+use rama_utils::{guard::DropGuard, macros::define_inner_service_accessors};
 
 /// Tracks per input counters and exposes them as an extension.
 ///
@@ -138,29 +138,6 @@ struct DefaultInputCounterData {
     concurrent_inputs: AtomicU64,
 }
 
-/// Drop guard that ensures `decrement` runs even if the inner service panics.
-///
-/// This guard is created after [`InputCounter::increment`] and dropped
-/// when the `serve` call ends. On unwind it will also be dropped, making the
-/// concurrent counter robust against panics (best-effort).
-struct DecrementGuard<C: InputCounter> {
-    counter: C,
-}
-
-impl<C: InputCounter> DecrementGuard<C> {
-    #[inline(always)]
-    fn new(counter: C) -> Self {
-        Self { counter }
-    }
-}
-
-impl<C: InputCounter> Drop for DecrementGuard<C> {
-    #[inline(always)]
-    fn drop(&mut self) {
-        self.counter.decrement();
-    }
-}
-
 /// Service that counts total and concurrent inputs and exposes a tracker via extensions.
 ///
 /// For each input:
@@ -201,7 +178,8 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let tracker = self.counter.increment();
-        let _guard = DecrementGuard::new(self.counter.clone());
+        let counter = self.counter.clone();
+        let _guard = DropGuard::new(move || counter.decrement());
 
         input.extensions().insert(tracker);
 
@@ -310,7 +288,7 @@ mod tests {
         assert_eq!(t1.concurrent_active_input_count(), 1);
 
         {
-            let _guard = DecrementGuard::new(counter);
+            let _guard = DropGuard::new(move || counter.decrement());
             // On drop the guard will decrement once.
         }
 

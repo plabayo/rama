@@ -5,6 +5,7 @@ documentation = "https://docs.rs/rama"
 description = "modular service framework"
 # We use examples/ as standalone crate, disable this so cargo doesn't also pick this up as examples here
 autoexamples = false
+autobenches = false
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
@@ -624,6 +625,11 @@ turmoil = { workspace = true }
 [lints]
 workspace = true
 
+[[test]]
+name = "http-core"
+path = "tests/http-core/main.rs"
+required-features = ["http-full"]
+
 [profile.dev]
 debug = false
 opt-level = 1
@@ -647,6 +653,26 @@ harness = false
 [[bench]]
 name = "sse_parser"
 required-features = ["http-full"]
+harness = false
+
+[[bench]]
+name = "graceful_shutdown"
+required-features = ["std"]
+harness = false
+
+[[bench]]
+name = "uri_wire"
+required-features = ["net"]
+harness = false
+
+[[bench]]
+name = "pool_contention"
+required-features = ["net"]
+harness = false
+
+[[bench]]
+name = "rss_parser"
+required-features = ["rss"]
 harness = false
 
 [[bench]]

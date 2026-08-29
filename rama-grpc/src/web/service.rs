@@ -1,12 +1,13 @@
 use std::fmt;
 
 use rama_core::{Service, bytes, error::BoxError, telemetry::tracing};
+use rama_http::headers::{ContentType, HeaderMapExt as _, Te};
 use rama_http_types::{
     Body, HeaderMap, HeaderValue, Method, Request, Response, StatusCode, StreamingBody, Version,
     header,
 };
 
-use crate::{metadata::GRPC_CONTENT_TYPE, server::NamedService};
+use crate::server::NamedService;
 
 use super::call::content_types::is_grpc_web;
 use super::call::{Encoding, GrpcWebCall};
@@ -154,11 +155,8 @@ where
 {
     req.headers_mut().remove(header::CONTENT_LENGTH);
 
-    req.headers_mut()
-        .insert(header::CONTENT_TYPE, GRPC_CONTENT_TYPE);
-
-    req.headers_mut()
-        .insert(header::TE, HeaderValue::from_static("trailers"));
+    req.headers_mut().typed_insert(ContentType::grpc());
+    req.headers_mut().typed_insert(Te::trailers());
 
     req.headers_mut().insert(
         header::ACCEPT_ENCODING,
@@ -179,10 +177,7 @@ where
         .map(|b| GrpcWebCall::response(b, encoding))
         .map(Body::new);
 
-    res.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static(encoding.to_content_type()),
-    );
+    res.headers_mut().typed_insert(encoding.to_content_type());
 
     res
 }
@@ -195,7 +190,7 @@ mod tests {
         ACCESS_CONTROL_REQUEST_HEADERS, ACCESS_CONTROL_REQUEST_METHOD, CONTENT_TYPE, ORIGIN,
     };
 
-    use crate::web::call::content_types::*;
+    use crate::{metadata::GRPC_CONTENT_TYPE, web::call::content_types::*};
 
     use super::*;
 
@@ -302,14 +297,22 @@ mod tests {
         async fn grpc_web_content_types() {
             let svc = enable(Svc);
 
-            for ct in &[GRPC_WEB_TEXT, GRPC_WEB_PROTO, GRPC_WEB_TEXT_PROTO, GRPC_WEB] {
+            for (ct, response_ct) in [
+                (GRPC_WEB_TEXT, GRPC_WEB_TEXT_PROTO),
+                (GRPC_WEB_PROTO, GRPC_WEB_PROTO),
+                (GRPC_WEB_TEXT_PROTO, GRPC_WEB_TEXT_PROTO),
+                (GRPC_WEB, GRPC_WEB_PROTO),
+            ] {
                 let mut req = request();
                 req.headers_mut()
                     .insert(CONTENT_TYPE, HeaderValue::from_static(ct));
+                req.headers_mut()
+                    .insert(header::ACCEPT, HeaderValue::from_static(ct));
 
                 let res = svc.serve(req).await.unwrap();
 
                 assert_eq!(res.status(), StatusCode::OK);
+                assert_eq!(res.headers().get(CONTENT_TYPE).unwrap(), response_ct);
             }
         }
     }

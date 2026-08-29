@@ -54,6 +54,7 @@ pub mod byte_set;
 pub mod bytes;
 pub mod collections;
 pub mod fmt;
+pub mod guard;
 pub mod hex;
 pub mod info;
 pub mod latency;

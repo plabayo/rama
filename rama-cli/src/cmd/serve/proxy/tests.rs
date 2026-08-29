@@ -16,6 +16,18 @@ use rama::{
         protocol::Role,
     },
     http::{Body, body::util::BodyExt as _},
+    icap::{
+        codec::{Header, HeaderSlot, ResponseLine},
+        http::IncomingRequest as IcapHttpIncomingRequest,
+        proto::{
+            Method as IcapMethod, MethodKind as IcapMethodKind, ServiceTag,
+            StatusCode as IcapStatusCode, header as icap_header,
+        },
+        server::{
+            IncomingRequest as IcapIncomingRequest, OptionsResponse as IcapOptionsResponse,
+            OutgoingResponse as IcapOutgoingResponse, Server as IcapServer,
+        },
+    },
     io::BridgeIo,
     net::{
         client::{ConnectorTarget, ProxyRoute},
@@ -28,9 +40,14 @@ use rama::{
     },
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::{io::duplex, time::timeout};
+use tokio::{
+    io::{AsyncReadExt as _, duplex},
+    time::timeout,
+};
 
 use super::*;
+
+const TEST_ICAP_SERVICE_TAG: ServiceTag = ServiceTag::from_static("rama-proxy-test");
 
 #[derive(Debug, Parser)]
 struct TestCli {
@@ -49,7 +66,7 @@ fn with_local_address(request: Request, local_address: &str) -> Request {
 }
 
 #[test]
-fn default_is_plain_http_on_loopback_8080() {
+fn default_is_shared_http_and_socks5_on_loopback_8080() {
     let cli = TestCli::parse_from(["test"]);
     let listeners = resolve_listeners(&cli.proxy);
     assert_eq!(
@@ -57,13 +74,462 @@ fn default_is_plain_http_on_loopback_8080() {
             .iter()
             .find(|(address, _)| *address == default_bind())
             .map(|(_, protocols)| protocols),
-        Some(&BTreeSet::from([ProxyProtocol::Http]))
+        Some(&BTreeSet::from([
+            ProxyProtocol::Http,
+            ProxyProtocol::Socks5,
+        ]))
     );
     assert!(!cli.proxy.lazy_connect);
     assert!(cli.proxy.mitm.is_none());
     assert_eq!(cli.proxy.body_limit, 0);
     assert_eq!(cli.proxy.capture_total_limit, DEFAULT_CAPTURE_TOTAL_LIMIT);
     assert_eq!(cli.proxy.capture_websocket_messages, 10_000);
+    assert!(cli.proxy.icap.is_none());
+    assert!(cli.proxy.icap_reqmod);
+    assert!(cli.proxy.icap_respmod);
+    assert_eq!(cli.proxy.icap_preview, DEFAULT_ICAP_PREVIEW_BYTES);
+    assert!(!cli.proxy.icap_allow_204);
+    assert!(!cli.proxy.icap_allow_206);
+    assert_eq!(cli.proxy.icap_connections, DEFAULT_ICAP_CONNECTIONS);
+    assert_eq!(cli.proxy.icap_timeout.get(), DEFAULT_ICAP_TIMEOUT_SECS);
+    assert_eq!(cli.proxy.icap_idle_timeout, DEFAULT_ICAP_IDLE_TIMEOUT_SECS);
+    assert!(!cli.proxy.icap_insecure);
+}
+
+#[test]
+fn icap_cli_builds_request_and_response_adaptation() {
+    let cli = TestCli::parse_from([
+        "test",
+        "--icap",
+        "icaps://icap.test:11344/echo",
+        "--icap-preview",
+        "2048",
+        "--icap-allow-204",
+        "--icap-allow-206",
+        "--icap-connections",
+        "4",
+        "--icap-insecure",
+    ]);
+    let adaptation = build_icap_adaptation(
+        &cli.proxy,
+        Arc::new(SocketOptions::default_tcp()),
+        Some(Duration::from_secs(1)),
+    )
+    .unwrap()
+    .unwrap();
+    let request = adaptation.request_service().unwrap();
+    let response = adaptation.response_service().unwrap();
+    assert_eq!(request.service_protocol(), &rama::net::Protocol::ICAPS);
+    assert_eq!(request.preview(), Some(Preview::new(2048)));
+    assert!(request.allows_204());
+    assert!(request.allows_206());
+    assert_eq!(request.uri(), response.uri());
+    assert_eq!(
+        adaptation.physical_idle_timeout().unwrap(),
+        Duration::from_secs(DEFAULT_ICAP_IDLE_TIMEOUT_SECS)
+    );
+}
+
+#[test]
+fn icap_cli_can_select_one_adaptation_direction() {
+    let request_only = TestCli::parse_from([
+        "test",
+        "--icap",
+        "icap://icap.test/echo",
+        "--icap-respmod=false",
+        "--icap-preview",
+        "0",
+    ]);
+    let adaptation = build_icap_adaptation(
+        &request_only.proxy,
+        Arc::new(SocketOptions::default_tcp()),
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(adaptation.request_service().is_some());
+    assert!(adaptation.response_service().is_none());
+    assert_eq!(adaptation.request_service().unwrap().preview(), None);
+
+    let response_only = TestCli::parse_from([
+        "test",
+        "--icap",
+        "icap://icap.test/echo",
+        "--icap-reqmod=false",
+    ]);
+    let adaptation = build_icap_adaptation(
+        &response_only.proxy,
+        Arc::new(SocketOptions::default_tcp()),
+        None,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(adaptation.request_service().is_none());
+    assert!(adaptation.response_service().is_some());
+}
+
+#[test]
+fn icap_cli_rejects_unusable_configuration() {
+    assert!(
+        TestCli::try_parse_from(["test", "--icap", "icap://[::1/echo"]).is_err(),
+        "--icap is parsed as a typed URI by clap"
+    );
+    assert!(
+        TestCli::try_parse_from(["test", "--icap-preview", "1"]).is_err(),
+        "ICAP-specific flags require --icap"
+    );
+
+    let neither = TestCli::parse_from([
+        "test",
+        "--icap",
+        "icap://icap.test/echo",
+        "--icap-reqmod=false",
+        "--icap-respmod=false",
+    ]);
+    let error = build_icap_adaptation(&neither.proxy, Arc::new(SocketOptions::default_tcp()), None)
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("at least one"));
+
+    let no_connections = TestCli::parse_from([
+        "test",
+        "--icap",
+        "icap://icap.test/echo",
+        "--icap-connections",
+        "0",
+    ]);
+    let error = build_icap_adaptation(
+        &no_connections.proxy,
+        Arc::new(SocketOptions::default_tcp()),
+        None,
+    )
+    .err()
+    .unwrap();
+    assert!(error.to_string().contains("greater than zero"));
+
+    let invalid_scheme = TestCli::parse_from(["test", "--icap", "https://icap.test/echo"]);
+    let error = build_icap_adaptation(
+        &invalid_scheme.proxy,
+        Arc::new(SocketOptions::default_tcp()),
+        None,
+    )
+    .err()
+    .unwrap();
+    assert!(error.to_string().contains("ICAP service endpoint"));
+
+    let allow_206_only = TestCli::parse_from([
+        "test",
+        "--icap",
+        "icap://icap.test/echo",
+        "--icap-allow-206",
+    ]);
+    let error = build_icap_adaptation(
+        &allow_206_only.proxy,
+        Arc::new(SocketOptions::default_tcp()),
+        None,
+    )
+    .err()
+    .unwrap();
+    assert!(error.to_string().contains("requires --icap-allow-204"));
+
+    assert!(
+        TestCli::try_parse_from([
+            "test",
+            "--icap",
+            "icap://icap.test/echo",
+            "--icap-timeout",
+            "0",
+        ])
+        .is_err(),
+        "ICAP I/O and pool waits must remain bounded"
+    );
+}
+
+#[tokio::test]
+async fn icap_connection_limit_tracks_capability_refreshes() {
+    let limit = ConnectionLimiter::new(4, None);
+    timeout(Duration::from_millis(250), limit.update(Some(3)))
+        .await
+        .expect("initial peer connection limit update stalled")
+        .unwrap();
+    assert_eq!(limit.semaphore.available_permits(), 3);
+    let held = [
+        limit.acquire().await.unwrap(),
+        limit.acquire().await.unwrap(),
+        limit.acquire().await.unwrap(),
+    ];
+    assert_eq!(
+        limit.update(Some(1)).await.unwrap(),
+        3,
+        "a busy decrease from an applied peer limit retains that limit"
+    );
+    assert_eq!(
+        limit.update(Some(0)).await.unwrap(),
+        3,
+        "an invalid peer limit retains the applied non-local limit"
+    );
+    drop(held);
+    timeout(Duration::from_millis(250), limit.update(Some(1)))
+        .await
+        .expect("lower peer connection limit update stalled")
+        .unwrap();
+    assert_eq!(limit.semaphore.available_permits(), 1);
+    timeout(Duration::from_millis(250), limit.update(Some(2)))
+        .await
+        .expect("higher peer connection limit update stalled")
+        .unwrap();
+    assert_eq!(limit.semaphore.available_permits(), 2);
+    timeout(Duration::from_millis(250), limit.update(Some(3)))
+        .await
+        .expect("second higher peer connection limit update stalled")
+        .unwrap();
+    assert_eq!(limit.semaphore.available_permits(), 3);
+    timeout(Duration::from_millis(250), limit.update(None))
+        .await
+        .expect("clearing peer connection limit stalled")
+        .unwrap();
+    assert_eq!(limit.semaphore.available_permits(), 4);
+
+    let first = limit.acquire().await.unwrap();
+    let second = limit.acquire().await.unwrap();
+    let third = limit.acquire().await.unwrap();
+    let fourth = limit.acquire().await.unwrap();
+    assert_eq!(
+        limit.update(Some(1)).await.unwrap(),
+        4,
+        "a busy decrease retains the last fully applied capacity"
+    );
+    assert_eq!(limit.semaphore.available_permits(), 0);
+
+    drop(first);
+    drop(second);
+    drop(third);
+    assert_eq!(limit.update(Some(1)).await.unwrap(), 1);
+    assert_eq!(limit.semaphore.available_permits(), 0);
+    drop(fourth);
+    let only = limit.acquire().await.unwrap();
+    assert_eq!(limit.semaphore.available_permits(), 0);
+    drop(only);
+
+    limit.update(None).await.unwrap();
+    assert_eq!(limit.semaphore.available_permits(), 4);
+    assert_eq!(limit.update(None).await.unwrap(), 4);
+    assert_eq!(limit.update(Some(0)).await.unwrap(), 4);
+}
+
+#[tokio::test]
+async fn icap_io_timeout_bounds_a_stalled_peer() {
+    let (client, _server) = duplex(64);
+    let mut client = IcapTimeoutIo::new(client, Duration::from_millis(10));
+    let mut byte = [0_u8; 1];
+    let error = client.read_exact(&mut byte).await.unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+}
+
+#[tokio::test]
+async fn icap_pool_controller_replaces_only_changed_capacity() {
+    let cli = TestCli::parse_from([
+        "test",
+        "--icap",
+        "icap://icap.test/echo",
+        "--icap-connections",
+        "4",
+    ]);
+    let adaptation = build_icap_adaptation(
+        &cli.proxy,
+        Arc::new(SocketOptions::default_tcp()),
+        Some(Duration::from_secs(1)),
+    )
+    .unwrap()
+    .unwrap();
+
+    assert_eq!(adaptation.physical_connection_limit().await.unwrap(), 4);
+    adaptation
+        .update_physical_connection_limit(1)
+        .await
+        .unwrap();
+    assert_eq!(adaptation.physical_connection_limit().await.unwrap(), 1);
+    adaptation
+        .update_physical_connection_limit(1)
+        .await
+        .unwrap();
+    assert_eq!(adaptation.physical_connection_limit().await.unwrap(), 1);
+}
+
+#[tokio::test]
+async fn icap_pool_generation_replacement_closes_every_idle_transport() {
+    struct TrackedConnection {
+        extensions: Extensions,
+        live: Arc<AtomicUsize>,
+    }
+
+    impl rama::extensions::ExtensionsRef for TrackedConnection {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl Drop for TrackedConnection {
+        fn drop(&mut self) {
+            self.live.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    let live = Arc::new(AtomicUsize::new(0));
+    let raw = service_fn({
+        let live = live.clone();
+        move |input: ConnectRequest| {
+            let live = live.clone();
+            async move {
+                live.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, Infallible>(EstablishedClientConnection {
+                    input,
+                    conn: TrackedConnection {
+                        extensions: Extensions::new(),
+                        live,
+                    },
+                })
+            }
+        }
+    });
+    let make_pool = |limit| {
+        let pool = LruDropPool::try_new(limit, limit)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let connector = PooledConnector::new(raw.clone(), pool.clone(), BasicConnIdentifier::new());
+        (connector, pool)
+    };
+    let (connector, pool) = make_pool(4);
+    let generation = ConnectorGeneration::new(4, connector, pool);
+    let request = ConnectRequest::new("icap.test:1344".parse().unwrap())
+        .with_application_protocol(rama::net::Protocol::ICAP);
+
+    let mut leased = Vec::new();
+    for _ in 0..4 {
+        leased.push(generation.serve(request.clone()).await.unwrap().conn);
+    }
+    assert_eq!(live.load(Ordering::SeqCst), 4);
+    drop(leased);
+    assert_eq!(
+        live.load(Ordering::SeqCst),
+        4,
+        "connections are idle in the pool"
+    );
+
+    let (connector, pool) = make_pool(1);
+    generation.replace(1, connector, pool).await;
+    assert_eq!(generation.limit().await, 1);
+    assert_eq!(
+        live.load(Ordering::SeqCst),
+        0,
+        "replacing the pool must close all idle transports"
+    );
+
+    let leased = generation.serve(request).await.unwrap().conn;
+    assert_eq!(live.load(Ordering::SeqCst), 1);
+    drop(leased);
+    assert_eq!(live.load(Ordering::SeqCst), 1);
+    drop(generation);
+    assert_eq!(live.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn icap_pool_retirement_is_not_held_open_by_a_pending_connect() {
+    struct TrackedConnection {
+        extensions: Extensions,
+        live: Arc<AtomicUsize>,
+    }
+
+    impl rama::extensions::ExtensionsRef for TrackedConnection {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl Drop for TrackedConnection {
+        fn drop(&mut self) {
+            self.live.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    let live = Arc::new(AtomicUsize::new(0));
+    let connect_started = Arc::new(tokio::sync::Notify::new());
+    let release_connect = Arc::new(tokio::sync::Notify::new());
+    let raw = service_fn({
+        let live = live.clone();
+        let connect_started = connect_started.clone();
+        let release_connect = release_connect.clone();
+        move |input: ConnectRequest| {
+            let live = live.clone();
+            let connect_started = connect_started.clone();
+            let release_connect = release_connect.clone();
+            async move {
+                if input
+                    .authority
+                    .host
+                    .try_as_domain()
+                    .is_ok_and(|domain| domain.as_str() == "pending.test")
+                {
+                    connect_started.notify_one();
+                    release_connect.notified().await;
+                }
+                live.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, Infallible>(EstablishedClientConnection {
+                    input,
+                    conn: TrackedConnection {
+                        extensions: Extensions::new(),
+                        live,
+                    },
+                })
+            }
+        }
+    });
+    let make_pool = |limit| {
+        let pool = LruDropPool::try_new(limit, limit)
+            .unwrap()
+            .with_drop_connection_if_no_response(false);
+        let connector = PooledConnector::new(raw.clone(), pool.clone(), BasicConnIdentifier::new());
+        (connector, pool)
+    };
+    let (connector, pool) = make_pool(2);
+    let generation = ConnectorGeneration::new(2, connector, pool);
+    let request = |authority: &str| {
+        ConnectRequest::new(authority.parse().unwrap())
+            .with_application_protocol(rama::net::Protocol::ICAP)
+    };
+
+    let idle = generation
+        .serve(request("idle.test:1344"))
+        .await
+        .unwrap()
+        .conn;
+    drop(idle);
+    assert_eq!(live.load(Ordering::SeqCst), 1);
+
+    let pending = tokio::spawn({
+        let generation = generation.clone();
+        let request = request("pending.test:1344");
+        async move { generation.serve(request).await.unwrap().conn }
+    });
+    connect_started.notified().await;
+
+    let (connector, pool) = make_pool(1);
+    generation.replace(1, connector, pool).await;
+    assert_eq!(
+        live.load(Ordering::SeqCst),
+        0,
+        "retirement must close idle sockets while an old connect is pending"
+    );
+
+    release_connect.notify_one();
+    let old_lease = pending.await.unwrap();
+    assert_eq!(live.load(Ordering::SeqCst), 1);
+    drop(old_lease);
+    assert_eq!(
+        live.load(Ordering::SeqCst),
+        0,
+        "a retired generation must reject returned connections"
+    );
 }
 
 #[test]
@@ -543,12 +1009,9 @@ fn reserve_loopback_address() -> std::net::SocketAddr {
 async fn spawn_plain_origin(
     response_body: &'static str,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind_address(
-        SocketAddress::from(reserve_loopback_address()),
-        Executor::default(),
-    )
-    .await
-    .unwrap();
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .unwrap();
     let address = listener.local_addr().unwrap();
     let task = tokio::spawn(
         listener.serve(HttpServer::auto(Executor::default()).service(service_fn(
@@ -560,42 +1023,603 @@ async fn spawn_plain_origin(
     (address, task)
 }
 
-async fn spawn_websocket_origin() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind_address(
-        SocketAddress::from(reserve_loopback_address()),
-        Executor::default(),
+#[derive(Default)]
+struct ProxyTestIcapState {
+    active: AtomicUsize,
+    max_active: AtomicUsize,
+    proxy_authorization_seen: AtomicUsize,
+    reqmod_calls: AtomicUsize,
+    respmod_calls: AtomicUsize,
+    peer_max_connections: Option<u64>,
+    methods: Option<Vec<IcapMethod<'static>>>,
+    delay: Option<Duration>,
+}
+
+struct ActiveIcapAdaptation(Arc<ProxyTestIcapState>);
+
+impl Drop for ActiveIcapAdaptation {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+async fn proxy_test_icap_service(
+    request: IcapIncomingRequest,
+    state: Arc<ProxyTestIcapState>,
+) -> Result<IcapOutgoingResponse, BoxError> {
+    let method = request.request().method();
+    if method == IcapMethodKind::Options {
+        const DEFAULT_METHODS: &[IcapMethod<'static>] = &[IcapMethod::Reqmod, IcapMethod::Respmod];
+        let response = IcapOptionsResponse::new(
+            TEST_ICAP_SERVICE_TAG,
+            state.methods.as_deref().unwrap_or(DEFAULT_METHODS),
+        )
+        .with_preview(Preview::new(DEFAULT_ICAP_PREVIEW_BYTES))
+        .with_transfer_preview_all(true);
+        let response = match state.peer_max_connections {
+            Some(limit) => response.with_max_connections(limit),
+            None => response,
+        };
+        return Ok(response.build()?);
+    }
+
+    let active = state.active.fetch_add(1, Ordering::SeqCst) + 1;
+    state.max_active.fetch_max(active, Ordering::SeqCst);
+    let _active = ActiveIcapAdaptation(state.clone());
+    match method {
+        IcapMethodKind::Reqmod => {
+            state.reqmod_calls.fetch_add(1, Ordering::SeqCst);
+        }
+        IcapMethodKind::Respmod => {
+            state.respmod_calls.fetch_add(1, Ordering::SeqCst);
+        }
+        IcapMethodKind::Options | IcapMethodKind::Extension => {}
+    }
+    if let Some(delay) = state.delay {
+        tokio::time::sleep(delay).await;
+    }
+    let mut slots = [HeaderSlot::EMPTY; 16];
+    let head = request.request().parse_head(&mut slots)?;
+    let saw_proxy_authorization = head
+        .header(icap_header::PROXY_AUTHORIZATION)
+        .is_some_and(|value| value.as_bytes().is_some());
+    if saw_proxy_authorization {
+        state
+            .proxy_authorization_seen
+            .fetch_add(1, Ordering::SeqCst);
+    }
+    let request = IcapHttpIncomingRequest::from_icap(request)?;
+    let line = ResponseLine::new(IcapStatusCode::OK, b"OK")?;
+    let tag = TEST_ICAP_SERVICE_TAG.to_wire();
+    let fields = [Header::new(icap_header::ISTAG, tag.as_bytes())?];
+    // This echo response depends on every input byte. Finish the bounded
+    // request before returning instead of advertising a dependent response
+    // while the client is still transmitting its Preview.
+    match method {
+        IcapMethodKind::Reqmod => {
+            let (parts, body) = request.into_request()?.into_parts();
+            let mut request = Request::from_parts(parts, Body::new(body.collect().await?));
+            request.headers_mut().insert(
+                "x-rama-icap-reqmod",
+                rama::http::HeaderValue::from_static("yes"),
+            );
+            if saw_proxy_authorization {
+                request.headers_mut().insert(
+                    "x-rama-icap-saw-proxy-authorization",
+                    rama::http::HeaderValue::from_static("yes"),
+                );
+            }
+            Ok(IcapOutgoingResponse::from_http_request(
+                line, &fields, request,
+            )?)
+        }
+        IcapMethodKind::Respmod => {
+            let (parts, body) = request.into_response()?.into_parts();
+            let mut response = Response::from_parts(parts, Body::new(body.collect().await?));
+            response.headers_mut().insert(
+                "x-rama-icap-respmod",
+                rama::http::HeaderValue::from_static("yes"),
+            );
+            response.headers_mut().insert(
+                rama::http::header::PROXY_AUTHENTICATE,
+                rama::http::HeaderValue::from_static("Basic realm=icap-test"),
+            );
+            Ok(IcapOutgoingResponse::from_http_response(
+                IcapMethodKind::Respmod,
+                line,
+                &fields,
+                response,
+            )?)
+        }
+        IcapMethodKind::Options | IcapMethodKind::Extension => Err(BoxError::from_static_str(
+            "unexpected ICAP method in adaptation test service",
+        )),
+    }
+}
+
+async fn spawn_proxy_test_icap_with_state(
+    state: Arc<ProxyTestIcapState>,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = IcapServer::new(
+        service_fn(move |request| proxy_test_icap_service(request, state.clone())),
+        TEST_ICAP_SERVICE_TAG,
+    )
+    .unwrap();
+    let task = tokio::spawn(listener.serve(server));
+    (address, task)
+}
+
+async fn spawn_proxy_test_icap() -> (
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+    Arc<ProxyTestIcapState>,
+) {
+    let state = Arc::new(ProxyTestIcapState::default());
+    let (address, task) = spawn_proxy_test_icap_with_state(state.clone()).await;
+    (address, task, state)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn forward_client_applies_icap_reqmod_and_respmod() {
+    let (icap_address, icap_task, _icap_state) = spawn_proxy_test_icap().await;
+    let origin_listener =
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+            .await
+            .unwrap();
+    let origin_address = origin_listener.local_addr().unwrap();
+    let origin_task = tokio::spawn(origin_listener.serve(
+        HttpServer::auto(Executor::default()).service(service_fn(|request: Request| async move {
+            assert_eq!(request.headers()["x-rama-icap-reqmod"], "yes");
+            assert_eq!(
+                request.into_body().collect().await.unwrap().to_bytes(),
+                "request body"
+            );
+            Ok::<_, Infallible>(Response::new(Body::from("response body")))
+        })),
+    ));
+    let cli = TestCli::parse_from(vec![
+        "test".to_owned(),
+        "--icap".to_owned(),
+        format!("icap://{icap_address}/adapt"),
+    ]);
+    let tcp_options = Arc::new(SocketOptions::default_tcp());
+    let icap = build_icap_adaptation(
+        &cli.proxy,
+        tcp_options.clone(),
+        Some(Duration::from_secs(2)),
+    )
+    .unwrap();
+    let client = new_proxy_client(ProxyClientConfig {
+        exec: Executor::default(),
+        capture: None,
+        inspection: InspectionState::default(),
+        har: HarController::default(),
+        portal: None,
+        tcp_options,
+        connect_timeout: Some(Duration::from_secs(2)),
+        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
+        upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+        icap,
+    });
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!("http://{origin_address}/adapt"))
+        .body(Body::from("request body"))
+        .unwrap();
+    let request_future = client.serve(request);
+    assert!(
+        std::mem::size_of_val(&request_future) <= 24 * 1024,
+        "ICAP inflated the proxy request future to {} bytes",
+        std::mem::size_of_val(&request_future),
+    );
+    let response = timeout(Duration::from_secs(5), request_future)
+        .await
+        .expect("ICAP-adapted proxy request timed out")
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-rama-icap-respmod"], "yes");
+    assert!(
+        !response
+            .headers()
+            .contains_key(rama::http::header::PROXY_AUTHENTICATE)
+    );
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "response body"
+    );
+    origin_task.abort();
+    icap_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn default_icap_directions_follow_single_method_capabilities() {
+    let state = Arc::new(ProxyTestIcapState {
+        methods: Some(vec![IcapMethod::Reqmod]),
+        ..Default::default()
+    });
+    let (icap_address, icap_task) = spawn_proxy_test_icap_with_state(state.clone()).await;
+    let (origin, origin_task) = spawn_plain_origin("single-method-ok").await;
+    let cli = TestCli::parse_from(vec![
+        "test".to_owned(),
+        "--icap".to_owned(),
+        format!("icap://{icap_address}/adapt"),
+    ]);
+    let tcp_options = Arc::new(SocketOptions::default_tcp());
+    let icap = build_icap_adaptation(
+        &cli.proxy,
+        tcp_options.clone(),
+        Some(Duration::from_secs(2)),
+    )
+    .unwrap();
+    let client = new_proxy_client(ProxyClientConfig {
+        exec: Executor::default(),
+        capture: None,
+        inspection: InspectionState::default(),
+        har: HarController::default(),
+        portal: None,
+        tcp_options,
+        connect_timeout: Some(Duration::from_secs(2)),
+        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
+        upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+        icap,
+    });
+
+    let response = timeout(
+        Duration::from_secs(5),
+        client.serve(
+            Request::builder()
+                .uri(format!("http://{origin}/single-method"))
+                .body(Body::empty())
+                .unwrap(),
+        ),
     )
     .await
+    .expect("single-method ICAP request timed out")
     .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "single-method-ok"
+    );
+    assert_eq!(state.reqmod_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(state.respmod_calls.load(Ordering::SeqCst), 0);
+
+    origin_task.abort();
+    icap_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stalled_icap_options_is_bounded_for_all_waiters() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let icap_address = listener.local_addr().unwrap();
+    let icap_task = tokio::spawn(async move {
+        let (_connection, _) = listener.accept().await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let cli = TestCli::parse_from(vec![
+        "test".to_owned(),
+        "--icap".to_owned(),
+        format!("icap://{icap_address}/adapt"),
+        "--icap-timeout".to_owned(),
+        "1".to_owned(),
+    ]);
+    let tcp_options = Arc::new(SocketOptions::default_tcp());
+    let icap = build_icap_adaptation(
+        &cli.proxy,
+        tcp_options.clone(),
+        Some(Duration::from_secs(2)),
+    )
+    .unwrap();
+    let client = new_proxy_client(ProxyClientConfig {
+        exec: Executor::default(),
+        capture: None,
+        inspection: InspectionState::default(),
+        har: HarController::default(),
+        portal: None,
+        tcp_options,
+        connect_timeout: Some(Duration::from_secs(2)),
+        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
+        upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+        icap,
+    });
+    let request = || {
+        Request::builder()
+            .uri("http://origin.test/bounded-options")
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let (first, second) = Box::pin(timeout(Duration::from_secs(3), async {
+        tokio::join!(client.serve(request()), client.serve(request()))
+    }))
+    .await
+    .expect("stalled OPTIONS waiters exceeded the ICAP timeout");
+    for response in [first.unwrap(), second.unwrap()] {
+        assert!(response.status().is_server_error());
+    }
+
+    icap_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn peer_max_connections_clamps_concurrent_icap_transactions() {
+    let icap_state = Arc::new(ProxyTestIcapState {
+        peer_max_connections: Some(1),
+        delay: Some(Duration::from_millis(30)),
+        ..Default::default()
+    });
+    let (icap_address, icap_task) = spawn_proxy_test_icap_with_state(icap_state.clone()).await;
+    let (origin, origin_task) = spawn_plain_origin("connection-limit-ok").await;
+    let cli = TestCli::parse_from(vec![
+        "test".to_owned(),
+        "--icap".to_owned(),
+        format!("icap://{icap_address}/adapt"),
+        "--icap-connections".to_owned(),
+        "4".to_owned(),
+    ]);
+    let tcp_options = Arc::new(SocketOptions::default_tcp());
+    let icap = build_icap_adaptation(
+        &cli.proxy,
+        tcp_options.clone(),
+        Some(Duration::from_secs(2)),
+    )
+    .unwrap();
+    let client = new_proxy_client(ProxyClientConfig {
+        exec: Executor::default(),
+        capture: None,
+        inspection: InspectionState::default(),
+        har: HarController::default(),
+        portal: None,
+        tcp_options,
+        connect_timeout: Some(Duration::from_secs(2)),
+        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
+        upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+        icap,
+    });
+    let request = || {
+        Request::builder()
+            .uri(format!("http://{origin}/limited"))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let exchange = || async {
+        let response = client.serve(request()).await.unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, body)
+    };
+    let (first, second) = Box::pin(timeout(Duration::from_secs(5), async {
+        tokio::join!(exchange(), exchange())
+    }))
+    .await
+    .expect("requests queued by Max-Connections did not make progress");
+    for (status, body) in [first, second] {
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, "connection-limit-ok");
+    }
+    assert_eq!(icap_state.max_active.load(Ordering::SeqCst), 1);
+
+    origin_task.abort();
+    icap_task.abort();
+}
+
+async fn spawn_websocket_origin() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .unwrap();
     let address = listener.local_addr().unwrap();
+    let websocket = WebSocketAcceptor::new().into_echo_service();
+    let websocket = service_fn(move |request: Request| {
+        let websocket = websocket.clone();
+        async move {
+            assert!(
+                !request
+                    .headers()
+                    .contains_key(rama::http::header::PROXY_AUTHORIZATION)
+            );
+            websocket.serve(request).await
+        }
+    });
     let task = tokio::spawn(
         listener.serve(
-            HttpServer::new_http1(Executor::default()).service(
-                ConsumeErrLayer::trace_as_debug()
-                    .into_layer(WebSocketAcceptor::new().into_echo_service()),
-            ),
+            HttpServer::new_http1(Executor::default())
+                .service(ConsumeErrLayer::trace_as_debug().into_layer(websocket)),
         ),
     );
     (address, task)
 }
 
 async fn spawn_tls_websocket_origin() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
-    let listener = TcpListener::bind_address(
-        SocketAddress::from(reserve_loopback_address()),
-        Executor::default(),
-    )
-    .await
-    .unwrap();
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .unwrap();
     let address = listener.local_addr().unwrap();
     let tls = TlsServerConfig::new()
         .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
         .unwrap()
         .with_alpn_http_auto();
-    let websocket = HttpServer::new_http1(Executor::default()).service(
-        ConsumeErrLayer::trace_as_debug().into_layer(WebSocketAcceptor::new().into_echo_service()),
-    );
+    let websocket = WebSocketAcceptor::new().into_echo_service();
+    let websocket = service_fn(move |request: Request| {
+        let websocket = websocket.clone();
+        async move {
+            assert!(
+                !request
+                    .headers()
+                    .contains_key(rama::http::header::PROXY_AUTHORIZATION)
+            );
+            websocket.serve(request).await
+        }
+    });
+    let websocket = HttpServer::new_http1(Executor::default())
+        .service(ConsumeErrLayer::trace_as_debug().into_layer(websocket));
     let task = tokio::spawn(listener.serve(TlsAcceptorService::new(tls, websocket, false)));
     (address, task)
+}
+
+fn proxy_websocket_client()
+-> impl Service<Request, Output = Response, Error: Into<BoxError>> + Clone {
+    let insecure = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+    EasyHttpWebClient::connector_builder()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .with_tls_proxy_support_using_boringssl_config(insecure.clone())
+        .with_proxy_support()
+        .with_tls_support_using_boringssl(insecure)
+        .with_default_http_connector(Executor::default())
+        .without_connection_pool()
+        .build_client()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn websocket_handshakes_support_each_icap_direction() {
+    let (icap_address, icap_task, icap_state) = spawn_proxy_test_icap().await;
+    let (origin, origin_task) = spawn_websocket_origin().await;
+
+    for (reqmod, respmod) in [(true, false), (false, true), (true, true)] {
+        let proxy_address = reserve_loopback_address();
+        let proxy_arg = proxy_address.to_string();
+        let icap_uri = format!("icap://{icap_address}/adapt");
+        let reqmod_arg = format!("--icap-reqmod={reqmod}");
+        let respmod_arg = format!("--icap-respmod={respmod}");
+        let cli = TestCli::parse_from([
+            "test",
+            "--bind",
+            proxy_arg.as_str(),
+            "--icap",
+            icap_uri.as_str(),
+            reqmod_arg.as_str(),
+            respmod_arg.as_str(),
+        ]);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let shutdown = rama::graceful::Shutdown::new(async move {
+            _ = shutdown_rx.await;
+        });
+        run(shutdown.guard(), cli.proxy).await.unwrap();
+
+        let reqmod_before = icap_state.reqmod_calls.load(Ordering::SeqCst);
+        let respmod_before = icap_state.respmod_calls.load(Ordering::SeqCst);
+        let client = proxy_websocket_client();
+        let extensions = Extensions::new();
+        extensions.insert(ProxyRoute::Proxy(
+            format!("http://{proxy_address}").parse().unwrap(),
+        ));
+        let mut websocket = client
+            .websocket(format!("ws://{origin}/echo"))
+            .with_header(
+                rama::http::header::PROXY_AUTHORIZATION,
+                "Basic downstream-secret",
+            )
+            .handshake(extensions)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            websocket
+                .response()
+                .headers
+                .contains_key("x-rama-icap-respmod"),
+            respmod,
+        );
+        assert!(
+            !websocket
+                .response()
+                .headers
+                .contains_key(rama::http::header::PROXY_AUTHENTICATE)
+        );
+        websocket
+            .send_message(Message::text("ICAP WebSocket round trip"))
+            .await
+            .unwrap();
+        assert_eq!(
+            websocket.recv_message().await.unwrap(),
+            Message::text("ICAP WebSocket round trip")
+        );
+        assert_eq!(
+            icap_state.reqmod_calls.load(Ordering::SeqCst) > reqmod_before,
+            reqmod,
+        );
+        assert_eq!(
+            icap_state.respmod_calls.load(Ordering::SeqCst) > respmod_before,
+            respmod,
+        );
+        assert!(icap_state.proxy_authorization_seen.load(Ordering::SeqCst) > 0);
+
+        drop(websocket);
+        drop(client);
+        shutdown_proxy(shutdown_tx, shutdown).await;
+    }
+
+    origin_task.abort();
+    icap_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn socks5_mitm_websocket_handshake_supports_icap() {
+    let (icap_address, icap_task, icap_state) = spawn_proxy_test_icap().await;
+    let (origin, origin_task) = spawn_tls_websocket_origin().await;
+    let proxy_address = reserve_loopback_address();
+    let ui_address = reserve_loopback_address();
+    let proxy_arg = proxy_address.to_string();
+    let mitm_arg = format!("--mitm={ui_address}");
+    let icap_uri = format!("icap://{icap_address}/adapt");
+    let cli = TestCli::parse_from([
+        "test",
+        "--bind",
+        proxy_arg.as_str(),
+        mitm_arg.as_str(),
+        "--icap",
+        icap_uri.as_str(),
+    ]);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = rama::graceful::Shutdown::new(async move {
+        _ = shutdown_rx.await;
+    });
+    run(shutdown.guard(), cli.proxy).await.unwrap();
+
+    let client = proxy_websocket_client();
+    let extensions = Extensions::new();
+    extensions.insert(ProxyRoute::Proxy(
+        format!("socks5h://{proxy_address}").parse().unwrap(),
+    ));
+    let mut websocket = client
+        .websocket(format!("wss://{origin}/echo"))
+        .with_header(
+            rama::http::header::PROXY_AUTHORIZATION,
+            "Basic downstream-secret",
+        )
+        .handshake(extensions)
+        .await
+        .unwrap();
+
+    assert_eq!(websocket.response().headers["x-rama-icap-respmod"], "yes");
+    assert!(
+        !websocket
+            .response()
+            .headers
+            .contains_key(rama::http::header::PROXY_AUTHENTICATE)
+    );
+    websocket
+        .send_message(Message::text("ICAP WSS over SOCKS5"))
+        .await
+        .unwrap();
+    assert_eq!(
+        websocket.recv_message().await.unwrap(),
+        Message::text("ICAP WSS over SOCKS5")
+    );
+    assert!(icap_state.reqmod_calls.load(Ordering::SeqCst) > 0);
+    assert!(icap_state.respmod_calls.load(Ordering::SeqCst) > 0);
+    assert!(icap_state.proxy_authorization_seen.load(Ordering::SeqCst) > 0);
+
+    drop(websocket);
+    drop(client);
+    shutdown_proxy(shutdown_tx, shutdown).await;
+    origin_task.abort();
+    icap_task.abort();
 }
 
 async fn get_via_proxy(
@@ -693,13 +1717,7 @@ async fn shared_http_and_socks5_listener_forwards_end_to_end() {
     let (origin, origin_task) = spawn_plain_origin("shared-proxy-ok").await;
     let proxy_address = reserve_loopback_address();
     let proxy_arg = proxy_address.to_string();
-    let cli = TestCli::parse_from([
-        "test",
-        "--bind",
-        proxy_arg.as_str(),
-        "--protocol",
-        "http,socks5",
-    ]);
+    let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str()]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown = rama::graceful::Shutdown::new(async move {
         _ = shutdown_rx.await;
@@ -739,21 +1757,22 @@ async fn https_proxy_listener_forwards_end_to_end() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn mitm_dashboard_and_http_proxy_share_a_listener_end_to_end() {
+async fn default_mitm_dashboard_http_and_socks5_share_a_listener_end_to_end() {
     let (origin, origin_task) = spawn_plain_origin("shared-dashboard-ok").await;
     let proxy_address = reserve_loopback_address();
     let proxy_arg = proxy_address.to_string();
-    let mitm_arg = format!("--mitm={proxy_address}");
-    let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), mitm_arg.as_str()]);
+    let cli = TestCli::parse_from(["test", "--bind", proxy_arg.as_str(), "--mitm"]);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown = rama::graceful::Shutdown::new(async move {
         _ = shutdown_rx.await;
     });
     run(shutdown.guard(), cli.proxy).await.unwrap();
 
-    let (status, body) = get_via_proxy(origin, &format!("http://{proxy_address}")).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, "shared-dashboard-ok");
+    for scheme in ["http", "socks5h"] {
+        let (status, body) = get_via_proxy(origin, &format!("{scheme}://{proxy_address}")).await;
+        assert_eq!(status, StatusCode::OK, "proxy scheme {scheme}");
+        assert_eq!(body, "shared-dashboard-ok", "proxy scheme {scheme}");
+    }
 
     let client = EasyHttpWebClient::default();
     let response = client
@@ -1321,6 +2340,7 @@ async fn forward_http_client_applies_connect_timeout_to_tls_handshake() {
         connect_timeout: Some(Duration::from_millis(50)),
         mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+        icap: None,
     });
     let started = tokio::time::Instant::now();
     let response = timeout(
@@ -1374,6 +2394,7 @@ async fn captured_http_summary_includes_ingress_and_egress_socket_addresses() {
         connect_timeout: None,
         mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+        icap: None,
     });
     let request = Request::builder()
         .uri(format!("http://{origin}/socket-summary"))
@@ -1582,6 +2603,7 @@ async fn live_har_controller_records_proxy_traffic_end_to_end() {
         connect_timeout: None,
         mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
         upstream,
+        icap: None,
     });
     let response = client
         .serve(
@@ -1613,12 +2635,10 @@ async fn live_har_controller_records_proxy_traffic_end_to_end() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn https_connect_is_mitm_relayed_end_to_end() {
-    let origin_listener = TcpListener::bind_address(
-        SocketAddress::from(reserve_loopback_address()),
-        Executor::default(),
-    )
-    .await
-    .unwrap();
+    let origin_listener =
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+            .await
+            .unwrap();
     let origin_address = origin_listener.local_addr().unwrap();
     let origin_tls = TlsServerConfig::new()
         .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
@@ -1677,13 +2697,120 @@ async fn https_connect_is_mitm_relayed_end_to_end() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
+    let (icap_address, icap_task, icap_state) = spawn_proxy_test_icap().await;
+    let origin_listener =
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+            .await
+            .unwrap();
+    let origin_address = origin_listener.local_addr().unwrap();
+    let origin_tls = TlsServerConfig::new()
+        .try_with_generated_server_auth(GeneratedServerAuthConfig::default())
+        .unwrap()
+        .with_alpn_http_auto();
+    let origin_http =
+        HttpServer::auto(Executor::default()).service(service_fn(|request: Request| async move {
+            assert_eq!(request.headers()["x-rama-icap-reqmod"], "yes");
+            assert_eq!(
+                request.headers()["x-rama-icap-saw-proxy-authorization"],
+                "yes"
+            );
+            assert!(
+                !request
+                    .headers()
+                    .contains_key(rama::http::header::PROXY_AUTHORIZATION)
+            );
+            Ok::<_, Infallible>(Response::new(Body::from("mitm-icap-ok")))
+        }));
+    let origin_task = tokio::spawn(origin_listener.serve(TlsAcceptorService::new(
+        origin_tls,
+        origin_http,
+        false,
+    )));
+
+    let proxy_address = reserve_loopback_address();
+    let ui_address = reserve_loopback_address();
+    let proxy_arg = proxy_address.to_string();
+    let mitm_arg = format!("--mitm={ui_address}");
+    let icap_uri = format!("icap://{icap_address}/adapt");
+    let cli = TestCli::parse_from([
+        "test",
+        "--bind",
+        proxy_arg.as_str(),
+        mitm_arg.as_str(),
+        "--icap",
+        icap_uri.as_str(),
+    ]);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = rama::graceful::Shutdown::new(async move {
+        _ = shutdown_rx.await;
+    });
+    run(shutdown.guard(), cli.proxy).await.unwrap();
+
+    let tls_config = TlsClientConfig::new().with_server_verify(ServerVerifyMode::Disable);
+    let client = EasyHttpWebClient::connector_builder()
+        .with_default_transport_connector()
+        .with_default_dns_connector()
+        .with_tls_proxy_support_using_boringssl()
+        .with_proxy_support()
+        .with_tls_support_using_boringssl(tls_config)
+        .with_default_http_connector(Executor::default())
+        .without_connection_pool()
+        .build_client();
+    for scheme in ["http", "socks5h"] {
+        let response = timeout(
+            Duration::from_secs(10),
+            client.serve(
+                Request::builder()
+                    .uri(format!("https://{origin_address}/icap"))
+                    .header(
+                        rama::http::header::PROXY_AUTHORIZATION,
+                        "Basic downstream-secret",
+                    )
+                    .extension(ProxyRoute::Proxy(
+                        format!("{scheme}://{proxy_address}").parse().unwrap(),
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("ICAP-adapted {scheme} MITM request timed out"))
+        .unwrap_or_else(|error| panic!("ICAP-adapted {scheme} MITM request failed: {error}"));
+        assert_eq!(response.status(), StatusCode::OK, "proxy scheme {scheme}");
+        assert_eq!(
+            response.headers()["x-rama-icap-respmod"],
+            "yes",
+            "proxy scheme {scheme}",
+        );
+        assert!(
+            !response
+                .headers()
+                .contains_key(rama::http::header::PROXY_AUTHENTICATE),
+            "proxy scheme {scheme}",
+        );
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            "mitm-icap-ok",
+            "proxy scheme {scheme}",
+        );
+    }
+    assert!(
+        icap_state.proxy_authorization_seen.load(Ordering::SeqCst) >= 2,
+        "ICAP did not observe proxy credentials on both MITM routes",
+    );
+
+    shutdown_proxy(shutdown_tx, shutdown).await;
+    origin_task.abort();
+    icap_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pausing_disables_new_mitm_and_capture_until_resumed() {
-    let origin_listener = TcpListener::bind_address(
-        SocketAddress::from(reserve_loopback_address()),
-        Executor::default(),
-    )
-    .await
-    .unwrap();
+    let origin_listener =
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+            .await
+            .unwrap();
     let origin_address = origin_listener.local_addr().unwrap();
     let origin_tls = TlsServerConfig::new()
         .try_with_generated_server_auth(GeneratedServerAuthConfig::default())

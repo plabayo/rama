@@ -290,7 +290,11 @@ async fn measure_inbound_server_frames(frame_count: usize) -> (usize, usize) {
             Ok::<_, BoxError>(OutgoingResponse::without_body(response))
         }
     });
-    let server = Server::new(service, b"\"rama-allocation\"").unwrap();
+    let server = Server::new(
+        service,
+        rama_icap::proto::ServiceTag::from_static("rama-allocation"),
+    )
+    .unwrap();
     let mut client = ClientConnection::new(ServiceInput::new(client_io));
     let request = Request::new(
         RequestLine::new(Method::Reqmod, "icap://icap.test/scan").unwrap(),

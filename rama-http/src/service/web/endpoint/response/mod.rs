@@ -3,6 +3,9 @@
 //! See [`crate::response`] for more details.
 
 use crate::Response;
+use crate::StatusCode;
+use rama_core::extensions::Extension;
+use std::convert::Infallible;
 
 mod append_headers;
 mod headers;
@@ -16,6 +19,49 @@ pub use self::{
     into_response::{IntoResponse, StaticResponseFactory},
     into_response_parts::{IntoResponseParts, ResponseParts, TryIntoHeaderError},
 };
+
+/// Marks a response produced because converting a response value failed.
+///
+/// Tuple response implementations use this marker to avoid replacing an inner
+/// error status with an outer status code. Custom fallible response types can
+/// add it as a response part for the same behavior.
+#[derive(Copy, Clone, Debug, Extension)]
+#[extension(tags(http))]
+pub struct IntoResponseFailed;
+
+impl IntoResponseParts for IntoResponseFailed {
+    type Error = Infallible;
+
+    fn into_response_parts(self, res: ResponseParts) -> Result<ResponseParts, Self::Error> {
+        res.extensions().insert(self);
+        Ok(res)
+    }
+}
+
+/// Forces an outer status code even if converting the inner response failed.
+#[derive(Debug, Copy, Clone, Default)]
+#[must_use = "a forced status code has no effect unless returned or converted into a response"]
+pub struct ForceStatusCode(pub StatusCode);
+
+impl IntoResponse for ForceStatusCode {
+    fn into_response(self) -> Response {
+        let mut res = ().into_response();
+        *res.status_mut() = self.0;
+        res
+    }
+}
+
+impl<R> IntoResponse for (ForceStatusCode, R)
+where
+    R: IntoResponse,
+{
+    fn into_response(self) -> Response {
+        let (ForceStatusCode(status), res) = self;
+        let mut res = res.into_response();
+        *res.status_mut() = status;
+        res
+    }
+}
 
 mod html;
 #[doc(inline)]
@@ -150,6 +196,7 @@ pub type Result<T, E = ErrorResponse> = std::result::Result<T, E>;
 ///
 /// See [`Result`] for more details.
 #[derive(Debug)]
+#[must_use]
 pub struct ErrorResponse(Response);
 
 impl<T> From<T> for ErrorResponse
@@ -162,6 +209,7 @@ where
 }
 
 impl ErrorResponse {
+    #[must_use]
     pub fn into_response(self) -> Response {
         self.0
     }

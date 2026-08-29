@@ -10,13 +10,15 @@ use rama_icap::{
     codec::{Header, HeaderSlot, ResponseLine},
     io::BodyEnd,
     message::{EncapsulatedParts, IcapTrailerNames, Response, TrailerBlock},
-    proto::{EncapsulatedKind, MethodKind, Preview, StatusCode, header},
+    proto::{EncapsulatedKind, Method, MethodKind, Preview, ServiceTag, StatusCode, header},
     server::{BodyFrame, IncomingRequest, OptionsResponse, OutgoingBody, OutgoingResponse, Server},
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 
 type BoxError = Box<dyn Error + Send + Sync>;
+
+const SERVICE_TAG: ServiceTag = ServiceTag::from_static("rama-oracle");
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Mode {
@@ -52,7 +54,7 @@ async fn main() -> Result<(), BoxError> {
     }
 
     let listener = TcpListener::bind(address).await?;
-    let server = Server::new(Oracle { mode }, b"\"rama-oracle\"")?;
+    let server = Server::new(Oracle { mode }, SERVICE_TAG)?;
     let mut connections = JoinSet::new();
     loop {
         tokio::select! {
@@ -89,7 +91,7 @@ async fn serve_request(
     let allow_206 = request.request().allows_206();
     let allow_icap_trailers = request.request().allows_icap_trailers();
 
-    let options = OptionsResponse::new("\"rama-oracle\"", "REQMOD, RESPMOD")
+    let options = OptionsResponse::new(SERVICE_TAG, &[Method::Reqmod, Method::Respmod])
         .with_service("Rama ICAP oracle")
         .with_preview(Preview::new(1024))
         .with_allow_204(true)
@@ -151,10 +153,11 @@ async fn serve_request(
         .unwrap_or_else(TrailerBlock::empty);
     let parts = echo_parts(method, incoming.as_ref())?;
     let response = if allow_icap_trailers && parts.has_body() {
+        let service_tag = SERVICE_TAG.to_wire();
         Response::new_with_icap_trailer_names(
             method,
             ResponseLine::new(StatusCode::OK, b"OK")?,
-            &[Header::new(header::ISTAG, b"\"rama-oracle\"")?],
+            &[Header::new(header::ISTAG, service_tag.as_bytes())?],
             parts.clone(),
             IcapTrailerNames::new(["X-Echo-Trailer"])?,
         )?
@@ -203,7 +206,8 @@ fn status_response(
     reason: &'static [u8],
     parts: Option<EncapsulatedParts>,
 ) -> Result<Response, BoxError> {
-    let istag = Header::new(header::ISTAG, b"\"rama-oracle\"")?;
+    let service_tag = SERVICE_TAG.to_wire();
+    let istag = Header::new(header::ISTAG, service_tag.as_bytes())?;
     Ok(Response::new(
         method,
         ResponseLine::new(status, reason)?,

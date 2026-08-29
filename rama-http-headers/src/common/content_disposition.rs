@@ -8,6 +8,8 @@
 
 use rama_core::telemetry::tracing;
 use rama_http_types::{HeaderName, HeaderValue};
+use rama_utils::byte_set::{set_ascii_alphanum, set_each};
+use std::fmt;
 
 use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 
@@ -50,6 +52,20 @@ use crate::{Error, HeaderDecode, HeaderEncode, TypedHeader};
 #[derive(Clone, Debug)]
 pub struct ContentDisposition(HeaderValue);
 
+/// Error returned when a filename cannot safely be used in Content-Disposition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidContentDispositionFilename {
+    _private: (),
+}
+
+impl fmt::Display for InvalidContentDispositionFilename {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("content-disposition filename contains a control character")
+    }
+}
+
+impl std::error::Error for InvalidContentDispositionFilename {}
+
 impl ContentDisposition {
     /// Construct a `Content-Disposition: inline` header.
     #[must_use]
@@ -59,21 +75,57 @@ impl ContentDisposition {
 
     /// Construct a `Content-Disposition: attachment` header with a filename.
     ///
-    /// If the filename contains non-ASCII characters or invalid header value bytes,
-    /// this will fall back to a simple `attachment` header without the filename parameter.
+    /// The filename is encoded as a quoted string. Non-ASCII filenames also get
+    /// an RFC 8187 `filename*` parameter. If the filename contains control
+    /// characters this falls back to a plain `attachment` header.
+    #[must_use]
     pub fn attachment(filename: &str) -> Self {
-        let full = format!("attachment; filename={filename}");
-        match HeaderValue::from_maybe_shared(full) {
-            Ok(val) => Self(val),
+        match Self::try_attachment(filename) {
+            Ok(value) => value,
             Err(err) => {
-                tracing::trace!(
-                    "Failed to create Content-Disposition header with filename '{}': {:?}. ",
-                    filename,
-                    err
-                );
+                tracing::trace!("Failed to create Content-Disposition attachment header: {err:?}.");
                 Self(HeaderValue::from_static("attachment"))
             }
         }
+    }
+
+    /// Construct an attachment header, rejecting filenames with control characters.
+    pub fn try_attachment(filename: &str) -> Result<Self, InvalidContentDispositionFilename> {
+        if filename.chars().any(char::is_control) {
+            return Err(InvalidContentDispositionFilename { _private: () });
+        }
+
+        let mut value = String::with_capacity(filename.len() + 32);
+        value.push_str("attachment; filename=\"");
+        for character in filename.chars() {
+            match character {
+                '"' | '\\' => {
+                    value.push('\\');
+                    value.push(character);
+                }
+                character if character.is_ascii() => value.push(character),
+                _ => value.push('_'),
+            }
+        }
+        value.push('"');
+
+        if !filename.is_ascii() {
+            value.push_str("; filename*=UTF-8''");
+            for byte in filename.bytes() {
+                if is_rfc8187_attr_char(byte) {
+                    value.push(char::from(byte));
+                } else {
+                    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                    value.push('%');
+                    value.push(char::from(HEX[usize::from(byte >> 4)]));
+                    value.push(char::from(HEX[usize::from(byte & 0x0f)]));
+                }
+            }
+        }
+
+        HeaderValue::from_maybe_shared(value)
+            .map(Self)
+            .map_err(|_err| InvalidContentDispositionFilename { _private: () })
     }
 
     /// Check if the disposition-type is `inline`.
@@ -96,6 +148,14 @@ impl ContentDisposition {
     }
 }
 
+const RFC8187_ATTR_CHAR_BYTES: [bool; 256] =
+    set_each(set_ascii_alphanum([false; 256]), b"!#$&+-.^_`|~");
+
+#[inline]
+fn is_rfc8187_attr_char(byte: u8) -> bool {
+    RFC8187_ATTR_CHAR_BYTES[usize::from(byte)]
+}
+
 impl TypedHeader for ContentDisposition {
     fn name() -> &'static HeaderName {
         &::rama_http_types::header::CONTENT_DISPOSITION
@@ -116,6 +176,48 @@ impl HeaderDecode for ContentDisposition {
 impl HeaderEncode for ContentDisposition {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
         values.extend(::std::iter::once(self.0.clone()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn value(disposition: &ContentDisposition) -> &str {
+        disposition.0.to_str().unwrap()
+    }
+
+    #[test]
+    fn attachment_quotes_filename() {
+        assert_eq!(
+            value(&ContentDisposition::attachment("report; final.txt")),
+            "attachment; filename=\"report; final.txt\""
+        );
+    }
+
+    #[test]
+    fn attachment_escapes_quote_and_backslash() {
+        assert_eq!(
+            value(&ContentDisposition::attachment("a\\\"b.txt")),
+            "attachment; filename=\"a\\\\\\\"b.txt\""
+        );
+    }
+
+    #[test]
+    fn attachment_adds_utf8_extended_filename() {
+        assert_eq!(
+            value(&ContentDisposition::attachment("café €.txt")),
+            "attachment; filename=\"caf_ _.txt\"; filename*=UTF-8''caf%C3%A9%20%E2%82%AC.txt"
+        );
+    }
+
+    #[test]
+    fn try_attachment_rejects_control_characters() {
+        ContentDisposition::try_attachment("safe.txt\r\nX-Evil: yes").unwrap_err();
+        assert_eq!(
+            value(&ContentDisposition::attachment("safe.txt\r\nX-Evil: yes")),
+            "attachment"
+        );
     }
 }
 /*

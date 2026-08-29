@@ -12,7 +12,7 @@ use rama::{
     icap::{
         codec::{Header, ResponseLine},
         http::{DEFAULT_MAX_REPLAY_BYTES, IncomingRequest as HttpIncomingRequest},
-        proto::{MethodKind, Preview, StatusCode, header},
+        proto::{Method, MethodKind, Preview, ServiceTag, StatusCode, header},
         server::{IncomingRequest, OptionsResponse, OutgoingResponse, Server, ServerError},
     },
     layer::{
@@ -32,7 +32,7 @@ use rama::{
 
 use crate::utils::{rate::opt_per_sec, tls::try_new_server_config_with_auth_files};
 
-const SERVICE_TAG: &str = "\"rama-echo\"";
+const SERVICE_TAG: ServiceTag = ServiceTag::from_static("rama-echo");
 
 #[derive(Debug, Args)]
 /// ICAP echo service for REQMOD and RESPMOD
@@ -180,7 +180,8 @@ async fn echo(
 
     let request = HttpIncomingRequest::from_icap(request)?;
     let line = ResponseLine::new(StatusCode::OK, b"OK")?;
-    let fields = [Header::new(header::ISTAG, SERVICE_TAG.as_bytes())?];
+    let service_tag = SERVICE_TAG.to_wire();
+    let fields = [Header::new(header::ISTAG, service_tag.as_bytes())?];
 
     match method {
         MethodKind::Reqmod => {
@@ -219,7 +220,7 @@ async fn buffer_echo_body(body: Body, limit: usize) -> Result<Body, BoxError> {
 }
 
 fn options_response(options: EchoOptions) -> Result<OutgoingResponse, BoxError> {
-    let mut response = OptionsResponse::new(SERVICE_TAG, "REQMOD, RESPMOD")
+    let mut response = OptionsResponse::new(SERVICE_TAG, &[Method::Reqmod, Method::Respmod])
         .with_service("Rama ICAP echo service")
         .with_preview(options.preview)
         .with_transfer_preview_all(true)

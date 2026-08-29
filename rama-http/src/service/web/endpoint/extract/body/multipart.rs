@@ -293,6 +293,11 @@ impl MultipartError {
             multer::Error::FieldSizeExceeded { .. } | multer::Error::StreamSizeExceeded { .. } => {
                 StatusCode::PAYLOAD_TOO_LARGE
             }
+            multer::Error::StreamReadFailed(error)
+                if super::is_length_limit_error(error.as_ref()) =>
+            {
+                StatusCode::PAYLOAD_TOO_LARGE
+            }
             multer::Error::StreamReadFailed(_) | multer::Error::LockFailure => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -303,6 +308,9 @@ impl MultipartError {
     /// Body text used for the rejection response.
     #[must_use]
     pub fn body_text(&self) -> String {
+        if self.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            return "Request payload is too large".to_owned();
+        }
         format!(
             "Failed to parse `multipart/form-data` request: {}",
             self.source
@@ -427,6 +435,7 @@ fn is_multipart_form_data(content_type: &str) -> bool {
 mod test {
     use super::*;
     use crate::StatusCode;
+    use crate::body::util::BodyExt;
     use crate::service::web::WebService;
     use rama_core::Service;
     use rama_core::extensions::ExtensionsRef;
@@ -795,6 +804,60 @@ mod test {
             .insert(MultipartConfig::new().with_default_field_limit(8));
         let resp = service.serve(req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            resp.into_body().collect().await.unwrap().to_bytes(),
+            "Request payload is too large"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_application_body_limit_returns_payload_too_large() {
+        use crate::layer::body_limit::BodyLimitLayer;
+        use rama_core::Layer;
+
+        let service = BodyLimitLayer::new(8).layer(WebService::default().with_post(
+            "/",
+            async |mut mp: Multipart| -> Result<StatusCode, MultipartRejection> {
+                let field = mp.next_field().await?.unwrap();
+                _ = field.bytes().await?;
+                Ok(StatusCode::OK)
+            },
+        ));
+
+        let body = body_with(&[("blob", None, None, &[42u8; 64])]);
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .header(rama_http_types::header::CONTENT_TYPE, ct())
+            .body(crate::Body::from(body))
+            .unwrap();
+        let resp = service.serve(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            resp.into_body().collect().await.unwrap().to_bytes(),
+            "Request payload is too large"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_read_failure_returns_internal_server_error() {
+        let service = WebService::default().with_post(
+            "/",
+            async |mut mp: Multipart| -> Result<StatusCode, MultipartRejection> {
+                _ = mp.next_field().await?;
+                Ok(StatusCode::OK)
+            },
+        );
+
+        let body = crate::Body::from_stream(rama_core::futures::stream::once(async {
+            Err::<rama_core::bytes::Bytes, _>(std::io::Error::other("body read failed"))
+        }));
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .header(rama_http_types::header::CONTENT_TYPE, ct())
+            .body(body)
+            .unwrap();
+        let resp = service.serve(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
     #[tokio::test]

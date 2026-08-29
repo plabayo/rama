@@ -1,6 +1,6 @@
 use core::{
     fmt,
-    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering},
     time::Duration,
 };
 use std::sync::Arc;
@@ -118,7 +118,11 @@ struct FailureEntry {
     failure_count: AtomicU32,
     active_attempts: AtomicU32,
     succeeded: AtomicBool,
+    fallback_scope: AtomicU8,
 }
+
+const FALLBACK_ANY_ROUTE: u8 = 0;
+const FALLBACK_PROXY_ONLY: u8 = 1;
 
 impl FailureEntry {
     fn mark_live(&self) {
@@ -129,6 +133,8 @@ impl FailureEntry {
         self.blocked_until.store(0, Ordering::Release);
         self.probe_until.store(0, Ordering::Release);
         self.failure_count.store(0, Ordering::Release);
+        self.fallback_scope
+            .store(FALLBACK_ANY_ROUTE, Ordering::Release);
     }
 }
 
@@ -177,7 +183,10 @@ impl Drop for AttemptPermit {
 
 enum CacheDecision {
     Attempt(AttemptPermit),
-    Blocked(Duration),
+    Blocked {
+        retry_after: Duration,
+        proxy_only: bool,
+    },
 }
 
 /// Shared negative cache for temporarily failing proxy routes.
@@ -292,7 +301,10 @@ impl ProxyRouteFailureCache {
 
         let mut now = now_monotonic_nanos();
         if let Some(remaining) = remaining_duration(blocked_until, now) {
-            return Some(CacheDecision::Blocked(remaining));
+            return Some(CacheDecision::Blocked {
+                retry_after: remaining,
+                proxy_only: entry.fallback_scope.load(Ordering::Acquire) == FALLBACK_PROXY_ONLY,
+            });
         }
 
         let lease_duration = duration_nanos(self.config.probe_lease);
@@ -300,7 +312,10 @@ impl ProxyRouteFailureCache {
             now = now_monotonic_nanos();
             let probe_until = entry.probe_until.load(Ordering::Acquire);
             if let Some(remaining) = remaining_duration(probe_until, now) {
-                return Some(CacheDecision::Blocked(remaining));
+                return Some(CacheDecision::Blocked {
+                    retry_after: remaining,
+                    proxy_only: entry.fallback_scope.load(Ordering::Acquire) == FALLBACK_PROXY_ONLY,
+                });
             }
             let new_probe_until = now.saturating_add(lease_duration);
             if entry
@@ -326,9 +341,22 @@ impl ProxyRouteFailureCache {
         }
     }
 
-    fn mark_failure(&self, permit: &mut AttemptPermit) {
+    fn mark_failure(&self, permit: &mut AttemptPermit, kind: ConnectionErrorKind) {
         let entry = &permit.entry;
         let started_time = permit.started_time;
+        if matches!(
+            kind,
+            ConnectionErrorKind::Rejected
+                | ConnectionErrorKind::Protocol
+                | ConnectionErrorKind::Other
+        ) {
+            // Be conservative when concurrent failures disagree: observing
+            // any proxy-specific failure keeps cached replay from silently
+            // falling through to a direct route.
+            entry
+                .fallback_scope
+                .store(FALLBACK_PROXY_ONLY, Ordering::Release);
+        }
         loop {
             if entry.succeeded.load(Ordering::Acquire) {
                 break;
@@ -400,7 +428,9 @@ fn should_cache_failure(error: &ConnectionError) -> bool {
             error.kind(),
             ConnectionErrorKind::Unavailable
                 | ConnectionErrorKind::Timeout
+                | ConnectionErrorKind::Rejected
                 | ConnectionErrorKind::Protocol
+                | ConnectionErrorKind::Other
         )
 }
 
@@ -436,7 +466,8 @@ impl core::error::Error for ProxyRouteFailureCachedError {}
 /// a connection pool so an existing pooled connection is considered before a
 /// new connection is suppressed by the negative cache.
 ///
-/// Transport `Unavailable`, `Timeout`, and `Protocol` failures are cached.
+/// Transport `Unavailable`, `Timeout`, `Rejected`, `Protocol`, and `Other`
+/// failures are cached.
 /// A success or any non-cacheable failure clears existing backoff state so the
 /// next request can try the route again. Direct and plural routes are ignored.
 #[derive(Debug, Clone)]
@@ -474,11 +505,18 @@ where
         let mut permit = match cache.begin(&input) {
             None => return self.inner.connect(input).await,
             Some(CacheDecision::Attempt(permit)) => permit,
-            Some(CacheDecision::Blocked(retry_after)) => {
+            Some(CacheDecision::Blocked {
+                retry_after,
+                proxy_only,
+            }) => {
                 tracing::debug!(?retry_after, "skip temporarily failing proxy route",);
                 return Err(ConnectionError::transport(
                     ProxyRouteFailureCachedError { retry_after },
-                    ConnectionErrorKind::Unavailable,
+                    if proxy_only {
+                        ConnectionErrorKind::Other
+                    } else {
+                        ConnectionErrorKind::Unavailable
+                    },
                 ));
             }
         };
@@ -489,7 +527,7 @@ where
                 Ok(established)
             }
             Err(error) if should_cache_failure(&error) => {
-                cache.mark_failure(&mut permit);
+                cache.mark_failure(&mut permit, error.kind());
                 Err(error)
             }
             Err(error) => {
@@ -589,7 +627,7 @@ mod tests {
     ) -> AttemptPermit {
         match failure_cache.begin(request) {
             Some(CacheDecision::Attempt(permit)) => permit,
-            Some(CacheDecision::Blocked(_)) => panic!("route was unexpectedly blocked"),
+            Some(CacheDecision::Blocked { .. }) => panic!("route was unexpectedly blocked"),
             None => panic!("proxy route was unexpectedly ignored"),
         }
     }
@@ -660,8 +698,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn timeout_and_protocol_failures_are_cached() {
-        for kind in [ConnectionErrorKind::Timeout, ConnectionErrorKind::Protocol] {
+    async fn route_local_transport_failures_are_cached() {
+        for kind in [
+            ConnectionErrorKind::Timeout,
+            ConnectionErrorKind::Rejected,
+            ConnectionErrorKind::Protocol,
+            ConnectionErrorKind::Other,
+        ] {
             let attempts = Arc::new(AtomicUsize::new(0));
             let inner = service_fn({
                 let attempts = attempts.clone();
@@ -692,6 +735,20 @@ mod tests {
                 .unwrap_err();
 
             assert_eq!(attempts.load(Ordering::SeqCst), 1, "{kind}");
+            assert_eq!(
+                cached.kind(),
+                if matches!(
+                    kind,
+                    ConnectionErrorKind::Rejected
+                        | ConnectionErrorKind::Protocol
+                        | ConnectionErrorKind::Other
+                ) {
+                    ConnectionErrorKind::Other
+                } else {
+                    ConnectionErrorKind::Unavailable
+                },
+                "{kind}"
+            );
             assert!(
                 cached
                     .get_ref()
@@ -929,11 +986,6 @@ mod tests {
         for (domain, kind) in [
             (
                 ConnectionErrorDomain::Transport,
-                ConnectionErrorKind::Rejected,
-            ),
-            (ConnectionErrorDomain::Transport, ConnectionErrorKind::Other),
-            (
-                ConnectionErrorDomain::Transport,
                 ConnectionErrorKind::Authentication,
             ),
             (
@@ -1065,8 +1117,29 @@ mod tests {
 
         assert!(matches!(
             failure_cache.begin(&request),
-            Some(CacheDecision::Blocked(_))
+            Some(CacheDecision::Blocked { .. })
         ));
+    }
+
+    #[test]
+    fn active_probe_preserves_proxy_only_cached_fallback_scope() {
+        let failure_cache = cache(ProxyRouteFailureCacheScope::PerDestination);
+        let request = request("one.example:443", proxy(None));
+        let permit = begin_attempt(&failure_cache, &request);
+        permit.entry.failure_count.store(1, Ordering::Release);
+        permit
+            .entry
+            .fallback_scope
+            .store(FALLBACK_PROXY_ONLY, Ordering::Release);
+        permit.entry.probe_until.store(
+            now_monotonic_nanos().saturating_add(duration_nanos(Duration::from_secs(1))),
+            Ordering::Release,
+        );
+
+        match failure_cache.begin(&request) {
+            Some(CacheDecision::Blocked { proxy_only, .. }) => assert!(proxy_only),
+            _ => panic!("an active half-open probe must block another caller"),
+        }
     }
 
     #[test]
@@ -1077,7 +1150,7 @@ mod tests {
         let entry = permit.entry.clone();
 
         entry.mark_live();
-        failure_cache.mark_failure(&mut permit);
+        failure_cache.mark_failure(&mut permit, ConnectionErrorKind::Unavailable);
 
         assert!(entry.succeeded.load(Ordering::Acquire));
         assert_eq!(entry.blocked_until.load(Ordering::Acquire), 0);
@@ -1095,7 +1168,7 @@ mod tests {
         entry.blocked_until.store(newer_deadline, Ordering::Release);
         entry.failure_count.store(1, Ordering::Release);
 
-        failure_cache.mark_failure(&mut permit);
+        failure_cache.mark_failure(&mut permit, ConnectionErrorKind::Unavailable);
 
         assert_eq!(entry.blocked_until.load(Ordering::Acquire), newer_deadline);
         assert_eq!(entry.failure_count.load(Ordering::Acquire), 1);
@@ -1112,7 +1185,7 @@ mod tests {
             .store(permit.started_time, Ordering::Release);
         entry.failure_count.store(1, Ordering::Release);
 
-        failure_cache.mark_failure(&mut permit);
+        failure_cache.mark_failure(&mut permit, ConnectionErrorKind::Unavailable);
 
         assert!(entry.blocked_until.load(Ordering::Acquire) > permit.started_time);
         assert_eq!(entry.failure_count.load(Ordering::Acquire), 2);

@@ -13,7 +13,7 @@ use super::{
 use crate::{
     codec::{Header, ResponseLine},
     message::{BuildError, Response as IcapResponse},
-    proto::{EncapsulatedKind, MethodKind, StatusCode, header},
+    proto::{EncapsulatedKind, MethodKind, ServiceTag, StatusCode, header},
     server::OutgoingResponse,
 };
 
@@ -64,20 +64,19 @@ impl IncomingRequest {
 
     /// Return a 204 response and leave the HTTP message unchanged.
     ///
-    /// `service_tag` may be supplied as text or bytes.
-    ///
     /// # Contract
     ///
     /// Do not return 204 after Preview has continued unless the request
     /// contains `Allow: 204`.
     pub fn respond_no_modification(
         self,
-        service_tag: impl AsRef<[u8]>,
+        service_tag: ServiceTag,
     ) -> Result<OutgoingResponse, Error> {
         let method = self.icap().method();
         if !matches!(method, MethodKind::Reqmod | MethodKind::Respmod) {
             return Err(Error::invalid_method());
         }
+        let service_tag = service_tag.to_wire();
         response_without_body(
             method,
             StatusCode::NO_MODIFICATION_NEEDED,
@@ -88,11 +87,11 @@ impl IncomingRequest {
 
     /// Return a 405 response for this ICAP request method.
     ///
-    /// `service_tag` may be supplied as text or bytes.
     pub fn respond_method_not_allowed(
         self,
-        service_tag: impl AsRef<[u8]>,
+        service_tag: ServiceTag,
     ) -> Result<OutgoingResponse, Error> {
+        let service_tag = service_tag.to_wire();
         response_without_body(
             self.icap().method(),
             StatusCode::METHOD_NOT_ALLOWED,
@@ -103,14 +102,13 @@ impl IncomingRequest {
 
     /// Return the current RESPMOD response head and preserve its body.
     ///
-    /// `service_tag` may be supplied as text or bytes.
-    ///
     /// A non-empty body uses offset-zero 206 replay. The request must contain
     /// both `Allow: 204` and `Allow: 206` because reading may continue Preview.
     pub async fn adapt_response_head(
         self,
-        service_tag: impl AsRef<[u8]>,
+        service_tag: ServiceTag,
     ) -> Result<OutgoingResponse, Error> {
+        let service_tag = service_tag.to_wire();
         let (parts, mut body) = self.into_parts();
         let IncomingRequestParts {
             icap, encapsulated, ..
@@ -202,7 +200,8 @@ enum UnchangedKind {
 
 impl UnchangedRequest {
     /// Build the negotiated 204 or streaming 200 echo response.
-    pub fn respond(self, service_tag: impl AsRef<[u8]>) -> Result<OutgoingResponse, Error> {
+    pub fn respond(self, service_tag: ServiceTag) -> Result<OutgoingResponse, Error> {
+        let service_tag = service_tag.to_wire();
         let method = self.request.icap().method();
         if matches!(self.kind, UnchangedKind::NoModification) {
             return response_without_body(

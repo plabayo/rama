@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, str::FromStr};
 use unicode_normalization::UnicodeNormalization;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// A string filter that normalizes the string prior to consumption.
 ///
 /// Normalizations:
@@ -13,7 +13,12 @@ use unicode_normalization::UnicodeNormalization;
 pub struct StringFilter(String);
 
 impl StringFilter {
-    /// Create a string filter which will match anything
+    /// Create the wildcard value used by proxy filtering.
+    ///
+    /// Wildcard matching is applied by the database and [`Proxy::is_match`]
+    /// rather than by [`PartialEq`], so this type remains a valid hash key.
+    ///
+    /// [`Proxy::is_match`]: super::Proxy::is_match
     #[must_use]
     pub fn any() -> Self {
         "*".into()
@@ -40,23 +45,6 @@ impl StringFilter {
     #[must_use]
     pub fn is_any(&self) -> bool {
         self.0 == "*"
-    }
-}
-
-impl PartialEq for StringFilter {
-    fn eq(&self, other: &Self) -> bool {
-        match (self.0.as_str(), other.0.as_str()) {
-            ("*", _) | (_, "*") => true,
-            _ => self.0 == other.0,
-        }
-    }
-}
-
-impl Eq for StringFilter {}
-
-impl std::hash::Hash for StringFilter {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.0.hash(state);
     }
 }
 
@@ -206,10 +194,6 @@ mod tests {
             ("foo ", " foo"),
             (" FOO ", " foo"),
             ("*", "*"),
-            ("*", "foo"),
-            ("foo", "*"),
-            ("  * ", "foo"),
-            ("foo", "  * "),
         ] {
             let a: StringFilter = a.into();
             let b: StringFilter = b.into();
@@ -219,10 +203,29 @@ mod tests {
 
     #[test]
     fn test_string_filter_neq() {
-        for (a, b) in [("hello", "world"), ("world", "hello")] {
+        for (a, b) in [
+            ("hello", "world"),
+            ("world", "hello"),
+            ("*", "foo"),
+            ("foo", "*"),
+        ] {
             let a: StringFilter = a.into();
             let b: StringFilter = b.into();
             assert_ne!(a, b);
         }
+    }
+
+    #[test]
+    fn test_string_filter_hash_keys_remain_distinct_on_collision() {
+        // A hash table compares equality once keys land in the same bucket.
+        // Model that collision directly so the wildcard cannot alias a
+        // concrete indexed filter again.
+        let mut collision_bucket = Vec::<StringFilter>::new();
+        for filter in ["*", "be", "fr"].map(StringFilter::new) {
+            if !collision_bucket.contains(&filter) {
+                collision_bucket.push(filter);
+            }
+        }
+        assert_eq!(collision_bucket.len(), 3);
     }
 }

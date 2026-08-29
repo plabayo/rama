@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use crate::byte_sets::is_token_byte;
+use crate::byte_sets::{is_field_value_byte, is_token_byte};
 
 /// Standard ICAP header field names.
 pub mod header {
@@ -55,6 +55,161 @@ pub mod chunk_extension {
     /// The partial-content `use-original-body` extension.
     pub const USE_ORIGINAL_BODY: &str = "use-original-body";
 }
+
+/// A validated, unquoted ICAP service tag.
+///
+/// Quotes and backslashes are escaped when the value is encoded, so callers
+/// work only with the logical in-memory value.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub struct ServiceTag {
+    value: [u8; 32],
+    len: u8,
+}
+
+impl ServiceTag {
+    /// Validate a service-tag value of at most 32 bytes.
+    pub const fn new(value: &str) -> Result<Self, InvalidServiceTag> {
+        let bytes = value.as_bytes();
+        if bytes.is_empty() || bytes.len() > 32 {
+            return Err(InvalidServiceTag);
+        }
+        let mut validated = [0_u8; 32];
+        let mut index = 0;
+        while index < bytes.len() {
+            if !is_field_value_byte(bytes[index]) {
+                return Err(InvalidServiceTag);
+            }
+            validated[index] = bytes[index];
+            index += 1;
+        }
+        Ok(Self {
+            value: validated,
+            len: index as u8,
+        })
+    }
+
+    /// Construct a service tag for use in a `const` or `static` declaration.
+    ///
+    /// Invalid literals fail const evaluation, so users do not need a manual
+    /// `match` merely to define a known service tag.
+    ///
+    /// ```rust
+    /// use rama_icap::proto::ServiceTag;
+    ///
+    /// const TAG: ServiceTag = ServiceTag::from_static("rama-icap-example");
+    /// assert_eq!(TAG.as_str(), "rama-icap-example");
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use rama_icap::proto::ServiceTag;
+    ///
+    /// const TAG: ServiceTag = ServiceTag::from_static("123456789012345678901234567890123");
+    /// ```
+    #[must_use]
+    #[expect(
+        clippy::panic,
+        reason = "const-evaluation failure is this constructor's compile-time validation API"
+    )]
+    pub const fn from_static(value: &'static str) -> Self {
+        match Self::new(value) {
+            Ok(tag) => tag,
+            Err(_) => panic!("invalid static ICAP service tag"),
+        }
+    }
+
+    /// Return the unquoted in-memory service-tag token.
+    #[must_use]
+    #[expect(
+        clippy::expect_used,
+        reason = "construction guarantees the stored bytes are an ASCII token"
+    )]
+    pub fn as_str(&self) -> &str {
+        core::str::from_utf8(self.as_bytes())
+            .expect("ServiceTag stores bytes from a validated UTF-8 string")
+    }
+
+    /// Return the unquoted logical service-tag bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.value[..usize::from(self.len)]
+    }
+
+    /// Encode this tag for a raw ICAP header field.
+    ///
+    /// High-level server and OPTIONS APIs do this automatically. This wrapper
+    /// is only needed when constructing a raw [`crate::codec::Header`].
+    #[must_use]
+    pub const fn to_wire(self) -> EncodedServiceTag {
+        let mut bytes = [0_u8; 66];
+        bytes[0] = b'"';
+        let mut source = 0;
+        let mut destination = 1;
+        while source < self.len as usize {
+            let byte = self.value[source];
+            if byte == b'"' || byte == b'\\' {
+                bytes[destination] = b'\\';
+                destination += 1;
+            }
+            bytes[destination] = byte;
+            source += 1;
+            destination += 1;
+        }
+        bytes[destination] = b'"';
+        EncodedServiceTag {
+            bytes,
+            len: destination as u8 + 1,
+        }
+    }
+}
+
+/// A quoted ICAP service tag ready for a raw wire-format header.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct EncodedServiceTag {
+    bytes: [u8; 66],
+    len: u8,
+}
+
+impl EncodedServiceTag {
+    /// Return the quoted wire-format bytes.
+    #[must_use]
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len)]
+    }
+}
+
+impl AsRef<[u8]> for EncodedServiceTag {
+    fn as_ref(&self) -> &[u8] {
+        self.as_bytes()
+    }
+}
+
+impl fmt::Debug for ServiceTag {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("ServiceTag")
+            .field(&self.as_str())
+            .finish()
+    }
+}
+
+impl fmt::Display for ServiceTag {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// A service tag is empty, longer than 32 bytes, or contains a byte that
+/// cannot occur in an ICAP quoted field value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidServiceTag;
+
+impl fmt::Display for InvalidServiceTag {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("invalid ICAP service tag")
+    }
+}
+
+impl core::error::Error for InvalidServiceTag {}
 
 /// An ICAP request method.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -624,6 +779,36 @@ mod tests {
         assert_eq!(Method::from_bytes(b"BAD METHOD"), Err(InvalidMethod));
         assert_eq!(Method::from_bytes(&[0xff]), Err(InvalidMethod));
         assert_eq!(InvalidMethod.to_string(), "invalid ICAP method");
+    }
+
+    #[test]
+    fn service_tag_is_unquoted_in_memory_and_quoted_for_the_wire() {
+        const TAG: ServiceTag = ServiceTag::from_static("rama-test");
+        assert_eq!(TAG.as_bytes(), b"rama-test");
+        assert_eq!(TAG.as_str(), "rama-test");
+        assert_eq!(TAG.to_string(), "rama-test");
+        assert_eq!(format!("{TAG:?}"), "ServiceTag(\"rama-test\")");
+        let wire = TAG.to_wire();
+        assert_eq!(wire.as_bytes(), b"\"rama-test\"");
+        assert_eq!(wire.as_ref(), b"\"rama-test\"");
+        let opaque = ServiceTag::new(r#"has spaces & "quotes"\ok"#).unwrap();
+        assert_eq!(opaque.as_str(), r#"has spaces & "quotes"\ok"#);
+        assert_eq!(
+            opaque.to_wire().as_bytes(),
+            br#""has spaces & \"quotes\"\\ok""#
+        );
+        let quotes = "\"".repeat(32);
+        assert_eq!(
+            ServiceTag::new(&quotes).unwrap().to_wire().as_bytes().len(),
+            66
+        );
+        assert_eq!(ServiceTag::new(""), Err(InvalidServiceTag));
+        assert_eq!(ServiceTag::new("line\nbreak"), Err(InvalidServiceTag));
+        assert_eq!(
+            ServiceTag::new("123456789012345678901234567890123"),
+            Err(InvalidServiceTag)
+        );
+        assert_eq!(InvalidServiceTag.to_string(), "invalid ICAP service tag");
     }
 
     #[test]

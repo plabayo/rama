@@ -36,8 +36,8 @@ use crate::{
 };
 
 use self::headers::{
-    ForwardedIcapHeader, connection_nominated_headers, response_proxy_headers,
-    sanitize_http_headers_with_nominated, validate_http_trailers,
+    ForwardedIcapHeader, SanitizedHttpHead, connection_nominated_headers, response_proxy_headers,
+    validate_http_trailers,
 };
 
 mod headers;
@@ -407,6 +407,10 @@ impl IncomingRequest {
     }
 
     /// Return the mutable typed HTTP metadata, when present.
+    ///
+    /// This conservatively makes a later streaming unchanged echo unavailable,
+    /// even when the caller only reads through the returned reference. Use
+    /// [`Self::encapsulated`] for read-only inspection.
     pub fn encapsulated_mut(&mut self) -> Option<&mut Encapsulated> {
         self.encapsulated_exposed_mutably = true;
         self.encapsulated.as_mut()
@@ -418,6 +422,12 @@ impl IncomingRequest {
     }
 
     /// Return the mutable streaming encapsulated entity body.
+    ///
+    /// This conservatively records the body as exposed because polling through
+    /// the returned handle may consume bytes. A later [`Self::try_into_unchanged`]
+    /// can then neither use Preview's 204 shortcut nor stream an unchanged
+    /// body echo; an independently negotiated outside-Preview 204 remains
+    /// available. Use [`Self::body`] for read-only inspection.
     pub fn body_mut(&mut self) -> &mut Body {
         self.body_exposed_mutably = true;
         &mut self.body
@@ -758,6 +768,15 @@ impl ClientRequest {
         self.replay_limits
     }
 
+    pub(crate) fn with_additional_trailer_forbidden(mut self, names: &[HeaderName]) -> Self {
+        for name in names {
+            if !self.trailer_forbidden.contains(name) {
+                self.trailer_forbidden.push(name.clone());
+            }
+        }
+        self
+    }
+
     /// Return the original HTTP request head for REQMOD.
     #[must_use]
     pub fn original_request(&self) -> Option<&HttpRequest<()>> {
@@ -855,12 +874,18 @@ struct DrivenClientResponse<'a, IO> {
 struct OriginalBody {
     source: Body,
     buffered: VecDeque<Frame<Bytes>>,
+    pending_data: Option<PendingData>,
     trailer_forbidden: Vec<HeaderName>,
     limits: ReplayLimits,
     retained_bytes: usize,
     retained_frames: usize,
     retain: bool,
     eof: bool,
+}
+
+struct PendingData {
+    data: Bytes,
+    frame_counted: bool,
 }
 
 impl OriginalBody {
@@ -874,6 +899,7 @@ impl OriginalBody {
         Self {
             source: body,
             buffered: VecDeque::new(),
+            pending_data: None,
             trailer_forbidden,
             limits,
             retained_bytes: 0,
@@ -892,6 +918,7 @@ impl OriginalBody {
 
     fn discard(&mut self) {
         self.stop_retaining();
+        self.pending_data = None;
         self.source = Body::empty();
         self.eof = true;
     }
@@ -907,9 +934,6 @@ impl OriginalBody {
         self.eof = frame.is_none() || self.source.is_end_stream();
         if let Some(frame) = &frame {
             self.validate_frame(frame)?;
-            if self.retain {
-                self.retain_frame(frame)?;
-            }
         }
         Ok(frame)
     }
@@ -923,6 +947,13 @@ impl OriginalBody {
     }
 
     fn retain_frame(&mut self, frame: &Frame<Bytes>) -> Result<(), Error> {
+        self.retain_frame_part(frame, true)
+    }
+
+    fn retain_frame_part(&mut self, frame: &Frame<Bytes>, count_frame: bool) -> Result<(), Error> {
+        if !self.retain {
+            return Ok(());
+        }
         let bytes = if let Some(data) = frame.data_ref() {
             if data.is_empty() {
                 return Ok(());
@@ -946,7 +977,7 @@ impl OriginalBody {
             .ok_or_else(Error::replay_limit_exceeded)?;
         let retained_frames = self
             .retained_frames
-            .checked_add(1)
+            .checked_add(usize::from(count_frame))
             .ok_or_else(Error::replay_limit_exceeded)?;
         if retained_bytes > self.limits.max_bytes || retained_frames > self.limits.max_frames {
             return Err(Error::replay_limit_exceeded());
@@ -966,6 +997,8 @@ impl OriginalBody {
         loop {
             let frame = if let Some(frame) = self.buffered.pop_front() {
                 Some(frame)
+            } else if let Some(pending) = self.pending_data.take() {
+                Some(Frame::data(pending.data))
             } else if self.eof {
                 None
             } else {
@@ -1032,8 +1065,8 @@ where
         replay_limits,
     } = request;
     let preview = icap.preview();
-    let retain_original = preview.is_some() || icap.allows_204();
-    let retain_after_preview = icap.allows_204();
+    let retain_original = preview.is_some() || icap.allows_204() || icap.allows_206();
+    let retain_after_preview = icap.allows_204() || icap.allows_206();
     if retain_after_preview
         && body
             .size_hint()
@@ -1048,7 +1081,6 @@ where
     let mut phase = preview.map_or(ClientSendPhase::Body, |limit| ClientSendPhase::Preview {
         remaining: limit.as_u64(),
     });
-    let mut pending_data = None;
     let mut trailers = None;
     let mut saw_trailers = false;
 
@@ -1075,34 +1107,39 @@ where
             }
         }
 
-        let frame = if let Some(data) = pending_data.take() {
-            Some(Frame::data(data))
+        let (frame, pending_frame_counted) = if let Some(pending) =
+            original_body.pending_data.take()
+        {
+            (Some(Frame::data(pending.data)), pending.frame_counted)
         } else {
             let outcome = transaction
                 .as_mut()
                 .ok_or_else(|| Error::invalid_sequence("ICAP client transaction disappeared"))?
                 .next_source_or_response(original_body.next_source())
                 .await?;
-            match outcome {
-                SourceOutcome::Item(frame) => frame?,
-                SourceOutcome::ResponseAvailable => {
-                    if matches!(phase, ClientSendPhase::Preview { .. }) {
-                        let response =
-                            finish_early_preview(take_transaction(&mut transaction)?).await?;
+            (
+                match outcome {
+                    SourceOutcome::Item(frame) => frame?,
+                    SourceOutcome::ResponseAvailable => {
+                        if matches!(phase, ClientSendPhase::Preview { .. }) {
+                            let response =
+                                finish_early_preview(take_transaction(&mut transaction)?).await?;
+                            return Ok(DrivenClientResponse {
+                                response,
+                                original_head,
+                                original_body,
+                            });
+                        }
+                        let response = take_transaction(&mut transaction)?.abandon().await?;
                         return Ok(DrivenClientResponse {
                             response,
                             original_head,
                             original_body,
                         });
                     }
-                    let response = take_transaction(&mut transaction)?.abandon().await?;
-                    return Ok(DrivenClientResponse {
-                        response,
-                        original_head,
-                        original_body,
-                    });
-                }
-            }
+                },
+                false,
+            )
         };
 
         let Some(frame) = frame else {
@@ -1147,7 +1184,10 @@ where
                             .unwrap_or(usize::MAX)
                             .min(data.len());
                         if take == 0 {
-                            pending_data = Some(data);
+                            original_body.pending_data = Some(PendingData {
+                                data,
+                                frame_counted: false,
+                            });
                             let outcome = take_transaction(&mut transaction)?
                                 .finish_preview(false)
                                 .await?;
@@ -1171,12 +1211,21 @@ where
                         }
                         *remaining -= u64::try_from(take).unwrap_or(0);
                         if take < data.len() {
-                            pending_data = Some(data.split_off(take));
+                            original_body.pending_data = Some(PendingData {
+                                data: data.split_off(take),
+                                frame_counted: true,
+                            });
                         }
                         data
                     }
                     ClientSendPhase::Body => data,
                 };
+
+                // Retain only the bytes selected for this send. A source body
+                // may yield one frame larger than Preview; buffering that
+                // unsplit frame would reject an otherwise bounded replay.
+                original_body
+                    .retain_frame_part(&Frame::data(send.clone()), !pending_frame_counted)?;
 
                 let outcome = transaction
                     .as_mut()
@@ -1201,7 +1250,7 @@ where
                     });
                 }
 
-                if pending_data.is_some() {
+                if original_body.pending_data.is_some() {
                     let outcome = take_transaction(&mut transaction)?
                         .finish_preview(false)
                         .await?;
@@ -1232,6 +1281,7 @@ where
                         "HTTP body produced more than one trailer frame",
                     ));
                 }
+                original_body.retain_frame(&Frame::trailers(fields.clone()))?;
                 trailers = Some(encode_http_trailers(&fields)?);
                 saw_trailers = true;
             }
@@ -2179,7 +2229,9 @@ fn prepare_request_head<T>(
     request: &HttpRequest<T>,
 ) -> (HttpRequest<()>, Vec<ForwardedIcapHeader>, Vec<HeaderName>) {
     let mut request = HttpRequest::from_parts(request.clone_parts(), ());
-    let (promoted, trailer_forbidden) = sanitize_http_headers_with_nominated(request.headers_mut());
+    let version = request.version();
+    let (promoted, trailer_forbidden) =
+        SanitizedHttpHead::take(request.headers_mut(), version).into_forwarded_and_nominated();
     (request, promoted, trailer_forbidden)
 }
 
@@ -2187,8 +2239,9 @@ fn prepare_response_head<T>(
     response: &HttpResponse<T>,
 ) -> (HttpResponse<()>, Vec<ForwardedIcapHeader>, Vec<HeaderName>) {
     let mut response = HttpResponse::from_parts(response.clone_parts(), ());
+    let version = response.version();
     let (promoted, trailer_forbidden) =
-        sanitize_http_headers_with_nominated(response.headers_mut());
+        SanitizedHttpHead::take(response.headers_mut(), version).into_forwarded_and_nominated();
     (response, promoted, trailer_forbidden)
 }
 
@@ -2522,8 +2575,11 @@ mod tests {
     use super::*;
     use crate::{
         codec::{HeaderSlot, ResponseLine},
-        proto::{Method, StatusCode, header},
+        proto::{Method, ServiceTag, StatusCode, header},
     };
+
+    const TEST_SERVICE_TAG: ServiceTag = ServiceTag::from_static("rama-test");
+    const OPAQUE_SERVICE_TAG: ServiceTag = ServiceTag::from_static(r#"rama "test"\http"#);
     use rama_core::{bytes::Bytes, extensions::Extension, futures::stream};
     use rama_http_types::{HeaderValue, body::util::BodyExt as _};
 
@@ -2542,6 +2598,21 @@ mod tests {
         assert!(body.buffered.is_empty());
         assert_eq!(body.retained_bytes, 0);
         assert_eq!(body.retained_frames, 0);
+    }
+
+    #[test]
+    fn original_body_accepts_frames_up_to_each_replay_limit() {
+        let limits = ReplayLimits::new().with_max_bytes(7).with_max_frames(2);
+        let mut body = OriginalBody::new(Body::empty(), true, limits, Vec::new());
+
+        body.retain_frame(&Frame::data(Bytes::from_static(b"abc")))
+            .unwrap();
+        body.retain_frame(&Frame::data(Bytes::from_static(b"defg")))
+            .unwrap();
+
+        assert_eq!(body.retained_bytes, 7);
+        assert_eq!(body.retained_frames, 2);
+        assert_eq!(body.buffered.len(), 2);
     }
 
     #[tokio::test]
@@ -2952,13 +3023,17 @@ mod tests {
 
         let response = tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            request.adapt_response_head(b"\"rama-test\""),
+            request.adapt_response_head(OPAQUE_SERVICE_TAG),
         )
         .await
         .unwrap()
         .unwrap();
 
         assert_eq!(response.response().status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            response.response().service_tag(),
+            Some(br#""rama \"test\"\\http""#.as_slice())
+        );
         assert_eq!(
             response.body_end(),
             crate::server::OutgoingBodyEnd::UseOriginalBody(0)
@@ -2985,7 +3060,7 @@ mod tests {
             b"204, 206",
         );
 
-        let mut response = request.adapt_response_head(b"\"rama-test\"").await.unwrap();
+        let mut response = request.adapt_response_head(TEST_SERVICE_TAG).await.unwrap();
 
         assert_eq!(response.response().status(), StatusCode::OK);
         let parsed = Encapsulated::parse(response.response().encapsulated().unwrap()).unwrap();
@@ -3001,6 +3076,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn response_head_adaptation_preserves_a_null_body() {
+        let request = incoming_respmod(Body::empty(), EncapsulatedKind::NullBody, None, b"");
+
+        let response = request
+            .adapt_response_head(OPAQUE_SERVICE_TAG)
+            .await
+            .unwrap();
+
+        assert_eq!(response.response().status(), StatusCode::OK);
+        let parsed = Encapsulated::parse(response.response().encapsulated().unwrap()).unwrap();
+        assert_eq!(parsed.body_kind(), EncapsulatedKind::NullBody);
+        assert_eq!(
+            response.response().service_tag(),
+            Some(br#""rama \"test\"\\http""#.as_slice())
+        );
+    }
+
+    #[tokio::test]
     async fn response_head_adaptation_rejects_unnegotiated_replay() {
         let request = incoming_respmod(
             Body::from("body"),
@@ -3010,7 +3103,7 @@ mod tests {
         );
 
         let error = request
-            .adapt_response_head(b"\"rama-test\"")
+            .adapt_response_head(TEST_SERVICE_TAG)
             .await
             .unwrap_err();
 
@@ -3314,7 +3407,7 @@ mod tests {
         let mut response = request
             .try_into_unchanged()
             .unwrap()
-            .respond(b"\"rama-test\"")
+            .respond(TEST_SERVICE_TAG)
             .unwrap();
 
         assert_eq!(response.response().status(), StatusCode::OK);
@@ -3346,12 +3439,41 @@ mod tests {
         let response = request
             .try_into_unchanged()
             .unwrap()
-            .respond(b"\"rama-test\"")
+            .respond(OPAQUE_SERVICE_TAG)
             .unwrap();
 
         assert_eq!(
             response.response().status(),
             StatusCode::NO_MODIFICATION_NEEDED
+        );
+        assert_eq!(
+            response.response().service_tag(),
+            Some(br#""rama \"test\"\\http""#.as_slice())
+        );
+    }
+
+    #[test]
+    fn direct_responses_encode_the_logical_service_tag() {
+        let no_modification =
+            incoming_respmod(Body::empty(), EncapsulatedKind::NullBody, None, b"204")
+                .respond_no_modification(OPAQUE_SERVICE_TAG)
+                .unwrap();
+        assert_eq!(
+            no_modification.response().service_tag(),
+            Some(br#""rama \"test\"\\http""#.as_slice())
+        );
+
+        let method_not_allowed =
+            incoming_respmod(Body::empty(), EncapsulatedKind::NullBody, None, b"")
+                .respond_method_not_allowed(OPAQUE_SERVICE_TAG)
+                .unwrap();
+        assert_eq!(
+            method_not_allowed.response().status(),
+            StatusCode::METHOD_NOT_ALLOWED
+        );
+        assert_eq!(
+            method_not_allowed.response().service_tag(),
+            Some(br#""rama \"test\"\\http""#.as_slice())
         );
     }
 
@@ -3367,7 +3489,7 @@ mod tests {
         let response = request
             .try_into_unchanged()
             .unwrap()
-            .respond(b"\"rama-test\"")
+            .respond(TEST_SERVICE_TAG)
             .unwrap();
 
         assert_eq!(
@@ -3401,7 +3523,7 @@ mod tests {
         let response = request
             .try_into_unchanged()
             .unwrap()
-            .respond(b"\"rama-test\"")
+            .respond(TEST_SERVICE_TAG)
             .unwrap();
 
         assert_eq!(response.response().status(), StatusCode::OK);

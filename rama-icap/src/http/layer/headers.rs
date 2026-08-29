@@ -1,37 +1,22 @@
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http_types::{
-    HeaderMap, Request as HttpRequest,
+    HeaderMap, Request as HttpRequest, Version,
     header::{self as http_header, HeaderValue},
 };
 use rama_net::address::HostWithOptPort;
 
-use crate::http::headers::{ForwardedIcapHeader, sanitize_http_headers};
+use crate::http::headers::SanitizedHttpHead;
 
-pub(super) fn trailer_header_values(headers: &HeaderMap) -> Vec<HeaderValue> {
-    headers
-        .get_all(http_header::TRAILER)
-        .iter()
-        .cloned()
-        .collect()
-}
-
-pub(super) fn sanitize_adapted_http_headers(headers: &mut HeaderMap) -> Vec<ForwardedIcapHeader> {
-    let trailers = trailer_header_values(headers);
-    let forwarded = sanitize_http_headers(headers);
+pub(super) fn sanitize_adapted_http_headers(
+    headers: &mut HeaderMap,
+    version: Version,
+) -> SanitizedHttpHead {
+    let sanitized = SanitizedHttpHead::take(headers, version);
     // The adapted body, not the untrusted ICAP response head, determines
     // downstream HTTP framing. This also removes conflicting duplicate values.
     headers.remove(http_header::CONTENT_LENGTH);
-    restore_trailer_header(headers, &trailers);
-    forwarded
-}
-
-pub(super) fn restore_trailer_header(headers: &mut HeaderMap, values: &[HeaderValue]) {
-    if headers.contains_key(http_header::TRAILER) {
-        return;
-    }
-    for value in values {
-        headers.append(http_header::TRAILER, value.clone());
-    }
+    sanitized.restore_trailers(headers);
+    sanitized
 }
 
 pub(super) fn normalize_request_authority<B>(request: &mut HttpRequest<B>) -> Result<(), BoxError> {
@@ -59,9 +44,21 @@ mod tests {
         headers.append(http_header::CONTENT_LENGTH, HeaderValue::from_static("20"));
         headers.insert(http_header::TRAILER, HeaderValue::from_static("x-checksum"));
 
-        sanitize_adapted_http_headers(&mut headers);
+        sanitize_adapted_http_headers(&mut headers, Version::HTTP_11);
 
         assert!(!headers.contains_key(http_header::CONTENT_LENGTH));
         assert_eq!(headers[http_header::TRAILER], "x-checksum");
+    }
+
+    #[test]
+    fn adapted_connection_nomination_suppresses_trailer_declaration() {
+        let mut headers = HeaderMap::new();
+        headers.insert(http_header::CONNECTION, HeaderValue::from_static("Trailer"));
+        headers.insert(http_header::TRAILER, HeaderValue::from_static("x-checksum"));
+
+        sanitize_adapted_http_headers(&mut headers, Version::HTTP_11);
+
+        assert!(!headers.contains_key(http_header::CONNECTION));
+        assert!(!headers.contains_key(http_header::TRAILER));
     }
 }

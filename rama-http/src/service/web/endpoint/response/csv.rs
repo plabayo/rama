@@ -1,4 +1,4 @@
-use super::IntoResponse;
+use super::{IntoResponse, IntoResponseFailed};
 use crate::{Body, Response, StatusCode};
 use csv;
 use rama_core::bytes::buf::Writer;
@@ -83,6 +83,7 @@ where
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Headers::single(ContentType::text_utf8()),
+                    IntoResponseFailed,
                     err.to_string(),
                 )
                     .into_response();
@@ -91,6 +92,7 @@ where
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Headers::single(ContentType::text_utf8()),
+                    IntoResponseFailed,
                     err.to_string(),
                 )
                     .into_response();
@@ -102,6 +104,7 @@ where
                     return (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Headers::single(ContentType::text_utf8()),
+                        IntoResponseFailed,
                         err.to_string(),
                     )
                         .into_response();

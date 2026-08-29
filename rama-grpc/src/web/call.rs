@@ -14,6 +14,7 @@ use rama_core::{
     bytes::{Buf, BufMut, Bytes, BytesMut},
     futures::Stream,
 };
+use rama_http::headers::ContentType;
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue,
     body::{Frame, SizeHint, StreamingBody},
@@ -376,10 +377,10 @@ impl Encoding {
         Self::from_header(headers.get(header::ACCEPT))
     }
 
-    pub(crate) fn to_content_type(self) -> &'static str {
+    pub(crate) fn to_content_type(self) -> ContentType {
         match self {
-            Self::Base64 => GRPC_WEB_TEXT_PROTO,
-            Self::None => GRPC_WEB_PROTO,
+            Self::Base64 => ContentType::grpc_web_text_proto(),
+            Self::None => ContentType::grpc_web_proto(),
         }
     }
 

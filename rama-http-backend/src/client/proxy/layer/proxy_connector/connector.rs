@@ -92,6 +92,9 @@ impl InnerHttpProxyConnector {
                 .map_err(|err| HttpProxyError::Transport(BoxError::from(err))),
             StatusCode::PROXY_AUTHENTICATION_REQUIRED => Err(HttpProxyError::AuthRequired),
             StatusCode::SERVICE_UNAVAILABLE => Err(HttpProxyError::Unavailable),
+            StatusCode::BAD_GATEWAY | StatusCode::GATEWAY_TIMEOUT => {
+                Err(HttpProxyError::UpstreamFailure(response.status()))
+            }
             status => Err(HttpProxyError::Rejected(status)),
         }
     }

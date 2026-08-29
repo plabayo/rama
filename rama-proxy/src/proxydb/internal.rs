@@ -84,6 +84,20 @@ fn proxydb_insert_validator(proxy: &Proxy) -> bool {
             || ((proxy.socks5 || proxy.socks5h) && (proxy.tcp || proxy.udp)))
 }
 
+fn string_filter_matches(
+    filters: Option<&[StringFilter]>,
+    candidate: Option<&StringFilter>,
+) -> bool {
+    match filters {
+        None => true,
+        Some(filters) => candidate.is_some_and(|candidate| {
+            filters
+                .iter()
+                .any(|filter| candidate.is_any() || filter.is_any() || filter == candidate)
+        }),
+    }
+}
+
 impl Proxy {
     /// Check if the proxy is a match for the given[`ProxyContext`] and [`ProxyFilter`].
     #[must_use]
@@ -107,54 +121,12 @@ impl Proxy {
             }
         }
 
-        filter
-            .continent
-            .as_ref()
-            .map(|c| {
-                let continent = self.continent.as_ref();
-                c.iter().any(|c| Some(c) == continent)
-            })
-            .unwrap_or(true)
-            && filter
-                .country
-                .as_ref()
-                .map(|c| {
-                    let country = self.country.as_ref();
-                    c.iter().any(|c| Some(c) == country)
-                })
-                .unwrap_or(true)
-            && filter
-                .state
-                .as_ref()
-                .map(|s| {
-                    let state = self.state.as_ref();
-                    s.iter().any(|s| Some(s) == state)
-                })
-                .unwrap_or(true)
-            && filter
-                .city
-                .as_ref()
-                .map(|c| {
-                    let city = self.city.as_ref();
-                    c.iter().any(|c| Some(c) == city)
-                })
-                .unwrap_or(true)
-            && filter
-                .pool_id
-                .as_ref()
-                .map(|p| {
-                    let pool_id = self.pool_id.as_ref();
-                    p.iter().any(|p| Some(p) == pool_id)
-                })
-                .unwrap_or(true)
-            && filter
-                .carrier
-                .as_ref()
-                .map(|c| {
-                    let carrier = self.carrier.as_ref();
-                    c.iter().any(|c| Some(c) == carrier)
-                })
-                .unwrap_or(true)
+        string_filter_matches(filter.continent.as_deref(), self.continent.as_ref())
+            && string_filter_matches(filter.country.as_deref(), self.country.as_ref())
+            && string_filter_matches(filter.state.as_deref(), self.state.as_ref())
+            && string_filter_matches(filter.city.as_deref(), self.city.as_ref())
+            && string_filter_matches(filter.pool_id.as_deref(), self.pool_id.as_ref())
+            && string_filter_matches(filter.carrier.as_deref(), self.carrier.as_ref())
             && filter
                 .asn
                 .as_ref()
@@ -228,6 +200,22 @@ mod tests {
             .collect();
         assert_eq!(proxies.len(), 1);
         assert_eq!(proxies[0].id, "2");
+    }
+
+    #[test]
+    fn direct_match_rejects_empty_filter_for_wildcard_candidate() {
+        let proxy = parse_csv_row("2,1,,1,,,,1,,,authority:80,,,*,,,,,").expect("valid proxy row");
+        let filter = ProxyFilter {
+            country: Some(Vec::new()),
+            ..Default::default()
+        };
+
+        assert!(!proxy.is_match(
+            &ProxyContext {
+                protocol: TransportProtocol::Tcp,
+            },
+            &filter,
+        ));
     }
 
     #[tokio::test]

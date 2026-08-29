@@ -403,7 +403,7 @@ impl<S, K> TlsConnector<S, K> {
             effective
         };
 
-        apply_default_alpn(request_extensions, &extensions, application_protocol);
+        apply_default_alpn(&extensions, application_protocol);
 
         // When HTTP pins a concrete target version, force the TLS ALPN to match
         // it before the handshake
@@ -488,12 +488,10 @@ impl<S, K> TlsConnector<S, K> {
     }
 }
 
-fn apply_default_alpn(
-    request_extensions: &Extensions,
-    effective_extensions: &Extensions,
-    application_protocol: Option<&Protocol>,
-) {
-    if request_extensions.get_ref::<TlsAlpn>().is_some() {
+fn apply_default_alpn(effective_extensions: &Extensions, application_protocol: Option<&Protocol>) {
+    // Any ALPN in the effective chain is explicit connector policy, whether
+    // supplied by the request or inherited from a base configuration.
+    if effective_extensions.get_ref::<TlsAlpn>().is_some() {
         return;
     }
     let Some(protocol) = application_protocol else {
@@ -670,13 +668,43 @@ mod tests {
         }
 
         #[test]
-        fn icaps_shadows_inherited_http_alpn() {
+        fn inherited_alpn_is_preserved_for_any_application_protocol() {
             let base = Extensions::new();
             base.insert(TlsAlpn::http_auto());
             let request = Extensions::new();
             let effective = request.fork().with_base(&base);
 
-            apply_default_alpn(&request, &effective, Some(&Protocol::ICAPS));
+            apply_default_alpn(&effective, Some(&Protocol::ICAPS));
+
+            assert_eq!(
+                alpn_of(&effective),
+                Some(vec![
+                    ApplicationProtocol::HTTP_2,
+                    ApplicationProtocol::HTTP_11
+                ])
+            );
+        }
+
+        #[test]
+        fn derives_default_alpn_when_no_explicit_policy_exists() {
+            let effective = Extensions::new();
+
+            apply_default_alpn(&effective, Some(&Protocol::HTTPS));
+
+            assert_eq!(
+                alpn_of(&effective),
+                Some(vec![
+                    ApplicationProtocol::HTTP_2,
+                    ApplicationProtocol::HTTP_11
+                ])
+            );
+        }
+
+        #[test]
+        fn derives_empty_alpn_for_icaps_without_explicit_policy() {
+            let effective = Extensions::new();
+
+            apply_default_alpn(&effective, Some(&Protocol::ICAPS));
 
             assert_eq!(alpn_of(&effective), Some(Vec::new()));
         }
@@ -689,7 +717,36 @@ mod tests {
             request.insert(TlsAlpn::http_1());
             let effective = request.fork().with_base(&base);
 
-            apply_default_alpn(&request, &effective, Some(&Protocol::ICAPS));
+            apply_default_alpn(&effective, Some(&Protocol::ICAPS));
+
+            assert_eq!(
+                alpn_of(&effective),
+                Some(vec![ApplicationProtocol::HTTP_11])
+            );
+        }
+
+        #[test]
+        fn inherited_http_alpn_survives_for_https() {
+            let base = Extensions::new();
+            base.insert(TlsAlpn::http_1());
+            let request = Extensions::new();
+            let effective = request.fork().with_base(&base);
+
+            apply_default_alpn(&effective, Some(&Protocol::HTTPS));
+
+            assert_eq!(
+                alpn_of(&effective),
+                Some(vec![ApplicationProtocol::HTTP_11])
+            );
+        }
+
+        #[test]
+        fn inherited_alpn_survives_without_application_protocol() {
+            let base = Extensions::new();
+            base.insert(TlsAlpn::http_1());
+            let effective = Extensions::new().with_base(&base);
+
+            apply_default_alpn(&effective, None);
 
             assert_eq!(
                 alpn_of(&effective),

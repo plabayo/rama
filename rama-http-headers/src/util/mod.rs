@@ -4,6 +4,7 @@ use crate::Error;
 
 //pub use self::charset::Charset;
 //pub use self::encoding::Encoding;
+pub(crate) use self::byte::is_http_token_byte;
 pub(crate) use self::entity::{EntityTag, EntityTagRange};
 pub(crate) use self::flat_csv::{
     FlatCsvSeparator, try_decode_flat_csv_header_values_as_non_empty_smallvec,
@@ -21,6 +22,7 @@ pub use self::flat_csv::ValuesOrAny;
 pub use self::seconds::Seconds;
 
 //mod charset;
+mod byte;
 pub mod csv;
 //mod encoding;
 mod entity;
