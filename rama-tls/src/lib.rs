@@ -21,22 +21,19 @@
 use std::borrow::Cow;
 
 use rama_core::extensions::Extension;
-use rama_net::Protocol;
+use rama_net::{Protocol, tls::ApplicationProtocol};
 use rama_utils::collections::smallvec::{SmallVec, smallvec};
 
 mod enums;
 pub use enums::{
-    ApplicationProtocol, CertificateCompressionAlgorithm, CipherSuite, CompressionAlgorithm,
-    ECPointFormat, ExtensionId, ProtocolVersion, SignatureScheme, SupportedGroup,
+    CertificateCompressionAlgorithm, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
+    ProtocolVersion, SignatureScheme, SupportedGroup,
 };
 
 pub mod client;
 pub mod fingerprint;
 pub mod keylog;
 pub mod server;
-
-#[cfg(feature = "http")]
-mod http;
 
 #[cfg(feature = "dial9")]
 mod dial9;

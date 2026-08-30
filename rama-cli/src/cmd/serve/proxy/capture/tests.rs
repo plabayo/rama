@@ -2002,7 +2002,7 @@ async fn captured_tls_extensions_produce_actual_fingerprints_and_export_data() {
         .extension(SecureTransport::with_client_hello(client_hello))
         .extension(NegotiatedTlsParameters {
             protocol_version: rama::tls::ProtocolVersion::TLSv1_3,
-            application_layer_protocol: Some(rama::tls::ApplicationProtocol::HTTP_2),
+            application_layer_protocol: Some(rama::net::tls::ApplicationProtocol::HTTP_2),
             peer_certificate_chain: None,
         })
         .body(Body::empty())
@@ -2013,7 +2013,9 @@ async fn captured_tls_extensions_produce_actual_fingerprints_and_export_data() {
                 Response::builder()
                     .extension(NegotiatedTlsParameters {
                         protocol_version: rama::tls::ProtocolVersion::TLSv1_2,
-                        application_layer_protocol: Some(rama::tls::ApplicationProtocol::HTTP_11),
+                        application_layer_protocol: Some(
+                            rama::net::tls::ApplicationProtocol::HTTP_11,
+                        ),
                         peer_certificate_chain: None,
                     })
                     .body(Body::empty())
@@ -2043,7 +2045,7 @@ async fn captured_tls_extensions_produce_actual_fingerprints_and_export_data() {
             ..
         } if value.protocol_version == rama::tls::ProtocolVersion::TLSv1_3
             && value.application_layer_protocol
-                == Some(rama::tls::ApplicationProtocol::HTTP_2)
+                == Some(rama::net::tls::ApplicationProtocol::HTTP_2)
     )));
     assert!(details.records.iter().any(|record| matches!(
         record,
@@ -2052,7 +2054,7 @@ async fn captured_tls_extensions_produce_actual_fingerprints_and_export_data() {
             ..
         } if value.protocol_version == rama::tls::ProtocolVersion::TLSv1_2
             && value.application_layer_protocol
-                == Some(rama::tls::ApplicationProtocol::HTTP_11)
+                == Some(rama::net::tls::ApplicationProtocol::HTTP_11)
     )));
     let profile = captured_emulation_profile(&details).unwrap().unwrap();
     assert!(profile.tls_client_hello.is_some());

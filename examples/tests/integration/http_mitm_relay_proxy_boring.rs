@@ -23,10 +23,9 @@ use rama::{
         },
     },
     layer::{ArcLayer, ConsumeErrLayer},
-    net::{address::ProxyAddress, client::ProxyRoute},
+    net::{address::ProxyAddress, client::ProxyRoute, tls::ApplicationProtocol},
     rt::Executor,
     tcp::server::TcpListener,
-    tls::ApplicationProtocol,
     tls::rustls::server::TlsAcceptorLayer,
     tls::{
         KeyLogIntent, TlsAlpn,

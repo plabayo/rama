@@ -71,6 +71,7 @@ pub use input_ext::{HttpVersionInputExt, TargetHttpVersionInputExt};
 #[doc(inline)]
 pub use proto::Protocol;
 
+pub mod tls;
 pub mod transport;
 
 #[cfg(feature = "http")]

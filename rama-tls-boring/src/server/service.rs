@@ -16,11 +16,9 @@ use rama_core::{
     io::Io,
     telemetry::tracing::{debug, trace},
 };
-use rama_net::client::ConnectorTarget;
-use rama_net::extensions::StreamTransformed;
+use rama_net::{client::ConnectorTarget, extensions::StreamTransformed, tls::ApplicationProtocol};
 use rama_tls::keylog::{KeyLogSink, open_intent_sink};
 use rama_tls::{
-    ApplicationProtocol,
     client::NegotiatedTlsParameters,
     server::{CertificateIdentity, TlsServerConfig},
 };

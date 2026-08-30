@@ -239,9 +239,10 @@ macro_rules! __enum_builder {
         $enum_vis enum $enum_name {
             $(
                 $(#[$enum_meta])*
-                $enum_var
-            ),*
-            ,Unknown(Vec<u8>)
+                $enum_var,
+            )*
+            /// Retains an unrecognized byte sequence.
+            Unknown($crate::macros::enums::__Vec<u8>)
         }
 
         impl $enum_name {
@@ -257,7 +258,7 @@ macro_rules! __enum_builder {
             // NOTE(allow) generated irrespective if there are callers
             #[allow(dead_code)]
             $enum_vis fn try_as_str(&self) -> Option<&str> {
-                ::std::str::from_utf8(match self {
+                ::core::str::from_utf8(match self {
                     $( $enum_name::$enum_var => $enum_val),*
                     ,$enum_name::Unknown(b) => b,
                 }).ok()
@@ -291,23 +292,23 @@ macro_rules! __enum_builder {
             }
         }
 
-        impl ::std::str::FromStr for $enum_name {
-            type Err = ::std::convert::Infallible;
+        impl ::core::str::FromStr for $enum_name {
+            type Err = ::core::convert::Infallible;
 
             fn from_str(s: &str) -> Result<Self, Self::Err> {
                 Ok(s.into())
             }
         }
 
-        impl From<String> for $enum_name {
-            fn from(s: String) -> Self {
+        impl From<$crate::macros::enums::__String> for $enum_name {
+            fn from(s: $crate::macros::enums::__String) -> Self {
                 let b = s.into_bytes();
                 b.into()
             }
         }
 
-        impl From<Vec<u8>> for $enum_name {
-            fn from(b: Vec<u8>) -> Self {
+        impl From<$crate::macros::enums::__Vec<u8>> for $enum_name {
+            fn from(b: $crate::macros::enums::__Vec<u8>) -> Self {
                 match &b[..] {
                     $($enum_val => $enum_name::$enum_var),*
                     , _ => $enum_name::Unknown(b),
@@ -315,7 +316,7 @@ macro_rules! __enum_builder {
             }
         }
 
-        impl From<$enum_name> for Vec<u8> {
+        impl From<$enum_name> for $crate::macros::enums::__Vec<u8> {
             fn from(e: $enum_name) -> Self {
                 match e {
                     $($enum_name::$enum_var => $enum_val.to_vec()),*
@@ -324,7 +325,7 @@ macro_rules! __enum_builder {
             }
         }
 
-        impl From<&$enum_name> for Vec<u8> {
+        impl From<&$enum_name> for $crate::macros::enums::__Vec<u8> {
             fn from(e: &$enum_name) -> Self {
                 match e {
                     $($enum_name::$enum_var => $enum_val.to_vec()),*
@@ -333,10 +334,10 @@ macro_rules! __enum_builder {
             }
         }
 
-        impl ::std::fmt::Display for $enum_name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        impl ::core::fmt::Display for $enum_name {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 match self {
-                    $( $enum_name::$enum_var => match ::std::str::from_utf8($enum_val) {
+                    $( $enum_name::$enum_var => match ::core::str::from_utf8($enum_val) {
                         Ok(x) => write!(f, "{x}"),
                         Err(_) => write!(f, concat!(stringify!($enum_var), " (0x{:x?})"), $enum_val),
                     }),*
@@ -347,9 +348,15 @@ macro_rules! __enum_builder {
                           }
                         )?
 
-                        match ::std::str::from_utf8(x) {
+                        match ::core::str::from_utf8(x) {
                             Ok(x) => write!(f, "Unknown ({x})"),
-                            Err(_) => write!(f, "Unknown (0x{})", hex::encode(x)),
+                            Err(_) => {
+                                write!(f, "Unknown (0x")?;
+                                for byte in x {
+                                    write!(f, "{byte:02x}")?;
+                                }
+                                write!(f, ")")
+                            },
                         }
                     },
                 }
@@ -379,7 +386,7 @@ macro_rules! __enum_builder {
             where
                 D: $crate::macros::enums::__SerdeDeserializer<'de>,
             {
-                let b = <::std::borrow::Cow<'de, [u8]>>::deserialize(deserializer)?;
+                let b = <$crate::macros::enums::__Cow<'de, [u8]>>::deserialize(deserializer)?;
                 Ok(b.as_ref().into())
             }
         }
@@ -515,6 +522,9 @@ pub use serde::{
 
 #[doc(hidden)]
 pub use ::smol_str::SmolStr as __SmolStr;
+
+#[doc(hidden)]
+pub use crate::std::{Cow as __Cow, String as __String, Vec as __Vec};
 
 #[cfg(test)]
 mod tests {

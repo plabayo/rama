@@ -13,9 +13,9 @@ use rama_net::client::{
     ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
 };
 use rama_net::extensions::StreamTransformed;
-use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt};
+use rama_net::{AuthorityInputExt, Protocol, ProtocolInputExt, tls::ApplicationProtocol};
 use rama_tls::client::{NegotiatedTlsParameters, TlsClientConfig};
-use rama_tls::{ApplicationProtocol, TlsAlpn, TlsTunnelMode, default_tls_alpn, resolve_tls_tunnel};
+use rama_tls::{TlsAlpn, TlsTunnelMode, default_tls_alpn, resolve_tls_tunnel};
 #[cfg(feature = "http")]
 use rama_utils::collections::smallvec::smallvec;
 
@@ -610,7 +610,7 @@ mod tests {
         use super::*;
         use rama_core::extensions::Extensions;
         use rama_net::http::{FallbackHttpVersion, TargetHttpVersion, Version};
-        use rama_tls::ApplicationProtocol;
+        use rama_net::tls::ApplicationProtocol;
 
         fn alpn_of(ext: &Extensions) -> Option<Vec<ApplicationProtocol>> {
             ext.get_ref::<TlsAlpn>().map(|a| a.0.clone().into_vec())

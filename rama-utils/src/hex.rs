@@ -32,6 +32,23 @@ pub const fn nibble(b: u8) -> Option<u8> {
     None
 }
 
+/// Uppercase ASCII hex digit to `0..=15`.
+///
+/// Decimal digits and `A` through `F` are accepted; lowercase is rejected.
+#[inline]
+#[must_use]
+pub const fn upper_nibble(b: u8) -> Option<u8> {
+    let d = b.wrapping_sub(b'0');
+    if d < 10 {
+        return Some(d);
+    }
+    let u = b.wrapping_sub(b'A');
+    if u < 6 {
+        return Some(u + 10);
+    }
+    None
+}
+
 /// Decode a `%XX`-style hex pair to its byte value, or `None` if either
 /// nibble is not a valid hex digit.
 ///
@@ -45,9 +62,29 @@ pub const fn nibble(b: u8) -> Option<u8> {
 #[must_use]
 pub const fn decode_pair(hi: u8, lo: u8) -> Option<u8> {
     match (nibble(hi), nibble(lo)) {
-        (Some(h), Some(l)) => Some((h << 4) | l),
+        (Some(h), Some(l)) => Some((h << 4) + l),
         _ => None,
     }
+}
+
+/// Decode two uppercase ASCII hex digits to one byte.
+///
+/// Decimal digits are accepted in either position; lowercase is rejected.
+#[inline]
+#[must_use]
+pub const fn decode_upper_pair(hi: u8, lo: u8) -> Option<u8> {
+    match (upper_nibble(hi), upper_nibble(lo)) {
+        (Some(h), Some(l)) => Some((h << 4) + l),
+        _ => None,
+    }
+}
+
+/// Encode one byte as two uppercase ASCII hex digits.
+#[inline]
+#[must_use]
+pub const fn encode_byte_upper(byte: u8) -> [u8; 2] {
+    const DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+    [DIGITS[(byte >> 4) as usize], DIGITS[(byte & 0x0f) as usize]]
 }
 
 #[cfg(test)]
@@ -76,6 +113,18 @@ mod tests {
     }
 
     #[test]
+    fn upper_nibble_exhaustive_256_bytes() {
+        for b in 0u8..=255 {
+            let expected = match b {
+                b'0'..=b'9' => Some(b - b'0'),
+                b'A'..=b'F' => Some(b - b'A' + 10),
+                _ => None,
+            };
+            assert_eq!(upper_nibble(b), expected, "upper_nibble(0x{b:02X})");
+        }
+    }
+
+    #[test]
     fn decode_pair_round_trip() {
         for b in 0u8..=255 {
             let hi_nib = b >> 4;
@@ -99,5 +148,20 @@ mod tests {
         assert_eq!(decode_pair(b'Z', b'0'), None);
         assert_eq!(decode_pair(b'0', b'Z'), None);
         assert_eq!(decode_pair(b' ', b'0'), None);
+    }
+
+    #[test]
+    fn uppercase_pair_encoding_round_trips_every_byte() {
+        for byte in 0u8..=255 {
+            let encoded = encode_byte_upper(byte);
+            assert_eq!(decode_upper_pair(encoded[0], encoded[1]), Some(byte));
+            assert!(
+                encoded
+                    .iter()
+                    .all(|b| b.is_ascii_digit() || b.is_ascii_uppercase())
+            );
+        }
+        assert_eq!(decode_upper_pair(b'a', b'0'), None);
+        assert_eq!(decode_upper_pair(b'0', b'f'), None);
     }
 }

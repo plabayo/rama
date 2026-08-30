@@ -5,6 +5,7 @@ use core::{
 };
 
 use rama_core::bytes::Bytes;
+use rama_net::tls::ApplicationProtocol;
 use rama_utils::macros::enums::enum_builder;
 
 use super::{Name, NameParseError};
@@ -91,6 +92,16 @@ impl AlpnList {
             remaining: &self.wire,
             remaining_protocols: self.len(),
         }
+    }
+
+    /// Iterate over owned application-protocol identifiers.
+    ///
+    /// Known identifiers do not allocate. Unknown identifiers copy their bytes;
+    /// use [`Self::iter`] when a borrowed zero-copy view is sufficient.
+    pub fn application_protocols(
+        &self,
+    ) -> impl ExactSizeIterator<Item = ApplicationProtocol> + FusedIterator + Clone {
+        self.iter().map(ApplicationProtocol::from)
     }
 }
 

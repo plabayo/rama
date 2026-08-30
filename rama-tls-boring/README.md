@@ -54,7 +54,7 @@ Learn more about `rama`:
 >
 > **Source is truth.** When in doubt, consult the linked source code below and treat it — not this summary — as authoritative (line ranges especially can drift over time).
 
-The TLS features below are implemented on top of [`rama-boring`](https://github.com/plabayo/rama-boring), which `rama-tls-boring` re-exports directly as [`rama_tls_boring::core`](src/lib.rs) — so its native types are available to you whenever the rama-level config isn't enough. Most features, though, are configured through rama's own TLS-agnostic type vocabulary in [`rama-tls`](../rama-tls/src/) (protocol versions, cipher suites, signature schemes, groups, ALPN, extensions, …) and mapped onto `rama-boring` in [type_conversion.rs](src/type_conversion.rs). Configuration flows through extension-based pieces on `TlsClientConfig` / `TlsServerConfig`, and per-request extensions layer over an optional base config (newest-wins).
+The TLS features below are implemented on top of [`rama-boring`](https://github.com/plabayo/rama-boring), which `rama-tls-boring` re-exports directly as [`rama_tls_boring::core`](src/lib.rs) — so its native types are available to you whenever the rama-level config isn't enough. Most features, though, are configured through rama's own TLS-agnostic type vocabulary in [`rama-tls`](../rama-tls/src/) (protocol versions, cipher suites, signature schemes, groups, extensions, …), with ALPN identifiers from [`rama-net`](../rama-net/src/tls/alpn.rs), and mapped onto `rama-boring` in [type_conversion.rs](src/type_conversion.rs). Configuration flows through extension-based pieces on `TlsClientConfig` / `TlsServerConfig`, and per-request extensions layer over an optional base config (newest-wins).
 
 **Boring-specific config.** Knobs beyond the backend-agnostic vocabulary are set through two extension traits that insert `Boring*` extension pieces onto the agnostic config (layered the same way — per-connection over base, newest-wins):
 
@@ -173,13 +173,13 @@ The inbound acceptor ([`TlsAcceptorLayer`](src/server/layer.rs) / [`TlsAcceptorS
 
 ### Shared type vocabulary
 
-Features are expressed through open enums and config types in [`rama-tls`](../rama-tls/src/) and converted to `rama-boring` in [type_conversion.rs](src/type_conversion.rs). Key types in [enums.rs](../rama-tls/src/enums.rs):
+TLS-specific features are expressed through open enums and config types in [`rama-tls`](../rama-tls/src/), while the shared ALPN identifier lives in [`rama-net`](../rama-net/src/tls/alpn.rs). Both are converted to `rama-boring` in [type_conversion.rs](src/type_conversion.rs). Key types include:
 
 - **`ProtocolVersion`** (u16) — SSLv2/SSLv3, TLS 1.0–1.3, DTLS; only TLS 1.0–1.3 + SSL3 map to `rama-boring`.
 - **`CipherSuite`** (u16) — full IANA registry incl. the five TLS 1.3 suites + AEGIS; `is_tls13()` / `is_grease()`.
 - **`SignatureScheme`** (u16) — RSA-PKCS1/PSS, ECDSA, EdDSA, GOST, brainpool, …; subset maps to `SslSignatureAlgorithm`.
 - **`SupportedGroup`** (u16) — SECP/X25519/X448, FFDHE, brainpool, GOST, and PQ hybrids (MLKEM/Kyber).
-- **`ApplicationProtocol`** (byte string) — HTTP/0.9–3, and many non-HTTP protocols; used for both ALPN and ALPS.
+- **`rama_net::tls::ApplicationProtocol`** (byte string) — HTTP/0.9–3 and many non-HTTP protocols; used for ALPN and ALPS.
 - **`CertificateCompressionAlgorithm`** (zlib/brotli/zstd) and legacy **`CompressionAlgorithm`** (parse-only).
 - **`ExtensionId`**, **`ClientHelloExtension`**, **`ECPointFormat`** (parse/inspection), and **`ECHClientHello`** / HPKE suite enums.
 - Backend-agnostic config: **`KeyLogIntent`**, **`ServerVerifyMode`**, **`TlsServerTrust`**, **`ClientVerifyMode`** / **`ClientAuth`**, and the **`ServerAuthData`** / **`ClientAuthData`** (concrete DER cert material via `rama_crypto::pki_types`) / **`ServerCertIssuer*`** family. Certificate generation (**`GeneratedServerAuthConfig`** + `generate_server_auth`) lives in [`rama-crypto`](../rama-crypto/src/cert/), backend-pluggable across boring / aws-lc / ring.

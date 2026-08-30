@@ -1,5 +1,5 @@
 use rama_core::extensions::Extension;
-use rama_tls::ApplicationProtocol;
+use rama_net::tls::ApplicationProtocol;
 use rama_tls::fingerprint::{PeetComputeError, PeetPrint};
 use rama_tls::{
     ProtocolVersion,

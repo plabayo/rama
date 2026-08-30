@@ -11,10 +11,11 @@
 
 use crate::client::{ClientHello, ClientHelloExtension};
 use crate::{
-    ApplicationProtocol, CertificateCompressionAlgorithm, CipherSuite, ExtensionId,
-    ProtocolVersion, SecureTransport, SignatureScheme, SupportedGroup,
+    CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SecureTransport,
+    SignatureScheme, SupportedGroup,
 };
 use rama_core::extensions::Extensions;
+use rama_net::tls::ApplicationProtocol;
 use std::fmt;
 
 #[derive(Clone)]

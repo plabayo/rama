@@ -2,9 +2,12 @@ use crate::RamaTlsRustlsCrateMarker;
 use rama_core::conversion::{RamaFrom, RamaTryFrom};
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorContext, ErrorExt};
-use rama_net::address::{Domain, Host};
+use rama_net::{
+    address::{Domain, Host},
+    tls::ApplicationProtocol,
+};
 use rama_tls::{
-    ApplicationProtocol, CipherSuite, ProtocolVersion, SignatureScheme,
+    CipherSuite, ProtocolVersion, SignatureScheme,
     client::{ClientHello, ClientHelloExtension, TlsServerIdentity},
 };
 use std::net::IpAddr;

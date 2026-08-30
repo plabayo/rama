@@ -6,10 +6,10 @@ use crate::enums::{
     KeyDerivationFunction,
 };
 use crate::{
-    ApplicationProtocol, CipherSuite, ECPointFormat, ExtensionId, ProtocolVersion, SignatureScheme,
-    SupportedGroup, enums::CompressionAlgorithm,
+    CipherSuite, ECPointFormat, ExtensionId, ProtocolVersion, SignatureScheme, SupportedGroup,
+    enums::CompressionAlgorithm,
 };
-use rama_net::address::Domain;
+use rama_net::{address::Domain, tls::ApplicationProtocol};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 /// When a client first connects to a server, it is required to send

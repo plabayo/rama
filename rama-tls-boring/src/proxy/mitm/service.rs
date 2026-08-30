@@ -22,7 +22,7 @@ use {
     crate::client::{AlpsCoupling, set_alpn_with_coupled_alps},
     rama_core::extensions::Extensions,
     rama_net::http::{FallbackHttpVersion, TargetHttpVersion},
-    rama_tls::ApplicationProtocol,
+    rama_net::tls::ApplicationProtocol,
 };
 
 use super::egress::{
@@ -292,9 +292,10 @@ mod tests {
     use rama_net::{
         address::{Host, HostWithPort},
         stream::service::EchoService,
+        tls::ApplicationProtocol,
     };
     use rama_tls::{
-        ApplicationProtocol, CipherSuite, KeyLogIntent, ProtocolVersion, TlsAlpn, TlsKeyLog,
+        CipherSuite, KeyLogIntent, ProtocolVersion, TlsAlpn, TlsKeyLog,
         client::{
             ClientHelloExtension, ServerTrustRoots, ServerVerifyMode, TlsServerCertPins,
             TlsServerTrust, TlsServerVerify,

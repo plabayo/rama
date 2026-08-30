@@ -22,13 +22,13 @@ use rama_core::{
     error::{BoxError, ErrorContext, ErrorExt},
 };
 use rama_crypto::dep::x509_parser::nom::AsBytes;
-use rama_net::address::Host;
+use rama_net::{address::Host, tls::ApplicationProtocol};
+use rama_tls::KeyLogIntent;
 use rama_tls::client::ClientAuth;
 use rama_tls::client::TlsClientConfig;
 use rama_tls::client::TlsServerCertPins;
 use rama_tls::client::{ServerTrustRoots, ServerVerifyMode};
 use rama_tls::client::{TlsServerTrust, TlsServerTrustAnchors};
-use rama_tls::{ApplicationProtocol, KeyLogIntent};
 use std::{
     fmt,
     sync::{Arc, LazyLock},

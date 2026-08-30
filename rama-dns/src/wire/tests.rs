@@ -1,7 +1,7 @@
 use std::{error::Error as _, net::Ipv4Addr};
 
 use rama_core::bytes::Bytes;
-use rama_net::address::Domain;
+use rama_net::{address::Domain, tls::ApplicationProtocol};
 
 use super::*;
 
@@ -340,6 +340,12 @@ fn parses_rfc_9460_mandatory_alpn_and_ipv4_hint_vector() {
         protocols.iter().collect::<Vec<_>>(),
         [b"h2".as_slice(), b"h3-19".as_slice()]
     );
+    let mut typed = protocols.application_protocols();
+    assert_eq!(typed.len(), 2);
+    assert_eq!(typed.next(), Some(ApplicationProtocol::HTTP_2));
+    assert_eq!(typed.next(), Some(ApplicationProtocol::from(b"h3-19")));
+    assert_eq!(typed.next(), None);
+    assert_eq!(typed.next(), None);
     assert_eq!(
         parsed.param(SvcParamKey::Ipv4Hint),
         Some(&SvcParam::Ipv4Hint(Box::new([Ipv4Addr::new(192, 0, 2, 1)])))

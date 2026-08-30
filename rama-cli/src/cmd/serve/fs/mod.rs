@@ -5,11 +5,10 @@ use rama::{
     error::{BoxError, ErrorContext},
     graceful::ShutdownGuard,
     http::service::fs::{DirectoryServeMode, ServeDirSymlinkPolicy},
-    net::address::SocketAddress,
+    net::{address::SocketAddress, tls::ApplicationProtocol},
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
-    tls::ApplicationProtocol,
 };
 
 use clap::Args;

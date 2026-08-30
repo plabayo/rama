@@ -24,11 +24,11 @@ use rama::{
     net::{
         address::SocketAddress,
         stream::layer::{ThrottleLayer, ThrottleMode},
+        tls::ApplicationProtocol,
     },
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::tracing,
-    tls::ApplicationProtocol,
     tls::boring::server::TlsAcceptorLayer,
     utils::{backoff::ExponentialBackoff, octets::mib},
 };

@@ -18,9 +18,10 @@ use rama_net::extensions::StreamTransformed;
 use rama_net::{
     address::{Domain, Host, HostWithPort},
     client::ConnectorTarget,
+    tls::ApplicationProtocol,
 };
 use rama_tls::{
-    ApplicationProtocol, KeyLogIntent,
+    KeyLogIntent,
     client::{NegotiatedTlsParameters, TlsServerIdentity},
     server::SelfSignedCaConfig,
 };

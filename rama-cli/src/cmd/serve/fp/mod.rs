@@ -38,13 +38,13 @@ use rama::{
     net::{
         address::SocketAddress,
         stream::layer::{ThrottleLayer, ThrottleMode},
+        tls::ApplicationProtocol,
     },
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     telemetry::tracing,
-    tls::ApplicationProtocol,
     tls::boring::server::TlsAcceptorLayer,
     ua::layer::classifier::UserAgentClassifierLayer,
     utils::{

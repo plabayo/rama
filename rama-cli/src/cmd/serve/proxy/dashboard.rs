@@ -3697,7 +3697,7 @@ mod tests {
                 tls_client_hello: Some(client_hello),
                 ingress_tls: Some(CapturedTlsParameters {
                     protocol_version: rama::tls::ProtocolVersion::TLSv1_3,
-                    application_layer_protocol: Some(rama::tls::ApplicationProtocol::HTTP_2),
+                    application_layer_protocol: Some(rama::net::tls::ApplicationProtocol::HTTP_2),
                     peer_certificate_count: Some(1),
                 }),
             },
@@ -3707,7 +3707,7 @@ mod tests {
                 headers: vec![("content-type".to_owned(), "text/plain".to_owned())],
                 egress_tls: Some(CapturedTlsParameters {
                     protocol_version: rama::tls::ProtocolVersion::TLSv1_3,
-                    application_layer_protocol: Some(rama::tls::ApplicationProtocol::HTTP_2),
+                    application_layer_protocol: Some(rama::net::tls::ApplicationProtocol::HTTP_2),
                     peer_certificate_count: Some(2),
                 }),
             },

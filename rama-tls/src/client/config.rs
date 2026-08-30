@@ -7,10 +7,11 @@ use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 use std::{borrow::Cow, net::IpAddr, sync::Arc};
 
-use crate::{
-    ApplicationProtocol, KeyLogIntent, ProtocolVersion, TlsAlpn, TlsKeyLog, TlsSupportedVersions,
+use crate::{KeyLogIntent, ProtocolVersion, TlsAlpn, TlsKeyLog, TlsSupportedVersions};
+use rama_net::{
+    address::{Domain, Host},
+    tls::ApplicationProtocol,
 };
-use rama_net::address::{Domain, Host};
 
 /// A backend agnostic builder for the common TLS configs.
 ///

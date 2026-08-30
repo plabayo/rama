@@ -5,9 +5,7 @@
 
 use super::hello::{ECHClientHello, ECHClientHelloOuter, HpkeSymmetricCipherSuite};
 use super::{ClientHello, ClientHelloExtension};
-use crate::{
-    ApplicationProtocol, CipherSuite, ExtensionId, ProtocolVersion, enums::CompressionAlgorithm,
-};
+use crate::{CipherSuite, ExtensionId, ProtocolVersion, enums::CompressionAlgorithm};
 use nom::{
     IResult, Parser,
     bytes::streaming::take,
@@ -19,7 +17,10 @@ use nom::{
 use rama_core::error::BoxErrorExt as _;
 use rama_core::error::{BoxError, ErrorExt as _};
 use rama_core::telemetry::tracing;
-use rama_net::address::{Domain, Host};
+use rama_net::{
+    address::{Domain, Host},
+    tls::ApplicationProtocol,
+};
 use std::str;
 
 /// Parse a [`ClientHello`] from the raw "wire" bytes.

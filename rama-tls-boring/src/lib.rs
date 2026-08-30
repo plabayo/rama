@@ -41,8 +41,8 @@ pub mod types {
     //! common tls types
     #[doc(inline)]
     pub use ::rama_tls::{
-        ApplicationProtocol, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
-        ProtocolVersion, SecureTransport, SignatureScheme, SupportedGroup, TlsTunnel, client,
+        CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId, ProtocolVersion,
+        SecureTransport, SignatureScheme, SupportedGroup, TlsTunnel, client,
     };
 }
 

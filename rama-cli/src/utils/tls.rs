@@ -5,7 +5,7 @@ use rama::{
     },
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     http::tls::CertIssuerHttpClient,
-    net::address::Host,
+    net::{address::Host, tls::ApplicationProtocol},
     rt::Executor,
     telemetry::tracing,
     tls::boring::{
@@ -13,7 +13,6 @@ use rama::{
         server::{BoringServerConfigExt as _, ServerCertIssuerData},
     },
     tls::{
-        ApplicationProtocol,
         client::TlsServerCertPin,
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
