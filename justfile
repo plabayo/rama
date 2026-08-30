@@ -430,33 +430,6 @@ miri-apple-ne-ffi:
     cargo +nightly miri test -p rama-net-apple-networkextension ffi::tproxy::tests::ffi_enum_decoders_fail_safe_on_bad_byte --lib
     cargo +nightly miri test -p rama-net-apple-networkextension ffi::tproxy::tests::ffi_struct_layout_matches_c_header_on_64_bit_targets --lib
 
-# Targeted mutation pass for the Apple NetworkExtension FFI/config boundary.
-# This intentionally avoids the full Apple e2e surface so cargo-mutants can
-# produce useful signal without spending most of its time in system-extension
-# setup. Install with: cargo install cargo-mutants --locked
-mutants-apple-ne-ffi:
-    cargo mutants --package rama-net-apple-networkextension --file rama-net-apple-networkextension/src/ffi/bytes.rs --file rama-net-apple-networkextension/src/ffi/tproxy.rs --file rama-net-apple-networkextension/src/tproxy/types.rs --timeout 120
-
-mutants-http-headers:
-    cargo mutants --package rama-http-types --file rama-http-types/src/header/name.rs --file rama-http-types/src/header/map.rs --timeout 120
-
-mutants-icap-codec:
-    cargo mutants --package rama-icap --all-features --test-tool nextest --cap-lints true --baseline skip --timeout 120 --jobs 4 --file rama-icap/src/byte_sets.rs --file rama-icap/src/proto.rs --file rama-icap/src/codec/chunk.rs --file rama-icap/src/codec/encapsulated.rs
-
-# `head.rs` has enough mutation candidates to benefit from cargo-mutants'
-# `--shard N/4` option when this recipe is run in release qualification.
-mutants-icap-head:
-    cargo mutants --package rama-icap --all-features --test-tool nextest --cap-lints true --baseline skip --timeout 120 --jobs 4 --file rama-icap/src/codec/head.rs
-
-mutants-icap-options:
-    cargo mutants --package rama-icap --all-features --test-tool nextest --cap-lints true --baseline skip --timeout 120 --jobs 4 --file rama-icap/src/client/options/capabilities.rs --file rama-icap/src/client/options/cache.rs --file rama-icap/src/client/options/service.rs
-
-mutants-icap-transactions:
-    cargo mutants --package rama-icap --all-features --test-tool nextest --cap-lints true --baseline skip --timeout 120 --jobs 4 --file rama-icap/src/message.rs --file rama-icap/src/io.rs --file rama-icap/src/client/mod.rs --file rama-icap/src/client/service.rs --file rama-icap/src/server/mod.rs --file rama-icap/src/server/service.rs --file rama-icap/src/server/types.rs
-
-mutants-icap-http:
-    cargo mutants --package rama-icap --all-features --test-tool nextest --cap-lints true --baseline skip --timeout 120 --jobs 4 --file rama-icap/src/http/mod.rs --file rama-icap/src/http/server.rs --file rama-icap/src/http/headers.rs --file rama-icap/src/http/layer/endpoint.rs --file rama-icap/src/http/layer/headers.rs --file rama-icap/src/http/layer/service.rs
-
 detect-unused-deps:
     @cargo install cargo-machete
     cargo machete --skip-target-dir --with-metadata

@@ -1,6 +1,9 @@
 #[doc(hidden)]
 #[macro_export]
 /// A macro which defines an enum type.
+///
+/// `@U8` and `@U16` enums order variants primarily by numeric protocol value.
+/// Distinct variants sharing a value use a deterministic variant tie-break.
 macro_rules! __enum_builder {
     (
         $(#[$m:meta])*
@@ -10,13 +13,40 @@ macro_rules! __enum_builder {
         { $( $(#[$enum_meta:meta])* $enum_var:ident => $enum_val:expr ),* $(,)? }
     ) => {
         $(#[$m])*
-        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+        #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
         $enum_vis enum $enum_name {
             $(
                 $(#[$enum_meta])*
-                $enum_var
-            ),*
-            ,Unknown(u8)
+                $enum_var,
+            )*
+            /// Retains an unrecognized numeric value.
+            Unknown(u8)
+        }
+
+        impl ::std::cmp::PartialOrd for $enum_name {
+            fn partial_cmp(&self, other: &Self) -> Option<::std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        impl ::std::cmp::Ord for $enum_name {
+            /// Compare by numeric value, then distinguish colliding variants.
+            fn cmp(&self, other: &Self) -> ::std::cmp::Ordering {
+                match u8::from(*self).cmp(&u8::from(*other)) {
+                    ::std::cmp::Ordering::Equal if self != other => match (self, other) {
+                        (Self::Unknown(_), _) => ::std::cmp::Ordering::Greater,
+                        (_, Self::Unknown(_)) => ::std::cmp::Ordering::Less,
+                        _ => {
+                            let variant_name = |value: &Self| match value {
+                                $(Self::$enum_var => stringify!($enum_var),)*
+                                Self::Unknown(_) => "",
+                            };
+                            variant_name(self).cmp(&variant_name(other))
+                        }
+                    },
+                    ordering => ordering,
+                }
+            }
         }
 
         impl From<u8> for $enum_name {
@@ -94,13 +124,40 @@ macro_rules! __enum_builder {
         { $( $(#[$enum_meta:meta])* $enum_var: ident => $enum_val: expr ),* $(,)? }
     ) => {
         $(#[$m])*
-        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+        #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
         $enum_vis enum $enum_name {
             $(
                 $(#[$enum_meta])*
-                $enum_var
-            ),*
-            ,Unknown(u16)
+                $enum_var,
+            )*
+            /// Retains an unrecognized numeric value.
+            Unknown(u16)
+        }
+
+        impl ::std::cmp::PartialOrd for $enum_name {
+            fn partial_cmp(&self, other: &Self) -> Option<::std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+
+        impl ::std::cmp::Ord for $enum_name {
+            /// Compare by numeric value, then distinguish colliding variants.
+            fn cmp(&self, other: &Self) -> ::std::cmp::Ordering {
+                match u16::from(*self).cmp(&u16::from(*other)) {
+                    ::std::cmp::Ordering::Equal if self != other => match (self, other) {
+                        (Self::Unknown(_), _) => ::std::cmp::Ordering::Greater,
+                        (_, Self::Unknown(_)) => ::std::cmp::Ordering::Less,
+                        _ => {
+                            let variant_name = |value: &Self| match value {
+                                $(Self::$enum_var => stringify!($enum_var),)*
+                                Self::Unknown(_) => "",
+                            };
+                            variant_name(self).cmp(&variant_name(other))
+                        }
+                    },
+                    ordering => ordering,
+                }
+            }
         }
 
         impl From<u16> for $enum_name {
@@ -458,3 +515,43 @@ pub use serde::{
 
 #[doc(hidden)]
 pub use ::smol_str::SmolStr as __SmolStr;
+
+#[cfg(test)]
+mod tests {
+    use super::enum_builder;
+
+    enum_builder! {
+        @U8
+        enum TestU8 {
+            Maximum => 255,
+            One => 1,
+        }
+    }
+
+    enum_builder! {
+        @U16
+        enum TestU16 {
+            Maximum => 65535,
+            One => 1,
+        }
+    }
+
+    #[test]
+    fn numeric_enum_order_follows_values_and_remains_eq_consistent() {
+        assert!(TestU8::One < TestU8::Unknown(2));
+        assert!(TestU8::Unknown(2) < TestU8::Maximum);
+        assert_ne!(TestU8::One, TestU8::Unknown(1));
+        assert_ne!(
+            TestU8::One.cmp(&TestU8::Unknown(1)),
+            core::cmp::Ordering::Equal
+        );
+
+        assert!(TestU16::One < TestU16::Unknown(2));
+        assert!(TestU16::Unknown(2) < TestU16::Maximum);
+        assert_ne!(TestU16::One, TestU16::Unknown(1));
+        assert_ne!(
+            TestU16::One.cmp(&TestU16::Unknown(1)),
+            core::cmp::Ordering::Equal
+        );
+    }
+}

@@ -61,6 +61,12 @@
 //! global resolver until it's actually used — handy when you want to pass
 //! a resolver around without forcing it to be constructed yet.
 //!
+//! ## DNS wire data
+//!
+//! The [`wire`] module provides provider-neutral DNS wire vocabulary. It
+//! currently decodes the shared RDATA used by SVCB and HTTPS records while
+//! retaining unknown service parameters.
+//!
 //! ## Rama
 //!
 //! Crate used by the end-user `rama` crate and `rama` crate authors alike.
@@ -84,3 +90,4 @@
 pub mod dial9;
 
 pub mod client;
+pub mod wire;

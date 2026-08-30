@@ -877,6 +877,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn numeric_protocol_enums_order_by_wire_value() {
+        assert!(ProtocolVersion::DTLSv1_3 < ProtocolVersion::DTLSv1_0);
+        assert!(ProtocolVersion::TLSv1_3 < ProtocolVersion::DTLSv1_3);
+        assert!(ProtocolVersion::Unknown(0x0400) < ProtocolVersion::DTLSv1_3);
+    }
+
+    #[test]
     fn test_enum_uint_display() {
         assert_eq!("X25519 (0x001d)", SupportedGroup::X25519.to_string());
         assert_eq!("Unknown (0xffff)", SupportedGroup::from(0xffff).to_string());

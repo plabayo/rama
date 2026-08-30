@@ -43,6 +43,16 @@ impl DomainBuilder {
         Self::default()
     }
 
+    /// Creates an empty builder with space for at least `capacity` bytes.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            buf: BytesMut::with_capacity(capacity),
+            label_count: 0,
+            starts_with_wildcard: false,
+        }
+    }
+
     /// Returns the number of labels currently in the builder.
     #[must_use]
     pub fn label_count(&self) -> usize {
@@ -71,7 +81,19 @@ impl DomainBuilder {
     ///
     /// Returns [`PushError`] if the label or resulting name length is invalid.
     pub fn push_label(&mut self, label: &str) -> Result<&mut Self, PushError> {
-        validate_label_bytes(label.as_bytes()).map_err(PushError::from_label)?;
+        self.push_label_bytes(label.as_bytes())
+    }
+
+    /// Push a single ASCII label from bytes.
+    ///
+    /// This is equivalent to [`DomainBuilder::push_label`] for callers that
+    /// already have protocol-native byte labels.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PushError`] if the label or resulting name length is invalid.
+    pub fn push_label_bytes(&mut self, label: &[u8]) -> Result<&mut Self, PushError> {
+        validate_label_bytes(label).map_err(PushError::from_label)?;
         self.push_validated_label(label)
     }
 
@@ -84,14 +106,14 @@ impl DomainBuilder {
     /// Returns a too-long [`PushError`] if the resulting name length would
     /// exceed `MAX_NAME_LEN`.
     pub fn push(&mut self, label: &Label) -> Result<&mut Self, PushError> {
-        self.push_validated_label(label.as_str())
+        self.push_validated_label(label.as_str().as_bytes())
     }
 
-    fn push_validated_label(&mut self, label: &str) -> Result<&mut Self, PushError> {
+    fn push_validated_label(&mut self, label: &[u8]) -> Result<&mut Self, PushError> {
         // Wildcard `*` is only valid as the leftmost label. The label-level
         // validator accepts `"*"` standalone, so the positional rule lives
         // here in the builder.
-        let is_wildcard = label == "*";
+        let is_wildcard = label == b"*";
         if is_wildcard && !self.is_empty() {
             return Err(PushError::misplaced_wildcard());
         }
@@ -110,7 +132,7 @@ impl DomainBuilder {
         } else {
             self.starts_with_wildcard = is_wildcard;
         }
-        self.buf.extend_from_slice(label.as_bytes());
+        self.buf.extend_from_slice(label);
         self.label_count += 1;
         Ok(self)
     }
@@ -166,11 +188,30 @@ impl DomainBuilder {
     /// label is the bare wildcard `"*"` (which is never a valid standalone
     /// domain).
     pub fn finish(self) -> Result<Domain, PushError> {
+        self.finish_inner(false)
+    }
+
+    /// Consume the builder and produce a fully qualified [`Domain`].
+    ///
+    /// The resulting presentation form ends in `.`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PushError`] if the builder is empty, or if the only pushed
+    /// label is the bare wildcard `"*"`.
+    pub fn finish_fqdn(self) -> Result<Domain, PushError> {
+        self.finish_inner(true)
+    }
+
+    fn finish_inner(mut self, fully_qualified: bool) -> Result<Domain, PushError> {
         if self.label_count == 0 {
             return Err(PushError::empty());
         }
         if self.label_count == 1 && self.starts_with_wildcard {
             return Err(PushError::misplaced_wildcard());
+        }
+        if fully_qualified {
+            self.buf.extend_from_slice(b".");
         }
         // Safety: builder maintained the Domain invariant at every push.
         Ok(unsafe { Domain::from_maybe_borrowed_unchecked(self.buf.freeze()) })
@@ -252,6 +293,8 @@ impl From<LabelError> for PushError {
 
 #[cfg(test)]
 mod tests {
+    use core::error::Error as _;
+
     use super::super::Domain;
     use super::*;
 
@@ -271,8 +314,29 @@ mod tests {
         b.push_label("example").unwrap();
         b.push_label("com").unwrap();
         assert_eq!(b.label_count(), 3);
+        assert_eq!(b.len(), 15);
         let d = b.finish().unwrap();
         assert_eq!(d.as_str(), "www.example.com");
+    }
+
+    #[test]
+    fn builds_fqdn_from_byte_labels() {
+        let mut b = DomainBuilder::with_capacity(16);
+        assert!(b.buf.capacity() >= 16);
+        b.push_label_bytes(b"www").unwrap();
+        b.push_label_bytes(b"example").unwrap();
+        b.push_label_bytes(b"com").unwrap();
+        let d = b.finish_fqdn().unwrap();
+        assert_eq!(d.as_str(), "www.example.com.");
+        assert!(d.is_fqdn());
+    }
+
+    #[test]
+    fn byte_labels_share_string_label_validation() {
+        let mut b = DomainBuilder::new();
+        b.push_label_bytes(b"a.b").unwrap_err();
+        b.push_label_bytes(b"\xc3\xa9").unwrap_err();
+        assert!(b.is_empty());
     }
 
     #[test]
@@ -312,6 +376,7 @@ mod tests {
         let mut b = DomainBuilder::new();
         let err = b.push_label("-bad").unwrap_err();
         assert!(err.as_label_error().is_some());
+        assert!(err.source().is_some());
         assert!(b.is_empty(), "builder is unchanged after failed push");
     }
 
@@ -326,6 +391,23 @@ mod tests {
         b.push_label(&label63).unwrap();
         let err = b.push_label(&label63).unwrap_err();
         assert!(format!("{err}").contains("max is 253"));
+
+        let mut exact = DomainBuilder::new();
+        for length in [63, 63, 63, 61] {
+            exact.push_label(&"a".repeat(length)).unwrap();
+        }
+        assert_eq!(exact.len(), Domain::MAX_LEN);
+        assert_eq!(
+            exact.finish_fqdn().unwrap().as_str().len(),
+            Domain::MAX_LEN + 1
+        );
+
+        let mut nearly_full = DomainBuilder::new();
+        for length in [63, 63, 63, 60] {
+            nearly_full.push_label(&"a".repeat(length)).unwrap();
+        }
+        assert_eq!(nearly_full.len(), Domain::MAX_LEN - 1);
+        nearly_full.push_label("a").unwrap_err();
     }
 
     #[test]
