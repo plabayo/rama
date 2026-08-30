@@ -14,7 +14,9 @@ pub use self::hickory::HickoryDnsResolver;
 
 mod tokio;
 #[doc(inline)]
-pub use self::tokio::{TokioDnsResolver, TokioDnsTxtUnsupportedError};
+pub use self::tokio::{
+    TokioDnsResolver, TokioDnsServiceBindingUnsupportedError, TokioDnsTxtUnsupportedError,
+};
 
 #[cfg(target_vendor = "apple")]
 mod apple;
@@ -52,7 +54,10 @@ pub mod fuzzing {
     /// Returns the TXT ttl + segment count, `None` for non-TXT verdicts.
     pub fn parse_txt_rr(raw: &[u8]) -> Option<(u32, usize)> {
         match super::systemd_resolved_wire::parse_txt_rr(raw) {
-            super::systemd_resolved_wire::RrParse::Txt { ttl, segments } => {
+            super::systemd_resolved_wire::RrParse::Record {
+                ttl,
+                value: segments,
+            } => {
                 let total: usize = segments.iter().map(|segment| segment.len() + 1).sum();
                 assert!(total <= raw.len(), "TXT segments exceed input buffer");
                 Some((ttl, segments.len()))

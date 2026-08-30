@@ -6,14 +6,16 @@
 //! daemon is unavailable (see [`super::systemd_resolved`]). The builder may
 //! explicitly enable or disable this path regardless of the NSS configuration.
 //!
-//! On targets with `res_nsearch` support, `A` / `AAAA` / `TXT` lookups are
+//! On targets with `res_nsearch` support, `A` / `AAAA` / `TXT` / `SVCB` /
+//! `HTTPS` lookups are
 //! backed by the native resolver stub. `res_nsearch` (not `res_nquery`) is
 //! used so the resolver walks the `search` list from `/etc/resolv.conf` and
 //! respects `ndots`, matching the behavior of `getaddrinfo` and hickory's
 //! system resolver.
 //!
 //! On other Linux libc environments, address lookups fall back to
-//! `getaddrinfo`, while TXT lookups return a stable unsupported error.
+//! `getaddrinfo`, while non-address lookups return stable unsupported errors
+//! when systemd-resolved is unavailable.
 
 use std::{
     ffi::CString,
@@ -32,14 +34,14 @@ use rama_core::{
 use rama_net::address::Domain;
 use rama_utils::{
     macros::{error::static_str_error, generate_set_and_with},
-    octets::kib,
     str::arcstr::ArcStr,
 };
 
 use super::{
-    resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver},
+    resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver},
     systemd_resolved::{self, ResolvedLookup, SystemdResolved},
 };
+use crate::wire::ServiceBinding;
 
 mod cache;
 
@@ -63,13 +65,12 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_CACHE_TTL: Duration = Duration::from_mins(5);
 const DEFAULT_NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(30);
 const DEFAULT_CACHE_CAPACITY: u64 = 65_536;
-/// Default `res_nsearch` response buffer size.
+/// Default maximum `res_nsearch` response size.
 ///
-/// Most DNS responses fit comfortably in 4 KiB, but large TXT/AAAA fan-outs
-/// (DKIM, long SPF, multi-record AAAA sets) can exceed that. 16 KiB matches
-/// what most TCP-fallback paths advertise via EDNS0 and keeps the per-query
-/// allocation in the blocking thread modest.
-const DEFAULT_RESPONSE_BUFFER_SIZE: usize = kib(16);
+/// This accepts the largest DNS wire message. The native backend starts with
+/// a modest allocation and grows only when libc reports a larger response,
+/// accommodating large TXT and SVCB/HTTPS RRsets such as ECH-heavy answers.
+const DEFAULT_RESPONSE_BUFFER_SIZE: usize = u16::MAX as usize;
 const NSSWITCH_CONF_PATH: &str = "/etc/nsswitch.conf";
 
 #[derive(Debug, Clone)]
@@ -140,9 +141,15 @@ impl LinuxDnsResolverBuilder {
     }
 
     generate_set_and_with! {
-        /// Per-query response buffer size used by `res_nsearch`. Responses that
-        /// exceed this bound are reported as an error; bump this for workloads
-        /// that legitimately receive large TXT/AAAA fan-outs.
+        /// Maximum per-query allocation and positive response size for `res_nsearch`.
+        ///
+        /// The initial allocation remains modest and grows on demand. Responses
+        /// exceeding this bound are errors when libc reports their required size;
+        /// lower it only when deliberately rejecting large TXT, SVCB, or HTTPS
+        /// RRsets. Some libc implementations do not report the size of negative
+        /// replies; an oversized negative reply can therefore fall back to the
+        /// resolver's default uncached-negative behavior. Values below the 12-byte
+        /// fixed DNS header are rejected before calling libc.
         pub fn response_buffer_size(mut self, response_buffer_size: usize) -> Self {
             self.response_buffer_size = response_buffer_size;
             self
@@ -161,10 +168,11 @@ impl LinuxDnsResolverBuilder {
         /// resolver. Explicitly enabling the backend also opts into
         /// systemd-resolved's name semantics for address lookups: names
         /// containing a dot are treated as fully qualified instead of
-        /// following libc's `ndots` search expansion. TXT lookups keep the
-        /// libc `search` behavior — a negative answer for a relative name is
-        /// retried through the native backend; only a positive as-is answer
-        /// can shadow a search-list candidate under `ndots` larger than one.
+        /// following libc's `ndots` search expansion. TXT, SVCB, and HTTPS
+        /// lookups keep the libc `search` behavior — a negative answer for a
+        /// relative name is retried through the native backend; only a
+        /// positive as-is answer can shadow a search-list candidate under
+        /// `ndots` larger than one.
         pub fn systemd_resolved(mut self, enabled: bool) -> Self {
             self.systemd_resolved = enabled;
             self
@@ -414,6 +422,48 @@ impl DnsTxtResolver for LinuxDnsResolver {
     }
 }
 
+impl DnsServiceBindingResolver for LinuxDnsResolver {
+    type Error = BoxError;
+
+    fn lookup_svcb(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
+        let response_buffer_size = self.response_buffer_size;
+        let resolved = self.systemd_resolved.clone();
+        lookup_cached_stream(
+            domain,
+            self.timeout,
+            self.cache.clone(),
+            cache::RecordKind::Svcb,
+            move |cache, domain| cache.get_svcb(domain),
+            move |cache, domain, values, ttl| cache.insert_svcb(domain, values, ttl),
+            move |domain, timeout| {
+                lookup_svcb_uncached_stream(resolved, domain, timeout, response_buffer_size)
+            },
+        )
+    }
+
+    fn lookup_https(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
+        let response_buffer_size = self.response_buffer_size;
+        let resolved = self.systemd_resolved.clone();
+        lookup_cached_stream(
+            domain,
+            self.timeout,
+            self.cache.clone(),
+            cache::RecordKind::Https,
+            move |cache, domain| cache.get_https(domain),
+            move |cache, domain, values, ttl| cache.insert_https(domain, values, ttl),
+            move |domain, timeout| {
+                lookup_https_uncached_stream(resolved, domain, timeout, response_buffer_size)
+            },
+        )
+    }
+}
+
 impl DnsResolver for LinuxDnsResolver {}
 
 /// Events emitted by uncached lookup streams.
@@ -427,8 +477,12 @@ impl DnsResolver for LinuxDnsResolver {}
 /// systemd-resolved negatives carry none (the daemon does its own RFC 2308
 /// negative caching), so they end up uncached here.
 pub(super) enum LookupEvent<T> {
-    Record(T, u32),
-    AuthoritativeNegative { soa_ttl: Option<u32> },
+    /// `None` means the backend could not expose a TTL; `Some(0)` is a real
+    /// wire TTL and must prevent the record from being retained in the cache.
+    Record(T, Option<u32>),
+    AuthoritativeNegative {
+        soa_ttl: Option<u32>,
+    },
 }
 
 /// Lookup a domain and produce a stream that is cached on succes. If a
@@ -487,7 +541,7 @@ where
         while let Some(item) = lookup.next().await {
             match item {
                 Ok(LookupEvent::Record(value, ttl)) => {
-                    if ttl > 0 {
+                    if let Some(ttl) = ttl {
                         min_ttl_secs = Some(min_ttl_secs.map_or(ttl, |prev| prev.min(ttl)));
                     }
                     values.push(value);
@@ -496,10 +550,8 @@ where
                     authoritative_negative = soa_ttl;
                 }
                 Err(err) => {
-                    // Still yield all items we got, but we dont cache these on error
-                    for value in values {
-                        yielder.yield_item(Ok(value)).await;
-                    }
+                    // The lookup is one DNS response. Do not expose a partial
+                    // RRset when its backend reports that response as invalid.
                     yielder.yield_item(Err(err)).await;
                     return;
                 }
@@ -571,6 +623,36 @@ fn lookup_txt_uncached_stream(
     });
     resolved_first_stream(varlink, move || {
         native_lookup_txt_stream(domain, timeout, response_buffer_size)
+    })
+}
+
+fn lookup_svcb_uncached_stream(
+    resolved: Option<Arc<SystemdResolved>>,
+    domain: Domain,
+    timeout: Duration,
+    response_buffer_size: usize,
+) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+    let varlink = resolved.map(|resolved| {
+        let domain = domain.clone();
+        async move { resolved.lookup_svcb(&domain, timeout).await }
+    });
+    resolved_first_stream(varlink, move || {
+        native_lookup_svcb_stream(domain, timeout, response_buffer_size)
+    })
+}
+
+fn lookup_https_uncached_stream(
+    resolved: Option<Arc<SystemdResolved>>,
+    domain: Domain,
+    timeout: Duration,
+    response_buffer_size: usize,
+) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+    let varlink = resolved.map(|resolved| {
+        let domain = domain.clone();
+        async move { resolved.lookup_https(&domain, timeout).await }
+    });
+    resolved_first_stream(varlink, move || {
+        native_lookup_https_stream(domain, timeout, response_buffer_size)
     })
 }
 
@@ -691,6 +773,75 @@ fn native_lookup_txt_stream(
     res_nsearch::lookup_txt_stream(domain, timeout, response_buffer_size)
 }
 
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
+fn native_lookup_svcb_stream(
+    domain: Domain,
+    timeout: Duration,
+    response_buffer_size: usize,
+) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+    res_nsearch::lookup_svcb_stream(domain, timeout, response_buffer_size)
+}
+
+#[cfg(not(any(
+    all(target_os = "linux", target_env = "gnu"),
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+)))]
+fn native_lookup_svcb_stream(
+    _domain: Domain,
+    _timeout: Duration,
+    _response_buffer_size: usize,
+) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+    unsupported_service_binding_stream()
+}
+
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
+fn native_lookup_https_stream(
+    domain: Domain,
+    timeout: Duration,
+    response_buffer_size: usize,
+) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+    res_nsearch::lookup_https_stream(domain, timeout, response_buffer_size)
+}
+
+#[cfg(not(any(
+    all(target_os = "linux", target_env = "gnu"),
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+)))]
+fn native_lookup_https_stream(
+    _domain: Domain,
+    _timeout: Duration,
+    _response_buffer_size: usize,
+) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+    unsupported_service_binding_stream()
+}
+
+#[cfg(not(any(
+    all(target_os = "linux", target_env = "gnu"),
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+)))]
+fn unsupported_service_binding_stream()
+-> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+    rama_core::futures::stream::once(std::future::ready(Err(BoxError::from(
+        LinuxDnsServiceBindingUnsupportedError,
+    ))))
+}
+
 #[cfg(not(any(
     all(target_os = "linux", target_env = "gnu"),
     target_os = "freebsd",
@@ -740,10 +891,16 @@ static_str_error! {
     pub struct LinuxDnsTxtUnsupportedError;
 }
 
+static_str_error! {
+    #[doc = "Linux native SVCB and HTTPS resolution is unsupported on this libc target (opt-in to hickory instead)"]
+    pub struct LinuxDnsServiceBindingUnsupportedError;
+}
+
 #[cfg(test)]
 mod tests {
     use super::{LookupEvent, ResolvedLookup, cache, lookup_cached_stream, resolved_first_stream};
     use rama_core::{
+        bytes::Bytes,
         error::{BoxError, BoxErrorExt as _},
         futures::{Stream, StreamExt as _, stream},
     };
@@ -757,6 +914,8 @@ mod tests {
         time::Duration,
     };
 
+    use crate::wire::ServiceBinding;
+
     fn test_cache() -> Arc<cache::LinuxDnsCache> {
         Arc::new(cache::LinuxDnsCache::new(
             64,
@@ -767,6 +926,12 @@ mod tests {
 
     fn test_domain() -> Domain {
         "example.com.".try_into().expect("valid domain")
+    }
+
+    fn service_binding(port: u16) -> ServiceBinding {
+        let mut rdata = vec![0, 1, 0, 0, 3, 0, 2];
+        rdata.extend_from_slice(&port.to_be_bytes());
+        ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata)).expect("valid service binding")
     }
 
     fn cached_ipv4_stream<S>(
@@ -796,6 +961,34 @@ mod tests {
         }
     }
 
+    fn cached_service_binding_stream<S>(
+        domain: Domain,
+        cache: Arc<cache::LinuxDnsCache>,
+        kind: cache::RecordKind,
+        backend: S,
+    ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send
+    where
+        S: Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send + 'static,
+    {
+        lookup_cached_stream(
+            domain,
+            Duration::from_secs(5),
+            cache,
+            kind,
+            move |cache, domain| match kind {
+                cache::RecordKind::Svcb => cache.get_svcb(domain),
+                cache::RecordKind::Https => cache.get_https(domain),
+                _ => unreachable!("service-binding cache helper only accepts SVCB or HTTPS"),
+            },
+            move |cache, domain, values, ttl| match kind {
+                cache::RecordKind::Svcb => cache.insert_svcb(domain, values, ttl),
+                cache::RecordKind::Https => cache.insert_https(domain, values, ttl),
+                _ => unreachable!("service-binding cache helper only accepts SVCB or HTTPS"),
+            },
+            move |_domain, _timeout| backend,
+        )
+    }
+
     #[tokio::test]
     async fn positive_cache_is_written_when_consumer_drops_after_one_item() {
         let cache = test_cache();
@@ -808,7 +1001,7 @@ mod tests {
         let backend = stream::iter(
             addrs
                 .into_iter()
-                .map(|addr| Ok(LookupEvent::Record(addr, 60))),
+                .map(|addr| Ok(LookupEvent::Record(addr, Some(60)))),
         );
 
         let mut stream = Box::pin(cached_ipv4_stream(domain.clone(), cache.clone(), backend));
@@ -831,7 +1024,7 @@ mod tests {
         let backend = stream::iter(
             addrs
                 .into_iter()
-                .map(|addr| Ok(LookupEvent::Record(addr, 60))),
+                .map(|addr| Ok(LookupEvent::Record(addr, Some(60)))),
         );
 
         let yielded: Vec<_> = cached_ipv4_stream(domain.clone(), cache.clone(), backend)
@@ -847,12 +1040,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn errors_are_yielded_after_prior_records_and_are_not_cached() {
+    async fn errors_discard_prior_records_and_are_not_cached() {
         let cache = test_cache();
         let domain = test_domain();
         let addr = Ipv4Addr::new(10, 0, 0, 1);
         let backend = stream::iter([
-            Ok(LookupEvent::Record(addr, 60)),
+            Ok(LookupEvent::Record(addr, Some(60))),
             Err(BoxError::from_static_str("boom")),
         ]);
 
@@ -860,13 +1053,61 @@ mod tests {
             .collect()
             .await;
 
-        assert_eq!(items.len(), 2);
-        assert!(matches!(items[0], Ok(got) if got == addr));
-        assert!(matches!(items[1], Err(ref err) if err.to_string() == "boom"));
+        assert_eq!(items.len(), 1);
+        assert!(matches!(items[0], Err(ref err) if err.to_string() == "boom"));
         assert!(
             cached_ipv4(&cache, &domain).is_none(),
             "a failed lookup must not be cached",
         );
+    }
+
+    #[tokio::test]
+    async fn zero_wire_ttl_does_not_retain_svcb_or_https_records() {
+        for kind in [cache::RecordKind::Svcb, cache::RecordKind::Https] {
+            let cache = test_cache();
+            let domain = test_domain();
+            let binding = service_binding(443);
+            let backend = stream::iter([Ok(LookupEvent::Record(binding.clone(), Some(0)))]);
+
+            let values: Vec<_> =
+                cached_service_binding_stream(domain.clone(), cache.clone(), kind, backend)
+                    .map(Result::unwrap)
+                    .collect()
+                    .await;
+            assert_eq!(values, [binding]);
+
+            let cached = match kind {
+                cache::RecordKind::Svcb => cache.get_svcb(&domain),
+                cache::RecordKind::Https => cache.get_https(&domain),
+                _ => unreachable!(),
+            };
+            assert!(
+                cached.is_none(),
+                "a wire TTL of zero must expire immediately"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn unavailable_record_ttl_uses_the_configured_cache_bound() {
+        let cache = test_cache();
+        let domain = test_domain();
+        let addr = Ipv4Addr::new(192, 0, 2, 1);
+        let native_called = Arc::new(AtomicBool::new(false));
+        let backend = resolved_first_stream(
+            Some(std::future::ready(ResolvedLookup::Records(vec![(
+                addr, None,
+            )]))),
+            tracked_native(&native_called),
+        );
+
+        let values: Vec<_> = cached_ipv4_stream(domain.clone(), cache.clone(), backend)
+            .map(Result::unwrap)
+            .collect()
+            .await;
+        assert_eq!(values, [addr]);
+        assert_eq!(cached_ipv4(&cache, &domain), Some(vec![addr]));
+        assert!(!native_called.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -876,11 +1117,14 @@ mod tests {
             .with_systemd_resolved(false)
             .build();
         assert_eq!(resolver.timeout(), Duration::from_secs(9));
+        assert_eq!(resolver.response_buffer_size(), usize::from(u16::MAX));
         assert!(!resolver.systemd_resolved_enabled());
 
         let resolver = super::LinuxDnsResolver::builder()
+            .with_response_buffer_size(4096)
             .with_systemd_resolved(true)
             .build();
+        assert_eq!(resolver.response_buffer_size(), 4096);
         assert!(resolver.systemd_resolved_enabled());
     }
 
@@ -912,7 +1156,10 @@ mod tests {
         let called = called.clone();
         move || {
             called.store(true, Ordering::SeqCst);
-            stream::iter(vec![Ok(LookupEvent::Record(Ipv4Addr::new(9, 9, 9, 9), 30))])
+            stream::iter(vec![Ok(LookupEvent::Record(
+                Ipv4Addr::new(9, 9, 9, 9),
+                Some(30),
+            ))])
         }
     }
 
@@ -922,7 +1169,7 @@ mod tests {
         let items: Vec<_> = resolved_first_stream(
             Some(std::future::ready(ResolvedLookup::Records(vec![(
                 Ipv4Addr::new(1, 2, 3, 4),
-                60,
+                Some(60),
             )]))),
             tracked_native(&native_called),
         )
@@ -931,7 +1178,7 @@ mod tests {
 
         assert_eq!(items.len(), 1);
         assert!(
-            matches!(items[0], Ok(LookupEvent::Record(addr, 60)) if addr == Ipv4Addr::new(1, 2, 3, 4)),
+            matches!(items[0], Ok(LookupEvent::Record(addr, Some(60))) if addr == Ipv4Addr::new(1, 2, 3, 4)),
         );
         assert!(!native_called.load(Ordering::SeqCst));
     }
@@ -983,7 +1230,7 @@ mod tests {
 
         assert_eq!(items.len(), 1);
         assert!(
-            matches!(items[0], Ok(LookupEvent::Record(addr, 30)) if addr == Ipv4Addr::new(9, 9, 9, 9)),
+            matches!(items[0], Ok(LookupEvent::Record(addr, Some(30))) if addr == Ipv4Addr::new(9, 9, 9, 9)),
         );
         assert!(native_called.load(Ordering::SeqCst));
     }
@@ -1017,6 +1264,37 @@ mod tests {
         match cache.get_ipv4(&domain) {
             Some(cache::CacheLookup::Negative) => {}
             _ => panic!("expected negative cache entry"),
+        }
+    }
+
+    #[test]
+    fn cache_keeps_svcb_and_https_rrsets_distinct() {
+        let cache = test_cache();
+        let domain = test_domain();
+        cache.insert_svcb(
+            domain.clone(),
+            vec![service_binding(8443)],
+            Some(Duration::from_secs(60)),
+        );
+        cache.insert_https(
+            domain.clone(),
+            vec![service_binding(443)],
+            Some(Duration::from_secs(120)),
+        );
+
+        match cache.get_svcb(&domain) {
+            Some(cache::CacheLookup::Positive(values)) => {
+                assert_eq!(values.len(), 1);
+                assert_eq!(values[0].port(), Some(8443));
+            }
+            _ => panic!("expected cached SVCB record"),
+        }
+        match cache.get_https(&domain) {
+            Some(cache::CacheLookup::Positive(values)) => {
+                assert_eq!(values.len(), 1);
+                assert_eq!(values[0].port(), Some(443));
+            }
+            _ => panic!("expected cached HTTPS record"),
         }
     }
 }

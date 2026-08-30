@@ -153,7 +153,7 @@ where
         {
             let addr = unsafe { T::from_sockaddr(current_ref.ai_addr.cast()) };
             // `getaddrinfo` does not expose per-record TTL — the cache layer
-            // treats `0` as "unknown, fall back to the configured default".
+            // treats `None` as "unknown, fall back to the configured default".
             //
             // Note: we deliberately do not emit `AuthoritativeNegative` from
             // this backend even when the result set is empty, because
@@ -162,7 +162,9 @@ where
             // suppressed family is not a DNS negative and must not poison the
             // cache.
             if seen.insert(addr.clone_key())
-                && tx.blocking_send(Ok(LookupEvent::Record(addr, 0))).is_err()
+                && tx
+                    .blocking_send(Ok(LookupEvent::Record(addr, None)))
+                    .is_err()
             {
                 break;
             }

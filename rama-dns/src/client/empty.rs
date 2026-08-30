@@ -9,7 +9,8 @@ use std::{
     net::{Ipv4Addr, Ipv6Addr},
 };
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver};
+use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
+use crate::wire::ServiceBinding;
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -90,6 +91,24 @@ impl DnsTxtResolver for EmptyDnsResolver {
     }
 }
 
+impl DnsServiceBindingResolver for EmptyDnsResolver {
+    type Error = Infallible;
+
+    fn lookup_svcb(
+        &self,
+        _: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        stream::empty()
+    }
+
+    fn lookup_https(
+        &self,
+        _: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        stream::empty()
+    }
+}
+
 impl DnsResolver for EmptyDnsResolver {}
 
 #[cfg(test)]
@@ -138,6 +157,16 @@ mod tests {
     #[tokio::test]
     async fn test_empty_lookup_txt() {
         impl_empty_test_body!(lookup_txt);
+    }
+
+    #[tokio::test]
+    async fn test_empty_lookup_svcb() {
+        impl_empty_test_body!(lookup_svcb);
+    }
+
+    #[tokio::test]
+    async fn test_empty_lookup_https() {
+        impl_empty_test_body!(lookup_https);
     }
 
     #[tokio::test]

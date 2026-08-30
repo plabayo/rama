@@ -17,11 +17,17 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_net::address::Domain;
+use rama_utils::octets::kib;
 
 use libc::c_int;
 use tokio::sync::mpsc;
 
 use super::{LinuxDnsResolverError, LookupEvent, dns_name_from_domain};
+use crate::wire::{RecordType, ServiceBinding};
+
+const INITIAL_RESPONSE_BUFFER_SIZE: usize = kib(16);
+const DNS_HEADER_SIZE: usize = 12;
+const MAX_DNS_MESSAGE_SIZE: usize = u16::MAX as usize;
 
 pub(super) fn lookup_ipv4_stream(
     domain: Domain,
@@ -65,6 +71,37 @@ pub(super) fn lookup_txt_stream(
     )
 }
 
+pub(super) fn lookup_svcb_stream(
+    domain: Domain,
+    timeout: Duration,
+    response_buffer_size: usize,
+) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+    lookup_service_binding_stream(domain, timeout, response_buffer_size, RecordType::SVCB)
+}
+
+pub(super) fn lookup_https_stream(
+    domain: Domain,
+    timeout: Duration,
+    response_buffer_size: usize,
+) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+    lookup_service_binding_stream(domain, timeout, response_buffer_size, RecordType::HTTPS)
+}
+
+fn lookup_service_binding_stream(
+    domain: Domain,
+    timeout: Duration,
+    response_buffer_size: usize,
+    record_type: RecordType,
+) -> impl Stream<Item = Result<LookupEvent<ServiceBinding>, BoxError>> + Send {
+    lookup_record_stream(
+        domain,
+        timeout,
+        response_buffer_size,
+        i32::from(u16::from(record_type)),
+        move |packet, emit| parse_service_binding_response(packet, record_type, emit),
+    )
+}
+
 fn lookup_record_stream<T, P>(
     domain: Domain,
     timeout: Duration,
@@ -89,18 +126,21 @@ where
                 return Ok(());
             };
 
-            let mut emitted = 0_usize;
-            parser(&packet, &mut |item, ttl| {
-                emitted += 1;
-                _ = tx.blocking_send(Ok(LookupEvent::Record(item, ttl)));
-            })?;
+            // Parse and validate the complete response before publishing any
+            // item. In particular, RFC 9460 section 2.2 requires a malformed
+            // SVCB/HTTPS member to invalidate its entire RRset.
+            let records = parse_complete_response(&packet, &parser)?;
 
-            if emitted == 0 {
+            if records.is_empty() {
                 // Authoritative negative: announce the SOA-derived TTL (per
                 // RFC 2308 §5, `min(SOA.TTL, SOA.MINIMUM)`) so the cache can
                 // honor the zone's intent rather than a fixed client default.
                 let soa_ttl = parse_authority_soa_ttl(&packet);
                 _ = tx.blocking_send(Ok(LookupEvent::AuthoritativeNegative { soa_ttl }));
+            } else {
+                for (item, ttl) in records {
+                    _ = tx.blocking_send(Ok(LookupEvent::Record(item, Some(ttl))));
+                }
             }
 
             Ok::<_, BoxError>(())
@@ -149,6 +189,15 @@ where
     })
 }
 
+fn parse_complete_response<T, P>(packet: &[u8], parser: &P) -> Result<Vec<(T, u32)>, BoxError>
+where
+    P: Fn(&[u8], &mut dyn FnMut(T, u32)) -> Result<(), BoxError>,
+{
+    let mut records = Vec::new();
+    parser(packet, &mut |item, ttl| records.push((item, ttl)))?;
+    Ok(records)
+}
+
 #[expect(
     clippy::needless_pass_by_value,
     reason = "Domain is consumed by `as_str` borrow + dropped at fn end; taking by value makes the lifetime trivial inside `spawn_blocking`"
@@ -158,6 +207,7 @@ fn lookup_record_packet(
     rrtype: libc::c_int,
     response_buffer_size: usize,
 ) -> Result<Option<Vec<u8>>, BoxError> {
+    let max_response_size = response_buffer_limit(response_buffer_size)?;
     let name = dns_name_from_domain(domain.as_str())?;
     let mut state: ffi::ResState = unsafe { mem::zeroed() };
 
@@ -167,59 +217,89 @@ fn lookup_record_packet(
     }
     let _guard = ResStateGuard(&mut state as *mut _);
 
-    let mut buffer = vec![0_u8; response_buffer_size];
+    let mut buffer = vec![0_u8; INITIAL_RESPONSE_BUFFER_SIZE.min(max_response_size)];
 
-    // SAFETY:
-    // - `state` is initialized by `res_ninit`.
-    // - `name` is a valid NUL-terminated DNS name.
-    // - `buffer` is writable response storage.
-    //
-    // `res_nsearch` (vs `res_nquery`) walks the search list from
-    // `/etc/resolv.conf` and applies the `ndots` rule, so short / unqualified
-    // names resolve the same way `getaddrinfo` and hickory's system resolver
-    // would resolve them.
-    let response_len = unsafe {
-        ffi::res_nsearch(
-            &mut state,
-            name.as_ptr(),
-            ffi::NS_C_IN as libc::c_int,
-            rrtype,
-            buffer.as_mut_ptr(),
-            buffer.len() as libc::c_int,
-        )
-    };
+    loop {
+        // SAFETY:
+        // - `state` is initialized by `res_ninit`.
+        // - `name` is a valid NUL-terminated DNS name.
+        // - `buffer` is writable response storage.
+        //
+        // `res_nsearch` (vs `res_nquery`) walks the search list from
+        // `/etc/resolv.conf` and applies the `ndots` rule, so short / unqualified
+        // names resolve the same way `getaddrinfo` and hickory's system resolver
+        // would resolve them.
+        let response_len = unsafe {
+            ffi::res_nsearch(
+                &mut state,
+                name.as_ptr(),
+                ffi::NS_C_IN as libc::c_int,
+                rrtype,
+                buffer.as_mut_ptr(),
+                buffer.len() as libc::c_int,
+            )
+        };
 
-    if response_len < 0 {
-        let h_errno = state.res_h_errno;
-        if matches!(h_errno, 0 | ffi::HOST_NOT_FOUND | ffi::NO_DATA) {
-            tracing::debug!(%domain, rrtype, h_errno, "dns::linux: res_nsearch empty result");
-            // glibc copies the wire response into `buffer` before classifying
-            // the rcode and returning -1 (see `__libc_res_nsearch` in
-            // `resolv/res_query.c`). The exact response length isn't surfaced,
-            // but the parser walks via DNS header counts and bounds itself on
-            // `packet.len()`, so handing over the full capacity is safe — any
-            // bytes past the real response are zeros from `vec![0; ...]` that
-            // look like empty labels / records and terminate the walk
-            // harmlessly. This lets us recover the SOA TTL from the authority
-            // section for RFC 2308-correct negative caching.
-            return Ok(Some(buffer));
+        if response_len < 0 {
+            let h_errno = state.res_h_errno;
+            if matches!(h_errno, 0 | ffi::HOST_NOT_FOUND | ffi::NO_DATA) {
+                tracing::debug!(%domain, rrtype, h_errno, "dns::linux: res_nsearch empty result");
+                // glibc copies the wire response into `buffer` before classifying
+                // the rcode and returning -1 (see `__libc_res_nsearch` in
+                // `resolv/res_query.c`). The exact response length isn't surfaced,
+                // but the parser walks via DNS header counts and bounds itself on
+                // `packet.len()`, so handing over the full capacity is safe — any
+                // bytes past the real response are zeros from `vec![0; ...]` that
+                // look like empty labels / records and terminate the walk
+                // harmlessly. This lets us recover the SOA TTL from the authority
+                // section for RFC 2308-correct negative caching.
+                return Ok(Some(buffer));
+            }
+            return Err(LinuxDnsResolverError::message(format!(
+                "res_nsearch failed (h_errno={h_errno})",
+            ))
+            .into());
         }
+
+        let response_len = response_len as usize;
+        if grow_response_buffer(&mut buffer, response_len, max_response_size)? {
+            // libc returns the required wire length when the supplied answer
+            // buffer is too small. Retry with exactly that capacity, avoiding
+            // a 64 KiB allocation for the overwhelmingly common small answer.
+            continue;
+        }
+
+        buffer.truncate(response_len);
+        return Ok(Some(buffer));
+    }
+}
+
+fn response_buffer_limit(configured: usize) -> Result<usize, BoxError> {
+    if configured < DNS_HEADER_SIZE {
         return Err(LinuxDnsResolverError::message(format!(
-            "res_nsearch failed (h_errno={h_errno})",
+            "res_nsearch response buffer size must be at least the {DNS_HEADER_SIZE}-byte DNS header",
         ))
         .into());
     }
+    Ok(configured.min(MAX_DNS_MESSAGE_SIZE))
+}
 
-    if response_len as usize > buffer.len() {
+fn grow_response_buffer(
+    buffer: &mut Vec<u8>,
+    required: usize,
+    maximum: usize,
+) -> Result<bool, BoxError> {
+    if required <= buffer.len() {
+        return Ok(false);
+    }
+    if required > maximum {
         return Err(LinuxDnsResolverError::message(format!(
-            "res_nsearch response exceeds buffer: required={response_len} capacity={}",
-            buffer.len()
+            "res_nsearch response exceeds configured maximum: required={required} maximum={maximum}",
         ))
         .into());
     }
-
-    buffer.truncate(response_len as usize);
-    Ok(Some(buffer))
+    buffer.resize(required, 0);
+    Ok(true)
 }
 
 struct ResStateGuard(*mut ffi::ResState);
@@ -280,18 +360,29 @@ fn parse_txt_response(packet: &[u8], emit: &mut dyn FnMut(Bytes, u32)) -> Result
     })
 }
 
+fn parse_service_binding_response(
+    packet: &[u8],
+    record_type: RecordType,
+    emit: &mut dyn FnMut(ServiceBinding, u32),
+) -> Result<(), BoxError> {
+    parse_answers(packet, record_type.into(), |rdata, ttl| {
+        emit(ServiceBinding::parse_rdata(rdata)?, ttl);
+        Ok(())
+    })
+}
+
 fn parse_answers<P>(packet: &[u8], expected_type: u16, mut parser: P) -> Result<(), BoxError>
 where
     P: FnMut(&[u8], u32) -> Result<(), BoxError>,
 {
-    if packet.len() < 12 {
+    if packet.len() < DNS_HEADER_SIZE {
         return Err(LinuxDnsResolverError::message("short DNS response header").into());
     }
 
     let qdcount = u16::from_be_bytes([packet[4], packet[5]]) as usize;
     let ancount = u16::from_be_bytes([packet[6], packet[7]]) as usize;
 
-    let mut offset = 12;
+    let mut offset = DNS_HEADER_SIZE;
     for _ in 0..qdcount {
         offset = skip_dns_name(packet, offset)?;
         offset = offset
@@ -335,17 +426,17 @@ where
 /// negative-cache TTL per RFC 2308 §5: `min(SOA.TTL, SOA.MINIMUM)`.
 ///
 /// Returns `None` if the response carries no usable SOA RR (no authority
-/// records, only NS, malformed rdata, …) — callers should then fall back to
-/// the configured default.
+/// records, only NS, malformed rdata, …) — callers must leave the negative
+/// response uncached here.
 fn parse_authority_soa_ttl(packet: &[u8]) -> Option<u32> {
-    if packet.len() < 12 {
+    if packet.len() < DNS_HEADER_SIZE {
         return None;
     }
     let qdcount = u16::from_be_bytes([packet[4], packet[5]]) as usize;
     let ancount = u16::from_be_bytes([packet[6], packet[7]]) as usize;
     let nscount = u16::from_be_bytes([packet[8], packet[9]]) as usize;
 
-    let mut offset = 12;
+    let mut offset = DNS_HEADER_SIZE;
     for _ in 0..qdcount {
         offset = skip_dns_name(packet, offset).ok()?;
         offset = offset
@@ -552,6 +643,36 @@ mod ffi {
 }
 
 #[cfg(test)]
+mod response_buffer_tests {
+    use super::{DNS_HEADER_SIZE, grow_response_buffer, response_buffer_limit};
+
+    #[test]
+    fn rejects_capacities_smaller_than_the_fixed_dns_header() {
+        for configured in 0..DNS_HEADER_SIZE {
+            let err = response_buffer_limit(configured).expect_err("header would not fit");
+            assert!(err.to_string().contains("at least the 12-byte DNS header"));
+        }
+        assert_eq!(
+            response_buffer_limit(DNS_HEADER_SIZE).expect("exact header capacity"),
+            DNS_HEADER_SIZE
+        );
+        assert_eq!(response_buffer_limit(usize::MAX).expect("clamped"), 65_535);
+    }
+
+    #[test]
+    fn grows_on_demand_up_to_the_configured_maximum() {
+        let mut buffer = vec![0; 16 * 1024];
+        assert!(grow_response_buffer(&mut buffer, 40_000, 65_535).expect("grow"));
+        assert_eq!(buffer.len(), 40_000);
+        assert!(!grow_response_buffer(&mut buffer, 40_000, 65_535).expect("already fits"));
+
+        let err = grow_response_buffer(&mut buffer, 65_535, 60_000)
+            .expect_err("configured maximum is enforced");
+        assert!(err.to_string().contains("required=65535 maximum=60000"));
+    }
+}
+
+#[cfg(test)]
 mod soa_ttl_tests {
     use super::{ffi, parse_authority_soa_ttl};
     use rama_utils::octets::kib;
@@ -648,5 +769,93 @@ mod soa_ttl_tests {
         let mut packet = build_negative_response(120, 90);
         packet.resize(kib(16), 0);
         assert_eq!(parse_authority_soa_ttl(&packet), Some(90));
+    }
+}
+
+#[cfg(test)]
+mod service_binding_tests {
+    use super::{RecordType, parse_complete_response, parse_service_binding_response};
+
+    fn response(record_type: RecordType, rdata: &[u8]) -> Vec<u8> {
+        response_records(record_type, &[rdata])
+    }
+
+    fn response_records(record_type: RecordType, rdatas: &[&[u8]]) -> Vec<u8> {
+        let mut packet = vec![
+            0, 0, 0x81, 0x80, 0, 1, 0, 2, 0, 0, 0, 0, 7, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
+            3, b'c', b'o', b'm', 0,
+        ];
+        packet[6..8].copy_from_slice(
+            &u16::try_from(rdatas.len() + 1)
+                .expect("short answer list")
+                .to_be_bytes(),
+        );
+        packet.extend_from_slice(&u16::from(record_type).to_be_bytes());
+        packet.extend_from_slice(&1_u16.to_be_bytes());
+
+        // Ancillary CNAME answer.
+        packet.extend_from_slice(&[0xc0, 0x0c]);
+        packet.extend_from_slice(&5_u16.to_be_bytes());
+        packet.extend_from_slice(&1_u16.to_be_bytes());
+        packet.extend_from_slice(&60_u32.to_be_bytes());
+        packet.extend_from_slice(&2_u16.to_be_bytes());
+        packet.extend_from_slice(&[0xc0, 0x0c]);
+
+        for rdata in rdatas {
+            packet.extend_from_slice(&[0xc0, 0x0c]);
+            packet.extend_from_slice(&u16::from(record_type).to_be_bytes());
+            packet.extend_from_slice(&1_u16.to_be_bytes());
+            packet.extend_from_slice(&123_u32.to_be_bytes());
+            packet.extend_from_slice(
+                &u16::try_from(rdata.len())
+                    .expect("short RDATA")
+                    .to_be_bytes(),
+            );
+            packet.extend_from_slice(rdata);
+        }
+        packet
+    }
+
+    #[test]
+    fn parses_svcb_and_https_answers_with_ttl() {
+        for (record_type, port) in [(RecordType::SVCB, 8443_u16), (RecordType::HTTPS, 443)] {
+            let mut rdata = vec![0, 1, 0, 0, 3, 0, 2];
+            rdata.extend_from_slice(&port.to_be_bytes());
+            let packet = response(record_type, &rdata);
+            let mut records = Vec::new();
+            parse_service_binding_response(&packet, record_type, &mut |value, ttl| {
+                records.push((value, ttl));
+            })
+            .expect("valid response");
+
+            assert_eq!(records.len(), 1);
+            assert_eq!(records[0].0.port(), Some(port));
+            assert_eq!(records[0].1, 123);
+        }
+    }
+
+    #[test]
+    fn filters_other_type_and_rejects_malformed_rdata() {
+        let packet = response(RecordType::SVCB, &[0, 1, 0]);
+        let mut emitted = 0;
+        parse_service_binding_response(&packet, RecordType::HTTPS, &mut |_, _| emitted += 1)
+            .expect("different type is ignored");
+        assert_eq!(emitted, 0);
+
+        let packet = response(RecordType::SVCB, &[0, 1]);
+        parse_service_binding_response(&packet, RecordType::SVCB, &mut |_, _| {})
+            .expect_err("missing target name");
+    }
+
+    #[test]
+    fn complete_response_discards_records_before_a_malformed_member() {
+        let valid = [0, 1, 0, 0, 3, 0, 2, 0x20, 0xfb];
+        let malformed = [0, 1];
+        let packet = response_records(RecordType::SVCB, &[&valid, &malformed]);
+
+        parse_complete_response(&packet, &|packet, emit| {
+            parse_service_binding_response(packet, RecordType::SVCB, emit)
+        })
+        .expect_err("one malformed member invalidates the complete response RRset");
     }
 }

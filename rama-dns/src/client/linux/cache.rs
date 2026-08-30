@@ -8,6 +8,8 @@ use moka::{Equivalent, Expiry, sync::Cache};
 use rama_core::bytes::Bytes;
 use rama_net::address::Domain;
 
+use crate::wire::ServiceBinding;
+
 /// Linux-only DNS response cache.
 ///
 /// Stores positive and negative results keyed on `(domain, record-kind)`,
@@ -85,6 +87,48 @@ impl LinuxDnsCache {
             domain,
             RecordKind::Txt,
             CacheValue::Txt(Arc::<[Bytes]>::from(values)),
+            ttl,
+        );
+    }
+
+    pub(super) fn get_svcb(&self, domain: &Domain) -> Option<CacheLookup<ServiceBinding>> {
+        self.lookup(domain, RecordKind::Svcb, |value| match value {
+            CacheValue::Svcb(values) => Some(values.clone()),
+            _ => None,
+        })
+    }
+
+    pub(super) fn insert_svcb(
+        &self,
+        domain: Domain,
+        values: Vec<ServiceBinding>,
+        ttl: Option<Duration>,
+    ) {
+        self.insert(
+            domain,
+            RecordKind::Svcb,
+            CacheValue::Svcb(Arc::from(values)),
+            ttl,
+        );
+    }
+
+    pub(super) fn get_https(&self, domain: &Domain) -> Option<CacheLookup<ServiceBinding>> {
+        self.lookup(domain, RecordKind::Https, |value| match value {
+            CacheValue::Https(values) => Some(values.clone()),
+            _ => None,
+        })
+    }
+
+    pub(super) fn insert_https(
+        &self,
+        domain: Domain,
+        values: Vec<ServiceBinding>,
+        ttl: Option<Duration>,
+    ) {
+        self.insert(
+            domain,
+            RecordKind::Https,
+            CacheValue::Https(Arc::from(values)),
             ttl,
         );
     }
@@ -183,14 +227,16 @@ pub(super) enum RecordKind {
     Ipv4,
     Ipv6,
     Txt,
+    Svcb,
+    Https,
 }
 
 #[derive(Debug, Clone)]
 struct CacheEntry {
     value: CacheValue,
     /// Per-entry expiry derived from the DNS response TTL, capped at the
-    /// configured positive max. `None` for negative entries or when the
-    /// resolver back-end could not surface a TTL.
+    /// configured positive max. `None` when the resolver back-end could not
+    /// surface a positive-record TTL.
     explicit_ttl: Option<Duration>,
 }
 
@@ -199,6 +245,8 @@ enum CacheValue {
     Ipv4(Arc<[std::net::Ipv4Addr]>),
     Ipv6(Arc<[std::net::Ipv6Addr]>),
     Txt(Arc<[Bytes]>),
+    Svcb(Arc<[ServiceBinding]>),
+    Https(Arc<[ServiceBinding]>),
     Negative,
 }
 

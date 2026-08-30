@@ -9,6 +9,8 @@ use rama_core::error::extra::OpaqueError;
 use rama_core::futures::{FutureExt as _, Stream, TryStreamExt as _};
 use rama_net::address::Domain;
 
+use crate::wire::ServiceBinding;
+
 pub use self::address::{
     BoxDnsAddressResolver, DnsAddressResolver, DnsAddresssResolverOverwrite,
     HappyEyeballAddressResolver, HappyEyeballAddressResolverExt,
@@ -17,7 +19,12 @@ pub use self::address::{
 mod txt;
 pub use self::txt::{BoxDnsTxtResolver, DnsTxtResolver};
 
-pub trait DnsResolver: DnsAddressResolver + DnsTxtResolver {
+mod service_binding;
+pub use self::service_binding::{BoxDnsServiceBindingResolver, DnsServiceBindingResolver};
+
+/// Aggregate resolver supporting address, TXT, SVCB, and HTTPS lookups.
+pub trait DnsResolver: DnsAddressResolver + DnsTxtResolver + DnsServiceBindingResolver {
+    /// Box this aggregate resolver for dynamic dispatch.
     fn into_box_dns_resolver(self) -> BoxDnsResolver
     where
         Self: Sized,
@@ -64,6 +71,16 @@ trait DynDnsResolver {
         &self,
         domain: Domain,
     ) -> Pin<Box<dyn Stream<Item = Result<Bytes, OpaqueError>> + Send + '_>>;
+
+    fn dyn_lookup_svcb(
+        &self,
+        domain: Domain,
+    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBinding, OpaqueError>> + Send + '_>>;
+
+    fn dyn_lookup_https(
+        &self,
+        domain: Domain,
+    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBinding, OpaqueError>> + Send + '_>>;
 }
 
 impl<T> DynDnsResolver for T
@@ -143,6 +160,28 @@ where
     ) -> Pin<Box<dyn Stream<Item = Result<Bytes, OpaqueError>> + Send + '_>> {
         Box::pin(self.lookup_txt(domain).map_err(ErrorExt::into_opaque_error))
     }
+
+    #[inline(always)]
+    fn dyn_lookup_svcb(
+        &self,
+        domain: Domain,
+    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBinding, OpaqueError>> + Send + '_>> {
+        Box::pin(
+            self.lookup_svcb(domain)
+                .map_err(ErrorExt::into_opaque_error),
+        )
+    }
+
+    #[inline(always)]
+    fn dyn_lookup_https(
+        &self,
+        domain: Domain,
+    ) -> Pin<Box<dyn Stream<Item = Result<ServiceBinding, OpaqueError>> + Send + '_>> {
+        Box::pin(
+            self.lookup_https(domain)
+                .map_err(ErrorExt::into_opaque_error),
+        )
+    }
 }
 
 /// A boxed [`DnsResolver`], mapping its error into [`OpaqueError`].
@@ -159,6 +198,7 @@ impl Clone for BoxDnsResolver {
 }
 
 impl BoxDnsResolver {
+    /// Box an aggregate DNS resolver.
     #[inline]
     pub fn new<T>(resolver: T) -> Self
     where
@@ -250,11 +290,116 @@ impl DnsTxtResolver for BoxDnsResolver {
     }
 }
 
+impl DnsServiceBindingResolver for BoxDnsResolver {
+    type Error = OpaqueError;
+
+    #[inline(always)]
+    fn lookup_svcb(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        self.inner.dyn_lookup_svcb(domain)
+    }
+
+    #[inline(always)]
+    fn lookup_https(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        self.inner.dyn_lookup_https(domain)
+    }
+}
+
 impl DnsResolver for BoxDnsResolver {
     fn into_box_dns_resolver(self) -> BoxDnsResolver
     where
         Self: Sized,
     {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::convert::Infallible;
+
+    use rama_core::futures::{StreamExt as _, stream};
+
+    use super::*;
+
+    struct FullResolver;
+
+    impl DnsAddressResolver for FullResolver {
+        type Error = Infallible;
+
+        fn lookup_ipv4(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Ipv4Addr, Self::Error>> + Send + '_ {
+            stream::empty()
+        }
+
+        fn lookup_ipv6(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Ipv6Addr, Self::Error>> + Send + '_ {
+            stream::empty()
+        }
+    }
+
+    impl DnsTxtResolver for FullResolver {
+        type Error = Infallible;
+
+        fn lookup_txt(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+            stream::empty()
+        }
+    }
+
+    impl DnsServiceBindingResolver for FullResolver {
+        type Error = Infallible;
+
+        fn lookup_svcb(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+            stream::once(std::future::ready(Ok(binding(8443))))
+        }
+
+        fn lookup_https(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+            stream::once(std::future::ready(Ok(binding(443))))
+        }
+    }
+
+    impl DnsResolver for FullResolver {}
+
+    fn binding(port: u16) -> ServiceBinding {
+        let mut rdata = vec![0, 1, 0, 0, 3, 0, 2];
+        rdata.extend_from_slice(&port.to_be_bytes());
+        ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata)).expect("valid service binding")
+    }
+
+    #[tokio::test]
+    async fn boxed_full_resolver_dispatches_service_binding_lookups() {
+        let resolver = FullResolver.into_box_dns_resolver();
+        let svcb = std::pin::pin!(resolver.lookup_svcb(Domain::example()))
+            .next()
+            .await
+            .expect("one record")
+            .expect("success");
+        assert_eq!(svcb.port(), Some(8443));
+
+        let resolver = resolver.into_box_dns_resolver();
+        let https = std::pin::pin!(resolver.lookup_https(Domain::example()))
+            .next()
+            .await
+            .expect("one record")
+            .expect("success");
+        assert_eq!(https.port(), Some(443));
     }
 }

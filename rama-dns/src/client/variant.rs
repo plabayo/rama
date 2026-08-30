@@ -7,7 +7,8 @@ use rama_core::{
 };
 use rama_net::address::Domain;
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver};
+use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
+use crate::wire::ServiceBinding;
 
 macro_rules! impl_dns_resolver_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
@@ -131,6 +132,49 @@ macro_rules! impl_dns_resolver_either {
             }
         }
 
+        impl<$($param),+> DnsServiceBindingResolver for ::rama_core::combinators::$id<$($param),+>
+        where
+            $($param: DnsServiceBindingResolver),+,
+        {
+            type Error = OpaqueError;
+
+            fn lookup_svcb(
+                &self,
+                domain: Domain,
+            ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+                stream_fn(async move |mut yielder| {
+                    match self {
+                        $(
+                            ::rama_core::combinators::$id::$param(d) => {
+                                let mut stream = std::pin::pin!(d.lookup_svcb(domain));
+                                while let Some(result) = stream.next().await {
+                                    yielder.yield_item(result.map_err(ErrorExt::into_opaque_error)).await;
+                                }
+                            },
+                        )+
+                    }
+                })
+            }
+
+            fn lookup_https(
+                &self,
+                domain: Domain,
+            ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+                stream_fn(async move |mut yielder| {
+                    match self {
+                        $(
+                            ::rama_core::combinators::$id::$param(d) => {
+                                let mut stream = std::pin::pin!(d.lookup_https(domain));
+                                while let Some(result) = stream.next().await {
+                                    yielder.yield_item(result.map_err(ErrorExt::into_opaque_error)).await;
+                                }
+                            },
+                        )+
+                    }
+                })
+            }
+        }
+
         impl<$($param),+> DnsResolver for ::rama_core::combinators::$id<$($param),+>
         where
             $($param: DnsResolver),+,
@@ -153,7 +197,10 @@ mod tests {
     use std::convert::Infallible;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
-    use crate::client::resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver};
+    use crate::client::resolver::{
+        DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+    };
+    use crate::wire::ServiceBinding;
 
     // Mock DNS resolvers for testing
     struct MockResolver1;
@@ -164,7 +211,9 @@ mod tests {
             $resolver:ident,
             $ipv4:expr,
             $ipv6:expr,
-            $txt_map:expr
+            $txt_map:expr,
+            $svcb_port:expr,
+            $https_port:expr
         ) => {
             impl DnsAddressResolver for $resolver {
                 type Error = Infallible;
@@ -195,6 +244,26 @@ mod tests {
                 }
             }
 
+            impl DnsServiceBindingResolver for $resolver {
+                type Error = Infallible;
+
+                fn lookup_svcb(
+                    &self,
+                    _domain: Domain,
+                ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+                    stream::once(std::future::ready(Ok::<_, Infallible>(binding($svcb_port))))
+                }
+
+                fn lookup_https(
+                    &self,
+                    _domain: Domain,
+                ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+                    stream::once(std::future::ready(Ok::<_, Infallible>(binding(
+                        $https_port,
+                    ))))
+                }
+            }
+
             impl DnsResolver for $resolver {}
         };
     }
@@ -203,15 +272,25 @@ mod tests {
         MockResolver1,
         Ipv4Addr::LOCALHOST,
         Ipv6Addr::LOCALHOST,
-        |domain: Domain| Bytes::from(domain.as_str().to_lowercase())
+        |domain: Domain| Bytes::from(domain.as_str().to_lowercase()),
+        8443,
+        443
     );
 
     impl_mock_dns_resolver!(
         MockResolver2,
         Ipv4Addr::new(192, 168, 1, 1),
         Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 2),
-        |domain: Domain| Bytes::from(domain.as_str().to_uppercase())
+        |domain: Domain| Bytes::from(domain.as_str().to_uppercase()),
+        9443,
+        444
     );
+
+    fn binding(port: u16) -> ServiceBinding {
+        let mut rdata = vec![0, 1, 0, 0, 3, 0, 2];
+        rdata.extend_from_slice(&port.to_be_bytes());
+        ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata)).expect("valid service binding")
+    }
 
     #[tokio::test]
     async fn test_either_lookup_txt() {
@@ -271,5 +350,25 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(ip_2, Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 2));
+    }
+
+    #[tokio::test]
+    async fn test_either_lookup_service_bindings() {
+        let resolver1 = Either::<MockResolver1, MockResolver2>::A(MockResolver1);
+        let resolver2 = Either::<MockResolver1, MockResolver2>::B(MockResolver2);
+
+        let svcb = std::pin::pin!(resolver1.lookup_svcb(Domain::example()))
+            .next()
+            .await
+            .expect("one record")
+            .expect("success");
+        assert_eq!(svcb.port(), Some(8443));
+
+        let https = std::pin::pin!(resolver2.lookup_https(Domain::example()))
+            .next()
+            .await
+            .expect("one record")
+            .expect("success");
+        assert_eq!(https.port(), Some(444));
     }
 }

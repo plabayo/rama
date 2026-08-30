@@ -16,7 +16,8 @@ use rama_utils::{
     str::arcstr::ArcStr,
 };
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver};
+use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
+use crate::wire::ServiceBinding;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -24,8 +25,8 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 #[non_exhaustive]
 /// Portable DNS resolver backed by [`tokio::net::lookup_host`].
 ///
-/// This relies on the host resolver for address lookups and does not support TXT
-/// record resolution.
+/// This relies on the host resolver for address lookups and does not support
+/// TXT, SVCB, or HTTPS record resolution.
 pub struct TokioDnsResolver {
     timeout: Duration,
 }
@@ -89,6 +90,28 @@ impl DnsTxtResolver for TokioDnsResolver {
         _domain: Domain,
     ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
         stream::once(std::future::ready(Err(TokioDnsTxtUnsupportedError)))
+    }
+}
+
+impl DnsServiceBindingResolver for TokioDnsResolver {
+    type Error = TokioDnsServiceBindingUnsupportedError;
+
+    fn lookup_svcb(
+        &self,
+        _domain: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        stream::once(std::future::ready(Err(
+            TokioDnsServiceBindingUnsupportedError,
+        )))
+    }
+
+    fn lookup_https(
+        &self,
+        _domain: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        stream::once(std::future::ready(Err(
+            TokioDnsServiceBindingUnsupportedError,
+        )))
     }
 }
 
@@ -163,4 +186,35 @@ impl std::error::Error for TokioDnsResolverError {}
 static_str_error! {
     #[doc = "Tokio DNS resolver does not support TXT lookups"]
     pub struct TokioDnsTxtUnsupportedError;
+}
+
+static_str_error! {
+    #[doc = "Tokio DNS resolver does not support SVCB or HTTPS lookups; boxed dispatch preserves this type for downcasting"]
+    pub struct TokioDnsServiceBindingUnsupportedError;
+}
+
+#[cfg(test)]
+mod tests {
+    use rama_core::futures::StreamExt as _;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn service_binding_lookups_return_typed_unsupported_errors() {
+        let resolver = TokioDnsResolver::new();
+
+        let svcb = std::pin::pin!(resolver.lookup_svcb(Domain::example()))
+            .next()
+            .await
+            .expect("one error")
+            .expect_err("unsupported");
+        assert_eq!(svcb, TokioDnsServiceBindingUnsupportedError);
+
+        let https = std::pin::pin!(resolver.lookup_https(Domain::example()))
+            .next()
+            .await
+            .expect("one error")
+            .expect_err("unsupported");
+        assert_eq!(https, TokioDnsServiceBindingUnsupportedError);
+    }
 }
