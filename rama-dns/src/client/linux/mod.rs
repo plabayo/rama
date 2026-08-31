@@ -1055,10 +1055,49 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    enum ServiceBindingKind {
+        Svcb,
+        Https,
+    }
+
+    impl ServiceBindingKind {
+        fn record_kind(self) -> cache::RecordKind {
+            match self {
+                Self::Svcb => cache::RecordKind::Svcb,
+                Self::Https => cache::RecordKind::Https,
+            }
+        }
+
+        fn get(
+            self,
+            cache: &cache::LinuxDnsCache,
+            domain: &Domain,
+        ) -> Option<cache::CacheLookup<ServiceBinding>> {
+            match self {
+                Self::Svcb => cache.get_svcb(domain),
+                Self::Https => cache.get_https(domain),
+            }
+        }
+
+        fn insert(
+            self,
+            cache: &cache::LinuxDnsCache,
+            domain: Domain,
+            values: Vec<ServiceBinding>,
+            ttl: Option<Duration>,
+        ) {
+            match self {
+                Self::Svcb => cache.insert_svcb(domain, values, ttl),
+                Self::Https => cache.insert_https(domain, values, ttl),
+            }
+        }
+    }
+
     fn cached_service_binding_stream<S>(
         domain: Domain,
         cache: Arc<cache::LinuxDnsCache>,
-        kind: cache::RecordKind,
+        kind: ServiceBindingKind,
         backend: S,
     ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send
     where
@@ -1068,17 +1107,9 @@ mod tests {
             domain,
             Duration::from_secs(5),
             cache,
-            kind,
-            move |cache, domain| match kind {
-                cache::RecordKind::Svcb => cache.get_svcb(domain),
-                cache::RecordKind::Https => cache.get_https(domain),
-                _ => unreachable!("service-binding cache helper only accepts SVCB or HTTPS"),
-            },
-            move |cache, domain, values, ttl| match kind {
-                cache::RecordKind::Svcb => cache.insert_svcb(domain, values, ttl),
-                cache::RecordKind::Https => cache.insert_https(domain, values, ttl),
-                _ => unreachable!("service-binding cache helper only accepts SVCB or HTTPS"),
-            },
+            kind.record_kind(),
+            move |cache, domain| kind.get(cache, domain),
+            move |cache, domain, values, ttl| kind.insert(cache, domain, values, ttl),
             move |_domain, _timeout| backend,
         )
     }
@@ -1228,7 +1259,7 @@ mod tests {
 
     #[tokio::test]
     async fn zero_wire_ttl_does_not_retain_svcb_or_https_records() {
-        for kind in [cache::RecordKind::Svcb, cache::RecordKind::Https] {
+        for kind in [ServiceBindingKind::Svcb, ServiceBindingKind::Https] {
             let cache = test_cache();
             let domain = test_domain();
             let binding = service_binding(443);
@@ -1241,11 +1272,7 @@ mod tests {
                     .await;
             assert_eq!(values, [binding]);
 
-            let cached = match kind {
-                cache::RecordKind::Svcb => cache.get_svcb(&domain),
-                cache::RecordKind::Https => cache.get_https(&domain),
-                _ => unreachable!(),
-            };
+            let cached = kind.get(&cache, &domain);
             assert!(
                 cached.is_none(),
                 "a wire TTL of zero must expire immediately"
