@@ -14,7 +14,7 @@ pub(crate) fn recorder(trace_dir: &std::path::Path) -> ::dial9::Recorder {
     let writer = ::dial9::DiskBuffer::builder()
         .base_path(trace_dir)
         .max_file_size(mib(1))
-        .max_total_size(4 * 1024 * 1024)
+        .max_total_size(mib(4))
         .build();
     let recorder = ::dial9::recorder_or_disabled(writer).build();
     assert!(
