@@ -17,4 +17,6 @@ pub use k8s::{k8s_health, k8s_health_builder};
 
 pub mod router;
 #[doc(inline)]
+pub use crate::matcher::{PathCase, PathDecoding, PathMatchPolicy};
+#[doc(inline)]
 pub use router::Router;

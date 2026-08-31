@@ -46,7 +46,8 @@ type EncodedSegment<'a> = Cow<'a, str>;
 /// `}` and `?`; everything else (`*`, `:`, `.`, `+`, …) is a literal. Within a
 /// segment:
 ///
-/// - **literal** text must equal the (decoded) path segment value;
+/// - **literal** text must equal the path segment value after applying the
+///   configured percent-decoding option;
 /// - `{name}` captures a non-empty run under `name`: a whole segment when alone
 ///   (`{id}`), or the run bounded by surrounding literals when affixed
 ///   (`{pkg}.json` captures the part before `.json`, `v{ver}-rc` the part
@@ -58,11 +59,11 @@ type EncodedSegment<'a> = Cow<'a, str>;
 ///   made only of `{name}?` or `{}?` is itself optional, so `/foo/{name}?/bar`
 ///   matches `/foo/john/bar`, `/foo//bar`, and `/foo/bar`;
 /// - `{*}`, as a *whole* segment, is an anonymous catch-all matching one or
-///   more path segments, available '/'-joined and decoded via
+///   more path segments, available '/'-joined with a leading `/` via
 ///   [`PathCaptures::glob`]. It may appear in the middle of a pattern;
 /// - `{*name}`, as a *whole* segment, is the **named** catch-all: same 1+
 ///   segment match as `{*}`, but the run is recorded under `name` (read back,
-///   '/'-joined and decoded, via [`PathCaptures::get`]). So `{name}` stays
+///   '/'-joined, via [`PathCaptures::get`]). So `{name}` stays
 ///   within a segment; `{*name}` spans segments.
 ///
 /// An unclosed `{`, or a brace group whose body isn't a valid token, is taken
@@ -455,7 +456,8 @@ pub struct PathRouteMatch<'a, 'p, T> {
     captures: PathCaptures<'a, 'p>,
 }
 
-/// Decoded captures inserted by [`PathRouter`]'s [`Service`] implementation.
+/// Captures inserted by [`PathRouter`]'s [`Service`] implementation.
+/// Values follow the route pattern's percent-decoding option.
 #[derive(Debug, Clone, Default, Extension)]
 #[extension(tags(net))]
 pub struct PathRouteCaptures {
@@ -903,7 +905,8 @@ impl PathRouteCaptures {
         }
     }
 
-    /// The decoded value captured under `name`, or `None` if absent.
+    /// The value captured under `name`, or `None` if absent. Its spelling
+    /// follows the route pattern's percent-decoding option.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&str> {
         self.params
@@ -912,20 +915,23 @@ impl PathRouteCaptures {
             .map(|(_, value)| value.as_str())
     }
 
-    /// The decoded value captured under `name`, or `None` if absent or empty.
+    /// The captured value, or `None` if absent or empty. Its spelling follows
+    /// the route pattern's percent-decoding option.
     #[must_use]
     pub fn get_non_empty(&self, name: &str) -> Option<&str> {
         self.get(name).filter(|value| !value.is_empty())
     }
 
-    /// Iterator over decoded named captures in match order.
+    /// Iterate over named captures in match order. Value spelling follows the
+    /// route pattern's percent-decoding option.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.params
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str()))
     }
 
-    /// The decoded anonymous `{*}` capture, if present.
+    /// The anonymous `{*}` capture, including its leading `/`, if present. Its
+    /// spelling follows the route pattern's percent-decoding option.
     #[must_use]
     pub fn glob(&self) -> Option<&str> {
         self.glob.as_deref()
@@ -1333,7 +1339,7 @@ impl PathPattern {
 }
 
 /// A recorded capture: name slice into the pattern's `name_bytes`
-/// (`name_len == 0` for the anonymous glob), plus the matched, decoded value.
+/// (`name_len == 0` for the anonymous glob), plus the matched value.
 #[derive(Debug, Clone)]
 struct Binding<'p> {
     name_start: usize,
@@ -1373,10 +1379,11 @@ impl<'p> Sink<'_, 'p> {
 
 /// Captured values from a successful [`PathPattern::captures`] match.
 ///
-/// Capture names borrow from the compiled pattern (`'a`). Values are always
-/// percent-decoded (per the pattern's options); the `'p` value lifetime ties
-/// them to the matched path so a future zero-copy fast path can borrow,
-/// though today every value is owned.
+/// Capture names borrow from the compiled pattern (`'a`). Values follow the
+/// pattern's percent-decoding option: decoded once when enabled, or preserving
+/// the URI path's encoded spelling when disabled. The `'p` value lifetime ties
+/// them to the matched path so a future zero-copy fast path can borrow, though
+/// today every value is owned.
 ///
 /// ```
 /// use rama_net::uri::{PathPattern, PathRef};
@@ -1407,9 +1414,9 @@ impl<'a, 'p> PathCaptures<'a, 'p> {
         unsafe { core::str::from_utf8_unchecked(raw) }
     }
 
-    /// The decoded value captured under `name`, or `None` if `name` was not
-    /// bound. The `{*}` catch-all is reachable via [`glob`](Self::glob), not
-    /// here.
+    /// The value captured under `name`, or `None` if `name` was not bound.
+    /// Its spelling follows the pattern's percent-decoding option. The `{*}`
+    /// catch-all is reachable via [`glob`](Self::glob), not here.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&str> {
         self.bindings
@@ -1418,14 +1425,16 @@ impl<'a, 'p> PathCaptures<'a, 'p> {
             .map(|b| b.value.as_ref())
     }
 
-    /// The decoded value captured under `name`, or `None` if absent or empty.
+    /// The captured value, or `None` if absent or empty. Its spelling follows
+    /// the pattern's percent-decoding option.
     #[must_use]
     pub fn get_non_empty(&self, name: &str) -> Option<&str> {
         self.get(name).filter(|value| !value.is_empty())
     }
 
-    /// Iterator over `(name, decoded value)` for every named (non-glob)
-    /// capture, in match order.
+    /// Iterate over `(name, value)` for every named (non-glob) capture, in
+    /// match order. Value spelling follows the pattern's percent-decoding
+    /// option.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.bindings
             .iter()
@@ -1433,8 +1442,9 @@ impl<'a, 'p> PathCaptures<'a, 'p> {
             .map(|b| (self.name_of(b), b.value.as_ref()))
     }
 
-    /// The `{*}` catch-all value, '/'-joined and decoded, or `None` when the
-    /// pattern has no catch-all (or it didn't match).
+    /// The `{*}` catch-all value, '/'-joined with a leading `/`, or `None` when
+    /// the pattern has no catch-all (or it didn't match). Its spelling follows
+    /// the pattern's percent-decoding option.
     #[must_use]
     pub fn glob(&self) -> Option<&str> {
         self.bindings

@@ -3,8 +3,8 @@
 //!
 //! The matching engine itself lives in rama-net ([`PathPattern`]), whose
 //! `{name}` / `{*name}` brace syntax is used directly by HTTP routing; this
-//! module owns the routing glue: the case-insensitive match options and
-//! turning [`PathCaptures`] into the [`UriParams`] extension the
+//! module owns the routing glue: the configurable HTTP path policy and turning
+//! [`PathCaptures`] into the [`UriParams`] extension the
 //! [`Path`](crate::service::web::extract::Path) extractor reads.
 
 use crate::StatusCode;
@@ -19,8 +19,16 @@ mod de;
 
 #[derive(Debug, Clone, Default, Extension)]
 #[extension(tags(http))]
-/// parameters that are inserted in the [`Extensions`],
-/// in case a path matcher found a match for the given [`Request`](crate::Request).
+/// Parameters inserted in [`Extensions`] when a path matcher matches a
+/// [`Request`](crate::Request).
+///
+/// Each captured value follows the [`PathDecoding`] policy of the pattern that
+/// produced it. Under [`PathDecoding::PercentDecoded`] (the default) valid
+/// percent escapes are decoded once. Under [`PathDecoding::Raw`] the URI
+/// path's encoded spelling is preserved. Nested patterns with different
+/// policies can therefore contribute differently encoded values to one
+/// `UriParams`. [`PathCase`] affects comparison only and never changes captured
+/// values.
 pub struct UriParams {
     params: Option<HashMap<ArcStr, ArcStr>>,
     glob: Option<ArcStr>,
@@ -33,7 +41,8 @@ impl UriParams {
             .insert(name, value);
     }
 
-    /// Some str slice will be returned in case a param could be found for the given name.
+    /// Return the captured value for `name`, with raw/decoded spelling
+    /// determined by its capturing pattern's [`PathDecoding`] policy.
     pub fn get(&self, name: impl AsRef<str>) -> Option<&str> {
         self.params
             .as_ref()
@@ -41,8 +50,8 @@ impl UriParams {
             .map(AsRef::as_ref)
     }
 
-    /// Some non-empty str slice will be returned in case a non-empty param
-    /// could be found for the given name.
+    /// Return a non-empty captured value for `name`, with raw/decoded spelling
+    /// determined by its capturing pattern's [`PathDecoding`] policy.
     pub fn get_non_empty(&self, name: impl AsRef<str>) -> Option<&str> {
         self.get(name).filter(|value| !value.is_empty())
     }
@@ -58,8 +67,9 @@ impl UriParams {
         ))
     }
 
-    /// Some str slice will be returned in case a glob value was captured
-    /// for the last part of the Path that was matched on.
+    /// Return the anonymous glob capture, including its leading `/`, with
+    /// raw/decoded spelling determined by its capturing pattern's
+    /// [`PathDecoding`] policy.
     #[must_use]
     pub fn glob(&self) -> Option<&str> {
         self.glob.as_deref()
@@ -98,6 +108,8 @@ impl UriParams {
         self
     }
 
+    /// Iterate over captured names and values. Each value's spelling follows
+    /// its capturing pattern's [`PathDecoding`] policy.
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.params
             .as_ref()
@@ -140,32 +152,111 @@ where
     }
 }
 
-/// Path-matching options used throughout HTTP routing: case-insensitive,
-/// percent-decoded, segment-boundary — mirrors the legacy matcher's behaviour.
-pub(crate) const HTTP_PATH_OPTS: PathMatchOptions = PathMatchOptions {
-    partial: false,
-    ignore_ascii_case: true,
-    percent_decode: true,
-};
+/// ASCII case-comparison policy for HTTP request paths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PathCase {
+    /// Compare path bytes case-sensitively.
+    Sensitive,
+    /// Compare ASCII path bytes case-insensitively.
+    AsciiInsensitive,
+}
 
-/// Compile `pattern` (in [`PathPattern`] syntax) with the HTTP routing options.
-/// Route inputs are normalized the same way the previous matcher accepted them:
-/// surrounding whitespace and leading/trailing slashes are ignored.
-pub(crate) fn compile_pattern(pattern: &str) -> PathPattern {
-    let pattern = normalize(pattern);
-    if pattern.is_empty() {
-        PathPattern::new_with_opts("/", HTTP_PATH_OPTS)
-    } else {
-        let pattern = format_smolstr!("/{pattern}");
-        PathPattern::new_with_opts(pattern.as_str(), HTTP_PATH_OPTS)
+/// Percent-escape handling policy for HTTP request paths and captures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum PathDecoding {
+    /// Match and capture the URI path's encoded spelling.
+    ///
+    /// Well-formed escapes preserve their spelling, including hex-digit case.
+    /// The URI encoded view canonicalizes malformed escapes by encoding the
+    /// stray percent sign, so `%` is observed as `%25` in a raw capture.
+    Raw,
+    /// Decode valid percent escapes once before matching and capture the
+    /// decoded value.
+    PercentDecoded,
+}
+
+/// Typed HTTP path-matching policy used by [`Router`](crate::service::web::Router)
+/// and policy-aware [`HttpMatcher`](crate::matcher::HttpMatcher) constructors.
+///
+/// The two axes are independent. [`Default`] preserves Rama's established
+/// case-insensitive, percent-decoded behavior. [`STRICT`](Self::STRICT)
+/// provides case-sensitive routing without implicit percent decoding as an
+/// explicit opt-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PathMatchPolicy {
+    case: PathCase,
+    decoding: PathDecoding,
+}
+
+impl PathMatchPolicy {
+    /// Strict routing: case-sensitive and without implicit percent decoding.
+    ///
+    /// Captures follow [`PathDecoding::Raw`], including its canonical handling
+    /// of malformed percent escapes.
+    pub const STRICT: Self = Self::new(PathCase::Sensitive, PathDecoding::Raw);
+
+    /// Construct a policy from independently selected case and decoding axes.
+    #[must_use]
+    pub const fn new(case: PathCase, decoding: PathDecoding) -> Self {
+        Self { case, decoding }
+    }
+
+    /// Return the configured case-comparison policy.
+    #[must_use]
+    pub const fn case(self) -> PathCase {
+        self.case
+    }
+
+    /// Return the configured percent-decoding policy.
+    #[must_use]
+    pub const fn decoding(self) -> PathDecoding {
+        self.decoding
+    }
+
+    pub(crate) const fn options(self) -> PathMatchOptions {
+        PathMatchOptions {
+            partial: false,
+            ignore_ascii_case: match self.case {
+                PathCase::Sensitive => false,
+                PathCase::AsciiInsensitive => true,
+            },
+            percent_decode: match self.decoding {
+                PathDecoding::Raw => false,
+                PathDecoding::PercentDecoded => true,
+            },
+        }
     }
 }
 
-/// Compile a prefix matcher (in [`PathPattern`] syntax) with the HTTP routing
-/// options: matches a leading run of segments, ignoring trailing segments and
-/// the trailing slash. So `/api` matches `/api` and `/api/users`.
-pub(crate) fn compile_prefix_pattern(prefix: &str) -> PathPattern {
-    PathPattern::new_prefix_with_opts(normalize(prefix), HTTP_PATH_OPTS)
+impl Default for PathMatchPolicy {
+    fn default() -> Self {
+        Self::new(PathCase::AsciiInsensitive, PathDecoding::PercentDecoded)
+    }
+}
+
+/// Compile `pattern` with an explicit HTTP path-matching policy.
+/// Route inputs are normalized by ignoring surrounding whitespace and
+/// leading/trailing slashes.
+pub(crate) fn compile_pattern_with_policy(pattern: &str, policy: PathMatchPolicy) -> PathPattern {
+    let pattern = normalize(pattern);
+    if pattern.is_empty() {
+        PathPattern::new_with_opts("/", policy.options())
+    } else {
+        let pattern = format_smolstr!("/{pattern}");
+        PathPattern::new_with_opts(pattern.as_str(), policy.options())
+    }
+}
+
+/// Compile a prefix matcher with an explicit HTTP path-matching policy.
+/// It matches a leading run of segments while ignoring trailing segments and
+/// the trailing slash, so `/api` matches `/api` and `/api/users`.
+pub(crate) fn compile_prefix_pattern_with_policy(
+    prefix: &str,
+    policy: PathMatchPolicy,
+) -> PathPattern {
+    PathPattern::new_prefix_with_opts(normalize(prefix), policy.options())
 }
 
 /// Match `path` against a compiled [`PathPattern`], inserting the captured
@@ -259,6 +350,14 @@ mod test {
     use super::*;
     use rama_utils::str::arcstr::arcstr;
 
+    fn compile_pattern(pattern: &str) -> PathPattern {
+        compile_pattern_with_policy(pattern, PathMatchPolicy::default())
+    }
+
+    fn compile_prefix_pattern(prefix: &str) -> PathPattern {
+        compile_prefix_pattern_with_policy(prefix, PathMatchPolicy::default())
+    }
+
     #[test]
     fn pattern_captures_into_uri_params() {
         let pat = compile_pattern("/users/{id}");
@@ -287,6 +386,36 @@ mod test {
     }
 
     #[test]
+    fn decoding_policy_covers_every_percent_encoded_byte() {
+        let raw_pattern = compile_pattern_with_policy(
+            "/send/{value}",
+            PathMatchPolicy::new(PathCase::Sensitive, PathDecoding::Raw),
+        );
+        let decoded_pattern = compile_pattern_with_policy(
+            "/send/{value}",
+            PathMatchPolicy::new(PathCase::Sensitive, PathDecoding::PercentDecoded),
+        );
+
+        for byte in u8::MIN..=u8::MAX {
+            let encoded = format!("%{byte:02X}");
+            let path = format!("/send/{encoded}");
+            let path = PathRef::from_raw_str(&path);
+
+            let raw = raw_pattern.captures(path).unwrap();
+            assert_eq!(raw.get("value"), Some(encoded.as_str()), "byte {byte:#04x}");
+
+            let bytes = [byte];
+            let expected = String::from_utf8_lossy(&bytes);
+            let decoded = decoded_pattern.captures(path).unwrap();
+            assert_eq!(
+                decoded.get("value"),
+                Some(expected.as_ref()),
+                "byte {byte:#04x}"
+            );
+        }
+    }
+
+    #[test]
     fn uri_params_get_non_empty_filters_empty_values() {
         let params = UriParams::from_iter([("name", ""), ("id", "42")]);
 
@@ -302,7 +431,7 @@ mod test {
         assert!(api.is_match(PathRef::from_raw_str("/api")));
         assert!(api.is_match(PathRef::from_raw_str("/api/users")));
         assert!(!api.is_match(PathRef::from_raw_str("/apixyz")));
-        // case-insensitive via HTTP_PATH_OPTS
+        // The public default remains case-insensitive.
         assert!(api.is_match(PathRef::from_raw_str("/API/users")));
     }
 
