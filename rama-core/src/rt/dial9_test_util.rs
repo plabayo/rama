@@ -13,7 +13,7 @@ pub(crate) fn recorder_slot() -> parking_lot::MutexGuard<'static, ()> {
 pub(crate) fn recorder(trace_dir: &std::path::Path) -> ::dial9::Recorder {
     let writer = ::dial9::DiskBuffer::builder()
         .base_path(trace_dir)
-        .max_file_size(1024 * 1024)
+        .max_file_size(mib(1))
         .max_total_size(4 * 1024 * 1024)
         .build();
     let recorder = ::dial9::recorder_or_disabled(writer).build();
