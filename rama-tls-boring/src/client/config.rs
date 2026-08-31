@@ -2,14 +2,14 @@ use itertools::Itertools;
 use rama_boring::x509::store::X509Store;
 use rama_core::conversion::RamaFrom;
 use rama_core::extensions::{Extension, Extensions, FromExtensions};
-use rama_net::tls::ApplicationProtocol;
+use rama_net::tls::{ApplicationProtocol, TlsAlpn};
 use rama_tls::client::{
     ClientHello, ClientHelloExtension, TlsClientAuth, TlsClientConfig, TlsServerCertPins,
     TlsServerName, TlsServerTrust, TlsServerVerify, TlsStoreServerCertChain,
 };
 use rama_tls::{
     CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SignatureScheme,
-    SupportedGroup, TlsAlpn, TlsKeyLog, TlsSupportedVersions,
+    SupportedGroup, TlsKeyLog, TlsSupportedVersions,
 };
 use rama_utils::macros::generate_set_and_with;
 use std::sync::Arc;

@@ -1,8 +1,9 @@
 //! rama TLS-agnostic types and utilities.
 //!
 //! The TLS-implementation-agnostic vocabulary (protocol versions, cipher suites,
-//! ALPN, client/server config, `ClientHello`, fingerprints, keylog, …) shared by
+//! client/server config, `ClientHello`, fingerprints, keylog, …) shared by
 //! the backend crates (`rama-tls-boring` / `rama-tls-rustls`).
+//! Protocol-neutral ALPN identifiers and offers live in [`rama_net::tls`].
 //!
 //! Learn more about `rama`:
 //!
@@ -21,8 +22,7 @@
 use std::borrow::Cow;
 
 use rama_core::extensions::Extension;
-use rama_net::{Protocol, tls::ApplicationProtocol};
-use rama_utils::collections::smallvec::{SmallVec, smallvec};
+use rama_net::Protocol;
 
 mod enums;
 pub use enums::{
@@ -38,58 +38,6 @@ pub mod server;
 #[cfg(feature = "dial9")]
 mod dial9;
 
-/// ALPN protocols to offer.
-#[derive(Clone, Debug, Extension)]
-#[extension(tags(tls))]
-pub struct TlsAlpn(pub SmallVec<[ApplicationProtocol; 2]>);
-
-impl TlsAlpn {
-    /// Offer no ALPN protocols.
-    #[must_use]
-    pub fn empty() -> Self {
-        Self(SmallVec::new())
-    }
-
-    /// Offer HTTP/2 and HTTP/1.1.
-    #[must_use]
-    pub fn http_auto() -> Self {
-        Self(smallvec![
-            ApplicationProtocol::HTTP_2,
-            ApplicationProtocol::HTTP_11,
-        ])
-    }
-
-    /// Offer HTTP/1.1 only.
-    #[must_use]
-    pub fn http_1() -> Self {
-        Self(smallvec![ApplicationProtocol::HTTP_11])
-    }
-
-    /// Offer HTTP/2 only.
-    #[must_use]
-    pub fn http_2() -> Self {
-        Self(smallvec![ApplicationProtocol::HTTP_2])
-    }
-}
-
-/// Return Rama's default ALPN offer for an application protocol.
-///
-/// HTTP can negotiate HTTP/2 or HTTP/1.1. WebSocket defaults to HTTP/1.1 because
-/// HTTP/2 WebSocket support cannot be known until after ALPN negotiation; an
-/// explicit target HTTP version can opt into HTTP/2. Protocols without a
-/// standardized ALPN in Rama, including ICAPS and custom protocols, return
-/// `None`.
-#[must_use]
-pub fn default_tls_alpn(protocol: &Protocol) -> Option<TlsAlpn> {
-    if protocol.is_http() {
-        Some(TlsAlpn::http_auto())
-    } else if protocol.is_ws() {
-        Some(TlsAlpn::http_1())
-    } else {
-        None
-    }
-}
-
 /// Keylog intent (e.g. `SSLKEYLOGFILE`) for the connection.
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
@@ -103,7 +51,11 @@ pub struct TlsSupportedVersions(pub Vec<ProtocolVersion>);
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]
-/// Requests TLS from a tunnel connector with an optional server identity.
+/// Requests TLS from a tunnel connector with proxy-scoped identity and ALPN.
+///
+/// Tunnel connectors combine these explicit fields with only their dedicated
+/// base configuration. Final-destination TLS request extensions are isolated
+/// from the tunnel-side handshake.
 pub struct TlsTunnel {
     /// Server identity used for certificate verification and, for DNS names, SNI.
     pub server_identity: Option<rama_net::address::Host>,
@@ -113,6 +65,12 @@ pub struct TlsTunnel {
     /// ICAPS connection through a TLS-protected HTTP proxy speaks HTTP to the
     /// proxy before the CONNECT tunnel carries ICAP.
     pub application_protocol: Option<Protocol>,
+    /// ALPN protocols to offer for this tunnel-side TLS handshake.
+    ///
+    /// This is distinct from the final destination's ALPN offer. `None` uses
+    /// the tunnel connector's base policy or the tunnel protocol's default;
+    /// `Some(TlsAlpn::empty())` explicitly omits ALPN.
+    pub alpn: Option<rama_net::tls::TlsAlpn>,
 }
 
 /// Whether a tunnel connector should use plaintext or TLS.
@@ -159,6 +117,7 @@ mod tunnel_tests {
         let tunnel = TlsTunnel {
             server_identity: None,
             application_protocol: None,
+            alpn: None,
         };
         let identity = Host::from_static("example.com");
         assert_eq!(
@@ -172,30 +131,12 @@ mod tunnel_tests {
         let tunnel = TlsTunnel {
             server_identity: None,
             application_protocol: None,
+            alpn: None,
         };
         assert_eq!(
             resolve_tls_tunnel(Some(&tunnel), None),
             TlsTunnelMode::Tls(None)
         );
-    }
-}
-
-#[cfg(test)]
-mod application_protocol_tests {
-    use super::*;
-
-    #[test]
-    fn derives_only_known_tls_application_protocols() {
-        assert_eq!(
-            default_tls_alpn(&Protocol::HTTPS).unwrap().0,
-            TlsAlpn::http_auto().0,
-        );
-        assert_eq!(
-            default_tls_alpn(&Protocol::WSS).unwrap().0,
-            TlsAlpn::http_1().0,
-        );
-        assert!(default_tls_alpn(&Protocol::ICAPS).is_none());
-        assert!(default_tls_alpn(&Protocol::from_static("custom")).is_none());
     }
 }
 

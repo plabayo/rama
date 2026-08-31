@@ -26,12 +26,16 @@ use rama::{
     },
     layer::ArcLayer,
     layer::ConsumeErrLayer,
-    net::{address::ProxyAddress, client::ProxyRoute, tls::ApplicationProtocol},
+    net::{
+        address::ProxyAddress,
+        client::ProxyRoute,
+        tls::{ApplicationProtocol, TlsAlpn},
+    },
     rt::Executor,
     tcp::server::TcpListener,
     tls::rustls::server::TlsAcceptorLayer,
     tls::{
-        KeyLogIntent, TlsAlpn,
+        KeyLogIntent,
         server::{GeneratedServerAuthConfig, TlsServerConfig},
     },
     utils::{backoff::ExponentialBackoff, collections::smallvec::smallvec, rng::HasherRng},

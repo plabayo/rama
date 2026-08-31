@@ -3,4 +3,4 @@
 mod alpn;
 
 #[doc(inline)]
-pub use alpn::ApplicationProtocol;
+pub use alpn::{ApplicationProtocol, TlsAlpn, default_tls_alpn};

@@ -59,7 +59,10 @@ impl HttpProxyConnectorLayer {
     generate_set_and_with! {
         /// Set the HTTP version to use for the CONNECT request.
         ///
-        /// By default this is set to HTTP/1.1.
+        /// This also constrains HTTPS-proxy ALPN to the matching protocol.
+        /// The `optional` and `required` constructors default to HTTP/1.1;
+        /// [`Default`] follows the HTTPS proxy's negotiated ALPN and falls back
+        /// to HTTP/1.1 when no version is negotiated.
         pub fn version(mut self, version: Version) -> Self {
             self.version = Some(version);
             self

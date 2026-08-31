@@ -767,11 +767,12 @@ mod tests {
     use crate::client::{BoringMaxVersion, BoringSignatureSchemes};
     use rama_core::extensions::Extensions;
     use rama_crypto::pki_types::CertificateDer;
+    use rama_net::tls::TlsAlpn;
     use rama_tls::client::{
         ClientHello, ClientHelloExtension, TlsServerCertPins, TlsServerTrust,
         TlsServerTrustAnchors, TlsServerVerify, TlsStoreServerCertChain,
     };
-    use rama_tls::{CipherSuite, ProtocolVersion, SignatureScheme, TlsAlpn};
+    use rama_tls::{CipherSuite, ProtocolVersion, SignatureScheme};
 
     #[test]
     fn build_from_common_pieces() {

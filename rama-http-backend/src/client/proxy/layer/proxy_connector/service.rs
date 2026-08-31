@@ -33,7 +33,9 @@ use std::{ops, sync::Arc};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 #[cfg(feature = "tls")]
-use rama_tls::TlsTunnel;
+use rama_net::tls::TlsAlpn;
+#[cfg(feature = "tls")]
+use rama_tls::{TlsTunnel, client::NegotiatedTlsParameters};
 
 /// A connector which can be used to establish a connection over an HTTP Proxy.
 ///
@@ -76,6 +78,7 @@ impl<S> HttpProxyConnector<S> {
     generate_set_and_with! {
         /// Set the HTTP version to use for the CONNECT request.
         ///
+        /// This also constrains HTTPS-proxy ALPN to the matching protocol.
         /// By default this is set to HTTP/1.1.
         pub fn version(mut self, version: Version) -> Self {
             self.version = Some(version);
@@ -187,6 +190,10 @@ where
         })?;
         let app_protocol = input.protocol().cloned();
 
+        if let Some(version) = self.version {
+            validate_connect_version(version)?;
+        }
+
         // insert target so that inner connector can use it instead of input's version
         input
             .extensions()
@@ -208,6 +215,7 @@ where
             input.extensions().insert(TlsTunnel {
                 server_identity: Some(proxy_info.address.host.clone()),
                 application_protocol: Some(Protocol::HTTPS),
+                alpn: self.version.and_then(connect_version_alpn),
             });
         }
 
@@ -245,19 +253,18 @@ where
                 },
             )?;
 
-        if let Some(version) = self.version {
-            if !matches!(
-                version,
-                Version::HTTP_10 | Version::HTTP_11 | Version::HTTP_2
-            ) {
-                return Err(ConnectionError::local(
-                    BoxError::from_static_str("http proxy connector: unsupported HTTP version"),
-                    ConnectionErrorKind::InvalidInput,
-                )
-                .context_debug_field("version", version));
-            }
-            connector.set_version(version);
-        }
+        let proxy_is_secure = proxy_info
+            .protocol
+            .as_ref()
+            .is_some_and(Protocol::is_secure);
+        let negotiated_version = if proxy_is_secure {
+            negotiated_proxy_http_version(conn.extensions())?
+        } else {
+            None
+        };
+        let connect_version =
+            resolve_connect_version(self.version, negotiated_version, proxy_is_secure)?;
+        connector.set_version(connect_version);
 
         if let Some(credential) = proxy_info.credential.clone() {
             match credential {
@@ -296,6 +303,103 @@ where
             "http proxy connector: connected to proxy: ready secure request",
         );
         Ok(EstablishedClientConnection { input, conn })
+    }
+}
+
+fn validate_connect_version(version: Version) -> Result<(), ConnectionError> {
+    if matches!(
+        version,
+        Version::HTTP_10 | Version::HTTP_11 | Version::HTTP_2
+    ) {
+        Ok(())
+    } else {
+        Err(ConnectionError::local(
+            BoxError::from_static_str("http proxy connector: unsupported HTTP version"),
+            ConnectionErrorKind::InvalidInput,
+        )
+        .context_debug_field("version", version))
+    }
+}
+
+fn resolve_connect_version(
+    configured: Option<Version>,
+    negotiated: Option<Version>,
+    proxy_is_secure: bool,
+) -> Result<Version, ConnectionError> {
+    if let Some(configured) = configured {
+        validate_connect_version(configured)?;
+        if proxy_is_secure {
+            match negotiated {
+                Some(negotiated) if negotiated != configured => {
+                    return Err(ConnectionError::transport(
+                        BoxError::from_static_str(
+                            "HTTPS proxy negotiated an incompatible HTTP version",
+                        ),
+                        ConnectionErrorKind::Protocol,
+                    )
+                    .context_debug_field("configured_version", configured)
+                    .context_debug_field("negotiated_version", negotiated));
+                }
+                None if configured == Version::HTTP_2 => {
+                    return Err(ConnectionError::transport(
+                        BoxError::from_static_str(
+                            "HTTPS proxy did not negotiate the required HTTP/2 ALPN",
+                        ),
+                        ConnectionErrorKind::Protocol,
+                    ));
+                }
+                _ => {}
+            }
+        }
+        return Ok(configured);
+    }
+
+    let Some(version) = negotiated else {
+        return Ok(Version::HTTP_11);
+    };
+    if matches!(
+        version,
+        Version::HTTP_10 | Version::HTTP_11 | Version::HTTP_2
+    ) {
+        Ok(version)
+    } else {
+        Err(ConnectionError::transport(
+            BoxError::from_static_str("HTTPS proxy negotiated an unsupported HTTP version"),
+            ConnectionErrorKind::Protocol,
+        )
+        .context_debug_field("negotiated_version", version))
+    }
+}
+
+#[cfg(feature = "tls")]
+fn negotiated_proxy_http_version(
+    extensions: &Extensions,
+) -> Result<Option<Version>, ConnectionError> {
+    let Some(protocol) = extensions
+        .get_ref::<NegotiatedTlsParameters>()
+        .and_then(|parameters| parameters.application_layer_protocol.clone())
+    else {
+        return Ok(None);
+    };
+
+    Version::try_from(protocol).map(Some).map_err(|error| {
+        ConnectionError::transport(error, ConnectionErrorKind::Protocol)
+            .context("HTTPS proxy negotiated an invalid HTTP ALPN")
+    })
+}
+
+#[cfg(not(feature = "tls"))]
+fn negotiated_proxy_http_version(_: &Extensions) -> Result<Option<Version>, ConnectionError> {
+    Ok(None)
+}
+
+#[cfg(feature = "tls")]
+fn connect_version_alpn(version: Version) -> Option<TlsAlpn> {
+    match version {
+        Version::HTTP_10 => Some(TlsAlpn::empty()),
+        Version::HTTP_11 => Some(TlsAlpn::http_1()),
+        Version::HTTP_2 => Some(TlsAlpn::http_2()),
+        _ => None,
     }
 }
 
@@ -589,6 +693,7 @@ mod tests {
             async move {
                 let tunnel = input.extensions.get_ref::<TlsTunnel>().unwrap();
                 assert_eq!(tunnel.application_protocol.as_ref(), Some(&Protocol::HTTPS),);
+                assert_eq!(tunnel.alpn.as_ref(), Some(&TlsAlpn::http_1()));
                 transport.serve(input).await
             }
         });
@@ -599,6 +704,124 @@ mod tests {
             address: HostWithPort::example_domain_https(),
             credential: None,
             protocol: Some(Protocol::HTTPS),
+        }));
+
+        connector.serve(input).await.unwrap();
+    }
+
+    #[cfg(feature = "tls")]
+    #[test]
+    fn explicit_connect_versions_define_matching_proxy_alpn() {
+        for (version, expected) in [
+            (Version::HTTP_10, TlsAlpn::empty()),
+            (Version::HTTP_11, TlsAlpn::http_1()),
+            (Version::HTTP_2, TlsAlpn::http_2()),
+        ] {
+            assert_eq!(connect_version_alpn(version), Some(expected));
+        }
+        assert_eq!(connect_version_alpn(Version::HTTP_3), None);
+
+        assert_eq!(
+            resolve_connect_version(Some(Version::HTTP_11), None, true).unwrap(),
+            Version::HTTP_11
+        );
+        assert_eq!(
+            resolve_connect_version(Some(Version::HTTP_10), None, true).unwrap(),
+            Version::HTTP_10
+        );
+        let error = resolve_connect_version(Some(Version::HTTP_2), None, true).unwrap_err();
+        assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+        assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
+        let error = resolve_connect_version(Some(Version::HTTP_11), Some(Version::HTTP_2), true)
+            .unwrap_err();
+        assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+        assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
+        assert_eq!(
+            resolve_connect_version(None, Some(Version::HTTP_2), true).unwrap(),
+            Version::HTTP_2
+        );
+        assert_eq!(
+            resolve_connect_version(None, None, true).unwrap(),
+            Version::HTTP_11
+        );
+        let error =
+            resolve_connect_version(None, Some(Version::HTTP_3), true).expect_err("unsupported");
+        assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+        assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
+    }
+
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn automatic_connect_version_follows_proxy_tls_negotiation() {
+        let http_server =
+            HttpServer::auto(Executor::default()).service(service_fn(async |req: Request| {
+                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(req.version(), Version::HTTP_2);
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }));
+        let transport = MockConnectorService::new(move || http_server.clone());
+        let transport = service_fn(move |input: ConnectRequest| {
+            let transport = transport.clone();
+            async move {
+                let tunnel = input.extensions.get_ref::<TlsTunnel>().unwrap();
+                assert!(tunnel.alpn.is_none());
+                let established = transport.serve(input).await?;
+                established
+                    .conn
+                    .extensions()
+                    .insert(NegotiatedTlsParameters {
+                        protocol_version: rama_tls::ProtocolVersion::TLSv1_3,
+                        application_layer_protocol: Some(
+                            rama_net::tls::ApplicationProtocol::HTTP_2,
+                        ),
+                        peer_certificate_chain: None,
+                    });
+                Ok::<_, Infallible>(established)
+            }
+        });
+        let connector = HttpProxyConnectorLayer::default().into_layer(transport);
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
+            address: HostWithPort::example_domain_https(),
+            credential: None,
+            protocol: Some(Protocol::HTTPS),
+        }));
+
+        connector.serve(input).await.unwrap();
+    }
+
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn plaintext_proxy_ignores_unrelated_tls_negotiation_metadata() {
+        let http_server =
+            HttpServer::auto(Executor::default()).service(service_fn(async |req: Request| {
+                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                assert_eq!(req.version(), Version::HTTP_11);
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }));
+        let transport = MockConnectorService::new(move || http_server.clone());
+        let transport = MapOutputLayer::new(
+            |established: EstablishedClientConnection<MockSocket, ConnectRequest>| {
+                established
+                    .conn
+                    .extensions()
+                    .insert(NegotiatedTlsParameters {
+                        protocol_version: rama_tls::ProtocolVersion::TLSv1_3,
+                        application_layer_protocol: Some(
+                            rama_net::tls::ApplicationProtocol::HTTP_2,
+                        ),
+                        peer_certificate_chain: None,
+                    });
+                established
+            },
+        )
+        .into_layer(transport);
+        let connector = HttpProxyConnectorLayer::default().into_layer(transport);
+        let input = ConnectRequest::new(HostWithPort::example_domain_https());
+        input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
+            address: HostWithPort::example_domain_http(),
+            credential: None,
+            protocol: Some(Protocol::HTTP),
         }));
 
         connector.serve(input).await.unwrap();

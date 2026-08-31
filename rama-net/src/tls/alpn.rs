@@ -1,6 +1,10 @@
 //! Application-Layer Protocol Negotiation identifiers.
 
+use rama_core::extensions::Extension;
+use rama_utils::collections::smallvec::{SmallVec, smallvec};
 use rama_utils::macros::enums::enum_builder;
+
+use crate::Protocol;
 
 fn display_unknown_maybe_as_grease(
     f: &mut core::fmt::Formatter<'_>,
@@ -93,6 +97,57 @@ enum_builder! {
         DICOM => b"dicom",
         /// PostgreSQL wire protocol.
         PostgreSQL => b"postgresql",
+    }
+}
+
+/// ALPN protocols to offer during a TLS handshake.
+#[derive(Clone, Debug, PartialEq, Eq, Extension)]
+#[extension(tags(tls))]
+pub struct TlsAlpn(pub SmallVec<[ApplicationProtocol; 2]>);
+
+impl TlsAlpn {
+    /// Offer no ALPN protocols.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self(SmallVec::new())
+    }
+
+    /// Offer HTTP/2 and HTTP/1.1, in that preference order.
+    #[must_use]
+    pub fn http_auto() -> Self {
+        Self(smallvec![
+            ApplicationProtocol::HTTP_2,
+            ApplicationProtocol::HTTP_11,
+        ])
+    }
+
+    /// Offer HTTP/1.1 only.
+    #[must_use]
+    pub fn http_1() -> Self {
+        Self(smallvec![ApplicationProtocol::HTTP_11])
+    }
+
+    /// Offer HTTP/2 only.
+    #[must_use]
+    pub fn http_2() -> Self {
+        Self(smallvec![ApplicationProtocol::HTTP_2])
+    }
+}
+
+/// Return Rama's default TLS ALPN offer for an application protocol.
+///
+/// HTTP can negotiate HTTP/2 or HTTP/1.1. WebSocket defaults to HTTP/1.1
+/// because HTTP/2 WebSocket support cannot be known until after ALPN
+/// negotiation; an explicit target HTTP version can opt into HTTP/2.
+/// Protocols without a standardized ALPN in Rama return `None`.
+#[must_use]
+pub fn default_tls_alpn(protocol: &Protocol) -> Option<TlsAlpn> {
+    if protocol.is_http() {
+        Some(TlsAlpn::http_auto())
+    } else if protocol.is_ws() {
+        Some(TlsAlpn::http_1())
+    } else {
+        None
     }
 }
 
@@ -214,6 +269,17 @@ mod tests {
             ApplicationProtocol::from(&[0x8a, 0x9a]).to_string()
         );
         assert_eq!("Unknown (\0)", ApplicationProtocol::from(&[0]).to_string());
+    }
+
+    #[test]
+    fn derives_only_known_tls_application_protocols() {
+        assert_eq!(
+            default_tls_alpn(&Protocol::HTTPS).unwrap(),
+            TlsAlpn::http_auto(),
+        );
+        assert_eq!(default_tls_alpn(&Protocol::WSS).unwrap(), TlsAlpn::http_1(),);
+        assert!(default_tls_alpn(&Protocol::ICAPS).is_none());
+        assert!(default_tls_alpn(&Protocol::from_static("custom")).is_none());
     }
 
     #[test]

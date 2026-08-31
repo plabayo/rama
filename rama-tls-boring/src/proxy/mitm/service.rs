@@ -292,10 +292,10 @@ mod tests {
     use rama_net::{
         address::{Host, HostWithPort},
         stream::service::EchoService,
-        tls::ApplicationProtocol,
+        tls::{ApplicationProtocol, TlsAlpn},
     };
     use rama_tls::{
-        CipherSuite, KeyLogIntent, ProtocolVersion, TlsAlpn, TlsKeyLog,
+        CipherSuite, KeyLogIntent, ProtocolVersion, TlsKeyLog,
         client::{
             ClientHelloExtension, ServerTrustRoots, ServerVerifyMode, TlsServerCertPins,
             TlsServerTrust, TlsServerVerify,
