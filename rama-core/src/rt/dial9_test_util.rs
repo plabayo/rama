@@ -1,5 +1,7 @@
 //! Shared setup for the tests that exercise the dial9 integration.
 
+use rama_utils::octets::mib_u64;
+
 /// Serializes tests that build an enabled dial9 recorder (a second `build()`
 /// while one is alive returns a disabled recorder).
 pub(crate) fn recorder_slot() -> parking_lot::MutexGuard<'static, ()> {
@@ -13,8 +15,8 @@ pub(crate) fn recorder_slot() -> parking_lot::MutexGuard<'static, ()> {
 pub(crate) fn recorder(trace_dir: &std::path::Path) -> ::dial9::Recorder {
     let writer = ::dial9::DiskBuffer::builder()
         .base_path(trace_dir)
-        .max_file_size(mib(1))
-        .max_total_size(mib(4))
+        .max_file_size(mib_u64(1))
+        .max_total_size(mib_u64(4))
         .build();
     let recorder = ::dial9::recorder_or_disabled(writer).build();
     assert!(

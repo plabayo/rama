@@ -26,8 +26,8 @@ fn build_dial9_engine(
 ) -> TransparentProxyEngine<TestHandler> {
     let writer = dial9::DiskBuffer::builder()
         .base_path(trace_dir)
-        .max_file_size(1024 * 1024)
-        .max_total_size(4 * 1024 * 1024)
+        .max_file_size(rama_utils::octets::mib_u64(1))
+        .max_total_size(rama_utils::octets::mib_u64(4))
         .build();
     let recorder = dial9::recorder_or_disabled(writer).build();
     assert!(

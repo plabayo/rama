@@ -193,7 +193,7 @@ pub async fn run(graceful: ShutdownGuard, cfg: CliCommandDiscard) -> Result<(), 
             );
 
             // no graceful shutdown for udp :)
-            tokio::spawn(async move {
+            rama::rt::spawn(async move {
                 tracing::info!(
                     network.local.address = %bind_address.ip(),
                     network.local.port = %bind_address.port(),

@@ -566,8 +566,8 @@ mod tests {
         let temp_dir = rama_utils::fs::tempdir().unwrap();
         let writer = rama_core::telemetry::dial9::DiskBuffer::builder()
             .base_path(temp_dir.path())
-            .max_file_size(1024 * 1024)
-            .max_total_size(4 * 1024 * 1024)
+            .max_file_size(rama_utils::octets::mib_u64(1))
+            .max_total_size(rama_utils::octets::mib_u64(4))
             .build();
         let recorder = rama_core::telemetry::dial9::recorder_or_disabled(writer).build();
         let runtime = Runtime::builder()

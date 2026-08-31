@@ -192,7 +192,11 @@ impl RuntimeBuilder {
         /// Set how this runtime is traced: task tracking, dumps, hooks, and its
         /// name in the trace.
         ///
-        /// Only used alongside [`with_dial9_recorder`](Self::with_dial9_recorder).
+        /// Applies alongside [`with_dial9_recorder`](Self::with_dial9_recorder).
+        /// The implicit environment path configures itself from `DIAL9_*`, so
+        /// combining options with it is rejected by
+        /// [`try_build`](Self::try_build); with telemetry explicitly disabled
+        /// the options are moot.
         /// When unset, the runtime takes this builder's thread name. Set options
         /// and you name it yourself.
         #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
@@ -214,6 +218,16 @@ impl RuntimeBuilder {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "blocking runtime worker thread count must be greater than zero",
+            ));
+        }
+
+        #[cfg(feature = "dial9")]
+        if self.dial9_attach_options.is_some()
+            && matches!(self.dial9_recorder, RuntimeDial9Recorder::FromEnv)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "dial9 attach options require an explicit dial9 recorder; the environment path configures itself from `DIAL9_*`",
             ));
         }
 
@@ -1183,6 +1197,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(runtime.flavor(), RuntimeFlavor::CurrentThread);
+    }
+
+    #[cfg(feature = "dial9")]
+    #[test]
+    fn dial9_attach_options_require_an_explicit_recorder() {
+        let err = Runtime::builder()
+            .with_dial9_attach_options(::dial9::TokioAttachOptions::default())
+            .try_build()
+            .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[cfg(feature = "dial9")]

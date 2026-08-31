@@ -97,7 +97,7 @@ async fn main() -> Result<(), BoxError> {
     };
 
     // Keep command futures off Windows' smaller process-main stack.
-    let result = tokio::spawn(run(cmds))
+    let result = rama::rt::spawn(run(cmds))
         .await
         .context("join CLI command task")?;
 

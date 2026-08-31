@@ -115,7 +115,7 @@ pub struct DefaultTransparentProxyAsyncRuntimeFactory {
     #[cfg(feature = "dial9")]
     dial9_recorder: FactoryDial9Recorder,
     #[cfg(feature = "dial9")]
-    dial9_attach_options: ::dial9::TokioAttachOptions,
+    dial9_attach_options: Option<::dial9::TokioAttachOptions>,
 }
 
 #[cfg(feature = "dial9")]
@@ -132,7 +132,7 @@ impl Default for DefaultTransparentProxyAsyncRuntimeFactory {
             #[cfg(feature = "dial9")]
             dial9_recorder: FactoryDial9Recorder::FromEnv,
             #[cfg(feature = "dial9")]
-            dial9_attach_options: ::dial9::TokioAttachOptions::default(),
+            dial9_attach_options: None,
         }
     }
 }
@@ -175,15 +175,17 @@ impl DefaultTransparentProxyAsyncRuntimeFactory {
         /// Set the dial9 tracing options for the engine's runtime, such as the
         /// runtime name a multi-extension trace is disambiguated by.
         ///
-        /// Only applies alongside
-        /// [`with_dial9_recorder`](Self::with_dial9_recorder): the environment
-        /// path takes its options from the `DIAL9_*` variables.
+        /// Applies alongside
+        /// [`with_dial9_recorder`](Self::with_dial9_recorder). The environment
+        /// path takes its options from the `DIAL9_*` variables, so combining
+        /// options with it is rejected when the runtime is created; with
+        /// telemetry explicitly disabled the options are moot.
         #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
         pub fn dial9_attach_options(
             mut self,
             dial9_attach_options: ::dial9::TokioAttachOptions,
         ) -> Self {
-            self.dial9_attach_options = dial9_attach_options;
+            self.dial9_attach_options = Some(dial9_attach_options);
             self
         }
     }
@@ -197,25 +199,39 @@ impl TransparentProxyAsyncRuntimeFactory for DefaultTransparentProxyAsyncRuntime
         _: Option<&[u8]>,
     ) -> Result<TransparentProxyAsyncRuntime, Self::Error> {
         #[cfg(feature = "dial9")]
-        match self.dial9_recorder {
-            FactoryDial9Recorder::Disabled => {}
-            FactoryDial9Recorder::FromEnv => {
-                let attached = ::dial9::recorder_from_env()
-                    .context("build dial9 instrumented runtime from environment")?;
-                return Ok(TransparentProxyAsyncRuntime::from_dial9(attached));
+        {
+            if self.dial9_attach_options.is_some()
+                && matches!(self.dial9_recorder, FactoryDial9Recorder::FromEnv)
+            {
+                return Err(rama_core::error::extra::OpaqueError::from_static_str(
+                    "dial9 attach options require an explicit dial9 recorder; the environment path configures itself from `DIAL9_*`",
+                )
+                .into());
             }
-            FactoryDial9Recorder::Custom(recorder) => {
-                use ::dial9::Dial9HandleTokioExt as _;
 
-                let mut builder = tokio::runtime::Builder::new_multi_thread();
-                builder.enable_all();
-                let runtime = recorder
-                    .handle()
-                    .attach_tokio_runtime(builder, self.dial9_attach_options)
-                    .context("attach dial9 recorder to engine runtime")?;
-                return Ok(TransparentProxyAsyncRuntime::from_dial9((
-                    *recorder, runtime,
-                )));
+            match self.dial9_recorder {
+                FactoryDial9Recorder::Disabled => {}
+                FactoryDial9Recorder::FromEnv => {
+                    let attached = ::dial9::recorder_from_env()
+                        .context("build dial9 instrumented runtime from environment")?;
+                    return Ok(TransparentProxyAsyncRuntime::from_dial9(attached));
+                }
+                FactoryDial9Recorder::Custom(recorder) => {
+                    use ::dial9::Dial9HandleTokioExt as _;
+
+                    let mut builder = tokio::runtime::Builder::new_multi_thread();
+                    builder.enable_all();
+                    let runtime = recorder
+                        .handle()
+                        .attach_tokio_runtime(
+                            builder,
+                            self.dial9_attach_options.unwrap_or_default(),
+                        )
+                        .context("attach dial9 recorder to engine runtime")?;
+                    return Ok(TransparentProxyAsyncRuntime::from_dial9((
+                        *recorder, runtime,
+                    )));
+                }
             }
         }
 
@@ -244,5 +260,12 @@ mod tests {
             factory.dial9_recorder,
             FactoryDial9Recorder::Disabled
         ));
+    }
+
+    #[test]
+    fn dial9_attach_options_require_an_explicit_recorder() {
+        let factory = DefaultTransparentProxyAsyncRuntimeFactory::new()
+            .with_dial9_attach_options(::dial9::TokioAttachOptions::default());
+        factory.create_async_runtime(None).unwrap_err();
     }
 }

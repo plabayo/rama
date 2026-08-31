@@ -1,6 +1,3 @@
-# Workspace-wide build flags.
-#
-
 # Resilient crates.io fetches for fragile environments like CI.
 [net]
 retry = 10

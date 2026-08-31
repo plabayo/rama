@@ -196,15 +196,16 @@ impl OwnedRuntime {
 
     /// Dispose of the runtime without blocking the caller indefinitely.
     ///
-    /// Workers get `grace` to stop. With `dial9` the trace pipeline then gets
-    /// another `grace` to drain, so budget for twice that.
+    /// `grace` is the total budget: workers get it to stop, and with `dial9`
+    /// the trace pipeline drains within whatever of it remains.
     pub fn shutdown_bounded(self, grace: Duration) {
         match self.inner {
             RuntimeInner::Tokio(runtime) => runtime.shutdown_timeout(grace),
             #[cfg(feature = "dial9")]
             RuntimeInner::Dial9 { runtime, recorder } => {
+                let started = std::time::Instant::now();
                 runtime.shutdown_timeout(grace);
-                recorder.graceful_shutdown(grace);
+                recorder.graceful_shutdown(grace.saturating_sub(started.elapsed()));
             }
         }
     }

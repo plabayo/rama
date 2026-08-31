@@ -531,10 +531,10 @@ opentelemetry = [
 #
 # `--cfg tokio_unstable` is optional. Without it dial9 takes poll
 # events from its own spawn helpers, so coverage is the tasks rama
-# routes through `rama_core::rt::Executor`. Set it (per-build via
-# `RUSTFLAGS`, or in your `.cargo/config.toml`) to also get every
-# other task on the runtime, task spawn/terminate events and
-# per-worker queue depth.
+# routes through `rama_core::rt::Executor` and `rama_core::rt::spawn`.
+# Set it (per-build via `RUSTFLAGS`, or in your `.cargo/config.toml`)
+# to also get every other task on the runtime, task spawn/terminate
+# events and per-worker queue depth.
 #
 # [dial9]: https://github.com/dial9-rs/dial9
 dial9 = [

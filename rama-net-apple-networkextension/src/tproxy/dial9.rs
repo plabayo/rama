@@ -1,6 +1,6 @@
 //! Pre-defined [dial9] events for the transparent proxy engine, plus
 //! tiny recording helpers that emit them when a
-//! a `dial9` recorder is attached to the runtime.
+//! `dial9` recorder is attached to the runtime.
 //!
 //! Mirrors the structured `tracing` events emitted by the engine
 //! (`open` / `close` / `handler-deadline`), encoded for fast offline

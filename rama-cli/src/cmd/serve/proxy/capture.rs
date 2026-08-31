@@ -648,7 +648,7 @@ impl CaptureStore {
         let mut key = [0_u8; 32];
         rand_bytes(&mut key).context("generate in-memory MITM capture key")?;
         let (temp_cleanup, temp_cleanup_worker) = TempPathCleanup::new();
-        tokio::spawn(temp_cleanup_worker.run());
+        rama::rt::spawn(temp_cleanup_worker.run());
         let (changes, _) = watch::channel(0);
         Ok(Self(Arc::new(CaptureStoreInner {
             inspection,
