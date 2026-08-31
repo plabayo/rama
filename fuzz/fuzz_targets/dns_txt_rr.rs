@@ -6,8 +6,8 @@
 //! type/class/TTL/rdlen header and the TXT character-string segments. On any
 //! malformed input it must return a typed `Malformed` verdict (mapped to a
 //! transport failure upstream) — never panic, never read out of bounds,
-//! never hang. The hook additionally asserts that every yielded TXT segment
-//! derives from within the input buffer.
+//! never hang. The hook additionally asserts that the validated record-owned
+//! TXT RDATA accounts for no more octets than the supplied RR.
 //!
 //! Run with:
 //!     cargo +nightly fuzz run dns_txt_rr -- -max_len=4096

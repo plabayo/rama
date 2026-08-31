@@ -35,7 +35,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorExt};
 use rama_core::futures::{Stream, async_stream::stream_fn};
 use rama_core::telemetry::tracing;
@@ -46,7 +45,7 @@ use tokio::io::unix::AsyncFd;
 use tokio::time::Instant;
 
 use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::{RecordType, ServiceBinding};
+use crate::wire::{RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -115,13 +114,8 @@ impl DnsTxtResolver for AppleDnsResolver {
     fn lookup_txt(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
-        query_record_stream::<Bytes, _>(
-            domain,
-            self.timeout,
-            ffi::K_DNS_SERVICE_TYPE_TXT,
-            parse_txt,
-        )
+    ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
+        query_record_stream::<Txt, _>(domain, self.timeout, ffi::K_DNS_SERVICE_TYPE_TXT, parse_txt)
     }
 }
 
@@ -506,44 +500,17 @@ impl Drop for ServiceRef {
 }
 
 fn parse_a(rdata: &[u8], emit: &mut dyn FnMut(Ipv4Addr)) -> Result<(), BoxError> {
-    if rdata.len() != 4 {
-        return Err(AppleDnsResolverError::message(format!(
-            "invalid A record length: {}",
-            rdata.len()
-        ))
-        .into());
-    }
-    emit(Ipv4Addr::new(rdata[0], rdata[1], rdata[2], rdata[3]));
+    emit(parse_a_rdata(rdata)?);
     Ok(())
 }
 
 fn parse_aaaa(rdata: &[u8], emit: &mut dyn FnMut(Ipv6Addr)) -> Result<(), BoxError> {
-    if rdata.len() != 16 {
-        return Err(AppleDnsResolverError::message(format!(
-            "invalid AAAA record length: {}",
-            rdata.len()
-        ))
-        .into());
-    }
-    let mut octets = [0_u8; 16];
-    octets.copy_from_slice(rdata);
-    emit(Ipv6Addr::from(octets));
+    emit(parse_aaaa_rdata(rdata)?);
     Ok(())
 }
 
-fn parse_txt(rdata: &[u8], emit: &mut dyn FnMut(Bytes)) -> Result<(), BoxError> {
-    let mut offset = 0;
-
-    while offset < rdata.len() {
-        let len = rdata[offset] as usize;
-        offset += 1;
-        if offset + len > rdata.len() {
-            return Err(AppleDnsResolverError::message("invalid TXT record payload").into());
-        }
-        emit(Bytes::copy_from_slice(&rdata[offset..offset + len]));
-        offset += len;
-    }
-
+fn parse_txt(rdata: &[u8], emit: &mut dyn FnMut(Txt)) -> Result<(), BoxError> {
+    emit(Txt::parse_rdata(rdata)?);
     Ok(())
 }
 
@@ -870,10 +837,18 @@ mod tests {
             txt.push(record);
         })
         .unwrap();
+        assert_eq!(txt.len(), 1);
         assert_eq!(
-            txt,
-            vec![Bytes::from_static(b"foo"), Bytes::from_static(b"bar")]
+            txt[0].iter().collect::<Vec<_>>(),
+            vec![&b"foo"[..], &b"bar"[..]]
         );
+    }
+
+    #[test]
+    fn malformed_txt_record_is_rejected_without_emitting() {
+        let mut emitted = false;
+        parse_txt(&[3, b'f', b'o'], &mut |_| emitted = true).expect_err("truncated TXT string");
+        assert!(!emitted);
     }
 
     #[test]

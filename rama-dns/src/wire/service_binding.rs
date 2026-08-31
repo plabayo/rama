@@ -6,9 +6,12 @@ use core::{
 
 use rama_core::bytes::Bytes;
 use rama_net::tls::ApplicationProtocol;
-use rama_utils::macros::enums::enum_builder;
+use rama_utils::{fmt::write_joined_with, macros::enums::enum_builder};
 
-use super::{Name, NameParseError};
+use super::{
+    Name, NameParseError,
+    presentation::{CharacterString, Hex},
+};
 
 enum_builder! {
     /// Numeric key for a service binding parameter.
@@ -179,6 +182,56 @@ impl SvcParam {
             Self::Ipv6Hint(_) => SvcParamKey::Ipv6Hint,
             Self::Unknown { key, .. } => *key,
         }
+    }
+}
+
+impl fmt::Display for SvcParam {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Mandatory(keys) => {
+                f.write_str("mandatory=")?;
+                write_joined_with(f, keys, ",", |f, key| ParamKeyName(*key).fmt(f))
+            }
+            Self::Alpn(protocols) => {
+                f.write_str("alpn=")?;
+                write_joined_with(
+                    f,
+                    protocols.iter().take(protocols.len()),
+                    ",",
+                    |f, protocol| CharacterString(protocol).fmt(f),
+                )
+            }
+            Self::NoDefaultAlpn => f.write_str("no-default-alpn"),
+            Self::Port(port) => write!(f, "port={port}"),
+            Self::Ipv4Hint(addresses) => {
+                f.write_str("ipv4hint=")?;
+                write_joined_with(f, addresses, ",", |f, address| address.fmt(f))
+            }
+            Self::Ech(config) => write!(f, "ech={}", Hex(config)),
+            Self::Ipv6Hint(addresses) => {
+                f.write_str("ipv6hint=")?;
+                write_joined_with(f, addresses, ",", |f, address| address.fmt(f))
+            }
+            Self::Unknown { key, value } => write!(f, "{}={}", ParamKeyName(*key), Hex(value)),
+        }
+    }
+}
+
+struct ParamKeyName(SvcParamKey);
+
+impl fmt::Display for ParamKeyName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            SvcParamKey::Mandatory => "mandatory",
+            SvcParamKey::Alpn => "alpn",
+            SvcParamKey::NoDefaultAlpn => "no-default-alpn",
+            SvcParamKey::Port => "port",
+            SvcParamKey::Ipv4Hint => "ipv4hint",
+            SvcParamKey::Ech => "ech",
+            SvcParamKey::Ipv6Hint => "ipv6hint",
+            SvcParamKey::Invalid => "key65535",
+            SvcParamKey::Unknown(value) => return write!(f, "key{value}"),
+        })
     }
 }
 
@@ -394,6 +447,17 @@ impl ServiceBinding {
             return Err(ServiceBindingParseError(
                 ServiceBindingParseErrorKind::MissingMandatoryParam,
             ));
+        }
+        Ok(())
+    }
+}
+
+/// Formats a human-readable service-binding diagnostic.
+impl fmt::Display for ServiceBinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {}", self.priority, self.target)?;
+        for param in &self.params {
+            write!(f, " {param}")?;
         }
         Ok(())
     }

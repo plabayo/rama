@@ -63,7 +63,7 @@ const AF_INET: i64 = 2;
 const AF_INET6: i64 = 10;
 
 use super::systemd_resolved_wire::{DNS_CLASS_IN, RrParse, parse_service_binding_rr, parse_txt_rr};
-use crate::wire::{RecordType, ServiceBinding};
+use crate::wire::{RecordType, ServiceBinding, Txt};
 
 /// A probe claim older than this is assumed orphaned and may be re-claimed.
 const PROBE_STALE: Duration = Duration::from_secs(15);
@@ -151,7 +151,6 @@ pub(super) enum ResolvedLookup<T> {
 
 enum ParsedRecord<T> {
     One { ttl: u32, value: T },
-    Many { ttl: u32, values: Vec<T> },
     Other,
     Malformed,
 }
@@ -241,16 +240,10 @@ impl SystemdResolved {
         self: &Arc<Self>,
         domain: &Domain,
         timeout: Duration,
-    ) -> ResolvedLookup<Bytes> {
+    ) -> ResolvedLookup<Txt> {
         self.lookup_record(domain, timeout, RecordType::TXT, |raw| {
             match parse_txt_rr(&raw) {
-                RrParse::Record {
-                    ttl,
-                    value: segments,
-                } => ParsedRecord::Many {
-                    ttl,
-                    values: segments,
-                },
+                RrParse::Record { ttl, value } => ParsedRecord::One { ttl, value },
                 RrParse::Other => ParsedRecord::Other,
                 RrParse::Malformed => ParsedRecord::Malformed,
             }
@@ -472,9 +465,6 @@ impl SystemdResolved {
             };
             match parser(Bytes::from(raw)) {
                 ParsedRecord::One { ttl, value } => records.push((value, Some(ttl))),
-                ParsedRecord::Many { ttl, values } => {
-                    records.extend(values.into_iter().map(|value| (value, Some(ttl))));
-                }
                 // e.g. CNAME chain entries included alongside the target RRset
                 ParsedRecord::Other => {}
                 ParsedRecord::Malformed => {
@@ -1341,13 +1331,14 @@ mod tests {
         }))]);
         let resolved = resolver(server.path.clone());
         match resolved.lookup_txt(&domain(), Duration::from_secs(2)).await {
-            ResolvedLookup::Records(records) => assert_eq!(
-                records,
-                vec![
-                    (Bytes::from_static(b"hello"), Some(123)),
-                    (Bytes::from_static(b"world"), Some(123)),
-                ],
-            ),
+            ResolvedLookup::Records(records) => {
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0].1, Some(123));
+                assert_eq!(
+                    records[0].0.iter().collect::<Vec<_>>(),
+                    [b"hello".as_slice(), b"world".as_slice()],
+                );
+            }
             _ => panic!("expected records"),
         }
     }
@@ -1674,21 +1665,24 @@ mod tests {
 
     #[test]
     fn parse_txt_rr_multi_segment() {
-        let raw = build_rr(
+        let rdata = txt_rdata(&[b"v=spf1 -all", b""]);
+        let raw = Bytes::from(build_rr(
             &["example", "com"],
             RecordType::TXT.into(),
             300,
-            &txt_rdata(&[b"v=spf1 -all", b""]),
-        );
+            &rdata,
+        ));
+        let rdata_ptr = raw.as_ptr().wrapping_add(raw.len() - rdata.len());
         match parse_txt_rr(&raw) {
             RrParse::Record {
                 ttl,
                 value: segments,
             } => {
                 assert_eq!(ttl, 300);
+                assert_eq!(segments.as_wire().as_ptr(), rdata_ptr);
                 assert_eq!(
-                    segments,
-                    vec![Bytes::from_static(b"v=spf1 -all"), Bytes::new()],
+                    segments.iter().collect::<Vec<_>>(),
+                    [b"v=spf1 -all".as_slice(), b"".as_slice()],
                 );
             }
             _ => panic!("expected txt"),
@@ -1698,24 +1692,33 @@ mod tests {
     #[test]
     fn parse_txt_rr_skips_other_types() {
         let raw = build_rr(&["example", "com"], 5, 300, &[0]);
-        assert!(matches!(parse_txt_rr(&raw), RrParse::Other));
+        assert!(matches!(parse_txt_rr(&Bytes::from(raw)), RrParse::Other));
     }
 
     #[test]
     fn parse_txt_rr_rejects_malformed() {
         // truncated header
-        assert!(matches!(parse_txt_rr(&[0, 0, 16]), RrParse::Malformed));
+        assert!(matches!(
+            parse_txt_rr(&Bytes::from_static(&[0, 0, 16])),
+            RrParse::Malformed
+        ));
         // compression pointer in the owner name
         assert!(matches!(
-            parse_txt_rr(&[0xC0, 0x0C, 0, 16]),
+            parse_txt_rr(&Bytes::from_static(&[0xC0, 0x0C, 0, 16])),
             RrParse::Malformed
         ));
         // rdata segment length pointing past the buffer
         let mut raw = build_rr(&["example", "com"], RecordType::TXT.into(), 60, &[200]);
-        assert!(matches!(parse_txt_rr(&raw), RrParse::Malformed));
+        assert!(matches!(
+            parse_txt_rr(&Bytes::from(raw.clone())),
+            RrParse::Malformed
+        ));
         // TXT rdata must carry at least one character-string
         raw = build_rr(&["example", "com"], RecordType::TXT.into(), 60, &[]);
-        assert!(matches!(parse_txt_rr(&raw), RrParse::Malformed));
+        assert!(matches!(
+            parse_txt_rr(&Bytes::from(raw.clone())),
+            RrParse::Malformed
+        ));
         // rdlen pointing past the buffer
         raw = build_rr(
             &["example", "com"],
@@ -1724,7 +1727,10 @@ mod tests {
             &txt_rdata(&[b"ok"]),
         );
         raw.truncate(raw.len() - 1);
-        assert!(matches!(parse_txt_rr(&raw), RrParse::Malformed));
+        assert!(matches!(
+            parse_txt_rr(&Bytes::from(raw.clone())),
+            RrParse::Malformed
+        ));
         // bytes after the declared rdata are not part of a standalone RR
         raw = build_rr(
             &["example", "com"],
@@ -1733,7 +1739,10 @@ mod tests {
             &txt_rdata(&[b"ok"]),
         );
         raw.push(0);
-        assert!(matches!(parse_txt_rr(&raw), RrParse::Malformed));
+        assert!(matches!(
+            parse_txt_rr(&Bytes::from(raw)),
+            RrParse::Malformed
+        ));
     }
 
     #[test]

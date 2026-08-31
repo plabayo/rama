@@ -50,6 +50,44 @@ pub fn display_fn<F>(formatter: F) -> DisplayFn<F> {
     DisplayFn(formatter)
 }
 
+/// Write values separated by `separator`, using `write_value` for each value.
+///
+/// Nothing is allocated, and the separator is written only between values.
+pub fn write_joined_with<W, I, F>(
+    writer: &mut W,
+    values: I,
+    separator: &str,
+    mut write_value: F,
+) -> fmt::Result
+where
+    W: fmt::Write + ?Sized,
+    I: IntoIterator,
+    F: FnMut(&mut W, I::Item) -> fmt::Result,
+{
+    let mut values = values.into_iter();
+    let Some(first) = values.next() else {
+        return Ok(());
+    };
+    write_value(writer, first)?;
+    for value in values {
+        writer.write_str(separator)?;
+        write_value(writer, value)?;
+    }
+    Ok(())
+}
+
+/// Write [`fmt::Display`] values separated by `separator` without allocating.
+pub fn write_joined<W, I>(writer: &mut W, values: I, separator: &str) -> fmt::Result
+where
+    W: fmt::Write + ?Sized,
+    I: IntoIterator,
+    I::Item: fmt::Display,
+{
+    write_joined_with(writer, values, separator, |writer, value| {
+        write!(writer, "{value}")
+    })
+}
+
 /// Deferred formatting value created by [`display_fn`].
 #[derive(Clone, Copy)]
 pub struct DisplayFn<F>(F);
@@ -114,5 +152,30 @@ mod tests {
             display_fn(|formatter: &mut fmt::Formatter<'_>| formatter.write_str("deferred"));
 
         assert_eq!(value.to_string(), "deferred");
+    }
+
+    #[test]
+    fn writes_display_values_with_separators_without_edges() {
+        let mut output = String::new();
+        write_joined(&mut output, [1, 2, 3], ",").unwrap();
+        assert_eq!(output, "1,2,3");
+
+        output.clear();
+        write_joined(&mut output, core::iter::empty::<u8>(), ",").unwrap();
+        assert!(output.is_empty());
+
+        output.clear();
+        write_joined(&mut output, [42], ",").unwrap();
+        assert_eq!(output, "42");
+    }
+
+    #[test]
+    fn writes_joined_values_with_custom_formatting() {
+        let mut output = String::new();
+        write_joined_with(&mut output, [10, 11], "-", |writer, value| {
+            write!(writer, "{value:x}")
+        })
+        .unwrap();
+        assert_eq!(output, "a-b");
     }
 }

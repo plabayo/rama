@@ -1,14 +1,11 @@
-use rama_core::{
-    bytes::Bytes,
-    futures::{Stream, stream},
-};
+use rama_core::futures::{Stream, stream};
 use rama_net::address::Domain;
 use rama_utils::macros::error::static_str_error;
 
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::ServiceBinding;
+use crate::wire::{ServiceBinding, Txt};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -85,7 +82,7 @@ impl DnsAddressResolver for DenyAllDnsResolver {
 impl DnsTxtResolver for DenyAllDnsResolver {
     type Error = DnsDeniedError;
 
-    fn lookup_txt(&self, _: Domain) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+    fn lookup_txt(&self, _: Domain) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
         stream::once(std::future::ready(Err(DnsDeniedError)))
     }
 }

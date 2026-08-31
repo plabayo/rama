@@ -1,7 +1,4 @@
-use rama_core::{
-    bytes::Bytes,
-    futures::{Stream, stream},
-};
+use rama_core::futures::{Stream, stream};
 use rama_net::address::Domain;
 
 use std::{
@@ -10,7 +7,7 @@ use std::{
 };
 
 use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::ServiceBinding;
+use crate::wire::{ServiceBinding, Txt};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -86,7 +83,7 @@ impl DnsTxtResolver for EmptyDnsResolver {
     fn lookup_txt(
         &self,
         _domain: Domain,
-    ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
         stream::empty()
     }
 }

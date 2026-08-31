@@ -10,7 +10,6 @@ use std::{
 };
 
 use rama_core::{
-    bytes::Bytes,
     error::BoxError,
     futures::{Stream, async_stream::stream_fn},
     stream::{StreamExt, wrappers::ReceiverStream},
@@ -23,7 +22,7 @@ use libc::c_int;
 use tokio::sync::mpsc;
 
 use super::{LinuxDnsResolverError, LookupEvent, dns_name_from_domain};
-use crate::wire::{RecordType, ServiceBinding};
+use crate::wire::{RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata};
 
 const INITIAL_RESPONSE_BUFFER_SIZE: usize = kib(16);
 const DNS_HEADER_SIZE: usize = 12;
@@ -61,7 +60,7 @@ pub(super) fn lookup_txt_stream(
     domain: Domain,
     timeout: Duration,
     response_buffer_size: usize,
-) -> impl Stream<Item = Result<LookupEvent<Bytes>, BoxError>> + Send {
+) -> impl Stream<Item = Result<LookupEvent<Txt>, BoxError>> + Send {
     lookup_record_stream(
         domain,
         timeout,
@@ -314,48 +313,21 @@ impl Drop for ResStateGuard {
 
 fn parse_a_response(packet: &[u8], emit: &mut dyn FnMut(Ipv4Addr, u32)) -> Result<(), BoxError> {
     parse_answers(packet, ffi::NS_T_A, |rdata, ttl| {
-        if rdata.len() != 4 {
-            return Err(LinuxDnsResolverError::message(format!(
-                "invalid A record length: {}",
-                rdata.len()
-            ))
-            .into());
-        }
-        emit(Ipv4Addr::new(rdata[0], rdata[1], rdata[2], rdata[3]), ttl);
+        emit(parse_a_rdata(rdata)?, ttl);
         Ok(())
     })
 }
 
 fn parse_aaaa_response(packet: &[u8], emit: &mut dyn FnMut(Ipv6Addr, u32)) -> Result<(), BoxError> {
     parse_answers(packet, ffi::NS_T_AAAA, |rdata, ttl| {
-        if rdata.len() != 16 {
-            return Err(LinuxDnsResolverError::message(format!(
-                "invalid AAAA record length: {}",
-                rdata.len()
-            ))
-            .into());
-        }
-        let mut octets = [0_u8; 16];
-        octets.copy_from_slice(rdata);
-        emit(Ipv6Addr::from(octets), ttl);
+        emit(parse_aaaa_rdata(rdata)?, ttl);
         Ok(())
     })
 }
 
-fn parse_txt_response(packet: &[u8], emit: &mut dyn FnMut(Bytes, u32)) -> Result<(), BoxError> {
+fn parse_txt_response(packet: &[u8], emit: &mut dyn FnMut(Txt, u32)) -> Result<(), BoxError> {
     parse_answers(packet, ffi::NS_T_TXT, |rdata, ttl| {
-        let mut offset = 0;
-
-        while offset < rdata.len() {
-            let len = rdata[offset] as usize;
-            offset += 1;
-            if offset + len > rdata.len() {
-                return Err(LinuxDnsResolverError::message("invalid TXT record payload").into());
-            }
-            emit(Bytes::copy_from_slice(&rdata[offset..offset + len]), ttl);
-            offset += len;
-        }
-
+        emit(Txt::parse_rdata(rdata)?, ttl);
         Ok(())
     })
 }
@@ -773,8 +745,10 @@ mod soa_ttl_tests {
 }
 
 #[cfg(test)]
-mod service_binding_tests {
-    use super::{RecordType, parse_complete_response, parse_service_binding_response};
+mod record_response_tests {
+    use super::{
+        RecordType, parse_complete_response, parse_service_binding_response, parse_txt_response,
+    };
 
     fn response(record_type: RecordType, rdata: &[u8]) -> Vec<u8> {
         response_records(record_type, &[rdata])
@@ -857,5 +831,32 @@ mod service_binding_tests {
             parse_service_binding_response(packet, RecordType::SVCB, emit)
         })
         .expect_err("one malformed member invalidates the complete response RRset");
+    }
+
+    #[test]
+    fn txt_response_preserves_one_item_per_record_and_string_boundaries() {
+        let first = [3, b'f', b'o', b'o', 0];
+        let second = [3, b'b', b'a', b'r'];
+        let packet = response_records(RecordType::TXT, &[&first, &second]);
+        let records = parse_complete_response(&packet, &parse_txt_response).expect("valid TXT");
+
+        assert_eq!(records.len(), 2);
+        assert_eq!(
+            records[0].0.iter().collect::<Vec<_>>(),
+            [&b"foo"[..], &b""[..]]
+        );
+        assert_eq!(records[1].0.iter().collect::<Vec<_>>(), [&b"bar"[..]]);
+        assert_eq!(records[0].1, 123);
+        assert_eq!(records[1].1, 123);
+    }
+
+    #[test]
+    fn txt_response_discards_records_before_a_malformed_member() {
+        let valid = [2, b'o', b'k'];
+        let malformed = [3, b'n', b'o'];
+        let packet = response_records(RecordType::TXT, &[&valid, &malformed]);
+
+        parse_complete_response(&packet, &parse_txt_response)
+            .expect_err("one malformed member invalidates the complete response RRset");
     }
 }

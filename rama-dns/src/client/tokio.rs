@@ -5,7 +5,6 @@ use std::{
 };
 
 use rama_core::{
-    bytes::Bytes,
     error::BoxError,
     futures::{Stream, async_stream::stream_fn, stream},
     telemetry::tracing,
@@ -17,7 +16,7 @@ use rama_utils::{
 };
 
 use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::ServiceBinding;
+use crate::wire::{ServiceBinding, Txt};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -88,7 +87,7 @@ impl DnsTxtResolver for TokioDnsResolver {
     fn lookup_txt(
         &self,
         _domain: Domain,
-    ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
         stream::once(std::future::ready(Err(TokioDnsTxtUnsupportedError)))
     }
 }

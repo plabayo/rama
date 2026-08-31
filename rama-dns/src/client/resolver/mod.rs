@@ -3,13 +3,12 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use rama_core::bytes::Bytes;
 use rama_core::error::ErrorExt;
 use rama_core::error::extra::OpaqueError;
 use rama_core::futures::{FutureExt as _, Stream, TryStreamExt as _};
 use rama_net::address::Domain;
 
-use crate::wire::ServiceBinding;
+use crate::wire::{ServiceBinding, Txt};
 
 pub use self::address::{
     BoxDnsAddressResolver, DnsAddressResolver, DnsAddresssResolverOverwrite,
@@ -70,7 +69,7 @@ trait DynDnsResolver {
     fn dyn_lookup_txt(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<Bytes, OpaqueError>> + Send + '_>>;
+    ) -> Pin<Box<dyn Stream<Item = Result<Txt, OpaqueError>> + Send + '_>>;
 
     fn dyn_lookup_svcb(
         &self,
@@ -157,7 +156,7 @@ where
     fn dyn_lookup_txt(
         &self,
         domain: Domain,
-    ) -> Pin<Box<dyn Stream<Item = Result<Bytes, OpaqueError>> + Send + '_>> {
+    ) -> Pin<Box<dyn Stream<Item = Result<Txt, OpaqueError>> + Send + '_>> {
         Box::pin(self.lookup_txt(domain).map_err(ErrorExt::into_opaque_error))
     }
 
@@ -280,7 +279,7 @@ impl DnsTxtResolver for BoxDnsResolver {
     fn lookup_txt(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
         self.inner.dyn_lookup_txt(domain)
     }
 
@@ -323,7 +322,10 @@ impl DnsResolver for BoxDnsResolver {
 mod tests {
     use std::convert::Infallible;
 
-    use rama_core::futures::{StreamExt as _, stream};
+    use rama_core::{
+        bytes::Bytes,
+        futures::{StreamExt as _, stream},
+    };
 
     use super::*;
 
@@ -353,7 +355,7 @@ mod tests {
         fn lookup_txt(
             &self,
             _: Domain,
-        ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+        ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
             stream::empty()
         }
     }

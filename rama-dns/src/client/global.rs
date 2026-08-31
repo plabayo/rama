@@ -3,13 +3,13 @@ use std::{
     sync::OnceLock,
 };
 
-use rama_core::{bytes::Bytes, error::extra::OpaqueError, futures::Stream, telemetry::tracing};
+use rama_core::{error::extra::OpaqueError, futures::Stream, telemetry::tracing};
 use rama_net::address::Domain;
 
 use crate::client::resolver::{
     BoxDnsResolver, DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
 };
-use crate::wire::ServiceBinding;
+use crate::wire::{ServiceBinding, Txt};
 
 #[cfg(all(
     not(target_vendor = "apple"),
@@ -96,7 +96,7 @@ impl DnsTxtResolver for GlobalDnsResolver {
     fn lookup_txt(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
         let resolver = global_dns_resolver();
         resolver.lookup_txt(domain)
     }

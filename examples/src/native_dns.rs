@@ -137,7 +137,7 @@ async fn resolve_domain(
             let mut stream = std::pin::pin!(resolver.lookup_txt(domain.clone()));
             while let Some(result) = stream.next().await {
                 let txt = result?;
-                println!("{domain}\tTXT\t{}", String::from_utf8_lossy(&txt));
+                println!("{domain}\tTXT\t{txt}");
             }
         }
         RecordType::Dual => {

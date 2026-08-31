@@ -30,7 +30,7 @@ use rama_net::address::Domain;
 use rama_utils::macros::generate_set_and_with;
 
 use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::ServiceBinding;
+use crate::wire::{ServiceBinding, Txt};
 
 #[derive(Debug, Clone)]
 /// DNS Resolver using the [`hickory_resolver`] crate
@@ -292,7 +292,7 @@ impl DnsTxtResolver for HickoryDnsResolver {
     fn lookup_txt(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<rama_core::bytes::Bytes, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
         stream_fn(async |mut yielder| {
             let name = try_or_yield!(
                 yielder,
@@ -314,12 +314,21 @@ impl DnsTxtResolver for HickoryDnsResolver {
                     _ => None,
                 })
             {
-                for txt_part in txt.txt_data.iter() {
-                    yielder.yield_item(Ok(Bytes::from(txt_part.clone()))).await;
+                match decode_hickory_txt(txt) {
+                    Ok(txt) => yielder.yield_item(Ok(txt)).await,
+                    Err(err) => {
+                        yielder.yield_item(Err(err)).await;
+                        return;
+                    }
                 }
             }
         })
     }
+}
+
+fn decode_hickory_txt(value: &hickory_resolver::proto::rr::rdata::TXT) -> Result<Txt, BoxError> {
+    Txt::try_from_strings(value.txt_data.iter().map(AsRef::<[u8]>::as_ref))
+        .context("validate Hickory TXT RDATA")
 }
 
 impl DnsServiceBindingResolver for HickoryDnsResolver {
@@ -423,9 +432,25 @@ fn name_from_domain(domain: Domain) -> Result<Name, BoxError> {
 mod tests {
     use super::*;
     use hickory_resolver::proto::rr::rdata::{
-        HTTPS, SVCB,
+        HTTPS, SVCB, TXT,
         svcb::{SvcParamKey, SvcParamValue},
     };
+
+    #[test]
+    fn txt_bridge_preserves_record_boundaries_and_validates_input() {
+        let value = TXT::from_bytes(vec![b"first", b"", b"\x00\xff"]);
+        let txt = decode_hickory_txt(&value).expect("valid TXT record");
+        assert_eq!(
+            txt.iter().collect::<Vec<_>>(),
+            [b"first".as_slice(), b"".as_slice(), b"\x00\xff".as_slice()],
+        );
+
+        decode_hickory_txt(&TXT::from_bytes(Vec::new()))
+            .expect_err("TXT RDATA requires one string");
+        let oversized = vec![0; 256];
+        decode_hickory_txt(&TXT::from_bytes(vec![&oversized]))
+            .expect_err("TXT string is limited to 255 octets");
+    }
 
     #[test]
     fn test_box_hickory_system_dns_resolver() {

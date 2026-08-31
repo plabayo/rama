@@ -1,7 +1,6 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rama_core::{
-    bytes::Bytes,
     error::{ErrorExt, extra::OpaqueError},
     futures::{Stream, StreamExt as _, async_stream::stream_fn},
 };
@@ -9,7 +8,7 @@ use rama_net::address::Domain;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 
 use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::ServiceBinding;
+use crate::wire::{ServiceBinding, Txt};
 
 macro_rules! dns_resolve_tuple_impl {
     ($($ty:ident),+ $(,)?) => {
@@ -140,7 +139,7 @@ macro_rules! dns_resolve_tuple_impl {
             fn lookup_txt(
                 &self,
                 domain: Domain,
-            ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+            ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
                 stream_fn(async move |mut yielder| {
                     let ($($ty,)+) = self;
 
@@ -240,6 +239,22 @@ mod tests {
 
     struct BindingResolver(u16, u16);
 
+    struct TxtResolver(&'static [&'static [u8]]);
+
+    impl DnsTxtResolver for TxtResolver {
+        type Error = Infallible;
+
+        fn lookup_txt(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
+            stream::once(std::future::ready(Ok(Txt::try_from_strings(
+                self.0.iter().copied(),
+            )
+            .expect("valid TXT"))))
+        }
+    }
+
     impl DnsServiceBindingResolver for BindingResolver {
         type Error = Infallible;
 
@@ -282,6 +297,19 @@ mod tests {
         }
     }
 
+    impl DnsTxtResolver for FailingResolver {
+        type Error = BoxError;
+
+        fn lookup_txt(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
+            stream::once(std::future::ready(Err(BoxError::from_static_str(
+                "TXT lookup failed",
+            ))))
+        }
+    }
+
     fn binding(port: u16) -> ServiceBinding {
         let mut rdata = vec![0, 1, 0, 0, 3, 0, 2];
         rdata.extend_from_slice(&port.to_be_bytes());
@@ -314,5 +342,37 @@ mod tests {
         items[0]
             .as_ref()
             .expect_err("malformed RRset must yield an error");
+    }
+
+    #[tokio::test]
+    async fn tuple_keeps_txt_records_grouped_and_errors_inline() {
+        let resolvers = (
+            TxtResolver(&[b"first", b"continued"]),
+            FailingResolver,
+            TxtResolver(&[b"second"]),
+        );
+        let items: Vec<_> = resolvers.lookup_txt(Domain::example()).collect().await;
+
+        assert_eq!(items.len(), 3);
+        assert_eq!(
+            items[0]
+                .as_ref()
+                .expect("first record")
+                .iter()
+                .collect::<Vec<_>>(),
+            [b"first".as_slice(), b"continued".as_slice()],
+        );
+        assert_eq!(
+            items[1].as_ref().expect_err("inline error").to_string(),
+            "TXT lookup failed"
+        );
+        assert_eq!(
+            items[2]
+                .as_ref()
+                .expect("second record")
+                .iter()
+                .collect::<Vec<_>>(),
+            [b"second".as_slice()],
+        );
     }
 }

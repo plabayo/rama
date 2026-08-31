@@ -1,14 +1,13 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rama_core::{
-    bytes::Bytes,
     error::{ErrorExt, extra::OpaqueError},
     futures::{Stream, StreamExt as _, async_stream::stream_fn},
 };
 use rama_net::address::Domain;
 
 use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::ServiceBinding;
+use crate::wire::{ServiceBinding, Txt};
 
 macro_rules! impl_dns_resolver_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
@@ -116,7 +115,7 @@ macro_rules! impl_dns_resolver_either {
             fn lookup_txt(
                 &self,
                 domain: Domain,
-            ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+            ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
                 stream_fn(async move |mut yielder| {
                     match self {
                         $(
@@ -200,7 +199,7 @@ mod tests {
     use crate::client::resolver::{
         DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
     };
-    use crate::wire::ServiceBinding;
+    use crate::wire::{ServiceBinding, Txt};
 
     // Mock DNS resolvers for testing
     struct MockResolver1;
@@ -239,8 +238,10 @@ mod tests {
                 fn lookup_txt(
                     &self,
                     domain: Domain,
-                ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
-                    stream::once(std::future::ready(Ok::<_, Infallible>($txt_map(domain))))
+                ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
+                    stream::once(std::future::ready(Ok::<_, Infallible>(
+                        Txt::try_from_strings([$txt_map(domain)]).expect("valid TXT record"),
+                    )))
                 }
             }
 
@@ -302,14 +303,14 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(result1, Bytes::from("abc"));
+        assert_eq!(result1.iter().collect::<Vec<_>>(), [b"abc".as_slice()]);
 
         let result2 = std::pin::pin!(resolver2.lookup_txt(Domain::from_static("abc")))
             .next()
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(result2, Bytes::from("ABC"));
+        assert_eq!(result2.iter().collect::<Vec<_>>(), [b"ABC".as_slice()]);
     }
 
     #[tokio::test]

@@ -5,10 +5,9 @@ use std::{
 };
 
 use moka::{Equivalent, Expiry, sync::Cache};
-use rama_core::bytes::Bytes;
 use rama_net::address::Domain;
 
-use crate::wire::ServiceBinding;
+use crate::wire::{ServiceBinding, Txt};
 
 /// Linux-only DNS response cache.
 ///
@@ -75,18 +74,18 @@ impl LinuxDnsCache {
         );
     }
 
-    pub(super) fn get_txt(&self, domain: &Domain) -> Option<CacheLookup<Bytes>> {
+    pub(super) fn get_txt(&self, domain: &Domain) -> Option<CacheLookup<Txt>> {
         self.lookup(domain, RecordKind::Txt, |value| match value {
             CacheValue::Txt(values) => Some(values.clone()),
             _ => None,
         })
     }
 
-    pub(super) fn insert_txt(&self, domain: Domain, values: Vec<Bytes>, ttl: Option<Duration>) {
+    pub(super) fn insert_txt(&self, domain: Domain, values: Vec<Txt>, ttl: Option<Duration>) {
         self.insert(
             domain,
             RecordKind::Txt,
-            CacheValue::Txt(Arc::<[Bytes]>::from(values)),
+            CacheValue::Txt(Arc::<[Txt]>::from(values)),
             ttl,
         );
     }
@@ -244,7 +243,7 @@ struct CacheEntry {
 enum CacheValue {
     Ipv4(Arc<[std::net::Ipv4Addr]>),
     Ipv6(Arc<[std::net::Ipv6Addr]>),
-    Txt(Arc<[Bytes]>),
+    Txt(Arc<[Txt]>),
     Svcb(Arc<[ServiceBinding]>),
     Https(Arc<[ServiceBinding]>),
     Negative,

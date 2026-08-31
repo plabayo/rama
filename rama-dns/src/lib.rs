@@ -24,6 +24,9 @@
 //! and SVCB/HTTPS resolver traits. Implement those traits yourself to plug in
 //! another resolver, and combine resolvers with the chain / tuple / variant
 //! adapters under [`client`].
+//! [`client::resolver::DnsTxtResolver`] yields one [`wire::Txt`] per DNS TXT
+//! resource record; each value preserves that record's character-string
+//! boundaries.
 //!
 //! ### Picking a resolver for high-QPS workloads
 //!
@@ -66,8 +69,9 @@
 //! ## DNS wire data
 //!
 //! The [`wire`] module provides provider-neutral DNS wire vocabulary. It
-//! currently decodes the shared RDATA used by SVCB and HTTPS records while
-//! retaining unknown service parameters.
+//! decodes A, AAAA, and TXT RDATA as well as the shared RDATA used by SVCB and
+//! HTTPS records. TXT string boundaries and unknown service parameters are
+//! preserved.
 //!
 //! ## Rama
 //!

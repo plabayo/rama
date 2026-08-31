@@ -16,6 +16,7 @@ use crate::{
 };
 use rama_core::extensions::Extensions;
 use rama_net::tls::ApplicationProtocol;
+use rama_utils::fmt::{write_joined, write_joined_with};
 use std::fmt;
 
 #[derive(Clone)]
@@ -166,37 +167,13 @@ impl fmt::Write for Md5Writer<'_> {
 
 impl PeetPrint {
     fn write_to_fmt(&self, w: &mut impl fmt::Write) -> fmt::Result {
-        fn write_joined_with_cb<W, T, F>(w: &mut W, items: &[T], cb: F) -> fmt::Result
-        where
-            W: fmt::Write,
-            F: Fn(&mut W, &T) -> fmt::Result,
-        {
-            let mut iter = items.iter();
-            if let Some(first) = iter.next() {
-                cb(w, first)?;
-                for part in iter {
-                    write!(w, "-")?;
-                    cb(w, part)?;
-                }
-            }
-            Ok(())
-        }
-
-        fn write_joined<W, T>(w: &mut W, items: &[T]) -> fmt::Result
-        where
-            W: fmt::Write,
-            T: fmt::Display,
-        {
-            write_joined_with_cb(w, items, |w, t| write!(w, "{t}"))
-        }
-
         fn write_u16<W, T>(w: &mut W, items: &[T]) -> fmt::Result
         where
             W: fmt::Write,
             T: Copy,
             u16: From<T>,
         {
-            write_joined_with_cb(w, items, |w, t| write!(w, "{}", u16::from(*t)))
+            write_joined_with(w, items, "-", |w, t| write!(w, "{}", u16::from(*t)))
         }
 
         fn write_u16_with_grease<W, T, F>(w: &mut W, items: &[T], is_grease: F) -> fmt::Result
@@ -206,7 +183,7 @@ impl PeetPrint {
             F: Fn(&T) -> bool,
             u16: From<T>,
         {
-            write_joined_with_cb(w, items, |w, t| {
+            write_joined_with(w, items, "-", |w, t| {
                 if is_grease(t) {
                     write!(w, "GREASE")
                 } else {
@@ -218,7 +195,7 @@ impl PeetPrint {
         write_u16_with_grease(w, &self.supported_tls_versions, ProtocolVersion::is_grease)?;
         write!(w, "|")?;
 
-        write_joined(w, &self.supported_protocols)?;
+        write_joined(w, &self.supported_protocols, "-")?;
         write!(w, "|")?;
 
         write_u16_with_grease(w, &self.supported_groups, SupportedGroup::is_grease)?;

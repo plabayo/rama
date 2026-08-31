@@ -14,7 +14,6 @@ use std::{
 };
 
 use rama_core::{
-    bytes::Bytes,
     error::BoxError,
     futures::{Stream, async_stream::stream_fn},
     telemetry::tracing,
@@ -32,7 +31,7 @@ use windows_sys::core::PCWSTR;
 use std::sync::atomic::AtomicU16;
 
 use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::{RecordType, ServiceBinding};
+use crate::wire::{RecordType, ServiceBinding, Txt};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -82,6 +81,12 @@ const _: () = assert!(std::mem::size_of::<DnsBackend>() == 0);
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 /// Windows-native [`DnsResolver`] implementation using `DnsQueryEx`.
+///
+/// Windows exposes TXT strings through `DNS_TXT_DATAW` as UTF-16. This
+/// resolver stores their UTF-8 encoding in [`Txt`], so its TXT results preserve
+/// string and record boundaries but cannot guarantee the original arbitrary
+/// wire octets are binary-transparent. Use a wire-native resolver such as
+/// Hickory when exact TXT octets are required on Windows.
 pub struct WindowsDnsResolver {
     timeout: Duration,
 }
@@ -137,7 +142,7 @@ impl DnsTxtResolver for WindowsDnsResolver {
     fn lookup_txt(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
         query_record_stream(domain, self.timeout, ffi::DNS_TYPE_TEXT, parse_txt_records)
     }
 }
@@ -475,7 +480,7 @@ fn parse_aaaa_records(
 
 fn parse_txt_records(
     records: *mut ffi::DnsRecord,
-    emit: &mut dyn FnMut(Bytes),
+    emit: &mut dyn FnMut(Txt),
 ) -> Result<(), BoxError> {
     walk_record_pointers(records, ffi::DNS_TYPE_TEXT, |record| {
         // DNS_TXT_DATAW ends in pStringArray[1], but Windows extends that
@@ -500,6 +505,12 @@ fn parse_txt_records(
         // SAFETY: the count field lies inside the validated Data range and its
         // SDK-checked offset preserves its u32 alignment.
         let string_count = unsafe { data.add(count_offset).cast::<u32>().read() } as usize;
+        if string_count == 0 {
+            return Err(WindowsDnsResolverError::message(
+                "TXT record must contain at least one string",
+            )
+            .into());
+        }
         let pointers_length = string_count
             .checked_mul(std::mem::size_of::<*const u16>())
             .and_then(|length| strings_offset.checked_add(length))
@@ -517,11 +528,22 @@ fn parse_txt_records(
             // flexible Data tail and the SDK-checked offset is pointer-aligned.
             let string = unsafe { strings.add(idx).read() };
             if string.is_null() {
-                continue;
+                return Err(WindowsDnsResolverError::message(format!(
+                    "TXT string pointer {idx} is null",
+                ))
+                .into());
             }
-            let value = wide_ptr_to_string(string);
-            emit(Bytes::from(value));
         }
+
+        // Validate every pointer before decoding so a malformed later entry
+        // cannot emit a partial record. Decode one string at a time into the
+        // common buffer instead of retaining an intermediate `Vec<String>`.
+        let values = (0..string_count).map(|idx| {
+            // SAFETY: the preceding pass validated this complete pointer entry
+            // and established that it is non-null.
+            wide_ptr_to_string(unsafe { strings.add(idx).read() })
+        });
+        emit(Txt::try_from_strings(values)?);
         Ok(())
     })
 }
@@ -1330,7 +1352,72 @@ mod tests {
 
         let mut out = Vec::new();
         parse_txt_records(&mut txt, &mut |bytes| out.push(bytes)).unwrap();
-        assert_eq!(out, vec![Bytes::from_static(b"hello world")]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].iter().collect::<Vec<_>>(), vec![&b"hello world"[..]]);
+    }
+
+    #[test]
+    fn parse_txt_records_preserves_a_valid_empty_string() {
+        let empty = [0_u16];
+        let mut txt = record(
+            ffi::DNS_TYPE_TEXT,
+            ffi::DnsRecordData {
+                txt: ffi::DNS_TXT_DATAW {
+                    string_count: 1,
+                    strings: [empty.as_ptr()],
+                },
+            },
+            ptr::null_mut(),
+        );
+        txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
+
+        let mut out = Vec::new();
+        parse_txt_records(&mut txt, &mut |value| out.push(value)).expect("valid empty string");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].iter().collect::<Vec<_>>(), [&b""[..]]);
+    }
+
+    #[test]
+    fn parse_txt_records_normalizes_utf16_to_utf8() {
+        let text: Vec<u16> = "héllo".encode_utf16().chain([0]).collect();
+        let mut txt = record(
+            ffi::DNS_TYPE_TEXT,
+            ffi::DnsRecordData {
+                txt: ffi::DNS_TXT_DATAW {
+                    string_count: 1,
+                    strings: [text.as_ptr()],
+                },
+            },
+            ptr::null_mut(),
+        );
+        txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
+
+        let mut out = Vec::new();
+        parse_txt_records(&mut txt, &mut |value| out.push(value)).expect("valid Unicode TXT");
+        assert_eq!(out[0].iter().collect::<Vec<_>>(), ["héllo".as_bytes()]);
+    }
+
+    #[test]
+    fn parse_txt_records_rejects_overlong_utf8_output() {
+        let text: Vec<u16> = std::iter::repeat_n(u16::from(b'x'), 256)
+            .chain([0])
+            .collect();
+        let mut txt = record(
+            ffi::DNS_TYPE_TEXT,
+            ffi::DnsRecordData {
+                txt: ffi::DNS_TXT_DATAW {
+                    string_count: 1,
+                    strings: [text.as_ptr()],
+                },
+            },
+            ptr::null_mut(),
+        );
+        txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
+
+        let mut out = Vec::new();
+        parse_txt_records(&mut txt, &mut |value| out.push(value))
+            .expect_err("decoded TXT string exceeds the wire limit");
+        assert!(out.is_empty());
     }
 
     #[test]
@@ -1364,13 +1451,66 @@ mod tests {
         parse_txt_records(ptr::from_mut(&mut txt).cast(), &mut |value| out.push(value))
             .expect("valid multi-string TXT record");
         assert_eq!(
-            out,
-            [
-                Bytes::from_static(b"first"),
-                Bytes::from_static(b"second"),
-                Bytes::from_static(b"third"),
-            ]
+            out[0].iter().collect::<Vec<_>>(),
+            vec![&b"first"[..], &b"second"[..], &b"third"[..]]
         );
+    }
+
+    #[test]
+    fn parse_txt_records_rejects_zero_strings() {
+        let mut txt = record(
+            ffi::DNS_TYPE_TEXT,
+            ffi::DnsRecordData {
+                txt: ffi::DNS_TXT_DATAW {
+                    string_count: 0,
+                    strings: [ptr::null()],
+                },
+            },
+            ptr::null_mut(),
+        );
+        txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
+
+        parse_txt_records(&mut txt, &mut |_| {}).expect_err("zero strings are invalid TXT RDATA");
+    }
+
+    #[test]
+    fn parse_txt_records_rejects_a_null_string_pointer() {
+        let mut txt = record(
+            ffi::DNS_TYPE_TEXT,
+            ffi::DnsRecordData {
+                txt: ffi::DNS_TXT_DATAW {
+                    string_count: 1,
+                    strings: [ptr::null()],
+                },
+            },
+            ptr::null_mut(),
+        );
+        txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
+
+        parse_txt_records(&mut txt, &mut |_| {}).expect_err("null TXT string is invalid");
+    }
+
+    #[test]
+    fn parse_txt_records_rejects_the_whole_record_after_a_null_string() {
+        let first: Vec<u16> = "valid".encode_utf16().chain([0]).collect();
+        let mut txt = TxtDnsRecord::<2> {
+            next: ptr::null_mut(),
+            name: ptr::null_mut(),
+            record_type: ffi::DNS_TYPE_TEXT,
+            data_length: std::mem::size_of::<TxtData<2>>() as u16,
+            flags: 0,
+            ttl: 0,
+            reserved: 0,
+            data: TxtData {
+                string_count: 2,
+                strings: [first.as_ptr(), ptr::null()],
+            },
+        };
+
+        let mut out = Vec::new();
+        parse_txt_records(ptr::from_mut(&mut txt).cast(), &mut |value| out.push(value))
+            .expect_err("one null string invalidates the record");
+        assert!(out.is_empty());
     }
 
     #[test]

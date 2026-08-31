@@ -26,7 +26,6 @@ use std::{
 };
 
 use rama_core::{
-    bytes::Bytes,
     error::BoxError,
     futures::{Stream, StreamExt as _, async_stream::stream_fn},
     telemetry::tracing,
@@ -41,7 +40,7 @@ use super::{
     resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver},
     systemd_resolved::{self, ResolvedLookup, SystemdResolved},
 };
-use crate::wire::ServiceBinding;
+use crate::wire::{ServiceBinding, Txt};
 
 mod cache;
 
@@ -405,7 +404,7 @@ impl DnsTxtResolver for LinuxDnsResolver {
     fn lookup_txt(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
         let response_buffer_size = self.response_buffer_size;
         let resolved = self.systemd_resolved.clone();
         lookup_cached_stream(
@@ -616,7 +615,7 @@ fn lookup_txt_uncached_stream(
     domain: Domain,
     timeout: Duration,
     response_buffer_size: usize,
-) -> impl Stream<Item = Result<LookupEvent<Bytes>, BoxError>> + Send {
+) -> impl Stream<Item = Result<LookupEvent<Txt>, BoxError>> + Send {
     let varlink = resolved.map(|resolved| {
         let domain = domain.clone();
         async move { resolved.lookup_txt(&domain, timeout).await }
@@ -769,7 +768,7 @@ fn native_lookup_txt_stream(
     domain: Domain,
     timeout: Duration,
     response_buffer_size: usize,
-) -> impl Stream<Item = Result<LookupEvent<Bytes>, BoxError>> + Send {
+) -> impl Stream<Item = Result<LookupEvent<Txt>, BoxError>> + Send {
     res_nsearch::lookup_txt_stream(domain, timeout, response_buffer_size)
 }
 
@@ -852,7 +851,7 @@ fn native_lookup_txt_stream(
     _domain: Domain,
     _timeout: Duration,
     _response_buffer_size: usize,
-) -> impl Stream<Item = Result<LookupEvent<Bytes>, BoxError>> + Send {
+) -> impl Stream<Item = Result<LookupEvent<Txt>, BoxError>> + Send {
     rama_core::futures::stream::once(std::future::ready(Err(BoxError::from(
         LinuxDnsTxtUnsupportedError,
     ))))
@@ -914,7 +913,7 @@ mod tests {
         time::Duration,
     };
 
-    use crate::wire::ServiceBinding;
+    use crate::wire::{ServiceBinding, Txt};
 
     fn test_cache() -> Arc<cache::LinuxDnsCache> {
         Arc::new(cache::LinuxDnsCache::new(
@@ -989,6 +988,25 @@ mod tests {
         )
     }
 
+    fn cached_txt_stream<S>(
+        domain: Domain,
+        cache: Arc<cache::LinuxDnsCache>,
+        backend: S,
+    ) -> impl Stream<Item = Result<Txt, BoxError>> + Send
+    where
+        S: Stream<Item = Result<LookupEvent<Txt>, BoxError>> + Send + 'static,
+    {
+        lookup_cached_stream(
+            domain,
+            Duration::from_secs(5),
+            cache,
+            cache::RecordKind::Txt,
+            move |cache, domain| cache.get_txt(domain),
+            move |cache, domain, values, ttl| cache.insert_txt(domain, values, ttl),
+            move |_domain, _timeout| backend,
+        )
+    }
+
     #[tokio::test]
     async fn positive_cache_is_written_when_consumer_drops_after_one_item() {
         let cache = test_cache();
@@ -1037,6 +1055,58 @@ mod tests {
             cached_ipv4(&cache, &domain).as_deref(),
             Some(addrs.as_slice())
         );
+    }
+
+    #[tokio::test]
+    async fn txt_cache_preserves_rr_grouping_hits_and_zero_ttl() {
+        let records = vec![
+            Txt::try_from_strings([b"first".as_slice(), b"continued".as_slice()])
+                .expect("valid TXT"),
+            Txt::try_from_strings([b"second".as_slice()]).expect("valid TXT"),
+        ];
+        let cache = test_cache();
+        let domain = test_domain();
+        let backend = stream::iter(
+            records
+                .clone()
+                .into_iter()
+                .map(|record| Ok(LookupEvent::Record(record, Some(60)))),
+        );
+
+        let fresh: Vec<_> = cached_txt_stream(domain.clone(), cache.clone(), backend)
+            .map(Result::unwrap)
+            .collect()
+            .await;
+        assert_eq!(fresh, records);
+
+        let backend_polled = Arc::new(AtomicBool::new(false));
+        let marker = backend_polled.clone();
+        let backend = stream::once(async move {
+            marker.store(true, Ordering::SeqCst);
+            Err::<LookupEvent<Txt>, _>(BoxError::from_static_str("cache miss"))
+        });
+        let hit: Vec<_> = cached_txt_stream(domain.clone(), cache.clone(), backend)
+            .map(Result::unwrap)
+            .collect()
+            .await;
+        assert_eq!(hit, records);
+        assert!(!backend_polled.load(Ordering::SeqCst));
+        assert_eq!(
+            hit[0].iter().collect::<Vec<_>>(),
+            [b"first".as_slice(), b"continued".as_slice()]
+        );
+
+        let zero_ttl_cache = test_cache();
+        let backend = stream::once(std::future::ready(Ok(LookupEvent::Record(
+            records[0].clone(),
+            Some(0),
+        ))));
+        let values: Vec<_> = cached_txt_stream(domain.clone(), zero_ttl_cache.clone(), backend)
+            .map(Result::unwrap)
+            .collect()
+            .await;
+        assert_eq!(values, [records[0].clone()]);
+        assert!(zero_ttl_cache.get_txt(&domain).is_none());
     }
 
     #[tokio::test]

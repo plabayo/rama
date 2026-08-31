@@ -6,9 +6,9 @@ use std::ops::Range;
 
 use rama_core::bytes::Bytes;
 
-use crate::wire::RecordType;
 #[cfg(any(target_os = "linux", all(test, target_family = "unix")))]
 use crate::wire::ServiceBinding;
+use crate::wire::{RecordType, Txt};
 
 pub(super) const DNS_CLASS_IN: u16 = 1;
 
@@ -21,32 +21,16 @@ pub(super) enum RrParse<T> {
 /// Parse one wire-format RR as produced by `ResolveRecord`'s `raw` field.
 /// Owner names are standalone here, so compression pointers cannot be
 /// resolved and are treated as malformed.
-pub(super) fn parse_txt_rr(raw: &[u8]) -> RrParse<Vec<Bytes>> {
+pub(super) fn parse_txt_rr(raw: &Bytes) -> RrParse<Txt> {
     let Some(rr) = parse_rr(raw) else {
         return RrParse::Malformed;
     };
     if rr.record_type != u16::from(RecordType::TXT) || rr.class != DNS_CLASS_IN {
         return RrParse::Other;
     }
-    let rdata = &raw[rr.rdata];
-    if rdata.is_empty() {
-        // RFC 1035 §3.3.14: TXT rdata is one or more character-strings
-        return RrParse::Malformed;
-    }
-    let mut segments = Vec::new();
-    let mut cursor = 0;
-    while cursor < rdata.len() {
-        let len = rdata[cursor] as usize;
-        cursor += 1;
-        let Some(segment) = rdata.get(cursor..cursor + len) else {
-            return RrParse::Malformed;
-        };
-        segments.push(Bytes::copy_from_slice(segment));
-        cursor += len;
-    }
-    RrParse::Record {
-        ttl: rr.ttl,
-        value: segments,
+    match Txt::parse_rdata_bytes(&raw.slice(rr.rdata)) {
+        Ok(value) => RrParse::Record { ttl: rr.ttl, value },
+        Err(_) => RrParse::Malformed,
     }
 }
 

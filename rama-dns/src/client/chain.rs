@@ -1,7 +1,6 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rama_core::{
-    bytes::Bytes,
     error::{ErrorExt, extra::OpaqueError},
     futures::{Stream, StreamExt, async_stream::stream_fn, stream},
 };
@@ -10,7 +9,7 @@ use rama_utils::collections::NonEmptyVec;
 use rand::RngExt;
 
 use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::ServiceBinding;
+use crate::wire::{ServiceBinding, Txt};
 
 fn gcd(mut a: usize, mut b: usize) -> usize {
     while b != 0 {
@@ -137,7 +136,7 @@ macro_rules! impl_chain_dns_txt_resolver {
         fn lookup_txt(
             &self,
             domain: Domain,
-        ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+        ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
             stream::iter(self.iter())
                 .flat_map(move |resolver| resolver.lookup_txt(domain.clone()))
                 .map(|result| result.map_err(ErrorExt::into_opaque_error))
@@ -245,6 +244,73 @@ mod tests {
         svcb_port: u16,
         https_port: u16,
         fail: bool,
+    }
+
+    #[derive(Debug, Clone)]
+    enum TxtEvent {
+        Record(Txt),
+        Error,
+    }
+
+    #[derive(Debug, Clone)]
+    struct TxtResolver(Vec<TxtEvent>);
+
+    impl DnsTxtResolver for TxtResolver {
+        type Error = BoxError;
+
+        fn lookup_txt(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
+            stream::iter(self.0.iter().cloned().map(|event| match event {
+                TxtEvent::Record(record) => Ok(record),
+                TxtEvent::Error => Err(BoxError::from_static_str("TXT lookup failed")),
+            }))
+        }
+    }
+
+    fn txt_resolvers() -> Vec<TxtResolver> {
+        vec![
+            TxtResolver(vec![
+                TxtEvent::Record(
+                    Txt::try_from_strings([b"first".as_slice(), b"continued".as_slice()])
+                        .expect("valid TXT"),
+                ),
+                TxtEvent::Error,
+            ]),
+            TxtResolver(vec![TxtEvent::Record(
+                Txt::try_from_strings([b"second".as_slice()]).expect("valid TXT"),
+            )]),
+        ]
+    }
+
+    async fn assert_txt_union<R>(resolvers: &R)
+    where
+        R: DnsTxtResolver,
+        R::Error: std::fmt::Debug + std::fmt::Display,
+    {
+        let items: Vec<_> = resolvers.lookup_txt(Domain::example()).collect().await;
+        assert_eq!(items.len(), 3);
+        assert_eq!(
+            items[0]
+                .as_ref()
+                .expect("first record")
+                .iter()
+                .collect::<Vec<_>>(),
+            [b"first".as_slice(), b"continued".as_slice()],
+        );
+        assert_eq!(
+            items[1].as_ref().expect_err("inline error").to_string(),
+            "TXT lookup failed"
+        );
+        assert_eq!(
+            items[2]
+                .as_ref()
+                .expect("second record")
+                .iter()
+                .collect::<Vec<_>>(),
+            [b"second".as_slice()],
+        );
     }
 
     impl DnsServiceBindingResolver for BindingResolver {
@@ -375,5 +441,17 @@ mod tests {
         items[0]
             .as_ref()
             .expect_err("malformed RRset must yield an error");
+    }
+
+    #[tokio::test]
+    async fn txt_vec_array_and_non_empty_vec_preserve_union_order_and_grouping() {
+        let resolvers = txt_resolvers();
+        assert_txt_union(&resolvers).await;
+
+        let resolvers: [_; 2] = txt_resolvers().try_into().expect("two resolvers");
+        assert_txt_union(&resolvers).await;
+
+        let resolvers = NonEmptyVec::from_vec(txt_resolvers()).expect("non-empty resolvers");
+        assert_txt_union(&resolvers).await;
     }
 }

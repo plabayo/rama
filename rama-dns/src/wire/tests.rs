@@ -1,4 +1,7 @@
-use std::{error::Error as _, net::Ipv4Addr};
+use std::{
+    error::Error as _,
+    net::{Ipv4Addr, Ipv6Addr},
+};
 
 use rama_core::bytes::Bytes;
 use rama_net::{address::Domain, tls::ApplicationProtocol};
@@ -6,6 +9,16 @@ use rama_net::{address::Domain, tls::ApplicationProtocol};
 use super::*;
 
 const FOO_EXAMPLE_COM: &[u8] = b"\x03foo\x07example\x03com\x00";
+
+fn txt_strings(txt: &Txt) -> Vec<&[u8]> {
+    let limit = txt.len().saturating_add(1);
+    txt.iter().take(limit).collect()
+}
+
+fn owned_txt_strings(iter: impl ExactSizeIterator<Item = Bytes>) -> Vec<Bytes> {
+    let limit = iter.len().saturating_add(1);
+    iter.take(limit).collect()
+}
 
 fn binding(priority: u16, target: &[u8], params: &[(u16, &[u8])]) -> Vec<u8> {
     let mut wire = priority.to_be_bytes().to_vec();
@@ -16,6 +29,185 @@ fn binding(priority: u16, target: &[u8], params: &[(u16, &[u8])]) -> Vec<u8> {
         wire.extend_from_slice(value);
     }
     wire
+}
+
+#[test]
+fn address_rdata_parses_all_structural_values() {
+    assert_eq!(parse_a_rdata(&[0, 0, 0, 0]).unwrap(), Ipv4Addr::UNSPECIFIED);
+    assert_eq!(
+        parse_a_rdata(&[192, 0, 2, 1]).unwrap(),
+        Ipv4Addr::new(192, 0, 2, 1)
+    );
+    assert_eq!(parse_aaaa_rdata(&[0; 16]).unwrap(), Ipv6Addr::UNSPECIFIED);
+    assert_eq!(
+        parse_aaaa_rdata(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,]).unwrap(),
+        "2001:db8::1".parse::<Ipv6Addr>().unwrap()
+    );
+}
+
+#[test]
+fn address_rdata_rejects_every_wrong_length_with_context() {
+    for len in [0, 1, 3, 5, 15, 17, 255] {
+        let error = parse_a_rdata(&vec![0; len]).unwrap_err();
+        assert_eq!(error.record_type(), RecordType::A);
+        assert_eq!(error.expected_len(), 4);
+        assert_eq!(error.actual_len(), len);
+        assert_eq!(
+            error.to_string(),
+            format!("A RDATA must contain exactly 4 octets, got {len}")
+        );
+
+        let error = parse_aaaa_rdata(&vec![0; len]).unwrap_err();
+        assert_eq!(error.record_type(), RecordType::AAAA);
+        assert_eq!(error.expected_len(), 16);
+        assert_eq!(error.actual_len(), len);
+        assert_eq!(
+            error.to_string(),
+            format!("AAAA RDATA must contain exactly 16 octets, got {len}")
+        );
+    }
+}
+
+#[test]
+fn txt_preserves_binary_strings_and_exact_boundaries() {
+    let txt = Txt::parse_rdata(b"\x03foo\x00\x04\x00\xff\x80A").unwrap();
+    assert_eq!(txt.len(), 3);
+    assert_eq!(txt.as_wire(), b"\x03foo\x00\x04\x00\xff\x80A");
+    assert_eq!(
+        txt_strings(&txt),
+        vec![&b"foo"[..], &b""[..], &b"\x00\xff\x80A"[..]]
+    );
+}
+
+#[test]
+fn txt_display_preserves_boundaries_escaping_and_binary_data() {
+    let txt = Txt::try_from_strings([
+        b"hello world".as_slice(),
+        b"quote\" slash\\ line\n".as_slice(),
+        &[0xff, 0x00],
+        b"",
+    ])
+    .unwrap();
+    assert_eq!(
+        txt.to_string(),
+        r#""hello world" "quote\" slash\\ line\n" 0xFF00 """#
+    );
+}
+
+#[test]
+fn txt_owned_and_borrowed_parsing_are_equal() {
+    let wire = Bytes::from_static(b"\x03foo\x03bar");
+    let borrowed = Txt::parse_rdata(&wire).unwrap();
+    let owned = Txt::parse_rdata_bytes(&wire).unwrap();
+    assert_eq!(borrowed, owned);
+    assert_eq!(owned.as_wire().as_ptr(), wire.as_ptr());
+}
+
+#[test]
+fn txt_requires_one_or_more_exactly_tiling_strings() {
+    assert_eq!(
+        Txt::parse_rdata(&[]).unwrap_err().to_string(),
+        "TXT RDATA must contain at least one character-string"
+    );
+    assert_eq!(
+        txt_strings(&Txt::parse_rdata(&[0]).unwrap()),
+        vec![&b""[..]]
+    );
+
+    for wire in [&[1][..], &[2, b'a'][..], &[0, 3, b'f', b'o'][..]] {
+        Txt::parse_rdata(wire).unwrap_err();
+    }
+}
+
+#[test]
+fn txt_accepts_maximum_string_and_rdata_boundaries() {
+    let mut maximum_string = vec![255];
+    maximum_string.extend(0_u8..=254);
+    let txt = Txt::parse_rdata(&maximum_string).unwrap();
+    assert_eq!(txt.len(), 1);
+    assert_eq!(txt.iter().next().unwrap().len(), 255);
+
+    let maximum_rdata = vec![0; usize::from(u16::MAX)];
+    let txt = Txt::parse_rdata(&maximum_rdata).unwrap();
+    assert_eq!(txt.len(), usize::from(u16::MAX));
+    assert_eq!(txt_strings(&txt).len(), usize::from(u16::MAX));
+    assert!(txt_strings(&txt).into_iter().all(<[u8]>::is_empty));
+
+    let oversized = vec![0; usize::from(u16::MAX) + 1];
+    assert_eq!(
+        Txt::parse_rdata(&oversized).unwrap_err().to_string(),
+        "TXT RDATA length 65536 exceeds 65535 octets"
+    );
+}
+
+#[test]
+fn txt_constructs_canonical_wire_from_decoded_strings() {
+    let txt = Txt::try_from_strings([&b"first"[..], &b""[..], &b"\x00\xff"[..]]).unwrap();
+    assert_eq!(txt.as_wire(), b"\x05first\x00\x02\x00\xff");
+    assert_eq!(
+        txt_strings(&txt),
+        vec![&b"first"[..], &b""[..], &b"\x00\xff"[..]]
+    );
+    Txt::try_from_strings(Vec::<Bytes>::new()).unwrap_err();
+    Txt::try_from_strings([vec![0; 256]]).unwrap_err();
+
+    let full_string = vec![0; usize::from(u8::MAX)];
+    let final_string = vec![0; usize::from(u8::MAX) - 1];
+    let maximum = Txt::try_from_strings(
+        std::iter::repeat_n(full_string.as_slice(), 255).chain([final_string.as_slice()]),
+    )
+    .expect("exact maximum RDATA length");
+    assert_eq!(maximum.as_wire().len(), usize::from(u16::MAX));
+    assert_eq!(maximum.len(), 256);
+
+    Txt::try_from_strings(
+        std::iter::repeat_n(full_string.as_slice(), 255)
+            .chain([final_string.as_slice(), b"".as_slice()]),
+    )
+    .unwrap_err();
+}
+
+#[test]
+fn txt_iterators_are_cloneable_exact_and_fused() {
+    let txt = Txt::parse_rdata(b"\x03foo\x03bar").unwrap();
+    let mut borrowed = txt.iter();
+    assert_eq!(borrowed.len(), 2);
+    let borrowed_clone = borrowed.clone();
+    assert_eq!(borrowed.next(), Some(&b"foo"[..]));
+    assert_eq!(borrowed.len(), 1);
+    let borrowed_clone_limit = borrowed_clone.len().saturating_add(1);
+    assert_eq!(
+        borrowed_clone
+            .take(borrowed_clone_limit)
+            .collect::<Vec<_>>(),
+        vec![&b"foo"[..], &b"bar"[..]]
+    );
+    assert_eq!(
+        borrowed.by_ref().take(2).collect::<Vec<_>>(),
+        vec![&b"bar"[..]]
+    );
+    assert_eq!(borrowed.next(), None);
+    assert_eq!(borrowed.next(), None);
+    drop(borrowed);
+
+    let wire_start = txt.as_wire().as_ptr() as usize;
+    let mut owned = txt.into_strings();
+    assert_eq!(owned.len(), 2);
+    let owned_clone = owned.clone();
+    let first = owned.next().expect("first string");
+    assert_eq!(first, Bytes::from_static(b"foo"));
+    assert_eq!(first.as_ptr() as usize, wire_start + 1);
+    assert_eq!(owned.len(), 1);
+    assert_eq!(
+        owned_txt_strings(owned_clone),
+        vec![Bytes::from_static(b"foo"), Bytes::from_static(b"bar")]
+    );
+    assert_eq!(
+        owned.by_ref().take(2).collect::<Vec<_>>(),
+        vec![Bytes::from_static(b"bar")]
+    );
+    assert_eq!(owned.next(), None);
+    assert_eq!(owned.next(), None);
 }
 
 #[test]
@@ -337,7 +529,10 @@ fn parses_rfc_9460_mandatory_alpn_and_ipv4_hint_vector() {
     let protocols = parsed.alpn_protocols().unwrap();
     assert_eq!(protocols.len(), 2);
     assert_eq!(
-        protocols.iter().collect::<Vec<_>>(),
+        protocols
+            .iter()
+            .take(protocols.len().saturating_add(1))
+            .collect::<Vec<_>>(),
         [b"h2".as_slice(), b"h3-19".as_slice()]
     );
     let mut typed = protocols.application_protocols();
@@ -353,6 +548,39 @@ fn parses_rfc_9460_mandatory_alpn_and_ipv4_hint_vector() {
     assert_eq!(
         parsed.ipv4_hints(),
         Some(&[Ipv4Addr::new(192, 0, 2, 1)][..])
+    );
+}
+
+#[test]
+fn service_binding_display_covers_every_parameter_kind() {
+    let mandatory = [0, 1, 0, 3];
+    let ipv4 = [192, 0, 2, 1, 198, 51, 100, 2];
+    let ech = [0, 4, 0xfe, 0x0d, 0, 0];
+    let mut ipv6 = [0; 16];
+    ipv6[15] = 1;
+    let parsed = ServiceBinding::parse_rdata(&binding(
+        1,
+        &[0],
+        &[
+            (u16::from(SvcParamKey::Mandatory), &mandatory),
+            (u16::from(SvcParamKey::Alpn), b"\x02h2\x02h3"),
+            (u16::from(SvcParamKey::NoDefaultAlpn), &[]),
+            (u16::from(SvcParamKey::Port), &[0x20, 0xfb]),
+            (u16::from(SvcParamKey::Ipv4Hint), &ipv4),
+            (u16::from(SvcParamKey::Ech), &ech),
+            (u16::from(SvcParamKey::Ipv6Hint), &ipv6),
+            (667, &[0xff, 0]),
+        ],
+    ))
+    .unwrap();
+
+    assert_eq!(
+        parsed.to_string(),
+        concat!(
+            "1 . mandatory=alpn,port alpn=\"h2\",\"h3\" no-default-alpn ",
+            "port=8443 ipv4hint=192.0.2.1,198.51.100.2 ",
+            "ech=0x0004FE0D0000 ipv6hint=::1 key667=0xFF00"
+        )
     );
 }
 
