@@ -929,9 +929,9 @@ fn native_lookup_txt_stream(
 }
 
 fn dns_name_from_domain(domain: &str) -> Result<CString, BoxError> {
-    let name = domain.trim_end_matches('.');
-    CString::new(name).map_err(|_e| {
-        LinuxDnsResolverError::message(format!("domain contains interior NUL byte: {name}")).into()
+    CString::new(domain).map_err(|_e| {
+        LinuxDnsResolverError::message(format!("domain contains interior NUL byte: {domain}"))
+            .into()
     })
 }
 
@@ -973,7 +973,10 @@ static_str_error! {
 
 #[cfg(test)]
 mod tests {
-    use super::{LookupEvent, ResolvedLookup, cache, lookup_cached_stream, resolved_first_stream};
+    use super::{
+        LookupEvent, ResolvedLookup, cache, dns_name_from_domain, lookup_cached_stream,
+        resolved_first_stream,
+    };
     use rama_core::{
         bytes::Bytes,
         error::{BoxError, BoxErrorExt as _},
@@ -1001,6 +1004,22 @@ mod tests {
 
     fn test_domain() -> Domain {
         "example.com.".try_into().expect("valid domain")
+    }
+
+    #[test]
+    fn native_query_preserves_absolute_root_label() {
+        assert_eq!(
+            dns_name_from_domain("printer.")
+                .expect("valid domain")
+                .to_bytes(),
+            b"printer.",
+        );
+        assert_eq!(
+            dns_name_from_domain("printer")
+                .expect("valid domain")
+                .to_bytes(),
+            b"printer",
+        );
     }
 
     fn service_binding(port: u16) -> ServiceBinding {

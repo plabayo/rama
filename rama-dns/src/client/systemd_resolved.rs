@@ -53,6 +53,8 @@ pub(super) const DEFAULT_SOCKET_PATH: &str = "/run/systemd/resolve/io.systemd.Re
 const METHOD_RESOLVE_HOSTNAME: &str = "io.systemd.Resolve.ResolveHostname";
 const METHOD_RESOLVE_RECORD: &str = "io.systemd.Resolve.ResolveRecord";
 const ERROR_NO_SUCH_RR: &str = "io.systemd.Resolve.NoSuchResourceRecord";
+const ERROR_DNS: &str = "io.systemd.Resolve.DNSError";
+const DNS_RCODE_NXDOMAIN: u64 = 3;
 const ERROR_METHOD_NOT_FOUND: &str = "org.varlink.service.MethodNotFound";
 /// Errors in this namespace are varlink protocol failures, not resolution answers.
 const VARLINK_ERROR_PREFIX: &str = "org.varlink.";
@@ -320,9 +322,9 @@ impl SystemdResolved {
         P: Fn(Bytes) -> ParsedRecord<T> + Send + Sync + 'static,
     {
         let name = wire_name(domain);
-        // fast path: single-label names always need the search list, which
-        // ResolveRecord never applies — skip the guaranteed-useless roundtrip
-        if !name.contains('.') {
+        // Relative single-label names need the search list, which
+        // ResolveRecord never applies — skip the guaranteed-useless roundtrip.
+        if !domain.is_fqdn() && !name.contains('.') {
             return ResolvedLookup::Unavailable;
         }
         // only a rooted name may treat a negative answer as authoritative;
@@ -387,7 +389,7 @@ impl SystemdResolved {
             Err(failure) => return self.transport_failed(claim, failure),
         };
         if let Some(error) = envelope.error.as_deref() {
-            return self.classify_reply_error(claim, error, false);
+            return self.classify_reply_error(claim, error, &envelope.parameters, false);
         }
         let reply = match serde_json::from_value::<HostnameReply>(envelope.parameters) {
             Ok(reply) => reply,
@@ -451,13 +453,13 @@ impl SystemdResolved {
             Err(failure) => return self.transport_failed(claim, failure),
         };
         if let Some(error) = envelope.error.as_deref() {
-            if !rooted && error == ERROR_NO_SUCH_RR {
+            if !rooted && is_negative_reply(error, &envelope.parameters) {
                 // not authoritative for a relative name: the native backend
                 // may still resolve it through the resolv.conf search list
                 self.report_success(claim);
                 return ResolvedLookup::Unavailable;
             }
-            return self.classify_reply_error(claim, error, true);
+            return self.classify_reply_error(claim, error, &envelope.parameters, true);
         }
         let reply = match serde_json::from_value::<RecordReply>(envelope.parameters) {
             Ok(reply) => reply,
@@ -512,9 +514,10 @@ impl SystemdResolved {
         &self,
         claim: Claim,
         error: &str,
+        parameters: &serde_json::Value,
         record_query: bool,
     ) -> ResolvedLookup<T> {
-        if error == ERROR_NO_SUCH_RR {
+        if is_negative_reply(error, parameters) {
             self.report_success(claim);
             return ResolvedLookup::Negative;
         }
@@ -778,7 +781,14 @@ fn mark_unavailable(state: &mut Availability) -> bool {
 }
 
 fn wire_name(domain: &Domain) -> String {
-    domain.as_str().trim_end_matches('.').to_owned()
+    domain.as_str().to_owned()
+}
+
+fn is_negative_reply(error: &str, parameters: &serde_json::Value) -> bool {
+    error == ERROR_NO_SUCH_RR
+        || (error == ERROR_DNS
+            && parameters.get("rcode").and_then(serde_json::Value::as_u64)
+                == Some(DNS_RCODE_NXDOMAIN))
 }
 
 fn no_slot_error(timeout: Duration) -> BoxError {
@@ -1026,6 +1036,10 @@ mod tests {
         json!({ "error": id, "parameters": {} })
     }
 
+    fn dns_error_reply(rcode: u64) -> serde_json::Value {
+        json!({ "error": ERROR_DNS, "parameters": { "rcode": rcode } })
+    }
+
     fn build_rr(labels: &[&str], rtype: u16, ttl: u32, rdata: &[u8]) -> Vec<u8> {
         let mut raw = Vec::new();
         for label in labels {
@@ -1127,6 +1141,33 @@ mod tests {
             2,
             "negatives must keep routing via varlink"
         );
+        assert_available(&resolved);
+    }
+
+    #[tokio::test]
+    async fn nxdomain_is_negative_and_keeps_backend_available() {
+        let server =
+            FakeResolved::spawn(vec![Behavior::Reply(dns_error_reply(DNS_RCODE_NXDOMAIN))]);
+        let resolved = resolver(server.path.clone());
+        assert!(matches!(
+            resolved
+                .lookup_ipv4(&domain(), Duration::from_secs(2))
+                .await,
+            ResolvedLookup::Negative,
+        ));
+        assert_available(&resolved);
+    }
+
+    #[tokio::test]
+    async fn other_dns_errors_are_not_negative() {
+        let server = FakeResolved::spawn(vec![Behavior::Reply(dns_error_reply(2))]);
+        let resolved = resolver(server.path.clone());
+        assert!(matches!(
+            resolved
+                .lookup_ipv4(&domain(), Duration::from_secs(2))
+                .await,
+            ResolvedLookup::Failed(_),
+        ));
         assert_available(&resolved);
     }
 
@@ -1669,7 +1710,12 @@ mod tests {
             "an old failure must not mark a recovered daemon unavailable",
         );
         assert!(matches!(
-            resolved.classify_reply_error::<Bytes>(original, ERROR_METHOD_NOT_FOUND, true),
+            resolved.classify_reply_error::<Bytes>(
+                original,
+                ERROR_METHOD_NOT_FOUND,
+                &serde_json::Value::Null,
+                true,
+            ),
             ResolvedLookup::Unavailable,
         ));
         assert!(
@@ -1929,6 +1975,33 @@ mod tests {
             resolved.lookup_txt(&rooted, Duration::from_secs(1)).await,
             ResolvedLookup::Negative,
         ));
+        assert_available(&resolved);
+    }
+
+    #[tokio::test]
+    async fn relative_txt_nxdomain_falls_back_without_authority() {
+        let server =
+            FakeResolved::spawn(vec![Behavior::Reply(dns_error_reply(DNS_RCODE_NXDOMAIN))]);
+        let resolved = resolver(server.path.clone());
+        assert!(matches!(
+            resolved.lookup_txt(&domain(), Duration::from_secs(1)).await,
+            ResolvedLookup::Unavailable,
+        ));
+        assert_eq!(server.connections(), 1, "the daemon is still asked first");
+        assert_available(&resolved);
+    }
+
+    #[tokio::test]
+    async fn rooted_single_label_uses_resolve_record() {
+        let server = FakeResolved::spawn(vec![Behavior::Reply(error_reply(ERROR_NO_SUCH_RR))]);
+        let resolved = resolver(server.path.clone());
+        let rooted: Domain = "printer.".try_into().expect("valid domain");
+        assert!(matches!(
+            resolved.lookup_txt(&rooted, Duration::from_secs(1)).await,
+            ResolvedLookup::Negative,
+        ));
+        assert_eq!(server.connections(), 1);
+        assert_eq!(wire_name(&rooted), "printer.");
         assert_available(&resolved);
     }
 

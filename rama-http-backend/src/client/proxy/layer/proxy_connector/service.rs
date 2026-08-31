@@ -22,6 +22,7 @@ use rama_net::{
         ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
         EstablishedClientConnection, ProxyRoute,
     },
+    http::TargetHttpVersion,
     user::ProxyCredential,
 };
 use rama_utils::macros::define_inner_service_accessors;
@@ -233,12 +234,26 @@ where
             "http proxy connector: connected to proxy",
         );
 
+        let proxy_is_secure = proxy_info
+            .protocol
+            .as_ref()
+            .is_some_and(Protocol::is_secure);
+        let negotiated_version = if proxy_is_secure {
+            negotiated_proxy_http_version(conn.extensions())?
+        } else {
+            None
+        };
+        let proxy_http_version =
+            resolve_connect_version(self.version, negotiated_version, proxy_is_secure)?;
+
         if app_protocol
             .as_ref()
             .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure())
         {
             // Protocols supporting plaintext forward-proxy form can reuse the
             // proxy stream. Other byte-stream protocols require a tunnel.
+            conn.extensions()
+                .insert(TargetHttpVersion(proxy_http_version));
             return Ok(EstablishedClientConnection {
                 input,
                 conn: MaybeHttpProxiedConnection::proxied(conn),
@@ -253,18 +268,7 @@ where
                 },
             )?;
 
-        let proxy_is_secure = proxy_info
-            .protocol
-            .as_ref()
-            .is_some_and(Protocol::is_secure);
-        let negotiated_version = if proxy_is_secure {
-            negotiated_proxy_http_version(conn.extensions())?
-        } else {
-            None
-        };
-        let connect_version =
-            resolve_connect_version(self.version, negotiated_version, proxy_is_secure)?;
-        connector.set_version(connect_version);
+        connector.set_version(proxy_http_version);
 
         if let Some(credential) = proxy_info.credential.clone() {
             match credential {
@@ -788,6 +792,55 @@ mod tests {
         }));
 
         connector.serve(input).await.unwrap();
+    }
+
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn forward_proxy_version_follows_proxy_tls_negotiation() {
+        for (negotiated, expected) in [
+            (None, Version::HTTP_11),
+            (
+                Some(rama_net::tls::ApplicationProtocol::HTTP_2),
+                Version::HTTP_2,
+            ),
+        ] {
+            let transport = MockConnectorService::new(|| {
+                service_fn(async |_socket: MockSocket| Ok::<_, Infallible>(()))
+            });
+            let transport = MapOutputLayer::new(
+                move |established: EstablishedClientConnection<MockSocket, ConnectRequest>| {
+                    established
+                        .conn
+                        .extensions()
+                        .insert(NegotiatedTlsParameters {
+                            protocol_version: rama_tls::ProtocolVersion::TLSv1_3,
+                            application_layer_protocol: negotiated.clone(),
+                            peer_certificate_chain: None,
+                        });
+                    established
+                },
+            )
+            .into_layer(transport);
+            let connector = HttpProxyConnectorLayer::default().into_layer(transport);
+            let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                .with_application_protocol(Protocol::HTTP);
+            input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
+                address: HostWithPort::example_domain_https(),
+                credential: None,
+                protocol: Some(Protocol::HTTPS),
+            }));
+
+            let established = connector.serve(input).await.unwrap();
+            assert!(matches!(established.conn.inner, Connection::Proxied { .. }));
+            assert_eq!(
+                established
+                    .conn
+                    .extensions()
+                    .get_ref::<TargetHttpVersion>()
+                    .map(|target| target.0),
+                Some(expected),
+            );
+        }
     }
 
     #[cfg(feature = "tls")]

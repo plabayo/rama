@@ -1,9 +1,43 @@
-use std::{error::Error, io, net::UdpSocket, process::Command, thread, time::Duration};
+use std::{
+    error::Error,
+    io,
+    net::UdpSocket,
+    path::PathBuf,
+    process::{Command, Output},
+    sync::atomic::{AtomicU64, Ordering},
+    thread,
+    time::Duration,
+};
 
 type TestResult<T = ()> = Result<T, Box<dyn Error + Send + Sync>>;
 
 #[test]
-fn resolves_cname_svcb_and_https_with_local_dns_server() -> TestResult {
+fn resolves_supported_records_with_local_dns_server() -> TestResult {
+    let output = resolve_from_local_dns("A", 1, &[192, 0, 2, 1])?;
+    assert!(
+        output.contains("Resolving A for domain: example.test"),
+        "output: {output}"
+    );
+    assert!(output.contains("* 192.0.2.1"), "output: {output}");
+
+    let output = resolve_from_local_dns(
+        "AAAA",
+        28,
+        &[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+    )?;
+    assert!(
+        output.contains("Resolving AAAA for domain: example.test"),
+        "output: {output}"
+    );
+    assert!(output.contains("* 2001:db8::1"), "output: {output}");
+
+    let output = resolve_from_local_dns("TXT", 16, b"\x05hello\x00")?;
+    assert!(
+        output.contains("Resolving TXT for domain: example.test"),
+        "output: {output}"
+    );
+    assert!(output.contains("* \"hello\" \"\""), "output: {output}");
+
     // The target preserves its leading label's case and uses RFC 1035
     // compression for the question name suffix.
     let output = resolve_from_local_dns("CNAME", 5, b"\x05Alias\xc0\x0c")?;
@@ -42,23 +76,52 @@ fn resolves_cname_svcb_and_https_with_local_dns_server() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn no_answer_exits_with_an_error() -> TestResult {
+    let output = run_resolve_from_local_dns("HTTPS", 65, None)?;
+    let stdout = String::from_utf8(output.stdout)?;
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(!output.status.success(), "stdout: {stdout}");
+    assert!(
+        stderr.contains("failed to resolve domain into any HTTPS record"),
+        "stderr: {stderr}\nstdout: {stdout}"
+    );
+    Ok(())
+}
+
 fn resolve_from_local_dns(
     record_type: &'static str,
     type_number: u16,
     rdata: &[u8],
 ) -> TestResult<String> {
+    let output = run_resolve_from_local_dns(record_type, type_number, Some(rdata))?;
+    let stdout = String::from_utf8(output.stdout)?;
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(
+        output.status.success(),
+        "stderr: {stderr}\nstdout: {stdout}"
+    );
+    Ok(stdout)
+}
+
+fn run_resolve_from_local_dns(
+    record_type: &'static str,
+    type_number: u16,
+    rdata: Option<&[u8]>,
+) -> TestResult<Output> {
     let socket = UdpSocket::bind(("127.0.0.1", 0))?;
     socket.set_read_timeout(Some(Duration::from_secs(10)))?;
     let name_server = socket.local_addr()?.to_string();
-    let rdata = rdata.to_vec();
+    let rdata = rdata.map(<[u8]>::to_vec);
     let server = thread::spawn(move || -> io::Result<()> {
         let mut query = [0; 2048];
         let (query_len, peer) = socket.recv_from(&mut query)?;
-        let response = dns_response(&query[..query_len], type_number, &rdata)?;
+        let response = dns_response(&query[..query_len], type_number, rdata.as_deref())?;
         socket.send_to(&response, peer)?;
         Ok(())
     });
 
+    let trace = TraceFile::new();
     let output = Command::new(env!("CARGO_BIN_EXE_rama"))
         .args([
             "resolve",
@@ -71,21 +134,17 @@ fn resolve_from_local_dns(
             "--tries",
             "1",
         ])
+        .arg("--trace")
+        .arg(&trace.0)
         .env("RUST_LOG", "info")
         .output()?;
     server
         .join()
         .map_err(|_panic| io::Error::other("local DNS server panicked"))??;
-    let stdout = String::from_utf8(output.stdout)?;
-    let stderr = String::from_utf8(output.stderr)?;
-    assert!(
-        output.status.success(),
-        "stderr: {stderr}\nstdout: {stdout}"
-    );
-    Ok(stdout)
+    Ok(output)
 }
 
-fn dns_response(query: &[u8], type_number: u16, rdata: &[u8]) -> io::Result<Vec<u8>> {
+fn dns_response(query: &[u8], type_number: u16, rdata: Option<&[u8]>) -> io::Result<Vec<u8>> {
     if query.len() < 12 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -121,11 +180,14 @@ fn dns_response(query: &[u8], type_number: u16, rdata: &[u8]) -> io::Result<Vec<
         ));
     }
 
-    let mut response = Vec::with_capacity(question_end + 12 + rdata.len());
+    let mut response = Vec::with_capacity(question_end + 12 + rdata.map_or(0, <[u8]>::len));
     response.extend_from_slice(&query[..2]);
     response.extend_from_slice(&[0x81, 0x80]);
-    response.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 0]);
+    response.extend_from_slice(&[0, 1, 0, u8::from(rdata.is_some()), 0, 0, 0, 0]);
     response.extend_from_slice(&query[12..question_end]);
+    let Some(rdata) = rdata else {
+        return Ok(response);
+    };
     response.extend_from_slice(&[0xc0, 0x0c]);
     response.extend_from_slice(&type_number.to_be_bytes());
     response.extend_from_slice(&[0, 1]);
@@ -135,4 +197,24 @@ fn dns_response(query: &[u8], type_number: u16, rdata: &[u8]) -> io::Result<Vec<
     response.extend_from_slice(&rdata_len.to_be_bytes());
     response.extend_from_slice(rdata);
     Ok(response)
+}
+
+static NEXT_TRACE_ID: AtomicU64 = AtomicU64::new(0);
+
+struct TraceFile(PathBuf);
+
+impl TraceFile {
+    fn new() -> Self {
+        let id = NEXT_TRACE_ID.fetch_add(1, Ordering::Relaxed);
+        Self(
+            std::env::temp_dir()
+                .join(format!("rama-resolve-test-{}-{id}.log", std::process::id(),)),
+        )
+    }
+}
+
+impl Drop for TraceFile {
+    fn drop(&mut self) {
+        drop(std::fs::remove_file(&self.0));
+    }
 }
