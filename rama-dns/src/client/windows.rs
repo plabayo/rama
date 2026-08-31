@@ -526,7 +526,9 @@ fn parse_txt_records(
         // Keep provenance for the complete allocation and validate the flexible
         // tail against wDataLength before reading any pointer from it.
         // SAFETY: `walk_record_pointers` only visits live DNS_RECORD nodes.
-        let data_length = unsafe { usize::from(ptr::addr_of!((*record).data_length).read()) };
+        let data_length = unsafe { ptr::addr_of!((*record).data_length) };
+        // SAFETY: the pointer addresses that live node's data-length field.
+        let data_length = usize::from(unsafe { data_length.read() });
         let data = record
             .cast::<u8>()
             .wrapping_add(std::mem::offset_of!(ffi::DnsRecord, data));
@@ -540,9 +542,10 @@ fn parse_txt_records(
             .into());
         }
 
+        let string_count = data.wrapping_add(count_offset).cast::<u32>();
         // SAFETY: the count field lies inside the validated Data range and its
         // SDK-checked offset preserves its u32 alignment.
-        let string_count = unsafe { data.add(count_offset).cast::<u32>().read() } as usize;
+        let string_count = unsafe { string_count.read() } as usize;
         if string_count == 0 {
             return Err(WindowsDnsResolverError::message(
                 "TXT record must contain at least one string",
@@ -564,7 +567,7 @@ fn parse_txt_records(
         for idx in 0..string_count {
             // SAFETY: the complete pointer entry lies inside the validated
             // flexible Data tail and the SDK-checked offset is pointer-aligned.
-            let string = unsafe { strings.add(idx).read() };
+            let string = unsafe { strings.wrapping_add(idx).read() };
             if string.is_null() {
                 return Err(WindowsDnsResolverError::message(format!(
                     "TXT string pointer {idx} is null",
@@ -579,7 +582,7 @@ fn parse_txt_records(
         let values = (0..string_count).map(|idx| {
             // SAFETY: the preceding pass validated this complete pointer entry
             // and established that it is non-null.
-            wide_ptr_to_string(unsafe { strings.add(idx).read() })
+            wide_ptr_to_string(unsafe { strings.wrapping_add(idx).read() })
         });
         emit(Txt::try_from_strings(values)?);
         Ok(())
@@ -601,21 +604,19 @@ fn parse_service_binding_records(
         // allocation pointer. Avoid forming a `&DnsRecord` whose referent ends
         // at the declared union before reaching a potentially larger tail.
         // SAFETY: `walk_record_pointers` only visits live DNS_RECORD nodes.
-        let rdata_len = unsafe { usize::from(ptr::addr_of!((*record).data_length).read()) };
+        let rdata_len = unsafe { ptr::addr_of!((*record).data_length) };
+        // SAFETY: the pointer addresses that live node's data-length field.
+        let rdata_len = usize::from(unsafe { rdata_len.read() });
+        let rdata = record
+            .cast::<u8>()
+            .wrapping_add(std::mem::offset_of!(ffi::DnsRecord, data));
         // SAFETY:
         // - Windows owns a live allocation containing the DNS_RECORD header
         //   followed by `data_length` octets beginning at Data.
         // - `record` retains provenance for that complete allocation.
         // - the record is flat because VERSION1 cannot request
         //   DNS_QUERY_PARSE_ALL_RECORDS.
-        let rdata = unsafe {
-            std::slice::from_raw_parts(
-                record
-                    .cast::<u8>()
-                    .add(std::mem::offset_of!(ffi::DnsRecord, data)),
-                rdata_len,
-            )
-        };
+        let rdata = unsafe { std::slice::from_raw_parts(rdata, rdata_len) };
         emit(ServiceBinding::parse_rdata(rdata)?);
         Ok(())
     })
@@ -633,12 +634,13 @@ where
         let current = record.cast_const();
         // SAFETY: `current` is a valid DNS_RECORD node while walking the
         // Windows-owned list. Field reads do not form a whole-record reference.
-        let (record_type, next) = unsafe {
-            (
-                ptr::addr_of!((*current).record_type).read(),
-                ptr::addr_of!((*current).next).read(),
-            )
-        };
+        let record_type = unsafe { ptr::addr_of!((*current).record_type) };
+        // SAFETY: same live DNS_RECORD node and field-only address as above.
+        let next = unsafe { ptr::addr_of!((*current).next) };
+        // SAFETY: the pointer addresses the live node's record-type field.
+        let record_type = unsafe { record_type.read() };
+        // SAFETY: the pointer addresses the live node's next field.
+        let next = unsafe { next.read() };
         if record_type == rrtype {
             visit(current)?;
         }
