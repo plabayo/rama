@@ -1,17 +1,18 @@
 //! Pre-defined [dial9] events for the transparent proxy engine, plus
 //! tiny recording helpers that emit them when a
-//! `dial9-tokio-telemetry::TracedRuntime` is active.
+//! a `dial9` recorder is attached to the runtime.
 //!
 //! Mirrors the structured `tracing` events emitted by the engine
 //! (`open` / `close` / `handler-deadline`), encoded for fast offline
 //! analysis with `dial9-viewer` and friends.
 //!
 //! Enabled with the `dial9` cargo feature on this crate. Emission is a
-//! no-op when no `TracedRuntime` is in effect.
+//! no-op when no recorder is attached.
 //!
-//! [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
+//! [dial9]: https://github.com/dial9-rs/dial9
 
-use dial9_tokio_telemetry::telemetry::{TelemetryHandle, clock_monotonic_ns, record_event};
+use dial9::Dial9Handle;
+use dial9::core::clock_monotonic_ns;
 use dial9_trace_format::TraceEvent;
 
 /// Emitted right after the engine has assigned a `flow_id` to a new
@@ -55,48 +56,39 @@ pub struct TproxyHandlerDeadline {
 
 #[inline]
 pub(crate) fn record_flow_opened(flow_id: u64, protocol: u32, pid: Option<i32>) {
-    let handle = TelemetryHandle::current();
+    let handle = Dial9Handle::current();
     if handle.is_enabled() {
-        record_event(
-            TproxyFlowOpened {
-                timestamp_ns: clock_monotonic_ns(),
-                flow_id,
-                protocol,
-                pid: pid.map(i64::from).unwrap_or(0),
-            },
-            &handle,
-        );
+        handle.record_event(TproxyFlowOpened {
+            timestamp_ns: clock_monotonic_ns(),
+            flow_id,
+            protocol,
+            pid: pid.map(i64::from).unwrap_or(0),
+        });
     }
 }
 
 #[inline]
 pub(crate) fn record_flow_closed(flow_id: u64, age_ms: u64, bytes_in: u64, bytes_out: u64) {
-    let handle = TelemetryHandle::current();
+    let handle = Dial9Handle::current();
     if handle.is_enabled() {
-        record_event(
-            TproxyFlowClosed {
-                timestamp_ns: clock_monotonic_ns(),
-                flow_id,
-                age_ms,
-                bytes_in,
-                bytes_out,
-            },
-            &handle,
-        );
+        handle.record_event(TproxyFlowClosed {
+            timestamp_ns: clock_monotonic_ns(),
+            flow_id,
+            age_ms,
+            bytes_in,
+            bytes_out,
+        });
     }
 }
 
 #[inline]
 pub(crate) fn record_handler_deadline(flow_id: u64, deadline_ms: u64) {
-    let handle = TelemetryHandle::current();
+    let handle = Dial9Handle::current();
     if handle.is_enabled() {
-        record_event(
-            TproxyHandlerDeadline {
-                timestamp_ns: clock_monotonic_ns(),
-                flow_id,
-                deadline_ms,
-            },
-            &handle,
-        );
+        handle.record_event(TproxyHandlerDeadline {
+            timestamp_ns: clock_monotonic_ns(),
+            flow_id,
+            deadline_ms,
+        });
     }
 }

@@ -1165,7 +1165,7 @@ where
     // Spawn through the rama `Executor` (graceful-aware) instead of
     // `flow_guard.spawn_task` directly, so that with the `dial9`
     // feature on the inner `tokio::spawn` is replaced by
-    // `dial9_tokio_telemetry::spawn` — giving per-future wake-event
+    // `dial9::spawn` — giving per-future wake-event
     // tracking on this long-lived per-flow service task.
     let meta_for_close = meta.clone();
     let counters_for_close = byte_counters.clone();

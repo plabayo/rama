@@ -1735,21 +1735,18 @@ mod tests {
     #[test]
     fn blocking_handshake_runs_inside_dial9_session() {
         let temp_dir = rama_utils::fs::tempdir().unwrap();
-        let config = rama_core::telemetry::dial9::Dial9Config::builder()
-            .enabled(true)
-            .base_path(temp_dir.path().join("blocking-websocket.bin"))
+        let writer = rama_core::telemetry::dial9::DiskBuffer::builder()
+            .base_path(temp_dir.path())
             .max_file_size(1024 * 1024)
             .max_total_size(4 * 1024 * 1024)
-            .build()
-            .unwrap();
+            .build();
+        let recorder = rama_core::telemetry::dial9::recorder_or_disabled(writer).build();
         let runtime = rama_core::rt::blocking::Runtime::builder()
-            .with_dial9_config(config)
+            .with_dial9_recorder(recorder)
             .try_build()
             .unwrap();
         let service = service_fn(|request: Request| async move {
-            assert!(
-                rama_core::telemetry::dial9::telemetry::TelemetryHandle::current().is_enabled()
-            );
+            assert!(rama_core::telemetry::dial9::Dial9Handle::current().is_enabled());
             let key = request
                 .headers()
                 .typed_get::<SecWebSocketKey>()

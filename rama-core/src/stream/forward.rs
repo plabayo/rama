@@ -93,8 +93,6 @@ impl core::fmt::Display for BridgeCloseReason {
 #[cfg(feature = "dial9")]
 #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
 impl dial9_trace_format::TraceField for BridgeCloseReason {
-    type Ref<'a> = Self;
-
     fn field_type() -> dial9_trace_format::types::FieldType {
         dial9_trace_format::types::FieldType::U8
     }
@@ -118,25 +116,6 @@ impl dial9_trace_format::TraceField for BridgeCloseReason {
             Self::FirstByteTimeout => 12,
         };
         enc.write_u8(code)
-    }
-
-    fn decode_ref<'a>(val: &dial9_trace_format::types::FieldValueRef<'a>) -> Option<Self::Ref<'a>> {
-        use dial9_trace_format::types::FieldValueRef;
-        match val {
-            FieldValueRef::Varint(1) => Some(Self::Shutdown),
-            FieldValueRef::Varint(2) => Some(Self::IdleTimeout),
-            FieldValueRef::Varint(3) => Some(Self::PeerEofLeft),
-            FieldValueRef::Varint(4) => Some(Self::PeerEofRight),
-            FieldValueRef::Varint(5) => Some(Self::ReadErrorLeft),
-            FieldValueRef::Varint(6) => Some(Self::ReadErrorRight),
-            FieldValueRef::Varint(7) => Some(Self::WriteErrorLeft),
-            FieldValueRef::Varint(8) => Some(Self::WriteErrorRight),
-            FieldValueRef::Varint(9) => Some(Self::PeekTimeout),
-            FieldValueRef::Varint(10) => Some(Self::HandlerDeadline),
-            FieldValueRef::Varint(11) => Some(Self::PausedTimeout),
-            FieldValueRef::Varint(12) => Some(Self::FirstByteTimeout),
-            _ => None,
-        }
     }
 }
 

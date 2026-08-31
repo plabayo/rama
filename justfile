@@ -1,19 +1,23 @@
 set windows-shell := ["powershell.exe", "-NoLogo", "-Command"]
 
-# `--cfg tokio_unstable` enables Tokio's unstable runtime APIs that
-# `dial9-tokio-telemetry` requires. It is benign for crates that do
-# not opt into the `dial9` feature; the workspace `.cargo/config.toml`
-# carries the same flag for raw `cargo` invocations. We set it via env
-# here because justfile's `export RUSTFLAGS` overrides cargo's config.
-#
 # Set `ALLOW_WARNINGS=true` for local iteration to drop `-D warnings`
 # so in-progress code with unused imports / dead code still builds.
+#
+# Set `TOKIO_UNSTABLE=true` to add `--cfg tokio_unstable`, which widens
+# dial9's task coverage.
+
+# This is an `export` rather than a `.cargo/config.toml` entry because
+# justfile's `export RUSTFLAGS` overrides cargo's config either way.
 export RUSTFLAGS := \
-    if env_var_or_default("ALLOW_WARNINGS", "false") == "true" { \
-        "--cfg tokio_unstable" \
+    (if env_var_or_default("ALLOW_WARNINGS", "false") == "true" { \
+        "" \
     } else { \
-        "-D warnings --cfg tokio_unstable" \
-    }
+        "-D warnings" \
+    }) + (if env_var_or_default("TOKIO_UNSTABLE", "false") == "true" { \
+        " --cfg tokio_unstable" \
+    } else { \
+        "" \
+    })
 # Mirror CI's doc job: rustdoc warnings (e.g. private intra-doc links) fail
 # locally too, unless ALLOW_WARNINGS=true. rustdoc reads RUSTDOCFLAGS, not
 # RUSTFLAGS, so it needs its own export.
@@ -199,9 +203,8 @@ qq: sort-check fmt-check check check-nostd clippy doc extra-checks
 qa: qq docsrs-metadata-check test test-no-default-features test-doc deny
 
 # QA pass for the optional `dial9` runtime-telemetry feature. Builds, lints
-# and tests the rama crates that opt into dial9. `tokio_unstable` is
-# required by `dial9-tokio-telemetry` and is set workspace-wide in
-# `.cargo/config.toml` so this recipe does not need to set it explicitly.
+# and tests the rama crates that opt into dial9, on stable Tokio. Use
+# `qa-dial9-tokio-unstable` for the same pass with `--cfg tokio_unstable`.
 #
 # Kept separate from the main `qa` recipe so the standard QA path stays
 # focused — but is part of `qa-full` so anyone running the full suite
@@ -211,6 +214,10 @@ qa-dial9:
     cargo check -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
     cargo clippy -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
     cargo nextest run -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-socks5 --features dial9
+
+# `qa-dial9` under `--cfg tokio_unstable`, where dial9 gets its full task coverage.
+qa-dial9-tokio-unstable:
+    TOKIO_UNSTABLE=true just qa-dial9
 
 # Interactive: boot the fastcgi-php gateway demo (HTTPS → FastCGI/TCP → php-fpm)
 # and leave it running until Ctrl-C so you can curl / browse it.
@@ -281,7 +288,7 @@ test-e2e-ffi-swift:
 
 test-ffi-apple-full: qa-ffi-apple test-e2e-ffi-apple test-e2e-ffi-swift qa-xpc-apple
 
-qa-full: qa qa-dial9 hack test-ignored test-ignored-release test-loom fuzz-60s check-links
+qa-full: qa qa-dial9 qa-dial9-tokio-unstable hack test-ignored test-ignored-release test-loom fuzz-60s check-links
 
 bench-e2e-http-client-server *ARGS:
     ./scripts/bench/e2e_http_client_server.py {{ARGS}}

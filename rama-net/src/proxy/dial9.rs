@@ -1,10 +1,11 @@
 //! Pre-defined [dial9] events for proxy bridge lifecycle.
 //!
-//! [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
+//! [dial9]: https://github.com/dial9-rs/dial9
 
 use crate::dial9::{io_error_kind_code, io_error_raw_os_code};
 
-use dial9_tokio_telemetry::telemetry::{TelemetryHandle, clock_monotonic_ns, record_event};
+use dial9::Dial9Handle;
+use dial9::core::clock_monotonic_ns;
 use dial9_trace_format::TraceEvent;
 
 /// Bridge lifecycle: the copy loop is about to start.
@@ -41,16 +42,13 @@ pub struct IoForwardBridgeClosed {
 
 #[inline]
 pub(super) fn record_bridge_opened(idle_timeout_ms: u64, graceful: bool) {
-    let handle = TelemetryHandle::current();
+    let handle = Dial9Handle::current();
     if handle.is_enabled() {
-        record_event(
-            IoForwardBridgeOpened {
-                timestamp_ns: clock_monotonic_ns(),
-                idle_timeout_ms,
-                graceful,
-            },
-            &handle,
-        );
+        handle.record_event(IoForwardBridgeOpened {
+            timestamp_ns: clock_monotonic_ns(),
+            idle_timeout_ms,
+            graceful,
+        });
     }
 }
 
@@ -62,19 +60,16 @@ pub(super) fn record_bridge_closed(
     bytes_r_to_l: u64,
     error: Option<&std::io::Error>,
 ) {
-    let handle = TelemetryHandle::current();
+    let handle = Dial9Handle::current();
     if handle.is_enabled() {
-        record_event(
-            IoForwardBridgeClosed {
-                timestamp_ns: clock_monotonic_ns(),
-                reason,
-                age_ms,
-                bytes_l_to_r,
-                bytes_r_to_l,
-                error_kind: error.map(|e| io_error_kind_code(e.kind())),
-                error_raw_os: error.and_then(io_error_raw_os_code),
-            },
-            &handle,
-        );
+        handle.record_event(IoForwardBridgeClosed {
+            timestamp_ns: clock_monotonic_ns(),
+            reason,
+            age_ms,
+            bytes_l_to_r,
+            bytes_r_to_l,
+            error_kind: error.map(|e| io_error_kind_code(e.kind())),
+            error_raw_os: error.and_then(io_error_raw_os_code),
+        });
     }
 }

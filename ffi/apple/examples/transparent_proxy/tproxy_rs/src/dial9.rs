@@ -9,15 +9,15 @@
 //! a test process is more noise than signal.
 //!
 //! Misconfiguration of an enabled config falls back to a plain
-//! runtime via dial9's [`build_or_disabled`] semantics rather than
+//! runtime via dial9's [`recorder_or_disabled`] semantics rather than
 //! failing the engine build.
 //!
-//! [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
-//! [`build_or_disabled`]: dial9_tokio_telemetry::Dial9ConfigBuilder::build_or_disabled
+//! [dial9]: https://github.com/dial9-rs/dial9
+//! [`recorder_or_disabled`]: dial9::recorder_or_disabled
 
 use std::time::Duration;
 
-use ::dial9_tokio_telemetry::Dial9Config;
+use ::dial9::{DiskBuffer, TokioAttachOptions};
 use rama::{
     net::apple::networkextension::tproxy::DefaultTransparentProxyAsyncRuntimeFactory,
     telemetry::tracing, utils::octets::mib_u64,
@@ -50,14 +50,14 @@ pub(super) fn make_runtime_factory() -> DefaultTransparentProxyAsyncRuntimeFacto
         tracing::debug!(
             "rama-tproxy dial9: explicitly disabled via RAMA_TPROXY_DIAL9_DISABLED env var",
         );
-        return factory.without_dial9_config();
+        return factory.without_dial9_recorder();
     }
 
     let Some(storage) = super::utils::storage_dir() else {
         tracing::debug!(
             "rama-tproxy dial9: no storage dir provided; running with plain tokio runtime",
         );
-        return factory.without_dial9_config();
+        return factory.without_dial9_recorder();
     };
 
     let trace_dir = storage.join("dial9-traces");
@@ -67,24 +67,29 @@ pub(super) fn make_runtime_factory() -> DefaultTransparentProxyAsyncRuntimeFacto
             %err,
             "rama-tproxy dial9: failed to create trace dir; running with plain runtime",
         );
-        return factory.without_dial9_config();
+        return factory.without_dial9_recorder();
     }
-
-    let cfg = Dial9Config::builder()
-        .enabled(true)
-        .base_path(trace_dir.join("trace.bin"))
-        .max_file_size(MAX_FILE_BYTES)
-        .max_total_size(MAX_TOTAL_BYTES)
-        .rotation_period(ROTATION_PERIOD)
-        // Name the runtime so a multi-extension dial9 trace can be
-        // disambiguated; cost is a small string in the trace header.
-        .with_runtime(|b| b.with_runtime_name("rama-tproxy-example"))
-        .build_or_disabled();
 
     tracing::info!(
         path = %trace_dir.display(),
         "rama-tproxy dial9: telemetry enabled",
     );
 
-    factory.with_dial9_config(cfg)
+    // Segments land in `<trace_dir>/trace.{n}.bin`.
+    let writer = DiskBuffer::builder()
+        .base_path(trace_dir)
+        .max_file_size(MAX_FILE_BYTES)
+        .max_total_size(MAX_TOTAL_BYTES)
+        .rotation_period(ROTATION_PERIOD)
+        .build();
+
+    factory
+        .with_dial9_recorder(::dial9::recorder_or_disabled(writer).build())
+        // Name the runtime so a multi-extension dial9 trace can be
+        // disambiguated; cost is a small string in the trace header.
+        .with_dial9_attach_options(
+            TokioAttachOptions::builder()
+                .runtime_name("rama-tproxy-example")
+                .build(),
+        )
 }

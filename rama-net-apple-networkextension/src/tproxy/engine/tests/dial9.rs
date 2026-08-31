@@ -3,7 +3,7 @@
 use super::common::*;
 use crate::tproxy::engine::*;
 use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};
-use dial9_tokio_telemetry::{Dial9Config, telemetry::TelemetryHandle};
+use dial9::Dial9Handle;
 use parking_lot::Mutex;
 use rama_core::{
     extensions::ExtensionsRef,
@@ -12,21 +12,32 @@ use rama_core::{
 };
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
+/// Serializes tests that build an enabled dial9 recorder, since
+/// dial9 allows a single recorder per process (a second `build()` while one is
+/// alive returns a disabled recorder).
+fn recorder_slot() -> parking_lot::MutexGuard<'static, ()> {
+    static SLOT: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    SLOT.lock()
+}
+
 fn build_dial9_engine(
     handler: TestHandler,
-    trace_path: std::path::PathBuf,
+    trace_dir: &std::path::Path,
 ) -> TransparentProxyEngine<TestHandler> {
-    let config = Dial9Config::builder()
-        .enabled(true)
-        .base_path(trace_path)
+    let writer = dial9::DiskBuffer::builder()
+        .base_path(trace_dir)
         .max_file_size(1024 * 1024)
         .max_total_size(4 * 1024 * 1024)
-        .build()
-        .expect("build dial9 config");
+        .build();
+    let recorder = dial9::recorder_or_disabled(writer).build();
+    assert!(
+        recorder.handle().is_enabled(),
+        "expected an enabled recorder; is another one still alive?"
+    );
 
     TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
         .with_runtime_factory(
-            DefaultTransparentProxyAsyncRuntimeFactory::new().with_dial9_config(config),
+            DefaultTransparentProxyAsyncRuntimeFactory::new().with_dial9_recorder(recorder),
         )
         .build()
         .expect("build dial9 engine")
@@ -34,10 +45,11 @@ fn build_dial9_engine(
 
 #[test]
 fn synchronous_app_message_works_with_dial9_runtime() {
+    let _slot = recorder_slot();
     let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
     let mut handler = TestHandler::passthrough();
     handler.app_message_handler = Arc::new(|_| Some(vec![42]));
-    let engine = build_dial9_engine(handler, temp_dir.path().join("app-message.bin"));
+    let engine = build_dial9_engine(handler, temp_dir.path());
 
     let reply = engine
         .handle_app_message(rama_core::bytes::Bytes::new())
@@ -49,6 +61,7 @@ fn synchronous_app_message_works_with_dial9_runtime() {
 
 #[test]
 fn external_promote_keeps_engine_dial9_session() {
+    let _slot = recorder_slot();
     let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
     let engine_runtime_id = Arc::new(Mutex::new(None));
     let callback_runtime_id = Arc::clone(&engine_runtime_id);
@@ -84,7 +97,7 @@ fn external_promote_keeps_engine_dial9_session() {
         on_sleep: None,
         on_wake: None,
     };
-    let engine = build_dial9_engine(handler, temp_dir.path().join("promote.bin"));
+    let engine = build_dial9_engine(handler, temp_dir.path());
     let runtime_id = {
         let _enter = engine.rt.as_ref().unwrap().enter();
         tokio::runtime::Handle::current().id()
@@ -104,7 +117,7 @@ fn external_promote_keeps_engine_dial9_session() {
             (*callback_runtime_id.lock()).expect("engine runtime id initialized");
         callback_tx
             .send(
-                TelemetryHandle::current().is_enabled()
+                Dial9Handle::current().is_enabled()
                     && tokio::runtime::Handle::current().id() == expected_runtime_id,
             )
             .expect("send callback telemetry state");

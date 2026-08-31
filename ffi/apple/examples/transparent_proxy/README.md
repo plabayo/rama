@@ -650,7 +650,7 @@ runtime events.
 
 ## Observability with dial9
 
-This example always builds with [dial9](https://github.com/dial9-rs/dial9-tokio-telemetry)
+This example always builds with [dial9](https://github.com/dial9-rs/dial9)
 runtime telemetry on. Wiring + tuning knobs live in
 [`tproxy_rs/src/dial9.rs`](./tproxy_rs/src/dial9.rs); a misconfigured
 build falls back to a plain runtime rather than failing the engine
@@ -661,7 +661,7 @@ The test harness wires no storage directory through, so it stays plain.
 ### Reading traces
 
 The trace is a self-describing binary stream from
-[`dial9-tokio-telemetry`](https://github.com/dial9-rs/dial9-tokio-telemetry).
+[`dial9`](https://github.com/dial9-rs/dial9).
 Triage with `dial9-viewer` (GUI timeline), `dial9` /  `dial9-cli` (grep
 + JSON; pipe into an LLM for triage), or deserialise programmatically
 with [`dial9-trace-format`](https://docs.rs/dial9-trace-format). Follow

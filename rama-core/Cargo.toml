@@ -51,16 +51,16 @@ opentelemetry = [
     "dep:opentelemetry_sdk",
     "dep:tracing-opentelemetry",
 ]
-# Route task spawns through `dial9-tokio-telemetry::spawn` so they pick
-# up wake-event tracking when a `TracedRuntime` is active. Inert when
-# no traced runtime is present. Requires `--cfg tokio_unstable`.
-dial9 = ["std", "dep:dial9-tokio-telemetry", "dep:dial9-trace-format"]
+# Route task spawns through `dial9::spawn` so they pick
+# up wake-event tracking when a recorder is attached. Inert when
+# no traced runtime is present. `--cfg tokio_unstable` widens dial9's task coverage.
+dial9 = ["std", "dep:dial9", "dep:dial9-trace-format"]
 
 [dependencies]
 ahash = { workspace = true, optional = true }
 asynk-strim = { workspace = true }
 bytes = { workspace = true }
-dial9-tokio-telemetry = { workspace = true, optional = true }
+dial9 = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
 futures = { version = "0.3", default-features = false, features = ["alloc", "async-await"] }
 opentelemetry = { workspace = true, optional = true }

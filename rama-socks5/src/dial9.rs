@@ -1,8 +1,9 @@
 //! Pre-defined [dial9] events for the SOCKS5 client handshake.
 //!
-//! [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
+//! [dial9]: https://github.com/dial9-rs/dial9
 
-use dial9_tokio_telemetry::telemetry::{TelemetryHandle, clock_monotonic_ns, record_event};
+use dial9::Dial9Handle;
+use dial9::core::clock_monotonic_ns;
 use dial9_trace_format::TraceEvent;
 use rama_net::address::Host;
 
@@ -36,31 +37,25 @@ pub struct Socks5HandshakeConnect {
 
 #[inline]
 pub(crate) fn record_handshake_auth(auth_method: u8, success: bool) {
-    let handle = TelemetryHandle::current();
+    let handle = Dial9Handle::current();
     if handle.is_enabled() {
-        record_event(
-            Socks5HandshakeAuth {
-                timestamp_ns: clock_monotonic_ns(),
-                auth_method: auth_method as u32,
-                success,
-            },
-            &handle,
-        );
+        handle.record_event(Socks5HandshakeAuth {
+            timestamp_ns: clock_monotonic_ns(),
+            auth_method: auth_method as u32,
+            success,
+        });
     }
 }
 
 #[inline]
 pub(crate) fn record_handshake_connect(host: Host, port: u16, reply_kind: u8) {
-    let handle = TelemetryHandle::current();
+    let handle = Dial9Handle::current();
     if handle.is_enabled() {
-        record_event(
-            Socks5HandshakeConnect {
-                timestamp_ns: clock_monotonic_ns(),
-                destination_host: host,
-                destination_port: port as u32,
-                reply_kind: reply_kind as u32,
-            },
-            &handle,
-        );
+        handle.record_event(Socks5HandshakeConnect {
+            timestamp_ns: clock_monotonic_ns(),
+            destination_host: host,
+            destination_port: port as u32,
+            reply_kind: reply_kind as u32,
+        });
     }
 }

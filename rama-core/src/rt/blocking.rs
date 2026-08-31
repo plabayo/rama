@@ -15,6 +15,8 @@ use crate::{
     extensions::{Extensions, ExtensionsRef},
     rt::{OwnedRuntime, OwnedRuntimeHandle},
 };
+#[cfg(feature = "dial9")]
+use ::dial9::Dial9HandleTokioExt as _;
 use core::{
     fmt,
     future::Future,
@@ -60,17 +62,19 @@ pub struct RuntimeBuilder {
     flavor: RuntimeFlavor,
     flavor_explicit: bool,
     #[cfg(feature = "dial9")]
-    dial9_config: RuntimeDial9Config,
+    dial9_recorder: RuntimeDial9Recorder,
     #[cfg(feature = "dial9")]
-    dial9_config_may_be_enabled: bool,
+    dial9_attach_options: Option<::dial9::TokioAttachOptions>,
+    #[cfg(feature = "dial9")]
+    dial9_may_be_enabled: bool,
 }
 
 #[cfg(feature = "dial9")]
 #[derive(Debug)]
-enum RuntimeDial9Config {
+enum RuntimeDial9Recorder {
     FromEnv,
     Disabled,
-    Custom(Box<::dial9_tokio_telemetry::Dial9Config>),
+    Custom(Box<::dial9::Recorder>),
 }
 
 impl Default for RuntimeBuilder {
@@ -81,15 +85,17 @@ impl Default for RuntimeBuilder {
             flavor: RuntimeFlavor::CurrentThread,
             flavor_explicit: false,
             #[cfg(feature = "dial9")]
-            dial9_config: RuntimeDial9Config::FromEnv,
+            dial9_recorder: RuntimeDial9Recorder::FromEnv,
             #[cfg(feature = "dial9")]
-            dial9_config_may_be_enabled: implicit_dial9_config_may_be_enabled(),
+            dial9_attach_options: None,
+            #[cfg(feature = "dial9")]
+            dial9_may_be_enabled: implicit_dial9_may_be_enabled(),
         }
     }
 }
 
 #[cfg(feature = "dial9")]
-fn implicit_dial9_config_may_be_enabled() -> bool {
+fn implicit_dial9_may_be_enabled() -> bool {
     match std::env::var("DIAL9_ENABLED") {
         Err(std::env::VarError::NotPresent) => false,
         Ok(value) => !matches!(
@@ -130,9 +136,8 @@ impl RuntimeBuilder {
         /// Use a current-thread Tokio scheduler.
         ///
         /// With the `dial9` feature, this overrides the implicit environment
-        /// config when telemetry is disabled. An enabled environment config or
-        /// an explicitly supplied dial9 config owns its scheduler and conflicts
-        /// with this setting.
+        /// config when telemetry is disabled. Enabled telemetry needs the
+        /// multi-thread scheduler and conflicts with this setting.
         pub fn current_thread(mut self) -> Self {
             self.flavor = RuntimeFlavor::CurrentThread;
             self.flavor_explicit = true;
@@ -144,9 +149,8 @@ impl RuntimeBuilder {
         /// Use a multi-thread Tokio scheduler.
         ///
         /// With the `dial9` feature, this overrides the implicit environment
-        /// config when telemetry is disabled. An enabled environment config or
-        /// an explicitly supplied dial9 config owns its scheduler and conflicts
-        /// with this setting.
+        /// config when telemetry is disabled, and its worker count applies to
+        /// the instrumented runtime otherwise.
         pub fn worker_threads(mut self, worker_threads: usize) -> Self {
             self.flavor = RuntimeFlavor::MultiThread { worker_threads };
             self.flavor_explicit = true;
@@ -156,32 +160,47 @@ impl RuntimeBuilder {
 
     #[cfg(feature = "dial9")]
     rama_utils::macros::generate_set_and_with! {
-        /// Set the dial9 runtime configuration.
+        /// Set the [`Recorder`] this runtime records into.
         ///
-        /// With the `dial9` feature, this defaults to resolving
-        /// [`Dial9Config::from_env`] when the runtime is built. An enabled
-        /// dial9 config owns its Tokio scheduler configuration. Combining an
-        /// explicitly supplied config with
-        /// [`with_current_thread`](Self::with_current_thread) or
-        /// [`with_worker_threads`](Self::with_worker_threads) is rejected by
-        /// [`try_build`](Self::try_build). An implicit environment config yields
-        /// to an explicit Rama scheduler when telemetry is disabled. Use
-        /// [`without_dial9_config`](Self::without_dial9_config) to explicitly
-        /// select a Rama-configured scheduler without dial9.
+        /// With the `dial9` feature, this defaults to resolving the `DIAL9_*`
+        /// environment when the runtime is built. Combining an enabled recorder
+        /// with [`with_current_thread`](Self::with_current_thread) is rejected
+        /// by [`try_build`](Self::try_build). An implicit environment config
+        /// yields to an explicit Rama scheduler when telemetry is disabled. Use
+        /// [`without_dial9_recorder`](Self::without_dial9_recorder) to
+        /// explicitly select a Rama-configured scheduler without dial9.
         ///
-        /// An enabled config must produce a multi-thread runtime because dial9
+        /// An enabled recorder must produce a multi-thread runtime because dial9
         /// installs ambient telemetry handles on Tokio-owned worker threads.
         ///
-        /// [`Dial9Config::from_env`]: dial9_tokio_telemetry::Dial9Config::from_env
+        /// [`Recorder`]: dial9::Recorder
         #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
-        pub fn dial9_config(
+        pub fn dial9_recorder(
             mut self,
-            dial9_config: Option<::dial9_tokio_telemetry::Dial9Config>,
+            dial9_recorder: Option<::dial9::Recorder>,
         ) -> Self {
-            self.dial9_config = match dial9_config {
-                Some(config) => RuntimeDial9Config::Custom(Box::new(config)),
-                None => RuntimeDial9Config::Disabled,
+            self.dial9_recorder = match dial9_recorder {
+                Some(recorder) => RuntimeDial9Recorder::Custom(Box::new(recorder)),
+                None => RuntimeDial9Recorder::Disabled,
             };
+            self
+        }
+    }
+
+    #[cfg(feature = "dial9")]
+    rama_utils::macros::generate_set_and_with! {
+        /// Set how this runtime is traced: task tracking, dumps, hooks, and its
+        /// name in the trace.
+        ///
+        /// Only used alongside [`with_dial9_recorder`](Self::with_dial9_recorder).
+        /// When unset, the runtime takes this builder's thread name. Set options
+        /// and you name it yourself.
+        #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
+        pub fn dial9_attach_options(
+            mut self,
+            dial9_attach_options: ::dial9::TokioAttachOptions,
+        ) -> Self {
+            self.dial9_attach_options = Some(dial9_attach_options);
             self
         }
     }
@@ -198,23 +217,17 @@ impl RuntimeBuilder {
             ));
         }
 
-        #[cfg(feature = "dial9")]
-        if matches!(&self.dial9_config, RuntimeDial9Config::Custom(_)) && self.flavor_explicit {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "blocking runtime scheduler must be configured either through Rama or dial9, not both",
-            ));
-        }
-
         let Self {
             thread_name,
             shutdown_timeout,
             flavor,
             flavor_explicit,
             #[cfg(feature = "dial9")]
-            dial9_config,
+            dial9_recorder,
             #[cfg(feature = "dial9")]
-            dial9_config_may_be_enabled,
+            dial9_attach_options,
+            #[cfg(feature = "dial9")]
+            dial9_may_be_enabled,
         } = self;
 
         #[cfg(not(feature = "dial9"))]
@@ -231,51 +244,47 @@ impl RuntimeBuilder {
         let thread = thread::Builder::new().name(thread_name).spawn(move || {
             #[cfg(feature = "dial9")]
             let runtime = match (|| -> io::Result<OwnedRuntime> {
-                if matches!(&dial9_config, RuntimeDial9Config::FromEnv)
-                    && !dial9_config_may_be_enabled
-                {
-                    return build_tokio_runtime(flavor, &runtime_thread_name)
-                        .map(OwnedRuntime::from_tokio);
-                }
-
-                let (config, dial9_config_explicit) = match dial9_config {
-                    RuntimeDial9Config::FromEnv => (
-                        Some(::dial9_tokio_telemetry::Dial9Config::from_env()),
-                        false,
-                    ),
-                    RuntimeDial9Config::Disabled => (None, true),
-                    RuntimeDial9Config::Custom(config) => (Some(*config), true),
+                let plain = || {
+                    build_tokio_runtime(flavor, &runtime_thread_name).map(OwnedRuntime::from_tokio)
                 };
-                let Some(config) = config else {
-                    return build_tokio_runtime(flavor, &runtime_thread_name)
-                        .map(OwnedRuntime::from_tokio);
-                };
-                let runtime = ::dial9_tokio_telemetry::TracedRuntime::try_new(config)
-                    .map_err(io::Error::other)?;
 
-                if !runtime.guard().is_enabled() && !dial9_config_explicit {
-                    drop(runtime);
-                    return build_tokio_runtime(flavor, &runtime_thread_name)
-                        .map(OwnedRuntime::from_tokio);
+                match dial9_recorder {
+                    RuntimeDial9Recorder::Disabled => plain(),
+                    // An unset `DIAL9_ENABLED` means the implicit environment is
+                    // off, so skip dial9 and leave Rama's scheduler in charge.
+                    RuntimeDial9Recorder::FromEnv if !dial9_may_be_enabled => plain(),
+                    RuntimeDial9Recorder::FromEnv => {
+                        let (recorder, runtime) = ::dial9::recorder_from_env_with(|builder| {
+                            configure_dial9_builder(builder, flavor, &runtime_thread_name);
+                        })?;
+                        // The environment resolved to telemetry-off after all;
+                        // hand the scheduler choice back to Rama.
+                        if !recorder.handle().is_enabled() {
+                            drop((runtime, recorder));
+                            return plain();
+                        }
+                        require_multi_thread(flavor, flavor_explicit)?;
+                        Ok(OwnedRuntime::from_dial9((recorder, runtime)))
+                    }
+                    RuntimeDial9Recorder::Custom(recorder) => {
+                        // A disabled recorder records nothing, so it does not
+                        // constrain the scheduler.
+                        if !recorder.handle().is_enabled() {
+                            return plain();
+                        }
+                        require_multi_thread(flavor, flavor_explicit)?;
+                        let mut builder = tokio::runtime::Builder::new_multi_thread();
+                        builder.enable_all();
+                        configure_dial9_builder(&mut builder, flavor, &runtime_thread_name);
+                        let options = dial9_attach_options.unwrap_or_else(|| {
+                            ::dial9::TokioAttachOptions::builder()
+                                .runtime_name(runtime_thread_name.as_str())
+                                .build()
+                        });
+                        let runtime = recorder.handle().attach_tokio_runtime(builder, options)?;
+                        Ok(OwnedRuntime::from_dial9((*recorder, runtime)))
+                    }
                 }
-                if flavor_explicit {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "blocking runtime scheduler must be configured either through Rama or enabled dial9 telemetry, not both",
-                    ));
-                }
-                if runtime.guard().is_enabled()
-                    && matches!(
-                        runtime.runtime().handle().runtime_flavor(),
-                        tokio::runtime::RuntimeFlavor::CurrentThread
-                    )
-                {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "dial9 telemetry at a blocking boundary requires a multi-thread Tokio runtime",
-                    ));
-                }
-                Ok(OwnedRuntime::from_dial9(runtime))
             })() {
                 Ok(runtime) => runtime,
                 Err(err) => {
@@ -351,6 +360,35 @@ fn build_tokio_runtime(
     builder.enable_all();
     builder.thread_name(format!("{thread_name}-worker"));
     builder.build()
+}
+
+/// Reject an explicit current-thread scheduler paired with enabled telemetry.
+///
+/// dial9 installs its ambient handles on Tokio-owned worker threads, so an
+/// unset scheduler takes multi-thread implicitly rather than erroring.
+#[cfg(feature = "dial9")]
+fn require_multi_thread(flavor: RuntimeFlavor, flavor_explicit: bool) -> io::Result<()> {
+    if flavor_explicit && matches!(flavor, RuntimeFlavor::CurrentThread) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "dial9 telemetry at a blocking boundary requires a multi-thread Tokio runtime",
+        ));
+    }
+    Ok(())
+}
+
+/// Apply this builder's scheduler settings to a dial9-instrumented runtime.
+/// An unset worker count leaves Tokio's default in place.
+#[cfg(feature = "dial9")]
+fn configure_dial9_builder(
+    builder: &mut tokio::runtime::Builder,
+    flavor: RuntimeFlavor,
+    thread_name: &str,
+) {
+    if let RuntimeFlavor::MultiThread { worker_threads } = flavor {
+        builder.worker_threads(worker_threads);
+    }
+    builder.thread_name(format!("{thread_name}-worker"));
 }
 
 fn describe_runtime_flavor(runtime: &OwnedRuntime) -> io::Result<RuntimeFlavor> {
@@ -1006,7 +1044,7 @@ mod tests {
     fn final_runtime_lease_can_drop_on_worker() {
         let builder = Runtime::builder();
         #[cfg(feature = "dial9")]
-        let builder = builder.without_dial9_config();
+        let builder = builder.without_dial9_recorder();
         let runtime = builder
             .with_worker_threads(1)
             .with_shutdown_timeout(Duration::from_secs(1))
@@ -1032,7 +1070,7 @@ mod tests {
     fn multi_thread_runtime_is_supported() {
         let builder = Runtime::builder();
         #[cfg(feature = "dial9")]
-        let builder = builder.without_dial9_config();
+        let builder = builder.without_dial9_recorder();
         let runtime = builder.with_worker_threads(2).try_build().unwrap();
         assert_eq!(
             runtime.flavor(),
@@ -1048,7 +1086,7 @@ mod tests {
     fn zero_worker_threads_is_rejected() {
         let builder = Runtime::builder();
         #[cfg(feature = "dial9")]
-        let builder = builder.without_dial9_config();
+        let builder = builder.without_dial9_recorder();
         let err = builder.with_worker_threads(0).try_build().unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
@@ -1057,17 +1095,23 @@ mod tests {
     #[test]
     fn default_builder_defers_dial9_environment_resolution() {
         let builder = Runtime::builder();
-        assert!(matches!(builder.dial9_config, RuntimeDial9Config::FromEnv));
+        assert!(matches!(
+            builder.dial9_recorder,
+            RuntimeDial9Recorder::FromEnv
+        ));
 
-        let builder = builder.without_dial9_config();
-        assert!(matches!(builder.dial9_config, RuntimeDial9Config::Disabled));
+        let builder = builder.without_dial9_recorder();
+        assert!(matches!(
+            builder.dial9_recorder,
+            RuntimeDial9Recorder::Disabled
+        ));
     }
 
     #[cfg(feature = "dial9")]
     #[test]
     fn implicit_disabled_dial9_uses_current_thread_scheduler() {
         let mut builder = Runtime::builder();
-        builder.dial9_config_may_be_enabled = false;
+        builder.dial9_may_be_enabled = false;
 
         let runtime = builder.try_build().unwrap();
         assert_eq!(runtime.flavor(), RuntimeFlavor::CurrentThread);
@@ -1077,7 +1121,7 @@ mod tests {
     #[test]
     fn explicit_scheduler_overrides_disabled_implicit_dial9() {
         let mut builder = Runtime::builder();
-        builder.dial9_config_may_be_enabled = false;
+        builder.dial9_may_be_enabled = false;
 
         let runtime = builder.with_worker_threads(1).try_build().unwrap();
         assert_eq!(
@@ -1088,39 +1132,70 @@ mod tests {
 
     #[cfg(feature = "dial9")]
     #[test]
-    fn explicit_scheduler_conflicts_with_explicit_dial9_config() {
-        let config = ::dial9_tokio_telemetry::Dial9Config::builder()
-            .enabled(false)
-            .build()
-            .unwrap();
-        let err = Runtime::builder()
-            .with_dial9_config(config)
-            .with_worker_threads(1)
+    fn explicit_worker_threads_apply_to_the_dial9_runtime() {
+        let _slot = crate::rt::dial9_test_util::recorder_slot();
+        let temp_dir = rama_utils::fs::tempdir().unwrap();
+        let runtime = Runtime::builder()
+            .with_dial9_recorder(crate::rt::dial9_test_util::recorder(temp_dir.path()))
+            .with_worker_threads(2)
             .try_build()
-            .unwrap_err();
+            .unwrap();
 
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(
+            runtime.flavor(),
+            RuntimeFlavor::MultiThread { worker_threads: 2 }
+        );
+        drop(runtime);
+    }
+
+    #[cfg(feature = "dial9")]
+    #[test]
+    fn dial9_attach_options_are_applied() {
+        let _slot = crate::rt::dial9_test_util::recorder_slot();
+        let temp_dir = rama_utils::fs::tempdir().unwrap();
+        let runtime = Runtime::builder()
+            .with_dial9_recorder(crate::rt::dial9_test_util::recorder(temp_dir.path()))
+            .with_dial9_attach_options(
+                ::dial9::TokioAttachOptions::builder()
+                    .tokio_instrumentation_enabled(false)
+                    .build(),
+            )
+            .try_build()
+            .unwrap();
+
+        // The recorder is live, but this runtime opted out of instrumentation,
+        // so its workers never join the session.
+        let service = runtime.service(service_fn(|()| async {
+            Ok::<_, core::convert::Infallible>(::dial9::Dial9Handle::current().is_enabled())
+        }));
+        assert!(!*service.serve(()).unwrap());
+        drop(service);
+        drop(runtime);
+    }
+
+    #[cfg(feature = "dial9")]
+    #[test]
+    fn disabled_dial9_recorder_keeps_the_rama_scheduler() {
+        let runtime = Runtime::builder()
+            .with_dial9_recorder(::dial9::recorder_disabled())
+            .with_current_thread()
+            .try_build()
+            .unwrap();
+
+        assert_eq!(runtime.flavor(), RuntimeFlavor::CurrentThread);
     }
 
     #[cfg(feature = "dial9")]
     #[test]
     fn dial9_tracks_blocking_service_root() {
+        let _slot = crate::rt::dial9_test_util::recorder_slot();
         let temp_dir = rama_utils::fs::tempdir().unwrap();
-        let config = ::dial9_tokio_telemetry::Dial9Config::builder()
-            .enabled(true)
-            .base_path(temp_dir.path().join("blocking-runtime.bin"))
-            .max_file_size(1024 * 1024)
-            .max_total_size(4 * 1024 * 1024)
-            .build()
-            .unwrap();
         let runtime = Runtime::builder()
-            .with_dial9_config(config)
+            .with_dial9_recorder(crate::rt::dial9_test_util::recorder(temp_dir.path()))
             .try_build()
             .unwrap();
         let service = runtime.service(service_fn(|()| async {
-            Ok::<_, core::convert::Infallible>(
-                ::dial9_tokio_telemetry::telemetry::TelemetryHandle::current().is_enabled(),
-            )
+            Ok::<_, core::convert::Infallible>(::dial9::Dial9Handle::current().is_enabled())
         }));
 
         assert!(matches!(
@@ -1135,16 +1210,10 @@ mod tests {
     #[cfg(feature = "dial9")]
     #[test]
     fn dial9_tracks_tasks_spawned_through_handle() {
+        let _slot = crate::rt::dial9_test_util::recorder_slot();
         let temp_dir = rama_utils::fs::tempdir().unwrap();
-        let config = ::dial9_tokio_telemetry::Dial9Config::builder()
-            .enabled(true)
-            .base_path(temp_dir.path().join("blocking-runtime-handle.bin"))
-            .max_file_size(1024 * 1024)
-            .max_total_size(4 * 1024 * 1024)
-            .build()
-            .unwrap();
         let runtime = Runtime::builder()
-            .with_dial9_config(config)
+            .with_dial9_recorder(crate::rt::dial9_test_util::recorder(temp_dir.path()))
             .try_build()
             .unwrap();
         let handle = runtime.handle();
@@ -1152,10 +1221,8 @@ mod tests {
 
         thread::spawn(move || {
             _ = handle.spawn(async move {
-                tx.send(
-                    ::dial9_tokio_telemetry::telemetry::TelemetryHandle::current().is_enabled(),
-                )
-                .unwrap();
+                tx.send(::dial9::Dial9Handle::current().is_enabled())
+                    .unwrap();
             });
         })
         .join()
@@ -1168,21 +1235,11 @@ mod tests {
     #[cfg(feature = "dial9")]
     #[test]
     fn dial9_rejects_current_thread_scheduler() {
+        let _slot = crate::rt::dial9_test_util::recorder_slot();
         let temp_dir = rama_utils::fs::tempdir().unwrap();
-        let config = ::dial9_tokio_telemetry::Dial9Config::builder()
-            .enabled(true)
-            .base_path(temp_dir.path().join("blocking-current-thread.bin"))
-            .max_file_size(1024 * 1024)
-            .max_total_size(4 * 1024 * 1024)
-            .with_tokio(|builder| {
-                *builder = tokio::runtime::Builder::new_current_thread();
-                builder.enable_all();
-            })
-            .build()
-            .unwrap();
-
         let err = Runtime::builder()
-            .with_dial9_config(config)
+            .with_dial9_recorder(crate::rt::dial9_test_util::recorder(temp_dir.path()))
+            .with_current_thread()
             .try_build()
             .unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
