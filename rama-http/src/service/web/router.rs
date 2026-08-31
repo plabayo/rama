@@ -23,8 +23,8 @@ use rama_utils::collections::NonEmptySmallVec;
 use crate::{
     Request, Response,
     headers::Allow,
-    matcher::path::{compile_pattern, match_pattern},
-    matcher::{HttpMatcher, MethodMatcher, UriParams},
+    matcher::path::{compile_pattern_with_policy, match_pattern},
+    matcher::{HttpMatcher, MethodMatcher, PathMatchPolicy, UriParams},
     service::web::{
         IntoEndpointService, IntoEndpointServiceWithState,
         response::{ErrorResponse, Headers, IntoResponse},
@@ -60,10 +60,28 @@ where
 /// Each route compiles to a [`PathPattern`]; on lookup the most-specific
 /// matching pattern wins (static segments beat captures beat catch-alls).
 /// Nested services are mounted under a prefix via a typed [`PathRouter`].
+/// Path matching uses [`PathMatchPolicy::default`] unless an explicit policy
+/// is selected at construction with [`Router::new_with_path_match_policy`] or
+/// [`Router::new_with_state_and_path_match_policy`].
+/// Routers created by [`Router::with_sub_router_make_fn`] inherit that policy.
+/// A separately constructed router passed to [`Router::with_sub_service`]
+/// retains its own policy; the parent policy still governs its mount prefix.
+///
+/// ```
+/// use rama_http::service::web::{PathMatchPolicy, Router};
+///
+/// let default_router: Router = Router::new();
+/// assert_eq!(default_router.path_match_policy(), PathMatchPolicy::default());
+///
+/// let strict_router: Router =
+///     Router::new_with_path_match_policy(PathMatchPolicy::STRICT);
+/// assert_eq!(strict_router.path_match_policy(), PathMatchPolicy::STRICT);
+/// ```
 #[allow(unused)]
 pub struct Router<State = (), Layer = DefaultEndpointLayer, O = Response, E = RouterError> {
     routes: Vec<RouteEntry<O, E>>,
     sub_services: Option<PathRouter<SubService<O, E>>>,
+    path_match_policy: PathMatchPolicy,
     not_found: Option<BoxService<Request, O, E>>,
     layer: Layer,
     state: State,
@@ -122,7 +140,16 @@ impl<O, E> Router<(), DefaultEndpointLayer, O, E> {
     /// create a new router.
     #[must_use]
     pub fn new() -> Self {
-        Self::new_with_state(())
+        Self::new_with_path_match_policy(PathMatchPolicy::default())
+    }
+
+    /// Create a new router with an explicit path-matching policy.
+    ///
+    /// The policy applies consistently to ordinary routes, fallback routes,
+    /// captures, wildcards, and mounted prefixes.
+    #[must_use]
+    pub fn new_with_path_match_policy(path_match_policy: PathMatchPolicy) -> Self {
+        Self::new_with_state_and_path_match_policy((), path_match_policy)
     }
 }
 
@@ -133,9 +160,22 @@ where
     #[must_use]
     /// Create a new router with state
     pub fn new_with_state(state: State) -> Self {
+        Self::new_with_state_and_path_match_policy(state, PathMatchPolicy::default())
+    }
+
+    /// Create a new router with state and an explicit path-matching policy.
+    ///
+    /// The policy applies consistently to ordinary routes, fallback routes,
+    /// captures, wildcards, and mounted prefixes.
+    #[must_use]
+    pub fn new_with_state_and_path_match_policy(
+        state: State,
+        path_match_policy: PathMatchPolicy,
+    ) -> Self {
         Self {
             routes: Vec::new(),
             sub_services: None,
+            path_match_policy,
             not_found: None,
             layer: Default::default(),
             state,
@@ -153,6 +193,13 @@ where
         &self.state
     }
 
+    /// Return the immutable path-matching policy selected at construction.
+    #[inline]
+    #[must_use]
+    pub const fn path_match_policy(&self) -> PathMatchPolicy {
+        self.path_match_policy
+    }
+
     /// Apply `layer` to every endpoint registered after this call.
     ///
     /// Routes registered before this call keep whatever layer was in effect at the time of registration.
@@ -160,6 +207,7 @@ where
         Router {
             routes: self.routes,
             sub_services: self.sub_services,
+            path_match_policy: self.path_match_policy,
             not_found: self.not_found,
             layer,
             state: self.state,
@@ -173,6 +221,7 @@ where
         Router {
             routes: self.routes,
             sub_services: self.sub_services,
+            path_match_policy: self.path_match_policy,
             not_found: self.not_found,
             layer: DefaultEndpointLayer,
             state: self.state,
@@ -453,6 +502,7 @@ where
         let router = Self {
             routes: Vec::new(),
             sub_services: None,
+            path_match_policy: self.path_match_policy,
             not_found: None,
             layer: self.layer.clone(),
             state: self.state.clone(),
@@ -507,6 +557,9 @@ where
     /// to create a sub-router that shares the same state this router has, use [`Router::with_sub_router_make_fn`] instead.
     /// Also, the endpoint layer is not applied to it, so its Output / Error must match those of the Router
     /// If you need its type conversions, consider [`Router::with_endpoint_service`]
+    ///
+    /// A separately constructed [`Router`] used as the service retains its own
+    /// path policy. This router's policy applies only to the mount prefix.
     #[must_use]
     #[inline]
     pub fn with_sub_service<S>(mut self, prefix: impl AsRef<str>, service: S) -> Self
@@ -542,14 +595,17 @@ where
         let router = self.sub_services.get_or_insert_default();
         router.insert_prefix_with_opts(
             prefix.as_ref().trim(),
-            crate::matcher::path::HTTP_PATH_OPTS,
+            self.path_match_policy.options(),
             SubService { svc: nested },
         );
 
         self
     }
 
-    /// add a route to the router with it's matcher and service.
+    /// Add a route to the router with its matcher and service.
+    ///
+    /// The route path uses the router's policy. Any path patterns inside
+    /// `matcher` retain the policy explicitly selected for that matcher.
     #[inline(always)]
     #[must_use]
     pub fn with_match_route<I, T>(
@@ -566,7 +622,10 @@ where
         self
     }
 
-    /// add a route to the router with it's matcher and service.
+    /// Add a route to the router with its matcher and service.
+    ///
+    /// The route path uses the router's policy. Any path patterns inside
+    /// `matcher` retain the policy explicitly selected for that matcher.
     pub fn set_match_route<I, T>(
         &mut self,
         path: impl AsRef<str>,
@@ -582,7 +641,7 @@ where
             .layer(service.into_endpoint_service_with_state(self.state.clone()))
             .boxed();
 
-        let pattern = compile_pattern(path.as_ref());
+        let pattern = compile_pattern_with_policy(path.as_ref(), self.path_match_policy);
 
         if let Some(entry) = self.routes.iter_mut().find(|e| e.pattern == pattern) {
             entry.handlers.push((matcher, service));
@@ -613,6 +672,8 @@ where
     /// shadow another handler sharing the path. A matching fallback runs only
     /// when no ordinary handler or mounted sub-service accepted the request,
     /// and before the router produces its generic 405 or 404 response.
+    /// The fallback path uses the router's policy; path patterns inside
+    /// `matcher` retain their own explicitly selected policy.
     #[inline(always)]
     #[must_use]
     pub fn with_fallback_match_route<I, T>(
@@ -631,6 +692,9 @@ where
 
     /// Add a route fallback evaluated after ordinary handlers and mounted
     /// sub-services for the same request path.
+    ///
+    /// The fallback path uses the router's policy; path patterns inside
+    /// `matcher` retain their own explicitly selected policy.
     pub fn set_fallback_match_route<I, T>(
         &mut self,
         path: impl AsRef<str>,
@@ -645,7 +709,7 @@ where
             .layer
             .layer(service.into_endpoint_service_with_state(self.state.clone()))
             .boxed();
-        let pattern = compile_pattern(path.as_ref());
+        let pattern = compile_pattern_with_policy(path.as_ref(), self.path_match_policy);
 
         if let Some(entry) = self.routes.iter_mut().find(|e| e.pattern == pattern) {
             entry.fallback_handlers.push((matcher, service));
@@ -887,7 +951,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        layer::error_handling::ErrorHandlerLayer, matcher::UriParams, service::web::extract::State,
+        layer::error_handling::ErrorHandlerLayer,
+        matcher::{PathCase, PathDecoding, UriParams},
+        service::web::extract::State,
     };
 
     fn root_service() -> impl Service<Request, Output = Response, Error = Infallible> {
@@ -957,6 +1023,50 @@ mod tests {
                 .body(Body::from("Not Found"))
                 .unwrap())
         })
+    }
+
+    fn label_service(
+        label: &'static str,
+    ) -> impl Service<Request, Output = Response, Error = Infallible> {
+        service_fn(move |_req| async move { Ok(Response::new(Body::from(label))) })
+    }
+
+    fn capture_service(
+        name: &'static str,
+    ) -> impl Service<Request, Output = Response, Error = Infallible> {
+        service_fn(move |req: Request| async move {
+            let params = req.extensions().get_ref::<UriParams>().unwrap();
+            Ok(Response::new(Body::from(
+                params.get(name).unwrap().to_owned(),
+            )))
+        })
+    }
+
+    fn joined_capture_service(
+        first: &'static str,
+        second: &'static str,
+    ) -> impl Service<Request, Output = Response, Error = Infallible> {
+        service_fn(move |req: Request| async move {
+            let params = req.extensions().get_ref::<UriParams>().unwrap();
+            Ok(Response::new(Body::from(format!(
+                "{}|{}",
+                params.get(first).unwrap(),
+                params.get(second).unwrap()
+            ))))
+        })
+    }
+
+    async fn get_text<S>(service: &S, path: &str) -> (StatusCode, String)
+    where
+        S: Service<Request, Output = Response, Error = Infallible>,
+    {
+        let response = service
+            .serve(Request::get(path).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, String::from_utf8(body.to_vec()).unwrap())
     }
 
     fn get_user_order_service() -> impl Service<Request, Output = Response, Error = Infallible> {
@@ -1206,7 +1316,7 @@ mod tests {
     #[test]
     fn specificity_reflects_segment_kinds() {
         let spec = |p: &str| {
-            specificity_of(&compile_pattern(p))
+            specificity_of(&compile_pattern_with_policy(p, PathMatchPolicy::default()))
                 .into_iter()
                 .map(|rank| rank.kind)
                 .collect::<Vec<_>>()
@@ -1222,9 +1332,10 @@ mod tests {
 
     #[test]
     fn specificity_breaks_dynamic_ties_with_literal_weight() {
-        let plain = specificity_of(&compile_pattern("/files/{name}"));
-        let json = specificity_of(&compile_pattern("/files/{name}.json"));
-        let wildcard_json = specificity_of(&compile_pattern("/files/{}.json"));
+        let compile = |path| compile_pattern_with_policy(path, PathMatchPolicy::default());
+        let plain = specificity_of(&compile("/files/{name}"));
+        let json = specificity_of(&compile("/files/{name}.json"));
+        let wildcard_json = specificity_of(&compile("/files/{}.json"));
 
         assert!(json > plain);
         assert!(wildcard_json > plain);
@@ -1548,6 +1659,207 @@ mod tests {
                 "GET",
                 "nested router: Allow header reflects sub-router's registered methods; prefix = {prefix}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn default_and_strict_path_policy_matrix() {
+        assert_eq!(
+            PathMatchPolicy::default(),
+            PathMatchPolicy::new(PathCase::AsciiInsensitive, PathDecoding::PercentDecoded)
+        );
+
+        let default = ErrorHandlerLayer::new().layer(
+            Router::new()
+                .with_get("/send/{value}", capture_service("value"))
+                .with_get("/case", label_service("lower"))
+                .with_get("/CASE", label_service("upper"))
+                .with_not_found(not_found_service()),
+        );
+        assert_eq!(
+            default.get_ref().path_match_policy(),
+            PathMatchPolicy::default()
+        );
+
+        for (path, expected) in [
+            ("/send/abc", "abc"),
+            ("/SEND/abc", "abc"),
+            ("/send/a%2Fb", "a/b"),
+            ("/send/a%252Fb", "a%2Fb"),
+            ("/send/%2e%2e", ".."),
+        ] {
+            assert_eq!(
+                get_text(&default, path).await,
+                (StatusCode::OK, expected.into())
+            );
+        }
+        for path in ["/case", "/CASE", "/CaSe"] {
+            assert_eq!(
+                get_text(&default, path).await,
+                (StatusCode::OK, "lower".into())
+            );
+        }
+
+        let strict = ErrorHandlerLayer::new().layer(
+            Router::new_with_path_match_policy(PathMatchPolicy::STRICT)
+                .with_get("/send/{value}", capture_service("value"))
+                .with_get("/case", label_service("lower"))
+                .with_get("/CASE", label_service("upper"))
+                .with_get("/encoded/a%2Fb", label_service("upper escape"))
+                .with_get("/encoded/a%2fb", label_service("lower escape"))
+                .with_not_found(not_found_service()),
+        );
+        assert_eq!(
+            strict.get_ref().path_match_policy(),
+            PathMatchPolicy::STRICT
+        );
+
+        for (path, expected) in [
+            ("/send/abc", "abc"),
+            ("/send/a%2Fb", "a%2Fb"),
+            ("/send/a%252Fb", "a%252Fb"),
+            ("/send/%2e%2e", "%2e%2e"),
+            ("/case", "lower"),
+            ("/CASE", "upper"),
+            ("/encoded/a%2Fb", "upper escape"),
+            ("/encoded/a%2fb", "lower escape"),
+        ] {
+            assert_eq!(
+                get_text(&strict, path).await,
+                (StatusCode::OK, expected.into())
+            );
+        }
+        for path in ["/SEND/abc", "/CaSe"] {
+            assert_eq!(get_text(&strict, path).await.0, StatusCode::NOT_FOUND);
+        }
+
+        // The URI retains malformed input for display, but its encoded path
+        // view escapes the stray percent sign. Decoded routing reverses that
+        // canonical escape once; raw routing preserves the encoded view.
+        for (input, decoded, raw) in [
+            ("/send/%", "%", "%25"),
+            ("/send/%2", "%2", "%252"),
+            ("/send/%GG", "%GG", "%25GG"),
+        ] {
+            let request = Request::get(input).body(Body::empty()).unwrap();
+            assert_eq!(request.uri().to_string(), input);
+            assert_eq!(
+                get_text(&default, input).await,
+                (StatusCode::OK, decoded.into())
+            );
+            assert_eq!(get_text(&strict, input).await, (StatusCode::OK, raw.into()));
+        }
+    }
+
+    #[tokio::test]
+    async fn path_policy_axes_are_independent() {
+        let sensitive_decoded =
+            PathMatchPolicy::new(PathCase::Sensitive, PathDecoding::PercentDecoded);
+        let router = ErrorHandlerLayer::new().layer(
+            Router::new_with_path_match_policy(sensitive_decoded)
+                .with_get("/send/{value}", capture_service("value"))
+                .with_not_found(not_found_service()),
+        );
+        assert_eq!(
+            get_text(&router, "/send/a%2Fb").await,
+            (StatusCode::OK, "a/b".into())
+        );
+        assert_eq!(
+            get_text(&router, "/SEND/a%2Fb").await.0,
+            StatusCode::NOT_FOUND
+        );
+
+        let insensitive_raw = PathMatchPolicy::new(PathCase::AsciiInsensitive, PathDecoding::Raw);
+        let router = ErrorHandlerLayer::new().layer(
+            Router::new_with_path_match_policy(insensitive_raw)
+                .with_get("/send/{value}", capture_service("value"))
+                .with_not_found(not_found_service()),
+        );
+        assert_eq!(
+            get_text(&router, "/SEND/a%2Fb").await,
+            (StatusCode::OK, "a%2Fb".into())
+        );
+    }
+
+    #[test]
+    fn stateful_router_policy_is_defaulted_or_explicit() {
+        let default = Router::<String>::new_with_state("state".to_owned());
+        assert_eq!(default.path_match_policy(), PathMatchPolicy::default());
+
+        let strict = Router::<String>::new_with_state_and_path_match_policy(
+            "state".to_owned(),
+            PathMatchPolicy::STRICT,
+        );
+        assert_eq!(strict.path_match_policy(), PathMatchPolicy::STRICT);
+    }
+
+    #[tokio::test]
+    async fn path_policy_applies_to_wildcards_and_mounted_prefixes() {
+        let default = ErrorHandlerLayer::new().layer(
+            Router::new()
+                .with_get("/assets/{*path}", capture_service("path"))
+                .with_sub_service(
+                    "/tenants/{tenant}",
+                    Router::new().with_get("/{item}", joined_capture_service("tenant", "item")),
+                )
+                .with_not_found(not_found_service()),
+        );
+        assert_eq!(
+            get_text(&default, "/ASSETS/a%2Fb/c%2Ed").await,
+            (StatusCode::OK, "a/b/c.d".into())
+        );
+        assert_eq!(
+            get_text(&default, "/TENANTS/Acme%2FBlue/Part%2FOne").await,
+            (StatusCode::OK, "Acme/Blue|Part/One".into())
+        );
+
+        let strict = ErrorHandlerLayer::new().layer(
+            Router::new_with_path_match_policy(PathMatchPolicy::STRICT)
+                .with_get("/assets/{*path}", capture_service("path"))
+                .with_sub_service(
+                    "/tenants/{tenant}",
+                    Router::new().with_get("/{item}", joined_capture_service("tenant", "item")),
+                )
+                .with_not_found(not_found_service()),
+        );
+        assert_eq!(
+            get_text(&strict, "/assets/a%2Fb/c%2Ed").await,
+            (StatusCode::OK, "a%2Fb/c%2Ed".into())
+        );
+        assert_eq!(
+            get_text(&strict, "/tenants/Acme%2FBlue/Part%2FOne").await,
+            (StatusCode::OK, "Acme%2FBlue|Part/One".into())
+        );
+        for path in ["/ASSETS/a%2Fb/c%2Ed", "/TENANTS/Acme%2FBlue/Part%2FOne"] {
+            assert_eq!(get_text(&strict, path).await.0, StatusCode::NOT_FOUND);
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_and_fallback_routes_inherit_the_router_policy() {
+        let router = Router::new_with_path_match_policy(PathMatchPolicy::STRICT)
+            .with_sub_router_make_fn("/api", |nested| {
+                assert_eq!(nested.path_match_policy(), PathMatchPolicy::STRICT);
+                nested.with_get("/Value", label_service("nested"))
+            })
+            .with_fallback_match_route(
+                "/problem/{value}",
+                HttpMatcher::method_get(),
+                capture_service("value"),
+            )
+            .with_not_found(not_found_service());
+        let router = ErrorHandlerLayer::new().layer(router);
+
+        assert_eq!(
+            get_text(&router, "/api/Value").await,
+            (StatusCode::OK, "nested".into())
+        );
+        assert_eq!(
+            get_text(&router, "/problem/a%2Fb").await,
+            (StatusCode::OK, "a%2Fb".into())
+        );
+        for path in ["/API/Value", "/api/value", "/PROBLEM/a%2Fb"] {
+            assert_eq!(get_text(&router, path).await.0, StatusCode::NOT_FOUND);
         }
     }
 }
