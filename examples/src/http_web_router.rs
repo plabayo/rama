@@ -48,7 +48,7 @@ use rama::{
             response::{Html, Json, Redirect},
         },
     },
-    net::http::uri::UriMatchReplaceRule,
+    net::uri::UriMatchReplaceRule,
     rt::Executor,
     telemetry::tracing::{
         self,

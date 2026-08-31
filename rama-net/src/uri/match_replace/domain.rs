@@ -1,8 +1,8 @@
 use crate::std::borrow::Cow;
 
+use super::UriMatchError;
 use super::UriMatchReplace;
 use crate::address::{Domain, OptPort};
-use crate::http::uri::match_replace::UriMatchError;
 use crate::uri::Uri;
 
 use rama_utils::macros::generate_set_and_with;

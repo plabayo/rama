@@ -41,11 +41,11 @@ all_the_tuples_no_last_special_case!(impl_uri_match_replace_on_tuple);
 mod tests {
     use crate::std::borrow::Cow;
 
-    use crate::http::uri::{
+    use crate::uri::Uri;
+    use crate::uri::{
         UriMatchError, UriMatchReplace as _, UriMatchReplaceScheme,
         match_replace::UriMatchReplaceNever,
     };
-    use crate::uri::Uri;
 
     #[test]
     fn tuple_simple() {

@@ -67,7 +67,7 @@ rama-http-hyperium = { workspace = true, optional = true }
 rama-http-macros = { workspace = true, optional = true }
 rama-http-types = { workspace = true }
 rama-json = { workspace = true }
-rama-net = { workspace = true, features = ["std", "http"] }
+rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
 rand = { workspace = true }
 rawzip = { workspace = true, optional = true }

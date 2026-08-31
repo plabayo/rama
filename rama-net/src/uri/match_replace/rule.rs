@@ -55,7 +55,7 @@ use serde::{Deserialize, Serialize, de::Error as _, ser::Error as _};
 /// # use core::str::FromStr;
 /// # use std::borrow::Cow;
 /// # use rama_net::uri::Uri;
-/// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
+/// # use rama_net::uri::{UriMatchReplace, UriMatchReplaceRule};
 /// let rule = UriMatchReplaceRule::try_new("http://*", "https://$1").unwrap();
 ///
 /// let input = Uri::from_static("http://example.com/x?y=1");
@@ -73,7 +73,7 @@ use serde::{Deserialize, Serialize, de::Error as _, ser::Error as _};
 /// # use core::str::FromStr;
 /// # use std::borrow::Cow;
 /// # use rama_net::uri::Uri;
-/// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
+/// # use rama_net::uri::{UriMatchReplace, UriMatchReplaceRule};
 /// let rule = UriMatchReplaceRule::try_new(
 ///     "https://*/docs/*",
 ///     "https://$1/knowledge/$2"
@@ -192,7 +192,7 @@ impl UriMatchReplaceRule {
     /// Equivalent to:
     ///
     /// ```rust
-    /// # use rama_net::http::uri::UriMatchReplaceRule;
+    /// # use rama_net::uri::UriMatchReplaceRule;
     /// let rule = UriMatchReplaceRule::try_new("http://*", "https://$1").unwrap();
     /// ```
     ///
@@ -202,7 +202,7 @@ impl UriMatchReplaceRule {
     /// # use core::str::FromStr;
     /// # use std::borrow::Cow;
     /// # use rama_net::uri::Uri;
-    /// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
+    /// # use rama_net::uri::{UriMatchReplace, UriMatchReplaceRule};
     /// let rule = UriMatchReplaceRule::http_to_https();
     /// let out = rule.match_replace_uri(Cow::Owned(Uri::from_static("http://a/b?x=1"))).unwrap();
     /// assert_eq!(out.to_string(), "https://a/b?x=1");
@@ -320,7 +320,7 @@ mod tests {
     use core::str::FromStr;
 
     use super::*;
-    use crate::http::uri::UriMatchReplace as _;
+    use crate::uri::UriMatchReplace as _;
 
     // ---------- helpers ----------
 

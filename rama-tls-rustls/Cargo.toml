@@ -22,7 +22,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 
 [features]
 default = []
-http = ["rama-net/http", "rama-tls/http"]
+http = ["rama-tls/http"]
 aws-lc = [
     "rustls/aws_lc_rs",
     "tokio-rustls/aws_lc_rs",

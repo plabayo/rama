@@ -32,7 +32,7 @@ use crate::address::{Domain, Host, HostWithOptPort};
 #[cfg(feature = "std")]
 use crate::client::ConnectorTarget;
 
-#[cfg(feature = "http")]
+#[cfg(feature = "std")]
 use crate::http::Version;
 use crate::transport::TransportProtocol;
 use crate::uri::{PathRef, Uri};
@@ -149,13 +149,13 @@ impl<T: ProtocolInputExt + ?Sized> ProtocolInputExt for &T {
 /// forwarded context, so it is not necessarily the egress version a connector
 /// should establish. Connector code should use [`TargetHttpVersionInputExt`].
 /// It is `None` for non-HTTP inputs (e.g. a raw transport target).
-#[cfg(feature = "http")]
+#[cfg(feature = "std")]
 pub trait HttpVersionInputExt {
     /// The HTTP version, or `None` for non-HTTP inputs.
     fn http_version(&self) -> Option<Version>;
 }
 
-#[cfg(feature = "http")]
+#[cfg(feature = "std")]
 impl<T: HttpVersionInputExt + ?Sized> HttpVersionInputExt for &T {
     fn http_version(&self) -> Option<Version> {
         (**self).http_version()
@@ -167,7 +167,7 @@ impl<T: HttpVersionInputExt + ?Sized> HttpVersionInputExt for &T {
 /// This is deliberately separate from [`HttpVersionInputExt`], which may
 /// resolve the original client version from forwarded request context. A
 /// connector needs the selected egress version instead.
-#[cfg(feature = "http")]
+#[cfg(feature = "std")]
 pub trait TargetHttpVersionInputExt {
     /// The selected egress HTTP version, or `None` if none is available.
     fn target_http_version(&self) -> Option<Version>;
@@ -182,7 +182,7 @@ pub trait TargetHttpVersionInputExt {
     }
 }
 
-#[cfg(feature = "http")]
+#[cfg(feature = "std")]
 impl<T: TargetHttpVersionInputExt + ?Sized> TargetHttpVersionInputExt for &T {
     fn target_http_version(&self) -> Option<Version> {
         (**self).target_http_version()

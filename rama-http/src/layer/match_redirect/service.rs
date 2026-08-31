@@ -5,7 +5,7 @@ use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
 use rama_core::telemetry::tracing;
 use rama_http_headers::Location;
-use rama_net::http::uri::{UriMatchError, UriMatchReplace};
+use rama_net::uri::{UriMatchError, UriMatchReplace};
 use rama_utils::macros::define_inner_service_accessors;
 use std::borrow::Cow;
 
@@ -28,7 +28,7 @@ impl<R, S> UriMatchRedirectService<R, S> {
     /// with the given [`UriMatchReplace`] implementation to optionally redirect
     /// early returning instead of serving using the inner [`Service`].
     ///
-    /// [`UriMatchReplace`]: rama_net::http::uri::UriMatchReplace
+    /// [`UriMatchReplace`]: rama_net::uri::UriMatchReplace
     #[inline]
     pub fn to(match_replace: R, service: S) -> Self {
         Self::new(StatusCode::SEE_OTHER, match_replace, service)
@@ -38,7 +38,7 @@ impl<R, S> UriMatchRedirectService<R, S> {
     /// with the given [`UriMatchReplace`] implementation to optionally redirect
     /// early returning instead of serving using the inner [`Service`].
     ///
-    /// [`UriMatchReplace`]: rama_net::http::uri::UriMatchReplace
+    /// [`UriMatchReplace`]: rama_net::uri::UriMatchReplace
     #[inline]
     pub fn moved(match_replace: R, service: S) -> Self {
         Self::new(StatusCode::MOVED_PERMANENTLY, match_replace, service)
@@ -48,7 +48,7 @@ impl<R, S> UriMatchRedirectService<R, S> {
     /// with the given [`UriMatchReplace`] implementation to optionally redirect
     /// early returning instead of serving using the inner [`Service`].
     ///
-    /// [`UriMatchReplace`]: rama_net::http::uri::UriMatchReplace
+    /// [`UriMatchReplace`]: rama_net::uri::UriMatchReplace
     #[inline]
     pub fn found(match_replace: R, service: S) -> Self {
         Self::new(StatusCode::FOUND, match_replace, service)
@@ -58,7 +58,7 @@ impl<R, S> UriMatchRedirectService<R, S> {
     /// with the given [`UriMatchReplace`] implementation to optionally redirect
     /// early returning instead of serving using the inner [`Service`].
     ///
-    /// [`UriMatchReplace`]: rama_net::http::uri::UriMatchReplace
+    /// [`UriMatchReplace`]: rama_net::uri::UriMatchReplace
     #[inline]
     pub fn temporary(match_replace: R, service: S) -> Self {
         Self::new(StatusCode::TEMPORARY_REDIRECT, match_replace, service)
@@ -68,7 +68,7 @@ impl<R, S> UriMatchRedirectService<R, S> {
     /// with the given [`UriMatchReplace`] implementation to optionally redirect
     /// early returning instead of serving using the inner [`Service`].
     ///
-    /// [`UriMatchReplace`]: rama_net::http::uri::UriMatchReplace
+    /// [`UriMatchReplace`]: rama_net::uri::UriMatchReplace
     #[inline]
     pub fn permanent(match_replace: R, service: S) -> Self {
         Self::new(StatusCode::PERMANENT_REDIRECT, match_replace, service)
@@ -151,8 +151,8 @@ where
 mod tests {
     use crate::{layer::into_response::IntoResponseService, service::web::IntoEndpointService};
     use rama_http_headers::HeaderMapExt;
-    use rama_net::http::uri::UriMatchReplaceRule;
     use rama_net::uri::Uri;
+    use rama_net::uri::UriMatchReplaceRule;
 
     use super::*;
 

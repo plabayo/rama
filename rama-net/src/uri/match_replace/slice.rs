@@ -42,7 +42,7 @@ mod tests {
     use core::str::FromStr;
 
     use super::*;
-    use crate::http::uri::UriMatchReplaceRule;
+    use crate::uri::UriMatchReplaceRule;
 
     // ---------- helpers ----------
 

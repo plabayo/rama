@@ -2,7 +2,7 @@ use std::fmt;
 
 use crate::Request;
 use rama_core::{Service, telemetry::tracing};
-use rama_net::http::uri::{UriMatchError, UriMatchReplace};
+use rama_net::uri::{UriMatchError, UriMatchReplace};
 use rama_utils::macros::define_inner_service_accessors;
 use std::borrow::Cow;
 

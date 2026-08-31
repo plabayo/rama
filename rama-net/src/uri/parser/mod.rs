@@ -281,7 +281,7 @@ pub(super) fn parse_authority_form(bytes: Bytes, mode: ParserMode) -> Result<Uri
 /// accepted forms use the strict RFC 3986 grammar plus the HTTP constraints
 /// that fragments and absolute-form userinfo are rejected, and CONNECT uses
 /// exactly `host:port`.
-#[cfg(feature = "http")]
+#[cfg(feature = "std")]
 pub(crate) fn validate_http_request_target(
     bytes: &[u8],
     authority_form: bool,
@@ -294,7 +294,7 @@ pub(crate) fn validate_http_request_target(
 /// Peeking deliberately retains Rama's graceful URI acceptance envelope so a
 /// syntactically recoverable request is still routed to the HTTP parser, which
 /// can then apply its configured policy and produce the protocol error.
-#[cfg(feature = "http")]
+#[cfg(feature = "std")]
 pub(crate) fn validate_http_request_target_for_peek(
     bytes: &[u8],
     authority_form: bool,
@@ -302,7 +302,7 @@ pub(crate) fn validate_http_request_target_for_peek(
     validate_http_request_target_with_mode(bytes, authority_form, ParserMode::Graceful)
 }
 
-#[cfg(feature = "http")]
+#[cfg(feature = "std")]
 fn validate_http_request_target_with_mode(
     bytes: &[u8],
     authority_form: bool,

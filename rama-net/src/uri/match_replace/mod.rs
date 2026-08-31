@@ -80,7 +80,7 @@ pub use fallthrough::UriMatchReplaceFallthrough;
 /// # use core::str::FromStr;
 /// # use std::borrow::Cow;
 /// # use rama_net::uri::Uri;
-/// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule};
+/// # use rama_net::uri::{UriMatchReplace, UriMatchReplaceRule};
 /// let rule = UriMatchReplaceRule::try_new("http://*", "https://$1").unwrap();
 ///
 /// let uri = Uri::from_static("http://example.com/x");
@@ -94,7 +94,7 @@ pub use fallthrough::UriMatchReplaceFallthrough;
 /// # use core::str::FromStr;
 /// # use std::borrow::Cow;
 /// # use rama_net::uri::Uri;
-/// # use rama_net::http::uri::{UriMatchReplace, UriMatchReplaceRule, UriMatchReplaceScheme, UriMatchReplaceFallthrough};
+/// # use rama_net::uri::{UriMatchReplace, UriMatchReplaceRule, UriMatchReplaceScheme, UriMatchReplaceFallthrough};
 /// let rules = UriMatchReplaceFallthrough((
 ///     UriMatchReplaceScheme::http_to_https(),
 ///     UriMatchReplaceRule::try_new("https://*/docs/*", "https://$1/knowledge/$2").unwrap(),
