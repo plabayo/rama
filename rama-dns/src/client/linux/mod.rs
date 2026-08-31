@@ -6,8 +6,8 @@
 //! daemon is unavailable (see [`super::systemd_resolved`]). The builder may
 //! explicitly enable or disable this path regardless of the NSS configuration.
 //!
-//! On targets with `res_nsearch` support, `A` / `AAAA` / `TXT` / `SVCB` /
-//! `HTTPS` lookups are
+//! On targets with `res_nsearch` support, `A` / `AAAA` / `CNAME` / `TXT` /
+//! `SVCB` / `HTTPS` lookups are
 //! backed by the native resolver stub. `res_nsearch` (not `res_nquery`) is
 //! used so the resolver walks the `search` list from `/etc/resolv.conf` and
 //! respects `ndots`, matching the behavior of `getaddrinfo` and hickory's
@@ -37,10 +37,13 @@ use rama_utils::{
 };
 
 use super::{
-    resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver},
+    resolver::{
+        DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
+        DnsTxtResolver,
+    },
     systemd_resolved::{self, ResolvedLookup, SystemdResolved},
 };
-use crate::wire::{ServiceBinding, Txt};
+use crate::wire::{Name, ServiceBinding, Txt};
 
 mod cache;
 
@@ -167,9 +170,9 @@ impl LinuxDnsResolverBuilder {
         /// resolver. Explicitly enabling the backend also opts into
         /// systemd-resolved's name semantics for address lookups: names
         /// containing a dot are treated as fully qualified instead of
-        /// following libc's `ndots` search expansion. TXT, SVCB, and HTTPS
-        /// lookups keep the libc `search` behavior — a negative answer for a
-        /// relative name is retried through the native backend; only a
+        /// following libc's `ndots` search expansion. CNAME, TXT, SVCB, and
+        /// HTTPS lookups keep the libc `search` behavior — a negative answer
+        /// for a relative name is retried through the native backend; only a
         /// positive as-is answer can shadow a search-list candidate under
         /// `ndots` larger than one.
         pub fn systemd_resolved(mut self, enabled: bool) -> Self {
@@ -421,6 +424,29 @@ impl DnsTxtResolver for LinuxDnsResolver {
     }
 }
 
+impl DnsCnameResolver for LinuxDnsResolver {
+    type Error = BoxError;
+
+    fn lookup_cname(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+        let response_buffer_size = self.response_buffer_size;
+        let resolved = self.systemd_resolved.clone();
+        lookup_cached_stream(
+            domain,
+            self.timeout,
+            self.cache.clone(),
+            cache::RecordKind::Cname,
+            move |cache, domain| cache.get_cname(domain),
+            move |cache, domain, values, ttl| cache.insert_cname(domain, values, ttl),
+            move |domain, timeout| {
+                lookup_cname_uncached_stream(resolved, domain, timeout, response_buffer_size)
+            },
+        )
+    }
+}
+
 impl DnsServiceBindingResolver for LinuxDnsResolver {
     type Error = BoxError;
 
@@ -625,6 +651,21 @@ fn lookup_txt_uncached_stream(
     })
 }
 
+fn lookup_cname_uncached_stream(
+    resolved: Option<Arc<SystemdResolved>>,
+    domain: Domain,
+    timeout: Duration,
+    response_buffer_size: usize,
+) -> impl Stream<Item = Result<LookupEvent<Name>, BoxError>> + Send {
+    let varlink = resolved.map(|resolved| {
+        let domain = domain.clone();
+        async move { resolved.lookup_cname(&domain, timeout).await }
+    });
+    resolved_first_stream(varlink, move || {
+        native_lookup_cname_stream(domain, timeout, response_buffer_size)
+    })
+}
+
 fn lookup_svcb_uncached_stream(
     resolved: Option<Arc<SystemdResolved>>,
     domain: Domain,
@@ -778,6 +819,36 @@ fn native_lookup_txt_stream(
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
+fn native_lookup_cname_stream(
+    domain: Domain,
+    timeout: Duration,
+    response_buffer_size: usize,
+) -> impl Stream<Item = Result<LookupEvent<Name>, BoxError>> + Send {
+    res_nsearch::lookup_cname_stream(domain, timeout, response_buffer_size)
+}
+
+#[cfg(not(any(
+    all(target_os = "linux", target_env = "gnu"),
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+)))]
+fn native_lookup_cname_stream(
+    _domain: Domain,
+    _timeout: Duration,
+    _response_buffer_size: usize,
+) -> impl Stream<Item = Result<LookupEvent<Name>, BoxError>> + Send {
+    rama_core::futures::stream::once(std::future::ready(Err(BoxError::from(
+        LinuxDnsCnameUnsupportedError,
+    ))))
+}
+
+#[cfg(any(
+    all(target_os = "linux", target_env = "gnu"),
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 fn native_lookup_svcb_stream(
     domain: Domain,
     timeout: Duration,
@@ -888,6 +959,11 @@ impl std::error::Error for LinuxDnsResolverError {}
 static_str_error! {
     #[doc = "Linux native TXT resolution is unsupported on this libc target (opt-in to hickory instead)"]
     pub struct LinuxDnsTxtUnsupportedError;
+}
+
+static_str_error! {
+    #[doc = "Linux native CNAME resolution is unsupported on this libc target (opt-in to hickory instead)"]
+    pub struct LinuxDnsCnameUnsupportedError;
 }
 
 static_str_error! {

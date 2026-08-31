@@ -7,10 +7,10 @@
 //! the query.
 //!
 //! Address lookups use `ResolveHostname` for `getaddrinfo` parity (search
-//! domains, `/etc/hosts`, synthesized names, CNAME chasing). TXT, SVCB, and
-//! HTTPS lookups use `ResolveRecord` (raw wire-format RRs, real TTLs), which
-//! older daemons do not implement — a `MethodNotFound` reply pins record
-//! lookups to the native backend
+//! domains, `/etc/hosts`, synthesized names, CNAME chasing). CNAME, TXT,
+//! SVCB, and HTTPS lookups use `ResolveRecord` (raw wire-format RRs, real
+//! TTLs), which older daemons do not implement — a `MethodNotFound` reply
+//! pins record lookups to the native backend
 //! without affecting address lookups. `ResolveRecord` applies no
 //! search-domain expansion, so single-label record names route to the native
 //! backend directly and only rooted names treat a negative answer as
@@ -62,8 +62,10 @@ const VARLINK_ERROR_PREFIX: &str = "org.varlink.";
 const AF_INET: i64 = 2;
 const AF_INET6: i64 = 10;
 
-use super::systemd_resolved_wire::{DNS_CLASS_IN, RrParse, parse_service_binding_rr, parse_txt_rr};
-use crate::wire::{RecordType, ServiceBinding, Txt};
+use super::systemd_resolved_wire::{
+    DNS_CLASS_IN, RrParse, parse_cname_rr, parse_service_binding_rr, parse_txt_rr,
+};
+use crate::wire::{Name, RecordType, ServiceBinding, Txt};
 
 /// A probe claim older than this is assumed orphaned and may be re-claimed.
 const PROBE_STALE: Duration = Duration::from_secs(15);
@@ -248,6 +250,24 @@ impl SystemdResolved {
                 RrParse::Malformed => ParsedRecord::Malformed,
             }
         })
+        .await
+    }
+
+    pub(super) async fn lookup_cname(
+        self: &Arc<Self>,
+        domain: &Domain,
+        timeout: Duration,
+    ) -> ResolvedLookup<Name> {
+        self.lookup_record(
+            domain,
+            timeout,
+            RecordType::CNAME,
+            |raw| match parse_cname_rr(&raw) {
+                RrParse::Record { ttl, value } => ParsedRecord::One { ttl, value },
+                RrParse::Other => ParsedRecord::Other,
+                RrParse::Malformed => ParsedRecord::Malformed,
+            },
+        )
         .await
     }
 
@@ -1344,6 +1364,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cname_records_parse_raw_wire_format() {
+        let first = build_rr(
+            &["example", "com"],
+            RecordType::CNAME.into(),
+            123,
+            b"\x05alias\x07example\x03com\0",
+        );
+        let second = build_rr(
+            &["alias", "example", "com"],
+            RecordType::CNAME.into(),
+            60,
+            b"\x06origin\x07example\x03com\0",
+        );
+        let server = FakeResolved::spawn(vec![Behavior::Reply(json!({
+            "parameters": {
+                "rrs": [
+                    { "raw": BASE64.encode(&first) },
+                    { "raw": BASE64.encode(&second) },
+                ],
+                "flags": 0,
+            },
+        }))]);
+        let resolved = resolver(server.path.clone());
+        match resolved
+            .lookup_cname(&domain(), Duration::from_secs(2))
+            .await
+        {
+            ResolvedLookup::Records(records) => {
+                assert_eq!(records.len(), 2);
+                assert_eq!(records[0].0.to_string(), "alias.example.com.");
+                assert_eq!(records[0].1, Some(123));
+                assert_eq!(records[1].0.to_string(), "origin.example.com.");
+                assert_eq!(records[1].1, Some(60));
+            }
+            _ => panic!("expected records"),
+        }
+    }
+
+    #[tokio::test]
     async fn service_binding_records_parse_raw_wire_format() {
         let cname = build_rr(&["example", "com"], 5, 60, &[0]);
         let svcb = build_rr(
@@ -1687,6 +1746,35 @@ mod tests {
             }
             _ => panic!("expected txt"),
         }
+    }
+
+    #[test]
+    fn parse_cname_rr_is_typed_and_zero_copy() {
+        let rdata = b"\x05alias\x07example\x03com\0";
+        let raw = Bytes::from(build_rr(
+            &["example", "com"],
+            RecordType::CNAME.into(),
+            300,
+            rdata,
+        ));
+        let rdata_ptr = raw.as_ptr().wrapping_add(raw.len() - rdata.len());
+
+        match parse_cname_rr(&raw) {
+            RrParse::Record { ttl, value } => {
+                assert_eq!(ttl, 300);
+                assert_eq!(value.as_wire().as_ptr(), rdata_ptr);
+                assert_eq!(value.to_string(), "alias.example.com.");
+            }
+            _ => panic!("expected CNAME"),
+        }
+
+        let raw = Bytes::from(build_rr(
+            &["example", "com"],
+            RecordType::CNAME.into(),
+            300,
+            &[0xc0, 0x0c],
+        ));
+        assert!(matches!(parse_cname_rr(&raw), RrParse::Malformed));
     }
 
     #[test]

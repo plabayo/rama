@@ -15,7 +15,8 @@ pub use self::hickory::HickoryDnsResolver;
 mod tokio;
 #[doc(inline)]
 pub use self::tokio::{
-    TokioDnsResolver, TokioDnsServiceBindingUnsupportedError, TokioDnsTxtUnsupportedError,
+    TokioDnsCnameUnsupportedError, TokioDnsResolver, TokioDnsServiceBindingUnsupportedError,
+    TokioDnsTxtUnsupportedError,
 };
 
 #[cfg(target_vendor = "apple")]

@@ -21,8 +21,8 @@ use rama::{
             resolver::config::{NameServerConfig, ResolverConfig},
         },
         resolver::{
-            BoxDnsResolver, DnsAddressResolver, DnsResolver, DnsServiceBindingResolver,
-            DnsTxtResolver, HappyEyeballAddressResolverExt,
+            BoxDnsResolver, DnsAddressResolver, DnsCnameResolver, DnsResolver,
+            DnsServiceBindingResolver, DnsTxtResolver, HappyEyeballAddressResolverExt,
         },
     },
     error::{BoxError, BoxErrorExt, ErrorContext as _, ErrorExt as _},
@@ -105,6 +105,25 @@ pub async fn run(cfg: ResolveCommand) -> Result<(), BoxError> {
             if records_found == 0 {
                 return Err(BoxError::from_static_str(
                     "failed to resolve domain into any TXT record",
+                ));
+            }
+        }
+        Some(RecordType::CNAME) => {
+            println!("Resolving CNAME for domain: {domain}");
+            let mut results = std::pin::pin!(resolver.lookup_cname(domain));
+            let mut records_found = 0;
+            while let Some(result) = results.next().await {
+                match result {
+                    Ok(record) => {
+                        records_found += 1;
+                        println!("* {record}");
+                    }
+                    Err(err) => tracing::debug!("error while resolving CNAME record: {err:?}"),
+                }
+            }
+            if records_found == 0 {
+                return Err(BoxError::from_static_str(
+                    "failed to resolve domain into any CNAME record",
                 ));
             }
         }
@@ -331,6 +350,7 @@ rama::utils::macros::enums::enum_builder! {
     enum RecordType {
         A => "A",
         AAAA => "AAAA",
+        CNAME => "CNAME",
         TXT => "TXT",
         SVCB => "SVCB",
         HTTPS => "HTTPS",
@@ -397,7 +417,7 @@ pub struct ResolveCommand {
     query_name: Option<Domain>,
 
     #[arg(short = 't', long = "type")]
-    /// explicit query type (A, AAAA, TXT, SVCB, HTTPS)
+    /// explicit query type (A, AAAA, CNAME, TXT, SVCB, HTTPS)
     query_type: Option<RecordType>,
 
     #[arg(short = '4', action = ArgAction::SetTrue)]
@@ -502,7 +522,8 @@ mod tests {
     }
 
     #[test]
-    fn parses_service_binding_record_types() {
+    fn parses_named_record_types() {
+        assert_eq!(RecordType::from_str("CNAME").unwrap(), RecordType::CNAME);
         assert_eq!(RecordType::from_str("SVCB").unwrap(), RecordType::SVCB);
         assert_eq!(RecordType::from_str("HTTPS").unwrap(), RecordType::HTTPS);
     }

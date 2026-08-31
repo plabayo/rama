@@ -6,8 +6,10 @@ use std::{
     net::{Ipv4Addr, Ipv6Addr},
 };
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::{ServiceBinding, Txt};
+use super::resolver::{
+    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+};
+use crate::wire::{Name, ServiceBinding, Txt};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -88,6 +90,17 @@ impl DnsTxtResolver for EmptyDnsResolver {
     }
 }
 
+impl DnsCnameResolver for EmptyDnsResolver {
+    type Error = Infallible;
+
+    fn lookup_cname(
+        &self,
+        _domain: Domain,
+    ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+        stream::empty()
+    }
+}
+
 impl DnsServiceBindingResolver for EmptyDnsResolver {
     type Error = Infallible;
 
@@ -154,6 +167,11 @@ mod tests {
     #[tokio::test]
     async fn test_empty_lookup_txt() {
         impl_empty_test_body!(lookup_txt);
+    }
+
+    #[tokio::test]
+    async fn test_empty_lookup_cname() {
+        impl_empty_test_body!(lookup_cname);
     }
 
     #[tokio::test]

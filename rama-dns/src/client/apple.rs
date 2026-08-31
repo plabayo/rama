@@ -13,7 +13,8 @@
 //!   - <https://developer.apple.com/documentation/dnssd/dns_sd_h>
 //!
 //! Implementation notes:
-//! - `A`, `AAAA`, and `TXT` lookups are all backed by `DNSServiceQueryRecord`.
+//! - `A`, `AAAA`, `CNAME`, `TXT`, `SVCB`, and `HTTPS` lookups are backed by
+//!   `DNSServiceQueryRecord`.
 //! - Each lookup owns its own `DNSServiceRef`.
 //! - The returned asynchronous stream integrates the `DNSServiceRef` socket with
 //!   Tokio using `AsyncFd`, calling `DNSServiceProcessResult` whenever the fd
@@ -44,8 +45,10 @@ use rama_utils::str::arcstr::ArcStr;
 use tokio::io::unix::AsyncFd;
 use tokio::time::Instant;
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::{RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata};
+use super::resolver::{
+    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+};
+use crate::wire::{Name, RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -116,6 +119,22 @@ impl DnsTxtResolver for AppleDnsResolver {
         domain: Domain,
     ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
         query_record_stream::<Txt, _>(domain, self.timeout, ffi::K_DNS_SERVICE_TYPE_TXT, parse_txt)
+    }
+}
+
+impl DnsCnameResolver for AppleDnsResolver {
+    type Error = BoxError;
+
+    fn lookup_cname(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+        query_record_stream::<Name, _>(
+            domain,
+            self.timeout,
+            ffi::K_DNS_SERVICE_TYPE_CNAME,
+            parse_cname,
+        )
     }
 }
 
@@ -514,6 +533,11 @@ fn parse_txt(rdata: &[u8], emit: &mut dyn FnMut(Txt)) -> Result<(), BoxError> {
     Ok(())
 }
 
+fn parse_cname(rdata: &[u8], emit: &mut dyn FnMut(Name)) -> Result<(), BoxError> {
+    emit(Name::from_wire(rdata)?);
+    Ok(())
+}
+
 fn parse_service_binding(
     rdata: &[u8],
     emit: &mut dyn FnMut(ServiceBinding),
@@ -564,6 +588,8 @@ mod ffi {
 
     // Host address.
     pub(super) const K_DNS_SERVICE_TYPE_A: u16 = 1;
+    // Canonical name for an alias.
+    pub(super) const K_DNS_SERVICE_TYPE_CNAME: u16 = 5;
     // One or more text strings (NOT "zero or more...").
     pub(super) const K_DNS_SERVICE_TYPE_TXT: u16 = 16;
     // IPv6 Address.
@@ -842,6 +868,19 @@ mod tests {
             txt[0].iter().collect::<Vec<_>>(),
             vec![&b"foo"[..], &b"bar"[..]]
         );
+    }
+
+    #[test]
+    fn parse_cname_record() {
+        let mut records = Vec::new();
+        parse_cname(b"\x05alias\x07example\x03com\0", &mut |record| {
+            records.push(record)
+        })
+        .expect("valid CNAME");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].to_string(), "alias.example.com.");
+
+        parse_cname(&[0xc0, 0x0c], &mut |_| {}).expect_err("standalone RDATA is uncompressed");
     }
 
     #[test]

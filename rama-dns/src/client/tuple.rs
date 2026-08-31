@@ -7,8 +7,10 @@ use rama_core::{
 use rama_net::address::Domain;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::{ServiceBinding, Txt};
+use super::resolver::{
+    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+};
+use crate::wire::{Name, ServiceBinding, Txt};
 
 macro_rules! dns_resolve_tuple_impl {
     ($($ty:ident),+ $(,)?) => {
@@ -145,6 +147,31 @@ macro_rules! dns_resolve_tuple_impl {
 
                     $(
                         let mut stream = std::pin::pin!($ty.lookup_txt(domain.clone()));
+                        while let Some(result) = stream.next().await {
+                            yielder.yield_item(result.map_err(ErrorExt::into_opaque_error)).await;
+                        }
+                    )+
+                })
+            }
+        }
+
+        impl<$($ty,)+> DnsCnameResolver for ($($ty,)+)
+        where
+            $(
+                $ty: DnsCnameResolver,
+            )+
+        {
+            type Error = OpaqueError;
+
+            fn lookup_cname(
+                &self,
+                domain: Domain,
+            ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+                stream_fn(async move |mut yielder| {
+                    let ($($ty,)+) = self;
+
+                    $(
+                        let mut stream = std::pin::pin!($ty.lookup_cname(domain.clone()));
                         while let Some(result) = stream.next().await {
                             yielder.yield_item(result.map_err(ErrorExt::into_opaque_error)).await;
                         }
@@ -314,6 +341,19 @@ mod tests {
         let mut rdata = vec![0, 1, 0, 0, 3, 0, 2];
         rdata.extend_from_slice(&port.to_be_bytes());
         ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata)).expect("valid service binding")
+    }
+
+    #[tokio::test]
+    async fn tuple_flattens_cname_targets() {
+        let first = Name::from_wire(b"\x05first\x07example\0").unwrap();
+        let second = Name::from_wire(b"\x06second\x07example\0").unwrap();
+        let targets: Vec<_> = (first, second)
+            .lookup_cname(Domain::example())
+            .map(Result::unwrap)
+            .collect()
+            .await;
+        assert_eq!(targets[0].to_string(), "first.example.");
+        assert_eq!(targets[1].to_string(), "second.example.");
     }
 
     #[tokio::test]

@@ -1,8 +1,9 @@
 //! DNS wire-format vocabulary and parsing.
 //!
-//! This module contains protocol data, not request-context extensions. In
-//! particular, [`ServiceBinding`] represents the common RDATA wire format used
-//! by both [`RecordType::SVCB`] and [`RecordType::HTTPS`] resource records.
+//! This module contains protocol data, not request-context extensions.
+//! [`Name`] handles case-preserving DNS names and RFC 1035 compression;
+//! [`ServiceBinding`] represents the common RDATA wire format used by both
+//! [`RecordType::SVCB`] and [`RecordType::HTTPS`] resource records.
 
 mod address;
 mod name;

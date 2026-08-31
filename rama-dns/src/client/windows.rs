@@ -30,8 +30,10 @@ use windows_sys::core::PCWSTR;
 #[cfg(test)]
 use std::sync::atomic::AtomicU16;
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::{RecordType, ServiceBinding, Txt};
+use super::resolver::{
+    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+};
+use crate::wire::{Name, RecordType, ServiceBinding, Txt};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -144,6 +146,22 @@ impl DnsTxtResolver for WindowsDnsResolver {
         domain: Domain,
     ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
         query_record_stream(domain, self.timeout, ffi::DNS_TYPE_TEXT, parse_txt_records)
+    }
+}
+
+impl DnsCnameResolver for WindowsDnsResolver {
+    type Error = BoxError;
+
+    fn lookup_cname(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+        query_record_stream(
+            domain,
+            self.timeout,
+            ffi::DNS_TYPE_CNAME,
+            parse_cname_records,
+        )
     }
 }
 
@@ -478,6 +496,26 @@ fn parse_aaaa_records(
     })
 }
 
+fn parse_cname_records(
+    records: *mut ffi::DnsRecord,
+    emit: &mut dyn FnMut(Name),
+) -> Result<(), BoxError> {
+    walk_records(records, ffi::DNS_TYPE_CNAME, |record| {
+        // SAFETY: `record` is a live DNS_RECORD of type CNAME while walking the list.
+        let target = unsafe { record.data.ptr.name_host };
+        if target.is_null() {
+            return Err(WindowsDnsResolverError::message("CNAME target pointer is null").into());
+        }
+        let target = wide_ptr_to_string(target);
+        if target == "." {
+            emit(Name::root());
+        } else {
+            emit(Name::from(Domain::try_from(target)?));
+        }
+        Ok(())
+    })
+}
+
 fn parse_txt_records(
     records: *mut ffi::DnsRecord,
     emit: &mut dyn FnMut(Txt),
@@ -614,7 +652,7 @@ where
     F: FnMut(&ffi::DnsRecord) -> Result<(), BoxError>,
 {
     walk_record_pointers(record, rrtype, |record| {
-        // SAFETY: A and AAAA visitors only access declared fields of
+        // SAFETY: typed visitors only access declared fields of
         // the live DNS_RECORD node supplied by `walk_record_pointers`.
         visit(unsafe { &*record })
     })
@@ -909,6 +947,7 @@ mod ffi {
     pub(super) const DNS_ERROR_RCODE_NAME_ERROR: u32 = 9003;
 
     pub(super) const DNS_TYPE_A: u16 = 1;
+    pub(super) const DNS_TYPE_CNAME: u16 = 5;
     pub(super) const DNS_TYPE_TEXT: u16 = 16;
     pub(super) const DNS_TYPE_AAAA: u16 = 28;
 
@@ -1090,10 +1129,29 @@ mod ffi {
     pub(super) union DnsRecordData {
         pub(super) a: DNS_A_DATA,
         pub(super) aaaa: DNS_AAAA_DATA,
+        pub(super) ptr: DNS_PTR_DATAW,
         pub(super) txt: DNS_TXT_DATAW,
         #[cfg(test)]
         pub(super) flat: [u8; 16],
     }
+
+    /// DNS_PTR_DATAW, also used for CNAME records.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub(super) struct DNS_PTR_DATAW {
+        /// Canonical target name as a NUL-terminated UTF-16 string.
+        pub(super) name_host: *const u16,
+    }
+
+    const _: () = {
+        use windows_sys::Win32::NetworkManagement::Dns::DNS_PTR_DATAW as SdkDnsPtrDataW;
+
+        assert!(std::mem::align_of::<DNS_PTR_DATAW>() == std::mem::align_of::<SdkDnsPtrDataW>());
+        assert!(
+            std::mem::offset_of!(DNS_PTR_DATAW, name_host)
+                == std::mem::offset_of!(SdkDnsPtrDataW, pNameHost)
+        );
+    };
 
     /// DNS_A_DATA:
     /// Official docs:
@@ -1313,6 +1371,46 @@ mod tests {
         let mut out = Vec::new();
         parse_a_records(&mut a, &mut |ip| out.push(ip)).unwrap();
         assert_eq!(out, vec![Ipv4Addr::new(192, 0, 2, 1)]);
+    }
+
+    #[test]
+    fn parse_cname_records_decodes_utf16_target_and_skips_other_types() {
+        let target = "Alias.Example.com.\0".encode_utf16().collect::<Vec<_>>();
+        let mut a = record(
+            ffi::DNS_TYPE_A,
+            ffi::DnsRecordData {
+                a: ffi::DNS_A_DATA { ip_address: 0 },
+            },
+            ptr::null_mut(),
+        );
+        let mut cname = record(
+            ffi::DNS_TYPE_CNAME,
+            ffi::DnsRecordData {
+                ptr: ffi::DNS_PTR_DATAW {
+                    name_host: target.as_ptr(),
+                },
+            },
+            ptr::from_mut(&mut a),
+        );
+
+        let mut out = Vec::new();
+        parse_cname_records(&mut cname, &mut |name| out.push(name)).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].as_wire(), b"\x05Alias\x07Example\x03com\0");
+    }
+
+    #[test]
+    fn parse_cname_records_rejects_null_target() {
+        let mut cname = record(
+            ffi::DNS_TYPE_CNAME,
+            ffi::DnsRecordData {
+                ptr: ffi::DNS_PTR_DATAW {
+                    name_host: ptr::null(),
+                },
+            },
+            ptr::null_mut(),
+        );
+        parse_cname_records(&mut cname, &mut |_| {}).expect_err("null target is invalid");
     }
 
     #[test]

@@ -1,15 +1,19 @@
-use core::fmt;
+use core::{
+    cmp::Ordering,
+    fmt,
+    hash::{Hash, Hasher},
+};
 
-use rama_core::bytes::Bytes;
-use rama_net::address::{Domain, DomainBuilder};
+use rama_core::bytes::{Bytes, BytesMut};
+use rama_net::address::{Domain, DomainBuilder, DomainLabels as _};
 
-/// A fully qualified DNS name in canonical, uncompressed wire format.
+/// A fully qualified DNS name in uncompressed wire format.
 ///
 /// Unlike [`Domain`], this type preserves DNS label boundaries and arbitrary
-/// label octets, and it can represent the root name. ASCII letters are stored
-/// lowercase for DNS-style equality and hashing. Ordering compares canonical
-/// wire bytes; it is not RFC 4034 DNSSEC canonical-name ordering.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// label octets, including their original case, and it can represent the root
+/// name. Equality, hashing, and ordering are ASCII-case-insensitive. Ordering
+/// is not RFC 4034 DNSSEC canonical-name ordering.
+#[derive(Clone)]
 pub struct Name(Bytes);
 
 impl Name {
@@ -31,10 +35,87 @@ impl Name {
         if consumed != wire.len() {
             return Err(NameParseError(NameParseErrorKind::TrailingData));
         }
-        Ok(Self::from_valid_wire(Bytes::copy_from_slice(wire)))
+        Ok(Self(Bytes::copy_from_slice(wire)))
     }
 
-    /// Return this name's canonical, uncompressed wire representation.
+    /// Parse one complete, uncompressed DNS name from shared bytes.
+    ///
+    /// Compression pointers are invalid here. The returned name shares the
+    /// input allocation.
+    pub fn from_wire_bytes(wire: &Bytes) -> Result<Self, NameParseError> {
+        let consumed = validate_prefix(wire)?;
+        if consumed != wire.len() {
+            return Err(NameParseError(NameParseErrorKind::TrailingData));
+        }
+        Ok(Self::from_valid_wire(wire.clone()))
+    }
+
+    /// Parse a possibly compressed DNS name at `offset` in a complete message.
+    ///
+    /// The returned length is the number of message octets occupied by the
+    /// encoded name at `offset`; bytes followed through compression pointers
+    /// are not included. RFC 1035 compression pointers must refer to prior
+    /// name occurrences. Enforcing a decreasing target ceiling guarantees
+    /// termination without rejecting long valid chains.
+    pub fn from_message(message: &[u8], offset: usize) -> Result<(Self, usize), NameParseError> {
+        let mut wire = BytesMut::with_capacity(64);
+        let mut cursor = offset;
+        let mut encoded_end = None;
+        let mut pointer_ceiling = offset;
+
+        loop {
+            let Some(&label_len) = message.get(cursor) else {
+                return Err(NameParseError(NameParseErrorKind::TruncatedLabel));
+            };
+
+            if label_len & 0xc0 == 0xc0 {
+                let Some(&second) = message.get(cursor + 1) else {
+                    return Err(NameParseError(
+                        NameParseErrorKind::TruncatedCompressionPointer,
+                    ));
+                };
+                let target = usize::from(u16::from_be_bytes([label_len & 0x3f, second]));
+                if target >= pointer_ceiling {
+                    return Err(NameParseError(
+                        NameParseErrorKind::NonPriorCompressionPointer,
+                    ));
+                }
+                encoded_end.get_or_insert(cursor + 2);
+                pointer_ceiling = target;
+                cursor = target;
+                continue;
+            }
+            if label_len & 0xc0 != 0 {
+                return Err(NameParseError(NameParseErrorKind::InvalidLabelKind));
+            }
+            if label_len == 0 {
+                wire.extend_from_slice(b"\0");
+                let consumed = encoded_end
+                    .unwrap_or(cursor + 1)
+                    .checked_sub(offset)
+                    .ok_or(NameParseError(
+                        NameParseErrorKind::NonPriorCompressionPointer,
+                    ))?;
+                return Ok((Self::from_valid_wire(wire.freeze()), consumed));
+            }
+
+            let label_start = cursor + 1;
+            let label_end = label_start
+                .checked_add(usize::from(label_len))
+                .ok_or(NameParseError(NameParseErrorKind::NameTooLong))?;
+            let label = message
+                .get(label_start..label_end)
+                .ok_or(NameParseError(NameParseErrorKind::TruncatedLabel))?;
+            if wire.len() + 1 + label.len() + 1 > Self::MAX_WIRE_LEN {
+                return Err(NameParseError(NameParseErrorKind::NameTooLong));
+            }
+            wire.extend_from_slice(&[label_len]);
+            wire.extend_from_slice(label);
+            cursor = label_end;
+        }
+    }
+
+    /// Return this name's case-preserving, uncompressed wire representation.
     #[must_use]
     pub fn as_wire(&self) -> &[u8] {
         &self.0
@@ -77,13 +158,61 @@ impl Name {
     }
 
     fn from_valid_wire(wire: Bytes) -> Self {
-        if wire.iter().any(u8::is_ascii_uppercase) {
-            let mut canonical = wire.to_vec();
-            canonical.make_ascii_lowercase();
-            Self(Bytes::from(canonical))
-        } else {
-            Self(wire)
+        Self(wire)
+    }
+}
+
+impl From<&Domain> for Name {
+    fn from(domain: &Domain) -> Self {
+        let mut wire = BytesMut::with_capacity(domain.as_str().len() + 2);
+        for label in domain.labels() {
+            wire.extend_from_slice(&[label.len() as u8]);
+            wire.extend_from_slice(label.as_str().as_bytes());
         }
+        wire.extend_from_slice(b"\0");
+        Self::from_valid_wire(wire.freeze())
+    }
+}
+
+impl PartialEq for Name {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.len() == other.0.len()
+            && self
+                .0
+                .iter()
+                .zip(other.0.iter())
+                .all(|(left, right)| left.eq_ignore_ascii_case(right))
+    }
+}
+
+impl Eq for Name {}
+
+impl PartialOrd for Name {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Name {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.0
+            .iter()
+            .map(u8::to_ascii_lowercase)
+            .cmp(other.0.iter().map(u8::to_ascii_lowercase))
+    }
+}
+
+impl Hash for Name {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        for byte in &self.0 {
+            state.write_u8(byte.to_ascii_lowercase());
+        }
+    }
+}
+
+impl From<Domain> for Name {
+    fn from(domain: Domain) -> Self {
+        Self::from(&domain)
     }
 }
 
@@ -100,8 +229,11 @@ fn validate_prefix(wire: &[u8]) -> Result<usize, NameParseError> {
             }
             return Ok(consumed);
         }
-        if label_len & 0xc0 != 0 {
+        if label_len & 0xc0 == 0xc0 {
             return Err(NameParseError(NameParseErrorKind::CompressedLabel));
+        }
+        if label_len & 0xc0 != 0 {
+            return Err(NameParseError(NameParseErrorKind::InvalidLabelKind));
         }
 
         let label_start = offset
@@ -153,7 +285,7 @@ impl fmt::Debug for Name {
     }
 }
 
-/// Error returned when an uncompressed DNS name cannot be decoded.
+/// Error returned when a DNS name cannot be decoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NameParseError(NameParseErrorKind);
 
@@ -164,6 +296,9 @@ enum NameParseErrorKind {
     CompressedLabel,
     NameTooLong,
     TrailingData,
+    TruncatedCompressionPointer,
+    NonPriorCompressionPointer,
+    InvalidLabelKind,
 }
 
 impl fmt::Display for NameParseError {
@@ -176,6 +311,13 @@ impl fmt::Display for NameParseError {
             }
             NameParseErrorKind::NameTooLong => "DNS name exceeds 255 wire octets",
             NameParseErrorKind::TrailingData => "data follows the DNS root label",
+            NameParseErrorKind::TruncatedCompressionPointer => {
+                "DNS name ends within a compression pointer"
+            }
+            NameParseErrorKind::NonPriorCompressionPointer => {
+                "DNS compression pointer does not refer to a prior name occurrence"
+            }
+            NameParseErrorKind::InvalidLabelKind => "DNS name uses an unsupported label kind",
         })
     }
 }

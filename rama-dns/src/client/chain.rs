@@ -8,8 +8,10 @@ use rama_net::address::Domain;
 use rama_utils::collections::NonEmptyVec;
 use rand::RngExt;
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::{ServiceBinding, Txt};
+use super::resolver::{
+    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+};
+use crate::wire::{Name, ServiceBinding, Txt};
 
 fn gcd(mut a: usize, mut b: usize) -> usize {
     while b != 0 {
@@ -144,6 +146,21 @@ macro_rules! impl_chain_dns_txt_resolver {
     };
 }
 
+macro_rules! impl_chain_dns_cname_resolver {
+    () => {
+        type Error = OpaqueError;
+
+        fn lookup_cname(
+            &self,
+            domain: Domain,
+        ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+            stream::iter(self.iter())
+                .flat_map(move |resolver| resolver.lookup_cname(domain.clone()))
+                .map(|result| result.map_err(ErrorExt::into_opaque_error))
+        }
+    };
+}
+
 macro_rules! impl_chain_dns_service_binding_resolver {
     () => {
         type Error = OpaqueError;
@@ -204,6 +221,9 @@ impl<R: DnsAddressResolver> DnsAddressResolver for Vec<R> {
 impl<R: DnsTxtResolver> DnsTxtResolver for Vec<R> {
     impl_chain_dns_txt_resolver!();
 }
+impl<R: DnsCnameResolver> DnsCnameResolver for Vec<R> {
+    impl_chain_dns_cname_resolver!();
+}
 impl<R: DnsServiceBindingResolver> DnsServiceBindingResolver for Vec<R> {
     impl_chain_dns_service_binding_resolver!();
 }
@@ -215,6 +235,9 @@ impl<R: DnsAddressResolver> DnsAddressResolver for NonEmptyVec<R> {
 impl<R: DnsTxtResolver> DnsTxtResolver for NonEmptyVec<R> {
     impl_chain_dns_txt_resolver!();
 }
+impl<R: DnsCnameResolver> DnsCnameResolver for NonEmptyVec<R> {
+    impl_chain_dns_cname_resolver!();
+}
 impl<R: DnsServiceBindingResolver> DnsServiceBindingResolver for NonEmptyVec<R> {
     impl_chain_dns_service_binding_resolver!();
 }
@@ -225,6 +248,9 @@ impl<R: DnsAddressResolver, const N: usize> DnsAddressResolver for [R; N] {
 }
 impl<R: DnsTxtResolver, const N: usize> DnsTxtResolver for [R; N] {
     impl_chain_dns_txt_resolver!();
+}
+impl<R: DnsCnameResolver, const N: usize> DnsCnameResolver for [R; N] {
+    impl_chain_dns_cname_resolver!();
 }
 impl<R: DnsServiceBindingResolver, const N: usize> DnsServiceBindingResolver for [R; N] {
     impl_chain_dns_service_binding_resolver!();
@@ -343,6 +369,20 @@ mod tests {
         let mut rdata = vec![0, 1, 0, 0, 3, 0, 2];
         rdata.extend_from_slice(&port.to_be_bytes());
         ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata)).expect("valid service binding")
+    }
+
+    #[tokio::test]
+    async fn cname_chain_flattens_every_resolver() {
+        let resolvers = vec![
+            Name::from_wire(b"\x05first\x07example\0").unwrap(),
+            Name::from_wire(b"\x06second\x07example\0").unwrap(),
+        ];
+        let targets: Vec<_> = resolvers
+            .lookup_cname(Domain::example())
+            .map(Result::unwrap)
+            .collect()
+            .await;
+        assert_eq!(targets, resolvers);
     }
 
     #[tokio::test]

@@ -6,8 +6,10 @@ use rama_core::{
 };
 use rama_net::address::Domain;
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::{ServiceBinding, Txt};
+use super::resolver::{
+    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+};
+use crate::wire::{Name, ServiceBinding, Txt};
 
 macro_rules! impl_dns_resolver_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
@@ -131,6 +133,31 @@ macro_rules! impl_dns_resolver_either {
             }
         }
 
+        impl<$($param),+> DnsCnameResolver for ::rama_core::combinators::$id<$($param),+>
+        where
+            $($param: DnsCnameResolver),+,
+        {
+            type Error = OpaqueError;
+
+            fn lookup_cname(
+                &self,
+                domain: Domain,
+            ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+                stream_fn(async move |mut yielder| {
+                    match self {
+                        $(
+                            ::rama_core::combinators::$id::$param(d) => {
+                                let mut stream = std::pin::pin!(d.lookup_cname(domain));
+                                while let Some(result) = stream.next().await {
+                                    yielder.yield_item(result.map_err(ErrorExt::into_opaque_error)).await;
+                                }
+                            },
+                        )+
+                    }
+                })
+            }
+        }
+
         impl<$($param),+> DnsServiceBindingResolver for ::rama_core::combinators::$id<$($param),+>
         where
             $($param: DnsServiceBindingResolver),+,
@@ -197,9 +224,10 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     use crate::client::resolver::{
-        DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+        DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
+        DnsTxtResolver,
     };
-    use crate::wire::{ServiceBinding, Txt};
+    use crate::wire::{Name, ServiceBinding, Txt};
 
     // Mock DNS resolvers for testing
     struct MockResolver1;
@@ -241,6 +269,19 @@ mod tests {
                 ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
                     stream::once(std::future::ready(Ok::<_, Infallible>(
                         Txt::try_from_strings([$txt_map(domain)]).expect("valid TXT record"),
+                    )))
+                }
+            }
+
+            impl DnsCnameResolver for $resolver {
+                type Error = Infallible;
+
+                fn lookup_cname(
+                    &self,
+                    _domain: Domain,
+                ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+                    stream::once(std::future::ready(Ok::<_, Infallible>(
+                        Name::from_wire(b"\x05alias\x07example\x03com\0").unwrap(),
                     )))
                 }
             }
@@ -311,6 +352,17 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(result2.iter().collect::<Vec<_>>(), [b"ABC".as_slice()]);
+    }
+
+    #[tokio::test]
+    async fn test_either_lookup_cname() {
+        let resolver = Either::<MockResolver1, MockResolver2>::A(MockResolver1);
+        let target = std::pin::pin!(resolver.lookup_cname(Domain::example()))
+            .next()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(target.to_string(), "alias.example.com.");
     }
 
     #[tokio::test]

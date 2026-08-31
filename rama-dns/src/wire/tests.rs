@@ -1,5 +1,6 @@
 use std::{
     error::Error as _,
+    hash::{Hash as _, Hasher},
     net::{Ipv4Addr, Ipv6Addr},
 };
 
@@ -9,6 +10,25 @@ use rama_net::{address::Domain, tls::ApplicationProtocol};
 use super::*;
 
 const FOO_EXAMPLE_COM: &[u8] = b"\x03foo\x07example\x03com\x00";
+
+#[derive(Default)]
+struct RecordingHasher(Vec<u8>);
+
+impl Hasher for RecordingHasher {
+    fn finish(&self) -> u64 {
+        0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        self.0.extend_from_slice(bytes);
+    }
+}
+
+fn name_hash_input(name: &Name) -> Vec<u8> {
+    let mut hasher = RecordingHasher::default();
+    name.hash(&mut hasher);
+    hasher.0
+}
 
 fn txt_strings(txt: &Txt) -> Vec<&[u8]> {
     let limit = txt.len().saturating_add(1);
@@ -29,6 +49,69 @@ fn binding(priority: u16, target: &[u8], params: &[(u16, &[u8])]) -> Vec<u8> {
         wire.extend_from_slice(value);
     }
     wire
+}
+
+#[test]
+fn name_parses_compressed_message_names_and_reports_encoded_length() {
+    let mut message = b"\x07example\x03com\x00".to_vec();
+    let alias_offset = message.len();
+    message.extend_from_slice(b"\x03www\xc0\x00");
+
+    let (name, encoded_len) = Name::from_message(&message, alias_offset).unwrap();
+    assert_eq!(encoded_len, 6);
+    assert_eq!(name.as_wire(), b"\x03www\x07example\x03com\x00");
+    assert_eq!(name.to_string(), "www.example.com.");
+
+    let message = b"prefix\x03foo\0suffix";
+    let (name, encoded_len) = Name::from_message(message, 6).unwrap();
+    assert_eq!(encoded_len, 5);
+    assert_eq!(name.as_wire(), b"\x03foo\0");
+}
+
+#[test]
+fn name_rejects_invalid_compression_without_looping() {
+    for (message, offset, expected) in [
+        (&b"\xc0"[..], 0, "ends within a compression pointer"),
+        (
+            &b"\xc0\x00"[..],
+            0,
+            "does not refer to a prior name occurrence",
+        ),
+        (&b"\x40"[..], 0, "unsupported label kind"),
+    ] {
+        let error = Name::from_message(message, offset).unwrap_err();
+        assert!(error.to_string().contains(expected), "got: {error}");
+    }
+
+    let mut pointer_chain = vec![0];
+    let mut previous = 0_u16;
+    for _ in 0..1_024 {
+        pointer_chain.extend_from_slice(&(0xc000 | previous).to_be_bytes());
+        previous = u16::try_from(pointer_chain.len() - 2).unwrap();
+    }
+    let (root, consumed) = Name::from_message(&pointer_chain, usize::from(previous)).unwrap();
+    assert!(root.is_root());
+    assert_eq!(consumed, 2);
+
+    // A pointer can be backwards from its own location while still cycling
+    // back to labels already consumed in the same encoded name.
+    let cyclic = b"prefix\x01a\xc0\x06";
+    assert_eq!(
+        Name::from_message(cyclic, 6).unwrap_err().to_string(),
+        "DNS compression pointer does not refer to a prior name occurrence"
+    );
+}
+
+#[test]
+fn name_converts_from_domain_without_presentation_reparsing() {
+    let domain = Domain::try_from("WWW.Example.com.").unwrap();
+    let name = Name::from(&domain);
+    assert_eq!(name.as_wire(), b"\x03WWW\x07Example\x03com\x00");
+
+    let wire = Bytes::from_static(b"\x03FOO\x07Example\x03COM\x00");
+    let shared = Name::from_wire_bytes(&wire).unwrap();
+    assert_eq!(shared.as_wire().as_ptr(), wire.as_ptr());
+    assert_eq!(shared.as_wire(), wire.as_ref());
 }
 
 #[test]
@@ -334,15 +417,24 @@ fn record_type_covers_existing_and_new_resolver_types() {
 }
 
 #[test]
-fn name_canonicalizes_ascii_case_and_formats_escaped_octets() {
+fn name_preserves_ascii_case_with_case_insensitive_identity() {
     let upper = Name::from_wire(b"\x03WWW\x07Example\x03COM\x00").unwrap();
     let lower = Name::from_wire(b"\x03www\x07example\x03com\x00").unwrap();
+    let different = Name::from_wire(b"\x03www\x07example\x03net\x00").unwrap();
     assert_eq!(upper, lower);
-    assert_eq!(upper.as_wire(), b"\x03www\x07example\x03com\x00");
-    assert_eq!(upper.to_string(), "www.example.com.");
-    assert_eq!(format!("{upper:?}"), "Name(\"www.example.com.\")");
+    assert_ne!(upper, different);
+    assert_eq!(upper.cmp(&lower), core::cmp::Ordering::Equal);
+    assert_eq!(upper.partial_cmp(&lower), Some(core::cmp::Ordering::Equal));
+    assert_eq!(name_hash_input(&upper), b"\x03www\x07example\x03com\x00");
+    assert_eq!(name_hash_input(&upper), name_hash_input(&lower));
+    assert_ne!(name_hash_input(&upper), name_hash_input(&different));
+
+    assert_eq!(upper.as_wire(), b"\x03WWW\x07Example\x03COM\x00");
+    assert_eq!(upper.to_string(), "WWW.Example.COM.");
+    assert_eq!(format!("{upper:?}"), "Name(\"WWW.Example.COM.\")");
     let domain = upper.to_domain().unwrap();
     assert_eq!(domain, Domain::from_static("www.example.com."));
+    assert_eq!(domain.as_str(), "WWW.Example.COM.");
     assert!(domain.is_fqdn());
     assert!(Name::root().to_domain().is_none());
 
@@ -360,6 +452,10 @@ fn name_rejects_compression_truncation_oversize_and_trailing_data() {
     assert_eq!(
         compressed.to_string(),
         "compressed DNS name is not allowed in this field"
+    );
+    assert_eq!(
+        Name::from_wire(&[0x40]).unwrap_err().to_string(),
+        "DNS name uses an unsupported label kind"
     );
     assert_eq!(
         Name::from_wire(&[1, b'a']).unwrap_err().to_string(),
@@ -380,6 +476,9 @@ fn name_rejects_compression_truncation_oversize_and_trailing_data() {
     assert_eq!(maximum.len(), Name::MAX_WIRE_LEN);
     let maximum_name = Name::from_wire(&maximum).unwrap();
     assert_eq!(maximum_name.as_wire(), maximum);
+    let (maximum_message_name, consumed) = Name::from_message(&maximum, 0).unwrap();
+    assert_eq!(maximum_message_name, maximum_name);
+    assert_eq!(consumed, Name::MAX_WIRE_LEN);
     let maximum_domain = maximum_name.to_domain().unwrap();
     assert_eq!(maximum_domain.as_str().len(), Domain::MAX_LEN + 1);
     assert!(maximum_domain.is_fqdn());
@@ -393,6 +492,12 @@ fn name_rejects_compression_truncation_oversize_and_trailing_data() {
     assert_eq!(one_too_long.len(), Name::MAX_WIRE_LEN + 1);
     assert_eq!(
         Name::from_wire(&one_too_long).unwrap_err().to_string(),
+        "DNS name exceeds 255 wire octets"
+    );
+    assert_eq!(
+        Name::from_message(&one_too_long, 0)
+            .unwrap_err()
+            .to_string(),
         "DNS name exceeds 255 wire octets"
     );
 

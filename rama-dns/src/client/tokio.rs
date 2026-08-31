@@ -15,8 +15,10 @@ use rama_utils::{
     str::arcstr::ArcStr,
 };
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::{ServiceBinding, Txt};
+use super::resolver::{
+    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+};
+use crate::wire::{Name, ServiceBinding, Txt};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -25,7 +27,7 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Portable DNS resolver backed by [`tokio::net::lookup_host`].
 ///
 /// This relies on the host resolver for address lookups and does not support
-/// TXT, SVCB, or HTTPS record resolution.
+/// CNAME, TXT, SVCB, or HTTPS record resolution.
 pub struct TokioDnsResolver {
     timeout: Duration,
 }
@@ -89,6 +91,17 @@ impl DnsTxtResolver for TokioDnsResolver {
         _domain: Domain,
     ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
         stream::once(std::future::ready(Err(TokioDnsTxtUnsupportedError)))
+    }
+}
+
+impl DnsCnameResolver for TokioDnsResolver {
+    type Error = TokioDnsCnameUnsupportedError;
+
+    fn lookup_cname(
+        &self,
+        _domain: Domain,
+    ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+        stream::once(std::future::ready(Err(TokioDnsCnameUnsupportedError)))
     }
 }
 
@@ -188,6 +201,11 @@ static_str_error! {
 }
 
 static_str_error! {
+    #[doc = "Tokio DNS resolver does not support CNAME lookups"]
+    pub struct TokioDnsCnameUnsupportedError;
+}
+
+static_str_error! {
     #[doc = "Tokio DNS resolver does not support SVCB or HTTPS lookups; boxed dispatch preserves this type for downcasting"]
     pub struct TokioDnsServiceBindingUnsupportedError;
 }
@@ -199,8 +217,15 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn service_binding_lookups_return_typed_unsupported_errors() {
+    async fn named_record_lookups_return_typed_unsupported_errors() {
         let resolver = TokioDnsResolver::new();
+
+        let cname = std::pin::pin!(resolver.lookup_cname(Domain::example()))
+            .next()
+            .await
+            .expect("one error")
+            .expect_err("unsupported");
+        assert_eq!(cname, TokioDnsCnameUnsupportedError);
 
         let svcb = std::pin::pin!(resolver.lookup_svcb(Domain::example()))
             .next()

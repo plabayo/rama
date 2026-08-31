@@ -7,7 +7,7 @@ use std::{
 use moka::{Equivalent, Expiry, sync::Cache};
 use rama_net::address::Domain;
 
-use crate::wire::{ServiceBinding, Txt};
+use crate::wire::{Name, ServiceBinding, Txt};
 
 /// Linux-only DNS response cache.
 ///
@@ -86,6 +86,22 @@ impl LinuxDnsCache {
             domain,
             RecordKind::Txt,
             CacheValue::Txt(Arc::<[Txt]>::from(values)),
+            ttl,
+        );
+    }
+
+    pub(super) fn get_cname(&self, domain: &Domain) -> Option<CacheLookup<Name>> {
+        self.lookup(domain, RecordKind::Cname, |value| match value {
+            CacheValue::Cname(values) => Some(values.clone()),
+            _ => None,
+        })
+    }
+
+    pub(super) fn insert_cname(&self, domain: Domain, values: Vec<Name>, ttl: Option<Duration>) {
+        self.insert(
+            domain,
+            RecordKind::Cname,
+            CacheValue::Cname(Arc::from(values)),
             ttl,
         );
     }
@@ -225,6 +241,7 @@ impl Equivalent<CacheKey> for CacheLookupKey<'_> {
 pub(super) enum RecordKind {
     Ipv4,
     Ipv6,
+    Cname,
     Txt,
     Svcb,
     Https,
@@ -243,6 +260,7 @@ struct CacheEntry {
 enum CacheValue {
     Ipv4(Arc<[std::net::Ipv4Addr]>),
     Ipv6(Arc<[std::net::Ipv6Addr]>),
+    Cname(Arc<[Name]>),
     Txt(Arc<[Txt]>),
     Svcb(Arc<[ServiceBinding]>),
     Https(Arc<[ServiceBinding]>),

@@ -7,9 +7,10 @@ use rama_core::{error::extra::OpaqueError, futures::Stream, telemetry::tracing};
 use rama_net::address::Domain;
 
 use crate::client::resolver::{
-    BoxDnsResolver, DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+    BoxDnsResolver, DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
+    DnsTxtResolver,
 };
-use crate::wire::{ServiceBinding, Txt};
+use crate::wire::{Name, ServiceBinding, Txt};
 
 #[cfg(all(
     not(target_vendor = "apple"),
@@ -99,6 +100,18 @@ impl DnsTxtResolver for GlobalDnsResolver {
     ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
         let resolver = global_dns_resolver();
         resolver.lookup_txt(domain)
+    }
+}
+
+impl DnsCnameResolver for GlobalDnsResolver {
+    type Error = OpaqueError;
+
+    #[inline(always)]
+    fn lookup_cname(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+        global_dns_resolver().lookup_cname(domain)
     }
 }
 

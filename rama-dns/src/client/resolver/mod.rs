@@ -8,12 +8,15 @@ use rama_core::error::extra::OpaqueError;
 use rama_core::futures::{FutureExt as _, Stream, TryStreamExt as _};
 use rama_net::address::Domain;
 
-use crate::wire::{ServiceBinding, Txt};
+use crate::wire::{Name, ServiceBinding, Txt};
 
 pub use self::address::{
     BoxDnsAddressResolver, DnsAddressResolver, DnsAddresssResolverOverwrite,
     HappyEyeballAddressResolver, HappyEyeballAddressResolverExt,
 };
+
+mod cname;
+pub use self::cname::{BoxDnsCnameResolver, DnsCnameResolver};
 
 mod txt;
 pub use self::txt::{BoxDnsTxtResolver, DnsTxtResolver};
@@ -21,8 +24,10 @@ pub use self::txt::{BoxDnsTxtResolver, DnsTxtResolver};
 mod service_binding;
 pub use self::service_binding::{BoxDnsServiceBindingResolver, DnsServiceBindingResolver};
 
-/// Aggregate resolver supporting address, TXT, SVCB, and HTTPS lookups.
-pub trait DnsResolver: DnsAddressResolver + DnsTxtResolver + DnsServiceBindingResolver {
+/// Aggregate resolver supporting address, CNAME, TXT, SVCB, and HTTPS lookups.
+pub trait DnsResolver:
+    DnsAddressResolver + DnsCnameResolver + DnsTxtResolver + DnsServiceBindingResolver
+{
     /// Box this aggregate resolver for dynamic dispatch.
     fn into_box_dns_resolver(self) -> BoxDnsResolver
     where
@@ -70,6 +75,11 @@ trait DynDnsResolver {
         &self,
         domain: Domain,
     ) -> Pin<Box<dyn Stream<Item = Result<Txt, OpaqueError>> + Send + '_>>;
+
+    fn dyn_lookup_cname(
+        &self,
+        domain: Domain,
+    ) -> Pin<Box<dyn Stream<Item = Result<Name, OpaqueError>> + Send + '_>>;
 
     fn dyn_lookup_svcb(
         &self,
@@ -158,6 +168,17 @@ where
         domain: Domain,
     ) -> Pin<Box<dyn Stream<Item = Result<Txt, OpaqueError>> + Send + '_>> {
         Box::pin(self.lookup_txt(domain).map_err(ErrorExt::into_opaque_error))
+    }
+
+    #[inline(always)]
+    fn dyn_lookup_cname(
+        &self,
+        domain: Domain,
+    ) -> Pin<Box<dyn Stream<Item = Result<Name, OpaqueError>> + Send + '_>> {
+        Box::pin(
+            self.lookup_cname(domain)
+                .map_err(ErrorExt::into_opaque_error),
+        )
     }
 
     #[inline(always)]
@@ -289,6 +310,23 @@ impl DnsTxtResolver for BoxDnsResolver {
     }
 }
 
+impl DnsCnameResolver for BoxDnsResolver {
+    type Error = OpaqueError;
+
+    #[inline(always)]
+    fn lookup_cname(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+        self.inner.dyn_lookup_cname(domain)
+    }
+
+    #[inline(always)]
+    fn into_box_dns_cname_resolver(self) -> BoxDnsCnameResolver {
+        BoxDnsCnameResolver::new(self)
+    }
+}
+
 impl DnsServiceBindingResolver for BoxDnsResolver {
     type Error = OpaqueError;
 
@@ -360,6 +398,20 @@ mod tests {
         }
     }
 
+    impl DnsCnameResolver for FullResolver {
+        type Error = Infallible;
+
+        fn lookup_cname(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+            stream::once(std::future::ready(Ok(Name::from_wire(
+                b"\x05alias\x07example\x03com\0",
+            )
+            .unwrap())))
+        }
+    }
+
     impl DnsServiceBindingResolver for FullResolver {
         type Error = Infallible;
 
@@ -387,8 +439,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn boxed_full_resolver_dispatches_service_binding_lookups() {
+    async fn boxed_full_resolver_dispatches_record_lookups() {
         let resolver = FullResolver.into_box_dns_resolver();
+        let cname = std::pin::pin!(resolver.lookup_cname(Domain::example()))
+            .next()
+            .await
+            .expect("one record")
+            .expect("success");
+        assert_eq!(cname.to_string(), "alias.example.com.");
+
         let svcb = std::pin::pin!(resolver.lookup_svcb(Domain::example()))
             .next()
             .await

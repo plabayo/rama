@@ -29,8 +29,10 @@ use rama_core::{futures::async_stream::stream_fn, telemetry::tracing};
 use rama_net::address::Domain;
 use rama_utils::macros::generate_set_and_with;
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver};
-use crate::wire::{ServiceBinding, Txt};
+use super::resolver::{
+    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+};
+use crate::wire::{Name as WireName, ServiceBinding, Txt};
 
 #[derive(Debug, Clone)]
 /// DNS Resolver using the [`hickory_resolver`] crate
@@ -326,9 +328,56 @@ impl DnsTxtResolver for HickoryDnsResolver {
     }
 }
 
+impl DnsCnameResolver for HickoryDnsResolver {
+    type Error = BoxError;
+
+    fn lookup_cname(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<WireName, Self::Error>> + Send + '_ {
+        stream_fn(async move |mut yielder| {
+            let name = try_or_yield!(
+                yielder,
+                name_from_domain(domain),
+                "lookup CNAME: create name from domain"
+            );
+            let lookup = try_or_yield!(
+                yielder,
+                self.0.lookup(name.clone(), HickoryRecordType::CNAME).await,
+                "resolve CNAME record(s) for name",
+                "name" = name
+            );
+            for cname in lookup
+                .answers()
+                .iter()
+                .filter_map(|answer| match &answer.data {
+                    RData::CNAME(cname) => Some(cname),
+                    _ => None,
+                })
+            {
+                match decode_hickory_name(cname) {
+                    Ok(cname) => yielder.yield_item(Ok(cname)).await,
+                    Err(err) => {
+                        yielder.yield_item(Err(err)).await;
+                        return;
+                    }
+                }
+            }
+        })
+    }
+}
+
 fn decode_hickory_txt(value: &hickory_resolver::proto::rr::rdata::TXT) -> Result<Txt, BoxError> {
     Txt::try_from_strings(value.txt_data.iter().map(AsRef::<[u8]>::as_ref))
         .context("validate Hickory TXT RDATA")
+}
+
+fn decode_hickory_name(value: &impl BinEncodable) -> Result<WireName, BoxError> {
+    let mut wire = Vec::new();
+    value
+        .emit(&mut BinEncoder::new(&mut wire))
+        .context("encode Hickory DNS name")?;
+    WireName::from_wire_bytes(&Bytes::from(wire)).context("validate Hickory DNS name")
 }
 
 impl DnsServiceBindingResolver for HickoryDnsResolver {
@@ -432,7 +481,7 @@ fn name_from_domain(domain: Domain) -> Result<Name, BoxError> {
 mod tests {
     use super::*;
     use hickory_resolver::proto::rr::rdata::{
-        HTTPS, SVCB, TXT,
+        CNAME, HTTPS, SVCB, TXT,
         svcb::{SvcParamKey, SvcParamValue},
     };
 
@@ -450,6 +499,14 @@ mod tests {
         let oversized = vec![0; 256];
         decode_hickory_txt(&TXT::from_bytes(vec![&oversized]))
             .expect_err("TXT string is limited to 255 octets");
+    }
+
+    #[test]
+    fn cname_bridge_preserves_dns_name_semantics() {
+        let cname = CNAME(Name::from_ascii("Alias.Example.").expect("valid name"));
+        let decoded = decode_hickory_name(&cname).expect("valid CNAME");
+        assert_eq!(decoded.as_wire(), b"\x05Alias\x07Example\0");
+        assert_eq!(decoded.to_string(), "Alias.Example.");
     }
 
     #[test]

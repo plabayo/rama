@@ -7,7 +7,7 @@ use std::ops::Range;
 use rama_core::bytes::Bytes;
 
 #[cfg(any(target_os = "linux", all(test, target_family = "unix")))]
-use crate::wire::ServiceBinding;
+use crate::wire::{Name, ServiceBinding};
 use crate::wire::{RecordType, Txt};
 
 pub(super) const DNS_CLASS_IN: u16 = 1;
@@ -29,6 +29,21 @@ pub(super) fn parse_txt_rr(raw: &Bytes) -> RrParse<Txt> {
         return RrParse::Other;
     }
     match Txt::parse_rdata_bytes(&raw.slice(rr.rdata)) {
+        Ok(value) => RrParse::Record { ttl: rr.ttl, value },
+        Err(_) => RrParse::Malformed,
+    }
+}
+
+/// Parse one standalone CNAME RR from a systemd-resolved reply.
+#[cfg(any(target_os = "linux", all(test, target_family = "unix")))]
+pub(super) fn parse_cname_rr(raw: &Bytes) -> RrParse<Name> {
+    let Some(rr) = parse_rr(raw) else {
+        return RrParse::Malformed;
+    };
+    if rr.record_type != u16::from(RecordType::CNAME) || rr.class != DNS_CLASS_IN {
+        return RrParse::Other;
+    }
+    match Name::from_wire_bytes(&raw.slice(rr.rdata)) {
         Ok(value) => RrParse::Record { ttl: rr.ttl, value },
         Err(_) => RrParse::Malformed,
     }

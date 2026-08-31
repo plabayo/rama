@@ -22,7 +22,7 @@ use libc::c_int;
 use tokio::sync::mpsc;
 
 use super::{LinuxDnsResolverError, LookupEvent, dns_name_from_domain};
-use crate::wire::{RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata};
+use crate::wire::{Name, RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata};
 
 const INITIAL_RESPONSE_BUFFER_SIZE: usize = kib(16);
 const DNS_HEADER_SIZE: usize = 12;
@@ -67,6 +67,20 @@ pub(super) fn lookup_txt_stream(
         response_buffer_size,
         ffi::NS_T_TXT as c_int,
         parse_txt_response,
+    )
+}
+
+pub(super) fn lookup_cname_stream(
+    domain: Domain,
+    timeout: Duration,
+    response_buffer_size: usize,
+) -> impl Stream<Item = Result<LookupEvent<Name>, BoxError>> + Send {
+    lookup_record_stream(
+        domain,
+        timeout,
+        response_buffer_size,
+        ffi::NS_T_CNAME as c_int,
+        parse_cname_response,
     )
 }
 
@@ -312,22 +326,37 @@ impl Drop for ResStateGuard {
 }
 
 fn parse_a_response(packet: &[u8], emit: &mut dyn FnMut(Ipv4Addr, u32)) -> Result<(), BoxError> {
-    parse_answers(packet, ffi::NS_T_A, |rdata, ttl| {
-        emit(parse_a_rdata(rdata)?, ttl);
+    parse_answers(packet, ffi::NS_T_A, |packet, rdata, ttl| {
+        emit(parse_a_rdata(&packet[rdata])?, ttl);
         Ok(())
     })
 }
 
 fn parse_aaaa_response(packet: &[u8], emit: &mut dyn FnMut(Ipv6Addr, u32)) -> Result<(), BoxError> {
-    parse_answers(packet, ffi::NS_T_AAAA, |rdata, ttl| {
-        emit(parse_aaaa_rdata(rdata)?, ttl);
+    parse_answers(packet, ffi::NS_T_AAAA, |packet, rdata, ttl| {
+        emit(parse_aaaa_rdata(&packet[rdata])?, ttl);
         Ok(())
     })
 }
 
 fn parse_txt_response(packet: &[u8], emit: &mut dyn FnMut(Txt, u32)) -> Result<(), BoxError> {
-    parse_answers(packet, ffi::NS_T_TXT, |rdata, ttl| {
-        emit(Txt::parse_rdata(rdata)?, ttl);
+    parse_answers(packet, ffi::NS_T_TXT, |packet, rdata, ttl| {
+        emit(Txt::parse_rdata(&packet[rdata])?, ttl);
+        Ok(())
+    })
+}
+
+fn parse_cname_response(packet: &[u8], emit: &mut dyn FnMut(Name, u32)) -> Result<(), BoxError> {
+    parse_answers(packet, ffi::NS_T_CNAME, |packet, rdata, ttl| {
+        let rdata_len = rdata.len();
+        let (name, consumed) = Name::from_message(packet, rdata.start)?;
+        if consumed != rdata_len {
+            return Err(LinuxDnsResolverError::message(
+                "CNAME RDATA contains data after its target name",
+            )
+            .into());
+        }
+        emit(name, ttl);
         Ok(())
     })
 }
@@ -337,15 +366,15 @@ fn parse_service_binding_response(
     record_type: RecordType,
     emit: &mut dyn FnMut(ServiceBinding, u32),
 ) -> Result<(), BoxError> {
-    parse_answers(packet, record_type.into(), |rdata, ttl| {
-        emit(ServiceBinding::parse_rdata(rdata)?, ttl);
+    parse_answers(packet, record_type.into(), |packet, rdata, ttl| {
+        emit(ServiceBinding::parse_rdata(&packet[rdata])?, ttl);
         Ok(())
     })
 }
 
 fn parse_answers<P>(packet: &[u8], expected_type: u16, mut parser: P) -> Result<(), BoxError>
 where
-    P: FnMut(&[u8], u32) -> Result<(), BoxError>,
+    P: FnMut(&[u8], std::ops::Range<usize>, u32) -> Result<(), BoxError>,
 {
     if packet.len() < DNS_HEADER_SIZE {
         return Err(LinuxDnsResolverError::message("short DNS response header").into());
@@ -385,7 +414,7 @@ where
         }
 
         if rrtype == expected_type && rrclass == ffi::NS_C_IN {
-            parser(&packet[offset..offset + rdlen], ttl)?;
+            parser(packet, offset..offset + rdlen, ttl)?;
         }
 
         offset += rdlen;
@@ -536,6 +565,8 @@ mod ffi {
 
     /// A (IPv4)
     pub(super) const NS_T_A: u16 = 1;
+    /// CNAME (canonical name)
+    pub(super) const NS_T_CNAME: u16 = 5;
     /// SOA (Start of Authority)
     pub(super) const NS_T_SOA: u16 = 6;
     /// TXT
@@ -747,7 +778,8 @@ mod soa_ttl_tests {
 #[cfg(test)]
 mod record_response_tests {
     use super::{
-        RecordType, parse_complete_response, parse_service_binding_response, parse_txt_response,
+        RecordType, parse_cname_response, parse_complete_response, parse_service_binding_response,
+        parse_txt_response,
     };
 
     fn response(record_type: RecordType, rdata: &[u8]) -> Vec<u8> {
@@ -759,21 +791,24 @@ mod record_response_tests {
             0, 0, 0x81, 0x80, 0, 1, 0, 2, 0, 0, 0, 0, 7, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
             3, b'c', b'o', b'm', 0,
         ];
+        let ancillary_count = usize::from(record_type != RecordType::CNAME);
         packet[6..8].copy_from_slice(
-            &u16::try_from(rdatas.len() + 1)
+            &u16::try_from(rdatas.len() + ancillary_count)
                 .expect("short answer list")
                 .to_be_bytes(),
         );
         packet.extend_from_slice(&u16::from(record_type).to_be_bytes());
         packet.extend_from_slice(&1_u16.to_be_bytes());
 
-        // Ancillary CNAME answer.
-        packet.extend_from_slice(&[0xc0, 0x0c]);
-        packet.extend_from_slice(&5_u16.to_be_bytes());
-        packet.extend_from_slice(&1_u16.to_be_bytes());
-        packet.extend_from_slice(&60_u32.to_be_bytes());
-        packet.extend_from_slice(&2_u16.to_be_bytes());
-        packet.extend_from_slice(&[0xc0, 0x0c]);
+        if ancillary_count != 0 {
+            // Ancillary CNAME answer.
+            packet.extend_from_slice(&[0xc0, 0x0c]);
+            packet.extend_from_slice(&5_u16.to_be_bytes());
+            packet.extend_from_slice(&1_u16.to_be_bytes());
+            packet.extend_from_slice(&60_u32.to_be_bytes());
+            packet.extend_from_slice(&2_u16.to_be_bytes());
+            packet.extend_from_slice(&[0xc0, 0x0c]);
+        }
 
         for rdata in rdatas {
             packet.extend_from_slice(&[0xc0, 0x0c]);
@@ -806,6 +841,20 @@ mod record_response_tests {
             assert_eq!(records[0].0.port(), Some(port));
             assert_eq!(records[0].1, 123);
         }
+    }
+
+    #[test]
+    fn cname_response_expands_compressed_rdata_with_ttl() {
+        let packet = response(RecordType::CNAME, &[0xc0, 0x0c]);
+        let records = parse_complete_response(&packet, &parse_cname_response).expect("valid CNAME");
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].0.to_string(), "example.com.");
+        assert_eq!(records[0].1, 123);
+
+        let packet = response(RecordType::CNAME, &[0xc0, 0x0c, 0]);
+        parse_complete_response(&packet, &parse_cname_response)
+            .expect_err("trailing CNAME RDATA is malformed");
     }
 
     #[test]

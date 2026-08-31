@@ -12,7 +12,7 @@
 //!   [`client`] when the corresponding target is active.
 //! - [`client::TokioDnsResolver`] — host-backed resolver that uses the
 //!   blocking system getaddrinfo via tokio's threadpool; it supports address
-//!   records only and returns typed errors for TXT, SVCB, and HTTPS lookups.
+//!   records only and returns typed errors for CNAME, TXT, SVCB, and HTTPS lookups.
 //! - `client::HickoryDnsResolver` — pure-Rust resolver from the
 //!   Hickory DNS project (<https://github.com/hickory-dns/hickory-dns>);
 //!   gated behind the `hickory` feature.
@@ -20,8 +20,8 @@
 //!   [`client::DnsDeniedError`]; useful when DNS must be disabled.
 //! - [`client::EmptyDnsResolver`] — returns no records for every lookup.
 //!
-//! [`client::resolver::DnsResolver`] is the aggregate of the address, TXT,
-//! and SVCB/HTTPS resolver traits. Implement those traits yourself to plug in
+//! [`client::resolver::DnsResolver`] is the aggregate of the address, CNAME,
+//! TXT, and SVCB/HTTPS resolver traits. Implement those traits yourself to plug in
 //! another resolver, and combine resolvers with the chain / tuple / variant
 //! adapters under [`client`].
 //! [`client::resolver::DnsTxtResolver`] yields one [`wire::Txt`] per DNS TXT
@@ -69,9 +69,9 @@
 //! ## DNS wire data
 //!
 //! The [`wire`] module provides provider-neutral DNS wire vocabulary. It
-//! decodes A, AAAA, and TXT RDATA as well as the shared RDATA used by SVCB and
-//! HTTPS records. TXT string boundaries and unknown service parameters are
-//! preserved.
+//! decodes A, AAAA, CNAME, and TXT RDATA as well as the shared RDATA used by
+//! SVCB and HTTPS records. DNS names, TXT string boundaries, and unknown
+//! service parameters are preserved.
 //!
 //! ## Rama
 //!
