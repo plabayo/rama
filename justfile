@@ -121,7 +121,7 @@ _zigbuild-linux-gnu-with-native-env-unix RECIPE TARGET:
     AR="zig ar" AWS_LC_SYS_CMAKE_BUILDER=0 just {{RECIPE}} {{TARGET}}
 
 _zigbuild-linux-gnu-with-native-env-windows RECIPE TARGET:
-    $rustVersion = (Select-String -Path rust-toolchain.toml -Pattern '^channel = "([^"]+)"$').Matches[0].Groups[1].Value; $gitShell = (Get-Command sh.exe).Source; $shortShell = (New-Object -ComObject Scripting.FileSystemObject).GetFile($gitShell).ShortPath.Replace('\', '/'); $env:RUSTUP_TOOLCHAIN = "${rustVersion}-x86_64-pc-windows-gnu"; $env:SHELL = $shortShell; $env:MAKESHELL = $shortShell; $env:AR = "zig ar"; $env:AWS_LC_SYS_CMAKE_BUILDER = "0"; just {{RECIPE}} {{TARGET}}
+    $rustVersion = (Select-String -Path rust-toolchain.toml -Pattern '^channel = "([^"]+)"$').Matches[0].Groups[1].Value; $gitShell = (Get-Command sh.exe).Source; $shortShell = (New-Object -ComObject Scripting.FileSystemObject).GetFile($gitShell).ShortPath.Replace('\', '/'); $env:RUSTUP_TOOLCHAIN = "${rustVersion}-x86_64-pc-windows-gnu"; $env:MAKEFLAGS = "SHELL=$shortShell"; $env:AR = "zig ar"; $env:AWS_LC_SYS_CMAKE_BUILDER = "0"; just {{RECIPE}} {{TARGET}}
 
 # check no_std crates against a target without std: any dep that links
 # std fails loudly here instead of poisoning downstream no_std consumers
