@@ -818,6 +818,12 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+    env:
+      # The released 0.4 baseline still depends on dial9 0.3, which only
+      # compiles with Tokio's unstable APIs (the workspace config used to
+      # carry this flag). Drop once a dial9-0.5-based rama is the
+      # published baseline.
+      RUSTFLAGS: --cfg tokio_unstable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check semver
