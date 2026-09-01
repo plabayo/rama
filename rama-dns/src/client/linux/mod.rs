@@ -575,8 +575,12 @@ where
                     authoritative_negative = soa_ttl;
                 }
                 Err(err) => {
-                    // The lookup is one DNS response. Do not expose a partial
-                    // RRset when its backend reports that response as invalid.
+                    // Preserve values the backend already accepted, but do not
+                    // cache an incomplete lookup. Backends requiring atomic
+                    // RRsets validate the complete response before emitting.
+                    for value in values {
+                        yielder.yield_item(Ok(value)).await;
+                    }
                     yielder.yield_item(Err(err)).await;
                     return;
                 }
@@ -1236,7 +1240,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn errors_discard_prior_records_and_are_not_cached() {
+    async fn errors_follow_prior_records_and_are_not_cached() {
         let cache = test_cache();
         let domain = test_domain();
         let addr = Ipv4Addr::new(10, 0, 0, 1);
@@ -1249,8 +1253,9 @@ mod tests {
             .collect()
             .await;
 
-        assert_eq!(items.len(), 1);
-        assert!(matches!(items[0], Err(ref err) if err.to_string() == "boom"));
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[0], Ok(got) if got == addr));
+        assert!(matches!(items[1], Err(ref err) if err.to_string() == "boom"));
         assert!(
             cached_ipv4(&cache, &domain).is_none(),
             "a failed lookup must not be cached",

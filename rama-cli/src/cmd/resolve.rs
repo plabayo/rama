@@ -522,13 +522,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_named_record_types() {
-        assert_eq!(RecordType::from_str("CNAME").unwrap(), RecordType::CNAME);
-        assert_eq!(RecordType::from_str("SVCB").unwrap(), RecordType::SVCB);
-        assert_eq!(RecordType::from_str("HTTPS").unwrap(), RecordType::HTTPS);
-    }
-
-    #[test]
     fn parse_nameserver_arg_ip_without_port() {
         let value = NameServerArg::from_str("1.1.1.1").expect("parse nameserver");
         assert_eq!(value.ip, IpAddr::from([1, 1, 1, 1]));

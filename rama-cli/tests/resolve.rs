@@ -2,9 +2,7 @@ use std::{
     error::Error,
     io,
     net::UdpSocket,
-    path::PathBuf,
     process::{Command, Output},
-    sync::atomic::{AtomicU64, Ordering},
     thread,
     time::Duration,
 };
@@ -121,7 +119,8 @@ fn run_resolve_from_local_dns(
         Ok(())
     });
 
-    let trace = TraceFile::new();
+    let trace_dir = rama::utils::fs::TempDir::with_prefix("rama-resolve-test-")?;
+    let trace = trace_dir.path().join("trace.log");
     let output = Command::new(env!("CARGO_BIN_EXE_rama"))
         .args([
             "resolve",
@@ -135,7 +134,7 @@ fn run_resolve_from_local_dns(
             "1",
         ])
         .arg("--trace")
-        .arg(&trace.0)
+        .arg(&trace)
         .env("RUST_LOG", "info")
         .output()?;
     server
@@ -197,24 +196,4 @@ fn dns_response(query: &[u8], type_number: u16, rdata: Option<&[u8]>) -> io::Res
     response.extend_from_slice(&rdata_len.to_be_bytes());
     response.extend_from_slice(rdata);
     Ok(response)
-}
-
-static NEXT_TRACE_ID: AtomicU64 = AtomicU64::new(0);
-
-struct TraceFile(PathBuf);
-
-impl TraceFile {
-    fn new() -> Self {
-        let id = NEXT_TRACE_ID.fetch_add(1, Ordering::Relaxed);
-        Self(
-            std::env::temp_dir()
-                .join(format!("rama-resolve-test-{}-{id}.log", std::process::id(),)),
-        )
-    }
-}
-
-impl Drop for TraceFile {
-    fn drop(&mut self) {
-        drop(std::fs::remove_file(&self.0));
-    }
 }
