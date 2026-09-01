@@ -534,7 +534,7 @@ jobs:
             rust-toolchain: 1.97.1-x86_64-pc-windows-gnu
             rust-target: x86_64-unknown-linux-gnu
             zig-target: x86_64-unknown-linux-gnu.2.17
-            just-recipe: test-zigbuild-linux-gnu-all
+            just-recipe: test-zigbuild-linux-gnu-cli
     name: test-rust-linux-gnu-cross-host-${{ matrix.os }}-${{ matrix.rust-target }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 240
