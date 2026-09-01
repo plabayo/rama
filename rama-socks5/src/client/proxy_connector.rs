@@ -467,7 +467,7 @@ mod tests {
     use rama_net::{
         ConnectorTransportProtocolInputExt, Protocol,
         address::HostWithPort,
-        client::{ConnectRequest, ConnectorService as _, ProxyRoute},
+        client::{ConnectRequest, ProxyRoute},
     };
 
     use super::*;

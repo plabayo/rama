@@ -143,8 +143,6 @@ impl DnsCnameResolver for BoxDnsCnameResolver {
 
 #[cfg(test)]
 mod tests {
-    use rama_core::futures::StreamExt as _;
-
     use super::*;
 
     #[tokio::test]
