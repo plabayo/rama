@@ -110,12 +110,13 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let HostWithPort { host, port } = input.connector_target().ok_or_else(|| {
+        let target = input.connector_target().ok_or_else(|| {
             ConnectionError::local(
                 BoxError::from_static_str("dns connector: connector target missing from input"),
                 ConnectionErrorKind::InvalidInput,
             )
         })?;
+        let HostWithPort { host, port } = target.clone();
 
         // Already an IP target: nothing to resolve, forward the input untouched.
         if host.try_as_ip().is_ok() {
@@ -131,6 +132,7 @@ where
         input
             .extensions()
             .insert(ConnectorTargetStream::new(DnsAddressCandidates {
+                target,
                 resolver: self.resolver.clone(),
                 domain,
                 port,
@@ -145,6 +147,7 @@ where
 /// Resolves a domain target into a happy-eyeballs-ordered stream of
 /// [`SocketAddr`]esses.
 struct DnsAddressCandidates<R> {
+    target: HostWithPort,
     resolver: R,
     domain: Domain,
     port: u16,
@@ -154,6 +157,10 @@ impl<R> AddressCandidates for DnsAddressCandidates<R>
 where
     R: DnsAddressResolver,
 {
+    fn target(&self) -> Option<&HostWithPort> {
+        Some(&self.target)
+    }
+
     fn stream<'a>(
         &'a self,
         extensions: &'a Extensions,
@@ -275,6 +282,14 @@ mod tests {
                 .extensions()
                 .get_ref::<ConnectorTargetStream>()
                 .is_some()
+        );
+        assert_eq!(
+            out.input
+                .extensions()
+                .get_ref::<ConnectorTargetStream>()
+                .unwrap()
+                .target(),
+            Some(&HostWithPort::example_domain_https())
         );
     }
 

@@ -111,10 +111,7 @@ pub type DefaultHttpWebClient<Body = crate::http::Body> = EasyHttpWebClient<
     Body,
     EstablishedClientConnection<
         BindBodyToConn<
-            crate::net::client::pool::MultiplexedConnection<
-                HttpClientService<Body>,
-                crate::net::client::pool::BasicConnId,
-            >,
+            crate::net::client::pool::MultiplexedConnection<HttpClientService<Body>, HttpConnId>,
         >,
         Request<Body>,
     >,
@@ -319,8 +316,8 @@ mod tests {
         address::ProxyAddress,
         client::{
             ConnectRequest, ConnectionError, ConnectionErrorDomain, ConnectionErrorKind,
-            ConnectorService, ProxyRoute, ProxyRouteFailureCache, ProxyRouteFailureCacheConfig,
-            ProxyRouteFailureCacheScope, ProxyRoutes,
+            ConnectorService, ConnectorTarget, ProxyRoute, ProxyRouteFailureCache,
+            ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheScope, ProxyRoutes,
         },
         test_utils::client::{MockConnectorService, MockSocket},
     };
@@ -500,6 +497,68 @@ mod tests {
             ConnectionError::from(client.serve(request).await.unwrap_err().into_box_error());
         assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
         assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
+    }
+
+    #[tokio::test]
+    async fn easy_client_pools_plaintext_proxy_versions_separately() {
+        let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
+        let dials = Arc::new(AtomicUsize::new(0));
+        let transport = service_fn({
+            let inner = dummy_server::<ConnectRequest>();
+            let proxy = proxy.clone();
+            let dials = dials.clone();
+            move |input: ConnectRequest| {
+                let inner = inner.clone();
+                let proxy = proxy.clone();
+                let dials = dials.clone();
+                async move {
+                    assert_eq!(
+                        input.extensions.get_ref::<ConnectorTarget>(),
+                        Some(&ConnectorTarget(proxy.address.clone())),
+                    );
+                    assert_eq!(
+                        input
+                            .extensions
+                            .get_ref::<ProxyRoute>()
+                            .and_then(ProxyRoute::proxy_address),
+                        Some(&proxy),
+                    );
+                    dials.fetch_add(1, Ordering::Relaxed);
+                    inner.connect(input).await
+                }
+            }
+        });
+        let client = EasyHttpWebClient::connector_builder()
+            .with_custom_transport_connector(transport)
+            .without_dns_connector()
+            .without_tls_proxy_support()
+            .with_proxy_support()
+            .without_tls_support()
+            .with_default_http_connector(Executor::default())
+            .with_default_connection_pool()
+            .build_client();
+
+        for (version, expected_conn) in [(Version::HTTP_11, 0), (Version::HTTP_2, 1)] {
+            let request = Request::builder()
+                .uri("http://example.com")
+                .version(version)
+                .body(Body::empty())
+                .unwrap();
+            request
+                .extensions()
+                .insert(ProxyRoutes::from(proxy.clone()));
+
+            let response = client.serve(request).await.unwrap();
+            assert_eq!(response.version(), version);
+            assert_eq!(
+                response.try_into_json::<Output>().await.unwrap(),
+                Output {
+                    conn: expected_conn,
+                    resp: 0,
+                },
+            );
+        }
+        assert_eq!(dials.load(Ordering::Relaxed), 2);
     }
 
     #[cfg(feature = "socks5")]

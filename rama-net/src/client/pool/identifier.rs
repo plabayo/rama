@@ -4,9 +4,10 @@ use rama_core::{
 };
 
 use crate::{
-    AuthorityInputExt, Protocol, ProtocolInputExt,
+    AuthorityInputExt, ConnectorTransportProtocolInputExt, Protocol, ProtocolInputExt,
     address::{HostWithOptPort, ProxyAddress},
     client::{ConnectorTarget, ProxyRoute},
+    transport::TransportProtocol,
 };
 
 use super::{ConnID, ReqToConnID};
@@ -14,7 +15,8 @@ use super::{ConnID, ReqToConnID};
 /// Basic connection-pool identifier derived from connection input.
 ///
 /// Inputs share a pool identity only when their application protocol, logical
-/// authority, selected proxy and physical connector target all match.
+/// authority, selected proxy, physical connector target and physical transport
+/// all match.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct BasicConnIdentifier;
@@ -29,11 +31,13 @@ impl BasicConnIdentifier {
 
 /// Connection identity produced by [`BasicConnIdentifier`].
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BasicConnId {
     pub protocol: Option<Protocol>,
     pub authority: HostWithOptPort,
     pub proxy_address: Option<ProxyAddress>,
     pub connector_target: Option<ConnectorTarget>,
+    pub connector_transport_protocol: Option<TransportProtocol>,
 }
 
 impl ConnID for BasicConnId {
@@ -54,7 +58,8 @@ impl ConnID for BasicConnId {
 
 impl<Input> ReqToConnID<Input> for BasicConnIdentifier
 where
-    Input: AuthorityInputExt + ExtensionsRef + ProtocolInputExt,
+    Input:
+        AuthorityInputExt + ConnectorTransportProtocolInputExt + ExtensionsRef + ProtocolInputExt,
 {
     type ID = BasicConnId;
 
@@ -72,6 +77,7 @@ where
                 .and_then(ProxyRoute::proxy_address)
                 .cloned(),
             connector_target: input.extensions().get_ref().cloned(),
+            connector_transport_protocol: input.connector_transport_protocol(),
         })
     }
 }
@@ -120,6 +126,43 @@ mod tests {
         assert_ne!(
             BasicConnIdentifier::new().id(&first).unwrap(),
             BasicConnIdentifier::new().id(&second).unwrap(),
+        );
+    }
+
+    #[test]
+    fn separates_physical_transport_protocols() {
+        use crate::client::ConnectorTransportProtocol;
+
+        let authority = "example.com:443".parse::<HostWithPort>().unwrap();
+        let tcp = ConnectRequest::new(authority.clone());
+        tcp.extensions
+            .insert(ConnectorTransportProtocol(TransportProtocol::Tcp));
+        let udp = ConnectRequest::new(authority);
+        udp.extensions
+            .insert(ConnectorTransportProtocol(TransportProtocol::Udp));
+
+        assert_ne!(
+            BasicConnIdentifier::new().id(&tcp).unwrap(),
+            BasicConnIdentifier::new().id(&udp).unwrap(),
+        );
+    }
+
+    #[test]
+    fn equivalent_physical_transports_share_an_identity() {
+        use crate::client::ConnectorTransportProtocol;
+
+        let authority = "example.com:443".parse::<HostWithPort>().unwrap();
+        let logical_tcp =
+            ConnectRequest::new(authority.clone()).with_transport_protocol(TransportProtocol::Tcp);
+        let routed_tcp =
+            ConnectRequest::new(authority).with_transport_protocol(TransportProtocol::Udp);
+        routed_tcp
+            .extensions
+            .insert(ConnectorTransportProtocol(TransportProtocol::Tcp));
+
+        assert_eq!(
+            BasicConnIdentifier::new().id(&logical_tcp).unwrap(),
+            BasicConnIdentifier::new().id(&routed_tcp).unwrap(),
         );
     }
 

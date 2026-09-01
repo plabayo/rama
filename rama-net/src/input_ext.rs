@@ -11,8 +11,8 @@
 //! resolution that fits it (the http `Request`/`Parts` impls in `rama-http-types`
 //! walk the uri → TLS SNI → `Forwarded` → `Host` fallback chain;
 //! a transport target resolves its authority directly). The only blanket impls
-//! are the trivial reference-forwarding ones and the composed
-//! [`ConnectorTargetInputExt`], whose method is purely derived.
+//! are the trivial reference-forwarding ones and the composed connector
+//! accessors, whose methods are purely derived.
 //!
 //! The return type *is* the fallibility contract: an `Option` may be absent (a
 //! caller that requires it does `.ok_or_else(|| …)?` with its own error);
@@ -30,7 +30,7 @@ use crate::address::HostWithPort;
 use crate::address::{Domain, Host, HostWithOptPort};
 
 #[cfg(feature = "std")]
-use crate::client::ConnectorTarget;
+use crate::client::{ConnectorTarget, ConnectorTransportProtocol};
 
 #[cfg(feature = "std")]
 use crate::http::Version;
@@ -209,13 +209,42 @@ impl<T: TransportProtocolInputExt + ?Sized> TransportProtocolInputExt for &T {
 
 #[cfg(feature = "std")]
 mod private {
-    use super::{AuthorityInputExt, ProtocolInputExt};
+    use super::{AuthorityInputExt, ProtocolInputExt, TransportProtocolInputExt};
 
     /// Seals [`ConnectorTargetInputExt`](super::ConnectorTargetInputExt): it is
     /// purely derived from [`AuthorityInputExt`] + [`ProtocolInputExt`], so it must
     /// never be implemented by hand.
     pub trait Sealed {}
     impl<T: AuthorityInputExt + ProtocolInputExt + ?Sized> Sealed for T {}
+
+    /// Seals [`ConnectorTransportProtocolInputExt`](super::ConnectorTransportProtocolInputExt):
+    /// it is purely derived from [`TransportProtocolInputExt`] and extensions.
+    pub trait TransportSealed {}
+    impl<T: TransportProtocolInputExt + ?Sized> TransportSealed for T {}
+}
+
+/// Resolve the physical transport protocol a connector should establish.
+///
+/// The ordinary [`TransportProtocolInputExt`] remains the input's logical
+/// transport. Connector-routing layers can overwrite only the physical route
+/// by inserting [`ConnectorTransportProtocol`].
+#[cfg(feature = "std")]
+pub trait ConnectorTransportProtocolInputExt:
+    TransportProtocolInputExt + ExtensionsRef + private::TransportSealed
+{
+    /// The physical connector transport override, then the logical transport.
+    fn connector_transport_protocol(&self) -> Option<TransportProtocol> {
+        self.extensions()
+            .get_ref::<ConnectorTransportProtocol>()
+            .map(|protocol| protocol.0)
+            .or_else(|| self.transport_protocol())
+    }
+}
+
+#[cfg(feature = "std")]
+impl<T: TransportProtocolInputExt + ExtensionsRef + ?Sized> ConnectorTransportProtocolInputExt
+    for T
+{
 }
 
 /// Resolve the **transport address** (`host:port`) to connect to: the routing

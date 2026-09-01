@@ -2,12 +2,17 @@
 
 use std::{num::NonZeroUsize, time::Duration};
 
-use rama_core::Layer;
 use rama_core::error::BoxError;
+use rama_core::{Layer, extensions::ExtensionsRef};
+use rama_http_types::{Version, conn::FallbackHttpVersion};
 use rama_net::client::pool::{
-    BasicConnId, BasicConnIdentifier, MultiplexPool, MuxSelection, PooledConnector,
+    BasicConnId, BasicConnIdentifier, ConnID, MultiplexPool, MuxSelection, PooledConnector,
+    ReqToConnID,
 };
-use rama_net::client::{ConnectRequest, ConnectorService};
+use rama_net::client::{ConnectRequest, ConnectorService, ProxyRoute};
+use rama_net::{
+    HttpVersionInputExt, ProtocolInputExt, TargetHttpVersionInputExt, transport::TransportProtocol,
+};
 
 use super::{BindBodyToConnLayer, BindBodyToConnector};
 
@@ -16,10 +21,99 @@ use super::{BindBodyToConnLayer, BindBodyToConnector};
 pub type HttpPooledConnector<S> = BindBodyToConnector<
     PooledConnector<
         S,
-        MultiplexPool<<S as ConnectorService<ConnectRequest>>::Connection, BasicConnId>,
-        BasicConnIdentifier,
+        MultiplexPool<<S as ConnectorService<ConnectRequest>>::Connection, HttpConnId>,
+        HttpConnIdentifier,
     >,
 >;
+
+/// HTTP connection-pool identifier derived from the network route and any
+/// version requirement that constrains the physical connection.
+#[derive(Clone, Debug, Default)]
+#[non_exhaustive]
+pub struct HttpConnIdentifier;
+
+impl HttpConnIdentifier {
+    /// Create an HTTP connection-pool identifier.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+/// Connection identity produced by [`HttpConnIdentifier`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpConnId {
+    network: BasicConnId,
+    required_version: Option<Version>,
+}
+
+impl ConnID for HttpConnId {
+    #[cfg(feature = "opentelemetry")]
+    fn attributes(&self) -> impl Iterator<Item = rama_core::telemetry::opentelemetry::KeyValue> {
+        self.network.attributes()
+    }
+}
+
+impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
+    type ID = HttpConnId;
+
+    fn id(&self, input: &ConnectRequest) -> Result<Self::ID, BoxError> {
+        let mut network = BasicConnIdentifier::new().id(input)?;
+        if input
+            .extensions()
+            .get_ref::<ProxyRoute>()
+            .and_then(ProxyRoute::proxy_address)
+            .is_some_and(|proxy| {
+                proxy
+                    .protocol
+                    .as_ref()
+                    .is_none_or(|protocol| protocol.is_http() || protocol.is_socks5())
+            })
+        {
+            // Rama's supported HTTP(S) and SOCKS proxy connectors establish a
+            // TCP connection to the proxy, irrespective of the origin's
+            // logical transport.
+            network.connector_transport_protocol = Some(TransportProtocol::Tcp);
+        }
+
+        Ok(HttpConnId {
+            network,
+            required_version: connection_version_requirement(input),
+        })
+    }
+}
+
+fn connection_version_requirement(input: &ConnectRequest) -> Option<Version> {
+    let plaintext_http = input
+        .protocol()
+        .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
+    let secure_forward_proxy = plaintext_http
+        && input
+            .extensions()
+            .get_ref::<ProxyRoute>()
+            .and_then(ProxyRoute::proxy_address)
+            .and_then(|proxy| proxy.protocol.as_ref())
+            .is_some_and(|protocol| protocol.is_secure());
+
+    // HTTPS forward-proxy wire versions come from proxy-side ALPN or an
+    // explicit connector policy, never from origin request metadata.
+    if secure_forward_proxy {
+        return None;
+    }
+
+    let fallback = input
+        .extensions()
+        .get_ref::<FallbackHttpVersion>()
+        .map(|fallback| fallback.0);
+    input
+        .target_http_version_with_fallback(fallback)
+        .or_else(|| {
+            let requested = input.http_version();
+            (plaintext_http || requested == Some(Version::HTTP_3))
+                .then_some(requested)
+                .flatten()
+        })
+}
 
 #[derive(Debug, Clone)]
 /// Config used to create a multiplexing http connection pool ([`MultiplexPool`]).
@@ -78,7 +172,7 @@ impl HttpPooledConnectorConfig {
             .with_selection(config.selection)
             .maybe_with_idle_timeout(config.idle_timeout);
 
-        let connector = PooledConnector::new(inner, pool, BasicConnIdentifier::new())
+        let connector = PooledConnector::new(inner, pool, HttpConnIdentifier::new())
             .maybe_with_wait_for_pool_timeout(config.wait_for_pool_timeout);
 
         BindBodyToConnLayer::new().into_layer(connector)
@@ -106,7 +200,7 @@ impl HttpPooledConnectorConfig {
             .with_selection(self.selection)
             .maybe_with_idle_timeout(self.idle_timeout);
 
-        let connector = PooledConnector::new(inner, pool, BasicConnIdentifier::new())
+        let connector = PooledConnector::new(inner, pool, HttpConnIdentifier::new())
             .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout);
 
         Ok(BindBodyToConnLayer::new().into_layer(connector))
@@ -129,7 +223,6 @@ mod tests {
     use rama_core::{Layer, Service, ServiceInput};
     use rama_http_types::body::util::BodyExt as _;
     use rama_http_types::{Body, HeaderValue, Method, Request, Response, StatusCode, Version};
-    use rama_net::Protocol;
     use rama_net::address::{HostWithPort, ProxyAddress};
     use rama_net::client::pool::{
         BasicConnIdentifier, MultiplexPool, PooledConnector, ReqToConnID,
@@ -139,11 +232,13 @@ mod tests {
         EstablishedClientConnection, ProxyRoute, ProxyRoutes, ProxyRoutesConnector,
     };
     use rama_net::conn::{ConnectionHealth, ConnectionHealthWatcher};
+    use rama_net::http::{HttpRequestVersion, TargetHttpVersion};
     use rama_net::test_utils::client::MockConnectorService;
+    use rama_net::{HttpVersionInputExt, Protocol, transport::TransportProtocol};
     use rama_utils::octets::kib;
     use tokio::time::sleep;
 
-    use super::{HttpPooledConnector, HttpPooledConnectorConfig};
+    use super::{HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig};
     use crate::client::proxy::layer::HttpProxyConnectorLayer;
     use crate::client::{HttpConnectRequestAdapter, HttpConnectorLayer};
     use crate::server::HttpServer;
@@ -188,6 +283,60 @@ mod tests {
 
         let proxied_id = BasicConnIdentifier::new().id(&request).unwrap();
         assert_eq!(proxied_id.proxy_address, Some(proxy_address));
+    }
+
+    #[test]
+    fn http_connection_id_separates_plaintext_wire_versions() {
+        for proxy in [
+            None,
+            Some("http://proxy.example:8080".parse::<ProxyAddress>().unwrap()),
+            Some(
+                "socks5://proxy.example:1080"
+                    .parse::<ProxyAddress>()
+                    .unwrap(),
+            ),
+        ] {
+            let ids = [Version::HTTP_11, Version::HTTP_2].map(|version| {
+                let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                    .with_application_protocol(Protocol::HTTP);
+                input.extensions.insert(HttpRequestVersion(version));
+                if let Some(proxy) = proxy.clone() {
+                    input.extensions.insert(ProxyRoute::Proxy(proxy));
+                }
+                HttpConnIdentifier::new().id(&input).unwrap()
+            });
+            assert_ne!(ids[0], ids[1]);
+        }
+    }
+
+    #[test]
+    fn http_connection_id_uses_only_physical_version_requirements() {
+        let secure_proxy: ProxyAddress = "https://proxy.example:8443".parse().unwrap();
+        let secure_forward_ids = [
+            (Version::HTTP_11, TransportProtocol::Tcp),
+            (Version::HTTP_2, TransportProtocol::Tcp),
+            (Version::HTTP_3, TransportProtocol::Udp),
+        ]
+        .map(|(version, transport)| {
+            let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                .with_application_protocol(Protocol::HTTP)
+                .with_transport_protocol(transport);
+            input.extensions.insert(HttpRequestVersion(version));
+            input
+                .extensions
+                .insert(ProxyRoute::Proxy(secure_proxy.clone()));
+            HttpConnIdentifier::new().id(&input).unwrap()
+        });
+        assert_eq!(secure_forward_ids[0], secure_forward_ids[1]);
+        assert_eq!(secure_forward_ids[1], secure_forward_ids[2]);
+
+        let explicit_ids = [Version::HTTP_11, Version::HTTP_2].map(|version| {
+            let input = ConnectRequest::new(HostWithPort::example_domain_https())
+                .with_application_protocol(Protocol::HTTPS);
+            input.extensions.insert(TargetHttpVersion(version));
+            HttpConnIdentifier::new().id(&input).unwrap()
+        });
+        assert_ne!(explicit_ids[0], explicit_ids[1]);
     }
 
     fn proxy_route(name: &str) -> ProxyRoute {
@@ -268,6 +417,59 @@ mod tests {
             attempts.lock().as_slice(),
             ["a.example", "b.example", "c.example", "a.example"]
         );
+    }
+
+    #[tokio::test]
+    async fn pooled_tunnel_does_not_reuse_http2_for_http3() {
+        for proxy in [
+            "http://proxy.example:8080",
+            "https://proxy.example:8443",
+            "socks5://proxy.example:1080",
+        ] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let inner = service_fn({
+                let attempts = Arc::clone(&attempts);
+                move |input: ConnectRequest| {
+                    let attempts = Arc::clone(&attempts);
+                    async move {
+                        attempts.fetch_add(1, Ordering::Relaxed);
+                        if input.http_version() == Some(Version::HTTP_3) {
+                            Err(ConnectionError::local(
+                                BoxError::from_static_str("HTTP/3 tunnel unsupported"),
+                                ConnectionErrorKind::InvalidInput,
+                            ))
+                        } else {
+                            Ok(EstablishedClientConnection {
+                                input,
+                                conn: ServiceInput::new(()),
+                            })
+                        }
+                    }
+                }
+            });
+            let pool = MultiplexPool::try_new(10, 10).unwrap();
+            let connector = PooledConnector::new(inner, pool, HttpConnIdentifier::new());
+            let proxy: ProxyAddress = proxy.parse().unwrap();
+
+            let first = ConnectRequest::new(HostWithPort::example_domain_https())
+                .with_application_protocol(Protocol::HTTPS)
+                .with_transport_protocol(TransportProtocol::Tcp);
+            first.extensions.insert(HttpRequestVersion(Version::HTTP_2));
+            first.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
+            drop(connector.serve(first).await.unwrap().conn);
+
+            let second = ConnectRequest::new(HostWithPort::example_domain_https())
+                .with_application_protocol(Protocol::HTTPS)
+                .with_transport_protocol(TransportProtocol::Udp);
+            second
+                .extensions
+                .insert(HttpRequestVersion(Version::HTTP_3));
+            second.extensions.insert(ProxyRoute::Proxy(proxy));
+            let error = connector.serve(second).await.unwrap_err();
+
+            assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+            assert_eq!(attempts.load(Ordering::Relaxed), 2);
+        }
     }
 
     /// A mock connector whose every backend connection runs an `HttpServer` that

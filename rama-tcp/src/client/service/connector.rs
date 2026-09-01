@@ -5,10 +5,10 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_net::{
-    ConnectorTargetInputExt, TransportProtocolInputExt,
+    ConnectorTargetInputExt, ConnectorTransportProtocolInputExt,
     client::{
-        ConnectionError, ConnectionErrorKind, ConnectorTargetStream, EstablishedClientConnection,
-        race_connect,
+        ConnectionError, ConnectionErrorKind, ConnectorTarget, ConnectorTargetStream,
+        EstablishedClientConnection, race_connect,
     },
     stream::{Socket, SocketInfo},
     transport::TransportProtocol,
@@ -81,14 +81,14 @@ impl Default for TcpConnector {
 
 impl<Input, StreamConnector> Service<Input> for TcpConnector<StreamConnector>
 where
-    Input: ConnectorTargetInputExt + TransportProtocolInputExt + Send + 'static,
+    Input: ConnectorTargetInputExt + ConnectorTransportProtocolInputExt + Send + 'static,
     StreamConnector: TcpStreamConnector<Error: Into<BoxError>> + Send + 'static,
 {
     type Output = EstablishedClientConnection<TcpStream, Input>;
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        match input.transport_protocol() {
+        match input.connector_transport_protocol() {
             Some(TransportProtocol::Tcp) | None => (), // a-ok :)
             Some(TransportProtocol::Udp) => {
                 return Err(ConnectionError::local(
@@ -100,9 +100,21 @@ where
             }
         }
 
-        let (conn, addr) = if let Some(candidates) =
-            input.extensions().get_ref::<ConnectorTargetStream>()
-        {
+        let authority = input.connector_target().ok_or_else(|| {
+            ConnectionError::local(
+                BoxError::from_static_str("tcp connector: connector target missing from input"),
+                ConnectionErrorKind::InvalidInput,
+            )
+        })?;
+
+        let target_is_overridden = input.extensions().contains::<ConnectorTarget>();
+        let (conn, addr) = if let Some(candidates) = input
+            .extensions()
+            .get_ref::<ConnectorTargetStream>()
+            .filter(|candidates| match candidates.target() {
+                Some(target) => target == &authority,
+                None => !target_is_overridden,
+            }) {
             let stream = candidates.stream(input.extensions());
             let (addr, conn) = race_connect(stream, self.max_in_flight, |addr| async move {
                 self.connector.connect(addr).await.map_err(Into::into)
@@ -114,12 +126,6 @@ where
             })?;
             (conn, addr)
         } else {
-            let authority = input.connector_target().ok_or_else(|| {
-                ConnectionError::local(
-                    BoxError::from_static_str("tcp connector: connector target missing from input"),
-                    ConnectionErrorKind::InvalidInput,
-                )
-            })?;
             crate::client::tcp_connect(input.extensions(), authority, &self.connector)
                 .await
                 .map_err(|error| {
@@ -146,9 +152,19 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::{net::SocketAddr, sync::Arc};
+
+    use rama_core::{
+        error::BoxError,
+        extensions::Extensions,
+        futures::{Stream, stream},
+    };
     use rama_net::{
         address::HostWithPort,
-        client::{ConnectRequest, ConnectionErrorDomain},
+        client::{
+            AddressCandidates, ConnectRequest, ConnectionErrorDomain, ConnectorTarget,
+            ConnectorTargetStream, ConnectorTransportProtocol,
+        },
         transport::TransportProtocol,
     };
 
@@ -165,6 +181,96 @@ mod tests {
         let error = connector.serve(req).await.unwrap_err();
         assert_eq!(error.domain(), ConnectionErrorDomain::Local);
         assert_eq!(error.kind(), ConnectionErrorKind::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn physical_tcp_override_accepts_logical_udp_input() {
+        let connector = TcpConnector::new().with_connector(DenyTcpStreamConnector::new());
+        let req = ConnectRequest::new(HostWithPort::local_ipv4(80))
+            .with_transport_protocol(TransportProtocol::Udp);
+        req.extensions
+            .insert(ConnectorTransportProtocol(TransportProtocol::Tcp));
+
+        let error = connector.serve(req).await.unwrap_err();
+        assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+        assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+    }
+
+    struct OneCandidate {
+        target: Option<HostWithPort>,
+        addr: SocketAddr,
+    }
+
+    impl AddressCandidates for OneCandidate {
+        fn target(&self) -> Option<&HostWithPort> {
+            self.target.as_ref()
+        }
+
+        fn stream<'a>(
+            &'a self,
+            _: &'a Extensions,
+        ) -> core::pin::Pin<Box<dyn Stream<Item = Result<SocketAddr, BoxError>> + Send + 'a>>
+        {
+            Box::pin(stream::iter([Ok(self.addr)]))
+        }
+    }
+
+    #[tokio::test]
+    async fn ignores_candidate_stream_for_a_different_target() {
+        let proxy_addr = SocketAddr::from(([127, 0, 0, 1], 8080));
+        let origin_addr = SocketAddr::from(([127, 0, 0, 1], 443));
+        for candidate_target in [Some(HostWithPort::example_domain_https()), None] {
+            let recorded = Arc::new(rama_utils::collections::AppendOnlyVec::<SocketAddr>::new());
+            let connector = TcpConnector::new().with_connector({
+                let recorded = Arc::clone(&recorded);
+                move |addr| {
+                    recorded.push(addr);
+                    async { Err::<TcpStream, _>(std::io::Error::other("denied")) }
+                }
+            });
+            let req = ConnectRequest::new(HostWithPort::example_domain_https());
+            req.extensions.insert(ConnectorTarget(proxy_addr.into()));
+            req.extensions
+                .insert(ConnectorTargetStream::new(OneCandidate {
+                    target: candidate_target,
+                    addr: origin_addr,
+                }));
+
+            let error = connector.serve(req).await.unwrap_err();
+            assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+            assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+            assert_eq!(recorded.iter().copied().collect::<Vec<_>>(), [proxy_addr]);
+        }
+    }
+
+    #[tokio::test]
+    async fn consumes_candidate_stream_for_the_current_target() {
+        let target = HostWithPort::example_domain_https();
+        let candidate_addr = SocketAddr::from(([127, 0, 0, 1], 8443));
+        for candidate_target in [Some(target.clone()), None] {
+            let recorded = Arc::new(rama_utils::collections::AppendOnlyVec::<SocketAddr>::new());
+            let connector = TcpConnector::new().with_connector({
+                let recorded = Arc::clone(&recorded);
+                move |addr| {
+                    recorded.push(addr);
+                    async { Err::<TcpStream, _>(std::io::Error::other("denied")) }
+                }
+            });
+            let req = ConnectRequest::new(target.clone());
+            req.extensions
+                .insert(ConnectorTargetStream::new(OneCandidate {
+                    target: candidate_target,
+                    addr: candidate_addr,
+                }));
+
+            let error = connector.serve(req).await.unwrap_err();
+            assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+            assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+            assert_eq!(
+                recorded.iter().copied().collect::<Vec<_>>(),
+                [candidate_addr]
+            );
+        }
     }
 
     #[tokio::test]

@@ -28,6 +28,19 @@ use rama_core::telemetry::tracing::{self, Instrument};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{error::Error as StdError, marker::PhantomData};
 
+pub(super) fn resolve_input_target_http_version<Input>(input: &Input) -> Option<Version>
+where
+    Input: ExtensionsRef + HttpVersionInputExt + TargetHttpVersionInputExt,
+{
+    let fallback = input
+        .extensions()
+        .get_ref::<FallbackHttpVersion>()
+        .map(|fallback| fallback.0);
+    input
+        .target_http_version_with_fallback(fallback)
+        .or_else(|| input.http_version())
+}
+
 fn resolve_target_http_version<IO, Input>(io: &IO, input: &Input) -> Option<Version>
 where
     IO: ExtensionsRef,
@@ -36,15 +49,10 @@ where
     // Negotiation on the established transport wins. The input accessor then
     // resolves an explicit target before the configured post-negotiation
     // fallback and any implicit input version.
-    let fallback = input
-        .extensions()
-        .get_ref::<FallbackHttpVersion>()
-        .map(|fallback| fallback.0);
     io.extensions()
         .get_ref::<TargetHttpVersion>()
         .map(|target| target.0)
-        .or_else(|| input.target_http_version_with_fallback(fallback))
-        .or_else(|| input.http_version())
+        .or_else(|| resolve_input_target_http_version(input))
 }
 
 #[cfg(test)]

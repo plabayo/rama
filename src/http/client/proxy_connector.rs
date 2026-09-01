@@ -7,7 +7,8 @@ use crate::{
     },
     io::Io,
     net::{
-        AuthorityInputExt, Protocol, ProtocolInputExt,
+        AuthorityInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt,
+        TargetHttpVersionInputExt,
         client::{
             ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
             ProxyRoute,
@@ -80,7 +81,13 @@ impl<S: Clone> ProxyConnector<S> {
 impl<Input, S> Service<Input> for ProxyConnector<S>
 where
     S: ConnectorService<Input, Connection: Io + Unpin>,
-    Input: AuthorityInputExt + ProtocolInputExt + Send + ExtensionsRef + 'static,
+    Input: AuthorityInputExt
+        + ProtocolInputExt
+        + HttpVersionInputExt
+        + TargetHttpVersionInputExt
+        + Send
+        + ExtensionsRef
+        + 'static,
 {
     type Output = EstablishedClientConnection<MaybeProxiedConnection<S::Connection>, Input>;
     type Error = ConnectionError;

@@ -367,6 +367,31 @@ mod tests {
     }
 
     #[test]
+    fn connector_transport_overrides_http_version_transport() {
+        use rama_net::{ConnectorTransportProtocolInputExt, client::ConnectorTransportProtocol};
+
+        let request = Request::builder()
+            .version(Version::HTTP_3)
+            .body(())
+            .unwrap();
+        request
+            .extensions()
+            .insert(ConnectorTransportProtocol(TransportProtocol::Tcp));
+        assert_eq!(request.transport_protocol(), Some(TransportProtocol::Udp));
+        assert_eq!(
+            request.connector_transport_protocol(),
+            Some(TransportProtocol::Tcp)
+        );
+
+        let (parts, _) = request.into_parts();
+        assert_eq!(parts.transport_protocol(), Some(TransportProtocol::Udp));
+        assert_eq!(
+            parts.connector_transport_protocol(),
+            Some(TransportProtocol::Tcp)
+        );
+    }
+
+    #[test]
     fn forwarded_parsing() {
         for (forwarded_str_vec, expected_authority) in [
             // base

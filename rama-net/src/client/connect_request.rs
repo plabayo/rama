@@ -139,6 +139,23 @@ mod tests {
     }
 
     #[test]
+    fn connector_transport_protocol_overrides_requested_transport() {
+        use crate::{ConnectorTransportProtocolInputExt, client::ConnectorTransportProtocol};
+
+        let request = ConnectRequest::new(HostWithPort::example_domain_https())
+            .with_transport_protocol(TransportProtocol::Udp);
+        request
+            .extensions
+            .insert(ConnectorTransportProtocol(TransportProtocol::Tcp));
+
+        assert_eq!(request.transport_protocol(), Some(TransportProtocol::Udp));
+        assert_eq!(
+            request.connector_transport_protocol(),
+            Some(TransportProtocol::Tcp)
+        );
+    }
+
+    #[test]
     fn target_http_version_comes_from_extension() {
         let request = ConnectRequest::new(HostWithPort::example_domain_https());
         assert_eq!(request.target_http_version(), None);

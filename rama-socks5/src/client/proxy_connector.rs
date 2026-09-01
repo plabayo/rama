@@ -11,8 +11,9 @@ use rama_net::{
     address::ProxyAddress,
     client::{
         ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
-        EstablishedClientConnection, ProxyRoute,
+        ConnectorTransportProtocol, EstablishedClientConnection, ProxyRoute,
     },
+    transport::TransportProtocol,
     user::ProxyCredential,
 };
 #[cfg(feature = "dns")]
@@ -368,6 +369,9 @@ where
         input
             .extensions()
             .insert(ConnectorTarget(normalized_proxy_info.address.clone()));
+        input
+            .extensions()
+            .insert(ConnectorTransportProtocol(TransportProtocol::Tcp));
 
         let EstablishedClientConnection { input, mut conn } =
             self.inner.connect(input).await.map_err(|error| {
@@ -454,5 +458,43 @@ where
         }
 
         Ok(EstablishedClientConnection { input, conn })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rama_core::{ServiceInput, service::service_fn};
+    use rama_net::{
+        ConnectorTransportProtocolInputExt, Protocol,
+        address::HostWithPort,
+        client::{ConnectRequest, ConnectorService as _, ProxyRoute},
+    };
+
+    use super::*;
+
+    #[tokio::test]
+    async fn stamps_physical_tcp_before_connecting_to_proxy() {
+        let inner = service_fn(|input: ConnectRequest| async move {
+            assert_eq!(
+                input.connector_transport_protocol(),
+                Some(TransportProtocol::Tcp)
+            );
+            Err::<EstablishedClientConnection<ServiceInput<tokio::io::DuplexStream>, _>, _>(
+                ConnectionError::local(
+                    BoxError::from_static_str("stop after observing connector input"),
+                    ConnectionErrorKind::Unavailable,
+                ),
+            )
+        });
+        let connector = Socks5ProxyConnector::optional(inner);
+        let input = ConnectRequest::new(HostWithPort::example_domain_https())
+            .with_application_protocol(Protocol::HTTPS)
+            .with_transport_protocol(TransportProtocol::Udp);
+        input.extensions.insert(ProxyRoute::Proxy(
+            "socks5://127.0.0.1:1080".parse().unwrap(),
+        ));
+
+        let error = connector.connect(input).await.unwrap_err();
+        assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
     }
 }

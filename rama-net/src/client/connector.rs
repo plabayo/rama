@@ -1,6 +1,6 @@
 use std::{future::Future, net::SocketAddr};
 
-use crate::address::HostWithPort;
+use crate::{address::HostWithPort, transport::TransportProtocol};
 
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
@@ -20,6 +20,14 @@ use rama_macros::Extension;
 /// which case a proxy is to be used instead.
 pub struct ConnectorTarget(pub HostWithPort);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
+#[extension(tags(net))]
+/// Transport protocol a connector must use for the selected route.
+///
+/// Routing middleware can use this alongside [`ConnectorTarget`] when the
+/// physical route's transport differs from the requested destination.
+pub struct ConnectorTransportProtocol(pub TransportProtocol);
+
 /// A lazily-resolved source of connection target [`SocketAddr`]esses.
 ///
 /// This is the abstraction boundary between resolving a target and
@@ -29,6 +37,14 @@ pub struct ConnectorTarget(pub HostWithPort);
 /// yielded addresses. The transport stays resolver-agnostic: it only ever sees
 /// a stream of [`SocketAddr`]s, never a DNS resolver.
 pub trait AddressCandidates: Send + Sync + 'static {
+    /// Return the target these candidates resolve, when known.
+    ///
+    /// Transport connectors use this correlation to avoid consuming stale
+    /// candidates after routing middleware selects a different target.
+    fn target(&self) -> Option<&HostWithPort> {
+        None
+    }
+
     /// Stream the candidate [`SocketAddr`]esses, in the order they should be
     /// attempted. The given [`Extensions`] carry per-request resolve config.
     fn stream<'a>(
@@ -49,6 +65,12 @@ impl ConnectorTargetStream {
         Self(Box::new(candidates))
     }
 
+    /// Return the target these candidates resolve, when known.
+    #[must_use]
+    pub fn target(&self) -> Option<&HostWithPort> {
+        self.0.target()
+    }
+
     /// Stream the candidate addresses (see [`AddressCandidates::stream`]).
     pub fn stream<'a>(
         &'a self,
@@ -61,6 +83,7 @@ impl ConnectorTargetStream {
 impl core::fmt::Debug for ConnectorTargetStream {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ConnectorTargetStream")
+            .field("target", &self.target())
             .finish_non_exhaustive()
     }
 }
