@@ -122,6 +122,8 @@ GNU/Linux binaries can also be cross-compiled from macOS and Windows using
 in CI for `x86_64-unknown-linux-gnu` with Rama's native system DNS resolver and
 native TLS backends enabled. Cross-built binaries must be run on a compatible
 Linux system, not on the macOS or Windows build host.
+On Windows, install the `x86_64-pc-windows-gnu` variant of the Rust toolchain
+selected by `rust-toolchain.toml`; the `just` recipes select it automatically.
 
 ### Tier 2 Platforms
 

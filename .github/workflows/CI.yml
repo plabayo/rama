@@ -521,14 +521,17 @@ jobs:
       matrix:
         include:
           - os: macos-latest
+            rust-toolchain: 1.97.1
             rust-target: x86_64-unknown-linux-gnu
             zig-target: x86_64-unknown-linux-gnu.2.17
             just-recipe: test-zigbuild-linux-gnu
           - os: macos-latest
+            rust-toolchain: 1.97.1
             rust-target: aarch64-unknown-linux-gnu
             zig-target: aarch64-unknown-linux-gnu.2.17
             just-recipe: test-zigbuild-linux-gnu-native-dns
           - os: windows-latest
+            rust-toolchain: 1.97.1-x86_64-pc-windows-gnu
             rust-target: x86_64-unknown-linux-gnu
             zig-target: x86_64-unknown-linux-gnu.2.17
             just-recipe: test-zigbuild-linux-gnu-all
@@ -538,13 +541,15 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.rust-toolchain }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
         if: startsWith(matrix.os, 'windows')
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
-          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          toolchain: ${{ matrix.rust-toolchain }}
           targets: ${{ matrix.rust-target }}
       - name: Install Zig
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
@@ -558,8 +563,8 @@ jobs:
           tool: just
       - uses: ./.github/actions/rust-cache
         with:
-          key: linux-gnu-cross-${{ matrix.os }}-${{ env.RUST_TOOLCHAIN }}-${{ matrix.zig-target }}
-          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+          key: linux-gnu-cross-${{ matrix.os }}-${{ matrix.rust-toolchain }}-${{ matrix.zig-target }}
+          env-vars: "RUST_TOOLCHAIN=${{ matrix.rust-toolchain }}"
       # The just recipes are also the documented local developer entry points.
       - name: Cross-link Linux GNU coverage
         run: just ${{ matrix.just-recipe }} ${{ matrix.zig-target }}
