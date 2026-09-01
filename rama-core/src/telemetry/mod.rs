@@ -6,7 +6,7 @@ pub mod dial9 {
     //! dial9 runtime telemetry re-exports.
 
     #[doc(inline)]
-    pub use ::dial9_tokio_telemetry::*;
+    pub use ::dial9::*;
     #[doc(inline)]
     pub use ::dial9_trace_format as trace_format;
 }

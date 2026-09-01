@@ -256,7 +256,7 @@ impl<S> FastCgiServer<S> {
             oneshot::channel::<io::Result<(ReadHalf<IO>, bool)>>();
 
         let options_for_task = self.options.clone();
-        let handle = tokio::spawn(async move {
+        let handle = rama_core::rt::spawn(async move {
             let result =
                 conn::read_body_records(rh, request_id, stdin_tx, data_tx, options_for_task).await;
             if reader_return_tx.send(result).is_err() {

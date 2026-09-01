@@ -53,9 +53,10 @@ use rama::{
     service::{BoxService, service_fn},
     tcp::{client::service::TcpConnector, server::TcpListener},
     telemetry::tracing::{self},
-    tls::{boring, rustls},
     tls::{
+        boring,
         client::{ServerVerifyMode, TlsClientConfig},
+        rustls,
         server::{GeneratedServerAuthConfig, TlsServerConfig},
     },
     utils::collections::smallvec::smallvec,

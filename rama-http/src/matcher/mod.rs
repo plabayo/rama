@@ -33,7 +33,7 @@ pub use version::VersionMatcher;
 
 pub(crate) mod path;
 #[doc(inline)]
-pub use path::{UriParams, UriParamsDeserializeError};
+pub use path::{PathCase, PathDecoding, PathMatchPolicy, UriParams, UriParamsDeserializeError};
 
 mod header;
 #[doc(inline)]
@@ -571,8 +571,14 @@ impl<Body> HttpMatcher<Body> {
     /// captures, `{}` / `{*}` globs).
     #[must_use]
     pub fn path(path: impl AsRef<str>) -> Self {
+        Self::path_with_policy(path, PathMatchPolicy::default())
+    }
+
+    /// Create a path matcher with an explicit [`PathMatchPolicy`].
+    #[must_use]
+    pub fn path_with_policy(path: impl AsRef<str>, policy: PathMatchPolicy) -> Self {
         Self {
-            kind: HttpMatcherKind::Path(path::compile_pattern(path.as_ref())),
+            kind: HttpMatcherKind::Path(path::compile_pattern_with_policy(path.as_ref(), policy)),
             negate: false,
         }
     }
@@ -583,8 +589,17 @@ impl<Body> HttpMatcher<Body> {
     /// [`PathPattern`], so `{name}` / `{*name}` captures are honored too.
     #[must_use]
     pub fn path_prefix(path: impl AsRef<str>) -> Self {
+        Self::path_prefix_with_policy(path, PathMatchPolicy::default())
+    }
+
+    /// Create a path-prefix matcher with an explicit [`PathMatchPolicy`].
+    #[must_use]
+    pub fn path_prefix_with_policy(path: impl AsRef<str>, policy: PathMatchPolicy) -> Self {
         Self {
-            kind: HttpMatcherKind::Path(path::compile_prefix_pattern(path.as_ref())),
+            kind: HttpMatcherKind::Path(path::compile_prefix_pattern_with_policy(
+                path.as_ref(),
+                policy,
+            )),
             negate: false,
         }
     }
@@ -595,10 +610,24 @@ impl<Body> HttpMatcher<Body> {
         self.and(Self::path(path))
     }
 
+    /// Add a path matcher with an explicit [`PathMatchPolicy`] on top of the
+    /// existing matcher set.
+    #[must_use]
+    pub fn and_path_with_policy(self, path: impl AsRef<str>, policy: PathMatchPolicy) -> Self {
+        self.and(Self::path_with_policy(path, policy))
+    }
+
     /// Create a path matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     #[must_use]
     pub fn or_path(self, path: impl AsRef<str>) -> Self {
         self.or(Self::path(path))
+    }
+
+    /// Add a path matcher with an explicit [`PathMatchPolicy`] as an
+    /// alternative to the existing matcher set.
+    #[must_use]
+    pub fn or_path_with_policy(self, path: impl AsRef<str>, policy: PathMatchPolicy) -> Self {
+        self.or(Self::path_with_policy(path, policy))
     }
 
     /// Create a [`HeaderMatcher`] matcher.
@@ -990,6 +1019,49 @@ mod test {
         fn matches(&self, _ext: Option<&Extensions>, _req: &Request<()>) -> bool {
             self.0
         }
+    }
+
+    #[test]
+    fn path_matchers_keep_default_and_support_explicit_policies() {
+        let req = Request::get("/SEND/a%2Fb").body(()).unwrap();
+        let ext = Extensions::new();
+        assert!(HttpMatcher::path("/send/{value}").matches(Some(&ext), &req));
+        assert_eq!(
+            ext.get_ref::<UriParams>().unwrap().get("value"),
+            Some("a/b")
+        );
+
+        let strict = HttpMatcher::path_with_policy("/send/{value}", PathMatchPolicy::STRICT);
+        assert!(!strict.matches(None, &req));
+
+        let req = Request::get("/send/a%2Fb").body(()).unwrap();
+        let ext = Extensions::new();
+        assert!(strict.matches(Some(&ext), &req));
+        assert_eq!(
+            ext.get_ref::<UriParams>().unwrap().get("value"),
+            Some("a%2Fb")
+        );
+
+        let prefix = HttpMatcher::path_prefix_with_policy("/api/{tenant}", PathMatchPolicy::STRICT);
+        let req = Request::get("/api/Acme%2FBlue/users").body(()).unwrap();
+        let ext = Extensions::new();
+        assert!(prefix.matches(Some(&ext), &req));
+        assert_eq!(
+            ext.get_ref::<UriParams>().unwrap().get("tenant"),
+            Some("Acme%2FBlue")
+        );
+
+        let req = Request::get("/send/a%2Fb").body(()).unwrap();
+        assert!(
+            HttpMatcher::method_get()
+                .and_path_with_policy("/send/{value}", PathMatchPolicy::STRICT)
+                .matches(None, &req)
+        );
+        assert!(
+            HttpMatcher::path_with_policy("/other", PathMatchPolicy::STRICT)
+                .or_path_with_policy("/send/{value}", PathMatchPolicy::STRICT)
+                .matches(None, &req)
+        );
     }
 
     #[test]

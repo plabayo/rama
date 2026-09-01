@@ -32,7 +32,7 @@ pub(crate) async fn race_resolve_dual(
         DnsResolveIpMode::SingleIpV4 | DnsResolveIpMode::SingleIpV6 => (false, false),
     };
 
-    tokio::spawn(
+    rama_core::rt::spawn(
         {
             let tx = tx.clone();
             let domain = domain.clone();
@@ -64,7 +64,7 @@ pub(crate) async fn race_resolve_dual(
         .instrument(trace_span!("dns::ipv4_lookup")),
     );
 
-    tokio::spawn(
+    rama_core::rt::spawn(
         {
             let dns_resolver = dns_resolver.clone();
             async move {

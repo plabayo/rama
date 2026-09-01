@@ -33,18 +33,12 @@ aws-lc = [
 ring = ["rustls/ring", "tokio-rustls/ring", "rcgen/ring", "rama-crypto/ring"]
 # Optional [dial9] runtime telemetry support.
 #
-# Building with this feature requires `--cfg tokio_unstable`.
 #
-# [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
-dial9 = [
-    "dep:dial9-tokio-telemetry",
-    "dep:dial9-trace-format",
-    "rama-net/dial9",
-    "rama-tls/dial9",
-]
+# [dial9]: https://github.com/dial9-rs/dial9
+dial9 = ["dep:dial9", "dep:dial9-trace-format", "rama-net/dial9", "rama-tls/dial9"]
 
 [dependencies]
-dial9-tokio-telemetry = { workspace = true, optional = true }
+dial9 = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
 moka = { workspace = true, features = ["sync"] }
 pin-project-lite = { workspace = true }

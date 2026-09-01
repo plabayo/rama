@@ -27,14 +27,13 @@ ignored = ["bindgen", "cc"]
 default = []
 # Optional [dial9] runtime telemetry support.
 #
-# Building with this feature requires `--cfg tokio_unstable`.
-#
-# [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
-dial9 = ["dep:dial9-tokio-telemetry", "dep:dial9-trace-format", "rama-core/dial9"]
+# `--cfg tokio_unstable` widens dial9's task coverage.
+# [dial9]: https://github.com/dial9-rs/dial9
+dial9 = ["dep:dial9", "dep:dial9-trace-format", "rama-core/dial9"]
 
 [dependencies]
 atomic-waker = { workspace = true }
-dial9-tokio-telemetry = { workspace = true, optional = true }
+dial9 = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
 libc = { workspace = true }
 parking_lot = { workspace = true }

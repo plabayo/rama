@@ -564,22 +564,19 @@ mod tests {
     #[test]
     fn client_request_runs_inside_dial9_session() {
         let temp_dir = rama_utils::fs::tempdir().unwrap();
-        let config = rama_core::telemetry::dial9::Dial9Config::builder()
-            .enabled(true)
-            .base_path(temp_dir.path().join("blocking-http.bin"))
-            .max_file_size(1024 * 1024)
-            .max_total_size(4 * 1024 * 1024)
-            .build()
-            .unwrap();
+        let writer = rama_core::telemetry::dial9::DiskBuffer::builder()
+            .base_path(temp_dir.path())
+            .max_file_size(rama_utils::octets::mib_u64(1))
+            .max_total_size(rama_utils::octets::mib_u64(4))
+            .build();
+        let recorder = rama_core::telemetry::dial9::recorder_or_disabled(writer).build();
         let runtime = Runtime::builder()
-            .with_dial9_config(config)
+            .with_dial9_recorder(recorder)
             .try_build()
             .unwrap();
         let client = Client::with_runtime(
             service_fn(|_: Request| async {
-                assert!(
-                    rama_core::telemetry::dial9::telemetry::TelemetryHandle::current().is_enabled()
-                );
+                assert!(rama_core::telemetry::dial9::Dial9Handle::current().is_enabled());
                 Ok::<_, BoxError>(HttpResponse::new(HttpBody::from("tracked")))
             }),
             &runtime,

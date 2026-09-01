@@ -223,8 +223,6 @@ impl ApplicationProtocol {
 
 #[cfg(feature = "dial9")]
 impl dial9_trace_format::TraceField for ApplicationProtocol {
-    type Ref<'a> = &'a [u8];
-
     fn field_type() -> dial9_trace_format::types::FieldType {
         dial9_trace_format::types::FieldType::Bytes
     }
@@ -234,15 +232,6 @@ impl dial9_trace_format::TraceField for ApplicationProtocol {
         encoder: &mut dial9_trace_format::EventEncoder<'_, W>,
     ) -> std::io::Result<()> {
         encoder.write_bytes(self.as_bytes())
-    }
-
-    fn decode_ref<'a>(
-        value: &dial9_trace_format::types::FieldValueRef<'a>,
-    ) -> Option<Self::Ref<'a>> {
-        match value {
-            dial9_trace_format::types::FieldValueRef::Bytes(bytes) => Some(bytes),
-            _ => None,
-        }
     }
 }
 

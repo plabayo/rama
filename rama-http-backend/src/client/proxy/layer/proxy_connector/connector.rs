@@ -109,7 +109,7 @@ impl InnerHttpProxyConnector {
             .await
             .map_err(|err| HttpProxyError::Transport(err.into()))?;
 
-        tokio::spawn(async move {
+        rama_core::rt::spawn(async move {
             if let Err(err) = conn.with_upgrades().await {
                 tracing::debug!("http upgrade proxy client conn failed: {err:?}");
             }
@@ -129,7 +129,7 @@ impl InnerHttpProxyConnector {
             .await
             .map_err(|err| HttpProxyError::Transport(err.into()))?;
 
-        tokio::spawn(async move {
+        rama_core::rt::spawn(async move {
             if let Err(err) = conn.await {
                 tracing::debug!("http2 proxy client conn failed: {err:?}");
             }

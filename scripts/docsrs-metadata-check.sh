@@ -6,8 +6,8 @@ exit_code=0
 
 # docs.rs builds use the package metadata from the published crate, not this
 # workspace's local `.cargo/config.toml`. Any crate whose docs.rs all-features
-# build enables `dial9` must pass `--cfg tokio_unstable` via rustc-args, because
-# `dial9-tokio-telemetry` depends on Tokio's unstable runtime APIs.
+# build enables `dial9` must pass `--cfg tokio_unstable` via rustc-args, so the rendered docs cover dial9's
+# full API.
 echo "Checking docs.rs metadata for dial9 crates..."
 docs_rs_metadata_missing=0
 for manifest in $(cd $SCRIPT_DIR/.. && find . -name Cargo.toml -not -path './target/*' | sort); do

@@ -19,7 +19,7 @@ impl BodyCaptureSink for EncryptedBodySink {
 
     fn aborted(&self) {
         let this = self.clone();
-        tokio::spawn(async move {
+        rama::rt::spawn(async move {
             this.store
                 .body_event(
                     this.exchange_id,

@@ -1165,7 +1165,7 @@ where
     // Spawn through the rama `Executor` (graceful-aware) instead of
     // `flow_guard.spawn_task` directly, so that with the `dial9`
     // feature on the inner `tokio::spawn` is replaced by
-    // `dial9_tokio_telemetry::spawn` — giving per-future wake-event
+    // `dial9::spawn` — giving per-future wake-event
     // tracking on this long-lived per-flow service task.
     let meta_for_close = meta.clone();
     let counters_for_close = byte_counters.clone();
@@ -1208,7 +1208,10 @@ where
         }
     }
 
-    let service_task = Executor::graceful(flow_guard.clone()).spawn_task(async move {
+    // Boxed: the future embeds the whole per-flow service stack, and this
+    // spawn runs on Swift dispatch threads with 512 KiB stacks — moving it
+    // by value through the spawn chain overflows them in debug builds.
+    let service_task = Executor::graceful(flow_guard.clone()).spawn_task(Box::pin(async move {
         let _task_guard = TcpFlowTaskGuard::new();
         let Ok(bridge) = bridge_rx.await else {
             // Cancelled before `activate`. Emit a synthetic close so
@@ -1300,7 +1303,7 @@ where
                 ingress_sent,
             );
         }
-    });
+    }));
 
     let pending = TcpSessionPendingData {
         bridge_tx,
@@ -1688,7 +1691,8 @@ where
     let meta_for_close = meta_arc.clone();
     let flow_guard_for_task = flow_guard.clone();
     let idle_notify_for_task = idle_notify.clone();
-    let service_task = Executor::graceful(flow_guard).spawn_task(async move {
+    // Boxed for the same small-FFI-stack reason as the TCP service task.
+    let service_task = Executor::graceful(flow_guard).spawn_task(Box::pin(async move {
         let Ok(flow) = flow_rx.await else {
             // Cancelled before activate — emit a synthetic close so post-mortem
             // logs still account for the flow.
@@ -1780,7 +1784,7 @@ where
             crate::tproxy::dial9::record_flow_closed(meta_for_close.flow_id, age_ms, 0, 0);
         }
         closed_sink();
-    });
+    }));
 
     let pending = UdpSessionPendingData {
         flow_tx,

@@ -340,7 +340,7 @@ impl SystemdResolved {
             return ResolvedLookup::Unavailable;
         }
         let this = self.clone();
-        join(tokio::spawn(async move {
+        join(rama_core::rt::spawn(async move {
             this.record_query(claim, name, rooted, timeout, record_type, parser)
                 .await
         }))
@@ -359,7 +359,7 @@ impl SystemdResolved {
         };
         let this = self.clone();
         let name = wire_name(domain);
-        join(tokio::spawn(async move {
+        join(rama_core::rt::spawn(async move {
             this.hostname_query(claim, name, family, timeout, decode)
                 .await
         }))
