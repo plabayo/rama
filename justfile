@@ -64,6 +64,65 @@ check-crate-linux CRATE:
   cargo check -p {{CRATE}} --target x86_64-unknown-linux-gnu --all-features
   cargo check -p {{CRATE}} --target aarch64-unknown-linux-gnu --all-features
 
+# Cross-link the same bounded Linux GNU coverage used by CI. The default
+# target keeps compatibility with glibc 2.17; pass another cargo-zigbuild
+# target explicitly when a different architecture or baseline is needed.
+test-zigbuild-linux-gnu TARGET="x86_64-unknown-linux-gnu.2.17":
+    just test-zigbuild-linux-gnu-sentinels {{TARGET}}
+    just test-zigbuild-linux-gnu-cli {{TARGET}}
+    just test-zigbuild-linux-gnu-all {{TARGET}}
+
+# Cross-link configurations where all-features could mask a target ABI issue
+# or activate several interchangeable backends at once.
+test-zigbuild-linux-gnu-sentinels TARGET="x86_64-unknown-linux-gnu.2.17":
+    @just _zigbuild-linux-gnu-with-native-env _zigbuild-linux-gnu-sentinels {{TARGET}}
+
+_zigbuild-linux-gnu-sentinels TARGET:
+    cargo zigbuild --locked -p rama --tests --no-default-features --target {{TARGET}}
+    just test-zigbuild-linux-gnu-native-dns {{TARGET}}
+    cargo zigbuild --locked -p rama --tests --no-default-features --features rustls,ring --target {{TARGET}}
+    cargo zigbuild --locked -p rama --tests --no-default-features --features rustls,aws-lc --target {{TARGET}}
+    cargo zigbuild --locked -p rama-examples --bin tls_boring_dynamic_certs --no-default-features --features boring,http-full --target {{TARGET}}
+
+# Link the focused downstream path that originally exposed the glibc resolver
+# symbol mismatch. This is also the inexpensive AArch64 CI gate.
+test-zigbuild-linux-gnu-native-dns TARGET="x86_64-unknown-linux-gnu.2.17":
+    cargo zigbuild --locked -p rama-examples --bin native_dns --features dns --target {{TARGET}}
+
+# Build the real CLI with its curated distribution features, independently of
+# workspace-wide feature unification.
+test-zigbuild-linux-gnu-cli TARGET="x86_64-unknown-linux-gnu.2.17":
+    @just _zigbuild-linux-gnu-with-native-env _zigbuild-linux-gnu-cli {{TARGET}}
+
+_zigbuild-linux-gnu-cli TARGET:
+    cargo zigbuild --locked -p rama-cli --bin rama --target {{TARGET}}
+
+# On a Linux x86_64 host, start the cross-built CLI to verify its ELF loader,
+# dynamic dependencies, allocator, and command-line entry point.
+test-zigbuild-linux-gnu-smoke BINARY="target/x86_64-unknown-linux-gnu/debug/rama":
+    chmod +x {{BINARY}}
+    {{BINARY}} --version
+
+# Cross-link every workspace target and feature. rama-fuzz is a cargo-fuzz
+# harness and gets its entry points from cargo fuzz rather than plain Cargo.
+test-zigbuild-linux-gnu-all TARGET="x86_64-unknown-linux-gnu.2.17":
+    @just _zigbuild-linux-gnu-with-native-env _zigbuild-linux-gnu-all {{TARGET}}
+
+_zigbuild-linux-gnu-all TARGET:
+    cargo zigbuild --locked --workspace --all-targets --all-features --exclude rama-fuzz --target {{TARGET}}
+
+# Native dependencies need the target archiver, while AWS-LC's cc builder uses
+# the compiler environment supplied by cargo-zigbuild. Keep the platform shell
+# details below this shared recipe boundary.
+_zigbuild-linux-gnu-with-native-env RECIPE TARGET:
+    @just _zigbuild-linux-gnu-with-native-env-{{os_family()}} {{RECIPE}} {{TARGET}}
+
+_zigbuild-linux-gnu-with-native-env-unix RECIPE TARGET:
+    AR="zig ar" AWS_LC_SYS_CMAKE_BUILDER=0 just {{RECIPE}} {{TARGET}}
+
+_zigbuild-linux-gnu-with-native-env-windows RECIPE TARGET:
+    $env:AR = "zig ar"; $env:AWS_LC_SYS_CMAKE_BUILDER = "0"; just {{RECIPE}} {{TARGET}}
+
 # check no_std crates against a target without std: any dep that links
 # std fails loudly here instead of poisoning downstream no_std consumers
 # (e.g. kernel drivers hit E0152 duplicate panic_impl)

@@ -155,24 +155,29 @@ feature or Linux sysroot is required. To request a specific minimum glibc
 version, append it to the Zig target, for example
 `x86_64-unknown-linux-gnu.2.17`.
 
-The complete workspace with all features also builds native AWS-LC and jemalloc
-code. Give those builds a target-capable archiver and select AWS-LC's `cc`
-builder. On macOS or another POSIX shell:
+The same bounded cross-link suite used by CI is available to developers through
+`just`. It checks Rama without default features, the minimal native DNS path,
+isolated Rustls/Ring, Rustls/AWS-LC, and BoringSSL configurations, the real
+`rama-cli` distribution feature set, and finally all workspace targets with all
+features:
 
 ```bash
-AR="zig ar" AWS_LC_SYS_CMAKE_BUILDER=0 \
-  cargo zigbuild --locked --workspace --all-targets --all-features \
-  --exclude rama-fuzz --target x86_64-unknown-linux-gnu.2.17
+just test-zigbuild-linux-gnu
 ```
 
-In PowerShell:
+Pass another cargo-zigbuild target to change architecture or glibc baseline:
 
-```powershell
-$env:AR = "zig ar"
-$env:AWS_LC_SYS_CMAKE_BUILDER = "0"
-cargo zigbuild --locked --workspace --all-targets --all-features `
-  --exclude rama-fuzz --target x86_64-unknown-linux-gnu.2.17
+```bash
+just test-zigbuild-linux-gnu-native-dns aarch64-unknown-linux-gnu.2.17
 ```
+
+The `test-zigbuild-linux-gnu-sentinels`,
+`test-zigbuild-linux-gnu-native-dns`, `test-zigbuild-linux-gnu-cli`, and
+`test-zigbuild-linux-gnu-all` recipes expose smaller scopes for local
+iteration. They configure the target archiver and AWS-LC builder consistently
+on POSIX and Windows hosts. On a Linux x86_64 machine,
+`just test-zigbuild-linux-gnu-smoke` also starts the produced CLI; CI runs this
+smoke test on the artifact cross-built by macOS.
 
 The `rama-fuzz` package is excluded because its binaries get their entry point
 from `cargo fuzz`; plain `cargo build` or `cargo zigbuild` cannot link those
