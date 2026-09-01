@@ -240,14 +240,18 @@ jobs:
         run: just qa-ffi-apple
       - name: Run transparent proxy Apple FFI e2e tests
         run: just test-e2e-ffi-apple
-      - name: Dump crash reports
+      - name: Rerun Swift FFI battery under lldb on failure
         if: failure()
         run: |
-          sleep 10
-          for f in ~/Library/Logs/DiagnosticReports/*; do
-            echo "=== $f ==="
-            cat "$f" || true
-          done
+          sysctl hw.ncpu hw.memsize
+          ulimit -n
+          xcrun lldb --batch \
+            -o "run" \
+            -k "thread backtrace all" \
+            -k "quit 1" \
+            -o "quit" \
+            -- "$(xcrun --find xctest)" \
+            .build/arm64-apple-macosx/debug/RamaAppleNetworkExtensionPackageTests.xctest
 
   test-rama-apple-ne-swift-ffi:
     runs-on: macos-latest
@@ -269,14 +273,18 @@ jobs:
         run: brew install just
       - name: Run RamaAppleNetworkExtension Swift FFI tests
         run: just test-e2e-ffi-swift
-      - name: Dump crash reports
+      - name: Rerun Swift FFI battery under lldb on failure
         if: failure()
         run: |
-          sleep 10
-          for f in ~/Library/Logs/DiagnosticReports/*; do
-            echo "=== $f ==="
-            cat "$f" || true
-          done
+          sysctl hw.ncpu hw.memsize
+          ulimit -n
+          xcrun lldb --batch \
+            -o "run" \
+            -k "thread backtrace all" \
+            -k "quit 1" \
+            -o "quit" \
+            -- "$(xcrun --find xctest)" \
+            .build/arm64-apple-macosx/debug/RamaAppleNetworkExtensionPackageTests.xctest
 
   test-rama-apple-xpc:
     runs-on: macos-latest
