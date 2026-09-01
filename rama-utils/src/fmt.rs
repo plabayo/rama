@@ -50,6 +50,71 @@ pub fn display_fn<F>(formatter: F) -> DisplayFn<F> {
     DisplayFn(formatter)
 }
 
+/// Display bytes as contiguous uppercase hexadecimal prefixed with `0x`.
+///
+/// Formatting is deferred and does not allocate.
+pub fn hex(bytes: &[u8]) -> impl fmt::Display + '_ {
+    display_fn(move |formatter: &mut fmt::Formatter<'_>| {
+        formatter.write_str("0x")?;
+        for &byte in bytes {
+            let encoded = crate::hex::encode_byte_upper(byte);
+            formatter.write_char(char::from(encoded[0]))?;
+            formatter.write_char(char::from(encoded[1]))?;
+        }
+        Ok(())
+    })
+}
+
+/// Display valid UTF-8 as a quoted debug string, or other bytes as [`hex`].
+///
+/// Formatting is deferred and does not allocate.
+pub fn utf8_or_hex(bytes: &[u8]) -> impl fmt::Display + '_ {
+    display_fn(
+        move |formatter: &mut fmt::Formatter<'_>| match core::str::from_utf8(bytes) {
+            Ok(text) => write!(formatter, "{text:?}"),
+            Err(_) => fmt::Display::fmt(&hex(bytes), formatter),
+        },
+    )
+}
+
+/// Write values separated by `separator`, using `write_value` for each value.
+///
+/// Nothing is allocated, and the separator is written only between values.
+pub fn write_joined_with<W, I, F>(
+    writer: &mut W,
+    values: I,
+    separator: &str,
+    mut write_value: F,
+) -> fmt::Result
+where
+    W: fmt::Write + ?Sized,
+    I: IntoIterator,
+    F: FnMut(&mut W, I::Item) -> fmt::Result,
+{
+    let mut values = values.into_iter();
+    let Some(first) = values.next() else {
+        return Ok(());
+    };
+    write_value(writer, first)?;
+    for value in values {
+        writer.write_str(separator)?;
+        write_value(writer, value)?;
+    }
+    Ok(())
+}
+
+/// Write [`fmt::Display`] values separated by `separator` without allocating.
+pub fn write_joined<W, I>(writer: &mut W, values: I, separator: &str) -> fmt::Result
+where
+    W: fmt::Write + ?Sized,
+    I: IntoIterator,
+    I::Item: fmt::Display,
+{
+    write_joined_with(writer, values, separator, |writer, value| {
+        write!(writer, "{value}")
+    })
+}
+
 /// Deferred formatting value created by [`display_fn`].
 #[derive(Clone, Copy)]
 pub struct DisplayFn<F>(F);
@@ -114,5 +179,46 @@ mod tests {
             display_fn(|formatter: &mut fmt::Formatter<'_>| formatter.write_str("deferred"));
 
         assert_eq!(value.to_string(), "deferred");
+    }
+
+    #[test]
+    fn displays_bytes_as_uppercase_hex_without_separators() {
+        assert_eq!(hex(&[0x00, 0x4f, 0xa5, 0xff]).to_string(), "0x004FA5FF");
+        assert_eq!(hex(&[]).to_string(), "0x");
+    }
+
+    #[test]
+    fn displays_utf8_quoted_and_other_bytes_as_hex() {
+        assert_eq!(
+            utf8_or_hex(b"quote\" slash\\ line\n").to_string(),
+            r#""quote\" slash\\ line\n""#
+        );
+        assert_eq!(utf8_or_hex(&[0xff, 0x00]).to_string(), "0xFF00");
+        assert_eq!(utf8_or_hex(b"").to_string(), "\"\"");
+    }
+
+    #[test]
+    fn writes_display_values_with_separators_without_edges() {
+        let mut output = String::new();
+        write_joined(&mut output, [1, 2, 3], ",").unwrap();
+        assert_eq!(output, "1,2,3");
+
+        output.clear();
+        write_joined(&mut output, core::iter::empty::<u8>(), ",").unwrap();
+        assert!(output.is_empty());
+
+        output.clear();
+        write_joined(&mut output, [42], ",").unwrap();
+        assert_eq!(output, "42");
+    }
+
+    #[test]
+    fn writes_joined_values_with_custom_formatting() {
+        let mut output = String::new();
+        write_joined_with(&mut output, [10, 11], "-", |writer, value| {
+            write!(writer, "{value:x}")
+        })
+        .unwrap();
+        assert_eq!(output, "a-b");
     }
 }

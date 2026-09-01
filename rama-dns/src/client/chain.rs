@@ -1,15 +1,17 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rama_core::{
-    bytes::Bytes,
     error::{ErrorExt, extra::OpaqueError},
-    futures::{Stream, StreamExt, stream},
+    futures::{Stream, StreamExt, async_stream::stream_fn, stream},
 };
 use rama_net::address::Domain;
 use rama_utils::collections::NonEmptyVec;
 use rand::RngExt;
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver};
+use super::resolver::{
+    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+};
+use crate::wire::{Name, ServiceBinding, Txt};
 
 fn gcd(mut a: usize, mut b: usize) -> usize {
     while b != 0 {
@@ -136,10 +138,79 @@ macro_rules! impl_chain_dns_txt_resolver {
         fn lookup_txt(
             &self,
             domain: Domain,
-        ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+        ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
             stream::iter(self.iter())
                 .flat_map(move |resolver| resolver.lookup_txt(domain.clone()))
                 .map(|result| result.map_err(ErrorExt::into_opaque_error))
+        }
+    };
+}
+
+macro_rules! impl_chain_dns_cname_resolver {
+    () => {
+        type Error = OpaqueError;
+
+        fn lookup_cname(
+            &self,
+            domain: Domain,
+        ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+            stream::iter(self.iter())
+                .flat_map(move |resolver| resolver.lookup_cname(domain.clone()))
+                .map(|result| result.map_err(ErrorExt::into_opaque_error))
+        }
+    };
+}
+
+macro_rules! impl_chain_dns_service_binding_resolver {
+    () => {
+        type Error = OpaqueError;
+
+        fn lookup_svcb(
+            &self,
+            domain: Domain,
+        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+            stream_fn(async move |mut yielder| {
+                let mut bindings = Vec::new();
+                for resolver in self {
+                    let mut stream = std::pin::pin!(resolver.lookup_svcb(domain.clone()));
+                    while let Some(result) = stream.next().await {
+                        match result {
+                            Ok(binding) => bindings.push(binding),
+                            Err(err) => {
+                                yielder.yield_item(Err(err.into_opaque_error())).await;
+                                return;
+                            }
+                        }
+                    }
+                }
+                for binding in bindings {
+                    yielder.yield_item(Ok(binding)).await;
+                }
+            })
+        }
+
+        fn lookup_https(
+            &self,
+            domain: Domain,
+        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+            stream_fn(async move |mut yielder| {
+                let mut bindings = Vec::new();
+                for resolver in self {
+                    let mut stream = std::pin::pin!(resolver.lookup_https(domain.clone()));
+                    while let Some(result) = stream.next().await {
+                        match result {
+                            Ok(binding) => bindings.push(binding),
+                            Err(err) => {
+                                yielder.yield_item(Err(err.into_opaque_error())).await;
+                                return;
+                            }
+                        }
+                    }
+                }
+                for binding in bindings {
+                    yielder.yield_item(Ok(binding)).await;
+                }
+            })
         }
     };
 }
@@ -150,6 +221,12 @@ impl<R: DnsAddressResolver> DnsAddressResolver for Vec<R> {
 impl<R: DnsTxtResolver> DnsTxtResolver for Vec<R> {
     impl_chain_dns_txt_resolver!();
 }
+impl<R: DnsCnameResolver> DnsCnameResolver for Vec<R> {
+    impl_chain_dns_cname_resolver!();
+}
+impl<R: DnsServiceBindingResolver> DnsServiceBindingResolver for Vec<R> {
+    impl_chain_dns_service_binding_resolver!();
+}
 impl<R: DnsResolver> DnsResolver for Vec<R> {}
 
 impl<R: DnsAddressResolver> DnsAddressResolver for NonEmptyVec<R> {
@@ -157,6 +234,12 @@ impl<R: DnsAddressResolver> DnsAddressResolver for NonEmptyVec<R> {
 }
 impl<R: DnsTxtResolver> DnsTxtResolver for NonEmptyVec<R> {
     impl_chain_dns_txt_resolver!();
+}
+impl<R: DnsCnameResolver> DnsCnameResolver for NonEmptyVec<R> {
+    impl_chain_dns_cname_resolver!();
+}
+impl<R: DnsServiceBindingResolver> DnsServiceBindingResolver for NonEmptyVec<R> {
+    impl_chain_dns_service_binding_resolver!();
 }
 impl<R: DnsResolver> DnsResolver for NonEmptyVec<R> {}
 
@@ -166,13 +249,141 @@ impl<R: DnsAddressResolver, const N: usize> DnsAddressResolver for [R; N] {
 impl<R: DnsTxtResolver, const N: usize> DnsTxtResolver for [R; N] {
     impl_chain_dns_txt_resolver!();
 }
+impl<R: DnsCnameResolver, const N: usize> DnsCnameResolver for [R; N] {
+    impl_chain_dns_cname_resolver!();
+}
+impl<R: DnsServiceBindingResolver, const N: usize> DnsServiceBindingResolver for [R; N] {
+    impl_chain_dns_service_binding_resolver!();
+}
 impl<R: DnsResolver, const N: usize> DnsResolver for [R; N] {}
 
 #[cfg(test)]
 mod tests {
     use ahash::{HashSet, HashSetExt as _};
+    use rama_core::bytes::Bytes;
+    use rama_core::error::{BoxError, BoxErrorExt as _};
 
     use super::*;
+
+    #[derive(Debug, Clone)]
+    struct BindingResolver {
+        svcb_port: u16,
+        https_port: u16,
+        fail: bool,
+    }
+
+    #[derive(Debug, Clone)]
+    enum TxtEvent {
+        Record(Txt),
+        Error,
+    }
+
+    #[derive(Debug, Clone)]
+    struct TxtResolver(Vec<TxtEvent>);
+
+    impl DnsTxtResolver for TxtResolver {
+        type Error = BoxError;
+
+        fn lookup_txt(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
+            stream::iter(self.0.iter().cloned().map(|event| match event {
+                TxtEvent::Record(record) => Ok(record),
+                TxtEvent::Error => Err(BoxError::from_static_str("TXT lookup failed")),
+            }))
+        }
+    }
+
+    fn txt_resolvers() -> Vec<TxtResolver> {
+        vec![
+            TxtResolver(vec![
+                TxtEvent::Record(
+                    Txt::try_from_strings([b"first".as_slice(), b"continued".as_slice()])
+                        .expect("valid TXT"),
+                ),
+                TxtEvent::Error,
+            ]),
+            TxtResolver(vec![TxtEvent::Record(
+                Txt::try_from_strings([b"second".as_slice()]).expect("valid TXT"),
+            )]),
+        ]
+    }
+
+    async fn assert_txt_union<R>(resolvers: &R)
+    where
+        R: DnsTxtResolver,
+        R::Error: std::fmt::Debug + std::fmt::Display,
+    {
+        let items: Vec<_> = resolvers.lookup_txt(Domain::example()).collect().await;
+        assert_eq!(items.len(), 3);
+        assert_eq!(
+            items[0]
+                .as_ref()
+                .expect("first record")
+                .iter()
+                .collect::<Vec<_>>(),
+            [b"first".as_slice(), b"continued".as_slice()],
+        );
+        assert_eq!(
+            items[1].as_ref().expect_err("inline error").to_string(),
+            "TXT lookup failed"
+        );
+        assert_eq!(
+            items[2]
+                .as_ref()
+                .expect("second record")
+                .iter()
+                .collect::<Vec<_>>(),
+            [b"second".as_slice()],
+        );
+    }
+
+    impl DnsServiceBindingResolver for BindingResolver {
+        type Error = BoxError;
+
+        fn lookup_svcb(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+            stream::once(std::future::ready(if self.fail {
+                Err(BoxError::from_static_str("malformed RRset"))
+            } else {
+                Ok(binding(self.svcb_port))
+            }))
+        }
+
+        fn lookup_https(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+            stream::once(std::future::ready(if self.fail {
+                Err(BoxError::from_static_str("malformed RRset"))
+            } else {
+                Ok(binding(self.https_port))
+            }))
+        }
+    }
+
+    fn binding(port: u16) -> ServiceBinding {
+        let mut rdata = vec![0, 1, 0, 0, 3, 0, 2];
+        rdata.extend_from_slice(&port.to_be_bytes());
+        ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata)).expect("valid service binding")
+    }
+
+    #[tokio::test]
+    async fn cname_chain_flattens_every_resolver() {
+        let resolvers = vec![
+            Name::from_wire(b"\x05first\x07example\0").unwrap(),
+            Name::from_wire(b"\x06second\x07example\0").unwrap(),
+        ];
+        let targets: Vec<_> = resolvers
+            .lookup_cname(Domain::example())
+            .map(Result::unwrap)
+            .collect()
+            .await;
+        assert_eq!(targets, resolvers);
+    }
 
     #[tokio::test]
     async fn test_rand_ipv4() {
@@ -218,5 +429,69 @@ mod tests {
 
             assert_eq!((i as usize) + 1, results.len());
         }
+    }
+
+    #[tokio::test]
+    async fn service_binding_chain_flattens_every_resolver() {
+        let resolvers = vec![
+            BindingResolver {
+                svcb_port: 8443,
+                https_port: 443,
+                fail: false,
+            },
+            BindingResolver {
+                svcb_port: 9443,
+                https_port: 444,
+                fail: false,
+            },
+        ];
+        let svcb: Vec<_> = resolvers
+            .lookup_svcb(Domain::example())
+            .map(|result| result.expect("success").port().expect("port"))
+            .collect()
+            .await;
+        assert_eq!(svcb, [8443, 9443]);
+
+        let array: [_; 2] = resolvers.try_into().expect("two resolvers");
+        let https: Vec<_> = array
+            .lookup_https(Domain::example())
+            .map(|result| result.expect("success").port().expect("port"))
+            .collect()
+            .await;
+        assert_eq!(https, [443, 444]);
+    }
+
+    #[tokio::test]
+    async fn service_binding_chain_discards_values_before_an_error() {
+        let resolvers = vec![
+            BindingResolver {
+                svcb_port: 8443,
+                https_port: 443,
+                fail: false,
+            },
+            BindingResolver {
+                svcb_port: 0,
+                https_port: 0,
+                fail: true,
+            },
+        ];
+
+        let items: Vec<_> = resolvers.lookup_svcb(Domain::example()).collect().await;
+        assert_eq!(items.len(), 1);
+        items[0]
+            .as_ref()
+            .expect_err("malformed RRset must yield an error");
+    }
+
+    #[tokio::test]
+    async fn txt_vec_array_and_non_empty_vec_preserve_union_order_and_grouping() {
+        let resolvers = txt_resolvers();
+        assert_txt_union(&resolvers).await;
+
+        let resolvers: [_; 2] = txt_resolvers().try_into().expect("two resolvers");
+        assert_txt_union(&resolvers).await;
+
+        let resolvers = NonEmptyVec::from_vec(txt_resolvers()).expect("non-empty resolvers");
+        assert_txt_union(&resolvers).await;
     }
 }

@@ -5,7 +5,7 @@ use crate::{
 };
 use rama_core::{Service, telemetry::tracing};
 use rama_net::Protocol;
-use rama_net::http::uri::{UriMatchError, UriMatchReplace, match_replace::UriMatchReplaceNever};
+use rama_net::uri::{UriMatchError, UriMatchReplace, match_replace::UriMatchReplaceNever};
 use rama_utils::macros::generate_set_and_with;
 use std::borrow::Cow;
 use std::convert::Infallible;

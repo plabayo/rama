@@ -111,10 +111,7 @@ pub type DefaultHttpWebClient<Body = crate::http::Body> = EasyHttpWebClient<
     Body,
     EstablishedClientConnection<
         BindBodyToConn<
-            crate::net::client::pool::MultiplexedConnection<
-                HttpClientService<Body>,
-                crate::net::client::pool::BasicConnId,
-            >,
+            crate::net::client::pool::MultiplexedConnection<HttpClientService<Body>, HttpConnId>,
         >,
         Request<Body>,
     >,
@@ -319,8 +316,8 @@ mod tests {
         address::ProxyAddress,
         client::{
             ConnectRequest, ConnectionError, ConnectionErrorDomain, ConnectionErrorKind,
-            ConnectorService, ProxyRoute, ProxyRouteFailureCache, ProxyRouteFailureCacheConfig,
-            ProxyRouteFailureCacheScope, ProxyRoutes,
+            ConnectorService, ConnectorTarget, ProxyRoute, ProxyRouteFailureCache,
+            ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheScope, ProxyRoutes,
         },
         test_utils::client::{MockConnectorService, MockSocket},
     };
@@ -500,6 +497,68 @@ mod tests {
             ConnectionError::from(client.serve(request).await.unwrap_err().into_box_error());
         assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
         assert_eq!(error.kind(), ConnectionErrorKind::Protocol);
+    }
+
+    #[tokio::test]
+    async fn easy_client_pools_plaintext_proxy_versions_separately() {
+        let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
+        let dials = Arc::new(AtomicUsize::new(0));
+        let transport = service_fn({
+            let inner = dummy_server::<ConnectRequest>();
+            let proxy = proxy.clone();
+            let dials = dials.clone();
+            move |input: ConnectRequest| {
+                let inner = inner.clone();
+                let proxy = proxy.clone();
+                let dials = dials.clone();
+                async move {
+                    assert_eq!(
+                        input.extensions.get_ref::<ConnectorTarget>(),
+                        Some(&ConnectorTarget(proxy.address.clone())),
+                    );
+                    assert_eq!(
+                        input
+                            .extensions
+                            .get_ref::<ProxyRoute>()
+                            .and_then(ProxyRoute::proxy_address),
+                        Some(&proxy),
+                    );
+                    dials.fetch_add(1, Ordering::Relaxed);
+                    inner.connect(input).await
+                }
+            }
+        });
+        let client = EasyHttpWebClient::connector_builder()
+            .with_custom_transport_connector(transport)
+            .without_dns_connector()
+            .without_tls_proxy_support()
+            .with_proxy_support()
+            .without_tls_support()
+            .with_default_http_connector(Executor::default())
+            .with_default_connection_pool()
+            .build_client();
+
+        for (version, expected_conn) in [(Version::HTTP_11, 0), (Version::HTTP_2, 1)] {
+            let request = Request::builder()
+                .uri("http://example.com")
+                .version(version)
+                .body(Body::empty())
+                .unwrap();
+            request
+                .extensions()
+                .insert(ProxyRoutes::from(proxy.clone()));
+
+            let response = client.serve(request).await.unwrap();
+            assert_eq!(response.version(), version);
+            assert_eq!(
+                response.try_into_json::<Output>().await.unwrap(),
+                Output {
+                    conn: expected_conn,
+                    resp: 0,
+                },
+            );
+        }
+        assert_eq!(dials.load(Ordering::Relaxed), 2);
     }
 
     #[cfg(feature = "socks5")]
@@ -770,6 +829,284 @@ mod tests {
             attempts.lock().as_slice(),
             [proxy, ProxyRoute::Direct, ProxyRoute::Direct]
         );
+    }
+
+    #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    #[tokio::test]
+    async fn rustls_https_proxy_alpn_is_scoped_across_connect() {
+        use crate::{
+            extensions::ExtensionsRef as _,
+            net::{
+                Protocol,
+                address::HostWithPort,
+                client::{EstablishedClientConnection, ProxyRoute},
+                stream::service::EchoService,
+            },
+            tls::{
+                client::{NegotiatedTlsParameters, TlsClientConfig},
+                rustls::{client::TlsConnector, server::TlsAcceptorLayer},
+                server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+            },
+        };
+        use rama_core::ServiceInput;
+        use rama_crypto::cert::generate_server_auth;
+        use rama_http::io::upgrade::handle_upgrade;
+        use rama_http_backend::client::proxy::layer::HttpProxyConnectorLayer;
+        use rama_net::http::TargetHttpVersion;
+        use std::sync::Arc;
+
+        let (proxy_chain, proxy_key) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).expect("proxy auth");
+        let proxy_trust = proxy_chain.last().expect("proxy trust anchor").clone();
+        let (origin_chain, origin_key) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).expect("origin auth");
+        let origin_trust = origin_chain.last().expect("origin trust anchor").clone();
+
+        let origin_server =
+            TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
+                cert_chain: origin_chain,
+                private_key: origin_key,
+                ocsp: None,
+            }))
+            .into_layer(EchoService::new());
+        let (origin_done_tx, origin_done_rx) = tokio::sync::oneshot::channel();
+        let origin_done_tx = Arc::new(parking_lot::Mutex::new(Some(origin_done_tx)));
+
+        let connect_version = Arc::new(parking_lot::Mutex::new(None));
+        let observed_version = connect_version.clone();
+        let proxy_http =
+            HttpServer::auto(Executor::default()).service(service_fn(move |req: Request| {
+                let origin_server = origin_server.clone();
+                let origin_done_tx = origin_done_tx.clone();
+                let observed_version = observed_version.clone();
+                async move {
+                    assert_eq!(req.method(), rama_http::Method::CONNECT);
+                    *observed_version.lock() = Some(req.version());
+                    let upgrade = handle_upgrade(&req);
+                    tokio::spawn(async move {
+                        let tunnel = upgrade.await.expect("server CONNECT upgrade");
+                        // The client deliberately drops immediately after the
+                        // handshake assertions, so the TLS server may finish
+                        // with an EOF/close-notify error.
+                        let _origin_result = origin_server.serve(tunnel).await;
+                        if let Some(tx) = origin_done_tx.lock().take() {
+                            tx.send(()).expect("origin completion receiver");
+                        }
+                    });
+                    Ok::<_, Infallible>(Response::new(Body::empty()))
+                }
+            }));
+        let proxy_server = TlsAcceptorLayer::new(
+            TlsServerConfig::new()
+                .with_single_cert(ServerAuthData {
+                    cert_chain: proxy_chain,
+                    private_key: proxy_key,
+                    ocsp: None,
+                })
+                .with_alpn_http_2(),
+        )
+        .into_layer(proxy_http);
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let client_io = Arc::new(parking_lot::Mutex::new(Some(client_io)));
+        let transport = service_fn(move |input: ConnectRequest| {
+            let conn = ServiceInput::new(client_io.lock().take().expect("one proxy connection"));
+            async move { Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn }) }
+        });
+
+        let proxy_config = TlsClientConfig::new()
+            .with_alpn_http_2()
+            .with_server_name(crate::net::address::Host::from_static("localhost"))
+            .try_with_server_trust_anchors([proxy_trust])
+            .expect("proxy trust");
+        let proxy_tls = TlsConnector::tunnel(transport, None).with_base_config(proxy_config);
+        let proxy = HttpProxyConnectorLayer::default().into_layer(proxy_tls);
+        let origin_config = TlsClientConfig::new()
+            .with_alpn(Default::default())
+            .with_server_name(crate::net::address::Host::from_static("localhost"))
+            .try_with_server_trust_anchors([origin_trust])
+            .expect("origin trust");
+        let connector = TlsConnector::auto(proxy).with_base_config(origin_config);
+
+        let input = ConnectRequest::new(HostWithPort::try_from("localhost:443").unwrap())
+            .with_application_protocol(Protocol::HTTPS);
+        input
+            .extensions
+            .insert(ProxyRoute::Proxy("https://localhost:8443".parse().unwrap()));
+        let client = async move {
+            let established = Box::pin(connector.serve(input))
+                .await
+                .expect("two TLS handshakes");
+
+            assert_eq!(*connect_version.lock(), Some(Version::HTTP_2));
+            assert_eq!(
+                established
+                    .conn
+                    .extensions()
+                    .get_ref::<NegotiatedTlsParameters>()
+                    .expect("origin TLS parameters")
+                    .application_layer_protocol,
+                None
+            );
+            assert!(
+                established
+                    .conn
+                    .extensions()
+                    .get_ref::<TargetHttpVersion>()
+                    .is_none(),
+                "proxy HTTP/2 must not leak past CONNECT into a no-ALPN origin"
+            );
+            drop(established);
+        };
+        let (proxy_result, ()) =
+            Box::pin(tokio::time::timeout(Duration::from_secs(5), async move {
+                tokio::join!(proxy_server.serve(ServiceInput::new(server_io)), client)
+            }))
+            .await
+            .expect("proxy/origin exchange");
+        proxy_result.expect("proxy server");
+        tokio::time::timeout(Duration::from_secs(5), origin_done_rx)
+            .await
+            .expect("origin server shutdown")
+            .expect("origin completion signal");
+    }
+
+    #[cfg(feature = "boring")]
+    #[tokio::test]
+    async fn boring_https_proxy_alpn_is_scoped_across_connect() {
+        use crate::{
+            extensions::ExtensionsRef as _,
+            net::{
+                Protocol,
+                address::HostWithPort,
+                client::{EstablishedClientConnection, ProxyRoute},
+                stream::service::EchoService,
+            },
+            tls::{
+                boring::{client::TlsConnector, server::TlsAcceptorLayer},
+                client::{NegotiatedTlsParameters, TlsClientConfig},
+                server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+            },
+        };
+        use rama_core::ServiceInput;
+        use rama_crypto::cert::generate_server_auth;
+        use rama_http::io::upgrade::handle_upgrade;
+        use rama_http_backend::client::proxy::layer::HttpProxyConnectorLayer;
+        use rama_net::http::TargetHttpVersion;
+        use std::sync::Arc;
+
+        let (proxy_chain, proxy_key) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).expect("proxy auth");
+        let proxy_trust = proxy_chain.last().expect("proxy trust anchor").clone();
+        let (origin_chain, origin_key) =
+            generate_server_auth(GeneratedServerAuthConfig::default()).expect("origin auth");
+        let origin_trust = origin_chain.last().expect("origin trust anchor").clone();
+
+        let origin_server =
+            TlsAcceptorLayer::new(TlsServerConfig::new().with_single_cert(ServerAuthData {
+                cert_chain: origin_chain,
+                private_key: origin_key,
+                ocsp: None,
+            }))
+            .into_layer(EchoService::new());
+        let (origin_done_tx, origin_done_rx) = tokio::sync::oneshot::channel();
+        let origin_done_tx = Arc::new(parking_lot::Mutex::new(Some(origin_done_tx)));
+
+        let connect_version = Arc::new(parking_lot::Mutex::new(None));
+        let observed_version = connect_version.clone();
+        let proxy_http =
+            HttpServer::auto(Executor::default()).service(service_fn(move |req: Request| {
+                let origin_server = origin_server.clone();
+                let origin_done_tx = origin_done_tx.clone();
+                let observed_version = observed_version.clone();
+                async move {
+                    assert_eq!(req.method(), rama_http::Method::CONNECT);
+                    *observed_version.lock() = Some(req.version());
+                    let upgrade = handle_upgrade(&req);
+                    tokio::spawn(async move {
+                        let tunnel = upgrade.await.expect("server CONNECT upgrade");
+                        // The client deliberately drops immediately after the
+                        // handshake assertions, so the TLS server may finish
+                        // with an EOF/close-notify error.
+                        let _origin_result = origin_server.serve(tunnel).await;
+                        if let Some(tx) = origin_done_tx.lock().take() {
+                            tx.send(()).expect("origin completion receiver");
+                        }
+                    });
+                    Ok::<_, Infallible>(Response::new(Body::empty()))
+                }
+            }));
+        let proxy_server = TlsAcceptorLayer::new(
+            TlsServerConfig::new()
+                .with_single_cert(ServerAuthData {
+                    cert_chain: proxy_chain,
+                    private_key: proxy_key,
+                    ocsp: None,
+                })
+                .with_alpn_http_2(),
+        )
+        .into_layer(proxy_http);
+
+        let (client_io, server_io) = tokio::io::duplex(64 * 1024);
+        let client_io = Arc::new(parking_lot::Mutex::new(Some(client_io)));
+        let transport = service_fn(move |input: ConnectRequest| {
+            let conn = ServiceInput::new(client_io.lock().take().expect("one proxy connection"));
+            async move { Ok::<_, ConnectionError>(EstablishedClientConnection { input, conn }) }
+        });
+
+        let proxy_config = TlsClientConfig::new()
+            .with_alpn_http_2()
+            .with_server_name(crate::net::address::Host::from_static("localhost"))
+            .try_with_server_trust_anchors([proxy_trust])
+            .expect("proxy trust");
+        let proxy_tls = TlsConnector::tunnel(transport, None).with_base_config(proxy_config);
+        let proxy = HttpProxyConnectorLayer::default().into_layer(proxy_tls);
+        let origin_config = TlsClientConfig::new()
+            .with_alpn(Default::default())
+            .with_server_name(crate::net::address::Host::from_static("localhost"))
+            .try_with_server_trust_anchors([origin_trust])
+            .expect("origin trust");
+        let connector = TlsConnector::auto(proxy).with_base_config(origin_config);
+
+        let input = ConnectRequest::new(HostWithPort::try_from("localhost:443").unwrap())
+            .with_application_protocol(Protocol::HTTPS);
+        input
+            .extensions
+            .insert(ProxyRoute::Proxy("https://localhost:8443".parse().unwrap()));
+        let client = async move {
+            let established = connector.serve(input).await.expect("two TLS handshakes");
+
+            assert_eq!(*connect_version.lock(), Some(Version::HTTP_2));
+            assert_eq!(
+                established
+                    .conn
+                    .extensions()
+                    .get_ref::<NegotiatedTlsParameters>()
+                    .expect("origin TLS parameters")
+                    .application_layer_protocol,
+                None
+            );
+            assert!(
+                established
+                    .conn
+                    .extensions()
+                    .get_ref::<TargetHttpVersion>()
+                    .is_none(),
+                "proxy HTTP/2 must not leak past CONNECT into a no-ALPN origin"
+            );
+            drop(established);
+        };
+        let (proxy_result, ()) =
+            Box::pin(tokio::time::timeout(Duration::from_secs(5), async move {
+                tokio::join!(proxy_server.serve(ServiceInput::new(server_io)), client)
+            }))
+            .await
+            .expect("proxy/origin exchange");
+        proxy_result.expect("proxy server");
+        tokio::time::timeout(Duration::from_secs(5), origin_done_rx)
+            .await
+            .expect("origin server shutdown")
+            .expect("origin completion signal");
     }
 
     #[cfg(feature = "boring")]

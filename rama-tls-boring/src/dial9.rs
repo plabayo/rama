@@ -5,8 +5,8 @@
 use dial9::Dial9Handle;
 use dial9::core::clock_monotonic_ns;
 use dial9_trace_format::{EventEncoder, TraceEvent, TraceField, types::FieldType};
-use rama_net::address::Host;
-use rama_tls::{ApplicationProtocol, ProtocolVersion};
+use rama_net::{address::Host, tls::ApplicationProtocol};
+use rama_tls::ProtocolVersion;
 use std::io::{self, Write};
 
 #[derive(Debug, Clone)]

@@ -1,8 +1,6 @@
 #![allow(missing_docs)]
 #![allow(non_camel_case_types)]
 
-use rama_core::bytes::{BufMut, Bytes, BytesMut};
-use rama_core::error::{BoxError, BoxErrorExt as _};
 use rama_utils::macros::enums::enum_builder;
 
 macro_rules! impl_u16_is_grease {
@@ -31,17 +29,6 @@ fn display_unknown_u16_maybe_as_grease(
 ) -> Option<std::fmt::Result> {
     if is_u16_grease(n) {
         Some(write!(f, "GREASE ({n:#06x})"))
-    } else {
-        None
-    }
-}
-
-fn display_byte_slice_maybe_as_grease(
-    f: &mut std::fmt::Formatter<'_>,
-    b: &[u8],
-) -> Option<std::fmt::Result> {
-    if b.len() == 2 && b[0] & 0x0f == 0x0a && b[1] & 0x0f == 0x0a {
-        Some(write!(f, "GREASE (0x{:x}{:x})", b[0], b[1]))
     } else {
         None
     }
@@ -759,88 +746,6 @@ enum_builder! {
 impl_u16_is_grease!(SupportedGroup);
 
 enum_builder! {
-    /// The Application Layer Negotiation Protocol (ALPN) identifiers
-    /// as found in the IANA registry for Tls ExtensionType values.
-    @Bytes
-    #[display_unknown = display_byte_slice_maybe_as_grease]
-    pub enum ApplicationProtocol {
-        HTTP_09 => b"http/0.9",
-        HTTP_10 => b"http/1.0",
-        HTTP_11 => b"http/1.1",
-        SPDY_1 => b"spdy/1",
-        SPDY_2 => b"spdy/2",
-        SPDY_3 => b"spdy/3",
-        STUN_TURN => b"stun.turn",
-        STUN_NAT_DISCOVERY => b"stun.nat-discovery",
-        HTTP_2 => b"h2",
-        HTTP_2_TCP => b"h2c",
-        WebRTC => b"webrtc",
-        CWebRTC => b"c-webrtc",
-        FTP => b"ftp",
-        IMAP => b"imap",
-        POP3 => b"pop3",
-        ManageSieve => b"managesieve",
-        CoAP_TLS => b"coap",
-        CoAP_DTLS => b"co",
-        XMPP_CLIENT => b"xmpp-client",
-        XMPP_SERVER => b"xmpp-server",
-        ACME_TLS => b"acme-tls/1",
-        MQTT => b"mqtt",
-        DNS_OVER_TLS => b"dot",
-        NTSKE_1 => b"ntske/1",
-        SunRPC => b"sunrpc",
-        HTTP_3 => b"h3",
-        SMB2 => b"smb",
-        IRC => b"irc",
-        NNTP => b"nntp",
-        NNSP => b"nnsp",
-        DoQ => b"doq",
-        SIP => b"sip/2",
-        TDS_80 => b"tds/8.0",
-        DICOM => b"dicom",
-        PostgreSQL => b"postgresql",
-    }
-}
-
-impl ApplicationProtocol {
-    pub fn encode_wire_format(&self, w: &mut impl std::io::Write) -> std::io::Result<usize> {
-        let b = self.as_bytes();
-        if b.len() > 255 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                BoxError::from_static_str("application protocol is too large"),
-            ));
-        }
-
-        w.write_all(&[b.len() as u8])?;
-        w.write_all(b)?;
-        Ok(b.len() + 1)
-    }
-
-    pub fn decode_wire_format(r: &mut impl std::io::Read) -> std::io::Result<Self> {
-        let mut length = [0];
-        r.read_exact(&mut length)?;
-
-        let length = length[0] as usize;
-
-        let mut buf = vec![0; length];
-        r.read_exact(&mut buf[..])?;
-
-        Ok(buf.into())
-    }
-
-    pub fn encode_alpns(alpns: &[Self]) -> std::io::Result<Bytes> {
-        let alpn_protos =
-            BytesMut::with_capacity(alpns.iter().map(|alpn| alpn.as_bytes().len() + 1).sum());
-        let mut writer = alpn_protos.writer();
-        for alpn in alpns {
-            alpn.encode_wire_format(&mut writer)?;
-        }
-        Ok(writer.into_inner().freeze())
-    }
-}
-
-enum_builder! {
     /// The `CertificateCompressionAlgorithm` TLS protocol enum, the algorithm used to compress the certificate.
     /// The algorithm MUST be one of the algorithms listed in the peer's compress_certificate extension.
     @U16
@@ -877,66 +782,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn numeric_protocol_enums_order_by_wire_value() {
+        assert!(ProtocolVersion::DTLSv1_3 < ProtocolVersion::DTLSv1_0);
+        assert!(ProtocolVersion::TLSv1_3 < ProtocolVersion::DTLSv1_3);
+        assert!(ProtocolVersion::Unknown(0x0400) < ProtocolVersion::DTLSv1_3);
+    }
+
+    #[test]
     fn test_enum_uint_display() {
         assert_eq!("X25519 (0x001d)", SupportedGroup::X25519.to_string());
         assert_eq!("Unknown (0xffff)", SupportedGroup::from(0xffff).to_string());
         assert_eq!("GREASE (0xdada)", SupportedGroup::from(0xdada).to_string());
-    }
-
-    #[test]
-    fn test_enum_bytes_display() {
-        assert_eq!("http/1.1", ApplicationProtocol::HTTP_11.to_string());
-        assert_eq!(
-            "Unknown (h42)",
-            ApplicationProtocol::from(b"h42").to_string()
-        );
-        assert_eq!(
-            "GREASE (0xdada)",
-            ApplicationProtocol::from(&[0xda, 0xda]).to_string()
-        );
-        assert_eq!("Unknown (\0)", ApplicationProtocol::from(&[0]).to_string());
-    }
-
-    #[test]
-    fn test_application_protocol_wire_format() {
-        let test_cases = [
-            (ApplicationProtocol::HTTP_11, "\x08http/1.1"),
-            (ApplicationProtocol::HTTP_2, "\x02h2"),
-        ];
-        for (proto, expected_wire_format) in test_cases {
-            let mut buf = Vec::new();
-            proto.encode_wire_format(&mut buf).unwrap();
-            assert_eq!(
-                &buf[..],
-                expected_wire_format.as_bytes(),
-                "proto({proto}) => expected_wire_format({expected_wire_format})",
-            );
-
-            let mut reader = std::io::Cursor::new(&buf[..]);
-            let output_proto = ApplicationProtocol::decode_wire_format(&mut reader).unwrap();
-            assert_eq!(
-                output_proto, proto,
-                "expected_wire_format({expected_wire_format}) => proto({proto})",
-            );
-        }
-    }
-
-    #[test]
-    fn test_application_protocol_decode_wire_format_multiple() {
-        const INPUT: &str = "\x02h2\x08http/1.1";
-        let mut r = std::io::Cursor::new(INPUT);
-        assert_eq!(
-            ApplicationProtocol::HTTP_2,
-            ApplicationProtocol::decode_wire_format(&mut r).unwrap()
-        );
-        assert_eq!(3, r.position());
-        assert_eq!(&INPUT.as_bytes()[0..3], b"\x02h2");
-        assert_eq!(
-            ApplicationProtocol::HTTP_11,
-            ApplicationProtocol::decode_wire_format(&mut r).unwrap()
-        );
-        assert_eq!(12, r.position());
-        assert_eq!(&INPUT.as_bytes()[3..12], b"\x08http/1.1");
     }
 
     #[test]
@@ -964,19 +820,5 @@ mod tests {
             serde_json::from_str(&serde_json::to_string(&SupportedGroup::from(0xffffu16)).unwrap())
                 .unwrap();
         assert_eq!(SupportedGroup::from(0xffffu16), p);
-    }
-
-    #[test]
-    fn test_enum_bytes_serialize_deserialize() {
-        let p: ApplicationProtocol =
-            serde_json::from_str(&serde_json::to_string(&ApplicationProtocol::HTTP_3).unwrap())
-                .unwrap();
-        assert_eq!(ApplicationProtocol::HTTP_3, p);
-
-        let p: ApplicationProtocol = serde_json::from_str(
-            &serde_json::to_string(&ApplicationProtocol::from(b"foobar")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(ApplicationProtocol::from(b"foobar"), p);
     }
 }

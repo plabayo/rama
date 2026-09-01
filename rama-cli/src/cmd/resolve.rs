@@ -21,8 +21,8 @@ use rama::{
             resolver::config::{NameServerConfig, ResolverConfig},
         },
         resolver::{
-            BoxDnsResolver, DnsAddressResolver, DnsResolver, DnsTxtResolver,
-            HappyEyeballAddressResolverExt,
+            BoxDnsResolver, DnsAddressResolver, DnsCnameResolver, DnsResolver,
+            DnsServiceBindingResolver, DnsTxtResolver, HappyEyeballAddressResolverExt,
         },
     },
     error::{BoxError, BoxErrorExt, ErrorContext as _, ErrorExt as _},
@@ -95,12 +95,9 @@ pub async fn run(cfg: ResolveCommand) -> Result<(), BoxError> {
             let mut records_found = 0;
             while let Some(result) = results.next().await {
                 match result {
-                    Ok(data) => {
+                    Ok(record) => {
                         records_found += 1;
-                        match std::str::from_utf8(data.as_ref()) {
-                            Ok(s) => println!("* {s}"),
-                            Err(_) => println!("* 0x{:X?}", data.as_ref()),
-                        }
+                        println!("* {record}");
                     }
                     Err(err) => tracing::debug!("error while resolving TXT record: {err:?}"),
                 }
@@ -110,6 +107,43 @@ pub async fn run(cfg: ResolveCommand) -> Result<(), BoxError> {
                     "failed to resolve domain into any TXT record",
                 ));
             }
+        }
+        Some(RecordType::CNAME) => {
+            println!("Resolving CNAME for domain: {domain}");
+            let mut results = std::pin::pin!(resolver.lookup_cname(domain));
+            let mut records_found = 0;
+            while let Some(result) = results.next().await {
+                match result {
+                    Ok(record) => {
+                        records_found += 1;
+                        println!("* {record}");
+                    }
+                    Err(err) => tracing::debug!("error while resolving CNAME record: {err:?}"),
+                }
+            }
+            if records_found == 0 {
+                return Err(BoxError::from_static_str(
+                    "failed to resolve domain into any CNAME record",
+                ));
+            }
+        }
+        Some(RecordType::SVCB) => {
+            resolve_service_bindings(
+                &domain,
+                "SVCB",
+                resolver.lookup_svcb(domain.clone()),
+                "failed to resolve domain into any SVCB record",
+            )
+            .await?;
+        }
+        Some(RecordType::HTTPS) => {
+            resolve_service_bindings(
+                &domain,
+                "HTTPS",
+                resolver.lookup_https(domain.clone()),
+                "failed to resolve domain into any HTTPS record",
+            )
+            .await?;
         }
         Some(RecordType::Unknown(variant)) => {
             return Err(
@@ -157,6 +191,35 @@ pub async fn run(cfg: ResolveCommand) -> Result<(), BoxError> {
         }
     }
 
+    Ok(())
+}
+
+async fn resolve_service_bindings<E>(
+    domain: &Domain,
+    record_type: &'static str,
+    results: impl rama::futures::Stream<Item = Result<rama::dns::wire::ServiceBinding, E>>,
+    no_records_error: &'static str,
+) -> Result<(), BoxError>
+where
+    E: std::fmt::Debug,
+{
+    println!("Resolving {record_type} for domain: {domain}");
+    let mut results = std::pin::pin!(results);
+    let mut record_found = false;
+    while let Some(result) = results.next().await {
+        match result {
+            Ok(record) => {
+                record_found = true;
+                println!("* {record}");
+            }
+            Err(err) => {
+                tracing::debug!("error while resolving {record_type} record: {err:?}");
+            }
+        }
+    }
+    if !record_found {
+        return Err(BoxError::from_static_str(no_records_error));
+    }
     Ok(())
 }
 
@@ -287,7 +350,10 @@ rama::utils::macros::enums::enum_builder! {
     enum RecordType {
         A => "A",
         AAAA => "AAAA",
+        CNAME => "CNAME",
         TXT => "TXT",
+        SVCB => "SVCB",
+        HTTPS => "HTTPS",
     }
 }
 
@@ -351,7 +417,7 @@ pub struct ResolveCommand {
     query_name: Option<Domain>,
 
     #[arg(short = 't', long = "type")]
-    /// explicit query type (A, AAAA, TXT)
+    /// explicit query type (A, AAAA, CNAME, TXT, SVCB, HTTPS)
     query_type: Option<RecordType>,
 
     #[arg(short = '4', action = ArgAction::SetTrue)]
@@ -430,6 +496,30 @@ impl ResolveCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama::{dns::wire::ServiceBinding, futures::stream};
+
+    #[tokio::test]
+    async fn service_binding_output_requires_at_least_one_record() {
+        let error = resolve_service_bindings(
+            &Domain::example(),
+            "HTTPS",
+            stream::empty::<Result<ServiceBinding, std::convert::Infallible>>(),
+            "no HTTPS records",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.to_string(), "no HTTPS records");
+
+        let binding = ServiceBinding::parse_rdata(&[0, 1, 0]).unwrap();
+        resolve_service_bindings(
+            &Domain::example(),
+            "SVCB",
+            stream::iter([Ok::<_, std::convert::Infallible>(binding)]),
+            "no SVCB records",
+        )
+        .await
+        .unwrap();
+    }
 
     #[test]
     fn parse_nameserver_arg_ip_without_port() {

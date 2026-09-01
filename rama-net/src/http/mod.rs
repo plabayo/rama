@@ -6,8 +6,6 @@
 
 pub mod server;
 
-pub mod uri;
-
 mod version;
 #[doc(inline)]
 pub use version::{

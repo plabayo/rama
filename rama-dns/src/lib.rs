@@ -11,17 +11,22 @@
 //!   (host-backed via tokio) elsewhere. Each is exposed under
 //!   [`client`] when the corresponding target is active.
 //! - [`client::TokioDnsResolver`] — host-backed resolver that uses the
-//!   blocking system getaddrinfo via tokio's threadpool.
+//!   blocking system getaddrinfo via tokio's threadpool; it supports address
+//!   records only and returns typed errors for CNAME, TXT, SVCB, and HTTPS lookups.
 //! - `client::HickoryDnsResolver` — pure-Rust resolver from the
 //!   Hickory DNS project (<https://github.com/hickory-dns/hickory-dns>);
 //!   gated behind the `hickory` feature.
 //! - [`client::DenyAllDnsResolver`] — fails every lookup with
 //!   [`client::DnsDeniedError`]; useful when DNS must be disabled.
-//! - [`client::EmptyDnsResolver`] — returns no addresses for every lookup.
+//! - [`client::EmptyDnsResolver`] — returns no records for every lookup.
 //!
-//! Implement [`client::resolver::DnsResolver`] yourself to plug in any
-//! other resolver, and combine resolvers with the chain / tuple / variant
+//! [`client::resolver::DnsResolver`] is the aggregate of the address, CNAME,
+//! TXT, and SVCB/HTTPS resolver traits. Implement those traits yourself to plug in
+//! another resolver, and combine resolvers with the chain / tuple / variant
 //! adapters under [`client`].
+//! [`client::resolver::DnsTxtResolver`] yields one [`wire::Txt`] per DNS TXT
+//! resource record; each value preserves that record's character-string
+//! boundaries.
 //!
 //! ### Picking a resolver for high-QPS workloads
 //!
@@ -61,6 +66,13 @@
 //! global resolver until it's actually used — handy when you want to pass
 //! a resolver around without forcing it to be constructed yet.
 //!
+//! ## DNS wire data
+//!
+//! The [`wire`] module provides provider-neutral DNS wire vocabulary. It
+//! decodes A, AAAA, CNAME, and TXT RDATA as well as the shared RDATA used by
+//! SVCB and HTTPS records. DNS names, TXT string boundaries, and unknown
+//! service parameters are preserved.
+//!
 //! ## Rama
 //!
 //! Crate used by the end-user `rama` crate and `rama` crate authors alike.
@@ -84,3 +96,4 @@
 pub mod dial9;
 
 pub mod client;
+pub mod wire;

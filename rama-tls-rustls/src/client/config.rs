@@ -2,11 +2,12 @@ use crate::dep::rustls::ClientConfig;
 use crate::dep::rustls::client::danger::ServerCertVerifier;
 use rama_core::error::BoxError;
 use rama_core::extensions::{Extension, FromExtensions};
+use rama_net::tls::TlsAlpn;
 use rama_tls::client::{
     TlsClientAuth, TlsClientConfig, TlsServerCertPins, TlsServerName, TlsServerTrust,
     TlsServerVerify, TlsStoreServerCertChain,
 };
-use rama_tls::{TlsAlpn, TlsKeyLog, TlsSupportedVersions};
+use rama_tls::{TlsKeyLog, TlsSupportedVersions};
 use std::sync::Arc;
 
 /// Gather all the TLS extensions supported by rustls

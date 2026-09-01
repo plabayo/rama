@@ -14,7 +14,10 @@ pub use self::hickory::HickoryDnsResolver;
 
 mod tokio;
 #[doc(inline)]
-pub use self::tokio::{TokioDnsResolver, TokioDnsTxtUnsupportedError};
+pub use self::tokio::{
+    TokioDnsCnameUnsupportedError, TokioDnsResolver, TokioDnsServiceBindingUnsupportedError,
+    TokioDnsTxtUnsupportedError,
+};
 
 #[cfg(target_vendor = "apple")]
 mod apple;
@@ -48,16 +51,24 @@ mod systemd_resolved_wire;
 #[doc(hidden)]
 pub mod fuzzing {
     /// Fuzz hook for the resolved wire-format RR parser: must never panic,
-    /// and every TXT segment must derive from within the input buffer.
+    /// and every TXT segment must derive from the validated RR RDATA.
     /// Returns the TXT ttl + segment count, `None` for non-TXT verdicts.
     pub fn parse_txt_rr(raw: &[u8]) -> Option<(u32, usize)> {
-        match super::systemd_resolved_wire::parse_txt_rr(raw) {
-            super::systemd_resolved_wire::RrParse::Txt { ttl, segments } => {
+        let raw = rama_core::bytes::Bytes::copy_from_slice(raw);
+        match super::systemd_resolved_wire::parse_txt_rr(&raw) {
+            super::systemd_resolved_wire::RrParse::Record {
+                ttl,
+                value: segments,
+            } => {
                 let total: usize = segments.iter().map(|segment| segment.len() + 1).sum();
-                assert!(total <= raw.len(), "TXT segments exceed input buffer");
+                assert!(total <= raw.len(), "TXT segments exceed validated RR");
                 Some((ttl, segments.len()))
             }
-            _ => None,
+            super::systemd_resolved_wire::RrParse::Malformed(error) => {
+                drop(error);
+                None
+            }
+            super::systemd_resolved_wire::RrParse::Other => None,
         }
     }
 

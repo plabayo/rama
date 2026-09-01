@@ -24,7 +24,7 @@ impl<R> UriMatchRedirectLayer<R> {
     /// Creates a new "see other" (303) [`UriMatchRedirectLayer`]
     /// with the given [`UriMatchReplace`] implementation.
     ///
-    /// [`UriMatchReplace`]: rama_net::http::uri::UriMatchReplace
+    /// [`UriMatchReplace`]: rama_net::uri::UriMatchReplace
     #[must_use]
     pub fn to(match_replace: R) -> Self {
         Self {
@@ -36,7 +36,7 @@ impl<R> UriMatchRedirectLayer<R> {
     /// Creates a new "moved permanently" (301) [`UriMatchRedirectLayer`]
     /// with the given [`UriMatchReplace`] implementation.
     ///
-    /// [`UriMatchReplace`]: rama_net::http::uri::UriMatchReplace
+    /// [`UriMatchReplace`]: rama_net::uri::UriMatchReplace
     #[must_use]
     pub fn moved(match_replace: R) -> Self {
         Self {
@@ -48,7 +48,7 @@ impl<R> UriMatchRedirectLayer<R> {
     /// Creates a new "found" (302) [`UriMatchRedirectLayer`]
     /// with the given [`UriMatchReplace`] implementation.
     ///
-    /// [`UriMatchReplace`]: rama_net::http::uri::UriMatchReplace
+    /// [`UriMatchReplace`]: rama_net::uri::UriMatchReplace
     #[must_use]
     pub fn found(match_replace: R) -> Self {
         Self {
@@ -60,7 +60,7 @@ impl<R> UriMatchRedirectLayer<R> {
     /// Creates a new "temporary redirect" (307) [`UriMatchRedirectLayer`]
     /// with the given [`UriMatchReplace`] implementation.
     ///
-    /// [`UriMatchReplace`]: rama_net::http::uri::UriMatchReplace
+    /// [`UriMatchReplace`]: rama_net::uri::UriMatchReplace
     #[must_use]
     pub fn temporary(match_replace: R) -> Self {
         Self {
@@ -72,7 +72,7 @@ impl<R> UriMatchRedirectLayer<R> {
     /// Creates a new "permanent redirect" (308) [`UriMatchRedirectLayer`]
     /// with the given [`UriMatchReplace`] implementation.
     ///
-    /// [`UriMatchReplace`]: rama_net::http::uri::UriMatchReplace
+    /// [`UriMatchReplace`]: rama_net::uri::UriMatchReplace
     #[must_use]
     pub fn permanent(match_replace: R) -> Self {
         Self {

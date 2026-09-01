@@ -109,6 +109,16 @@ pub use path_matcher::{
     PathRouteCaptures, PathRouteMatch, PathRouter, PathRouterError,
 };
 
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+pub mod match_replace;
+#[cfg(feature = "std")]
+#[doc(inline)]
+pub use match_replace::{
+    UriMatchError, UriMatchReplace, UriMatchReplaceDomain, UriMatchReplaceFallthrough,
+    UriMatchReplaceRule, UriMatchReplaceRuleset, UriMatchReplaceScheme,
+};
+
 mod query;
 #[cfg(feature = "std")]
 #[doc(inline)]
@@ -468,7 +478,7 @@ impl Uri {
     /// The caller remains responsible for restricting asterisk-form to
     /// `OPTIONS`, because this URI type does not depend on an HTTP method
     /// type.
-    #[cfg(feature = "http")]
+    #[cfg(feature = "std")]
     pub fn parse_http_request_target<T: IntoUriInput>(
         input: T,
         authority_form: bool,

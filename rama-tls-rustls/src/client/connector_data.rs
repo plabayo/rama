@@ -318,12 +318,10 @@ pub fn self_signed_client_auth()
 mod tests {
     use super::*;
     use rama_core::{error::BoxErrorExt, extensions::Extensions};
-    use rama_tls::{
-        TlsAlpn,
-        client::{
-            TlsClientAuth, TlsClientConfig, TlsServerCertPins, TlsServerTrust,
-            TlsServerTrustAnchors, TlsServerVerify, TlsStoreServerCertChain,
-        },
+    use rama_net::tls::TlsAlpn;
+    use rama_tls::client::{
+        TlsClientAuth, TlsClientConfig, TlsServerCertPins, TlsServerTrust, TlsServerTrustAnchors,
+        TlsServerVerify, TlsStoreServerCertChain,
     };
 
     #[test]

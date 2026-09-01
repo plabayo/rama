@@ -14,7 +14,6 @@ use std::{
 };
 
 use rama_core::{
-    bytes::Bytes,
     error::BoxError,
     futures::{Stream, async_stream::stream_fn},
     telemetry::tracing,
@@ -28,7 +27,13 @@ use tokio::time::Instant;
 use windows_sys::Win32::Foundation::ERROR_CANCELLED;
 use windows_sys::core::PCWSTR;
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver};
+#[cfg(test)]
+use std::sync::atomic::AtomicU16;
+
+use super::resolver::{
+    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+};
+use crate::wire::{Name, RecordType, ServiceBinding, Txt};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -78,6 +83,12 @@ const _: () = assert!(std::mem::size_of::<DnsBackend>() == 0);
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 /// Windows-native [`DnsResolver`] implementation using `DnsQueryEx`.
+///
+/// Windows exposes TXT strings through `DNS_TXT_DATAW` as UTF-16. This
+/// resolver stores their UTF-8 encoding in [`Txt`], so its TXT results preserve
+/// string and record boundaries but cannot guarantee the original arbitrary
+/// wire octets are binary-transparent. Use a wire-native resolver such as
+/// Hickory when exact TXT octets are required on Windows.
 pub struct WindowsDnsResolver {
     timeout: Duration,
 }
@@ -133,12 +144,69 @@ impl DnsTxtResolver for WindowsDnsResolver {
     fn lookup_txt(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
         query_record_stream(domain, self.timeout, ffi::DNS_TYPE_TEXT, parse_txt_records)
     }
 }
 
+impl DnsCnameResolver for WindowsDnsResolver {
+    type Error = BoxError;
+
+    fn lookup_cname(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+        query_record_stream(
+            domain,
+            self.timeout,
+            ffi::DNS_TYPE_CNAME,
+            parse_cname_records,
+        )
+    }
+}
+
+impl DnsServiceBindingResolver for WindowsDnsResolver {
+    type Error = BoxError;
+
+    fn lookup_svcb(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        query_service_binding_stream(domain, self.timeout, RecordType::SVCB)
+    }
+
+    fn lookup_https(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        query_service_binding_stream(domain, self.timeout, RecordType::HTTPS)
+    }
+}
+
 impl DnsResolver for WindowsDnsResolver {}
+
+fn query_service_binding_stream(
+    domain: Domain,
+    timeout: Duration,
+    record_type: RecordType,
+) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send {
+    query_service_binding_stream_with_backend(domain, timeout, record_type, DnsBackend::System)
+}
+
+fn query_service_binding_stream_with_backend(
+    domain: Domain,
+    timeout: Duration,
+    record_type: RecordType,
+    backend: DnsBackend,
+) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send {
+    query_record_stream_with_backend(
+        domain,
+        timeout,
+        record_type.into(),
+        move |records, emit| parse_service_binding_records(records, record_type, emit),
+        backend,
+    )
+}
 
 fn query_record_stream<T, P>(
     domain: Domain,
@@ -334,13 +402,14 @@ fn handle_query_result<T, P>(
         ffi::ERROR_SUCCESS | ffi::DNS_INFO_NO_RECORDS | ffi::DNS_ERROR_RCODE_NAME_ERROR
     ) {
         if query_status == ffi::ERROR_SUCCESS && !result.query_records.is_null() {
-            let mut emit_record = |record| {
-                tracing::debug!("dns::windows: answer: {record:?}");
-                state.queue.lock().push_back(Ok(record));
-            };
-
-            if let Err(err) = (state.parser)(result.query_records, &mut emit_record) {
-                state.queue.lock().push_back(Err(err));
+            match parse_complete_record_set(&state.parser, result.query_records) {
+                Ok(records) => {
+                    for record in &records {
+                        tracing::debug!("dns::windows: answer: {record:?}");
+                    }
+                    state.queue.lock().extend(records.into_iter().map(Ok));
+                }
+                Err(err) => state.queue.lock().push_back(Err(err)),
             }
         }
 
@@ -359,6 +428,18 @@ fn handle_query_result<T, P>(
         .into()));
     cleanup_result(result);
     mark_done(state);
+}
+
+fn parse_complete_record_set<T, P>(
+    parser: &P,
+    records: *mut ffi::DnsRecord,
+) -> Result<Vec<T>, BoxError>
+where
+    P: Fn(*mut ffi::DnsRecord, &mut dyn FnMut(T)) -> Result<(), BoxError>,
+{
+    let mut parsed = Vec::new();
+    parser(records, &mut |record| parsed.push(record))?;
+    Ok(parsed)
 }
 
 fn cleanup_result(result: &mut ffi::DNS_QUERY_RESULT) {
@@ -415,46 +496,168 @@ fn parse_aaaa_records(
     })
 }
 
-fn parse_txt_records(
+fn parse_cname_records(
     records: *mut ffi::DnsRecord,
-    emit: &mut dyn FnMut(Bytes),
+    emit: &mut dyn FnMut(Name),
 ) -> Result<(), BoxError> {
-    walk_records(records, ffi::DNS_TYPE_TEXT, |record| {
-        // SAFETY: `record` is a live DNS_RECORD of type TXT while walking the list.
-        let txt = unsafe { &record.data.txt };
-        for idx in 0..txt.string_count as usize {
-            #[expect(
-                clippy::multiple_unsafe_ops_per_block,
-                reason = "pointer arithmetic and dereference are one logical array-index read"
-            )]
-            let ptr = unsafe { *txt.strings.as_ptr().add(idx) };
-            if ptr.is_null() {
-                continue;
-            }
-            let value = wide_ptr_to_string(ptr);
-            emit(Bytes::from(value));
+    walk_records(records, ffi::DNS_TYPE_CNAME, |record| {
+        // SAFETY: `record` is a live DNS_RECORD of type CNAME while walking the list.
+        let target = unsafe { record.data.ptr.name_host };
+        if target.is_null() {
+            return Err(WindowsDnsResolverError::message("CNAME target pointer is null").into());
+        }
+        let target = wide_ptr_to_string(target);
+        if target == "." {
+            emit(Name::root());
+        } else {
+            emit(Name::from(Domain::try_from(target)?));
         }
         Ok(())
     })
 }
 
-fn walk_records<F>(
+fn parse_txt_records(
+    records: *mut ffi::DnsRecord,
+    emit: &mut dyn FnMut(Txt),
+) -> Result<(), BoxError> {
+    walk_record_pointers(records, ffi::DNS_TYPE_TEXT, |record| {
+        // DNS_TXT_DATAW ends in pStringArray[1], but Windows extends that
+        // pointer array to dwStringCount entries in the DNS_RECORD allocation.
+        // Keep provenance for the complete allocation and validate the flexible
+        // tail against wDataLength before reading any pointer from it.
+        // SAFETY: `walk_record_pointers` only visits live DNS_RECORD nodes.
+        let data_length = unsafe { ptr::addr_of!((*record).data_length) };
+        // SAFETY: the pointer addresses that live node's data-length field.
+        let data_length = usize::from(unsafe { data_length.read() });
+        let data = record
+            .cast::<u8>()
+            .wrapping_add(std::mem::offset_of!(ffi::DnsRecord, data));
+        let count_offset = std::mem::offset_of!(ffi::DNS_TXT_DATAW, string_count);
+        let strings_offset = std::mem::offset_of!(ffi::DNS_TXT_DATAW, strings);
+        let count_end = count_offset + std::mem::size_of::<u32>();
+        if data_length < count_end {
+            return Err(WindowsDnsResolverError::message(format!(
+                "invalid TXT record data length: {data_length}",
+            ))
+            .into());
+        }
+
+        let string_count = data.wrapping_add(count_offset).cast::<u32>();
+        // SAFETY: the count field lies inside the validated Data range and its
+        // SDK-checked offset preserves its u32 alignment.
+        let string_count = unsafe { string_count.read() } as usize;
+        if string_count == 0 {
+            return Err(WindowsDnsResolverError::message(
+                "TXT record must contain at least one string",
+            )
+            .into());
+        }
+        let pointers_length = string_count
+            .checked_mul(std::mem::size_of::<*const u16>())
+            .and_then(|length| strings_offset.checked_add(length))
+            .ok_or_else(|| WindowsDnsResolverError::message("TXT string array length overflow"))?;
+        if pointers_length > data_length {
+            return Err(WindowsDnsResolverError::message(format!(
+                "invalid TXT string array: count={string_count} data_length={data_length}",
+            ))
+            .into());
+        }
+
+        let strings = data.wrapping_add(strings_offset).cast::<*const u16>();
+        for idx in 0..string_count {
+            // SAFETY: the complete pointer entry lies inside the validated
+            // flexible Data tail and the SDK-checked offset is pointer-aligned.
+            let string = unsafe { strings.wrapping_add(idx).read() };
+            if string.is_null() {
+                return Err(WindowsDnsResolverError::message(format!(
+                    "TXT string pointer {idx} is null",
+                ))
+                .into());
+            }
+        }
+
+        // Validate every pointer before decoding so a malformed later entry
+        // cannot emit a partial record. Decode one string at a time into the
+        // common buffer instead of retaining an intermediate `Vec<String>`.
+        let values = (0..string_count).map(|idx| {
+            // SAFETY: the preceding pass validated this complete pointer entry
+            // and established that it is non-null.
+            wide_ptr_to_string(unsafe { strings.wrapping_add(idx).read() })
+        });
+        emit(Txt::try_from_strings(values)?);
+        Ok(())
+    })
+}
+
+fn parse_service_binding_records(
+    records: *mut ffi::DnsRecord,
+    expected_type: RecordType,
+    emit: &mut dyn FnMut(ServiceBinding),
+) -> Result<(), BoxError> {
+    walk_record_pointers(records, expected_type.into(), |record| {
+        // DNS_QUERY_REQUEST_VERSION1 cannot request
+        // DNS_QUERY_PARSE_ALL_RECORDS. Microsoft therefore guarantees
+        // SVCB and HTTPS are returned in backward-compatible flat form:
+        // `data_length` octets of original RDATA begin at `data`.
+        // <https://learn.microsoft.com/en-us/windows/win32/dns/dns-constants#dns-query-options>
+        // Read fields and derive the flexible RDATA tail directly from the raw
+        // allocation pointer. Avoid forming a `&DnsRecord` whose referent ends
+        // at the declared union before reaching a potentially larger tail.
+        // SAFETY: `walk_record_pointers` only visits live DNS_RECORD nodes.
+        let rdata_len = unsafe { ptr::addr_of!((*record).data_length) };
+        // SAFETY: the pointer addresses that live node's data-length field.
+        let rdata_len = usize::from(unsafe { rdata_len.read() });
+        let rdata = record
+            .cast::<u8>()
+            .wrapping_add(std::mem::offset_of!(ffi::DnsRecord, data));
+        // SAFETY:
+        // - Windows owns a live allocation containing the DNS_RECORD header
+        //   followed by `data_length` octets beginning at Data.
+        // - `record` retains provenance for that complete allocation.
+        // - the record is flat because VERSION1 cannot request
+        //   DNS_QUERY_PARSE_ALL_RECORDS.
+        let rdata = unsafe { std::slice::from_raw_parts(rdata, rdata_len) };
+        emit(ServiceBinding::parse_rdata(rdata)?);
+        Ok(())
+    })
+}
+
+fn walk_record_pointers<F>(
     mut record: *mut ffi::DnsRecord,
     rrtype: u16,
     mut visit: F,
 ) -> Result<(), BoxError>
 where
-    F: FnMut(&ffi::DnsRecord) -> Result<(), BoxError>,
+    F: FnMut(*const ffi::DnsRecord) -> Result<(), BoxError>,
 {
     while !record.is_null() {
-        // SAFETY: `record` is a valid node in the linked list while iterating.
-        let current = unsafe { &*record };
-        if current.record_type == rrtype {
+        let current = record.cast_const();
+        // SAFETY: `current` is a valid DNS_RECORD node while walking the
+        // Windows-owned list. Field reads do not form a whole-record reference.
+        let record_type = unsafe { ptr::addr_of!((*current).record_type) };
+        // SAFETY: same live DNS_RECORD node and field-only address as above.
+        let next = unsafe { ptr::addr_of!((*current).next) };
+        // SAFETY: the pointer addresses the live node's record-type field.
+        let record_type = unsafe { record_type.read() };
+        // SAFETY: the pointer addresses the live node's next field.
+        let next = unsafe { next.read() };
+        if record_type == rrtype {
             visit(current)?;
         }
-        record = current.next;
+        record = next;
     }
     Ok(())
+}
+
+fn walk_records<F>(record: *mut ffi::DnsRecord, rrtype: u16, mut visit: F) -> Result<(), BoxError>
+where
+    F: FnMut(&ffi::DnsRecord) -> Result<(), BoxError>,
+{
+    walk_record_pointers(record, rrtype, |record| {
+        // SAFETY: typed visitors only access declared fields of
+        // the live DNS_RECORD node supplied by `walk_record_pointers`.
+        visit(unsafe { &*record })
+    })
 }
 
 fn wide_ptr_to_string(ptr: *const u16) -> String {
@@ -606,6 +809,7 @@ struct FakeDnsBackend {
     cancel_called: AtomicBool,
     callback_completed_during_cancel: AtomicBool,
     wait_loop_iterations: std::sync::atomic::AtomicUsize,
+    query_type: AtomicU16,
     callback_threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
 }
 
@@ -620,6 +824,7 @@ impl FakeDnsBackend {
             cancel_called: AtomicBool::new(false),
             callback_completed_during_cancel: AtomicBool::new(false),
             wait_loop_iterations: std::sync::atomic::AtomicUsize::new(0),
+            query_type: AtomicU16::new(0),
             callback_threads: Mutex::new(Vec::new()),
         }
     }
@@ -639,6 +844,7 @@ impl FakeDnsBackend {
     ) -> u32 {
         // SAFETY: the backend is called with the same live request passed to `DnsQueryEx`.
         let request = unsafe { &*request };
+        self.query_type.store(request.query_type, Ordering::SeqCst);
         *self.pending.lock() = Some(FakePendingQuery {
             callback: request.query_completion_callback,
             context: request.query_context as usize,
@@ -743,6 +949,7 @@ mod ffi {
     pub(super) const DNS_ERROR_RCODE_NAME_ERROR: u32 = 9003;
 
     pub(super) const DNS_TYPE_A: u16 = 1;
+    pub(super) const DNS_TYPE_CNAME: u16 = 5;
     pub(super) const DNS_TYPE_TEXT: u16 = 16;
     pub(super) const DNS_TYPE_AAAA: u16 = 28;
 
@@ -893,13 +1100,60 @@ mod ffi {
         pub(super) data: DnsRecordData,
     }
 
+    // Keep the hand-written projection pinned to windows-sys' SDK-derived
+    // DNS_RECORDW header. Its Data union is intentionally a smaller subset,
+    // so only alignment and every field offset through Data are comparable.
+    const _: () = {
+        use windows_sys::Win32::NetworkManagement::Dns::DNS_RECORDW;
+
+        assert!(std::mem::align_of::<DnsRecord>() == std::mem::align_of::<DNS_RECORDW>());
+        assert!(std::mem::offset_of!(DnsRecord, next) == std::mem::offset_of!(DNS_RECORDW, pNext));
+        assert!(std::mem::offset_of!(DnsRecord, name) == std::mem::offset_of!(DNS_RECORDW, pName));
+        assert!(
+            std::mem::offset_of!(DnsRecord, record_type)
+                == std::mem::offset_of!(DNS_RECORDW, wType)
+        );
+        assert!(
+            std::mem::offset_of!(DnsRecord, data_length)
+                == std::mem::offset_of!(DNS_RECORDW, wDataLength)
+        );
+        assert!(std::mem::offset_of!(DnsRecord, flags) == std::mem::offset_of!(DNS_RECORDW, Flags));
+        assert!(std::mem::offset_of!(DnsRecord, ttl) == std::mem::offset_of!(DNS_RECORDW, dwTtl));
+        assert!(
+            std::mem::offset_of!(DnsRecord, reserved)
+                == std::mem::offset_of!(DNS_RECORDW, dwReserved)
+        );
+        assert!(std::mem::offset_of!(DnsRecord, data) == std::mem::offset_of!(DNS_RECORDW, Data));
+    };
+
     /// DNS_RECORDW::Data union subset used by this backend.
     #[repr(C)]
     pub(super) union DnsRecordData {
         pub(super) a: DNS_A_DATA,
         pub(super) aaaa: DNS_AAAA_DATA,
+        pub(super) ptr: DNS_PTR_DATAW,
         pub(super) txt: DNS_TXT_DATAW,
+        #[cfg(test)]
+        pub(super) flat: [u8; 16],
     }
+
+    /// DNS_PTR_DATAW, also used for CNAME records.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub(super) struct DNS_PTR_DATAW {
+        /// Canonical target name as a NUL-terminated UTF-16 string.
+        pub(super) name_host: *const u16,
+    }
+
+    const _: () = {
+        use windows_sys::Win32::NetworkManagement::Dns::DNS_PTR_DATAW as SdkDnsPtrDataW;
+
+        assert!(std::mem::align_of::<DNS_PTR_DATAW>() == std::mem::align_of::<SdkDnsPtrDataW>());
+        assert!(
+            std::mem::offset_of!(DNS_PTR_DATAW, name_host)
+                == std::mem::offset_of!(SdkDnsPtrDataW, pNameHost)
+        );
+    };
 
     /// DNS_A_DATA:
     /// Official docs:
@@ -957,6 +1211,20 @@ mod ffi {
         pub(super) strings: [*const u16; 1],
     }
 
+    const _: () = {
+        use windows_sys::Win32::NetworkManagement::Dns::DNS_TXT_DATAW as SdkDnsTxtDataW;
+
+        assert!(std::mem::align_of::<DNS_TXT_DATAW>() == std::mem::align_of::<SdkDnsTxtDataW>());
+        assert!(
+            std::mem::offset_of!(DNS_TXT_DATAW, string_count)
+                == std::mem::offset_of!(SdkDnsTxtDataW, dwStringCount)
+        );
+        assert!(
+            std::mem::offset_of!(DNS_TXT_DATAW, strings)
+                == std::mem::offset_of!(SdkDnsTxtDataW, pStringArray)
+        );
+    };
+
     #[link(name = "Dnsapi")]
     unsafe extern "system" {
         /// DnsQueryEx:
@@ -1008,6 +1276,8 @@ mod tests {
     use rama_core::futures::StreamExt;
     use std::pin::pin;
 
+    use crate::wire::SvcParam;
+
     #[test]
     fn windows_resolver_defaults_to_five_second_timeout() {
         assert_eq!(WindowsDnsResolver::new().timeout(), Duration::from_secs(5));
@@ -1047,6 +1317,36 @@ mod tests {
         }
     }
 
+    #[repr(C)]
+    struct FlatDnsRecord<const N: usize> {
+        next: *mut ffi::DnsRecord,
+        name: *mut u16,
+        record_type: u16,
+        data_length: u16,
+        flags: u32,
+        ttl: u32,
+        reserved: u32,
+        data: [u8; N],
+    }
+
+    #[repr(C)]
+    struct TxtDnsRecord<const N: usize> {
+        next: *mut ffi::DnsRecord,
+        name: *mut u16,
+        record_type: u16,
+        data_length: u16,
+        flags: u32,
+        ttl: u32,
+        reserved: u32,
+        data: TxtData<N>,
+    }
+
+    #[repr(C)]
+    struct TxtData<const N: usize> {
+        string_count: u32,
+        strings: [*const u16; N],
+    }
+
     #[test]
     fn parse_a_records_reads_network_order_and_skips_other_types() {
         let mut aaaa = record(
@@ -1073,6 +1373,46 @@ mod tests {
         let mut out = Vec::new();
         parse_a_records(&mut a, &mut |ip| out.push(ip)).unwrap();
         assert_eq!(out, vec![Ipv4Addr::new(192, 0, 2, 1)]);
+    }
+
+    #[test]
+    fn parse_cname_records_decodes_utf16_target_and_skips_other_types() {
+        let target = "Alias.Example.com.\0".encode_utf16().collect::<Vec<_>>();
+        let mut a = record(
+            ffi::DNS_TYPE_A,
+            ffi::DnsRecordData {
+                a: ffi::DNS_A_DATA { ip_address: 0 },
+            },
+            ptr::null_mut(),
+        );
+        let mut cname = record(
+            ffi::DNS_TYPE_CNAME,
+            ffi::DnsRecordData {
+                ptr: ffi::DNS_PTR_DATAW {
+                    name_host: target.as_ptr(),
+                },
+            },
+            ptr::from_mut(&mut a),
+        );
+
+        let mut out = Vec::new();
+        parse_cname_records(&mut cname, &mut |name| out.push(name)).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].as_wire(), b"\x05Alias\x07Example\x03com\0");
+    }
+
+    #[test]
+    fn parse_cname_records_rejects_null_target() {
+        let mut cname = record(
+            ffi::DNS_TYPE_CNAME,
+            ffi::DnsRecordData {
+                ptr: ffi::DNS_PTR_DATAW {
+                    name_host: ptr::null(),
+                },
+            },
+            ptr::null_mut(),
+        );
+        parse_cname_records(&mut cname, &mut |_| {}).expect_err("null target is invalid");
     }
 
     #[test]
@@ -1108,10 +1448,324 @@ mod tests {
             },
             ptr::null_mut(),
         );
+        txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
 
         let mut out = Vec::new();
         parse_txt_records(&mut txt, &mut |bytes| out.push(bytes)).unwrap();
-        assert_eq!(out, vec![Bytes::from_static(b"hello world")]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].iter().collect::<Vec<_>>(), vec![&b"hello world"[..]]);
+    }
+
+    #[test]
+    fn parse_txt_records_preserves_a_valid_empty_string() {
+        let empty = [0_u16];
+        let mut txt = record(
+            ffi::DNS_TYPE_TEXT,
+            ffi::DnsRecordData {
+                txt: ffi::DNS_TXT_DATAW {
+                    string_count: 1,
+                    strings: [empty.as_ptr()],
+                },
+            },
+            ptr::null_mut(),
+        );
+        txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
+
+        let mut out = Vec::new();
+        parse_txt_records(&mut txt, &mut |value| out.push(value)).expect("valid empty string");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].iter().collect::<Vec<_>>(), [&b""[..]]);
+    }
+
+    #[test]
+    fn parse_txt_records_normalizes_utf16_to_utf8() {
+        let text: Vec<u16> = "héllo".encode_utf16().chain([0]).collect();
+        let mut txt = record(
+            ffi::DNS_TYPE_TEXT,
+            ffi::DnsRecordData {
+                txt: ffi::DNS_TXT_DATAW {
+                    string_count: 1,
+                    strings: [text.as_ptr()],
+                },
+            },
+            ptr::null_mut(),
+        );
+        txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
+
+        let mut out = Vec::new();
+        parse_txt_records(&mut txt, &mut |value| out.push(value)).expect("valid Unicode TXT");
+        assert_eq!(out[0].iter().collect::<Vec<_>>(), ["héllo".as_bytes()]);
+    }
+
+    #[test]
+    fn parse_txt_records_rejects_overlong_utf8_output() {
+        let text: Vec<u16> = std::iter::repeat_n(u16::from(b'x'), 256)
+            .chain([0])
+            .collect();
+        let mut txt = record(
+            ffi::DNS_TYPE_TEXT,
+            ffi::DnsRecordData {
+                txt: ffi::DNS_TXT_DATAW {
+                    string_count: 1,
+                    strings: [text.as_ptr()],
+                },
+            },
+            ptr::null_mut(),
+        );
+        txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
+
+        let mut out = Vec::new();
+        parse_txt_records(&mut txt, &mut |value| out.push(value))
+            .expect_err("decoded TXT string exceeds the wire limit");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_txt_records_reads_a_multi_string_flexible_tail() {
+        let first: Vec<u16> = "first".encode_utf16().chain([0]).collect();
+        let second: Vec<u16> = "second".encode_utf16().chain([0]).collect();
+        let third: Vec<u16> = "third".encode_utf16().chain([0]).collect();
+        let mut txt = TxtDnsRecord::<3> {
+            next: ptr::null_mut(),
+            name: ptr::null_mut(),
+            record_type: ffi::DNS_TYPE_TEXT,
+            data_length: std::mem::size_of::<TxtData<3>>() as u16,
+            flags: 0,
+            ttl: 0,
+            reserved: 0,
+            data: TxtData {
+                string_count: 3,
+                strings: [first.as_ptr(), second.as_ptr(), third.as_ptr()],
+            },
+        };
+        assert_eq!(
+            std::mem::offset_of!(TxtDnsRecord<3>, data),
+            std::mem::offset_of!(ffi::DnsRecord, data),
+        );
+        assert_eq!(
+            std::mem::offset_of!(TxtData<3>, strings),
+            std::mem::offset_of!(ffi::DNS_TXT_DATAW, strings),
+        );
+
+        let mut out = Vec::new();
+        parse_txt_records(ptr::from_mut(&mut txt).cast(), &mut |value| out.push(value))
+            .expect("valid multi-string TXT record");
+        assert_eq!(
+            out[0].iter().collect::<Vec<_>>(),
+            vec![&b"first"[..], &b"second"[..], &b"third"[..]]
+        );
+    }
+
+    #[test]
+    fn parse_txt_records_rejects_zero_strings() {
+        let mut txt = record(
+            ffi::DNS_TYPE_TEXT,
+            ffi::DnsRecordData {
+                txt: ffi::DNS_TXT_DATAW {
+                    string_count: 0,
+                    strings: [ptr::null()],
+                },
+            },
+            ptr::null_mut(),
+        );
+        txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
+
+        parse_txt_records(&mut txt, &mut |_| {}).expect_err("zero strings are invalid TXT RDATA");
+    }
+
+    #[test]
+    fn parse_txt_records_rejects_a_null_string_pointer() {
+        let mut txt = record(
+            ffi::DNS_TYPE_TEXT,
+            ffi::DnsRecordData {
+                txt: ffi::DNS_TXT_DATAW {
+                    string_count: 1,
+                    strings: [ptr::null()],
+                },
+            },
+            ptr::null_mut(),
+        );
+        txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
+
+        parse_txt_records(&mut txt, &mut |_| {}).expect_err("null TXT string is invalid");
+    }
+
+    #[test]
+    fn parse_txt_records_rejects_the_whole_record_after_a_null_string() {
+        let first: Vec<u16> = "valid".encode_utf16().chain([0]).collect();
+        let mut txt = TxtDnsRecord::<2> {
+            next: ptr::null_mut(),
+            name: ptr::null_mut(),
+            record_type: ffi::DNS_TYPE_TEXT,
+            data_length: std::mem::size_of::<TxtData<2>>() as u16,
+            flags: 0,
+            ttl: 0,
+            reserved: 0,
+            data: TxtData {
+                string_count: 2,
+                strings: [first.as_ptr(), ptr::null()],
+            },
+        };
+
+        let mut out = Vec::new();
+        parse_txt_records(ptr::from_mut(&mut txt).cast(), &mut |value| out.push(value))
+            .expect_err("one null string invalidates the record");
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn parse_txt_records_rejects_a_count_beyond_the_flexible_tail() {
+        let text: Vec<u16> = "only".encode_utf16().chain([0]).collect();
+        let mut txt = record(
+            ffi::DNS_TYPE_TEXT,
+            ffi::DnsRecordData {
+                txt: ffi::DNS_TXT_DATAW {
+                    string_count: 2,
+                    strings: [text.as_ptr()],
+                },
+            },
+            ptr::null_mut(),
+        );
+        txt.data_length = std::mem::size_of::<ffi::DNS_TXT_DATAW>() as u16;
+
+        parse_txt_records(&mut txt, &mut |_| {})
+            .expect_err("the declared count exceeds the one-pointer Data allocation");
+    }
+
+    #[test]
+    fn parse_service_binding_records_reads_flat_rdata_and_filters_type() {
+        let mut https = record(
+            RecordType::HTTPS.into(),
+            ffi::DnsRecordData {
+                flat: [0, 1, 0, 0, 3, 0, 2, 1, 187, 0, 0, 0, 0, 0, 0, 0],
+            },
+            ptr::null_mut(),
+        );
+        https.data_length = 9;
+        let mut svcb = record(
+            RecordType::SVCB.into(),
+            ffi::DnsRecordData {
+                flat: [0, 1, 0, 0, 3, 0, 2, 32, 251, 0, 0, 0, 0, 0, 0, 0],
+            },
+            &mut https,
+        );
+        svcb.data_length = 9;
+
+        let mut out = Vec::new();
+        parse_service_binding_records(&mut svcb, RecordType::SVCB, &mut |value| out.push(value))
+            .expect("valid SVCB");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].port(), Some(8443));
+
+        out.clear();
+        parse_service_binding_records(&mut svcb, RecordType::HTTPS, &mut |value| out.push(value))
+            .expect("valid HTTPS");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].port(), Some(443));
+    }
+
+    #[test]
+    fn parse_service_binding_records_rejects_malformed_flat_rdata() {
+        let mut record = record(
+            RecordType::SVCB.into(),
+            ffi::DnsRecordData { flat: [0; 16] },
+            ptr::null_mut(),
+        );
+        record.data_length = 2;
+        parse_service_binding_records(&mut record, RecordType::SVCB, &mut |_| {})
+            .expect_err("target name is missing");
+    }
+
+    #[test]
+    fn parse_service_binding_records_reads_a_large_flexible_tail() {
+        let opaque = [0x5a; 300];
+        let mut rdata = vec![0, 1, 0];
+        rdata.extend_from_slice(&65_000_u16.to_be_bytes());
+        rdata.extend_from_slice(&(opaque.len() as u16).to_be_bytes());
+        rdata.extend_from_slice(&opaque);
+
+        let mut record = FlatDnsRecord::<512> {
+            next: ptr::null_mut(),
+            name: ptr::null_mut(),
+            record_type: RecordType::HTTPS.into(),
+            data_length: rdata.len() as u16,
+            flags: 0,
+            ttl: 0,
+            reserved: 0,
+            data: [0; 512],
+        };
+        record.data[..rdata.len()].copy_from_slice(&rdata);
+        assert_eq!(
+            std::mem::offset_of!(FlatDnsRecord<512>, data),
+            std::mem::offset_of!(ffi::DnsRecord, data),
+        );
+
+        let mut out = Vec::new();
+        parse_service_binding_records(
+            ptr::from_mut(&mut record).cast(),
+            RecordType::HTTPS,
+            &mut |value| out.push(value),
+        )
+        .expect("valid flexible-tail HTTPS RDATA");
+
+        assert_eq!(out.len(), 1);
+        assert!(matches!(
+            &out[0].params()[0],
+            SvcParam::Unknown { value, .. } if value.as_ref() == opaque
+        ));
+    }
+
+    #[test]
+    fn complete_record_set_discards_values_before_a_malformed_record() {
+        let mut malformed = record(
+            RecordType::SVCB.into(),
+            ffi::DnsRecordData { flat: [0; 16] },
+            ptr::null_mut(),
+        );
+        malformed.data_length = 2;
+        let mut valid = record(
+            RecordType::SVCB.into(),
+            ffi::DnsRecordData {
+                flat: [0, 1, 0, 0, 3, 0, 2, 32, 251, 0, 0, 0, 0, 0, 0, 0],
+            },
+            &mut malformed,
+        );
+        valid.data_length = 9;
+
+        parse_complete_record_set(
+            &|records, emit| parse_service_binding_records(records, RecordType::SVCB, emit),
+            &mut valid,
+        )
+        .expect_err("one malformed record invalidates the complete RRset");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn service_binding_queries_use_the_selected_record_type() {
+        for record_type in [RecordType::SVCB, RecordType::HTTPS] {
+            let fake = Arc::new(FakeDnsBackend::new());
+            let stream = query_service_binding_stream_with_backend(
+                Domain::example(),
+                Duration::from_secs(30),
+                record_type,
+                DnsBackend::Fake(fake.clone()),
+            );
+            let query_task = tokio::spawn(async move {
+                let mut stream = pin!(stream);
+                stream.next().await
+            });
+
+            tokio::time::timeout(Duration::from_secs(5), fake.started.notified())
+                .await
+                .expect("fake DNS query did not start");
+            assert_eq!(
+                fake.query_type.load(Ordering::SeqCst),
+                u16::from(record_type)
+            );
+
+            query_task.abort();
+            _ = query_task.await;
+            fake.join_callback_threads();
+        }
     }
 
     #[test]

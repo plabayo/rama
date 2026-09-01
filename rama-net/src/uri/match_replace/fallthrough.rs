@@ -1,6 +1,6 @@
 use crate::std::borrow::Cow;
 
-use crate::http::uri::{UriMatchError, UriMatchReplace};
+use super::{UriMatchError, UriMatchReplace};
 use crate::uri::Uri;
 
 use rama_utils::macros::all_the_tuples_no_last_special_case;
@@ -89,7 +89,7 @@ all_the_tuples_no_last_special_case!(impl_uri_match_replace_on_fallthrough_tuple
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::uri::{UriMatchReplaceScheme, match_replace::UriMatchReplaceNever};
+    use crate::uri::{UriMatchReplaceScheme, match_replace::UriMatchReplaceNever};
 
     #[test]
     fn fallthrough_slices_simple() {

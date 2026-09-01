@@ -1,7 +1,4 @@
-use rama_core::{
-    bytes::Bytes,
-    futures::{Stream, stream},
-};
+use rama_core::futures::{Stream, stream};
 use rama_net::address::Domain;
 
 use std::{
@@ -9,7 +6,10 @@ use std::{
     net::{Ipv4Addr, Ipv6Addr},
 };
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver};
+use super::resolver::{
+    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+};
+use crate::wire::{Name, ServiceBinding, Txt};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -85,7 +85,36 @@ impl DnsTxtResolver for EmptyDnsResolver {
     fn lookup_txt(
         &self,
         _domain: Domain,
-    ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
+        stream::empty()
+    }
+}
+
+impl DnsCnameResolver for EmptyDnsResolver {
+    type Error = Infallible;
+
+    fn lookup_cname(
+        &self,
+        _domain: Domain,
+    ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+        stream::empty()
+    }
+}
+
+impl DnsServiceBindingResolver for EmptyDnsResolver {
+    type Error = Infallible;
+
+    fn lookup_svcb(
+        &self,
+        _: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        stream::empty()
+    }
+
+    fn lookup_https(
+        &self,
+        _: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
         stream::empty()
     }
 }
@@ -138,6 +167,21 @@ mod tests {
     #[tokio::test]
     async fn test_empty_lookup_txt() {
         impl_empty_test_body!(lookup_txt);
+    }
+
+    #[tokio::test]
+    async fn test_empty_lookup_cname() {
+        impl_empty_test_body!(lookup_cname);
+    }
+
+    #[tokio::test]
+    async fn test_empty_lookup_svcb() {
+        impl_empty_test_body!(lookup_svcb);
+    }
+
+    #[tokio::test]
+    async fn test_empty_lookup_https() {
+        impl_empty_test_body!(lookup_https);
     }
 
     #[tokio::test]

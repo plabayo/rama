@@ -27,7 +27,7 @@ targets = [
 
 [features]
 default = []
-http = ["rama-net/http"]
+http = []
 dial9 = ["dep:dial9-trace-format", "rama-core/dial9"]
 
 [dependencies]

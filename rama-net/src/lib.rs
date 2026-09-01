@@ -58,23 +58,24 @@ pub(crate) mod std;
 pub(crate) mod test_hash;
 #[doc(inline)]
 pub use client_ip::ClientIp;
-#[cfg(feature = "std")]
-#[doc(inline)]
-pub use input_ext::ConnectorTargetInputExt;
 #[doc(inline)]
 pub use input_ext::{
     AuthorityInputExt, PathInputExt, ProtocolInputExt, TransportProtocolInputExt, UriInputExt,
 };
-#[cfg(feature = "http")]
+#[cfg(feature = "std")]
+#[doc(inline)]
+pub use input_ext::{ConnectorTargetInputExt, ConnectorTransportProtocolInputExt};
+#[cfg(feature = "std")]
 #[doc(inline)]
 pub use input_ext::{HttpVersionInputExt, TargetHttpVersionInputExt};
 #[doc(inline)]
 pub use proto::Protocol;
 
+pub mod tls;
 pub mod transport;
 
-#[cfg(feature = "http")]
-#[cfg_attr(docsrs, doc(cfg(feature = "http")))]
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod http;
 
 #[cfg(feature = "std")]

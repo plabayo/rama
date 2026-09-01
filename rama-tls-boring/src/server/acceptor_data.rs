@@ -14,9 +14,9 @@ use rama_core::conversion::RamaTryFrom;
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext, ErrorExt as _};
 use rama_core::telemetry::tracing;
 use rama_crypto::dep::x509_parser::nom::AsBytes;
-use rama_net::address::Domain;
+use rama_net::{address::Domain, tls::ApplicationProtocol};
 use rama_tls::{
-    ApplicationProtocol, KeyLogIntent, ProtocolVersion,
+    KeyLogIntent, ProtocolVersion,
     client::ClientHello as RamaClientHello,
     server::{
         CertificateAuthorityData, CertificateIdentity, CertificateIssuanceContext,

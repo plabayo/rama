@@ -1,4 +1,4 @@
-use super::HttpProxyConnector;
+use super::{HttpProxyConnector, HttpProxyVersionPolicy};
 use rama_core::Layer;
 use rama_http::{HeaderMap, HeaderValue, header::IntoHeaderName};
 use rama_http_types::Version;
@@ -11,7 +11,7 @@ use rama_utils::macros::generate_set_and_with;
 pub struct HttpProxyConnectorLayer {
     required: bool,
     tls_proxy_supported: bool,
-    version: Option<Version>,
+    version_policy: HttpProxyVersionPolicy,
     headers: Option<HeaderMap>,
 }
 
@@ -27,7 +27,9 @@ impl HttpProxyConnectorLayer {
         Self {
             required: false,
             tls_proxy_supported: true,
-            version: Some(Version::HTTP_11),
+            version_policy: HttpProxyVersionPolicy::Automatic {
+                connect_fallback: Some(Version::HTTP_11),
+            },
             headers: None,
         }
     }
@@ -43,7 +45,9 @@ impl HttpProxyConnectorLayer {
         Self {
             required: true,
             tls_proxy_supported: true,
-            version: Some(Version::HTTP_11),
+            version_policy: HttpProxyVersionPolicy::Automatic {
+                connect_fallback: Some(Version::HTTP_11),
+            },
             headers: None,
         }
     }
@@ -57,11 +61,16 @@ impl HttpProxyConnectorLayer {
     }
 
     generate_set_and_with! {
-        /// Set the HTTP version to use for the CONNECT request.
+        /// Set the HTTP version used to communicate with the proxy.
         ///
-        /// By default this is set to HTTP/1.1.
+        /// This pins plaintext forward-proxy requests and CONNECT requests to
+        /// the given version, and constrains HTTPS-proxy ALPN accordingly.
+        /// Without an explicit version, plaintext forward-proxy requests follow
+        /// the target version. The `optional` and `required` constructors retain
+        /// HTTP/1.1 as their CONNECT and HTTPS-proxy default; [`Default`] follows
+        /// negotiated HTTPS-proxy ALPN and otherwise falls back to HTTP/1.1.
         pub fn version(mut self, version: Version) -> Self {
-            self.version = Some(version);
+            self.version_policy = HttpProxyVersionPolicy::Fixed(version);
             self
         }
     }
@@ -87,7 +96,7 @@ impl<S> Layer<S> for HttpProxyConnectorLayer {
             inner,
             required: self.required,
             tls_proxy_supported: self.tls_proxy_supported,
-            version: self.version,
+            version_policy: self.version_policy,
             headers: self.headers.clone(),
         }
     }
@@ -98,7 +107,9 @@ impl Default for HttpProxyConnectorLayer {
         Self {
             required: false,
             tls_proxy_supported: true,
-            version: None,
+            version_policy: HttpProxyVersionPolicy::Automatic {
+                connect_fallback: None,
+            },
             headers: None,
         }
     }

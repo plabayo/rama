@@ -3,10 +3,14 @@ use std::{
     sync::OnceLock,
 };
 
-use rama_core::{bytes::Bytes, error::extra::OpaqueError, futures::Stream, telemetry::tracing};
+use rama_core::{error::extra::OpaqueError, futures::Stream, telemetry::tracing};
 use rama_net::address::Domain;
 
-use crate::client::resolver::{BoxDnsResolver, DnsAddressResolver, DnsResolver, DnsTxtResolver};
+use crate::client::resolver::{
+    BoxDnsResolver, DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver,
+    DnsTxtResolver,
+};
+use crate::wire::{Name, ServiceBinding, Txt};
 
 #[cfg(all(
     not(target_vendor = "apple"),
@@ -93,9 +97,41 @@ impl DnsTxtResolver for GlobalDnsResolver {
     fn lookup_txt(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
         let resolver = global_dns_resolver();
         resolver.lookup_txt(domain)
+    }
+}
+
+impl DnsCnameResolver for GlobalDnsResolver {
+    type Error = OpaqueError;
+
+    #[inline(always)]
+    fn lookup_cname(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+        global_dns_resolver().lookup_cname(domain)
+    }
+}
+
+impl DnsServiceBindingResolver for GlobalDnsResolver {
+    type Error = OpaqueError;
+
+    #[inline(always)]
+    fn lookup_svcb(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        global_dns_resolver().lookup_svcb(domain)
+    }
+
+    #[inline(always)]
+    fn lookup_https(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+        global_dns_resolver().lookup_https(domain)
     }
 }
 

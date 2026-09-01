@@ -18,6 +18,6 @@ pub use bind_body::{BindBodyToConn, BindBodyToConnLayer, BindBodyToConnector};
 
 mod pool;
 #[doc(inline)]
-pub use pool::{HttpPooledConnector, HttpPooledConnectorConfig};
+pub use pool::{HttpConnId, HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig};
 
 pub mod proxy;

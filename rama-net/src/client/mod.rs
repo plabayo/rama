@@ -10,7 +10,10 @@ pub use error::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind};
 
 mod connector;
 #[doc(inline)]
-pub use connector::{AddressCandidates, ConnectorTarget, ConnectorTargetStream, race_connect};
+pub use connector::{
+    AddressCandidates, ConnectorTarget, ConnectorTargetStream, ConnectorTransportProtocol,
+    race_connect,
+};
 
 mod graceful;
 #[doc(inline)]

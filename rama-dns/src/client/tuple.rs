@@ -1,14 +1,16 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rama_core::{
-    bytes::Bytes,
     error::{ErrorExt, extra::OpaqueError},
     futures::{Stream, StreamExt as _, async_stream::stream_fn},
 };
 use rama_net::address::Domain;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver};
+use super::resolver::{
+    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+};
+use crate::wire::{Name, ServiceBinding, Txt};
 
 macro_rules! dns_resolve_tuple_impl {
     ($($ty:ident),+ $(,)?) => {
@@ -139,7 +141,7 @@ macro_rules! dns_resolve_tuple_impl {
             fn lookup_txt(
                 &self,
                 domain: Domain,
-            ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
+            ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
                 stream_fn(async move |mut yielder| {
                     let ($($ty,)+) = self;
 
@@ -149,6 +151,92 @@ macro_rules! dns_resolve_tuple_impl {
                             yielder.yield_item(result.map_err(ErrorExt::into_opaque_error)).await;
                         }
                     )+
+                })
+            }
+        }
+
+        impl<$($ty,)+> DnsCnameResolver for ($($ty,)+)
+        where
+            $(
+                $ty: DnsCnameResolver,
+            )+
+        {
+            type Error = OpaqueError;
+
+            fn lookup_cname(
+                &self,
+                domain: Domain,
+            ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+                stream_fn(async move |mut yielder| {
+                    let ($($ty,)+) = self;
+
+                    $(
+                        let mut stream = std::pin::pin!($ty.lookup_cname(domain.clone()));
+                        while let Some(result) = stream.next().await {
+                            yielder.yield_item(result.map_err(ErrorExt::into_opaque_error)).await;
+                        }
+                    )+
+                })
+            }
+        }
+
+        impl<$($ty,)+> DnsServiceBindingResolver for ($($ty,)+)
+        where
+            $(
+                $ty: DnsServiceBindingResolver,
+            )+
+        {
+            type Error = OpaqueError;
+
+            fn lookup_svcb(
+                &self,
+                domain: Domain,
+            ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+                stream_fn(async move |mut yielder| {
+                    let ($($ty,)+) = self;
+                    let mut bindings = Vec::new();
+
+                    $(
+                        let mut stream = std::pin::pin!($ty.lookup_svcb(domain.clone()));
+                        while let Some(result) = stream.next().await {
+                            match result {
+                                Ok(binding) => bindings.push(binding),
+                                Err(err) => {
+                                    yielder.yield_item(Err(err.into_opaque_error())).await;
+                                    return;
+                                }
+                            }
+                        }
+                    )+
+                    for binding in bindings {
+                        yielder.yield_item(Ok(binding)).await;
+                    }
+                })
+            }
+
+            fn lookup_https(
+                &self,
+                domain: Domain,
+            ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+                stream_fn(async move |mut yielder| {
+                    let ($($ty,)+) = self;
+                    let mut bindings = Vec::new();
+
+                    $(
+                        let mut stream = std::pin::pin!($ty.lookup_https(domain.clone()));
+                        while let Some(result) = stream.next().await {
+                            match result {
+                                Ok(binding) => bindings.push(binding),
+                                Err(err) => {
+                                    yielder.yield_item(Err(err.into_opaque_error())).await;
+                                    return;
+                                }
+                            }
+                        }
+                    )+
+                    for binding in bindings {
+                        yielder.yield_item(Ok(binding)).await;
+                    }
                 })
             }
         }
@@ -163,3 +251,168 @@ macro_rules! dns_resolve_tuple_impl {
 }
 
 all_the_tuples_no_last_special_case!(dns_resolve_tuple_impl);
+
+#[cfg(test)]
+mod tests {
+    use std::convert::Infallible;
+
+    use rama_core::{
+        bytes::Bytes,
+        error::{BoxError, BoxErrorExt as _},
+        futures::stream,
+    };
+
+    use super::*;
+
+    struct BindingResolver(u16, u16);
+
+    struct TxtResolver(&'static [&'static [u8]]);
+
+    impl DnsTxtResolver for TxtResolver {
+        type Error = Infallible;
+
+        fn lookup_txt(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
+            stream::once(std::future::ready(Ok(Txt::try_from_strings(
+                self.0.iter().copied(),
+            )
+            .expect("valid TXT"))))
+        }
+    }
+
+    impl DnsServiceBindingResolver for BindingResolver {
+        type Error = Infallible;
+
+        fn lookup_svcb(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+            stream::once(std::future::ready(Ok(binding(self.0))))
+        }
+
+        fn lookup_https(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+            stream::once(std::future::ready(Ok(binding(self.1))))
+        }
+    }
+
+    struct FailingResolver;
+
+    impl DnsServiceBindingResolver for FailingResolver {
+        type Error = BoxError;
+
+        fn lookup_svcb(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+            stream::once(std::future::ready(Err(BoxError::from_static_str(
+                "malformed RRset",
+            ))))
+        }
+
+        fn lookup_https(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<ServiceBinding, Self::Error>> + Send + '_ {
+            stream::once(std::future::ready(Err(BoxError::from_static_str(
+                "malformed RRset",
+            ))))
+        }
+    }
+
+    impl DnsTxtResolver for FailingResolver {
+        type Error = BoxError;
+
+        fn lookup_txt(
+            &self,
+            _: Domain,
+        ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
+            stream::once(std::future::ready(Err(BoxError::from_static_str(
+                "TXT lookup failed",
+            ))))
+        }
+    }
+
+    fn binding(port: u16) -> ServiceBinding {
+        let mut rdata = vec![0, 1, 0, 0, 3, 0, 2];
+        rdata.extend_from_slice(&port.to_be_bytes());
+        ServiceBinding::parse_rdata_bytes(&Bytes::from(rdata)).expect("valid service binding")
+    }
+
+    #[tokio::test]
+    async fn tuple_flattens_cname_targets() {
+        let first = Name::from_wire(b"\x05first\x07example\0").unwrap();
+        let second = Name::from_wire(b"\x06second\x07example\0").unwrap();
+        let targets: Vec<_> = (first, second)
+            .lookup_cname(Domain::example())
+            .map(Result::unwrap)
+            .collect()
+            .await;
+        assert_eq!(targets[0].to_string(), "first.example.");
+        assert_eq!(targets[1].to_string(), "second.example.");
+    }
+
+    #[tokio::test]
+    async fn tuple_flattens_both_service_binding_record_families() {
+        let resolvers = (BindingResolver(8443, 443), BindingResolver(9443, 444));
+        let svcb: Vec<_> = resolvers
+            .lookup_svcb(Domain::example())
+            .map(|result| result.expect("success").port().expect("port"))
+            .collect()
+            .await;
+        assert_eq!(svcb, [8443, 9443]);
+
+        let https: Vec<_> = resolvers
+            .lookup_https(Domain::example())
+            .map(|result| result.expect("success").port().expect("port"))
+            .collect()
+            .await;
+        assert_eq!(https, [443, 444]);
+    }
+
+    #[tokio::test]
+    async fn tuple_discards_service_bindings_before_an_error() {
+        let resolvers = (BindingResolver(8443, 443), FailingResolver);
+        let items: Vec<_> = resolvers.lookup_https(Domain::example()).collect().await;
+        assert_eq!(items.len(), 1);
+        items[0]
+            .as_ref()
+            .expect_err("malformed RRset must yield an error");
+    }
+
+    #[tokio::test]
+    async fn tuple_keeps_txt_records_grouped_and_errors_inline() {
+        let resolvers = (
+            TxtResolver(&[b"first", b"continued"]),
+            FailingResolver,
+            TxtResolver(&[b"second"]),
+        );
+        let items: Vec<_> = resolvers.lookup_txt(Domain::example()).collect().await;
+
+        assert_eq!(items.len(), 3);
+        assert_eq!(
+            items[0]
+                .as_ref()
+                .expect("first record")
+                .iter()
+                .collect::<Vec<_>>(),
+            [b"first".as_slice(), b"continued".as_slice()],
+        );
+        assert_eq!(
+            items[1].as_ref().expect_err("inline error").to_string(),
+            "TXT lookup failed"
+        );
+        assert_eq!(
+            items[2]
+                .as_ref()
+                .expect("second record")
+                .iter()
+                .collect::<Vec<_>>(),
+            [b"second".as_slice()],
+        );
+    }
+}

@@ -6,7 +6,6 @@ use crate::{
 
 use rama_core::{Fork, extensions::Extensions, extensions::ExtensionsRef};
 
-#[cfg(feature = "http")]
 use crate::{
     HttpVersionInputExt, TargetHttpVersionInputExt,
     http::{HttpRequestVersion, TargetHttpVersion, Version},
@@ -103,7 +102,6 @@ impl TransportProtocolInputExt for ConnectRequest {
     }
 }
 
-#[cfg(feature = "http")]
 impl TargetHttpVersionInputExt for ConnectRequest {
     fn target_http_version(&self) -> Option<Version> {
         self.extensions
@@ -112,7 +110,6 @@ impl TargetHttpVersionInputExt for ConnectRequest {
     }
 }
 
-#[cfg(feature = "http")]
 impl HttpVersionInputExt for ConnectRequest {
     fn http_version(&self) -> Option<Version> {
         self.extensions
@@ -141,7 +138,23 @@ mod tests {
         assert!(attempt.extensions.contains::<AttemptMarker>());
     }
 
-    #[cfg(feature = "http")]
+    #[test]
+    fn connector_transport_protocol_overrides_requested_transport() {
+        use crate::{ConnectorTransportProtocolInputExt, client::ConnectorTransportProtocol};
+
+        let request = ConnectRequest::new(HostWithPort::example_domain_https())
+            .with_transport_protocol(TransportProtocol::Udp);
+        request
+            .extensions
+            .insert(ConnectorTransportProtocol(TransportProtocol::Tcp));
+
+        assert_eq!(request.transport_protocol(), Some(TransportProtocol::Udp));
+        assert_eq!(
+            request.connector_transport_protocol(),
+            Some(TransportProtocol::Tcp)
+        );
+    }
+
     #[test]
     fn target_http_version_comes_from_extension() {
         let request = ConnectRequest::new(HostWithPort::example_domain_https());
@@ -154,7 +167,6 @@ mod tests {
         assert_eq!(request.target_http_version(), Some(Version::HTTP_2));
     }
 
-    #[cfg(feature = "http")]
     #[test]
     fn request_http_version_is_not_a_target_requirement() {
         let request = ConnectRequest::new(HostWithPort::example_domain_https());

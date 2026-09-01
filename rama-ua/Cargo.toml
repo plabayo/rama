@@ -34,7 +34,7 @@ ahash = { workspace = true }
 itertools = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-http = { workspace = true }
-rama-net = { workspace = true, features = ["std", "http"] }
+rama-net = { workspace = true, features = ["std"] }
 rama-tls = { workspace = true, optional = true }
 rama-utils = { workspace = true, features = ["std"] }
 rand = { workspace = true }

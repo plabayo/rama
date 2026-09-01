@@ -135,6 +135,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "dns_service_binding"
+path = "fuzz_targets/dns_service_binding.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dns_name"
+path = "fuzz_targets/dns_name.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "icap_codec"
 path = "fuzz_targets/icap_codec.rs"
 test = false

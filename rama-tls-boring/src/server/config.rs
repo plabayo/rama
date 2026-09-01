@@ -1,8 +1,9 @@
 use crate::server::ServerCertIssuerData;
 
 use rama_core::extensions::{Extension, FromExtensions};
+use rama_net::tls::TlsAlpn;
 use rama_tls::server::{TlsClientVerify, TlsServerAuth, TlsServerConfig, TlsStoreClientCertChain};
-use rama_tls::{TlsAlpn, TlsKeyLog, TlsSupportedVersions};
+use rama_tls::{TlsKeyLog, TlsSupportedVersions};
 
 /// Gather all the TLS extensions supported by boring
 #[derive(FromExtensions)]

@@ -4,10 +4,10 @@ use std::fmt::{self, Write as _};
 use rama_core::extensions::Extensions;
 
 use crate::{
-    ApplicationProtocol, CipherSuite, ExtensionId, ProtocolVersion, SecureTransport,
-    SignatureScheme,
+    CipherSuite, ExtensionId, ProtocolVersion, SecureTransport, SignatureScheme,
     client::{ClientHello, NegotiatedTlsParameters},
 };
+use rama_net::tls::ApplicationProtocol;
 
 fn write_hex_list<W, T>(writer: &mut W, values: impl IntoIterator<Item = T>) -> fmt::Result
 where

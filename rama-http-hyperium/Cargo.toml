@@ -33,7 +33,7 @@ http-body = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-http-types = { workspace = true }
-rama-net = { workspace = true, features = ["std", "http"] }
+rama-net = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 

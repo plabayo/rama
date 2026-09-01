@@ -164,7 +164,7 @@ pub(super) fn contains_folded(haystack: &str, needle: &str) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(in crate::cmd::serve::proxy) struct CapturedTlsParameters {
     pub protocol_version: rama::tls::ProtocolVersion,
-    pub application_layer_protocol: Option<rama::tls::ApplicationProtocol>,
+    pub application_layer_protocol: Option<rama::net::tls::ApplicationProtocol>,
     pub peer_certificate_count: Option<usize>,
 }
 

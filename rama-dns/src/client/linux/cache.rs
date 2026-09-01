@@ -5,8 +5,9 @@ use std::{
 };
 
 use moka::{Equivalent, Expiry, sync::Cache};
-use rama_core::bytes::Bytes;
 use rama_net::address::Domain;
+
+use crate::wire::{Name, ServiceBinding, Txt};
 
 /// Linux-only DNS response cache.
 ///
@@ -73,18 +74,76 @@ impl LinuxDnsCache {
         );
     }
 
-    pub(super) fn get_txt(&self, domain: &Domain) -> Option<CacheLookup<Bytes>> {
+    pub(super) fn get_txt(&self, domain: &Domain) -> Option<CacheLookup<Txt>> {
         self.lookup(domain, RecordKind::Txt, |value| match value {
             CacheValue::Txt(values) => Some(values.clone()),
             _ => None,
         })
     }
 
-    pub(super) fn insert_txt(&self, domain: Domain, values: Vec<Bytes>, ttl: Option<Duration>) {
+    pub(super) fn insert_txt(&self, domain: Domain, values: Vec<Txt>, ttl: Option<Duration>) {
         self.insert(
             domain,
             RecordKind::Txt,
-            CacheValue::Txt(Arc::<[Bytes]>::from(values)),
+            CacheValue::Txt(Arc::<[Txt]>::from(values)),
+            ttl,
+        );
+    }
+
+    pub(super) fn get_cname(&self, domain: &Domain) -> Option<CacheLookup<Name>> {
+        self.lookup(domain, RecordKind::Cname, |value| match value {
+            CacheValue::Cname(values) => Some(values.clone()),
+            _ => None,
+        })
+    }
+
+    pub(super) fn insert_cname(&self, domain: Domain, values: Vec<Name>, ttl: Option<Duration>) {
+        self.insert(
+            domain,
+            RecordKind::Cname,
+            CacheValue::Cname(Arc::from(values)),
+            ttl,
+        );
+    }
+
+    pub(super) fn get_svcb(&self, domain: &Domain) -> Option<CacheLookup<ServiceBinding>> {
+        self.lookup(domain, RecordKind::Svcb, |value| match value {
+            CacheValue::Svcb(values) => Some(values.clone()),
+            _ => None,
+        })
+    }
+
+    pub(super) fn insert_svcb(
+        &self,
+        domain: Domain,
+        values: Vec<ServiceBinding>,
+        ttl: Option<Duration>,
+    ) {
+        self.insert(
+            domain,
+            RecordKind::Svcb,
+            CacheValue::Svcb(Arc::from(values)),
+            ttl,
+        );
+    }
+
+    pub(super) fn get_https(&self, domain: &Domain) -> Option<CacheLookup<ServiceBinding>> {
+        self.lookup(domain, RecordKind::Https, |value| match value {
+            CacheValue::Https(values) => Some(values.clone()),
+            _ => None,
+        })
+    }
+
+    pub(super) fn insert_https(
+        &self,
+        domain: Domain,
+        values: Vec<ServiceBinding>,
+        ttl: Option<Duration>,
+    ) {
+        self.insert(
+            domain,
+            RecordKind::Https,
+            CacheValue::Https(Arc::from(values)),
             ttl,
         );
     }
@@ -182,15 +241,18 @@ impl Equivalent<CacheKey> for CacheLookupKey<'_> {
 pub(super) enum RecordKind {
     Ipv4,
     Ipv6,
+    Cname,
     Txt,
+    Svcb,
+    Https,
 }
 
 #[derive(Debug, Clone)]
 struct CacheEntry {
     value: CacheValue,
     /// Per-entry expiry derived from the DNS response TTL, capped at the
-    /// configured positive max. `None` for negative entries or when the
-    /// resolver back-end could not surface a TTL.
+    /// configured positive max. `None` when the resolver back-end could not
+    /// surface a positive-record TTL.
     explicit_ttl: Option<Duration>,
 }
 
@@ -198,7 +260,10 @@ struct CacheEntry {
 enum CacheValue {
     Ipv4(Arc<[std::net::Ipv4Addr]>),
     Ipv6(Arc<[std::net::Ipv6Addr]>),
-    Txt(Arc<[Bytes]>),
+    Cname(Arc<[Name]>),
+    Txt(Arc<[Txt]>),
+    Svcb(Arc<[ServiceBinding]>),
+    Https(Arc<[ServiceBinding]>),
     Negative,
 }
 

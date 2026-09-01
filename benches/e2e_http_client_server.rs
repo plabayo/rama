@@ -45,6 +45,7 @@ use rama::{
         address::{ProxyAddress, SocketAddress},
         client::ProxyRoute,
         proxy::IoForwardService,
+        tls::ApplicationProtocol,
         user::credentials::{ProxyCredential, basic},
     },
     proxy::socks5::Socks5Acceptor,
@@ -53,11 +54,11 @@ use rama::{
     tcp::{client::service::TcpConnector, server::TcpListener},
     telemetry::tracing::{self},
     tls::{
-        ApplicationProtocol,
+        boring,
         client::{ServerVerifyMode, TlsClientConfig},
+        rustls,
         server::{GeneratedServerAuthConfig, TlsServerConfig},
     },
-    tls::{boring, rustls},
     utils::collections::smallvec::smallvec,
 };
 

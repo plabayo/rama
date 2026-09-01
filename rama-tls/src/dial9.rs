@@ -2,7 +2,7 @@
 //!
 //! [dial9]: https://github.com/dial9-rs/dial9
 
-use crate::{ApplicationProtocol, ProtocolVersion};
+use crate::ProtocolVersion;
 use dial9_trace_format::{EventEncoder, TraceField, types::FieldType};
 use std::io::{self, Write};
 
@@ -13,15 +13,5 @@ impl TraceField for ProtocolVersion {
 
     fn encode<W: Write>(&self, enc: &mut EventEncoder<'_, W>) -> io::Result<()> {
         enc.write_u16(u16::from(*self))
-    }
-}
-
-impl TraceField for ApplicationProtocol {
-    fn field_type() -> FieldType {
-        FieldType::Bytes
-    }
-
-    fn encode<W: Write>(&self, enc: &mut EventEncoder<'_, W>) -> io::Result<()> {
-        enc.write_bytes(self.as_bytes())
     }
 }

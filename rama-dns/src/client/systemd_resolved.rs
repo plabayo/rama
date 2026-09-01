@@ -7,11 +7,12 @@
 //! the query.
 //!
 //! Address lookups use `ResolveHostname` for `getaddrinfo` parity (search
-//! domains, `/etc/hosts`, synthesized names, CNAME chasing). TXT lookups use
-//! `ResolveRecord` (raw wire-format RRs, real TTLs), which older daemons do
-//! not implement — a `MethodNotFound` reply pins TXT to the native backend
+//! domains, `/etc/hosts`, synthesized names, CNAME chasing). CNAME, TXT,
+//! SVCB, and HTTPS lookups use `ResolveRecord` (raw wire-format RRs, real
+//! TTLs), which older daemons do not implement — a `MethodNotFound` reply
+//! pins record lookups to the native backend
 //! without affecting address lookups. `ResolveRecord` applies no
-//! search-domain expansion, so single-label TXT names route to the native
+//! search-domain expansion, so single-label record names route to the native
 //! backend directly and only rooted names treat a negative answer as
 //! authoritative: a relative name that comes back negative is retried
 //! natively so the resolv.conf search list still applies. Remaining
@@ -52,6 +53,8 @@ pub(super) const DEFAULT_SOCKET_PATH: &str = "/run/systemd/resolve/io.systemd.Re
 const METHOD_RESOLVE_HOSTNAME: &str = "io.systemd.Resolve.ResolveHostname";
 const METHOD_RESOLVE_RECORD: &str = "io.systemd.Resolve.ResolveRecord";
 const ERROR_NO_SUCH_RR: &str = "io.systemd.Resolve.NoSuchResourceRecord";
+const ERROR_DNS: &str = "io.systemd.Resolve.DNSError";
+const DNS_RCODE_NXDOMAIN: u64 = 3;
 const ERROR_METHOD_NOT_FOUND: &str = "org.varlink.service.MethodNotFound";
 /// Errors in this namespace are varlink protocol failures, not resolution answers.
 const VARLINK_ERROR_PREFIX: &str = "org.varlink.";
@@ -61,7 +64,10 @@ const VARLINK_ERROR_PREFIX: &str = "org.varlink.";
 const AF_INET: i64 = 2;
 const AF_INET6: i64 = 10;
 
-use super::systemd_resolved_wire::{DNS_CLASS_IN, DNS_TYPE_TXT, RrParse, parse_txt_rr};
+use super::systemd_resolved_wire::{
+    DNS_CLASS_IN, RrParse, parse_cname_rr, parse_service_binding_rr, parse_txt_rr,
+};
+use crate::wire::{Name, RecordType, ServiceBinding, Txt};
 
 /// A probe claim older than this is assumed orphaned and may be re-claimed.
 const PROBE_STALE: Duration = Duration::from_secs(15);
@@ -127,13 +133,17 @@ struct Availability {
 pub(super) struct SystemdResolved {
     config: Config,
     state: Mutex<Availability>,
-    txt_supported: AtomicBool,
+    record_supported: AtomicBool,
     permits: Semaphore,
 }
 
 pub(super) enum ResolvedLookup<T> {
-    /// Records with their DNS TTL in seconds (`0` = unknown).
-    Records(Vec<(T, u32)>),
+    /// Records with their DNS or configured cache TTL in seconds.
+    ///
+    /// `None` is reserved for ResolveHostname, whose reply has no wire TTL,
+    /// when its configured synthetic TTL is zero. Raw records always carry
+    /// `Some(ttl)`, including a wire TTL of zero.
+    Records(Vec<(T, Option<u32>)>),
     /// Authoritative "no such record" answer.
     Negative,
     /// Resolution failed upstream: surface it; falling back would usually
@@ -141,6 +151,12 @@ pub(super) enum ResolvedLookup<T> {
     Failed(BoxError),
     /// resolved is not usable for this lookup; use the native backend.
     Unavailable,
+}
+
+enum ParsedRecord<T> {
+    One { ttl: u32, value: T },
+    Other,
+    Malformed(BoxError),
 }
 
 #[derive(Clone, Copy)]
@@ -197,7 +213,7 @@ impl SystemdResolved {
                 failures: 0,
                 next_probe_generation: 0,
             }),
-            txt_supported: AtomicBool::new(true),
+            record_supported: AtomicBool::new(true),
             permits,
         }
     }
@@ -228,11 +244,87 @@ impl SystemdResolved {
         self: &Arc<Self>,
         domain: &Domain,
         timeout: Duration,
-    ) -> ResolvedLookup<Bytes> {
+    ) -> ResolvedLookup<Txt> {
+        self.lookup_record(domain, timeout, RecordType::TXT, |raw| {
+            match parse_txt_rr(&raw) {
+                RrParse::Record { ttl, value } => ParsedRecord::One { ttl, value },
+                RrParse::Other => ParsedRecord::Other,
+                RrParse::Malformed(error) => ParsedRecord::Malformed(error),
+            }
+        })
+        .await
+    }
+
+    pub(super) async fn lookup_cname(
+        self: &Arc<Self>,
+        domain: &Domain,
+        timeout: Duration,
+    ) -> ResolvedLookup<Name> {
+        self.lookup_record(
+            domain,
+            timeout,
+            RecordType::CNAME,
+            |raw| match parse_cname_rr(&raw) {
+                RrParse::Record { ttl, value } => ParsedRecord::One { ttl, value },
+                RrParse::Other => ParsedRecord::Other,
+                RrParse::Malformed(error) => ParsedRecord::Malformed(error),
+            },
+        )
+        .await
+    }
+
+    pub(super) async fn lookup_svcb(
+        self: &Arc<Self>,
+        domain: &Domain,
+        timeout: Duration,
+    ) -> ResolvedLookup<ServiceBinding> {
+        self.lookup_service_binding(domain, timeout, RecordType::SVCB)
+            .await
+    }
+
+    pub(super) async fn lookup_https(
+        self: &Arc<Self>,
+        domain: &Domain,
+        timeout: Duration,
+    ) -> ResolvedLookup<ServiceBinding> {
+        self.lookup_service_binding(domain, timeout, RecordType::HTTPS)
+            .await
+    }
+
+    async fn lookup_service_binding(
+        self: &Arc<Self>,
+        domain: &Domain,
+        timeout: Duration,
+        record_type: RecordType,
+    ) -> ResolvedLookup<ServiceBinding> {
+        self.lookup_record(
+            domain,
+            timeout,
+            record_type,
+            move |raw| match parse_service_binding_rr(&raw, record_type) {
+                RrParse::Record { ttl, value } => ParsedRecord::One { ttl, value },
+                RrParse::Other => ParsedRecord::Other,
+                RrParse::Malformed(error) => ParsedRecord::Malformed(error),
+            },
+        )
+        .await
+    }
+
+    async fn lookup_record<T, P>(
+        self: &Arc<Self>,
+        domain: &Domain,
+        timeout: Duration,
+        record_type: RecordType,
+        parser: P,
+    ) -> ResolvedLookup<T>
+    where
+        T: Send + 'static,
+        P: Fn(Bytes) -> ParsedRecord<T> + Send + Sync + 'static,
+    {
         let name = wire_name(domain);
-        // fast path: single-label names always need the search list, which
-        // ResolveRecord never applies — skip the guaranteed-useless roundtrip
-        if !name.contains('.') {
+        // Relative single-label names need the search list, which
+        // ResolveRecord never applies — skip the guaranteed-useless roundtrip.
+        if !domain.is_fqdn() && !name.contains('.') {
             return ResolvedLookup::Unavailable;
         }
         // only a rooted name may treat a negative answer as authoritative;
@@ -242,14 +334,15 @@ impl SystemdResolved {
             return ResolvedLookup::Unavailable;
         };
         // read after claim(): its recovery-reprobe arm resets this pin
-        if !self.txt_supported.load(Ordering::Acquire) {
+        if !self.record_supported.load(Ordering::Acquire) {
             // the daemon never saw a query: hand back any probe slot
             self.report_transport_failure(claim, FailureKind::Overload);
             return ResolvedLookup::Unavailable;
         }
         let this = self.clone();
         join(rama_core::rt::spawn(async move {
-            this.record_query(claim, name, rooted, timeout).await
+            this.record_query(claim, name, rooted, timeout, record_type, parser)
+                .await
         }))
         .await
     }
@@ -296,7 +389,7 @@ impl SystemdResolved {
             Err(failure) => return self.transport_failed(claim, failure),
         };
         if let Some(error) = envelope.error.as_deref() {
-            return self.classify_reply_error(claim, error, false);
+            return self.classify_reply_error(claim, error, &envelope.parameters, false);
         }
         let reply = match serde_json::from_value::<HostnameReply>(envelope.parameters) {
             Ok(reply) => reply,
@@ -332,19 +425,24 @@ impl SystemdResolved {
         ResolvedLookup::Records(records)
     }
 
-    async fn record_query(
+    async fn record_query<T, P>(
         self: Arc<Self>,
         claim: Claim,
         name: String,
         rooted: bool,
         timeout: Duration,
-    ) -> ResolvedLookup<Bytes> {
+        record_type: RecordType,
+        parser: P,
+    ) -> ResolvedLookup<T>
+    where
+        P: Fn(Bytes) -> ParsedRecord<T>,
+    {
         let envelope = match self
             .call(
                 METHOD_RESOLVE_RECORD,
                 &RecordParams {
                     name: &name,
-                    r#type: DNS_TYPE_TXT,
+                    r#type: record_type.into(),
                     class: DNS_CLASS_IN,
                 },
                 timeout,
@@ -355,13 +453,13 @@ impl SystemdResolved {
             Err(failure) => return self.transport_failed(claim, failure),
         };
         if let Some(error) = envelope.error.as_deref() {
-            if !rooted && error == ERROR_NO_SUCH_RR {
+            if !rooted && is_negative_reply(error, &envelope.parameters) {
                 // not authoritative for a relative name: the native backend
                 // may still resolve it through the resolv.conf search list
                 self.report_success(claim);
                 return ResolvedLookup::Unavailable;
             }
-            return self.classify_reply_error(claim, error, true);
+            return self.classify_reply_error(claim, error, &envelope.parameters, true);
         }
         let reply = match serde_json::from_value::<RecordReply>(envelope.parameters) {
             Ok(reply) => reply,
@@ -381,22 +479,33 @@ impl SystemdResolved {
         }
         let mut records = Vec::new();
         for entry in &reply.rrs {
-            let Ok(raw) = BASE64.decode(&entry.raw) else {
-                return self.transport_failed(
-                    claim,
-                    TransportFailure::soft("invalid base64 rr in ResolveRecord reply"),
-                );
-            };
-            match parse_txt_rr(&raw) {
-                RrParse::Txt { ttl, segments } => {
-                    records.extend(segments.into_iter().map(|segment| (segment, ttl)));
-                }
-                // e.g. CNAME chain entries included alongside the target RRset
-                RrParse::Other => {}
-                RrParse::Malformed => {
+            let raw = match BASE64.decode(&entry.raw) {
+                Ok(raw) => raw,
+                Err(error) => {
                     return self.transport_failed(
                         claim,
-                        TransportFailure::soft("malformed rr in ResolveRecord reply"),
+                        TransportFailure::soft(
+                            error
+                                .context("invalid base64 rr in ResolveRecord reply")
+                                .context_str_field("query", name.clone())
+                                .context_field("record_type", record_type),
+                        ),
+                    );
+                }
+            };
+            match parser(Bytes::from(raw)) {
+                ParsedRecord::One { ttl, value } => records.push((value, Some(ttl))),
+                // e.g. CNAME chain entries included alongside the target RRset
+                ParsedRecord::Other => {}
+                ParsedRecord::Malformed(error) => {
+                    return self.transport_failed(
+                        claim,
+                        TransportFailure::soft(
+                            error
+                                .context("malformed rr in ResolveRecord reply")
+                                .context_str_field("query", name.clone())
+                                .context_field("record_type", record_type),
+                        ),
                     );
                 }
             }
@@ -418,19 +527,20 @@ impl SystemdResolved {
         &self,
         claim: Claim,
         error: &str,
+        parameters: &serde_json::Value,
         record_query: bool,
     ) -> ResolvedLookup<T> {
-        if error == ERROR_NO_SUCH_RR {
+        if is_negative_reply(error, parameters) {
             self.report_success(claim);
             return ResolvedLookup::Negative;
         }
         if record_query && error == ERROR_METHOD_NOT_FOUND {
-            // daemon reachable but too old for ResolveRecord: pin TXT to the
-            // native backend, address lookups keep flowing
+            // daemon reachable but too old for ResolveRecord: pin raw record
+            // lookups to the native backend; address lookups keep flowing
             if self.report_success(claim) {
-                self.txt_supported.store(false, Ordering::Release);
+                self.record_supported.store(false, Ordering::Release);
                 tracing::debug!(
-                    "dns::systemd-resolved: ResolveRecord not implemented; txt lookups use the native backend"
+                    "dns::systemd-resolved: ResolveRecord not implemented; record lookups use the native backend"
                 );
             }
             return ResolvedLookup::Unavailable;
@@ -477,9 +587,9 @@ impl SystemdResolved {
             Phase::Unavailable { since } => {
                 (since.elapsed() >= self.config.reprobe_interval).then(|| {
                     // A daemon replacement may implement methods that the
-                    // previous instance did not. Re-test TXT support whenever
-                    // transport recovery starts a new probe generation.
-                    self.txt_supported.store(true, Ordering::Release);
+                    // previous instance did not. Re-test raw-record support
+                    // whenever transport recovery starts a new probe generation.
+                    self.record_supported.store(true, Ordering::Release);
                     begin_probe(&mut state)
                 })
             }
@@ -684,7 +794,14 @@ fn mark_unavailable(state: &mut Availability) -> bool {
 }
 
 fn wire_name(domain: &Domain) -> String {
-    domain.as_str().trim_end_matches('.').to_owned()
+    domain.as_str().to_owned()
+}
+
+fn is_negative_reply(error: &str, parameters: &serde_json::Value) -> bool {
+    error == ERROR_NO_SUCH_RR
+        || (error == ERROR_DNS
+            && parameters.get("rcode").and_then(serde_json::Value::as_u64)
+                == Some(DNS_RCODE_NXDOMAIN))
 }
 
 fn no_slot_error(timeout: Duration) -> BoxError {
@@ -692,13 +809,12 @@ fn no_slot_error(timeout: Duration) -> BoxError {
         .context_debug_field("timeout", timeout)
 }
 
-/// Positive sub-second TTLs round up to one second so they cannot collapse
-/// into `0`, which the cache layer treats as "unknown".
-fn hostname_cache_ttl_secs(ttl: Duration) -> u32 {
+/// Positive sub-second TTLs round up to one second instead of expiring immediately.
+fn hostname_cache_ttl_secs(ttl: Duration) -> Option<u32> {
     if ttl.is_zero() {
-        0
+        None
     } else {
-        u32::try_from(ttl.as_secs().max(1)).unwrap_or(u32::MAX)
+        Some(u32::try_from(ttl.as_secs().max(1)).unwrap_or(u32::MAX))
     }
 }
 
@@ -933,6 +1049,10 @@ mod tests {
         json!({ "error": id, "parameters": {} })
     }
 
+    fn dns_error_reply(rcode: u64) -> serde_json::Value {
+        json!({ "error": ERROR_DNS, "parameters": { "rcode": rcode } })
+    }
+
     fn build_rr(labels: &[&str], rtype: u16, ttl: u32, rdata: &[u8]) -> Vec<u8> {
         let mut raw = Vec::new();
         for label in labels {
@@ -961,6 +1081,12 @@ mod tests {
         rdata
     }
 
+    fn service_binding_rdata(port: u16) -> Vec<u8> {
+        let mut rdata = vec![0, 1, 0, 0, 3, 0, 2];
+        rdata.extend_from_slice(&port.to_be_bytes());
+        rdata
+    }
+
     #[tokio::test]
     async fn resolve_hostname_returns_matching_family_records() {
         let server = FakeResolved::spawn(vec![Behavior::Reply(hostname_reply(&json!([
@@ -976,8 +1102,8 @@ mod tests {
             ResolvedLookup::Records(records) => assert_eq!(
                 records,
                 vec![
-                    (Ipv4Addr::new(93, 184, 216, 34), 15),
-                    (Ipv4Addr::new(10, 0, 0, 1), 15),
+                    (Ipv4Addr::new(93, 184, 216, 34), Some(15)),
+                    (Ipv4Addr::new(10, 0, 0, 1), Some(15)),
                 ],
             ),
             _ => panic!("expected records"),
@@ -998,7 +1124,10 @@ mod tests {
         {
             ResolvedLookup::Records(records) => assert_eq!(
                 records,
-                vec![("2001:db8::1".parse::<Ipv6Addr>().expect("valid ipv6"), 15)],
+                vec![(
+                    "2001:db8::1".parse::<Ipv6Addr>().expect("valid ipv6"),
+                    Some(15)
+                )],
             ),
             _ => panic!("expected records"),
         }
@@ -1025,6 +1154,33 @@ mod tests {
             2,
             "negatives must keep routing via varlink"
         );
+        assert_available(&resolved);
+    }
+
+    #[tokio::test]
+    async fn nxdomain_is_negative_and_keeps_backend_available() {
+        let server =
+            FakeResolved::spawn(vec![Behavior::Reply(dns_error_reply(DNS_RCODE_NXDOMAIN))]);
+        let resolved = resolver(server.path.clone());
+        assert!(matches!(
+            resolved
+                .lookup_ipv4(&domain(), Duration::from_secs(2))
+                .await,
+            ResolvedLookup::Negative,
+        ));
+        assert_available(&resolved);
+    }
+
+    #[tokio::test]
+    async fn other_dns_errors_are_not_negative() {
+        let server = FakeResolved::spawn(vec![Behavior::Reply(dns_error_reply(2))]);
+        let resolved = resolver(server.path.clone());
+        assert!(matches!(
+            resolved
+                .lookup_ipv4(&domain(), Duration::from_secs(2))
+                .await,
+            ResolvedLookup::Failed(_),
+        ));
         assert_available(&resolved);
     }
 
@@ -1234,7 +1390,7 @@ mod tests {
         let cname = build_rr(&["example", "com"], 5, 60, &[0]);
         let txt = build_rr(
             &["example", "com"],
-            DNS_TYPE_TXT,
+            RecordType::TXT.into(),
             123,
             &txt_rdata(&[b"hello", b"world"]),
         );
@@ -1249,14 +1405,113 @@ mod tests {
         }))]);
         let resolved = resolver(server.path.clone());
         match resolved.lookup_txt(&domain(), Duration::from_secs(2)).await {
-            ResolvedLookup::Records(records) => assert_eq!(
-                records,
-                vec![
-                    (Bytes::from_static(b"hello"), 123),
-                    (Bytes::from_static(b"world"), 123),
-                ],
-            ),
+            ResolvedLookup::Records(records) => {
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0].1, Some(123));
+                assert_eq!(
+                    records[0].0.iter().collect::<Vec<_>>(),
+                    [b"hello".as_slice(), b"world".as_slice()],
+                );
+            }
             _ => panic!("expected records"),
+        }
+    }
+
+    #[tokio::test]
+    async fn cname_records_parse_raw_wire_format() {
+        let first = build_rr(
+            &["example", "com"],
+            RecordType::CNAME.into(),
+            123,
+            b"\x05alias\x07example\x03com\0",
+        );
+        let second = build_rr(
+            &["alias", "example", "com"],
+            RecordType::CNAME.into(),
+            60,
+            b"\x06origin\x07example\x03com\0",
+        );
+        let server = FakeResolved::spawn(vec![Behavior::Reply(json!({
+            "parameters": {
+                "rrs": [
+                    { "raw": BASE64.encode(&first) },
+                    { "raw": BASE64.encode(&second) },
+                ],
+                "flags": 0,
+            },
+        }))]);
+        let resolved = resolver(server.path.clone());
+        match resolved
+            .lookup_cname(&domain(), Duration::from_secs(2))
+            .await
+        {
+            ResolvedLookup::Records(records) => {
+                assert_eq!(records.len(), 2);
+                assert_eq!(records[0].0.to_string(), "alias.example.com.");
+                assert_eq!(records[0].1, Some(123));
+                assert_eq!(records[1].0.to_string(), "origin.example.com.");
+                assert_eq!(records[1].1, Some(60));
+            }
+            _ => panic!("expected records"),
+        }
+    }
+
+    #[tokio::test]
+    async fn service_binding_records_parse_raw_wire_format() {
+        let cname = build_rr(&["example", "com"], 5, 60, &[0]);
+        let svcb = build_rr(
+            &["example", "com"],
+            RecordType::SVCB.into(),
+            123,
+            &service_binding_rdata(8443),
+        );
+        let https = build_rr(
+            &["example", "com"],
+            RecordType::HTTPS.into(),
+            321,
+            &service_binding_rdata(443),
+        );
+        let server = FakeResolved::spawn(vec![
+            Behavior::Reply(json!({
+                "parameters": {
+                    "rrs": [
+                        { "raw": BASE64.encode(&cname) },
+                        { "raw": BASE64.encode(&https) },
+                        { "raw": BASE64.encode(&svcb) },
+                    ],
+                    "flags": 0,
+                },
+            })),
+            Behavior::Reply(json!({
+                "parameters": {
+                    "rrs": [{ "raw": BASE64.encode(&https) }],
+                    "flags": 0,
+                },
+            })),
+        ]);
+        let resolved = resolver(server.path.clone());
+
+        match resolved
+            .lookup_svcb(&domain(), Duration::from_secs(2))
+            .await
+        {
+            ResolvedLookup::Records(records) => {
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0].0.port(), Some(8443));
+                assert_eq!(records[0].1, Some(123));
+            }
+            _ => panic!("expected SVCB records"),
+        }
+        match resolved
+            .lookup_https(&domain(), Duration::from_secs(2))
+            .await
+        {
+            ResolvedLookup::Records(records) => {
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0].0.port(), Some(443));
+                assert_eq!(records[0].1, Some(321));
+            }
+            _ => panic!("expected HTTPS records"),
         }
     }
 
@@ -1279,7 +1534,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn txt_method_not_found_pins_native_backend() {
+    async fn record_method_not_found_pins_native_backend() {
         let server = FakeResolved::spawn(vec![
             Behavior::Reply(error_reply(ERROR_METHOD_NOT_FOUND)),
             Behavior::Reply(hostname_reply(
@@ -1294,9 +1549,15 @@ mod tests {
         ));
         assert_available(&resolved);
 
-        // sticky: no further daemon roundtrip for txt
+        // Sticky for every ResolveRecord-backed family: no further daemon roundtrip.
         assert!(matches!(
             resolved.lookup_txt(&domain(), Duration::from_secs(1)).await,
+            ResolvedLookup::Unavailable,
+        ));
+        assert!(matches!(
+            resolved
+                .lookup_https(&domain(), Duration::from_secs(1))
+                .await,
             ResolvedLookup::Unavailable,
         ));
         assert_eq!(server.connections(), 1);
@@ -1462,11 +1723,16 @@ mod tests {
             "an old failure must not mark a recovered daemon unavailable",
         );
         assert!(matches!(
-            resolved.classify_reply_error::<Bytes>(original, ERROR_METHOD_NOT_FOUND, true),
+            resolved.classify_reply_error::<Bytes>(
+                original,
+                ERROR_METHOD_NOT_FOUND,
+                &serde_json::Value::Null,
+                true,
+            ),
             ResolvedLookup::Unavailable,
         ));
         assert!(
-            resolved.txt_supported.load(Ordering::Acquire),
+            resolved.record_supported.load(Ordering::Acquire),
             "a superseded probe must not pin capabilities on its replacement",
         );
 
@@ -1494,41 +1760,47 @@ mod tests {
     }
 
     #[test]
-    fn recovery_probe_rechecks_pinned_txt_capability() {
+    fn recovery_probe_rechecks_pinned_record_capability() {
         let mut config = test_config("/nonexistent".into());
         config.reprobe_interval = Duration::ZERO;
         let resolved = SystemdResolved::new(config);
 
         let initial = resolved.claim().expect("initial probe");
         resolved.report_success(initial);
-        resolved.txt_supported.store(false, Ordering::Release);
+        resolved.record_supported.store(false, Ordering::Release);
         resolved.report_transport_failure(
             Claim {
                 probe_generation: None,
             },
             FailureKind::Hard,
         );
-        assert!(!resolved.txt_supported.load(Ordering::Acquire));
+        assert!(!resolved.record_supported.load(Ordering::Acquire));
 
         let reprobe = resolved.claim().expect("recovery probe");
         assert!(reprobe.probe_generation.is_some());
-        assert!(resolved.txt_supported.load(Ordering::Acquire));
+        assert!(resolved.record_supported.load(Ordering::Acquire));
     }
 
     #[test]
     fn parse_txt_rr_multi_segment() {
-        let raw = build_rr(
+        let rdata = txt_rdata(&[b"v=spf1 -all", b""]);
+        let raw = Bytes::from(build_rr(
             &["example", "com"],
-            DNS_TYPE_TXT,
+            RecordType::TXT.into(),
             300,
-            &txt_rdata(&[b"v=spf1 -all", b""]),
-        );
+            &rdata,
+        ));
+        let rdata_ptr = raw.as_ptr().wrapping_add(raw.len() - rdata.len());
         match parse_txt_rr(&raw) {
-            RrParse::Txt { ttl, segments } => {
+            RrParse::Record {
+                ttl,
+                value: segments,
+            } => {
                 assert_eq!(ttl, 300);
+                assert_eq!(segments.as_wire().as_ptr(), rdata_ptr);
                 assert_eq!(
-                    segments,
-                    vec![Bytes::from_static(b"v=spf1 -all"), Bytes::new()],
+                    segments.iter().collect::<Vec<_>>(),
+                    [b"v=spf1 -all".as_slice(), b"".as_slice()],
                 );
             }
             _ => panic!("expected txt"),
@@ -1536,41 +1808,136 @@ mod tests {
     }
 
     #[test]
+    fn parse_cname_rr_is_typed_and_zero_copy() {
+        let rdata = b"\x05alias\x07example\x03com\0";
+        let raw = Bytes::from(build_rr(
+            &["example", "com"],
+            RecordType::CNAME.into(),
+            300,
+            rdata,
+        ));
+        let rdata_ptr = raw.as_ptr().wrapping_add(raw.len() - rdata.len());
+
+        match parse_cname_rr(&raw) {
+            RrParse::Record { ttl, value } => {
+                assert_eq!(ttl, 300);
+                assert_eq!(value.as_wire().as_ptr(), rdata_ptr);
+                assert_eq!(value.to_string(), "alias.example.com.");
+            }
+            _ => panic!("expected CNAME"),
+        }
+
+        let raw = Bytes::from(build_rr(
+            &["example", "com"],
+            RecordType::CNAME.into(),
+            300,
+            &[0xc0, 0x0c],
+        ));
+        assert!(matches!(parse_cname_rr(&raw), RrParse::Malformed(_)));
+    }
+
+    #[test]
     fn parse_txt_rr_skips_other_types() {
         let raw = build_rr(&["example", "com"], 5, 300, &[0]);
-        assert!(matches!(parse_txt_rr(&raw), RrParse::Other));
+        assert!(matches!(parse_txt_rr(&Bytes::from(raw)), RrParse::Other));
     }
 
     #[test]
     fn parse_txt_rr_rejects_malformed() {
         // truncated header
-        assert!(matches!(parse_txt_rr(&[0, 0, 16]), RrParse::Malformed));
+        let RrParse::Malformed(error) = parse_txt_rr(&Bytes::from_static(&[0, 0, 16])) else {
+            panic!("expected malformed TXT RR");
+        };
+        assert_eq!(error.to_string(), "DNS resource-record header is truncated",);
         // compression pointer in the owner name
         assert!(matches!(
-            parse_txt_rr(&[0xC0, 0x0C, 0, 16]),
-            RrParse::Malformed
+            parse_txt_rr(&Bytes::from_static(&[0xC0, 0x0C, 0, 16])),
+            RrParse::Malformed(_)
         ));
         // rdata segment length pointing past the buffer
-        let mut raw = build_rr(&["example", "com"], DNS_TYPE_TXT, 60, &[200]);
-        assert!(matches!(parse_txt_rr(&raw), RrParse::Malformed));
+        let mut raw = build_rr(&["example", "com"], RecordType::TXT.into(), 60, &[200]);
+        assert!(matches!(
+            parse_txt_rr(&Bytes::from(raw.clone())),
+            RrParse::Malformed(_)
+        ));
         // TXT rdata must carry at least one character-string
-        raw = build_rr(&["example", "com"], DNS_TYPE_TXT, 60, &[]);
-        assert!(matches!(parse_txt_rr(&raw), RrParse::Malformed));
+        raw = build_rr(&["example", "com"], RecordType::TXT.into(), 60, &[]);
+        assert!(matches!(
+            parse_txt_rr(&Bytes::from(raw.clone())),
+            RrParse::Malformed(_)
+        ));
         // rdlen pointing past the buffer
-        raw = build_rr(&["example", "com"], DNS_TYPE_TXT, 60, &txt_rdata(&[b"ok"]));
+        raw = build_rr(
+            &["example", "com"],
+            RecordType::TXT.into(),
+            60,
+            &txt_rdata(&[b"ok"]),
+        );
         raw.truncate(raw.len() - 1);
-        assert!(matches!(parse_txt_rr(&raw), RrParse::Malformed));
+        assert!(matches!(
+            parse_txt_rr(&Bytes::from(raw.clone())),
+            RrParse::Malformed(_)
+        ));
         // bytes after the declared rdata are not part of a standalone RR
-        raw = build_rr(&["example", "com"], DNS_TYPE_TXT, 60, &txt_rdata(&[b"ok"]));
+        raw = build_rr(
+            &["example", "com"],
+            RecordType::TXT.into(),
+            60,
+            &txt_rdata(&[b"ok"]),
+        );
         raw.push(0);
-        assert!(matches!(parse_txt_rr(&raw), RrParse::Malformed));
+        assert!(matches!(
+            parse_txt_rr(&Bytes::from(raw)),
+            RrParse::Malformed(_)
+        ));
     }
 
     #[test]
-    fn hostname_cache_ttl_rounds_up_subsecond() {
-        assert_eq!(hostname_cache_ttl_secs(Duration::ZERO), 0);
-        assert_eq!(hostname_cache_ttl_secs(Duration::from_millis(500)), 1);
-        assert_eq!(hostname_cache_ttl_secs(Duration::from_secs(15)), 15);
+    fn parse_service_binding_rr_is_typed_validated_and_zero_copy() {
+        let rdata = [0, 1, 0, 0, 100, 0, 3, 1, 2, 3];
+        let raw = Bytes::from(build_rr(
+            &["example", "com"],
+            RecordType::SVCB.into(),
+            300,
+            &rdata,
+        ));
+        let value_ptr = raw.as_ptr().wrapping_add(raw.len() - rdata.len() + 7);
+
+        match parse_service_binding_rr(&raw, RecordType::SVCB) {
+            RrParse::Record { ttl, value } => {
+                assert_eq!(ttl, 300);
+                match &value.params()[0] {
+                    crate::wire::SvcParam::Unknown { value, .. } => {
+                        assert_eq!(value.as_ptr(), value_ptr);
+                        assert_eq!(value.as_ref(), [1, 2, 3]);
+                    }
+                    _ => panic!("expected unknown parameter"),
+                }
+            }
+            _ => panic!("expected service binding"),
+        }
+        assert!(matches!(
+            parse_service_binding_rr(&raw, RecordType::HTTPS),
+            RrParse::Other,
+        ));
+
+        let malformed = Bytes::from(build_rr(
+            &["example", "com"],
+            RecordType::SVCB.into(),
+            300,
+            &[0, 1],
+        ));
+        assert!(matches!(
+            parse_service_binding_rr(&malformed, RecordType::SVCB),
+            RrParse::Malformed(_),
+        ));
+    }
+
+    #[test]
+    fn hostname_cache_ttl_preserves_unknown_zero_and_rounds_up_subsecond() {
+        assert_eq!(hostname_cache_ttl_secs(Duration::ZERO), None);
+        assert_eq!(hostname_cache_ttl_secs(Duration::from_millis(500)), Some(1));
+        assert_eq!(hostname_cache_ttl_secs(Duration::from_secs(15)), Some(15));
     }
 
     #[tokio::test]
@@ -1621,6 +1988,33 @@ mod tests {
             resolved.lookup_txt(&rooted, Duration::from_secs(1)).await,
             ResolvedLookup::Negative,
         ));
+        assert_available(&resolved);
+    }
+
+    #[tokio::test]
+    async fn relative_txt_nxdomain_falls_back_without_authority() {
+        let server =
+            FakeResolved::spawn(vec![Behavior::Reply(dns_error_reply(DNS_RCODE_NXDOMAIN))]);
+        let resolved = resolver(server.path.clone());
+        assert!(matches!(
+            resolved.lookup_txt(&domain(), Duration::from_secs(1)).await,
+            ResolvedLookup::Unavailable,
+        ));
+        assert_eq!(server.connections(), 1, "the daemon is still asked first");
+        assert_available(&resolved);
+    }
+
+    #[tokio::test]
+    async fn rooted_single_label_uses_resolve_record() {
+        let server = FakeResolved::spawn(vec![Behavior::Reply(error_reply(ERROR_NO_SUCH_RR))]);
+        let resolved = resolver(server.path.clone());
+        let rooted: Domain = "printer.".try_into().expect("valid domain");
+        assert!(matches!(
+            resolved.lookup_txt(&rooted, Duration::from_secs(1)).await,
+            ResolvedLookup::Negative,
+        ));
+        assert_eq!(server.connections(), 1);
+        assert_eq!(wire_name(&rooted), "printer.");
         assert_available(&resolved);
     }
 
@@ -1751,7 +2145,7 @@ mod tests {
             }
             _ => panic!("expected failed lookup"),
         }
-        // only MethodNotFound may pin txt to the native backend
+        // Only MethodNotFound may pin raw-record lookups to the native backend.
         match resolved.lookup_txt(&domain(), Duration::from_secs(1)).await {
             ResolvedLookup::Failed(_) => {}
             _ => panic!("expected failed lookup"),

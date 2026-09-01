@@ -63,8 +63,9 @@ here; see the cross-references at the bottom.
   `parser.rs`.
 
 * [rfc7301.txt](./tls/rfc7301.txt) — ALPN. See
-  [`src/tls/enums.rs`](../src/tls/enums.rs)' `ApplicationProtocol`
-  and `parse_protocol_name_list` in `parser.rs`.
+  [`src/tls/alpn.rs`](../src/tls/alpn.rs)' `ApplicationProtocol`
+  and protocol-name-list decoding in the
+  [`rama-tls` ClientHello parser](../../rama-tls/src/client/parser.rs).
 
 * [rfc6962.txt](./tls/rfc6962.txt) — Certificate Transparency.
   Kept as reference; only the `signed_certificate_timestamp`

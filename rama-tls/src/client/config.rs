@@ -7,10 +7,11 @@ use rama_crypto::pki_types::{CertificateDer, PrivateKeyDer};
 use rama_utils::{collections::smallvec::SmallVec, macros::generate_set_and_with};
 use std::{borrow::Cow, net::IpAddr, sync::Arc};
 
-use crate::{
-    ApplicationProtocol, KeyLogIntent, ProtocolVersion, TlsAlpn, TlsKeyLog, TlsSupportedVersions,
+use crate::{KeyLogIntent, ProtocolVersion, TlsKeyLog, TlsSupportedVersions};
+use rama_net::{
+    address::{Domain, Host},
+    tls::{ApplicationProtocol, TlsAlpn},
 };
-use rama_net::address::{Domain, Host};
 
 /// A backend agnostic builder for the common TLS configs.
 ///
@@ -42,6 +43,12 @@ impl TlsClientConfig {
     /// transfer the tls config to e.g. request extensions
     pub fn write_to(&self, extensions: &Extensions) {
         extensions.extend(&self.0);
+    }
+
+    /// Return the configured ALPN offer, if one was set explicitly.
+    #[must_use]
+    pub fn alpn(&self) -> Option<TlsAlpn> {
+        self.0.get_ref::<TlsAlpn>().cloned()
     }
 
     generate_set_and_with! {
@@ -82,7 +89,10 @@ impl TlsClientConfig {
         /// A DNS identity is also sent as SNI. An IP identity is matched against
         /// an `iPAddress` subject alternative name and is not sent as SNI.
         /// Overrides the identity the connector would otherwise derive from the
-        /// transport authority host or [`TlsTunnel::server_identity`].
+        /// transport authority host. When this config is installed as a tunnel
+        /// connector's dedicated base, it also overrides
+        /// [`TlsTunnel::server_identity`]. Top-level origin request extensions
+        /// are not applied to a proxy-side tunnel handshake.
         ///
         /// [`TlsTunnel`]: crate::TlsTunnel
         pub fn server_name(mut self, server_name: Host) -> Self {
@@ -709,6 +719,16 @@ mod tests {
             Some(true),
         );
         assert!(ext.get_ref::<TlsServerVerify>().is_none());
+    }
+
+    #[test]
+    fn alpn_accessor_returns_an_owned_offer() {
+        let config = TlsClientConfig::new().with_alpn_http_auto();
+        let offer = config.alpn().expect("configured ALPN");
+
+        assert_eq!(offer, TlsAlpn::http_auto());
+        assert_eq!(config.alpn(), Some(TlsAlpn::http_auto()));
+        assert!(TlsClientConfig::new().alpn().is_none());
     }
 
     #[test]

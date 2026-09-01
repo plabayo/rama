@@ -29,8 +29,9 @@ pub use config::{
 };
 use rama_crypto::pki_types::CertificateDer;
 
-use super::{ApplicationProtocol, ProtocolVersion};
+use super::ProtocolVersion;
 use rama_core::extensions::Extension;
+use rama_net::tls::ApplicationProtocol;
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(tls))]

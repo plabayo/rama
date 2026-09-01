@@ -14,9 +14,10 @@ use hickory_resolver::{
     config::{CLOUDFLARE, GOOGLE, QUAD9, ResolverConfig},
     net::runtime::TokioRuntimeProvider,
     proto::rr::{
-        Name, RData,
+        Name, RData, RecordType as HickoryRecordType,
         rdata::{A, AAAA},
     },
+    proto::serialize::binary::{BinEncodable, BinEncoder},
 };
 
 use rama_core::{
@@ -28,7 +29,10 @@ use rama_core::{futures::async_stream::stream_fn, telemetry::tracing};
 use rama_net::address::Domain;
 use rama_utils::macros::generate_set_and_with;
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver};
+use super::resolver::{
+    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+};
+use crate::wire::{Name as WireName, ServiceBinding, Txt};
 
 #[derive(Debug, Clone)]
 /// DNS Resolver using the [`hickory_resolver`] crate
@@ -290,7 +294,7 @@ impl DnsTxtResolver for HickoryDnsResolver {
     fn lookup_txt(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<rama_core::bytes::Bytes, Self::Error>> + Send + '_ {
+    ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
         stream_fn(async |mut yielder| {
             let name = try_or_yield!(
                 yielder,
@@ -312,15 +316,159 @@ impl DnsTxtResolver for HickoryDnsResolver {
                     _ => None,
                 })
             {
-                for txt_part in txt.txt_data.iter() {
-                    yielder.yield_item(Ok(Bytes::from(txt_part.clone()))).await;
+                match decode_hickory_txt(txt) {
+                    Ok(txt) => yielder.yield_item(Ok(txt)).await,
+                    Err(err) => {
+                        yielder.yield_item(Err(err)).await;
+                        return;
+                    }
                 }
             }
         })
     }
 }
 
+impl DnsCnameResolver for HickoryDnsResolver {
+    type Error = BoxError;
+
+    fn lookup_cname(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<WireName, Self::Error>> + Send + '_ {
+        stream_fn(async move |mut yielder| {
+            let name = try_or_yield!(
+                yielder,
+                name_from_domain(domain),
+                "lookup CNAME: create name from domain"
+            );
+            let lookup = try_or_yield!(
+                yielder,
+                self.0.lookup(name.clone(), HickoryRecordType::CNAME).await,
+                "resolve CNAME record(s) for name",
+                "name" = name
+            );
+            for cname in lookup
+                .answers()
+                .iter()
+                .filter_map(|answer| match &answer.data {
+                    RData::CNAME(cname) => Some(cname),
+                    _ => None,
+                })
+            {
+                match decode_hickory_name(cname) {
+                    Ok(cname) => yielder.yield_item(Ok(cname)).await,
+                    Err(err) => {
+                        yielder.yield_item(Err(err)).await;
+                        return;
+                    }
+                }
+            }
+        })
+    }
+}
+
+fn decode_hickory_txt(value: &hickory_resolver::proto::rr::rdata::TXT) -> Result<Txt, BoxError> {
+    Txt::try_from_strings(value.txt_data.iter().map(AsRef::<[u8]>::as_ref))
+        .context("validate Hickory TXT RDATA")
+}
+
+fn decode_hickory_name(value: &impl BinEncodable) -> Result<WireName, BoxError> {
+    let mut wire = Vec::new();
+    value
+        .emit(&mut BinEncoder::new(&mut wire))
+        .context("encode Hickory DNS name")?;
+    WireName::from_wire_bytes(&Bytes::from(wire)).context("validate Hickory DNS name")
+}
+
+impl DnsServiceBindingResolver for HickoryDnsResolver {
+    type Error = BoxError;
+
+    fn lookup_svcb(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
+        self.lookup_service_bindings(domain, HickoryRecordType::SVCB)
+    }
+
+    fn lookup_https(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
+        self.lookup_service_bindings(domain, HickoryRecordType::HTTPS)
+    }
+}
+
 impl DnsResolver for HickoryDnsResolver {}
+
+impl HickoryDnsResolver {
+    fn lookup_service_bindings(
+        &self,
+        domain: Domain,
+        record_type: HickoryRecordType,
+    ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
+        stream_fn(async move |mut yielder| {
+            let name = try_or_yield!(
+                yielder,
+                name_from_domain(domain),
+                "lookup service binding: create name from domain"
+            );
+            let lookup = try_or_yield!(
+                yielder,
+                self.0.lookup(name.clone(), record_type).await,
+                "resolve service binding record(s) for name",
+                "name" = name
+            );
+            let bindings = decode_hickory_rrset(
+                record_type,
+                lookup.answers().iter().map(|answer| &answer.data),
+            );
+            let bindings = match bindings {
+                Ok(bindings) => bindings,
+                Err(err) => {
+                    yielder.yield_item(Err(err)).await;
+                    return;
+                }
+            };
+            for binding in bindings {
+                yielder.yield_item(Ok(binding)).await;
+            }
+        })
+    }
+}
+
+fn decode_hickory_rrset<'a>(
+    record_type: HickoryRecordType,
+    records: impl IntoIterator<Item = &'a RData>,
+) -> Result<Vec<ServiceBinding>, BoxError> {
+    records
+        .into_iter()
+        .filter_map(|data| decode_hickory_rdata(record_type, data))
+        .collect()
+}
+
+fn decode_hickory_rdata(
+    record_type: HickoryRecordType,
+    data: &RData,
+) -> Option<Result<ServiceBinding, BoxError>> {
+    match (record_type, data) {
+        (HickoryRecordType::SVCB, RData::SVCB(svcb)) => Some(decode_hickory_service_binding(svcb)),
+        (HickoryRecordType::HTTPS, RData::HTTPS(https)) => {
+            Some(decode_hickory_service_binding(https))
+        }
+        _ => None,
+    }
+}
+
+fn decode_hickory_service_binding(value: &impl BinEncodable) -> Result<ServiceBinding, BoxError> {
+    let mut rdata = Vec::new();
+    // A fresh encoder has no name-compression state, so TargetName is emitted
+    // in the uncompressed RDATA form required by the shared wire parser.
+    value
+        .emit(&mut BinEncoder::new(&mut rdata))
+        .context("encode Hickory service binding RDATA")?;
+    let rdata = Bytes::from(rdata);
+    ServiceBinding::parse_rdata_bytes(&rdata).context("validate Hickory service binding RDATA")
+}
 
 fn name_from_domain(domain: Domain) -> Result<Name, BoxError> {
     let is_fqdn = domain.is_fqdn();
@@ -332,6 +480,34 @@ fn name_from_domain(domain: Domain) -> Result<Name, BoxError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hickory_resolver::proto::rr::rdata::{
+        CNAME, HTTPS, SVCB, TXT,
+        svcb::{SvcParamKey, SvcParamValue},
+    };
+
+    #[test]
+    fn txt_bridge_preserves_record_boundaries_and_validates_input() {
+        let value = TXT::from_bytes(vec![b"first", b"", b"\x00\xff"]);
+        let txt = decode_hickory_txt(&value).expect("valid TXT record");
+        assert_eq!(
+            txt.iter().collect::<Vec<_>>(),
+            [b"first".as_slice(), b"".as_slice(), b"\x00\xff".as_slice()],
+        );
+
+        decode_hickory_txt(&TXT::from_bytes(Vec::new()))
+            .expect_err("TXT RDATA requires one string");
+        let oversized = vec![0; 256];
+        decode_hickory_txt(&TXT::from_bytes(vec![&oversized]))
+            .expect_err("TXT string is limited to 255 octets");
+    }
+
+    #[test]
+    fn cname_bridge_preserves_dns_name_semantics() {
+        let cname = CNAME(Name::from_ascii("Alias.Example.").expect("valid name"));
+        let decoded = decode_hickory_name(&cname).expect("valid CNAME");
+        assert_eq!(decoded.as_wire(), b"\x05Alias\x07Example\0");
+        assert_eq!(decoded.to_string(), "Alias.Example.");
+    }
 
     #[test]
     fn test_box_hickory_system_dns_resolver() {
@@ -361,5 +537,67 @@ mod tests {
         _ = HickoryDnsResolver::try_new_cloudflare()
             .unwrap()
             .into_box_dns_resolver();
+    }
+
+    #[test]
+    fn service_binding_bridge_supports_svcb_and_https() {
+        let svcb = RData::SVCB(SVCB::new(
+            1,
+            Name::root(),
+            vec![(SvcParamKey::Port, SvcParamValue::Port(8443))],
+        ));
+        let binding = decode_hickory_rdata(HickoryRecordType::SVCB, &svcb)
+            .expect("matching type")
+            .expect("valid SVCB");
+        assert_eq!(binding.priority(), 1);
+        assert_eq!(binding.port(), Some(8443));
+
+        let https = RData::HTTPS(HTTPS(SVCB::new(
+            2,
+            Name::from_ascii("svc.example.").expect("valid name"),
+            vec![(SvcParamKey::Port, SvcParamValue::Port(443))],
+        )));
+        let binding = decode_hickory_rdata(HickoryRecordType::HTTPS, &https)
+            .expect("matching type")
+            .expect("valid HTTPS");
+        assert_eq!(binding.priority(), 2);
+        assert_eq!(binding.port(), Some(443));
+        assert_eq!(
+            binding.target().to_domain().expect("domain").as_str(),
+            "svc.example."
+        );
+        assert!(decode_hickory_rdata(HickoryRecordType::HTTPS, &svcb).is_none());
+        assert!(decode_hickory_rdata(HickoryRecordType::SVCB, &https).is_none());
+    }
+
+    #[test]
+    fn service_binding_bridge_applies_rama_validation() {
+        let invalid = SVCB::new(
+            1,
+            Name::root(),
+            vec![(SvcParamKey::NoDefaultAlpn, SvcParamValue::NoDefaultAlpn)],
+        );
+        let err = decode_hickory_service_binding(&invalid).expect_err("ALPN is required");
+        assert!(
+            err.to_string().contains("validate Hickory service binding"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn service_binding_bridge_rejects_a_complete_malformed_rrset() {
+        let valid = RData::SVCB(SVCB::new(
+            1,
+            Name::root(),
+            vec![(SvcParamKey::Port, SvcParamValue::Port(8443))],
+        ));
+        let malformed = RData::SVCB(SVCB::new(
+            1,
+            Name::root(),
+            vec![(SvcParamKey::NoDefaultAlpn, SvcParamValue::NoDefaultAlpn)],
+        ));
+
+        decode_hickory_rrset(HickoryRecordType::SVCB, [&valid, &malformed])
+            .expect_err("one malformed record invalidates the complete RRset");
     }
 }

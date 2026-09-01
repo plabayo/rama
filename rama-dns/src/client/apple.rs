@@ -13,7 +13,8 @@
 //!   - <https://developer.apple.com/documentation/dnssd/dns_sd_h>
 //!
 //! Implementation notes:
-//! - `A`, `AAAA`, and `TXT` lookups are all backed by `DNSServiceQueryRecord`.
+//! - `A`, `AAAA`, `CNAME`, `TXT`, `SVCB`, and `HTTPS` lookups are backed by
+//!   `DNSServiceQueryRecord`.
 //! - Each lookup owns its own `DNSServiceRef`.
 //! - The returned asynchronous stream integrates the `DNSServiceRef` socket with
 //!   Tokio using `AsyncFd`, calling `DNSServiceProcessResult` whenever the fd
@@ -35,7 +36,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use rama_core::bytes::Bytes;
 use rama_core::error::{BoxError, ErrorExt};
 use rama_core::futures::{Stream, async_stream::stream_fn};
 use rama_core::telemetry::tracing;
@@ -45,7 +45,10 @@ use rama_utils::str::arcstr::ArcStr;
 use tokio::io::unix::AsyncFd;
 use tokio::time::Instant;
 
-use super::resolver::{DnsAddressResolver, DnsResolver, DnsTxtResolver};
+use super::resolver::{
+    DnsAddressResolver, DnsCnameResolver, DnsResolver, DnsServiceBindingResolver, DnsTxtResolver,
+};
+use crate::wire::{Name, RecordType, ServiceBinding, Txt, parse_a_rdata, parse_aaaa_rdata};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -114,12 +117,51 @@ impl DnsTxtResolver for AppleDnsResolver {
     fn lookup_txt(
         &self,
         domain: Domain,
-    ) -> impl Stream<Item = Result<Bytes, Self::Error>> + Send + '_ {
-        query_record_stream::<Bytes, _>(
+    ) -> impl Stream<Item = Result<Txt, Self::Error>> + Send + '_ {
+        query_record_stream::<Txt, _>(domain, self.timeout, ffi::K_DNS_SERVICE_TYPE_TXT, parse_txt)
+    }
+}
+
+impl DnsCnameResolver for AppleDnsResolver {
+    type Error = BoxError;
+
+    fn lookup_cname(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<Name, Self::Error>> + Send + '_ {
+        query_record_stream::<Name, _>(
             domain,
             self.timeout,
-            ffi::K_DNS_SERVICE_TYPE_TXT,
-            parse_txt,
+            ffi::K_DNS_SERVICE_TYPE_CNAME,
+            parse_cname,
+        )
+    }
+}
+
+impl DnsServiceBindingResolver for AppleDnsResolver {
+    type Error = BoxError;
+
+    fn lookup_svcb(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
+        query_record_stream::<ServiceBinding, _>(
+            domain,
+            self.timeout,
+            RecordType::SVCB.into(),
+            parse_service_binding,
+        )
+    }
+
+    fn lookup_https(
+        &self,
+        domain: Domain,
+    ) -> impl Stream<Item = Result<ServiceBinding, BoxError>> + Send + '_ {
+        query_record_stream::<ServiceBinding, _>(
+            domain,
+            self.timeout,
+            RecordType::HTTPS.into(),
+            parse_service_binding,
         )
     }
 }
@@ -168,6 +210,7 @@ where
         let mut state = Box::new(QueryState {
             queue: Mutex::new(VecDeque::new()),
             done: AtomicBool::new(false),
+            more_coming: AtomicBool::new(false),
             parser,
         });
 
@@ -234,7 +277,7 @@ where
         let deadline = Instant::now() + timeout;
 
         loop {
-            for item in drain_queue(&state) {
+            for item in drain_completed_batch(&state) {
                 yielder.yield_item(item).await;
             }
 
@@ -298,7 +341,10 @@ where
     P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync,
 {
     state.done.store(true, Ordering::SeqCst);
-    state.queue.lock().push_back(Err(err.into_box_error()));
+    state.more_coming.store(false, Ordering::SeqCst);
+    let mut queue = state.queue.lock();
+    queue.clear();
+    queue.push_back(Err(err.into_box_error()));
 }
 
 fn finish_empty<T, P>(
@@ -310,6 +356,8 @@ fn finish_empty<T, P>(
     P: Fn(&[u8], &mut dyn FnMut(T)) -> Result<(), BoxError> + Send + Sync,
 {
     state.done.store(true, Ordering::SeqCst);
+    state.more_coming.store(false, Ordering::SeqCst);
+    state.queue.lock().clear();
     tracing::debug!(operation, code, "dns::apple: finish with empty result");
 }
 
@@ -360,6 +408,13 @@ unsafe extern "C" fn query_record_callback<T, P>(
         return;
     };
 
+    // `DNSServiceProcessResult` can dispatch callbacks that were already
+    // queued after an earlier callback made this batch terminal. Never let a
+    // later callback append records after an error or completed response.
+    if state.done.load(Ordering::SeqCst) {
+        return;
+    }
+
     if error_code != ffi::K_DNS_SERVICE_ERR_NO_ERROR {
         if is_empty_result_error(error_code) {
             finish_empty(state, "query callback", error_code);
@@ -385,25 +440,35 @@ unsafe extern "C" fn query_record_callback<T, P>(
 
     // SAFETY: guaranteed by the callback contract documented above.
     let rdata = unsafe { std::slice::from_raw_parts(rdata.cast::<u8>(), rdlen as usize) };
-    let mut emit_record = |record| {
-        tracing::debug!(
-            rrtype,
-            %domain,
-            "dns::apple: answer: {record:?}"
-        );
-        state.queue.lock().push_back(Ok(record));
-    };
-
-    match (state.parser)(rdata, &mut emit_record) {
-        Ok(()) => {}
+    let mut parsed = Vec::new();
+    match (state.parser)(rdata, &mut |record| parsed.push(record)) {
+        Ok(()) => {
+            let mut queue = state.queue.lock();
+            if state.done.load(Ordering::SeqCst) {
+                return;
+            }
+            for record in parsed {
+                tracing::debug!(
+                    rrtype,
+                    %domain,
+                    "dns::apple: answer: {record:?}"
+                );
+                queue.push_back(Ok(record));
+            }
+        }
         Err(err) => {
-            state.queue.lock().push_back(Err(err));
+            let mut queue = state.queue.lock();
+            queue.clear();
+            queue.push_back(Err(err));
+            state.more_coming.store(false, Ordering::SeqCst);
             state.done.store(true, Ordering::SeqCst);
             return;
         }
     }
 
-    if (flags & ffi::K_DNS_SERVICE_FLAGS_MORE_COMING) == 0 {
+    let more_coming = (flags & ffi::K_DNS_SERVICE_FLAGS_MORE_COMING) != 0;
+    state.more_coming.store(more_coming, Ordering::SeqCst);
+    if !more_coming {
         state.done.store(true, Ordering::SeqCst);
     }
 }
@@ -412,11 +477,20 @@ unsafe extern "C" fn query_record_callback<T, P>(
 struct QueryState<T, P> {
     queue: Mutex<VecDeque<Result<T, BoxError>>>,
     done: AtomicBool,
+    more_coming: AtomicBool,
     parser: P,
 }
 
 fn drain_queue<T, P>(state: &QueryState<T, P>) -> Vec<Result<T, BoxError>> {
     state.queue.lock().drain(..).collect()
+}
+
+fn drain_completed_batch<T, P>(state: &QueryState<T, P>) -> Vec<Result<T, BoxError>> {
+    if state.more_coming.load(Ordering::SeqCst) {
+        Vec::new()
+    } else {
+        drain_queue(state)
+    }
 }
 
 #[derive(Debug)]
@@ -445,44 +519,30 @@ impl Drop for ServiceRef {
 }
 
 fn parse_a(rdata: &[u8], emit: &mut dyn FnMut(Ipv4Addr)) -> Result<(), BoxError> {
-    if rdata.len() != 4 {
-        return Err(AppleDnsResolverError::message(format!(
-            "invalid A record length: {}",
-            rdata.len()
-        ))
-        .into());
-    }
-    emit(Ipv4Addr::new(rdata[0], rdata[1], rdata[2], rdata[3]));
+    emit(parse_a_rdata(rdata)?);
     Ok(())
 }
 
 fn parse_aaaa(rdata: &[u8], emit: &mut dyn FnMut(Ipv6Addr)) -> Result<(), BoxError> {
-    if rdata.len() != 16 {
-        return Err(AppleDnsResolverError::message(format!(
-            "invalid AAAA record length: {}",
-            rdata.len()
-        ))
-        .into());
-    }
-    let mut octets = [0_u8; 16];
-    octets.copy_from_slice(rdata);
-    emit(Ipv6Addr::from(octets));
+    emit(parse_aaaa_rdata(rdata)?);
     Ok(())
 }
 
-fn parse_txt(rdata: &[u8], emit: &mut dyn FnMut(Bytes)) -> Result<(), BoxError> {
-    let mut offset = 0;
+fn parse_txt(rdata: &[u8], emit: &mut dyn FnMut(Txt)) -> Result<(), BoxError> {
+    emit(Txt::parse_rdata(rdata)?);
+    Ok(())
+}
 
-    while offset < rdata.len() {
-        let len = rdata[offset] as usize;
-        offset += 1;
-        if offset + len > rdata.len() {
-            return Err(AppleDnsResolverError::message("invalid TXT record payload").into());
-        }
-        emit(Bytes::copy_from_slice(&rdata[offset..offset + len]));
-        offset += len;
-    }
+fn parse_cname(rdata: &[u8], emit: &mut dyn FnMut(Name)) -> Result<(), BoxError> {
+    emit(Name::from_wire(rdata)?);
+    Ok(())
+}
 
+fn parse_service_binding(
+    rdata: &[u8],
+    emit: &mut dyn FnMut(ServiceBinding),
+) -> Result<(), BoxError> {
+    emit(ServiceBinding::parse_rdata(rdata)?);
     Ok(())
 }
 
@@ -528,6 +588,8 @@ mod ffi {
 
     // Host address.
     pub(super) const K_DNS_SERVICE_TYPE_A: u16 = 1;
+    // Canonical name for an alias.
+    pub(super) const K_DNS_SERVICE_TYPE_CNAME: u16 = 5;
     // One or more text strings (NOT "zero or more...").
     pub(super) const K_DNS_SERVICE_TYPE_TXT: u16 = 16;
     // IPv6 Address.
@@ -801,10 +863,173 @@ mod tests {
             txt.push(record);
         })
         .unwrap();
+        assert_eq!(txt.len(), 1);
         assert_eq!(
-            txt,
-            vec![Bytes::from_static(b"foo"), Bytes::from_static(b"bar")]
+            txt[0].iter().collect::<Vec<_>>(),
+            vec![&b"foo"[..], &b"bar"[..]]
         );
+    }
+
+    #[test]
+    fn parse_cname_record() {
+        let mut records = Vec::new();
+        parse_cname(b"\x05alias\x07example\x03com\0", &mut |record| {
+            records.push(record)
+        })
+        .expect("valid CNAME");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].to_string(), "alias.example.com.");
+
+        parse_cname(&[0xc0, 0x0c], &mut |_| {}).expect_err("standalone RDATA is uncompressed");
+    }
+
+    #[test]
+    fn malformed_txt_record_is_rejected_without_emitting() {
+        let mut emitted = false;
+        parse_txt(&[3, b'f', b'o'], &mut |_| emitted = true).expect_err("truncated TXT string");
+        assert!(!emitted);
+    }
+
+    #[test]
+    fn parse_service_binding_record() {
+        let mut records = Vec::new();
+        parse_service_binding(&[0, 1, 0, 0, 3, 0, 2, 0x20, 0xfb], &mut |record| {
+            records.push(record)
+        })
+        .expect("valid service binding");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].priority(), 1);
+        assert_eq!(records[0].port(), Some(8443));
+    }
+
+    #[test]
+    fn malformed_service_binding_record_is_rejected() {
+        let err = parse_service_binding(&[0, 1], &mut |_| {}).expect_err("target name is required");
+        assert!(err.to_string().contains("target name"), "got: {err}");
+    }
+
+    #[test]
+    fn malformed_service_binding_discards_the_pending_rrset() {
+        type Parser = fn(&[u8], &mut dyn FnMut(ServiceBinding)) -> Result<(), BoxError>;
+
+        let mut state = QueryState::<ServiceBinding, Parser> {
+            queue: Mutex::new(VecDeque::new()),
+            done: AtomicBool::new(false),
+            more_coming: AtomicBool::new(false),
+            parser: parse_service_binding,
+        };
+        let fullname = CString::new("example.com.").expect("valid C string");
+        let valid: [u8; 9] = [0, 1, 0, 0, 3, 0, 2, 0x20, 0xfb];
+        let malformed: [u8; 2] = [0, 1];
+
+        // SAFETY: every pointer passed to the callback remains live for the
+        // duration of each synchronous test invocation.
+        unsafe {
+            query_record_callback::<ServiceBinding, Parser>(
+                ptr::null_mut(),
+                ffi::K_DNS_SERVICE_FLAGS_MORE_COMING,
+                0,
+                ffi::K_DNS_SERVICE_ERR_NO_ERROR,
+                fullname.as_ptr(),
+                RecordType::SVCB.into(),
+                ffi::K_DNS_SERVICE_CLASS_IN,
+                valid.len() as u16,
+                valid.as_ptr().cast(),
+                60,
+                ptr::from_mut(&mut state).cast(),
+            );
+        }
+        assert!(
+            state.more_coming.load(Ordering::SeqCst),
+            "callback ended early: done={} queue={:?}",
+            state.done.load(Ordering::SeqCst),
+            state.queue.lock(),
+        );
+        assert!(drain_completed_batch(&state).is_empty());
+        assert_eq!(state.queue.lock().len(), 1);
+
+        // SAFETY: same live test storage as above.
+        unsafe {
+            query_record_callback::<ServiceBinding, Parser>(
+                ptr::null_mut(),
+                0,
+                0,
+                ffi::K_DNS_SERVICE_ERR_NO_ERROR,
+                fullname.as_ptr(),
+                RecordType::SVCB.into(),
+                ffi::K_DNS_SERVICE_CLASS_IN,
+                malformed.len() as u16,
+                malformed.as_ptr().cast(),
+                60,
+                ptr::from_mut(&mut state).cast(),
+            );
+        }
+
+        // A callback already queued by DNSServiceProcessResult after the
+        // malformed member must observe the terminal latch and do nothing.
+        // SAFETY: same live test storage as above.
+        unsafe {
+            query_record_callback::<ServiceBinding, Parser>(
+                ptr::null_mut(),
+                0,
+                0,
+                ffi::K_DNS_SERVICE_ERR_NO_ERROR,
+                fullname.as_ptr(),
+                RecordType::SVCB.into(),
+                ffi::K_DNS_SERVICE_CLASS_IN,
+                valid.len() as u16,
+                valid.as_ptr().cast(),
+                60,
+                ptr::from_mut(&mut state).cast(),
+            );
+        }
+
+        let items = drain_completed_batch(&state);
+        assert_eq!(items.len(), 1);
+        items[0]
+            .as_ref()
+            .expect_err("malformed RRset must yield an error");
+        assert!(state.done.load(Ordering::SeqCst));
+        assert!(!state.more_coming.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn terminal_callback_outcomes_discard_pending_records() {
+        type Parser = fn(&[u8], &mut dyn FnMut(ServiceBinding)) -> Result<(), BoxError>;
+
+        let pending = || {
+            ServiceBinding::parse_rdata(&[0, 1, 0, 0, 3, 0, 2, 0x20, 0xfb])
+                .expect("valid pending record")
+        };
+        let state = QueryState::<ServiceBinding, Parser> {
+            queue: Mutex::new(VecDeque::from([Ok(pending())])),
+            done: AtomicBool::new(false),
+            more_coming: AtomicBool::new(true),
+            parser: parse_service_binding,
+        };
+        queue_error(&state, AppleDnsResolverError::message("callback failed"));
+        let items = drain_completed_batch(&state);
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items[0]
+                .as_ref()
+                .expect_err("callback failure must replace pending records")
+                .to_string(),
+            "callback failed"
+        );
+        assert!(state.done.load(Ordering::SeqCst));
+        assert!(!state.more_coming.load(Ordering::SeqCst));
+
+        let state = QueryState::<ServiceBinding, Parser> {
+            queue: Mutex::new(VecDeque::from([Ok(pending())])),
+            done: AtomicBool::new(false),
+            more_coming: AtomicBool::new(true),
+            parser: parse_service_binding,
+        };
+        finish_empty(&state, "test", ffi::K_DNS_SERVICE_ERR_NO_SUCH_RECORD);
+        assert!(drain_completed_batch(&state).is_empty());
+        assert!(state.done.load(Ordering::SeqCst));
+        assert!(!state.more_coming.load(Ordering::SeqCst));
     }
 
     #[test]

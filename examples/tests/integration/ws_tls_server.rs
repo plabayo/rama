@@ -8,7 +8,7 @@ use rama::{
         mime,
         ws::handshake::client::BlockingHttpClientWebSocketExt as _,
     },
-    tls::TlsAlpn,
+    net::tls::TlsAlpn,
 };
 
 #[tokio::test]
