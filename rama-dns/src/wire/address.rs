@@ -77,15 +77,10 @@ impl AddressRdataParseError {
 
 impl fmt::Display for AddressRdataParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let record_name = match self.record_type {
-            RecordType::A => "A",
-            RecordType::AAAA => "AAAA",
-            _ => "address",
-        };
         write!(
             f,
-            "{record_name} RDATA must contain exactly {} octets, got {}",
-            self.expected_len, self.actual_len
+            "{} RDATA must contain exactly {} octets, got {}",
+            self.record_type, self.expected_len, self.actual_len
         )
     }
 }

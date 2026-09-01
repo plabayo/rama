@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::IpAddr;
 
 use rama_core::{
     Layer, Service,
@@ -110,13 +110,12 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
-        let target = input.connector_target().ok_or_else(|| {
+        let HostWithPort { host, .. } = input.connector_target().ok_or_else(|| {
             ConnectionError::local(
                 BoxError::from_static_str("dns connector: connector target missing from input"),
                 ConnectionErrorKind::InvalidInput,
             )
         })?;
-        let HostWithPort { host, port } = target.clone();
 
         // Already an IP target: nothing to resolve, forward the input untouched.
         if host.try_as_ip().is_ok() {
@@ -132,10 +131,8 @@ where
         input
             .extensions()
             .insert(ConnectorTargetStream::new(DnsAddressCandidates {
-                target,
                 resolver: self.resolver.clone(),
                 domain,
-                port,
             }));
 
         self.inner.connect(input).await
@@ -145,32 +142,26 @@ where
 /// [`AddressCandidates`] backed by a [`DnsAddressResolver`].
 ///
 /// Resolves a domain target into a happy-eyeballs-ordered stream of
-/// [`SocketAddr`]esses.
+/// [`IpAddr`]esses.
 struct DnsAddressCandidates<R> {
-    target: HostWithPort,
     resolver: R,
     domain: Domain,
-    port: u16,
 }
 
 impl<R> AddressCandidates for DnsAddressCandidates<R>
 where
     R: DnsAddressResolver,
 {
-    fn target(&self) -> Option<&HostWithPort> {
-        Some(&self.target)
+    fn domain(&self) -> &Domain {
+        &self.domain
     }
 
-    fn stream<'a>(
-        &'a self,
-        extensions: &'a Extensions,
-    ) -> BoxStream<'a, Result<SocketAddr, BoxError>> {
-        let port = self.port;
+    fn stream<'a>(&'a self, extensions: &'a Extensions) -> BoxStream<'a, Result<IpAddr, BoxError>> {
         self.resolver
             .happy_eyeballs_resolver(Host::Name(self.domain.clone()))
             .with_extensions(extensions)
             .lookup_ip()
-            .map(move |result| result.map(|ip| SocketAddr::new(ip, port)).into_box_error())
+            .map(|result| result.into_box_error())
             .boxed()
     }
 }
@@ -288,8 +279,8 @@ mod tests {
                 .extensions()
                 .get_ref::<ConnectorTargetStream>()
                 .unwrap()
-                .target(),
-            Some(&HostWithPort::example_domain_https())
+                .domain(),
+            &Domain::example()
         );
     }
 

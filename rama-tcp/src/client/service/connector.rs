@@ -1,14 +1,17 @@
+use std::net::SocketAddr;
+
 use rama_core::{
     Service,
     error::{BoxError, BoxErrorExt as _},
     extensions::ExtensionsRef,
+    futures::StreamExt as _,
     telemetry::tracing,
 };
 use rama_net::{
     ConnectorTargetInputExt, ConnectorTransportProtocolInputExt,
     client::{
-        ConnectionError, ConnectionErrorKind, ConnectorTarget, ConnectorTargetStream,
-        EstablishedClientConnection, race_connect,
+        ConnectionError, ConnectionErrorKind, ConnectorTargetStream, EstablishedClientConnection,
+        race_connect,
     },
     stream::{Socket, SocketInfo},
     transport::TransportProtocol,
@@ -107,15 +110,15 @@ where
             )
         })?;
 
-        let target_is_overridden = input.extensions().contains::<ConnectorTarget>();
         let (conn, addr) = if let Some(candidates) = input
             .extensions()
             .get_ref::<ConnectorTargetStream>()
-            .filter(|candidates| match candidates.target() {
-                Some(target) => target == &authority,
-                None => !target_is_overridden,
-            }) {
-            let stream = candidates.stream(input.extensions());
+            .filter(|candidates| candidate_domain_matches_target(candidates, &authority))
+        {
+            let port = authority.port;
+            let stream = candidates
+                .stream(input.extensions())
+                .map(move |result| result.map(|ip| SocketAddr::new(ip, port)));
             let (addr, conn) = race_connect(stream, self.max_in_flight, |addr| async move {
                 self.connector.connect(addr).await.map_err(Into::into)
             })
@@ -150,9 +153,19 @@ where
     }
 }
 
+fn candidate_domain_matches_target(
+    candidates: &ConnectorTargetStream,
+    target: &rama_net::address::HostWithPort,
+) -> bool {
+    target
+        .host
+        .try_as_domain()
+        .is_ok_and(|domain| domain.as_ref() == candidates.domain())
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{net::SocketAddr, sync::Arc};
+    use std::{net::IpAddr, sync::Arc};
 
     use rama_core::{
         error::BoxError,
@@ -160,7 +173,7 @@ mod tests {
         futures::{Stream, stream},
     };
     use rama_net::{
-        address::HostWithPort,
+        address::{Domain, HostWithPort},
         client::{
             AddressCandidates, ConnectRequest, ConnectionErrorDomain, ConnectorTarget,
             ConnectorTargetStream, ConnectorTransportProtocol,
@@ -197,57 +210,81 @@ mod tests {
     }
 
     struct OneCandidate {
-        target: Option<HostWithPort>,
-        addr: SocketAddr,
+        domain: Domain,
+        ip_addr: IpAddr,
     }
 
     impl AddressCandidates for OneCandidate {
-        fn target(&self) -> Option<&HostWithPort> {
-            self.target.as_ref()
+        fn domain(&self) -> &Domain {
+            &self.domain
         }
 
         fn stream<'a>(
             &'a self,
             _: &'a Extensions,
-        ) -> core::pin::Pin<Box<dyn Stream<Item = Result<SocketAddr, BoxError>> + Send + 'a>>
-        {
-            Box::pin(stream::iter([Ok(self.addr)]))
+        ) -> core::pin::Pin<Box<dyn Stream<Item = Result<IpAddr, BoxError>> + Send + 'a>> {
+            Box::pin(stream::iter([Ok(self.ip_addr)]))
         }
+    }
+
+    #[test]
+    fn candidate_correlation_uses_domain_but_not_port() {
+        let candidates = ConnectorTargetStream::new(OneCandidate {
+            domain: Domain::example(),
+            ip_addr: [127, 0, 0, 1].into(),
+        });
+
+        assert!(candidate_domain_matches_target(
+            &candidates,
+            &HostWithPort::example_domain_https(),
+        ));
+        assert!(candidate_domain_matches_target(
+            &candidates,
+            &HostWithPort::example_domain_with_port(8443),
+        ));
+        assert!(!candidate_domain_matches_target(
+            &candidates,
+            &HostWithPort::new(
+                rama_net::address::Host::Name(Domain::from_static("other.test")),
+                443,
+            ),
+        ));
+        assert!(!candidate_domain_matches_target(
+            &candidates,
+            &HostWithPort::local_ipv4(443),
+        ));
     }
 
     #[tokio::test]
     async fn ignores_candidate_stream_for_a_different_target() {
         let proxy_addr = SocketAddr::from(([127, 0, 0, 1], 8080));
-        let origin_addr = SocketAddr::from(([127, 0, 0, 1], 443));
-        for candidate_target in [Some(HostWithPort::example_domain_https()), None] {
-            let recorded = Arc::new(rama_utils::collections::AppendOnlyVec::<SocketAddr>::new());
-            let connector = TcpConnector::new().with_connector({
-                let recorded = Arc::clone(&recorded);
-                move |addr| {
-                    recorded.push(addr);
-                    async { Err::<TcpStream, _>(std::io::Error::other("denied")) }
-                }
-            });
-            let req = ConnectRequest::new(HostWithPort::example_domain_https());
-            req.extensions.insert(ConnectorTarget(proxy_addr.into()));
-            req.extensions
-                .insert(ConnectorTargetStream::new(OneCandidate {
-                    target: candidate_target,
-                    addr: origin_addr,
-                }));
+        let recorded = Arc::new(rama_utils::collections::AppendOnlyVec::<SocketAddr>::new());
+        let connector = TcpConnector::new().with_connector({
+            let recorded = Arc::clone(&recorded);
+            move |addr| {
+                recorded.push(addr);
+                async { Err::<TcpStream, _>(std::io::Error::other("denied")) }
+            }
+        });
+        let req = ConnectRequest::new(HostWithPort::example_domain_https());
+        req.extensions.insert(ConnectorTarget(proxy_addr.into()));
+        req.extensions
+            .insert(ConnectorTargetStream::new(OneCandidate {
+                domain: Domain::example(),
+                ip_addr: [127, 0, 0, 1].into(),
+            }));
 
-            let error = connector.serve(req).await.unwrap_err();
-            assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
-            assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
-            assert_eq!(recorded.iter().copied().collect::<Vec<_>>(), [proxy_addr]);
-        }
+        let error = connector.serve(req).await.unwrap_err();
+        assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+        assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+        assert_eq!(recorded.iter().copied().collect::<Vec<_>>(), [proxy_addr]);
     }
 
     #[tokio::test]
-    async fn consumes_candidate_stream_for_the_current_target() {
-        let target = HostWithPort::example_domain_https();
-        let candidate_addr = SocketAddr::from(([127, 0, 0, 1], 8443));
-        for candidate_target in [Some(target.clone()), None] {
+    async fn uses_current_target_port_for_matching_domain_candidates() {
+        let origin = HostWithPort::example_domain_https();
+        let candidate_ip = IpAddr::from([127, 0, 0, 1]);
+        for target_port in [443, 8443] {
             let recorded = Arc::new(rama_utils::collections::AppendOnlyVec::<SocketAddr>::new());
             let connector = TcpConnector::new().with_connector({
                 let recorded = Arc::clone(&recorded);
@@ -256,11 +293,17 @@ mod tests {
                     async { Err::<TcpStream, _>(std::io::Error::other("denied")) }
                 }
             });
-            let req = ConnectRequest::new(target.clone());
+            let req = ConnectRequest::new(origin.clone());
+            if target_port != origin.port {
+                req.extensions
+                    .insert(ConnectorTarget(HostWithPort::example_domain_with_port(
+                        target_port,
+                    )));
+            }
             req.extensions
                 .insert(ConnectorTargetStream::new(OneCandidate {
-                    target: candidate_target,
-                    addr: candidate_addr,
+                    domain: Domain::example(),
+                    ip_addr: candidate_ip,
                 }));
 
             let error = connector.serve(req).await.unwrap_err();
@@ -268,7 +311,7 @@ mod tests {
             assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
             assert_eq!(
                 recorded.iter().copied().collect::<Vec<_>>(),
-                [candidate_addr]
+                [SocketAddr::new(candidate_ip, target_port)]
             );
         }
     }

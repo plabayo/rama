@@ -1,8 +1,7 @@
 use core::{fmt, iter::FusedIterator, num::NonZeroUsize};
 
 use rama_core::bytes::Bytes;
-
-use super::presentation::CharacterString;
+use rama_utils::fmt::{utf8_or_hex, write_joined_with};
 
 const MAX_RDATA_LEN: usize = u16::MAX as usize;
 
@@ -136,13 +135,9 @@ impl Txt {
 /// Formats a human-readable diagnostic while preserving string boundaries.
 impl fmt::Display for Txt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (index, string) in self.iter().take(self.string_count.get()).enumerate() {
-            if index != 0 {
-                f.write_str(" ")?;
-            }
-            CharacterString(string).fmt(f)?;
-        }
-        Ok(())
+        write_joined_with(f, self.iter(), " ", |f, string| {
+            write!(f, "{}", utf8_or_hex(string))
+        })
     }
 }
 

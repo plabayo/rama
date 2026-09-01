@@ -50,6 +50,33 @@ pub fn display_fn<F>(formatter: F) -> DisplayFn<F> {
     DisplayFn(formatter)
 }
 
+/// Display bytes as contiguous uppercase hexadecimal prefixed with `0x`.
+///
+/// Formatting is deferred and does not allocate.
+pub fn hex(bytes: &[u8]) -> impl fmt::Display + '_ {
+    display_fn(move |formatter: &mut fmt::Formatter<'_>| {
+        formatter.write_str("0x")?;
+        for &byte in bytes {
+            let encoded = crate::hex::encode_byte_upper(byte);
+            formatter.write_char(char::from(encoded[0]))?;
+            formatter.write_char(char::from(encoded[1]))?;
+        }
+        Ok(())
+    })
+}
+
+/// Display valid UTF-8 as a quoted debug string, or other bytes as [`hex`].
+///
+/// Formatting is deferred and does not allocate.
+pub fn utf8_or_hex(bytes: &[u8]) -> impl fmt::Display + '_ {
+    display_fn(
+        move |formatter: &mut fmt::Formatter<'_>| match core::str::from_utf8(bytes) {
+            Ok(text) => write!(formatter, "{text:?}"),
+            Err(_) => fmt::Display::fmt(&hex(bytes), formatter),
+        },
+    )
+}
+
 /// Write values separated by `separator`, using `write_value` for each value.
 ///
 /// Nothing is allocated, and the separator is written only between values.
@@ -152,6 +179,22 @@ mod tests {
             display_fn(|formatter: &mut fmt::Formatter<'_>| formatter.write_str("deferred"));
 
         assert_eq!(value.to_string(), "deferred");
+    }
+
+    #[test]
+    fn displays_bytes_as_uppercase_hex_without_separators() {
+        assert_eq!(hex(&[0x00, 0x4f, 0xa5, 0xff]).to_string(), "0x004FA5FF");
+        assert_eq!(hex(&[]).to_string(), "0x");
+    }
+
+    #[test]
+    fn displays_utf8_quoted_and_other_bytes_as_hex() {
+        assert_eq!(
+            utf8_or_hex(b"quote\" slash\\ line\n").to_string(),
+            r#""quote\" slash\\ line\n""#
+        );
+        assert_eq!(utf8_or_hex(&[0xff, 0x00]).to_string(), "0xFF00");
+        assert_eq!(utf8_or_hex(b"").to_string(), "\"\"");
     }
 
     #[test]

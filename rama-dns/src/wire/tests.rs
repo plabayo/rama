@@ -137,7 +137,7 @@ fn address_rdata_rejects_every_wrong_length_with_context() {
         assert_eq!(error.actual_len(), len);
         assert_eq!(
             error.to_string(),
-            format!("A RDATA must contain exactly 4 octets, got {len}")
+            format!("A (0x0001) RDATA must contain exactly 4 octets, got {len}")
         );
 
         let error = parse_aaaa_rdata(&vec![0; len]).unwrap_err();
@@ -146,7 +146,7 @@ fn address_rdata_rejects_every_wrong_length_with_context() {
         assert_eq!(error.actual_len(), len);
         assert_eq!(
             error.to_string(),
-            format!("AAAA RDATA must contain exactly 16 octets, got {len}")
+            format!("AAAA (0x001c) RDATA must contain exactly 16 octets, got {len}")
         );
     }
 }

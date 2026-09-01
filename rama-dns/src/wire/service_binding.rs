@@ -6,12 +6,12 @@ use core::{
 
 use rama_core::bytes::Bytes;
 use rama_net::tls::ApplicationProtocol;
-use rama_utils::{fmt::write_joined_with, macros::enums::enum_builder};
-
-use super::{
-    Name, NameParseError,
-    presentation::{CharacterString, Hex},
+use rama_utils::{
+    fmt::{hex, utf8_or_hex, write_joined_with},
+    macros::enums::enum_builder,
 };
+
+use super::{Name, NameParseError};
 
 enum_builder! {
     /// Numeric key for a service binding parameter.
@@ -194,12 +194,9 @@ impl fmt::Display for SvcParam {
             }
             Self::Alpn(protocols) => {
                 f.write_str("alpn=")?;
-                write_joined_with(
-                    f,
-                    protocols.iter().take(protocols.len()),
-                    ",",
-                    |f, protocol| CharacterString(protocol).fmt(f),
-                )
+                write_joined_with(f, protocols.iter(), ",", |f, protocol| {
+                    write!(f, "{}", utf8_or_hex(protocol))
+                })
             }
             Self::NoDefaultAlpn => f.write_str("no-default-alpn"),
             Self::Port(port) => write!(f, "port={port}"),
@@ -207,12 +204,14 @@ impl fmt::Display for SvcParam {
                 f.write_str("ipv4hint=")?;
                 write_joined_with(f, addresses, ",", |f, address| address.fmt(f))
             }
-            Self::Ech(config) => write!(f, "ech={}", Hex(config)),
+            Self::Ech(config) => write!(f, "ech={}", hex(config)),
             Self::Ipv6Hint(addresses) => {
                 f.write_str("ipv6hint=")?;
                 write_joined_with(f, addresses, ",", |f, address| address.fmt(f))
             }
-            Self::Unknown { key, value } => write!(f, "{}={}", ParamKeyName(*key), Hex(value)),
+            Self::Unknown { key, value } => {
+                write!(f, "{}={}", ParamKeyName(*key), hex(value))
+            }
         }
     }
 }

@@ -1,6 +1,12 @@
-use std::{future::Future, net::SocketAddr};
+use std::{
+    future::Future,
+    net::{IpAddr, SocketAddr},
+};
 
-use crate::{address::HostWithPort, transport::TransportProtocol};
+use crate::{
+    address::{Domain, HostWithPort},
+    transport::TransportProtocol,
+};
 
 use rama_core::{
     error::{BoxError, BoxErrorExt as _},
@@ -28,29 +34,25 @@ pub struct ConnectorTarget(pub HostWithPort);
 /// physical route's transport differs from the requested destination.
 pub struct ConnectorTransportProtocol(pub TransportProtocol);
 
-/// A lazily-resolved source of connection target [`SocketAddr`]esses.
+/// A lazily-resolved source of connection target [`IpAddr`]esses.
 ///
 /// This is the abstraction boundary between resolving a target and
 /// connecting to it. An upstream connector (e.g. the `rama-dns` address
 /// resolver) stamps a [`ConnectorTargetStream`] into the [`Extensions`], and a
 /// transport connector consumes it: dialing (and optionally racing) the
 /// yielded addresses. The transport stays resolver-agnostic: it only ever sees
-/// a stream of [`SocketAddr`]s, never a DNS resolver.
+/// a stream of [`IpAddr`]s, never a DNS resolver. It combines each address with
+/// the current connector target's port immediately before dialing.
 pub trait AddressCandidates: Send + Sync + 'static {
-    /// Return the target these candidates resolve, when known.
+    /// Return the domain these candidates resolve.
     ///
     /// Transport connectors use this correlation to avoid consuming stale
-    /// candidates after routing middleware selects a different target.
-    fn target(&self) -> Option<&HostWithPort> {
-        None
-    }
+    /// candidates after routing middleware selects a different domain.
+    fn domain(&self) -> &Domain;
 
-    /// Stream the candidate [`SocketAddr`]esses, in the order they should be
+    /// Stream the candidate [`IpAddr`]esses, in the order they should be
     /// attempted. The given [`Extensions`] carry per-request resolve config.
-    fn stream<'a>(
-        &'a self,
-        extensions: &'a Extensions,
-    ) -> BoxStream<'a, Result<SocketAddr, BoxError>>;
+    fn stream<'a>(&'a self, extensions: &'a Extensions) -> BoxStream<'a, Result<IpAddr, BoxError>>;
 }
 
 #[derive(Extension)]
@@ -65,17 +67,17 @@ impl ConnectorTargetStream {
         Self(Box::new(candidates))
     }
 
-    /// Return the target these candidates resolve, when known.
+    /// Return the domain these candidates resolve.
     #[must_use]
-    pub fn target(&self) -> Option<&HostWithPort> {
-        self.0.target()
+    pub fn domain(&self) -> &Domain {
+        self.0.domain()
     }
 
     /// Stream the candidate addresses (see [`AddressCandidates::stream`]).
     pub fn stream<'a>(
         &'a self,
         extensions: &'a Extensions,
-    ) -> BoxStream<'a, Result<SocketAddr, BoxError>> {
+    ) -> BoxStream<'a, Result<IpAddr, BoxError>> {
         self.0.stream(extensions)
     }
 }
@@ -83,7 +85,7 @@ impl ConnectorTargetStream {
 impl core::fmt::Debug for ConnectorTargetStream {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ConnectorTargetStream")
-            .field("target", &self.target())
+            .field("domain", &self.domain())
             .finish_non_exhaustive()
     }
 }

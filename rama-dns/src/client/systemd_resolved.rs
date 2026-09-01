@@ -156,7 +156,7 @@ pub(super) enum ResolvedLookup<T> {
 enum ParsedRecord<T> {
     One { ttl: u32, value: T },
     Other,
-    Malformed,
+    Malformed(BoxError),
 }
 
 #[derive(Clone, Copy)]
@@ -249,7 +249,7 @@ impl SystemdResolved {
             match parse_txt_rr(&raw) {
                 RrParse::Record { ttl, value } => ParsedRecord::One { ttl, value },
                 RrParse::Other => ParsedRecord::Other,
-                RrParse::Malformed => ParsedRecord::Malformed,
+                RrParse::Malformed(error) => ParsedRecord::Malformed(error),
             }
         })
         .await
@@ -267,7 +267,7 @@ impl SystemdResolved {
             |raw| match parse_cname_rr(&raw) {
                 RrParse::Record { ttl, value } => ParsedRecord::One { ttl, value },
                 RrParse::Other => ParsedRecord::Other,
-                RrParse::Malformed => ParsedRecord::Malformed,
+                RrParse::Malformed(error) => ParsedRecord::Malformed(error),
             },
         )
         .await
@@ -304,7 +304,7 @@ impl SystemdResolved {
             move |raw| match parse_service_binding_rr(&raw, record_type) {
                 RrParse::Record { ttl, value } => ParsedRecord::One { ttl, value },
                 RrParse::Other => ParsedRecord::Other,
-                RrParse::Malformed => ParsedRecord::Malformed,
+                RrParse::Malformed(error) => ParsedRecord::Malformed(error),
             },
         )
         .await
@@ -479,20 +479,33 @@ impl SystemdResolved {
         }
         let mut records = Vec::new();
         for entry in &reply.rrs {
-            let Ok(raw) = BASE64.decode(&entry.raw) else {
-                return self.transport_failed(
-                    claim,
-                    TransportFailure::soft("invalid base64 rr in ResolveRecord reply"),
-                );
+            let raw = match BASE64.decode(&entry.raw) {
+                Ok(raw) => raw,
+                Err(error) => {
+                    return self.transport_failed(
+                        claim,
+                        TransportFailure::soft(
+                            error
+                                .context("invalid base64 rr in ResolveRecord reply")
+                                .context_str_field("query", name.clone())
+                                .context_field("record_type", record_type),
+                        ),
+                    );
+                }
             };
             match parser(Bytes::from(raw)) {
                 ParsedRecord::One { ttl, value } => records.push((value, Some(ttl))),
                 // e.g. CNAME chain entries included alongside the target RRset
                 ParsedRecord::Other => {}
-                ParsedRecord::Malformed => {
+                ParsedRecord::Malformed(error) => {
                     return self.transport_failed(
                         claim,
-                        TransportFailure::soft("malformed rr in ResolveRecord reply"),
+                        TransportFailure::soft(
+                            error
+                                .context("malformed rr in ResolveRecord reply")
+                                .context_str_field("query", name.clone())
+                                .context_field("record_type", record_type),
+                        ),
                     );
                 }
             }
@@ -1820,7 +1833,7 @@ mod tests {
             300,
             &[0xc0, 0x0c],
         ));
-        assert!(matches!(parse_cname_rr(&raw), RrParse::Malformed));
+        assert!(matches!(parse_cname_rr(&raw), RrParse::Malformed(_)));
     }
 
     #[test]
@@ -1832,26 +1845,26 @@ mod tests {
     #[test]
     fn parse_txt_rr_rejects_malformed() {
         // truncated header
-        assert!(matches!(
-            parse_txt_rr(&Bytes::from_static(&[0, 0, 16])),
-            RrParse::Malformed
-        ));
+        let RrParse::Malformed(error) = parse_txt_rr(&Bytes::from_static(&[0, 0, 16])) else {
+            panic!("expected malformed TXT RR");
+        };
+        assert_eq!(error.to_string(), "DNS resource-record header is truncated",);
         // compression pointer in the owner name
         assert!(matches!(
             parse_txt_rr(&Bytes::from_static(&[0xC0, 0x0C, 0, 16])),
-            RrParse::Malformed
+            RrParse::Malformed(_)
         ));
         // rdata segment length pointing past the buffer
         let mut raw = build_rr(&["example", "com"], RecordType::TXT.into(), 60, &[200]);
         assert!(matches!(
             parse_txt_rr(&Bytes::from(raw.clone())),
-            RrParse::Malformed
+            RrParse::Malformed(_)
         ));
         // TXT rdata must carry at least one character-string
         raw = build_rr(&["example", "com"], RecordType::TXT.into(), 60, &[]);
         assert!(matches!(
             parse_txt_rr(&Bytes::from(raw.clone())),
-            RrParse::Malformed
+            RrParse::Malformed(_)
         ));
         // rdlen pointing past the buffer
         raw = build_rr(
@@ -1863,7 +1876,7 @@ mod tests {
         raw.truncate(raw.len() - 1);
         assert!(matches!(
             parse_txt_rr(&Bytes::from(raw.clone())),
-            RrParse::Malformed
+            RrParse::Malformed(_)
         ));
         // bytes after the declared rdata are not part of a standalone RR
         raw = build_rr(
@@ -1875,7 +1888,7 @@ mod tests {
         raw.push(0);
         assert!(matches!(
             parse_txt_rr(&Bytes::from(raw)),
-            RrParse::Malformed
+            RrParse::Malformed(_)
         ));
     }
 
@@ -1916,7 +1929,7 @@ mod tests {
         ));
         assert!(matches!(
             parse_service_binding_rr(&malformed, RecordType::SVCB),
-            RrParse::Malformed,
+            RrParse::Malformed(_),
         ));
     }
 

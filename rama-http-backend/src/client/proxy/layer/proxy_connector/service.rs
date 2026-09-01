@@ -668,7 +668,7 @@ mod tests {
     use rama_http_types::{Body, Request, Response, conn::FallbackHttpVersion};
     use rama_net::{
         Protocol,
-        address::{HostWithPort, ProxyAddress},
+        address::{Domain, HostWithPort, ProxyAddress},
         client::{
             AddressCandidates, ConnectRequest, ConnectionErrorDomain, ConnectionErrorKind,
             ConnectorService, ConnectorTargetStream, ProxyRoute, ProxyRoutes, ProxyRoutesConnector,
@@ -679,7 +679,7 @@ mod tests {
     use rama_tcp::client::service::TcpConnector;
     use std::{
         convert::Infallible,
-        net::SocketAddr,
+        net::{IpAddr, SocketAddr},
         sync::atomic::{AtomicUsize, Ordering},
     };
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -689,28 +689,27 @@ mod tests {
     struct ConnMarker(u32);
 
     struct OneCandidate {
-        target: HostWithPort,
-        addr: SocketAddr,
+        domain: Domain,
+        ip_addr: IpAddr,
     }
 
     impl AddressCandidates for OneCandidate {
-        fn target(&self) -> Option<&HostWithPort> {
-            Some(&self.target)
+        fn domain(&self) -> &Domain {
+            &self.domain
         }
 
         fn stream<'a>(
             &'a self,
             _: &'a Extensions,
-        ) -> core::pin::Pin<Box<dyn Stream<Item = Result<SocketAddr, BoxError>> + Send + 'a>>
-        {
-            Box::pin(stream::iter([Ok(self.addr)]))
+        ) -> core::pin::Pin<Box<dyn Stream<Item = Result<IpAddr, BoxError>> + Send + 'a>> {
+            Box::pin(stream::iter([Ok(self.ip_addr)]))
         }
     }
 
     #[tokio::test]
     async fn proxy_route_ignores_stale_origin_candidates() {
         let proxy_addr = SocketAddr::from(([127, 0, 0, 1], 8080));
-        let origin_addr = SocketAddr::from(([127, 0, 0, 1], 443));
+        let origin_ip = IpAddr::from([127, 0, 0, 1]);
         let recorded = Arc::new(rama_utils::collections::AppendOnlyVec::<SocketAddr>::new());
         let transport = TcpConnector::new().with_connector({
             let recorded = Arc::clone(&recorded);
@@ -725,8 +724,8 @@ mod tests {
         input
             .extensions
             .insert(ConnectorTargetStream::new(OneCandidate {
-                target: HostWithPort::example_domain_http(),
-                addr: origin_addr,
+                domain: Domain::example(),
+                ip_addr: origin_ip,
             }));
         input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
             address: proxy_addr.into(),

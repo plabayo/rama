@@ -64,7 +64,11 @@ pub mod fuzzing {
                 assert!(total <= raw.len(), "TXT segments exceed validated RR");
                 Some((ttl, segments.len()))
             }
-            _ => None,
+            super::systemd_resolved_wire::RrParse::Malformed(error) => {
+                drop(error);
+                None
+            }
+            super::systemd_resolved_wire::RrParse::Other => None,
         }
     }
 
