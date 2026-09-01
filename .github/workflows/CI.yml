@@ -240,6 +240,14 @@ jobs:
         run: just qa-ffi-apple
       - name: Run transparent proxy Apple FFI e2e tests
         run: just test-e2e-ffi-apple
+      - name: Dump crash reports
+        if: failure()
+        run: |
+          sleep 10
+          for f in ~/Library/Logs/DiagnosticReports/*; do
+            echo "=== $f ==="
+            cat "$f" || true
+          done
 
   test-rama-apple-ne-swift-ffi:
     runs-on: macos-latest
@@ -261,6 +269,14 @@ jobs:
         run: brew install just
       - name: Run RamaAppleNetworkExtension Swift FFI tests
         run: just test-e2e-ffi-swift
+      - name: Dump crash reports
+        if: failure()
+        run: |
+          sleep 10
+          for f in ~/Library/Logs/DiagnosticReports/*; do
+            echo "=== $f ==="
+            cat "$f" || true
+          done
 
   test-rama-apple-xpc:
     runs-on: macos-latest
