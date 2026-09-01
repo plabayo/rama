@@ -4106,6 +4106,7 @@ dependencies = [
  "arc-swap",
  "base64 0.23.1",
  "bindgen",
+ "cc",
  "dial9",
  "dial9-trace-format",
  "hickory-resolver",

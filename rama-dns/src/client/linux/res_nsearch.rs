@@ -595,19 +595,9 @@ mod ffi {
     // - https://man.netbsd.org/resolver.3
     pub(super) type ResState = bindings::__res_state;
 
-    // GNU/Linux symbol mapping:
-    // - `res_ninit` is exported as `__res_ninit`
-    // - `res_nclose` is exported as `__res_nclose`
-    // - `res_nsearch` is exported compatibly as `__res_nsearch` at each
-    //   architecture's original glibc baseline (`GLIBC_2.2.5` on x86_64,
-    //   `GLIBC_2.17` on AArch64)
-    //
-    // glibc 2.34 also introduced `res_nsearch@GLIBC_2.34` in libc, but using
-    // that newer symbol would unnecessarily raise the executable's minimum
-    // glibc version. In particular, cross toolchains which target an older
-    // glibc ABI correctly omit it from their link stubs. The compatibility
-    // symbol remains in libresolv on newer glibc releases and calls the same
-    // implementation.
+    // GNU/Linux changed the public resolver symbol mapping in glibc 2.34.
+    // Compile a small C shim against the target's `<resolv.h>` so native and
+    // cross toolchains each select the mapping appropriate for their glibc ABI.
     //
     // Sources:
     // - https://codebrowser.dev/glibc/glibc/resolv/res_init.c.html
@@ -617,11 +607,11 @@ mod ffi {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[link(name = "resolv")]
     unsafe extern "C" {
-        #[link_name = "__res_ninit"]
+        #[link_name = "rama_res_ninit"]
         pub(super) fn res_ninit(state: *mut ResState) -> c_int;
-        #[link_name = "__res_nclose"]
+        #[link_name = "rama_res_nclose"]
         pub(super) fn res_nclose(state: *mut ResState);
-        #[link_name = "__res_nsearch"]
+        #[link_name = "rama_res_nsearch"]
         pub(super) fn res_nsearch(
             state: *mut ResState,
             dname: *const c_char,
