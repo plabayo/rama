@@ -137,3 +137,43 @@ will also succeed. The difference still though is that GitHub Action will also r
 
 - Tier 1 platforms: MacOS, Linux and Windows
 - Tier 2 platforms: Android and iOS
+
+## Cross-compiling for GNU/Linux
+
+Rama binaries can be cross-compiled from macOS or Windows with
+[`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild). Install Zig,
+`cargo-zigbuild`, and the Rust target, then build as usual:
+
+```bash
+rustup target add x86_64-unknown-linux-gnu
+cargo install --locked cargo-zigbuild
+cargo zigbuild --release --target x86_64-unknown-linux-gnu
+```
+
+This path keeps Rama's native system DNS resolver enabled. No alternate DNS
+feature or Linux sysroot is required. To request a specific minimum glibc
+version, append it to the Zig target, for example
+`x86_64-unknown-linux-gnu.2.17`.
+
+The complete workspace with all features also builds native AWS-LC and jemalloc
+code. Give those builds a target-capable archiver and select AWS-LC's `cc`
+builder. On macOS or another POSIX shell:
+
+```bash
+AR="zig ar" AWS_LC_SYS_CMAKE_BUILDER=0 \
+  cargo zigbuild --locked --workspace --all-targets --all-features \
+  --exclude rama-fuzz --target x86_64-unknown-linux-gnu.2.17
+```
+
+In PowerShell:
+
+```powershell
+$env:AR = "zig ar"
+$env:AWS_LC_SYS_CMAKE_BUILDER = "0"
+cargo zigbuild --locked --workspace --all-targets --all-features `
+  --exclude rama-fuzz --target x86_64-unknown-linux-gnu.2.17
+```
+
+The `rama-fuzz` package is excluded because its binaries get their entry point
+from `cargo fuzz`; plain `cargo build` or `cargo zigbuild` cannot link those
+libFuzzer harnesses. This does not exclude a Rama library or release artifact.

@@ -515,6 +515,65 @@ jobs:
             exit "$rc"
           fi
 
+  test-rust-linux-gnu-cross-host:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            rust-target: x86_64-unknown-linux-gnu
+            zig-target: x86_64-unknown-linux-gnu.2.17
+            workspace-gate: true
+          - os: macos-latest
+            rust-target: aarch64-unknown-linux-gnu
+            zig-target: aarch64-unknown-linux-gnu.2.17
+            workspace-gate: false
+          - os: windows-latest
+            rust-target: x86_64-unknown-linux-gnu
+            zig-target: x86_64-unknown-linux-gnu.2.17
+            workspace-gate: true
+    name: test-rust-linux-gnu-cross-host-${{ matrix.os }}-${{ matrix.rust-target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 240
+    needs:
+      - precheck-rust
+      - precheck-docs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
+        if: startsWith(matrix.os, 'windows')
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.rust-target }}
+      - name: Install Zig
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.15.2
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        with:
+          tool: cargo-zigbuild@0.23.3
+      - uses: ./.github/actions/rust-cache
+        with:
+          key: linux-gnu-cross-${{ matrix.os }}-${{ env.RUST_TOOLCHAIN }}-${{ matrix.zig-target }}
+          env-vars: "RUST_TOOLCHAIN=${{ env.RUST_TOOLCHAIN }}"
+      - name: Link the native DNS downstream path
+        run: >-
+          cargo zigbuild --locked -p rama-examples --bin native_dns
+          --features dns --target ${{ matrix.zig-target }}
+      - name: Link workspace targets with all features
+        if: matrix.workspace-gate
+        env:
+          # jemalloc's configure otherwise selects the host archiver, which
+          # cannot create a Linux archive when this runs on macOS or Windows.
+          AR: zig ar
+          # aws-lc-sys' CMake path currently passes a preprocessor option Zig
+          # rejects; its supported cc builder uses cargo-zigbuild's compiler.
+          AWS_LC_SYS_CMAKE_BUILDER: "0"
+        run: >-
+          cargo zigbuild --locked --workspace --all-targets --all-features
+          --exclude rama-fuzz --target ${{ matrix.zig-target }}
+
   precheck-rust-tier2:
     strategy:
       matrix:
@@ -868,6 +927,7 @@ jobs:
       - test-rama-apple-ne-swift-ffi
       - test-fastcgi-php
       - test-rust-linux-musl
+      - test-rust-linux-gnu-cross-host
       - test-rama-apple-xpc
       - test-dial9-tokio-unstable
       - test-loom
