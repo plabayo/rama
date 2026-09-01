@@ -67,15 +67,10 @@ mmap = ["std", "dep:memmap2"]
 opentelemetry = ["std", "rama-core/opentelemetry"]
 # Optional [dial9] runtime telemetry support.
 #
-# Building with this feature requires `--cfg tokio_unstable`.
+# `--cfg tokio_unstable` widens dial9's task coverage.
 #
-# [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
-dial9 = [
-    "std",
-    "dep:dial9-tokio-telemetry",
-    "dep:dial9-trace-format",
-    "rama-core/dial9",
-]
+# [dial9]: https://github.com/dial9-rs/dial9
+dial9 = ["std", "dep:dial9", "dep:dial9-trace-format", "rama-core/dial9"]
 
 [dependencies]
 ahash = { workspace = true, optional = true }
@@ -85,7 +80,7 @@ base64 = { version = "0.23", default-features = false, features = ["alloc"], opt
 bitflags = { workspace = true }
 const_format = { workspace = true }
 csv = { workspace = true, optional = true }
-dial9-tokio-telemetry = { workspace = true, optional = true }
+dial9 = { workspace = true, optional = true }
 dial9-trace-format = { workspace = true, optional = true }
 idna = { workspace = true, optional = true }
 ipnet = { workspace = true, features = ["serde"] }

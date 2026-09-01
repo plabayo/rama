@@ -4,13 +4,9 @@ use core::future::Future;
 use std::time::Duration;
 use tokio::runtime::{EnterGuard, Handle, Runtime};
 
-#[cfg(feature = "dial9")]
-use crate::telemetry::tracing;
-
 /// A cloneable handle targeting one specific [`OwnedRuntime`].
 ///
-/// Unlike an ambient spawn helper, this handle targets one Tokio runtime and,
-/// when enabled, retains the dial9 telemetry session to which work belongs. It
+/// Unlike an ambient spawn helper, this handle targets one Tokio runtime. It
 /// can therefore spawn correctly instrumented tasks from arbitrary threads.
 ///
 /// The handle does not keep the runtime itself alive. Retain the owning
@@ -19,12 +15,10 @@ use crate::telemetry::tracing;
 #[derive(Clone, Debug)]
 pub struct OwnedRuntimeHandle {
     tokio: Handle,
-    #[cfg(feature = "dial9")]
-    dial9: ::dial9_tokio_telemetry::telemetry::TelemetryHandle,
 }
 
 impl OwnedRuntimeHandle {
-    /// Capture the current Tokio runtime and dial9 telemetry session.
+    /// Capture the current Tokio runtime.
     ///
     /// # Panics
     ///
@@ -33,8 +27,6 @@ impl OwnedRuntimeHandle {
     pub fn current() -> Self {
         Self {
             tokio: Handle::current(),
-            #[cfg(feature = "dial9")]
-            dial9: ::dial9_tokio_telemetry::telemetry::TelemetryHandle::current(),
         }
     }
 
@@ -50,7 +42,7 @@ impl OwnedRuntimeHandle {
     /// Spawn an owned task on the targeted runtime.
     ///
     /// With `dial9` enabled, the task is associated with the exact telemetry
-    /// session captured by this handle, even when called from another thread.
+    /// session of the targeted runtime, even when called from another thread.
     pub fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
     where
         F: Future + Send + 'static,
@@ -58,8 +50,7 @@ impl OwnedRuntimeHandle {
     {
         #[cfg(feature = "dial9")]
         {
-            let _enter = self.tokio.enter();
-            self.dial9.spawn(future)
+            ::dial9::spawn_in(&self.tokio, future)
         }
         #[cfg(not(feature = "dial9"))]
         {
@@ -91,11 +82,7 @@ impl OwnedRuntimeHandle {
 
 impl From<Handle> for OwnedRuntimeHandle {
     fn from(tokio: Handle) -> Self {
-        Self {
-            tokio,
-            #[cfg(feature = "dial9")]
-            dial9: ::dial9_tokio_telemetry::telemetry::TelemetryHandle::disabled(),
-        }
+        Self { tokio }
     }
 }
 
@@ -115,7 +102,10 @@ pub struct OwnedRuntime {
 enum RuntimeInner {
     Tokio(Runtime),
     #[cfg(feature = "dial9")]
-    Dial9(::dial9_tokio_telemetry::TracedRuntime),
+    Dial9 {
+        runtime: Runtime,
+        recorder: ::dial9::Recorder,
+    },
 }
 
 impl OwnedRuntime {
@@ -127,13 +117,14 @@ impl OwnedRuntime {
         }
     }
 
-    /// Wrap a dial9 traced runtime and retain its telemetry guard.
+    /// Wrap a dial9 traced runtime and retain its recorder.
     #[cfg(feature = "dial9")]
     #[cfg_attr(docsrs, doc(cfg(feature = "dial9")))]
     #[must_use]
-    pub fn from_dial9(runtime: ::dial9_tokio_telemetry::TracedRuntime) -> Self {
+    pub fn from_dial9(attached: ::dial9::AttachedRuntime) -> Self {
+        let (recorder, runtime) = attached;
         Self {
-            inner: RuntimeInner::Dial9(runtime),
+            inner: RuntimeInner::Dial9 { runtime, recorder },
         }
     }
 
@@ -145,10 +136,7 @@ impl OwnedRuntime {
         match &self.inner {
             RuntimeInner::Tokio(runtime) => runtime.handle().clone().into(),
             #[cfg(feature = "dial9")]
-            RuntimeInner::Dial9(runtime) => OwnedRuntimeHandle {
-                tokio: runtime.runtime().handle().clone(),
-                dial9: runtime.guard().handle(),
-            },
+            RuntimeInner::Dial9 { runtime, .. } => runtime.handle().clone().into(),
         }
     }
 
@@ -156,7 +144,7 @@ impl OwnedRuntime {
         match &self.inner {
             RuntimeInner::Tokio(runtime) => runtime,
             #[cfg(feature = "dial9")]
-            RuntimeInner::Dial9(runtime) => runtime.runtime(),
+            RuntimeInner::Dial9 { runtime, .. } => runtime,
         }
     }
 
@@ -189,7 +177,7 @@ impl OwnedRuntime {
         match &self.inner {
             RuntimeInner::Tokio(runtime) => runtime.block_on(future),
             #[cfg(feature = "dial9")]
-            RuntimeInner::Dial9(runtime) => runtime.block_on(future),
+            RuntimeInner::Dial9 { runtime, .. } => ::dial9::block_on(runtime, future),
         }
     }
 
@@ -208,45 +196,16 @@ impl OwnedRuntime {
 
     /// Dispose of the runtime without blocking the caller indefinitely.
     ///
-    /// Tokio supports a bounded consuming shutdown directly. dial9's traced
-    /// runtime does not currently expose one, so its drop is isolated on a
-    /// reaper thread and awaited for at most `grace`.
+    /// `grace` is the total budget: workers get it to stop, and with `dial9`
+    /// the trace pipeline drains within whatever of it remains.
     pub fn shutdown_bounded(self, grace: Duration) {
         match self.inner {
             RuntimeInner::Tokio(runtime) => runtime.shutdown_timeout(grace),
             #[cfg(feature = "dial9")]
-            RuntimeInner::Dial9(runtime) => {
-                let (done_tx, done_rx) = std::sync::mpsc::sync_channel(1);
-                let mut runtime = std::mem::ManuallyDrop::new(runtime);
-                let spawned = std::thread::Builder::new()
-                    .name("rama-runtime-dispose".to_owned())
-                    .spawn(move || {
-                        // SAFETY: the closure is the sole owner and takes the
-                        // value exactly once.
-                        drop(unsafe { std::mem::ManuallyDrop::take(&mut runtime) });
-                        _ = done_tx.send(());
-                    });
-                match spawned {
-                    Ok(thread) => match done_rx.recv_timeout(grace) {
-                        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                            if thread.join().is_err() {
-                                tracing::error!("dial9 runtime dispose thread panicked");
-                            }
-                        }
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                            tracing::warn!(
-                                ?grace,
-                                "dial9 runtime shutdown timed out; detaching dispose thread"
-                            );
-                        }
-                    },
-                    Err(err) => {
-                        tracing::error!(
-                            %err,
-                            "failed to spawn dial9 runtime dispose thread; leaking runtime"
-                        );
-                    }
-                }
+            RuntimeInner::Dial9 { runtime, recorder } => {
+                let started = std::time::Instant::now();
+                runtime.shutdown_timeout(grace);
+                recorder.graceful_shutdown(grace.saturating_sub(started.elapsed()));
             }
         }
     }
@@ -282,28 +241,26 @@ mod tests {
     #[cfg(feature = "dial9")]
     #[test]
     fn external_spawn_keeps_its_dial9_session() {
+        use ::dial9::Dial9HandleTokioExt as _;
         use std::sync::mpsc;
 
+        let _slot = crate::rt::dial9_test_util::recorder_slot();
         let temp_dir = rama_utils::fs::tempdir().unwrap();
-        let config = ::dial9_tokio_telemetry::Dial9Config::builder()
-            .enabled(true)
-            .base_path(temp_dir.path().join("owned-runtime.bin"))
-            .max_file_size(1024 * 1024)
-            .max_total_size(4 * 1024 * 1024)
-            .build()
+        let recorder = crate::rt::dial9_test_util::recorder(temp_dir.path());
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder.enable_all();
+        let tokio_runtime = recorder
+            .handle()
+            .attach_tokio_runtime(builder, ::dial9::TokioAttachOptions::default())
             .unwrap();
-        let runtime = OwnedRuntime::from_dial9(
-            ::dial9_tokio_telemetry::TracedRuntime::try_new(config).unwrap(),
-        );
+        let runtime = OwnedRuntime::from_dial9((recorder, tokio_runtime));
         let handle = runtime.handle();
         let (tx, rx) = mpsc::sync_channel(1);
 
         std::thread::spawn(move || {
             _ = handle.spawn(async move {
-                tx.send(
-                    ::dial9_tokio_telemetry::telemetry::TelemetryHandle::current().is_enabled(),
-                )
-                .unwrap();
+                tx.send(::dial9::Dial9Handle::current().is_enabled())
+                    .unwrap();
             });
         })
         .join()
@@ -316,15 +273,19 @@ mod tests {
     #[cfg(feature = "dial9")]
     #[test]
     fn dial9_shutdown_honors_the_grace_period() {
+        use ::dial9::Dial9HandleTokioExt as _;
         use std::sync::mpsc;
 
-        let config = ::dial9_tokio_telemetry::Dial9Config::builder()
-            .enabled(false)
-            .build()
+        // A disabled recorder claims no process-wide slot, so this one needs no
+        // serializing against the other dial9 tests.
+        let recorder = ::dial9::recorder_disabled();
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder.enable_all();
+        let tokio_runtime = recorder
+            .handle()
+            .attach_tokio_runtime(builder, ::dial9::TokioAttachOptions::default())
             .unwrap();
-        let runtime = OwnedRuntime::from_dial9(
-            ::dial9_tokio_telemetry::TracedRuntime::try_new(config).unwrap(),
-        );
+        let runtime = OwnedRuntime::from_dial9((recorder, tokio_runtime));
         let (started_tx, started_rx) = mpsc::sync_channel(1);
         let (release_tx, release_rx) = mpsc::sync_channel(1);
         _ = runtime.spawn(async move {

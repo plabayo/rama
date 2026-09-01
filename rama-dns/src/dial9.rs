@@ -1,8 +1,9 @@
 //! Pre-defined [dial9] events for DNS lookups.
 //!
-//! [dial9]: https://github.com/dial9-rs/dial9-tokio-telemetry
+//! [dial9]: https://github.com/dial9-rs/dial9
 
-use dial9_tokio_telemetry::telemetry::{TelemetryHandle, clock_monotonic_ns, record_event};
+use dial9::Dial9Handle;
+use dial9::core::clock_monotonic_ns;
 use dial9_trace_format::TraceEvent;
 use rama_net::address::Domain;
 
@@ -31,16 +32,13 @@ pub struct DnsLookupResolved {
 
 #[inline]
 pub(crate) fn record_lookup_started(domain: Domain, query_family: u8) {
-    let handle = TelemetryHandle::current();
+    let handle = Dial9Handle::current();
     if handle.is_enabled() {
-        record_event(
-            DnsLookupStarted {
-                timestamp_ns: clock_monotonic_ns(),
-                domain,
-                query_family: query_family as u32,
-            },
-            &handle,
-        );
+        handle.record_event(DnsLookupStarted {
+            timestamp_ns: clock_monotonic_ns(),
+            domain,
+            query_family: query_family as u32,
+        });
     }
 }
 
@@ -51,17 +49,14 @@ pub(crate) fn record_lookup_resolved(
     elapsed_ms: u64,
     success: bool,
 ) {
-    let handle = TelemetryHandle::current();
+    let handle = Dial9Handle::current();
     if handle.is_enabled() {
-        record_event(
-            DnsLookupResolved {
-                timestamp_ns: clock_monotonic_ns(),
-                domain,
-                query_family: query_family as u32,
-                elapsed_ms,
-                success,
-            },
-            &handle,
-        );
+        handle.record_event(DnsLookupResolved {
+            timestamp_ns: clock_monotonic_ns(),
+            domain,
+            query_family: query_family as u32,
+            elapsed_ms,
+            success,
+        });
     }
 }

@@ -25,7 +25,7 @@ jobs:
   precheck-rust:
     runs-on: ubuntu-latest
     env:
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -72,7 +72,7 @@ jobs:
       - precheck-docs
     env:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
@@ -104,7 +104,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
       RUSTDOCFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -141,7 +141,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
@@ -196,7 +196,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -220,7 +220,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -240,6 +240,18 @@ jobs:
         run: just qa-ffi-apple
       - name: Run transparent proxy Apple FFI e2e tests
         run: just test-e2e-ffi-apple
+      - name: Rerun Swift FFI battery under lldb on failure
+        if: failure()
+        run: |
+          sysctl hw.ncpu hw.memsize
+          ulimit -n
+          xcrun lldb --batch \
+            -o "run" \
+            -k "thread backtrace all" \
+            -k "quit 1" \
+            -o "quit" \
+            -- "$(xcrun --find xctest)" \
+            .build/arm64-apple-macosx/debug/RamaAppleNetworkExtensionPackageTests.xctest
 
   test-rama-apple-ne-swift-ffi:
     runs-on: macos-latest
@@ -247,7 +259,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -261,6 +273,18 @@ jobs:
         run: brew install just
       - name: Run RamaAppleNetworkExtension Swift FFI tests
         run: just test-e2e-ffi-swift
+      - name: Rerun Swift FFI battery under lldb on failure
+        if: failure()
+        run: |
+          sysctl hw.ncpu hw.memsize
+          ulimit -n
+          xcrun lldb --batch \
+            -o "run" \
+            -k "thread backtrace all" \
+            -k "quit 1" \
+            -o "quit" \
+            -- "$(xcrun --find xctest)" \
+            .build/arm64-apple-macosx/debug/RamaAppleNetworkExtensionPackageTests.xctest
 
   test-rama-apple-xpc:
     runs-on: macos-latest
@@ -268,7 +292,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -336,7 +360,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -410,7 +434,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -536,7 +560,7 @@ jobs:
       - precheck-docs
     runs-on: ${{ matrix.os }}
     env:
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -590,29 +614,29 @@ jobs:
         run: |
           cargo build --target ${{ matrix.target }} --tests --all-features
 
-  test-baseline-no-tokio-unstable:
+  # The rest of CI builds rama on stable tokio. This job covers dial9's full-fidelity path
+  test-dial9-tokio-unstable:
     runs-on: ubuntu-latest
     needs:
       - precheck-rust
       - precheck-docs
-    env:
-      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
+          components: clippy
       - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
-          tool: nextest
+          tool: just
       - uses: ./.github/actions/rust-cache
         with:
           env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-          key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}-baseline-no-tokio-unstable
-      - name: Baseline tests without tokio_unstable
-        run: |
-          cargo nextest run --workspace
-          cargo test --doc --workspace
+          key: ubuntu-latest-${{env.RUST_TOOLCHAIN}}-dial9-tokio-unstable
+      # The recipe sets `--cfg tokio_unstable`, setting RUSTFLAGS here would
+      # not survive the justfile's own `export RUSTFLAGS`.
+      - name: Run dial9 QA checks under tokio_unstable
+        run: just qa-dial9-tokio-unstable
 
   test-loom:
     runs-on: ubuntu-latest
@@ -663,13 +687,14 @@ jobs:
       - name: cargo hack check without dial9
         run: cargo hack check --each-feature --exclude-features dial9 --exclude-all-features --no-dev-deps --workspace
 
+  # Every feature combination, dial9 included
   cargo-hack-dial9:
     runs-on: ubuntu-latest
     needs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -724,7 +749,7 @@ jobs:
       - precheck-rust
       - precheck-docs
     env:
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
@@ -753,7 +778,7 @@ jobs:
     # The server suite usually takes ~12-22m.
     timeout-minutes: 90
     env:
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -780,7 +805,7 @@ jobs:
     # have occasionally made it exceed 25m.
     timeout-minutes: 90
     env:
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -817,6 +842,12 @@ jobs:
     needs:
       - precheck-rust
       - precheck-docs
+    env:
+      # The released 0.4 baseline still depends on dial9 0.3, which only
+      # compiles with Tokio's unstable APIs (the workspace config used to
+      # carry this flag). Drop once a dial9-0.5-based rama is the
+      # published baseline.
+      RUSTFLAGS: --cfg tokio_unstable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check semver
@@ -838,7 +869,7 @@ jobs:
       - test-fastcgi-php
       - test-rust-linux-musl
       - test-rama-apple-xpc
-      - test-baseline-no-tokio-unstable
+      - test-dial9-tokio-unstable
       - test-loom
       - cargo-hack-base
       - cargo-hack-dial9

@@ -171,7 +171,7 @@ where
             return;
         };
 
-        tokio::spawn(async move {
+        rama_core::rt::spawn(async move {
             match self.resolve(&host).await {
                 Ok(ips) => {
                     tracing::trace!(%host, ?ips, "dns lb: refreshed addresses");

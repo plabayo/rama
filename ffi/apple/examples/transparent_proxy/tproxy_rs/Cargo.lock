@@ -193,6 +193,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
+name = "blazesym"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "847a0a95b041ad5aae1bdc44f2bd54743f76eb0065c4f86b139f81343c287eaf"
+dependencies = [
+ "cpp_demangle",
+ "crc32fast",
+ "flate2",
+ "gimli",
+ "libc",
+ "memmap2",
+ "rustc-demangle",
+ "tempfile",
+]
+
+[[package]]
 name = "block-buffer"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -284,6 +300,12 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 dependencies = [
  "serde",
 ]
+
+[[package]]
+name = "c-enum"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd17eb909a8c6a894926bfcc3400a4bb0e732f5a57d37b1f14e8b29e329bace8"
 
 [[package]]
 name = "cc"
@@ -421,6 +443,15 @@ name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
+
+[[package]]
+name = "cpp_demangle"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0667304c32ea56cb4cd6d2d7c0cfe9a2f8041229db8c033af7f8d69492429def"
+dependencies = [
+ "cfg-if",
+]
 
 [[package]]
 name = "cpufeatures"
@@ -643,10 +674,49 @@ dependencies = [
 ]
 
 [[package]]
-name = "dial9-macro"
-version = "0.3.7"
+name = "dial9"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a7e31f073f2e14e5a9d338c543a0601aeaf7c43fc428cd59ce417230d0db37d"
+checksum = "49b11bce55173f77d9003cce8f129b4af889a4639005c53c3498cef933bc895c"
+dependencies = [
+ "bon",
+ "dial9-core",
+ "dial9-macro",
+ "dial9-metrique",
+ "dial9-perf-self-profile",
+ "dial9-tokio-telemetry",
+ "dial9-trace-format",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dial9-core"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e8cbbc8955394be626249a3b52ddd6bf664373661eaeae70d87eb12bf6f20b6"
+dependencies = [
+ "arc-swap",
+ "bon",
+ "bytes",
+ "crossbeam-queue",
+ "dial9-trace-format",
+ "flate2",
+ "futures-util",
+ "libc",
+ "metrique",
+ "metrique-timesource",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "ulid",
+]
+
+[[package]]
+name = "dial9-macro"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4177b8f8bf95d8e3769c1aad596f5d6fb231953a45c4c3d2a5946fe8e4ec327b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -654,24 +724,52 @@ dependencies = [
 ]
 
 [[package]]
-name = "dial9-tokio-telemetry"
-version = "0.3.15"
+name = "dial9-metrique"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b511dfd54f5191f7eb86856fe19d8e3c8f71673bd256e1bfa1c8128fbbc0cdb"
+checksum = "d42fe0e3e14e8780c4ecf9ee14c183dbcb9b1ae3612cc9a689e7dc83b13adef1"
 dependencies = [
- "arc-swap",
+ "dial9-core",
+ "dial9-trace-format",
+ "metrique",
+ "metrique-writer",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dial9-perf-self-profile"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8f65948455c504bf08576c7b5cfe93bfcaa486d661dc4ee85c2a6309ab89629"
+dependencies = [
+ "blazesym",
+ "bytes",
+ "crossbeam-utils",
+ "dial9-core",
+ "dial9-trace-format",
+ "libc",
+ "perf-event-data",
+ "perf-event-open-sys2",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dial9-tokio-telemetry"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af1244091367c805b5d98a6a590f8ab992efda06e6d2560a6967ef898ffd30a2"
+dependencies = [
  "bon",
  "bytes",
- "crossbeam-queue",
- "dial9-macro",
+ "dial9-core",
  "dial9-trace-format",
  "flate2",
  "futures-util",
  "hostname",
  "libc",
- "metrique",
  "metrique-timesource",
- "metrique-writer",
  "pin-project-lite",
  "serde",
  "serde_json",
@@ -683,20 +781,22 @@ dependencies = [
 
 [[package]]
 name = "dial9-trace-format"
-version = "0.4.1"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3636d6ec60d94840cc414dcd6a95c77b3ba0a7b86d43fd035b89662eeb5cfa7"
+checksum = "86083b7240114b2d0da4a7e9d041571d80ca3b1f92ae0ec794f1be21709daa6a"
 dependencies = [
  "dial9-trace-format-derive",
  "serde",
+ "typeid",
 ]
 
 [[package]]
 name = "dial9-trace-format-derive"
-version = "0.4.1"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fff7c2855b73d0de34bc31d6dc7afbf0f6ce230a668403ac2b57b21d1ffe3928"
+checksum = "9309248f12e414d88bcc9505f78b0c9ed47f79c5b62db611493e19a612cdc9d6"
 dependencies = [
+ "proc-macro-crate",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -764,7 +864,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -817,6 +917,7 @@ dependencies = [
  "crc32fast",
  "libz-sys",
  "miniz_oxide",
+ "zlib-rs",
 ]
 
 [[package]]
@@ -1039,6 +1140,18 @@ dependencies = [
  "r-efi 6.0.0",
  "rand_core 0.10.1",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "gimli"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bf7f043f89559805f8c7cacc432749b2fa0d0a0a9ee46ce47164ed5ba7f126c"
+dependencies = [
+ "fnv",
+ "hashbrown 0.16.1",
+ "indexmap",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -1549,6 +1662,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "memmap2"
+version = "0.9.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "memoffset"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
+dependencies = [
+ "autocfg",
+]
+
+[[package]]
 name = "metrics"
 version = "0.24.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1586,7 +1717,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b55bfa39e6f5e44a37a59a794915ce36d04371471cf62ae365cd9703f58a5e0"
 dependencies = [
  "itoa",
- "jiff",
  "metrique-core",
  "metrique-macro",
  "metrique-service-metrics",
@@ -1595,7 +1725,6 @@ dependencies = [
  "metrique-writer-core",
  "metrique-writer-macro",
  "ryu",
- "serde_json",
  "tokio",
 ]
 
@@ -1938,6 +2067,27 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "perf-event-data"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "575828d9d7d205188048eb1508560607a03d21eafdbba47b8cade1736c1c28e1"
+dependencies = [
+ "bitflags 2.13.1",
+ "c-enum",
+ "perf-event-open-sys2",
+]
+
+[[package]]
+name = "perf-event-open-sys2"
+version = "5.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9c25955321465255e437600b54296983fab1feac2cd0c38958adeb26dbae49e"
+dependencies = [
+ "libc",
+ "memoffset",
+]
 
 [[package]]
 name = "petgraph"
@@ -2323,7 +2473,7 @@ dependencies = [
  "ahash",
  "asynk-strim",
  "bytes",
- "dial9-tokio-telemetry",
+ "dial9",
  "dial9-trace-format",
  "futures",
  "parking_lot",
@@ -2372,7 +2522,7 @@ dependencies = [
  "arc-swap",
  "base64",
  "bindgen",
- "dial9-tokio-telemetry",
+ "dial9",
  "dial9-trace-format",
  "libc",
  "moka",
@@ -2658,7 +2808,7 @@ dependencies = [
  "const_format",
  "core-foundation",
  "csv",
- "dial9-tokio-telemetry",
+ "dial9",
  "dial9-trace-format",
  "idna",
  "ipnet",
@@ -2693,7 +2843,7 @@ dependencies = [
  "atomic-waker",
  "bindgen",
  "cc",
- "dial9-tokio-telemetry",
+ "dial9",
  "dial9-trace-format",
  "libc",
  "parking_lot",
@@ -2726,7 +2876,7 @@ name = "rama-socks5"
 version = "0.5.0"
 dependencies = [
  "byteorder",
- "dial9-tokio-telemetry",
+ "dial9",
  "dial9-trace-format",
  "rama-core",
  "rama-dns",
@@ -2781,7 +2931,7 @@ version = "0.5.0"
 dependencies = [
  "ahash",
  "brotli",
- "dial9-tokio-telemetry",
+ "dial9",
  "dial9-trace-format",
  "flate2",
  "itertools 0.15.0",
@@ -2804,7 +2954,7 @@ dependencies = [
 name = "rama-tls-rustls"
 version = "0.5.0"
 dependencies = [
- "dial9-tokio-telemetry",
+ "dial9",
  "dial9-trace-format",
  "moka",
  "pin-project-lite",
@@ -2911,7 +3061,7 @@ dependencies = [
  "ahash",
  "arc-swap",
  "base64",
- "dial9-tokio-telemetry",
+ "dial9",
  "moka",
  "rama",
  "serde",
@@ -3052,6 +3202,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustc-demangle"
+version = "0.1.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b74b56ffa8bb2830709a538c2cbcae9aa062db0d2a42563bfb09bdaae44020eb"
+
+[[package]]
 name = "rustc-hash"
 version = "2.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3085,7 +3241,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3462,7 +3618,7 @@ dependencies = [
  "fastrand",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3779,10 +3935,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "typeid"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc7d623258602320d5c55d1bc22793b57daff0ec7efc270ea7d55ce1d5f5471c"
+
+[[package]]
 name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "ulid"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
+dependencies = [
+ "rand 0.9.5",
+ "web-time",
+]
 
 [[package]]
 name = "unicase"
@@ -3933,6 +4105,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "web-time"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "webpki-root-certs"
 version = "1.0.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3981,7 +4163,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4236,6 +4418,12 @@ dependencies = [
  "quote",
  "syn 3.0.4",
 ]
+
+[[package]]
+name = "zlib-rs"
+version = "0.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34b31d188d9d685a4f9c7b46d6e36631b07058d2cfe190267adce54dc230bf12"
 
 [[package]]
 name = "zmij"

@@ -1,7 +1,8 @@
 [build]
-# dial9-tokio-telemetry needs Tokio's unstable runtime hooks. We always
-# enable dial9 in this example; this is the canonical place to opt into
-# the cfg flag for everything built from this crate.
+# This example always enables dial9 and wants its full task timeline, which
+# comes from Tokio's unstable runtime hooks. The flag is optional (dial9
+# builds without it, with narrower task coverage), this is the canonical
+# place to opt in for everything built from this crate.
 rustflags = ["--cfg", "tokio_unstable"]
 
 [env]

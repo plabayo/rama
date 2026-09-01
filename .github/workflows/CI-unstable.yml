@@ -36,7 +36,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
@@ -81,7 +81,7 @@ jobs:
     timeout-minutes: ${{ matrix.os == 'windows-latest' && matrix.profile == 'release' && 210 || 150 }}
     env:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
-      RUSTFLAGS: -D warnings --cfg tokio_unstable
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: ilammy/setup-nasm@72793074d3c8cdda771dba85f6deafe00623038b # v1.5.2
@@ -123,7 +123,6 @@ jobs:
       RUSTUP_TOOLCHAIN: beta
       # No `-D warnings` here: we want clippy to apply as many
       # auto-fixes as it can, even if some lints remain unfixable.
-      RUSTFLAGS: --cfg tokio_unstable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -238,11 +237,7 @@ jobs:
       # toolchain can pick up `+crt-static` from a recent image
       # default, so disable it explicitly here. rustc emits exactly
       # this fix in the error message when the combination fires.
-      # Also keep `--cfg tokio_unstable` here because setting
-      # RUSTFLAGS via env overrides the workspace's
-      # `.cargo/config.toml` rustflags entirely (rather than
-      # appending).
-      RUSTFLAGS: "--cfg tokio_unstable -C target-feature=-crt-static"
+      RUSTFLAGS: "-C target-feature=-crt-static"
       # `cargo-fuzz` uses the host triple by default. A recent
       # ubuntu-latest image flipped that to
       # `x86_64-unknown-linux-musl`, which isn't installed by

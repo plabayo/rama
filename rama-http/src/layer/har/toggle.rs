@@ -73,7 +73,7 @@ where
 {
     let toggle: Arc<AtomicBool> = Default::default();
     let flag = toggle.clone();
-    tokio::spawn(async move {
+    rama_core::rt::spawn(async move {
         let mut cancel = std::pin::pin!(cancel);
         loop {
             tokio::select! {
@@ -115,7 +115,7 @@ where
 {
     let toggle: Arc<AtomicBool> = Default::default();
     let flag = toggle.clone();
-    tokio::spawn(async move {
+    rama_core::rt::spawn(async move {
         let mut cancel = std::pin::pin!(cancel);
         loop {
             tokio::select! {
@@ -161,7 +161,7 @@ where
     let toggle: Arc<AtomicBool> = Default::default();
     let flag = toggle.clone();
 
-    tokio::spawn(async move {
+    rama_core::rt::spawn(async move {
         let mut cancel = std::pin::pin!(cancel);
         loop {
             tokio::select! {

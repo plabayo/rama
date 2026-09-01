@@ -256,7 +256,7 @@ impl FileRecorderTask {
         let mut completed = BTreeMap::new();
         let (cancel_tx, _) = watch::channel(false);
         let (temp_cleanup, temp_cleanup_worker) = TempPathCleanup::new();
-        let temp_cleanup_task = tokio::spawn(temp_cleanup_worker.run());
+        let temp_cleanup_task = rama_core::rt::spawn(temp_cleanup_worker.run());
 
         loop {
             tokio::select! {
@@ -624,7 +624,7 @@ async fn create_web_socket_capture(
     });
     let closer = capture.close_handle();
     let (done, completion) = oneshot::channel();
-    tokio::spawn(async move {
+    rama_core::rt::spawn(async move {
         _ = done.send(write_web_socket_capture(file, path, receiver, closed_at_rx).await);
     });
     Ok((capture, completion, closer))
@@ -1393,7 +1393,7 @@ impl FileRecorder {
         self.task.once.call_once(|| {
             let task = self.task.task.lock().take();
             if let Some(task) = task {
-                tokio::spawn(task.run());
+                rama_core::rt::spawn(task.run());
             }
         });
     }
