@@ -117,6 +117,12 @@ Most organisations running rama in production do so on a variety of Linux system
 | Linux    | ✅     | AMD x64 developer machine with Ubuntu 25 + [GitHub Action (Ubuntu 24.04)](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) (arm64 and amd64) |
 | Windows  | ✅     | Windows 11 AMD x64 developer machine + [GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners) (arm64 and amd64) |
 
+GNU/Linux binaries can also be cross-compiled from macOS and Windows using
+[`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild). This is tested
+in CI for `x86_64-unknown-linux-gnu` with Rama's native system DNS resolver and
+native TLS backends enabled. Cross-built binaries must be run on a compatible
+Linux system, not on the macOS or Windows build host.
+
 ### Tier 2 Platforms
 
 Tier 2 platforms run `cargo check` and also `cargo build` tests.
