@@ -1,13 +1,39 @@
 //! Middleware for removing headers from requests and responses.
 //!
-//! See [request] and [response] for more details.
+//! For an HTTP intermediary, the context-aware hop-by-hop pair is the
+//! recommended default. When using transform middleware, place the request
+//! layer outside it and the response layer inside it. This consumes fields
+//! belonging to each incoming hop before the middleware handles the message,
+//! while fields originated by the middleware remain available to the next
+//! hop:
+//!
+//! ```
+//! use rama_core::{Layer, service::service_fn};
+//! use rama_http::{Body, Request, Response};
+//! use rama_http::layer::remove_header::{
+//!     RemoveRequestHeaderLayer, RemoveResponseHeaderLayer,
+//! };
+//!
+//! let client = service_fn(async |_request: Request| {
+//!     Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+//! });
+//! let proxy = (
+//!     RemoveRequestHeaderLayer::hop_by_hop(),
+//!     // transform middleware goes here
+//!     RemoveResponseHeaderLayer::hop_by_hop(),
+//! ).into_layer(client);
+//! # let _ = proxy;
+//! ```
+//!
+//! Use the `hop_by_hop_strict` layer constructors only when upgrade and
+//! trailer capabilities are intentionally unsupported. See [request] and
+//! [response] for the other removal policies.
 
 use rama_core::bytes::BytesMut;
 use rama_core::telemetry::tracing;
-use rama_http_headers::{Connection, HeaderMapExt};
 use rama_utils::str::{any_submatch_ignore_ascii_case, starts_with_ignore_ascii_case};
 
-use crate::{HeaderMap, HeaderName, HeaderValue, header};
+use crate::{HeaderMap, HeaderName, HeaderValue, Response, StatusCode, Version, header};
 
 pub mod request;
 pub mod response;
@@ -35,41 +61,45 @@ fn remove_headers_by_exact_name(headers: &mut HeaderMap, name: &HeaderName) {
     headers.remove(name);
 }
 
-/// Remove hop by hop headers from an outbound request.
+#[doc(inline)]
+pub use rama_http_types::header::hop_by_hop::{
+    HopByHopHeaderContext, HopByHopResponseDisposition, connection_header_names,
+    remove_hop_by_hop_headers, remove_hop_by_hop_request_headers,
+    remove_hop_by_hop_response_headers, sanitize_hop_by_hop_request_headers,
+    sanitize_hop_by_hop_response_headers,
+};
+pub use rama_http_types::header::proxy_auth::{
+    remove_proxy_auth_request_headers, remove_proxy_auth_response_headers,
+};
+
+/// Sanitize a response for forwarding to the next hop.
 ///
-/// This function applies the rules from RFC 9110 for hop by hop headers
-/// before forwarding a request to another hop.
-///
-/// This should be called when acting as a forward proxy, reverse proxy,
-/// or gateway that forwards requests to an upstream server.
-///
-/// End-to-end forwarding metadata is preserved unless explicitly named by the
-/// `Connection` header. Use [`remove_forwarding_metadata_request_headers`] when
-/// that metadata must be scrubbed as a separate policy decision.
-pub fn remove_hop_by_hop_request_headers(headers: &mut HeaderMap) {
-    while let Some(c) = headers.typed_get::<Connection>() {
-        for header in c.iter_headers() {
-            while headers.remove(header).is_some() {
-                tracing::trace!(
-                    "removed hop-by-hop request header listed in Connection header for name: {header}"
-                );
-            }
-        }
-        _ = headers.remove(header::CONNECTION);
+/// An invalid or uncorrelated protocol upgrade is replaced with a `502 Bad
+/// Gateway` response. HTTP/1.1 responses also instruct the next hop to close,
+/// because forwarding a stripped `101 Switching Protocols` response would
+/// desynchronize the connection.
+pub fn sanitize_hop_by_hop_response<B>(
+    response: &mut Response<B>,
+    request_context: &HopByHopHeaderContext,
+) {
+    let disposition = sanitize_hop_by_hop_response_headers(response, request_context);
+    if disposition != HopByHopResponseDisposition::RejectUpgrade {
+        return;
     }
-    for header in [
-        &header::CONNECTION,
-        &header::PROXY_CONNECTION,
-        &header::PROXY_AUTHORIZATION,
-        &header::KEEP_ALIVE,
-        &header::TE,
-        &header::TRAILER,
-        &header::TRANSFER_ENCODING,
-        &header::UPGRADE,
-    ] {
-        while headers.remove(header).is_some() {
-            tracing::trace!("removed hop-by-hop request header for name: {header}");
-        }
+
+    let version = response.version();
+    tracing::debug!(
+        http.response.status = %response.status(),
+        http.version = %version,
+        response.header_count = response.headers().len(),
+        "replacing rejected HTTP protocol upgrade with a bad gateway response"
+    );
+    *response.status_mut() = StatusCode::BAD_GATEWAY;
+    response.headers_mut().clear();
+    if version == Version::HTTP_11 {
+        response
+            .headers_mut()
+            .insert(header::CONNECTION, HeaderValue::from_static("close"));
     }
 }
 
@@ -97,38 +127,6 @@ pub fn remove_forwarding_metadata_request_headers(headers: &mut HeaderMap) {
     ] {
         while headers.remove(header).is_some() {
             tracing::trace!("removed forwarding metadata request header for name: {header}");
-        }
-    }
-}
-
-/// Remove hop by hop headers from an outbound response.
-///
-/// This function applies the rules from RFC 9110 for hop by hop headers
-/// before forwarding a response to a downstream client.
-///
-/// This should be called when relaying responses received from an upstream
-/// server to a client.
-pub fn remove_hop_by_hop_response_headers(headers: &mut HeaderMap) {
-    while let Some(c) = headers.typed_get::<Connection>() {
-        for header in c.iter_headers() {
-            while headers.remove(header).is_some() {
-                tracing::trace!(
-                    "removed hop-by-hop response header listed in Connection header for name: {header}"
-                );
-            }
-        }
-        _ = headers.remove(header::CONNECTION);
-    }
-    for header in [
-        &header::CONNECTION,
-        &header::KEEP_ALIVE,
-        &header::PROXY_AUTHENTICATE,
-        &header::TRAILER,
-        &header::TRANSFER_ENCODING,
-        &header::UPGRADE,
-    ] {
-        while headers.remove(header).is_some() {
-            tracing::trace!("removed hop-by-hop response header for name: {header}");
         }
     }
 }
@@ -183,16 +181,13 @@ pub fn coalesce_cookie_headers(headers: &mut HeaderMap) {
 /// `:authority` pseudo-header) and `Sec-WebSocket-Key` (unused in the HTTP/2
 /// WebSocket handshake per RFC 8441 §5.1).
 pub fn remove_illegal_h2_request_headers(headers: &mut HeaderMap) {
-    while let Some(c) = headers.typed_get::<Connection>() {
-        for header in c.iter_headers() {
-            while headers.remove(header).is_some() {
-                tracing::trace!(
-                    header = %header,
-                    "removed connection-specific request header listed in Connection header for name"
-                );
-            }
+    for header in connection_header_names(headers) {
+        while headers.remove(&header).is_some() {
+            tracing::trace!(
+                %header,
+                "removed connection-specific request header listed in Connection header for name"
+            );
         }
-        _ = headers.remove(header::CONNECTION);
     }
     for header in [
         &header::CONNECTION,
@@ -239,16 +234,13 @@ pub fn remove_illegal_h2_request_headers(headers: &mut HeaderMap) {
 /// downstream hop), and use `remove_hop_by_hop_response_headers` when actually
 /// relaying a response across a connection hop.
 pub fn remove_illegal_h2_response_headers(headers: &mut HeaderMap) {
-    while let Some(c) = headers.typed_get::<Connection>() {
-        for header in c.iter_headers() {
-            while headers.remove(header).is_some() {
-                tracing::trace!(
-                    header = %header,
-                    "removed connection-specific response header listed in Connection header for name"
-                );
-            }
+    for header in connection_header_names(headers) {
+        while headers.remove(&header).is_some() {
+            tracing::trace!(
+                %header,
+                "removed connection-specific response header listed in Connection header for name"
+            );
         }
-        _ = headers.remove(header::CONNECTION);
     }
     for header in [
         &header::CONNECTION,
@@ -424,6 +416,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Request, Response, StatusCode, Version};
+
+    fn values<'a>(headers: &'a HeaderMap, name: &HeaderName) -> Vec<&'a [u8]> {
+        headers
+            .get_all(name)
+            .iter()
+            .map(HeaderValue::as_bytes)
+            .collect()
+    }
 
     const FORWARDING_METADATA_HEADERS: [&str; 10] = [
         "x-forwarded-for",
@@ -460,9 +461,10 @@ mod tests {
                 "expected {name} to be preserved"
             );
         }
-        for name in ["connection", "x-hop", "keep-alive", "proxy-authorization"] {
+        for name in ["connection", "x-hop", "keep-alive"] {
             assert!(!headers.contains_key(name), "expected {name} to be removed");
         }
+        assert!(headers.contains_key(header::PROXY_AUTHORIZATION));
     }
 
     #[test]
@@ -476,6 +478,233 @@ mod tests {
 
         assert!(!headers.contains_key(header::FORWARDED));
         assert!(headers.contains_key(header::VIA));
+    }
+
+    #[test]
+    fn strict_cleanup_removes_valid_nominations_beside_obs_text() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONNECTION,
+            HeaderValue::from_bytes(b"close, x-hop, \xff").unwrap(),
+        );
+        headers.insert("x-hop", HeaderValue::from_static("secret"));
+
+        remove_hop_by_hop_headers(&mut headers);
+
+        assert!(headers.is_empty());
+    }
+
+    #[test]
+    fn strict_cleanup_is_consistent_and_preserves_proxy_auth() {
+        let mut request_headers = HeaderMap::new();
+        request_headers.insert(
+            header::PROXY_AUTHENTICATE,
+            HeaderValue::from_static("Basic"),
+        );
+        remove_hop_by_hop_request_headers(&mut request_headers);
+        assert!(request_headers.contains_key(header::PROXY_AUTHENTICATE));
+
+        let mut response_headers = HeaderMap::new();
+        response_headers.insert(
+            header::PROXY_AUTHORIZATION,
+            HeaderValue::from_static("Basic dGVzdA=="),
+        );
+        response_headers.insert(header::PROXY_CONNECTION, HeaderValue::from_static("close"));
+        response_headers.insert(header::TE, HeaderValue::from_static("trailers"));
+        remove_hop_by_hop_response_headers(&mut response_headers);
+        assert!(response_headers.contains_key(header::PROXY_AUTHORIZATION));
+        assert!(!response_headers.contains_key(header::PROXY_CONNECTION));
+        assert!(!response_headers.contains_key(header::TE));
+
+        remove_hop_by_hop_headers(&mut response_headers);
+        assert_eq!(response_headers.len(), 1);
+        assert!(response_headers.contains_key(header::PROXY_AUTHORIZATION));
+    }
+
+    #[test]
+    fn proxy_auth_cleanup_is_explicit() {
+        let mut request = HeaderMap::new();
+        request.insert(
+            header::PROXY_AUTHORIZATION,
+            HeaderValue::from_static("Basic dGVzdA=="),
+        );
+        remove_proxy_auth_request_headers(&mut request);
+        assert!(request.is_empty());
+
+        let mut response = HeaderMap::new();
+        response.insert(
+            header::PROXY_AUTHENTICATE,
+            HeaderValue::from_static("Basic"),
+        );
+        response.insert(
+            HeaderName::from_static("proxy-authentication-info"),
+            HeaderValue::from_static("nextnonce=abc"),
+        );
+        remove_proxy_auth_response_headers(&mut response);
+        assert!(response.is_empty());
+    }
+
+    #[test]
+    fn request_sanitizer_preserves_only_next_hop_metadata() {
+        let mut request = Request::builder()
+            .version(Version::HTTP_11)
+            .header("connection", "keep-alive, UpGrAdE, x-hop")
+            .header("upgrade", "WebSocket, example/1")
+            .header("keep-alive", "timeout=5")
+            .header("trailer", "x-checksum")
+            .header("x-hop", "secret")
+            .header("proxy-authorization", "Basic dGVzdA==")
+            .header("accept", "application/json")
+            .body(())
+            .unwrap();
+
+        let context = sanitize_hop_by_hop_request_headers(&mut request);
+
+        assert_eq!(values(request.headers(), &header::CONNECTION), [b"UpGrAdE"]);
+        assert_eq!(
+            values(request.headers(), &header::UPGRADE),
+            [b"WebSocket, example/1"]
+        );
+        assert_eq!(request.headers()[header::TRAILER], "x-checksum");
+        assert!(!request.headers().contains_key(header::KEEP_ALIVE));
+        assert!(!request.headers().contains_key("x-hop"));
+        assert!(request.headers().contains_key(header::PROXY_AUTHORIZATION));
+        assert_eq!(request.headers()[header::ACCEPT], "application/json");
+        assert_eq!(
+            context.nominated_headers(),
+            [
+                header::KEEP_ALIVE,
+                header::UPGRADE,
+                HeaderName::from_static("x-hop")
+            ]
+        );
+    }
+
+    #[test]
+    fn invalid_or_non_http11_upgrade_is_not_preserved() {
+        for (version, upgrade) in [
+            (Version::HTTP_10, "websocket"),
+            (Version::HTTP_2, "websocket"),
+            (Version::HTTP_3, "websocket"),
+            (Version::HTTP_11, "websocket, invalid protocol"),
+        ] {
+            let mut request = Request::builder()
+                .version(version)
+                .header("connection", "upgrade")
+                .header("upgrade", upgrade)
+                .body(())
+                .unwrap();
+
+            let _context = sanitize_hop_by_hop_request_headers(&mut request);
+
+            assert!(request.headers().is_empty(), "version: {version:?}");
+        }
+    }
+
+    #[test]
+    fn malformed_connection_does_not_preserve_upgrade() {
+        let mut request = Request::builder()
+            .version(Version::HTTP_11)
+            .body(())
+            .unwrap();
+        request.headers_mut().insert(
+            header::CONNECTION,
+            HeaderValue::from_bytes(b"upgrade, \xff").unwrap(),
+        );
+        request
+            .headers_mut()
+            .insert(header::UPGRADE, HeaderValue::from_static("websocket"));
+
+        let _context = sanitize_hop_by_hop_request_headers(&mut request);
+
+        assert!(request.headers().is_empty());
+    }
+
+    #[test]
+    fn connection_nomination_suppresses_trailer_restoration() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::CONNECTION, HeaderValue::from_static("trailer"));
+        headers.insert(header::TRAILER, HeaderValue::from_static("x-checksum"));
+
+        let context = HopByHopHeaderContext::take(&mut headers, Version::HTTP_11);
+        context.restore_response(&mut headers, Version::HTTP_11, &[]);
+
+        assert!(headers.is_empty());
+    }
+
+    #[test]
+    fn response_sanitizer_requires_matching_request_and_switch_status() {
+        let request = Request::builder()
+            .version(Version::HTTP_11)
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket, example/1")
+            .body(())
+            .unwrap();
+        let request_context = HopByHopHeaderContext::capture(request.headers(), request.version());
+
+        for (status, protocol, preserved) in [
+            (StatusCode::SWITCHING_PROTOCOLS, "WebSocket", true),
+            (StatusCode::SWITCHING_PROTOCOLS, "example/1", true),
+            (
+                StatusCode::SWITCHING_PROTOCOLS,
+                "WebSocket, example/1",
+                true,
+            ),
+            (StatusCode::SWITCHING_PROTOCOLS, "example/2", false),
+            (
+                StatusCode::SWITCHING_PROTOCOLS,
+                "WebSocket, example/2",
+                false,
+            ),
+            (StatusCode::OK, "websocket", false),
+        ] {
+            let mut response = Response::builder()
+                .version(Version::HTTP_11)
+                .status(status)
+                .header("connection", "keep-alive, upgrade, x-hop")
+                .header("upgrade", protocol)
+                .header("keep-alive", "timeout=5")
+                .header("x-hop", "secret")
+                .header("proxy-authenticate", "Basic")
+                .body(())
+                .unwrap();
+
+            let disposition = sanitize_hop_by_hop_response_headers(&mut response, &request_context);
+
+            assert_eq!(response.headers().contains_key(header::UPGRADE), preserved);
+            assert_eq!(
+                response.headers().contains_key(header::CONNECTION),
+                preserved
+            );
+            assert!(!response.headers().contains_key(header::KEEP_ALIVE));
+            assert!(!response.headers().contains_key("x-hop"));
+            assert!(response.headers().contains_key(header::PROXY_AUTHENTICATE));
+            assert_eq!(
+                disposition,
+                if status == StatusCode::SWITCHING_PROTOCOLS && !preserved {
+                    HopByHopResponseDisposition::RejectUpgrade
+                } else {
+                    HopByHopResponseDisposition::Forward
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn unsolicited_switching_protocols_upgrade_is_removed() {
+        let request_context = HopByHopHeaderContext::default();
+        let mut response = Response::builder()
+            .version(Version::HTTP_11)
+            .status(StatusCode::SWITCHING_PROTOCOLS)
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .body(())
+            .unwrap();
+
+        let disposition = sanitize_hop_by_hop_response_headers(&mut response, &request_context);
+
+        assert!(response.headers().is_empty());
+        assert_eq!(disposition, HopByHopResponseDisposition::RejectUpgrade);
     }
 
     #[test]

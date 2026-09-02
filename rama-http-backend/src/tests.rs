@@ -7,12 +7,19 @@ use std::{
     time::{Duration, Instant},
 };
 
-use tokio::time::sleep;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    time::sleep,
+};
 
 use rama_core::{
     Layer, Service,
+    bytes::Bytes,
     extensions::ExtensionsRef,
-    futures::future::{join, join_all},
+    futures::{
+        future::{join, join_all},
+        stream,
+    },
     graceful::Shutdown,
     io::BridgeIo,
     layer::ArcLayer,
@@ -28,6 +35,7 @@ use rama_http::{
 use rama_http_types::{
     Body, Request, Response, StatusCode, Version,
     conn::{H2ClientContextParams, PeerH2Settings, TargetHttpVersion},
+    proto::h1::ext::ConnectionClose,
 };
 use rama_net::{
     TargetHttpVersionInputExt,
@@ -248,6 +256,77 @@ async fn mitm_relay_server_svc_fn(req: Request) -> Result<Response, Infallible> 
     Ok(Response::new(Body::from(body)))
 }
 
+async fn mitm_relay_hop_by_hop_svc_fn(req: Request) -> Result<Response, Infallible> {
+    assert!(!req.headers().contains_key("connection"));
+    assert!(!req.headers().contains_key("x-request-hop"));
+    assert!(!req.extensions().contains::<ConnectionClose>());
+    assert_eq!(req.headers()["proxy-authorization"], "Basic dGVzdA==");
+
+    Ok(Response::builder()
+        .header("connection", "x-response-hop")
+        .header("x-response-hop", "secret")
+        .header("proxy-authenticate", "Basic")
+        .header("x-end-to-end", "visible")
+        .body(Body::from("complete response"))
+        .unwrap())
+}
+
+async fn mitm_relay_middleware_hop_by_hop_svc_fn(req: Request) -> Result<Response, Infallible> {
+    assert!(!req.headers().contains_key("x-ingress-hop"));
+    assert_eq!(req.headers()["connection"], "x-request-hop");
+    assert_eq!(req.headers()["x-request-hop"], "new request intent");
+
+    Ok(Response::builder()
+        .header("connection", "x-upstream-hop")
+        .header("x-upstream-hop", "upstream metadata")
+        .header("x-end-to-end", "visible")
+        .body(Body::from("complete response"))
+        .unwrap())
+}
+
+async fn mitm_relay_trailer_svc_fn(req: Request) -> Result<Response, Infallible> {
+    assert_eq!(req.headers()["te"], "trailers");
+    if req.version() == Version::HTTP_11 {
+        assert_eq!(req.headers()["connection"], "TE");
+    } else {
+        assert!(!req.headers().contains_key("connection"));
+    }
+
+    let mut trailers = rama_http_types::HeaderMap::new();
+    trailers.insert("x-checksum", HeaderValue::from_static("deadbeef"));
+    let stream = stream::iter([Ok::<_, Infallible>(Bytes::from_static(b"hello"))]);
+    let body = Body::from_stream(stream).with_trailer_headers(trailers);
+
+    Ok(Response::builder()
+        .header("trailer", "x-checksum")
+        .body(body)
+        .unwrap())
+}
+
+async fn mitm_relay_unsolicited_upgrade_svc_fn(_: Request) -> Result<Response, Infallible> {
+    Ok(Response::builder()
+        .version(Version::HTTP_11)
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header("connection", "upgrade")
+        .header("upgrade", "websocket")
+        .header("sec-websocket-accept", "invalid")
+        .body(Body::empty())
+        .unwrap())
+}
+
+async fn mitm_relay_upgrade_svc_fn(req: Request) -> Result<Response, Infallible> {
+    assert_eq!(req.headers()["connection"], "upgrade");
+    assert_eq!(req.headers()["upgrade"], "websocket");
+
+    Ok(Response::builder()
+        .version(Version::HTTP_11)
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header("connection", "upgrade")
+        .header("upgrade", "websocket")
+        .body(Body::empty())
+        .unwrap())
+}
+
 async fn mitm_relay_server_close_after_first_request_svc_fn(
     req: Request,
     request_count: Arc<AtomicUsize>,
@@ -255,7 +334,19 @@ async fn mitm_relay_server_close_after_first_request_svc_fn(
     assert!(req.headers().contains_key("x-observed-req"));
 
     let id = request_count.fetch_add(1, Ordering::SeqCst);
-    let mut response = Response::new(Body::from(format!("single response body ({id})")));
+    let stream = stream::unfold(0, move |part| async move {
+        sleep(Duration::from_millis(10)).await;
+        match part {
+            0 => Some((
+                Ok::<_, Infallible>(Bytes::from_static(b"single response ")),
+                1,
+            )),
+            1 => Some((Ok(Bytes::from(format!("body ({id})"))), 2)),
+            _ => None,
+        }
+    });
+    let body = Body::from_stream(stream);
+    let mut response = Response::new(body);
     if id == 0 {
         response.headers_mut().insert(
             HeaderName::from_static("connection"),
@@ -343,6 +434,409 @@ async fn test_mitm_relay_roundtrip_inner(version: Version) {
     let fut = graceful.shutdown();
 
     fut.await;
+}
+
+#[tokio::test]
+async fn http11_mitm_relay_default_sanitizes_both_hops() {
+    let (mut client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
+
+    let token = CancellationToken::new();
+    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let cancel_drop_guard = token.drop_guard();
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpServer::auto(Executor::graceful(guard))
+            .service(service_fn(mitm_relay_hop_by_hop_svc_fn))
+            .serve(MockSocket::new(server_stream))
+            .await
+            .unwrap();
+    });
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpMitmRelay::new(Executor::graceful(guard))
+            .serve(BridgeIo(
+                MockSocket::new(relay_ingress_stream),
+                MockSocket::new(relay_egress_stream),
+            ))
+            .await
+            .unwrap();
+    });
+
+    client_stream
+        .write_all(
+            b"GET / HTTP/1.1\r\n\
+              Host: www.example.com\r\n\
+              Connection: close, x-request-hop\r\n\
+              X-Request-Hop: secret\r\n\
+              Proxy-Authorization: Basic dGVzdA==\r\n\
+              \r\n",
+        )
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        client_stream.read_to_end(&mut response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let response = String::from_utf8(response).unwrap();
+
+    assert!(!response.to_ascii_lowercase().contains("x-response-hop"));
+    assert!(
+        response
+            .to_ascii_lowercase()
+            .contains("x-end-to-end: visible")
+    );
+    assert!(
+        response
+            .to_ascii_lowercase()
+            .contains("proxy-authenticate: basic")
+    );
+    assert!(response.ends_with("complete response"));
+
+    drop(client_stream);
+    cancel_drop_guard.disarm().cancel();
+    graceful.shutdown().await;
+}
+
+#[tokio::test]
+async fn http11_mitm_relay_sanitizes_before_transform_middleware() {
+    let (mut client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
+
+    let token = CancellationToken::new();
+    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let cancel_drop_guard = token.drop_guard();
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpServer::auto(Executor::graceful(guard))
+            .service(service_fn(mitm_relay_middleware_hop_by_hop_svc_fn))
+            .serve(MockSocket::new(server_stream))
+            .await
+            .unwrap();
+    });
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpMitmRelay::new(Executor::graceful(guard))
+            .with_http_middleware((
+                ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
+                SetRequestHeaderLayer::overriding(
+                    HeaderName::from_static("connection"),
+                    HeaderValue::from_static("x-request-hop"),
+                ),
+                SetRequestHeaderLayer::overriding(
+                    HeaderName::from_static("x-request-hop"),
+                    HeaderValue::from_static("new request intent"),
+                ),
+                SetResponseHeaderLayer::overriding(
+                    HeaderName::from_static("connection"),
+                    HeaderValue::from_static("x-response-hop"),
+                ),
+                SetResponseHeaderLayer::overriding(
+                    HeaderName::from_static("x-response-hop"),
+                    HeaderValue::from_static("new response intent"),
+                ),
+                ArcLayer::new(),
+            ))
+            .serve(BridgeIo(
+                MockSocket::new(relay_ingress_stream),
+                MockSocket::new(relay_egress_stream),
+            ))
+            .await
+            .unwrap();
+    });
+
+    client_stream
+        .write_all(
+            b"GET / HTTP/1.1\r\n\
+              Host: www.example.com\r\n\
+              Connection: x-ingress-hop\r\n\
+              X-Ingress-Hop: ingress metadata\r\n\
+              \r\n",
+        )
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let mut chunk = [0; 1024];
+        loop {
+            let read = client_stream.read(&mut chunk).await?;
+            if read == 0 {
+                return Ok::<_, std::io::Error>(());
+            }
+            response.extend_from_slice(&chunk[..read]);
+            if response.ends_with(b"complete response") {
+                return Ok(());
+            }
+        }
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    let response = String::from_utf8(response).unwrap().to_ascii_lowercase();
+
+    assert!(!response.contains("x-upstream-hop"), "{response}");
+    assert!(
+        response.contains("connection: x-response-hop"),
+        "{response}"
+    );
+    assert!(
+        response.contains("x-response-hop: new response intent"),
+        "{response}"
+    );
+    assert!(response.contains("x-end-to-end: visible"), "{response}");
+    assert!(response.ends_with("complete response"), "{response}");
+
+    drop(client_stream);
+    cancel_drop_guard.disarm().cancel();
+    graceful.shutdown().await;
+}
+
+#[tokio::test]
+async fn http11_mitm_relay_default_preserves_response_trailers() {
+    let (mut client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
+
+    let token = CancellationToken::new();
+    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let cancel_drop_guard = token.drop_guard();
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpServer::auto(Executor::graceful(guard))
+            .service(service_fn(mitm_relay_trailer_svc_fn))
+            .serve(MockSocket::new(server_stream))
+            .await
+            .unwrap();
+    });
+    graceful.spawn_task_fn(async move |guard| {
+        HttpMitmRelay::new(Executor::graceful(guard))
+            .serve(BridgeIo(
+                MockSocket::new(relay_ingress_stream),
+                MockSocket::new(relay_egress_stream),
+            ))
+            .await
+            .unwrap();
+    });
+
+    client_stream
+        .write_all(
+            b"GET / HTTP/1.1\r\n\
+              Host: www.example.com\r\n\
+              Connection: close, TE\r\n\
+              TE: gzip, trailers\r\n\
+              \r\n",
+        )
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        client_stream.read_to_end(&mut response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let response = String::from_utf8(response).unwrap().to_ascii_lowercase();
+
+    assert!(response.contains("trailer: x-checksum"));
+    assert!(response.ends_with("0\r\nx-checksum: deadbeef\r\n\r\n"));
+
+    drop(client_stream);
+    cancel_drop_guard.disarm().cancel();
+    graceful.shutdown().await;
+}
+
+#[tokio::test]
+async fn h2_mitm_relay_default_preserves_response_trailers() {
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
+
+    let token = CancellationToken::new();
+    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let cancel_drop_guard = token.drop_guard();
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpServer::auto(Executor::graceful(guard))
+            .service(service_fn(mitm_relay_trailer_svc_fn))
+            .serve(MockSocket::new(server_stream))
+            .await
+            .unwrap();
+    });
+    graceful.spawn_task_fn(async move |guard| {
+        HttpMitmRelay::new(Executor::graceful(guard))
+            .serve(BridgeIo(
+                MockSocket::new(relay_ingress_stream),
+                MockSocket::new(relay_egress_stream),
+            ))
+            .await
+            .unwrap();
+    });
+
+    let mut request = create_test_request(Version::HTTP_2);
+    request
+        .headers_mut()
+        .insert("te", HeaderValue::from_static("trailers"));
+    let conn = http_connect(
+        MockSocket::new(client_stream),
+        request,
+        Executor::graceful(graceful.guard()),
+    )
+    .await
+    .unwrap()
+    .conn;
+    let mut request = create_test_request(Version::HTTP_2);
+    request
+        .headers_mut()
+        .insert("te", HeaderValue::from_static("trailers"));
+    let response = conn.serve(request).await.unwrap();
+    let mut body = response.into_body();
+    let mut data = Vec::new();
+    let mut checksum = None;
+    while let Some(frame) = body.frame().await {
+        let frame = frame.unwrap();
+        if let Some(chunk) = frame.data_ref() {
+            data.extend_from_slice(chunk);
+        }
+        if let Some(trailers) = frame.trailers_ref() {
+            checksum = trailers
+                .get("x-checksum")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+        }
+    }
+
+    assert_eq!(data, b"hello");
+    assert_eq!(checksum.as_deref(), Some("deadbeef"));
+
+    drop(conn);
+    cancel_drop_guard.disarm().cancel();
+    graceful.shutdown().await;
+}
+
+#[tokio::test]
+async fn http11_mitm_relay_rejects_unsolicited_switching_protocols() {
+    let (mut client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
+
+    let token = CancellationToken::new();
+    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let cancel_drop_guard = token.drop_guard();
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpServer::auto(Executor::graceful(guard))
+            .service(service_fn(mitm_relay_unsolicited_upgrade_svc_fn))
+            .serve(MockSocket::new(server_stream))
+            .await
+            .unwrap();
+    });
+    graceful.spawn_task_fn(async move |guard| {
+        HttpMitmRelay::new(Executor::graceful(guard))
+            .serve(BridgeIo(
+                MockSocket::new(relay_ingress_stream),
+                MockSocket::new(relay_egress_stream),
+            ))
+            .await
+            .unwrap();
+    });
+
+    client_stream
+        .write_all(
+            b"GET / HTTP/1.1\r\n\
+              Host: www.example.com\r\n\
+              Connection: close\r\n\
+              \r\n",
+        )
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        client_stream.read_to_end(&mut response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let response = String::from_utf8(response).unwrap().to_ascii_lowercase();
+
+    assert!(response.starts_with("http/1.1 502 bad gateway\r\n"));
+    assert!(response.contains("connection: close"));
+    assert!(!response.contains("upgrade:"));
+    assert!(!response.contains("sec-websocket-accept:"));
+
+    drop(client_stream);
+    cancel_drop_guard.disarm().cancel();
+    graceful.shutdown().await;
+}
+
+#[tokio::test]
+async fn http11_mitm_relay_does_not_turn_upgrade_into_close() {
+    let (mut client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
+
+    let token = CancellationToken::new();
+    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let cancel_drop_guard = token.drop_guard();
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpServer::auto(Executor::graceful(guard))
+            .service(service_fn(mitm_relay_upgrade_svc_fn))
+            .serve(MockSocket::new(server_stream))
+            .await
+            .unwrap();
+    });
+    graceful.spawn_task_fn(async move |guard| {
+        HttpMitmRelay::new(Executor::graceful(guard))
+            .serve(BridgeIo(
+                MockSocket::new(relay_ingress_stream),
+                MockSocket::new(relay_egress_stream),
+            ))
+            .await
+            .unwrap();
+    });
+
+    client_stream
+        .write_all(
+            b"GET / HTTP/1.1\r\n\
+              Host: www.example.com\r\n\
+              Connection: upgrade\r\n\
+              Upgrade: websocket\r\n\
+              \r\n",
+        )
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let mut chunk = [0; 512];
+        loop {
+            let read = client_stream.read(&mut chunk).await?;
+            if read == 0 {
+                return Ok::<_, std::io::Error>(());
+            }
+            response.extend_from_slice(&chunk[..read]);
+            if response.windows(4).any(|window| window == b"\r\n\r\n") {
+                return Ok(());
+            }
+        }
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    let response = String::from_utf8(response).unwrap().to_ascii_lowercase();
+
+    assert!(
+        response.starts_with("http/1.1 101 switching protocols\r\n"),
+        "{response}"
+    );
+    assert!(response.contains("connection: upgrade"), "{response}");
+    assert!(response.contains("upgrade: websocket"), "{response}");
+    assert!(!response.contains("connection: close"), "{response}");
+
+    drop(client_stream);
+    cancel_drop_guard.disarm().cancel();
+    graceful.shutdown().await;
 }
 
 async fn test_mitm_relay_concurrency_inner(version: Version, n: usize) {
@@ -506,12 +1000,22 @@ async fn test_http11_mitm_relay_closes_downstream_after_upstream_close() {
             .and_then(|v| v.to_str().ok()),
         Some("close")
     );
+    let mut body = response.into_body();
+    let mut data = Vec::new();
+    while let Some(frame) = body.frame().await {
+        let frame = frame.unwrap();
+        if let Some(chunk) = frame.data_ref() {
+            data.extend_from_slice(chunk);
+        }
+    }
+    assert_eq!(data, b"single response body (0)");
 
     let second = conn.serve(create_test_request(Version::HTTP_11)).await;
     assert!(
         second.is_err(),
         "downstream connection should close after upstream close"
     );
+    assert_eq!(request_count.load(Ordering::SeqCst), 1);
 
     drop(conn);
     cancel_drop_guard.disarm().cancel();

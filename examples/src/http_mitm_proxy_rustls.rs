@@ -196,17 +196,17 @@ async fn http_connect_proxy(upgraded: Upgraded) -> Result<(), BoxError> {
 fn new_http_mitm_proxy() -> impl Service<Request, Output = Response, Error = Infallible> + Clone {
     Arc::new(
         (
+            RemoveRequestHeaderLayer::hop_by_hop(),
             MapResponseBodyLayer::new_boxed_streaming_body(),
             TraceLayer::new_for_http(),
             ConsumeErrLayer::default(),
-            RemoveResponseHeaderLayer::hop_by_hop(),
-            RemoveRequestHeaderLayer::hop_by_hop(),
             // A MITM proxy relays whatever `Accept-Encoding` the client sends; it must not turn an
             // unsatisfiable negotiation into its own 406, so opt out of that enforcement.
             CompressionLayer::new()
                 .with_compress_predicate(MirrorDecompressed::new())
                 .with_enforce_not_acceptable(false),
             AddRequiredRequestHeadersLayer::new(),
+            RemoveResponseHeaderLayer::hop_by_hop(),
         )
             .into_layer(service_fn(http_mitm_proxy)),
     )

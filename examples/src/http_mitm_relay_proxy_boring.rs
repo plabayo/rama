@@ -115,7 +115,6 @@ async fn main() -> Result<(), BoxError> {
                     connect,
                 ),
                 (
-                    RemoveResponseHeaderLayer::hop_by_hop(),
                     RemoveRequestHeaderLayer::hop_by_hop(),
                     SetRequestHeaderLayer::overriding(
                         HeaderName::from_static("x-observed"),
@@ -129,6 +128,7 @@ async fn main() -> Result<(), BoxError> {
                         HeaderName::from_static("x-proxy-version"),
                         HeaderValue::from_static(rama::utils::info::VERSION),
                     ),
+                    RemoveResponseHeaderLayer::hop_by_hop(),
                 ),
             )
                 .into_layer(EasyHttpWebClient::default_with_executor(

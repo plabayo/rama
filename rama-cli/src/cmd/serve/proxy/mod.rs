@@ -850,9 +850,9 @@ macro_rules! build_mitm_service {
                 portal,
             ),
             websocket_layer,
-            RemoveResponseHeaderLayer::exact(rama::http::header::PROXY_AUTHENTICATE),
+            RemoveResponseHeaderLayer::proxy_auth(),
             icap,
-            RemoveRequestHeaderLayer::exact(rama::http::header::PROXY_AUTHORIZATION),
+            RemoveRequestHeaderLayer::proxy_auth(),
             CaptureHttpLayer::new(Some(capture)),
             HARExportLayer::new(har.clone(), har),
             DecompressionLayer::new()
@@ -1988,13 +1988,19 @@ fn new_proxy_client(
         )
             .into_layer(client),
     );
-    // Let ICAP see proxy authentication metadata, but never forward it to
-    // the origin or downstream client. Splitting the two removal layers puts
-    // adaptation between their request and response directions.
-    let ordinary = RemoveRequestHeaderLayer::hop_by_hop().into_layer(base.clone());
-    let ordinary = icap.clone().into_layer(ordinary);
-    let ordinary = RemoveResponseHeaderLayer::hop_by_hop().into_layer(ordinary);
-    let ordinary = require_request_service(ordinary);
+    // Sanitize each source hop before adaptation. Let ICAP see proxy
+    // authentication metadata, but consume it before the origin or downstream
+    // client sees the message.
+    let ordinary = require_request_service(
+        (
+            RemoveRequestHeaderLayer::hop_by_hop(),
+            RemoveResponseHeaderLayer::proxy_auth(),
+            icap.clone(),
+            RemoveRequestHeaderLayer::proxy_auth(),
+            RemoveResponseHeaderLayer::hop_by_hop(),
+        )
+            .into_layer(base.clone()),
+    );
     let websocket_relay = WebSocketRelayIoLayer::new().into_layer(
         CaptureWebSocketLayer::new(capture.clone()).into_layer(
             HARWebSocketLayer::new().into_layer(
@@ -2005,11 +2011,14 @@ fn new_proxy_client(
             ),
         ),
     );
-    let websocket =
-        RemoveRequestHeaderLayer::exact(rama::http::header::PROXY_AUTHORIZATION).into_layer(base);
-    let websocket = icap.into_layer(websocket);
-    let websocket = RemoveResponseHeaderLayer::exact(rama::http::header::PROXY_AUTHENTICATE)
-        .into_layer(websocket);
+    let websocket = (
+        RemoveRequestHeaderLayer::hop_by_hop(),
+        RemoveResponseHeaderLayer::proxy_auth(),
+        icap,
+        RemoveRequestHeaderLayer::proxy_auth(),
+        RemoveResponseHeaderLayer::hop_by_hop(),
+    )
+        .into_layer(base);
     let websocket = require_request_service(
         HttpUpgradeMitmRelayLayer::new(
             exec,

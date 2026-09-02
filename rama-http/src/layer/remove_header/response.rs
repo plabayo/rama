@@ -45,7 +45,9 @@ pub struct RemoveResponseHeaderLayer {
 enum RemoveResponseHeaderMode {
     Prefix(SmolStr),
     Exact(HeaderName),
-    Hop,
+    HopContextAware,
+    HopStrict,
+    ProxyAuth,
     Sensitive,
 }
 
@@ -70,11 +72,35 @@ impl RemoveResponseHeaderLayer {
 
     /// Create a new [`RemoveResponseHeaderLayer`].
     ///
-    /// Removes all hop-by-hop request headers as specified in [RFC 9110](https://github.com/plabayo/rama/blob/main/rama-http-core/specifications/rfc9110.txt#section-7.6.1).
+    /// Removes hop-by-hop response headers while preserving a valid upgrade
+    /// response corresponding to the request.
+    ///
+    /// This is the recommended mode for HTTP intermediaries. Use
+    /// [`Self::hop_by_hop_strict`] to remove the upgrade envelope as well.
+    /// Pair it with [`super::RemoveRequestHeaderLayer::hop_by_hop`]; mixing
+    /// strict request removal with a context-aware response can validate an
+    /// upgrade that was not forwarded upstream.
     #[must_use]
     pub fn hop_by_hop() -> Self {
         Self {
-            mode: RemoveResponseHeaderMode::Hop,
+            mode: RemoveResponseHeaderMode::HopContextAware,
+        }
+    }
+
+    /// Removes response-side hop-by-hop fields without forwarding upgrade or
+    /// trailer capabilities to the next hop.
+    #[must_use]
+    pub fn hop_by_hop_strict() -> Self {
+        Self {
+            mode: RemoveResponseHeaderMode::HopStrict,
+        }
+    }
+
+    /// Remove fields belonging to a proxy authentication exchange.
+    #[must_use]
+    pub fn proxy_auth() -> Self {
+        Self {
+            mode: RemoveResponseHeaderMode::ProxyAuth,
         }
     }
 
@@ -131,9 +157,21 @@ impl<S> RemoveResponseHeader<S> {
 
     /// Create a new [`RemoveResponseHeader`].
     ///
-    /// Removes all hop-by-hop request headers as specified in [RFC 9110](https://github.com/plabayo/rama/blob/main/rama-http-core/specifications/rfc9110.txt#section-7.6.1).
+    /// Removes hop-by-hop response headers while preserving a valid upgrade
+    /// response corresponding to the request.
     pub fn hop_by_hop(inner: S) -> Self {
         RemoveResponseHeaderLayer::hop_by_hop().into_layer(inner)
+    }
+
+    /// Removes response-side hop-by-hop fields without forwarding upgrade or
+    /// trailer capabilities to the next hop.
+    pub fn hop_by_hop_strict(inner: S) -> Self {
+        RemoveResponseHeaderLayer::hop_by_hop_strict().into_layer(inner)
+    }
+
+    /// Remove fields belonging to a proxy authentication exchange.
+    pub fn proxy_auth(inner: S) -> Self {
+        RemoveResponseHeaderLayer::proxy_auth().into_layer(inner)
     }
 
     /// Create a new [`RemoveResponseHeader`].
@@ -156,10 +194,20 @@ where
     type Error = S::Error;
 
     async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+        let request_context = matches!(&self.mode, RemoveResponseHeaderMode::HopContextAware)
+            .then(|| super::HopByHopHeaderContext::capture(req.headers(), req.version()));
         let mut resp = self.inner.serve(req).await?;
         match &self.mode {
-            RemoveResponseHeaderMode::Hop => {
+            RemoveResponseHeaderMode::HopContextAware => {
+                if let Some(request_context) = request_context.as_ref() {
+                    super::sanitize_hop_by_hop_response(&mut resp, request_context);
+                }
+            }
+            RemoveResponseHeaderMode::HopStrict => {
                 super::remove_hop_by_hop_response_headers(resp.headers_mut())
+            }
+            RemoveResponseHeaderMode::ProxyAuth => {
+                super::remove_proxy_auth_response_headers(resp.headers_mut())
             }
             RemoveResponseHeaderMode::Sensitive => {
                 super::remove_sensitive_response_headers(resp.headers_mut())
@@ -178,7 +226,10 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{Body, Response};
+    use crate::{
+        Body, HeaderValue, Response, header,
+        layer::set_header::{SetRequestHeaderLayer, SetResponseHeaderLayer},
+    };
     use rama_core::{Layer, Service, service::service_fn};
     use std::convert::Infallible;
 
@@ -275,5 +326,213 @@ mod test {
             res.headers().get("foo").map(|v| v.to_str().unwrap()),
             Some("bar")
         );
+    }
+
+    #[tokio::test]
+    async fn remove_response_header_hop_by_hop_preserves_matching_upgrade() {
+        let svc = (
+            super::super::RemoveRequestHeaderLayer::hop_by_hop(),
+            RemoveResponseHeaderLayer::hop_by_hop(),
+        )
+            .into_layer(service_fn(async |req: Request| {
+                assert_eq!(req.headers()["connection"], "upgrade");
+                assert_eq!(req.headers()["upgrade"], "WebSocket");
+                assert!(!req.headers().contains_key("keep-alive"));
+                assert!(!req.headers().contains_key("x-hop"));
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .version(crate::Version::HTTP_11)
+                        .status(crate::StatusCode::SWITCHING_PROTOCOLS)
+                        .header("connection", "keep-alive, upgrade, x-hop")
+                        .header("upgrade", "websocket")
+                        .header("keep-alive", "timeout=5")
+                        .header("x-hop", "secret")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            }));
+        let req = Request::builder()
+            .version(crate::Version::HTTP_11)
+            .header("connection", "keep-alive, upgrade, x-hop")
+            .header("upgrade", "WebSocket")
+            .header("keep-alive", "timeout=5")
+            .header("x-hop", "secret")
+            .body(Body::empty())
+            .unwrap();
+
+        let res = svc.serve(req).await.unwrap();
+
+        assert_eq!(res.headers()["connection"], "upgrade");
+        assert_eq!(res.headers()["upgrade"], "websocket");
+        assert!(res.headers().get("keep-alive").is_none());
+        assert!(res.headers().get("x-hop").is_none());
+    }
+
+    #[tokio::test]
+    async fn remove_response_header_hop_by_hop_rejects_unsolicited_upgrade() {
+        let svc = RemoveResponseHeaderLayer::hop_by_hop().into_layer(service_fn(
+            async |_req: Request| {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .version(crate::Version::HTTP_11)
+                        .status(crate::StatusCode::SWITCHING_PROTOCOLS)
+                        .header("connection", "upgrade")
+                        .header("upgrade", "websocket")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            },
+        ));
+
+        let res = svc.serve(Request::new(Body::empty())).await.unwrap();
+
+        assert_eq!(res.status(), crate::StatusCode::BAD_GATEWAY);
+        assert_eq!(res.headers()["connection"], "close");
+        assert!(res.headers().get("upgrade").is_none());
+    }
+
+    #[tokio::test]
+    async fn remove_response_header_hop_by_hop_rejects_mismatched_upgrade() {
+        let svc = RemoveResponseHeaderLayer::hop_by_hop().into_layer(service_fn(
+            async |_req: Request| {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .version(crate::Version::HTTP_11)
+                        .status(crate::StatusCode::SWITCHING_PROTOCOLS)
+                        .header("connection", "upgrade")
+                        .header("upgrade", "example/2")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            },
+        ));
+        let request = Request::builder()
+            .version(crate::Version::HTTP_11)
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .body(Body::empty())
+            .unwrap();
+
+        let res = svc.serve(request).await.unwrap();
+
+        assert_eq!(res.status(), crate::StatusCode::BAD_GATEWAY);
+        assert_eq!(res.headers()["connection"], "close");
+        assert!(!res.headers().contains_key("upgrade"));
+    }
+
+    #[tokio::test]
+    async fn invalid_h2_switching_protocols_has_no_connection_header() {
+        let svc = RemoveResponseHeaderLayer::hop_by_hop().into_layer(service_fn(
+            async |_req: Request| {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .version(crate::Version::HTTP_2)
+                        .status(crate::StatusCode::SWITCHING_PROTOCOLS)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            },
+        ));
+        let request = Request::builder()
+            .version(crate::Version::HTTP_2)
+            .body(Body::empty())
+            .unwrap();
+
+        let res = svc.serve(request).await.unwrap();
+
+        assert_eq!(res.status(), crate::StatusCode::BAD_GATEWAY);
+        assert!(res.headers().is_empty());
+    }
+
+    #[tokio::test]
+    async fn remove_response_header_hop_by_hop_strict_removes_upgrade() {
+        let svc = RemoveResponseHeaderLayer::hop_by_hop_strict().into_layer(service_fn(
+            async |_req: Request| {
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .version(crate::Version::HTTP_11)
+                        .status(crate::StatusCode::SWITCHING_PROTOCOLS)
+                        .header("connection", "upgrade")
+                        .header("upgrade", "websocket")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            },
+        ));
+        let req = Request::builder()
+            .version(crate::Version::HTTP_11)
+            .header("connection", "upgrade")
+            .header("upgrade", "websocket")
+            .body(Body::empty())
+            .unwrap();
+
+        let res = svc.serve(req).await.unwrap();
+
+        assert!(res.headers().get("connection").is_none());
+        assert!(res.headers().get("upgrade").is_none());
+    }
+
+    #[tokio::test]
+    async fn hop_layers_consume_fields_before_transform_middleware() {
+        let svc = (
+            super::super::RemoveRequestHeaderLayer::hop_by_hop(),
+            SetResponseHeaderLayer::overriding(
+                HeaderName::from_static("x-response-hop"),
+                HeaderValue::from_static("secret"),
+            ),
+            SetResponseHeaderLayer::overriding(
+                header::CONNECTION,
+                HeaderValue::from_static("upgrade, x-response-hop"),
+            ),
+            SetRequestHeaderLayer::overriding(
+                HeaderName::from_static("x-request-hop"),
+                HeaderValue::from_static("secret"),
+            ),
+            SetRequestHeaderLayer::overriding(
+                header::UPGRADE,
+                HeaderValue::from_static("websocket"),
+            ),
+            SetRequestHeaderLayer::overriding(
+                header::CONNECTION,
+                HeaderValue::from_static("upgrade, x-request-hop"),
+            ),
+            RemoveResponseHeaderLayer::hop_by_hop(),
+        )
+            .into_layer(service_fn(async |request: Request| {
+                assert_eq!(
+                    request.headers()[header::CONNECTION],
+                    "upgrade, x-request-hop"
+                );
+                assert_eq!(request.headers()[header::UPGRADE], "websocket");
+                assert_eq!(request.headers()["x-request-hop"], "secret");
+                assert!(!request.headers().contains_key("x-ingress-hop"));
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .version(crate::Version::HTTP_11)
+                        .status(crate::StatusCode::SWITCHING_PROTOCOLS)
+                        .header(header::CONNECTION, "upgrade, x-upstream-hop")
+                        .header(header::UPGRADE, "websocket")
+                        .header("x-upstream-hop", "secret")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            }));
+        let request = Request::builder()
+            .version(crate::Version::HTTP_11)
+            .header(header::CONNECTION, "x-ingress-hop")
+            .header("x-ingress-hop", "secret")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = svc.serve(request).await.unwrap();
+
+        assert_eq!(response.status(), crate::StatusCode::SWITCHING_PROTOCOLS);
+        assert_eq!(
+            response.headers()[header::CONNECTION],
+            "upgrade, x-response-hop"
+        );
+        assert_eq!(response.headers()[header::UPGRADE], "websocket");
+        assert_eq!(response.headers()["x-response-hop"], "secret");
+        assert!(!response.headers().contains_key("x-upstream-hop"));
     }
 }

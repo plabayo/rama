@@ -95,7 +95,9 @@ use rama::{
         client::EasyHttpWebClient,
         layer::{
             map_response_body::MapResponseBodyLayer,
-            required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer,
+            remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
+            required_header::AddRequiredResponseHeadersLayer,
+            trace::TraceLayer,
         },
         server::HttpServer,
         service::web::response::IntoResponse,
@@ -199,9 +201,11 @@ async fn main() -> Result<(), BoxError> {
     let http_svc = Arc::new(
         (
             ConsumeErrLayer::trace_as_debug(),
+            RemoveRequestHeaderLayer::hop_by_hop(),
             MapResponseBodyLayer::new_boxed_streaming_body(),
             TraceLayer::new_for_http(),
             AddRequiredResponseHeadersLayer::new(),
+            RemoveResponseHeaderLayer::hop_by_hop(),
         )
             .into_layer(HttpsMITMService { https_client }),
     );
