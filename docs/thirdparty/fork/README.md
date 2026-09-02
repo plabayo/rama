@@ -170,10 +170,7 @@ not be kept in sync with upstream — they are now part of `rama`.
 ## Relative Forks
 
 - <https://github.com/quinn-rs/quinn/tree/d9c8c4c695fc64292d9b117844ea6924ca0d0815/quinn-udp>
-  - Audited against `d5d5b978c2b82e95beba3ed652c80e903e716a90`; no relevant changes.
-  - Rama API, metadata, fallbacks, validation, dual-stack, ECN, and send errors differ.
-  - Excludes error queues, Apple batching, and
-    [Windows coalescing](https://github.com/quinn-rs/quinn/issues/2041).
+  - Generic UDP socket code adapted for Rama.
   - License:
     - Original: <https://github.com/quinn-rs/quinn/blob/d9c8c4c695fc64292d9b117844ea6924ca0d0815/LICENSE-MIT>
     - Type: MIT

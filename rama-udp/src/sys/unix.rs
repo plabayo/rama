@@ -581,7 +581,7 @@ fn recv_via_recvmmsg(
                 io.as_raw_fd(),
                 hdrs.as_mut_ptr(),
                 bufs.len().min(BATCH_SIZE) as _,
-                RECV_FLAGS,
+                RECV_FLAGS as _,
                 ptr::null_mut::<libc::timespec>(),
             ) as isize
         }
