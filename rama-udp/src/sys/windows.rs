@@ -150,7 +150,7 @@ impl UdpSocketState {
         }
 
         Ok(Self {
-            max_gso_segments: AtomicUsize::new(max_gso_segments(&*socket)?),
+            max_gso_segments: AtomicUsize::new(*MAX_GSO_SEGMENTS),
             may_fragment,
             pktinfo_supported: pktinfo_v4_supported && pktinfo_v6_supported,
             ecn_v4_supported,
@@ -570,22 +570,23 @@ static WSARECVMSG_PTR: LazyLock<WinSock::LPFN_WSARECVMSG> = LazyLock::new(|| {
     wsa_recvmsg_ptr
 });
 
-fn max_gso_segments(socket: &impl AsRawSocket) -> io::Result<usize> {
+static MAX_GSO_SEGMENTS: LazyLock<usize> = LazyLock::new(|| {
+    // Probe a throwaway socket: changing UDP_SEND_MSG_SIZE on the application
+    // socket breaks later ordinary sends on Windows on ARM.
+    let Ok(socket) = std::net::UdpSocket::bind("[::]:0")
+        .or_else(|_| std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)))
+    else {
+        return 1;
+    };
     const GSO_SIZE: c_uint = 1500;
     match set_socket_option(
-        socket,
+        &socket,
         WinSock::IPPROTO_UDP,
         WinSock::UDP_SEND_MSG_SIZE,
         GSO_SIZE,
     ) {
-        Ok(()) => {
-            // UDP_SEND_MSG_SIZE is socket-wide: leaving the probe value set
-            // would split otherwise ordinary payloads larger than 1500 bytes.
-            // Per-send segmentation is selected later through a control message.
-            set_socket_option(socket, WinSock::IPPROTO_UDP, WinSock::UDP_SEND_MSG_SIZE, 0)?;
-            // Empirically found on Windows 11 x64.
-            Ok(512)
-        }
-        Err(_) => Ok(1),
+        // Empirically found on Windows 11 x64.
+        Ok(()) => 512,
+        Err(_) => 1,
     }
-}
+});
