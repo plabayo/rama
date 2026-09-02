@@ -7,6 +7,7 @@ use std::{env, path::PathBuf};
 
 fn main() {
     println!("cargo::rerun-if-changed=build.rs");
+    println!("cargo::rerun-if-changed=src/client/linux/resolv_wrapper.c");
     println!("cargo::rerun-if-changed=src/client/linux/resolv_wrapper.h");
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").ok();
@@ -18,6 +19,19 @@ fn main() {
 
     if !uses_res_nsearch {
         return;
+    }
+
+    if matches!(
+        (target_os.as_deref(), target_env.as_deref()),
+        (Some("linux"), Some("gnu"))
+    ) {
+        cc::Build::new()
+            .file("src/client/linux/resolv_wrapper.c")
+            // Compiler warnings remain fatal; avoid promoting cargo-zigbuild's
+            // failed compiler-family probe into a successful build warning.
+            .warnings_into_errors(true)
+            .cargo_warnings(false)
+            .compile("rama_dns_resolv");
     }
 
     let out_path = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("resolv_bindings.rs");

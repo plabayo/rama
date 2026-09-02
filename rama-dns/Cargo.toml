@@ -63,6 +63,7 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Network
 
 [build-dependencies]
 bindgen = { workspace = true }
+cc = { workspace = true }
 
 [dev-dependencies]
 ahash = { workspace = true }

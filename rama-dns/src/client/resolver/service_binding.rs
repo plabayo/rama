@@ -193,7 +193,7 @@ impl DnsServiceBindingResolver for BoxDnsServiceBindingResolver {
 mod tests {
     use std::convert::Infallible;
 
-    use rama_core::{bytes::Bytes, futures::StreamExt as _};
+    use rama_core::bytes::Bytes;
 
     use super::*;
 

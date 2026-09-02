@@ -269,7 +269,7 @@ pub type Socks5PrefixedIo<S> = PrefixedIo<StackReader<SOCKS5_GREETING_PEEK_LEN>,
 #[cfg(test)]
 mod test {
     use rama_core::{ServiceInput, io::Io, service::service_fn};
-    use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, ReadBuf};
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
     use std::{
         collections::VecDeque,

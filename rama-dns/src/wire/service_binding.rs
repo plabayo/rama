@@ -472,7 +472,7 @@ fn parse_param(key: SvcParamKey, value: Bytes) -> Result<SvcParam, ServiceBindin
             }
             let mut keys = Vec::with_capacity(value.len() / 2);
             let mut previous = None;
-            for pair in value.chunks_exact(2) {
+            for pair in value.as_chunks::<2>().0 {
                 let key_number = u16::from_be_bytes([pair[0], pair[1]]);
                 let key = SvcParamKey::from(key_number);
                 if key == SvcParamKey::Mandatory
@@ -515,7 +515,9 @@ fn parse_param(key: SvcParamKey, value: Bytes) -> Result<SvcParam, ServiceBindin
             }
             Ok(SvcParam::Ipv4Hint(
                 value
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|octets| Ipv4Addr::new(octets[0], octets[1], octets[2], octets[3]))
                     .collect::<Vec<_>>()
                     .into_boxed_slice(),
@@ -533,7 +535,9 @@ fn parse_param(key: SvcParamKey, value: Bytes) -> Result<SvcParam, ServiceBindin
             }
             Ok(SvcParam::Ipv6Hint(
                 value
-                    .chunks_exact(16)
+                    .as_chunks::<16>()
+                    .0
+                    .iter()
                     .map(|octets| {
                         let mut address = [0; 16];
                         address.copy_from_slice(octets);
