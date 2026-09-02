@@ -414,6 +414,7 @@ std = [
     "rama-net?/std",
     "rama-utils/std",
 ]
+test-utils = ["rama-net?/test-utils", "rama-udp?/test-utils"]
 compression = [
     "std",
     "http",

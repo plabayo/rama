@@ -39,7 +39,13 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 ## rama-udp
 
-UDP support for rama.
+UDP support for Rama, including packet metadata, Explicit Congestion
+Notification (ECN), batching and segmentation.
+
+The existing Tokio socket API remains available. Packet-oriented code can use
+the runtime-neutral datagram traits.
+
+See [`specifications/`](specifications/) for the relevant RFCs.
 
 Crate used by the end-user `rama` crate.
 

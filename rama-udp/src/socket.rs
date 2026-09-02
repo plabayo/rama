@@ -14,6 +14,12 @@ use rama_net::{
 #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
 use rama_net::socket::{DeviceName, SocketOptions, opts::Domain};
 
+#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
+// `SO_BINDTODEVICE` applies to IP sockets. This helper creates an IPv4 UDP
+// socket because its API takes only a device name and provides no IP-family
+// input from which to select IPv6.
+const DEVICE_UDP_DOMAIN: Domain = Domain::IPv4;
+
 pub use tokio::net::UdpSocket;
 
 /// Bind a [`UdpSocket`] to the local interface and connect
@@ -110,6 +116,8 @@ pub async fn bind_udp_with_socket(
 )]
 /// Creates a new [`UdpSocket`], which will be bound to the specified (interface) device name).
 ///
+/// This convenience helper currently creates an IPv4 UDP socket.
+///
 /// The returned socket is ready for accepting connections and connecting to others.
 pub async fn bind_udp_with_device<
     N: TryInto<DeviceName, Error: Into<BoxError>> + Send + 'static,
@@ -121,7 +129,7 @@ pub async fn bind_udp_with_device<
         device: Some(name),
         ..SocketOptions::default_udp()
     }
-    .try_build_socket(Domain::Unix)
+    .try_build_socket(DEVICE_UDP_DOMAIN)
     .context("create udp ipv4 socket attached to device")?;
     bind_socket_internal(socket)
 }

@@ -1,0 +1,1123 @@
+
+
+
+
+
+
+Internet Engineering Task Force (IETF)                          D. Black
+Request for Comments: 8311                                      Dell EMC
+Updates: 3168, 4341, 4342, 5622, 6679                       January 2018
+Category: Standards Track
+ISSN: 2070-1721
+
+
+                        Relaxing Restrictions on
+         Explicit Congestion Notification (ECN) Experimentation
+
+Abstract
+
+   This memo updates RFC 3168, which specifies Explicit Congestion
+   Notification (ECN) as an alternative to packet drops for indicating
+   network congestion to endpoints.  It relaxes restrictions in RFC 3168
+   that hinder experimentation towards benefits beyond just removal of
+   loss.  This memo summarizes the anticipated areas of experimentation
+   and updates RFC 3168 to enable experimentation in these areas.  An
+   Experimental RFC in the IETF document stream is required to take
+   advantage of any of these enabling updates.  In addition, this memo
+   makes related updates to the ECN specifications for RTP in RFC 6679
+   and for the Datagram Congestion Control Protocol (DCCP) in RFCs 4341,
+   4342, and 5622.  This memo also records the conclusion of the ECN
+   nonce experiment in RFC 3540 and provides the rationale for
+   reclassification of RFC 3540 from Experimental to Historic; this
+   reclassification enables new experimental use of the ECT(1)
+   codepoint.
+
+Status of This Memo
+
+   This is an Internet Standards Track document.
+
+   This document is a product of the Internet Engineering Task Force
+   (IETF).  It represents the consensus of the IETF community.  It has
+   received public review and has been approved for publication by the
+   Internet Engineering Steering Group (IESG).  Further information on
+   Internet Standards is available in Section 2 of RFC 7841.
+
+   Information about the current status of this document, any errata,
+   and how to provide feedback on it may be obtained at
+   https://www.rfc-editor.org/info/rfc8311.
+
+
+
+
+
+
+
+
+
+
+Black                        Standards Track                    [Page 1]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+Copyright Notice
+
+   Copyright (c) 2018 IETF Trust and the persons identified as the
+   document authors.  All rights reserved.
+
+   This document is subject to BCP 78 and the IETF Trust's Legal
+   Provisions Relating to IETF Documents
+   (https://trustee.ietf.org/license-info) in effect on the date of
+   publication of this document.  Please review these documents
+   carefully, as they describe your rights and restrictions with respect
+   to this document.  Code Components extracted from this document must
+   include Simplified BSD License text as described in Section 4.e of
+   the Trust Legal Provisions and are provided without warranty as
+   described in the Simplified BSD License.
+
+   This document may contain material from IETF Documents or IETF
+   Contributions published or made publicly available before November
+   10, 2008.  The person(s) controlling the copyright in some of this
+   material may not have granted the IETF Trust the right to allow
+   modifications of such material outside the IETF Standards Process.
+   Without obtaining an adequate license from the person(s) controlling
+   the copyright in such materials, this document may not be modified
+   outside the IETF Standards Process, and derivative works of it may
+   not be created outside the IETF Standards Process, except to format
+   it for publication as an RFC or to translate it into languages other
+   than English.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Black                        Standards Track                    [Page 2]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+Table of Contents
+
+   1.  Introduction  . . . . . . . . . . . . . . . . . . . . . . . .   3
+     1.1.  ECN Terminology . . . . . . . . . . . . . . . . . . . . .   4
+     1.2.  Requirements Language . . . . . . . . . . . . . . . . . .   4
+   2.  ECN Experimentation: Overview . . . . . . . . . . . . . . . .   5
+     2.1.  Effective Congestion Control is Required  . . . . . . . .   6
+     2.2.  Network Considerations for ECN Experimentation  . . . . .   6
+     2.3.  Operational and Management Considerations . . . . . . . .   7
+   3.  ECN Nonce and RFC 3540  . . . . . . . . . . . . . . . . . . .   8
+   4.  Updates to RFC 3168 . . . . . . . . . . . . . . . . . . . . .   9
+     4.1.  Congestion Response Differences . . . . . . . . . . . . .   9
+     4.2.  Congestion Marking Differences  . . . . . . . . . . . . .  10
+     4.3.  TCP Control Packets and Retransmissions . . . . . . . . .  13
+   5.  ECN for RTP Updates to RFC 6679 . . . . . . . . . . . . . . .  14
+   6.  ECN for DCCP Updates to RFCs 4341, 4342, and 5622 . . . . . .  16
+   7.  IANA Considerations . . . . . . . . . . . . . . . . . . . . .  16
+   8.  Security Considerations . . . . . . . . . . . . . . . . . . .  16
+   9.  References  . . . . . . . . . . . . . . . . . . . . . . . . .  17
+     9.1.  Normative References  . . . . . . . . . . . . . . . . . .  17
+     9.2.  Informative References  . . . . . . . . . . . . . . . . .  18
+   Acknowledgements  . . . . . . . . . . . . . . . . . . . . . . . .  20
+   Author's Address  . . . . . . . . . . . . . . . . . . . . . . . .  20
+
+1.  Introduction
+
+   This memo updates RFC 3168 [RFC3168], which specifies Explicit
+   Congestion Notification (ECN) as an alternative to packet drops for
+   indicating network congestion to endpoints.  It relaxes restrictions
+   in RFC 3168 that hinder experimentation towards benefits beyond just
+   removal of loss.  This memo summarizes the proposed areas of
+   experimentation and updates RFC 3168 to enable experimentation in
+   these areas.  An Experimental RFC in the IETF document stream
+   [RFC4844] is required to take advantage of any of these enabling
+   updates.  Putting all of these updates into a single document enables
+   experimentation to proceed without requiring a standards process
+   exception for each Experimental RFC that needs changes to RFC 3168, a
+   Proposed Standard RFC.
+
+   There is no need for this memo to update RFC 3168 to simplify
+   standardization of protocols and mechanisms that are documented in
+   Standards Track RFCs, as any Standards Track RFC can update RFC 3168
+   directly without either relying on updates in this memo or using a
+   standards process exception.
+
+
+
+
+
+
+
+Black                        Standards Track                    [Page 3]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+   In addition, this memo makes related updates to the ECN specification
+   for RTP [RFC6679] and for three DCCP profiles ([RFC4341], [RFC4342],
+   and [RFC5622]) for the same reason.  Each experiment is still
+   required to be documented in one or more separate RFCs, but use of
+   Experimental RFCs for this purpose does not require a process
+   exception to modify any of these Proposed Standard RFCs when the
+   modification falls within the bounds established by this memo (RFC
+   5622 is an Experimental RFC; it is modified by this memo for
+   consistency with modifications to the other two DCCP RFCs).
+
+   Some of the anticipated experimentation includes use of the ECT(1)
+   codepoint that was dedicated to the ECN nonce experiment in RFC 3540
+   [RFC3540].  This memo records the conclusion of the ECN nonce
+   experiment and provides the explanation for reclassification of RFC
+   3540 from Experimental to Historic in order to enable new
+   experimental use of the ECT(1) codepoint.
+
+1.1.  ECN Terminology
+
+   ECT: ECN-Capable Transport.  One of the two codepoints, ECT(0) or
+      ECT(1), in the ECN field [RFC3168] of the IP header (v4 or v6).
+      An ECN-capable sender sets one of these to indicate that both
+      transport endpoints support ECN.
+
+   Not-ECT:  The ECN codepoint set by senders that indicates that the
+      transport is not ECN capable.
+
+   CE: Congestion Experienced.  The ECN codepoint that an intermediate
+      node sets to indicate congestion.  A node sets an increasing
+      proportion of ECT packets to Congestion Experienced (CE) as the
+      level of congestion increases.
+
+1.2.  Requirements Language
+
+   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
+   "SHOULD", "SHOULD NOT", "RECOMMENDED", "NOT RECOMMENDED", "MAY", and
+   "OPTIONAL" in this document are to be interpreted as described in
+   BCP 14 [RFC2119] [RFC8174] when, and only when, they appear in all
+   capitals, as shown here.
+
+
+
+
+
+
+
+
+
+
+
+
+Black                        Standards Track                    [Page 4]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+2.  ECN Experimentation: Overview
+
+   Three areas of ECN experimentation are covered by this memo; the
+   cited documents should be consulted for the detailed goals and
+   rationale of each proposed experiment:
+
+   Congestion Response Differences:  An ECN congestion indication
+      communicates a higher likelihood than a dropped packet that a
+      short queue exists at the network bottleneck node [TCP-ABE].  This
+      difference suggests that for congestion indicated by ECN, a
+      different sender congestion response (e.g., sender backs off by a
+      smaller amount) may be appropriate by comparison to the sender
+      response to congestion indicated by loss.  Two examples of
+      proposed sender congestion response changes are described in
+      [TCP-ABE] and [ECN-L4S] -- the proposal in the latter document
+      couples the sender congestion response change to Congestion
+      Marking Differences functionality (see next paragraph).  These
+      changes are at variance with the requirement in RFC 3168 that a
+      sender's congestion control response to ECN congestion indications
+      be the same as to drops.  IETF approval, e.g., via an Experimental
+      RFC in the IETF document stream, is required for any sender
+      congestion response used in this area of experimentation.  See
+      Section 4.1 for further discussion.
+
+   Congestion Marking Differences:  Congestion marking at network nodes
+      can be configured to maintain very shallow queues in conjunction
+      with a different sender response to congestion indications (CE
+      marks), e.g., as proposed in [ECN-L4S].  The traffic involved
+      needs to be identified by the senders to the network nodes in
+      order to avoid damage to other network traffic whose senders do
+      not expect the more frequent congestion marking used to maintain
+      very shallow queues.  Use of different ECN codepoints,
+      specifically ECT(0) and ECT(1), is a promising means of traffic
+      identification for this purpose, but that technique is at variance
+      with the requirement in RFC 3168 that traffic marked as ECT(0) not
+      receive different treatment in the network by comparison to
+      traffic marked as ECT(1).  IETF approval, e.g., via an
+      Experimental RFC in the IETF document stream, is required for any
+      differences in congestion marking or sender congestion response
+      used in this area of experimentation.  See Section 4.2 for further
+      discussion.
+
+
+
+
+
+
+
+
+
+
+Black                        Standards Track                    [Page 5]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+   TCP Control Packets and Retransmissions:  RFC 3168 limits the use of
+      ECN with TCP to data packets, excluding retransmissions.  With the
+      successful deployment of ECN in large portions of the Internet,
+      there is interest in extending the benefits of ECN to TCP control
+      packets (e.g., SYNs) and retransmitted packets, e.g., as proposed
+      in [ECN-TCP].  This is at variance with RFC 3168's prohibition of
+      ECN for TCP control packets and retransmitted packets.  See
+      Section 4.3 for further discussion.
+
+   The scope of this memo is limited to these three areas of
+   experimentation.  This memo expresses no view on the likely outcomes
+   of the proposed experiments and does not specify the experiments in
+   detail.  Additional experiments in these areas are possible, e.g., on
+   use of ECN to support deployment of a protocol similar to Data Center
+   TCP (DCTCP) [RFC8257] beyond DCTCP's current applicability that is
+   limited to data center environments.  The purpose of this memo is to
+   remove constraints in Standards Track RFCs that stand in the way of
+   these areas of experimentation.
+
+2.1.  Effective Congestion Control is Required
+
+   Congestion control remains an important aspect of the Internet
+   architecture [RFC2914].  Any Experimental RFC in the IETF document
+   stream that takes advantage of this memo's updates to any RFC is
+   required to discuss the congestion control implications of the
+   experiment(s) in order to provide assurance that deployment of the
+   experiment(s) does not pose a congestion-based threat to the
+   operation of the Internet.
+
+2.2.  Network Considerations for ECN Experimentation
+
+   ECN functionality [RFC3168] is becoming widely deployed in the
+   Internet and is being designed into additional protocols such as
+   Transparent Interconnection of Lots of Links (TRILL) [ECN-TRILL].
+   ECN experiments are expected to coexist with deployed ECN
+   functionality, with the responsibility for that coexistence falling
+   primarily upon designers of experimental changes to ECN.  In
+   addition, protocol designers and implementers, as well as network
+   operators, may desire to anticipate and/or support ECN experiments.
+   The following guidelines will help avoid conflicts with the areas of
+   ECN experimentation enabled by this memo:
+
+   1.  Forwarding behavior as described in RFC 3168 remains the
+       preferred approach for routers that are not involved in ECN
+       experiments, in particular continuing to treat the ECT(0) and
+       ECT(1) codepoints as equivalent, as specified in Section 4.2
+       below.
+
+
+
+
+Black                        Standards Track                    [Page 6]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+   2.  Network nodes that forward packets SHOULD NOT assume that the ECN
+       CE codepoint indicates that the packet would have been dropped if
+       ECN were not in use.  This is because Congestion Response
+       Differences experiments employ different congestion responses to
+       dropped packets by comparison to receipt of CE-marked packets
+       (see Section 4.1 below), so CE-marked packets SHOULD NOT be
+       arbitrarily dropped.  A corresponding difference in congestion
+       responses already occurs when the ECN field is used for
+       Pre-Congestion Notification (PCN) [RFC6660].
+
+   3.  A network node MUST NOT originate traffic marked with ECT(1)
+       unless the network node is participating in a Congestion Marking
+       Differences experiment that uses ECT(1), as specified in
+       Section 4.2 below.
+
+   Some ECN experiments use ECN with packets where ECN has not been used
+   previously, specifically TCP control packets and retransmissions; see
+   Section 4.3 below.  The new middlebox behavior requirements in that
+   section are of particular importance.  In general, any system or
+   protocol that inspects or monitors network traffic SHOULD be prepared
+   to encounter ECN usage on packets and traffic that currently do not
+   use ECN.
+
+   ECN field handling requirements for tunnel encapsulation and
+   decapsulation are specified in [RFC6040], which is in the process of
+   being updated by [ECN-SHIM].  Related guidance for encapsulations
+   whose outer headers are not IP headers can be found in [ECN-ENCAP].
+   These requirements and guidance apply to all traffic, including
+   traffic that is part of any ECN experiment.
+
+2.3.  Operational and Management Considerations
+
+   Changes in network traffic behavior that result from ECN
+   experimentation are likely to impact network operations and
+   management.  Designers of ECN experiments are expected to anticipate
+   possible impacts and consider how they may be dealt with.  Specific
+   topics to consider include possible network management changes or
+   extensions, monitoring of the experimental deployment, collection of
+   data for evaluation of the experiment, and possible interactions with
+   other protocols, particularly protocols that encapsulate network
+   traffic.
+
+   For further discussion, see [RFC5706]; the questions in Appendix A of
+   RFC 5706 provide a concise survey of some important aspects to
+   consider.
+
+
+
+
+
+
+Black                        Standards Track                    [Page 7]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+3.  ECN Nonce and RFC 3540
+
+   As specified in RFC 3168, ECN uses two ECN-Capable Transport (ECT)
+   codepoints, ECT(0) and ECT(1), to indicate that a packet supports
+   ECN.  RFC 3168 assigned the second codepoint, ECT(1), to support ECN
+   nonce functionality that discourages receivers from exploiting ECN to
+   improve their throughput at the expense of other network users.  That
+   ECN nonce functionality is fully specified in RFC 3540 [RFC3540].
+   This section explains why RFC 3540 has been reclassified from
+   Experimental to Historic and makes associated updates to RFC 3168.
+
+   While the ECN nonce works as specified, and has been deployed in
+   limited environments, widespread usage in the Internet has not
+   materialized.  A study of the ECN behavior of the top one million web
+   servers using 2014 data [Trammell15] found that after ECN was
+   negotiated, none of the 581,711 IPv4 servers tested were using both
+   ECT codepoints, which would have been a possible sign of ECN nonce
+   usage.  Of the 17,028 IPv6 servers tested, four set both ECT(0) and
+   ECT(1) on data packets.  This might have been evidence of use of the
+   ECN nonce by these four servers, but it might equally have been due
+   to erroneous re-marking of the ECN field by a middlebox or router.
+
+   With the emergence of new experimental functionality that depends on
+   use of the ECT(1) codepoint for other purposes, continuing to reserve
+   that codepoint for the ECN nonce experiment is no longer justified.
+   In addition, other approaches to discouraging receivers from
+   exploiting ECN have emerged; see Appendix B.1 of [ECN-L4S].
+   Therefore, in support of ECN experimentation with the ECT(1)
+   codepoint, this memo:
+
+   o  Declares that the ECN nonce experiment [RFC3540] has concluded and
+      notes the absence of widespread deployment.
+
+   o  Updates RFC 3168 [RFC3168] to remove discussion of the ECN nonce
+      and use of ECT(1) for that nonce.
+
+   The four primary updates to RFC 3168 that remove discussion of the
+   ECN nonce and use of ECT(1) for that nonce are as follows:
+
+   1.  The removal of the paragraph in Section 5 that immediately
+       follows Figure 1; this paragraph discusses the ECN nonce as the
+       motivation for two ECT codepoints.
+
+   2.  The removal of Section 11.2, "A Discussion of the ECN nonce", in
+       its entirety.
+
+
+
+
+
+
+Black                        Standards Track                    [Page 8]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+   3.  The removal of the last paragraph of Section 12, which states
+       that ECT(1) may be used as part of the implementation of the ECN
+       nonce.
+
+   4.  The removal of the first two paragraphs of Section 20.2, which
+       discuss the ECN nonce and alternatives.  No changes are made to
+       the rest of Section 20.2, which discusses alternative uses for
+       the fourth ECN codepoint.
+
+   In addition, other less-substantive changes to RFC 3168 are required
+   to remove all other mentions of the ECN nonce and to remove
+   implications that ECT(1) is intended for use by the ECN nonce; these
+   specific text updates are omitted for brevity.
+
+4.  Updates to RFC 3168
+
+   The following subsections specify updates to RFC 3168 to enable the
+   three areas of experimentation summarized in Section 2.
+
+4.1.  Congestion Response Differences
+
+   RFC 3168 specifies that senders respond identically to packet drops
+   and ECN congestion indications.  ECN congestion indications are
+   predominately originated by Active Queue Management (AQM) mechanisms
+   in intermediate buffers.  AQM mechanisms are usually configured to
+   maintain shorter queue lengths than non-AQM-based mechanisms,
+   particularly non-AQM drop-based mechanisms such as tail-drop, as AQM
+   mechanisms indicate congestion before the queue overflows.  While the
+   occurrence of loss does not easily enable the receiver to determine
+   if AQM is used, the receipt of an ECN CE mark conveys a strong
+   likelihood that AQM was used to manage the bottleneck queue.  Hence,
+   an ECN congestion indication communicates a higher likelihood than a
+   dropped packet that a short queue exists at the network bottleneck
+   node [TCP-ABE].  This difference suggests that for congestion
+   indicated by ECN, a different sender congestion response (e.g.,
+   sender backs off by a smaller amount) may be appropriate by
+   comparison to the sender response to congestion indicated by loss.
+   However, Section 5 of RFC 3168 specifies that:
+
+      Upon the receipt by an ECN-Capable transport of a single CE
+      packet, the congestion control algorithms followed at the end-
+      systems MUST be essentially the same as the congestion control
+      response to a *single* dropped packet.
+
+   This memo updates this text from RFC 3168 to allow the congestion
+   control response (including the TCP Sender's congestion control
+   response) to a CE-marked packet to differ from the response to a
+   dropped packet, provided that the changes from RFC 3168 are
+
+
+
+Black                        Standards Track                    [Page 9]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+   documented in an Experimental RFC in the IETF document stream.  The
+   specific change to RFC 3168 is to insert the words "unless otherwise
+   specified by an Experimental RFC in the IETF document stream" at the
+   end of the sentence quoted above.
+
+   RFC 4774 [RFC4774] quotes the above text from RFC 3168 as background,
+   but it does not impose requirements based on that text.  Therefore,
+   no update to RFC 4774 is required to enable this area of
+   experimentation.
+
+   Section 6.1.2 of RFC 3168 specifies that:
+
+      If the sender receives an ECN-Echo (ECE) ACK packet (that is, an
+      ACK packet with the ECN-Echo flag set in the TCP header), then the
+      sender knows that congestion was encountered in the network on the
+      path from the sender to the receiver.  The indication of
+      congestion should be treated just as a congestion loss in
+      non-ECN-Capable TCP.  That is, the TCP source halves the
+      congestion window "cwnd" and reduces the slow start threshold
+      "ssthresh".
+
+   This memo also updates this text from RFC 3168 to allow the
+   congestion control response (including the TCP Sender's congestion
+   control response) to a CE-marked packet to differ from the response
+   to a dropped packet, provided that the changes from RFC 3168 are
+   documented in an Experimental RFC in the IETF document stream.  The
+   specific change to RFC 3168 is to insert the words "Unless otherwise
+   specified by an Experimental RFC in the IETF document stream" at the
+   beginning of the second sentence quoted above.
+
+4.2.  Congestion Marking Differences
+
+   Taken to its limit, an AQM algorithm that uses ECN congestion
+   indications can be configured to maintain very shallow queues,
+   thereby reducing network latency by comparison to maintaining a
+   larger queue.  Significantly more aggressive sender responses to ECN
+   are needed to make effective use of such very shallow queues;
+   "Datacenter TCP (DCTCP)" [RFC8257] provides an example.  In this
+   case, separate network node treatments are essential, both to prevent
+   the aggressive low-latency traffic from starving conventional traffic
+   (if present) and to prevent any conventional traffic disruption to
+   any lower-latency service that uses the very shallow queues.  Use of
+   different ECN codepoints is a promising means of identifying these
+   two classes of traffic to network nodes; hence, this area of
+   experimentation is based on the use of the ECT(1) codepoint to
+   request ECN congestion marking behavior in the network that differs
+   from ECT(0).  It is essential that any such change in ECN congestion
+   marking behavior be counterbalanced by use of a different IETF-
+
+
+
+Black                        Standards Track                   [Page 10]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+   approved congestion response to CE marks at the sender, e.g., as
+   proposed in [ECN-L4S].
+
+   Section 5 of RFC 3168 specifies that "Routers treat the ECT(0) and
+   ECT(1) codepoints as equivalent."
+
+   This memo updates RFC 3168 to allow routers to treat the ECT(0) and
+   ECT(1) codepoints differently, provided that the changes from RFC
+   3168 are documented in an Experimental RFC in the IETF document
+   stream.  The specific change to RFC 3168 is to insert the words
+   "unless otherwise specified by an Experimental RFC in the IETF
+   document stream" at the end of the above sentence.
+
+   When an AQM is configured to use ECN congestion indications to
+   maintain a very shallow queue, congestion indications are marked on
+   packets that would not have been dropped if ECN was not in use.
+   Section 5 of RFC 3168 specifies that:
+
+      For a router, the CE codepoint of an ECN-Capable packet SHOULD
+      only be set if the router would otherwise have dropped the packet
+      as an indication of congestion to the end nodes.  When the
+      router's buffer is not yet full and the router is prepared to drop
+      a packet to inform end nodes of incipient congestion, the router
+      should first check to see if the ECT codepoint is set in that
+      packet's IP header.  If so, then instead of dropping the packet,
+      the router MAY instead set the CE codepoint in the IP header.
+
+   This memo updates RFC 3168 to allow congestion indications that are
+   not equivalent to drops, provided that the changes from RFC 3168 are
+   documented in an Experimental RFC in the IETF document stream.  The
+   specific change is to change "For a router" to "Unless otherwise
+   specified by an Experimental RFC in the IETF document stream" at the
+   beginning of the first sentence of the above paragraph.
+
+   A larger update to RFC 3168 is necessary to enable sender usage of
+   ECT(1) to request network congestion marking behavior that maintains
+   very shallow queues at network nodes.  When using loss as a
+   congestion signal, the number of signals provided should be reduced
+   to a minimum; hence, only the presence or absence of congestion is
+   communicated.  In contrast, ECN can provide a richer signal, e.g., to
+   indicate the current level of congestion, without the disadvantage of
+   a larger number of packet losses.  A proposed experiment in this
+   area, Low Latency Low Loss Scalable throughput (L4S) [ECN-L4S],
+   significantly increases the CE marking probability for traffic marked
+   as ECT(1) in a fashion that would interact badly with existing sender
+   congestion response functionality because that functionality assumes
+   that the network marks ECT packets as frequently as it would drop
+   Not-ECT packets.  If network traffic that uses such a conventional
+
+
+
+Black                        Standards Track                   [Page 11]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+   sender congestion response were to encounter L4S's increased marking
+   probability (and hence rate) at a network bottleneck queue, the
+   resulting traffic throughput is likely to be much less than intended
+   for the level of congestion at the bottleneck queue.
+
+   This memo updates RFC 3168 to remove that interaction for ECT(1).
+   The specific update to Section 5 of RFC 3168 is to replace the
+   following two paragraphs:
+
+      Senders are free to use either the ECT(0) or the ECT(1) codepoint
+      to indicate ECT, on a packet-by-packet basis.
+
+      The use of both the two codepoints for ECT, ECT(0) and ECT(1), is
+      motivated primarily by the desire to allow mechanisms for the data
+      sender to verify that network elements are not erasing the CE
+      codepoint, and that data receivers are properly reporting to the
+      sender the receipt of packets with the CE codepoint set, as
+      required by the transport protocol.  Guidelines for the senders
+      and receivers to differentiate between the ECT(0) and ECT(1)
+      codepoints will be addressed in separate documents, for each
+      transport protocol.  In particular, this document does not address
+      mechanisms for TCP end-nodes to differentiate between the ECT(0)
+      and ECT(1) codepoints.  Protocols and senders that only require a
+      single ECT codepoint SHOULD use ECT(0).
+
+   with this paragraph:
+
+      Protocols and senders MUST use the ECT(0) codepoint to indicate
+      ECT unless otherwise specified by an Experimental RFC in the IETF
+      document stream.  Protocols and senders MUST NOT use the ECT(1)
+      codepoint to indicate ECT unless otherwise specified by an
+      Experimental RFC in the IETF document stream.  Guidelines for
+      senders and receivers to differentiate between the ECT(0) and
+      ECT(1) codepoints will be addressed in separate documents, for
+      each transport protocol.  In particular, this document does not
+      address mechanisms for TCP end-nodes to differentiate between the
+      ECT(0) and ECT(1) codepoints.
+
+   Congestion Marking Differences experiments SHOULD modify the network
+   behavior for traffic marked as ECT(1) rather than ECT(0) if network
+   behavior for only one ECT codepoint is modified.  Congestion Marking
+   Differences experiments MUST NOT modify the network behavior for
+   traffic marked as ECT(0) in a fashion that requires changes to the
+   sender congestion response to obtain desired network behavior.  If a
+   Congestion Marking Differences experiment modifies the network
+   behavior for traffic marked as ECT(1), e.g., CE-marking behavior, in
+
+
+
+
+
+Black                        Standards Track                   [Page 12]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+   a fashion that requires changes to the sender congestion response to
+   obtain desired network behavior, then the Experimental RFC in the
+   IETF document stream for that experiment MUST specify:
+
+   o  The sender congestion response to CE marking in the network, and
+
+   o  Router behavior changes, or the absence thereof, in forwarding CE-
+      marked packets that are part of the experiment.
+
+   In addition, this memo updates RFC 3168 to remove discussion of the
+   ECN nonce, as noted in Section 3 above.
+
+4.3.  TCP Control Packets and Retransmissions
+
+   With the successful use of ECN for traffic in large portions of the
+   Internet, there is interest in extending the benefits of ECN to TCP
+   control packets (e.g., SYNs) and retransmitted packets, e.g., as
+   proposed by ECN++ [ECN-TCP].
+
+   RFC 3168 prohibits use of ECN for TCP control packets and
+   retransmitted packets in a number of places:
+
+   o  Section 5.2: "To ensure the reliable delivery of the congestion
+      indication of the CE codepoint, an ECT codepoint MUST NOT be set
+      in a packet unless the loss of that packet in the network would be
+      detected by the end nodes and interpreted as an indication of
+      congestion."
+
+   o  Section 6.1.1: "A host MUST NOT set ECT on SYN or SYN-ACK packets"
+
+   o  Section 6.1.4: "...pure acknowledgement packets (e.g., packets
+      that do not contain any accompanying data) MUST be sent with the
+      not-ECT codepoint."
+
+   o  Section 6.1.5: "This document specifies ECN-capable TCP
+      implementations MUST NOT set either ECT codepoint (ECT(0) or
+      ECT(1)) in the IP header for retransmitted data packets, and that
+      the TCP data receiver SHOULD ignore the ECN field on arriving data
+      packets that are outside of the receiver's current window."
+
+   o  Section 6.1.6: "...the TCP data sender MUST NOT set either an ECT
+      codepoint or the CWR bit on window probe packets.
+
+   This memo updates RFC 3168 to allow the use of ECT codepoints on SYN
+   and SYN-ACK packets, pure acknowledgement packets, window probe
+   packets, and retransmissions of packets that were originally sent
+   with an ECT codepoint, provided that the changes from RFC 3168 are
+   documented in an Experimental RFC in the IETF document stream.  The
+
+
+
+Black                        Standards Track                   [Page 13]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+   specific change to RFC 3168 is to insert the words "unless otherwise
+   specified by an Experimental RFC in the IETF document stream" at the
+   end of each sentence quoted above.
+
+   In addition, beyond requiring TCP senders not to set ECT on TCP
+   control packets and retransmitted packets, RFC 3168 is silent on
+   whether it is appropriate for a network element, e.g., a firewall, to
+   discard such a packet as invalid.  For this area of ECN
+   experimentation to be useful, middleboxes ought not to do that;
+   therefore, RFC 3168 is updated by adding the following text to the
+   end of Section 6.1.1.1 on Middlebox Issues:
+
+      Unless otherwise specified by an Experimental RFC in the IETF
+      document stream, middleboxes SHOULD NOT discard TCP control
+      packets and retransmitted TCP packets solely because the ECN field
+      in the IP header does not contain Not-ECT.  An exception to this
+      requirement occurs in responding to an attack that uses ECN
+      codepoints other than Not-ECT.  For example, as part of the
+      response, it may be appropriate to drop ECT-marked TCP SYN packets
+      with higher probability than TCP SYN packets marked with Not-ECT.
+      Any such exceptional discarding of TCP control packets and
+      retransmitted TCP packets in response to an attack MUST NOT be
+      done routinely in the absence of an attack and SHOULD only be done
+      if it is determined that the use of ECN is contributing to the
+      attack.
+
+5.  ECN for RTP Updates to RFC 6679
+
+   RFC 6679 [RFC6679] specifies use of ECN for RTP traffic; it allows
+   use of both the ECT(0) and ECT(1) codepoints and provides the
+   following guidance on use of these codepoints in Section 7.3.1:
+
+      The sender SHOULD mark packets as ECT(0) unless the receiver
+      expresses a preference for ECT(1) or for a random ECT value using
+      the "ect" parameter in the "a=ecn-capable-rtp:" attribute.
+
+   The Congestion Marking Differences area of experimentation increases
+   the potential consequences of using ECT(1) instead of ECT(0); hence,
+   the above guidance is updated by adding the following two sentences:
+
+      Random ECT values MUST NOT be used, as that may expose RTP to
+      differences in network treatment of traffic marked with ECT(1) and
+      ECT(0) and differences in associated endpoint congestion
+      responses.  In addition, ECT(0) MUST be used unless otherwise
+      specified in an Experimental RFC in the IETF document stream.
+
+
+
+
+
+
+Black                        Standards Track                   [Page 14]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+   Section 7.3.3 of RFC 6679 specifies RTP's response to receipt of
+   CE-marked packets as being identical to the response to dropped
+   packets:
+
+      The reception of RTP packets with ECN-CE marks in the IP header is
+      a notification that congestion is being experienced.  The default
+      reaction on the reception of these ECN-CE-marked packets MUST be
+      to provide the congestion control algorithm with a congestion
+      notification that triggers the algorithm to react as if packet
+      loss had occurred.  There should be no difference in congestion
+      response if ECN-CE marks or packet drops are detected.
+
+   In support of Congestion Response Differences experimentation, this
+   memo updates this text in a fashion similar to RFC 3168 to allow the
+   RTP congestion control response to a CE-marked packet to differ from
+   the response to a dropped packet, provided that the changes from RFC
+   6679 are documented in an Experimental RFC in the IETF document
+   stream.  The specific change to RFC 6679 is to insert the words
+   "Unless otherwise specified by an Experimental RFC in the IETF
+   document stream" and reformat the last two sentences to be subject to
+   that condition; that is:
+
+      The reception of RTP packets with ECN-CE marks in the IP header is
+      a notification that congestion is being experienced.  Unless
+      otherwise specified by an Experimental RFC in the IETF document
+      stream:
+
+      *  The default reaction on the reception of these ECN-CE-marked
+         packets MUST be to provide the congestion control algorithm
+         with a congestion notification that triggers the algorithm to
+         react as if packet loss had occurred.
+
+      *  There should be no difference in congestion response if ECN-CE
+         marks or packet drops are detected.
+
+   The second sentence of the immediately following paragraph in
+   Section 7.3.3 of RFC 6679 requires a related update:
+
+      Other reactions to ECN-CE may be specified in the future,
+      following IETF Review.  Detailed designs of such alternative
+      reactions MUST be specified in a Standards Track RFC and be
+      reviewed to ensure they are safe for deployment under any
+      restrictions specified.
+
+   The update is to change "Standards Track RFC" to "Standards Track RFC
+   or Experimental RFC in the IETF document stream" for consistency with
+   the first update.
+
+
+
+
+Black                        Standards Track                   [Page 15]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+6.  ECN for DCCP Updates to RFCs 4341, 4342, and 5622
+
+   The specifications of the three DCCP Congestion Control IDs (CCIDs),
+   2 [RFC4341], 3 [RFC4342], and 4 [RFC5622], contain broadly the same
+   wording as follows:
+
+      each DCCP-Data and DCCP-DataAck packet is sent as ECN Capable with
+      either the ECT(0) or the ECT(1) codepoint set.
+
+   This memo updates these sentences in each of the three RFCs as
+   follows:
+
+      each DCCP-Data and DCCP-DataAck packet is sent as ECN Capable.
+      Unless otherwise specified by an Experimental RFC in the IETF
+      document stream, such DCCP senders MUST set the ECT(0) codepoint.
+
+   In support of Congestion Marking Differences experimentation (as
+   noted in Section 3), this memo also updates all three of these RFCs
+   to remove discussion of the ECN nonce.  The specific text updates are
+   omitted for brevity.
+
+7.  IANA Considerations
+
+   To reflect the reclassification of RFC 3540 as Historic, IANA has
+   updated the "Transmission Control Protocol (TCP) Header Flags"
+   registry <https://www.iana.org/assignments/tcp-header-flags> to
+   remove the registration of bit 7 as the NS (Nonce Sum) bit and add an
+   annotation to the registry to state that bit 7 was used by Historic
+   RFC 3540 as the NS (Nonce Sum) bit but is now Reserved.
+
+8.  Security Considerations
+
+   As a process memo that only relaxes restrictions on experimentation,
+   there are no protocol security considerations, as security
+   considerations for any experiments that take advantage of the relaxed
+   restrictions are discussed in the documents that propose the
+   experiments.
+
+   However, effective congestion control is crucial to the continued
+   operation of the Internet; hence, this memo places the responsibility
+   for not breaking Internet congestion control on the experiments and
+   the experimenters who propose them.  This responsibility includes the
+   requirement to discuss congestion control implications in an
+   Experimental RFC in the IETF document stream for each experiment, as
+   stated in Section 2.1; review of that discussion by the IETF
+   community and the IESG prior to RFC publication is intended to
+   provide assurance that each experiment does not break Internet
+   congestion control.
+
+
+
+Black                        Standards Track                   [Page 16]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+   See Appendix C.1 of [ECN-L4S] for discussion of alternatives to the
+   ECN nonce.
+
+9.  References
+
+9.1.  Normative References
+
+   [RFC2119]  Bradner, S., "Key words for use in RFCs to Indicate
+              Requirement Levels", BCP 14, RFC 2119,
+              DOI 10.17487/RFC2119, March 1997,
+              <https://www.rfc-editor.org/info/rfc2119>.
+
+   [RFC2914]  Floyd, S., "Congestion Control Principles", BCP 41,
+              RFC 2914, DOI 10.17487/RFC2914, September 2000,
+              <https://www.rfc-editor.org/info/rfc2914>.
+
+   [RFC3168]  Ramakrishnan, K., Floyd, S., and D. Black, "The Addition
+              of Explicit Congestion Notification (ECN) to IP",
+              RFC 3168, DOI 10.17487/RFC3168, September 2001,
+              <https://www.rfc-editor.org/info/rfc3168>.
+
+   [RFC3540]  Spring, N., Wetherall, D., and D. Ely, "Robust Explicit
+              Congestion Notification (ECN) Signaling with Nonces",
+              RFC 3540, DOI 10.17487/RFC3540, June 2003,
+              <https://www.rfc-editor.org/info/rfc3540>.
+
+   [RFC4341]  Floyd, S. and E. Kohler, "Profile for Datagram Congestion
+              Control Protocol (DCCP) Congestion Control ID 2: TCP-like
+              Congestion Control", RFC 4341, DOI 10.17487/RFC4341, March
+              2006, <https://www.rfc-editor.org/info/rfc4341>.
+
+   [RFC4342]  Floyd, S., Kohler, E., and J. Padhye, "Profile for
+              Datagram Congestion Control Protocol (DCCP) Congestion
+              Control ID 3: TCP-Friendly Rate Control (TFRC)", RFC 4342,
+              DOI 10.17487/RFC4342, March 2006,
+              <https://www.rfc-editor.org/info/rfc4342>.
+
+   [RFC5622]  Floyd, S. and E. Kohler, "Profile for Datagram Congestion
+              Control Protocol (DCCP) Congestion ID 4: TCP-Friendly Rate
+              Control for Small Packets (TFRC-SP)", RFC 5622,
+              DOI 10.17487/RFC5622, August 2009,
+              <https://www.rfc-editor.org/info/rfc5622>.
+
+   [RFC6679]  Westerlund, M., Johansson, I., Perkins, C., O'Hanlon, P.,
+              and K. Carlberg, "Explicit Congestion Notification (ECN)
+              for RTP over UDP", RFC 6679, DOI 10.17487/RFC6679, August
+              2012, <https://www.rfc-editor.org/info/rfc6679>.
+
+
+
+
+Black                        Standards Track                   [Page 17]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+   [RFC8174]  Leiba, B., "Ambiguity of Uppercase vs Lowercase in RFC
+              2119 Key Words", BCP 14, RFC 8174, DOI 10.17487/RFC8174,
+              May 2017, <https://www.rfc-editor.org/info/rfc8174>.
+
+9.2.  Informative References
+
+   [ECN-ENCAP]
+              Briscoe, B., Kaippallimalil, J., and P. Thaler,
+              "Guidelines for Adding Congestion Notification to
+              Protocols that Encapsulate IP", Work in Progress,
+              draft-ietf-tsvwg-ecn-encap-guidelines-09, July 2017.
+
+   [ECN-EXPERIMENT]
+              Khademi, N., Welzl, M., Armitage, G., and G. Fairhurst,
+              "Updating the Explicit Congestion Notification (ECN)
+              Specification to Allow IETF Experimentation", Work in
+              Progress, draft-khademi-tsvwg-ecn-response-01, July 2016.
+
+   [ECN-L4S]  Schepper, K. and B. Briscoe, "Identifying Modified
+              Explicit Congestion Notification (ECN) Semantics for
+              Ultra-Low Queuing Delay", Work in Progress,
+              draft-ietf-tsvwg-ecn-l4s-id-01, October 2017.
+
+   [ECN-SHIM] Briscoe, B., "Propagating Explicit Congestion Notification
+              Across IP Tunnel Headers Separated by a Shim", Work in
+              Progress, draft-ietf-tsvwg-rfc6040update-shim-05, November
+              2017.
+
+   [ECN-TCP]  Bagnulo, M. and B. Briscoe, "ECN++: Adding Explicit
+              Congestion Notification (ECN) to TCP Control Packets",
+              Work in Progress, draft-ietf-tcpm-generalized-ecn-02,
+              October 2017.
+
+   [ECN-TRILL]
+              Eastlake, D. and B. Briscoe, "TRILL: ECN (Explicit
+              Congestion Notification) Support", Work in Progress,
+              draft-ietf-trill-ecn-support-04, November 2017.
+
+   [RFC4774]  Floyd, S., "Specifying Alternate Semantics for the
+              Explicit Congestion Notification (ECN) Field", BCP 124,
+              RFC 4774, DOI 10.17487/RFC4774, November 2006,
+              <https://www.rfc-editor.org/info/rfc4774>.
+
+   [RFC4844]  Daigle, L., Ed. and Internet Architecture Board, "The RFC
+              Series and RFC Editor", RFC 4844, DOI 10.17487/RFC4844,
+              July 2007, <https://www.rfc-editor.org/info/rfc4844>.
+
+
+
+
+
+Black                        Standards Track                   [Page 18]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+   [RFC5706]  Harrington, D., "Guidelines for Considering Operations and
+              Management of New Protocols and Protocol Extensions",
+              RFC 5706, DOI 10.17487/RFC5706, November 2009,
+              <https://www.rfc-editor.org/info/rfc5706>.
+
+   [RFC6040]  Briscoe, B., "Tunnelling of Explicit Congestion
+              Notification", RFC 6040, DOI 10.17487/RFC6040, November
+              2010, <https://www.rfc-editor.org/info/rfc6040>.
+
+   [RFC6660]  Briscoe, B., Moncaster, T., and M. Menth, "Encoding Three
+              Pre-Congestion Notification (PCN) States in the IP Header
+              Using a Single Diffserv Codepoint (DSCP)", RFC 6660,
+              DOI 10.17487/RFC6660, July 2012,
+              <https://www.rfc-editor.org/info/rfc6660>.
+
+   [RFC8257]  Bensley, S., Thaler, D., Balasubramanian, P., Eggert, L.,
+              and G. Judd, "Data Center TCP (DCTCP): TCP Congestion
+              Control for Data Centers", RFC 8257, DOI 10.17487/RFC8257,
+              October 2017, <https://www.rfc-editor.org/info/rfc8257>.
+
+   [TCP-ABE]  Khademi, N., Welzl, M., Armitage, G., and G. Fairhurst,
+              "TCP Alternative Backoff with ECN (ABE)", Work in
+              Progress, draft-ietf-tcpm-alternativebackoff-ecn-05,
+              December 2017.
+
+   [Trammell15]
+              Trammell, B., Kuehlewind, M., Boppart, D., Learmonth, I.,
+              Fairhurst, G., and R. Scheffenegger, "Enabling Internet-
+              Wide Deployment of Explicit Congestion Notification", In
+              Conference Proceedings of Passive and Active Measurement
+              (PAM), pp. 193-205, March 2015,
+              <https://doi.org/10.1007/978-3-319-15509-8_15>.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Black                        Standards Track                   [Page 19]
+
+RFC 8311                   ECN Experimentation              January 2018
+
+
+Acknowledgements
+
+   The content of this specification, including the specific portions of
+   RFC 3168 that are updated, draws heavily from [ECN-EXPERIMENT], whose
+   authors are gratefully acknowledged.  The authors of the documents
+   describing the experiments have motivated the production of this memo
+   -- their interest in innovation is welcome and heartily acknowledged.
+   Colin Perkins suggested updating RFC 6679 on RTP and provided
+   guidance on where to make the updates.
+
+   This specification improved as a result of comments from a number of
+   reviewers, including Ben Campbell, Brian Carpenter, Benoit Claise,
+   Spencer Dawkins, Gorry Fairhurst, Sue Hares, Ingemar Johansson, Naeem
+   Khademi, Mirja Kuehlewind, Karen Nielsen, Hilarie Orman, Eric
+   Rescorla, Adam Roach, and Michael Welzl.  Bob Briscoe's thorough
+   review of multiple draft versions of this memo resulted in numerous
+   improvements including addition of the updates to the DCCP RFCs.
+
+Author's Address
+
+   David Black
+   Dell EMC
+   176 South Street
+   Hopkinton, MA  01748
+   United States of America
+
+   Email: david.black@dell.com
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Black                        Standards Track                   [Page 20]
+
