@@ -53,7 +53,7 @@ pub use service::{UdpSocketConfig, UdpSocketFactory};
 mod sys;
 
 mod log {
-    #[cfg(any(target_vendor = "apple", windows))]
+    #[cfg(target_vendor = "apple")]
     pub(crate) use rama_core::telemetry::tracing::debug;
     #[cfg(any(target_os = "linux", target_os = "android"))]
     pub(crate) use rama_core::telemetry::tracing::{debug, info, warn};

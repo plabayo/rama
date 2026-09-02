@@ -14,8 +14,6 @@ use std::{
 use rama_net::socket::core::{SockAddr, SockAddrStorage, socklen_t};
 use windows_sys::Win32::Networking::WinSock;
 
-use crate::log::debug;
-
 use super::{
     EcnCodepoint, RecvMeta, SocketCapabilities, Transmit, UdpSockRef,
     cmsg::{self, CMsgHdr},
@@ -29,6 +27,8 @@ pub(crate) struct UdpSocketState {
     max_gso_segments: AtomicUsize,
     may_fragment: bool,
     pktinfo_supported: bool,
+    wsa_recvmsg: WinSock::LPFN_WSARECVMSG,
+    wsa_sendmsg: WinSock::LPFN_WSASENDMSG,
 
     /// Whether the underlying Winsock provider supports IPv4 ECN socket options/control messages.
     ///
@@ -83,13 +83,8 @@ impl UdpSocketState {
         };
         let is_ipv4 = !is_ipv6 || !v6only;
 
-        // We don't support old versions of Windows that do not enable access to `WSARecvMsg()`
-        if WSARECVMSG_PTR.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "network stack does not support WSARecvMsg function",
-            ));
-        }
+        let wsa_recvmsg = query_wsa_recvmsg(&*socket)?;
+        let wsa_sendmsg = query_wsa_sendmsg(&*socket)?;
 
         let mut ecn_v4_supported = !is_ipv4;
         let mut ecn_v6_supported = !is_ipv6;
@@ -153,6 +148,8 @@ impl UdpSocketState {
             max_gso_segments: AtomicUsize::new(*MAX_GSO_SEGMENTS),
             may_fragment,
             pktinfo_supported: pktinfo_v4_supported && pktinfo_v6_supported,
+            wsa_recvmsg,
+            wsa_sendmsg,
             ecn_v4_supported,
             ecn_v6_supported,
         })
@@ -167,6 +164,7 @@ impl UdpSocketState {
         let result = send(
             socket,
             transmit,
+            self.wsa_sendmsg,
             self.ecn_v4_supported,
             self.ecn_v6_supported,
         );
@@ -191,7 +189,7 @@ impl UdpSocketState {
         meta: &mut [RecvMeta],
     ) -> io::Result<usize> {
         let _ = self.may_fragment;
-        let Some(wsa_recvmsg_ptr) = *WSARECVMSG_PTR else {
+        let Some(wsa_recvmsg) = self.wsa_recvmsg else {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "network stack does not support WSARecvMsg function",
@@ -227,7 +225,7 @@ impl UdpSocketState {
         // SAFETY: `wsa_msg` points to live writable address, payload and control
         // buffers with their matching lengths; `len` is a valid output pointer.
         unsafe {
-            let rc = (wsa_recvmsg_ptr)(
+            let rc = (wsa_recvmsg)(
                 socket.0.as_raw_socket() as usize,
                 &mut wsa_msg,
                 &mut len,
@@ -379,9 +377,17 @@ impl UdpSocketState {
 fn send(
     socket: &UdpSockRef<'_>,
     transmit: &Transmit<'_>,
+    wsa_sendmsg: WinSock::LPFN_WSASENDMSG,
     ecn_v4_supported: bool,
     ecn_v6_supported: bool,
 ) -> io::Result<()> {
+    let Some(wsa_sendmsg) = wsa_sendmsg else {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "network stack does not support WSASendMsg function",
+        ));
+    };
+
     // The portable message-header API does not expose the inner WSAMSG.
     let mut ctrl_buf = cmsg::Aligned([0; CMSG_LEN]);
     let daddr = SockAddr::from(transmit.destination);
@@ -474,7 +480,7 @@ fn send(
     // SAFETY: `wsa_msg` references live address, payload and finalized control
     // buffers; `len` is a valid writable result pointer.
     let rc = unsafe {
-        WinSock::WSASendMsg(
+        (wsa_sendmsg)(
             socket.0.as_raw_socket() as usize,
             &wsa_msg,
             0,
@@ -519,56 +525,62 @@ pub(crate) const BATCH_SIZE: usize = 1;
 const CMSG_LEN: usize = 128;
 const OPTION_ON: u32 = 1;
 
-static WSARECVMSG_PTR: LazyLock<WinSock::LPFN_WSARECVMSG> = LazyLock::new(|| {
-    // SAFETY: this call passes constant address-family, type and protocol
-    // values and returns either a socket handle or `INVALID_SOCKET`.
-    let s = unsafe { WinSock::socket(WinSock::AF_INET as _, WinSock::SOCK_DGRAM as _, 0) };
-    if s == WinSock::INVALID_SOCKET {
-        debug!(
-            "ignoring WSARecvMsg function pointer due to socket creation error: {}",
-            io::Error::last_os_error()
-        );
-        return None;
-    }
+fn query_wsa_recvmsg(socket: &impl AsRawSocket) -> io::Result<WinSock::LPFN_WSARECVMSG> {
+    let mut function = None;
+    query_extension_function(
+        socket,
+        &WinSock::WSAID_WSARECVMSG,
+        &mut function,
+        "WSARecvMsg",
+    )?;
+    Ok(function)
+}
 
-    // Detect if OS expose WSARecvMsg API based on
-    // https://github.com/Azure/mio-uds-windows/blob/a3c97df82018086add96d8821edb4aa85ec1b42b/src/stdnet/ext.rs#L601
-    let guid = WinSock::WSAID_WSARECVMSG;
-    let mut wsa_recvmsg_ptr = None;
+fn query_wsa_sendmsg(socket: &impl AsRawSocket) -> io::Result<WinSock::LPFN_WSASENDMSG> {
+    let mut function = None;
+    query_extension_function(
+        socket,
+        &WinSock::WSAID_WSASENDMSG,
+        &mut function,
+        "WSASendMsg",
+    )?;
+    Ok(function)
+}
+
+fn query_extension_function<T>(
+    socket: &impl AsRawSocket,
+    guid: &windows_sys::core::GUID,
+    function: &mut Option<T>,
+    name: &str,
+) -> io::Result<()> {
     let mut len = 0;
-
-    // Safety: Option handles the NULL pointer with a None value
+    // SAFETY: the socket handle and GUID are valid, `function` is writable for
+    // its reported size, and `len` is a valid output pointer. Both callers use
+    // the function-pointer type identified by their corresponding GUID.
     let rc = unsafe {
         WinSock::WSAIoctl(
-            s as _,
+            socket.as_raw_socket() as _,
             WinSock::SIO_GET_EXTENSION_FUNCTION_POINTER,
-            &guid as *const _ as *const _,
-            size_of_val(&guid) as u32,
-            &mut wsa_recvmsg_ptr as *mut _ as *mut _,
-            size_of_val(&wsa_recvmsg_ptr) as u32,
+            guid as *const _ as *const _,
+            size_of_val(guid) as u32,
+            function as *mut _ as *mut _,
+            size_of_val(function) as u32,
             &mut len,
             ptr::null_mut(),
             None,
         )
     };
-
     if rc == -1 {
-        debug!(
-            "ignoring WSARecvMsg function pointer due to ioctl error: {}",
-            io::Error::last_os_error()
-        );
-    } else if len as usize != size_of::<WinSock::LPFN_WSARECVMSG>() {
-        debug!("ignoring WSARecvMsg function pointer due to pointer size mismatch");
-        wsa_recvmsg_ptr = None;
+        return Err(io::Error::last_os_error());
     }
-
-    // SAFETY: `s` was created successfully above and is closed exactly once.
-    unsafe {
-        WinSock::closesocket(s);
+    if len as usize != size_of_val(function) || function.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("network stack does not support {name} function"),
+        ));
     }
-
-    wsa_recvmsg_ptr
-});
+    Ok(())
+}
 
 static MAX_GSO_SEGMENTS: LazyLock<usize> = LazyLock::new(|| {
     // Probe a throwaway socket: changing UDP_SEND_MSG_SIZE on the application
