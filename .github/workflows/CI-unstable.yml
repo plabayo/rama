@@ -76,9 +76,9 @@ jobs:
           - profile: release
             cargo_profile_args: --release
     runs-on: ${{ matrix.os }}
-    # A cold Windows release build plus its ignored compiletests can exceed
-    # 150 minutes. Keep the wider bound scoped to that combination.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && matrix.profile == 'release' && 210 || 150 }}
+    # Cold Windows and macOS release builds plus their ignored compiletests can
+    # exceed 150 minutes. Keep the wider bound scoped to those combinations.
+    timeout-minutes: ${{ matrix.profile == 'release' && (matrix.os == 'windows-latest' || matrix.os == 'macos-latest') && 210 || 150 }}
     env:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
       RUSTFLAGS: -D warnings
@@ -97,7 +97,7 @@ jobs:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-test-${{ matrix.profile }}
       - name: Run tests (${{ matrix.profile }})
-        timeout-minutes: 90
+        timeout-minutes: ${{ matrix.os == 'macos-latest' && matrix.profile == 'release' && 120 || 90 }}
         run: >-
           cargo nextest run --all-features ${{ matrix.cargo_profile_args }}
           --workspace
