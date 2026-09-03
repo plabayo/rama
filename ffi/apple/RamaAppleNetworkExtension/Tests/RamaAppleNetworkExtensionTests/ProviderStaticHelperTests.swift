@@ -323,6 +323,7 @@ final class ProviderStaticHelperTests: XCTestCase {
         let savedCloseP95 = defaultTcpStartLatencyBreakerCloseP95Ms
         let savedPressureTimeout = defaultTcpPressureConnectTimeoutMs
         let savedBreakerTimeout = defaultTcpBreakerConnectTimeoutMs
+        let savedRefusalPassthrough = defaultFlowRefusalPassthrough
         defer {
             writePumpMaxPendingBytes = savedWriteCap
             writePumpHwmLogThresholdBytes = savedWriteHwm
@@ -335,6 +336,7 @@ final class ProviderStaticHelperTests: XCTestCase {
             defaultTcpStartLatencyBreakerCloseP95Ms = savedCloseP95
             defaultTcpPressureConnectTimeoutMs = savedPressureTimeout
             defaultTcpBreakerConnectTimeoutMs = savedBreakerTimeout
+            defaultFlowRefusalPassthrough = savedRefusalPassthrough
         }
 
         let startup = RamaTransparentProxyConfigBridge(
@@ -350,7 +352,8 @@ final class ProviderStaticHelperTests: XCTestCase {
             tcpStartLatencyBreakerCloseP95Ms: 17,
             tcpPressureConnectTimeoutMs: 18,
             tcpBreakerConnectTimeoutMs: 19,
-            flowRefusalPassthrough: true)
+            // Opposite of the Swift default, so this proves the override lands.
+            flowRefusalPassthrough: false)
 
         var logs: [String] = []
         RamaTransparentProxyProvider.applyRuntimeConfig(from: startup) { logs.append($0) }
@@ -366,7 +369,7 @@ final class ProviderStaticHelperTests: XCTestCase {
         XCTAssertEqual(defaultTcpStartLatencyBreakerCloseP95Ms, 17)
         XCTAssertEqual(defaultTcpPressureConnectTimeoutMs, 18)
         XCTAssertEqual(defaultTcpBreakerConnectTimeoutMs, 19)
-        XCTAssertTrue(defaultFlowRefusalPassthrough)
+        XCTAssertFalse(defaultFlowRefusalPassthrough)
         XCTAssertEqual(logs.count, 4)
     }
 

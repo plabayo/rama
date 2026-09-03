@@ -54,7 +54,8 @@ struct RamaTransparentProxyConfigBridge {
     var tcpBreakerConnectTimeoutMs: UInt32
     /// When the provider declines a flow for its own reasons (start cap /
     /// breaker, or a missing session), hand it to the kernel untouched instead
-    /// of blocking it. `false` (Block, fail closed) is the default.
+    /// of blocking it. `true` (Passthrough, fail open) is the default; see
+    /// `FlowRefusalAction` on the Rust side.
     var flowRefusalPassthrough: Bool
 }
 

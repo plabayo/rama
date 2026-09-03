@@ -646,15 +646,27 @@ impl TransparentProxyNetworkRule {
 /// How the provider treats a flow it declines to intercept for its OWN reasons
 /// — the pre-ready TCP start hard cap / latency breaker tripping, or a missing /
 /// invalid session — as distinct from a [`crate::tproxy::FlowAction::Blocked`]
-/// your handler returns. Default [`Block`](Self::Block) (fail closed); set
-/// [`Passthrough`](Self::Passthrough) to fail open. The chosen action is always
-/// logged at the decision site.
+/// your handler returns. The chosen action is always logged at the decision
+/// site.
+///
+/// Default [`Passthrough`](Self::Passthrough) (fail open). These refusals are
+/// capacity decisions, not policy: the flow is one the handler WOULD have
+/// intercepted, and the direct route still exists. Declining hands it to that
+/// route per the transparent-provider contract (see the crate-level `tproxy`
+/// docs) — the same path every policy-passthrough flow already takes, so it
+/// adds no new exposure class. Blocking instead turns a transient overload into
+/// hard connect errors for every app on the machine, and a client retry storm
+/// (the usual reaction to those errors) then feeds the very overload that
+/// caused them.
+///
+/// Set [`Block`](Self::Block) only where an uninspected flow is worse than no
+/// flow AND you accept a machine-wide outage under load as the cost.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum FlowRefusalAction {
     /// Refuse the flow (fail closed).
-    #[default]
     Block,
     /// Hand the flow to the kernel untouched (fail open).
+    #[default]
     Passthrough,
 }
 
@@ -713,7 +725,7 @@ pub struct TransparentProxyConfig {
     tcp_breaker_connect_timeout_ms: u32,
     /// How to treat a flow the provider declines to intercept for its own
     /// reasons (start hard cap / latency breaker, or a missing session).
-    /// Default [`FlowRefusalAction::Block`].
+    /// Default [`FlowRefusalAction::Passthrough`].
     flow_refusal_action: FlowRefusalAction,
 }
 
@@ -738,7 +750,7 @@ impl TransparentProxyConfig {
             tcp_start_latency_breaker_close_p95_ms: DEFAULT_TCP_START_LATENCY_BREAKER_CLOSE_P95_MS,
             tcp_pressure_connect_timeout_ms: DEFAULT_TCP_PRESSURE_CONNECT_TIMEOUT_MS,
             tcp_breaker_connect_timeout_ms: DEFAULT_TCP_BREAKER_CONNECT_TIMEOUT_MS,
-            flow_refusal_action: FlowRefusalAction::Block,
+            flow_refusal_action: FlowRefusalAction::Passthrough,
         }
     }
 
@@ -834,7 +846,8 @@ impl TransparentProxyConfig {
     generate_set_and_with! {
         /// Set how the provider treats a flow it declines to intercept for its
         /// own reasons — start hard cap / latency breaker, or a missing session.
-        /// Default [`FlowRefusalAction::Block`] (fail closed).
+        /// Default [`FlowRefusalAction::Passthrough`] (fail open); see the type
+        /// docs before choosing [`FlowRefusalAction::Block`].
         pub fn flow_refusal_action(mut self, action: FlowRefusalAction) -> Self {
             self.flow_refusal_action = action;
             self

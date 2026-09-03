@@ -347,13 +347,68 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// mutated from `stateQueue`.
     private var flowCountHighWater = 0
 
-    /// Coalesces a burst of `reapIdleUnderPressure` triggers (one fires per
-    /// admission while combined occupancy is over the soft cap) into a single
-    /// outstanding selection scan. Only mutated on `stateQueue`. Without it,
-    /// every over-cap admission enqueues a fresh O(n log n) selection on the
-    /// serial `stateQueue`, behind which the next admission's
-    /// `registerTcpFlow.sync` (on the NE delivery thread) head-of-line-blocks.
-    private var pressureReapInFlight = false
+    /// Coalesces a burst of `reapIdleUnderPressure` triggers (one per
+    /// admission while over the soft cap) into one outstanding scan. Set
+    /// on the triggering thread at enqueue and cleared by the scan block,
+    /// so it must be locked rather than `stateQueue`-confined: a flag that
+    /// lives only inside the serial block is never visible to the block
+    /// queued behind it, and every admission would enqueue its own
+    /// O(n log n) scan — behind which the next admission's
+    /// `registerTcpFlow.sync` on the NE delivery thread would block.
+    private let pressureReapScheduled = Locked(false)
+
+    /// Monotonic deadline (uptime ns) before which a pressure scan is
+    /// skipped outright. Armed by a no-headroom scan: nothing was idle
+    /// past the floor, and idle age only grows, so no flow can qualify
+    /// before the closest one crosses it. Under a churn burst — every
+    /// flow seconds old against a 120s floor — this turns dozens of
+    /// futile full scans per second into none. Cleared by a successful
+    /// reap and whenever a removal drops occupancy under the cap. Only
+    /// mutated on `stateQueue`.
+    private var pressureRescanSuppressedUntilNs: UInt64 = 0
+
+    /// Bounds on that suppression. The upper one caps how long a stale
+    /// view can outlive a change the idle-age argument doesn't cover
+    /// (flows leaving the registry, a knob being lowered); the lower one
+    /// keeps the corner where something is idle past the floor yet
+    /// ineligible for a non-idle reason (a terminal flow whose drain
+    /// isn't pending) from degrading back into a scan per admission.
+    private static let pressureRescanMaxSuppressMs: UInt64 = 5_000
+    private static let pressureRescanMinSuppressMs: UInt64 = 250
+
+    /// Reaper counters, monotonic; the tick reports the deltas so a bundle
+    /// shows coalescing (triggers ≫ scans) and suppression (skipped) at work.
+    /// `triggers` and `scans` are locked, not `stateQueue`-confined: the
+    /// first is bumped on the triggering thread, the second is read by
+    /// tests while they hold the queue.
+    private let pressureTriggersTotal = Locked(0)
+    private let pressureScansTotal = Locked(0)
+    private var pressureSkipsTotal = 0
+    private var pressureVictimsTotal = 0
+    private var pressureStatsAtLastTick = (triggers: 0, scans: 0, skips: 0, victims: 0)
+
+    /// One over-cap stretch, from the first over-cap scan to the removal that
+    /// takes occupancy back under the cap. Summarised in a single lifecycle
+    /// line at its end — the shape of a burst (how long, how high, what the
+    /// reaper managed) is what a post-incident bundle needs and what the
+    /// 60s tick is too coarse to show. An episode cut short by a provider
+    /// restart is dropped unsummarised (the tick deltas still cover it).
+    /// Only mutated on `stateQueue`.
+    private struct PressureEpisode {
+        var startNs: UInt64
+        var peakOccupancy: UInt64
+        var scans = 0
+        var skips = 0
+        var victims = 0
+    }
+    private var pressureEpisode: PressureEpisode?
+
+    #if DEBUG
+        /// Test-only: the suppression most recently armed, in ms. Lets a
+        /// test assert the derived bound itself instead of racing the
+        /// clock for what remains of it. Only mutated on `stateQueue`.
+        private var pressureRescanLastArmedMs: UInt64 = 0
+    #endif
 
     /// Rate-limits the "over cap but nothing idle to reap" lifecycle log to once
     /// per pressure episode (re-armed when occupancy drops back under the cap or
@@ -428,7 +483,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// `defaultFlowPressureSoftCap`. Reaps idle TCP flows past
     /// `defaultFlowPressureIdleFloorMs`, oldest-idle first (LRU), down to
     /// `defaultFlowPressureLowWater`, to free nexus slots for SUBSEQUENT flows.
-    /// Coalesced via `pressureReapInFlight` so a burst is a single scan.
+    /// Coalesced via `pressureReapScheduled` so a burst is a single scan.
     ///
     /// Guarantees (see the tunable doc for the policy rationale):
     ///   * The just-admitted flow is NEVER the victim and is never delayed —
@@ -444,25 +499,46 @@ final class TransparentProxyCore: @unchecked Sendable {
     ///     idempotent via `isDone`.
     func reapIdleUnderPressure() {
         guard defaultFlowPressureSoftCap > 0 else { return }
-        // Selection on `stateQueue` ASYNC — never a second `stateQueue.sync` on
-        // the delivery thread that admitted the flow (admission already
-        // happened; a sync here could stall all flow delivery). `fire` only
-        // DISPATCHES teardowns to each victim's `flowQueue`, so nothing heavy
-        // runs while on `stateQueue`.
+        // Claim the single outstanding scan slot BEFORE dispatching; a
+        // trigger that finds it taken rides the scan already queued, which
+        // re-reads occupancy when it runs. Never `stateQueue.sync` here —
+        // this is the delivery thread that just admitted the flow.
+        pressureTriggersTotal.withLock { $0 += 1 }
+        let claimed = pressureReapScheduled.withLock { scheduled -> Bool in
+            if scheduled { return false }
+            scheduled = true
+            return true
+        }
+        guard claimed else { return }
         stateQueue.async {
-            // Coalesce a burst: if a selection scan is already outstanding this
-            // trigger rides it rather than enqueuing another O(n log n) scan on
-            // the serial queue behind the delivery thread's register `.sync`.
-            // The flag guards selection + dispatch (the stateQueue-bound work);
-            // the dispatched teardowns run independently on their flowQueues, and
-            // a trigger arriving after dispatch correctly runs a fresh scan that
-            // re-reads occupancy.
-            guard !self.pressureReapInFlight else { return }
-            self.pressureReapInFlight = true
-            defer { self.pressureReapInFlight = false }
-            let victims = self.collectPressureVictimsLocked()
+            // Release the slot first so a trigger landing mid-scan gets a
+            // fresh scan afterwards instead of being dropped.
+            self.pressureReapScheduled.withLock { $0 = false }
+            let victims = self.collectPressureVictimsIfDueLocked()
+            // `fire` only DISPATCHES teardowns to each victim's `flowQueue`,
+            // so nothing heavy runs while on `stateQueue`.
             self.firePressureEvictions(victims)
         }
+    }
+
+    /// Suppression gate in front of `collectPressureVictimsLocked`. MUST be
+    /// called on `stateQueue`. Only an over-cap scan is expensive, so only
+    /// that is what the deadline skips; under the cap the scan is O(1) and
+    /// is what clears the gate and re-arms the episode log.
+    private func collectPressureVictimsIfDueLocked() -> [TcpFlowContext] {
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        let occupancy = self.tcpSessions.count + self.udpSessions.count
+        let overCap = occupancy >= Int(defaultFlowPressureSoftCap)
+        guard !overCap || nowNs >= pressureRescanSuppressedUntilNs else {
+            pressureSkipsTotal += 1
+            if var episode = pressureEpisode {
+                episode.skips += 1
+                episode.peakOccupancy = max(episode.peakOccupancy, UInt64(occupancy))
+                pressureEpisode = episode
+            }
+            return []
+        }
+        return collectPressureVictimsLocked(nowNs: nowNs)
     }
 
     /// Victim selection. MUST be called on `stateQueue`. Re-reads live occupancy
@@ -476,19 +552,29 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// this (via `registerUdpFlow` occupancy), reaping idle TCP slots to relieve
     /// the global ceiling. Empty result = nothing to do (under cap, or no idle
     /// headroom).
-    private func collectPressureVictimsLocked() -> [TcpFlowContext] {
+    private func collectPressureVictimsLocked(
+        nowNs: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) -> [TcpFlowContext] {
         let softCap = defaultFlowPressureSoftCap
         guard softCap > 0 else { return [] }
         let lowWater = max(UInt64(defaultFlowPressureLowWater), 1)
         let floorMs = UInt64(defaultFlowPressureIdleFloorMs)
         let occupancy = UInt64(self.tcpSessions.count + self.udpSessions.count)
         guard occupancy >= UInt64(softCap) else {
-            // Back under the cap: re-arm the no-headroom log for the next episode.
+            // Back under the cap: re-arm the no-headroom log for the next
+            // episode, and drop any rescan suppression so the next one is
+            // never skipped on the strength of a stale view.
             pressureNoHeadroomLogged = false
+            pressureRescanSuppressedUntilNs = 0
             return []
         }
         let want = occupancy > lowWater ? Int(occupancy - lowWater) : 0
         guard want > 0 else { return [] }
+        pressureScansTotal.withLock { $0 += 1 }
+        var episode = pressureEpisode ?? PressureEpisode(startNs: nowNs, peakOccupancy: occupancy)
+        episode.scans += 1
+        episode.peakOccupancy = max(episode.peakOccupancy, occupancy)
+        pressureEpisode = episode
         // Snapshot the LRU sort key (`lastActivityAt`) and a single `now` into
         // immutable locals BEFORE filtering/sorting. `lastActivityAt` is mutated
         // on each flow's own `flowQueue` (onActivity), so sorting the live
@@ -496,7 +582,6 @@ final class TransparentProxyCore: @unchecked Sendable {
         // data race and an unstable comparator. Snapshotting makes the ordering
         // self-consistent; the fire-loop re-check on `flowQueue` remains the
         // authority on whether a chosen victim is actually still idle.
-        let nowNs = DispatchTime.now().uptimeNanoseconds
         typealias Candidate = (
             ctx: TcpFlowContext, state: TcpFlowMaintenanceState, lastNs: UInt64
         )
@@ -523,6 +608,29 @@ final class TransparentProxyCore: @unchecked Sendable {
         }
         let eligible: [TcpFlowContext] = sortedCandidates.map { $0.ctx }
         if eligible.isEmpty {
+            // Nothing idle past the floor, and idle age only grows: no flow
+            // can qualify before the closest established one crosses it.
+            // Skip rescans until then (bounded) instead of re-sorting the
+            // registry on every admission of a burst that, by construction,
+            // has nothing to give. Pre-ready flows are excluded — they
+            // become eligible via a state change, not via age, and one
+            // that turns ready inside the window enters at idle age 0
+            // (`handleEgressReady` resets the clock), so it cannot beat
+            // this bound; the cap covers the rest. `+ 1`: eligibility is
+            // strictly past the floor.
+            let maxIdleMs =
+                candidates.lazy
+                .filter { $0.state.egressReady }
+                .map { (nowNs &- $0.lastNs) / 1_000_000 }
+                .max() ?? 0
+            let untilEligibleMs = floorMs > maxIdleMs ? floorMs - maxIdleMs + 1 : 0
+            let suppressMs = min(
+                max(untilEligibleMs, Self.pressureRescanMinSuppressMs),
+                Self.pressureRescanMaxSuppressMs)
+            pressureRescanSuppressedUntilNs = nowNs &+ suppressMs &* 1_000_000
+            #if DEBUG
+                pressureRescanLastArmedMs = suppressMs
+            #endif
             // Over the cap but nothing idle enough to sacrifice — admit and ride
             // rather than reset a live flow. Logged ONCE per episode (not per
             // admission): a sustained over-cap population — notably UDP-dominated
@@ -538,7 +646,10 @@ final class TransparentProxyCore: @unchecked Sendable {
             return []
         }
         pressureNoHeadroomLogged = false
+        pressureRescanSuppressedUntilNs = 0
         let victims = Array(eligible.prefix(want))
+        pressureVictimsTotal += victims.count
+        pressureEpisode?.victims += victims.count
         self.logLifecycle(
             "flow pressure: occupancy \(occupancy) over soft cap \(softCap); reaping "
                 + "\(victims.count) idle flow(s) toward low-water \(lowWater)"
@@ -600,6 +711,9 @@ final class TransparentProxyCore: @unchecked Sendable {
             self.stuckPreReadyFlowIds.removeAll(keepingCapacity: false)
             self.stuckClosingFlowIds.removeAll(keepingCapacity: false)
             self.overload = TcpOverloadState()
+            self.pressureRescanSuppressedUntilNs = 0
+            self.pressureNoHeadroomLogged = false
+            self.pressureEpisode = nil
         }
     }
 
@@ -618,8 +732,15 @@ final class TransparentProxyCore: @unchecked Sendable {
         let udp = self.udpSessions.count
         let total = tcp + udp
         if total > self.flowCountHighWater { self.flowCountHighWater = total }
+        // Tick-driven breaker pass: catches the state where pressure arrived
+        // through admissions under the soft cap after a slow completion, so
+        // neither event evaluated with both conditions true. Cannot close on
+        // its own — in-flight only drops on completion, which evaluates
+        // itself. Also keeps the `breaker=` field below fresh.
+        self.updateTcpAdmissionBreakerLocked(trigger: "tick")
         // Combined total is what matters for the kernel nexus ceiling (global
         // across the flowswitch). `cap`/`peak` make pressure visible in soak.
+        let topShedApps = self.overload.topShedAppSummary()
         let overloadSnapshot = self.overload.snapshotAndResetRates(
             intervalSeconds: Self.periodicMaintenanceIntervalSeconds)
         let topApps = self.overload.topAppSummary()
@@ -628,6 +749,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         let shedRate = String(format: "%.2f", overloadSnapshot.shedRate)
         let breaker = overloadSnapshot.breakerOpen ? "open" : "closed"
         let appSummary = topApps.isEmpty ? "-" : topApps
+        let shedAppSummary = topShedApps.isEmpty ? "-" : topShedApps
         let latencySummary =
             "p50=\(overloadSnapshot.p50StartMs),p95=\(overloadSnapshot.p95StartMs),"
             + "p99=\(overloadSnapshot.p99StartMs)"
@@ -636,12 +758,26 @@ final class TransparentProxyCore: @unchecked Sendable {
             + "peak=\(self.flowCountHighWater) softCap=\(defaultFlowPressureSoftCap)"
         let overloadSummary =
             "tcpStartsInFlight=\(overloadSnapshot.startsInFlight) "
+            + "tcpStartsInFlightPeak=\(overloadSnapshot.startsInFlightPeak) "
+            + "hardCap=\(defaultTcpStartInFlightHardCap) "
             + "admissionRate=\(admissionRate)/s timeoutRate=\(timeoutRate)/s "
-            + "shedRate=\(shedRate)/s startLatencyMs[\(latencySummary)] "
-            + "breaker=\(breaker)"
+            + "shedRate=\(shedRate)/s shedHardCap=\(overloadSnapshot.shedHardCap) "
+            + "shedBreaker=\(overloadSnapshot.shedBreaker) shedApps=\(shedAppSummary) "
+            + "startLatencyMs[\(latencySummary)] breaker=\(breaker)"
+        let triggers = self.pressureTriggersTotal.withLock { $0 }
+        let scans = self.pressureScansTotal.withLock { $0 }
+        let pressureSummary =
+            "pressure[triggers=\(triggers - pressureStatsAtLastTick.triggers) "
+            + "scans=\(scans - pressureStatsAtLastTick.scans) "
+            + "skipped=\(pressureSkipsTotal - pressureStatsAtLastTick.skips) "
+            + "evicted=\(pressureVictimsTotal - pressureStatsAtLastTick.victims)]"
+        pressureStatsAtLastTick = (triggers, scans, pressureSkipsTotal, pressureVictimsTotal)
+        // Bundle ids are in the clear: Apple's own `com.apple.networkextension`
+        // subsystem logs the source app of every flow publicly on the same
+        // machine, so redacting them here only hides them from our own
+        // post-incident reads.
         self.logLifecycle(
-            "\(countSummary) \(overloadSummary)",
-            privateMetadata: "topApps=\(appSummary)")
+            "\(countSummary) \(overloadSummary) \(pressureSummary) topApps=\(appSummary)")
 
         // Track two cross-tick "stuck" sets. An ID present in both the
         // previous AND the current set has been stuck for ≥ one tick
@@ -801,6 +937,44 @@ final class TransparentProxyCore: @unchecked Sendable {
             firePressureEvictions(victims)
         }
 
+        /// Test hook: the production trigger's on-queue half, rescan
+        /// suppression included, run synchronously.
+        /// `testReapIdleUnderPressure` bypasses the gate on purpose (it pins
+        /// victim selection alone).
+        func testReapIdleUnderPressureIfDue() {
+            let victims = stateQueue.sync { self.collectPressureVictimsIfDueLocked() }
+            firePressureEvictions(victims)
+        }
+
+        /// Test hook: full selection scans performed so far.
+        var testPressureScanCount: Int { pressureScansTotal.withLock { $0 } }
+
+        /// Test hook: a scan is queued and has not started yet.
+        var testPressureReapScheduled: Bool { pressureReapScheduled.withLock { $0 } }
+
+        /// Test hook: the suppression most recently armed, in ms.
+        var testPressureRescanLastArmedMs: UInt64 {
+            stateQueue.sync { self.pressureRescanLastArmedMs }
+        }
+
+        /// Test hook: remaining rescan suppression in ms (`0` = none).
+        var testPressureRescanSuppressedForMs: UInt64 {
+            stateQueue.sync {
+                let now = DispatchTime.now().uptimeNanoseconds
+                guard now < self.pressureRescanSuppressedUntilNs else { return 0 }
+                return (self.pressureRescanSuppressedUntilNs - now) / 1_000_000
+            }
+        }
+
+        /// Test hook: park `stateQueue` until the returned semaphore is
+        /// signalled, so a test can pile triggers up behind it. Do not call
+        /// any `stateQueue.sync` hook while it is held.
+        func testHoldStateQueue() -> DispatchSemaphore {
+            let gate = DispatchSemaphore(value: 0)
+            stateQueue.async { gate.wait() }
+            return gate
+        }
+
         /// Test hook: run the post-wake established-flow path re-check
         /// synchronously, skipping the `defaultPostWakePathRecheckMs`
         /// settle timer. Mirrors `testRunPeriodicMaintenance`.
@@ -899,6 +1073,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                     self.overload.perAppFlowCounts[appId] = count - 1
                 }
             }
+            self.endPressureEpisodeIfUnderCapLocked()
             // Belt-and-suspenders against `ObjectIdentifier` reuse:
             // if a torn-down flow's pointer is recycled for a new ctx
             // within one maintenance tick, the new ctx would inherit
@@ -920,23 +1095,44 @@ final class TransparentProxyCore: @unchecked Sendable {
             let hardCap = Int(defaultTcpStartInFlightHardCap)
             let softCap = Int(defaultTcpStartInFlightSoftCap)
             let inFlight = self.overload.startsInFlight.count
+            // Evaluate on admission too, not only on completion, and BEFORE
+            // the hard-cap branch: the latency window may already be bad
+            // from completions that happened under the soft cap, and the
+            // admission that brings pressure is the one that should open
+            // the breaker — not the next completion, and not never, when
+            // pinned at the hard cap.
+            if !self.overload.breakerOpen, softCap > 0, inFlight >= softCap {
+                self.updateTcpAdmissionBreakerLocked(trigger: "admission")
+            }
             if hardCap > 0, inFlight >= hardCap {
-                self.overload.shedsSinceTick += 1
-                return .reject(
+                self.overload.shedHardCapSinceTick += 1
+                return self.recordShedLocked(
                     reason: "hard start cap reached inFlight=\(inFlight) hardCap=\(hardCap)",
                     appId: appId)
             }
             if self.overload.breakerOpen, softCap > 0, inFlight >= softCap {
-                self.overload.shedsSinceTick += 1
-                return .reject(
+                self.overload.shedBreakerSinceTick += 1
+                return self.recordShedLocked(
                     reason: "latency breaker open inFlight=\(inFlight) softCap=\(softCap)",
                     appId: appId)
             }
             let token = TcpAdmissionToken(flowId: flowId, startedAt: .now(), appId: appId)
             self.overload.startsInFlight[flowId] = token
             self.overload.admissionsSinceTick += 1
+            self.overload.startsInFlightPeakSinceTick = max(
+                self.overload.startsInFlightPeakSinceTick, self.overload.startsInFlight.count)
             return .admit(token)
         }
+    }
+
+    /// Count a refusal and decide whether its per-flow line may be
+    /// persisted (first `persistedShedLinesPerTick` per window). MUST be
+    /// called on `stateQueue`.
+    private func recordShedLocked(reason: String, appId: String) -> TcpAdmissionDecision {
+        self.overload.shedsSinceTick += 1
+        self.overload.shedsByAppSinceTick[appId, default: 0] += 1
+        let persist = self.overload.shedsSinceTick <= TcpOverloadState.persistedShedLinesPerTick
+        return .reject(reason: reason, appId: appId, persist: persist)
     }
 
     func finishTcpStart(_ token: TcpAdmissionToken, outcome: TcpStartOutcome) {
@@ -944,6 +1140,10 @@ final class TransparentProxyCore: @unchecked Sendable {
             guard self.overload.startsInFlight.removeValue(forKey: token.flowId) != nil else {
                 return
             }
+            // Latency comes from the token the CALLER hands back, not the
+            // stored one — on purpose: tests shape the latency window by
+            // backdating `startedAt`. Production always passes the token it
+            // was issued, so the two are identical there.
             let latencyMs =
                 (DispatchTime.now().uptimeNanoseconds &- token.startedAt.uptimeNanoseconds)
                 / 1_000_000
@@ -951,7 +1151,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             if outcome == .timeout {
                 self.overload.timeoutsSinceTick += 1
             }
-            self.updateTcpAdmissionBreakerLocked()
+            self.updateTcpAdmissionBreakerLocked(trigger: "completion")
         }
     }
 
@@ -969,28 +1169,66 @@ final class TransparentProxyCore: @unchecked Sendable {
         }
     }
 
-    private func updateTcpAdmissionBreakerLocked() {
-        let p95 = self.overload.percentile(0.95)
+    /// Runs on start completion, on admission at/over the soft cap, and on
+    /// the maintenance tick. Both inputs — the completed-latency window and
+    /// the in-flight count — change only on admission or completion, so the
+    /// tick is a backstop for the case where the last evaluation saw one
+    /// condition but not the other and nothing has arrived since.
+    private func updateTcpAdmissionBreakerLocked(trigger: String) {
         let inFlight = self.overload.startsInFlight.count
         let softCap = Int(defaultTcpStartInFlightSoftCap)
         let openThreshold = UInt64(defaultTcpStartLatencyBreakerP95Ms)
         let closeThreshold = UInt64(defaultTcpStartLatencyBreakerCloseP95Ms)
         guard softCap > 0, openThreshold > 0 else { return }
+        let p95 = self.overload.percentile(0.95)
         if !self.overload.breakerOpen, inFlight >= softCap, p95 >= openThreshold {
             self.overload.breakerOpen = true
             self.logLifecycle(
-                "tcp overload breaker open: p95StartMs=\(p95) inFlight=\(inFlight) softCap=\(softCap)")
+                "tcp overload breaker open (on \(trigger)): p95StartMs=\(p95) "
+                    + "inFlight=\(inFlight) softCap=\(softCap) openP95Ms=\(openThreshold)")
         } else if self.overload.breakerOpen, inFlight < softCap, p95 <= closeThreshold {
             self.overload.breakerOpen = false
             self.logLifecycle(
-                "tcp overload breaker closed: p95StartMs=\(p95) inFlight=\(inFlight) softCap=\(softCap)")
+                "tcp overload breaker closed (on \(trigger)): p95StartMs=\(p95) "
+                    + "inFlight=\(inFlight) softCap=\(softCap) closeP95Ms=\(closeThreshold)")
         }
     }
 
     func removeUdpFlow(_ flowId: ObjectIdentifier) {
         // `.async` for the same reason as `removeTcpFlow` — never block a
         // per-flow teardown on the shared serial queue.
-        stateQueue.async { self.udpSessions.removeValue(forKey: flowId) }
+        stateQueue.async {
+            self.udpSessions.removeValue(forKey: flowId)
+            self.endPressureEpisodeIfUnderCapLocked()
+        }
+    }
+
+    /// MUST be called on `stateQueue` after a registry removal. The reaper
+    /// only ever runs at/over the cap, so a removal is the only production
+    /// event that can observe the drop back down: end the pressure episode
+    /// here — re-arm the once-per-episode log and drop rescan suppression —
+    /// so the next episode opens with a fresh scan instead of a view that
+    /// could be up to the suppression cap stale. The boundary is the
+    /// reaper's own low-water mark, not the cap itself: occupancy hovering
+    /// one removal below the cap would otherwise close and reopen an
+    /// episode on every crossing, each with a summary line and a fresh
+    /// full scan. A dip that stops short of low-water is one episode.
+    private func endPressureEpisodeIfUnderCapLocked() {
+        let softCap = Int(defaultFlowPressureSoftCap)
+        guard softCap > 0 else { return }
+        let episodeEnd = min(Int(defaultFlowPressureLowWater), softCap - 1)
+        guard self.tcpSessions.count + self.udpSessions.count <= episodeEnd else { return }
+        pressureNoHeadroomLogged = false
+        pressureRescanSuppressedUntilNs = 0
+        if let episode = pressureEpisode {
+            pressureEpisode = nil
+            let durationMs =
+                (DispatchTime.now().uptimeNanoseconds &- episode.startNs) / 1_000_000
+            logLifecycle(
+                "flow pressure episode ended: durationMs=\(durationMs) "
+                    + "peakOccupancy=\(episode.peakOccupancy) softCap=\(softCap) "
+                    + "scans=\(episode.scans) skipped=\(episode.skips) evicted=\(episode.victims)")
+        }
     }
 
     /// Count of currently-registered TCP flows. Test-only signal for

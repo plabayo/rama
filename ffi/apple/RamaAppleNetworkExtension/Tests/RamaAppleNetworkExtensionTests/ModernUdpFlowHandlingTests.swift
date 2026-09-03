@@ -94,10 +94,12 @@ final class ModernUdpFlowHandlingTests: XCTestCase {
             XCTAssertTrue(publicMessages[0].contains("udp_callback=\(callback.rawValue)"))
             XCTAssertTrue(publicMessages[0].contains("rama_decision=passthrough"))
             XCTAssertTrue(publicMessages[0].contains("callback_return=false"))
+            // Destination stays private; the source app is public, like the
+            // TCP shed lines and the tick's `topApps=`.
             XCTAssertFalse(publicMessages[0].contains("203.0.113.9"))
-            XCTAssertFalse(publicMessages[0].contains("com.example.client"))
+            XCTAssertTrue(publicMessages[0].contains("source_app=com.example.client"))
             XCTAssertTrue(privateMetadata[0].contains("initial_remote=203.0.113.9:443"))
-            XCTAssertTrue(privateMetadata[0].contains("source_app=com.example.client"))
+            XCTAssertFalse(privateMetadata[0].contains("com.example.client"))
         }
     }
 

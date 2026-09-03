@@ -115,23 +115,32 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             guard case .admit(let token) = admission else {
                 let reason: String
                 let appId: String
-                if case .reject(let r, let id) = admission {
+                let persist: Bool
+                if case .reject(let r, let id, let p) = admission {
                     reason = r
                     appId = id
+                    persist = p
                 } else {
                     reason = "unavailable"
                     appId = "unknown"
+                    persist = true
                 }
+                // `app=` in the clear: the source bundle id is already public
+                // in Apple's own per-flow NE log lines on the same machine, and
+                // it is the first thing a post-incident read needs. Past the
+                // per-tick budget the line goes to debug only — see
+                // `TcpAdmissionDecision.reject(persist:)`; the tick carries
+                // the counts and the top refusing apps.
+                let line =
+                    "tcp admission rejected: \(reason); "
+                    + (defaultFlowRefusalPassthrough
+                        ? "passing through (fail open)" : "blocking (fail closed)")
+                    + " app=\(appId)"
+                if persist { core.logLifecycle(line) } else { core.logDebug(line) }
                 if defaultFlowRefusalPassthrough {
-                    core.logLifecycle(
-                        "tcp admission rejected: \(reason); passing through (fail open)",
-                        privateMetadata: "app=\(appId)")
                     session.cancel()
                     return false
                 }
-                core.logLifecycle(
-                    "tcp admission rejected: \(reason); blocking (fail closed)",
-                    privateMetadata: "app=\(appId)")
                 let error = tcpUpstreamUnavailableError()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
@@ -410,6 +419,11 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         }
         egressReady = true
         ctx.egressReady = true
+        // Reaching ready is progress: start the idle clock here, not at
+        // creation, so a flow that connected slowly does not enter the
+        // pressure reaper's eligible set already aged — the rescan bound
+        // in `collectPressureVictimsLocked` counts on that.
+        ctx.lastActivityAt = .now()
         if let token = ctx.admissionToken {
             core?.finishTcpStart(token, outcome: .ready)
             ctx.admissionToken = nil

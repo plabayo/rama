@@ -8,7 +8,15 @@ struct TcpAdmissionToken: Sendable {
 
 enum TcpAdmissionDecision {
     case admit(TcpAdmissionToken)
-    case reject(reason: String, appId: String)
+    /// `persist`: whether the per-flow refusal line may go to the
+    /// persisted lifecycle log. Only the first few refusals of each
+    /// tick window do; the rest log at debug and are carried by the
+    /// tick's counters. A refusal storm otherwise trips logd's
+    /// per-process rate limit on persisted messages, which then
+    /// drops the ticks and episode summaries too — observed on
+    /// device: ~6,600 lines in 90s silenced the lifecycle category
+    /// for well over ten minutes while the burst that mattered ran.
+    case reject(reason: String, appId: String, persist: Bool)
 }
 
 enum TcpStartOutcome {
@@ -22,6 +30,11 @@ struct TcpOverloadSnapshot {
     var timeoutRate: Double
     var shedRate: Double
     var startsInFlight: Int
+    /// High-water mark of `startsInFlight` within the tick window — the
+    /// near-miss signal a bundle needs when nothing was actually shed.
+    var startsInFlightPeak: Int
+    var shedHardCap: Int
+    var shedBreaker: Int
     var p50StartMs: UInt64
     var p95StartMs: UInt64
     var p99StartMs: UInt64
@@ -36,7 +49,15 @@ struct TcpOverloadState {
     var admissionsSinceTick = 0
     var timeoutsSinceTick = 0
     var shedsSinceTick = 0
+    var shedHardCapSinceTick = 0
+    var shedBreakerSinceTick = 0
+    var shedsByAppSinceTick: [String: Int] = [:]
+    var startsInFlightPeakSinceTick = 0
     var breakerOpen = false
+
+    /// Per-flow refusal lines allowed into the persisted log per tick
+    /// window; see `TcpAdmissionDecision.reject(persist:)`.
+    static let persistedShedLinesPerTick = 8
 
     mutating func appId(for meta: RamaTransparentProxyFlowMetaBridge) -> String {
         meta.sourceAppBundleIdentifier
@@ -52,11 +73,31 @@ struct TcpOverloadState {
         }
     }
 
+    /// Over COMPLETED starts only. Pending starts are deliberately NOT
+    /// folded in as censored samples: a slow start is pending longer, so
+    /// the in-flight set over-represents the slow tail, and a healthy
+    /// load with a ~1% dead-destination tail then trips a p95 rule on
+    /// most at-soft-cap admissions. A genuine stall still reaches this
+    /// window through its connect timeouts (≤ one pressure clamp), and
+    /// under fail-open the hard cap already sheds in the meantime.
     func percentile(_ percentile: Double) -> UInt64 {
         guard !startLatencyMsWindow.isEmpty else { return 0 }
         let sorted = startLatencyMsWindow.sorted()
         let rawIndex = Int((Double(sorted.count - 1) * percentile).rounded(.up))
         return sorted[min(max(rawIndex, 0), sorted.count - 1)]
+    }
+
+    /// Top refusing apps this tick window — attribution for the sheds
+    /// whose per-flow lines were not persisted.
+    func topShedAppSummary(limit: Int = 3) -> String {
+        shedsByAppSinceTick
+            .sorted { lhs, rhs in
+                if lhs.value == rhs.value { return lhs.key < rhs.key }
+                return lhs.value > rhs.value
+            }
+            .prefix(limit)
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: ",")
     }
 
     func topAppSummary(limit: Int = 3) -> String {
@@ -78,6 +119,9 @@ struct TcpOverloadState {
             timeoutRate: Double(timeoutsSinceTick) / seconds,
             shedRate: Double(shedsSinceTick) / seconds,
             startsInFlight: startsInFlight.count,
+            startsInFlightPeak: max(startsInFlightPeakSinceTick, startsInFlight.count),
+            shedHardCap: shedHardCapSinceTick,
+            shedBreaker: shedBreakerSinceTick,
             p50StartMs: percentile(0.50),
             p95StartMs: percentile(0.95),
             p99StartMs: percentile(0.99),
@@ -86,6 +130,10 @@ struct TcpOverloadState {
         admissionsSinceTick = 0
         timeoutsSinceTick = 0
         shedsSinceTick = 0
+        shedHardCapSinceTick = 0
+        shedBreakerSinceTick = 0
+        shedsByAppSinceTick.removeAll(keepingCapacity: true)
+        startsInFlightPeakSinceTick = startsInFlight.count
         return snapshot
     }
 }
