@@ -130,10 +130,9 @@ async fn main() -> Result<(), BoxError> {
                 ProxyAuthLayer::new(basic!("john", "secret")),
                 HijackLayer::new(DomainMatcher::exact("har.toggle.internal"), toggle_service),
                 UpgradeLayer::new(Executor::graceful(guard), MethodMatcher::CONNECT, connect),
+                RemoveRequestHeaderLayer::hop_by_hop(),
                 MapOutputLayer::new(add_har_file_header),
                 MapResponseBodyLayer::new_boxed_streaming_body(),
-                RemoveResponseHeaderLayer::hop_by_hop(),
-                RemoveRequestHeaderLayer::hop_by_hop(),
                 StreamCompressionLayer::new()
                     .with_compress_predicate(MirrorDecompressed::new())
                     .with_enforce_not_acceptable(false),
@@ -141,6 +140,7 @@ async fn main() -> Result<(), BoxError> {
                 DecompressionLayer::new()
                     .with_insert_accept_encoding_header(false)
                     .with_tolerate_decode_errors(true),
+                RemoveResponseHeaderLayer::hop_by_hop(),
                 ArcLayer::new(),
             )
                 .into_layer(EasyHttpWebClient::default_with_executor(exec)),

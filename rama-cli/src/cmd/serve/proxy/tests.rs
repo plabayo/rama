@@ -1236,6 +1236,76 @@ async fn forward_client_applies_icap_reqmod_and_respmod() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn forward_client_consumes_proxy_auth_without_icap() {
+    let origin_listener =
+        TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+            .await
+            .unwrap();
+    let origin_address = origin_listener.local_addr().unwrap();
+    let origin_task = tokio::spawn(origin_listener.serve(
+        HttpServer::auto(Executor::default()).service(service_fn(|request: Request| async move {
+            assert!(
+                !request
+                    .headers()
+                    .contains_key(rama::http::header::PROXY_AUTHORIZATION)
+            );
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .header(rama::http::header::PROXY_AUTHENTICATE, "Basic")
+                    .header(
+                        rama::http::header::PROXY_AUTHENTICATION_INFO,
+                        "nextnonce=deadbeef",
+                    )
+                    .body(Body::from("proxy auth consumed"))
+                    .unwrap(),
+            )
+        })),
+    ));
+    let client = new_proxy_client(ProxyClientConfig {
+        exec: Executor::default(),
+        capture: None,
+        inspection: InspectionState::default(),
+        har: HarController::default(),
+        portal: None,
+        tcp_options: Arc::new(SocketOptions::default_tcp()),
+        connect_timeout: Some(Duration::from_secs(2)),
+        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
+        upstream: UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+        icap: None,
+    });
+    let response = client
+        .serve(
+            Request::builder()
+                .uri(format!("http://{origin_address}/proxy-auth"))
+                .header(
+                    rama::http::header::PROXY_AUTHORIZATION,
+                    "Basic downstream-secret",
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        !response
+            .headers()
+            .contains_key(rama::http::header::PROXY_AUTHENTICATE)
+    );
+    assert!(
+        !response
+            .headers()
+            .contains_key(rama::http::header::PROXY_AUTHENTICATION_INFO)
+    );
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "proxy auth consumed"
+    );
+
+    origin_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn default_icap_directions_follow_single_method_capabilities() {
     let state = Arc::new(ProxyTestIcapState {
         methods: Some(vec![IcapMethod::Reqmod]),

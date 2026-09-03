@@ -15,7 +15,7 @@ pub(super) fn sanitize_adapted_http_headers(
     // The adapted body, not the untrusted ICAP response head, determines
     // downstream HTTP framing. This also removes conflicting duplicate values.
     headers.remove(http_header::CONTENT_LENGTH);
-    sanitized.restore_trailers(headers);
+    sanitized.restore_trailer_headers(headers, version);
     sanitized
 }
 

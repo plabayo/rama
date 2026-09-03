@@ -106,19 +106,15 @@ async fn main() -> Result<(), BoxError> {
         );
         let web_client =
             EasyHttpWebClient::default_with_executor(Executor::graceful(guard.clone()));
-        // WebSocket handshakes need their hop-by-hop upgrade headers.
-        // Strip hop-by-hop headers only on the ordinary HTTP branch.
-        let web_client = HijackLayer::new(
-            WebSocketMatcher::new(),
-            websocket_mitm_layer(exec.clone()).into_layer(web_client.clone()),
+        let web_client = (
+            RemoveRequestHeaderLayer::hop_by_hop(),
+            HijackLayer::new(
+                WebSocketMatcher::new(),
+                websocket_mitm_layer(exec.clone()).into_layer(web_client.clone()),
+            ),
+            RemoveResponseHeaderLayer::hop_by_hop(),
         )
-        .into_layer(
-            (
-                RemoveResponseHeaderLayer::hop_by_hop(),
-                RemoveRequestHeaderLayer::hop_by_hop(),
-            )
-                .into_layer(web_client),
-        );
+            .into_layer(web_client);
         let http_service = HttpServer::auto(exec.clone()).service(Arc::new(
             (
                 TraceLayer::new_for_http(),

@@ -70,6 +70,9 @@ mod map;
 mod name;
 mod value;
 
+pub mod hop_by_hop;
+pub mod proxy_auth;
+
 pub use self::map::{
     AsHeaderName, Drain, Entry, GetAll, HeaderMap, IntoHeaderName, IntoIter, IntoOrderedIter, Iter,
     IterMut, Keys, MaxSizeReached, OccupiedEntry, OrderedIter, VacantEntry, ValueDrain, ValueIter,
@@ -99,6 +102,7 @@ pub use self::name::{
     AGE,
     ALLOW,
     ALT_SVC,
+    AUTHENTICATION_INFO,
     AUTHORIZATION,
     CACHE_CONTROL,
     CACHE_STATUS,
@@ -134,6 +138,7 @@ pub use self::name::{
     ORIGIN,
     PRAGMA,
     PROXY_AUTHENTICATE,
+    PROXY_AUTHENTICATION_INFO,
     PROXY_AUTHORIZATION,
     PUBLIC_KEY_PINS,
     PUBLIC_KEY_PINS_REPORT_ONLY,

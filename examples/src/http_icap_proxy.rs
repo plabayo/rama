@@ -80,6 +80,7 @@ use rama::{
         client::EasyHttpWebClient,
         layer::{
             error_handling::ErrorHandlerLayer,
+            remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             upgrade::{EagerHttpProxyConnector, UpgradeLayer},
         },
         matcher::MethodMatcher,
@@ -170,7 +171,12 @@ async fn main() -> Result<(), BoxError> {
 
     // A non-CONNECT request selects its origin per request. The web client
     // derives that origin and acquires a matching upstream connection.
-    let direct = (ErrorHandlerLayer::new(), adaptation.clone())
+    let direct = (
+        ErrorHandlerLayer::new(),
+        RemoveRequestHeaderLayer::hop_by_hop(),
+        adaptation.clone(),
+        RemoveResponseHeaderLayer::hop_by_hop(),
+    )
         .into_layer(EasyHttpWebClient::default_with_executor(executor.clone()));
 
     // CONNECT already owns its egress socket. Peek/Relay preserves that

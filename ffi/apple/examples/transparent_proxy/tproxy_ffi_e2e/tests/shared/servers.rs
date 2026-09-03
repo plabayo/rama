@@ -461,14 +461,18 @@ async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
         .build_client();
 
     if is_http_req_websocket_handshake(&req) {
-        let ws_client = HttpUpgradeMitmRelayLayer::new(
-            Executor::default(),
-            HttpWebSocketRelayServiceRequestMatcher::new(
-                (ConsumeErrLayer::trace_as_debug(), MapOutputLayer::new(drop))
-                    .into_layer(IoForwardService::default()),
+        let ws_client = (
+            RemoveRequestHeaderLayer::hop_by_hop(),
+            HttpUpgradeMitmRelayLayer::new(
+                Executor::default(),
+                HttpWebSocketRelayServiceRequestMatcher::new(
+                    (ConsumeErrLayer::trace_as_debug(), MapOutputLayer::new(drop))
+                        .into_layer(IoForwardService::default()),
+                ),
             ),
+            RemoveResponseHeaderLayer::hop_by_hop(),
         )
-        .into_layer(inner_client);
+            .into_layer(inner_client);
 
         return Ok(match ws_client.serve(req).await {
             Ok(resp) => resp,

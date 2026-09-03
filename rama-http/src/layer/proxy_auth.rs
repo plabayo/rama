@@ -1,8 +1,11 @@
 //! Middleware that validates if a request has the appropriate Proxy Authorisation.
 //!
 //! If the request is not authorized a `407 Proxy Authentication Required` response will be sent.
+//! Authorized credentials are consumed before forwarding by default. Use
+//! [`ProxyAuthLayer::with_preserve_header`] only for an explicitly cooperative
+//! proxy chain.
 
-use crate::header::PROXY_AUTHENTICATE;
+use crate::header::{PROXY_AUTHENTICATE, PROXY_AUTHORIZATION};
 use crate::headers::authorization::Authority;
 use crate::headers::{HeaderMapExt, ProxyAuthorization, authorization::Credentials};
 use crate::{Request, Response, StatusCode};
@@ -21,6 +24,7 @@ use std::marker::PhantomData;
 pub struct ProxyAuthLayer<A, C, L = ()> {
     proxy_auth: A,
     allow_anonymous: bool,
+    preserve_header: bool,
     _phantom: PhantomData<fn(C, L) -> ()>,
 }
 
@@ -41,6 +45,7 @@ impl<A: Clone, C, L> Clone for ProxyAuthLayer<A, C, L> {
         Self {
             proxy_auth: self.proxy_auth.clone(),
             allow_anonymous: self.allow_anonymous,
+            preserve_header: self.preserve_header,
             _phantom: PhantomData,
         }
     }
@@ -52,6 +57,7 @@ impl<A, C> ProxyAuthLayer<A, C, ()> {
         Self {
             proxy_auth,
             allow_anonymous: false,
+            preserve_header: false,
             _phantom: PhantomData,
         }
     }
@@ -60,6 +66,17 @@ impl<A, C> ProxyAuthLayer<A, C, ()> {
         /// Allow anonymous requests.
         pub fn allow_anonymous(mut self, allow_anonymous: bool) -> Self {
             self.allow_anonymous = allow_anonymous;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Preserve `Proxy-Authorization` after authenticating the request.
+        ///
+        /// This is disabled by default so credentials addressed to this proxy
+        /// cannot leak to an inner service or a different upstream proxy.
+        pub fn preserve_header(mut self, preserve_header: bool) -> Self {
+            self.preserve_header = preserve_header;
             self
         }
     }
@@ -79,6 +96,7 @@ impl<A, C, L> ProxyAuthLayer<A, C, L> {
         ProxyAuthLayer {
             proxy_auth: self.proxy_auth,
             allow_anonymous: self.allow_anonymous,
+            preserve_header: self.preserve_header,
             _phantom: PhantomData,
         }
     }
@@ -94,10 +112,13 @@ where
     fn layer(&self, inner: S) -> Self::Service {
         ProxyAuthService::new(self.proxy_auth.clone(), inner)
             .with_allow_anonymous(self.allow_anonymous)
+            .with_preserve_header(self.preserve_header)
     }
 
     fn into_layer(self, inner: S) -> Self::Service {
-        ProxyAuthService::new(self.proxy_auth, inner).with_allow_anonymous(self.allow_anonymous)
+        ProxyAuthService::new(self.proxy_auth, inner)
+            .with_allow_anonymous(self.allow_anonymous)
+            .with_preserve_header(self.preserve_header)
     }
 }
 
@@ -111,6 +132,7 @@ where
 pub struct ProxyAuthService<A, C, S, L = ()> {
     proxy_auth: A,
     allow_anonymous: bool,
+    preserve_header: bool,
     inner: S,
     _phantom: PhantomData<fn(C, L) -> ()>,
 }
@@ -121,6 +143,7 @@ impl<A, C, S, L> ProxyAuthService<A, C, S, L> {
         Self {
             proxy_auth,
             allow_anonymous: false,
+            preserve_header: false,
             inner,
             _phantom: PhantomData,
         }
@@ -134,6 +157,14 @@ impl<A, C, S, L> ProxyAuthService<A, C, S, L> {
         }
     }
 
+    rama_utils::macros::generate_set_and_with! {
+        /// Preserve `Proxy-Authorization` after authenticating the request.
+        pub fn preserve_header(mut self, preserve_header: bool) -> Self {
+            self.preserve_header = preserve_header;
+            self
+        }
+    }
+
     define_inner_service_accessors!();
 }
 
@@ -142,6 +173,7 @@ impl<A: fmt::Debug, C, S: fmt::Debug, L> fmt::Debug for ProxyAuthService<A, C, S
         f.debug_struct("ProxyAuthService")
             .field("proxy_auth", &self.proxy_auth)
             .field("allow_anonymous", &self.allow_anonymous)
+            .field("preserve_header", &self.preserve_header)
             .field("inner", &self.inner)
             .field(
                 "_phantom",
@@ -156,6 +188,7 @@ impl<A: Clone, C, S: Clone, L> Clone for ProxyAuthService<A, C, S, L> {
         Self {
             proxy_auth: self.proxy_auth.clone(),
             allow_anonymous: self.allow_anonymous,
+            preserve_header: self.preserve_header,
             inner: self.inner.clone(),
             _phantom: PhantomData,
         }
@@ -174,7 +207,7 @@ where
     type Output = Response<OptionalBody<ResBody>>;
     type Error = BoxError;
 
-    async fn serve(&self, req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
+    async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         if let Some(credentials) = req
             .headers()
             .typed_get::<ProxyAuthorization<C>>()
@@ -183,6 +216,9 @@ where
         {
             if let Some(ext) = self.proxy_auth.authorized(credentials).await {
                 req.extensions().extend(&ext);
+                if !self.preserve_header {
+                    req.headers_mut().remove(PROXY_AUTHORIZATION);
+                }
                 Ok(self
                     .inner
                     .serve(req)
@@ -198,6 +234,9 @@ where
             }
         } else if self.allow_anonymous {
             req.extensions().insert(UserId::Anonymous);
+            if !self.preserve_header {
+                req.headers_mut().remove(PROXY_AUTHORIZATION);
+            }
             Ok(self
                 .inner
                 .serve(req)
@@ -211,5 +250,87 @@ where
                 .body(OptionalBody::none())
                 .context("create auth-required response")?)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_core::service::service_fn;
+    use rama_net::user::{Basic, credentials::basic};
+    use std::convert::Infallible;
+
+    fn authorized_request() -> Request<()> {
+        Request::builder()
+            .header(PROXY_AUTHORIZATION, "Basic am9objpzZWNyZXQ=")
+            .body(())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn consumes_authorized_header_by_default() {
+        let service = ProxyAuthLayer::<_, Basic>::new(basic!("john", "secret")).into_layer(
+            service_fn(async |request: Request<()>| {
+                assert!(!request.headers().contains_key(PROXY_AUTHORIZATION));
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("x-inner", "reached")
+                        .body(())
+                        .unwrap(),
+                )
+            }),
+        );
+
+        let response = service.serve(authorized_request()).await.unwrap();
+        assert_eq!(response.headers()["x-inner"], "reached");
+    }
+
+    #[tokio::test]
+    async fn can_preserve_authorized_header() {
+        let service = ProxyAuthLayer::<_, Basic>::new(basic!("john", "secret"))
+            .with_preserve_header(true)
+            .into_layer(service_fn(async |request: Request<()>| {
+                assert!(request.headers().contains_key(PROXY_AUTHORIZATION));
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("x-inner", "reached")
+                        .body(())
+                        .unwrap(),
+                )
+            }));
+
+        let response = service.serve(authorized_request()).await.unwrap();
+        assert_eq!(response.headers()["x-inner"], "reached");
+    }
+
+    #[tokio::test]
+    async fn consumes_unparsed_header_for_anonymous_request() {
+        let service = ProxyAuthLayer::<_, Basic>::new(basic!("john", "secret"))
+            .with_allow_anonymous(true)
+            .into_layer(service_fn(async |request: Request<()>| {
+                assert!(!request.headers().contains_key(PROXY_AUTHORIZATION));
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header("x-inner", "reached")
+                        .body(())
+                        .unwrap(),
+                )
+            }));
+        let request = Request::builder()
+            .header(PROXY_AUTHORIZATION, "Unknown credentials")
+            .body(())
+            .unwrap();
+
+        let response = service.serve(request).await.unwrap();
+        assert_eq!(response.headers()["x-inner"], "reached");
+    }
+
+    #[test]
+    fn debug_reports_header_policy() {
+        let service = ProxyAuthService::<_, Basic, _>::new(basic!("john", "secret"), ());
+        let debug = format!("{service:?}");
+
+        assert!(debug.contains("ProxyAuthService"));
+        assert!(debug.contains("preserve_header: false"));
     }
 }

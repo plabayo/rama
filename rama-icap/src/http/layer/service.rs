@@ -588,7 +588,7 @@ where
             .context("decode ICAP REQMOD request result")?;
         let version = request.version();
         let effective_head = sanitize_adapted_http_headers(request.headers_mut(), version);
-        original_head.restore(
+        original_head.restore_request(
             request.headers_mut(),
             version,
             effective_head.nominated_headers(),
@@ -708,7 +708,7 @@ where
         .context("decode ICAP RESPMOD result")?;
     let version = response.version();
     let effective_head = sanitize_adapted_http_headers(response.headers_mut(), version);
-    original_response_head.restore(
+    original_response_head.restore_response(
         response.headers_mut(),
         version,
         effective_head.nominated_headers(),

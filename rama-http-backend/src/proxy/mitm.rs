@@ -20,13 +20,16 @@ use rama_core::{
 use rama_http::{
     Body, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
     conn::{H2ServerContextParams, TargetHttpVersion},
+    header,
+    io::upgrade::OnUpgrade,
+    layer::remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
     service::web::response::IntoResponse,
 };
 use rama_http_core::server::conn::{
     auto::Builder as AutoConnBuilder, http1::Builder as Http1ConnBuilder,
     http2::Builder as H2ConnBuilder,
 };
-use rama_http_types::proto::h2::frame::Settings;
+use rama_http_types::proto::{h1::ext::ConnectionClose, h2::frame::Settings};
 use rama_net::client::EstablishedClientConnection;
 use rama_net::uri::Uri;
 
@@ -114,9 +117,9 @@ impl From<DefaultErrorResponse> for Response {
     }
 }
 
-/// Default middleware used by [`HttpMitmRelay`],
-/// most likely you'll want to overwrite it with custom middleware,
-/// unless you do not require MITM middleware.
+/// Default middleware used by [`HttpMitmRelay`].
+///
+/// It handles relay errors and makes the resulting service shareable.
 pub type DefaultMiddleware = (
     ConsumeErrLayer<Trace, StaticOutput<DefaultErrorResponse>>,
     ArcLayer,
@@ -130,6 +133,11 @@ pub type DefaultMiddleware = (
 /// Useful if you have a fairly standard MITM http flow and already
 /// have pre-established ingress and egress connections (e.g. because
 /// you already MITM'd the <L7 layers, such as SOCKS5 MITM'ng, TLS, ...).
+///
+/// The relay does not consume proxy-authentication fields: a transparent
+/// intermediary may be forwarding them to the proxy that owns the exchange.
+/// A proxy that owns that exchange should explicitly apply the `proxy_auth`
+/// request and response removal layers in its middleware.
 pub struct HttpMitmRelay<M = DefaultMiddleware> {
     http_server: HttpServer<AutoConnBuilder>,
     middleware: M,
@@ -161,8 +169,10 @@ impl HttpMitmRelay {
 
     /// Set HTTP middleware to use between server and client.
     ///
-    /// By default the identity middleware `()` is used,
-    /// which preserves the requests and responses as is...
+    /// Context-aware hop-by-hop sanitation remains at the relay boundary.
+    /// Fields received from each connection are consumed before this
+    /// middleware handles the message. Transport intent added by the
+    /// middleware is therefore originated for the next connection.
     pub fn with_http_middleware<M>(self, middleware: M) -> HttpMitmRelay<M> {
         HttpMitmRelay {
             http_server: self.http_server,
@@ -215,14 +225,11 @@ impl<Ingress, Egress, M> Service<BridgeIo<Ingress, Egress>> for HttpMitmRelay<M>
 where
     Ingress: Io + Unpin + ExtensionsRef,
     Egress: Io + Unpin + ExtensionsRef,
-    M: Layer<
+    (RemoveRequestHeaderLayer, M, RemoveResponseHeaderLayer): Layer<
             HttpClientService<Body>,
             Service: Service<Request, Output = Response, Error: Into<BoxError>> + Clone,
-        >
-        + Send
-        + Sync
-        + 'static
-        + Clone,
+        > + Clone,
+    M: Send + Sync + 'static + Clone,
 {
     type Output = ();
     type Error = BoxError;
@@ -283,7 +290,12 @@ where
                         }
                     };
                     ingress_stream.extensions().insert(mirrored);
-                    let client = self.middleware.clone().layer(conn);
+                    let client = (
+                        RemoveRequestHeaderLayer::hop_by_hop(),
+                        self.middleware.clone(),
+                        RemoveResponseHeaderLayer::hop_by_hop(),
+                    )
+                        .layer(conn);
                     Arc::new(Mutex::new(RelayState::Http2 { client }))
                 }
                 Err(err) => {
@@ -294,7 +306,11 @@ where
         } else {
             Arc::new(Mutex::new(RelayState::new(
                 egress_stream,
-                self.middleware.clone(),
+                (
+                    RemoveRequestHeaderLayer::hop_by_hop(),
+                    self.middleware.clone(),
+                    RemoveResponseHeaderLayer::hop_by_hop(),
+                ),
             )))
         };
 
@@ -509,7 +525,24 @@ where
         RelayState::Http1 { client } => {
             let result = client.serve(req).await.into_box_error();
             match result {
-                Ok(resp) => Ok(resp),
+                Ok(mut resp) => {
+                    if resp.extensions().contains::<ConnectionClose>()
+                        && !resp.extensions().contains::<OnUpgrade>()
+                    {
+                        tracing::debug!(
+                            http.request.method = %method,
+                            url.full = %uri,
+                            http.version = %resp.version(),
+                            "upstream closed fixed HTTP/1 MITM relay connection"
+                        );
+                        *state = RelayState::Closed;
+                        if resp.version() == Version::HTTP_11 {
+                            resp.headers_mut()
+                                .insert(header::CONNECTION, HeaderValue::from_static("close"));
+                        }
+                    }
+                    Ok(resp)
+                }
                 Err(err) => {
                     tracing::debug!(
                         http.request.method = %method,
