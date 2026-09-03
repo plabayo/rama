@@ -318,7 +318,9 @@ final class TcpOverloadAdmissionTests: XCTestCase {
         XCTAssertTrue(joined.contains("shedHardCap=0"))
         XCTAssertTrue(joined.contains("shedBreaker=0 shedApps=-"))
         XCTAssertTrue(
-            joined.contains("pressure[triggers=0 scans=0 skipped=0 evicted=0 spared=0 pending=0]"))
+            joined.contains(
+                "pressure[triggers=0 scans=0 skipped=0 selected=0 evicted=0 spared=0 pending=0]"
+            ))
     }
 
     /// A burst that came within a few starts of the hard cap but shed nothing

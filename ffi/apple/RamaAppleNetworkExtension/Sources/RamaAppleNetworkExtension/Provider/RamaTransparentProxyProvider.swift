@@ -496,6 +496,13 @@ nonisolated(unsafe) var defaultFlowPressureSoftCap: UInt32 = 450
 nonisolated(unsafe) var defaultFlowPressureLowWater: UInt32 = 350
 nonisolated(unsafe) var defaultFlowPressureIdleFloorMs: UInt32 = 120_000
 
+/// Keep the reaper target inside its meaningful range. A zero soft cap
+/// disables pressure reaping, so its unused low-water value is preserved.
+func normalizedFlowPressureLowWater(softCap: UInt32, lowWater: UInt32) -> UInt32 {
+    guard softCap > 0 else { return lowWater }
+    return min(max(lowWater, 1), softCap)
+}
+
 /// Hard cap on egress `NWConnection.start` calls that have not reached
 /// `.ready` yet. This is the admission-side circuit breaker: every pre-ready
 /// egress connection is exactly the expensive NECP handler population that
@@ -1141,7 +1148,9 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         writePumpMaxPendingBytes = startup.tcpWritePumpMaxPendingBytes
         writePumpHwmLogThresholdBytes = writePumpMaxPendingBytes / 2
         defaultFlowPressureSoftCap = startup.flowPressureSoftCap
-        defaultFlowPressureLowWater = startup.flowPressureLowWater
+        defaultFlowPressureLowWater = normalizedFlowPressureLowWater(
+            softCap: startup.flowPressureSoftCap,
+            lowWater: startup.flowPressureLowWater)
         defaultFlowPressureIdleFloorMs = startup.flowPressureIdleFloorMs
         defaultTcpStartInFlightHardCap = startup.tcpStartInFlightHardCap
         defaultTcpStartInFlightSoftCap = startup.tcpStartInFlightSoftCap
@@ -1151,6 +1160,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         defaultTcpBreakerConnectTimeoutMs = startup.tcpBreakerConnectTimeoutMs
         defaultFlowRefusalPassthrough = startup.flowRefusalPassthrough
 
+        if defaultFlowPressureLowWater != startup.flowPressureLowWater {
+            logLifecycle(
+                "flow pressure lowWater=\(startup.flowPressureLowWater) outside 1..."
+                    + "\(startup.flowPressureSoftCap); using \(defaultFlowPressureLowWater)"
+            )
+        }
         logLifecycle("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
         logLifecycle(
             "flow refusal action=\(defaultFlowRefusalPassthrough ? "passthrough (fail open)" : "block (fail closed)")"
