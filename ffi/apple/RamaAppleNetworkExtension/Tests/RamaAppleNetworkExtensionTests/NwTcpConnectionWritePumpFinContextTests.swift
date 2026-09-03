@@ -102,6 +102,37 @@ final class NwTcpConnectionWritePumpFinContextTests: XCTestCase {
         XCTAssertTrue(callbackOnQueue.get())
     }
 
+    func testDataSendErrorReachesTerminalBeforeDrainWaiter() {
+        let mock = MockNwConnection()
+        mock.transition(to: .ready)
+        let queue = makeQueue()
+        let events = Locked([String]())
+        let terminal = expectation(description: "terminal owner notified")
+        let drained = expectation(description: "drain waiter released")
+        let pump = NwTcpConnectionWritePump(
+            connection: mock,
+            queue: queue,
+            lingerCloseDeadline: .milliseconds(2_000),
+            onDrained: {},
+            onTerminal: { _ in
+                events.withLock { $0.append("terminal") }
+                terminal.fulfill()
+            })
+
+        XCTAssertEqual(pump.enqueue(Data([0x01])), .accepted)
+        waitForQueueDrain(queue)
+        XCTAssertEqual(mock.pendingSendCount, 1)
+        pump.closeWhenDrained {
+            events.withLock { $0.append("drain") }
+            drained.fulfill()
+        }
+        waitForQueueDrain(queue)
+
+        XCTAssertTrue(mock.completePendingSend(error: .posix(.ECONNRESET)))
+        wait(for: [terminal, drained], timeout: 1.0)
+        XCTAssertEqual(events.withLock { $0 }, ["terminal", "drain"])
+    }
+
     func testDeinitFallbackReturnsDrainCallbackToPumpQueue() {
         let mock = MockNwConnection()
         mock.transition(to: .ready)

@@ -81,7 +81,9 @@ final class FlowPressureReaperTests: XCTestCase {
                 uptimeNanoseconds: nowNs > backNs ? nowNs - backNs : 1)
         }
 
-        var wasTornDown: Bool { ctx.isDone }
+        /// Pressure teardown always closes the read half. Observe the mock's
+        /// locked counter instead of racing the flow-queue-confined `isDone`.
+        var wasTornDown: Bool { flow.closeReadCallCount > 0 }
 
         /// Bump activity to "now" so the flow reads as freshly active.
         func markActiveNow() { ctx.lastActivityAt = .now() }
@@ -858,6 +860,44 @@ final class FlowPressureReaperTests: XCTestCase {
         XCTAssertEqual(core.testPressureScanCount, 2)
     }
 
+    func testProtectedCandidatesBoundSuppressionAfterProtectionClears() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 0
+        let core = makeCore()
+        let (queue, gate) = gatedQueue("protected-suppression")
+        defer { gate.signal() }
+        let old = Fx(core: core, idleSeconds: 30, flowQueue: queue)
+        let firstAdmission = Fx(core: core, idleSeconds: 1)
+        insert(core, [old, firstAdmission])
+
+        core.reapIdleUnderPressure(protecting: firstAdmission.flowId)
+        pollUntil("old flow is selected") {
+            !core.testPressureReapScheduled
+                && core.testPressurePendingVictimCount == 1
+        }
+
+        let secondAdmission = Fx(core: core, idleSeconds: 1)
+        insert(core, [secondAdmission])
+        core.reapIdleUnderPressure(protecting: secondAdmission.flowId)
+        pollUntil("protected-only replacement scan completes") {
+            !core.testPressureReapScheduled && core.testPressureScanCount == 2
+        }
+
+        XCTAssertEqual(
+            core.testPressureRescanLastArmedMs,
+            250,
+            "protected idle flows bound suppression instead of hiding for 5s")
+
+        gate.signal()
+        pollUntil("selected old flow leaves") { old.wasTornDown }
+        core.testReapIdleUnderPressureIfDue(nowNs: UInt64.max)
+        XCTAssertEqual(
+            core.testPressureSelectionsTotal,
+            2,
+            "former admissions become eligible after bounded suppression")
+    }
+
     // MARK: - TG-10: episode boundary via the production removal path
 
     /// The reaper only runs at/over the cap, so the under-cap branch of the
@@ -1357,6 +1397,45 @@ final class FlowPressureReaperTests: XCTestCase {
         XCTAssertEqual(core.testPressureSelectionsTotal, 2)
     }
 
+    func testDispatchLeaseKeepsCreditForVictimAlreadyRemoving() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let (blockedQueue, gate) = gatedQueue("removing-lease-credit")
+        defer { gate.signal() }
+        let removing = Fx(
+            core: core,
+            idleSeconds: 30,
+            flowQueue: blockedQueue)
+        let alternate = Fx(core: core, idleSeconds: 20)
+        insert(core, [removing, alternate])
+
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 1)
+        XCTAssertFalse(
+            core.testAnnouncePressureRemoval(
+                flowId: removing.flowId,
+                context: removing.ctx),
+            "a selected victim already supplies its own relief credit")
+
+        core.testRunPressureRecheck(afterMs: 6_000)
+        XCTAssertEqual(core.testPressureExpiredTotal, 0)
+        XCTAssertEqual(core.testPressureSelectionsTotal, 1)
+        XCTAssertFalse(
+            core.testPressureRecheckScheduled,
+            "pending registry removal owns resolution, not a lease timer")
+
+        core.removeTcpFlow(removing.flowId, context: removing.ctx)
+        pollUntil("removing victim leaves registry") { core.tcpFlowCount == 1 }
+        gate.signal()
+        drain(blockedQueue)
+        XCTAssertFalse(alternate.wasTornDown)
+        XCTAssertEqual(core.testPressureEvictedTotal, 0)
+        XCTAssertEqual(core.testPressureExpiredTotal, 0)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 0)
+    }
+
     func testExpiredVictimIsNotRequeuedBehindBlockedFlowQueue() {
         defaultFlowPressureSoftCap = 2
         defaultFlowPressureLowWater = 1
@@ -1452,6 +1531,50 @@ final class FlowPressureReaperTests: XCTestCase {
         XCTAssertEqual(selected.filter { $0.wasTornDown }.count, 2)
         XCTAssertEqual(core.testPressureEvictedTotal, 2)
         XCTAssertEqual(core.testPressureCanceledTotal, 2)
+    }
+
+    func testRemovingSelectedVictimKeepsItsReliefCredit() {
+        defaultFlowPressureSoftCap = 4
+        defaultFlowPressureLowWater = 2
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let (victimQueue, victimGate) = gatedQueue("selected-removal-credit")
+        defer { victimGate.signal() }
+        let first = Fx(
+            core: core,
+            idleSeconds: 100,
+            flowQueue: victimQueue)
+        let removing = Fx(
+            core: core,
+            idleSeconds: 90,
+            flowQueue: victimQueue)
+        let natural = Fx(core: core, idleSeconds: 0)
+        let survivor = Fx(core: core, idleSeconds: 0)
+        insert(core, [first, removing, natural, survivor])
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 2)
+
+        let stateGate = core.testHoldStateQueue()
+        defer { stateGate.signal() }
+        // `removing` already owns victim credit. A second natural removal
+        // must cancel `first`, not discard the credit of a flow already
+        // certain to leave and then evict `first` below low-water.
+        core.removeTcpFlow(removing.flowId, context: removing.ctx)
+        core.removeTcpFlow(natural.flowId, context: natural.ctx)
+        stateGate.signal()
+        pollUntil("announced removals land") { core.tcpFlowCount == 2 }
+
+        victimGate.signal()
+        drain(victimQueue)
+        _ = core.tcpFlowCount
+        XCTAssertEqual(core.tcpFlowCount, 2, "must not evict below low-water")
+        XCTAssertFalse(first.wasTornDown)
+        XCTAssertEqual(core.testPressureEvictedTotal, 0)
+        XCTAssertEqual(
+            core.testPressureCanceledTotal,
+            2,
+            "one canceled selection plus the selected flow's natural teardown")
+        XCTAssertEqual(core.testPressurePendingVictimCount, 0)
     }
 
     func testCanceledVictimNaturalRemovalSuppliesFreshRelief() {

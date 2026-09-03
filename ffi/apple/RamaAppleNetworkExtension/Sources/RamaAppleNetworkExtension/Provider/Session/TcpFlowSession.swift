@@ -400,6 +400,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     }
 
     private func finishTerminalDrain(_ drain: TerminalDrain) {
+        guard !ctx.isDone else { return }
         pendingTerminalDrains.remove(drain)
         completedTerminalDrains.insert(drain)
 
@@ -418,8 +419,10 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         }
 
         let bothFinished = completedTerminalDrains.count == 2
-        let waitingForSibling = pendingClientDrainClose != nil && !bothFinished
-        ctx.drainClosePending = !pendingTerminalDrains.isEmpty || waitingForSibling
+        // A completed clean half-close may wait indefinitely for its
+        // independent sibling direction. That is a valid half-open TCP flow,
+        // not a wedged writer drain, so it must not retain the drain backstop.
+        ctx.drainClosePending = !pendingTerminalDrains.isEmpty
         guard bothFinished, pendingTerminalDrains.isEmpty,
             pendingClientDrainClose != nil
         else {
@@ -706,11 +709,12 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             },
             onTerminal: { [weak self] error in
                 guard let self else { return }
-                // Promoted mode only: the forwarder owns teardown, so
-                // drive it to terminal — its onTerminal closes the
-                // kernel flow + drops the registry entry. (The
-                // connection is already force-cancelled by the pump.)
+                // Preserve terminal send failures in both modes. In promoted
+                // mode the forwarder's natural terminal is intentionally
+                // clean, so the errorful context teardown must win before we
+                // cancel the forwarder and let that clean callback run.
                 if self.ctx.mode != .viaRust {
+                    self.ctx.applyWriterTerminal(error)
                     self.ctx.directForwarder?.cancel()
                 } else {
                     self.terminalDrainBackstop?.cancel()

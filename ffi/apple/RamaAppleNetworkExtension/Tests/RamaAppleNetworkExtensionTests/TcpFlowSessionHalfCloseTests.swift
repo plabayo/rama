@@ -204,9 +204,30 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         XCTAssertGreaterThan(session.ctx.lastActivityAt.uptimeNanoseconds, 1)
     }
 
+    func testSessionWritePumpsRejectAfterPressureCommit() {
+        let (session, core, _, conn, queue) = makeArmedSession()
+        defer { core.detachEngine(reason: 0) }
+
+        session.buildClientWritePump()
+        session.ctx.clientWritePump?.markOpened()
+        conn.transition(to: .ready)
+        queue.sync { session.handleEgressReady(connection: conn) }
+        session.ctx.withMaintenanceStateLocked {
+            $0.pressureEvictionCommitted = true
+        }
+
+        XCTAssertEqual(
+            session.ctx.clientWritePump?.enqueue(Data([0x01])),
+            .closed)
+        XCTAssertEqual(
+            session.ctx.egressWritePump?.enqueue(Data([0x02])),
+            .closed)
+        XCTAssertEqual(conn.pendingSendCount, 0)
+    }
+
     func testCleanClientDrainDisarmsEofBackstopBeforeWriterFinishes() {
         let (session, core, flow, conn, queue) = makeArmedSession(
-            egressEofGraceMs: 50)
+            egressEofGraceMs: 60_000)
         defer { core.detachEngine(reason: 0) }
         session.lingerCloseMs = 60_000
         session.ctx.lingerCloseMs = 60_000
@@ -231,7 +252,6 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
             XCTAssertFalse(session.ctx.egressReadPump?.isEofBackstopArmed == true)
         }
 
-        Thread.sleep(forTimeInterval: 0.10)
         XCTAssertEqual(conn.cancelCount, 0, "clean upload half survives EOF grace")
         XCTAssertEqual(flow.closeWriteCallCount, 0, "client writer is still draining")
 
@@ -245,6 +265,12 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
     func testEgressWriteFailureDuringDrainTearsDownViaRustSession() {
         let (session, core, flow, conn, queue) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }
+        session.buildClientWritePump()
+        session.ctx.clientWritePump?.markOpened()
+        queue.sync { session.closeClientAfterRustDrain() }
+        waitFor("client writer completes first drain") {
+            flow.closeWriteCallCount == 1
+        }
         conn.transition(to: .ready)
         queue.sync { session.handleEgressReady(connection: conn) }
         guard let writer = session.ctx.egressWritePump else {
@@ -262,6 +288,38 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(flow.closeReadCallCount, 1)
         XCTAssertGreaterThanOrEqual(flow.closeWriteCallCount, 1)
         XCTAssertGreaterThanOrEqual(conn.cancelCount, 1)
+        guard case .posix(.ECONNRESET)? = flow.lastCloseReadError as? NWError else {
+            return XCTFail("overlapping drain must preserve the egress send error")
+        }
+        guard case .posix(.ECONNRESET)? = flow.lastCloseWriteError as? NWError else {
+            return XCTFail("both kernel-flow halves must carry the send error")
+        }
+    }
+
+    func testPromotedEgressWriteFailurePreservesError() {
+        let (session, core, flow, conn, queue) = makeArmedSession()
+        defer { core.detachEngine(reason: 0) }
+        conn.transition(to: .ready)
+        queue.sync {
+            session.handleEgressReady(connection: conn)
+            session.ctx.mode = .promoted
+        }
+        guard let writer = session.ctx.egressWritePump else {
+            return XCTFail("egress writer built")
+        }
+        XCTAssertEqual(writer.enqueue(Data([0x01])), .accepted)
+        waitFor("promoted egress data send") { conn.pendingSendCount == 1 }
+
+        XCTAssertTrue(conn.completePendingSend(error: .posix(.ECONNRESET)))
+        waitFor("promoted terminal error tears the session down") {
+            flow.closeReadCallCount > 0
+        }
+        guard case .posix(.ECONNRESET)? = flow.lastCloseReadError as? NWError else {
+            return XCTFail("promoted read close must preserve the send error")
+        }
+        guard case .posix(.ECONNRESET)? = flow.lastCloseWriteError as? NWError else {
+            return XCTFail("promoted write close must preserve the send error")
+        }
     }
 
     func testCompletedEgressFinClearsDrainPending() {
@@ -281,13 +339,15 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         conn.transition(to: .ready)
 
         queue.sync { session.closeEgressAfterRustDrain() }
-        XCTAssertTrue(session.ctx.drainClosePending)
+        XCTAssertTrue(session.ctx.maintenanceSnapshot().drainClosePending)
         queue.sync {
             XCTAssertNotNil(session.terminalDrainBackstop, "backstop armed with the drain")
         }
         waitFor("egress FIN send") { conn.pendingSendCount == 1 }
         XCTAssertTrue(conn.completePendingSend(error: nil))
-        waitFor("drain marker cleared") { !session.ctx.drainClosePending }
+        waitFor("drain marker cleared") {
+            !session.ctx.maintenanceSnapshot().drainClosePending
+        }
 
         drain(queue)
         queue.sync {
@@ -299,8 +359,8 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
     func testClientDrainWaitsForLaterEgressClose() {
         let (session, core, flow, conn, queue) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }
-        session.lingerCloseMs = 60_000
-        session.ctx.lingerCloseMs = 60_000
+        session.lingerCloseMs = 25
+        session.ctx.lingerCloseMs = 25
         session.buildClientWritePump()
         session.ctx.clientWritePump?.markOpened()
         session.ctx.egressWritePump = NwTcpConnectionWritePump(
@@ -314,18 +374,36 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         queue.sync { session.closeClientAfterRustDrain() }
         waitFor("client writer half-closes") { flow.closeWriteCallCount == 1 }
         drain(queue)
-        XCTAssertFalse(session.ctx.isDone)
-        XCTAssertTrue(session.ctx.drainClosePending)
+        queue.sync {
+            XCTAssertFalse(session.ctx.isDone)
+            XCTAssertFalse(session.ctx.drainClosePending)
+            XCTAssertNil(session.terminalDrainBackstop)
+        }
         XCTAssertEqual(conn.cancelCount, 0)
 
         queue.sync { session.closeClientAfterRustDrain() }
         XCTAssertEqual(flow.closeWriteCallCount, 1, "duplicate close signal is inert")
-        XCTAssertTrue(session.ctx.drainClosePending)
+        XCTAssertFalse(session.ctx.maintenanceSnapshot().drainClosePending)
+
+        // Waiting for the independent upload-side close is a valid quiet
+        // half-open state, not a wedged writer drain. Its absent timer state
+        // proves no drain deadline can kill later traffic in that direction.
+        queue.sync {
+            XCTAssertFalse(session.ctx.isDone)
+            XCTAssertNil(session.terminalDrainBackstop)
+        }
+        XCTAssertEqual(conn.cancelCount, 0)
+        XCTAssertEqual(
+            session.ctx.egressWritePump?.enqueue(Data([0x02])),
+            .accepted,
+            "quiet half-open upload must still accept later bytes")
+        waitFor("post-half-close upload send") { conn.pendingSendCount == 1 }
+        XCTAssertTrue(conn.completePendingSend(error: nil))
 
         queue.sync { session.closeEgressAfterRustDrain() }
         waitFor("later egress FIN is issued") { conn.pendingSendCount == 1 }
         XCTAssertTrue(conn.completePendingSend(error: nil))
-        waitFor("both directions finalize") { session.ctx.isDone }
+        waitFor("both directions finalize") { flow.closeReadCallCount == 1 }
         XCTAssertEqual(flow.closeWriteCallCount, 1)
         XCTAssertEqual(flow.closeReadCallCount, 1)
     }
@@ -348,12 +426,14 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         queue.sync { session.closeEgressAfterRustDrain() }
         waitFor("egress FIN is issued") { conn.pendingSendCount == 1 }
         XCTAssertTrue(conn.completePendingSend(error: nil))
-        waitFor("egress drain clears") { !session.ctx.drainClosePending }
-        XCTAssertFalse(session.ctx.isDone)
+        waitFor("egress drain clears") {
+            !session.ctx.maintenanceSnapshot().drainClosePending
+        }
+        queue.sync { XCTAssertFalse(session.ctx.isDone) }
         XCTAssertEqual(conn.cancelCount, 0)
 
         queue.sync { session.closeClientAfterRustDrain() }
-        waitFor("later client drain finalizes") { session.ctx.isDone }
+        waitFor("later client drain finalizes") { flow.closeReadCallCount == 1 }
         XCTAssertEqual(flow.closeWriteCallCount, 1)
         XCTAssertEqual(flow.closeReadCallCount, 1)
     }
@@ -390,13 +470,13 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         }
         wait(for: [drainsStarted], timeout: 1.0)
         waitFor("egress FIN send") { conn.pendingSendCount == 1 }
-        XCTAssertTrue(session.ctx.drainClosePending)
+        XCTAssertTrue(session.ctx.maintenanceSnapshot().drainClosePending)
 
         XCTAssertTrue(conn.completePendingSend(error: nil))
         drain(queue)
 
         XCTAssertTrue(
-            session.ctx.drainClosePending,
+            session.ctx.maintenanceSnapshot().drainClosePending,
             "egress FIN must not hide the still-pending client writer drain")
         let remainedArmed = TestValue(false)
         let firstInspection = expectation(description: "inspect overlapping drain")
@@ -410,9 +490,9 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
             "backstop must remain armed until every writer drain finishes")
 
         XCTAssertTrue(flow.completeNextWrite())
-        waitFor("client drain finishes teardown") { session.ctx.isDone }
+        waitFor("client drain finishes teardown") { flow.closeReadCallCount == 1 }
         drain(queue)
-        XCTAssertFalse(session.ctx.drainClosePending)
+        XCTAssertFalse(session.ctx.maintenanceSnapshot().drainClosePending)
         let disarmed = TestValue(false)
         let finalInspection = expectation(description: "inspect completed drains")
         queue.async {
@@ -454,13 +534,13 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         XCTAssertTrue(flow.completeNextWrite())
         drain(queue)
 
-        XCTAssertFalse(session.ctx.isDone)
+        queue.sync { XCTAssertFalse(session.ctx.isDone) }
         XCTAssertEqual(conn.cancelCount, 0, "client drain must not abort the pending egress FIN")
-        XCTAssertTrue(session.ctx.drainClosePending)
+        XCTAssertTrue(session.ctx.maintenanceSnapshot().drainClosePending)
 
         XCTAssertTrue(conn.completePendingSend(error: nil))
-        waitFor("last drain performs final teardown") { session.ctx.isDone }
-        XCTAssertFalse(session.ctx.drainClosePending)
+        waitFor("last drain performs final teardown") { flow.closeReadCallCount == 1 }
+        XCTAssertFalse(session.ctx.maintenanceSnapshot().drainClosePending)
         XCTAssertEqual(conn.cancelCount, 1)
     }
 }

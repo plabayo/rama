@@ -52,6 +52,7 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     private let stateQueue = DispatchQueue(label: "rama.tproxy.core.state")
     private let lifecycleLock = NSRecursiveLock()
+    private let flowStartupGroup = DispatchGroup()
     private var engineStorage: RamaTransparentProxyEngineHandle?
     private var engineGeneration: UInt64 = 0
     private var acceptingFlows = false
@@ -164,6 +165,12 @@ final class TransparentProxyCore: @unchecked Sendable {
             runFlowTeardown(ctx) { ctx.applyEngineDetached() }
         }
         for session in detached.udp { session.ctx.terminate?(engineDetachedError()) }
+        // A startup that passed its execution-time generation check before
+        // admission closed may still be inside its short transport-start
+        // body. Let it finish before stopping the Rust engine. Queued starts
+        // that have not entered the group are blocked by `lifecycleLock` and
+        // reject the detached generation after this method releases it.
+        flowStartupGroup.wait()
         detached.engine?.stop(reason: reason)
     }
 
@@ -480,6 +487,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     struct PressureVictimReservation {
         let token: UInt64
         let selectedAtNs: UInt64
+        let flowId: ObjectIdentifier
         var phase: PressureVictimPhase
     }
 
@@ -604,7 +612,8 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// line at its end — the shape of a burst (how long, how high, what the
     /// reaper managed) is what a post-incident bundle needs and what the
     /// 60s tick is too coarse to show. An episode cut short by a provider
-    /// restart is dropped unsummarised (the tick deltas still cover it).
+    /// restart is deliberately dropped unsummarised with the rest of that
+    /// lifecycle's maintenance state.
     /// Only mutated on `stateQueue`.
     private struct PressureEpisode {
         var startNs: UInt64
@@ -866,7 +875,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         // that reaches the cap again a trigger in their window is O(1) here.
         let pressureState = pressureVictimState.withLock {
             (reservations: $0.reservations,
-             pendingRemovalFlowIds: Set($0.pendingRemovalFlowIds.filter { $0.value }.keys),
+             pendingRemovalFlowIds: Set($0.pendingRemovalFlowIds.keys),
              victimCreditCount: $0.victimCreditCount,
              naturalReliefCount: $0.naturalReliefCount)
         }
@@ -900,7 +909,6 @@ final class TransparentProxyCore: @unchecked Sendable {
             let id = ObjectIdentifier(session.ctx)
             let flowId = session.ctx.flowId ?? id
             guard !reservedIds.contains(id),
-                !protectedFlowIds.contains(flowId),
                 !pressureState.pendingRemovalFlowIds.contains(flowId)
             else {
                 return nil
@@ -917,6 +925,9 @@ final class TransparentProxyCore: @unchecked Sendable {
         // an actively-transferring flow of either mode is never selected.
         // Closing flows become eligible once genuinely drain-wedged.
         let idleCandidates: [Candidate] = candidates.filter { candidate in
+            let id = ObjectIdentifier(candidate.ctx)
+            let flowId = candidate.ctx.flowId ?? id
+            guard !protectedFlowIds.contains(flowId) else { return false }
             let lifecycleAllowsEviction = Self.flowPressureAllowsEviction(
                 candidate.state,
                 nowNs: nowNs)
@@ -991,7 +1002,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 let id = ObjectIdentifier(ctx)
                 let flowId = ctx.flowId ?? id
                 return state.reservations[id] == nil
-                    && state.pendingRemovalFlowIds[flowId] != true
+                    && state.pendingRemovalFlowIds[flowId] == nil
             }
             for ctx in stillEligible.prefix(currentWant) {
                 nextPressureVictimToken &+= 1
@@ -1000,6 +1011,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                     PressureVictimReservation(
                         token: token,
                         selectedAtNs: nowNs,
+                        flowId: ctx.flowId ?? ObjectIdentifier(ctx),
                         phase: .selected),
                     for: ObjectIdentifier(ctx))
                 victims.append(PressureVictim(ctx: ctx, token: token))
@@ -1209,8 +1221,12 @@ final class TransparentProxyCore: @unchecked Sendable {
     ) {
         let leaseNs = pressureVictimDispatchLeaseMs &* 1_000_000
         let selectionDeadline = pressureVictimState.withLock { state in
-            state.reservations.values.lazy
-                .filter { $0.phase == .selected }
+            let pendingRemovalFlowIds = Set(state.pendingRemovalFlowIds.keys)
+            return state.reservations.values.lazy
+                .filter {
+                    $0.phase == .selected
+                        && !pendingRemovalFlowIds.contains($0.flowId)
+                }
                 .map { $0.selectedAtNs &+ leaseNs }
                 .min()
         }
@@ -1241,11 +1257,13 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// victim remains a tombstone until its queued closure acknowledges the
     /// token, so the rescan can try a different flow without piling work onto
     /// the same starved queue. MUST run on `stateQueue`.
-    private func runPressureRecheckLocked() {
-        let nowNs = DispatchTime.now().uptimeNanoseconds
+    private func runPressureRecheckLocked(
+        nowNs: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) {
         let expired = pressureVictimState.withLock { state in
             let ids = state.reservations.compactMap { id, reservation in
                 reservation.phase == .selected
+                    && state.pendingRemovalFlowIds[reservation.flowId] == nil
                     && Self.elapsedMs(nowNs: nowNs, sinceNs: reservation.selectedAtNs)
                         >= pressureVictimDispatchLeaseMs
                     ? id : nil
@@ -1662,6 +1680,28 @@ final class TransparentProxyCore: @unchecked Sendable {
             }
         }
 
+        /// Test hook: announce removal without immediately queueing the
+        /// registry mutation, exposing the exact pending-accounting window.
+        @discardableResult
+        func testAnnouncePressureRemoval(
+            flowId: ObjectIdentifier,
+            context: TcpFlowContext?
+        ) -> Bool {
+            announcePressureRemoval(
+                flowId: flowId,
+                contextId: context.map(ObjectIdentifier.init),
+                engineGeneration: nil)
+        }
+
+        /// Test hook: drive the lease recheck at a synthetic future instant.
+        func testRunPressureRecheck(afterMs: UInt64) {
+            let nowNs = DispatchTime.now().uptimeNanoseconds
+            stateQueue.sync {
+                self.runPressureRecheckLocked(
+                    nowNs: nowNs &+ afterMs &* 1_000_000)
+            }
+        }
+
         /// Test hook: park `stateQueue` until the returned semaphore is
         /// signalled, so a test can pile triggers up behind it. Do not call
         /// any `stateQueue.sync` hook while it is held.
@@ -1742,9 +1782,10 @@ final class TransparentProxyCore: @unchecked Sendable {
     }
 
     /// Register and enqueue transport startup while holding the lifecycle
-    /// lock. This uses the registration's existing state-queue transaction;
-    /// detach therefore either queues teardown after startup on `flowQueue`,
-    /// or wins first and rejects registration without a second state sync.
+    /// lock. The queued body re-checks that lifecycle under the same lock when
+    /// it actually executes: if detach wins after registration but before a
+    /// backlogged flow queue runs, the stale body becomes a no-op instead of
+    /// starting an old-generation transport after detach returned.
     func registerTcpFlowAndScheduleStartup(
         _ flowId: ObjectIdentifier,
         anchor: TcpFlowSessionAnchor,
@@ -1762,7 +1803,10 @@ final class TransparentProxyCore: @unchecked Sendable {
                 appId: appId,
                 engineGeneration: engineGeneration)
         else { return false }
-        flowQueue.async(execute: body)
+        scheduleRegisteredStartup(
+            generation: engineGeneration,
+            on: flowQueue,
+            body: body)
         if defaultFlowPressureSoftCap > 0,
             occupancy >= Int(defaultFlowPressureSoftCap)
         {
@@ -1815,13 +1859,45 @@ final class TransparentProxyCore: @unchecked Sendable {
                 anchor: anchor,
                 engineGeneration: engineGeneration)
         else { return false }
-        flowQueue.async(execute: body)
+        scheduleRegisteredStartup(
+            generation: engineGeneration,
+            on: flowQueue,
+            body: body)
         if defaultFlowPressureSoftCap > 0,
             occupancy >= Int(defaultFlowPressureSoftCap)
         {
             reapIdleUnderPressure()
         }
         return true
+    }
+
+    /// Execute a registered transport start inside the lifecycle bracket.
+    /// `acceptingFlows`, `engineStorage`, and `engineGeneration` are written
+    /// only while this lock is held (their state-queue transaction is nested
+    /// inside it), so this execution-time read needs no extra hot-path sync.
+    /// The group, entered atomically with that check, gives detach a strict
+    /// boundary without serializing concurrent starts: either the body
+    /// finishes before detach returns, or it never begins for that generation.
+    private func scheduleRegisteredStartup(
+        generation: UInt64,
+        on flowQueue: DispatchQueue,
+        body: @escaping @Sendable () -> Void
+    ) {
+        flowQueue.async { [weak self] in
+            guard let self else { return }
+            self.lifecycleLock.lock()
+            guard self.acceptingFlows,
+                self.engineStorage != nil,
+                self.engineGeneration == generation
+            else {
+                self.lifecycleLock.unlock()
+                return
+            }
+            self.flowStartupGroup.enter()
+            self.lifecycleLock.unlock()
+            defer { self.flowStartupGroup.leave() }
+            body()
+        }
     }
 
     func removeTcpFlow(
@@ -2090,7 +2166,9 @@ final class TransparentProxyCore: @unchecked Sendable {
             var newestId: ObjectIdentifier?
             var newestToken: UInt64 = 0
             for (id, reservation) in state.reservations
-            where reservation.phase == .selected {
+            where reservation.phase == .selected
+                && state.pendingRemovalFlowIds[reservation.flowId] == nil
+            {
                 if newestId == nil || reservation.token > newestToken {
                     newestId = id
                     newestToken = reservation.token

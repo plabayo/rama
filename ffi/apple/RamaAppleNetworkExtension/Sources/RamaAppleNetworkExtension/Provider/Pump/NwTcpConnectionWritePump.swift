@@ -216,10 +216,8 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
         lingerWork?.cancel()
         lingerWork = nil
         connection.cancelAndDetach()
-        if let cb = onDrainedCallback {
-            onDrainedCallback = nil
-            cb()
-        }
+        let drainCallback = onDrainedCallback
+        onDrainedCallback = nil
         // Drive the owner's teardown. In promoted mode the forwarder
         // owns the kernel flow + connection lifecycle; its C→S
         // direction can be parked indefinitely — blocked on a
@@ -233,6 +231,10 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
         // `TcpClientWritePump.onTerminalError`, the equivalent hook on
         // the sibling write pump.
         onTerminal(error)
+        // A drain waiter must still be released, but only AFTER errorful
+        // teardown has won. Otherwise the callback can complete the sibling
+        // drain pair as clean EOF and make `onTerminal(error)` a no-op.
+        drainCallback?()
     }
 
     internal func pumpCoreDidFinishDraining(_ core: TcpWritePumpCore) {
