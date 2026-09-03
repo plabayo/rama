@@ -26,6 +26,7 @@ final class TcpClientReadPump: @unchecked Sendable {
     private weak var session: (any TcpClientBytesSink)?
     private let logger: @Sendable (FlowLogMessage) -> Void
     private let onTerminal: @Sendable (Error?) -> Void
+    private let onActivity: @Sendable () -> Void
     private let queue: DispatchQueue
     /// Lifecycle phase — replaces the former `readPending`, `paused`, and
     /// `closed` boolean triple.  The compiler now enforces that only one
@@ -49,13 +50,15 @@ final class TcpClientReadPump: @unchecked Sendable {
         session: any TcpClientBytesSink,
         queue: DispatchQueue,
         logger: @escaping @Sendable (FlowLogMessage) -> Void,
-        onTerminal: @escaping @Sendable (Error?) -> Void
+        onTerminal: @escaping @Sendable (Error?) -> Void,
+        onActivity: @escaping @Sendable () -> Void = {}
     ) {
         self.flow = flow
         self.session = session
         self.queue = queue
         self.logger = logger
         self.onTerminal = onTerminal
+        self.onActivity = onActivity
     }
 
     func requestRead() {
@@ -175,6 +178,13 @@ final class TcpClientReadPump: @unchecked Sendable {
             guard let self else { return }
             self.queue.async { [weak self] in
                 guard let self else { return }
+                // Count bytes at the transport boundary, before any
+                // delivery/cutover decision. A held `.paused` chunk is
+                // replayed from `pendingData` without passing here again,
+                // so one kernel read produces exactly one activity edge.
+                if let data, !data.isEmpty {
+                    self.onActivity()
+                }
                 if self.phase == .closed {
                     // Pump cancelled while a `readData` was in
                     // flight. If a promote-cutover installed a

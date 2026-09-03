@@ -462,7 +462,7 @@ nonisolated(unsafe) var defaultPromotedIdleTimeoutMs: UInt32 = 900_000
 //     BOTH TCP and UDP admission (a UDP burst can approach the ceiling too).
 //   * This reaper never refuses or delays a new flow: the new flow is admitted;
 //     the reap (async, off the delivery thread) frees room for SUBSEQUENT flows.
-//     A burst of triggers is coalesced (`pressureReapScheduled`) into one scan,
+//     A burst of triggers is coalesced (`pressureReapSlot`) into one scan,
 //     victims still tearing down stay excluded and count as gone (so triggers
 //     in that window select nothing twice), and after a scan finds nothing
 //     idle past the floor, rescans are skipped until the closest flow could
@@ -477,7 +477,7 @@ nonisolated(unsafe) var defaultPromotedIdleTimeoutMs: UInt32 = 900_000
 //     episode) rather than reset a live connection — the SoftCap margin below
 //     the ceiling is the cushion for that (rare) case.
 //   * Mode-agnostic eviction: BOTH `viaRust` and `.promoted` flows are evictable
-//     (both bump `lastActivityAt` on the shared write-pump flowQueue hop, so the
+//     (both bump `lastActivityAt` from their read and write pumps, so the
 //     idle-floor check excludes an actively-transferring flow of either mode).
 //     Eviction is TCP-only: UDP flows self-bound via `defaultUdpIdleTimeoutMs`
 //     (60s, far tighter than TCP), so a UDP-driven burst TRIGGERS the reap
@@ -496,11 +496,13 @@ nonisolated(unsafe) var defaultFlowPressureSoftCap: UInt32 = 450
 nonisolated(unsafe) var defaultFlowPressureLowWater: UInt32 = 350
 nonisolated(unsafe) var defaultFlowPressureIdleFloorMs: UInt32 = 120_000
 
-/// Keep the reaper target inside its meaningful range. A zero soft cap
-/// disables pressure reaping, so its unused low-water value is preserved.
+/// Keep an enabled reaper's target strictly below its trigger, preserving the
+/// hysteresis that prevents a full scan on every admission. A cap of one has
+/// the sole meaningful target zero. A zero soft cap disables pressure reaping,
+/// so its unused low-water value is preserved.
 func normalizedFlowPressureLowWater(softCap: UInt32, lowWater: UInt32) -> UInt32 {
     guard softCap > 0 else { return lowWater }
-    return min(max(lowWater, 1), softCap)
+    return min(lowWater, softCap - 1)
 }
 
 /// Hard cap on egress `NWConnection.start` calls that have not reached
@@ -1162,7 +1164,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
 
         if defaultFlowPressureLowWater != startup.flowPressureLowWater {
             logLifecycle(
-                "flow pressure lowWater=\(startup.flowPressureLowWater) outside 1..."
+                "flow pressure lowWater=\(startup.flowPressureLowWater) outside 0..<"
                     + "\(startup.flowPressureSoftCap); using \(defaultFlowPressureLowWater)"
             )
         }

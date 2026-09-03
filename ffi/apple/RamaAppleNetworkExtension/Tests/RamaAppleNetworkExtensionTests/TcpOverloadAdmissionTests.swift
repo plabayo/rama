@@ -319,7 +319,8 @@ final class TcpOverloadAdmissionTests: XCTestCase {
         XCTAssertTrue(joined.contains("shedBreaker=0 shedApps=-"))
         XCTAssertTrue(
             joined.contains(
-                "pressure[triggers=0 scans=0 skipped=0 selected=0 evicted=0 spared=0 pending=0]"
+                "pressure[triggers=0 scans=0 skipped=0 selected=0 evicted=0 "
+                    + "spared=0 canceled=0 expired=0 pending=0]"
             ))
     }
 

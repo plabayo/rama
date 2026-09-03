@@ -73,8 +73,11 @@ final class TcpReadPumpReplayTests: XCTestCase {
         let sink = ScriptedBytesSink([.paused, .accepted])
         let flow = MockTcpFlow()
         let queue = makeQueue()
+        let activityCount = TestValue(0)
         let pump = TcpClientReadPump(
-            flow: flow, session: sink, queue: queue, logger: { _ in }, onTerminal: { _ in })
+            flow: flow, session: sink, queue: queue, logger: { _ in },
+            onTerminal: { _ in },
+            onActivity: { activityCount.update { $0 += 1 } })
 
         pump.requestRead()
         pollUntil("pump issued first readData") { !flow.pendingReadCompletions.isEmpty }
@@ -86,6 +89,7 @@ final class TcpReadPumpReplayTests: XCTestCase {
         pollUntil("chunk delivered to sink") { sink.received.count == 1 }
         queue.sync {}
         XCTAssertEqual(sink.received, [chunk])
+        XCTAssertEqual(activityCount.get(), 1, "newly read chunk records one activity edge")
         XCTAssertTrue(
             flow.pendingReadCompletions.isEmpty,
             "a paused pump must NOT issue another readData until resume()")
@@ -96,9 +100,15 @@ final class TcpReadPumpReplayTests: XCTestCase {
         XCTAssertEqual(
             sink.received, [chunk, chunk],
             "resume() must replay the exact held bytes before reading more")
+        XCTAssertEqual(activityCount.get(), 1, "replay must not duplicate the activity edge")
         pollUntil("fresh readData issued after successful replay") {
             !flow.pendingReadCompletions.isEmpty
         }
+        let nextChunk = Data([0x05])
+        flow.completeRead(data: nextChunk, error: nil)
+        pollUntil("next new chunk delivered") { sink.received.count == 3 }
+        XCTAssertEqual(sink.received, [chunk, chunk, nextChunk])
+        XCTAssertEqual(activityCount.get(), 2, "each new read records one activity edge")
     }
 
     /// A `.paused` AGAIN on the replay attempt re-holds the same bytes (no
@@ -137,8 +147,11 @@ final class TcpReadPumpReplayTests: XCTestCase {
         let conn = MockNwConnection()
         conn.transition(to: .ready)
         let queue = makeQueue()
+        let activityCount = TestValue(0)
         let pump = NwTcpConnectionReadPump(
-            connection: conn, session: sink, queue: queue, eofGraceDeadline: .seconds(60))
+            connection: conn, session: sink, queue: queue,
+            eofGraceDeadline: .seconds(60),
+            onActivity: { activityCount.update { $0 += 1 } })
 
         pump.start()
         pollUntil("pump issued first receive") { conn.pendingReceiveCount == 1 }
@@ -149,13 +162,20 @@ final class TcpReadPumpReplayTests: XCTestCase {
         pollUntil("chunk delivered to sink") { sink.received.count == 1 }
         queue.sync {}
         XCTAssertEqual(sink.received, [chunk])
+        XCTAssertEqual(activityCount.get(), 1, "new receive records one activity edge")
         XCTAssertEqual(
             conn.pendingReceiveCount, 0, "a paused egress pump must NOT issue another receive")
 
         pump.resume()
         pollUntil("held chunk replayed on resume") { sink.received.count == 2 }
         XCTAssertEqual(sink.received, [chunk, chunk], "replay the exact held bytes first")
+        XCTAssertEqual(activityCount.get(), 1, "replay must not duplicate the activity edge")
         pollUntil("fresh receive after replay") { conn.pendingReceiveCount == 1 }
+        let nextChunk = Data([0x06])
+        _ = conn.completePendingReceive(data: nextChunk, isComplete: false, error: nil)
+        pollUntil("next new chunk delivered") { sink.received.count == 3 }
+        XCTAssertEqual(sink.received, [chunk, chunk, nextChunk])
+        XCTAssertEqual(activityCount.get(), 2, "each new receive records one activity edge")
     }
 
     // MARK: - cancelForPromote hands the held replay buffer to carryover

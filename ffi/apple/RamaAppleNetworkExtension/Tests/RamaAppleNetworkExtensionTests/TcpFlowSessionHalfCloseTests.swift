@@ -193,4 +193,69 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
             XCTAssertFalse(session.ctx.isDone)
         }
     }
+
+    func testEgressFinCannotClearOverlappingClientDrain() {
+        let (session, core, flow, conn, queue) = makeArmedSession()
+        defer { core.detachEngine(reason: 0) }
+        session.lingerCloseMs = 60_000
+        session.ctx.lingerCloseMs = 60_000
+
+        flow.captureWriteCompletions = true
+        session.buildClientWritePump()
+        session.ctx.clientWritePump?.markOpened()
+        XCTAssertEqual(
+            session.ctx.clientWritePump?.enqueue(Data([0x01])),
+            .accepted)
+
+        session.ctx.egressWritePump = NwTcpConnectionWritePump(
+            connection: conn,
+            queue: queue,
+            lingerCloseDeadline: .milliseconds(60_000),
+            onDrained: {},
+            readSideIdleMs: { 0 })
+        conn.transition(to: .ready)
+
+        waitFor("client write remains in flight") {
+            flow.pendingWriteCompletionCount == 1
+        }
+        let drainsStarted = expectation(description: "both writer drains started")
+        queue.async {
+            session.closeClientAfterRustDrain()
+            session.closeEgressAfterRustDrain()
+            drainsStarted.fulfill()
+        }
+        wait(for: [drainsStarted], timeout: 1.0)
+        waitFor("egress FIN send") { conn.pendingSendCount == 1 }
+        XCTAssertTrue(session.ctx.drainClosePending)
+
+        XCTAssertTrue(conn.completePendingSend(error: nil))
+        drain(queue)
+
+        XCTAssertTrue(
+            session.ctx.drainClosePending,
+            "egress FIN must not hide the still-pending client writer drain")
+        let remainedArmed = TestValue(false)
+        let firstInspection = expectation(description: "inspect overlapping drain")
+        queue.async {
+            remainedArmed.set(session.terminalDrainBackstop != nil)
+            firstInspection.fulfill()
+        }
+        wait(for: [firstInspection], timeout: 1.0)
+        XCTAssertTrue(
+            remainedArmed.get(),
+            "backstop must remain armed until every writer drain finishes")
+
+        XCTAssertTrue(flow.completeNextWrite())
+        waitFor("client drain finishes teardown") { session.ctx.isDone }
+        drain(queue)
+        XCTAssertFalse(session.ctx.drainClosePending)
+        let disarmed = TestValue(false)
+        let finalInspection = expectation(description: "inspect completed drains")
+        queue.async {
+            disarmed.set(session.terminalDrainBackstop == nil)
+            finalInspection.fulfill()
+        }
+        wait(for: [finalInspection], timeout: 1.0)
+        XCTAssertTrue(disarmed.get(), "last completed drain disarms the shared backstop")
+    }
 }

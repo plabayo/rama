@@ -32,6 +32,7 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
     /// run before the backstop fires.
     private let eofGraceDeadline: DispatchTimeInterval
     private let onReadError: @Sendable (Error) -> Void
+    private let onActivity: @Sendable () -> Void
     /// Scheduled EOF-cancel work, retained so we can invalidate it
     /// when the clean path beats us to the cancel.
     private var eofWork: DispatchWorkItem?
@@ -57,13 +58,15 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         session: any NwEgressBytesSink,
         queue: DispatchQueue,
         eofGraceDeadline: DispatchTimeInterval,
-        onReadError: @escaping @Sendable (Error) -> Void = { _ in }
+        onReadError: @escaping @Sendable (Error) -> Void = { _ in },
+        onActivity: @escaping @Sendable () -> Void = {}
     ) {
         self.connection = connection
         self.session = session
         self.queue = queue
         self.eofGraceDeadline = eofGraceDeadline
         self.onReadError = onReadError
+        self.onActivity = onActivity
     }
     func start() {
         queue.async { self.scheduleReadLocked() }
@@ -173,6 +176,12 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
             [weak self] data, _, isComplete, error in
             guard let self else { return }
             self.queue.async {
+                // Count each nonempty transport receive once. Replaying a
+                // held `.paused` chunk happens in `scheduleReadLocked` and
+                // deliberately does not bump activity a second time.
+                if let data, !data.isEmpty {
+                    self.onActivity()
+                }
                 if self.phase == .closed {
                     // Receive in flight while the pump was
                     // cancelled. If a promote-cutover installed

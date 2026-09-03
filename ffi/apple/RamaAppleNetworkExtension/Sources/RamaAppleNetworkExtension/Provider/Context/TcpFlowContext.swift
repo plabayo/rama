@@ -107,8 +107,8 @@ final class TcpFlowContext: @unchecked Sendable {
         set { maintenanceState.withLock { $0.terminalSignalled = newValue } }
     }
     /// A promoted or Rust-backed write drain is still outstanding. Unlike
-    /// `terminalSignalled`, this clears after one half finishes draining and
-    /// is read from the maintenance queue.
+    /// `terminalSignalled`, this clears only after every concurrently pending
+    /// writer drain finishes and is read from the maintenance queue.
     var drainClosePending: Bool {
         get { maintenanceState.withLock { $0.drainClosePending } }
         set { maintenanceState.withLock { $0.drainClosePending = newValue } }
@@ -143,9 +143,9 @@ final class TcpFlowContext: @unchecked Sendable {
     var directForwarder: TcpDirectForwarder?
     /// Monotonic timestamp (`DispatchTime`, mach-uptime — pauses during
     /// system sleep, like the engine's tokio idle timers) of the last byte
-    /// observed on the promoted (`TcpDirectForwarder`) data path. Bumped by
-    /// the forwarder's `onActivity` hook on `flowQueue`; read off-queue
-    /// through the maintenance snapshot. A promoted flow idle past
+    /// observed on either data path. The via-Rust read/write pumps and the
+    /// promoted forwarder bump it on `flowQueue`; maintenance reads it
+    /// through the locked snapshot. A promoted flow idle past
     /// `defaultPromotedIdleTimeoutMs` is reaped by `applyIdleTimeout`.
     ///
     /// Restores the idle backstop a flow already had on the `viaRust` path

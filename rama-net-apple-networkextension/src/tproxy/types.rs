@@ -705,7 +705,9 @@ pub struct TransparentProxyConfig {
     /// Combined TCP+UDP live-flow soft cap that triggers Swift's idle TCP
     /// pressure reaper. `0` disables this established-flow pressure reaper.
     flow_pressure_soft_cap: u32,
-    /// Target combined live-flow count after a pressure reap.
+    /// Requested combined live-flow count after a pressure reap. When the
+    /// reaper is enabled, the public accessor normalizes this below `soft_cap`
+    /// so the target retains hysteresis.
     flow_pressure_low_water: u32,
     /// Minimum idle age before a TCP flow is eligible for pressure reaping.
     flow_pressure_idle_floor_ms: u32,
@@ -786,10 +788,17 @@ impl TransparentProxyConfig {
         self.flow_pressure_soft_cap
     }
 
-    /// Target combined live-flow count after a pressure reap.
+    /// Effective target combined live-flow count after a pressure reap.
+    ///
+    /// When pressure reaping is enabled, this is normalized to
+    /// `0..flow_pressure_soft_cap`. With a zero soft cap the reaper is disabled
+    /// and the configured value is returned unchanged.
     #[must_use]
     pub fn flow_pressure_low_water(&self) -> u32 {
-        self.flow_pressure_low_water
+        match self.flow_pressure_soft_cap {
+            0 => self.flow_pressure_low_water,
+            soft_cap => self.flow_pressure_low_water.min(soft_cap - 1),
+        }
     }
 
     /// Minimum idle age before a TCP flow is eligible for pressure reaping.
@@ -908,7 +917,8 @@ impl TransparentProxyConfig {
     }
 
     generate_set_and_with! {
-        /// Set the target combined live-flow count after a pressure reap.
+        /// Set the requested combined live-flow count after a pressure reap.
+        /// [`Self::flow_pressure_low_water`] returns the normalized target.
         pub fn flow_pressure_low_water(mut self, value: u32) -> Self {
             self.flow_pressure_low_water = value;
             self
@@ -1068,8 +1078,8 @@ mod transparent_proxy_config_tests {
     #[test]
     fn overload_knobs_round_trip() {
         let cfg = TransparentProxyConfig::new()
-            .with_flow_pressure_soft_cap(1)
-            .with_flow_pressure_low_water(2)
+            .with_flow_pressure_soft_cap(2)
+            .with_flow_pressure_low_water(1)
             .with_flow_pressure_idle_floor_ms(3)
             .with_tcp_start_in_flight_hard_cap(4)
             .with_tcp_start_in_flight_soft_cap(5)
@@ -1078,8 +1088,8 @@ mod transparent_proxy_config_tests {
             .with_tcp_pressure_connect_timeout_ms(8)
             .with_tcp_breaker_connect_timeout_ms(9);
 
-        assert_eq!(cfg.flow_pressure_soft_cap(), 1);
-        assert_eq!(cfg.flow_pressure_low_water(), 2);
+        assert_eq!(cfg.flow_pressure_soft_cap(), 2);
+        assert_eq!(cfg.flow_pressure_low_water(), 1);
         assert_eq!(cfg.flow_pressure_idle_floor_ms(), 3);
         assert_eq!(cfg.tcp_start_in_flight_hard_cap(), 4);
         assert_eq!(cfg.tcp_start_in_flight_soft_cap(), 5);
@@ -1087,6 +1097,29 @@ mod transparent_proxy_config_tests {
         assert_eq!(cfg.tcp_start_latency_breaker_close_p95_ms(), 7);
         assert_eq!(cfg.tcp_pressure_connect_timeout_ms(), 8);
         assert_eq!(cfg.tcp_breaker_connect_timeout_ms(), 9);
+    }
+
+    #[test]
+    fn flow_pressure_low_water_is_normalized_against_soft_cap() {
+        let below = TransparentProxyConfig::new()
+            .with_flow_pressure_soft_cap(10)
+            .with_flow_pressure_low_water(0);
+        assert_eq!(below.flow_pressure_low_water(), 0);
+
+        let above = TransparentProxyConfig::new()
+            .with_flow_pressure_soft_cap(10)
+            .with_flow_pressure_low_water(11);
+        assert_eq!(above.flow_pressure_low_water(), 9);
+
+        let at_cap = TransparentProxyConfig::new()
+            .with_flow_pressure_soft_cap(10)
+            .with_flow_pressure_low_water(10);
+        assert_eq!(at_cap.flow_pressure_low_water(), 9);
+
+        let disabled = TransparentProxyConfig::new()
+            .with_flow_pressure_soft_cap(0)
+            .with_flow_pressure_low_water(11);
+        assert_eq!(disabled.flow_pressure_low_water(), 11);
     }
 
     /// Pin the default for the `exclude` flag — flipping the
