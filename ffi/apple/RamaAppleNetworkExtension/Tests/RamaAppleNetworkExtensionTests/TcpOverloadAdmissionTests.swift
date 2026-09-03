@@ -44,7 +44,7 @@ final class TcpOverloadAdmissionTests: XCTestCase {
             return
         }
 
-        guard case .reject(let reason, _) = core.testAdmitTcpStart(
+        guard case .reject(let reason, _, _) = core.testAdmitTcpStart(
             flowId: ObjectIdentifier(second), meta: meta())
         else {
             XCTFail("second start should be rejected at hard cap")
@@ -87,7 +87,7 @@ final class TcpOverloadAdmissionTests: XCTestCase {
 
         waitFor("breaker opens") { core.testTcpOverloadBreakerOpen }
 
-        guard case .reject(let reason, _) = core.testAdmitTcpStart(
+        guard case .reject(let reason, _, _) = core.testAdmitTcpStart(
             flowId: ObjectIdentifier(third), meta: meta(bundleId: "com.example.third"))
         else {
             XCTFail("breaker should reject while in-flight starts are still at the soft cap")
@@ -123,7 +123,7 @@ final class TcpOverloadAdmissionTests: XCTestCase {
 
         _ = admittedToken(core, second)  // inFlight 0 → 1, under the soft cap
         _ = admittedToken(core, third)  // inFlight 1 → 2
-        guard case .reject(let reason, _) = core.testAdmitTcpStart(
+        guard case .reject(let reason, _, _) = core.testAdmitTcpStart(
             flowId: ObjectIdentifier(fourth), meta: meta())
         else {
             XCTFail("the admission that reaches the soft cap on a slow window must open and shed")
@@ -250,6 +250,52 @@ final class TcpOverloadAdmissionTests: XCTestCase {
         XCTAssertFalse(core.testTcpOverloadBreakerOpen)
     }
 
+    /// A refusal storm must not take the persisted log down with it: only the
+    /// first few per-flow lines of a tick window are marked for persistence,
+    /// and the tick carries the counts plus the top refusing apps.
+    func testShedLinesArePersistedOnlyWithinThePerTickBudget() {
+        defaultTcpStartInFlightHardCap = 1
+        let core = TransparentProxyCore()
+        let captured = CapturedNotices()
+        LifecycleLog.noticeOverride = { captured.append($0) }
+        let holder = NSObject()
+        _ = admittedToken(core, holder)  // pins inFlight at the cap of 1
+
+        var persisted = 0
+        var demoted = 0
+        let objects = (0..<20).map { _ in NSObject() }
+        for (i, object) in objects.enumerated() {
+            let app = i % 2 == 0 ? "com.example.noisy" : "com.example.quiet"
+            guard case .reject(_, let appId, let persist) = core.testAdmitTcpStart(
+                flowId: ObjectIdentifier(object), meta: meta(bundleId: app))
+            else {
+                XCTFail("at the hard cap every start is refused")
+                return
+            }
+            XCTAssertEqual(appId, app)
+            if persist { persisted += 1 } else { demoted += 1 }
+        }
+        XCTAssertEqual(persisted, TcpOverloadState.persistedShedLinesPerTick)
+        XCTAssertEqual(demoted, 20 - TcpOverloadState.persistedShedLinesPerTick)
+
+        core.testRunPeriodicMaintenance()
+        let tick = captured.values.joined(separator: "\n")
+        XCTAssertTrue(tick.contains("shedHardCap=20"), tick)
+        XCTAssertTrue(
+            tick.contains("shedApps=com.example.noisy=10,com.example.quiet=10"),
+            "attribution for the demoted lines rides the tick: \(tick)")
+
+        // A new window re-opens the budget.
+        let later = NSObject()
+        guard case .reject(_, _, let persistAgain) = core.testAdmitTcpStart(
+            flowId: ObjectIdentifier(later), meta: meta())
+        else {
+            XCTFail("still at the cap")
+            return
+        }
+        XCTAssertTrue(persistAgain, "the persist budget resets with the tick window")
+    }
+
     func testMaintenanceTelemetryIsPersistedAndIncludesOverloadFields() {
         defaultTcpStartInFlightHardCap = 10
         let core = TransparentProxyCore()
@@ -270,7 +316,7 @@ final class TcpOverloadAdmissionTests: XCTestCase {
         XCTAssertTrue(joined.contains("breaker="))
         XCTAssertTrue(joined.contains("hardCap=10"), "the cap the peak is measured against")
         XCTAssertTrue(joined.contains("shedHardCap=0"))
-        XCTAssertTrue(joined.contains("shedBreaker=0"))
+        XCTAssertTrue(joined.contains("shedBreaker=0 shedApps=-"))
         XCTAssertTrue(joined.contains("pressure[triggers=0 scans=0 skipped=0 evicted=0]"))
     }
 

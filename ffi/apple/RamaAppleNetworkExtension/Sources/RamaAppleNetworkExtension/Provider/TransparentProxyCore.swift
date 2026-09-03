@@ -740,6 +740,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         self.updateTcpAdmissionBreakerLocked(trigger: "tick")
         // Combined total is what matters for the kernel nexus ceiling (global
         // across the flowswitch). `cap`/`peak` make pressure visible in soak.
+        let topShedApps = self.overload.topShedAppSummary()
         let overloadSnapshot = self.overload.snapshotAndResetRates(
             intervalSeconds: Self.periodicMaintenanceIntervalSeconds)
         let topApps = self.overload.topAppSummary()
@@ -748,6 +749,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         let shedRate = String(format: "%.2f", overloadSnapshot.shedRate)
         let breaker = overloadSnapshot.breakerOpen ? "open" : "closed"
         let appSummary = topApps.isEmpty ? "-" : topApps
+        let shedAppSummary = topShedApps.isEmpty ? "-" : topShedApps
         let latencySummary =
             "p50=\(overloadSnapshot.p50StartMs),p95=\(overloadSnapshot.p95StartMs),"
             + "p99=\(overloadSnapshot.p99StartMs)"
@@ -760,7 +762,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             + "hardCap=\(defaultTcpStartInFlightHardCap) "
             + "admissionRate=\(admissionRate)/s timeoutRate=\(timeoutRate)/s "
             + "shedRate=\(shedRate)/s shedHardCap=\(overloadSnapshot.shedHardCap) "
-            + "shedBreaker=\(overloadSnapshot.shedBreaker) "
+            + "shedBreaker=\(overloadSnapshot.shedBreaker) shedApps=\(shedAppSummary) "
             + "startLatencyMs[\(latencySummary)] breaker=\(breaker)"
         let triggers = self.pressureTriggersTotal.withLock { $0 }
         let scans = self.pressureScansTotal.withLock { $0 }
@@ -1103,16 +1105,14 @@ final class TransparentProxyCore: @unchecked Sendable {
                 self.updateTcpAdmissionBreakerLocked(trigger: "admission")
             }
             if hardCap > 0, inFlight >= hardCap {
-                self.overload.shedsSinceTick += 1
                 self.overload.shedHardCapSinceTick += 1
-                return .reject(
+                return self.recordShedLocked(
                     reason: "hard start cap reached inFlight=\(inFlight) hardCap=\(hardCap)",
                     appId: appId)
             }
             if self.overload.breakerOpen, softCap > 0, inFlight >= softCap {
-                self.overload.shedsSinceTick += 1
                 self.overload.shedBreakerSinceTick += 1
-                return .reject(
+                return self.recordShedLocked(
                     reason: "latency breaker open inFlight=\(inFlight) softCap=\(softCap)",
                     appId: appId)
             }
@@ -1123,6 +1123,16 @@ final class TransparentProxyCore: @unchecked Sendable {
                 self.overload.startsInFlightPeakSinceTick, self.overload.startsInFlight.count)
             return .admit(token)
         }
+    }
+
+    /// Count a refusal and decide whether its per-flow line may be
+    /// persisted (first `persistedShedLinesPerTick` per window). MUST be
+    /// called on `stateQueue`.
+    private func recordShedLocked(reason: String, appId: String) -> TcpAdmissionDecision {
+        self.overload.shedsSinceTick += 1
+        self.overload.shedsByAppSinceTick[appId, default: 0] += 1
+        let persist = self.overload.shedsSinceTick <= TcpOverloadState.persistedShedLinesPerTick
+        return .reject(reason: reason, appId: appId, persist: persist)
     }
 
     func finishTcpStart(_ token: TcpAdmissionToken, outcome: TcpStartOutcome) {
