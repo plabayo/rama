@@ -2,7 +2,7 @@ name: CI
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.97.1
+  RUST_TOOLCHAIN: stable
   RUST_TOOLCHAIN_MSRV: 1.96.0
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_TEST_DEBUG: 0
@@ -61,7 +61,7 @@ jobs:
       matrix:
         toolchain:
           - 1.96.0 # MSRV
-          - 1.97.1
+          - stable
         os:
           - ubuntu-latest
           - macos-latest
@@ -126,7 +126,7 @@ jobs:
     strategy:
       matrix:
         toolchain:
-          - 1.97.1
+          - stable
         os:
           - ubuntu-latest
           - ubuntu-24.04-arm
@@ -423,10 +423,10 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            toolchain: 1.97.1
+            toolchain: stable
             target: x86_64-unknown-linux-musl
           - os: ubuntu-24.04-arm
-            toolchain: 1.97.1
+            toolchain: stable
             target: aarch64-unknown-linux-musl
     name: test-rust-linux-musl-${{ matrix.toolchain }}-${{ matrix.os }}-${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -521,17 +521,17 @@ jobs:
       matrix:
         include:
           - os: macos-latest
-            rust-toolchain: 1.97.1
+            rust-toolchain: stable
             rust-target: x86_64-unknown-linux-gnu
             zig-target: x86_64-unknown-linux-gnu.2.17
             just-recipe: test-zigbuild-linux-gnu
           - os: macos-latest
-            rust-toolchain: 1.97.1
+            rust-toolchain: stable
             rust-target: aarch64-unknown-linux-gnu
             zig-target: aarch64-unknown-linux-gnu.2.17
             just-recipe: test-zigbuild-linux-gnu-native-dns
           - os: windows-latest
-            rust-toolchain: 1.97.1-x86_64-pc-windows-gnu
+            rust-toolchain: stable-x86_64-pc-windows-gnu
             rust-target: x86_64-unknown-linux-gnu
             zig-target: x86_64-unknown-linux-gnu.2.17
             just-recipe: test-zigbuild-linux-gnu-cli
@@ -606,30 +606,30 @@ jobs:
           - custom_env: {}
           - thing: arm-android
             target: armv7-linux-androideabi
-            rust: 1.97.1
+            rust: stable
             os: ubuntu-latest
           - thing: arm64-android
             target: aarch64-linux-android
-            rust: 1.97.1
+            rust: stable
             os: ubuntu-latest
           - thing: i686-android
             target: i686-linux-android
-            rust: 1.97.1
+            rust: stable
             os: ubuntu-latest
           - thing: x86_64-android
             target: x86_64-linux-android
-            rust: 1.97.1
+            rust: stable
             os: ubuntu-latest
           - thing: aarch64-ios
             target: aarch64-apple-ios
-            rust: 1.97.1
+            rust: stable
             os: macos-latest
             custom_env:
               IPHONEOS_DEPLOYMENT_TARGET: 17.5
           - thing: x86_64-ios
             target: x86_64-apple-ios
             os: macos-15-intel
-            rust: 1.97.1
+            rust: stable
             custom_env:
               IPHONEOS_DEPLOYMENT_TARGET: 17.5
     needs:
@@ -816,7 +816,7 @@ jobs:
     strategy:
       matrix:
         toolchain:
-          - 1.97.1
+          - stable
         os:
           - ubuntu-latest
     runs-on: ${{ matrix.os }}
