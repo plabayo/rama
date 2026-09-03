@@ -32,12 +32,14 @@ use rama::{
         level_filters::LevelFilter,
         subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt},
     },
+    utils::octets::kib,
 };
 
 use std::convert::Infallible;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 const SRC: &str = include_str!("./tcp_listener_hello.rs");
+const MAX_HTTP_REQUEST_HEAD_SIZE: usize = kib(16);
 // The below &str type will also work!
 // const ADDR: &str = "127.0.0.1:62500";
 const ADDR: SocketAddress = SocketAddress::local_ipv4(62500);
@@ -70,8 +72,12 @@ async fn handle(mut stream: impl Socket + Io + Unpin) -> Result<(), Infallible> 
             .unwrap_or_else(|_| "???".to_owned())
     );
 
-    // HTTP clients reject responses received before a request is in flight.
-    stream.read_u8().await.expect("read request byte");
+    // Consume the full request head before closing the connection. In particular,
+    // Windows resets a TCP connection that is closed with unread inbound data,
+    // which can discard the response before the client receives it.
+    read_http_request_head(&mut stream)
+        .await
+        .expect("read HTTP request head");
 
     let resp = [
         "HTTP/1.1 200 OK",
@@ -87,6 +93,26 @@ async fn handle(mut stream: impl Socket + Io + Unpin) -> Result<(), Infallible> 
         .write_all(resp.as_bytes())
         .await
         .expect("write to stream");
+    stream.shutdown().await.expect("shut down stream");
 
     Ok::<_, std::convert::Infallible>(())
+}
+
+async fn read_http_request_head(
+    stream: &mut (impl tokio::io::AsyncRead + Unpin),
+) -> std::io::Result<()> {
+    let mut request_head = Vec::with_capacity(kib(1));
+
+    while !request_head.ends_with(b"\r\n\r\n") {
+        if request_head.len() == MAX_HTTP_REQUEST_HEAD_SIZE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "HTTP request head is too large",
+            ));
+        }
+
+        request_head.push(stream.read_u8().await?);
+    }
+
+    Ok(())
 }
