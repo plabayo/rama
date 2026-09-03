@@ -34,6 +34,7 @@ pub mod conn;
 pub mod extensions;
 pub mod forwarded;
 pub mod input_ext;
+pub mod ip;
 pub mod mode;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
@@ -44,8 +45,8 @@ pub mod rate;
 #[cfg(feature = "std")]
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 pub mod stream;
-#[cfg(feature = "std")]
-#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+#[cfg(any(test, feature = "test-utils"))]
+#[cfg_attr(docsrs, doc(cfg(feature = "test-utils")))]
 pub mod test_utils;
 pub mod uri;
 pub mod user;

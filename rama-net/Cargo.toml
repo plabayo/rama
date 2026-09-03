@@ -56,6 +56,7 @@ std = [
     "dep:mime",
     "dep:base64",
 ]
+test-utils = ["std"]
 # IDNA (internationalized domain names) support.
 #
 # Pulls a non-trivial Unicode-table dependency; keep off if your traffic is ASCII-only.

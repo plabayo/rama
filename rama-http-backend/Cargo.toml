@@ -56,6 +56,7 @@ tokio-util = { workspace = true }
 rama-unix = { workspace = true }
 
 [dev-dependencies]
+rama-net = { workspace = true, features = ["test-utils"] }
 rama-ws = { workspace = true }
 serde_json = { workspace = true }
 

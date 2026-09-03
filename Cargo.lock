@@ -4806,11 +4806,14 @@ dependencies = [
 name = "rama-udp"
 version = "0.5.0"
 dependencies = [
+ "libc",
+ "parking_lot",
  "rama-core",
  "rama-net",
  "rama-utils",
  "tokio",
  "tokio-util",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

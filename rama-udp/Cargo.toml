@@ -26,15 +26,28 @@ targets = [
 
 [features]
 default = []
+test-utils = ["dep:parking_lot"]
 
 [dependencies]
+parking_lot = { workspace = true, optional = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
 tokio = { workspace = true, features = ["macros", "net"] }
 tokio-util = { workspace = true, features = ["net"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    "Win32_System_IO",
+] }
+
 [dev-dependencies]
+parking_lot = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net", "rt"] }
 
 [lints]
