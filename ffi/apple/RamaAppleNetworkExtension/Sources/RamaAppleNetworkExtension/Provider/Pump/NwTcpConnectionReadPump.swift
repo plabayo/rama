@@ -175,13 +175,13 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) {
             [weak self] data, _, isComplete, error in
             guard let self else { return }
+            // Publish before the queue hop so a concurrently queued pressure
+            // eviction cannot commit using an idle timestamp from before these
+            // bytes arrived. Replays never pass this boundary a second time.
+            if let data, !data.isEmpty {
+                self.onActivity()
+            }
             self.queue.async {
-                // Count each nonempty transport receive once. Replaying a
-                // held `.paused` chunk happens in `scheduleReadLocked` and
-                // deliberately does not bump activity a second time.
-                if let data, !data.isEmpty {
-                    self.onActivity()
-                }
                 if self.phase == .closed {
                     // Receive in flight while the pump was
                     // cancelled. If a promote-cutover installed

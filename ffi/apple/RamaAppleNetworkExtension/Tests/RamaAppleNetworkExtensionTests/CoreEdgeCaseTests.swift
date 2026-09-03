@@ -10,6 +10,14 @@ import XCTest
 /// edit got the path wrong; none of them are "test coverage for
 /// coverage's sake."
 final class CoreEdgeCaseTests: XCTestCase {
+    func testFlowIdleAgeSaturatesWhenActivityIsNewerThanClock() {
+        let ctx = TcpFlowContext()
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        ctx.lastActivityAt = DispatchTime(uptimeNanoseconds: nowNs + 1)
+
+        XCTAssertEqual(ctx.idleMs(nowNs: nowNs), 0)
+    }
+
 
     override class func setUp() {
         super.setUp()
@@ -183,6 +191,31 @@ final class CoreEdgeCaseTests: XCTestCase {
             "second attachEngine must release the first engine handle"
         )
         core.detachEngine(reason: 0)
+    }
+
+    func testStaleEngineGenerationCannotAdmitOrRegisterAfterRestart() {
+        let core = TransparentProxyCore()
+        core.attachEngine(makeEngine())
+        let staleGeneration = core.testEngineGeneration
+        core.detachEngine(reason: 0)
+        core.attachEngine(makeEngine())
+        defer { core.detachEngine(reason: 0) }
+
+        let flow = MockTcpFlow()
+        let ctx = TcpFlowContext()
+        let anchor = _TestTcpFlowSessionAnchor(ctx: ctx)
+        XCTAssertNil(
+            core.registerTcpFlow(
+                ObjectIdentifier(flow),
+                anchor: anchor,
+                engineGeneration: staleGeneration))
+        XCTAssertNil(
+            core.admitTcpStart(
+                flowId: ObjectIdentifier(flow),
+                meta: makeMeta(),
+                engineGeneration: staleGeneration))
+        XCTAssertEqual(core.tcpFlowCount, 0)
+        XCTAssertEqual(core.testTcpStartsInFlight, 0)
     }
 
     // MARK: - registerTcpFlow / removeTcpFlow idempotence

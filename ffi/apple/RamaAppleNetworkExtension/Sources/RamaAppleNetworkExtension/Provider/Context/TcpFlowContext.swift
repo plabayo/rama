@@ -164,6 +164,28 @@ final class TcpFlowContext: @unchecked Sendable {
     func maintenanceSnapshot() -> TcpFlowMaintenanceState {
         maintenanceState.withLock { $0 }
     }
+
+    /// Saturating idle age at one lock-defined instant. Activity may publish
+    /// after the caller captures `nowNs`; that is age zero, not unsigned wrap.
+    func idleMs(
+        nowNs: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) -> UInt64 {
+        maintenanceState.withLock { state in
+            let lastNs = state.lastActivityAt.uptimeNanoseconds
+            guard lastNs <= nowNs else { return 0 }
+            return (nowNs - lastNs) / 1_000_000
+        }
+    }
+
+    /// Run a final pressure-eviction decision while activity publication is
+    /// excluded. The caller may atomically claim its external reservation in
+    /// this closure: activity that wins this lock is observed and spares the
+    /// flow; activity after the claim loses to an already-committed teardown.
+    func withMaintenanceStateLocked<T>(
+        _ body: (TcpFlowMaintenanceState) -> T
+    ) -> T {
+        maintenanceState.withLock { body($0) }
+    }
     /// The per-flow serial queue that confines every mutation of this
     /// context (and the `isDone` teardown flag). Set once by
     /// `TcpFlowSession.init`. Lifecycle paths that originate off this
@@ -188,6 +210,10 @@ final class TcpFlowContext: @unchecked Sendable {
     /// pre-open cleanup path fires. Lets the core maintain an exact in-flight
     /// start gauge and start-to-ready latency window.
     var admissionToken: TcpAdmissionToken?
+    /// Engine lifecycle that created this flow. Removal callbacks carry it
+    /// back to the core so stale teardown work from a detached engine cannot
+    /// alter a newly attached engine's pressure episode.
+    var engineGeneration: UInt64?
     /// Sticky one-shot teardown guard. Mutated and read only on
     /// `flowQueue` (single-threaded by construction), so it needs no lock.
     private(set) var isDone = false
@@ -243,7 +269,12 @@ final class TcpFlowContext: @unchecked Sendable {
         connection?.cancelAndDetach()
         connection = nil
         session?.cancel()
-        if let flowId { core?.removeTcpFlow(flowId) }
+        if let flowId {
+            core?.removeTcpFlow(
+                flowId,
+                context: self,
+                engineGeneration: engineGeneration)
+        }
     }
 
     // MARK: Post-open writer-self-terminal
@@ -261,7 +292,12 @@ final class TcpFlowContext: @unchecked Sendable {
         connection?.cancelAndDetach()
         connection = nil
         session?.cancel()
-        if let flowId { core?.removeTcpFlow(flowId) }
+        if let flowId {
+            core?.removeTcpFlow(
+                flowId,
+                context: self,
+                engineGeneration: engineGeneration)
+        }
     }
 
     // MARK: Post-open natural close
@@ -287,7 +323,12 @@ final class TcpFlowContext: @unchecked Sendable {
         }
         connection?.cancelAndDetach()
         connection = nil
-        if let flowId { core?.removeTcpFlow(flowId) }
+        if let flowId {
+            core?.removeTcpFlow(
+                flowId,
+                context: self,
+                engineGeneration: engineGeneration)
+        }
     }
 
     /// The promoted forwarder reached its natural terminal (both directions
@@ -307,7 +348,12 @@ final class TcpFlowContext: @unchecked Sendable {
         connection?.stateUpdateHandler = nil
         connection?.viabilityUpdateHandler = nil
         connection = nil
-        if let flowId { core?.removeTcpFlow(flowId) }
+        if let flowId {
+            core?.removeTcpFlow(
+                flowId,
+                context: self,
+                engineGeneration: engineGeneration)
+        }
     }
 
     // MARK: Post-open full teardown
@@ -454,6 +500,11 @@ final class TcpFlowContext: @unchecked Sendable {
             directForwarder = nil
         }
         session?.cancel()
-        if let flowId { core?.removeTcpFlow(flowId) }
+        if let flowId {
+            core?.removeTcpFlow(
+                flowId,
+                context: self,
+                engineGeneration: engineGeneration)
+        }
     }
 }

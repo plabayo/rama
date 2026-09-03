@@ -136,6 +136,11 @@ final class TcpWritePumpCore: @unchecked Sendable {
         if let hwm { logHwm(hwm) }
         guard decision == .accepted else { return decision }
 
+        // Acceptance is the byte-progress boundary. Publish it before the
+        // queue hop so a concurrently queued pressure eviction cannot commit
+        // against the timestamp from before this chunk was accepted.
+        self.onActivity()
+
         queue.async { [weak self] in
             guard let self else { return }
             // Re-check under lock; cancel() can have flipped the flag
@@ -144,9 +149,6 @@ final class TcpWritePumpCore: @unchecked Sendable {
             // already zeroed the counter, and subtracting again would push
             // it negative.
             guard !self.state.withLock({ $0.closed }) else { return }
-            // Real byte progress on `queue` (flowQueue): the one race-free
-            // activity signal for the flow-pressure backstop, for both modes.
-            self.onActivity()
             self.pending.pushBack(data)
             self.flush()
         }

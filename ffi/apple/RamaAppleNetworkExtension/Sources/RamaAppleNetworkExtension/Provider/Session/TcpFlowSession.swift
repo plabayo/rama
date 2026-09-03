@@ -44,9 +44,17 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         case egressWriter
     }
     private var pendingTerminalDrains: Set<TerminalDrain> = []
+    private struct ClientDrainClose {
+        let wasOpened: Bool
+        let error: Error?
+    }
+    /// The client-writer result owns final session teardown, but only after
+    /// every simultaneously announced writer drain has completed.
+    private var pendingClientDrainClose: ClientDrainClose?
 
     // Late-bound: only set once the engine decision is .intercept.
     var sessionHandle: RamaTcpSessionHandle?
+    private var engineGeneration: UInt64?
 
     // Configured by `start`; defaults applied here so phase methods
     // can run in tests without going through the engine decision.
@@ -119,7 +127,15 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 ctx.applyPreReadyFailure()
                 return true
             }
-            let admission = core.admitTcpStart(flowId: flowId, meta: meta)
+            guard let engineGeneration,
+                let admission = core.admitTcpStart(
+                    flowId: flowId,
+                    meta: meta,
+                    engineGeneration: engineGeneration)
+            else {
+                session.cancel()
+                return false
+            }
             guard case .admit(let token) = admission else {
                 let reason: String
                 let appId: String
@@ -156,14 +172,25 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 return true
             }
             ctx.admissionToken = token
-            let occupancy = core.registerTcpFlow(flowId, anchor: self, appId: token.appId)
+            guard
+                let occupancy = core.registerTcpFlow(
+                    flowId,
+                    anchor: self,
+                    appId: token.appId,
+                    engineGeneration: engineGeneration)
+            else {
+                core.finishTcpStart(token, outcome: .failed)
+                ctx.admissionToken = nil
+                session.cancel()
+                return false
+            }
             // Admission is bounded by the start gauge above. The flow-pressure
             // backstop still reaps idle established flows asynchronously to free
             // room for subsequent flows as total live occupancy approaches the
             // kernel nexus ceiling.
             let admitted = startEgressConnection(session: session)
             if defaultFlowPressureSoftCap > 0, occupancy >= Int(defaultFlowPressureSoftCap) {
-                core.reapIdleUnderPressure()
+                core.reapIdleUnderPressure(protecting: flowId)
             }
             return admitted
         case .passthrough:
@@ -219,8 +246,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     // MARK: - Phase: engine session
 
     func requestEngineSession() -> RamaTransparentProxyTcpSessionDecision? {
-        guard let engine = core?.engine else { return nil }
-        return engine.newTcpSession(
+        guard let lease = core?.engineLeaseForNewFlow() else { return nil }
+        let decision = lease.engine.newTcpSession(
             meta: meta,
             onServerBytes: { [weak ctx] data in
                 ctx?.clientWritePump?.enqueue(data) ?? .closed
@@ -241,6 +268,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 }
             }
         )
+        engineGeneration = lease.generation
+        ctx.engineGeneration = lease.generation
+        return decision
     }
 
     // MARK: - Phase: egress connection
@@ -339,9 +369,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     private func scheduleDrainBackstopCheck(afterMs: UInt64) {
         let work = DispatchWorkItem { [weak self] in
             guard let self, self.ctx.isDone == false else { return }
-            let idleMs =
-                (DispatchTime.now().uptimeNanoseconds
-                    &- self.ctx.lastActivityAt.uptimeNanoseconds) / 1_000_000
+            let idleMs = self.ctx.idleMs()
             if idleMs < UInt64(self.lingerCloseMs) {
                 // Still moving bytes (live half-close) — check again once the
                 // current linger window could have elapsed quietly.
@@ -371,6 +399,11 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         guard pendingTerminalDrains.isEmpty else { return }
         terminalDrainBackstop?.cancel()
         terminalDrainBackstop = nil
+        guard let close = pendingClientDrainClose else { return }
+        pendingClientDrainClose = nil
+        ctx.applyDrainedClose(
+            wasOpened: close.wasOpened,
+            error: close.error)
     }
 
     func closeClientAfterRustDrain() {
@@ -378,10 +411,10 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         let egressReadError = ctx.egressReadError
         ctx.clientWritePump?.closeWhenDrained { [weak self] wasOpened in
             guard let self else { return }
-            self.finishTerminalDrain(.clientWriter)
-            self.ctx.applyDrainedClose(
+            self.pendingClientDrainClose = ClientDrainClose(
                 wasOpened: wasOpened,
                 error: egressReadError)
+            self.finishTerminalDrain(.clientWriter)
         }
     }
 
@@ -657,14 +690,13 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             // from a quiet connection. A gone ctx reads as fully idle.
             readSideIdleMs: { [weak ctx] in
                 guard let ctx else { return .max }
-                return (DispatchTime.now().uptimeNanoseconds
-                    &- ctx.lastActivityAt.uptimeNanoseconds) / 1_000_000
+                return ctx.idleMs()
             }
         )
         ctx.egressWritePump = pump
     }
 
-    private func buildEgressReadPump(
+    func buildEgressReadPump(
         connection: any NwConnectionLike,
         session: RamaTcpSessionHandle
     ) -> NwTcpConnectionReadPump {

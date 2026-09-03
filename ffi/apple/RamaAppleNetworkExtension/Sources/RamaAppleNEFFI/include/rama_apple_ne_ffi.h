@@ -261,7 +261,7 @@ typedef struct {
     /// Combined TCP+UDP live-flow soft cap that triggers the idle TCP
     /// pressure reaper. 0 disables this established-flow reaper.
     uint32_t flow_pressure_soft_cap;
-    /// Target combined live-flow count after a pressure reap.
+    /// Requested target; Swift validates it against the soft cap.
     uint32_t flow_pressure_low_water;
     /// Minimum idle age before a TCP flow is eligible for pressure reaping.
     uint32_t flow_pressure_idle_floor_ms;

@@ -1136,7 +1136,7 @@ mod tests {
 
         let ffi = TransparentProxyConfig::from_rust_type(&config);
         assert_eq!(ffi.flow_pressure_soft_cap, 11);
-        assert_eq!(ffi.flow_pressure_low_water, 10);
+        assert_eq!(ffi.flow_pressure_low_water, 12);
         assert_eq!(ffi.flow_pressure_idle_floor_ms, 13);
         assert_eq!(ffi.tcp_start_in_flight_hard_cap, 14);
         assert_eq!(ffi.tcp_start_in_flight_soft_cap, 15);

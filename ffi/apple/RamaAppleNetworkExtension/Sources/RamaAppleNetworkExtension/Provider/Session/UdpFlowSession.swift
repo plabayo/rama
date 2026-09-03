@@ -36,6 +36,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     let ctx: UdpFlowContext
 
     var sessionHandle: RamaUdpSessionHandle?
+    private var engineGeneration: UInt64?
 
     /// Wall-clock cap on per-flow idle (no datagrams in either
     /// direction). 0 disables the watchdog. Defaults to
@@ -98,7 +99,15 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             )
             sessionHandle = session
             ctx.session = session
-            let occupancy = core?.registerUdpFlow(flowId, anchor: self) ?? 0
+            guard let engineGeneration,
+                let occupancy = core?.registerUdpFlow(
+                    flowId,
+                    anchor: self,
+                    engineGeneration: engineGeneration)
+            else {
+                session.onClientClose()
+                return .passthrough
+            }
             openKernelFlow()
             // Nexus pressure is global (tcp+udp). A UDP burst can approach the
             // kernel ceiling too, so drive the same backstop TCP admission does
@@ -146,7 +155,9 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
                 ctx.session?.onClientClose()
-                core?.removeUdpFlow(flowId)
+                core?.removeUdpFlow(
+                    flowId,
+                    engineGeneration: session?.engineGeneration)
             }
         }
     }
@@ -285,8 +296,8 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     }
 
     func requestEngineSession() -> RamaTransparentProxyUdpSessionDecision? {
-        guard let engine = core?.engine else { return nil }
-        return engine.newUdpSession(
+        guard let lease = core?.engineLeaseForNewFlow() else { return nil }
+        let decision = lease.engine.newUdpSession(
             meta: meta,
             onServerDatagram: { [weak ctx, weak self] data, peer in
                 // Push the datagram synchronously (writer.enqueue is
@@ -304,6 +315,8 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             onClientReadDemand: { [weak ctx] in ctx?.requestRead?() },
             onServerClosed: { [weak ctx] in ctx?.terminate?(nil) }
         )
+        engineGeneration = lease.generation
+        return decision
     }
 
     func openKernelFlow() {

@@ -176,15 +176,15 @@ final class TcpClientReadPump: @unchecked Sendable {
         // path).
         self.flow.readData { [weak self] data, error in
             guard let self else { return }
+            // Publish activity at the transport boundary, before enqueueing
+            // delivery work. A pressure eviction can be queued on the same
+            // flow queue concurrently; delaying this edge until that queue runs
+            // would let the eviction observe a stale idle timestamp and win.
+            if let data, !data.isEmpty {
+                self.onActivity()
+            }
             self.queue.async { [weak self] in
                 guard let self else { return }
-                // Count bytes at the transport boundary, before any
-                // delivery/cutover decision. A held `.paused` chunk is
-                // replayed from `pendingData` without passing here again,
-                // so one kernel read produces exactly one activity edge.
-                if let data, !data.isEmpty {
-                    self.onActivity()
-                }
                 if self.phase == .closed {
                     // Pump cancelled while a `readData` was in
                     // flight. If a promote-cutover installed a

@@ -705,9 +705,8 @@ pub struct TransparentProxyConfig {
     /// Combined TCP+UDP live-flow soft cap that triggers Swift's idle TCP
     /// pressure reaper. `0` disables this established-flow pressure reaper.
     flow_pressure_soft_cap: u32,
-    /// Requested combined live-flow count after a pressure reap. When the
-    /// reaper is enabled, the public accessor normalizes this below `soft_cap`
-    /// so the target retains hysteresis.
+    /// Requested combined live-flow count after a pressure reap. The Apple
+    /// provider normalizes this below `soft_cap` at its logged FFI boundary.
     flow_pressure_low_water: u32,
     /// Minimum idle age before a TCP flow is eligible for pressure reaping.
     flow_pressure_idle_floor_ms: u32,
@@ -788,17 +787,13 @@ impl TransparentProxyConfig {
         self.flow_pressure_soft_cap
     }
 
-    /// Effective target combined live-flow count after a pressure reap.
+    /// Requested target combined live-flow count after a pressure reap.
     ///
-    /// When pressure reaping is enabled, this is normalized to
-    /// `0..flow_pressure_soft_cap`. With a zero soft cap the reaper is disabled
-    /// and the configured value is returned unchanged.
+    /// The Apple provider validates this against the soft cap when the config
+    /// crosses the FFI boundary, where an invalid value can also be logged.
     #[must_use]
     pub fn flow_pressure_low_water(&self) -> u32 {
-        match self.flow_pressure_soft_cap {
-            0 => self.flow_pressure_low_water,
-            soft_cap => self.flow_pressure_low_water.min(soft_cap - 1),
-        }
+        self.flow_pressure_low_water
     }
 
     /// Minimum idle age before a TCP flow is eligible for pressure reaping.
@@ -918,7 +913,6 @@ impl TransparentProxyConfig {
 
     generate_set_and_with! {
         /// Set the requested combined live-flow count after a pressure reap.
-        /// [`Self::flow_pressure_low_water`] returns the normalized target.
         pub fn flow_pressure_low_water(mut self, value: u32) -> Self {
             self.flow_pressure_low_water = value;
             self
@@ -1100,7 +1094,7 @@ mod transparent_proxy_config_tests {
     }
 
     #[test]
-    fn flow_pressure_low_water_is_normalized_against_soft_cap() {
+    fn flow_pressure_low_water_round_trips_before_ffi_validation() {
         let below = TransparentProxyConfig::new()
             .with_flow_pressure_soft_cap(10)
             .with_flow_pressure_low_water(0);
@@ -1109,12 +1103,12 @@ mod transparent_proxy_config_tests {
         let above = TransparentProxyConfig::new()
             .with_flow_pressure_soft_cap(10)
             .with_flow_pressure_low_water(11);
-        assert_eq!(above.flow_pressure_low_water(), 9);
+        assert_eq!(above.flow_pressure_low_water(), 11);
 
         let at_cap = TransparentProxyConfig::new()
             .with_flow_pressure_soft_cap(10)
             .with_flow_pressure_low_water(10);
-        assert_eq!(at_cap.flow_pressure_low_water(), 9);
+        assert_eq!(at_cap.flow_pressure_low_water(), 10);
 
         let disabled = TransparentProxyConfig::new()
             .with_flow_pressure_soft_cap(0)

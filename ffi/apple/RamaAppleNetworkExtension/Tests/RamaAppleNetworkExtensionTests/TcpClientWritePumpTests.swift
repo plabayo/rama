@@ -236,6 +236,27 @@ final class TcpClientWritePumpTests: XCTestCase {
         DispatchQueue(label: "rama.tproxy.test.writer", qos: .utility)
     }
 
+    func testAcceptedWritePublishesActivityBeforeItsQueueHop() {
+        let flow = MockTcpFlow()
+        let queue = makeQueue()
+        let gate = DispatchSemaphore(value: 0)
+        queue.async { gate.wait() }
+        let activity = NSLock_Counter()
+        let pump = TcpClientWritePump(
+            flow: flow,
+            queue: queue,
+            logger: { _ in },
+            onTerminalError: { _ in },
+            onDrained: {},
+            onActivity: { activity.increment() })
+
+        XCTAssertEqual(pump.enqueue(Data([0x01])), .accepted)
+        XCTAssertEqual(activity.value, 1, "acceptance publishes before queued delivery")
+        XCTAssertEqual(flow.writeCount, 0, "the data path is still parked behind the queue gate")
+
+        gate.signal()
+    }
+
     /// Sustained transient errors must not pin the pump alive forever.
     /// `flow.write` returning `ENOBUFS` repeatedly is the production
     /// failure mode that wedged the runtime: each retry strongly
@@ -477,9 +498,13 @@ final class TcpClientWritePumpTests: XCTestCase {
     /// payload up, so a strict cap would deadlock the relay.
     func testFirstOversizedChunkIsAccepted() {
         let flow = MockTcpFlow()
+        let queue = makeQueue()
+        let releaseQueue = DispatchSemaphore(value: 0)
+        queue.async { releaseQueue.wait() }
+        defer { releaseQueue.signal() }
         let pump = TcpClientWritePump(
             flow: flow,
-            queue: makeQueue(),
+            queue: queue,
             logger: { _ in },
             onTerminalError: { _ in },
             onDrained: {}

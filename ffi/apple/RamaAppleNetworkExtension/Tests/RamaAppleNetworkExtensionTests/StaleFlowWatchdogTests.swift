@@ -284,7 +284,7 @@ final class StaleFlowWatchdogTests: XCTestCase {
         )
     }
 
-    /// `stopFlowCountReporting` (called from `detachEngine`) must
+    /// `resetMaintenanceStateLocked` (called from `detachEngine`) must
     /// also clear the watchdog tracking set; otherwise a subsequent
     /// `attachEngine` would inherit stale IDs and potentially kick a
     /// fresh, healthy flow on its very first tick.
@@ -295,7 +295,7 @@ final class StaleFlowWatchdogTests: XCTestCase {
         core.testRunPeriodicMaintenance()
         XCTAssertFalse(core.testStuckPreReadyFlowIds.isEmpty)
 
-        // `detachEngine` -> stopFlowCountReporting -> clears the set.
+        // `detachEngine` resets maintenance state and clears the set.
         // Engine-less core: detach is a no-op path through the
         // teardown branches but still clears the set.
         core.detachEngine(reason: 0)

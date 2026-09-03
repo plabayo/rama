@@ -111,6 +111,31 @@ final class TcpReadPumpReplayTests: XCTestCase {
         XCTAssertEqual(activityCount.get(), 2, "each new read records one activity edge")
     }
 
+    func testClientReadPublishesActivityBeforeItsQueueHop() {
+        let sink = ScriptedBytesSink([.accepted])
+        let flow = MockTcpFlow()
+        let queue = makeQueue()
+        let activityCount = TestValue(0)
+        let pump = TcpClientReadPump(
+            flow: flow,
+            session: sink,
+            queue: queue,
+            logger: { _ in },
+            onTerminal: { _ in },
+            onActivity: { activityCount.update { $0 += 1 } })
+        pump.requestRead()
+        pollUntil("client read is pending") { !flow.pendingReadCompletions.isEmpty }
+        let gate = DispatchSemaphore(value: 0)
+        queue.async { gate.wait() }
+
+        flow.completeRead(data: Data([0x01]), error: nil)
+        pollUntil("activity published before delivery") { activityCount.get() == 1 }
+        XCTAssertTrue(sink.received.isEmpty, "delivery remains parked behind the queue gate")
+
+        gate.signal()
+        pollUntil("delivery resumes") { sink.received.count == 1 }
+    }
+
     /// A `.paused` AGAIN on the replay attempt re-holds the same bytes (no
     /// duplication, no loss, no extra read) until the next resume.
     func testClientReadPumpRepausedReplayDoesNotDuplicateOrRead() {
@@ -176,6 +201,35 @@ final class TcpReadPumpReplayTests: XCTestCase {
         pollUntil("next new chunk delivered") { sink.received.count == 3 }
         XCTAssertEqual(sink.received, [chunk, chunk, nextChunk])
         XCTAssertEqual(activityCount.get(), 2, "each new receive records one activity edge")
+    }
+
+    func testEgressReceivePublishesActivityBeforeItsQueueHop() {
+        let sink = ScriptedBytesSink([.accepted])
+        let conn = MockNwConnection()
+        conn.transition(to: .ready)
+        let queue = makeQueue()
+        let activityCount = TestValue(0)
+        let pump = NwTcpConnectionReadPump(
+            connection: conn,
+            session: sink,
+            queue: queue,
+            eofGraceDeadline: .seconds(60),
+            onActivity: { activityCount.update { $0 += 1 } })
+        pump.start()
+        pollUntil("egress receive is pending") { conn.pendingReceiveCount == 1 }
+        let gate = DispatchSemaphore(value: 0)
+        queue.async { gate.wait() }
+
+        XCTAssertTrue(
+            conn.completePendingReceive(
+                data: Data([0x02]),
+                isComplete: false,
+                error: nil))
+        pollUntil("activity published before delivery") { activityCount.get() == 1 }
+        XCTAssertTrue(sink.received.isEmpty, "delivery remains parked behind the queue gate")
+
+        gate.signal()
+        pollUntil("delivery resumes") { sink.received.count == 1 }
     }
 
     // MARK: - cancelForPromote hands the held replay buffer to carryover

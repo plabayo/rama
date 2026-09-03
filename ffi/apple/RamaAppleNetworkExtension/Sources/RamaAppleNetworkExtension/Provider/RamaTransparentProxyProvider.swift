@@ -496,10 +496,10 @@ nonisolated(unsafe) var defaultFlowPressureSoftCap: UInt32 = 450
 nonisolated(unsafe) var defaultFlowPressureLowWater: UInt32 = 350
 nonisolated(unsafe) var defaultFlowPressureIdleFloorMs: UInt32 = 120_000
 
-/// Keep an enabled reaper's target strictly below its trigger, preserving the
-/// hysteresis that prevents a full scan on every admission. A cap of one has
-/// the sole meaningful target zero. A zero soft cap disables pressure reaping,
-/// so its unused low-water value is preserved.
+/// Keep an enabled reaper's target strictly below its trigger. This guarantees
+/// at least one slot of hysteresis; deployments that want a larger batch gap
+/// configure a lower target. A cap of one has the sole meaningful target zero.
+/// A zero soft cap disables pressure reaping, so its unused target is preserved.
 func normalizedFlowPressureLowWater(softCap: UInt32, lowWater: UInt32) -> UInt32 {
     guard softCap > 0 else { return lowWater }
     return min(lowWater, softCap - 1)
