@@ -9,8 +9,6 @@ use rama_core::telemetry::tracing;
 
 use crate::{HeaderMap, HeaderName, header};
 
-const PROXY_AUTHENTICATION_INFO: HeaderName = HeaderName::from_static("proxy-authentication-info");
-
 fn remove_fields<'a>(headers: &mut HeaderMap, names: impl IntoIterator<Item = &'a HeaderName>) {
     for name in names {
         if headers.remove(name).is_some() {
@@ -28,7 +26,10 @@ pub fn remove_proxy_auth_request_headers(headers: &mut HeaderMap) {
 pub fn remove_proxy_auth_response_headers(headers: &mut HeaderMap) {
     remove_fields(
         headers,
-        [&header::PROXY_AUTHENTICATE, &PROXY_AUTHENTICATION_INFO],
+        [
+            &header::PROXY_AUTHENTICATE,
+            &header::PROXY_AUTHENTICATION_INFO,
+        ],
     );
 }
 
@@ -63,18 +64,23 @@ mod tests {
             HeaderValue::from_static("Basic"),
         );
         headers.insert(
-            HeaderName::from_static("proxy-authentication-info"),
+            header::PROXY_AUTHENTICATION_INFO,
             HeaderValue::from_static("nextnonce=abc"),
         );
         headers.insert(
             header::PROXY_AUTHORIZATION,
             HeaderValue::from_static("Basic dGVzdA=="),
         );
+        headers.insert(
+            header::AUTHENTICATION_INFO,
+            HeaderValue::from_static("nextnonce=origin"),
+        );
 
         remove_proxy_auth_response_headers(&mut headers);
 
         assert!(!headers.contains_key(header::PROXY_AUTHENTICATE));
-        assert!(!headers.contains_key("proxy-authentication-info"));
+        assert!(!headers.contains_key(header::PROXY_AUTHENTICATION_INFO));
         assert!(headers.contains_key(header::PROXY_AUTHORIZATION));
+        assert!(headers.contains_key(header::AUTHENTICATION_INFO));
     }
 }

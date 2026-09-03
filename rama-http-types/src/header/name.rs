@@ -411,6 +411,16 @@ standard_headers! {
     /// Advertises the availability of alternate services to clients.
     (AltSvc, ALT_SVC, b"alt-svc");
 
+    /// Communicates information after a client's authentication credentials
+    /// have been accepted.
+    ///
+    /// Its semantics are defined by the authentication scheme named by the
+    /// corresponding request's `Authorization` header. A proxy forwarding the
+    /// response must not modify this field.
+    ///
+    /// See [RFC 7615, section 3](https://www.rfc-editor.org/rfc/rfc7615.html#section-3).
+    (AuthenticationInfo, AUTHENTICATION_INFO, b"authentication-info");
+
     /// Contains the credentials to authenticate a user agent with a server.
     ///
     /// Usually this header is included after the server has responded with a
@@ -834,6 +844,16 @@ standard_headers! {
     /// The `proxy-authenticate` header is sent along with a `407 Proxy
     /// Authentication Required`.
     (ProxyAuthenticate, PROXY_AUTHENTICATE, b"proxy-authenticate");
+
+    /// Communicates information after proxy authentication credentials have
+    /// been accepted.
+    ///
+    /// Its semantics are defined by the authentication scheme named by the
+    /// corresponding request's `Proxy-Authorization` header. This field applies
+    /// only to the next outbound client on the response chain.
+    ///
+    /// See [RFC 7615, section 4](https://www.rfc-editor.org/rfc/rfc7615.html#section-4).
+    (ProxyAuthenticationInfo, PROXY_AUTHENTICATION_INFO, b"proxy-authentication-info");
 
     /// Contains the credentials to authenticate a user agent to a proxy server.
     ///

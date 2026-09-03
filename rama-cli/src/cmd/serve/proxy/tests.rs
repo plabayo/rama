@@ -1252,7 +1252,10 @@ async fn forward_client_consumes_proxy_auth_without_icap() {
             Ok::<_, Infallible>(
                 Response::builder()
                     .header(rama::http::header::PROXY_AUTHENTICATE, "Basic")
-                    .header("proxy-authentication-info", "nextnonce=deadbeef")
+                    .header(
+                        rama::http::header::PROXY_AUTHENTICATION_INFO,
+                        "nextnonce=deadbeef",
+                    )
                     .body(Body::from("proxy auth consumed"))
                     .unwrap(),
             )
@@ -1289,7 +1292,11 @@ async fn forward_client_consumes_proxy_auth_without_icap() {
             .headers()
             .contains_key(rama::http::header::PROXY_AUTHENTICATE)
     );
-    assert!(!response.headers().contains_key("proxy-authentication-info"));
+    assert!(
+        !response
+            .headers()
+            .contains_key(rama::http::header::PROXY_AUTHENTICATION_INFO)
+    );
     assert_eq!(
         response.into_body().collect().await.unwrap().to_bytes(),
         "proxy auth consumed"

@@ -537,7 +537,7 @@ mod tests {
             HeaderValue::from_static("Basic"),
         );
         response.insert(
-            HeaderName::from_static("proxy-authentication-info"),
+            header::PROXY_AUTHENTICATION_INFO,
             HeaderValue::from_static("nextnonce=abc"),
         );
         remove_proxy_auth_response_headers(&mut response);
