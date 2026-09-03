@@ -463,9 +463,11 @@ nonisolated(unsafe) var defaultPromotedIdleTimeoutMs: UInt32 = 900_000
 //   * This reaper never refuses or delays a new flow: the new flow is admitted;
 //     the reap (async, off the delivery thread) frees room for SUBSEQUENT flows.
 //     A burst of triggers is coalesced (`pressureReapScheduled`) into one scan,
-//     and after a scan finds nothing idle past the floor, rescans are skipped
-//     until the closest flow could possibly cross it (bounded to 250ms–5s) —
-//     under a churn burst the registry is not re-sorted per admission.
+//     victims still tearing down stay excluded and count as gone (so triggers
+//     in that window select nothing twice), and after a scan finds nothing
+//     idle past the floor, rescans are skipped until the closest flow could
+//     possibly cross it (bounded to 250ms–5s) — under a churn burst the
+//     registry is not re-sorted per admission.
 //     Separate TCP start admission caps below may still reject pre-ready egress
 //     starts before another expensive `NWConnection.start` is added.
 //   * NEVER touches an active or recently-active flow: only flows idle past

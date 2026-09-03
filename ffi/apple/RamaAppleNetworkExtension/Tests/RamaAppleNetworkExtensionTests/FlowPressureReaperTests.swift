@@ -357,7 +357,12 @@ final class FlowPressureReaperTests: XCTestCase {
             stalest.wasTornDown,
             "a victim that became active between selection and teardown must be spared")
         XCTAssertTrue(middle.wasTornDown, "the still-idle selected victim is evicted")
-        XCTAssertFalse(freshest.wasTornDown, "a non-selected flow is never touched")
+        // The spare hops to `stateQueue` and re-evaluates the cycle, which is
+        // now one short of low-water: the next-oldest idle flow takes the place.
+        _ = core.tcpFlowCount  // barrier behind that hop
+        XCTAssertTrue(freshest.wasTornDown, "a spared victim is replaced by the next idle flow")
+        XCTAssertEqual(core.testPressureSparedTotal, 1)
+        XCTAssertEqual(core.tcpFlowCount, 1, "the cycle still reaches low-water")
     }
 
     // MARK: - TG-6: UDP counts toward occupancy but is never a victim
@@ -580,5 +585,295 @@ final class FlowPressureReaperTests: XCTestCase {
         core.testReapIdleUnderPressureIfDue()
         XCTAssertEqual(core.testPressureScanCount, 2, "fresh scan, not a suppressed skip")
         XCTAssertEqual(noHeadroomLines(), 2, "once-per-episode log re-armed")
+    }
+
+    // MARK: - TG-11: pending victims are not reselected while their teardown is queued
+
+    /// A serial `flowQueue` parked behind a gate: every teardown dispatched
+    /// onto it queues up without running, holding the victims in the
+    /// selected-but-not-yet-removed window the reaper must account for.
+    private func gatedQueue(_ label: String) -> (DispatchQueue, DispatchSemaphore) {
+        let q = DispatchQueue(label: "rama.test.pressure.\(label)")
+        let gate = DispatchSemaphore(value: 0)
+        q.async { gate.wait() }
+        return (q, gate)
+    }
+
+    /// Fire one production trigger and wait until its `stateQueue` block has
+    /// run to completion (the `tcpFlowCount` sync read is the barrier). Unlike
+    /// a burst, consecutive triggers here each get their own block — the
+    /// coalescing slot is free again the moment the previous block starts.
+    private func triggerAndDrain(_ core: TransparentProxyCore) {
+        core.reapIdleUnderPressure()
+        pollUntil("trigger block started") { !core.testPressureReapScheduled }
+        _ = core.tcpFlowCount
+    }
+
+    /// The coalescing test (TG-9) parks `stateQueue` BEFORE the first scan.
+    /// This one lets the first scan select its victims and parks their
+    /// `flowQueue` instead, so the victims stay registered and idle while
+    /// more admissions trigger. Those triggers must not rescan the registry,
+    /// re-account the same victims, or queue them a second teardown.
+    func testTriggersWhileVictimTeardownIsBlockedDoNotReselectPendingVictims() {
+        defaultFlowPressureSoftCap = 3
+        defaultFlowPressureLowWater = 2
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let (q, gate) = gatedQueue("pending")
+        // 5 idle flows → want = 5 − low-water 2 = 3 victims (the 3 stalest).
+        let fxs = (0..<5).map { Fx(core: core, idleSeconds: 10 + UInt64($0), flowQueue: q) }
+        insert(core, fxs)
+
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressureScanCount, 1)
+        XCTAssertEqual(core.testPressureVictimsTotal, 3, "first scan selects 3 victims")
+        XCTAssertEqual(core.testPressurePendingVictimCount, 3)
+        XCTAssertEqual(core.tcpFlowCount, 5, "teardown is blocked: nothing left the registry")
+
+        // Twenty more admissions' worth of triggers while the victims sit in
+        // the window. Occupancy has not moved and the pending victims cover
+        // the whole excess, so each trigger is an O(1) no-op.
+        for _ in 0..<20 { triggerAndDrain(core) }
+
+        XCTAssertEqual(core.testPressureScanCount, 1, "no full rescan while victims are pending")
+        XCTAssertEqual(core.testPressureVictimsTotal, 3, "the same victims are not re-accounted")
+        XCTAssertEqual(core.testPressurePendingVictimCount, 3, "still the one outstanding set")
+
+        gate.signal()
+        pollUntil("victims torn down and removed") { core.tcpFlowCount == 2 }
+        q.sync {}  // every queued teardown closure has run
+        XCTAssertEqual(core.testPressureEvictionBodyRuns, 3, "one teardown closure per victim")
+        XCTAssertEqual(fxs.filter { $0.wasTornDown }.count, 3)
+        for fx in fxs where fx.wasTornDown {
+            XCTAssertEqual(fx.flow.closeReadCallCount, 1, "each victim torn down exactly once")
+        }
+        XCTAssertEqual(core.testPressurePendingVictimCount, 0, "pending set drains with registry")
+    }
+
+    /// A pending victim that moves bytes before its `flowQueue` re-check is
+    /// spared, leaves the pending set, and the cycle is re-evaluated: the
+    /// next-oldest idle flow takes its place so the reap still reaches
+    /// low-water. The spared flow is a normal flow again — idle long enough,
+    /// it is selectable by a later cycle.
+    func testPendingVictimRevivedBeforeRecheckIsSparedReplacedAndReArmed() {
+        defaultFlowPressureSoftCap = 3
+        defaultFlowPressureLowWater = 2
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let (q, gate) = gatedQueue("revive")
+        let stalest = Fx(core: core, idleSeconds: 40, flowQueue: q)
+        let middle = Fx(core: core, idleSeconds: 30, flowQueue: q)
+        let next = Fx(core: core, idleSeconds: 20, flowQueue: q)
+        let freshest = Fx(core: core, idleSeconds: 10, flowQueue: q)
+        insert(core, [stalest, middle, next, freshest])
+
+        // want = 4 − 2 = 2 → stalest + middle selected, teardown parked.
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressureVictimsTotal, 2)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 2)
+
+        stalest.markActiveNow()
+        gate.signal()
+        pollUntil("cycle converges to low-water") { core.tcpFlowCount == 2 }
+        _ = core.tcpFlowCount
+
+        XCTAssertFalse(stalest.wasTornDown, "the revived victim is spared by the re-check")
+        XCTAssertTrue(middle.wasTornDown)
+        XCTAssertTrue(next.wasTornDown, "the spare is re-evaluated: next-oldest idle replaces it")
+        XCTAssertFalse(freshest.wasTornDown, "and only as many as low-water requires")
+        XCTAssertEqual(core.testPressureVictimsTotal, 3, "stalest, middle, next: unique selections")
+        XCTAssertEqual(core.testPressureSparedTotal, 1)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 0)
+
+        // Re-armed: idle again and over the cap, the spared flow is a victim.
+        stalest.ctx.lastActivityAt = DispatchTime(
+            uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds - 40_000_000_000)
+        insert(core, [Fx(core: core, idleSeconds: 0, flowQueue: q)])
+        triggerAndDrain(core)
+        pollUntil("spared flow evicted by the later cycle") { stalest.wasTornDown }
+        XCTAssertEqual(core.testPressureVictimsTotal, 4)
+    }
+
+    /// Spared for a reason other than activity: a graceful drain began on
+    /// the victim between selection and re-check. It must leave the pending
+    /// set like an activity spare does, or it could never be selected again
+    /// once drain-wedged.
+    func testPendingVictimSparedByDrainRecheckLeavesPendingSet() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let (q, gate) = gatedQueue("drain")
+        let victim = Fx(core: core, idleSeconds: 30, flowQueue: q)
+        let other = Fx(core: core, idleSeconds: 1, flowQueue: q)
+        insert(core, [victim, other])
+
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 1)
+
+        // Graceful close started, within its linger budget: not wedged.
+        victim.ctx.terminalSignalled = true
+        victim.ctx.drainClosePending = true
+        victim.ctx.lingerCloseMs = 60_000
+        gate.signal()
+        q.sync {}
+        pollUntil("spare lands on stateQueue") { core.testPressurePendingVictimCount == 0 }
+
+        XCTAssertFalse(victim.wasTornDown, "a gracefully-closing victim is spared")
+        XCTAssertEqual(core.testPressureSparedTotal, 1)
+        XCTAssertEqual(core.tcpFlowCount, 2)
+    }
+
+    /// A pending victim torn down by another path first (here an engine
+    /// detach on its queue) resolves through the registry removal, not the
+    /// spare path: no double accounting either way.
+    func testPendingVictimTornDownByAnotherPathResolvesViaRemoval() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let q = DispatchQueue(label: "rama.test.pressure.other-path")
+        let gate = DispatchSemaphore(value: 0)
+        let victim = Fx(core: core, idleSeconds: 30, flowQueue: q)
+        // Runs BEFORE the eviction closure on the same serial queue.
+        q.async {
+            gate.wait()
+            victim.ctx.applyEngineDetached()
+        }
+        insert(core, [victim, Fx(core: core, idleSeconds: 1, flowQueue: q)])
+
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 1)
+
+        gate.signal()
+        q.sync {}
+        pollUntil("removal lands") { core.tcpFlowCount == 1 }
+        XCTAssertEqual(core.testPressureEvictionBodyRuns, 1, "the eviction closure ran and no-oped")
+        XCTAssertEqual(core.testPressurePendingVictimCount, 0)
+        XCTAssertEqual(core.testPressureSparedTotal, 0, "already gone: not a spare")
+        XCTAssertEqual(victim.flow.closeReadCallCount, 1, "torn down exactly once")
+    }
+
+    /// Admissions keep arriving while a cycle has pending victims. Pending
+    /// victims count as leaving: occupancy net of them must reach the cap
+    /// again before another scan runs (the same hysteresis as without
+    /// pending victims), and that scan excludes the pending set.
+    func testAdmissionsDuringPendingCycleScanIncrementallyAgainstProjectedOccupancy() {
+        defaultFlowPressureSoftCap = 4
+        defaultFlowPressureLowWater = 2
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let (q, gate) = gatedQueue("admit")
+        // 6 idle → want = 6 − 2 = 4 pending; 2 idle flows remain unselected.
+        let idle = (0..<6).map { Fx(core: core, idleSeconds: 10 + UInt64($0), flowQueue: q) }
+        insert(core, idle)
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 4)
+        XCTAssertEqual(core.testPressureScanCount, 1)
+
+        // Projected occupancy 7 − 4 = 3 < cap 4: the admission is an O(1) no-op.
+        let a1 = Fx(core: core, idleSeconds: 0, flowQueue: q)
+        insert(core, [a1])
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressureScanCount, 1, "excess already covered by pending victims")
+        XCTAssertEqual(core.testPressureVictimsTotal, 4)
+
+        // Projected 8 − 4 = 4 ≥ cap: scan for the 2 extra, excluding pending.
+        let a2 = Fx(core: core, idleSeconds: 0, flowQueue: q)
+        insert(core, [a2])
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressureScanCount, 2, "new excess: one incremental scan")
+        XCTAssertEqual(core.testPressureVictimsTotal, 6, "two more unique victims")
+        XCTAssertEqual(core.testPressurePendingVictimCount, 6)
+
+        gate.signal()
+        pollUntil("converges to low-water") { core.tcpFlowCount == 2 }
+        q.sync {}
+        XCTAssertEqual(core.testPressureEvictionBodyRuns, 6)
+        XCTAssertEqual(idle.filter { $0.wasTornDown }.count, 6, "every idle flow, each once")
+        XCTAssertFalse(a1.wasTornDown, "active admissions are never selected")
+        XCTAssertFalse(a2.wasTornDown, "active admissions are never selected")
+        XCTAssertEqual(core.testPressurePendingVictimCount, 0)
+    }
+
+    /// Detach mid-cycle: the registry and the pending set clear together,
+    /// the parked eviction closures no-op when they finally run, and the
+    /// next lifecycle's first over-cap trigger scans fresh.
+    func testDetachDuringPendingCycleClearsPendingStateWithoutSuppressingLaterScans() {
+        defaultFlowPressureSoftCap = 3
+        defaultFlowPressureLowWater = 2
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let (q, gate) = gatedQueue("detach")
+        let fxs = (0..<5).map { Fx(core: core, idleSeconds: 10 + UInt64($0), flowQueue: q) }
+        insert(core, fxs)
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 3)
+
+        core.detachEngine(reason: 0)
+        XCTAssertEqual(core.tcpFlowCount, 0)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 0, "detach clears the pending set")
+
+        gate.signal()
+        q.sync {}
+        _ = core.tcpFlowCount
+        XCTAssertEqual(fxs.filter { $0.wasTornDown }.count, 5, "every flow is torn down")
+        for fx in fxs {
+            XCTAssertEqual(fx.flow.closeReadCallCount, 1, "evict + detach never double-close")
+        }
+        XCTAssertEqual(core.testPressurePendingVictimCount, 0)
+
+        // Next lifecycle: a fresh over-cap population scans and evicts.
+        let again = (0..<5).map { Fx(core: core, idleSeconds: 10 + UInt64($0), flowQueue: q) }
+        insert(core, again)
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressureScanCount, 2, "scans are not suppressed after detach")
+        pollUntil("fresh cycle evicts") { core.tcpFlowCount == 2 }
+    }
+
+    /// Bounded stress: admissions churn from a background thread against a
+    /// low cap while victims tear down on a small pool of real serial queues.
+    /// Every selection must produce exactly one teardown closure and no flow
+    /// may be selected twice; occupancy must settle between low-water and
+    /// the cap once the churn stops.
+    func testLowThresholdChurnConvergesWithoutDuplicateSelections() {
+        defaultFlowPressureSoftCap = 20
+        defaultFlowPressureLowWater = 10
+        defaultFlowPressureIdleFloorMs = 0
+        let core = makeCore()
+        let queues = (0..<4).map { DispatchQueue(label: "rama.test.pressure.churn.\($0)") }
+        let all = Locked([Fx]())
+        let done = expectation(description: "churn finished")
+        DispatchQueue.global().async {
+            for i in 0..<300 {
+                let fx = Fx(core: core, idleSeconds: 1, flowQueue: queues[i % queues.count])
+                all.withLock { $0.append(fx) }
+                core.testInsertTcpContext(fx.flowId, fx.ctx)
+                core.reapIdleUnderPressure()
+            }
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 10.0)
+
+        // Slot first, then the sync read: a scan that already started runs
+        // before the read, so a `0` here means no selection is still in flight.
+        pollUntil("pending victims settle", timeout: 10.0) {
+            !core.testPressureReapScheduled && core.testPressurePendingVictimCount == 0
+        }
+        for q in queues { q.sync {} }
+        _ = core.tcpFlowCount
+
+        let fxs = all.withLock { $0 }
+        let tornDown = fxs.filter { $0.wasTornDown }.count
+        let victims = core.testPressureVictimsTotal
+        XCTAssertEqual(core.testPressureSparedTotal, 0, "idle floor 0: nothing revives")
+        XCTAssertEqual(victims, tornDown, "every unique selection was evicted exactly once")
+        XCTAssertEqual(core.testPressureEvictionBodyRuns, victims, "one closure per selection")
+        XCTAssertEqual(core.tcpFlowCount, 300 - tornDown)
+        XCTAssertGreaterThanOrEqual(core.tcpFlowCount, 10, "never reaped below low-water")
+        XCTAssertLessThan(core.tcpFlowCount, 20, "every over-cap trigger was relieved")
+        for fx in fxs where fx.wasTornDown {
+            XCTAssertEqual(fx.flow.closeReadCallCount, 1)
+        }
     }
 }
