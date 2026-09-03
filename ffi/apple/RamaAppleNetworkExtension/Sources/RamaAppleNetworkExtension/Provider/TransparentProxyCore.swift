@@ -124,6 +124,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         stateQueue.sync {
             self.tcpSessions.removeAll(keepingCapacity: false)
             self.udpSessions.removeAll(keepingCapacity: false)
+            self.pendingPressureVictims.removeAll(keepingCapacity: false)
         }
     }
 
@@ -384,8 +385,29 @@ final class TransparentProxyCore: @unchecked Sendable {
     private let pressureTriggersTotal = Locked(0)
     private let pressureScansTotal = Locked(0)
     private var pressureSkipsTotal = 0
+    /// Unique selections: a flow is counted once per cycle it is selected in.
     private var pressureVictimsTotal = 0
-    private var pressureStatsAtLastTick = (triggers: 0, scans: 0, skips: 0, victims: 0)
+    /// Selections the `flowQueue` re-check declined (`victims - spared` = evicted).
+    private var pressureSparedTotal = 0
+    private var pressureStatsAtLastTick = (triggers: 0, scans: 0, skips: 0, victims: 0, spared: 0)
+
+    /// Selected victims whose teardown has not yet left the registry, by ctx
+    /// identity. Selection only DISPATCHES the teardown; nothing the scan
+    /// reads changes until the victim's `flowQueue` runs it and the
+    /// `removeTcpFlow` hop lands here — so without this a trigger in that
+    /// window re-selects, re-counts and re-dispatches the same flows.
+    ///
+    /// One victim's timeline: [delivery] over-cap admission claims the scan
+    /// slot → [stateQueue] slot released, scan selects it: inserted here,
+    /// counted, closure dispatched → [flowQueue] re-check: spared →
+    /// `pressureVictimSpared` hop removes it; else `applyPressureEvicted` sets
+    /// `isDone` and hops `removeTcpFlow` → [stateQueue] registry entry and
+    /// this entry go together. In between it is excluded from selection and
+    /// counts as leaving (`want` is measured against occupancy minus this
+    /// set). Every teardown path ends in `removeTcpFlow`, so a victim torn
+    /// down by another path resolves too; detach clears it with the registry.
+    /// Only mutated on `stateQueue`.
+    private var pendingPressureVictims: Set<ObjectIdentifier> = []
 
     /// One over-cap stretch, from the first over-cap scan to the removal that
     /// takes occupancy back under the cap. Summarised in a single lifecycle
@@ -400,6 +422,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         var scans = 0
         var skips = 0
         var victims = 0
+        var spared = 0
     }
     private var pressureEpisode: PressureEpisode?
 
@@ -408,6 +431,9 @@ final class TransparentProxyCore: @unchecked Sendable {
         /// test assert the derived bound itself instead of racing the
         /// clock for what remains of it. Only mutated on `stateQueue`.
         private var pressureRescanLastArmedMs: UInt64 = 0
+        /// Test-only: eviction closures that reached a victim `flowQueue`,
+        /// spared or not. One per unique selection is the invariant.
+        private let pressureEvictionBodyRuns = Locked(0)
     #endif
 
     /// Rate-limits the "over cap but nothing idle to reap" lifecycle log to once
@@ -483,7 +509,9 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// `defaultFlowPressureSoftCap`. Reaps idle TCP flows past
     /// `defaultFlowPressureIdleFloorMs`, oldest-idle first (LRU), down to
     /// `defaultFlowPressureLowWater`, to free nexus slots for SUBSEQUENT flows.
-    /// Coalesced via `pressureReapScheduled` so a burst is a single scan.
+    /// Coalesced via `pressureReapScheduled` so a burst is a single scan, and
+    /// victims still tearing down (`pendingPressureVictims`) count as gone, so
+    /// a trigger landing in their window costs O(1).
     ///
     /// Guarantees (see the tunable doc for the policy rationale):
     ///   * The just-admitted flow is NEVER the victim and is never delayed —
@@ -524,11 +552,13 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// Suppression gate in front of `collectPressureVictimsLocked`. MUST be
     /// called on `stateQueue`. Only an over-cap scan is expensive, so only
     /// that is what the deadline skips; under the cap the scan is O(1) and
-    /// is what clears the gate and re-arms the episode log.
+    /// is what clears the gate and re-arms the episode log. "Over cap" is
+    /// measured net of pending victims, like the scan itself.
     private func collectPressureVictimsIfDueLocked() -> [TcpFlowContext] {
         let nowNs = DispatchTime.now().uptimeNanoseconds
         let occupancy = self.tcpSessions.count + self.udpSessions.count
-        let overCap = occupancy >= Int(defaultFlowPressureSoftCap)
+        let projected = occupancy - pendingPressureVictims.count
+        let overCap = projected >= Int(defaultFlowPressureSoftCap)
         guard !overCap || nowNs >= pressureRescanSuppressedUntilNs else {
             pressureSkipsTotal += 1
             if var episode = pressureEpisode {
@@ -544,10 +574,12 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// Victim selection. MUST be called on `stateQueue`. Re-reads live occupancy
     /// (it may have changed since the triggering admission). Eligible:
     /// established (`egressReady`), not already closing (`terminalSignalled`),
-    /// idle past the floor — ranked oldest-idle first (true LRU), capped at the
-    /// count needed to reach low-water. MODE-AGNOSTIC: both `viaRust` and
-    /// `.promoted` flows are evictable (nexus pressure is global and both carry
-    /// an accurate `lastActivityAt`). Eviction is TCP-only because UDP flows
+    /// not already selected (`pendingPressureVictims`), idle past the floor —
+    /// ranked oldest-idle first (true LRU), capped at the count needed to
+    /// reach low-water once the pending victims are gone. MODE-AGNOSTIC:
+    /// both `viaRust` and `.promoted` flows are evictable (nexus pressure is
+    /// global and both carry an accurate `lastActivityAt`). Eviction is
+    /// TCP-only because UDP flows
     /// self-bound via `defaultUdpIdleTimeoutMs`; a UDP-driven burst still TRIGGERS
     /// this (via `registerUdpFlow` occupancy), reaping idle TCP slots to relieve
     /// the global ceiling. Empty result = nothing to do (under cap, or no idle
@@ -568,8 +600,12 @@ final class TransparentProxyCore: @unchecked Sendable {
             pressureRescanSuppressedUntilNs = 0
             return []
         }
-        let want = occupancy > lowWater ? Int(occupancy - lowWater) : 0
-        guard want > 0 else { return [] }
+        // Pending victims are leaving: measure against what remains. Until
+        // that reaches the cap again a trigger in their window is O(1) here.
+        let pending = UInt64(pendingPressureVictims.count)
+        let projected = occupancy > pending ? occupancy - pending : 0
+        guard projected >= UInt64(softCap), projected > lowWater else { return [] }
+        let want = Int(projected - lowWater)
         pressureScansTotal.withLock { $0 += 1 }
         var episode = pressureEpisode ?? PressureEpisode(startNs: nowNs, peakOccupancy: occupancy)
         episode.scans += 1
@@ -585,7 +621,10 @@ final class TransparentProxyCore: @unchecked Sendable {
         typealias Candidate = (
             ctx: TcpFlowContext, state: TcpFlowMaintenanceState, lastNs: UInt64
         )
-        let candidates: [Candidate] = self.tcpSessions.values.map { session in
+        let candidates: [Candidate] = self.tcpSessions.values.compactMap { session in
+            guard !pendingPressureVictims.contains(ObjectIdentifier(session.ctx)) else {
+                return nil
+            }
             let state = session.ctx.maintenanceSnapshot()
             return (
                 ctx: session.ctx,
@@ -648,11 +687,13 @@ final class TransparentProxyCore: @unchecked Sendable {
         pressureNoHeadroomLogged = false
         pressureRescanSuppressedUntilNs = 0
         let victims = Array(eligible.prefix(want))
+        for ctx in victims { pendingPressureVictims.insert(ObjectIdentifier(ctx)) }
         pressureVictimsTotal += victims.count
         pressureEpisode?.victims += victims.count
         self.logLifecycle(
             "flow pressure: occupancy \(occupancy) over soft cap \(softCap); reaping "
-                + "\(victims.count) idle flow(s) toward low-water \(lowWater)"
+                + "\(victims.count) idle flow(s) toward low-water \(lowWater) "
+                + "(\(pendingPressureVictims.count) pending teardown)"
         )
         return victims
     }
@@ -662,17 +703,44 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// THERE before tearing down — a byte may have moved (bumping
     /// `lastActivityAt`) between selection and here, and `mode`/`isDone` may
     /// have advanced. `applyPressureEvicted` has no internal gate, so this
-    /// re-check is its protection; teardown is idempotent via `isDone`.
+    /// re-check is its protection; teardown is idempotent via `isDone`. A
+    /// spared victim is handed back via `pressureVictimSpared`; an evicted
+    /// one resolves through `removeTcpFlow`.
     private func firePressureEvictions(_ victims: [TcpFlowContext]) {
         let floorMs = UInt64(defaultFlowPressureIdleFloorMs)
         for ctx in victims {
-            runFlowTeardown(ctx) {
+            runFlowTeardown(ctx) { [weak self] in
+                #if DEBUG
+                    self?.pressureEvictionBodyRuns.withLock { $0 += 1 }
+                #endif
                 guard ctx.egressReady, !ctx.isDone,
                     !ctx.drainClosePending || Self.flowIsDrainWedged(ctx),
                     Self.flowIdleMs(ctx) > floorMs
-                else { return }
+                else {
+                    self?.pressureVictimSpared(ctx)
+                    return
+                }
                 ctx.applyPressureEvicted()
             }
+        }
+    }
+
+    /// A selected victim failed its `flowQueue` re-check. Drop it from the
+    /// pending set — unless a teardown that beat it there already took it out
+    /// with the registry — and re-evaluate: the cycle is now one short of
+    /// low-water, and only an admission would otherwise notice. Async hop,
+    /// never `sync`: this runs on the victim's `flowQueue`.
+    private func pressureVictimSpared(_ ctx: TcpFlowContext) {
+        stateQueue.async {
+            guard self.pendingPressureVictims.remove(ObjectIdentifier(ctx)) != nil else { return }
+            self.pressureSparedTotal += 1
+            self.pressureEpisode?.spared += 1
+            // Only an over-cap remainder is worth re-evaluating; a removal
+            // owns the under-cap bookkeeping (`endPressureEpisodeIfUnderCapLocked`).
+            let projected =
+                self.tcpSessions.count + self.udpSessions.count - self.pendingPressureVictims.count
+            guard projected >= Int(defaultFlowPressureSoftCap) else { return }
+            self.firePressureEvictions(self.collectPressureVictimsIfDueLocked())
         }
     }
 
@@ -770,8 +838,12 @@ final class TransparentProxyCore: @unchecked Sendable {
             "pressure[triggers=\(triggers - pressureStatsAtLastTick.triggers) "
             + "scans=\(scans - pressureStatsAtLastTick.scans) "
             + "skipped=\(pressureSkipsTotal - pressureStatsAtLastTick.skips) "
-            + "evicted=\(pressureVictimsTotal - pressureStatsAtLastTick.victims)]"
-        pressureStatsAtLastTick = (triggers, scans, pressureSkipsTotal, pressureVictimsTotal)
+            + "evicted=\(pressureVictimsTotal - pressureStatsAtLastTick.victims) "
+            + "spared=\(pressureSparedTotal - pressureStatsAtLastTick.spared) "
+            + "pending=\(pendingPressureVictims.count)]"
+        pressureStatsAtLastTick = (
+            triggers, scans, pressureSkipsTotal, pressureVictimsTotal, pressureSparedTotal
+        )
         // Bundle ids are in the clear: Apple's own `com.apple.networkextension`
         // subsystem logs the source app of every flow publicly on the same
         // machine, so redacting them here only hides them from our own
@@ -952,6 +1024,20 @@ final class TransparentProxyCore: @unchecked Sendable {
         /// Test hook: a scan is queued and has not started yet.
         var testPressureReapScheduled: Bool { pressureReapScheduled.withLock { $0 } }
 
+        /// Test hook: unique victim selections so far (what `evicted=` reports).
+        var testPressureVictimsTotal: Int { stateQueue.sync { self.pressureVictimsTotal } }
+
+        /// Test hook: eviction closures that ran on a victim `flowQueue`.
+        var testPressureEvictionBodyRuns: Int { pressureEvictionBodyRuns.withLock { $0 } }
+
+        /// Test hook: selected victims whose teardown has not yet left the registry.
+        var testPressurePendingVictimCount: Int {
+            stateQueue.sync { self.pendingPressureVictims.count }
+        }
+
+        /// Test hook: selections the `flowQueue` re-check declined.
+        var testPressureSparedTotal: Int { stateQueue.sync { self.pressureSparedTotal } }
+
         /// Test hook: the suppression most recently armed, in ms.
         var testPressureRescanLastArmedMs: UInt64 {
             stateQueue.sync { self.pressureRescanLastArmedMs }
@@ -1063,7 +1149,9 @@ final class TransparentProxyCore: @unchecked Sendable {
         // until the async lands, which only HELPS the ObjectIdentifier-reuse
         // guard below.
         stateQueue.async {
-            self.tcpSessions.removeValue(forKey: flowId)
+            if let anchor = self.tcpSessions.removeValue(forKey: flowId) {
+                self.pendingPressureVictims.remove(ObjectIdentifier(anchor.ctx))
+            }
             if let appId = self.overload.flowApps.removeValue(forKey: flowId),
                 let count = self.overload.perAppFlowCounts[appId]
             {
@@ -1227,7 +1315,8 @@ final class TransparentProxyCore: @unchecked Sendable {
             logLifecycle(
                 "flow pressure episode ended: durationMs=\(durationMs) "
                     + "peakOccupancy=\(episode.peakOccupancy) softCap=\(softCap) "
-                    + "scans=\(episode.scans) skipped=\(episode.skips) evicted=\(episode.victims)")
+                    + "scans=\(episode.scans) skipped=\(episode.skips) evicted=\(episode.victims) "
+                    + "spared=\(episode.spared)")
         }
     }
 
