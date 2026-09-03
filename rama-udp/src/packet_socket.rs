@@ -343,6 +343,24 @@ mod tests {
         loopback_batch(true).await;
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_gso_probe_preserves_ordinary_datagrams() {
+        let (mut receiver, sender_socket) = bind_pair(false).await;
+        let destination = receiver.local_addr().unwrap();
+        let payload = vec![0x5a; 2_000];
+        sender_socket
+            .create_sender()
+            .send(SendDatagram::new(destination, &payload))
+            .await
+            .unwrap();
+
+        let mut buffer = vec![0; payload.len()];
+        let metadata = receiver.recv(&mut buffer).await.unwrap();
+        assert_eq!(metadata.len, payload.len());
+        assert_eq!(buffer, payload);
+    }
+
     #[cfg(any(unix, windows))]
     #[tokio::test]
     async fn exposes_detected_socket_capabilities_to_senders() {
@@ -515,7 +533,7 @@ mod tests {
         assert_eq!(&buffer[..reply.len], b"reply");
     }
 
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[cfg(any(target_os = "linux", target_os = "android", windows))]
     #[tokio::test]
     async fn segmented_loopback_preserves_each_datagram_boundary() {
         let (mut receiver, sender_socket) = bind_pair(false).await;
@@ -525,8 +543,10 @@ mod tests {
             return;
         }
 
-        let datagram = SendDatagram::new(destination, b"aaabbbcc")
-            .with_segment_size(NonZeroUsize::new(3).unwrap());
+        let expected = [vec![b'a'; 128], vec![b'b'; 128], vec![b'c'; 64]];
+        let payload = expected.concat();
+        let datagram = SendDatagram::new(destination, &payload)
+            .with_segment_size(NonZeroUsize::new(128).unwrap());
         if let Err(error) = sender.send(datagram).await {
             assert!(matches!(error, DatagramError::Io(_)));
             assert_eq!(sender.capabilities().max_send_segments, 1);
@@ -535,7 +555,7 @@ mod tests {
 
         let mut segments = Vec::new();
         while segments.len() < 3 {
-            let mut buffer = [0; 32];
+            let mut buffer = vec![0; payload.len()];
             let metadata = receiver.recv(&mut buffer).await.unwrap();
             assert!(!metadata.truncated);
             if let Some(size) = metadata.segment_size {
@@ -552,6 +572,6 @@ mod tests {
                 segments.push(buffer[..metadata.len].to_vec());
             }
         }
-        assert_eq!(segments, [b"aaa".to_vec(), b"bbb".to_vec(), b"cc".to_vec()]);
+        assert_eq!(segments, expected);
     }
 }

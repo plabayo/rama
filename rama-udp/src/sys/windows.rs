@@ -5,10 +5,7 @@ use std::{
     net::{IpAddr, Ipv4Addr},
     os::windows::io::AsRawSocket,
     ptr,
-    sync::{
-        LazyLock,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use rama_net::socket::core::{SockAddr, SockAddrStorage, socklen_t};
@@ -145,7 +142,7 @@ impl UdpSocketState {
         }
 
         Ok(Self {
-            max_gso_segments: AtomicUsize::new(*MAX_GSO_SEGMENTS),
+            max_gso_segments: AtomicUsize::new(max_gso_segments(&*socket)?),
             may_fragment,
             pktinfo_supported: pktinfo_v4_supported && pktinfo_v6_supported,
             wsa_recvmsg,
@@ -582,23 +579,21 @@ fn query_extension_function<T>(
     Ok(())
 }
 
-static MAX_GSO_SEGMENTS: LazyLock<usize> = LazyLock::new(|| {
-    // Probe a throwaway socket: changing UDP_SEND_MSG_SIZE on the application
-    // socket breaks later ordinary sends on Windows on ARM.
-    let Ok(socket) = std::net::UdpSocket::bind("[::]:0")
-        .or_else(|_| std::net::UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)))
-    else {
-        return 1;
-    };
+fn max_gso_segments(socket: &impl AsRawSocket) -> io::Result<usize> {
     const GSO_SIZE: c_uint = 1500;
     match set_socket_option(
-        &socket,
+        socket,
         WinSock::IPPROTO_UDP,
         WinSock::UDP_SEND_MSG_SIZE,
         GSO_SIZE,
     ) {
-        // Empirically found on Windows 11 x64.
-        Ok(()) => 512,
-        Err(_) => 1,
+        Ok(()) => {
+            // UDP_SEND_MSG_SIZE is socket-wide. Reset the probe so ordinary
+            // datagrams are not segmented unless a send requests it.
+            set_socket_option(socket, WinSock::IPPROTO_UDP, WinSock::UDP_SEND_MSG_SIZE, 0)?;
+            // Empirically found on Windows 11 x64.
+            Ok(512)
+        }
+        Err(_) => Ok(1),
     }
-});
+}

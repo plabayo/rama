@@ -2,8 +2,8 @@ use std::{io, os::fd::AsRawFd};
 
 use super::{cmsg, imp::set_socket_option};
 
-// TODO: Report ICMP error-queue entries once callers can associate and
-// validate them against transmitted datagrams.
+// TODO: Add opt-in ICMP error-queue support once callers can drain it
+// before I/O and associate entries with transmitted datagrams.
 
 pub(super) mod gso {
     use super::*;
