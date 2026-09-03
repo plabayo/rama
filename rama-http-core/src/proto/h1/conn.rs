@@ -611,9 +611,11 @@ where
             // alone, so a backend that ignores the request-side close (omits
             // `Connection: close` in its response) would leave the connection in
             // the pool. Disable keep-alive up front so the connection is evicted
-            // regardless of the response.
+            // regardless of the response. Propagate the same transport state via
+            // the request extensions copied onto the corresponding response.
             if headers::connection_any_close(&head.headers) {
                 self.state.disable_keep_alive();
+                head.extensions.insert(ConnectionClose);
             }
         }
 
@@ -1202,11 +1204,11 @@ mod tests {
     // pool for reuse — independent of whether the backend response echoes
     // `Connection: close`. The client otherwise derives reuse from the response alone.
     #[test]
-    fn client_request_connection_close_disables_keep_alive() {
+    fn client_request_connection_close_marks_closed_exchange() {
         // Encodes a client GET (with the given Connection header lines, one
-        // `append` each) on a fresh client Conn and returns whether the
-        // connection remains reusable.
-        fn remains_reusable_after_get(connection_values: &[&'static str]) -> bool {
+        // `append` each) on a fresh client Conn and returns its reuse state and
+        // whether the request extensions mark the exchange as closing.
+        fn state_after_get(connection_values: &[&'static str]) -> (bool, bool) {
             let io = TestIo::new(tokio_test::io::Builder::new().build());
             let mut conn = Conn::<_, Bytes, crate::proto::h1::ClientTransaction>::new(io);
             assert!(
@@ -1225,30 +1227,40 @@ mod tests {
                 extensions: Extensions::new(),
             };
             conn.write_head(head, None);
-            conn.state.wants_keep_alive()
+            (
+                conn.state.wants_keep_alive(),
+                conn.state
+                    .encoded_request_extensions
+                    .as_ref()
+                    .is_some_and(|extensions| extensions.contains::<ConnectionClose>()),
+            )
         }
 
         // Control: a request without `Connection: close` leaves the connection reusable.
-        assert!(
-            remains_reusable_after_get(&[]),
-            "a keep-alive request must leave the connection reusable"
+        assert_eq!(
+            state_after_get(&[]),
+            (true, false),
+            "a keep-alive request must leave the connection reusable and unmarked"
         );
         // Fix: a `Connection: close` request must disable keep-alive so the
-        // connection is evicted regardless of the response.
-        assert!(
-            !remains_reusable_after_get(&["close"]),
-            "a `Connection: close` request must disable keep-alive (connection evicted)"
+        // connection is evicted and mark the corresponding response.
+        assert_eq!(
+            state_after_get(&["close"]),
+            (false, true),
+            "a `Connection: close` request must close and mark the exchange"
         );
         // A `close` token in a comma-separated value is honored.
-        assert!(
-            !remains_reusable_after_get(&["keep-alive, close"]),
-            "a `close` token in a comma-separated Connection value must disable keep-alive"
+        assert_eq!(
+            state_after_get(&["keep-alive, close"]),
+            (false, true),
+            "a comma-separated `close` token must close and mark the exchange"
         );
         // A `close` in ANY of multiple Connection header lines is honored
         // (get_all, not just the first line).
-        assert!(
-            !remains_reusable_after_get(&["keep-alive", "close"]),
-            "a `close` in any Connection header line must disable keep-alive"
+        assert_eq!(
+            state_after_get(&["keep-alive", "close"]),
+            (false, true),
+            "a `close` in any Connection field must close and mark the exchange"
         );
     }
 

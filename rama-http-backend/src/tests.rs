@@ -1023,6 +1023,100 @@ async fn test_http11_mitm_relay_closes_downstream_after_upstream_close() {
 }
 
 #[tokio::test]
+async fn test_http11_mitm_relay_propagates_originated_request_close() {
+    let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
+    let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
+
+    let token = CancellationToken::new();
+    let graceful = Shutdown::new(token.clone().cancelled_owned());
+    let cancel_drop_guard = token.drop_guard();
+    let request_count = Arc::new(AtomicUsize::new(0));
+
+    graceful.spawn_task_fn({
+        let request_count = request_count.clone();
+        async move |_guard| {
+            let mut server_stream = server_stream;
+            let mut request = Vec::new();
+            let mut buf = [0; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = server_stream.read(&mut buf).await.unwrap();
+                assert_ne!(count, 0, "relay closed before sending the request head");
+                request.extend_from_slice(&buf[..count]);
+            }
+            let request = String::from_utf8(request).unwrap();
+            assert!(request.to_ascii_lowercase().contains("connection: close"));
+            request_count.fetch_add(1, Ordering::SeqCst);
+
+            server_stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 24\r\n\r\nsingle response ")
+                .await
+                .unwrap();
+            sleep(Duration::from_millis(10)).await;
+            server_stream.write_all(b"body (0)").await.unwrap();
+
+            let mut trailing = Vec::new();
+            server_stream.read_to_end(&mut trailing).await.unwrap();
+        }
+    });
+
+    graceful.spawn_task_fn(async move |guard| {
+        HttpMitmRelay::new(Executor::graceful(guard))
+            .with_http_middleware((
+                ConsumeErrLayer::trace_as_debug().with_response(DefaultErrorResponse::new()),
+                SetRequestHeaderLayer::overriding(
+                    HeaderName::from_static("connection"),
+                    HeaderValue::from_static("close"),
+                ),
+                ArcLayer::new(),
+            ))
+            .serve(BridgeIo(
+                MockSocket::new(relay_ingress_stream),
+                MockSocket::new(relay_egress_stream),
+            ))
+            .await
+            .unwrap();
+    });
+
+    let request = create_test_request(Version::HTTP_11);
+    let conn = http_connect(
+        MockSocket::new(client_stream),
+        request,
+        Executor::graceful(graceful.guard()),
+    )
+    .await
+    .unwrap()
+    .conn;
+
+    let response = conn
+        .serve(create_test_request(Version::HTTP_11))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get("connection")
+            .and_then(|value| value.to_str().ok()),
+        Some("close")
+    );
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "single response body (0)"
+    );
+
+    let second = conn.serve(create_test_request(Version::HTTP_11)).await;
+    assert!(
+        second.is_err(),
+        "downstream connection should close after an originated request close"
+    );
+    assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+    drop(conn);
+    cancel_drop_guard.disarm().cancel();
+    graceful.shutdown().await;
+}
+
+#[tokio::test]
 async fn test_http11_mitm_relay_task_finishes_after_ingress_disconnect() {
     let (client_stream, relay_ingress_stream) = tokio::io::duplex(kib(16));
     let (relay_egress_stream, server_stream) = tokio::io::duplex(kib(16));
