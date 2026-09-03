@@ -96,6 +96,141 @@ final class TcpOverloadAdmissionTests: XCTestCase {
         XCTAssertTrue(reason.contains("latency breaker open"))
     }
 
+    // MARK: - Breaker evaluation off the completion path
+
+    /// The window already says "slow" from a completion that happened under
+    /// the soft cap (so that completion's own evaluation saw no pressure).
+    /// The admission that brings in-flight up to the soft cap must open the
+    /// breaker itself and be shed — a completion-only breaker would admit it
+    /// and open on some later completion.
+    func testBreakerOpensOnTheAdmissionThatBringsPressureOntoASlowWindow() {
+        defaultTcpStartInFlightHardCap = 10
+        defaultTcpStartInFlightSoftCap = 2
+        defaultTcpStartLatencyBreakerP95Ms = 1
+        let core = TransparentProxyCore()
+        let captured = CapturedNotices()
+        LifecycleLog.noticeOverride = { captured.append($0) }
+        let slow = NSObject()
+        let second = NSObject()
+        let third = NSObject()
+        let fourth = NSObject()
+
+        let slowToken = admittedToken(core, slow)
+        Thread.sleep(forTimeInterval: 0.005)
+        core.testFinishTcpStart(slowToken, outcome: .ready)  // ~5ms > 1ms, but inFlight 0
+        waitFor("completion lands") { core.testTcpStartsInFlight == 0 }
+        XCTAssertFalse(core.testTcpOverloadBreakerOpen, "slow window without pressure stays closed")
+
+        _ = admittedToken(core, second)  // inFlight 0 → 1, under the soft cap
+        _ = admittedToken(core, third)  // inFlight 1 → 2
+        guard case .reject(let reason, _) = core.testAdmitTcpStart(
+            flowId: ObjectIdentifier(fourth), meta: meta())
+        else {
+            XCTFail("the admission that reaches the soft cap on a slow window must open and shed")
+            return
+        }
+        XCTAssertTrue(reason.contains("latency breaker open"), reason)
+        XCTAssertTrue(core.testTcpOverloadBreakerOpen)
+        XCTAssertEqual(core.testTcpStartsInFlight, 2, "the shed start never enters the gauge")
+        XCTAssertTrue(
+            captured.values.joined(separator: "\n").contains("breaker open (on admission)"),
+            "the lifecycle line must say which evaluation opened it")
+    }
+
+    /// Pressure alone is not overload: with no slow completions on record the
+    /// admission-path evaluation must leave the breaker closed and admit.
+    func testPressureWithoutSlowCompletionsDoesNotOpenBreakerOnAdmission() {
+        defaultTcpStartInFlightHardCap = 10
+        defaultTcpStartInFlightSoftCap = 2
+        defaultTcpStartLatencyBreakerP95Ms = 1
+        let core = TransparentProxyCore()
+        let first = NSObject()
+        let second = NSObject()
+        let third = NSObject()
+
+        _ = admittedToken(core, first)
+        _ = admittedToken(core, second)
+        Thread.sleep(forTimeInterval: 0.005)  // pending starts age; that must not count
+        guard case .admit = core.testAdmitTcpStart(flowId: ObjectIdentifier(third), meta: meta())
+        else {
+            XCTFail("pressure without slow completions is not overload; must be admitted")
+            return
+        }
+        XCTAssertFalse(core.testTcpOverloadBreakerOpen)
+        XCTAssertEqual(core.testTcpStartsInFlight, 3)
+    }
+
+    /// Both conditions true, but no single event saw them together: the slow
+    /// completion evaluated under the soft cap, and the admissions that then
+    /// raised in-flight to the soft cap were each still under it when they
+    /// evaluated. Nothing else arrives. The tick must open it.
+    func testMaintenanceTickOpensBreakerWhenNoEventSawBothConditions() {
+        defaultTcpStartInFlightHardCap = 10
+        defaultTcpStartInFlightSoftCap = 2
+        defaultTcpStartLatencyBreakerP95Ms = 1
+        let core = TransparentProxyCore()
+        let captured = CapturedNotices()
+        LifecycleLog.noticeOverride = { captured.append($0) }
+        let slow = NSObject()
+        let second = NSObject()
+        let third = NSObject()
+
+        let slowToken = admittedToken(core, slow)
+        Thread.sleep(forTimeInterval: 0.005)
+        core.testFinishTcpStart(slowToken, outcome: .ready)
+        waitFor("completion lands") { core.testTcpStartsInFlight == 0 }
+        _ = admittedToken(core, second)  // evaluates at inFlight 0: no pressure
+        _ = admittedToken(core, third)  // evaluates at inFlight 1: no pressure
+        XCTAssertFalse(core.testTcpOverloadBreakerOpen, "precondition: no event saw both")
+        XCTAssertEqual(core.testTcpStartsInFlight, 2)
+
+        core.testRunPeriodicMaintenance()
+
+        XCTAssertTrue(core.testTcpOverloadBreakerOpen, "tick must evaluate the open direction")
+        XCTAssertTrue(
+            captured.values.joined(separator: "\n").contains("breaker=open"),
+            "tick telemetry reflects the evaluation it just ran")
+    }
+
+    /// A healthy load with a small timeout-bound tail: 6 of 128 completions at
+    /// 5s, the rest at 100ms, true p95 100ms. Folding the ages of PENDING
+    /// starts into the percentile would open the breaker here on most
+    /// at-soft-cap admissions (a slow start is pending longer, so the pending
+    /// set over-represents the tail); the completed-only window must not.
+    func testHealthyHeavyTailCompletionsDoNotOpenBreakerUnderPressure() {
+        defaultTcpStartInFlightHardCap = 300
+        defaultTcpStartInFlightSoftCap = 64
+        defaultTcpStartLatencyBreakerP95Ms = 1_500
+        let core = TransparentProxyCore()
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        // Fill the 128-sample window deterministically: `finishTcpStart` takes
+        // the latency from the token it is handed, so a backdated copy sets it.
+        for i in 0..<128 {
+            let slow = i % 25 == 0
+            let token = admittedToken(core, NSObject())
+            let backdated = TcpAdmissionToken(
+                flowId: token.flowId,
+                startedAt: DispatchTime(
+                    uptimeNanoseconds: nowNs - (slow ? 5_000_000_000 : 100_000_000)),
+                appId: token.appId)
+            core.testFinishTcpStart(backdated, outcome: slow ? .timeout : .ready)
+        }
+        waitFor("window filled") { core.testTcpStartsInFlight == 0 }
+        XCTAssertFalse(core.testTcpOverloadBreakerOpen)
+
+        // Genuine pressure on top: 64 starts pending and ageing, none completing.
+        let pending = (0..<64).map { _ in NSObject() }
+        for object in pending { _ = admittedToken(core, object) }
+        Thread.sleep(forTimeInterval: 0.005)
+        let probe = NSObject()
+        guard case .admit = core.testAdmitTcpStart(flowId: ObjectIdentifier(probe), meta: meta())
+        else {
+            XCTFail("a healthy tail is not overload; the at-soft-cap admission must pass")
+            return
+        }
+        XCTAssertFalse(core.testTcpOverloadBreakerOpen)
+    }
+
     func testMaintenanceTelemetryIsPersistedAndIncludesOverloadFields() {
         defaultTcpStartInFlightHardCap = 10
         let core = TransparentProxyCore()
@@ -114,6 +249,46 @@ final class TcpOverloadAdmissionTests: XCTestCase {
         XCTAssertTrue(joined.contains("timeoutRate="))
         XCTAssertTrue(joined.contains("startLatencyMs["))
         XCTAssertTrue(joined.contains("breaker="))
+        XCTAssertTrue(joined.contains("hardCap=10"), "the cap the peak is measured against")
+        XCTAssertTrue(joined.contains("shedHardCap=0"))
+        XCTAssertTrue(joined.contains("shedBreaker=0"))
+        XCTAssertTrue(joined.contains("pressure[triggers=0 scans=0 skipped=0 evicted=0]"))
+    }
+
+    /// A burst that came within a few starts of the hard cap but shed nothing
+    /// leaves no per-flow line behind. The tick's peak is the only trace, and
+    /// it must survive the gauge having drained by the time the tick fires.
+    func testTickReportsInFlightPeakAsTheNearMissSignal() {
+        defaultTcpStartInFlightHardCap = 10
+        let core = TransparentProxyCore()
+        let captured = CapturedNotices()
+        LifecycleLog.noticeOverride = { captured.append($0) }
+        let objects = (0..<8).map { _ in NSObject() }
+        let tokens = objects.map { admittedToken(core, $0) }
+        for token in tokens.dropLast() { core.testFinishTcpStart(token, outcome: .ready) }
+        waitFor("gauge drains to one") { core.testTcpStartsInFlight == 1 }
+
+        core.testRunPeriodicMaintenance()
+
+        let joined = captured.values.joined(separator: "\n")
+        XCTAssertTrue(joined.contains("tcpStartsInFlight=1 tcpStartsInFlightPeak=8"), joined)
+    }
+
+    /// Bundle ids are what a post-incident read needs first, and Apple logs
+    /// them in the clear for every flow anyway: the tick's top-app summary
+    /// must be in the message body, not in redacted metadata.
+    func testTickTopAppsIsPublic() {
+        defaultTcpStartInFlightHardCap = 10
+        let core = TransparentProxyCore()
+        let captured = CapturedNotices()
+        LifecycleLog.noticeOverride = { captured.append($0) }
+        let anchor = _TestTcpFlowSessionAnchor(ctx: TcpFlowContext())
+        core.registerTcpFlow(ObjectIdentifier(anchor), anchor: anchor, appId: "com.example.chatty")
+
+        core.testRunPeriodicMaintenance()
+
+        XCTAssertTrue(
+            captured.values.joined(separator: "\n").contains("topApps=com.example.chatty=1"))
     }
 
     func testConnectTimeoutClampsUnderPressureAndBreaker() {

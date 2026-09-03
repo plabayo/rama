@@ -462,7 +462,10 @@ nonisolated(unsafe) var defaultPromotedIdleTimeoutMs: UInt32 = 900_000
 //     BOTH TCP and UDP admission (a UDP burst can approach the ceiling too).
 //   * This reaper never refuses or delays a new flow: the new flow is admitted;
 //     the reap (async, off the delivery thread) frees room for SUBSEQUENT flows.
-//     A burst of triggers is coalesced (`pressureReapInFlight`) into one scan.
+//     A burst of triggers is coalesced (`pressureReapScheduled`) into one scan,
+//     and after a scan finds nothing idle past the floor, rescans are skipped
+//     until the closest flow could possibly cross it (bounded to 250ms–5s) —
+//     under a churn burst the registry is not re-sorted per admission.
 //     Separate TCP start admission caps below may still reject pre-ready egress
 //     starts before another expensive `NWConnection.start` is added.
 //   * NEVER touches an active or recently-active flow: only flows idle past
@@ -495,17 +498,23 @@ nonisolated(unsafe) var defaultFlowPressureIdleFloorMs: UInt32 = 120_000
 /// `.ready` yet. This is the admission-side circuit breaker: every pre-ready
 /// egress connection is exactly the expensive NECP handler population that
 /// makes the next `nw_connection_start` slower, so once this cap is full we
-/// fail newly-claimed intercepted flows fast instead of adding another stalled
-/// start. `0` disables hard admission refusal.
+/// refuse newly-claimed intercepted flows — declined to the direct route, or
+/// blocked, per `defaultFlowRefusalPassthrough` — instead of adding another
+/// stalled start. `0` disables hard admission refusal.
 nonisolated(unsafe) var defaultTcpStartInFlightHardCap: UInt32 = 128
 
 /// When the provider declines a flow for its OWN reasons — the start hard cap /
 /// latency breaker tripping, or the engine handing back an intercept decision
 /// without a session — hand the flow to the kernel untouched (fail open) instead
-/// of blocking it (fail closed). `false` (Block) is the default; the rama user
-/// opts in via `TransparentProxyConfig::with_flow_refusal_action(Passthrough)`.
-/// The chosen action is logged at each decision site regardless.
-nonisolated(unsafe) var defaultFlowRefusalPassthrough: Bool = false
+/// of blocking it (fail closed). `true` (Passthrough) is the default, mirroring
+/// the Rust `FlowRefusalAction` default: these are capacity refusals, and the
+/// direct route the flow declines onto is the same one every policy-passthrough
+/// flow already takes. Blocking turns transient overload into hard connect
+/// errors machine-wide, whose retry storms feed the overload. A strict-posture
+/// deployment opts into that via
+/// `TransparentProxyConfig::with_flow_refusal_action(Block)`. The chosen action
+/// is logged at each decision site regardless.
+nonisolated(unsafe) var defaultFlowRefusalPassthrough: Bool = true
 
 /// Softer pre-ready pressure level used by the latency breaker. A slow
 /// start-to-ready window opens the breaker, but admission refusal only begins
@@ -517,7 +526,11 @@ nonisolated(unsafe) var defaultTcpStartInFlightSoftCap: UInt32 = 64
 /// Start-to-ready latency threshold for the breaker, in milliseconds. The core
 /// tracks a rolling window of recent egress starts; if p95 crosses this
 /// threshold while pre-ready pressure is present, it opens the breaker and
-/// begins shedding new intercepted starts at the soft cap.
+/// begins shedding new intercepted starts at the soft cap. Evaluated on
+/// completion, on admission at/over the soft cap (ahead of the hard-cap
+/// check), and on the maintenance tick, so the admission that brings pressure
+/// onto an already-slow window opens it rather than the next completion. The
+/// window is completed starts only; see `TcpOverloadState.percentile`.
 nonisolated(unsafe) var defaultTcpStartLatencyBreakerP95Ms: UInt32 = 1_500
 
 /// Close threshold for the start-latency breaker. Once p95 drops below this

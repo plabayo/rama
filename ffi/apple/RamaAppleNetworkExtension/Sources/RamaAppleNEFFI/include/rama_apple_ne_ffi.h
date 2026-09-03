@@ -278,8 +278,8 @@ typedef struct {
     /// Connect-timeout clamp while the start-latency breaker is open.
     uint32_t tcp_breaker_connect_timeout_ms;
     /// How the provider treats a flow it declines for its own reasons (start
-    /// hard cap / latency breaker, or a missing session): `0` = Block (default,
-    /// fail closed), `1` = Passthrough (fail open). Always logged either way.
+    /// hard cap / latency breaker, or a missing session): `0` = Block (fail
+    /// closed), `1` = Passthrough (default, fail open). Always logged either way.
     uint32_t flow_refusal_action;
 } RamaTransparentProxyConfig;
 

@@ -2016,6 +2016,7 @@ dependencies = [
  "arc-swap",
  "base64",
  "bindgen",
+ "cc",
  "libc",
  "moka",
  "parking_lot",
@@ -2472,11 +2473,13 @@ dependencies = [
 name = "rama-udp"
 version = "0.5.0"
 dependencies = [
+ "libc",
  "rama-core",
  "rama-net",
  "rama-utils",
  "tokio",
  "tokio-util",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

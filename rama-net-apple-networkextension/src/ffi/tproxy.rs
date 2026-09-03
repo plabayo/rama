@@ -245,7 +245,7 @@ pub struct TransparentProxyConfig {
     /// See [`tproxy::TransparentProxyConfig::tcp_breaker_connect_timeout_ms`].
     pub tcp_breaker_connect_timeout_ms: u32,
     /// Action when the provider declines a flow for its own reasons (start cap /
-    /// breaker, or missing session): `0` = Block (default), `1` = Passthrough.
+    /// breaker, or missing session): `0` = Block, `1` = Passthrough (default).
     /// See [`tproxy::FlowRefusalAction`].
     pub flow_refusal_action: u32,
 }
@@ -929,25 +929,28 @@ mod tests {
     }
 
     #[test]
-    fn flow_refusal_action_defaults_block_and_maps_to_ffi() {
+    fn flow_refusal_action_defaults_passthrough_and_maps_to_ffi() {
         use crate::tproxy::FlowRefusalAction;
-        // Default is fail-closed.
+        // Default is fail-open: capacity refusals decline to the direct route.
         assert_eq!(
             tproxy::TransparentProxyConfig::new().flow_refusal_action(),
-            FlowRefusalAction::Block
+            FlowRefusalAction::Passthrough
         );
-        let block = TransparentProxyConfig::from_rust_type(&tproxy::TransparentProxyConfig::new());
-        assert_eq!(block.flow_refusal_action, 0);
-        // SAFETY: freshly built, not yet freed.
-        unsafe { block.free() };
-
-        let cfg = tproxy::TransparentProxyConfig::new()
-            .with_flow_refusal_action(FlowRefusalAction::Passthrough);
-        assert_eq!(cfg.flow_refusal_action(), FlowRefusalAction::Passthrough);
-        let pass = TransparentProxyConfig::from_rust_type(&cfg);
+        assert_eq!(FlowRefusalAction::default(), FlowRefusalAction::Passthrough);
+        let pass = TransparentProxyConfig::from_rust_type(&tproxy::TransparentProxyConfig::new());
         assert_eq!(pass.flow_refusal_action, 1);
         // SAFETY: freshly built, not yet freed.
         unsafe { pass.free() };
+
+        // The wire encoding is fixed (0 = Block, 1 = Passthrough) independent
+        // of which one is the default, so the Swift side never has to know.
+        let cfg = tproxy::TransparentProxyConfig::new()
+            .with_flow_refusal_action(FlowRefusalAction::Block);
+        assert_eq!(cfg.flow_refusal_action(), FlowRefusalAction::Block);
+        let block = TransparentProxyConfig::from_rust_type(&cfg);
+        assert_eq!(block.flow_refusal_action, 0);
+        // SAFETY: freshly built, not yet freed.
+        unsafe { block.free() };
     }
 
     #[test]

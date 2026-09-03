@@ -122,16 +122,17 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                     reason = "unavailable"
                     appId = "unknown"
                 }
+                // `app=` in the clear: the source bundle id is already public
+                // in Apple's own per-flow NE log lines on the same machine, and
+                // it is the first thing a post-incident read needs.
                 if defaultFlowRefusalPassthrough {
                     core.logLifecycle(
-                        "tcp admission rejected: \(reason); passing through (fail open)",
-                        privateMetadata: "app=\(appId)")
+                        "tcp admission rejected: \(reason); passing through (fail open) app=\(appId)")
                     session.cancel()
                     return false
                 }
                 core.logLifecycle(
-                    "tcp admission rejected: \(reason); blocking (fail closed)",
-                    privateMetadata: "app=\(appId)")
+                    "tcp admission rejected: \(reason); blocking (fail closed) app=\(appId)")
                 let error = tcpUpstreamUnavailableError()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
@@ -410,6 +411,11 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         }
         egressReady = true
         ctx.egressReady = true
+        // Reaching ready is progress: start the idle clock here, not at
+        // creation, so a flow that connected slowly does not enter the
+        // pressure reaper's eligible set already aged — the rescan bound
+        // in `collectPressureVictimsLocked` counts on that.
+        ctx.lastActivityAt = .now()
         if let token = ctx.admissionToken {
             core?.finishTcpStart(token, outcome: .ready)
             ctx.admissionToken = nil

@@ -36,6 +36,7 @@ final class FlowPressureReaperTests: XCTestCase {
     }
 
     override func tearDown() {
+        LifecycleLog.noticeOverride = nil
         defaultFlowPressureSoftCap = savedSoftCap
         defaultFlowPressureLowWater = savedLowWater
         defaultFlowPressureIdleFloorMs = savedFloorMs
@@ -415,5 +416,169 @@ final class FlowPressureReaperTests: XCTestCase {
         XCTAssertEqual(
             fxs.filter { $0.wasTornDown }.count, 3,
             "the async production path evicts down to low-water (5 − 2 = 3)")
+    }
+
+    // MARK: - TG-8: rescan suppression after a no-headroom scan
+
+    /// A churn burst is every flow seconds old against a floor of minutes:
+    /// each admission's scan finds nothing, and the next admission scans
+    /// again. After a no-headroom result the reaper must skip rescans until
+    /// the closest established flow could possibly cross the floor — then
+    /// resume and actually evict it.
+    func testNoHeadroomScanSuppressesRescansUntilClosestFlowCanCrossFloor() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let f1 = Fx(core: core, idleSeconds: 1)
+        let f2 = Fx(core: core, idleSeconds: 2)
+        let f4 = Fx(core: core, idleSeconds: 4)  // crosses the 5s floor in ~1s
+        insert(core, [f1, f2, f4])
+
+        core.testReapIdleUnderPressureIfDue()
+        XCTAssertEqual(core.testPressureScanCount, 1)
+        XCTAssertFalse(f4.wasTornDown, "nothing idle past the floor yet")
+        let armedMs = core.testPressureRescanLastArmedMs
+        XCTAssertGreaterThanOrEqual(armedMs, 990, "bound derives from the closest flow (5s − 4s)")
+        XCTAssertLessThanOrEqual(armedMs, 1_001, "+1ms: eligibility is strictly past the floor")
+
+        core.testReapIdleUnderPressureIfDue()
+        XCTAssertEqual(core.testPressureScanCount, 1, "rescan skipped while nothing can qualify")
+
+        // Past the (≤1s) window f4 is ~5.2s idle: over the floor, and the gate
+        // is open again. Wall-clock on the same monotonic clock the gate uses,
+        // so one reap here is deterministic — not a deadline-fire we could miss.
+        Thread.sleep(forTimeInterval: 1.2)
+        core.testReapIdleUnderPressureIfDue()
+
+        XCTAssertEqual(core.testPressureScanCount, 2, "rescan resumed once something could qualify")
+        XCTAssertTrue(f4.wasTornDown, "and evicted the flow that crossed the floor")
+        XCTAssertFalse(f1.wasTornDown)
+        XCTAssertFalse(f2.wasTornDown)
+        XCTAssertEqual(
+            core.testPressureRescanSuppressedForMs, 0, "a successful reap clears suppression")
+    }
+
+    func testRescanSuppressionIsBoundedWhenFloorIsFarAway() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 600_000
+        let core = makeCore()
+        insert(core, [Fx(core: core, idleSeconds: 1), Fx(core: core, idleSeconds: 1)])
+
+        core.testReapIdleUnderPressureIfDue()
+
+        XCTAssertEqual(
+            core.testPressureRescanLastArmedMs, 5_000, "≈599s until anything qualifies, capped")
+    }
+
+    /// A flow idle past the floor but ineligible for a non-idle reason
+    /// (terminal signalled, drain not pending) would compute a zero bound and
+    /// put the reaper back on a scan per admission. The lower bound holds it.
+    func testRescanSuppressionHasAFloorWhenIneligibilityIsNotIdleDriven() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let stuck = Fx(core: core, idleSeconds: 30)
+        stuck.ctx.terminalSignalled = true  // drainClosePending stays false → not wedged
+        let fresh = Fx(core: core, idleSeconds: 1)
+        insert(core, [stuck, fresh])
+
+        core.testReapIdleUnderPressureIfDue()
+
+        XCTAssertFalse(stuck.wasTornDown, "terminal-but-not-wedged is ineligible")
+        XCTAssertEqual(
+            core.testPressureRescanLastArmedMs, 250, "the lower bound, not the zero the idle math gives")
+    }
+
+    func testTriggerUnderCapDoesNotScan() {
+        defaultFlowPressureSoftCap = 5
+        defaultFlowPressureLowWater = 4
+        let core = makeCore()
+        insert(core, [Fx(core: core, idleSeconds: 30), Fx(core: core, idleSeconds: 30)])
+
+        core.testReapIdleUnderPressureIfDue()
+
+        XCTAssertEqual(core.testPressureScanCount, 0, "the occupancy guard is O(1); no selection")
+    }
+
+    // MARK: - TG-9: trigger coalescing on the production async path
+
+    /// One trigger fires per admission while over the cap. With the queue
+    /// busy — as it is under exactly that load — ten triggers must collapse
+    /// into ONE queued scan. The previous flag lived inside the serial block
+    /// and could never be observed set by the block queued behind it.
+    func testRapidTriggersCoalesceIntoOneScanWhileStateQueueIsBusy() {
+        defaultFlowPressureSoftCap = 1
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 60_000
+        let core = makeCore()
+        insert(core, [Fx(core: core, idleSeconds: 1), Fx(core: core, idleSeconds: 1)])
+
+        let gate = core.testHoldStateQueue()
+        for _ in 0..<10 { core.reapIdleUnderPressure() }
+        XCTAssertTrue(core.testPressureReapScheduled, "exactly one scan is queued")
+        XCTAssertEqual(core.testPressureScanCount, 0, "and it hasn't run: the queue is held")
+
+        gate.signal()
+        pollUntil("queued scan runs") { core.testPressureScanCount == 1 }
+        pollUntil("slot released") { !core.testPressureReapScheduled }
+        XCTAssertEqual(core.testPressureScanCount, 1, "ten triggers, one scan")
+
+        // Nothing was idle past the 60s floor, so that scan armed suppression:
+        // a fresh trigger claims the (free) slot but its scan is skipped.
+        core.reapIdleUnderPressure()
+        pollUntil("second trigger drains") { !core.testPressureReapScheduled }
+        _ = core.testPressureRescanSuppressedForMs  // stateQueue.sync barrier behind the block
+        XCTAssertEqual(core.testPressureScanCount, 1, "suppressed rescan on the async path")
+    }
+
+    // MARK: - TG-10: episode boundary via the production removal path
+
+    /// The reaper only runs at/over the cap, so the under-cap branch of the
+    /// scan is unreachable in production; a removal is the only event that
+    /// sees occupancy drop. It must end the episode — clear suppression and
+    /// re-arm the once-per-episode log — or the next burst inherits a view up
+    /// to 5s stale and its first no-headroom line is swallowed.
+    func testRemovalUnderCapEndsTheEpisodeSoTheNextOneScansFresh() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 60_000
+        let core = makeCore()
+        let notices = Locked([String]())
+        LifecycleLog.noticeOverride = { message in notices.withLock { $0.append(message) } }
+        func noHeadroomLines() -> Int {
+            notices.withLock { $0.filter { $0.contains("admitting without reap") }.count }
+        }
+        let a = Fx(core: core, idleSeconds: 1)
+        let b = Fx(core: core, idleSeconds: 1)
+        let c = Fx(core: core, idleSeconds: 1)
+        insert(core, [a, b, c])
+
+        core.testReapIdleUnderPressureIfDue()
+        XCTAssertEqual(core.testPressureScanCount, 1)
+        XCTAssertEqual(core.testPressureRescanLastArmedMs, 5_000, "episode 1 armed the cap")
+        XCTAssertEqual(noHeadroomLines(), 1)
+        core.testReapIdleUnderPressureIfDue()  // suppressed: counted as a skip, not a scan
+        XCTAssertEqual(core.testPressureScanCount, 1)
+
+        // Two removals through the production path take occupancy to 1 (< cap).
+        core.removeTcpFlow(b.flowId)
+        core.removeTcpFlow(c.flowId)
+        XCTAssertEqual(
+            core.testPressureRescanSuppressedForMs, 0,
+            "dropping under the cap ends the episode (the sync read doubles as the barrier)")
+        let episodeLines = notices.withLock { $0.filter { $0.contains("flow pressure episode ended") } }
+        XCTAssertEqual(episodeLines.count, 1, "one summary line per episode")
+        XCTAssertTrue(
+            episodeLines.first?.contains("peakOccupancy=3 softCap=2 scans=1 skipped=1 evicted=0")
+                ?? false, episodeLines.first ?? "")
+
+        // Episode 2, well inside the old 5s deadline: must scan and must log.
+        insert(core, [Fx(core: core, idleSeconds: 1), Fx(core: core, idleSeconds: 1)])
+        core.testReapIdleUnderPressureIfDue()
+        XCTAssertEqual(core.testPressureScanCount, 2, "fresh scan, not a suppressed skip")
+        XCTAssertEqual(noHeadroomLines(), 2, "once-per-episode log re-armed")
     }
 }
