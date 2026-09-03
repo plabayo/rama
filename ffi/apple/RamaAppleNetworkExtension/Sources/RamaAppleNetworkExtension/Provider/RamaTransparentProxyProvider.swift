@@ -1065,9 +1065,11 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         logDebug: (_ publicMessage: String, _ privateMetadata: String) -> Void
     ) -> Bool {
         let callbackReturn = decision.callbackReturnValue
+        // Source app in the clear, like the TCP shed lines and the tick's
+        // `topApps=`; the destination stays private.
         logDebug(
-            "udp_callback=\(callback.rawValue) rama_decision=\(decision.rawValue) callback_return=\(callbackReturn)",
-            "initial_remote=\(remoteEndpoint?.description ?? "<unsupported-or-missing>") source_app=\(sourceAppSigningIdentifier ?? "<missing>")"
+            "udp_callback=\(callback.rawValue) rama_decision=\(decision.rawValue) callback_return=\(callbackReturn) source_app=\(sourceAppSigningIdentifier ?? "<missing>")",
+            "initial_remote=\(remoteEndpoint?.description ?? "<unsupported-or-missing>")"
         )
         return callbackReturn
     }

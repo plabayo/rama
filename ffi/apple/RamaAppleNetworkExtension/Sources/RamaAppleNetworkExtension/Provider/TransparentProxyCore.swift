@@ -391,7 +391,9 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// takes occupancy back under the cap. Summarised in a single lifecycle
     /// line at its end — the shape of a burst (how long, how high, what the
     /// reaper managed) is what a post-incident bundle needs and what the
-    /// 60s tick is too coarse to show. Only mutated on `stateQueue`.
+    /// 60s tick is too coarse to show. An episode cut short by a provider
+    /// restart is dropped unsummarised (the tick deltas still cover it).
+    /// Only mutated on `stateQueue`.
     private struct PressureEpisode {
         var startNs: UInt64
         var peakOccupancy: UInt64
@@ -611,10 +613,11 @@ final class TransparentProxyCore: @unchecked Sendable {
             // Skip rescans until then (bounded) instead of re-sorting the
             // registry on every admission of a burst that, by construction,
             // has nothing to give. Pre-ready flows are excluded — they
-            // become eligible via a state change, not via age; one that
-            // turns ready inside the window enters at an idle age of its
-            // connect time, far under any sane floor, and the cap bounds
-            // the rest. `+ 1`: eligibility is strictly past the floor.
+            // become eligible via a state change, not via age, and one
+            // that turns ready inside the window enters at idle age 0
+            // (`handleEgressReady` resets the clock), so it cannot beat
+            // this bound; the cap covers the rest. `+ 1`: eligibility is
+            // strictly past the floor.
             let maxIdleMs =
                 candidates.lazy
                 .filter { $0.state.egressReady }
@@ -1127,6 +1130,10 @@ final class TransparentProxyCore: @unchecked Sendable {
             guard self.overload.startsInFlight.removeValue(forKey: token.flowId) != nil else {
                 return
             }
+            // Latency comes from the token the CALLER hands back, not the
+            // stored one — on purpose: tests shape the latency window by
+            // backdating `startedAt`. Production always passes the token it
+            // was issued, so the two are identical there.
             let latencyMs =
                 (DispatchTime.now().uptimeNanoseconds &- token.startedAt.uptimeNanoseconds)
                 / 1_000_000
@@ -1188,13 +1195,19 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     /// MUST be called on `stateQueue` after a registry removal. The reaper
     /// only ever runs at/over the cap, so a removal is the only production
-    /// event that can observe the drop below it: end the pressure episode
+    /// event that can observe the drop back down: end the pressure episode
     /// here — re-arm the once-per-episode log and drop rescan suppression —
     /// so the next episode opens with a fresh scan instead of a view that
-    /// could be up to the suppression cap stale.
+    /// could be up to the suppression cap stale. The boundary is the
+    /// reaper's own low-water mark, not the cap itself: occupancy hovering
+    /// one removal below the cap would otherwise close and reopen an
+    /// episode on every crossing, each with a summary line and a fresh
+    /// full scan. A dip that stops short of low-water is one episode.
     private func endPressureEpisodeIfUnderCapLocked() {
         let softCap = Int(defaultFlowPressureSoftCap)
-        guard softCap > 0, self.tcpSessions.count + self.udpSessions.count < softCap else { return }
+        guard softCap > 0 else { return }
+        let episodeEnd = min(Int(defaultFlowPressureLowWater), softCap - 1)
+        guard self.tcpSessions.count + self.udpSessions.count <= episodeEnd else { return }
         pressureNoHeadroomLogged = false
         pressureRescanSuppressedUntilNs = 0
         if let episode = pressureEpisode {

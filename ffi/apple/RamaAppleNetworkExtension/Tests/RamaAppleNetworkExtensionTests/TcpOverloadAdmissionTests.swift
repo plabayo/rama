@@ -193,15 +193,17 @@ final class TcpOverloadAdmissionTests: XCTestCase {
     }
 
     /// A healthy load with a small timeout-bound tail: 6 of 128 completions at
-    /// 5s, the rest at 100ms, true p95 100ms. Folding the ages of PENDING
-    /// starts into the percentile would open the breaker here on most
-    /// at-soft-cap admissions (a slow start is pending longer, so the pending
-    /// set over-represents the tail); the completed-only window must not.
+    /// 5s, the rest at 100ms, true p95 100ms. Pressure on top of it is not
+    /// overload. (The pin against folding PENDING ages into the percentile is
+    /// `testPressureWithoutSlowCompletionsDoesNotOpenBreakerOnAdmission`; this
+    /// one pins the window shape itself via the tick's latency summary.)
     func testHealthyHeavyTailCompletionsDoNotOpenBreakerUnderPressure() {
         defaultTcpStartInFlightHardCap = 300
         defaultTcpStartInFlightSoftCap = 64
         defaultTcpStartLatencyBreakerP95Ms = 1_500
         let core = TransparentProxyCore()
+        let captured = CapturedNotices()
+        LifecycleLog.noticeOverride = { captured.append($0) }
         let nowNs = DispatchTime.now().uptimeNanoseconds
         // Fill the 128-sample window deterministically: `finishTcpStart` takes
         // the latency from the token it is handed, so a backdated copy sets it.
@@ -217,6 +219,23 @@ final class TcpOverloadAdmissionTests: XCTestCase {
         }
         waitFor("window filled") { core.testTcpStartsInFlight == 0 }
         XCTAssertFalse(core.testTcpOverloadBreakerOpen)
+        // Pins that the backdated tokens really shaped the window (and so that
+        // `finishTcpStart` keeps taking latency from the handed token). The
+        // completions land a few ms after the backdated start, so match ranges.
+        core.testRunPeriodicMaintenance()
+        let tick = captured.values.joined(separator: "\n")
+        let pattern = try! NSRegularExpression(pattern: #"startLatencyMs\[p50=(\d+),p95=(\d+),p99=(\d+)\]"#)
+        guard let match = pattern.firstMatch(in: tick, range: NSRange(tick.startIndex..., in: tick))
+        else {
+            XCTFail("no latency summary in tick: \(tick)")
+            return
+        }
+        func percentile(_ group: Int) -> Int {
+            Int(tick[Range(match.range(at: group), in: tick)!]) ?? -1
+        }
+        XCTAssertTrue((100..<200).contains(percentile(1)), "p50 ≈ 100ms, got \(percentile(1))")
+        XCTAssertTrue((100..<200).contains(percentile(2)), "p95 ≈ 100ms (tail is <5%), got \(percentile(2))")
+        XCTAssertGreaterThanOrEqual(percentile(3), 5_000, "p99 sees the 5s tail")
 
         // Genuine pressure on top: 64 starts pending and ageing, none completing.
         let pending = (0..<64).map { _ in NSObject() }

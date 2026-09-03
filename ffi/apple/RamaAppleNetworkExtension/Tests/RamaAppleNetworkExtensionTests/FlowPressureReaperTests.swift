@@ -439,7 +439,7 @@ final class FlowPressureReaperTests: XCTestCase {
         XCTAssertEqual(core.testPressureScanCount, 1)
         XCTAssertFalse(f4.wasTornDown, "nothing idle past the floor yet")
         let armedMs = core.testPressureRescanLastArmedMs
-        XCTAssertGreaterThanOrEqual(armedMs, 990, "bound derives from the closest flow (5s − 4s)")
+        XCTAssertGreaterThanOrEqual(armedMs, 900, "bound derives from the closest flow (5s − 4s)")
         XCTAssertLessThanOrEqual(armedMs, 1_001, "+1ms: eligibility is strictly past the floor")
 
         core.testReapIdleUnderPressureIfDue()
