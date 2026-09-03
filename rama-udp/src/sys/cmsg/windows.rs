@@ -43,6 +43,11 @@ impl MsgHdr for WinSock::WSAMSG {
 
     fn set_control_len(&mut self, len: usize) {
         self.Control.len = len as _;
+        // Some Winsock implementations reject a non-null control pointer when
+        // its length is zero, even though no control data will be read.
+        if len == 0 {
+            self.Control.buf = ptr::null_mut();
+        }
     }
 
     fn control_len(&self) -> usize {
