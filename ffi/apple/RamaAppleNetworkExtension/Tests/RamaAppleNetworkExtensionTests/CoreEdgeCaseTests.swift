@@ -151,6 +151,9 @@ final class CoreEdgeCaseTests: XCTestCase {
 
         let flow = MockTcpFlow()
         XCTAssertTrue(core.handleTcpFlow(flow, meta: makeMeta()))
+        waitFor("post-registration startup applies metadata") {
+            flow.applyMetadataCallCount == 1
+        }
         XCTAssertEqual(
             flow.applyMetadataCallCount, 1,
             "applyMetadata must run by default (preserve_original_meta_data ?? true)"
@@ -216,6 +219,129 @@ final class CoreEdgeCaseTests: XCTestCase {
                 engineGeneration: staleGeneration))
         XCTAssertEqual(core.tcpFlowCount, 0)
         XCTAssertEqual(core.testTcpStartsInFlight, 0)
+    }
+
+    func testDetachRejectsStaleRegistrationAndStartup() {
+        let core = TransparentProxyCore()
+        core.attachEngine(makeEngine())
+        let generation = core.testEngineGeneration
+        core.detachEngine(reason: 0)
+        let flow = MockTcpFlow()
+        let ctx = TcpFlowContext()
+        let queue = DispatchQueue(label: "rama.test.stale-start")
+        ctx.flowQueue = queue
+        ctx.core = core
+        ctx.flow = flow
+        ctx.flowId = ObjectIdentifier(flow)
+        let anchor = _TestTcpFlowSessionAnchor(ctx: ctx)
+        let started = AtomicFlag()
+        XCTAssertFalse(
+            core.registerTcpFlowAndScheduleStartup(
+                ObjectIdentifier(flow),
+                anchor: anchor,
+                appId: nil,
+                engineGeneration: generation,
+                on: queue
+            ) {
+                started.store(true)
+            })
+        let drained = expectation(description: "stale flow queue drained")
+        queue.async { drained.fulfill() }
+        wait(for: [drained], timeout: 1.0)
+        XCTAssertFalse(started.load())
+        XCTAssertEqual(core.tcpFlowCount, 0)
+    }
+
+    func testRegisteredStartupRunsBeforeDetachTeardown() {
+        let core = TransparentProxyCore()
+        core.attachEngine(makeEngine())
+        let generation = core.testEngineGeneration
+        let flow = MockTcpFlow()
+        let ctx = TcpFlowContext()
+        let queue = DispatchQueue(label: "rama.test.ordered-start")
+        ctx.flowQueue = queue
+        ctx.core = core
+        ctx.flow = flow
+        ctx.flowId = ObjectIdentifier(flow)
+        let startedBeforeTeardown = AtomicFlag()
+
+        XCTAssertTrue(
+            core.registerTcpFlowAndScheduleStartup(
+                ObjectIdentifier(flow),
+                anchor: _TestTcpFlowSessionAnchor(ctx: ctx),
+                appId: nil,
+                engineGeneration: generation,
+                on: queue
+            ) {
+                if !ctx.isDone { startedBeforeTeardown.store(true) }
+            })
+        core.detachEngine(reason: 0)
+
+        let drained = expectation(description: "ordered flow queue drained")
+        queue.async { drained.fulfill() }
+        wait(for: [drained], timeout: 1.0)
+        XCTAssertTrue(startedBeforeTeardown.load())
+        XCTAssertTrue(ctx.isDone)
+    }
+
+    func testDetachRejectsStaleUdpRegistrationAndStartup() {
+        let core = TransparentProxyCore()
+        core.attachEngine(makeEngine())
+        let generation = core.testEngineGeneration
+        core.detachEngine(reason: 0)
+        let flow = MockUdpFlow()
+        let ctx = UdpFlowContext()
+        let queue = DispatchQueue(label: "rama.test.stale-udp-start")
+        ctx.flowQueue = queue
+        let started = AtomicFlag()
+
+        XCTAssertFalse(
+            core.registerUdpFlowAndScheduleStartup(
+                ObjectIdentifier(flow),
+                anchor: _TestUdpFlowSessionAnchor(ctx: ctx),
+                engineGeneration: generation,
+                on: queue
+            ) {
+                started.store(true)
+            })
+        queue.sync {}
+        XCTAssertFalse(started.load())
+        XCTAssertEqual(core.udpFlowCount, 0)
+    }
+
+    func testStaleRemovalsCannotTouchReattachedRegistries() {
+        let core = TransparentProxyCore()
+        core.attachEngine(makeEngine())
+        let staleGeneration = core.testEngineGeneration
+        core.detachEngine(reason: 0)
+        core.attachEngine(makeEngine())
+        defer { core.detachEngine(reason: 0) }
+        let currentGeneration = core.testEngineGeneration
+
+        let tcpFlow = MockTcpFlow()
+        let tcpId = ObjectIdentifier(tcpFlow)
+        let tcpCtx = TcpFlowContext()
+        XCTAssertNotNil(
+            core.registerTcpFlow(
+                tcpId,
+                anchor: _TestTcpFlowSessionAnchor(ctx: tcpCtx),
+                engineGeneration: currentGeneration))
+        let udpFlow = MockUdpFlow()
+        let udpId = ObjectIdentifier(udpFlow)
+        XCTAssertNotNil(
+            core.registerUdpFlow(
+                udpId,
+                anchor: _TestUdpFlowSessionAnchor(ctx: UdpFlowContext()),
+                engineGeneration: currentGeneration))
+
+        core.removeTcpFlow(
+            tcpId,
+            context: TcpFlowContext(),
+            engineGeneration: staleGeneration)
+        core.removeUdpFlow(udpId, engineGeneration: staleGeneration)
+
+        XCTAssertEqual(core.tcpFlowCount, 1)
+        XCTAssertEqual(core.udpFlowCount, 1)
     }
 
     // MARK: - registerTcpFlow / removeTcpFlow idempotence
@@ -368,19 +494,20 @@ final class CoreEdgeCaseTests: XCTestCase {
     /// The flow-count reporting timer is scheduled on attachEngine and
     /// cancelled on detachEngine. Without explicit cancel-on-detach, an
     /// attach/detach/attach sequence would leak a timer per cycle. This
-    /// drives the sequence repeatedly; it catches a hard crash / double-cancel
-    /// regression (the idempotency-of-cleanup invariant) — there is no
-    /// directly-observable timer handle to assert on.
+    /// drives the sequence repeatedly and checks the DEBUG timer seam so a
+    /// wake/detach race cannot silently retain a repeating timer.
     func testAttachDetachCycleDoesNotLeakTimer() {
         let core = TransparentProxyCore()
         for _ in 0..<5 {
             core.attachEngine(makeEngine())
+            XCTAssertTrue(core.testFlowCountReportingScheduled)
             core.detachEngine(reason: 0)
+            XCTAssertFalse(core.testFlowCountReportingScheduled)
         }
-        // No state to assert directly — the timer is private — but
-        // running this test under the engine-init / shutdown 5×
-        // pattern catches any obvious double-cancel crash or leak
-        // that would surface here.
+        core.handleSystemWake()
+        XCTAssertFalse(
+            core.testFlowCountReportingScheduled,
+            "wake after detach must not resurrect maintenance")
     }
 
     /// Mirrors the shape of a `startProxy` failure after `attachEngine`:

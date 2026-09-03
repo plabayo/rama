@@ -44,6 +44,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         case egressWriter
     }
     private var pendingTerminalDrains: Set<TerminalDrain> = []
+    private var completedTerminalDrains: Set<TerminalDrain> = []
     private struct ClientDrainClose {
         let wasOpened: Bool
         let error: Error?
@@ -173,26 +174,23 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             }
             ctx.admissionToken = token
             guard
-                let occupancy = core.registerTcpFlow(
+                core.registerTcpFlowAndScheduleStartup(
                     flowId,
                     anchor: self,
                     appId: token.appId,
-                    engineGeneration: engineGeneration)
+                    engineGeneration: engineGeneration,
+                    on: flowQueue,
+                    body: { [self, session] in
+                        guard !ctx.isDone else { return }
+                        _ = startEgressConnection(session: session)
+                    })
             else {
                 core.finishTcpStart(token, outcome: .failed)
                 ctx.admissionToken = nil
                 session.cancel()
                 return false
             }
-            // Admission is bounded by the start gauge above. The flow-pressure
-            // backstop still reaps idle established flows asynchronously to free
-            // room for subsequent flows as total live occupancy approaches the
-            // kernel nexus ceiling.
-            let admitted = startEgressConnection(session: session)
-            if defaultFlowPressureSoftCap > 0, occupancy >= Int(defaultFlowPressureSoftCap) {
-                core.reapIdleUnderPressure(protecting: flowId)
-            }
-            return admitted
+            return true
         case .passthrough:
             // Declining hands the flow to the direct route (documented for
             // NETransparentProxyProvider; only the NEAppProxyProvider base
@@ -238,7 +236,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             // activity signal. Fires for BOTH viaRust and promoted (the
             // forwarder flushes through this pump too), so an actively
             // transferring flow of EITHER mode is never reaped as "idle".
-            onActivity: { [weak ctx] in ctx?.lastActivityAt = .now() }
+            onActivity: { [weak ctx] in
+                ctx?.recordActivityUnlessPressureEvicted() ?? false
+            }
         )
         ctx.clientWritePump = writer
     }
@@ -362,13 +362,17 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     func armTerminalDrainBackstop() {
         ctx.terminalSignalled = true
         ctx.drainClosePending = true
-        guard terminalDrainBackstop == nil, ctx.isDone != true else { return }
+        guard terminalDrainBackstop == nil, ctx.isDone != true,
+            ctx.drainClosePending
+        else { return }
         scheduleDrainBackstopCheck(afterMs: UInt64(lingerCloseMs))
     }
 
     private func scheduleDrainBackstopCheck(afterMs: UInt64) {
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.ctx.isDone == false else { return }
+            guard let self, self.ctx.isDone == false,
+                self.ctx.drainClosePending
+            else { return }
             let idleMs = self.ctx.idleMs()
             if idleMs < UInt64(self.lingerCloseMs) {
                 // Still moving bytes (live half-close) — check again once the
@@ -387,28 +391,58 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
 
     private func beginTerminalDrain(_ drain: TerminalDrain) -> Bool {
         guard !ctx.isDone else { return false }
+        guard !completedTerminalDrains.contains(drain) else { return false }
         let inserted = pendingTerminalDrains.insert(drain).inserted
         guard inserted else { return false }
-        armTerminalDrainBackstop()
+        ctx.terminalSignalled = true
+        ctx.drainClosePending = true
         return true
     }
 
     private func finishTerminalDrain(_ drain: TerminalDrain) {
         pendingTerminalDrains.remove(drain)
-        ctx.drainClosePending = !pendingTerminalDrains.isEmpty
-        guard pendingTerminalDrains.isEmpty else { return }
+        completedTerminalDrains.insert(drain)
+
+        if drain == .clientWriter, let close = pendingClientDrainClose {
+            if !close.wasOpened || close.error != nil {
+                pendingClientDrainClose = nil
+                terminalDrainBackstop?.cancel()
+                terminalDrainBackstop = nil
+                ctx.drainClosePending = false
+                ctx.applyDrainedClose(
+                    wasOpened: close.wasOpened,
+                    error: close.error)
+                return
+            }
+            ctx.applyClientWriteHalfClose()
+        }
+
+        let bothFinished = completedTerminalDrains.count == 2
+        let waitingForSibling = pendingClientDrainClose != nil && !bothFinished
+        ctx.drainClosePending = !pendingTerminalDrains.isEmpty || waitingForSibling
+        guard bothFinished, pendingTerminalDrains.isEmpty,
+            pendingClientDrainClose != nil
+        else {
+            if !ctx.drainClosePending {
+                terminalDrainBackstop?.cancel()
+                terminalDrainBackstop = nil
+            }
+            return
+        }
+        pendingClientDrainClose = nil
         terminalDrainBackstop?.cancel()
         terminalDrainBackstop = nil
-        guard let close = pendingClientDrainClose else { return }
-        pendingClientDrainClose = nil
-        ctx.applyDrainedClose(
-            wasOpened: close.wasOpened,
-            error: close.error)
+        ctx.drainClosePending = false
+        ctx.applyFullyDrainedClose()
     }
 
     func closeClientAfterRustDrain() {
         guard beginTerminalDrain(.clientWriter) else { return }
         let egressReadError = ctx.egressReadError
+        // A clean peer EOF arms an unconditional connection-release timer.
+        // Transfer ownership before waiting for the client writer: the shared
+        // activity-aware drain backstop preserves a still-live upload half.
+        if egressReadError == nil { ctx.egressReadPump?.disarmEofBackstop() }
         ctx.clientWritePump?.closeWhenDrained { [weak self] wasOpened in
             guard let self else { return }
             self.pendingClientDrainClose = ClientDrainClose(
@@ -416,6 +450,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 error: egressReadError)
             self.finishTerminalDrain(.clientWriter)
         }
+        armTerminalDrainBackstop()
     }
 
     func installEgressStateHandler(connection: any NwConnectionLike) {
@@ -554,10 +589,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     func closeEgressAfterRustDrain() {
         guard beginTerminalDrain(.egressWriter) else { return }
         ctx.egressWritePump?.closeWhenDrained { [weak self] in
-            self?.flowQueue.async { [weak self] in
-                self?.finishTerminalDrain(.egressWriter)
-            }
+            self?.finishTerminalDrain(.egressWriter)
         }
+        armTerminalDrainBackstop()
     }
 
     func handleEgressFailed(_ error: NWError?) {
@@ -670,21 +704,25 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 self.ctx.session?.signalEgressDrain()
                 self.ctx.directForwarder?.onEgressPumpDrained()
             },
-            onTerminal: { [weak self] _ in
+            onTerminal: { [weak self] error in
                 guard let self else { return }
                 // Promoted mode only: the forwarder owns teardown, so
                 // drive it to terminal — its onTerminal closes the
                 // kernel flow + drops the registry entry. (The
                 // connection is already force-cancelled by the pump.)
-                // In viaRust mode the egress write pump's `.closed`
-                // return propagates to Rust on its next write, which
-                // unwinds the bridge — so no action is needed (and
-                // routing through teardown here would just race that).
-                guard self.ctx.mode != .viaRust else { return }
-                self.ctx.directForwarder?.cancel()
+                if self.ctx.mode != .viaRust {
+                    self.ctx.directForwarder?.cancel()
+                } else {
+                    self.terminalDrainBackstop?.cancel()
+                    self.terminalDrainBackstop = nil
+                    self.ctx.drainClosePending = false
+                    self.ctx.applyWriterTerminal(error)
+                }
             },
             // C→S byte progress on `flowQueue` — see `buildClientWritePump`.
-            onActivity: { [weak self] in self?.ctx.lastActivityAt = .now() },
+            onActivity: { [weak self] in
+                self?.ctx.recordActivityUnlessPressureEvicted() ?? false
+            },
             // Post-FIN the only activity bumps come from the still-open
             // read direction, so the linger can tell a live half-close
             // from a quiet connection. A gone ctx reads as fully idle.
@@ -706,7 +744,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             queue: flowQueue,
             eofGraceDeadline: .milliseconds(Int(egressEofGraceMs)),
             onReadError: { [weak ctx] error in ctx?.egressReadError = error },
-            onActivity: { [weak ctx] in ctx?.lastActivityAt = .now() }
+            onActivity: { [weak ctx] in
+                _ = ctx?.recordActivityUnlessPressureEvicted()
+            }
         )
         ctx.egressReadPump = pump
         return pump
@@ -772,7 +812,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             queue: flowQueue,
             logger: { [weak core] message in core?.logFlowMessage(message) },
             onTerminal: { error in terminal.dispatch(error) },
-            onActivity: { [weak ctx] in ctx?.lastActivityAt = .now() }
+            onActivity: { [weak ctx] in
+                _ = ctx?.recordActivityUnlessPressureEvicted()
+            }
         )
         ctx.clientReadPump = flowReadPump
     }

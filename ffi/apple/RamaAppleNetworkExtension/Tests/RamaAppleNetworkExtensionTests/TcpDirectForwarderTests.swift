@@ -44,9 +44,10 @@ final class TcpDirectForwarderTests: XCTestCase {
         var drainStallCount = 0
         /// Counts the forwarder's `onActivity` callback — fired on every
         /// byte moved in either direction. Production routes this to
-        /// `ctx.lastActivityAt` for the promoted-idle reaper. Mutated on
-        /// `queue`, read via `queue.sync`.
-        var activityCount = 0
+        /// `ctx.lastActivityAt` for the promoted-idle reaper. The callback
+        /// deliberately fires before the `queue` hop, so this counter is
+        /// independently locked.
+        let activityCount = TestValue(0)
         /// Background thread that auto-fires pending send
         /// completions on the mock connection. The egress
         /// write pump serialises sends — each `send` call
@@ -74,7 +75,8 @@ final class TcpDirectForwarderTests: XCTestCase {
         /// force `.paused`.
         init(
             _ tag: String, preDrained: Bool = true, autoCompleter: Bool = true,
-            drainStallDeadline: DispatchTimeInterval = .milliseconds(Int(defaultLingerCloseMs))
+            drainStallDeadline: DispatchTimeInterval = .milliseconds(Int(defaultLingerCloseMs)),
+            activityAllowed: Bool = true
         ) {
             let flow = MockTcpFlow()
             let conn = MockNwConnection()
@@ -109,7 +111,7 @@ final class TcpDirectForwarderTests: XCTestCase {
             var capturedClosingRef: (() -> Void)? = nil
             var capturedDrainPendingRef: ((Bool) -> Void)? = nil
             var capturedDrainStallRef: (() -> Void)? = nil
-            var capturedActivityRef: (() -> Void)? = nil
+            let capturedActivityRef = TestValue<(@Sendable () -> Bool)?>(nil)
             self.forwarder = TcpDirectForwarder(
                 flow: flow, connection: conn,
                 clientWritePump: clientWritePump,
@@ -120,7 +122,9 @@ final class TcpDirectForwarderTests: XCTestCase {
                 onClosing: { capturedClosingRef?() },
                 onDrainPendingChanged: { capturedDrainPendingRef?($0) },
                 onDrainStall: { capturedDrainStallRef?() },
-                onActivity: { capturedActivityRef?() },
+                onActivity: {
+                    capturedActivityRef.get()?() ?? false
+                },
                 closeClientWrite: { [flow] error in flow.closeWriteWithError(error) },
                 onTerminal: { capturedTerminalRef?() }
             )
@@ -137,7 +141,10 @@ final class TcpDirectForwarderTests: XCTestCase {
             capturedClosingRef = { [weak self] in self?.closingCount += 1 }
             capturedDrainPendingRef = { [weak self] in self?.drainPending = $0 }
             capturedDrainStallRef = { [weak self] in self?.drainStallCount += 1 }
-            capturedActivityRef = { [weak self] in self?.activityCount += 1 }
+            capturedActivityRef.set { [weak self] in
+                self?.activityCount.update { $0 += 1 }
+                return activityAllowed
+            }
             if preDrained {
                 forwarder.markClientReadDrained()
                 forwarder.markEgressReadDrained()
@@ -315,18 +322,98 @@ final class TcpDirectForwarderTests: XCTestCase {
         h.forwarder.markRustS2CDone()
         h.drain()
         XCTAssertEqual(
-            h.queue.sync { h.activityCount }, 0, "no activity before any bytes move")
+            h.activityCount.get(), 0, "no activity before any bytes move")
 
         h.flow.completeRead(data: Data([0x01, 0x02]), error: nil)
         waitFor("C→S byte bumped activity", timeout: 1.0) {
-            h.queue.sync { h.activityCount } >= 1
+            h.activityCount.get() >= 1
         }
 
-        let afterC2S = h.queue.sync { h.activityCount }
+        let afterC2S = h.activityCount.get()
         _ = h.conn.completePendingReceive(data: Data([0xAA]), isComplete: false, error: nil)
         waitFor("S→C byte bumped activity", timeout: 1.0) {
-            h.queue.sync { h.activityCount } > afterC2S
+            h.activityCount.get() > afterC2S
         }
+    }
+
+    /// A promoted kernel read publishes activity at the transport callback
+    /// boundary, before its delivery block can wait behind pressure work on
+    /// the per-flow queue.
+    func testClientReadPublishesActivityBeforeFlowQueueDelivery() {
+        let h = Harness("activity.client.boundary")
+        h.forwarder.markRustC2SDone()
+        h.drain()
+        waitFor("direct client read", timeout: 1.0) { h.flow.pendingReadCount > 0 }
+
+        let blockerEntered = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        h.queue.async {
+            blockerEntered.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerEntered.wait(timeout: .now() + 1), .success)
+        defer { releaseBlocker.signal() }
+
+        h.flow.completeRead(data: Data([0x01]), error: nil)
+        waitFor("activity published ahead of queue delivery", timeout: 1.0) {
+            h.activityCount.get() == 1
+        }
+    }
+
+    /// The promoted network receive side has the same ordering guarantee.
+    func testServerReadPublishesActivityBeforeFlowQueueDelivery() {
+        let h = Harness("activity.server.boundary")
+        h.forwarder.markRustS2CDone()
+        h.drain()
+        waitFor("direct server receive", timeout: 1.0) {
+            h.conn.pendingReceiveCount > 0
+        }
+
+        let blockerEntered = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        h.queue.async {
+            blockerEntered.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerEntered.wait(timeout: .now() + 1), .success)
+        defer { releaseBlocker.signal() }
+
+        XCTAssertTrue(h.conn.completePendingReceive(
+            data: Data([0x02]), isComplete: false, error: nil))
+        XCTAssertEqual(h.activityCount.get(), 1)
+    }
+
+    func testRejectedClientReadIsNotForwardedOrRearmed() {
+        let h = Harness("activity.client.reject", activityAllowed: false)
+        h.forwarder.markRustC2SDone()
+        h.drain()
+        waitFor("direct client read", timeout: 1.0) { h.flow.pendingReadCount == 1 }
+
+        h.flow.completeRead(data: Data([0x01]), error: nil)
+        waitFor("activity rejection observed", timeout: 1.0) {
+            h.activityCount.get() == 1
+        }
+        h.drain()
+
+        XCTAssertTrue(h.conn.sentChunks.isEmpty)
+        XCTAssertEqual(h.flow.pendingReadCount, 0)
+    }
+
+    func testRejectedServerReadIsNotForwardedOrRearmed() {
+        let h = Harness("activity.server.reject", activityAllowed: false)
+        h.forwarder.markRustS2CDone()
+        h.drain()
+        waitFor("direct server receive", timeout: 1.0) {
+            h.conn.pendingReceiveCount == 1
+        }
+
+        XCTAssertTrue(h.conn.completePendingReceive(
+            data: Data([0x02]), isComplete: false, error: nil))
+        h.drain()
+
+        XCTAssertEqual(h.activityCount.get(), 1)
+        XCTAssertTrue(h.flow.writes.isEmpty)
+        XCTAssertEqual(h.conn.pendingReceiveCount, 0)
     }
 
     // MARK: - Finishing / terminal

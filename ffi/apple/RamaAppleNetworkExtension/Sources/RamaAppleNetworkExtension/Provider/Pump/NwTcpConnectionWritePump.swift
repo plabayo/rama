@@ -6,6 +6,8 @@ import RamaAppleNEFFI
 final class NwTcpConnectionWritePump: @unchecked Sendable {
     private let connection: any NwConnectionLike
     private let core: TcpWritePumpCore
+    private let callbackQueue: DispatchQueue
+    private let callbackQueueKey = DispatchSpecificKey<UInt8>()
     /// Fired (on `core.queue`, at most once) when the pump hits a
     /// terminal write error. Symmetric to
     /// `TcpClientWritePump.onTerminalError`: the egress write pump
@@ -52,7 +54,7 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
         lingerCloseDeadline: DispatchTimeInterval,
         onDrained: @escaping @Sendable () -> Void,
         onTerminal: @escaping @Sendable (Error) -> Void = { _ in },
-        onActivity: @escaping @Sendable () -> Void = {},
+        onActivity: @escaping @Sendable () -> Bool = { true },
         readSideIdleMs: @escaping @Sendable () -> UInt64 = { .max }
     ) {
         self.connection = connection
@@ -60,6 +62,7 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
         self.lingerCloseMs = Self.millis(from: lingerCloseDeadline)
         self.readSideIdleMs = readSideIdleMs
         self.onTerminal = onTerminal
+        self.callbackQueue = queue
         let core = TcpWritePumpCore(
             queue: queue,
             initialLifecycle: .open,
@@ -85,6 +88,7 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
         )
         self.core = core
         core.delegate = self
+        queue.setSpecific(key: callbackQueueKey, value: 1)
     }
 
 
@@ -163,13 +167,15 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
     deinit {
         // Fallback: if the pump is deallocated before drain
         // completes, fire the callback so the caller's state
-        // machine isn't stranded. `deinit` runs synchronously
-        // on whichever thread releases the last strong ref —
-        // the callback contract doesn't promise a specific
-        // queue, but for safety the caller should treat it as
-        // "not necessarily on `core.queue`" and hop if needed.
+        // machine isn't stranded. `deinit` runs synchronously on whichever
+        // thread releases the last strong ref, so normalize this rare fallback
+        // onto the same queue as ordinary pump completions.
         if let cb = onDrainedCallback {
-            cb()
+            if DispatchQueue.getSpecific(key: callbackQueueKey) != nil {
+                cb()
+            } else {
+                callbackQueue.async(execute: cb)
+            }
         }
     }
 }
@@ -204,10 +210,9 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
         //     state handler, so it won't re-enter teardown and any later
         //     cancel from `onTerminal` is a no-op.
         //
-        // In `viaRust` mode `onDrainedCallback` is nil (the `onCloseEgress`
-        // hook calls `closeWhenDrained()` with no callback) so step 1 is a
-        // no-op there; the force-cancel is still correct — a terminal write
-        // error means the egress is broken/abandoned either way.
+        // In either mode the force-cancel is correct: a terminal write error
+        // means the egress is broken. The owner callback below then performs
+        // mode-appropriate session teardown.
         lingerWork?.cancel()
         lingerWork = nil
         connection.cancelAndDetach()
@@ -259,6 +264,8 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
         // half-close and the linger watchdog would have to escalate to
         // a force-cancel. See
         // <https://developer.apple.com/documentation/network/nwconnection/contentcontext/finalmessage>.
+        let callbackQueue = self.callbackQueue
+        let callbackQueueKey = self.callbackQueueKey
         connection.send(
             content: nil,
             contentContext: .finalMessage,
@@ -267,7 +274,12 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
                 // The FIN has been processed locally (queued
                 // for transmission). Fire the close-callback
                 // for the caller waiting on drain completion.
-                cb?()
+                guard let cb else { return }
+                if DispatchQueue.getSpecific(key: callbackQueueKey) != nil {
+                    cb()
+                } else {
+                    callbackQueue.async(execute: cb)
+                }
             })
         )
         // The FIN is queued. Schedule the linger watchdog so the

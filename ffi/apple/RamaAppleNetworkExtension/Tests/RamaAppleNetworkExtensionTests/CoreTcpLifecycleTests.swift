@@ -164,7 +164,9 @@ final class CoreTcpLifecycleTests: XCTestCase {
         let flow = MockTcpFlow()
         XCTAssertTrue(fx.core.handleTcpFlow(flow, meta: makeMeta()))
         XCTAssertEqual(fx.core.tcpFlowCount, 1)
-        XCTAssertEqual(flow.applyMetadataCallCount, 1)
+        waitFor("post-registration startup applies metadata") {
+            flow.applyMetadataCallCount == 1
+        }
 
         let conn = fx.capture.waitForLastConnection()
         conn.transition(to: .ready)
@@ -674,6 +676,9 @@ final class CoreTcpLifecycleTests: XCTestCase {
         XCTAssertEqual(fx.core.tcpFlowCount, flowCount)
 
         // Drive all to .ready, open, then EOF.
+        waitFor("all post-registration startups", timeout: 5.0) {
+            fx.capture.allConnections.count == flowCount
+        }
         let connections = fx.capture.allConnections
         XCTAssertEqual(connections.count, flowCount)
         for conn in connections {

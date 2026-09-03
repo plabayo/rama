@@ -36,6 +36,9 @@ struct TcpFlowMaintenanceState {
     var lastActivityAt: DispatchTime = .now()
     var lingerCloseMs: UInt32 = defaultLingerCloseMs
     var mode: TcpFlowMode = .viaRust
+    /// Set in the same lock scope that commits a pressure reservation. Data
+    /// producers use it to avoid reporting accepted bytes after teardown won.
+    var pressureEvictionCommitted = false
 }
 
 /// Mutable flow state is confined to its dedicated serial queue. Fields read
@@ -161,6 +164,17 @@ final class TcpFlowContext: @unchecked Sendable {
         set { maintenanceState.withLock { $0.lastActivityAt = newValue } }
     }
 
+    /// Linearize a producer's accepted-byte activity against the pressure
+    /// reaper's final commit. `false` means teardown already won and the
+    /// producer must report the destination closed instead of accepting data.
+    func recordActivityUnlessPressureEvicted() -> Bool {
+        maintenanceState.withLock { state in
+            guard !state.pressureEvictionCommitted else { return false }
+            state.lastActivityAt = .now()
+            return true
+        }
+    }
+
     func maintenanceSnapshot() -> TcpFlowMaintenanceState {
         maintenanceState.withLock { $0 }
     }
@@ -182,9 +196,9 @@ final class TcpFlowContext: @unchecked Sendable {
     /// this closure: activity that wins this lock is observed and spares the
     /// flow; activity after the claim loses to an already-committed teardown.
     func withMaintenanceStateLocked<T>(
-        _ body: (TcpFlowMaintenanceState) -> T
+        _ body: (inout TcpFlowMaintenanceState) -> T
     ) -> T {
-        maintenanceState.withLock { body($0) }
+        maintenanceState.withLock { body(&$0) }
     }
     /// The per-flow serial queue that confines every mutation of this
     /// context (and the `isDone` teardown flag). Set once by
@@ -321,6 +335,30 @@ final class TcpFlowContext: @unchecked Sendable {
             flow?.closeReadWithError(error)
             flow?.closeWriteWithError(error)
         }
+        connection?.cancelAndDetach()
+        connection = nil
+        if let flowId {
+            core?.removeTcpFlow(
+                flowId,
+                context: self,
+                engineGeneration: engineGeneration)
+        }
+    }
+
+    /// Clean server→client half-close. Keep accepting client→server bytes
+    /// until Rust independently closes and drains the egress writer.
+    func applyClientWriteHalfClose() {
+        guard !isDone else { return }
+        flow?.closeWriteWithError(nil)
+    }
+
+    /// Both Rust write directions have drained. The client write half was
+    /// already closed when its drain completed, so close only the remaining
+    /// read half before releasing the connection and registry ownership.
+    func applyFullyDrainedClose() {
+        guard !isDone else { return }
+        isDone = true
+        flow?.closeReadWithError(nil)
         connection?.cancelAndDetach()
         connection = nil
         if let flowId {

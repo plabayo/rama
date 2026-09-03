@@ -34,14 +34,11 @@ final class TcpWritePumpCore: @unchecked Sendable {
     private var lifecycle: WritePumpLifecycle
     private var retrying: WriteRetry?
 
-    /// Fired on `queue` (flowQueue) each time an accepted data chunk is
-    /// processed — i.e. real byte progress in this direction. The owner bumps
-    /// the flow's `lastActivityAt` so the flow-pressure backstop's idle/LRU
-    /// selection is accurate for BOTH data-path modes: both `TcpDirectForwarder`
-    /// (promoted) and the in-Rust path flush through these pumps, so this single
-    /// flowQueue-confined hook is the one race-free activity signal for all
-    /// flows. No-op by default (standalone-pump tests).
-    private let onActivity: @Sendable () -> Void
+    /// Fired on the enqueue caller before an accepted chunk is reported. The
+    /// owner atomically bumps `lastActivityAt` or rejects the chunk if pressure
+    /// teardown already committed. Both data-path modes flush through these
+    /// pumps, so this is the shared write-activity boundary. No-op by default.
+    private let onActivity: @Sendable () -> Bool
 
     init(
         queue: DispatchQueue,
@@ -49,7 +46,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
         onDrained: @escaping @Sendable () -> Void,
         doWrite: @escaping (Data, @escaping @Sendable (Error?) -> Void) -> Void,
         logHwm: @escaping @Sendable (Int) -> Void,
-        onActivity: @escaping @Sendable () -> Void = {}
+        onActivity: @escaping @Sendable () -> Bool = { true }
     ) {
         self.queue = queue
         self.lifecycle = initialLifecycle
@@ -133,13 +130,18 @@ final class TcpWritePumpCore: @unchecked Sendable {
             }
             return (.accepted, newHwm)
         }
-        if let hwm { logHwm(hwm) }
         guard decision == .accepted else { return decision }
 
-        // Acceptance is the byte-progress boundary. Publish it before the
-        // queue hop so a concurrently queued pressure eviction cannot commit
-        // against the timestamp from before this chunk was accepted.
-        self.onActivity()
+        // Linearize acceptance against pressure teardown before reporting the
+        // chunk accepted. If teardown won after the byte-budget reservation,
+        // roll that reservation back and surface a closed destination.
+        guard self.onActivity() else {
+            state.withLock { s in
+                if !s.closed { s.pendingBytes = max(s.pendingBytes - data.count, 0) }
+            }
+            return .closed
+        }
+        if let hwm { logHwm(hwm) }
 
         queue.async { [weak self] in
             guard let self else { return }

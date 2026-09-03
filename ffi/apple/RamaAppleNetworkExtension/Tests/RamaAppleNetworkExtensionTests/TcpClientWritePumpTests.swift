@@ -248,7 +248,10 @@ final class TcpClientWritePumpTests: XCTestCase {
             logger: { _ in },
             onTerminalError: { _ in },
             onDrained: {},
-            onActivity: { activity.increment() })
+            onActivity: {
+                activity.increment()
+                return true
+            })
 
         XCTAssertEqual(pump.enqueue(Data([0x01])), .accepted)
         XCTAssertEqual(activity.value, 1, "acceptance publishes before queued delivery")

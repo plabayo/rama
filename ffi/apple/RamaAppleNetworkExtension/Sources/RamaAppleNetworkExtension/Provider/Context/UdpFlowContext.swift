@@ -34,6 +34,12 @@ final class UdpFlowContext: @unchecked Sendable {
     }
 
     weak var session: RamaUdpSessionHandle?
+    /// Serial queue that confines this context's mutable lifecycle state.
+    var flowQueue: DispatchQueue?
+    /// Lifecycle identity captured before registration. Keeping it on the
+    /// context prevents a late teardown from losing the generation when its
+    /// weak session owner has already deallocated.
+    var engineGeneration: UInt64?
     /// Writer pump for client-bound replies; per-datagram `sentBy`
     /// endpoint is set from Rust's per-datagram peer attribution.
     var writer: UdpClientWritePump?

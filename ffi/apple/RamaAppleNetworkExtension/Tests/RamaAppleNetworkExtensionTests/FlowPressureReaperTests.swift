@@ -28,6 +28,11 @@ final class FlowPressureReaperTests: XCTestCase {
     private var savedLowWater: UInt32 = 0
     private var savedFloorMs: UInt32 = 0
 
+    override class func setUp() {
+        super.setUp()
+        TestFixtures.ensureInitialized()
+    }
+
     override func setUp() {
         super.setUp()
         savedSoftCap = defaultFlowPressureSoftCap
@@ -88,8 +93,111 @@ final class FlowPressureReaperTests: XCTestCase {
         return core
     }
 
+    private func makeEngine() -> RamaTransparentProxyEngineHandle {
+        guard
+            let engine = RamaTransparentProxyEngineHandle(
+                engineConfigJson: TestFixtures.engineConfigJson())
+        else {
+            XCTFail("engine init")
+            preconditionFailure()
+        }
+        return engine
+    }
+
+    private func makeMeta(protocolRaw: UInt32) -> RamaTransparentProxyFlowMetaBridge {
+        RamaTransparentProxyFlowMetaBridge(
+            protocolRaw: protocolRaw,
+            remoteHost: "127.0.0.1",
+            remotePort: 443,
+            localHost: nil,
+            localPort: 0,
+            sourceAppSigningIdentifier: nil,
+            sourceAppBundleIdentifier: nil,
+            sourceAppAuditToken: nil,
+            sourceAppPid: 4242)
+    }
+
     func testProductionDispatchLeaseDefaultIsPinned() {
         XCTAssertEqual(TransparentProxyCore().testPressureVictimDispatchLeaseMs, 250)
+    }
+
+    func testDispatchLeaseToleratesBriefQueueContention() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        // Keep timing semantics separate from the exact production constant
+        // pinned above. A generous test lease avoids false expiry when CI is
+        // descheduled while this queue is intentionally blocked.
+        let core = makeCore()
+        let queue = DispatchQueue(label: "rama.test.pressure.production-lease")
+        let victim = Fx(core: core, idleSeconds: 30, flowQueue: queue)
+        let active = Fx(core: core, idleSeconds: 0)
+        insert(core, [victim, active])
+
+        let blockerEntered = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        queue.async {
+            blockerEntered.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerEntered.wait(timeout: .now() + 1), .success)
+        var blockerReleased = false
+        defer {
+            if !blockerReleased { releaseBlocker.signal() }
+        }
+
+        core.testReapIdleUnderPressureIfDue()
+        Thread.sleep(forTimeInterval: 0.10)
+        XCTAssertEqual(core.testPressureExpiredTotal, 0)
+        releaseBlocker.signal()
+        blockerReleased = true
+        pollUntil("victim commits before the dispatch lease") {
+            victim.wasTornDown && core.testPressureEvictedTotal == 1
+        }
+    }
+
+    func testTcpAdmissionDrivesProductionPressureTrigger() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let engine = makeEngine()
+        core.attachEngine(engine)
+        let capture = NwConnectionCapture()
+        core.nwConnectionFactory = capture.factory
+        defer { core.detachEngine(reason: 0) }
+
+        let idle = Fx(core: core, idleSeconds: 30)
+        insert(core, [idle])
+        let admitted = MockTcpFlow()
+
+        XCTAssertTrue(core.handleTcpFlow(admitted, meta: makeMeta(protocolRaw: 1)))
+        pollUntil("TCP admission-triggered pressure reap") {
+            idle.wasTornDown && core.testPressureEvictedTotal == 1
+        }
+        XCTAssertFalse(core.testInspectTcpContext(for: admitted)?.isDone ?? true)
+    }
+
+    func testUdpAdmissionDrivesProductionPressureTrigger() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let engine = makeEngine()
+        core.attachEngine(engine)
+        defer { core.detachEngine(reason: 0) }
+
+        let idle = Fx(core: core, idleSeconds: 30)
+        insert(core, [idle])
+        let admitted = MockUdpFlow()
+
+        XCTAssertEqual(
+            core.handleUdpFlowDecision(admitted, meta: makeMeta(protocolRaw: 2)),
+            .intercept)
+        pollUntil("UDP admission-triggered pressure reap") {
+            idle.wasTornDown && core.testPressureEvictedTotal == 1
+        }
+        XCTAssertEqual(core.udpFlowCount, 1)
     }
 
     private func insert(_ core: TransparentProxyCore, _ fxs: [Fx]) {
@@ -199,6 +307,52 @@ final class FlowPressureReaperTests: XCTestCase {
         XCTAssertTrue(idle1.wasTornDown && idle2.wasTornDown && idle3.wasTornDown)
         XCTAssertFalse(active1.wasTornDown, "recently-active flow spared")
         XCTAssertFalse(active2.wasTornDown, "recently-active flow spared")
+    }
+
+    func testWriteAcceptanceLosesCleanlyToPressureCommit() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let queue = DispatchQueue(label: "rama.test.pressure.write-linearization")
+        let victim = Fx(
+            core: core,
+            idleSeconds: 30,
+            flowQueue: queue)
+        let active = Fx(core: core, idleSeconds: 0)
+        insert(core, [victim, active])
+
+        let activityEntered = DispatchSemaphore(value: 0)
+        let allowActivity = DispatchSemaphore(value: 0)
+        let result = TestValue<RamaTcpDeliverStatusBridge?>(nil)
+        let pump = TcpWritePumpCore(
+            queue: queue,
+            onDrained: {},
+            doWrite: { _, _ in XCTFail("rejected write must not reach transport") },
+            logHwm: { _ in },
+            onActivity: {
+                activityEntered.signal()
+                allowActivity.wait()
+                return victim.ctx.recordActivityUnlessPressureEvicted()
+            })
+        DispatchQueue.global().async {
+            result.set(pump.enqueue(Data([0x01])))
+        }
+        XCTAssertEqual(activityEntered.wait(timeout: .now() + 1), .success)
+
+        core.testReapIdleUnderPressureIfDue()
+        pollUntil("pressure commit tears victim down") { victim.wasTornDown }
+        allowActivity.signal()
+        pollUntil("enqueue reports its terminal decision") { result.get() != nil }
+        pollUntil("pressure eviction is accounted") {
+            core.testPressureEvictedTotal == 1
+        }
+
+        XCTAssertEqual(result.get(), .closed)
+        XCTAssertEqual(core.testPressureEvictedTotal, 1)
+        let invariant = queue.sync { pump.testInvariantSnapshot() }
+        XCTAssertEqual(invariant.pendingBytes, 0, "rejected acceptance rolls back budget")
+        XCTAssertTrue(invariant.pendingEmpty)
     }
 
     // MARK: - Scope: mode-agnostic (global)
@@ -627,6 +781,81 @@ final class FlowPressureReaperTests: XCTestCase {
 
         XCTAssertFalse(justAdmitted.wasTornDown)
         XCTAssertEqual(core.testPressureSelectionsTotal, 0)
+    }
+
+    func testRegistrationProtectsAdmissionBeforeTriggerIsPublished() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 0
+        let core = makeCore()
+        let old = Fx(core: core, idleSeconds: 30)
+        insert(core, [old])
+        let admitted = Fx(core: core, idleSeconds: 10)
+
+        XCTAssertNotNil(
+            core.registerTcpFlow(
+                admitted.flowId,
+                anchor: _TestTcpFlowSessionAnchor(ctx: admitted.ctx)))
+        core.testReapIdleUnderPressureIfDue()
+
+        XCTAssertTrue(old.wasTornDown)
+        XCTAssertFalse(admitted.wasTornDown)
+        XCTAssertEqual(core.testPressureEvictedTotal, 1)
+    }
+
+    func testCoalescedScanProtectsEveryAdmissionAtZeroIdleFloor() {
+        defaultFlowPressureSoftCap = 3
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 0
+        let core = makeCore()
+        let old = Fx(core: core, idleSeconds: 30)
+        let firstAdmission = Fx(core: core, idleSeconds: 1)
+        let secondAdmission = Fx(core: core, idleSeconds: 1)
+        insert(core, [old, firstAdmission, secondAdmission])
+
+        let gate = core.testHoldStateQueue()
+        core.reapIdleUnderPressure(protecting: firstAdmission.flowId)
+        core.reapIdleUnderPressure(protecting: secondAdmission.flowId)
+        gate.signal()
+        pollUntil("coalesced protected scan completes") {
+            !core.testPressureReapScheduled
+        }
+        pollUntil("old victim leaves") { old.wasTornDown }
+
+        XCTAssertFalse(firstAdmission.wasTornDown)
+        XCTAssertFalse(secondAdmission.wasTornDown)
+        XCTAssertEqual(core.testPressureScanCount, 1)
+        XCTAssertEqual(core.testPressureSelectionsTotal, 1)
+    }
+
+    func testReplacementScanRetainsAdmissionProtection() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 0
+        let core = makeCore()
+        let (queue, gate) = gatedQueue("replacement-protection")
+        let stale = Fx(
+            core: core,
+            idleSeconds: 30,
+            flowQueue: queue)
+        let admission = Fx(core: core, idleSeconds: 1)
+        insert(core, [stale, admission])
+
+        core.reapIdleUnderPressure(protecting: admission.flowId)
+        pollUntil("stale victim selected") {
+            core.testPressurePendingVictimCount == 1
+        }
+        stale.ctx.lastActivityAt = DispatchTime(
+            uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 5_000_000_000)
+        gate.signal()
+        pollUntil("stale victim spared") {
+            core.testPressureSparedTotal == 1
+        }
+
+        XCTAssertFalse(stale.wasTornDown)
+        XCTAssertFalse(admission.wasTornDown)
+        XCTAssertEqual(core.testPressureSelectionsTotal, 1)
+        XCTAssertEqual(core.testPressureScanCount, 2)
     }
 
     // MARK: - TG-10: episode boundary via the production removal path
@@ -1149,8 +1378,8 @@ final class FlowPressureReaperTests: XCTestCase {
 
         gate.signal()
         drain(blockedQueue)
-        pollUntil("responsive flow is selected after acknowledging stale work") {
-            blocked.wasTornDown
+        pollUntil("responsive flow is evicted after acknowledging stale work") {
+            core.testPressureEvictedTotal == 1
         }
         XCTAssertEqual(core.testPressureSelectionsTotal, 2)
         XCTAssertEqual(core.testPressureEvictionBodyRuns, 2)
@@ -1260,6 +1489,50 @@ final class FlowPressureReaperTests: XCTestCase {
         XCTAssertEqual(selected.filter { $0.wasTornDown }.count, 2)
         XCTAssertEqual(core.testPressureEvictedTotal, 2)
         XCTAssertEqual(core.testPressureCanceledTotal, 2)
+    }
+
+    func testCanceledTombstoneCannotHideVictimFromNextEpisode() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let notices = Locked([String]())
+        LifecycleLog.noticeOverride = { message in
+            notices.withLock { $0.append(message) }
+        }
+        let (queue, gate) = gatedQueue("canceled-next-episode")
+        let stale = Fx(core: core, idleSeconds: 30, flowQueue: queue)
+        let relief = Fx(core: core, idleSeconds: 0)
+        insert(core, [stale, relief])
+
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 1)
+        core.removeTcpFlow(relief.flowId)
+        pollUntil("natural removal ends first episode") {
+            core.tcpFlowCount == 1 && core.testPressureCanceledTotal == 1
+        }
+        let firstEpisode = notices.withLock {
+            $0.last { $0.contains("flow pressure episode ended") } ?? ""
+        }
+        XCTAssertTrue(
+            firstEpisode.contains("selected=1 evicted=0 spared=0 canceled=1"),
+            firstEpisode)
+
+        let admission = Fx(core: core, idleSeconds: 0)
+        insert(core, [admission])
+        core.reapIdleUnderPressure(protecting: admission.flowId)
+        pollUntil("second episode observes tombstone") {
+            !core.testPressureReapScheduled && core.testPressureScanCount == 2
+        }
+        XCTAssertFalse(stale.wasTornDown)
+
+        gate.signal()
+        pollUntil("acknowledged tombstone is reconsidered") {
+            stale.wasTornDown && core.tcpFlowCount == 1
+        }
+        XCTAssertFalse(admission.wasTornDown)
+        XCTAssertEqual(core.testPressureScanCount, 3)
+        XCTAssertEqual(core.testPressureEvictedTotal, 1)
     }
 
     func testClusteredSparesCauseOnlyOneReplacementScan() {

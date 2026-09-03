@@ -60,6 +60,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             label: "rama.tproxy.udp.flow.\(UInt(bitPattern: ObjectIdentifier(flow)))",
             qos: .utility)
         self.ctx = UdpFlowContext()
+        self.ctx.flowQueue = self.flowQueue
     }
 
     /// Entry point. Returns `true` if the flow was claimed.
@@ -100,22 +101,18 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             sessionHandle = session
             ctx.session = session
             guard let engineGeneration,
-                let occupancy = core?.registerUdpFlow(
+                core?.registerUdpFlowAndScheduleStartup(
                     flowId,
                     anchor: self,
-                    engineGeneration: engineGeneration)
+                    engineGeneration: engineGeneration,
+                    on: flowQueue,
+                    body: { [self] in
+                        guard ctx.readState != .closed else { return }
+                        openKernelFlow()
+                    }) == true
             else {
                 session.onClientClose()
                 return .passthrough
-            }
-            openKernelFlow()
-            // Nexus pressure is global (tcp+udp). A UDP burst can approach the
-            // kernel ceiling too, so drive the same backstop TCP admission does
-            // — it reaps idle TCP slots to free room. NEVER refuses/delays this
-            // flow (the reap is async, off this delivery thread, for SUBSEQUENT
-            // flows). No-op when the soft cap is disabled or unmet.
-            if defaultFlowPressureSoftCap > 0, occupancy >= Int(defaultFlowPressureSoftCap) {
-                core?.reapIdleUnderPressure()
             }
             return .intercept
         case .passthrough:
@@ -157,7 +154,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 ctx.session?.onClientClose()
                 core?.removeUdpFlow(
                     flowId,
-                    engineGeneration: session?.engineGeneration)
+                    engineGeneration: ctx.engineGeneration)
             }
         }
     }
@@ -316,6 +313,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             onServerClosed: { [weak ctx] in ctx?.terminate?(nil) }
         )
         engineGeneration = lease.generation
+        ctx.engineGeneration = lease.generation
         return decision
     }
 
@@ -323,6 +321,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         flow.open(withLocalEndpoint: nil) { [weak self] error in
             self?.flowQueue.async { [weak self] in
                 guard let self else { return }
+                guard self.ctx.readState != .closed else { return }
                 if let error {
                     let message = classifyFlowCallbackError(
                         error,

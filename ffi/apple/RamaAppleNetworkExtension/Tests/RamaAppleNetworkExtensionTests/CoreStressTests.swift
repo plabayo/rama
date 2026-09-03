@@ -401,7 +401,13 @@ final class CoreStressTests: XCTestCase {
             let flow = MockTcpFlow()
             flows.append(flow)
             _ = core.handleTcpFlow(flow, meta: makeMeta())
-            let conn = capture.waitForLastConnection()
+            // Startup is intentionally queued after lifecycle-safe
+            // registration. Wait for this iteration's new connection instead
+            // of reusing the previous "last" connection while it is pending.
+            waitFor("connection \(i) constructed") {
+                capture.allConnections.count >= i + 1
+            }
+            let conn = capture.allConnections[i]
             // Half pre-ready, half ready+open.
             if i % 2 == 0 {
                 conn.transition(to: .ready)

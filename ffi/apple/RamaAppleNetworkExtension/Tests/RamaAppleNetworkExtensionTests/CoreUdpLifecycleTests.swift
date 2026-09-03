@@ -98,7 +98,7 @@ final class CoreUdpLifecycleTests: XCTestCase {
     }
 
     /// A destination Rama accepts must map to true and transfer ownership to
-    /// the provider, which immediately begins opening the kernel flow.
+    /// the provider, which queues opening the kernel flow.
     func testInterceptDecisionReturnsTrueAndOpensFlow() {
         let fx = makeFixture()
         defer { tearDown(fx) }
@@ -111,7 +111,7 @@ final class CoreUdpLifecycleTests: XCTestCase {
 
         XCTAssertEqual(decision, .intercept)
         XCTAssertTrue(decision.callbackReturnValue)
-        XCTAssertTrue(flow.openWasInvoked)
+        waitFor("post-registration startup opens flow") { flow.openWasInvoked }
         XCTAssertEqual(fx.core.udpFlowCount, 1)
     }
 
@@ -157,6 +157,27 @@ final class CoreUdpLifecycleTests: XCTestCase {
             fx.core.udpFlowCount == 0
         }
         XCTAssertEqual(flow.pendingReadCount, 0)
+    }
+
+    func testOpenCompletionAfterDetachCannotReactivateSession() {
+        let fx = makeFixture()
+        let flow = MockUdpFlow()
+        XCTAssertTrue(fx.core.handleUdpFlow(flow, meta: makeMeta()))
+        waitFor("flow.open called") { flow.openWasInvoked }
+        guard let flowQueue = fx.core.testInspectUdpFlowQueue(for: flow) else {
+            XCTFail("registered UDP flow queue")
+            return
+        }
+
+        fx.core.detachEngine(reason: 0)
+        waitFor("detach closes UDP flow") {
+            flow.closeReadCallCount == 1 && flow.closeWriteCallCount == 1
+        }
+        XCTAssertTrue(flow.completeOpen(error: nil))
+        flowQueue.sync {}
+
+        XCTAssertEqual(flow.pendingReadCount, 0)
+        XCTAssertEqual(fx.core.udpFlowCount, 0)
     }
 
     // MARK: - Read error

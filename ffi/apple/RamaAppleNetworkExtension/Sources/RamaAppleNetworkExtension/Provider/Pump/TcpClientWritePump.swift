@@ -17,7 +17,7 @@ final class TcpClientWritePump: @unchecked Sendable {
         logger: @escaping @Sendable (FlowLogMessage) -> Void,
         onTerminalError: @escaping @Sendable (Error) -> Void,
         onDrained: @escaping @Sendable () -> Void,
-        onActivity: @escaping @Sendable () -> Void = {}
+        onActivity: @escaping @Sendable () -> Bool = { true }
     ) {
         self.logger = logger
         self.onTerminalError = onTerminalError

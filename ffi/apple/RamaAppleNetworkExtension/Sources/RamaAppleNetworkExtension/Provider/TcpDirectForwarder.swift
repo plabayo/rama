@@ -70,11 +70,11 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// to `ctx.applyDrainBackstop()` (a full teardown), the
     /// same reaper the `viaRust` backstop uses.
     private let onDrainStall: () -> Void
-    /// Fired (on `queue`) whenever bytes move in either direction.
-    /// Production bumps `ctx.lastActivityAt` so the maintenance watchdog's
-    /// promoted-flow idle reaper only drops flows that have genuinely gone
-    /// quiet — never an actively-transferring one.
-    private let onActivity: () -> Void
+    /// Fired in the transport callback, before delivery hops to `queue`.
+    /// Production atomically bumps `ctx.lastActivityAt` or rejects bytes after
+    /// pressure teardown has committed, so an active flow is never selected
+    /// from a stale pre-callback timestamp.
+    private let onActivity: @Sendable () -> Bool
     /// Closes the kernel flow's write half once S→C finished draining, so
     /// the client app sees the server's EOF (the `flow` type here has no
     /// close surface, hence the injected hook). Without it a client that
@@ -195,7 +195,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
         onClosing: @escaping () -> Void = {},
         onDrainPendingChanged: @escaping (Bool) -> Void = { _ in },
         onDrainStall: @escaping () -> Void = {},
-        onActivity: @escaping () -> Void = {},
+        onActivity: @escaping @Sendable () -> Bool = { true },
         closeClientWrite: @escaping (Error?) -> Void = { _ in },
         onTerminal: @escaping () -> Void
     ) {
@@ -387,14 +387,12 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// for every C→S write in the `.active` phase so the paused/
     /// buffered-replay logic lives in exactly one place.
     private func writeC2SLocked(_ data: Data) {
-        onActivity()
         c2sBuffer.pushBack(data)
         flushC2SBufferLocked()
     }
 
     /// S→C counterpart.
     private func writeS2CLocked(_ data: Data) {
-        onActivity()
         s2cBuffer.pushBack(data)
         flushS2CBufferLocked()
     }
@@ -498,6 +496,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
         inFlightRead = true
         flow.readData { [weak self] data, error in
             guard let self else { return }
+            if let data, !data.isEmpty, !self.onActivity() { return }
             self.queue.async { [weak self] in
                 guard let self else { return }
                 self.inFlightRead = false
@@ -528,6 +527,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) {
             [weak self] data, _, isComplete, error in
             guard let self else { return }
+            if let data, !data.isEmpty, !self.onActivity() { return }
             self.queue.async { [weak self] in
                 guard let self else { return }
                 self.inFlightReceive = false
@@ -585,18 +585,15 @@ final class TcpDirectForwarder: @unchecked Sendable {
             return
         }
         c2sPhase = .finishing
-        armC2SBackstopLocked()
         egressWritePump.closeWhenDrained { [weak self] in
             guard let self else { return }
-            self.queue.async { [weak self] in
-                guard let self else { return }
-                self.c2sBackstop?.cancel()
-                self.c2sBackstop = nil
-                self.c2sPhase = .finished
-                self.updateDrainPendingLocked()
-                self.maybeFireTerminalLocked()
-            }
+            self.c2sBackstop?.cancel()
+            self.c2sBackstop = nil
+            self.c2sPhase = .finished
+            self.updateDrainPendingLocked()
+            self.maybeFireTerminalLocked()
         }
+        armC2SBackstopLocked()
     }
 
     private func finishS2CLocked() {
@@ -604,26 +601,23 @@ final class TcpDirectForwarder: @unchecked Sendable {
             return
         }
         s2cPhase = .finishing
-        armS2CBackstopLocked()
         // `TcpClientWritePump.closeWhenDrained` takes a
         // callback. Use it to detect drain completion so the
         // terminal-fire is paced by the pump's actual close.
         clientWritePump.closeWhenDrained { [weak self] _ in
             guard let self else { return }
-            self.queue.async { [weak self] in
-                guard let self else { return }
-                self.s2cBackstop?.cancel()
-                self.s2cBackstop = nil
-                // Every S->C byte has drained: surface the server's EOF to
-                // the client app. Write half only, so a continuing upload
-                // is untouched; the later duplicate close in
-                // `applyPromotedTerminal` is an idempotent no-op.
-                self.closeClientWrite(self.s2cTerminalError)
-                self.s2cPhase = .finished
-                self.updateDrainPendingLocked()
-                self.maybeFireTerminalLocked()
-            }
+            self.s2cBackstop?.cancel()
+            self.s2cBackstop = nil
+            // Every S->C byte has drained: surface the server's EOF to
+            // the client app. Write half only, so a continuing upload
+            // is untouched; the later duplicate close in
+            // `applyPromotedTerminal` is an idempotent no-op.
+            self.closeClientWrite(self.s2cTerminalError)
+            self.s2cPhase = .finished
+            self.updateDrainPendingLocked()
+            self.maybeFireTerminalLocked()
         }
+        armS2CBackstopLocked()
     }
 
     // ── Internal: drain backstop ─────────────────────────────────

@@ -76,4 +76,57 @@ final class NwTcpConnectionWritePumpFinContextTests: XCTestCase {
                 + String(describing: chunk?.contentContext)
         )
     }
+
+    func testFinCompletionReturnsDrainCallbackToPumpQueue() {
+        let mock = MockNwConnection()
+        mock.transition(to: .ready)
+        let queue = makeQueue()
+        let queueKey = DispatchSpecificKey<UInt8>()
+        queue.setSpecific(key: queueKey, value: 1)
+        let callbackOnQueue = TestValue(false)
+        let callback = expectation(description: "FIN drain callback")
+        let pump = NwTcpConnectionWritePump(
+            connection: mock,
+            queue: queue,
+            lingerCloseDeadline: .milliseconds(2_000),
+            onDrained: {})
+
+        pump.closeWhenDrained {
+            callbackOnQueue.set(DispatchQueue.getSpecific(key: queueKey) == 1)
+            callback.fulfill()
+        }
+        waitForQueueDrain(queue)
+        XCTAssertTrue(mock.completePendingSend(error: nil))
+        wait(for: [callback], timeout: 1.0)
+
+        XCTAssertTrue(callbackOnQueue.get())
+    }
+
+    func testDeinitFallbackReturnsDrainCallbackToPumpQueue() {
+        let mock = MockNwConnection()
+        mock.transition(to: .ready)
+        let queue = makeQueue()
+        let queueKey = DispatchSpecificKey<UInt8>()
+        queue.setSpecific(key: queueKey, value: 1)
+        let callbackOnQueue = TestValue(false)
+        let callback = expectation(description: "deinit drain callback")
+        var pump: NwTcpConnectionWritePump? = NwTcpConnectionWritePump(
+            connection: mock,
+            queue: queue,
+            lingerCloseDeadline: .milliseconds(2_000),
+            onDrained: {})
+
+        XCTAssertEqual(pump?.enqueue(Data([0x01])), .accepted)
+        waitForQueueDrain(queue)
+        XCTAssertEqual(mock.pendingSendCount, 1)
+        pump?.closeWhenDrained {
+            callbackOnQueue.set(DispatchQueue.getSpecific(key: queueKey) == 1)
+            callback.fulfill()
+        }
+        waitForQueueDrain(queue)
+        pump = nil
+        wait(for: [callback], timeout: 1.0)
+
+        XCTAssertTrue(callbackOnQueue.get())
+    }
 }

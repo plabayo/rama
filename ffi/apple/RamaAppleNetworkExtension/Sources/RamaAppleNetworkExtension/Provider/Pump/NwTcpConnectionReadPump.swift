@@ -306,6 +306,15 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + eofGraceDeadline, execute: work)
     }
 
+    /// A clean server→client drain has delivered EOF to the app while the
+    /// opposite upload half remains valid. Its activity-aware terminal drain
+    /// backstop now owns eventual cleanup, so the unconditional EOF fallback
+    /// must not cancel the still-live egress connection.
+    func disarmEofBackstop() {
+        eofWork?.cancel()
+        eofWork = nil
+    }
+
     func cancel() {
         queue.async { [weak self] in
             guard let self else { return }
