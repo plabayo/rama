@@ -273,11 +273,11 @@ nonisolated(unsafe) var writeRetryHardDeadlineMs: Int = 5_000
 /// Memory budget (in bytes) each writer pump (TCP response and TCP egress)
 /// keeps queued before it tells the Rust bridge to pause.
 ///
-/// Byte-based rather than chunk-count based: a chunk-count cap of N bounds
-/// worst-case memory at `N * max_chunk_size`, which with our 16–64 KiB
-/// chunks blows up fast under h2 multiplexing (many concurrent flows each
-/// holding the full chunk-count budget). A byte budget is constant
-/// regardless of chunk size.
+/// The byte budget is paired with `tcpWritePumpMaxPendingItems`. Bytes bound
+/// payload storage while the item cap bounds `Data`, queue-entry, and dispatch
+/// metadata when a producer emits pathologically small writes. Neither bound
+/// replaces the other: a byte-only budget could retain one item per byte, and
+/// a count-only budget would retain `N * max_chunk_size` payload bytes.
 ///
 /// Default 256 KiB, two pumps per flow = 512 KiB worst-case per flow on
 /// the write side. Smaller than it sounds: any actively backpressured flow
@@ -288,6 +288,13 @@ nonisolated(unsafe) var writeRetryHardDeadlineMs: Int = 5_000
 /// flows that benefit; the global default is sized for the common case
 /// (many concurrent flows, modest per-flow throughput).
 nonisolated(unsafe) var writePumpMaxPendingBytes: Int = 256 * 1024
+
+/// Total non-empty chunks accepted by one TCP write pump, including queued,
+/// dispatch-pending, in-flight, and transient-retry work. The normal 4–16 KiB
+/// transport chunks reach the default byte cap after only 16–64 entries, so
+/// this second bound is inactive on the ordinary path while preventing tiny
+/// writes from manufacturing hundreds of thousands of retained objects.
+let tcpWritePumpMaxPendingItems: Int = 256
 
 /// Drop-on-full bound for `UdpClientWritePump.pending`. UDP is lossy by
 /// definition, so the pump prefers dropping the newest datagram on
@@ -861,10 +868,14 @@ struct TcpWriterState {
     /// Sum of bytes currently queued OR in-flight on the writer.
     /// Source of truth for backpressure decisions.
     var pendingBytes: Int = 0
+    /// Number of accepted non-empty chunks currently dispatch-pending, queued,
+    /// in-flight, or retained for transient retry. Charged over the same
+    /// lifetime as `pendingBytes` so the asynchronous handoff itself is bounded.
+    var pendingItems: Int = 0
     /// Set when an `enqueue` returned `.paused`. We fire `onDrained`
-    /// on the first removal that drops `pendingBytes` below the cap,
-    /// then clear — edge-triggered so we never spam Rust with
-    /// redundant drain signals while the queue churns at-cap.
+    /// on the first removal that leaves headroom under both caps, then clear —
+    /// edge-triggered so we never spam Rust with redundant drain signals while
+    /// the queue churns at either cap.
     var pausedSignaled: Bool = false
     /// All-time peak of `pendingBytes` for this pump instance. Updated
     /// atomically under the lock; telemetry logs only its first threshold

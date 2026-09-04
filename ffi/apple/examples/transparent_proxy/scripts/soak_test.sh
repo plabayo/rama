@@ -49,6 +49,8 @@
 #   fanout.txt           per-worker outcomes of the active pool
 #   holders.log          flow-pool live/gauge timeline
 #   probe-timeline.txt    periodic liveness probe (freeze detector)
+#   pool-intervals.tsv    sustained explicitly-established flow-pool intervals
+#   holder-markers/       per-worker header/connected establishment proof
 #   final-mem.txt        ps/vmmap/heap AFTER the idle tail
 #   leaks.txt            `leaks` pass on the live sysext
 #   dial9-traces/        per-flow egress dial traces
@@ -131,11 +133,23 @@ hdr()  { printf '\n%s[soak]%s %s%s%s\n' "$DIM" "$RESET" "$BOLD" "$*" "$RESET"; }
 warn() { printf '%s[soak]%s %s%s%s\n' "$DIM" "$RESET" "$YEL" "$*" "$RESET" >&2; }
 die()  { printf '%s[soak]%s %s%s%s\n' "$DIM" "$RESET" "$RED" "$*" "$RESET" >&2; exit 1; }
 
+write_incomplete_status() {
+  local reason="$1" tmp="$OUT/.evidence-status.$$"
+  {
+    printf 'complete\t0\npassed\t0\nexit_code\t2\n'
+    printf 'issue\t%s\n' "$reason"
+    printf 'schema_complete\t1\n'
+  } > "$tmp" && mv -f "$tmp" "$OUT/evidence-status.tsv"
+}
+
 for _n in STRESS_SECONDS CONCURRENCY FANOUT_TARGET FANOUT_HOLD MAX_SAFE_FLOWS \
           IDLE_TARGET IDLE_HOLD IDLE_TAIL CEIL_STEP CEIL_SETTLE; do
   _v="${!_n}"
   [[ "$_v" =~ ^[0-9]+$ ]] || die "$_n must be a non-negative integer (got '$_v')"
 done
+(( CEIL_STEP > 0 )) || die "CEIL_STEP must be greater than zero"
+(( CONCURRENCY > 0 )) || die "CONCURRENCY must be greater than zero"
+(( MAX_SAFE_FLOWS > 0 )) || die "MAX_SAFE_FLOWS must be greater than zero"
 
 # ── Teardown ──────────────────────────────────────────────────────────
 LOG_STREAM_STARTED=0
@@ -145,11 +159,16 @@ PROBE_MON_PID=""
 HOLDER_PIDFILE=""
 FLOW_POOL_ATTAINED=0
 FLOW_POOL_MAX_LIVE=0
+FLOW_POOL_MAX_ESTABLISHED=0
+HOLDER_SEQUENCE=0
+FLOW_POOL_LABEL=""
 kill_holders() {
   # Kill every flow-pool worker we launched (pidfile is the source of truth;
   # the pattern kill is a scoped backup for the drip curls).
   if [[ -n "$HOLDER_PIDFILE" && -f "$HOLDER_PIDFILE" ]]; then
-    while read -r _p; do [[ -n "$_p" ]] && kill "$_p" 2>/dev/null || true; done < "$HOLDER_PIDFILE"
+    while IFS=$'\t' read -r _p _marker; do
+      [[ -n "$_p" ]] && kill "$_p" 2>/dev/null || true
+    done < "$HOLDER_PIDFILE"
     : > "$HOLDER_PIDFILE"
   fi
   pkill -f "$DL_HOST/bytes" 2>/dev/null || true
@@ -178,6 +197,11 @@ epoch_now() {
   fi
 }
 
+gauge_is_fresh() {
+  awk -v gauge="$1" -v probe="$2" -v phase_start="$3" \
+    'BEGIN { exit !(gauge >= phase_start && gauge <= probe && probe - gauge <= 70) }'
+}
+
 # Build a rama /bytes URL that streams `size` bytes in `chunk` pieces with
 # `delay_ms` between chunks (server-side drip). size clamped to the 32 MiB cap,
 # delay to the 60s server cap.
@@ -194,11 +218,38 @@ phase_mark() {
   printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$epoch" "$(date -u +%FT%TZ)" >> "$OUT/phases.tsv"
 }
 
-# Latest gauge sample → "softcap hardcap tcp udp total" (or "" if no tick yet).
+# Latest gauge sample → "epoch softcap hardcap tcp udp total" (or empty).
 read_gauge() {
-  grep -oE 'live-flow counts tcp=[0-9]+ udp=[0-9]+ total=[0-9]+ peak=[0-9]+ softCap=[0-9]+ hardCap=[0-9]+' \
-    "$OUT/system.ndjson" 2>/dev/null | tail -1 \
-    | sed -E 's/.*tcp=([0-9]+) udp=([0-9]+) total=([0-9]+) peak=[0-9]+ softCap=([0-9]+) hardCap=([0-9]+)/\4 \5 \1 \2 \3/'
+  if [[ -n "$PYTHON_BIN" ]]; then
+    "$PYTHON_BIN" - "$OUT/system.ndjson" <<'PY'
+import json, re, sys
+from datetime import datetime
+rx = re.compile(r"live-flow counts tcp=(\d+) udp=(\d+) total=(\d+) peak=\d+ softCap=(\d+) hardCap=(\d+)")
+latest = None
+try:
+    with open(sys.argv[1], errors="replace") as source:
+        for raw in source:
+            try:
+                row = json.loads(raw)
+                match = rx.search(row.get("eventMessage", ""))
+                stamp = row.get("timestamp", "")
+                if not match or not stamp:
+                    continue
+                epoch = datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+                tcp, udp, total, soft, hard = match.groups()
+                latest = f"{epoch:.6f} {soft} {hard} {tcp} {udp} {total}"
+            except (ValueError, TypeError, json.JSONDecodeError):
+                continue
+except FileNotFoundError:
+    pass
+if latest:
+    print(latest)
+PY
+  else
+    grep -oE 'live-flow counts tcp=[0-9]+ udp=[0-9]+ total=[0-9]+ peak=[0-9]+ softCap=[0-9]+ hardCap=[0-9]+' \
+      "$OUT/system.ndjson" 2>/dev/null | tail -1 \
+      | sed -E 's/.*tcp=([0-9]+) udp=([0-9]+) total=([0-9]+) peak=[0-9]+ softCap=([0-9]+) hardCap=([0-9]+)/0 \4 \5 \1 \2 \3/'
+  fi
 }
 wait_for_gauge() {
   local deadline=$(( $(date +%s) + $1 )) g
@@ -217,24 +268,31 @@ start_probe_monitor() {
   PROBE_MON_PID=$!
 }
 
-# Count live (kill -0) pids in the pidfile, rewriting it to survivors only.
+# Count live and explicitly established workers, rewriting to survivors only.
 recount_holders() {
-  local live=0 tmp="$OUT/.pids.tmp"; : > "$tmp"
-  while read -r p; do
-    [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null && { echo "$p" >> "$tmp"; live=$((live+1)); }
+  local live=0 established=0 tmp="$OUT/.pids.tmp" p marker; : > "$tmp"
+  while IFS=$'\t' read -r p marker; do
+    if [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; then
+      printf '%s\t%s\n' "$p" "$marker" >> "$tmp"
+      live=$((live+1))
+      [[ -s "$marker" ]] && established=$((established+1))
+    fi
   done < "$HOLDER_PIDFILE"
   mv "$tmp" "$HOLDER_PIDFILE"
-  echo "$live"
+  echo "$live $established"
 }
 
 # spawn one ACTIVE flow: a slow server-side drip (~45s, refilled by top-up as
 # the server's ~60s connection timeout cuts it). Holds an established flow.
 spawn_active() {
-  local delay=22   # 2048 chunks * 22ms ≈ 45s drip, under the 60s server cut
-  curl -s -o /dev/null --max-time 70 \
+  local delay=22 marker
+  HOLDER_SEQUENCE=$((HOLDER_SEQUENCE + 1))
+  marker="$OUT/holder-markers/${FLOW_POOL_LABEL}.${HOLDER_SEQUENCE}.active.headers"
+  : > "$marker"
+  curl -s -o /dev/null --dump-header "$marker" --max-time 70 \
     -w '%{http_code} %{size_download} %{time_total}\n' \
     "$(dl_url "$DL_MAX_BYTES" 16384 "$delay")" >> "$OUT/fanout.txt" 2>&1 &
-  echo $! >> "$HOLDER_PIDFILE"
+  printf '%s\t%s\n' "$!" "$marker" >> "$HOLDER_PIDFILE"
 }
 
 # spawn one SILENT flow: raw TCP connect that sends nothing, exits on EOF
@@ -243,9 +301,14 @@ spawn_active() {
 # toward the idle floor. (On a long-floor build the server's ~60s timeout cuts
 # it before the floor → admit-and-ride; on a short-floor build it gets evicted.)
 spawn_silent() {
-  ( exec 3<>/dev/tcp/"$DL_HOST"/443 2>/dev/null && IFS= read -r -t "$IDLE_HOLD" -u 3 _ ) \
+  local marker
+  HOLDER_SEQUENCE=$((HOLDER_SEQUENCE + 1))
+  marker="$OUT/holder-markers/${FLOW_POOL_LABEL}.${HOLDER_SEQUENCE}.silent.connected"
+  ( exec 3<>/dev/tcp/"$DL_HOST"/443 2>/dev/null \
+      && printf 'connected\n' > "$marker" \
+      && IFS= read -r -t "$IDLE_HOLD" -u 3 _ ) \
     >/dev/null 2>&1 &
-  echo $! >> "$HOLDER_PIDFILE"
+  printf '%s\t%s\n' "$!" "$marker" >> "$HOLDER_PIDFILE"
 }
 
 # Sustain a pool of `target` flows for `hold` seconds via top-up, logging the
@@ -253,23 +316,52 @@ spawn_silent() {
 run_flow_pool() {
   local label="$1" target="$2" hold="$3" spawn_fn="$4"
   : > "$HOLDER_PIDFILE"
-  local end=$(( $(date +%s) + hold )) live need g
+  local end=$(( $(date +%s) + hold )) live established need g counts
+  local sustained_since_seconds="" sustained_since_epoch="" now_seconds now_epoch
+  local last_established_epoch=""
+  FLOW_POOL_LABEL="$label"
   FLOW_POOL_ATTAINED=0
   FLOW_POOL_MAX_LIVE=0
+  FLOW_POOL_MAX_ESTABLISHED=0
   while (( $(date +%s) < end )); do
-    live="$(recount_holders)"
+    counts="$(recount_holders)"; read -r live established <<< "$counts"
     need=$(( target - live ))
     (( need > 0 )) && { local k; for ((k=0; k<need; k++)); do "$spawn_fn"; done; }
     sleep 1
-    live="$(recount_holders)"   # settle, then report survivors honestly
+    counts="$(recount_holders)"; read -r live established <<< "$counts"
     (( live > FLOW_POOL_MAX_LIVE )) && FLOW_POOL_MAX_LIVE=$live
-    (( live >= target )) && FLOW_POOL_ATTAINED=1
+    (( established > FLOW_POOL_MAX_ESTABLISHED )) && FLOW_POOL_MAX_ESTABLISHED=$established
+    now_seconds="$(date +%s)"; now_epoch="$(epoch_now)"
+    if (( established >= target )); then
+      if [[ -z "$sustained_since_seconds" ]]; then
+        sustained_since_seconds="$now_seconds"
+        sustained_since_epoch="$now_epoch"
+      fi
+      last_established_epoch="$now_epoch"
+      if (( now_seconds - sustained_since_seconds >= 5 )); then
+        FLOW_POOL_ATTAINED=1
+      fi
+    else
+      if [[ -n "$sustained_since_seconds" ]] \
+        && (( now_seconds - sustained_since_seconds >= 5 )); then
+        printf '%s\t%s\t%s\n' "$label" "$sustained_since_epoch" \
+          "$last_established_epoch" >> "$OUT/pool-intervals.tsv"
+      fi
+      sustained_since_seconds=""
+      sustained_since_epoch=""
+      last_established_epoch=""
+    fi
     g="$(read_gauge)"
-    printf '%s\t%s\tlive=%s\tgauge_total=%s\n' "$(date -u +%FT%TZ)" "$label" "$live" "${g##* }" >> "$OUT/holders.log"
-    printf '\r[soak] %s live=%s gauge_total=%s  %ds left   ' "$label" "$live" "${g##* }" "$(( end - $(date +%s) ))"
+    printf '%s\t%s\tlive=%s\testablished=%s\tgauge_total=%s\n' "$(date -u +%FT%TZ)" "$label" "$live" "$established" "${g##* }" >> "$OUT/holders.log"
+    printf '\r[soak] %s live=%s established=%s gauge_total=%s  %ds left   ' "$label" "$live" "$established" "${g##* }" "$(( end - $(date +%s) ))"
     probe_ok || warn "probe failed during $label (gauge_total=${g##* }) — watch for freeze"
     sleep 5
   done
+  if [[ -n "$sustained_since_seconds" ]] \
+    && (( $(date +%s) - sustained_since_seconds >= 5 )); then
+    printf '%s\t%s\t%s\n' "$label" "$sustained_since_epoch" \
+      "$last_established_epoch" >> "$OUT/pool-intervals.tsv"
+  fi
   printf '\r%-70s\r' ' '
   kill_holders
   sleep 3
@@ -280,7 +372,15 @@ hdr "rama transparent proxy soak — comprehensive single session"
 [[ -x "$(command -v curl)" ]] || die "curl not found"
 [[ -f "$STRESS_SH" ]] || die "stress script not found at $STRESS_SH (is REPO correct?)"
 mkdir -p "$OUT" || die "cannot create OUT=$OUT"
+if [[ -n "$(find "$OUT" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
+  die "OUT=$OUT is not empty; use a fresh artifact directory"
+fi
 : > "$OUT/phases.tsv"; : > "$OUT/run-meta.tsv"
+: > "$OUT/probe-timeline.txt"; : > "$OUT/holders.log"
+: > "$OUT/ceiling-probes.tsv"
+: > "$OUT/pool-intervals.tsv"
+mkdir -p "$OUT/holder-markers"
+write_incomplete_status "soak did not reach evidence extraction"
 HOLDER_PIDFILE="$OUT/holders.pids"; : > "$HOLDER_PIDFILE"
 ulimit -n 16384 2>/dev/null || true
 
@@ -358,7 +458,7 @@ if [[ -z "$G0" ]]; then
   SOFTCAP_KNOWN=0; SOFTCAP=0; HARDCAP=0; BASELINE_TOTAL=0
 else
   SOFTCAP_KNOWN=1
-  read -r SOFTCAP HARDCAP _ _ BASELINE_TOTAL <<< "$G0"
+  read -r BASELINE_GAUGE_EPOCH SOFTCAP HARDCAP _ _ BASELINE_TOTAL <<< "$G0"
   say "detected ${BOLD}softCap=$SOFTCAP hardCap=$HARDCAP${RESET}, baseline live flows=$BASELINE_TOTAL"
 fi
 printf 'softcap\t%s\nhardcap\t%s\nbaseline_total\t%s\n' \
@@ -419,9 +519,10 @@ say "resolved targets: fanout=$FANOUT_TARGET idle=$IDLE_TARGET (MAX_SAFE_FLOWS=$
 } > "$OUT/baseline-mem.txt" 2>&1
 phase_mark baseline end
 
-# ════════════════ CEILING-FINDER (opt-in, softCap=0 only) ═════════════
+# ═════════════ CEILING-FINDER (opt-in, both caps disabled) ════════════
 if [[ "$MODE" == "find-ceiling" ]]; then
-  phase_mark ceiling start
+  CEILING_START_EPOCH="$(epoch_now)"
+  printf '%s\tstart\t%s\t%s\n' ceiling "$CEILING_START_EPOCH" "$(date -u +%FT%TZ)" >> "$OUT/phases.tsv"
   hdr "CEILING-FINDER"
   warn "This deliberately exhausts the kernel nexus-flow allocation and can"
   warn "briefly FREEZE ALL networking on this Mac. It backs off + kills load the"
@@ -431,16 +532,40 @@ if [[ "$MODE" == "find-ceiling" ]]; then
     printf '%s[soak]%s type CEILING to proceed: ' "$DIM" "$RESET"; read -r _ans
     [[ "$_ans" == "CEILING" ]] || die "aborted"
   fi
-  launched=0; last_good=0; ceiling=""; CEILING_FOUND=0
+  launched=0; last_good=0; ceiling=""; CEILING_FOUND=0; CEILING_ABORTED=0
+  CEILING_OUTAGE_START=""; CEILING_OUTAGE_END=""
   while (( launched < MAX_SAFE_FLOWS * 3 )); do
     for ((i=0; i<CEIL_STEP; i++)); do spawn_active; launched=$((launched+1)); done
     sleep "$CEIL_SETTLE"
-    g="$(read_gauge)"; occ="${g##* }"; [[ -z "$occ" ]] && occ="?"
-    if probe_ok; then
+    g="$(read_gauge)"; gauge_epoch="${g%% *}"; occ="${g##* }"; [[ -z "$occ" ]] && occ="?"
+    probe_epoch="$(epoch_now)"
+    code="$(probe_once)"
+    printf '%s\t%s\t%s\t%s\n' "$probe_epoch" "$code" "$occ" "$gauge_epoch" >> "$OUT/ceiling-probes.tsv"
+    if [[ "$code" =~ ^2 ]]; then
       last_good="$occ"; say "ramp: launched=$launched gauge_total=$occ probe=OK"
     else
-      ceiling="$occ"; CEILING_FOUND=1
-      warn "probe FAILED at gauge_total=$occ — likely the ceiling. Backing off."; break
+      warn "probe failed at gauge_total=$occ; confirming before attributing a ceiling"
+      sleep 1
+      g="$(read_gauge)"; confirm_gauge_epoch="${g%% *}"; confirm_occ="${g##* }"; [[ -z "$confirm_occ" ]] && confirm_occ="?"
+      confirm_probe_epoch="$(epoch_now)"
+      confirm_code="$(probe_once)"
+      printf '%s\t%s\t%s\t%s\n' "$confirm_probe_epoch" "$confirm_code" "$confirm_occ" "$confirm_gauge_epoch" >> "$OUT/ceiling-probes.tsv"
+      if [[ ! "$confirm_code" =~ ^2 ]] \
+        && [[ "$occ" =~ ^[0-9]+$ && "$confirm_occ" =~ ^[0-9]+$ ]] \
+        && (( occ > BASELINE_TOTAL && confirm_occ > BASELINE_TOTAL )) \
+        && gauge_is_fresh "$gauge_epoch" "$probe_epoch" "$CEILING_START_EPOCH" \
+        && gauge_is_fresh "$confirm_gauge_epoch" "$confirm_probe_epoch" "$CEILING_START_EPOCH"; then
+        ceiling="$confirm_occ"; CEILING_FOUND=1
+        CEILING_OUTAGE_START="$probe_epoch"
+        warn "two elevated probes failed at gauge_total=$confirm_occ — ceiling proved. Backing off."
+        break
+      elif [[ ! "$confirm_code" =~ ^2 ]]; then
+        CEILING_ABORTED=1
+        warn "repeated failure was not backed by elevated gauge evidence; aborting as unproven"
+        break
+      else
+        warn "confirmation recovered; treating the first failure as transient and continuing"
+      fi
     fi
   done
   (( CEILING_FOUND )) || warn "ceiling was not found before the configured ramp limit"
@@ -448,8 +573,13 @@ if [[ "$MODE" == "find-ceiling" ]]; then
   kill_holders
   CEILING_RECOVERED=0
   for i in $(seq 1 20); do
-    if probe_ok; then
+    g="$(read_gauge)"; recovery_gauge_epoch="${g%% *}"; recovery_occ="${g##* }"
+    recovery_epoch="$(epoch_now)"
+    recovery_code="$(probe_once)"
+    printf '%s\t%s\t%s\t%s\n' "$recovery_epoch" "$recovery_code" "$recovery_occ" "$recovery_gauge_epoch" >> "$OUT/ceiling-probes.tsv"
+    if [[ "$recovery_code" =~ ^2 ]]; then
       CEILING_RECOVERED=1
+      CEILING_OUTAGE_END="$recovery_epoch"
       say "${GREEN}recovered${RESET}"
       break
     fi
@@ -462,8 +592,9 @@ if [[ "$MODE" == "find-ceiling" ]]; then
     printf 'gauge_total at first probe FAIL: %s\n' "${ceiling:-none}"
     printf 'set softCap ~70%% and lowWater ~55%% of the ceiling.\n'
   } | tee "$OUT/ceiling.txt"
-  printf 'ceiling_found\t%s\nceiling_recovered\t%s\n' \
-    "$CEILING_FOUND" "$CEILING_RECOVERED" >> "$OUT/run-meta.tsv"
+  printf 'ceiling_found\t%s\nceiling_recovered\t%s\nceiling_outage_start\t%s\nceiling_outage_end\t%s\n' \
+    "$CEILING_FOUND" "$CEILING_RECOVERED" "$CEILING_OUTAGE_START" \
+    "$CEILING_OUTAGE_END" >> "$OUT/run-meta.tsv"
   phase_mark ceiling end
 else
 
@@ -492,13 +623,15 @@ if [[ "$SKIP_FANOUT" != 1 ]]; then
   say "active slow-drip flows via $DL_HOST/bytes → peak / admit-and-ride / active-not-evicted"
   : > "$OUT/fanout.txt"
   run_flow_pool fanout "$FANOUT_TARGET" "$FANOUT_HOLD" spawn_active
-  FANOUT_OK=$FLOW_POOL_ATTAINED
-  printf 'fanout_max_live\t%s\n' "$FLOW_POOL_MAX_LIVE" >> "$OUT/run-meta.tsv"
+  FANOUT_ESTABLISHED_TARGET_SUSTAINED=$FLOW_POOL_ATTAINED
+  printf 'fanout_max_live\t%s\nfanout_max_established\t%s\nfanout_target\t%s\n' \
+    "$FLOW_POOL_MAX_LIVE" "$FLOW_POOL_MAX_ESTABLISHED" "$FANOUT_TARGET" \
+    >> "$OUT/run-meta.tsv"
   phase_mark fanout end
 else
-  FANOUT_OK=skipped
+  FANOUT_ESTABLISHED_TARGET_SUSTAINED=skipped
 fi
-printf 'fanout_ok\t%s\n' "$FANOUT_OK" >> "$OUT/run-meta.tsv"
+printf 'fanout_established_target_sustained\t%s\n' "$FANOUT_ESTABLISHED_TARGET_SUSTAINED" >> "$OUT/run-meta.tsv"
 
 if [[ "$SKIP_IDLE" != 1 ]]; then
   phase_mark idle-holders start
@@ -508,13 +641,15 @@ if [[ "$SKIP_IDLE" != 1 ]]; then
   warn "is 120s, so on a PROD build expect admit-and-ride (no eviction). Build with"
   warn "a short Rust flow-pressure idle floor (≈10s) to see evictions."
   run_flow_pool idle-holders "$IDLE_TARGET" "$IDLE_HOLD" spawn_silent
-  IDLE_HOLDERS_OK=$FLOW_POOL_ATTAINED
-  printf 'idle_holders_max_live\t%s\n' "$FLOW_POOL_MAX_LIVE" >> "$OUT/run-meta.tsv"
+  IDLE_HOLDERS_ESTABLISHED_TARGET_SUSTAINED=$FLOW_POOL_ATTAINED
+  printf 'idle_holders_max_live\t%s\nidle_holders_max_established\t%s\nidle_holders_target\t%s\n' \
+    "$FLOW_POOL_MAX_LIVE" "$FLOW_POOL_MAX_ESTABLISHED" "$IDLE_TARGET" \
+    >> "$OUT/run-meta.tsv"
   phase_mark idle-holders end
 else
-  IDLE_HOLDERS_OK=skipped
+  IDLE_HOLDERS_ESTABLISHED_TARGET_SUSTAINED=skipped
 fi
-printf 'idle_holders_ok\t%s\n' "$IDLE_HOLDERS_OK" >> "$OUT/run-meta.tsv"
+printf 'idle_holders_established_target_sustained\t%s\n' "$IDLE_HOLDERS_ESTABLISHED_TARGET_SUSTAINED" >> "$OUT/run-meta.tsv"
 
 phase_mark real-download start
 hdr "phase 4 — real-world download (32 MiB steady stream)"
@@ -533,6 +668,7 @@ if [[ "$SKIP_SLEEP" == 1 || ! -t 0 ]]; then
   hdr "phase 5 — sleep/wake (SKIPPED)"
   [[ ! -t 0 && "$SKIP_SLEEP" != 1 ]] && warn "no TTY — skipping sleep/wake (needs a manual wake)"
   POST_WAKE_OK=skipped
+  SLEEP_COMMAND_OK=skipped
 else
   phase_mark sleep-wake start
   hdr "phase 5 — sleep/wake"
@@ -550,7 +686,12 @@ else
   WAKE_DL_PID=$!
   sleep 8
   warn ">>> SLEEPING NOW — wake the Mac manually in ~45s <<<"
-  sudo pmset sleepnow || warn "pmset sleepnow failed"
+  if sudo pmset sleepnow; then
+    SLEEP_COMMAND_OK=1
+  else
+    SLEEP_COMMAND_OK=0
+    warn "pmset sleepnow failed"
+  fi
   sleep 5
   sudo -v 2>/dev/null || true
   say "awake — probing connectivity..."
@@ -573,6 +714,7 @@ else
   phase_mark sleep-wake end
 fi
 printf 'post_wake_ok\t%s\n' "$POST_WAKE_OK" >> "$OUT/run-meta.tsv"
+printf 'sleep_command_ok\t%s\n' "$SLEEP_COMMAND_OK" >> "$OUT/run-meta.tsv"
 
 phase_mark idle-tail start
 hdr "phase 6 — idle ${IDLE_TAIL}s (quiesce; keep the machine idle for a clean leak read)"
@@ -652,62 +794,99 @@ fi
 hdr "extracting signals"
 PYX="$(command -v python3 || true)"
 if [[ -n "$PYX" ]]; then
-  "$PYX" - "$OUT" "$EXAMPLE_DIR/scripts" <<'PYEOF'
+  if "$PYX" - "$OUT" "$EXAMPLE_DIR/scripts" <<'PYEOF'
 import os, re, sys
 from decimal import Decimal
 from datetime import datetime, timezone
 
 sys.path.insert(0, sys.argv[2])
 from soak_pressure_log import (
+    ceiling_outage_window,
+    ceiling_probe_evidence_issues,
     classify_soak_result,
+    engine_lifecycle_event,
+    flow_pool_status,
     flow_gauge,
     no_headroom_event,
     parse_epoch,
     parse_ndjson_lines,
+    parse_ceiling_probe_lines,
     phase_for_epoch,
     pressure_reaper_status,
     selection_event,
+    sleep_wake_evidence_issues,
     settled_final_flow_gauge,
     soak_evidence_issues,
     summarize_pressure_rows,
+    unexpected_probe_failure_count,
 )
 
 out = sys.argv[1]
 nd = os.path.join(out, "system.ndjson")
 
 meta = {}
+meta_issues = []
 mf = os.path.join(out, "run-meta.tsv")
 if os.path.exists(mf):
-    for ln in open(mf):
+    for line_number, ln in enumerate(open(mf), 1):
         p = ln.rstrip("\n").split("\t")
         if len(p) == 2:
+            if p[0] in meta:
+                meta_issues.append(f"duplicate run metadata key {p[0]!r}")
             meta[p[0]] = p[1]
+        elif ln.strip():
+            meta_issues.append(f"malformed run metadata at line {line_number}")
+
+for key in ("softcap", "hardcap", "baseline_total"):
+    value = meta.get(key)
+    if value is None or re.fullmatch(r"\d+", value) is None:
+        meta_issues.append(f"run metadata {key!r} is missing or invalid")
+for key in (
+    "provider_start_pid", "provider_start_time", "provider_end_pid",
+    "provider_end_time", "log_stream_pid", "probe_monitor_pid",
+):
+    if not meta.get(key):
+        meta_issues.append(f"run metadata {key!r} is missing")
 
 phases = []
 pf = os.path.join(out, "phases.tsv")
 starts = {}
 ended_phases = set()
+phase_issues = []
 if os.path.exists(pf):
     phase_starts_us = {}
     phase_ends_us = {}
-    for ln in open(pf):
+    for line_number, ln in enumerate(open(pf), 1):
         p = ln.rstrip("\n").split("\t")
         if len(p) < 3:
+            phase_issues.append(f"malformed phase marker at line {line_number}")
             continue
         name, kind, epoch = p[0], p[1], p[2]
-        try:
-            epoch_decimal = Decimal(epoch)
-            e = epoch_decimal
-            e_us = int(epoch_decimal * 1_000_000)
-        except (ValueError, ArithmeticError):
+        e = parse_epoch(epoch)
+        if e is None:
+            phase_issues.append(f"invalid phase timestamp at line {line_number}")
             continue
+        e_us = int(e * 1_000_000)
         if kind == "start":
+            if name in starts:
+                phase_issues.append(f"duplicate start marker for phase {name!r}")
+                continue
             starts[name] = e
             phase_starts_us[name] = e_us
         elif kind == "end" and name in starts:
+            if name in ended_phases:
+                phase_issues.append(f"duplicate end marker for phase {name!r}")
+                continue
+            if e <= starts[name]:
+                phase_issues.append(f"phase {name!r} has a non-positive duration")
+                continue
             phases.append([name, starts[name], e])
             phase_ends_us[name] = e_us
             ended_phases.add(name)
+        elif kind == "end":
+            phase_issues.append(f"phase {name!r} ended without a start marker")
+        else:
+            phase_issues.append(f"invalid phase marker kind at line {line_number}")
 
 def phase_of(ep):
     return phase_for_epoch(ep, phases)
@@ -736,6 +915,7 @@ def is_in_run(ep):
 
 rows = []
 ndjson_issues = []
+timestamp_issues = []
 try:
     with open(nd, "r", errors="replace") as f:
         decoded, ndjson_issues = parse_ndjson_lines(f)
@@ -743,6 +923,10 @@ try:
             (o.get("timestamp", ""), o.get("eventMessage", ""), o.get("messageType", ""))
             for o in decoded
         ]
+        invalid_timestamps = sum(1 for ts, _, _ in rows if to_epoch(ts) is None)
+        if invalid_timestamps:
+            timestamp_issues.append(
+                f"{invalid_timestamps} NDJSON record(s) have invalid timestamps")
 except FileNotFoundError:
     pass
 
@@ -772,6 +956,7 @@ c = dict(admit_and_ride=0, wd_idle=0,
 egress_fail = {}   # posix code -> count
 per_phase = {}
 gauge_epochs_per_phase = {}
+occupancy_samples_per_phase = {}
 
 pressure = summarize_pressure_rows(
     ((to_epoch(ts), msg) for ts, msg, _ in rows),
@@ -787,7 +972,10 @@ final_gauge = settled_final_flow_gauge(
     settle_end_epoch=idle_tail[1])
 
 def ph(n):
-    return per_phase.setdefault(n, dict(peak_total=0, ride=0, body_err=0, gauge=0))
+    return per_phase.setdefault(
+        n, dict(peak_total=0, ride=0, body_err=0, gauge=0, sleep=0, wake=0))
+
+generation_events = []
 
 with open(os.path.join(out, "flow-counts.txt"), "w") as g, \
      open(os.path.join(out, "timeline.txt"), "w") as t:
@@ -801,24 +989,29 @@ with open(os.path.join(out, "flow-counts.txt"), "w") as g, \
                 f"{ts}  [{pname}]  tcp={tcp} udp={udp} total={total} "
                 f"peak={pk} softCap={sc} hardCap={hc if hc is not None else 'missing'}\n"
             )
-            peak_tcp = max(peak_tcp, tcp); peak_udp = max(peak_udp, udp); peak_total = max(peak_total, total)
-            softcap_seen.add(sc); n_gauge += 1
-            if hc is not None:
-                hardcap_seen.add(hc)
-            else:
-                missing_hardcap_gauges += 1
-            p = ph(pname); p["peak_total"] = max(p["peak_total"], total); p["gauge"] += 1
             if ep is not None:
+                peak_tcp = max(peak_tcp, tcp); peak_udp = max(peak_udp, udp); peak_total = max(peak_total, total)
+                softcap_seen.add(sc); n_gauge += 1
+                if hc is not None:
+                    hardcap_seen.add(hc)
+                else:
+                    missing_hardcap_gauges += 1
+                p = ph(pname); p["peak_total"] = max(p["peak_total"], total); p["gauge"] += 1
                 gauge_epochs_per_phase.setdefault(pname, []).append(ep)
+                occupancy_samples_per_phase.setdefault(pname, []).append((ep, total))
         selection = selection_event(msg)
         if selection is not None and is_in_run(ep):
             ph(pname)["peak_total"] = max(
                 ph(pname)["peak_total"], selection["occupancy"])
+            occupancy_samples_per_phase.setdefault(pname, []).append(
+                (ep, selection["occupancy"]))
         no_headroom = no_headroom_event(msg)
         if no_headroom is not None and is_in_run(ep):
             c["admit_and_ride"] += 1; ph(pname)["ride"] += 1
             ph(pname)["peak_total"] = max(
                 ph(pname)["peak_total"], no_headroom["occupancy"])
+            occupancy_samples_per_phase.setdefault(pname, []).append(
+                (ep, no_headroom["occupancy"]))
         for rx, key in ((wd_idle_re, "wd_idle"), (wd_wedged_re, "wd_wedged"), (wd_prerdy_re, "wd_prerdy")):
             mm = rx.search(msg)
             if mm:
@@ -838,30 +1031,41 @@ with open(os.path.join(out, "flow-counts.txt"), "w") as g, \
             if mtype in ("Error", "Fault"):
                 c["err"] += 1
             if "system sleep" in ml:
-                c["sleep"] += 1
+                c["sleep"] += 1; ph(pname)["sleep"] += 1
             if "system wake" in ml:
-                c["wake"] += 1
+                c["wake"] += 1; ph(pname)["wake"] += 1
+        lifecycle = engine_lifecycle_event(msg)
+        if lifecycle:
+            generation_events.append((ts, lifecycle))
 
 # Freeze detector (probe-timeline epoch \t iso \t code); exclude sleep-wake.
 probe_fail = probe_total = max_fail_run = probe_skipped = 0
 probe_per_phase = {}
+probe_failure_epochs = {}
+probe_issues = []
 ptl = os.path.join(out, "probe-timeline.txt")
 if os.path.exists(ptl):
     run = 0
-    for ln in open(ptl):
+    for line_number, ln in enumerate(open(ptl), 1):
         p = ln.rstrip("\n").split("\t")
         if len(p) < 3:
+            probe_issues.append(f"malformed liveness probe at line {line_number}")
             continue
         ep = parse_epoch(p[0])
         code = p[-1]
-        if phase_of(ep) == "sleep-wake":
+        if ep is None:
+            probe_issues.append(f"invalid liveness-probe timestamp at line {line_number}")
+            continue
+        probe_phase = phase_of(ep)
+        if probe_phase in ("?", "-"):
+            continue
+        if probe_phase == "sleep-wake":
             probe_skipped += 1; run = 0; continue
         probe_total += 1
-        probe_phase = phase_of(ep)
-        if ep is not None:
-            probe_per_phase.setdefault(probe_phase, []).append(ep)
+        probe_per_phase.setdefault(probe_phase, []).append(ep)
         if not code.startswith("2"):
             probe_fail += 1; run += 1; max_fail_run = max(max_fail_run, run)
+            probe_failure_epochs.setdefault(probe_phase, []).append(ep)
         else:
             run = 0
 
@@ -880,7 +1084,95 @@ if os.path.exists(fof):
 def meta_true(key):
     return meta.get(key) == "1"
 
-capture_issues = list(ndjson_issues)
+def meta_int(key, default=0):
+    try:
+        return int(meta.get(key, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+pool_intervals = {"fanout": [], "idle-holders": []}
+pool_interval_issues = []
+pool_interval_file = os.path.join(out, "pool-intervals.tsv")
+if os.path.exists(pool_interval_file):
+    for line_number, line in enumerate(open(pool_interval_file), 1):
+        fields = line.rstrip("\n").split("\t")
+        if len(fields) != 3 or fields[0] not in pool_intervals:
+            pool_interval_issues.append(
+                f"malformed established-pool interval at line {line_number}")
+            continue
+        start = parse_epoch(fields[1])
+        end = parse_epoch(fields[2])
+        if start is None or end is None or end - start < Decimal("5"):
+            pool_interval_issues.append(
+                f"invalid established-pool interval at line {line_number}")
+            continue
+        pool_intervals[fields[0]].append((start, end))
+
+# Event-local cap values participate in configuration consistency too; checking
+# only periodic gauges could bless an episode from another generation/config.
+softcap_seen.update(pressure["soft_caps"])
+baseline_total = meta_int("baseline_total")
+configured_softcap = meta_int("softcap")
+fanout_status = flow_pool_status(
+    meta.get("fanout_established_target_sustained"),
+    meta.get("fanout_target"),
+    occupancy_samples_per_phase.get("fanout", []),
+    configured_softcap,
+    pool_intervals["fanout"],
+    next((p for p in phases if p[0] == "fanout"), None),
+)
+idle_status = flow_pool_status(
+    meta.get("idle_holders_established_target_sustained"),
+    meta.get("idle_holders_target"),
+    occupancy_samples_per_phase.get("idle-holders", []),
+    configured_softcap,
+    pool_intervals["idle-holders"],
+    next((p for p in phases if p[0] == "idle-holders"), None),
+)
+meta["fanout_ok"] = fanout_status
+meta["idle_holders_ok"] = idle_status
+
+ceiling_records = []
+ceiling_parse_issues = []
+ceiling_file = os.path.join(out, "ceiling-probes.tsv")
+if os.path.exists(ceiling_file):
+    with open(ceiling_file) as ceiling_input:
+        ceiling_records, ceiling_parse_issues = parse_ceiling_probe_lines(ceiling_input)
+ceiling_phase = next((p for p in phases if p[0] == "ceiling"), None)
+ceiling_proof_issues = []
+if meta.get("mode") == "find-ceiling":
+    ceiling_proof_issues.extend(ceiling_parse_issues)
+    ceiling_proof_issues.extend(ceiling_probe_evidence_issues(
+        ceiling_records, meta.get("ceiling_found"), baseline_total, ceiling_phase,
+        meta.get("ceiling_recovered")))
+ceiling_window = (
+    ceiling_outage_window(ceiling_records, baseline_total, ceiling_phase)
+    if meta.get("mode") == "find-ceiling" and meta.get("ceiling_found") == "1"
+    else None
+)
+if ceiling_window is not None:
+    recorded_window = (
+        parse_epoch(meta.get("ceiling_outage_start")),
+        parse_epoch(meta.get("ceiling_outage_end")),
+    )
+    if recorded_window != ceiling_window:
+        ceiling_proof_issues.append("recorded ceiling outage window does not match direct probes")
+
+capture_issues = (
+    list(ndjson_issues) + meta_issues + phase_issues + timestamp_issues + probe_issues
+    + pool_interval_issues
+)
+for label, status, raw_status in (
+    ("fanout", fanout_status, meta.get("fanout_established_target_sustained")),
+    ("idle-holders", idle_status, meta.get("idle_holders_established_target_sustained")),
+):
+    if raw_status == "1" and status is None:
+        capture_issues.append(
+            f"{label} has no correlated phase-local provider occupancy evidence")
+capture_issues.extend(ceiling_proof_issues)
+if generation_events:
+    capture_issues.append(
+        f"provider engine generation changed ({len(generation_events)} lifecycle event(s))")
 if missing_hardcap_gauges:
     capture_issues.append(
         f"{missing_hardcap_gauges} flow-gauge sample(s) omitted hardCap")
@@ -892,6 +1184,12 @@ if softcap_seen and meta.get("softcap") not in {str(value) for value in softcap_
     capture_issues.append("baseline soft cap does not match captured gauges")
 if hardcap_seen and meta.get("hardcap") not in {str(value) for value in hardcap_seen}:
     capture_issues.append("baseline hard cap does not match captured gauges")
+if meta.get("mode") != "find-ceiling" and meta.get("post_wake_ok") != "skipped":
+    capture_issues.extend(sleep_wake_evidence_issues(
+        meta.get("sleep_command_ok"),
+        ph("sleep-wake")["sleep"],
+        ph("sleep-wake")["wake"],
+    ))
 
 if meta.get("mode") == "find-ceiling":
     required_phases = {"baseline", "ceiling"}
@@ -899,8 +1197,8 @@ else:
     required_phases = {"baseline", "real-download", "idle-tail"}
     for outcome, phase in (
         ("stress_ok", "stress"),
-        ("fanout_ok", "fanout"),
-        ("idle_holders_ok", "idle-holders"),
+        ("fanout_established_target_sustained", "fanout"),
+        ("idle_holders_established_target_sustained", "idle-holders"),
         ("post_wake_ok", "sleep-wake"),
     ):
         if meta.get(outcome) != "skipped":
@@ -925,18 +1223,25 @@ evidence_issues = soak_evidence_issues(
     final_gauge_required=meta.get("mode") != "find-ceiling",
     final_gauge_present=final_gauge is not None,
 )
-baseline_total = int(meta.get("baseline_total", "0") or "0")
 final_total = final_gauge["total"] if final_gauge else None
-softcap_seen.update(pressure["soft_caps"])
-sc = max(softcap_seen) if softcap_seen else int(meta.get("softcap", "0") or "0")
+sc = configured_softcap
 observed_peak = pressure["observed_peak"]
 periodic = pressure["periodic"]
 episode = pressure["episode"]
 reaper_status = pressure_reaper_status(pressure, sc, not evidence_issues)
+unexpected_probe_failures = (
+    probe_fail
+)
+if ceiling_window is not None and ceiling_window[1] is not None and not ceiling_proof_issues:
+    ceiling_failures = probe_failure_epochs.get("ceiling", [])
+    unexpected_ceiling_failures = unexpected_probe_failure_count(
+        ceiling_failures, ceiling_window
+    )
+    unexpected_probe_failures -= len(ceiling_failures) - unexpected_ceiling_failures
 run_result = classify_soak_result(
     meta,
     evidence_issues,
-    probe_failures=probe_fail,
+    probe_failures=unexpected_probe_failures,
     body_errors=c["body_err"],
     reaper_status=reaper_status,
 )
@@ -970,6 +1275,8 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
     w(f"final live flows:         {final_total if final_total is not None else 'n/a'}")
     if not evidence_complete:
         w("leak verdict:             INCONCLUSIVE — evidence or provider continuity is incomplete")
+    elif final_total is None:
+        w("leak verdict:             NOT EVALUATED — ceiling mode has no required idle tail")
     elif final_total <= baseline_total + 5:
         w(f"leak verdict:             GOOD — settled to ≈baseline ({final_total} ≤ {baseline_total}+5)")
     else:
@@ -1027,8 +1334,10 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
     w("")
     w("--- freeze detector (liveness probe; sleep-wake excluded) ---")
     w(f"probes:                   {probe_total} (failures {probe_fail}, longest run {max_fail_run}, sleep-wake skipped {probe_skipped})")
-    if probe_fail > 0:
-        w(f"freeze verdict:           !! {probe_fail} probe failures — investigate nexus exhaustion / network blip")
+    if unexpected_probe_failures > 0:
+        w(f"freeze verdict:           !! {unexpected_probe_failures} unexpected probe failures — investigate nexus exhaustion / network blip")
+    elif probe_fail > 0:
+        w("freeze verdict:           GOOD — phase-local failures match proved ceiling exhaustion")
     elif not evidence_complete:
         w("freeze verdict:           INCONCLUSIVE — probe coverage or provider continuity is incomplete")
     else:
@@ -1048,7 +1357,9 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
     w("")
     w("see flow-counts.txt, timeline.txt, probe-timeline.txt, holders.log, leaks.txt")
 
-with open(os.path.join(out, "evidence-status.tsv"), "w") as status:
+status_path = os.path.join(out, "evidence-status.tsv")
+status_tmp = status_path + f".tmp.{os.getpid()}"
+with open(status_tmp, "w") as status:
     status.write(f"complete\t{1 if evidence_complete else 0}\n")
     status.write(f"passed\t{1 if run_passed else 0}\n")
     status.write(f"exit_code\t{run_result['exit_code']}\n")
@@ -1056,13 +1367,23 @@ with open(os.path.join(out, "evidence-status.tsv"), "w") as status:
         status.write(f"issue\t{issue}\n")
     for failure in run_failures:
         status.write(f"failure\t{failure}\n")
+    status.write("schema_complete\t1\n")
+    status.flush()
+    os.fsync(status.fileno())
+os.replace(status_tmp, status_path)
 PYEOF
+  then
+    :
+  else
+    warn "evidence extractor failed — preserving artifacts with an incomplete verdict"
+    write_incomplete_status "evidence extractor failed"
+  fi
 else
   warn "python3 not found — falling back to grep"
   grep -oE 'live-flow counts[^"]*' "$OUT/system.ndjson" > "$OUT/flow-counts.txt" 2>/dev/null || true
   grep -iE 'flow pressure|drain backstop|force-tear|brotli error|drop MITM relay|system sleep|system wake' \
     "$OUT/system.ndjson" > "$OUT/timeline.txt" 2>/dev/null || true
-  printf 'complete\t0\npassed\t0\nexit_code\t2\nissue\tpython3 unavailable\n' > "$OUT/evidence-status.tsv"
+  write_incomplete_status "python3 unavailable"
 fi
 
 # ── Bundle ────────────────────────────────────────────────────────────
@@ -1075,13 +1396,28 @@ echo
 [[ -f "$OUT/extract-summary.txt" ]] && cat "$OUT/extract-summary.txt"
 echo
 hdr "hand me: $OUT  (or the tarball)"
-EVIDENCE_COMPLETE="$(awk -F '\t' '$1 == "complete" { print $2; exit }' "$OUT/evidence-status.tsv" 2>/dev/null)"
-RUN_PASSED="$(awk -F '\t' '$1 == "passed" { print $2; exit }' "$OUT/evidence-status.tsv" 2>/dev/null)"
-if [[ "$EVIDENCE_COMPLETE" != 1 ]]; then
-  warn "soak completed, but evidence is incomplete; see evidence-status.tsv"
+STATUS_LAST="$(awk 'NF { line=$0 } END { print line }' "$OUT/evidence-status.tsv" 2>/dev/null)"
+STATUS_KEYS="$(awk -F '\t' '$1 == "complete" || $1 == "passed" || $1 == "exit_code" || $1 == "schema_complete" { count[$1]++ } END { print count["complete"]+0, count["passed"]+0, count["exit_code"]+0, count["schema_complete"]+0 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
+STATUS_BAD_LINES="$(awk -F '\t' 'NF && (NF != 2 || ($1 != "complete" && $1 != "passed" && $1 != "exit_code" && $1 != "issue" && $1 != "failure" && $1 != "schema_complete")) { bad++ } END { print bad+0 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
+EVIDENCE_COMPLETE="$(awk -F '\t' '$1 == "complete" { print $2 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
+RUN_PASSED="$(awk -F '\t' '$1 == "passed" { print $2 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
+DECLARED_EXIT="$(awk -F '\t' '$1 == "exit_code" { print $2 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
+if [[ "$STATUS_LAST" != $'schema_complete\t1' || "$STATUS_KEYS" != "1 1 1 1" || "$STATUS_BAD_LINES" != 0 ]]; then
+  warn "evidence status is truncated or schema-incomplete"
   exit 2
 fi
-if [[ "$RUN_PASSED" != 1 ]]; then
-  warn "soak evidence is complete, but one or more validation checks failed; see evidence-status.tsv"
-  exit 1
-fi
+case "$EVIDENCE_COMPLETE:$RUN_PASSED:$DECLARED_EXIT" in
+  1:1:0) exit 0 ;;
+  1:0:1)
+    warn "soak evidence is complete, but one or more validation checks failed; see evidence-status.tsv"
+    exit 1
+    ;;
+  0:0:2)
+  warn "soak completed, but evidence is incomplete; see evidence-status.tsv"
+  exit 2
+    ;;
+  *)
+    warn "evidence status contains an inconsistent verdict tuple"
+    exit 2
+    ;;
+esac

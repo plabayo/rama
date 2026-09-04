@@ -50,6 +50,19 @@ CONCURRENCY="${STRESS_CONCURRENCY:-16}"
 LARGE_BYTES="${STRESS_LARGE_BYTES:-16777216}"   # 16 MiB
 POST_BYTES="${STRESS_POST_BYTES:-8388608}"      # 8 MiB
 
+for numeric_name in DURATION CONCURRENCY LARGE_BYTES POST_BYTES; do
+  numeric_value="${!numeric_name}"
+  if [[ ! "$numeric_value" =~ ^[0-9]+$ ]]; then
+    printf '[stress] %s must be a non-negative integer (got %q)\n' \
+      "$numeric_name" "$numeric_value" >&2
+    exit 2
+  fi
+done
+if (( CONCURRENCY == 0 )); then
+  printf '[stress] CONCURRENCY must be greater than zero\n' >&2
+  exit 2
+fi
+
 HTTP_TARGET="${STRESS_HTTP_TARGET:-http://http-test.ramaproxy.org/method}"
 HTTPS_TARGET="${STRESS_HTTPS_TARGET:-https://http-test.ramaproxy.org/method}"
 POST_TARGET="${STRESS_POST_TARGET:-https://http-test.ramaproxy.org/octet-stream}"
@@ -62,6 +75,7 @@ MONITOR_PID="${STRESS_MONITOR_PID:-}"
 NDJSON_PATH="${STRESS_NDJSON:-}"
 SKIP_LIVENESS="${STRESS_SKIP_LIVENESS:-}"
 ANALYZE_ONLY=0
+TRAFFIC_FAILED=0
 if (( DURATION <= 0 )); then
   ANALYZE_ONLY=1
 fi
@@ -84,11 +98,10 @@ trap 'kill $(jobs -p) 2>/dev/null || true' EXIT INT TERM
 # Treat every non-2xx/3xx outcome as failure, including `000`
 # transport errors.
 http_status_is_ok() {
-  # Empty / `000` / 4xx / 5xx → fail. Otherwise → ok.
   local code="$1"
   case "$code" in
-    "" | 000 | 4?? | 5??) return 1 ;;
-    *) return 0 ;;
+    2?? | 3??) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
@@ -96,7 +109,7 @@ http_status_is_ok() {
 do_one_curl() {
   local label="$1" target="$2"; shift 2
   local code
-  code=$(curl --silent --show-error --output /dev/null \
+  code=$(curl --silent --output /dev/null \
       --max-time 30 \
       --fail-with-body \
       --write-out '%{http_code}' \
@@ -119,6 +132,7 @@ loop_http() {
   done
   printf '%s done: iters=%d ok=%d fail=%d\n' "$label" "$iter" "$ok" "$fail" \
     >"$LOG_DIR/${label}.summary"
+  (( fail == 0 ))
 }
 
 # Many curls in parallel via xargs.
@@ -128,21 +142,22 @@ loop_pool() {
   while (( SECONDS < end )); do
     seq 1 "$CONCURRENCY" \
       | xargs -P "$CONCURRENCY" -I{} \
-        curl --silent --show-error --output /dev/null \
+        curl --silent --output /dev/null \
           --max-time 30 \
           --fail-with-body \
           --write-out '%{http_code} %{time_total}s\n' \
           "$@" "$target" \
-          >>"$LOG_DIR/${label}.log" 2>&1 || true
+          >>"$LOG_DIR/${label}.log" 2>/dev/null || true
     iter=$((iter + CONCURRENCY))
   done
-  local fail
-  fail=$(grep -cE '^(000|[45][0-9]{2})( |$)|^curl: \([0-9]+\) ' \
+  local ok fail
+  ok=$(awk '$1 ~ /^[23][0-9][0-9]$/ { count++ } END { print count + 0 }' \
     "$LOG_DIR/${label}.log" 2>/dev/null)
-  fail=${fail:-0}
-  local ok=$((iter - fail))
+  ok=${ok:-0}
+  fail=$((iter - ok))
   printf '%s done: iters=%d ok=%d fail=%d\n' "$label" "$iter" "$ok" "$fail" \
     >"$LOG_DIR/${label}.summary"
+  (( fail == 0 ))
 }
 
 # One-shot snapshot of a target pid: rss/vsz, vmmap summary, heap totals.
@@ -241,23 +256,30 @@ if (( ! ANALYZE_ONLY )); then
 
   START_TS=$(date -u +%s)
 
-  loop_http      small_https     "$HTTPS_TARGET"   --http2 &
-  loop_http      small_http1     "$HTTPS_TARGET"   --http1.1 &
-  loop_http      plain_http      "$HTTP_TARGET" &
-  loop_http      large_get       "$LARGE_TARGET"  --http2 &
-  loop_http      post_large      "$POST_TARGET"   --data-binary "@$POST_FILE" &
-  loop_http      head_only       "$HTTPS_TARGET"  --head &
-  loop_http      churn_close     "$HTTPS_TARGET"  --header 'Connection: close' &
-  loop_pool      parallel_pool   "$HTTPS_TARGET" &
+  for worker_name in small_https small_http1 plain_http large_get post_large \
+    head_only churn_close parallel_pool; do
+    : > "$LOG_DIR/${worker_name}.log"
+  done
 
+  TRAFFIC_PIDS=()
+  loop_http small_https "$HTTPS_TARGET" --http2 & TRAFFIC_PIDS+=("$!")
+  loop_http small_http1 "$HTTPS_TARGET" --http1.1 & TRAFFIC_PIDS+=("$!")
+  loop_http plain_http "$HTTP_TARGET" & TRAFFIC_PIDS+=("$!")
+  loop_http large_get "$LARGE_TARGET" --http2 & TRAFFIC_PIDS+=("$!")
+  loop_http post_large "$POST_TARGET" --data-binary "@$POST_FILE" & TRAFFIC_PIDS+=("$!")
+  loop_http head_only "$HTTPS_TARGET" --head & TRAFFIC_PIDS+=("$!")
+  loop_http churn_close "$HTTPS_TARGET" --header 'Connection: close' & TRAFFIC_PIDS+=("$!")
+  loop_pool parallel_pool "$HTTPS_TARGET" & TRAFFIC_PIDS+=("$!")
+
+  MONITOR_JOB_PID=""
   if [[ -n "$MONITOR_PID" ]]; then
     monitor_pid "$MONITOR_PID" &
+    MONITOR_JOB_PID="$!"
   fi
 
-  WORKER_PIDS=$(jobs -p)
-  say "workers up:  $(echo "$WORKER_PIDS" | wc -w | tr -d ' ')"
+  say "workers up:  ${#TRAFFIC_PIDS[@]}"
 
-  while kill -0 $(echo "$WORKER_PIDS" | head -1) 2>/dev/null; do
+  while kill -0 "${TRAFFIC_PIDS[0]}" 2>/dev/null; do
     ELAPSED=$(( $(date -u +%s) - START_TS ))
     if (( ELAPSED > DURATION )); then break; fi
     printf '\r[stress] %ds elapsed' "$ELAPSED"
@@ -265,7 +287,11 @@ if (( ! ANALYZE_ONLY )); then
   done
   printf '\n'
 
-  wait
+  TRAFFIC_FAILED=0
+  for worker_pid in "${TRAFFIC_PIDS[@]}"; do
+    wait "$worker_pid" || TRAFFIC_FAILED=1
+  done
+  [[ -n "$MONITOR_JOB_PID" ]] && wait "$MONITOR_JOB_PID" || true
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────
@@ -367,3 +393,7 @@ fi
 
 hdr "logs at $LOG_DIR"
 say "done"
+if (( ! ANALYZE_ONLY && TRAFFIC_FAILED )); then
+  say "${RED}one or more traffic workers observed request failures${RESET}"
+  exit 1
+fi

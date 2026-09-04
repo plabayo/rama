@@ -1,15 +1,27 @@
 #!/usr/bin/env python3
 """Regression tests for the on-device soak pressure-log schema."""
 
+import os
+from pathlib import Path
+import json
+import re
+import subprocess
+import tempfile
 import unittest
 
 from soak_pressure_log import (
     ceiling_configuration_issues,
+    ceiling_probe_evidence_issues,
+    ceiling_outage_window,
     classify_soak_result,
+    engine_lifecycle_event,
+    flow_pool_status,
     flow_gauge,
     is_no_headroom,
     no_headroom_event,
     parse_epoch,
+    parse_evidence_status_lines,
+    parse_ceiling_probe_lines,
     parse_ndjson_lines,
     phase_for_epoch,
     pressure_counters,
@@ -17,9 +29,11 @@ from soak_pressure_log import (
     pressure_reaper_status,
     selected_count,
     selection_event,
+    sleep_wake_evidence_issues,
     settled_final_flow_gauge,
     soak_evidence_issues,
     summarize_pressure_rows,
+    unexpected_probe_failure_count,
 )
 
 
@@ -39,6 +53,7 @@ class SoakPressureLogTests(unittest.TestCase):
             "idle_holders_ok": "1",
             "real_download_ok": "1",
             "post_wake_ok": "skipped",
+            "sleep_command_ok": "skipped",
         }
 
     def test_current_selection_line(self):
@@ -695,6 +710,301 @@ class SoakPressureLogTests(unittest.TestCase):
         )
         self.assertFalse(missing["complete"])
         self.assertEqual(missing["exit_code"], 2)
+
+    def test_reaper_good_is_cap_matched_and_requires_an_ended_episode(self):
+        def episode(outcome, cap):
+            return (
+                parse_epoch("101.000001"),
+                f"flow pressure episode {outcome}: startEpochMs=100501 "
+                f"durationMs=10 peakOccupancy=520 softCap={cap} scans=1 "
+                "skipped=0 selected=1 evicted=1 spared=0 canceled=0 expired=0 "
+                "startEpochUs=100501000",
+            )
+
+        mismatched = summarize_pressure_rows(
+            [episode("ended", 450)],
+            baseline_end_epoch=parse_epoch("100.500500"),
+            baseline_end_epoch_us=100_500_500,
+        )
+        self.assertEqual(
+            pressure_reaper_status(mismatched, 500, True),
+            "crossed-without-attributable-eviction",
+        )
+        interrupted = summarize_pressure_rows(
+            [episode("interrupted", 500)],
+            baseline_end_epoch=parse_epoch("100.500500"),
+            baseline_end_epoch_us=100_500_500,
+        )
+        self.assertEqual(interrupted["validated_eviction_episodes"], 0)
+        self.assertEqual(
+            pressure_reaper_status(interrupted, 500, True),
+            "crossed-without-attributable-eviction",
+        )
+
+    def test_same_pid_engine_lifecycle_messages_change_generation(self):
+        self.assertEqual(engine_lifecycle_event("extension startProxy requested"), "startProxy")
+        self.assertEqual(engine_lifecycle_event("proxy engine detached cleanly"), "engine detached")
+        self.assertIsNone(engine_lifecycle_event("periodic live-flow counts"))
+
+    def test_flow_pool_requires_sustained_processes_and_provider_occupancy(self):
+        phase = ("fanout", parse_epoch("100"), parse_epoch("200"))
+        gauges = [(parse_epoch("115"), 100)]
+        self.assertEqual(
+            flow_pool_status("1", 100, gauges, 0, [("110", "120")], phase), "1"
+        )
+        self.assertEqual(
+            flow_pool_status(
+                "1", 100, [(parse_epoch("115"), 80)], 80,
+                [("110", "120")], phase,
+            ),
+            "1",
+            "a cap reaper may hold provider occupancy at the configured cap",
+        )
+        self.assertIsNone(
+            flow_pool_status("1", 100, [], 0, [("110", "120")], phase),
+            "live children without a fresh provider gauge are inconclusive",
+        )
+        self.assertIsNone(
+            flow_pool_status(
+                "1", 100, [(parse_epoch("109.999999"), 100)], 0,
+                [("110", "120")], phase,
+            )
+        )
+        self.assertEqual(
+            flow_pool_status("0", 100, gauges, 0, [], phase), "0",
+            "missing establishment is a workload failure",
+        )
+        self.assertEqual(
+            flow_pool_status("skipped", None, [], 0, [], None), "skipped"
+        )
+        self.assertEqual(
+            flow_pool_status(
+                "1", 100, [(parse_epoch("135"), 100)], 0,
+                [("110", "120"), ("130", "140")], phase,
+            ),
+            "1",
+            "a later correlated sustained interval can replace an earlier miss",
+        )
+
+    def test_sleep_wake_requires_phase_local_lifecycle_markers(self):
+        self.assertEqual(sleep_wake_evidence_issues("skipped", 0, 0), [])
+        self.assertEqual(sleep_wake_evidence_issues("1", 1, 1), [])
+        self.assertEqual(
+            sleep_wake_evidence_issues("1", 0, 0),
+            [
+                "sleep-wake phase has no system sleep marker",
+                "sleep-wake phase has no system wake marker",
+            ],
+        )
+        self.assertEqual(
+            sleep_wake_evidence_issues("0", 1, 1),
+            [],
+            "a failed command is an observed workload failure, not a capture gap",
+        )
+
+    def test_ceiling_proof_is_microsecond_precise_half_open_and_consecutive(self):
+        records, issues = parse_ceiling_probe_lines(
+            [
+                "100.099999\t000\t510\t100.099998\n",
+                "100.100000\t000\t510\t100.100000\n",
+                "100.100001\t000\t511\t100.100000\n",
+                "100.500000\t200\t511\t100.400000\n",
+                "101.100000\t000\t512\t101.099999\n",
+            ]
+        )
+        self.assertEqual(issues, [])
+        phase = ("ceiling", parse_epoch("100.100000"), parse_epoch("101.100000"))
+        self.assertEqual(
+            ceiling_probe_evidence_issues(records, "1", 500, phase, "1"), []
+        )
+        self.assertNotEqual(
+            ceiling_probe_evidence_issues(records[:2], "1", 500, phase), []
+        )
+        low = [
+            (parse_epoch("100.2"), "000", 500, parse_epoch("100.2")),
+            (parse_epoch("100.3"), "000", 501, parse_epoch("100.3")),
+        ]
+        self.assertNotEqual(ceiling_probe_evidence_issues(low, "1", 500, phase), [])
+        stale = [
+            (parse_epoch("100.2"), "000", 510, parse_epoch("99.9")),
+            (parse_epoch("100.3"), "000", 511, parse_epoch("99.9")),
+        ]
+        self.assertNotEqual(ceiling_probe_evidence_issues(stale, "1", 500, phase), [])
+        window = ceiling_outage_window(records, 500, phase)
+        self.assertEqual(
+            window, (parse_epoch("100.100000"), parse_epoch("100.500000"))
+        )
+        failures = [
+            parse_epoch("100.099999"),
+            parse_epoch("100.100000"),
+            parse_epoch("100.499999"),
+            parse_epoch("100.500000"),
+        ]
+        self.assertEqual(
+            unexpected_probe_failure_count(failures, window),
+            2,
+            "failures before proof and at/after direct recovery stay reportable",
+        )
+
+    def test_evidence_status_requires_last_sentinel_and_consistent_tuple(self):
+        self.assertEqual(
+            parse_evidence_status_lines(
+                ["complete\t1\n", "passed\t1\n", "exit_code\t0\n", "schema_complete\t1\n"]
+            ),
+            0,
+        )
+        self.assertEqual(
+            parse_evidence_status_lines(
+                ["complete\t1\n", "passed\t0\n", "exit_code\t1\n", "schema_complete\t1\n"]
+            ),
+            1,
+        )
+        self.assertEqual(
+            parse_evidence_status_lines(
+                ["complete\t0\n", "passed\t0\n", "exit_code\t2\n", "schema_complete\t1\n"]
+            ),
+            2,
+        )
+        self.assertIsNone(parse_evidence_status_lines(["complete\t1\n", "passed\t1\n"]))
+        self.assertIsNone(
+            parse_evidence_status_lines(
+                ["complete\t0\n", "passed\t1\n", "exit_code\t0\n", "schema_complete\t1\n"]
+            )
+        )
+        self.assertIsNone(
+            parse_evidence_status_lines(
+                [
+                    "complete\t1\n", "passed\t1\n", "exit_code\t0\n",
+                    "unknown\tvalue\n", "schema_complete\t1\n",
+                ]
+            )
+        )
+
+    def test_invalid_timestamp_samples_are_capture_issues_not_coverage(self):
+        issues = soak_evidence_issues(
+            self.complete_meta(),
+            rows_count=2,
+            gauge_count=0,
+            probe_count=0,
+            capture_issues=[
+                "2 NDJSON record(s) have invalid timestamps",
+                "invalid liveness-probe timestamp at line 1",
+            ],
+            final_gauge_required=False,
+        )
+        self.assertIn("fewer than two flow-gauge samples were captured", issues)
+        self.assertIn("fewer than two non-sleep liveness probes were captured", issues)
+        self.assertIn("2 NDJSON record(s) have invalid timestamps", issues)
+
+    def test_stress_refused_targets_exit_nonzero_without_negative_counts(self):
+        script = Path(__file__).with_name("stress_traffic.sh")
+        with tempfile.TemporaryDirectory() as log_dir:
+            env = os.environ.copy()
+            env.update(
+                STRESS_DURATION="1",
+                STRESS_CONCURRENCY="1",
+                STRESS_POST_BYTES="1024",
+                STRESS_SKIP_LIVENESS="1",
+                STRESS_LOG_DIR=log_dir,
+                STRESS_HTTP_TARGET="http://127.0.0.1:1",
+                STRESS_HTTPS_TARGET="http://127.0.0.1:1",
+                STRESS_LARGE_TARGET="http://127.0.0.1:1",
+                STRESS_POST_TARGET="http://127.0.0.1:1",
+            )
+            result = subprocess.run(
+                ["bash", str(script)],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=30,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+            summaries = list(Path(log_dir).glob("*.summary"))
+            self.assertEqual(len(summaries), 8, result.stdout)
+            for summary in summaries:
+                text = summary.read_text()
+                match = re.search(r"iters=(\d+) ok=(\d+) fail=(\d+)", text)
+                self.assertIsNotNone(match, text)
+                iterations, ok, failed = map(int, match.groups())
+                self.assertEqual(iterations, ok + failed)
+                self.assertGreater(failed, 0)
+
+    def test_stress_rejects_zero_concurrency_before_starting_workers(self):
+        script = Path(__file__).with_name("stress_traffic.sh")
+        env = os.environ.copy()
+        env.update(STRESS_DURATION="0", STRESS_CONCURRENCY="0")
+        result = subprocess.run(
+            ["bash", str(script)],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=5,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("CONCURRENCY must be greater than zero", result.stdout)
+
+    def test_embedded_extractor_writes_a_schema_complete_failed_verdict(self):
+        script_dir = Path(__file__).parent
+        shell = (script_dir / "soak_test.sh").read_text()
+        marker = "<<'PYEOF'\n"
+        extractor = shell.split(marker, 1)[1].split("\nPYEOF", 1)[0]
+        gauge = (
+            "live-flow counts tcp=0 udp=0 total=0 peak=0 softCap=0 hardCap=0 "
+            "pressure[triggers=0 scans=0 skipped=0 selected=0 evicted=0 "
+            "spared=0 canceled=0 expired=0 pending=0]"
+        )
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            out = Path(artifact_dir)
+            (out / "run-meta.tsv").write_text(
+                "log_stream_started\t1\n"
+                "log_stream_alive_end\t1\n"
+                "baseline_gauge_seen\t1\n"
+                "probe_monitor_alive_end\t1\n"
+                "provider_continuous\t1\n"
+                "provider_start_pid\t10\nprovider_start_time\tstart\n"
+                "provider_end_pid\t10\nprovider_end_time\tstart\n"
+                "log_stream_pid\t20\nprobe_monitor_pid\t30\n"
+                "mode\tfind-ceiling\n"
+                "softcap\t0\nhardcap\t0\nbaseline_total\t0\n"
+                "ceiling_found\t0\nceiling_recovered\t1\n"
+            )
+            (out / "phases.tsv").write_text(
+                "baseline\tstart\t100.000000\tx\n"
+                "baseline\tend\t101.000000\tx\n"
+                "ceiling\tstart\t101.000000\tx\n"
+                "ceiling\tend\t102.000000\tx\n"
+            )
+            rows = [
+                {
+                    "timestamp": "1970-01-01 00:01:40.200000+0000",
+                    "eventMessage": gauge,
+                    "messageType": "Debug",
+                },
+                {
+                    "timestamp": "1970-01-01 00:01:41.200000+0000",
+                    "eventMessage": gauge,
+                    "messageType": "Debug",
+                },
+            ]
+            (out / "system.ndjson").write_text(
+                "".join(json.dumps(row) + "\n" for row in rows)
+            )
+            (out / "probe-timeline.txt").write_text(
+                "100.300000\tx\t200\n101.300000\tx\t200\n"
+            )
+            (out / "ceiling-probes.tsv").write_text("")
+            result = subprocess.run(
+                ["python3", "-c", extractor, str(out), str(script_dir)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
+            status = (out / "evidence-status.tsv").read_text().splitlines(True)
+            self.assertEqual(parse_evidence_status_lines(status), 1, result.stdout)
 
 
 if __name__ == "__main__":

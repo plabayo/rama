@@ -110,6 +110,38 @@ final class UdpFlowSessionTests: XCTestCase {
         XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
     }
 
+    func testQueuedWriteErrorPreemptsLaterNaturalClose() {
+        let fx = Fixture()
+        fx.session.installTerminate()
+        fx.session.buildClientWritePump()
+        fx.session.ctx.writer?.markOpened()
+        let endpoint = NWHostEndpoint(hostname: "127.0.0.1", port: "53")
+        fx.session.ctx.writer?.enqueue(Data("stuck".utf8), sentBy: endpoint)
+        fx.session.flowQueue.sync {}
+
+        let blockerStarted = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        fx.session.flowQueue.async {
+            blockerStarted.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerStarted.wait(timeout: .now() + 1), .success)
+
+        let writeError = NSError(domain: NSPOSIXErrorDomain, code: Int(EPIPE))
+        XCTAssertTrue(fx.flow.completePendingWrite(error: writeError))
+        // The error completion is now queued first; natural close is queued
+        // second. Immediate teardown must run inline with the first block so
+        // the graceful block cannot replace EPIPE with a clean close.
+        fx.session.requestGracefulServerClose()
+        releaseBlocker.signal()
+        fx.session.flowQueue.sync {}
+
+        XCTAssertEqual(fx.flow.closeReadCallCount, 1)
+        XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
+        XCTAssertEqual((fx.flow.lastCloseWriteError as NSError?)?.domain, NSPOSIXErrorDomain)
+        XCTAssertEqual((fx.flow.lastCloseWriteError as NSError?)?.code, Int(EPIPE))
+    }
+
     func testNaturalServerCloseBackstopTerminatesStuckKernelWrite() {
         let fx = Fixture()
         fx.session.gracefulDrainTimeoutMs = 20

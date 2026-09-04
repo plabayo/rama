@@ -2374,7 +2374,17 @@ final class TransparentProxyCore: @unchecked Sendable {
         flowLifecycleGroup.enter()
         lifecycleLock.unlock()
         defer { flowLifecycleGroup.leave() }
-        flowQueue.sync(execute: body)
+        flowQueue.sync {
+            body()
+            // A Rust max-lifetime callback can close the session before Swift
+            // reaches registration. Its first removal may therefore have seen
+            // no map entry. Reconcile after insertion, on the flow's queue,
+            // and use the admitting generation so stale cleanup cannot touch a
+            // newly attached engine's registry.
+            if anchor.ctx.readState == .closed {
+                self.removeUdpFlow(flowId, engineGeneration: engineGeneration)
+            }
+        }
         if defaultFlowPressureSoftCap > 0,
             occupancy >= Int(defaultFlowPressureSoftCap)
         {

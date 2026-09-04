@@ -131,6 +131,9 @@ final class UdpClientWritePump: @unchecked Sendable {
         /// Test-only rendezvous immediately before the write/close gate.
         /// Release builds carry no hook storage or branch.
         var testBeforeWriteGate: (() -> Void)?
+        /// Test-only ordering hook after callback-entry activity is recorded
+        /// but before borrowed FFI views are materialized.
+        var testBeforeBorrowedMaterialize: (() -> Void)?
         internal private(set) var testPendingHwmLogCount: Int = 0
     #endif
 
@@ -205,8 +208,19 @@ final class UdpClientWritePump: @unchecked Sendable {
     /// after a count+byte reservation succeeds, and always before returning to
     /// Rust. Raw pointers never escape onto `queue`.
     func enqueueBorrowed(_ view: RamaBytesView, peerView: RamaUdpPeerView) {
+        // Stamp server activity at callback entry, before admission-lock
+        // contention or borrowed-view copying can lose a deadline tie.
+        onActivity()
+        #if DEBUG
+            testBeforeBorrowedMaterialize?()
+        #endif
         let byteCount = Int(view.len)
-        enqueue(byteCount: byteCount, borrowed: true, allowsFallback: false) {
+        enqueue(
+            byteCount: byteCount,
+            borrowed: true,
+            allowsFallback: false,
+            activityRecordedAtEntry: true
+        ) {
             (
                 dataFromView(view),
                 peerFromView(peerView)?.toNetworkExtensionEndpoint()
@@ -218,6 +232,7 @@ final class UdpClientWritePump: @unchecked Sendable {
         byteCount: Int,
         borrowed: Bool = false,
         allowsFallback: Bool,
+        activityRecordedAtEntry: Bool = false,
         materialize: () -> (Data, NWEndpoint?)
     ) {
         // RFC 768 admits zero-length UDP datagrams. Forward them
@@ -269,11 +284,11 @@ final class UdpClientWritePump: @unchecked Sendable {
 
         switch admission {
         case .accepted:
-            onActivity()
+            if !activityRecordedAtEntry { onActivity() }
         case .full(let shouldLog):
             // Receiving a datagram remains activity even when the bounded,
             // lossy writer must drop it. The activity clock is thread-safe.
-            onActivity()
+            if !activityRecordedAtEntry { onActivity() }
             if shouldLog {
                 RamaLog.trace(
                     "udp client write pump full (count cap \(udpWritePumpMaxPending), byte cap \(udpWritePumpMaxRetainedBytes)), dropping subsequent arrivals"
@@ -364,7 +379,8 @@ final class UdpClientWritePump: @unchecked Sendable {
 
     private func finishDrainIfReadyLocked() {
         guard drainCompletion != nil, pending.isEmpty,
-            phase == .idle || phase == .pending
+            phase == .idle || phase == .pending,
+            shared.withLock({ $0.waiting == 0 })
         else { return }
         completeDrainLocked(drained: true)
     }

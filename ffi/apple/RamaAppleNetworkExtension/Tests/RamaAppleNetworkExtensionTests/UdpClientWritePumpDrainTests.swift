@@ -127,6 +127,44 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         XCTAssertTrue(flow.writtenBatches.isEmpty)
     }
 
+    func testOnQueueGracefulCloseWaitsForAcceptedDispatchBacklog() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        let pump = UdpClientWritePump(
+            flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+        pump.markOpened()
+        queue.sync {}
+
+        var drainResult: Bool?
+        let drained = expectation(description: "accepted dispatch backlog drained")
+        queue.sync {
+            // Reserve from another thread while the flow queue is occupied.
+            // Its accepted dispatch must land behind this block.
+            let enqueued = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                pump.enqueue(self.tag(1), sentBy: self.ep())
+                enqueued.signal()
+            }
+            XCTAssertEqual(enqueued.wait(timeout: .now() + 1), .success)
+            XCTAssertEqual(pump.testAdmissionSnapshot.waiting, 1)
+
+            pump.closeWhenDrained(timeoutMs: 1_000) { result in
+                drainResult = result
+                drained.fulfill()
+            }
+            XCTAssertNil(
+                drainResult,
+                "an accepted dispatch behind the active queue block is not drained yet")
+        }
+
+        queue.sync {}
+        XCTAssertEqual(flow.writtenBatches.first.map { tagOf($0.datagrams[0]) }, 1)
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+        wait(for: [drained], timeout: 2)
+        XCTAssertEqual(drainResult, true)
+        XCTAssertTrue(pump.testAdmissionSnapshot.closed)
+    }
+
     // MARK: - write-error terminate
 
     /// A non-nil `writeDatagrams` completion error must terminate the pump:
@@ -435,6 +473,37 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
                     port: 0,
                     scope_id: 0))
         }
+        XCTAssertEqual(pump.testAdmissionSnapshot.borrowedMaterializations, 1)
+    }
+
+    func testBorrowedActivityIsRecordedBeforeMaterialization() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        var activityCount = 0
+        let pump = UdpClientWritePump(
+            flow: flow,
+            queue: queue,
+            logger: { _ in },
+            onTerminalError: { _ in },
+            onActivity: { activityCount += 1 })
+        pump.testBeforeBorrowedMaterialize = {
+            XCTAssertEqual(
+                activityCount, 1,
+                "idle activity must be visible before borrowed pointers are copied")
+        }
+
+        var payload = Array("hello".utf8)
+        payload.withUnsafeMutableBufferPointer { buffer in
+            pump.enqueueBorrowed(
+                RamaBytesView(ptr: buffer.baseAddress, len: buffer.count),
+                peerView: RamaUdpPeerView(
+                    present: false,
+                    host_utf8: nil,
+                    host_utf8_len: 0,
+                    port: 0,
+                    scope_id: 0))
+        }
+        XCTAssertEqual(activityCount, 1)
         XCTAssertEqual(pump.testAdmissionSnapshot.borrowedMaterializations, 1)
     }
 

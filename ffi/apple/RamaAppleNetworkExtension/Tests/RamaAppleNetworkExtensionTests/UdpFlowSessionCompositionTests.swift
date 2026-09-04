@@ -40,16 +40,13 @@ final class UdpFlowSessionCompositionTests: XCTestCase {
 
     /// Read-completion with an error terminates the flow.
     ///
-    /// Teardown spans two `flowQueue` hops: `handleReadCompletion` runs on the
-    /// first hop and *posts* `terminate`, whose body (`readState = .closed`,
-    /// kernel-flow close) runs on the second. A single barrier lands between
-    /// the two hops and would race the close, so flush twice before asserting.
+    /// `handleReadCompletion` is already on `flowQueue`, so `terminate` commits
+    /// inline there and a single barrier observes the complete teardown.
     func testReadCompletionWithErrorTerminates() {
         let fx = Fixture()
         fx.session.handleReadCompletion(
             datagrams: nil, endpoints: nil,
             error: NSError(domain: "test", code: 1))
-        fx.barrier()
         fx.barrier()
         XCTAssertEqual(fx.session.ctx.readState, .closed)
         XCTAssertEqual(fx.flow.closeReadCallCount, 1)
@@ -58,12 +55,10 @@ final class UdpFlowSessionCompositionTests: XCTestCase {
 
     /// Read-completion with empty datagrams = EOF = terminate.
     ///
-    /// Two-hop teardown — see `testReadCompletionWithErrorTerminates` for why
-    /// the assert needs two barriers.
+    /// Same-queue termination commits inline with the completion handler.
     func testReadCompletionEmptyDatagramsTerminates() {
         let fx = Fixture()
         fx.session.handleReadCompletion(datagrams: [], endpoints: nil, error: nil)
-        fx.barrier()
         fx.barrier()
         XCTAssertEqual(fx.session.ctx.readState, .closed)
         XCTAssertEqual(fx.flow.closeReadCallCount, 1)

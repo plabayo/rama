@@ -743,7 +743,7 @@ final class TcpClientWritePumpTests: XCTestCase {
         XCTAssertEqual(flow.writes[1], Data([0x04, 0x05]))
     }
 
-    func testWriteCoreChargesInFlightBytesUntilCompletion() {
+    func testWriteCoreChargesInFlightBytesAndItemsUntilCompletion() {
         let queue = makeQueue()
         let writeCompletion = TestValue<(@Sendable (Error?) -> Void)?>(nil)
         let core = TcpWritePumpCore(
@@ -758,6 +758,7 @@ final class TcpClientWritePumpTests: XCTestCase {
         XCTAssertEqual(core.enqueue(first), .accepted)
         queue.sync {}
         XCTAssertEqual(core.state.withLock { $0.pendingBytes }, first.count)
+        XCTAssertEqual(core.state.withLock { $0.pendingItems }, 1)
         XCTAssertEqual(
             core.enqueue(Data([0xB1, 0xB2])),
             .paused,
@@ -767,6 +768,135 @@ final class TcpClientWritePumpTests: XCTestCase {
         writeCompletion.get()?(nil)
         queue.sync {}
         XCTAssertEqual(core.state.withLock { $0.pendingBytes }, 0)
+        XCTAssertEqual(core.state.withLock { $0.pendingItems }, 0)
+    }
+
+    func testWriteCoreRejectedActivityRollsBackBothCharges() {
+        let queue = makeQueue()
+        let writeCount = NSLock_Counter()
+        let core = TcpWritePumpCore(
+            queue: queue,
+            onDrained: {},
+            doWrite: { _, _ in writeCount.increment() },
+            logHwm: { _ in },
+            onActivity: { false }
+        )
+
+        XCTAssertEqual(core.enqueue(Data([0xA1])), .closed)
+        queue.sync {}
+        let accounting = core.state.withLock {
+            (pendingBytes: $0.pendingBytes, pendingItems: $0.pendingItems)
+        }
+        XCTAssertEqual(accounting.pendingBytes, 0)
+        XCTAssertEqual(accounting.pendingItems, 0)
+        XCTAssertEqual(writeCount.value, 0)
+    }
+
+    func testWriteCoreBoundsTinyDispatchBacklogAndDrainsInFifoOrder() {
+        let queue = makeQueue()
+        let queueEntered = expectation(description: "writer queue blocked")
+        let releaseQueue = DispatchSemaphore(value: 0)
+        queue.async {
+            queueEntered.fulfill()
+            releaseQueue.wait()
+        }
+        wait(for: [queueEntered], timeout: 1.0)
+
+        let writes = TestValue<[UInt8]>([])
+        let completions = TestValue<[@Sendable (Error?) -> Void]>([])
+        let drainCount = NSLock_Counter()
+        let core = TcpWritePumpCore(
+            queue: queue,
+            onDrained: { drainCount.increment() },
+            doWrite: { data, completion in
+                writes.update { $0.append(data[0]) }
+                completions.update { $0.append(completion) }
+            },
+            logHwm: { _ in }
+        )
+
+        var accepted = 0
+        var paused = 0
+        for index in 0..<10_000 {
+            switch core.enqueue(Data([UInt8(truncatingIfNeeded: index)])) {
+            case .accepted: accepted += 1
+            case .paused: paused += 1
+            case .closed: XCTFail("open pump unexpectedly closed")
+            }
+        }
+
+        XCTAssertEqual(accepted, tcpWritePumpMaxPendingItems)
+        XCTAssertEqual(paused, 10_000 - tcpWritePumpMaxPendingItems)
+        let saturated = core.state.withLock {
+            (pendingBytes: $0.pendingBytes, pendingItems: $0.pendingItems)
+        }
+        XCTAssertEqual(saturated.pendingBytes, tcpWritePumpMaxPendingItems)
+        XCTAssertEqual(saturated.pendingItems, tcpWritePumpMaxPendingItems)
+        XCTAssertEqual(drainCount.value, 0)
+
+        releaseQueue.signal()
+        queue.sync {}
+        queue.sync { core.beginDraining() }
+        XCTAssertFalse(core.isClosed(), "queued items must keep a draining pump open")
+
+        for index in 0..<tcpWritePumpMaxPendingItems {
+            let completion = completions.update { callbacks -> (@Sendable (Error?) -> Void)? in
+                callbacks.isEmpty ? nil : callbacks.removeFirst()
+            }
+            guard let completion else {
+                XCTFail("missing completion for accepted item \(index)")
+                return
+            }
+            completion(nil)
+            queue.sync {}
+            if index == 0 {
+                let afterFirst = core.state.withLock {
+                    (pendingBytes: $0.pendingBytes, pendingItems: $0.pendingItems)
+                }
+                XCTAssertEqual(afterFirst.pendingBytes, tcpWritePumpMaxPendingItems - 1)
+                XCTAssertEqual(afterFirst.pendingItems, tcpWritePumpMaxPendingItems - 1)
+                XCTAssertEqual(drainCount.value, 1, "one freed item must emit one drain edge")
+            }
+        }
+
+        XCTAssertEqual(
+            writes.get(),
+            (0..<tcpWritePumpMaxPendingItems).map { UInt8($0) },
+            "accepted tiny writes must retain FIFO order"
+        )
+        let drained = core.state.withLock {
+            (pendingBytes: $0.pendingBytes, pendingItems: $0.pendingItems)
+        }
+        XCTAssertEqual(drained.pendingBytes, 0)
+        XCTAssertEqual(drained.pendingItems, 0)
+        XCTAssertEqual(drainCount.value, 1, "one pause episode must emit exactly one drain edge")
+        XCTAssertTrue(core.isClosed(), "drain-close must finish after both charges reach zero")
+    }
+
+    func testWriteCoreCancelClearsItemChargeBeforeLateCompletion() {
+        let queue = makeQueue()
+        let writeCompletion = TestValue<(@Sendable (Error?) -> Void)?>(nil)
+        let core = TcpWritePumpCore(
+            queue: queue,
+            onDrained: {},
+            doWrite: { _, completion in writeCompletion.set(completion) },
+            logHwm: { _ in }
+        )
+
+        XCTAssertEqual(core.enqueue(Data([0xA1])), .accepted)
+        queue.sync {}
+        XCTAssertEqual(core.state.withLock { $0.pendingItems }, 1)
+
+        let cleanup = core.prepareCancel()
+        queue.async(execute: cleanup)
+        writeCompletion.get()?(nil)
+        queue.sync {}
+
+        let snapshot = queue.sync { core.testInvariantSnapshot() }
+        XCTAssertTrue(snapshot.pendingEmpty)
+        XCTAssertTrue(snapshot.retryingNil)
+        XCTAssertEqual(snapshot.pendingBytes, 0)
+        XCTAssertEqual(snapshot.pendingItems, 0)
     }
 
     func testWriteCoreLogsOnlyFirstHighWaterThresholdCrossing() {

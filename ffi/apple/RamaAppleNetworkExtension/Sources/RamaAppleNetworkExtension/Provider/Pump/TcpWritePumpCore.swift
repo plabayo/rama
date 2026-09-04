@@ -11,8 +11,8 @@ protocol TcpWritePumpCoreDelegate: AnyObject {
 }
 
 /// Shared write-pump state machine used by both `TcpClientWritePump` and
-/// `NwTcpConnectionWritePump`.  Owns the `Locked<TcpWriterState>` byte
-/// budget, the in-flight queue, and the exponential-backoff retry loop.
+/// `NwTcpConnectionWritePump`. Owns the `Locked<TcpWriterState>` byte/item
+/// budgets, the in-flight queue, and the exponential-backoff retry loop.
 ///
 /// The actual write primitive and HWM logging are injected at construction
 /// time as closures so the core is agnostic of whether the underlying
@@ -68,18 +68,22 @@ final class TcpWritePumpCore: @unchecked Sendable {
         /// Test-only snapshot of the queue-only fields that should be
         /// quiescent after `cancel()` cleanup runs. Used to verify the
         /// post-cancel invariant
-        ///   `closed ⇒ pending empty ∧ retrying nil ∧ pendingBytes 0`
+        ///   `closed ⇒ pending empty ∧ retrying nil ∧ pendingBytes 0
+        ///              ∧ pendingItems 0`
         /// is preserved across the race window where a write's
         /// completion lands after cleanup.  Must be called on `queue`.
         internal func testInvariantSnapshot()
-            -> (pendingEmpty: Bool, retryingNil: Bool, pendingBytes: Int)
+            -> (
+                pendingEmpty: Bool, retryingNil: Bool,
+                pendingBytes: Int, pendingItems: Int
+            )
         {
-            let bytes = state.withLock { $0.pendingBytes }
-            return (pending.isEmpty, retrying == nil, bytes)
+            let accounting = state.withLock { ($0.pendingBytes, $0.pendingItems) }
+            return (pending.isEmpty, retrying == nil, accounting.0, accounting.1)
         }
     #endif
 
-    /// Atomically marks the core closed and zeroes the byte budget.
+    /// Atomically marks the core closed and zeroes both admission budgets.
     /// Returns a queue-side cleanup closure the caller must dispatch on
     /// `queue`.  Separating the atomic part from the queue work lets the
     /// outer class append its own cleanup (e.g. fire `onDrainedClose`)
@@ -88,6 +92,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
         state.withLock { s in
             s.closed = true
             s.pendingBytes = 0
+            s.pendingItems = 0
         }
         return { [self] in
             self.pending.removeAll()
@@ -122,13 +127,15 @@ final class TcpWritePumpCore: @unchecked Sendable {
             if s.closed { return (.closed, nil) }
             // First chunk always passes through — an oversized single
             // chunk must not deadlock the bridge.
-            if s.pendingBytes > 0
+            let byteCapReached = s.pendingBytes > 0
                 && s.pendingBytes + data.count > writePumpMaxPendingBytes
-            {
+            let itemCapReached = s.pendingItems >= tcpWritePumpMaxPendingItems
+            if byteCapReached || itemCapReached {
                 s.pausedSignaled = true
                 return (.paused, nil)
             }
             s.pendingBytes += data.count
+            s.pendingItems += 1
             var newHwm: Int? = nil
             let previousHwm = s.pendingBytesHwm
             if s.pendingBytes > previousHwm {
@@ -151,7 +158,10 @@ final class TcpWritePumpCore: @unchecked Sendable {
         // roll that reservation back and surface a closed destination.
         guard self.onActivity() else {
             state.withLock { s in
-                if !s.closed { s.pendingBytes = max(s.pendingBytes - data.count, 0) }
+                if !s.closed {
+                    s.pendingBytes = max(s.pendingBytes - data.count, 0)
+                    s.pendingItems = max(s.pendingItems - 1, 0)
+                }
             }
             return .closed
         }
@@ -161,9 +171,9 @@ final class TcpWritePumpCore: @unchecked Sendable {
             guard let self else { return }
             // Re-check under lock; cancel() can have flipped the flag
             // between the FFI fast-path return and this dispatch.
-            // Do NOT subtract pendingBytes here: if cancel() ran first it
-            // already zeroed the counter, and subtracting again would push
-            // it negative.
+            // Do NOT subtract the admission charges here: if cancel() ran first
+            // it already zeroed both counters, and subtracting again would push
+            // them negative.
             guard !self.state.withLock({ $0.closed }) else { return }
             self.pending.pushBack(data)
             self.flush()
@@ -178,6 +188,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
             let wasClosed = s.closed
             s.closed = true
             s.pendingBytes = 0
+            s.pendingItems = 0
             return wasClosed
         }
         if alreadyClosed { return }
@@ -203,14 +214,16 @@ final class TcpWritePumpCore: @unchecked Sendable {
                 guard let self else { return }
                 // If `cancel()` ran while this write was in flight and
                 // its queue cleanup (`pending.removeAll`, `retrying = nil`,
-                // `pendingBytes = 0`) landed *before* this completion,
+                // `pendingBytes = 0`, `pendingItems = 0`) landed *before* this
+                // completion,
                 // the transient-retry branch below would silently revive
                 // those fields — pushing `chunk` back onto `pending`,
-                // re-incrementing `pendingBytes`, and re-arming
+                // retaining stale admission accounting and re-arming
                 // `retrying`. No further write fires (the asyncAfter's
                 // `flush()` would bail on `isClosed()`), but the
                 // post-cancel invariant
-                // `closed ⇒ pending empty ∧ retrying nil ∧ pendingBytes 0`
+                // `closed ⇒ pending empty ∧ retrying nil ∧ pendingBytes 0
+                //            ∧ pendingItems 0`
                 // would quietly break — a Heisenbug for any future code
                 // that reads those fields as a "pump is idle" signal.
                 // Drop the completion's result on the floor; we're done.
@@ -252,8 +265,10 @@ final class TcpWritePumpCore: @unchecked Sendable {
                 }
                 let fireDrain = self.state.withLock { s in
                     s.pendingBytes = max(0, s.pendingBytes - chunk.count)
+                    s.pendingItems = max(0, s.pendingItems - 1)
                     if s.pausedSignaled
                         && s.pendingBytes < writePumpMaxPendingBytes
+                        && s.pendingItems < tcpWritePumpMaxPendingItems
                     {
                         s.pausedSignaled = false
                         return true
@@ -261,9 +276,9 @@ final class TcpWritePumpCore: @unchecked Sendable {
                     return false
                 }
                 // Keep the in-flight Data charged until the transport has
-                // released it. This makes pendingBytes the documented
-                // queued-or-in-flight bound, while still waking Rust as soon
-                // as real capacity becomes available.
+                // released it. Both counters therefore cover dispatch-pending,
+                // queued, retrying, and in-flight work while still waking Rust
+                // as soon as real capacity becomes available.
                 if fireDrain { self.onDrained() }
                 // Only the closing path needs a second activity edge. Keep
                 // ordinary streaming at its existing one lock per accepted
@@ -285,13 +300,13 @@ final class TcpWritePumpCore: @unchecked Sendable {
 
     private func finishCloseIfDrained() {
         guard lifecycle == .draining, !writing, pending.isEmpty else { return }
-        // Also require `pendingBytes == 0`: `enqueue` bumps the count and
-        // returns `.accepted` on the FFI thread, then appends to `pending`
-        // via `queue.async`. Between those, `pending.isEmpty` is true while
-        // a chunk is in flight — closing here would FIN and drop it. Checked
+        // Also require both admission charges to be zero: `enqueue` bumps them
+        // and returns `.accepted` on the FFI thread, then appends to `pending`
+        // via `queue.async`. Between those, `pending.isEmpty` is true while a
+        // chunk is dispatch-pending — closing here would FIN and drop it. Checked
         // in the same lock that publishes `closed`, for one snapshot.
         let proceed: Bool = state.withLock { s in
-            if s.closed || s.pendingBytes != 0 { return false }
+            if s.closed || s.pendingBytes != 0 || s.pendingItems != 0 { return false }
             s.closed = true
             return true
         }

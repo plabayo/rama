@@ -26,6 +26,10 @@ PRESSURE_EPISODE_RE = re.compile(
     r"selected=(\d+) evicted=(\d+) spared=(\d+) canceled=(\d+) expired=(\d+)"
 )
 START_EPOCH_US_RE = re.compile(r"\bstartEpochUs=(\d+)\b")
+ENGINE_LIFECYCLE_RE = re.compile(
+    r"\b(?:startProxy|stopProxy|engine created|engine detached)\b",
+    re.IGNORECASE,
+)
 
 PRESSURE_COUNTER_KEYS = (
     "triggers",
@@ -133,6 +137,192 @@ def parse_ndjson_lines(lines):
             continue
         decoded.append(value)
     return decoded, issues
+
+
+def engine_lifecycle_event(message):
+    """Return the generation-changing lifecycle text in one log message."""
+    match = ENGINE_LIFECYCLE_RE.search(message)
+    return match.group(0) if match else None
+
+
+def flow_pool_status(
+    established_sustained,
+    target,
+    occupancy_samples,
+    soft_cap,
+    sustained_intervals,
+    phase,
+):
+    """Prove established workers plus correlated provider occupancy."""
+    if established_sustained == "skipped":
+        return "skipped"
+    if established_sustained not in (0, 1, "0", "1"):
+        return None
+    if str(established_sustained) == "0":
+        return "0"
+    try:
+        target = int(target)
+        soft_cap = int(soft_cap)
+        _, phase_start, phase_end = phase
+    except (TypeError, ValueError):
+        return None
+    if target <= 0 or soft_cap < 0:
+        return None
+    required_peak = min(target, soft_cap) if soft_cap else target
+    for raw_start, raw_end in sustained_intervals:
+        interval_start = parse_epoch(raw_start)
+        interval_end = parse_epoch(raw_end)
+        if (
+            interval_start is None
+            or interval_end is None
+            or interval_end - interval_start < Decimal("5")
+            or interval_start < phase_start
+            or interval_end > phase_end
+        ):
+            continue
+        for epoch, total in occupancy_samples:
+            if interval_start <= epoch <= interval_end and total >= required_peak:
+                return "1"
+    return None
+
+
+def sleep_wake_evidence_issues(command_outcome, sleep_markers, wake_markers):
+    """Return missing/failed sleep-cycle proof for an attempted cycle."""
+    if command_outcome == "skipped":
+        return []
+    issues = []
+    if command_outcome not in (0, 1, "0", "1"):
+        issues.append("sleep command outcome is missing")
+    if sleep_markers < 1:
+        issues.append("sleep-wake phase has no system sleep marker")
+    if wake_markers < 1:
+        issues.append("sleep-wake phase has no system wake marker")
+    return issues
+
+
+def parse_ceiling_probe_lines(lines):
+    """Parse timestamp/code/occupancy ceiling probes without guessing."""
+    records = []
+    issues = []
+    for line_number, raw in enumerate(lines, 1):
+        line = raw.strip()
+        if not line:
+            continue
+        fields = line.split("\t")
+        if len(fields) != 4:
+            issues.append(f"malformed ceiling probe at line {line_number}")
+            continue
+        epoch = parse_epoch(fields[0])
+        gauge_epoch = parse_epoch(fields[3])
+        try:
+            occupancy = int(fields[2])
+        except ValueError:
+            occupancy = -1
+        if (
+            epoch is None
+            or gauge_epoch is None
+            or re.fullmatch(r"\d{3}", fields[1]) is None
+            or occupancy < 0
+        ):
+            issues.append(f"malformed ceiling probe at line {line_number}")
+            continue
+        records.append((epoch, fields[1], occupancy, gauge_epoch))
+    return records, issues
+
+
+def ceiling_outage_window(records, baseline_total, phase):
+    """Return the proved direct-failure to direct-recovery half-open window."""
+    try:
+        baseline_total = int(baseline_total)
+        _, start, end = phase
+    except (TypeError, ValueError):
+        return None
+    run = 0
+    first_failure = None
+    proved_start = None
+    for epoch, code, occupancy, gauge_epoch in records:
+        if not (start <= epoch < end):
+            continue
+        if code.startswith("2"):
+            if proved_start is not None:
+                return proved_start, epoch
+            run = 0
+            first_failure = None
+            continue
+        gauge_is_fresh = (
+            start <= gauge_epoch <= epoch and epoch - gauge_epoch <= Decimal("70")
+        )
+        if occupancy > baseline_total and gauge_is_fresh:
+            if run == 0:
+                first_failure = epoch
+            run += 1
+            if run >= 2:
+                proved_start = first_failure
+        else:
+            run = 0
+            first_failure = None
+    if proved_start is not None:
+        return proved_start, None
+    return None
+
+
+def ceiling_probe_evidence_issues(
+    records, ceiling_found, baseline_total, phase, ceiling_recovered=None
+):
+    """Require attributable consecutive failure and claimed direct recovery."""
+    if ceiling_found not in (0, 1, "0", "1"):
+        return ["ceiling-finder outcome is missing"]
+    if str(ceiling_found) != "1":
+        return []
+    window = ceiling_outage_window(records, baseline_total, phase)
+    if window is None:
+        if phase is None:
+            return ["ceiling failure proof has invalid baseline or phase"]
+        return ["ceiling failure lacks two consecutive elevated, phase-local probes"]
+    if str(ceiling_recovered) == "1" and window[1] is None:
+        return ["ceiling recovery lacks a phase-local direct success probe"]
+    return []
+
+
+def unexpected_probe_failure_count(failure_epochs, outage_window):
+    """Count failures outside the one directly corroborated outage window."""
+    if outage_window is None or outage_window[1] is None:
+        return len(failure_epochs)
+    start, end = outage_window
+    return sum(1 for epoch in failure_epochs if not (start <= epoch < end))
+
+
+def parse_evidence_status_lines(lines):
+    """Validate the atomic, schema-complete terminal verdict tuple."""
+    pairs = []
+    for raw in lines:
+        raw = raw.rstrip("\n")
+        if not raw:
+            continue
+        fields = raw.split("\t", 1)
+        if len(fields) != 2:
+            return None
+        pairs.append(fields)
+    values = {}
+    for key, value in pairs:
+        if key not in (
+            "complete", "passed", "exit_code", "issue", "failure",
+            "schema_complete",
+        ):
+            return None
+        if key in ("complete", "passed", "exit_code", "schema_complete"):
+            if key in values:
+                return None
+            values[key] = value
+    if not pairs or pairs[-1] != ["schema_complete", "1"]:
+        return None
+    expected = {
+        ("1", "1", "0"),
+        ("1", "0", "1"),
+        ("0", "0", "2"),
+    }
+    verdict = (values.get("complete"), values.get("passed"), values.get("exit_code"))
+    return int(verdict[2]) if verdict in expected else None
 
 
 def pressure_counters(message):
@@ -314,7 +504,7 @@ def pressure_reaper_status(pressure, soft_cap, evidence_complete):
         return "inconclusive"
     if soft_cap <= 0:
         return "disabled"
-    if pressure["validated_eviction_episodes"] > 0:
+    if pressure.get("validated_eviction_episode_caps", {}).get(soft_cap, 0) > 0:
         return "good"
     if pressure["observed_peak"] >= soft_cap:
         return "crossed-without-attributable-eviction"
@@ -355,6 +545,7 @@ def classify_soak_result(
             ("idle_holders_ok", "idle-holder target"),
             ("real_download_ok", "real download"),
             ("post_wake_ok", "post-wake recovery"),
+            ("sleep_command_ok", "sleep command"),
         )
         for key, label in workload_fields:
             value = meta.get(key)
@@ -415,6 +606,7 @@ def summarize_pressure_rows(
         "periodic": {key: 0 for key in PRESSURE_COUNTER_KEYS[:-1]},
         "episodes": 0,
         "validated_eviction_episodes": 0,
+        "validated_eviction_episode_caps": {},
         "episode": {
             key: 0
             for key in ("selected", "evicted", "spared", "canceled", "expired")
@@ -502,11 +694,17 @@ def summarize_pressure_rows(
                 continue
             result["episodes"] += 1
             if (
+                episode["outcome"] == "ended"
+                and
                 episode["soft_cap"] > 0
                 and episode["peak_occupancy"] >= episode["soft_cap"]
                 and episode["evicted"] > 0
             ):
                 result["validated_eviction_episodes"] += 1
+                cap = episode["soft_cap"]
+                result["validated_eviction_episode_caps"][cap] = (
+                    result["validated_eviction_episode_caps"].get(cap, 0) + 1
+                )
             result["observed_peak"] = max(
                 result["observed_peak"], episode["peak_occupancy"])
             result["soft_caps"].add(episode["soft_cap"])

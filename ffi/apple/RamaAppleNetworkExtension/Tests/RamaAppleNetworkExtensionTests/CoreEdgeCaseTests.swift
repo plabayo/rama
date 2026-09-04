@@ -349,6 +349,34 @@ final class CoreEdgeCaseTests: XCTestCase {
         XCTAssertEqual(core.udpFlowCount, 0)
     }
 
+    func testUdpRegistrationReconcilesCloseThatPrecededInsertion() {
+        let core = TransparentProxyCore()
+        core.attachEngine(makeEngine())
+        defer { core.detachEngine(reason: 0) }
+        let generation = core.testEngineGeneration
+        let flow = MockUdpFlow()
+        let ctx = UdpFlowContext()
+        let queue = DispatchQueue(label: "rama.test.preclosed-udp-start")
+        ctx.flowQueue = queue
+        ctx.readState = .closed
+
+        // Model the pre-activation max-lifetime callback: its first removal
+        // ran before registration and therefore had no entry to remove.
+        core.removeUdpFlow(ObjectIdentifier(flow), engineGeneration: generation)
+        XCTAssertEqual(core.udpFlowCount, 0)
+
+        XCTAssertTrue(
+            core.registerUdpFlowAndScheduleStartup(
+                ObjectIdentifier(flow),
+                anchor: _TestUdpFlowSessionAnchor(ctx: ctx),
+                engineGeneration: generation,
+                on: queue,
+                body: {}))
+        waitFor("post-insertion reconciliation removes already-closed UDP session") {
+            core.udpFlowCount == 0
+        }
+    }
+
     func testValidStartupsStayConcurrentAndDetachWaitsForThem() {
         let core = TransparentProxyCore()
         core.attachEngine(makeEngine())

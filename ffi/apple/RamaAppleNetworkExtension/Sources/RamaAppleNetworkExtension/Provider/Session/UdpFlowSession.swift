@@ -73,6 +73,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     let flowId: ObjectIdentifier
     let flowQueue: DispatchQueue
     let ctx: UdpFlowContext
+    private let flowQueueKey = DispatchSpecificKey<UInt8>()
 
     var sessionHandle: RamaUdpSessionHandle?
     private var engineGeneration: UInt64?
@@ -120,6 +121,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             qos: .utility)
         self.ctx = UdpFlowContext()
         self.ctx.flowQueue = self.flowQueue
+        self.flowQueue.setSpecific(key: self.flowQueueKey, value: 1)
     }
 
     /// Entry point. Returns `true` if the flow was claimed.
@@ -225,6 +227,17 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             guard let ctx else { return }
             let core = core
             let session = self
+            // Error callbacks already normalized onto the flow queue must
+            // commit teardown before a later graceful-close block. Adding a
+            // second hop here would let that clean close overtake and suppress
+            // the originating kernel error. Off-queue callers still dispatch
+            // so Rust callbacks can unwind before Swift closes their handle.
+            if let session,
+                DispatchQueue.getSpecific(key: session.flowQueueKey) != nil
+            {
+                session.terminateImmediately(error, retainedCore: core)
+                return
+            }
             flowQueue.async {
                 if let session {
                     session.terminateImmediately(error, retainedCore: core)
@@ -481,6 +494,12 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     }
 
     func handleReadCompletion(datagrams: [Data]?, endpoints: [NWEndpoint]?, error: Error?) {
+        // Timestamp ingress at callback entry. The flow queue can be delayed
+        // behind an already-due idle timer; recording only inside its block
+        // would let that timer reap a datagram that arrived first.
+        if let datagrams, !datagrams.isEmpty {
+            recordIdleActivity()
+        }
         flowQueue.async { [weak self] in
             guard let self else { return }
             let ctx = self.ctx
@@ -509,9 +528,6 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 return
             }
 
-            // Apple just gave us datagrams, so record liveness. The
-            // existing watchdog observes this timestamp at fire time.
-            self.recordIdleActivity()
             self.forwardDatagrams(datagrams: datagrams, endpoints: endpoints, session: session)
             if hadPendingDemand { ctx.requestRead?() }
         }
@@ -552,9 +568,9 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         let decision = lease.engine.newUdpSession(
             meta: meta,
             onServerDatagram: { [weak ctx] view, peerView in
-                // The writer's existing queue-normalisation block also
-                // records activity, avoiding a second dispatch for the
-                // idle watchdog on every server datagram.
+                // The writer records activity at callback entry before it
+                // materializes these borrowed views, without adding a second
+                // dispatch for the idle watchdog.
                 ctx?.writer?.enqueueBorrowed(view, peerView: peerView)
             },
             onClientReadDemand: { [weak ctx] in ctx?.requestRead?() },

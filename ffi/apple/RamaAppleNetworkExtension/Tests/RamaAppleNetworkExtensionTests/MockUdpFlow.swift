@@ -153,6 +153,11 @@ final class MockUdpFlow: UdpFlowLike, @unchecked Sendable {
         return _closeWriteErrors.count
     }
 
+    var lastCloseWriteError: Error? {
+        lock.lock(); defer { lock.unlock() }
+        return _closeWriteErrors.last ?? nil
+    }
+
     var writeAfterCloseCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _writeAfterCloseCount

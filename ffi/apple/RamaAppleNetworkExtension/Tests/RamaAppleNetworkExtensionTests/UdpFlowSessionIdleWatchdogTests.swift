@@ -186,6 +186,33 @@ final class UdpFlowSessionIdleWatchdogTests: XCTestCase {
         XCTAssertEqual(fx.core.udpFlowCount, 0)
     }
 
+    func testReadCallbackRecordsActivityBeforeFlowQueueDispatch() {
+        let fx = Fixture(idleTimeoutMs: 100_000)
+        let priorActivity = DispatchTime.now().uptimeNanoseconds
+        fx.session.recordIdleActivity(nowUptimeNs: priorActivity)
+
+        let blockerStarted = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        fx.session.flowQueue.async {
+            blockerStarted.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerStarted.wait(timeout: .now() + 1), .success)
+
+        fx.session.handleReadCompletion(
+            datagrams: [Data("activity".utf8)],
+            endpoints: nil,
+            error: nil)
+
+        XCTAssertGreaterThan(
+            fx.session.testIdleActivitySnapshot.lastUptimeNs ?? 0,
+            priorActivity,
+            "callback entry must publish activity while queue processing is still blocked")
+
+        releaseBlocker.signal()
+        fx.drainFlowQueue()
+    }
+
     /// Lifecycle invariant: when `start()` takes any non-intercept
     /// path (engine unavailable, `.passthrough`, `.blocked`), the
     /// session is never registered with the core, so the local
