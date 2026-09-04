@@ -575,9 +575,9 @@ pub struct TcpEgressConnectOptions {
     /// Whether `egress_eof_grace_ms` carries a meaningful value.
     /// `false` ⇒ Swift uses its built-in default.
     pub has_egress_eof_grace_ms: bool,
-    /// Grace window (milliseconds) between the egress read pump
-    /// observing peer EOF and the Swift side force-cancelling the
-    /// connection. See
+    /// Grace window (milliseconds) after an abnormal egress-read stop
+    /// before the Swift side force-cancels the connection. Clean peer
+    /// EOF does not arm this fallback. See
     /// [`crate::tproxy::NwTcpConnectOptions::egress_eof_grace`].
     pub egress_eof_grace_ms: u32,
     /// Enable TCP keepalive (`enableKeepalive`). No `has_` flag — always

@@ -170,7 +170,10 @@ qa-rust: sort clippy rust-doc rust-test rust-test-ignored
 check-spec-parity:
     ./scripts/check_spec_parity.sh
 
-qa: qa-rust check-spec-parity build-tproxy-dev
+test-soak-log-parser:
+    python3 ./scripts/test_soak_pressure_log.py
+
+qa: qa-rust check-spec-parity test-soak-log-parser build-tproxy-dev
 
 test-e2e: build-tproxy-rs-debug clippy-tproxy-ffi-e2e cleanup-tproxy-ffi-e2e run-tproxy-ffi-e2e run-tproxy-ffi-e2e-swift
 

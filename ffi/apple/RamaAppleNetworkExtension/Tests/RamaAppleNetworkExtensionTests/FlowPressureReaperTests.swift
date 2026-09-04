@@ -830,6 +830,38 @@ final class FlowPressureReaperTests: XCTestCase {
         XCTAssertEqual(core.testPressureSelectionsTotal, 1)
     }
 
+    func testSettledBatchRechecksReleasedProductionAdmissions() {
+        defaultFlowPressureSoftCap = 3
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 0
+        let core = makeCore()
+        let old = [
+            Fx(core: core, idleSeconds: 30),
+            Fx(core: core, idleSeconds: 20),
+        ]
+        insert(core, old)
+        let admissions = (0..<4).map { _ in Fx(core: core, idleSeconds: 1) }
+        for admission in admissions {
+            XCTAssertNotNil(
+                core.registerTcpFlow(
+                    admission.flowId,
+                    anchor: _TestTcpFlowSessionAnchor(ctx: admission.ctx)))
+        }
+
+        core.reapIdleUnderPressure()
+        pollUntil("released admissions autonomously reach low-water") {
+            core.tcpFlowCount == 1
+        }
+
+        XCTAssertTrue(old.allSatisfy(\.wasTornDown))
+        XCTAssertEqual(admissions.filter(\.wasTornDown).count, 3)
+        XCTAssertEqual(core.testPressureEvictedTotal, 5)
+        XCTAssertEqual(
+            core.testPressureScanCount,
+            3,
+            "one initial scan, one protection boundary, one delayed continuation")
+    }
+
     func testReplacementScanRetainsAdmissionProtection() {
         defaultFlowPressureSoftCap = 2
         defaultFlowPressureLowWater = 1
@@ -858,6 +890,11 @@ final class FlowPressureReaperTests: XCTestCase {
         XCTAssertFalse(admission.wasTornDown)
         XCTAssertEqual(core.testPressureSelectionsTotal, 1)
         XCTAssertEqual(core.testPressureScanCount, 2)
+        pollUntil("released admission is reconsidered once") {
+            admission.wasTornDown
+        }
+        XCTAssertEqual(core.testPressureSelectionsTotal, 2)
+        XCTAssertEqual(core.testPressureScanCount, 3)
     }
 
     func testProtectedCandidatesBoundSuppressionAfterProtectionClears() {
@@ -891,11 +928,13 @@ final class FlowPressureReaperTests: XCTestCase {
 
         gate.signal()
         pollUntil("selected old flow leaves") { old.wasTornDown }
-        core.testReapIdleUnderPressureIfDue(nowNs: UInt64.max)
+        pollUntil("released admissions are reconsidered") {
+            core.testPressureSelectionsTotal == 2
+        }
         XCTAssertEqual(
             core.testPressureSelectionsTotal,
             2,
-            "former admissions become eligible after bounded suppression")
+            "former admissions become eligible after one bounded continuation")
     }
 
     // MARK: - TG-10: episode boundary via the production removal path
@@ -1496,6 +1535,55 @@ final class FlowPressureReaperTests: XCTestCase {
         XCTAssertEqual(core.testPressureEvictedTotal, 0)
         XCTAssertEqual(core.testPressureExpiredTotal, 0)
         XCTAssertEqual(core.testPressurePendingVictimCount, 0)
+    }
+
+    func testUnknownRemovalCannotCancelSelectedVictim() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let (queue, gate) = gatedQueue("unknown-removal")
+        defer { gate.signal() }
+        let victim = Fx(core: core, idleSeconds: 30, flowQueue: queue)
+        let active = Fx(core: core, idleSeconds: 0)
+        insert(core, [victim, active])
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 1)
+
+        let unknown = MockTcpFlow()
+        core.removeTcpFlow(ObjectIdentifier(unknown))
+        _ = core.tcpFlowCount
+
+        XCTAssertEqual(core.testPressureCanceledTotal, 0)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 1)
+    }
+
+    func testDuplicateRemovalCannotCancelSecondVictim() {
+        defaultFlowPressureSoftCap = 3
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let (queue, gate) = gatedQueue("duplicate-removal")
+        defer { gate.signal() }
+        let victims = [
+            Fx(core: core, idleSeconds: 30, flowQueue: queue),
+            Fx(core: core, idleSeconds: 20, flowQueue: queue),
+        ]
+        let natural = Fx(core: core, idleSeconds: 0)
+        insert(core, victims + [natural])
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 2)
+
+        core.removeTcpFlow(natural.flowId)
+        pollUntil("natural removal lands") { core.tcpFlowCount == 2 }
+        XCTAssertEqual(core.testPressureCanceledTotal, 1)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 1)
+
+        core.removeTcpFlow(natural.flowId)
+        _ = core.tcpFlowCount
+
+        XCTAssertEqual(core.testPressureCanceledTotal, 1)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 1)
     }
 
     func testExpiredVictimIsNotRequeuedBehindBlockedFlowQueue() {

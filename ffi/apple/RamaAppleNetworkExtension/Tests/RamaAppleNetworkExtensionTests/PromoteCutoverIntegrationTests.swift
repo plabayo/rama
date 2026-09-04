@@ -266,6 +266,60 @@ final class PromoteCutoverIntegrationTests: XCTestCase {
         XCTAssertNil(ctx.directForwarder)
     }
 
+    func testCutoverReplaysClientEofObservedBeforePromotion() {
+        let fx = makeFixture(); defer { tearDown(fx) }
+        let flow = MockTcpFlow()
+        let (conn, ctx) = driveToActivePumps(fx, flow: flow)
+        let completer = startSendCompleter(conn); defer { completer.store(true) }
+        guard let flowQueue = ctx.flowQueue else {
+            return XCTFail("production context has a flow queue")
+        }
+
+        flow.completeRead(data: nil, error: nil)
+        waitFor("client EOF is fully consumed before promotion") {
+            flow.closeReadCallCount == 1 && flow.pendingReadCount == 0
+        }
+
+        flowQueue.sync {
+            fx.core.beginPromoteCutover(
+                ctx: ctx,
+                flow: flow,
+                flowQueue: flowQueue,
+                flowId: ObjectIdentifier(flow))
+        }
+        XCTAssertEqual(ctx.mode, .promoted)
+        guard let forwarder = ctx.directForwarder else {
+            return XCTFail("client half-close remains promotable")
+        }
+
+        let serverTail = Data([0xFA, 0x11])
+        _ = conn.completePendingReceive(
+            data: serverTail,
+            isComplete: false,
+            error: nil)
+        forwarder.markRustC2SDone()
+        forwarder.markRustS2CDone()
+        flowQueue.sync {}
+
+        waitFor("replayed client EOF finishes c2s") {
+            forwarder.c2sPhase == .finished
+        }
+        XCTAssertEqual(
+            flow.pendingReadCount,
+            0,
+            "promotion must not read the already-closed client half again")
+        waitFor("server tail remains deliverable after client EOF") {
+            flow.writes.contains(serverTail)
+        }
+        waitFor("promoted server read starts") { conn.pendingReceiveCount > 0 }
+        _ = conn.completePendingReceive(data: nil, isComplete: true, error: nil)
+        flow.completeNextWrite()
+
+        waitFor("both half-closes release the registry") {
+            fx.core.tcpFlowCount == 0
+        }
+    }
+
     func testClientCarryoverReadErrorTearsDownWithOriginalError() {
         let fx = makeFixture(); defer { tearDown(fx) }
 

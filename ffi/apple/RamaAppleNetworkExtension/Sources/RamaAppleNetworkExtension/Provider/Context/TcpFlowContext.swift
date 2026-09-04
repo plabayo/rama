@@ -100,11 +100,12 @@ final class TcpFlowContext: @unchecked Sendable {
     /// flow — coalesces a burst of triggers into one outstanding verdict.
     /// Set / cleared on `flowQueue`, like `lastPathViable`.
     var deadPathRecheckPending = false
-    /// A terminal close signal (server EOF / egress close, `viaRust`
-    /// mode) was observed on `flowQueue` and the graceful drain +
-    /// teardown was kicked off. Set on `flowQueue`; read off-queue by the
-    /// periodic maintenance watchdog through the locked snapshot. The
-    /// watchdog combines this with `drainClosePending`.
+    /// A terminal close signal (server EOF / egress close, `viaRust` mode) was
+    /// observed. The egress read pump publishes it at the transport boundary
+    /// before entering Rust so promotion cannot overtake the one-shot close
+    /// callback; ordinary close handlers and the promoted forwarder also set
+    /// it on `flowQueue`. Read off-queue by the maintenance watchdog through
+    /// the locked snapshot, together with `drainClosePending`.
     var terminalSignalled: Bool {
         get { maintenanceState.withLock { $0.terminalSignalled } }
         set { maintenanceState.withLock { $0.terminalSignalled = newValue } }
@@ -293,25 +294,13 @@ final class TcpFlowContext: @unchecked Sendable {
 
     // MARK: Post-open writer-self-terminal
 
-    /// `TcpClientWritePump.onTerminalError` fired: the writer exhausted its
-    /// retry budget or hit a non-transient error. Closes the kernel flow,
-    /// cancels the egress NWConnection + session. Other pumps are NOT
-    /// explicitly cancelled — the NWConnection cancel surfaces in their read
-    /// loops as the canonical unwind signal.
+    /// Either write pump exhausted its retry budget or hit a non-transient
+    /// error. Cancel both writers before closing either transport: a Rust
+    /// callback already inside `callback_active` may concurrently enqueue to
+    /// the sibling writer, and it must observe `.closed` rather than schedule a
+    /// kernel write after the transport has been closed.
     func applyWriterTerminal(_ error: Error) {
-        guard !isDone else { return }
-        isDone = true
-        flow?.closeReadWithError(error)
-        flow?.closeWriteWithError(error)
-        connection?.cancelAndDetach()
-        connection = nil
-        session?.cancel()
-        if let flowId {
-            core?.removeTcpFlow(
-                flowId,
-                context: self,
-                engineGeneration: engineGeneration)
-        }
+        applyFullTeardown(error: error, driveForwarder: true)
     }
 
     // MARK: Post-open natural close
@@ -530,14 +519,18 @@ final class TcpFlowContext: @unchecked Sendable {
         egressReadPump?.cancel()
         egressReadPump = nil
         egressWritePump?.cancel()
-        egressWritePump = nil
         clientReadPump = nil
-        clientWritePump = nil
         if driveForwarder {
             directForwarder?.cancel()
             directForwarder = nil
         }
+        // `cancel()` waits for Rust callbacks already inside callback_active.
+        // Keep both callback-visible writer slots intact until that barrier
+        // returns; the callbacks see synchronously canceled pumps and report
+        // `.closed`, never a racing ARC load versus a nil store.
         session?.cancel()
+        egressWritePump = nil
+        clientWritePump = nil
         if let flowId {
             core?.removeTcpFlow(
                 flowId,

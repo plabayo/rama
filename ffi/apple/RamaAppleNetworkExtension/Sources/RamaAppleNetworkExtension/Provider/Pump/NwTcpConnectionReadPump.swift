@@ -25,9 +25,10 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
     /// [`TcpClientReadPump.session`].
     private weak var session: (any NwEgressBytesSink)?
     private let queue: DispatchQueue
-    /// Grace window after observing peer EOF / error. It bounds a stalled
-    /// client-writer drain or error path; a completed clean half-close
-    /// disarms it so the opposite upload half may continue.
+    private let queueKey = DispatchSpecificKey<UInt8>()
+    /// Grace window after an abnormal read-side stop. It bounds cleanup when
+    /// Rust drops the egress consumer, the session vanishes, or a read fails.
+    /// Clean EOF does not arm it; the opposite upload half may remain live.
     private let eofGraceDeadline: DispatchTimeInterval
     private let onTerminalObserved: @Sendable () -> Void
     private let onReadError: @Sendable (Error) -> Void
@@ -68,6 +69,7 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         self.onTerminalObserved = onTerminalObserved
         self.onReadError = onReadError
         self.onActivity = onActivity
+        queue.setSpecific(key: queueKey, value: 1)
     }
     func start() {
         queue.async { self.scheduleReadLocked() }
@@ -94,46 +96,62 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         onError: @escaping @Sendable (Error) -> Void = { _ in },
         onComplete: @escaping @Sendable () -> Void
     ) {
-        queue.async {
-            // Disarm the EOF-grace backstop BEFORE the `.closed` early
-            // return: an armed timer always implies `.closed` (every arm
-            // site sets it in the same block), and a stale timer would
-            // force-cancel the connection under the new forwarder's feet.
-            // The forwarder rediscovers a pre-existing EOF with one benign
-            // direct `receive`.
-            self.eofWork?.cancel()
-            self.eofWork = nil
-            guard self.phase != .closed else {
-                if let terminal = self.observedTerminal {
-                    self.observedTerminal = nil
-                    if case .failure(let error) = terminal {
-                        onError(error)
-                    }
-                    onCarryover(.none)
-                }
-                onComplete()
-                return
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            cancelForPromoteLocked(
+                onCarryover: onCarryover,
+                onError: onError,
+                onComplete: onComplete)
+        } else {
+            queue.async {
+                self.cancelForPromoteLocked(
+                    onCarryover: onCarryover,
+                    onError: onError,
+                    onComplete: onComplete)
             }
-            if let pending = self.pendingData {
-                self.pendingData = nil
-                onCarryover(.some(pending))
-            }
-            if let terminal = self.pendingTerminal {
-                self.pendingTerminal = nil
+        }
+    }
+
+    private func cancelForPromoteLocked(
+        onCarryover: @escaping @Sendable (Data?) -> Void,
+        onError: @escaping @Sendable (Error) -> Void,
+        onComplete: @escaping @Sendable () -> Void
+    ) {
+        // Disarm the EOF-grace backstop BEFORE the `.closed` early return: an
+        // armed timer always implies `.closed`, and a stale timer would cancel
+        // the connection under the forwarder. Run inline when already on the
+        // flow queue so the promotion ACK cannot overtake this transition.
+        eofWork?.cancel()
+        eofWork = nil
+        guard phase != .closed else {
+            if let terminal = observedTerminal {
+                observedTerminal = nil
                 if case .failure(let error) = terminal {
                     onError(error)
                 }
                 onCarryover(.none)
             }
-            let hadInFlightRead = (self.phase == .reading)
-            self.phase = .closed
-            if hadInFlightRead {
-                self.onPromoteCarryover = onCarryover
-                self.onPromoteError = onError
-                self.onPromoteComplete = onComplete
-            } else {
-                onComplete()
+            onComplete()
+            return
+        }
+        if let pending = pendingData {
+            pendingData = nil
+            onCarryover(.some(pending))
+        }
+        if let terminal = pendingTerminal {
+            pendingTerminal = nil
+            if case .failure(let error) = terminal {
+                onError(error)
             }
+            onCarryover(.none)
+        }
+        let hadInFlightRead = (phase == .reading)
+        phase = .closed
+        if hadInFlightRead {
+            onPromoteCarryover = onCarryover
+            onPromoteError = onError
+            onPromoteComplete = onComplete
+        } else {
+            onComplete()
         }
     }
 
@@ -280,27 +298,25 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         case .failure(let error):
             onReadError(error)
             session?.onEgressError()
+            scheduleEgressReleaseLocked()
         }
-        scheduleEgressReleaseLocked()
     }
 
-    /// Bounded fallback that force-cancels the egress NWConnection if the
-    /// clean teardown path (`on_egress_eof`/`on_server_closed` → Swift cancel)
-    /// doesn't reach it first.
+    /// Bounded fallback that force-cancels the egress NWConnection when an
+    /// abnormal stop cannot rely on the clean Rust close path.
     ///
-    /// Armed whenever this pump stops reading for a terminal reason — peer
-    /// EOF/error, Rust returning `.closed` (the bridge dropped the egress
-    /// consumer), or the session vanishing mid-flight. Without it, a
+    /// Armed for a peer error, Rust returning `.closed` (the bridge dropped the
+    /// egress consumer), or the session vanishing mid-flight. Without it, a
     /// `.closed`/session-gone path would silently stop reading while the
     /// NWConnection (and its NECP registration) stays live until the OS reaps
     /// it — the sibling asymmetry with `TcpClientReadPump`, which routes its
     /// `.closed` through `terminate(...)`.
     ///
-    /// The clean path is given `eofGraceDeadline` to win first; `cancel()` is
-    /// idempotent so a late watchdog is a no-op. `connection` is captured
-    /// strongly (not via `[weak self]`) so a promote teardown / outer drop
-    /// between arming and the deadline still releases the registration —
-    /// mirrors the write pump's linger watchdog.
+    /// Clean EOF deliberately does not arm this short fallback: it closes only
+    /// server→client, while a quiet client→server half may legally resume much
+    /// later. Rust's `on_server_closed` callback owns its eventual drain path.
+    /// `connection` is captured strongly so an outer drop after a hard stop
+    /// still releases its registration.
     private func scheduleEgressReleaseLocked() {
         guard eofWork == nil else { return }
         let conn = self.connection
@@ -310,15 +326,6 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         }
         eofWork = work
         queue.asyncAfter(deadline: .now() + eofGraceDeadline, execute: work)
-    }
-
-    /// A clean server→client drain has delivered EOF to the app while the
-    /// opposite upload half remains valid. Its activity-aware terminal drain
-    /// backstop now owns eventual cleanup, so the unconditional EOF fallback
-    /// must not cancel the still-live egress connection.
-    func disarmEofBackstop() {
-        eofWork?.cancel()
-        eofWork = nil
     }
 
     func cancel() {

@@ -91,6 +91,32 @@ final class TcpFlowTeardownTests: XCTestCase {
             fx.conn.cancelCount, 1, "subsequent teardowns must not re-cancel the connection")
     }
 
+    func testWriterTerminalSynchronouslyClosesBothWriterPumps() {
+        let fx = Fixture()
+        let queue = DispatchQueue(label: "rama.test.writer-terminal")
+        let clientWriter = TcpClientWritePump(
+            flow: fx.flow,
+            queue: queue,
+            logger: { _ in },
+            onTerminalError: { _ in },
+            onDrained: {})
+        let egressWriter = NwTcpConnectionWritePump(
+            connection: fx.conn,
+            queue: queue,
+            lingerCloseDeadline: .milliseconds(50),
+            onDrained: {})
+        fx.ctx.clientWritePump = clientWriter
+        fx.ctx.egressWritePump = egressWriter
+
+        fx.ctx.applyWriterTerminal(NSError(domain: "test.writer", code: 1))
+
+        XCTAssertEqual(clientWriter.enqueue(Data([0x01])), .closed)
+        XCTAssertEqual(egressWriter.enqueue(Data([0x02])), .closed)
+        queue.sync {}
+        XCTAssertTrue(fx.flow.writes.isEmpty)
+        XCTAssertTrue(fx.conn.sentChunks.isEmpty)
+    }
+
     // MARK: - Pre-open variants
 
     /// `applyPreReadyFailure` runs in the egress-connection-failed-

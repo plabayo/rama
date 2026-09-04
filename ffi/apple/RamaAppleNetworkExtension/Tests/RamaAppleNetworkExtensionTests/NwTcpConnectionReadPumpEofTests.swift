@@ -17,9 +17,9 @@ import XCTest
 /// `NEAppProxyFlow.writeData` queue. When the app stops reading (process
 /// exit, browser tab closed, NEAppProxyFlow already cancelled by the
 /// kernel for other reasons) the drain never completes and the clean
-/// path stalls indefinitely. The backstop schedules an unconditional
-/// `connection.cancel()` after `eofGraceDeadline` so the NWConnection
-/// registration is released in bounded time regardless.
+/// path can stall. A short fallback is safe only after a hard error, a dropped
+/// Rust consumer, or an abandoned session. Clean EOF is a legal half-close and
+/// must preserve even a quiet independent upload until Rust closes the service.
 final class NwTcpConnectionReadPumpEofTests: XCTestCase {
 
     private final class RecordingEgressSink: NwEgressBytesSink, @unchecked Sendable {
@@ -126,7 +126,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         wait(for: [exp], timeout: timeout)
     }
 
-    func testIsCompleteSchedulesCancelWithinGrace() {
+    func testCleanEofDoesNotScheduleShortRelease() {
         let engine = makeEngine()
         defer { engine.stop(reason: 0) }
         let session = makeInterceptedSession(engine)
@@ -146,10 +146,14 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         // Upstream peer EOF.
         mock.completePendingReceive(isComplete: true)
         waitForQueueDrain(queue)
-        XCTAssertEqual(mock.cancelCount, 0, "EOF backstop must not fire before its deadline")
+        XCTAssertEqual(mock.cancelCount, 0, "clean EOF must not arm a short backstop")
 
-        // Poll for the deadline to fire (robust to a loaded runner).
-        pollUntil("EOF backstop force-cancels the connection") { mock.cancelCount == 1 }
+        Thread.sleep(forTimeInterval: 0.45)
+        waitForQueueDrain(queue)
+        XCTAssertEqual(
+            mock.cancelCount, 0,
+            "clean EOF must preserve even a quiet opposite direction")
+        XCTAssertFalse(queue.sync { pump.isEofBackstopArmed })
     }
 
     func testReadErrorSchedulesCancelWithinGrace() {
@@ -247,7 +251,9 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
 
         pump.start()
         waitForQueueDrain(queue)
-        mock.completePendingReceive(isComplete: true)
+        mock.completePendingReceive(
+            isComplete: false,
+            error: NWError.posix(.ECONNRESET))
         waitForQueueDrain(queue)
         XCTAssertEqual(mock.cancelCount, 0)
 
@@ -268,7 +274,7 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         )
     }
 
-    /// Regression: the EOF backstop must fire even after the pump
+    /// Regression: the hard-stop backstop must fire even after the pump
     /// itself is deallocated. A promote teardown drops the per-flow
     /// ctx — and the read pump along with it — once the cutover
     /// completes; without a strong capture of the connection, the
@@ -302,13 +308,15 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
             waitForQueueDrain(queue)
             XCTAssertEqual(mock.pendingReceiveCount, 1)
 
-            mock.completePendingReceive(isComplete: true)
+            mock.completePendingReceive(
+                isComplete: false,
+                error: NWError.posix(.ECONNRESET))
             waitForQueueDrain(queue)
             XCTAssertEqual(mock.cancelCount, 0, "backstop not yet fired")
             // `pump` goes out of scope → deallocated.
         }
 
-        pollUntil("EOF backstop fires even after the pump is deallocated") {
+        pollUntil("hard-stop backstop fires even after pump deallocation") {
             mock.cancelCount == 1
         }
     }

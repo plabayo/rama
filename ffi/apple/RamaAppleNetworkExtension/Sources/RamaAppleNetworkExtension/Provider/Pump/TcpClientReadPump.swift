@@ -28,6 +28,7 @@ final class TcpClientReadPump: @unchecked Sendable {
     private let onTerminal: @Sendable (Error?) -> Void
     private let onActivity: @Sendable () -> Void
     private let queue: DispatchQueue
+    private let queueKey = DispatchSpecificKey<UInt8>()
     /// Lifecycle phase — replaces the former `readPending`, `paused`, and
     /// `closed` boolean triple.  The compiler now enforces that only one
     /// branch is active at a time instead of relying on scattered guards.
@@ -43,6 +44,11 @@ final class TcpClientReadPump: @unchecked Sendable {
     /// The separate error channel keeps a hard kernel-read failure distinct
     /// from clean EOF across the cutover. Fires at most once, then clears.
     private var onPromoteCarryover: (@Sendable (_ payload: Data?, _ error: Error?) -> Void)?
+    /// A clean EOF already consumed by the ordinary Rust-bound path. Promotion
+    /// may still be valid while the server half remains open, so retain this
+    /// one-shot terminal edge for the direct forwarder instead of issuing a
+    /// second `readData` against a read half Apple has declared closed.
+    private var observedNaturalEof = false
 
     init(
         flow: any TcpFlowReadable,
@@ -58,6 +64,7 @@ final class TcpClientReadPump: @unchecked Sendable {
         self.logger = logger
         self.onTerminal = onTerminal
         self.onActivity = onActivity
+        queue.setSpecific(key: queueKey, value: 1)
     }
 
     func requestRead() {
@@ -106,36 +113,56 @@ final class TcpClientReadPump: @unchecked Sendable {
         onError: @escaping @Sendable (Error) -> Void = { _ in },
         onComplete: @escaping @Sendable () -> Void
     ) {
-        queue.async {
-            guard self.phase != .closed else {
-                onComplete()
-                return
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            cancelForPromoteLocked(
+                onCarryover: onCarryover,
+                onError: onError,
+                onComplete: onComplete)
+        } else {
+            queue.async {
+                self.cancelForPromoteLocked(
+                    onCarryover: onCarryover,
+                    onError: onError,
+                    onComplete: onComplete)
             }
-            // Hand over the replay buffer immediately.
-            if let pending = self.pendingData {
-                self.pendingData = nil
-                onCarryover(.some(pending))
+        }
+    }
+
+    private func cancelForPromoteLocked(
+        onCarryover: @escaping @Sendable (Data?) -> Void,
+        onError: @escaping @Sendable (Error) -> Void,
+        onComplete: @escaping @Sendable () -> Void
+    ) {
+        guard phase != .closed else {
+            if observedNaturalEof {
+                observedNaturalEof = false
+                onCarryover(.none)
             }
-            let hadInFlightRead = (self.phase == .reading)
-            self.phase = .closed
-            // Install the carryover sink for the in-flight read
-            // (if any). When the readData completion lands, it
-            // routes through `onPromoteCarryover` rather than
-            // the normal sink, then fires `onComplete`. For an
-            // idle pump (no in-flight read) we fire `onComplete`
-            // immediately — no further carryover can land.
-            if hadInFlightRead {
-                self.onPromoteCarryover = { payload, error in
-                    if let error {
-                        onError(error)
-                    } else {
-                        onCarryover(payload)
-                    }
-                    onComplete()
+            onComplete()
+            return
+        }
+        // Hand over the replay buffer immediately.
+        if let pending = pendingData {
+            pendingData = nil
+            onCarryover(.some(pending))
+        }
+        let hadInFlightRead = (phase == .reading)
+        phase = .closed
+        // Install the carryover sink for the in-flight read (if any). When
+        // its completion lands, it routes here instead of to Rust. This
+        // transition runs inline when promotion already owns `queue`, so the
+        // ACK cannot overtake sink installation and lose a concurrent read.
+        if hadInFlightRead {
+            onPromoteCarryover = { payload, error in
+                if let error {
+                    onError(error)
+                } else {
+                    onCarryover(payload)
                 }
-            } else {
                 onComplete()
             }
+        } else {
+            onComplete()
         }
     }
 
@@ -225,6 +252,7 @@ final class TcpClientReadPump: @unchecked Sendable {
                             text: "flow.readData eof"
                         )
                     )
+                    self.observedNaturalEof = true
                     self.terminate(with: nil)
                     return
                 }

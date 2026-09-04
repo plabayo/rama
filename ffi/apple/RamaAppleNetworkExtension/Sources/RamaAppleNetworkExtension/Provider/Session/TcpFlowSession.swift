@@ -247,10 +247,16 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
 
     func requestEngineSession() -> RamaTransparentProxyTcpSessionDecision? {
         guard let lease = core?.engineLeaseForNewFlow() else { return nil }
+        guard let clientWritePump = ctx.clientWritePump else { return nil }
         let decision = lease.engine.newTcpSession(
             meta: meta,
-            onServerBytes: { [weak ctx] data in
-                ctx?.clientWritePump?.enqueue(data) ?? .closed
+            // Capture the writer itself: Rust invokes this closure on an
+            // arbitrary worker, while teardown mutates ctx slots on
+            // `flowQueue`. Re-reading `ctx.clientWritePump` here would race
+            // Swift ARC's load with that nil store. The retained pump is
+            // synchronously marked closed before teardown cancels Rust.
+            onServerBytes: { [clientWritePump] data in
+                clientWritePump.enqueue(data)
             },
             onClientReadDemand: { [weak self] in
                 self?.flowQueue.async { [weak self] in
@@ -455,10 +461,6 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     func closeClientAfterRustDrain() {
         guard beginTerminalDrain(.clientWriter) else { return }
         let egressReadError = ctx.egressReadError
-        // A clean peer EOF arms an unconditional connection-release timer.
-        // Transfer ownership before waiting for the client writer: the shared
-        // activity-aware drain backstop preserves a still-live upload half.
-        if egressReadError == nil { ctx.egressReadPump?.disarmEofBackstop() }
         ctx.clientWritePump?.closeWhenDrained { [weak self] wasOpened in
             guard let self else { return }
             self.pendingClientDrainClose = ClientDrainClose(
@@ -564,6 +566,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         guard let session = sessionHandle else { return }
 
         buildEgressWritePump(connection: connection)
+        let egressWritePump = ctx.egressWritePump
         let readPump = buildEgressReadPump(connection: connection, session: session)
 
         // Register the Rust→Swift promote callback BEFORE
@@ -583,8 +586,10 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         armPromoteCallback()
 
         session.activate(
-            onWriteToEgress: { [weak ctx] data in
-                ctx?.egressWritePump?.enqueue(data) ?? .closed
+            // As above, keep a stable callback-visible writer reference rather
+            // than racing an arbitrary Rust worker against ctx teardown.
+            onWriteToEgress: { [egressWritePump] data in
+                egressWritePump?.enqueue(data) ?? .closed
             },
             onEgressReadDemand: { [weak self] in
                 self?.flowQueue.async { [weak self] in

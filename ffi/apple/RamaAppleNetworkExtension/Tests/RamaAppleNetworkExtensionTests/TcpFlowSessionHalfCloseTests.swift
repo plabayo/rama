@@ -84,6 +84,7 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         let conn = MockNwConnection()
         let session = TcpFlowSession(core: core, flow: flow, meta: makeMeta())
         session.ctx.connection = conn
+        session.buildClientWritePump()
 
         // The intercept decision is synchronous; pin the handle the way
         // `start()` would.
@@ -187,7 +188,6 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         let (session, core, _, conn, queue) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }
 
-        session.buildClientWritePump()
         session.ctx.clientWritePump?.markOpened()
         session.ctx.lastActivityAt = DispatchTime(uptimeNanoseconds: 1)
         XCTAssertEqual(
@@ -208,7 +208,6 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         let (session, core, flow, _, queue) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }
         flow.captureWriteCompletions = true
-        session.buildClientWritePump()
         session.ctx.clientWritePump?.markOpened()
         XCTAssertEqual(
             session.ctx.clientWritePump?.enqueue(Data([0x01])),
@@ -229,7 +228,6 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         let (session, core, _, conn, queue) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }
 
-        session.buildClientWritePump()
         session.ctx.clientWritePump?.markOpened()
         conn.transition(to: .ready)
         queue.sync { session.handleEgressReady(connection: conn) }
@@ -246,14 +244,13 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         XCTAssertEqual(conn.pendingSendCount, 0)
     }
 
-    func testCleanClientDrainDisarmsEofBackstopBeforeWriterFinishes() {
+    func testCleanClientDrainNeedsNoShortEofBackstop() {
         let (session, core, flow, conn, queue) = makeArmedSession(
             egressEofGraceMs: 60_000)
         defer { core.detachEngine(reason: 0) }
         session.lingerCloseMs = 60_000
         session.ctx.lingerCloseMs = 60_000
         flow.captureWriteCompletions = true
-        session.buildClientWritePump()
         session.ctx.clientWritePump?.markOpened()
         XCTAssertEqual(
             session.ctx.clientWritePump?.enqueue(Data([0x01])),
@@ -265,7 +262,7 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         XCTAssertTrue(conn.completePendingReceive(isComplete: true))
         drain(queue)
         queue.sync {
-            XCTAssertTrue(session.ctx.egressReadPump?.isEofBackstopArmed == true)
+            XCTAssertFalse(session.ctx.egressReadPump?.isEofBackstopArmed == true)
             session.closeClientAfterRustDrain()
         }
         drain(queue)
@@ -273,7 +270,7 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
             XCTAssertFalse(session.ctx.egressReadPump?.isEofBackstopArmed == true)
         }
 
-        XCTAssertEqual(conn.cancelCount, 0, "clean upload half survives EOF grace")
+        XCTAssertEqual(conn.cancelCount, 0, "clean upload survives error grace")
         XCTAssertEqual(flow.closeWriteCallCount, 0, "client writer is still draining")
 
         XCTAssertTrue(flow.completeNextWrite())
@@ -283,10 +280,30 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         XCTAssertEqual(conn.cancelCount, 0)
     }
 
+    func testDelayedRustClosePreservesQuietUploadAfterEgressEof() {
+        let (session, core, _, conn, queue) = makeArmedSession(
+            egressEofGraceMs: 120)
+        defer { core.detachEngine(reason: 0) }
+
+        // The opposite upload may legally remain quiet beyond the short error
+        // grace before resuming; recency cannot distinguish it from a leak.
+        session.ctx.lastActivityAt = DispatchTime(uptimeNanoseconds: 1)
+        XCTAssertTrue(conn.completePendingReceive(isComplete: true))
+        drain(queue)
+
+        Thread.sleep(forTimeInterval: 0.30)
+        drain(queue)
+        XCTAssertEqual(
+            conn.cancelCount, 0,
+            "clean egress EOF must preserve a quiet legal upload")
+        queue.sync {
+            XCTAssertFalse(session.ctx.egressReadPump?.isEofBackstopArmed == true)
+        }
+    }
+
     func testEgressWriteFailureDuringDrainTearsDownViaRustSession() {
         let (session, core, flow, conn, queue) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }
-        session.buildClientWritePump()
         session.ctx.clientWritePump?.markOpened()
         queue.sync { session.closeClientAfterRustDrain() }
         waitFor("client writer completes first drain") {
@@ -320,7 +337,6 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
     func testEgressFinFailureTearsDownViaRustSessionWithError() {
         let (session, core, flow, conn, queue) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }
-        session.buildClientWritePump()
         session.ctx.clientWritePump?.markOpened()
         queue.sync { session.closeClientAfterRustDrain() }
         waitFor("client writer completes first drain") {
@@ -347,7 +363,6 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
     func testPromotedEgressWriteFailurePreservesError() {
         let (session, core, flow, conn, queue) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }
-        session.buildClientWritePump()
         session.ctx.clientWritePump?.markOpened()
         conn.transition(to: .ready)
         queue.sync {
@@ -386,7 +401,6 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
     func testPromotedEgressFinFailurePreservesError() {
         let (session, core, flow, conn, queue) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }
-        session.buildClientWritePump()
         session.ctx.clientWritePump?.markOpened()
         conn.transition(to: .ready)
         queue.sync {
@@ -427,7 +441,6 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
     func testPromotedClientReadFailureUsesErrorfulContextTeardown() {
         let (session, core, flow, conn, queue) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }
-        session.buildClientWritePump()
         session.ctx.clientWritePump?.markOpened()
         conn.transition(to: .ready)
         queue.sync {
@@ -499,7 +512,6 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         defer { core.detachEngine(reason: 0) }
         session.lingerCloseMs = 25
         session.ctx.lingerCloseMs = 25
-        session.buildClientWritePump()
         session.ctx.clientWritePump?.markOpened()
         session.ctx.egressWritePump = NwTcpConnectionWritePump(
             connection: conn,
@@ -551,7 +563,6 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         defer { core.detachEngine(reason: 0) }
         session.lingerCloseMs = 60_000
         session.ctx.lingerCloseMs = 60_000
-        session.buildClientWritePump()
         session.ctx.clientWritePump?.markOpened()
         session.ctx.egressWritePump = NwTcpConnectionWritePump(
             connection: conn,
@@ -583,7 +594,6 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         session.ctx.lingerCloseMs = 60_000
 
         flow.captureWriteCompletions = true
-        session.buildClientWritePump()
         session.ctx.clientWritePump?.markOpened()
         XCTAssertEqual(
             session.ctx.clientWritePump?.enqueue(Data([0x01])),
@@ -648,7 +658,6 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         session.ctx.lingerCloseMs = 60_000
 
         flow.captureWriteCompletions = true
-        session.buildClientWritePump()
         session.ctx.clientWritePump?.markOpened()
         XCTAssertEqual(
             session.ctx.clientWritePump?.enqueue(Data([0x01])),

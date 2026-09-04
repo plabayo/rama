@@ -221,13 +221,13 @@ pub struct NwTcpConnectOptions {
     /// would otherwise keep the socket pinned in FIN_WAIT_1. `None`
     /// falls back to the Swift-side default (currently 5 seconds).
     pub linger_close_timeout: Option<Duration>,
-    /// Grace window after the egress read pump observes peer EOF or a
-    /// read error. It bounds cleanup while the client writer is still
-    /// draining, has vanished, or the terminal result is an error. Once a
-    /// clean server→client half-close has drained, Swift disarms this
-    /// unconditional fallback so a still-active client→server half may
-    /// continue; the separate progress-aware linger bounds a stalled close.
-    /// `None` falls back to the Swift-side default (currently 2 seconds).
+    /// Grace window for abnormal egress-read termination: a read error,
+    /// a vanished Swift session, or Rust dropping its egress consumer.
+    /// It bounds how long the `NWConnection` may remain registered when
+    /// the normal close path cannot run. A clean server→client EOF does
+    /// not arm this short fallback because the client→server half may
+    /// legally remain quiet and resume later. `None` falls back to the
+    /// Swift-side default (currently 2 seconds).
     pub egress_eof_grace: Option<Duration>,
     /// Enable TCP keepalive on the egress `NWConnection`. **Defaults to
     /// `true`** ([`Self::default`]): the transport-layer self-heal for a

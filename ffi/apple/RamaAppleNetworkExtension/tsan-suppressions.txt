@@ -41,7 +41,6 @@ race:Tests
 #    mutation to one of these MUST remove its line and fix it (or route the test
 #    read through `ctx.flowQueue?.sync { … }`, the idiom used by
 #    SystemLifecycleTests.testRecoveryQueuedBeforeWakeCheckSparesFlow).
-race:TcpFlowContext.applyFullTeardown
 race:TransparentProxyCore.beginPromoteCutover
 race:TransparentProxyCore.checkDeadPath
 race:TcpDirectForwarder.finishC2SLocked

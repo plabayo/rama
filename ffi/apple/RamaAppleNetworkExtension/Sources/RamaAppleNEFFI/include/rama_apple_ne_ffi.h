@@ -508,11 +508,11 @@ typedef struct {
     /// Whether `egress_eof_grace_ms` carries a meaningful value;
     /// `false` ⇒ Swift uses its built-in default.
     bool has_egress_eof_grace_ms;
-    /// Grace window (ms) between the egress read pump observing peer
-    /// EOF (or a read error) and the Swift side force-cancelling the
-    /// connection. Protects the path where the clean teardown
-    /// (`on_server_closed` → cancel) stalls because the originating
-    /// app stopped reading from its NEAppProxyFlow.
+    /// Grace window (ms) after an abnormal egress-read stop before the
+    /// Swift side force-cancels the connection. Covers read errors, a
+    /// vanished Swift session, or Rust dropping its egress consumer.
+    /// Clean peer EOF does not arm this short fallback because the
+    /// client-to-server half may legally remain quiet and resume later.
     uint32_t egress_eof_grace_ms;
     /// Enable TCP keepalive (NWProtocolTCP.Options.enableKeepalive). No
     /// `has_` flag — always meaningful, defaults true. Self-heals a
