@@ -365,10 +365,12 @@ where
 
         // A CONNECT upgrade inherits proxy-leg connection metadata. Shadow the
         // proxy's wire version before the outer origin HTTP connector runs.
-        // Origin TLS may replace this with its own negotiated ALPN later.
-        if app_is_http && let Some(origin_http_version) = requested_http_version {
-            conn.extensions()
-                .insert(TargetHttpVersion(origin_http_version));
+        // A plaintext origin needs an explicit HTTP/1.1 default; for a TLS
+        // origin without a requested version, leave selection to origin ALPN.
+        if app_is_plaintext_http || requested_http_version.is_some() {
+            conn.extensions().insert(TargetHttpVersion(
+                requested_http_version.unwrap_or(Version::HTTP_11),
+            ));
         }
 
         tracing::trace!("inserting HttpProxyHeaders in context");
@@ -1077,6 +1079,46 @@ mod tests {
                 .get_ref::<HttpProxyConnectionMode>()
                 .copied(),
             Some(HttpProxyConnectionMode::Tunnel)
+        );
+    }
+
+    #[tokio::test]
+    async fn plaintext_http_tunnel_defaults_missing_origin_version() {
+        let http_server =
+            HttpServer::auto(Executor::default()).service(service_fn(async move |req: Request| {
+                assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }));
+        let transport = MockConnectorService::new(move || http_server.clone());
+        let transport = service_fn(move |input: ConnectRequest| {
+            let transport = transport.clone();
+            async move {
+                let established = transport.serve(input).await?;
+                established
+                    .conn
+                    .extensions()
+                    .insert(TargetHttpVersion(Version::HTTP_2));
+                Ok::<_, Infallible>(established)
+            }
+        });
+        let connector = HttpProxyConnectorLayer::required().into_layer(transport);
+        let input = ConnectRequest::new(HostWithPort::example_domain_http())
+            .with_application_protocol(Protocol::HTTP);
+        input.extensions.insert(PlaintextHttpProxyMode::Tunnel);
+        input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
+            address: HostWithPort::example_domain_http(),
+            credential: None,
+            protocol: Some(Protocol::HTTP),
+        }));
+
+        let established = connector.serve(input).await.unwrap();
+        assert_eq!(
+            established
+                .conn
+                .extensions()
+                .get_ref::<TargetHttpVersion>()
+                .map(|version| version.0),
+            Some(Version::HTTP_11),
         );
     }
 

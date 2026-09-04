@@ -4,7 +4,7 @@ use rama::{
     extensions::ExtensionsRef as _,
     http::{
         Request, Response, StatusCode, body::util::BodyExt as _, convert::curl,
-        service::web::response::IntoResponse as _,
+        header::PROXY_AUTHORIZATION, service::web::response::IntoResponse as _,
     },
     net::{ProtocolInputExt as _, client::ProxyRoute},
     service::MirrorService,
@@ -30,18 +30,38 @@ impl Service<Request> for CurlWriter {
             .await
             .context("rama: (curl-writer) emulate UA")?;
 
-        let (parts, body) = req.into_parts();
-        if !self.forward_proxy_auth
-            && !self.proxy_tunnel
+        let (mut parts, body) = req.into_parts();
+        let selected_proxy = parts
+            .extensions()
+            .get_ref::<ProxyRoute>()
+            .and_then(ProxyRoute::proxy_address)
+            .filter(|proxy| {
+                proxy
+                    .protocol
+                    .as_ref()
+                    .is_none_or(|protocol| protocol.is_http())
+            });
+        let is_forward_proxy = !self.proxy_tunnel
             && parts
                 .protocol()
                 .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure())
+            && selected_proxy.is_some();
+        let configured_forward_credential = is_forward_proxy
+            && self.forward_proxy_auth
+            && selected_proxy.is_some_and(|proxy| proxy.credential.is_some());
+
+        // Mirror the live client's credential boundary. A regular request
+        // header can authenticate an established forward proxy, but it must
+        // never be replayed to a direct, SOCKS, or CONNECT-tunneled origin.
+        // A configured forward credential also wins over a manual value.
+        if !is_forward_proxy || configured_forward_credential {
+            parts.headers.remove(PROXY_AUTHORIZATION);
+        }
+
+        if is_forward_proxy
+            && !self.forward_proxy_auth
             && let Some(ProxyRoute::Proxy(mut proxy)) =
                 parts.extensions().get_ref::<ProxyRoute>().cloned()
-            && proxy
-                .protocol
-                .as_ref()
-                .is_none_or(|protocol| protocol.is_http())
         {
             proxy.credential = None;
             parts.extensions().insert(ProxyRoute::Proxy(proxy));

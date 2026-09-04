@@ -2905,6 +2905,16 @@ mod conn {
 
             let mut body = req.into_body();
 
+            respond
+                .send_informational(
+                    Response::builder()
+                        .status(StatusCode::EARLY_HINTS)
+                        .header("content-length", "not-a-number")
+                        .body(())
+                        .unwrap(),
+                )
+                .unwrap();
+
             let mut send_stream = respond
                 .send_response(
                     Response::builder()
@@ -3006,6 +3016,51 @@ mod conn {
         assert_eq!(body, "No bread for you!");
 
         done_tx.send(()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn h2_connect_rejected_validates_content_length() {
+        let (client_io, server_io, _) = setup_duplex_test_server();
+
+        let server_task = tokio::spawn(async move {
+            let sock = ServiceInput::new(server_io);
+            let mut h2 = rama::http::core::h2::server::handshake(sock).await.unwrap();
+
+            let (req, mut respond) = h2.accept().await.unwrap().unwrap();
+            assert_eq!(req.method(), Method::CONNECT);
+
+            let res = Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-length", "999")
+                .body(())
+                .unwrap();
+            let mut send_stream = respond.send_response(res, false).unwrap();
+            send_stream
+                .send_data("No bread for you!".into(), true)
+                .unwrap();
+        });
+
+        let io = ServiceInput::new(client_io);
+        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+            .handshake::<_, Empty<Bytes>>(io)
+            .await
+            .expect("http handshake");
+
+        tokio::spawn(async move {
+            _ = conn.await;
+        });
+
+        let req = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+            .body(Empty::new())
+            .unwrap();
+        if let Ok(res) = client.send_request(req).await {
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+            concat(res)
+                .await
+                .expect_err("rejected CONNECT must validate response content-length");
+        }
+
+        server_task.await.unwrap();
     }
 
     #[tokio::test]

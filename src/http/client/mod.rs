@@ -448,6 +448,24 @@ mod tests {
         }
     }
 
+    #[derive(Debug, Clone, Copy)]
+    struct InspectConnectionModeLayer(rama_http_backend::client::proxy::HttpProxyConnectionMode);
+
+    impl<S: ExtensionsRef> Layer<S> for InspectConnectionModeLayer {
+        type Service = S;
+
+        fn layer(&self, inner: S) -> Self::Service {
+            assert_eq!(
+                inner
+                    .extensions()
+                    .get_ref::<rama_http_backend::client::proxy::HttpProxyConnectionMode>()
+                    .copied(),
+                Some(self.0),
+            );
+            inner
+        }
+    }
+
     fn dummy_server<Input: Send + 'static>()
     -> impl Service<
         Input,
@@ -495,6 +513,30 @@ mod tests {
             })
         });
         let client = EasyHttpWebClient::new(connector).with_tunnel_plaintext_http(true);
+        let request = Request::builder()
+            .uri("http://example.com/")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = client.serve(request).await.unwrap();
+        assert_eq!(response.status(), crate::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn jit_layer_can_read_established_connection_extensions() {
+        let connector = service_fn(|request: Request| async move {
+            let conn = EmptyHttpConnection::default();
+            conn.extensions()
+                .insert(rama_http_backend::client::proxy::HttpProxyConnectionMode::Direct);
+            conn.extensions().insert(ProxyRoute::Direct);
+            Ok::<_, Infallible>(EstablishedClientConnection {
+                input: request,
+                conn,
+            })
+        });
+        let client = EasyHttpWebClient::new(connector).with_jit_layer(InspectConnectionModeLayer(
+            rama_http_backend::client::proxy::HttpProxyConnectionMode::Direct,
+        ));
         let request = Request::builder()
             .uri("http://example.com/")
             .body(Body::empty())

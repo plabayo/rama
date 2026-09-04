@@ -1,4 +1,9 @@
-use rama_core::{Layer, Service, error::BoxError, extensions::ExtensionsRef, telemetry::tracing};
+use rama_core::{
+    Layer, Service,
+    error::BoxError,
+    extensions::{Extensions, ExtensionsRef},
+    telemetry::tracing,
+};
 use rama_http_headers::{HeaderMapExt, ProxyAuthorization};
 use rama_http_types::{
     Request, Response, StatusCode, header::PROXY_AUTHORIZATION, proxy::HttpProxyConnectionMode,
@@ -116,6 +121,12 @@ impl<S> HttpForwardProxyService<S> {
     }
 
     rama_utils::macros::define_inner_service_accessors!();
+}
+
+impl<S: ExtensionsRef> ExtensionsRef for HttpForwardProxyService<S> {
+    fn extensions(&self) -> &Extensions {
+        self.inner.extensions()
+    }
 }
 
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for HttpForwardProxyService<S>

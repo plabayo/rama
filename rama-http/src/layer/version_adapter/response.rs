@@ -2,7 +2,7 @@ use rama_core::error::{BoxError, ErrorContext as _};
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_http_headers::{Connection, HeaderMapExt, SecWebSocketAccept, SecWebSocketKey, Upgrade};
-use rama_http_types::header::SEC_WEBSOCKET_ACCEPT;
+use rama_http_types::header::{CONTENT_LENGTH, SEC_WEBSOCKET_ACCEPT};
 use rama_http_types::proto::h2::ext::Protocol;
 use rama_http_types::{Request, Response, StatusCode, Version};
 
@@ -158,6 +158,9 @@ fn upgrade_response_to_h2_or_h3<Body>(
         if request_ctx.is_websocket() {
             tracing::trace!("translating h1 websocket 101 response into h2/h3 200 OK");
             *response.status_mut() = StatusCode::OK;
+            // Successful CONNECT responses switch to tunnel framing. A
+            // Content-Length on the handshake never describes that tunnel.
+            response.headers_mut().remove(CONTENT_LENGTH);
             // `Sec-WebSocket-Accept` is unused in h2/h3; drop it (the connection-specific
             // upgrade headers are removed by the illegal-header strip below).
             response.headers_mut().remove(SEC_WEBSOCKET_ACCEPT);
@@ -208,6 +211,9 @@ fn downgrade_response_to_h1<Body>(
         *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
 
         let headers = response.headers_mut();
+        // A 1xx response cannot carry a payload. H2/H3 CONNECT peers may send
+        // a misleading Content-Length which the tunnel path correctly ignores.
+        headers.remove(CONTENT_LENGTH);
         headers.typed_insert(Upgrade::websocket());
         headers.typed_insert(Connection::upgrade());
         if let Some(key) = request_ctx.websocket_key.clone() {
@@ -331,53 +337,61 @@ mod tests {
 
     #[test]
     fn test_h1_to_h2_websocket_101_becomes_200() {
-        let mut resp = Response::builder()
-            .version(Version::HTTP_11)
-            .status(StatusCode::SWITCHING_PROTOCOLS)
-            .header(UPGRADE, "websocket")
-            .header(CONNECTION, "Upgrade")
-            .header("sec-websocket-accept", SAMPLE_ACCEPT)
-            .body(())
-            .unwrap();
+        for content_length in ["0", "999"] {
+            let mut resp = Response::builder()
+                .version(Version::HTTP_11)
+                .status(StatusCode::SWITCHING_PROTOCOLS)
+                .header(UPGRADE, "websocket")
+                .header(CONNECTION, "Upgrade")
+                .header("sec-websocket-accept", SAMPLE_ACCEPT)
+                .header(CONTENT_LENGTH, content_length)
+                .body(())
+                .unwrap();
 
-        adapt_response_version(&mut resp, &websocket_ctx(Version::HTTP_2)).unwrap();
+            adapt_response_version(&mut resp, &websocket_ctx(Version::HTTP_2)).unwrap();
 
-        assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(resp.version(), Version::HTTP_2);
-        // h1 handshake / connection-specific headers are gone in h2
-        assert!(!resp.headers().contains_key(UPGRADE));
-        assert!(!resp.headers().contains_key(CONNECTION));
-        assert!(!resp.headers().contains_key("sec-websocket-accept"));
+            assert_eq!(resp.status(), StatusCode::OK);
+            assert_eq!(resp.version(), Version::HTTP_2);
+            // h1 handshake / connection-specific and framing headers are gone in h2
+            assert!(!resp.headers().contains_key(UPGRADE));
+            assert!(!resp.headers().contains_key(CONNECTION));
+            assert!(!resp.headers().contains_key("sec-websocket-accept"));
+            assert!(!resp.headers().contains_key(CONTENT_LENGTH));
+        }
     }
 
     #[test]
     fn test_h2_to_h1_websocket_success_becomes_101() {
         for status in [StatusCode::OK, StatusCode::CREATED] {
-            let mut resp = Response::builder()
-                .version(Version::HTTP_2)
-                .status(status)
-                .body(())
-                .unwrap();
+            for content_length in ["0", "999"] {
+                let mut resp = Response::builder()
+                    .version(Version::HTTP_2)
+                    .status(status)
+                    .header(CONTENT_LENGTH, content_length)
+                    .body(())
+                    .unwrap();
 
-            adapt_response_version(&mut resp, &websocket_ctx(Version::HTTP_11)).unwrap();
+                adapt_response_version(&mut resp, &websocket_ctx(Version::HTTP_11)).unwrap();
 
-            assert_eq!(resp.version(), Version::HTTP_11);
-            assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
-            assert!(
-                resp.headers()
-                    .typed_get::<Upgrade>()
-                    .is_some_and(|u| u.is_websocket())
-            );
-            assert!(
-                resp.headers()
-                    .typed_get::<Connection>()
-                    .is_some_and(|c| c.contains_upgrade())
-            );
-            // the accept is recomputed from the original request key (RFC 6455 example)
-            assert_eq!(
-                resp.headers().get("sec-websocket-accept").unwrap(),
-                SAMPLE_ACCEPT,
-            );
+                assert_eq!(resp.version(), Version::HTTP_11);
+                assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
+                assert!(
+                    resp.headers()
+                        .typed_get::<Upgrade>()
+                        .is_some_and(|u| u.is_websocket())
+                );
+                assert!(
+                    resp.headers()
+                        .typed_get::<Connection>()
+                        .is_some_and(|c| c.contains_upgrade())
+                );
+                // the accept is recomputed from the original request key (RFC 6455 example)
+                assert_eq!(
+                    resp.headers().get("sec-websocket-accept").unwrap(),
+                    SAMPLE_ACCEPT,
+                );
+                assert!(!resp.headers().contains_key(CONTENT_LENGTH));
+            }
         }
     }
 

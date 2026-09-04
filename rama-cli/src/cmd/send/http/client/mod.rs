@@ -1053,10 +1053,16 @@ mod tests {
             complete_args.extend_from_slice(args);
             let cfg = send_cfg(&complete_args);
             let uri = args.last().expect("target URI");
+            let mut request = Request::builder().uri(*uri).body(Body::empty()).unwrap();
+            for header in &cfg.header {
+                request
+                    .headers_mut()
+                    .insert(header.name.clone(), header.value.clone());
+            }
             new_hermetic(&cfg)
                 .await
                 .unwrap()
-                .serve(Request::builder().uri(*uri).body(Body::empty()).unwrap())
+                .serve(request)
                 .await
                 .unwrap();
             tokio::fs::read_to_string(output.path().join("response.out"))
@@ -1111,6 +1117,49 @@ mod tests {
         ])
         .await;
         assert!(command.contains("pu:pp"), "{command}");
+
+        let command = export(&[
+            "-H",
+            "Proxy-Authorization: Basic origin-secret",
+            "http://origin.example/export",
+        ])
+        .await;
+        assert!(!command.contains("origin-secret"), "{command}");
+
+        let command = export(&[
+            "--proxy",
+            "http://proxy.example:8080",
+            "--proxytunnel",
+            "-H",
+            "Proxy-Authorization: Basic origin-secret",
+            "http://origin.example/export",
+        ])
+        .await;
+        assert!(command.contains("--proxytunnel"), "{command}");
+        assert!(!command.contains("origin-secret"), "{command}");
+
+        let command = export(&[
+            "--proxy",
+            "http://proxy.example:8080",
+            "--proxy-user",
+            "pu:pp",
+            "-H",
+            "Proxy-Authorization: Basic stale-secret",
+            "http://origin.example/export",
+        ])
+        .await;
+        assert!(command.contains("pu:pp"), "{command}");
+        assert!(!command.contains("stale-secret"), "{command}");
+
+        let command = export(&[
+            "--proxy",
+            "http://proxy.example:8080",
+            "-H",
+            "Proxy-Authorization: Basic manual-secret",
+            "http://origin.example/export",
+        ])
+        .await;
+        assert!(command.contains("manual-secret"), "{command}");
     }
 
     #[tokio::test]
