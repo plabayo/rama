@@ -367,7 +367,7 @@ where
         // proxy's wire version before the outer origin HTTP connector runs.
         // A plaintext origin needs an explicit HTTP/1.1 default; for a TLS
         // origin without a requested version, leave selection to origin ALPN.
-        if app_is_plaintext_http || requested_http_version.is_some() {
+        if app_is_plaintext_http || (app_is_http && requested_http_version.is_some()) {
             conn.extensions().insert(TargetHttpVersion(
                 requested_http_version.unwrap_or(Version::HTTP_11),
             ));
