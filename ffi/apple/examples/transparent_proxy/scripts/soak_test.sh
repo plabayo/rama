@@ -551,7 +551,11 @@ import json, os, re, sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, sys.argv[2])
-from soak_pressure_log import is_no_headroom, pressure_counters, selected_count
+from soak_pressure_log import (
+    no_headroom_event,
+    selection_event,
+    summarize_pressure_rows,
+)
 
 out = sys.argv[1]
 nd = os.path.join(out, "system.ndjson")
@@ -602,6 +606,13 @@ def to_epoch(ts):
         except Exception:
             return None
 
+baseline_end_epoch = next(
+    (end for name, _, end in phases if name == "baseline"), None)
+
+def is_in_run(ep):
+    return baseline_end_epoch is None or (
+        ep is not None and ep > baseline_end_epoch)
+
 rows = []
 try:
     with open(nd, "r", errors="replace") as f:
@@ -618,8 +629,8 @@ except FileNotFoundError:
     print("no system.ndjson"); sys.exit(0)
 
 gauge_re = re.compile(r"live-flow counts tcp=(\d+) udp=(\d+) total=(\d+) peak=(\d+) softCap=(\d+)")
-# Reaper signals — selections are diagnostic; periodic `evicted` deltas are
-# authoritative because a selected victim may later be spared or canceled.
+# Reaper signals are summarized separately below. Periodic deltas and episode
+# totals overlap, so they are evidence channels rather than additive counters.
 wd_idle_re = re.compile(r"watchdog: force-tearing down (\d+) idle promoted flow")
 wd_wedged_re = re.compile(r"watchdog: force-tearing down (\d+) wedged closing flow")
 wd_prerdy_re = re.compile(r"watchdog: force-tearing down (\d+) stale pre-ready flow")
@@ -637,15 +648,18 @@ peak_tcp = peak_udp = peak_total = 0
 softcap_seen = set()
 last_tcp = last_udp = None
 n_gauge = 0
-c = dict(selection_events=0, selected=0, eviction_intervals=0, evicted=0,
-         spared=0, canceled=0, expired=0, admit_and_ride=0, wd_idle=0,
+c = dict(admit_and_ride=0, wd_idle=0,
          wd_wedged=0, wd_prerdy=0, drain_backstop=0, body_err=0,
          relay_drop=0, sleep=0, wake=0, err=0)
 egress_fail = {}   # posix code -> count
 per_phase = {}
 
+pressure = summarize_pressure_rows(
+    ((to_epoch(ts), msg) for ts, msg, _ in rows),
+    baseline_end_epoch=baseline_end_epoch)
+
 def ph(n):
-    return per_phase.setdefault(n, dict(peak_total=0, evicted=0, ride=0, body_err=0, gauge=0))
+    return per_phase.setdefault(n, dict(peak_total=0, ride=0, body_err=0, gauge=0))
 
 with open(os.path.join(out, "flow-counts.txt"), "w") as g, \
      open(os.path.join(out, "timeline.txt"), "w") as t:
@@ -658,18 +672,15 @@ with open(os.path.join(out, "flow-counts.txt"), "w") as g, \
             peak_tcp = max(peak_tcp, tcp); peak_udp = max(peak_udp, udp); peak_total = max(peak_total, total)
             last_tcp, last_udp = tcp, udp; softcap_seen.add(sc); n_gauge += 1
             p = ph(pname); p["peak_total"] = max(p["peak_total"], total); p["gauge"] += 1
-        selected = selected_count(msg)
-        if selected is not None:
-            c["selection_events"] += 1; c["selected"] += selected
-        pressure = pressure_counters(msg)
-        if pressure is not None:
-            if pressure["evicted"] > 0:
-                c["eviction_intervals"] += 1
-            for key in ("evicted", "spared", "canceled", "expired"):
-                c[key] += pressure[key]
-            ph(pname)["evicted"] += pressure["evicted"]
-        if is_no_headroom(msg):
+        selection = selection_event(msg)
+        if selection is not None and is_in_run(ep):
+            ph(pname)["peak_total"] = max(
+                ph(pname)["peak_total"], selection["occupancy"])
+        no_headroom = no_headroom_event(msg)
+        if no_headroom is not None and is_in_run(ep):
             c["admit_and_ride"] += 1; ph(pname)["ride"] += 1
+            ph(pname)["peak_total"] = max(
+                ph(pname)["peak_total"], no_headroom["occupancy"])
         for rx, key in ((wd_idle_re, "wd_idle"), (wd_wedged_re, "wd_wedged"), (wd_prerdy_re, "wd_prerdy")):
             mm = rx.search(msg)
             if mm:
@@ -729,7 +740,11 @@ if os.path.exists(fof):
 
 baseline_total = int(meta.get("baseline_total", "0") or "0")
 final_total = (last_tcp or 0) + (last_udp or 0)
+softcap_seen.update(pressure["soft_caps"])
 sc = max(softcap_seen) if softcap_seen else int(meta.get("softcap", "0") or "0")
+observed_peak = pressure["observed_peak"]
+periodic = pressure["periodic"]
+episode = pressure["episode"]
 
 with open(os.path.join(out, "extract-summary.txt"), "w") as s:
     def w(line=""):
@@ -740,7 +755,8 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
     w(f"phases:                   {', '.join(p[0] for p in phases) or '(none)'}")
     w(f"softCap (gauge):          {sorted(softcap_seen) or sc}")
     w(f"gauge ticks:              {n_gauge}")
-    w(f"peak flows:               tcp={peak_tcp} udp={peak_udp} total={peak_total}")
+    w(f"sampled peak flows:       tcp={peak_tcp} udp={peak_udp} total={peak_total}")
+    w(f"observed event peak:      total={observed_peak}")
     w("")
     w("--- leak (baseline-relative; assumes a quiet idle tail) ---")
     w(f"baseline live flows:      {baseline_total}")
@@ -756,22 +772,28 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
         w("                          longer idle tail + cross-check leaks.txt before suspecting a leak.")
     w("")
     w("--- flow-pressure reaper (keyed on emitted log lines) ---")
-    w(f"pressure selections:      {c['selection_events']}  (flows selected: {c['selected']})")
-    w(f"confirmed evictions:      {c['evicted']}  (reporting intervals: {c['eviction_intervals']})")
-    w(f"non-eviction outcomes:    spared={c['spared']} canceled={c['canceled']} expired={c['expired']}")
+    w(f"pressure selections:      {pressure['selection_events']}  "
+      f"(flows selected: {pressure['selected']})")
+    w(f"periodic outcome deltas:  evicted={periodic['evicted']} spared={periodic['spared']} "
+      f"canceled={periodic['canceled']} expired={periodic['expired']} "
+      f"(intervals: {pressure['periodic_intervals']})")
+    w(f"finalized episode totals: evicted={episode['evicted']} spared={episode['spared']} "
+      f"canceled={episode['canceled']} expired={episode['expired']} "
+      f"(episodes: {pressure['episodes']})")
+    w("                          channels overlap and are NOT summed")
     w(f"admit-and-ride (no idle): {c['admit_and_ride']}")
     if sc > 0:
-        head = sc - peak_total
-        w(f"peak vs softCap:          peak_total={peak_total} softCap={sc} "
+        head = sc - observed_peak
+        w(f"peak vs softCap:          observed_peak={observed_peak} softCap={sc} "
           f"({'UNDER by %d' % head if head >= 0 else 'OVER by %d (rode)' % (-head)})")
-        if peak_total < sc:
-            w("reaper verdict:           cap NOT reached (peak < softCap) → reaper not exercised. On a")
-            w("                          high-cap build this is expected+safe; use a LOW-CAP build to test.")
-        elif c["evicted"] > 0:
+        if pressure["eviction_observed"]:
             w("reaper verdict:           GOOD — cap crossed and reaper evicted idle flows.")
+        elif observed_peak >= sc:
+            w("reaper verdict:           cap crossed with no confirmed eviction — admit-and-ride or")
+            w("                          incomplete outcome telemetry; inspect the timeline.")
         else:
-            w("reaper verdict:           cap crossed, admit-and-ride only (no idle victims) — expected on")
-            w("                          a long idle floor; use a short-floor build to see evictions.")
+            w("reaper verdict:           cap crossing NOT OBSERVED. A between-tick burst can evade sampled")
+            w("                          gauges; use a LOW-CAP build and require event/episode evidence.")
     w("")
     w("--- watchdog / drain teardowns ---")
     w(f"drain-backstop fires:     {c['drain_backstop']}")
@@ -802,10 +824,12 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
     w("")
     if phases:
         w("--- per-phase ---")
-        w(f"{'phase':<14} {'peak_total':>10} {'evicted':>7} {'ride':>5} {'bodyErr':>8} {'ticks':>6}")
+        w(f"{'phase':<14} {'peak_total':>10} {'ride':>5} {'bodyErr':>8} {'ticks':>6}")
         for name, sp, epe in phases:
             p = ph(name)
-            w(f"{name:<14} {p['peak_total']:>10} {p['evicted']:>7} {p['ride']:>5} {p['body_err']:>8} {p['gauge']:>6}")
+            w(f"{name:<14} {p['peak_total']:>10} {p['ride']:>5} "
+              f"{p['body_err']:>8} {p['gauge']:>6}")
+        w("(eviction deltas are intentionally not phase-attributed: reporting ticks can cross phases)")
     w("")
     w("see flow-counts.txt, timeline.txt, probe-timeline.txt, holders.log, leaks.txt")
 PYEOF

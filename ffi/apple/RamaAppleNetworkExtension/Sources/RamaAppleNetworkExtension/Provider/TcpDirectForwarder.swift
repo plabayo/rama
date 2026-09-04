@@ -646,8 +646,8 @@ final class TcpDirectForwarder: @unchecked Sendable {
             self.s2cBackstop = nil
             // Every S->C byte has drained: surface the server's EOF to
             // the client app. Write half only, so a continuing upload
-            // is untouched; the later duplicate close in
-            // `applyPromotedTerminal` is an idempotent no-op.
+            // is untouched. The owner records this one-shot edge so final
+            // aggregate teardown closes only the remaining half.
             self.closeClientWrite(self.s2cTerminalError)
             self.s2cPhase = .finished
             self.updateDrainPendingLocked()

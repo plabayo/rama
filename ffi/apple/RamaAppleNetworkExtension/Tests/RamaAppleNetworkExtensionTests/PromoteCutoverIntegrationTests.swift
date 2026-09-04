@@ -275,10 +275,12 @@ final class PromoteCutoverIntegrationTests: XCTestCase {
             return XCTFail("production context has a flow queue")
         }
 
-        flow.completeRead(data: nil, error: nil)
-        waitFor("client EOF is fully consumed before promotion") {
-            flow.closeReadCallCount == 1 && flow.pendingReadCount == 0
-        }
+        flow.completeReadSynchronously(data: nil, error: nil)
+        flowQueue.sync {}
+        XCTAssertEqual(flow.pendingReadCount, 0)
+        XCTAssertEqual(
+            flow.closeReadCallCount, 0,
+            "observed EOF must not consume the final provider close")
 
         flowQueue.sync {
             fx.core.beginPromoteCutover(
@@ -318,6 +320,10 @@ final class PromoteCutoverIntegrationTests: XCTestCase {
         waitFor("both half-closes release the registry") {
             fx.core.tcpFlowCount == 0
         }
+        XCTAssertEqual(
+            flow.closeReadCallCount, 1,
+            "final aggregation issues the provider read close exactly once")
+        XCTAssertEqual(flow.closeWriteCallCount, 1)
     }
 
     func testClientCarryoverReadErrorTearsDownWithOriginalError() {
@@ -622,9 +628,9 @@ final class PromoteCutoverIntegrationTests: XCTestCase {
         waitFor("flow removed from registry", timeout: 5.0) {
             fx.core.tcpFlowCount == 0
         }
-        XCTAssertGreaterThanOrEqual(flow.closeReadCallCount, 1,
+        XCTAssertEqual(flow.closeReadCallCount, 1,
             "forwarder onTerminal must close the kernel flow read side")
-        XCTAssertGreaterThanOrEqual(flow.closeWriteCallCount, 1,
+        XCTAssertEqual(flow.closeWriteCallCount, 1,
             "forwarder onTerminal must close the kernel flow write side")
     }
 

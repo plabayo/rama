@@ -116,16 +116,16 @@ final class ChaosTests: XCTestCase {
         }
     }
 
-    /// Concurrent teardown from two threads on the SAME teardown
-    /// object — the sticky `done` flag must keep cancel-count at 1.
-    /// (Today teardown runs queue-confined in production; this test
-    /// pins the invariant for hypothetical future callers that race
-    /// from raw threads.)
-    func testConcurrentTeardownFromMultipleThreads() {
+    /// Concurrent callers may submit teardown work at the same time, but
+    /// production routes every terminal transition through the per-flow
+    /// serial queue. Pin idempotency under that actual ownership contract.
+    func testConcurrentTeardownRequestsSerializeOnFlowQueue() {
         let core = TransparentProxyCore()
         let flow = MockTcpFlow()
         let conn = MockNwConnection()
         let ctx = TcpFlowContext()
+        let flowQueue = DispatchQueue(label: "test.chaos.flow")
+        ctx.flowQueue = flowQueue
         ctx.connection = conn
         ctx.flow = flow
         ctx.core = core
@@ -135,20 +135,18 @@ final class ChaosTests: XCTestCase {
         for _ in 0..<8 {
             group.enter()
             DispatchQueue.global().async {
-                ctx.applyReadHardError(NSError(domain: "chaos", code: 99))
-                group.leave()
+                flowQueue.async {
+                    ctx.applyReadHardError(NSError(domain: "chaos", code: 99))
+                    group.leave()
+                }
             }
         }
         group.wait()
 
-        // The structural sticky flag should hold even though
-        // we're calling from raw threads (queue-confinement is
-        // a documented expectation; we test what happens if a
-        // future caller violates it).
         XCTAssertTrue(ctx.isDone)
         XCTAssertEqual(
             conn.cancelCount, 1,
-            "even under raced multi-thread teardown the sticky flag should keep cancel-count at 1")
+            "queue-confined raced teardown requests must cancel exactly once")
     }
 }
 

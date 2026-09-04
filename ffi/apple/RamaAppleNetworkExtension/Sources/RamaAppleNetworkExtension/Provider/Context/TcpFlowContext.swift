@@ -232,8 +232,25 @@ final class TcpFlowContext: @unchecked Sendable {
     /// Sticky one-shot teardown guard. Mutated and read only on
     /// `flowQueue` (single-threaded by construction), so it needs no lock.
     private(set) var isDone = false
+    /// Each `NEAppProxyTCPFlow` half has one terminal close operation. Keep
+    /// those edges separate from whole-flow teardown so a later aggregate
+    /// terminal cannot repeat a close or replace its original error.
+    private var clientReadClosed = false
+    private var clientWriteClosed = false
 
     init() {
+    }
+
+    func closeClientReadOnce(_ error: Error?) {
+        guard !clientReadClosed else { return }
+        clientReadClosed = true
+        flow?.closeReadWithError(error)
+    }
+
+    func closeClientWriteOnce(_ error: Error?) {
+        guard !clientWriteClosed else { return }
+        clientWriteClosed = true
+        flow?.closeWriteWithError(error)
     }
 
     // ── Teardown (folded in from the former `TcpFlowTeardown`) ──────────
@@ -279,8 +296,8 @@ final class TcpFlowContext: @unchecked Sendable {
             admissionToken = nil
         }
         let err = tcpUpstreamUnavailableError()
-        flow?.closeReadWithError(err)
-        flow?.closeWriteWithError(err)
+        closeClientReadOnce(err)
+        closeClientWriteOnce(err)
         connection?.cancelAndDetach()
         connection = nil
         session?.cancel()
@@ -314,15 +331,15 @@ final class TcpFlowContext: @unchecked Sendable {
         guard !isDone else { return }
         isDone = true
         if let error {
-            flow?.closeReadWithError(error)
-            flow?.closeWriteWithError(error)
+            closeClientReadOnce(error)
+            closeClientWriteOnce(error)
         } else if wasOpened {
-            flow?.closeReadWithError(nil)
-            flow?.closeWriteWithError(nil)
+            closeClientReadOnce(nil)
+            closeClientWriteOnce(nil)
         } else {
             let error = tcpUpstreamUnavailableError()
-            flow?.closeReadWithError(error)
-            flow?.closeWriteWithError(error)
+            closeClientReadOnce(error)
+            closeClientWriteOnce(error)
         }
         connection?.cancelAndDetach()
         connection = nil
@@ -338,7 +355,7 @@ final class TcpFlowContext: @unchecked Sendable {
     /// until Rust independently closes and drains the egress writer.
     func applyClientWriteHalfClose() {
         guard !isDone else { return }
-        flow?.closeWriteWithError(nil)
+        closeClientWriteOnce(nil)
     }
 
     /// Both Rust write directions have drained. The client write half was
@@ -347,7 +364,7 @@ final class TcpFlowContext: @unchecked Sendable {
     func applyFullyDrainedClose() {
         guard !isDone else { return }
         isDone = true
-        flow?.closeReadWithError(nil)
+        closeClientReadOnce(nil)
         connection?.cancelAndDetach()
         connection = nil
         if let flowId {
@@ -370,8 +387,8 @@ final class TcpFlowContext: @unchecked Sendable {
     func applyPromotedTerminal() {
         guard !isDone else { return }
         isDone = true
-        flow?.closeReadWithError(nil)
-        flow?.closeWriteWithError(nil)
+        closeClientReadOnce(nil)
+        closeClientWriteOnce(nil)
         connection?.stateUpdateHandler = nil
         connection?.viabilityUpdateHandler = nil
         connection = nil
@@ -512,8 +529,8 @@ final class TcpFlowContext: @unchecked Sendable {
             admissionToken = nil
         }
         clientWritePump?.cancel()
-        flow?.closeReadWithError(error)
-        flow?.closeWriteWithError(error)
+        closeClientReadOnce(error)
+        closeClientWriteOnce(error)
         connection?.cancelAndDetach()
         connection = nil
         egressReadPump?.cancel()

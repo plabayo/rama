@@ -224,7 +224,10 @@ final class CoreTcpLifecycleTests: XCTestCase {
         waitFor("zero-byte activated EOF releases the registry", timeout: 3.0) {
             fx.core.tcpFlowCount == 0
         }
-        XCTAssertGreaterThanOrEqual(flow.closeWriteCallCount, 1)
+        XCTAssertEqual(
+            flow.closeReadCallCount, 1,
+            "natural EOF and final aggregation share one read-half close")
+        XCTAssertEqual(flow.closeWriteCallCount, 1)
         waitFor("zero-byte activated EOF releases the connection") {
             conn.cancelCount >= 1
         }
@@ -487,6 +490,8 @@ final class CoreTcpLifecycleTests: XCTestCase {
                 "write close must preserve ECONNRESET, got "
                     + "\(String(describing: flow.lastCloseWriteError))")
         }
+        XCTAssertEqual(flow.closeReadCallCount, 1)
+        XCTAssertEqual(flow.closeWriteCallCount, 1)
         XCTAssertGreaterThanOrEqual(conn.cancelCount, 1)
     }
 

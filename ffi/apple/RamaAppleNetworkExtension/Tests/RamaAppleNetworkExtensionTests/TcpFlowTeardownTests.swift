@@ -117,6 +117,20 @@ final class TcpFlowTeardownTests: XCTestCase {
         XCTAssertTrue(fx.conn.sentChunks.isEmpty)
     }
 
+    func testFullTeardownDoesNotRepeatAnAlreadyClosedHalf() {
+        let fx = Fixture()
+        let first = NSError(domain: "test.first-write-close", code: 7)
+        let later = NSError(domain: "test.later-flow-error", code: 9)
+
+        fx.ctx.closeClientWriteOnce(first)
+        fx.ctx.applyWriterTerminal(later)
+
+        XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
+        XCTAssertEqual((fx.flow.lastCloseWriteError as NSError?)?.domain, first.domain)
+        XCTAssertEqual(fx.flow.closeReadCallCount, 1)
+        XCTAssertEqual((fx.flow.lastCloseReadError as NSError?)?.domain, later.domain)
+    }
+
     // MARK: - Pre-open variants
 
     /// `applyPreReadyFailure` runs in the egress-connection-failed-

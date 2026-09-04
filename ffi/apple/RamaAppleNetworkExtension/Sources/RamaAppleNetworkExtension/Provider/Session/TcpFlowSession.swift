@@ -821,8 +821,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         let flow = self.flow
         let terminal = TcpReadTerminal(
             // Client upload half-close (SHUT_WR → kernel readData EOF):
-            // close our read side of the kernel flow and forward EOF to
-            // the egress, but do NOT cancel the egress read pump — the
+            // forward EOF to the egress, but do NOT issue a redundant
+            // provider read-close or cancel the egress read pump — the
             // server→client direction must keep flowing until the server
             // closes. Cancelling it here truncated downloads on every
             // half-close and matched the Rust engine's asymmetric
@@ -831,7 +831,6 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 guard let self, !self.ctx.isDone else { return }
                 self.core?.logTrace(
                     "tcp client read EOF (half-close): forward to egress, keep download open")
-                flow.closeReadWithError(nil)
                 session?.onClientEof()
             },
             onHardError: { [weak self] err in

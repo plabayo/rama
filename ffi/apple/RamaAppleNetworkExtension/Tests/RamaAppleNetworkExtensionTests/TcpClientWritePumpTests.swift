@@ -125,6 +125,20 @@ final class MockTcpFlow: TcpFlowLike, @unchecked Sendable {
         }
     }
 
+    /// Deliver a read result inline so a following `flowQueue.sync` is a
+    /// deterministic barrier after the pump's callback hop. Use only when a
+    /// test must prove the result was consumed before a later transition.
+    func completeReadSynchronously(data: Data?, error: Error?) {
+        lock.lock()
+        guard !_pendingReads.isEmpty else {
+            lock.unlock()
+            return
+        }
+        let cb = _pendingReads.removeFirst()
+        lock.unlock()
+        cb(data, error)
+    }
+
     // MARK: - TcpFlowLike — lifecycle surface
 
     private var _pendingOpenCompletion: (@Sendable (Error?) -> Void)?

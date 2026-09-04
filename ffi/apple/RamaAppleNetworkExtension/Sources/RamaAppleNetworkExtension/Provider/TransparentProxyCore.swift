@@ -1589,6 +1589,9 @@ final class TransparentProxyCore: @unchecked Sendable {
         self.pressureRescanSuppressedUntilNs = 0
         self.pressureProtectionRetryToken &+= 1
         self.pressureNoHeadroomLogged = false
+        if let episode = self.pressureEpisode {
+            self.logPressureEpisodeLocked(episode, outcome: "interrupted")
+        }
         self.pressureEpisode = nil
         self.pressureRepairState = .idle
         self.pendingPressureProtectedFlowIds.removeAll(keepingCapacity: false)
@@ -2522,17 +2525,25 @@ final class TransparentProxyCore: @unchecked Sendable {
         reschedulePressureRecheckLocked()
         if let episode = pressureEpisode {
             pressureEpisode = nil
-            let durationMs = Self.elapsedMs(
-                nowNs: DispatchTime.now().uptimeNanoseconds,
-                sinceNs: episode.startNs)
-            logLifecycle(
-                "flow pressure episode ended: durationMs=\(durationMs) "
-                    + "peakOccupancy=\(episode.peakOccupancy) softCap=\(softCap) "
-                    + "scans=\(episode.scans) skipped=\(episode.skips) "
-                    + "selected=\(episode.selections) evicted=\(episode.evicted) "
-                    + "spared=\(episode.spared) canceled=\(episode.canceled) "
-                    + "expired=\(episode.expired)")
+            logPressureEpisodeLocked(episode, outcome: "ended")
         }
+    }
+
+    private func logPressureEpisodeLocked(
+        _ episode: PressureEpisode,
+        outcome: String
+    ) {
+        let durationMs = Self.elapsedMs(
+            nowNs: DispatchTime.now().uptimeNanoseconds,
+            sinceNs: episode.startNs)
+        logLifecycle(
+            "flow pressure episode \(outcome): durationMs=\(durationMs) "
+                + "peakOccupancy=\(episode.peakOccupancy) "
+                + "softCap=\(defaultFlowPressureSoftCap) "
+                + "scans=\(episode.scans) skipped=\(episode.skips) "
+                + "selected=\(episode.selections) evicted=\(episode.evicted) "
+                + "spared=\(episode.spared) canceled=\(episode.canceled) "
+                + "expired=\(episode.expired)")
     }
 
     /// Count of currently-registered TCP flows. Test-only signal for
@@ -2871,8 +2882,8 @@ final class TransparentProxyCore: @unchecked Sendable {
             },
             // The forwarder's flow type has no close surface; hand it the
             // write-half close so the client app sees server EOF.
-            closeClientWrite: { [weak flow] error in
-                flow?.closeWriteWithError(error)
+            closeClientWrite: { [weak ctx] error in
+                ctx?.closeClientWriteOnce(error)
             },
             // Both directions done. Route through the shared teardown so the
             // close marks `done` and detaches handlers — WITHOUT cancelling the

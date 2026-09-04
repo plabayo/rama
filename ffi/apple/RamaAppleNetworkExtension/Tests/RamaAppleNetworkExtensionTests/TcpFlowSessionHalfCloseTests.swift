@@ -6,8 +6,8 @@ import XCTest
 
 /// Regression coverage for the Swift NEAppProxyProvider half-close
 /// path (Fix A): a client upload half-close (kernel `readData` EOF)
-/// must close our read side and forward client EOF to the egress, but
-/// must NOT tear down the egress (download) read pump — the
+/// must forward client EOF to the egress without redundantly closing
+/// our read side, and must NOT tear down the egress read pump — the
 /// server→client direction has to keep flowing until the server
 /// closes. This is fp's exact `/api/ws` shape (client done, server
 /// keeps sending then closes) and the layer `tproxy_ffi_e2e` never
@@ -117,17 +117,19 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         return (session, core, flow, conn, queue)
     }
 
-    /// Client half-close closes our read side + forwards client EOF,
-    /// and does NOT cancel the egress download pump / connection.
+    /// Client half-close forwards client EOF without issuing a provider
+    /// close, and does NOT cancel the egress download pump / connection.
     func testClientHalfCloseKeepsEgressReadPumpAlive() {
-        let (session, core, flow, conn, _) = makeArmedSession()
+        let (session, core, flow, conn, queue) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }
 
         // Client half-close: kernel readData completes with EOF.
-        flow.completeRead(data: nil, error: nil)
-        waitFor("half-close ran the natural-EOF terminal") { flow.closeReadCallCount == 1 }
+        flow.completeReadSynchronously(data: nil, error: nil)
+        drain(queue)
 
-        XCTAssertEqual(flow.closeReadCallCount, 1, "half-close closes our read side")
+        XCTAssertEqual(
+            flow.closeReadCallCount, 0,
+            "observed EOF is not a provider-issued read close")
         XCTAssertEqual(
             conn.cancelCount, 0, "half-close must NOT cancel the egress connection")
         XCTAssertNotNil(
@@ -142,8 +144,9 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         let (session, core, flow, conn, queue) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }
 
-        flow.completeRead(data: nil, error: nil)
-        waitFor("half-close ran the natural-EOF terminal") { flow.closeReadCallCount == 1 }
+        flow.completeReadSynchronously(data: nil, error: nil)
+        drain(queue)
+        XCTAssertEqual(flow.closeReadCallCount, 0)
 
         // Two server→client read cycles after the upload half-close.
         // Empty non-terminal receives loop the pump back to
@@ -323,15 +326,15 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         waitFor("terminal egress write tears session down") {
             queue.sync { session.ctx.isDone }
         }
-        XCTAssertGreaterThanOrEqual(flow.closeReadCallCount, 1)
-        XCTAssertGreaterThanOrEqual(flow.closeWriteCallCount, 1)
+        XCTAssertEqual(flow.closeReadCallCount, 1)
+        XCTAssertEqual(flow.closeWriteCallCount, 1)
         XCTAssertGreaterThanOrEqual(conn.cancelCount, 1)
         guard case .posix(.ECONNRESET)? = flow.lastCloseReadError as? NWError else {
             return XCTFail("overlapping drain must preserve the egress send error")
         }
-        guard case .posix(.ECONNRESET)? = flow.lastCloseWriteError as? NWError else {
-            return XCTFail("both kernel-flow halves must carry the send error")
-        }
+        XCTAssertNil(
+            flow.lastCloseWriteError,
+            "the already-closed download half must retain its clean EOF")
     }
 
     func testEgressFinFailureTearsDownViaRustSessionWithError() {
@@ -355,9 +358,11 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         guard case .posix(.ECONNRESET)? = flow.lastCloseReadError as? NWError else {
             return XCTFail("read half must preserve the FIN error")
         }
-        guard case .posix(.ECONNRESET)? = flow.lastCloseWriteError as? NWError else {
-            return XCTFail("write half must preserve the FIN error")
-        }
+        XCTAssertEqual(flow.closeReadCallCount, 1)
+        XCTAssertEqual(flow.closeWriteCallCount, 1)
+        XCTAssertNil(
+            flow.lastCloseWriteError,
+            "the already-closed download half must retain its clean EOF")
     }
 
     func testPromotedEgressWriteFailurePreservesError() {

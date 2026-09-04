@@ -47,7 +47,7 @@ final class TcpClientReadPump: @unchecked Sendable {
     /// A clean EOF already consumed by the ordinary Rust-bound path. Promotion
     /// may still be valid while the server half remains open, so retain this
     /// one-shot terminal edge for the direct forwarder instead of issuing a
-    /// second `readData` against a read half Apple has declared closed.
+    /// second `readData` after the source has declared that no more data exists.
     private var observedNaturalEof = false
 
     init(

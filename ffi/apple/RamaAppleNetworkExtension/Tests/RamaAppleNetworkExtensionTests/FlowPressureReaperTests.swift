@@ -1326,7 +1326,13 @@ final class FlowPressureReaperTests: XCTestCase {
         XCTAssertEqual(core.testPressurePendingVictimCount, 0)
         XCTAssertFalse(
             notices.withLock { $0.contains { $0.contains("flow pressure episode ended") } },
-            "detach drops an interrupted episode without summarizing teardown as pressure")
+            "detach must not mislabel an interrupted episode as naturally ended")
+        let interrupted = notices.withLock {
+            $0.last { $0.contains("flow pressure episode interrupted") } ?? ""
+        }
+        XCTAssertTrue(
+            interrupted.contains("selected=3 evicted=0"),
+            "detach must preserve the pre-reset episode evidence: \(interrupted)")
 
         // Next lifecycle: a fresh over-cap population scans and evicts.
         let again = (0..<5).map { Fx(core: core, idleSeconds: 10 + UInt64($0), flowQueue: q) }

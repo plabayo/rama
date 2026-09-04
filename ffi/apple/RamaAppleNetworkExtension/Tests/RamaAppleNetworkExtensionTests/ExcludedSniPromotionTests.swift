@@ -232,6 +232,13 @@ final class ExcludedSniPromotionTests: XCTestCase {
         }
 
         finish(fixture, activeFlows: [active])
+        XCTAssertEqual(active.flow.closeReadCallCount, 1)
+        XCTAssertEqual(
+            active.flow.closeWriteCallCount, 1,
+            "final aggregation must not replace the reset close with clean EOF")
+        guard case .posix(.ECONNRESET)? = active.flow.lastCloseWriteError as? NWError else {
+            return XCTFail("final write close did not preserve connection reset")
+        }
     }
 
     func testExcludedSniPromotionKeepsDownloadAliveAfterClientHalfClose() {
