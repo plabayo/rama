@@ -143,7 +143,10 @@ async fn main() -> Result<(), BoxError> {
                 RemoveResponseHeaderLayer::hop_by_hop(),
                 ArcLayer::new(),
             )
-                .into_layer(EasyHttpWebClient::default_with_executor(exec)),
+                .into_layer(
+                    EasyHttpWebClient::default_with_executor(exec)
+                        .with_isolate_forward_proxy_auth_error(true),
+                ),
         ));
 
         tcp_service

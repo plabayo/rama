@@ -194,8 +194,31 @@ impl Recv {
             counts.inc_num_recv_streams(stream);
         }
 
-        if !stream.content_length.is_head() {
-            use super::stream::ContentLength;
+        use super::stream::ContentLength;
+
+        let ignore_content_length = match stream.content_length {
+            ContentLength::Head => true,
+            ContentLength::Connect => match frame.pseudo().status {
+                Some(status) if status.is_success() => {
+                    // A successful CONNECT switches this stream to tunnel
+                    // data. RFC 9110 requires response framing headers to be
+                    // ignored, regardless of their value.
+                    stream.content_length = ContentLength::Omitted;
+                    true
+                }
+                Some(status) if status.is_informational() => true,
+                Some(_) => {
+                    // A rejected CONNECT is an ordinary HTTP response and its
+                    // body retains normal Content-Length validation.
+                    stream.content_length = ContentLength::Omitted;
+                    false
+                }
+                None => true,
+            },
+            ContentLength::Omitted | ContentLength::Remaining(_) => false,
+        };
+
+        if !ignore_content_length {
             use rama_http_types::header;
 
             if let Some(content_length) = frame.fields().get(header::CONTENT_LENGTH) {

@@ -22,7 +22,7 @@ use rama_http::{
     io::upgrade::{self, Upgraded},
 };
 use rama_http_types::{
-    Method, Request, Response, StatusCode, Version, opentelemetry::version_as_protocol_version,
+    Method, Request, Response, Version, opentelemetry::version_as_protocol_version,
     proto::h2::frame::SettingOrder,
 };
 use std::task::ready;
@@ -784,16 +784,12 @@ where
                 }
 
                 let content_length = headers::content_length_parse_all(res.headers());
-                if let (Some(mut send_stream), StatusCode::OK) = (send_stream, res.status()) {
-                    if content_length.is_some_and(|len| len != 0) {
-                        warn!("h2 connect response with non-zero body not supported");
-
-                        send_stream.send_reset(crate::h2::Reason::INTERNAL_ERROR);
-                        return Poll::Ready(Err((
-                            crate::Error::new_h2(crate::h2::Reason::INTERNAL_ERROR.into()),
-                            None::<Request<B>>,
-                        )));
-                    }
+                if let (Some(send_stream), status) = (send_stream, res.status())
+                    && status.is_success()
+                {
+                    // Successful CONNECT switches this stream to tunnel mode.
+                    // RFC 9110 requires Content-Length and Transfer-Encoding
+                    // to be ignored; subsequent DATA belongs to the tunnel.
                     let (parts, recv_stream) = res.into_parts();
                     let res = Response::from_parts(parts, IncomingBody::empty());
 

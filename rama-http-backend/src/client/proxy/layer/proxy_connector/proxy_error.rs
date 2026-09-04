@@ -5,10 +5,11 @@ use rama_http_types::{StatusCode, Version};
 use rama_net::client::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind};
 
 #[derive(Debug)]
-/// error that can be returned in case a http proxy
-/// did not manage to establish a connection
+/// Error returned while establishing an HTTP proxy tunnel or enforcing an
+/// established forward-proxy response policy.
 pub enum HttpProxyError {
-    /// Proxy Authentication Required
+    /// Proxy authentication required during CONNECT or an isolated ordinary
+    /// forward request.
     ///
     /// (Proxy returned HTTP 407)
     AuthRequired,

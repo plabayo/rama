@@ -138,7 +138,7 @@ async fn main() {
 }
 
 async fn http_plain_proxy(req: Request) -> Result<Response, Infallible> {
-    let client = EasyHttpWebClient::default();
+    let client = EasyHttpWebClient::default().with_isolate_forward_proxy_auth_error(true);
     let uri = req.uri().clone();
     tracing::debug!(
         url.full = %req.uri(),

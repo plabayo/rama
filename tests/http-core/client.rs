@@ -1917,6 +1917,7 @@ mod conn {
 
     #[test]
     fn uri_absolute_form() {
+        use rama::http::HttpProxyConnectionMode;
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
         use rama_net::client::ProxyRoute;
@@ -1935,10 +1936,11 @@ mod conn {
             let n = sock.read(&mut buf).expect("read 1");
 
             // Notably:
-            // - absolute-form on the wire, because a forward HTTP proxy is configured
-            //   via the `ProxyRoute` extension below. The h1 encoder owns the wire
-            //   request-target (the h1 analog of `Pseudo::request`) and selects
-            //   absolute-form so the proxy learns the origin.
+            // - absolute-form on the wire, because the connection is explicitly
+            //   identified as an established HTTP forward-proxy connection below.
+            //   The h1 encoder owns the wire request-target (the h1 analog of
+            //   `Pseudo::request`) and selects absolute-form so the proxy learns
+            //   the origin.
             // - Still no Host header, since it wasn't set
             let expected = "GET http://rama.local/a HTTP/1.1\r\n\r\n";
             assert_eq!(s(&buf[..n]), expected);
@@ -1959,14 +1961,15 @@ mod conn {
             .uri("http://rama.local/a")
             .body(Empty::<Bytes>::new())
             .unwrap();
-        // Without this the low-level h1 client now coerces the absolute URI to
-        // origin-form (`GET /a`); the forward-proxy `ProxyRoute` is the routing
-        // signal that selects absolute-form.
+        // A low-level h1 client has no connector to publish the established mode,
+        // so its caller must supply that fact explicitly. `ProxyRoute` identifies
+        // the selected route but is not enough to prove forward-proxy semantics.
         req.extensions().insert(ProxyRoute::Proxy(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
         }));
+        req.extensions().insert(HttpProxyConnectionMode::Forward);
 
         let res = client.send_request(req).and_then(move |res| {
             assert_eq!(res.status(), rama::http::StatusCode::OK);
@@ -2890,7 +2893,7 @@ mod conn {
         let (client_io, server_io, _) = setup_duplex_test_server();
 
         // Spawn an HTTP2 server that asks for bread and responds with baguette.
-        tokio::spawn(async move {
+        let server_task = tokio::spawn(async move {
             let sock = ServiceInput::new(server_io);
             let mut h2 = rama::http::core::h2::server::handshake(sock).await.unwrap();
 
@@ -2902,7 +2905,16 @@ mod conn {
 
             let mut body = req.into_body();
 
-            let mut send_stream = respond.send_response(Response::new(()), false).unwrap();
+            let mut send_stream = respond
+                .send_response(
+                    Response::builder()
+                        .status(StatusCode::CREATED)
+                        .header("content-length", "999")
+                        .body(())
+                        .unwrap(),
+                    false,
+                )
+                .unwrap();
 
             send_stream.send_data("Bread?".into(), true).unwrap();
 
@@ -2910,7 +2922,11 @@ mod conn {
             assert_eq!(&bytes[..], b"Baguette!");
             _ = body.flow_control().release_capacity(bytes.len());
 
-            assert!(body.data().await.is_none());
+            while let Some(bytes) = body.data().await {
+                let bytes = bytes.unwrap();
+                assert!(bytes.is_empty(), "unexpected extra CONNECT tunnel data");
+                _ = body.flow_control().release_capacity(bytes.len());
+            }
         });
 
         let io = ServiceInput::new(client_io);
@@ -2927,7 +2943,7 @@ mod conn {
             .body(Empty::<Bytes>::new())
             .unwrap();
         let res = client.send_request(req).await.expect("send_request");
-        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.status(), StatusCode::CREATED);
 
         let mut upgraded = rama::http::io::upgrade::handle_upgrade(res).await.unwrap();
 
@@ -2938,6 +2954,7 @@ mod conn {
         upgraded.write_all(b"Baguette!").await.unwrap();
 
         upgraded.shutdown().await.unwrap();
+        server_task.await.unwrap();
     }
 
     #[tokio::test]

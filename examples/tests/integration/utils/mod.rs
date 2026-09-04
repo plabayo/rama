@@ -18,7 +18,6 @@ use ::std::time::Duration;
 use rama::{
     Layer, Service,
     error::BoxError,
-    http::client::proxy::layer::SetProxyAuthHttpHeaderLayer,
     http::service::client::{HttpClientExt, IntoUrl, RequestBuilder},
     http::ws::handshake::client::{HttpClientWebSocketExt, WebSocketRequestBuilder, WithService},
     http::{
@@ -261,7 +260,6 @@ impl ExampleRunner {
                     ),
                 ),
                 AddRequiredRequestHeadersLayer::default(),
-                SetProxyAuthHttpHeaderLayer::default(),
             )
                 .into_layer(inner_client)
                 .boxed();

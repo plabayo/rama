@@ -312,8 +312,13 @@ fn encode_request_target_preserving_form(
 /// Encode the HTTP/1 request-target selected by Rama connection metadata.
 ///
 /// Direct requests use origin-form, `CONNECT` uses authority-form, `OPTIONS
-/// *` uses asterisk-form, and insecure requests routed through an HTTP proxy
-/// use absolute-form. Userinfo and fragments are never emitted.
+/// *` uses asterisk-form, and insecure requests on an established HTTP forward
+/// proxy connection use absolute-form. Userinfo and fragments are never
+/// emitted. Route intent is deliberately ignored: the established connection
+/// mode is the only authoritative signal after fallback and pool selection.
+/// Low-level callers that bypass a proxy connector must insert
+/// [`HttpProxyConnectionMode::Forward`](crate::proxy::HttpProxyConnectionMode::Forward)
+/// themselves.
 pub fn encode_request_target(
     method: &Method,
     uri: &Uri,
@@ -329,10 +334,8 @@ pub fn encode_request_target(
         Err(rama_net::uri::WireError::AsteriskMismatch)
     } else {
         let via_http_proxy = extensions
-            .get_ref::<rama_net::client::ProxyRoute>()
-            .and_then(rama_net::client::ProxyRoute::proxy_address)
-            .and_then(|proxy| proxy.protocol.as_ref())
-            .is_some_and(|protocol| protocol.is_http());
+            .get_ref::<crate::proxy::HttpProxyConnectionMode>()
+            .is_some_and(|mode| *mode == crate::proxy::HttpProxyConnectionMode::Forward);
         let is_insecure = !crate::protocol_from_uri_or_extensions(extensions, uri).is_secure();
         if via_http_proxy && is_insecure {
             uri.write_http_absolute_form(output)
@@ -596,6 +599,55 @@ mod tests {
         assert_eq!(
             encode_request(&wrong_asterisk).unwrap_err().kind(),
             HeadErrorKind::InvalidTarget,
+        );
+    }
+
+    #[test]
+    fn established_http_proxy_mode_overrides_route_intent() {
+        use crate::proxy::HttpProxyConnectionMode;
+        use rama_net::{address::ProxyAddress, client::ProxyRoute};
+
+        for (mode, target) in [
+            (
+                HttpProxyConnectionMode::Forward,
+                "GET http://origin.example/path?q=1 HTTP/1.1\r\n",
+            ),
+            (
+                HttpProxyConnectionMode::Tunnel,
+                "GET /path?q=1 HTTP/1.1\r\n",
+            ),
+            (
+                HttpProxyConnectionMode::Direct,
+                "GET /path?q=1 HTTP/1.1\r\n",
+            ),
+        ] {
+            let request = Request::builder()
+                .uri("http://origin.example/path?q=1")
+                .body(())
+                .unwrap();
+            request.extensions().insert(ProxyRoute::Proxy(
+                "http://proxy.example:8080".parse::<ProxyAddress>().unwrap(),
+            ));
+            request.extensions().insert(mode);
+
+            let encoded = encode_request(&request).unwrap();
+            assert!(
+                encoded.starts_with(target.as_bytes()),
+                "unexpected request target for {mode:?}: {encoded:?}"
+            );
+        }
+
+        let request = Request::builder()
+            .uri("http://origin.example/path?q=1")
+            .body(())
+            .unwrap();
+        request.extensions().insert(ProxyRoute::Proxy(
+            "http://proxy.example:8080".parse::<ProxyAddress>().unwrap(),
+        ));
+        let encoded = encode_request(&request).unwrap();
+        assert!(
+            encoded.starts_with(b"GET /path?q=1 HTTP/1.1\r\n"),
+            "route intent without an established mode must not select absolute-form: {encoded:?}"
         );
     }
 

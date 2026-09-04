@@ -141,6 +141,16 @@ pub struct SendCommand {
     /// upstream proxy user credentials to use (or overwrite)
     proxy_user: Option<Basic>,
 
+    #[arg(long, default_value_t = false)]
+    /// Disable automatic credentials on plaintext HTTP requests forwarded to
+    /// an HTTP(S) proxy. Explicit Proxy-Authorization headers are preserved.
+    no_proxy_forward_auth: bool,
+
+    #[arg(long = "proxytunnel", default_value_t = false)]
+    /// Use HTTP CONNECT even for plaintext HTTP requests sent through an
+    /// HTTP(S) proxy. This does not encrypt the tunneled origin traffic.
+    proxy_tunnel: bool,
+
     #[arg(long, short = 'u')]
     /// (HTTP) client authentication: `USER[:PASS]` | TOKEN,
     /// if basic and no password is given it will be promped

@@ -2,6 +2,7 @@ use crate::{
     Layer, Service,
     error::{BoxError, BoxErrorExt},
     extensions::{Extensions, ExtensionsRef},
+    http::HttpProxyConnectionMode,
     http::client::proxy::layer::{
         HttpProxyConnector, HttpProxyConnectorLayer, MaybeHttpProxiedConnection,
     },
@@ -124,10 +125,11 @@ where
                         "using socks proxy connector",
                     );
 
+                    let selected_route = ProxyRoute::Proxy(proxy.clone());
                     let EstablishedClientConnection { input, conn } =
                         self.socks.connect(input).await?;
 
-                    let conn = MaybeProxiedConnection::socks(conn);
+                    let conn = MaybeProxiedConnection::socks_with_route(conn, selected_route);
                     Ok(EstablishedClientConnection { input, conn })
                 } else if protocol.is_http() {
                     tracing::trace!(
@@ -162,15 +164,23 @@ pin_project! {
 
 impl<S: ExtensionsRef> MaybeProxiedConnection<S> {
     pub fn direct(conn: S) -> Self {
+        conn.extensions().insert(HttpProxyConnectionMode::Direct);
+        conn.extensions().insert(ProxyRoute::Direct);
         Self {
             inner: Connection::Direct { conn },
         }
     }
 
     pub fn socks(conn: S) -> Self {
+        conn.extensions().insert(HttpProxyConnectionMode::Direct);
         Self {
             inner: Connection::Socks { conn },
         }
+    }
+
+    fn socks_with_route(conn: S, route: ProxyRoute) -> Self {
+        conn.extensions().insert(route);
+        Self::socks(conn)
     }
 
     pub fn http(conn: MaybeHttpProxiedConnection<S>) -> Self {

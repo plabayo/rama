@@ -13,6 +13,9 @@ pub use ::rama_http::{
     opentelemetry, proto, protocols, request, response, service, sse, utils,
 };
 
+#[doc(inline)]
+pub use ::rama_http::proxy::{HttpProxyConnectionMode, PlaintextHttpProxyMode};
+
 #[cfg(feature = "http-backend")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http-backend")))]
 #[doc(inline)]

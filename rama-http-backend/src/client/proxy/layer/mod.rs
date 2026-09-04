@@ -1,7 +1,7 @@
 //! Http Proxy Connector Layers for Rama Http Clients
 
-mod proxy_auth_header;
-pub use proxy_auth_header::{SetProxyAuthHttpHeaderLayer, SetProxyAuthHttpHeaderService};
+mod forward;
+pub use forward::{HttpForwardProxyLayer, HttpForwardProxyService};
 
 mod proxy_connector;
 #[doc(inline)]

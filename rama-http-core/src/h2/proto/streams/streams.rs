@@ -419,7 +419,7 @@ where
         let stream_id = me.actions.send.open()?;
 
         // Convert the message
-        let is_content_length_head = *request.method() == Method::HEAD;
+        let request_method = request.method().clone();
         let (headers, req_ext) = client::Peer::convert_send_message(
             stream_id,
             request,
@@ -443,8 +443,10 @@ where
         req_ext.insert(Egress(stream.extensions.clone()));
         stream.req_extensions = Some(req_ext);
 
-        if is_content_length_head {
-            stream.content_length = ContentLength::Head;
+        match request_method {
+            Method::HEAD => stream.content_length = ContentLength::Head,
+            Method::CONNECT => stream.content_length = ContentLength::Connect,
+            _ => {}
         }
 
         let mut stream = me.store.insert(stream.id, stream);

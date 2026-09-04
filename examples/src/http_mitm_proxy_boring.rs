@@ -105,7 +105,8 @@ async fn main() -> Result<(), BoxError> {
             mitm_svc,
         );
         let web_client =
-            EasyHttpWebClient::default_with_executor(Executor::graceful(guard.clone()));
+            EasyHttpWebClient::default_with_executor(Executor::graceful(guard.clone()))
+                .with_isolate_forward_proxy_auth_error(true);
         let web_client = (
             RemoveRequestHeaderLayer::hop_by_hop(),
             HijackLayer::new(

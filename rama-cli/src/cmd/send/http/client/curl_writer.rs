@@ -1,10 +1,12 @@
 use rama::{
     Service,
     error::{BoxError, ErrorContext as _},
+    extensions::ExtensionsRef as _,
     http::{
         Request, Response, StatusCode, body::util::BodyExt as _, convert::curl,
         service::web::response::IntoResponse as _,
     },
+    net::{ProtocolInputExt as _, client::ProxyRoute},
     service::MirrorService,
     ua::layer::emulate::UserAgentEmulateHttpRequestModifier,
 };
@@ -14,6 +16,8 @@ use super::writer::Writer;
 #[derive(Debug, Clone)]
 pub(super) struct CurlWriter {
     pub(super) writer: Writer,
+    pub(super) proxy_tunnel: bool,
+    pub(super) forward_proxy_auth: bool,
 }
 
 impl Service<Request> for CurlWriter {
@@ -27,6 +31,21 @@ impl Service<Request> for CurlWriter {
             .context("rama: (curl-writer) emulate UA")?;
 
         let (parts, body) = req.into_parts();
+        if !self.forward_proxy_auth
+            && !self.proxy_tunnel
+            && parts
+                .protocol()
+                .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure())
+            && let Some(ProxyRoute::Proxy(mut proxy)) =
+                parts.extensions().get_ref::<ProxyRoute>().cloned()
+            && proxy
+                .protocol
+                .as_ref()
+                .is_none_or(|protocol| protocol.is_http())
+        {
+            proxy.credential = None;
+            parts.extensions().insert(ProxyRoute::Proxy(proxy));
+        }
         let payload = body
             .collect()
             .await
@@ -40,7 +59,9 @@ impl Service<Request> for CurlWriter {
         let curl_cmd = curl::try_cmd_string_for_request_parts_and_payload_with_options(
             &parts,
             &payload,
-            curl::CurlExportOptions::default().with_script_compatibility(compatibility),
+            curl::CurlExportOptions::default()
+                .with_proxy_tunnel(self.proxy_tunnel)
+                .with_script_compatibility(compatibility),
             &curl::CurlScriptPayloadMode::Inline,
         )
         .context("rama: (curl-writer) create curl command")?;

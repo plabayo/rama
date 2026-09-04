@@ -4,7 +4,7 @@ use std::{num::NonZeroUsize, time::Duration};
 
 use rama_core::error::BoxError;
 use rama_core::{Layer, extensions::ExtensionsRef};
-use rama_http_types::{Version, conn::FallbackHttpVersion};
+use rama_http_types::{Version, conn::FallbackHttpVersion, proxy::PlaintextHttpProxyMode};
 use rama_net::client::pool::{
     BasicConnId, BasicConnIdentifier, ConnID, MultiplexPool, MuxSelection, PooledConnector,
     ReqToConnID,
@@ -26,8 +26,9 @@ pub type HttpPooledConnector<S> = BindBodyToConnector<
     >,
 >;
 
-/// HTTP connection-pool identifier derived from the network route and any
-/// version requirement that constrains the physical connection.
+/// HTTP connection-pool identifier derived from the network route, any version
+/// requirement that constrains the physical connection, and whether plaintext
+/// HTTP uses forward-proxy or CONNECT-tunnel semantics.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct HttpConnIdentifier;
@@ -41,10 +42,22 @@ impl HttpConnIdentifier {
 }
 
 /// Connection identity produced by [`HttpConnIdentifier`].
+///
+/// Besides physical route and HTTP-version requirements, this identity keeps
+/// plaintext forward-proxy connections separate from plaintext CONNECT
+/// tunnels. Those connections address the same proxy socket but use different
+/// HTTP request semantics.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HttpConnId {
     network: BasicConnId,
     required_version: Option<Version>,
+    http_proxy_mode: Option<HttpProxyModeRequirement>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HttpProxyModeRequirement {
+    Forward,
+    Tunnel,
 }
 
 impl ConnID for HttpConnId {
@@ -79,8 +92,43 @@ impl ReqToConnID<ConnectRequest> for HttpConnIdentifier {
         Ok(HttpConnId {
             network,
             required_version: connection_version_requirement(input),
+            http_proxy_mode: http_proxy_mode_requirement(input),
         })
     }
+}
+
+fn http_proxy_mode_requirement(input: &ConnectRequest) -> Option<HttpProxyModeRequirement> {
+    let is_http_proxy = input
+        .extensions()
+        .get_ref::<ProxyRoute>()
+        .and_then(ProxyRoute::proxy_address)
+        .is_some_and(|proxy| {
+            proxy
+                .protocol
+                .as_ref()
+                .is_none_or(|protocol| protocol.is_http())
+        });
+    if !is_http_proxy {
+        return None;
+    }
+
+    let plaintext_http = input
+        .protocol()
+        .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
+    Some(
+        if plaintext_http
+            && input
+                .extensions()
+                .get_ref::<PlaintextHttpProxyMode>()
+                .copied()
+                .unwrap_or_default()
+                == PlaintextHttpProxyMode::Forward
+        {
+            HttpProxyModeRequirement::Forward
+        } else {
+            HttpProxyModeRequirement::Tunnel
+        },
+    )
 }
 
 fn connection_version_requirement(input: &ConnectRequest) -> Option<Version> {
@@ -88,6 +136,12 @@ fn connection_version_requirement(input: &ConnectRequest) -> Option<Version> {
         .protocol()
         .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
     let secure_forward_proxy = plaintext_http
+        && input
+            .extensions()
+            .get_ref::<PlaintextHttpProxyMode>()
+            .copied()
+            .unwrap_or_default()
+            == PlaintextHttpProxyMode::Forward
         && input
             .extensions()
             .get_ref::<ProxyRoute>()
@@ -222,6 +276,7 @@ mod tests {
     use rama_core::service::service_fn;
     use rama_core::{Layer, Service, ServiceInput};
     use rama_http_types::body::util::BodyExt as _;
+    use rama_http_types::proxy::PlaintextHttpProxyMode;
     use rama_http_types::{Body, HeaderValue, Method, Request, Response, StatusCode, Version};
     use rama_net::address::{HostWithPort, ProxyAddress};
     use rama_net::client::pool::{
@@ -238,7 +293,10 @@ mod tests {
     use rama_utils::octets::kib;
     use tokio::time::sleep;
 
-    use super::{HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig};
+    use super::{
+        HttpConnIdentifier, HttpPooledConnector, HttpPooledConnectorConfig,
+        HttpProxyModeRequirement, connection_version_requirement, http_proxy_mode_requirement,
+    };
     use crate::client::proxy::layer::HttpProxyConnectorLayer;
     use crate::client::{HttpConnectRequestAdapter, HttpConnectorLayer};
     use crate::server::HttpServer;
@@ -337,6 +395,122 @@ mod tests {
             HttpConnIdentifier::new().id(&input).unwrap()
         });
         assert_ne!(explicit_ids[0], explicit_ids[1]);
+    }
+
+    #[test]
+    fn http_connection_id_separates_forward_and_forced_tunnel_modes() {
+        for proxy in [
+            "http://proxy.example:8080".parse::<ProxyAddress>().unwrap(),
+            "https://proxy.example:8443"
+                .parse::<ProxyAddress>()
+                .unwrap(),
+        ] {
+            let make_id = |tunnel| {
+                let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                    .with_application_protocol(Protocol::HTTP);
+                input
+                    .extensions
+                    .insert(HttpRequestVersion(Version::HTTP_11));
+                input.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
+                if tunnel {
+                    input.extensions.insert(PlaintextHttpProxyMode::Tunnel);
+                }
+                HttpConnIdentifier::new().id(&input).unwrap()
+            };
+
+            assert_ne!(make_id(false), make_id(true));
+        }
+    }
+
+    #[test]
+    fn http_proxy_mode_requirement_covers_every_route_kind() {
+        let make_input = |application: Protocol, proxy: Option<&str>, tunnel: bool| {
+            let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                .with_application_protocol(application);
+            if let Some(proxy) = proxy {
+                input
+                    .extensions
+                    .insert(ProxyRoute::Proxy(proxy.parse::<ProxyAddress>().unwrap()));
+            }
+            if tunnel {
+                input.extensions.insert(PlaintextHttpProxyMode::Tunnel);
+            }
+            input
+        };
+
+        assert_eq!(
+            http_proxy_mode_requirement(&make_input(
+                Protocol::HTTP,
+                Some("http://proxy.example:8080"),
+                false,
+            )),
+            Some(HttpProxyModeRequirement::Forward)
+        );
+        assert_eq!(
+            http_proxy_mode_requirement(&make_input(
+                Protocol::HTTP,
+                Some("http://proxy.example:8080"),
+                true,
+            )),
+            Some(HttpProxyModeRequirement::Tunnel)
+        );
+        for application in [Protocol::HTTPS, Protocol::from_static("custom")] {
+            assert_eq!(
+                http_proxy_mode_requirement(&make_input(
+                    application,
+                    Some("http://proxy.example:8080"),
+                    false,
+                )),
+                Some(HttpProxyModeRequirement::Tunnel)
+            );
+        }
+        assert_eq!(
+            http_proxy_mode_requirement(&make_input(
+                Protocol::HTTP,
+                Some("socks5://proxy.example:1080"),
+                false,
+            )),
+            None
+        );
+        assert_eq!(
+            http_proxy_mode_requirement(&make_input(Protocol::HTTP, None, false)),
+            None
+        );
+    }
+
+    #[test]
+    fn connection_version_requirement_uses_only_physical_wire_constraints() {
+        for application in [Protocol::HTTPS, Protocol::from_static("custom")] {
+            let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                .with_application_protocol(application);
+            input.extensions.insert(HttpRequestVersion(Version::HTTP_2));
+            assert_eq!(connection_version_requirement(&input), None);
+        }
+
+        let secure_forward = ConnectRequest::new(HostWithPort::example_domain_http())
+            .with_application_protocol(Protocol::HTTP);
+        secure_forward
+            .extensions
+            .insert(HttpRequestVersion(Version::HTTP_2));
+        secure_forward.extensions.insert(ProxyRoute::Proxy(
+            "https://proxy.example:8443"
+                .parse::<ProxyAddress>()
+                .unwrap(),
+        ));
+        assert_eq!(connection_version_requirement(&secure_forward), None);
+
+        for version in [Version::HTTP_11, Version::HTTP_2] {
+            let tunnel = ConnectRequest::new(HostWithPort::example_domain_http())
+                .with_application_protocol(Protocol::HTTP);
+            tunnel.extensions.insert(PlaintextHttpProxyMode::Tunnel);
+            tunnel.extensions.insert(TargetHttpVersion(version));
+            tunnel.extensions.insert(ProxyRoute::Proxy(
+                "https://proxy.example:8443"
+                    .parse::<ProxyAddress>()
+                    .unwrap(),
+            ));
+            assert_eq!(connection_version_requirement(&tunnel), Some(version));
+        }
     }
 
     fn proxy_route(name: &str) -> ProxyRoute {

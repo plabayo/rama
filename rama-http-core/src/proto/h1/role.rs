@@ -1501,9 +1501,10 @@ fn extend(dst: &mut Vec<u8>, data: &[u8]) {
 /// - forward HTTP proxy + insecure scheme -> absolute-form (`http://host/path`)
 /// - otherwise -> origin-form (`/path?query`)
 ///
-/// The `ProxyRoute` extension is the one extra routing signal H1 needs that h2's
-/// `Pseudo::request` does not (h2 has no absolute-form). The form writers normalise an
-/// empty path to `/` and strip the userinfo/fragment that must not reach the wire.
+/// The `HttpProxyConnectionMode` extension is the one extra connection signal
+/// H1 needs that h2's `Pseudo::request` does not (h2 has no absolute-form). The
+/// form writers normalise an empty path to `/` and strip the userinfo/fragment
+/// that must not reach the wire.
 fn encode_request_target(
     method: &Method,
     uri: &rama_net::uri::Uri,
@@ -1536,6 +1537,7 @@ mod tests {
 
     #[test]
     fn encode_request_target_forms() {
+        use rama_http_types::proxy::HttpProxyConnectionMode;
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
         use rama_net::client::ProxyRoute;
@@ -1548,6 +1550,17 @@ mod tests {
         }
 
         fn http_proxy_ext() -> Extensions {
+            let ext = Extensions::new();
+            ext.insert(ProxyRoute::Proxy(ProxyAddress {
+                address: HostWithPort::example_domain_http(),
+                credential: None,
+                protocol: Some(Protocol::HTTP),
+            }));
+            ext.insert(HttpProxyConnectionMode::Forward);
+            ext
+        }
+
+        fn http_proxy_route_ext() -> Extensions {
             let ext = Extensions::new();
             ext.insert(ProxyRoute::Proxy(ProxyAddress {
                 address: HostWithPort::example_domain_http(),
@@ -1586,6 +1599,16 @@ mod tests {
                 &http_proxy_ext()
             ),
             "http://example.com/p",
+        );
+
+        // Route intent alone cannot prove which connection was established.
+        assert_eq!(
+            target(
+                &Method::GET,
+                "http://user:pass@example.com/p#frag",
+                &http_proxy_route_ext()
+            ),
+            "/p",
         );
 
         // secure request over an HTTP proxy is tunnelled -> origin-form, not absolute

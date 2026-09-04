@@ -182,7 +182,7 @@ fn upgrade_response_to_h2_or_h3<Body>(
 /// Translate an HTTP/2 or HTTP/3 response down to HTTP/1.x.
 ///
 /// For a WebSocket handshake (known from the captured request context) the Extended
-/// CONNECT `200 OK` becomes the HTTP/1 `101 Switching Protocols` accept, re-deriving
+/// CONNECT successful `2xx` becomes the HTTP/1 `101 Switching Protocols` accept, re-deriving
 /// `Sec-WebSocket-Accept` from the request's `Sec-WebSocket-Key`. Ordinary responses
 /// (no captured Extended CONNECT protocol) carry no connection-specific headers and
 /// need only the version swap. A non-WebSocket Extended CONNECT is rejected.
@@ -201,10 +201,10 @@ fn downgrade_response_to_h1<Body>(
         )));
     }
 
-    // A WebSocket success (`200`) becomes the HTTP/1 `101` accept; a non-success
+    // A WebSocket success (`2xx`) becomes the HTTP/1 `101` accept; a non-success
     // response (handshake rejected upstream) passes through apart from the version.
-    if response.status() == StatusCode::OK {
-        tracing::trace!("translating h2/h3 websocket 200 response into h1 101 Switching Protocols");
+    if response.status().is_success() {
+        tracing::trace!("translating h2/h3 websocket 2xx response into h1 101 Switching Protocols");
         *response.status_mut() = StatusCode::SWITCHING_PROTOCOLS;
 
         let headers = response.headers_mut();
@@ -351,32 +351,52 @@ mod tests {
     }
 
     #[test]
-    fn test_h2_to_h1_websocket_200_becomes_101() {
+    fn test_h2_to_h1_websocket_success_becomes_101() {
+        for status in [StatusCode::OK, StatusCode::CREATED] {
+            let mut resp = Response::builder()
+                .version(Version::HTTP_2)
+                .status(status)
+                .body(())
+                .unwrap();
+
+            adapt_response_version(&mut resp, &websocket_ctx(Version::HTTP_11)).unwrap();
+
+            assert_eq!(resp.version(), Version::HTTP_11);
+            assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
+            assert!(
+                resp.headers()
+                    .typed_get::<Upgrade>()
+                    .is_some_and(|u| u.is_websocket())
+            );
+            assert!(
+                resp.headers()
+                    .typed_get::<Connection>()
+                    .is_some_and(|c| c.contains_upgrade())
+            );
+            // the accept is recomputed from the original request key (RFC 6455 example)
+            assert_eq!(
+                resp.headers().get("sec-websocket-accept").unwrap(),
+                SAMPLE_ACCEPT,
+            );
+        }
+    }
+
+    #[test]
+    fn test_h2_to_h1_websocket_407_remains_an_ordinary_rejection() {
         let mut resp = Response::builder()
             .version(Version::HTTP_2)
-            .status(StatusCode::OK)
+            .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+            .header("proxy-authenticate", "Basic realm=upstream")
             .body(())
             .unwrap();
 
         adapt_response_version(&mut resp, &websocket_ctx(Version::HTTP_11)).unwrap();
 
         assert_eq!(resp.version(), Version::HTTP_11);
-        assert_eq!(resp.status(), StatusCode::SWITCHING_PROTOCOLS);
-        assert!(
-            resp.headers()
-                .typed_get::<Upgrade>()
-                .is_some_and(|u| u.is_websocket())
-        );
-        assert!(
-            resp.headers()
-                .typed_get::<Connection>()
-                .is_some_and(|c| c.contains_upgrade())
-        );
-        // the accept is recomputed from the original request key (RFC 6455 example)
-        assert_eq!(
-            resp.headers().get("sec-websocket-accept").unwrap(),
-            SAMPLE_ACCEPT,
-        );
+        assert_eq!(resp.status(), StatusCode::PROXY_AUTHENTICATION_REQUIRED);
+        assert!(!resp.headers().contains_key(UPGRADE));
+        assert!(!resp.headers().contains_key(CONNECTION));
+        assert_eq!(resp.headers()["proxy-authenticate"], "Basic realm=upstream");
     }
 
     #[test]

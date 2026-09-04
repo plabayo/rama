@@ -10,7 +10,9 @@ use rama_http::io::upgrade::OnUpgrade;
 use rama_http::layer::version_adapter::ensure_valid_request_for_version;
 use rama_http_types::body::OnIncompleteBody;
 use rama_http_types::proto::h1::ext::ConnectionClose;
+use rama_http_types::proxy::HttpProxyConnectionMode;
 use rama_http_types::{Method, Request, Response, Version};
+use rama_net::client::ProxyRoute;
 use rama_net::conn::ConnectionHealthWatcher;
 use rama_utils::guard::DropGuard;
 use std::fmt;
@@ -45,6 +47,13 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
+        // Request-target encoding must follow the connection that survived
+        // route fallback and pool selection, never the requested ProxyRoute.
+        // The established fact shadows any caller-provided request marker.
+        self.extensions
+            .clone_to::<HttpProxyConnectionMode>(req.extensions());
+        self.extensions.clone_to::<ProxyRoute>(req.extensions());
+
         // Check if this http connection can actually be used for this request version
         match (&self.sender, req.version()) {
             (SendRequest::Http1(_), Version::HTTP_10 | Version::HTTP_11)
