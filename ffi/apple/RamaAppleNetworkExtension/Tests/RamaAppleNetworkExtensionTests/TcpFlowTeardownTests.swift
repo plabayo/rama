@@ -21,9 +21,9 @@ import XCTest
 ///   * **Idempotency** — first variant wins; every subsequent
 ///     call (any variant) is a no-op.
 ///   * **Pre-open variants** (`applyPreReadyFailure`,
-///     `applyConnectTimeout`) leave the kernel flow alone —
-///     the flow was never opened, calling `closeReadWithError`
-///     on an un-opened flow is a contract violation.
+///     `applyConnectTimeout`) reject both halves exactly once —
+///     the provider already claimed the flow, so dropping it unopened
+///     would strand the originating connect.
 ///   * **Drained-close variant** distinguishes
 ///     `wasOpened: true` (close with `nil`, a clean EOF) from
 ///     `wasOpened: false` (close with `upstreamUnavailable`).

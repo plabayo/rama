@@ -773,6 +773,13 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 ctx?.terminalSignalled = true
             },
             onReadError: { [weak ctx] error in ctx?.egressReadError = error },
+            onAbnormalStop: { [weak ctx] error in
+                guard let ctx else {
+                    connection.cancelAndDetach()
+                    return
+                }
+                ctx.applyReadHardError(error)
+            },
             onActivity: { [weak ctx] in
                 _ = ctx?.recordActivityUnlessPressureEvicted()
             }

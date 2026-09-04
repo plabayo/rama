@@ -631,6 +631,88 @@ final class TcpClientWritePumpTests: XCTestCase {
         )
     }
 
+    /// A service may enqueue its complete response and close its output while
+    /// the claimed kernel flow is still opening. The close must wait for open,
+    /// preserve the queued response, and complete immediately after its write.
+    func testCloseBeforeOpenDrainsAfterSuccessfulOpen() {
+        let flow = MockTcpFlow()
+        flow.captureWriteCompletions = true
+        let queue = makeQueue()
+        let pump = TcpClientWritePump(
+            flow: flow,
+            queue: queue,
+            logger: { _ in },
+            onTerminalError: { _ in
+                XCTFail("a successful write must not terminate the pump")
+            },
+            onDrained: {}
+        )
+
+        let response = Data([0x48, 0x69])
+        XCTAssertEqual(pump.enqueue(response), .accepted)
+        queue.sync {}
+
+        let drained = expectation(description: "pre-open close drains")
+        let drainCount = NSLock_Counter()
+        let sawOpened = TestValue<Bool?>(nil)
+        pump.closeWhenDrained { wasOpened in
+            drainCount.increment()
+            sawOpened.set(wasOpened)
+            drained.fulfill()
+        }
+        queue.sync {}
+
+        XCTAssertEqual(flow.writeCount, 0, "must not write before flow.open")
+        XCTAssertEqual(drainCount.value, 0, "must not close cleanly before flow.open")
+
+        pump.markOpened()
+        queue.sync {}
+        XCTAssertEqual(flow.writes, [response])
+        XCTAssertEqual(flow.pendingWriteCompletionCount, 1)
+        XCTAssertEqual(drainCount.value, 0, "close waits for the in-flight write")
+
+        XCTAssertTrue(flow.completeNextWrite())
+        queue.sync {}
+        wait(for: [drained], timeout: 1.0)
+
+        XCTAssertEqual(drainCount.value, 1)
+        XCTAssertEqual(sawOpened.get(), true)
+        XCTAssertEqual(pump.enqueue(Data([0x21])), .closed)
+    }
+
+    func testCloseBeforeOpenCancelCompletesAsUnopenedOnce() {
+        let flow = MockTcpFlow()
+        let queue = makeQueue()
+        let pump = TcpClientWritePump(
+            flow: flow,
+            queue: queue,
+            logger: { _ in },
+            onTerminalError: { _ in },
+            onDrained: {}
+        )
+
+        let drained = expectation(description: "pre-open cancel resolves drain")
+        let drainCount = NSLock_Counter()
+        let sawOpened = TestValue<Bool?>(nil)
+        pump.closeWhenDrained { wasOpened in
+            drainCount.increment()
+            sawOpened.set(wasOpened)
+            drained.fulfill()
+        }
+        queue.sync {}
+        XCTAssertEqual(drainCount.value, 0)
+
+        pump.cancel()
+        wait(for: [drained], timeout: 1.0)
+        XCTAssertEqual(drainCount.value, 1)
+        XCTAssertEqual(sawOpened.get(), false)
+
+        pump.markOpened()
+        queue.sync {}
+        XCTAssertEqual(drainCount.value, 1)
+        XCTAssertEqual(flow.writeCount, 0)
+    }
+
     /// `closeWhenDrained` must fire its completion exactly once after
     /// every queued chunk has been delivered, so the dispatcher's
     /// teardown chain (close write side, cancel egress, remove from

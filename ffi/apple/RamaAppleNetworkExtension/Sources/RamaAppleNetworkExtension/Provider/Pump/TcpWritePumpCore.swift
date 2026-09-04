@@ -90,11 +90,13 @@ final class TcpWritePumpCore: @unchecked Sendable {
         }
     }
 
-    /// Transitions lifecycle to `.open` and flushes any queued chunks.
+    /// Marks the destination open and flushes any queued chunks. A close
+    /// requested while the destination was still pending enters `.draining`
+    /// before the first write, preserving that terminal intent.
     /// Must be called on `queue`.
-    func markOpen() {
+    func markOpen(draining: Bool = false) {
         if isClosed() { return }
-        lifecycle = .open
+        lifecycle = draining ? .draining : .open
         flush()
     }
 

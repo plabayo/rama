@@ -44,12 +44,19 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     /// this on the session before calling `start()`.
     var idleTimeoutMs: UInt32 = defaultUdpIdleTimeoutMs
 
-    /// Pending one-shot idle work item, queue-confined.
-    /// `armIdleTimer` cancels and reschedules; the terminate
-    /// closure cancels and nils it. Tracked separately from
-    /// `ctx` so unit tests can observe whether the watchdog
-    /// has been armed without poking at internal state.
+    /// Pending one-shot idle work item and monotonic activity time,
+    /// both queue-confined. Datagram activity only updates the
+    /// timestamp. The outstanding timer observes it when it fires
+    /// and re-arms once for any remaining idle interval.
     var idleWork: DispatchWorkItem?
+    private var idleLastActivityAtUptimeNs: UInt64?
+
+    #if DEBUG
+        /// Test-only count of actual queue schedules, not activity
+        /// observations. Pins that a datagram burst creates no timers
+        /// without adding field storage or increments in Release.
+        private(set) var idleTimerScheduleCount: UInt64 = 0
+    #endif
 
     init(core: TransparentProxyCore, flow: F, meta: RamaTransparentProxyFlowMetaBridge) {
         self.core = core
@@ -148,6 +155,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 ctx.readState = .closed
                 session?.idleWork?.cancel()
                 session?.idleWork = nil
+                session?.idleLastActivityAtUptimeNs = nil
                 ctx.writer?.close()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
@@ -159,10 +167,10 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         }
     }
 
-    /// Cancel any pending idle work item and arm a fresh one. Called
-    /// after `flow.open` succeeds and on every datagram in either
-    /// direction. When the work item fires, it terminates the flow
-    /// so the session leaves the core's map and deallocates.
+    /// Start the idle watchdog after `flow.open` succeeds. Repeated
+    /// calls only record activity while a timer is already pending.
+    /// When the timer fires, it either re-arms for the time remaining
+    /// since the latest datagram or terminates the flow.
     ///
     /// Apple's `NEAppProxyUDPFlow` gives the extension no terminal
     /// signal for an idle peer (UDP has no FIN; the kernel's
@@ -174,24 +182,75 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     ///
     /// Must run on `flowQueue`. `idleTimeoutMs == 0` disables the
     /// watchdog (used in tests that exercise other code paths).
-    func armIdleTimer() {
-        idleWork?.cancel()
-        idleWork = nil
+    func armIdleTimer(
+        nowUptimeNs: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) {
         let timeout = idleTimeoutMs
-        guard timeout > 0 else { return }
+        guard timeout > 0 else {
+            idleWork?.cancel()
+            idleWork = nil
+            idleLastActivityAtUptimeNs = nil
+            return
+        }
+        idleLastActivityAtUptimeNs = nowUptimeNs
+        guard idleWork == nil else { return }
+        scheduleIdleTimer(afterNs: UInt64(timeout) * 1_000_000)
+    }
+
+    /// Record one datagram in either direction. This is deliberately
+    /// only a monotonic timestamp write on the flow queue: high-rate
+    /// traffic must not cancel, allocate, or enqueue timer work.
+    func recordIdleActivity(
+        nowUptimeNs: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) {
+        guard idleTimeoutMs > 0 else { return }
+        idleLastActivityAtUptimeNs = nowUptimeNs
+    }
+
+    private func scheduleIdleTimer(afterNs delayNs: UInt64) {
+        let boundedDelay = min(delayNs, UInt64(Int.max))
         let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            // Observe the latest readState — a terminate that
-            // raced ahead between fire and execution would have
-            // cleared idleWork, but a fresh re-arm could have
-            // landed in between. Guarding here keeps the
-            // watchdog harmless against double-fire.
-            guard self.ctx.readState != .closed else { return }
-            self.core?.logDebug("udp flow idle for \(timeout) ms; closing")
-            self.ctx.terminate?(nil)
+            self?.handleIdleTimerFire()
         }
         idleWork = work
-        flowQueue.asyncAfter(deadline: .now() + .milliseconds(Int(timeout)), execute: work)
+        #if DEBUG
+            idleTimerScheduleCount &+= 1
+        #endif
+        flowQueue.asyncAfter(
+            deadline: .now() + .nanoseconds(Int(boundedDelay)),
+            execute: work
+        )
+    }
+
+    /// Reconcile a timer fire with the most recent activity. The
+    /// explicit timestamp keeps the state transition deterministic
+    /// in tests; production uses the monotonic dispatch clock.
+    func handleIdleTimerFire(
+        nowUptimeNs: UInt64 = DispatchTime.now().uptimeNanoseconds
+    ) {
+        idleWork = nil
+        guard ctx.readState != .closed else { return }
+        let timeout = idleTimeoutMs
+        guard timeout > 0 else {
+            idleLastActivityAtUptimeNs = nil
+            return
+        }
+        guard let lastActivityAt = idleLastActivityAtUptimeNs else {
+            armIdleTimer(nowUptimeNs: nowUptimeNs)
+            return
+        }
+
+        let timeoutNs = UInt64(timeout) * 1_000_000
+        let idleNs = nowUptimeNs >= lastActivityAt
+            ? nowUptimeNs - lastActivityAt
+            : 0
+        guard idleNs >= timeoutNs else {
+            scheduleIdleTimer(afterNs: timeoutNs - idleNs)
+            return
+        }
+
+        core?.logDebug("udp flow idle for \(timeout) ms; closing")
+        ctx.terminate?(nil)
     }
 
     func buildClientWritePump() {
@@ -203,6 +262,9 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 // [weak ctx] avoids a writer ↔ terminate cycle —
                 // terminate reaches the writer via `ctx.writer`.
                 ctx?.terminate?(error)
+            },
+            onActivity: { [weak self] in
+                self?.recordIdleActivity()
             }
         )
     }
@@ -257,9 +319,9 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 return
             }
 
-            // Reset the idle deadline — Apple just gave us datagrams,
-            // the flow is alive.
-            self.armIdleTimer()
+            // Apple just gave us datagrams, so record liveness. The
+            // existing watchdog observes this timestamp at fire time.
+            self.recordIdleActivity()
             self.forwardDatagrams(datagrams: datagrams, endpoints: endpoints, session: session)
             if hadPendingDemand { ctx.requestRead?() }
         }
@@ -296,18 +358,11 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         guard let lease = core?.engineLeaseForNewFlow() else { return nil }
         let decision = lease.engine.newUdpSession(
             meta: meta,
-            onServerDatagram: { [weak ctx, weak self] data, peer in
-                // Push the datagram synchronously (writer.enqueue is
-                // queue-internal) AND hop to flowQueue to bump the
-                // idle deadline. The hop is a few microseconds of
-                // additional latency on the rare path where the
-                // Rust → Swift datagram is the only liveness signal;
-                // worth it to avoid a UAF on `self.idleWork` from a
-                // background scheduler thread.
+            onServerDatagram: { [weak ctx] data, peer in
+                // The writer's existing queue-normalisation block also
+                // records activity, avoiding a second dispatch for the
+                // idle watchdog on every server datagram.
                 ctx?.writer?.enqueue(data, sentBy: peer?.toNetworkExtensionEndpoint())
-                self?.flowQueue.async { [weak self] in
-                    self?.armIdleTimer()
-                }
             },
             onClientReadDemand: { [weak ctx] in ctx?.requestRead?() },
             onServerClosed: { [weak ctx] in ctx?.terminate?(nil) }

@@ -42,10 +42,20 @@ struct TcpOverloadSnapshot {
 }
 
 struct TcpOverloadState {
+    private static let startLatencyWindowCapacity = 128
+
     var startsInFlight: [ObjectIdentifier: TcpAdmissionToken] = [:]
     var flowApps: [ObjectIdentifier: String] = [:]
     var perAppFlowCounts: [String: Int] = [:]
-    var startLatencyMsWindow: [UInt64] = []
+    private(set) var startLatencyMsWindow: [UInt64] = []
+    /// A sorted view of the same bounded samples. It is updated only when a
+    /// completion inserts a latency, keeping admission-time breaker checks
+    /// O(1) even when a refusal storm repeatedly evaluates the same window.
+    private var sortedStartLatencyMsWindow: [UInt64] = []
+    #if DEBUG
+        /// Test-only proof that percentile reads do not rebuild the cache.
+        private(set) var startLatencyCacheRefreshCount = 0
+    #endif
     var admissionsSinceTick = 0
     var timeoutsSinceTick = 0
     var shedsSinceTick = 0
@@ -67,10 +77,26 @@ struct TcpOverloadState {
     }
 
     mutating func insertLatency(_ latencyMs: UInt64) {
+        let evicted =
+            startLatencyMsWindow.count == Self.startLatencyWindowCapacity
+            ? startLatencyMsWindow.removeFirst()
+            : nil
         startLatencyMsWindow.append(latencyMs)
-        if startLatencyMsWindow.count > 128 {
-            startLatencyMsWindow.removeFirst(startLatencyMsWindow.count - 128)
+
+        if let evicted {
+            let index = Self.lowerBound(of: evicted, in: sortedStartLatencyMsWindow)
+            precondition(
+                index < sortedStartLatencyMsWindow.count
+                    && sortedStartLatencyMsWindow[index] == evicted,
+                "latency window and sorted cache diverged")
+            sortedStartLatencyMsWindow.remove(at: index)
         }
+
+        let insertionIndex = Self.lowerBound(of: latencyMs, in: sortedStartLatencyMsWindow)
+        sortedStartLatencyMsWindow.insert(latencyMs, at: insertionIndex)
+        #if DEBUG
+            startLatencyCacheRefreshCount += 1
+        #endif
     }
 
     /// Over COMPLETED starts only. Pending starts are deliberately NOT
@@ -81,10 +107,25 @@ struct TcpOverloadState {
     /// window through its connect timeouts (≤ one pressure clamp), and
     /// under fail-open the hard cap already sheds in the meantime.
     func percentile(_ percentile: Double) -> UInt64 {
-        guard !startLatencyMsWindow.isEmpty else { return 0 }
-        let sorted = startLatencyMsWindow.sorted()
-        let rawIndex = Int((Double(sorted.count - 1) * percentile).rounded(.up))
-        return sorted[min(max(rawIndex, 0), sorted.count - 1)]
+        guard !sortedStartLatencyMsWindow.isEmpty else { return 0 }
+        let rawIndex = Int(
+            (Double(sortedStartLatencyMsWindow.count - 1) * percentile).rounded(.up))
+        let index = min(max(rawIndex, 0), sortedStartLatencyMsWindow.count - 1)
+        return sortedStartLatencyMsWindow[index]
+    }
+
+    private static func lowerBound(of value: UInt64, in sorted: [UInt64]) -> Int {
+        var lower = 0
+        var upper = sorted.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if sorted[middle] < value {
+                lower = middle + 1
+            } else {
+                upper = middle
+            }
+        }
+        return lower
     }
 
     /// Top refusing apps this tick window — attribution for the sheds
@@ -114,6 +155,13 @@ struct TcpOverloadState {
 
     mutating func snapshotAndResetRates(intervalSeconds: Double) -> TcpOverloadSnapshot {
         let seconds = max(intervalSeconds, 1.0)
+        // All three values index the same already-sorted cache. Do not call
+        // `sorted()` independently here: this tick runs during overload too.
+        let latencyPercentiles = (
+            p50: percentile(0.50),
+            p95: percentile(0.95),
+            p99: percentile(0.99)
+        )
         let snapshot = TcpOverloadSnapshot(
             admissionRate: Double(admissionsSinceTick) / seconds,
             timeoutRate: Double(timeoutsSinceTick) / seconds,
@@ -122,9 +170,9 @@ struct TcpOverloadState {
             startsInFlightPeak: max(startsInFlightPeakSinceTick, startsInFlight.count),
             shedHardCap: shedHardCapSinceTick,
             shedBreaker: shedBreakerSinceTick,
-            p50StartMs: percentile(0.50),
-            p95StartMs: percentile(0.95),
-            p99StartMs: percentile(0.99),
+            p50StartMs: latencyPercentiles.p50,
+            p95StartMs: latencyPercentiles.p95,
+            p99StartMs: latencyPercentiles.p99,
             breakerOpen: breakerOpen
         )
         admissionsSinceTick = 0

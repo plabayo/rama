@@ -250,6 +250,44 @@ final class TcpOverloadAdmissionTests: XCTestCase {
         XCTAssertFalse(core.testTcpOverloadBreakerOpen)
     }
 
+    #if DEBUG
+        /// Admission and rejection paths may ask for p95 on every new flow.
+        /// Once a completion has refreshed the bounded sorted cache, those
+        /// reads must remain O(1) until another completion changes the window.
+        func testPercentilesReuseCacheAndStayCorrectAfterWindowEviction() {
+            var overload = TcpOverloadState()
+            for latency in 0..<128 {
+                overload.insertLatency(UInt64(latency))
+            }
+            XCTAssertEqual(overload.startLatencyCacheRefreshCount, 128)
+
+            let refreshesBeforeRejectionChecks = overload.startLatencyCacheRefreshCount
+            for _ in 0..<10_000 {
+                XCTAssertEqual(overload.percentile(0.95), 121)
+            }
+            XCTAssertEqual(
+                overload.startLatencyCacheRefreshCount,
+                refreshesBeforeRejectionChecks,
+                "unchanged-window admission checks must not rebuild the percentile cache")
+
+            // The 129th insertion evicts the oldest value (0), leaving 1...128.
+            overload.insertLatency(128)
+            XCTAssertEqual(overload.startLatencyMsWindow, Array(1...128).map(UInt64.init))
+            XCTAssertEqual(
+                overload.startLatencyCacheRefreshCount,
+                refreshesBeforeRejectionChecks + 1)
+
+            let snapshot = overload.snapshotAndResetRates(intervalSeconds: 60)
+            XCTAssertEqual(snapshot.p50StartMs, 65)
+            XCTAssertEqual(snapshot.p95StartMs, 122)
+            XCTAssertEqual(snapshot.p99StartMs, 127)
+            XCTAssertEqual(
+                overload.startLatencyCacheRefreshCount,
+                refreshesBeforeRejectionChecks + 1,
+                "one maintenance snapshot must reuse the same sorted view for p50/p95/p99")
+        }
+    #endif
+
     /// A refusal storm must not take the persisted log down with it: only the
     /// first few per-flow lines of a tick window are marked for persistence,
     /// and the tick carries the counts plus the top refusing apps.

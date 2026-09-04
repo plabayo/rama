@@ -173,7 +173,11 @@ dl_url() {
   printf 'https://%s/bytes?size=%s&chunk=%s&delay_ms=%s' "$DL_HOST" "$size" "$chunk" "$delay"
 }
 
-phase_mark() { printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$(date +%s)" "$(date -u +%FT%TZ)" >> "$OUT/phases.tsv"; }
+phase_mark() {
+  local epoch
+  epoch="$(python3 -c 'import time; print(f"{time.time():.6f}")')"
+  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$epoch" "$(date -u +%FT%TZ)" >> "$OUT/phases.tsv"
+}
 
 # Latest gauge sample → "softcap tcp udp total"  (or "" if no tick yet).
 read_gauge() {
@@ -578,7 +582,7 @@ if os.path.exists(pf):
             continue
         name, kind, epoch = p[0], p[1], p[2]
         try:
-            e = int(epoch)
+            e = float(epoch)
         except ValueError:
             continue
         if kind == "start":

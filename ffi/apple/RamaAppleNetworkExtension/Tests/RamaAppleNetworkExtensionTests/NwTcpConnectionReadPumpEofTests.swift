@@ -182,6 +182,72 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         pollUntil("EOF backstop fires on the read-error branch") { mock.cancelCount == 1 }
     }
 
+    func testReadErrorEscalatesOriginalErrorToOwnerWithinGrace() {
+        let sink = RecordingEgressSink()
+        let queue = makeQueue()
+        let mock = MockNwConnection()
+        let escalated = expectation(description: "owner teardown fires")
+        let observed = TestValue<NWError?>(nil)
+        let pump = NwTcpConnectionReadPump(
+            connection: mock,
+            session: sink,
+            queue: queue,
+            eofGraceDeadline: .milliseconds(80),
+            onAbnormalStop: { error in
+                observed.set(error as? NWError)
+                mock.cancelAndDetach()
+                escalated.fulfill()
+            }
+        )
+        let error = NWError.posix(.ECONNRESET)
+
+        pump.start()
+        waitForQueueDrain(queue)
+        mock.completePendingReceive(isComplete: false, error: error)
+
+        wait(for: [escalated], timeout: 1.0)
+        guard case .posix(.ECONNRESET)? = observed.get() else {
+            return XCTFail("owner did not receive the original reset")
+        }
+        XCTAssertEqual(mock.cancelCount, 1)
+        XCTAssertNil(mock.stateUpdateHandler)
+        XCTAssertNil(mock.viabilityUpdateHandler)
+    }
+
+    func testPausedTerminalTailStillEscalatesWithinGrace() {
+        let sink = RecordingEgressSink(statuses: [.paused])
+        let queue = makeQueue()
+        let mock = MockNwConnection()
+        let escalated = expectation(description: "paused terminal escalates")
+        let observed = TestValue<NWError?>(nil)
+        let pump = NwTcpConnectionReadPump(
+            connection: mock,
+            session: sink,
+            queue: queue,
+            eofGraceDeadline: .milliseconds(80),
+            onAbnormalStop: { error in
+                observed.set(error as? NWError)
+                escalated.fulfill()
+            }
+        )
+        let error = NWError.posix(.ECONNABORTED)
+
+        pump.start()
+        waitForQueueDrain(queue)
+        mock.completePendingReceive(
+            data: Data([0x01, 0x02]),
+            isComplete: false,
+            error: error)
+
+        wait(for: [escalated], timeout: 1.0)
+        XCTAssertEqual(sink.received, [Data([0x01, 0x02])])
+        XCTAssertEqual(sink.errorCount, 0, "terminal stays behind rejected tail")
+        guard case .posix(.ECONNABORTED)? = observed.get() else {
+            return XCTFail("owner did not receive the paused tail's error")
+        }
+        pump.cancel()
+    }
+
     func testReadErrorUsesErrorTerminal() {
         let sink = RecordingEgressSink()
         let queue = makeQueue()
@@ -370,6 +436,36 @@ final class NwTcpConnectionReadPumpEofTests: XCTestCase {
         pollUntil("egress `.closed` arms the same bounded release as EOF/error") {
             mock.cancelCount == 1
         }
+    }
+
+    func testEgressClosedEscalatesSyntheticErrorToOwner() {
+        let sink = RecordingEgressSink(statuses: [.closed])
+        let queue = makeQueue()
+        let mock = MockNwConnection()
+        let escalated = expectation(description: "closed consumer escalates")
+        let observed = TestValue<NSError?>(nil)
+        let pump = NwTcpConnectionReadPump(
+            connection: mock,
+            session: sink,
+            queue: queue,
+            eofGraceDeadline: .milliseconds(80),
+            onAbnormalStop: { error in
+                observed.set(error as NSError)
+                escalated.fulfill()
+            }
+        )
+
+        pump.start()
+        waitForQueueDrain(queue)
+        mock.completePendingReceive(
+            data: Data([0x01]), isComplete: false, error: nil)
+
+        wait(for: [escalated], timeout: 1.0)
+        XCTAssertEqual(observed.get()?.domain, "rama.tproxy.egress-read")
+        XCTAssertTrue(
+            observed.get()?.localizedDescription.contains("consumer closed") == true)
+        XCTAssertEqual(mock.pendingReceiveCount, 0)
+        pump.cancel()
     }
 
     /// If the per-flow

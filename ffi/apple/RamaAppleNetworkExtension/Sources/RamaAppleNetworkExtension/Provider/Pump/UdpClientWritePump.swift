@@ -19,6 +19,7 @@ final class UdpClientWritePump: @unchecked Sendable {
     private let flow: any UdpFlowWritable
     private let logger: (FlowLogMessage) -> Void
     private let onTerminalError: (Error) -> Void
+    private let onActivity: () -> Void
     private let queue: DispatchQueue
     /// Each pending entry pairs a reply datagram with the
     /// `sentBy` endpoint to use for `flow.writeDatagrams`. Capturing
@@ -86,12 +87,14 @@ final class UdpClientWritePump: @unchecked Sendable {
         flow: any UdpFlowWritable,
         queue: DispatchQueue,
         logger: @escaping (FlowLogMessage) -> Void,
-        onTerminalError: @escaping (Error) -> Void
+        onTerminalError: @escaping (Error) -> Void,
+        onActivity: @escaping () -> Void = {}
     ) {
         self.flow = flow
         self.queue = queue
         self.logger = logger
         self.onTerminalError = onTerminalError
+        self.onActivity = onActivity
     }
 
 
@@ -130,6 +133,12 @@ final class UdpClientWritePump: @unchecked Sendable {
         // the transport plumbing.
         queue.async {
             if self.phase == .closed { return }
+            // This block is already the queue-normalisation point for
+            // server datagrams. Report liveness here so callers do not
+            // need a second per-datagram dispatch merely to update an
+            // idle timestamp. A received datagram is activity even when
+            // the lossy pending queue below must drop it.
+            self.onActivity()
             // Drop-on-full: UDP is lossy. Indefinite buffering would
             // deliver datagrams long after the kernel would have dropped
             // them on the wire. Bias toward dropping the newest entry so

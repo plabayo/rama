@@ -823,37 +823,114 @@ final class TcpDirectForwarderTests: XCTestCase {
         XCTAssertEqual(h.s2cPhase, .finished)
     }
 
-    /// NWConnection receive error closes S→C the same as EOF.
-    func testConnectionReceiveErrorFinishesS2CDirection() {
+    /// An egress receive error is a full-flow hard stop, not a clean S→C
+    /// half-close. A quiet client upload must not keep the flow registered.
+    func testConnectionReceiveErrorTerminatesQuietOppositeDirection() {
         let h = Harness("conn.error")
+        h.forwarder.markRustC2SDone()
         h.forwarder.markRustS2CDone()
         h.drain()
+        XCTAssertEqual(h.flow.pendingReadCount, 1, "opposite upload is quiet")
 
         _ = h.conn.completePendingReceive(
             data: nil, isComplete: false,
             error: NWError.posix(.ECONNRESET))
-        waitFor("s2c finished on error", timeout: 2.0) {
-            h.s2cPhase == .finished
+        waitFor("full flow terminates on egress error", timeout: 2.0) {
+            h.queue.sync { h.readError != nil }
         }
         guard case .posix(.ECONNRESET)? = h.flow.lastCloseWriteError as? NWError else {
             return XCTFail("connection reset error was not forwarded")
         }
+        let ownerError = h.queue.sync(execute: { h.readError })
+        guard case .posix(.ECONNRESET)? = ownerError as? NWError else {
+            return XCTFail("owner did not receive the original reset")
+        }
+        XCTAssertEqual(h.c2sPhase, .finished)
+        XCTAssertEqual(h.s2cPhase, .finished)
+        XCTAssertEqual(h.queue.sync { h.terminalCount }, 0)
     }
 
     func testCarryoverErrorFinishesS2CWithError() {
         let h = Harness("carryover.error")
         let error = NSError(domain: "test.carryover", code: 19)
 
+        h.forwarder.acceptClientCarryover(Data([0xAA]))
+        h.drain()
+        XCTAssertEqual(
+            h.queue.sync { h.forwarder.testBufferedChunkCount }, 1)
         h.forwarder.acceptEgressCarryoverError(error)
         h.forwarder.acceptEgressCarryover(.none)
         h.forwarder.markRustS2CDone()
 
-        waitFor("s2c finished with carryover error", timeout: 2.0) {
-            h.s2cPhase == .finished
+        waitFor("carryover error reaches full teardown", timeout: 2.0) {
+            h.queue.sync { h.readError != nil }
         }
         let observed = h.flow.lastCloseWriteError as NSError?
         XCTAssertEqual(observed?.domain, error.domain)
         XCTAssertEqual(observed?.code, error.code)
+        XCTAssertEqual(h.c2sPhase, .finished)
+        XCTAssertEqual(h.s2cPhase, .finished)
+        XCTAssertEqual(
+            h.queue.sync { h.forwarder.testBufferedChunkCount }, 0,
+            "fatal cutover error must release undeliverable carryover")
+    }
+
+    func testConnectionErrorDrainsTailBeforeFullTeardown() {
+        let h = Harness("conn.error.tail")
+        h.flow.captureWriteCompletions = true
+        h.forwarder.markRustC2SDone()
+        h.forwarder.markRustS2CDone()
+        h.drain()
+
+        let tail = Data([0xCA, 0xFE])
+        _ = h.conn.completePendingReceive(
+            data: tail,
+            isComplete: false,
+            error: NWError.posix(.ECONNRESET))
+        waitFor("terminal tail enters client writer", timeout: 1.0) {
+            h.flow.pendingWriteCompletionCount == 1
+        }
+        XCTAssertNil(h.queue.sync { h.readError })
+        XCTAssertEqual(h.flow.writes, [tail])
+
+        XCTAssertTrue(h.flow.completeNextWrite())
+        waitFor("tail drain escalates original error", timeout: 1.0) {
+            h.queue.sync { h.readError != nil }
+        }
+        guard case .posix(.ECONNRESET)? = h.flow.lastCloseWriteError as? NWError else {
+            return XCTFail("tail drain did not preserve the reset")
+        }
+        XCTAssertEqual(h.c2sPhase, .finished)
+        XCTAssertEqual(h.s2cPhase, .finished)
+    }
+
+    func testConnectionErrorBoundsStalledTailDespiteOppositeActivity() {
+        let h = Harness(
+            "conn.error.stalled.tail",
+            drainStallDeadline: .milliseconds(60),
+            initialDrainIdleMs: 0)
+        h.flow.captureWriteCompletions = true
+        h.forwarder.markRustC2SDone()
+        h.forwarder.markRustS2CDone()
+        h.drain()
+
+        _ = h.conn.completePendingReceive(
+            data: Data([0xBA, 0xDD]),
+            isComplete: false,
+            error: NWError.posix(.ECONNRESET))
+        waitFor("terminal tail stalls in client writer", timeout: 1.0) {
+            h.flow.pendingWriteCompletionCount == 1
+        }
+
+        waitFor("fixed abnormal deadline tears down flow", timeout: 1.0) {
+            h.queue.sync { h.readError != nil }
+        }
+        let ownerError = h.queue.sync(execute: { h.readError })
+        guard case .posix(.ECONNRESET)? = ownerError as? NWError else {
+            return XCTFail("stalled tail teardown lost the reset")
+        }
+        XCTAssertEqual(h.c2sPhase, .finished)
+        XCTAssertEqual(h.s2cPhase, .finished)
     }
 
     // MARK: - Markers without data

@@ -26,11 +26,10 @@ import Foundation
 ///     (FIFO after any tail Rust enqueued), then starts a direct
 ///     `flow.readData` / `connection.receive` loop that enqueues
 ///     to the write pump.
-///  4. Each direction's read loop, on EOF/error, calls
-///     `closeWhenDrained` on the matching write pump to send a
-///     FIN; once both directions reach `.finished` the
-///     forwarder calls `onTerminal()` so the registry can drop
-///     the flow.
+///  4. Clean EOF drains and half-closes the matching writer. A hard read
+///     error drains any already-received tail, then asks the owner for full
+///     teardown with the original error. Once both clean directions reach
+///     `.finished`, `onTerminal()` lets the registry drop the flow.
 ///
 /// Concurrency: every method runs on `queue`. Tests construct
 /// the forwarder with a private serial queue and then drive it
@@ -74,9 +73,9 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// to `ctx.applyDrainBackstop()` (a full teardown), the
     /// same reaper the `viaRust` backstop uses.
     private let onDrainStall: () -> Void
-    /// Fatal kernel-read failure. Unlike EOF, this must tear the entire flow
-    /// down with the original error; attempting an orderly FIN would present a
-    /// reset client connection as a clean half-close.
+    /// Fatal transport-read failure in either direction. Unlike EOF, this
+    /// tears the entire flow down with the original error; an orderly FIN
+    /// would present a reset connection as a clean half-close.
     private let onReadError: (Error) -> Void
     /// Fired in the transport callback, before delivery hops to `queue`.
     /// Production atomically bumps `ctx.lastActivityAt` or rejects bytes after
@@ -190,6 +189,11 @@ final class TcpDirectForwarder: @unchecked Sendable {
     private var closingSignalled: Bool = false
     private var drainPendingSignalled: Bool = false
 
+    #if DEBUG
+        /// Queue-confined test seam proving fatal teardown releases carryover.
+        var testBufferedChunkCount: Int { c2sBuffer.count + s2cBuffer.count }
+    #endif
+
     // ── Init ─────────────────────────────────────────────────────
 
     init(
@@ -293,16 +297,14 @@ final class TcpDirectForwarder: @unchecked Sendable {
                     self.s2cBuffer.pushBack(data)
                 } else {
                     self.s2cEofBuffered = true
-                    self.signalClosingLocked()
-                    self.updateDrainPendingLocked()
+                    self.noteS2CTerminalLocked()
                 }
             case .active:
                 if let data = payload, !data.isEmpty {
                     self.writeS2CLocked(data)
                 } else {
                     self.s2cEofBuffered = true
-                    self.signalClosingLocked()
-                    self.updateDrainPendingLocked()
+                    self.noteS2CTerminalLocked()
                     if self.s2cBuffer.isEmpty && !self.s2cWritePaused {
                         self.finishS2CLocked()
                     }
@@ -569,8 +571,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
                     // is never entered, and the closing-stuck watchdog
                     // would otherwise not see the flow at all. Its idle
                     // gate still spares a drain that is making progress.
-                    self.signalClosingLocked()
-                    self.updateDrainPendingLocked()
+                    self.noteS2CTerminalLocked()
                     if self.s2cBuffer.isEmpty && !self.s2cWritePaused {
                         self.finishS2CLocked()
                     }
@@ -590,10 +591,18 @@ final class TcpDirectForwarder: @unchecked Sendable {
     // ── Internal: direction finish ───────────────────────────────
 
     private func failClientReadLocked(_ error: Error) {
+        failReadLocked(error)
+    }
+
+    private func failReadLocked(_ error: Error) {
         guard !cancelled, !terminalFired else { return }
         cancelled = true
         c2sPhase = .finished
         s2cPhase = .finished
+        c2sBuffer.removeAll()
+        s2cBuffer.removeAll()
+        c2sWritePaused = false
+        s2cWritePaused = false
         updateDrainPendingLocked()
         c2sBackstop?.cancel()
         c2sBackstop = nil
@@ -651,6 +660,13 @@ final class TcpDirectForwarder: @unchecked Sendable {
             self.closeClientWrite(self.s2cTerminalError)
             self.s2cPhase = .finished
             self.updateDrainPendingLocked()
+            if let error = self.s2cTerminalError {
+                // A transport failure is not an orderly half-close. The tail
+                // above was allowed to drain first; now make the owner release
+                // the opposite direction and registry with the same error.
+                self.failReadLocked(error)
+                return
+            }
             self.maybeFireTerminalLocked()
         }
         armS2CBackstopLocked()
@@ -666,6 +682,17 @@ final class TcpDirectForwarder: @unchecked Sendable {
         guard !closingSignalled else { return }
         closingSignalled = true
         onClosing()
+    }
+
+    private func noteS2CTerminalLocked() {
+        signalClosingLocked()
+        updateDrainPendingLocked()
+        if s2cTerminalError != nil {
+            // Unlike clean EOF, an error cannot leave the quiet opposite half
+            // alive indefinitely. Arm while tail bytes are still buffered so
+            // a permanently paused client writer is bounded too.
+            armS2CBackstopLocked()
+        }
     }
 
     private func updateDrainPendingLocked() {
@@ -731,12 +758,17 @@ final class TcpDirectForwarder: @unchecked Sendable {
     private func scheduleS2CBackstopLocked(afterMs: UInt64) {
         guard afterMs != .max else { return }
         let work = DispatchWorkItem { [weak self] in
-            guard let self, !self.cancelled, !self.terminalFired,
-                self.s2cPhase == .finishing
-            else { return }
+            guard let self, !self.cancelled, !self.terminalFired else { return }
+            let abnormalTailPending =
+                self.s2cTerminalError != nil
+                && self.s2cEofBuffered
+                && self.s2cPhase != .finished
+            guard self.s2cPhase == .finishing || abnormalTailPending else {
+                return
+            }
             self.s2cBackstop = nil
             let idleMs = self.drainIdleMs()
-            if idleMs < self.drainStallMs {
+            if self.s2cTerminalError == nil && idleMs < self.drainStallMs {
                 self.scheduleS2CBackstopLocked(
                     afterMs: max(self.drainStallMs - idleMs, 50))
                 return
@@ -747,7 +779,11 @@ final class TcpDirectForwarder: @unchecked Sendable {
                     text:
                         "promote forwarder S→C drain backstop fired; forcing teardown (peer not draining)"
                 ))
-            self.onDrainStall()
+            if let error = self.s2cTerminalError {
+                self.failReadLocked(error)
+            } else {
+                self.onDrainStall()
+            }
         }
         s2cBackstop = work
         queue.asyncAfter(

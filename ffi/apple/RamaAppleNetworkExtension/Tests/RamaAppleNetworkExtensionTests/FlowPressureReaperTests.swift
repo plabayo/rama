@@ -937,14 +937,11 @@ final class FlowPressureReaperTests: XCTestCase {
             "former admissions become eligible after one bounded continuation")
     }
 
-    // MARK: - TG-10: episode boundary via the production removal path
+    // MARK: - TG-10: episode hysteresis via the production removal path
 
-    /// The reaper only runs at/over the cap, so the under-cap branch of the
-    /// scan is unreachable in production; a removal is the only event that
-    /// sees occupancy drop. It must end the episode — clear suppression and
-    /// re-arm the once-per-episode log — or the next burst inherits a view up
-    /// to 5s stale and its first no-headroom line is swallowed.
-    func testRemovalUnderCapEndsTheEpisodeSoTheNextOneScansFresh() {
+    /// A removal is the production event that observes low-water. It must end
+    /// the episode there so the next burst starts with a fresh scan and log.
+    func testRemovalToLowWaterEndsTheEpisodeSoTheNextOneScansFresh() {
         defaultFlowPressureSoftCap = 2
         defaultFlowPressureLowWater = 1
         defaultFlowPressureIdleFloorMs = 60_000
@@ -984,6 +981,58 @@ final class FlowPressureReaperTests: XCTestCase {
         core.testReapIdleUnderPressureIfDue()
         XCTAssertEqual(core.testPressureScanCount, 2, "fresh scan, not a suppressed skip")
         XCTAssertEqual(noHeadroomLines(), 2, "once-per-episode log re-armed")
+    }
+
+    func testCapBoundaryChurnKeepsEpisodeSuppressionUntilLowWater() {
+        defaultFlowPressureSoftCap = 5
+        defaultFlowPressureLowWater = 2
+        defaultFlowPressureIdleFloorMs = 60_000
+        let core = makeCore()
+        let notices = Locked([String]())
+        LifecycleLog.noticeOverride = { message in
+            notices.withLock { $0.append(message) }
+        }
+        var live = (0..<5).map { _ in Fx(core: core, idleSeconds: 0) }
+        insert(core, live)
+
+        core.testReapIdleUnderPressureIfDue()
+        XCTAssertEqual(core.testPressureScanCount, 1)
+        XCTAssertGreaterThan(core.testPressureRescanSuppressedForMs, 0)
+
+        for _ in 0..<20 {
+            let leaving = live.removeFirst()
+            core.removeTcpFlow(leaving.flowId)
+            pollUntil("boundary removal lands") { core.tcpFlowCount == 4 }
+            let admitted = Fx(core: core, idleSeconds: 0)
+            live.append(admitted)
+            insert(core, [admitted])
+            core.testReapIdleUnderPressureIfDue()
+        }
+
+        XCTAssertEqual(
+            core.testPressureScanCount, 1,
+            "cap-to-cap-minus-one churn must not re-sort the registry")
+        XCTAssertEqual(
+            notices.withLock {
+                $0.filter { $0.contains("admitting without reap") }.count
+            },
+            1,
+            "no-headroom remains once per hysteresis episode")
+        XCTAssertFalse(
+            notices.withLock {
+                $0.contains { $0.contains("flow pressure episode ended") }
+            })
+
+        for flow in live.prefix(3) { core.removeTcpFlow(flow.flowId) }
+        pollUntil("low-water ends hostile churn episode") {
+            core.tcpFlowCount == 2
+        }
+        XCTAssertEqual(
+            notices.withLock {
+                $0.filter { $0.contains("flow pressure episode ended") }.count
+            },
+            1)
+        XCTAssertEqual(core.testPressureRescanSuppressedForMs, 0)
     }
 
     // MARK: - TG-11: pending victims are not reselected while their teardown is queued
@@ -1340,6 +1389,55 @@ final class FlowPressureReaperTests: XCTestCase {
         triggerAndDrain(core)
         XCTAssertEqual(core.testPressureScanCount, 2, "scans are not suppressed after detach")
         pollUntil("fresh cycle evicts") { core.tcpFlowCount == 2 }
+    }
+
+    func testDetachAccountsOffQueueVictimDecisionsExactlyOnce() {
+        defaultFlowPressureSoftCap = 4
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let notices = Locked([String]())
+        LifecycleLog.noticeOverride = { message in
+            notices.withLock { $0.append(message) }
+        }
+        let flows = (0..<4).map {
+            Fx(core: core, idleSeconds: 40 - UInt64($0 * 10))
+        }
+        insert(core, flows)
+        let victims = core.testCollectPressureVictims()
+        XCTAssertEqual(victims.count, 3)
+
+        XCTAssertTrue(core.testCommitPressureVictim(victims[0]))
+        XCTAssertTrue(core.testMarkPressureVictimSpared(victims[1]))
+        let selectedIds = Set(victims.map { ObjectIdentifier($0.ctx) })
+        guard
+            let natural = flows.first(where: {
+                !selectedIds.contains(ObjectIdentifier($0.ctx))
+            })
+        else {
+            return XCTFail("expected one unselected flow")
+        }
+        XCTAssertTrue(
+            core.testAnnouncePressureRemoval(
+                flowId: natural.flowId, context: natural.ctx),
+            "independent removal retires the remaining selected victim")
+
+        // None of the normal state-queue accounting callbacks has run. Detach
+        // must atomically capture the three decisions before invalidating the
+        // reservations, without charging them again during detached teardown.
+        core.detachEngine(reason: 0)
+        _ = core.tcpFlowCount
+
+        XCTAssertEqual(core.testPressureEvictedTotal, 1)
+        XCTAssertEqual(core.testPressureSparedTotal, 1)
+        XCTAssertEqual(core.testPressureCanceledTotal, 1)
+        let interrupted = notices.withLock {
+            $0.last { $0.contains("flow pressure episode interrupted") } ?? ""
+        }
+        XCTAssertTrue(
+            interrupted.contains(
+                "selected=3 evicted=1 spared=1 canceled=1 expired=0"),
+            interrupted)
     }
 
     func testSleepPreservesPendingVictimAndEpisode() {
@@ -2142,10 +2240,14 @@ final class FlowPressureReaperTests: XCTestCase {
 
         gate.signal()
         // The original batch removes four from six. Two admissions land while
-        // that capacity is pending, so the batch settles at four: safely below
-        // the cap without chasing those arrivals through one sort apiece.
-        pollUntil("episode settles") { core.tcpFlowCount == 4 }
+        // that capacity is pending, so the batch settles at four without
+        // chasing those arrivals through one sort apiece. The episode remains
+        // open inside the hysteresis band until ordinary relief reaches two.
+        pollUntil("batch settles") { core.tcpFlowCount == 4 }
         XCTAssertEqual(core.testPressureScanCount, 1)
+        core.removeTcpFlow(idle[0].flowId)
+        core.removeTcpFlow(idle[1].flowId)
+        pollUntil("episode reaches low-water") { core.tcpFlowCount == 2 }
         let episode = notices.withLock {
             $0.last { $0.contains("flow pressure episode ended") } ?? ""
         }

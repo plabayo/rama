@@ -111,7 +111,14 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
     func testDropsNewestWhenQueueFull() {
         let flow = MockUdpFlow()
         let queue = makeQueue()
-        let pump = UdpClientWritePump(flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+        var activityCount = 0
+        let pump = UdpClientWritePump(
+            flow: flow,
+            queue: queue,
+            logger: { _ in },
+            onTerminalError: { _ in },
+            onActivity: { activityCount += 1 }
+        )
         pump.markOpened()
 
         // 260 attributed datagrams; never complete the in-flight write so the
@@ -120,6 +127,10 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         let total = 260
         for n in 0..<total { pump.enqueue(tag(n), sentBy: ep()) }
         queue.sync {}
+        XCTAssertEqual(
+            activityCount, total,
+            "received datagrams remain activity even when the lossy queue drops them"
+        )
 
         var drained: [Int] = []
         while let batch = flow.writtenBatches.first {

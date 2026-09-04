@@ -258,6 +258,11 @@ final class CoreTcpLifecycleTests: XCTestCase {
         waitFor("detach cancelled the live egress connection (no leak)") {
             conn.cancelCount >= 1
         }
+        waitFor("detach closed each provider half exactly once") {
+            flow.closeReadCallCount == 1 && flow.closeWriteCallCount == 1
+        }
+        XCTAssertEqual(flow.closeReadCallCount, 1)
+        XCTAssertEqual(flow.closeWriteCallCount, 1)
     }
 
     // MARK: - Pre-ready failure paths
@@ -276,12 +281,12 @@ final class CoreTcpLifecycleTests: XCTestCase {
         waitFor("flow registration removed after pre-ready failure") {
             fx.core.tcpFlowCount == 0
         }
-        // Pre-ready failure does NOT call flow.open (we never got
-        // far enough), and does NOT touch the flow's close methods
-        // (the flow was never opened from the kernel's perspective
-        // — the kernel will see the session cancel and tear it down
-        // via NE's own path).
+        // Pre-ready failure does not call flow.open, but the provider already
+        // claimed the flow. Reject both unopened halves exactly once so the
+        // originating connect fails promptly instead of remaining stranded.
         XCTAssertFalse(flow.openWasInvoked, "flow.open must not be called on pre-ready failure")
+        XCTAssertEqual(flow.closeReadCallCount, 1)
+        XCTAssertEqual(flow.closeWriteCallCount, 1)
         XCTAssertEqual(conn.cancelCount, 1, "connection must be cancelled exactly once")
     }
 
@@ -387,6 +392,8 @@ final class CoreTcpLifecycleTests: XCTestCase {
         }
         XCTAssertGreaterThanOrEqual(conn.cancelCount, 1)
         XCTAssertFalse(flow.openWasInvoked)
+        XCTAssertEqual(flow.closeReadCallCount, 1)
+        XCTAssertEqual(flow.closeWriteCallCount, 1)
     }
 
     /// On wake, an established (post-`.ready`) flow is left alone.
@@ -433,11 +440,11 @@ final class CoreTcpLifecycleTests: XCTestCase {
             fx.core.tcpFlowCount == 0
         }
         XCTAssertGreaterThanOrEqual(conn.cancelCount, 1)
-        XCTAssertGreaterThanOrEqual(
+        XCTAssertEqual(
             flow.closeReadCallCount, 1,
             "post-ready failure must close the flow's read side"
         )
-        XCTAssertGreaterThanOrEqual(flow.closeWriteCallCount, 1)
+        XCTAssertEqual(flow.closeWriteCallCount, 1)
     }
 
     func testViaRustEgressReceiveErrorPreservesTransportError() {
@@ -466,15 +473,10 @@ final class CoreTcpLifecycleTests: XCTestCase {
         waitFor("egress receive error reaches the session") {
             ctx.egressReadError != nil
         }
-        let completer = AtomicFlag()
-        DispatchQueue.global().async {
-            while !completer.load() {
-                _ = conn.completePendingSend(error: nil)
-                flow.completeRead(data: nil, error: nil)
-                Thread.sleep(forTimeInterval: 0.001)
-            }
-        }
-        defer { completer.store(true) }
+        XCTAssertEqual(
+            flow.pendingReadCount, 1,
+            "the client upload stays quiet; teardown must not need client EOF"
+        )
         waitFor("egress receive error removes the flow", timeout: 3.0) {
             fx.core.tcpFlowCount == 0
         }
@@ -492,7 +494,7 @@ final class CoreTcpLifecycleTests: XCTestCase {
         }
         XCTAssertEqual(flow.closeReadCallCount, 1)
         XCTAssertEqual(flow.closeWriteCallCount, 1)
-        XCTAssertGreaterThanOrEqual(conn.cancelCount, 1)
+        XCTAssertEqual(conn.cancelCount, 1)
     }
 
     func testPostReadyWaitingRecoversWithoutTeardown() {
@@ -552,11 +554,11 @@ final class CoreTcpLifecycleTests: XCTestCase {
         waitFor("waiting tolerance fired teardown", timeout: 3.0) {
             fx.core.tcpFlowCount == 0
         }
-        XCTAssertGreaterThanOrEqual(
+        XCTAssertEqual(
             flow.closeReadCallCount, 1,
             "tolerance timeout must close the flow's read side"
         )
-        XCTAssertGreaterThanOrEqual(flow.closeWriteCallCount, 1)
+        XCTAssertEqual(flow.closeWriteCallCount, 1)
         XCTAssertGreaterThanOrEqual(conn.cancelCount, 1)
     }
 
@@ -578,6 +580,8 @@ final class CoreTcpLifecycleTests: XCTestCase {
             fx.core.tcpFlowCount == 0
         }
         XCTAssertGreaterThanOrEqual(conn.cancelCount, 1)
+        XCTAssertEqual(flow.closeReadCallCount, 1)
+        XCTAssertEqual(flow.closeWriteCallCount, 1)
     }
 
     // MARK: - ARC leak check

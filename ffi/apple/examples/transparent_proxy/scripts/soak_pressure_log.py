@@ -17,7 +17,8 @@ PRESSURE_COUNTER_RE = re.compile(
     r"evicted=(\d+) spared=(\d+) canceled=(\d+) expired=(\d+) pending=(\d+)\]"
 )
 PRESSURE_EPISODE_RE = re.compile(
-    r"flow pressure episode (ended|interrupted): durationMs=(\d+) "
+    r"flow pressure episode (ended|interrupted): startEpochMs=(\d+) "
+    r"durationMs=(\d+) "
     r"peakOccupancy=(\d+) softCap=(\d+) scans=(\d+) skipped=(\d+) "
     r"selected=(\d+) evicted=(\d+) spared=(\d+) canceled=(\d+) expired=(\d+)"
 )
@@ -95,6 +96,7 @@ def pressure_episode(message):
     values = match.groups()
     keys = (
         "outcome",
+        "start_epoch_ms",
         "duration_ms",
         "peak_occupancy",
         "soft_cap",
@@ -112,10 +114,14 @@ def pressure_episode(message):
 def summarize_pressure_rows(rows, baseline_end_epoch=None):
     """Build non-double-counting pressure evidence from `(epoch, message)` rows.
 
-    The first gauge at/before the baseline boundary snapshots the provider's
-    lifecycle-wide peak. Only a later increase is attributable to this run.
-    Periodic deltas and episode totals are retained as separate, overlapping
-    evidence channels; callers must never sum them.
+    A lifecycle peak first observed after the boundary is not attributable to
+    the run: it may have risen in the gap after the previous gauge. That first
+    post-boundary gauge establishes a conservative floor; only later increases
+    count. Likewise, the first periodic delta after a boundary is discarded
+    unless the preceding tick was at/after the boundary, because its interval
+    may straddle baseline. Episode producers carry their wall-clock start, so
+    episode attribution never guesses from monotonic duration. Periodic deltas
+    and episode totals overlap and callers must never sum them.
     """
     result = {
         "observed_peak": 0,
@@ -131,7 +137,10 @@ def summarize_pressure_rows(rows, baseline_end_epoch=None):
             for key in ("selected", "evicted", "spared", "canceled", "expired")
         },
     }
-    baseline_peak = 0
+    lifecycle_peak_floor = 0
+    exact_boundary_gauge = False
+    post_boundary_gauge_seen = False
+    last_periodic_epoch = None
 
     for epoch, message in rows:
         gauge = flow_gauge(message)
@@ -140,17 +149,49 @@ def summarize_pressure_rows(rows, baseline_end_epoch=None):
             if baseline_end_epoch is not None and (
                 epoch is None or epoch <= baseline_end_epoch
             ):
-                baseline_peak = max(baseline_peak, gauge["peak"])
+                lifecycle_peak_floor = max(
+                    lifecycle_peak_floor, gauge["peak"]
+                )
+                exact_boundary_gauge = (
+                    exact_boundary_gauge or epoch == baseline_end_epoch
+                )
             elif baseline_end_epoch is None or epoch > baseline_end_epoch:
                 result["observed_peak"] = max(
                     result["observed_peak"], gauge["total"])
-                if gauge["peak"] > baseline_peak:
+                may_attribute_lifecycle_peak = (
+                    baseline_end_epoch is None
+                    or post_boundary_gauge_seen
+                    or exact_boundary_gauge
+                )
+                if (
+                    may_attribute_lifecycle_peak
+                    and gauge["peak"] > lifecycle_peak_floor
+                ):
                     result["observed_peak"] = max(
                         result["observed_peak"], gauge["peak"])
+                lifecycle_peak_floor = max(
+                    lifecycle_peak_floor, gauge["peak"]
+                )
+                post_boundary_gauge_seen = True
 
         in_run = baseline_end_epoch is None or (
             epoch is not None and epoch > baseline_end_epoch
         )
+        counters = pressure_counters(message)
+        if counters:
+            interval_is_in_run = in_run and (
+                baseline_end_epoch is None
+                or (
+                    last_periodic_epoch is not None
+                    and last_periodic_epoch >= baseline_end_epoch
+                )
+            )
+            if interval_is_in_run:
+                result["periodic_intervals"] += 1
+                for key in result["periodic"]:
+                    result["periodic"][key] += counters[key]
+            if epoch is not None:
+                last_periodic_epoch = epoch
         if not in_run:
             continue
 
@@ -169,18 +210,14 @@ def summarize_pressure_rows(rows, baseline_end_epoch=None):
                 result["observed_peak"], no_headroom["occupancy"])
             result["soft_caps"].add(no_headroom["soft_cap"])
 
-        counters = pressure_counters(message)
-        if counters:
-            result["periodic_intervals"] += 1
-            for key in result["periodic"]:
-                result["periodic"][key] += counters[key]
-
         episode = pressure_episode(message)
         if episode:
-            if baseline_end_epoch is not None:
-                start_epoch = epoch - episode["duration_ms"] / 1000
-                if start_epoch <= baseline_end_epoch:
-                    continue
+            if (
+                baseline_end_epoch is not None
+                and episode["start_epoch_ms"]
+                <= baseline_end_epoch * 1_000
+            ):
+                continue
             result["episodes"] += 1
             result["observed_peak"] = max(
                 result["observed_peak"], episode["peak_occupancy"])

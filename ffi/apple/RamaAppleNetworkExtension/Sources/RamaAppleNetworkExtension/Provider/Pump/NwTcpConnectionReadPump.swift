@@ -32,9 +32,12 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
     private let eofGraceDeadline: DispatchTimeInterval
     private let onTerminalObserved: @Sendable () -> Void
     private let onReadError: @Sendable (Error) -> Void
+    /// Owner-level teardown after an abnormal stop's grace expires. When nil,
+    /// retain the historical connection-only fallback for standalone users.
+    private let onAbnormalStop: (@Sendable (Error) -> Void)?
     private let onActivity: @Sendable () -> Void
-    /// Scheduled EOF-cancel work, retained so we can invalidate it
-    /// when the clean path beats us to the cancel.
+    /// Scheduled abnormal-stop work, retained so the clean teardown or
+    /// promotion path can invalidate it before its deadline.
     private var eofWork: DispatchWorkItem?
     /// Lifecycle phase — replaces the former `closed`, `paused`, and
     /// `receiving` boolean triple.  The `receiving` → `.reading` mapping
@@ -60,6 +63,7 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         eofGraceDeadline: DispatchTimeInterval,
         onTerminalObserved: @escaping @Sendable () -> Void = {},
         onReadError: @escaping @Sendable (Error) -> Void = { _ in },
+        onAbnormalStop: (@Sendable (Error) -> Void)? = nil,
         onActivity: @escaping @Sendable () -> Void = {}
     ) {
         self.connection = connection
@@ -68,6 +72,7 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         self.eofGraceDeadline = eofGraceDeadline
         self.onTerminalObserved = onTerminalObserved
         self.onReadError = onReadError
+        self.onAbnormalStop = onAbnormalStop
         self.onActivity = onActivity
         queue.setSpecific(key: queueKey, value: 1)
     }
@@ -164,7 +169,10 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
             guard let session = self.session else {
                 self.pendingData = nil
                 self.phase = .closed
-                self.scheduleEgressReleaseLocked()
+                self.scheduleEgressReleaseLocked(
+                    Self.abnormalStopError(
+                        terminal: self.pendingTerminal,
+                        reason: "egress consumer session disappeared"))
                 return
             }
             switch session.onEgressBytes(pending) {
@@ -183,9 +191,13 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                 // Stop reading AND arm the bounded release so the
                 // NWConnection can't linger if the clean path never cancels.
                 self.pendingData = nil
+                let terminal = self.pendingTerminal
                 self.pendingTerminal = nil
                 self.phase = .closed
-                self.scheduleEgressReleaseLocked()
+                self.scheduleEgressReleaseLocked(
+                    Self.abnormalStopError(
+                        terminal: terminal,
+                        reason: "Rust egress consumer closed"))
                 return
             }
         }
@@ -244,7 +256,10 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                         // nowhere to go. Arm the bounded release so the
                         // connection can't linger.
                         self.phase = .closed
-                        self.scheduleEgressReleaseLocked()
+                        self.scheduleEgressReleaseLocked(
+                            Self.abnormalStopError(
+                                terminal: terminal,
+                                reason: "egress consumer session disappeared"))
                         return
                     }
                     switch session.onEgressBytes(data) {
@@ -262,6 +277,12 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                         self.pendingData = data
                         self.pendingTerminal = terminal
                         self.phase = .paused
+                        if case .failure(let error) = terminal {
+                            // Bound a terminal tail that Rust never resumes.
+                            // Promotion may still disarm this work and carry
+                            // the bytes plus original error across.
+                            self.scheduleEgressReleaseLocked(error)
+                        }
                         return
                     case .closed:
                         // Rust dropped the egress consumer; no demand will
@@ -271,7 +292,10 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                         // EOF/error path and with `TcpClientReadPump`'s
                         // `.closed` → `terminate(...)`.
                         self.phase = .closed
-                        self.scheduleEgressReleaseLocked()
+                        self.scheduleEgressReleaseLocked(
+                            Self.abnormalStopError(
+                                terminal: terminal,
+                                reason: "Rust egress consumer closed"))
                         return
                     }
                 }
@@ -298,12 +322,24 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         case .failure(let error):
             onReadError(error)
             session?.onEgressError()
-            scheduleEgressReleaseLocked()
+            scheduleEgressReleaseLocked(error)
         }
     }
 
-    /// Bounded fallback that force-cancels the egress NWConnection when an
-    /// abnormal stop cannot rely on the clean Rust close path.
+    private static func abnormalStopError(
+        terminal: EgressReadTerminal?,
+        reason: String
+    ) -> Error {
+        if case .failure(let error) = terminal { return error }
+        return NSError(
+            domain: "rama.tproxy.egress-read",
+            code: -1,
+            userInfo: [NSLocalizedDescriptionKey: reason])
+    }
+
+    /// Bounded fallback that asks the owner to tear down the entire flow when
+    /// an abnormal stop cannot rely on the clean Rust close path. Standalone
+    /// users without an owner callback retain connection-only cancellation.
     ///
     /// Armed for a peer error, Rust returning `.closed` (the bridge dropped the
     /// egress consumer), or the session vanishing mid-flight. Without it, a
@@ -315,13 +351,18 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
     /// Clean EOF deliberately does not arm this short fallback: it closes only
     /// server→client, while a quiet client→server half may legally resume much
     /// later. Rust's `on_server_closed` callback owns its eventual drain path.
-    /// `connection` is captured strongly so an outer drop after a hard stop
-    /// still releases its registration.
-    private func scheduleEgressReleaseLocked() {
+    /// Both the callback and `connection` are captured strongly so an outer
+    /// drop after a hard stop cannot lose the scheduled release action.
+    private func scheduleEgressReleaseLocked(_ error: Error) {
         guard eofWork == nil else { return }
         let conn = self.connection
+        let teardown = self.onAbnormalStop
         let work = DispatchWorkItem { [weak self] in
-            conn.cancelAndDetach()
+            if let teardown {
+                teardown(error)
+            } else {
+                conn.cancelAndDetach()
+            }
             self?.eofWork = nil
         }
         eofWork = work

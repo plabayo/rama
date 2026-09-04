@@ -44,7 +44,10 @@ final class TcpClientWritePump: @unchecked Sendable {
             guard let self else { return }
             if self.core.isClosed() { return }
             self.wasEverOpened = true
-            self.core.markOpen()
+            // `closeWhenDrained` may have arrived while flow.open was in
+            // flight. Enter draining before the first write so opening cannot
+            // erase that terminal request.
+            self.core.markOpen(draining: self.onDrainedClose != nil)
         }
     }
 
@@ -69,6 +72,10 @@ final class TcpClientWritePump: @unchecked Sendable {
                 return
             }
             self.onDrainedClose = onDrainedClose
+            // A successful flow.open owns the transition from a pending drain
+            // to active draining. Completing here would close an unopened flow
+            // cleanly; starting writes here would target an unopened flow.
+            if !self.wasEverOpened { return }
             self.core.beginDraining()
         }
     }

@@ -544,6 +544,16 @@ final class TransparentProxyCore: @unchecked Sendable {
         let token: UInt64
     }
 
+    private struct PressureOutcomeCounts {
+        var evicted = 0
+        var spared = 0
+        var canceled = 0
+
+        var isEmpty: Bool {
+            evicted == 0 && spared == 0 && canceled == 0
+        }
+    }
+
     /// Tokenized reservations close three races at once. A selected victim is
     /// excluded from another scan, but only for a bounded dispatch lease. Its
     /// flow queue must atomically claim the exact token before teardown, so a
@@ -582,6 +592,11 @@ final class TransparentProxyCore: @unchecked Sendable {
         /// of a pressure victim; `false` when it is that victim's own removal.
         var pendingRemovalFlowIds: [ObjectIdentifier: Bool] = [:]
         var naturalReliefCount = 0
+        /// Outcome decisions made off `stateQueue`, waiting to be folded into
+        /// the queue-confined lifecycle counters. Keeping this tiny ledger
+        /// under the reservation lock makes detach an exactly-once boundary:
+        /// it can atomically drain decisions and invalidate every token.
+        private var unreportedOutcomes = PressureOutcomeCounts()
 
         mutating func insertReservation(
             _ reservation: PressureVictimReservation,
@@ -633,7 +648,27 @@ final class TransparentProxyCore: @unchecked Sendable {
             }
         }
 
-        mutating func reset() {
+        mutating func recordOutcome(_ phase: PressureVictimPhase) {
+            switch phase {
+            case .committed:
+                unreportedOutcomes.evicted += 1
+            case .spareAwaitingAccounting:
+                unreportedOutcomes.spared += 1
+            case .canceled:
+                unreportedOutcomes.canceled += 1
+            case .selected, .expired:
+                break
+            }
+        }
+
+        mutating func takeUnreportedOutcomes() -> PressureOutcomeCounts {
+            let outcomes = unreportedOutcomes
+            unreportedOutcomes = PressureOutcomeCounts()
+            return outcomes
+        }
+
+        mutating func reset() -> PressureOutcomeCounts {
+            let outcomes = takeUnreportedOutcomes()
             reservations.removeAll(keepingCapacity: false)
             selectionOrder.removeAll(keepingCapacity: false)
             selectionHead = 0
@@ -643,6 +678,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             unresolvedReservationCount = 0
             naturalReliefCount = 0
             activeEngineGeneration = nil
+            return outcomes
         }
 
         mutating func earliestSelectedDeadline(leaseNs: UInt64) -> UInt64? {
@@ -692,6 +728,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                     pendingRemovalFlowIds[reservation.flowId] == nil
                 else { continue }
                 setPhase(.canceled, for: ref.id)
+                recordOutcome(.canceled)
                 compactSelectionOrderIfNeeded()
                 return true
             }
@@ -739,16 +776,18 @@ final class TransparentProxyCore: @unchecked Sendable {
     private let pressureVictimState = Locked(PressureVictimState())
     private var nextPressureVictimToken: UInt64 = 0
 
-    /// One over-cap stretch, from the first over-cap scan to the completed
-    /// batch that takes occupancy below the cap. Summarised in a lifecycle
+    /// One pressure stretch, from the first at-cap scan until live occupancy
+    /// reaches the normalized low-water target. Summarised in a lifecycle
     /// line at its end — the shape of a burst (how long, how high, what the
     /// reaper managed) is what a post-incident bundle needs and what the
     /// 60s tick is too coarse to show. An episode cut short by a provider
-    /// restart is deliberately dropped unsummarised with the rest of that
-    /// lifecycle's maintenance state.
+    /// restart is emitted as `interrupted`, after atomically folding any
+    /// committed, spared, or canceled decisions that have not reached their
+    /// normal state-queue accounting callbacks yet.
     /// Only mutated on `stateQueue`.
     private struct PressureEpisode {
         var startNs: UInt64
+        var startEpochMs: UInt64
         var peakOccupancy: UInt64
         var scans = 0
         var skips = 0
@@ -771,7 +810,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     #endif
 
     /// Rate-limits the "over cap but nothing idle to reap" lifecycle log to once
-    /// per pressure episode (re-armed when occupancy falls below the cap or a
+    /// per pressure episode (re-armed when occupancy reaches low-water or a
     /// reap actually fires). A sustained over-cap population — notably
     /// UDP-dominated occupancy, where the TCP-only reap can never reach
     /// low-water — would otherwise emit a persisted os_log on EVERY admission.
@@ -823,6 +862,17 @@ final class TransparentProxyCore: @unchecked Sendable {
     private static func elapsedMs(nowNs: UInt64, sinceNs: UInt64) -> UInt64 {
         guard sinceNs <= nowNs else { return 0 }
         return (nowNs - sinceNs) / 1_000_000
+    }
+
+    private static func wallClockEpochMs() -> UInt64 {
+        UInt64(max(Date().timeIntervalSince1970 * 1_000, 0))
+    }
+
+    private static func pressureLowWater() -> UInt64 {
+        UInt64(
+            normalizedFlowPressureLowWater(
+                softCap: defaultFlowPressureSoftCap,
+                lowWater: defaultFlowPressureLowWater))
     }
 
     private static func flowIdleMs(
@@ -951,7 +1001,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             }
         case .towardLowWater:
             guard pressureEpisode != nil,
-                projected > Int(defaultFlowPressureLowWater)
+                projected > Int(Self.pressureLowWater())
             else {
                 clearPressureProtectionsIfIdleLocked()
                 return []
@@ -999,7 +1049,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             activePressureProtectedFlowIds.removeAll(keepingCapacity: true)
             return []
         }
-        let lowWater = UInt64(defaultFlowPressureLowWater)
+        let lowWater = Self.pressureLowWater()
         let floorMs = UInt64(defaultFlowPressureIdleFloorMs)
         let occupancy = UInt64(self.tcpSessions.count + self.udpSessions.count)
         if var episode = pressureEpisode {
@@ -1035,7 +1085,11 @@ final class TransparentProxyCore: @unchecked Sendable {
         }
         let want = Int(projected - lowWater)
         pressureScansTotal.withLock { $0 += 1 }
-        var episode = pressureEpisode ?? PressureEpisode(startNs: nowNs, peakOccupancy: occupancy)
+        var episode = pressureEpisode
+            ?? PressureEpisode(
+                startNs: nowNs,
+                startEpochMs: Self.wallClockEpochMs(),
+                peakOccupancy: occupancy)
         episode.scans += 1
         episode.peakOccupancy = max(episode.peakOccupancy, occupancy)
         pressureEpisode = episode
@@ -1303,6 +1357,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 reservation.phase == .selected
             else { return false }
             state.setPhase(.spareAwaitingAccounting, for: id)
+            state.recordOutcome(.spareAwaitingAccounting)
             return true
         }
     }
@@ -1318,6 +1373,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 reservation.phase == .selected
             else { return false }
             state.setPhase(.committed, for: id)
+            state.recordOutcome(.committed)
             return true
         }
         return committed
@@ -1328,6 +1384,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// victim's `flowQueue`.
     private func pressureVictimSpared(_ victim: PressureVictim) {
         stateQueue.async {
+            self.drainPressureVictimOutcomesLocked()
             let id = ObjectIdentifier(victim.ctx)
             guard self.resolvePressureVictimLocked(id, token: victim.token) else { return }
             self.pressureRepairState = .scanWhenBatchSettles
@@ -1343,6 +1400,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         wasEligibleAtFire: Bool
     ) {
         stateQueue.async {
+            self.drainPressureVictimOutcomesLocked()
             guard let phase = self.acknowledgePressureVictimLocked(
                 ObjectIdentifier(victim.ctx), token: victim.token)
             else { return }
@@ -1353,7 +1411,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             }
             let needsRepair = (phase == .expired || phase == .canceled)
                 && self.pressureEpisode != nil
-                && projected > Int(defaultFlowPressureLowWater)
+                && projected > Int(Self.pressureLowWater())
             let terminalTombstones = self.pressureVictimState.withLock {
                 $0.reservations.count - $0.unresolvedReservationCount
             }
@@ -1384,7 +1442,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 self.settlePressureVictimBatchLocked()
             }
             self.reschedulePressureRecheckLocked()
-            self.endPressureEpisodeIfUnderCapLocked()
+            self.endPressureEpisodeIfAtLowWaterLocked()
         }
     }
 
@@ -1410,7 +1468,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             let projected = max(
                 occupancy - state.victimCreditCount - state.naturalReliefCount,
                 0)
-            guard projected > Int(defaultFlowPressureLowWater),
+            guard projected > Int(Self.pressureLowWater()),
                 state.reservations[id] == nil,
                 state.pendingRemovalFlowIds[flowId] == nil
             else { return }
@@ -1460,8 +1518,8 @@ final class TransparentProxyCore: @unchecked Sendable {
         return removed
     }
 
-    /// Resolve one exact reservation and charge its terminal outcome to the
-    /// episode that selected it. MUST be called on `stateQueue`.
+    /// Resolve one exact reservation after its already-ledgered spare outcome
+    /// reaches `stateQueue`. MUST be called on `stateQueue`.
     @discardableResult
     private func resolvePressureVictimLocked(
         _ id: ObjectIdentifier, token: UInt64
@@ -1475,10 +1533,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             }
             return state.removeReservation(for: id)
         }
-        guard reservation != nil else { return false }
-        pressureSparedTotal += 1
-        pressureEpisode?.spared += 1
-        return true
+        return reservation != nil
     }
 
     /// Schedule the earliest outstanding pressure deadline. One token guards
@@ -1574,6 +1629,28 @@ final class TransparentProxyCore: @unchecked Sendable {
         flowCountReportingTimer = nil
     }
 
+    /// Fold off-queue terminal decisions into queue-confined telemetry once.
+    /// Reservation cleanup is deliberately separate: a committed victim still
+    /// carries projected-capacity credit until its registry removal lands.
+    private func drainPressureVictimOutcomesLocked() {
+        let outcomes = pressureVictimState.withLock {
+            $0.takeUnreportedOutcomes()
+        }
+        applyPressureVictimOutcomesLocked(outcomes)
+    }
+
+    private func applyPressureVictimOutcomesLocked(
+        _ outcomes: PressureOutcomeCounts
+    ) {
+        guard !outcomes.isEmpty else { return }
+        pressureEvictedTotal += outcomes.evicted
+        pressureSparedTotal += outcomes.spared
+        pressureCanceledTotal += outcomes.canceled
+        pressureEpisode?.evicted += outcomes.evicted
+        pressureEpisode?.spared += outcomes.spared
+        pressureEpisode?.canceled += outcomes.canceled
+    }
+
     private func resetMaintenanceStateLocked() {
         pressureReapSlot.withLock { slot in
             slot.nextToken &+= 1
@@ -1589,6 +1666,12 @@ final class TransparentProxyCore: @unchecked Sendable {
         self.pressureRescanSuppressedUntilNs = 0
         self.pressureProtectionRetryToken &+= 1
         self.pressureNoHeadroomLogged = false
+        // Drain and invalidate under one lock. A flow-queue decision either
+        // linearizes first and is included below, or loses its stale token.
+        let finalOutcomes = self.pressureVictimState.withLock {
+            $0.reset()
+        }
+        self.applyPressureVictimOutcomesLocked(finalOutcomes)
         if let episode = self.pressureEpisode {
             self.logPressureEpisodeLocked(episode, outcome: "interrupted")
         }
@@ -1596,7 +1679,6 @@ final class TransparentProxyCore: @unchecked Sendable {
         self.pressureRepairState = .idle
         self.pendingPressureProtectedFlowIds.removeAll(keepingCapacity: false)
         self.activePressureProtectedFlowIds.removeAll(keepingCapacity: false)
-        self.pressureVictimState.withLock { $0.reset() }
         self.pressureRecheckWork?.cancel()
         self.pressureRecheckWork = nil
         self.pressureRecheckDeadlineNs = 0
@@ -1617,6 +1699,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// MUST be called on `stateQueue` — both the timer handler and
     /// the test hook satisfy that.
     private func collectMaintenanceKicksLocked() -> MaintenanceKicks {
+        drainPressureVictimOutcomesLocked()
         // `stateQueue.sync` is unnecessary inside — the timer fires ON
         // `stateQueue`, so direct access to the maps is already
         // serialised correctly.
@@ -1840,6 +1923,14 @@ final class TransparentProxyCore: @unchecked Sendable {
         }
         func testFirePressureEvictions(_ victims: [PressureVictim]) {
             firePressureEvictions(victims)
+        }
+
+        func testCommitPressureVictim(_ victim: PressureVictim) -> Bool {
+            commitPressureVictim(victim)
+        }
+
+        func testMarkPressureVictimSpared(_ victim: PressureVictim) -> Bool {
+            markPressureVictimSpared(victim)
         }
 
         /// Test hook: the production trigger's on-queue half, rescan
@@ -2174,7 +2265,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         // consistent state. The map's strong ref also keeps the ctx alive
         // until the async lands, which only HELPS the ObjectIdentifier-reuse
         // guard below.
-        let canceledForRelief = announcePressureRemoval(
+        _ = announcePressureRemoval(
             flowId: flowId,
             contextId: context.map(ObjectIdentifier.init),
             engineGeneration: engineGeneration)
@@ -2182,12 +2273,9 @@ final class TransparentProxyCore: @unchecked Sendable {
             if let engineGeneration, engineGeneration != self.engineGeneration {
                 return
             }
+            self.drainPressureVictimOutcomesLocked()
             self.pressureVictimState.withLock {
                 $0.removePendingRemoval(for: flowId)
-            }
-            if canceledForRelief {
-                self.pressureCanceledTotal += 1
-                self.pressureEpisode?.canceled += 1
             }
             var resolvedPressureReservation = false
             if let anchor = self.tcpSessions.removeValue(forKey: flowId) {
@@ -2197,16 +2285,10 @@ final class TransparentProxyCore: @unchecked Sendable {
                 }
                 resolvedPressureReservation = reservation != nil
                 switch reservation?.phase {
-                case .committed:
-                    self.pressureEvictedTotal += 1
-                    self.pressureEpisode?.evicted += 1
                 case .selected:
                     self.pressureCanceledTotal += 1
                     self.pressureEpisode?.canceled += 1
-                case .spareAwaitingAccounting:
-                    self.pressureSparedTotal += 1
-                    self.pressureEpisode?.spared += 1
-                case .canceled, .expired, .none:
+                case .committed, .spareAwaitingAccounting, .canceled, .expired, .none:
                     break
                 }
             }
@@ -2361,7 +2443,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     ) {
         // `.async` for the same reason as `removeTcpFlow` — never block a
         // per-flow teardown on the shared serial queue.
-        let canceledForRelief = announcePressureRemoval(
+        _ = announcePressureRemoval(
             flowId: flowId,
             contextId: nil,
             engineGeneration: engineGeneration)
@@ -2369,12 +2451,9 @@ final class TransparentProxyCore: @unchecked Sendable {
             if let engineGeneration, engineGeneration != self.engineGeneration {
                 return
             }
+            self.drainPressureVictimOutcomesLocked()
             self.pressureVictimState.withLock {
                 $0.removePendingRemoval(for: flowId)
-            }
-            if canceledForRelief {
-                self.pressureCanceledTotal += 1
-                self.pressureEpisode?.canceled += 1
             }
             self.udpSessions.removeValue(forKey: flowId)
             self.reschedulePressureRecheckLocked()
@@ -2464,7 +2543,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             }
             let occupancy = tcpSessions.count + udpSessions.count
             let projected = max(occupancy - state.credit, 0)
-            if projected <= Int(defaultFlowPressureLowWater) {
+            if projected <= Int(Self.pressureLowWater()) {
                 pressureRepairState = .idle
             } else if state.terminalTombstones > 0 {
                 pressureRepairState = .waitingForTombstoneAck
@@ -2479,7 +2558,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             }
             let occupancy = tcpSessions.count + udpSessions.count
             let projected = max(occupancy - state.credit, 0)
-            if projected <= Int(defaultFlowPressureLowWater)
+            if projected <= Int(Self.pressureLowWater())
                 || state.terminalTombstones == 0
             {
                 pressureRepairState = .idle
@@ -2495,28 +2574,28 @@ final class TransparentProxyCore: @unchecked Sendable {
         if clearPressureProtectionsIfIdleLocked() {
             scheduleReleasedProtectionRetryIfNeededLocked(nowNs: nowNs)
         }
-        endPressureEpisodeIfUnderCapLocked()
+        endPressureEpisodeIfAtLowWaterLocked()
     }
 
-    /// MUST be called on `stateQueue` after a registry removal. The reaper
-    /// only ever runs at/over the cap, so a removal is the only production
-    /// event that can observe the drop back down: end the pressure episode
-    /// here — re-arm the once-per-episode log and drop rescan suppression —
-    /// so the next episode opens with a fresh scan instead of a view that
-    /// could be up to the suppression cap stale. A completed batch that leaves
-    /// occupancy below the cap has relieved pressure even if concurrent
-    /// admissions kept it just above low-water; chasing those admissions
-    /// individually would turn each one into another full registry sort.
-    private func endPressureEpisodeIfUnderCapLocked() {
+    /// MUST be called on `stateQueue` after a registry removal or terminal
+    /// victim outcome. Keep the episode and its suppression alive throughout
+    /// the entire hysteresis band: ending at `softCap - 1` lets hostile churn
+    /// alternate across the cap and force an O(n log n) scan on every arrival.
+    /// Reaching normalized low-water proves the burst has actually settled.
+    private func endPressureEpisodeIfAtLowWaterLocked() {
         let softCap = Int(defaultFlowPressureSoftCap)
         guard softCap > 0 else { return }
-        guard self.tcpSessions.count + self.udpSessions.count < softCap else { return }
+        let lowWater = Int(Self.pressureLowWater())
+        guard self.tcpSessions.count + self.udpSessions.count <= lowWater else {
+            return
+        }
         guard pressureRepairState == .idle else { return }
         let unresolved = pressureVictimState.withLock { state in
             !state.pendingRemovalFlowIds.isEmpty
                 || state.unresolvedReservationCount > 0
         }
         guard !unresolved else { return }
+        drainPressureVictimOutcomesLocked()
         pressureNoHeadroomLogged = false
         pressureRescanSuppressedUntilNs = 0
         pressureProtectionRetryToken &+= 1
@@ -2537,7 +2616,8 @@ final class TransparentProxyCore: @unchecked Sendable {
             nowNs: DispatchTime.now().uptimeNanoseconds,
             sinceNs: episode.startNs)
         logLifecycle(
-            "flow pressure episode \(outcome): durationMs=\(durationMs) "
+            "flow pressure episode \(outcome): startEpochMs=\(episode.startEpochMs) "
+                + "durationMs=\(durationMs) "
                 + "peakOccupancy=\(episode.peakOccupancy) "
                 + "softCap=\(defaultFlowPressureSoftCap) "
                 + "scans=\(episode.scans) skipped=\(episode.skips) "
