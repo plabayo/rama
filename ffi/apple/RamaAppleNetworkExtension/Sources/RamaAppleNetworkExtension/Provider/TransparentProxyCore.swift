@@ -9,6 +9,21 @@ enum UdpFlowRegistrationDecision {
     case capacityRefused(reason: String, persist: Bool)
 }
 
+private enum UdpFlowRegistrationPlan {
+    case started(occupancy: Int, pendingServerClose: Bool)
+    case unavailable
+    case capacityRefused(reason: String, persist: Bool)
+
+    var decision: UdpFlowRegistrationDecision {
+        switch self {
+        case .started(let occupancy, _): return .started(occupancy: occupancy)
+        case .unavailable: return .unavailable
+        case .capacityRefused(let reason, let persist):
+            return .capacityRefused(reason: reason, persist: persist)
+        }
+    }
+}
+
 /// Home of the transparent-proxy per-flow state machine, the engine
 /// handle ownership, and the session / context registration maps.
 ///
@@ -2077,6 +2092,12 @@ final class TransparentProxyCore: @unchecked Sendable {
             stateQueue.sync { self.pressureVictimCreditCount() }
         }
 
+        /// Registry entries whose terminal removal has already linearized in
+        /// pressure accounting but whose async map erase has not landed yet.
+        var testPressurePendingRemovalCount: Int {
+            pressureVictimState.withLock { $0.pendingRemovalFlowIds.count }
+        }
+
         /// Test hook: selections the `flowQueue` re-check declined.
         var testPressureSparedTotal: Int { stateQueue.sync { self.pressureSparedTotal } }
 
@@ -2308,28 +2329,39 @@ final class TransparentProxyCore: @unchecked Sendable {
         appId: String = "pid:unknown",
         engineGeneration: UInt64? = nil
     ) -> Int? {
-        switch registerUdpFlowDecision(
+        switch prepareUdpFlowRegistration(
             flowId,
             anchor: anchor,
             appId: appId,
             engineGeneration: engineGeneration)
         {
-        case .started(let occupancy): return occupancy
+        case .started(let occupancy, let pendingServerClose):
+            if pendingServerClose {
+                if let terminate = anchor.ctx.terminate {
+                    terminate(nil)
+                } else {
+                    removeUdpFlow(flowId, engineGeneration: engineGeneration)
+                }
+            }
+            return occupancy
         case .unavailable, .capacityRefused: return nil
         }
     }
 
-    private func registerUdpFlowDecision(
+    private func prepareUdpFlowRegistration(
         _ flowId: ObjectIdentifier,
         anchor: UdpFlowSessionAnchor,
         appId: String,
         engineGeneration: UInt64?
-    ) -> UdpFlowRegistrationDecision {
+    ) -> UdpFlowRegistrationPlan {
         stateQueue.sync {
             if let engineGeneration {
                 guard self.acceptingFlows,
                     engineGeneration == self.engineGeneration
-                else { return .unavailable }
+                else {
+                    anchor.ctx.registrationGate.abandon()
+                    return .unavailable
+                }
             }
             let projected = self.tcpSessions.count + self.udpSessions.count
                 + self.overload.liveFlowReservations.count
@@ -2342,13 +2374,38 @@ final class TransparentProxyCore: @unchecked Sendable {
                 guard case .reject(_, _, let persist) = self.recordShedLocked(
                     reason: reason, appId: appId)
                 else { preconditionFailure("shed recorder must reject") }
+                anchor.ctx.registrationGate.abandon()
                 return .capacityRefused(reason: reason, persist: persist)
             }
-            self.udpSessions[flowId] = anchor
-            self.pressureVictimState.withLock {
-                $0.registeredFlowIds.insert(flowId)
+
+            // `stateQueue -> registrationGate -> pressureVictimState` is the
+            // sole publication order. A Rust close that sees `.claimed`
+            // therefore cannot announce removal before both registry mirrors
+            // exist. Conversely, a close already recorded while `.pending`
+            // is published as leaving in this same transaction, retaining its
+            // anchor for graceful drain without creating pressure overshoot.
+            guard let claim = anchor.ctx.registrationGate.claim(
+                publishing: { pendingServerClose in
+                    self.udpSessions[flowId] = anchor
+                    self.pressureVictimState.withLock {
+                        $0.registeredFlowIds.insert(flowId)
+                    }
+                    let occupancy = self.tcpSessions.count + self.udpSessions.count
+                    if pendingServerClose {
+                        _ = self.announcePressureRemoval(
+                            flowId: flowId,
+                            contextId: nil,
+                            engineGeneration: engineGeneration,
+                            mayCancelSelectedVictim: false)
+                    }
+                    return occupancy
+                })
+            else {
+                return .unavailable
             }
-            return .started(occupancy: self.tcpSessions.count + self.udpSessions.count)
+            return .started(
+                occupancy: claim.value,
+                pendingServerClose: claim.pendingServerClose)
         }
     }
 
@@ -2359,29 +2416,43 @@ final class TransparentProxyCore: @unchecked Sendable {
         appId: String,
         engineGeneration: UInt64,
         on flowQueue: DispatchQueue,
-        body: @escaping @Sendable () -> Void
+        body: @escaping @Sendable () -> Void,
+        pendingServerClose: (@Sendable () -> Void)? = nil
     ) -> UdpFlowRegistrationDecision {
         lifecycleLock.lock()
-        let registration = registerUdpFlowDecision(
+        let registration = prepareUdpFlowRegistration(
             flowId,
             anchor: anchor,
             appId: appId,
             engineGeneration: engineGeneration)
-        guard case .started(let occupancy) = registration else {
+        guard case .started(let occupancy, let closePending) = registration else {
             lifecycleLock.unlock()
-            return registration
+            return registration.decision
         }
         flowLifecycleGroup.enter()
         lifecycleLock.unlock()
         defer { flowLifecycleGroup.leave() }
         flowQueue.sync {
-            body()
+            if closePending {
+                if let pendingServerClose {
+                    pendingServerClose()
+                } else if let terminate = anchor.ctx.terminate {
+                    terminate(nil)
+                } else {
+                    self.removeUdpFlow(flowId, engineGeneration: engineGeneration)
+                }
+            } else {
+                body()
+            }
             // A Rust max-lifetime callback can close the session before Swift
-            // reaches registration. Its first removal may therefore have seen
-            // no map entry. Reconcile after insertion, on the flow's queue,
-            // and use the admitting generation so stale cleanup cannot touch a
-            // newly attached engine's registry.
-            if anchor.ctx.readState == .closed {
+            // finishes startup, and defensive/test teardown can still mark a
+            // context closed independently of the ownership gate. Reconcile
+            // after insertion, on the flow's queue, and use the admitting
+            // generation so stale cleanup cannot touch a newly attached
+            // engine's registry.
+            if anchor.ctx.readState == .closed,
+                !anchor.ctx.defersRegistryRemovalForGracefulDrain
+            {
                 self.removeUdpFlow(flowId, engineGeneration: engineGeneration)
             }
         }
@@ -2651,7 +2722,8 @@ final class TransparentProxyCore: @unchecked Sendable {
     private func announcePressureRemoval(
         flowId: ObjectIdentifier,
         contextId: ObjectIdentifier?,
-        engineGeneration: UInt64?
+        engineGeneration: UInt64?,
+        mayCancelSelectedVictim: Bool = true
     ) -> Bool {
         pressureVictimState.withLock { state in
             if let engineGeneration {
@@ -2677,7 +2749,11 @@ final class TransparentProxyCore: @unchecked Sendable {
                 providesRelief = true
             }
             state.insertPendingRemoval(providesRelief, for: flowId)
-            guard providesRelief else {
+            // A pre-closed registration adds and removes the same occupancy in
+            // one ownership transaction. Its relief must offset that new entry
+            // without consuming credit already carried by an older selected
+            // victim. Ordinary removals still supersede one queued selection.
+            guard providesRelief, mayCancelSelectedVictim else {
                 return false
             }
             return state.cancelNewestSelected()

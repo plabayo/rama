@@ -98,6 +98,47 @@ final class LiveFlowHardCapTests: XCTestCase {
         XCTAssertEqual(core.tcpFlowCount + core.udpFlowCount, 2)
     }
 
+    func testUdpCapRejectionAbandonsPendingCloseAndLeavesFlowUntouched() {
+        defaultLiveFlowHardCap = 1
+        let core = TransparentProxyCore()
+        let generation = core.attachEngine(makeEngine())
+        defer { core.testDetachAndDrainFlowQueues() }
+
+        let held = MockUdpFlow()
+        XCTAssertEqual(
+            core.registerUdpFlow(
+                ObjectIdentifier(held),
+                anchor: _TestUdpFlowSessionAnchor(ctx: UdpFlowContext()),
+                engineGeneration: generation),
+            1)
+
+        let rejected = MockUdpFlow()
+        let ctx = UdpFlowContext()
+        let queue = DispatchQueue(label: "rama.test.udp.pending-close.cap-reject")
+        ctx.flowQueue = queue
+        XCTAssertFalse(ctx.registrationGate.recordServerClose())
+        let replayed = AtomicFlag()
+        let decision = core.registerUdpFlowAndScheduleStartupDecision(
+            ObjectIdentifier(rejected),
+            anchor: _TestUdpFlowSessionAnchor(ctx: ctx),
+            appId: "com.example.cap-reject",
+            engineGeneration: generation,
+            on: queue,
+            body: { XCTFail("capacity-refused UDP must not start") },
+            pendingServerClose: { replayed.store(true) })
+
+        guard case .capacityRefused = decision else {
+            return XCTFail("second flow must be refused at the hard cap")
+        }
+        XCTAssertFalse(ctx.registrationGate.recordServerClose())
+        queue.sync {}
+        XCTAssertFalse(replayed.load())
+        XCTAssertFalse(rejected.openWasInvoked)
+        XCTAssertEqual(rejected.closeReadCallCount, 0)
+        XCTAssertEqual(rejected.closeWriteCallCount, 0)
+        XCTAssertEqual(core.udpFlowCount, 1)
+    }
+
     func testRemovalRestoresOneHardCapSlotAndZeroDisablesCap() {
         defaultLiveFlowHardCap = 1
         let core = TransparentProxyCore()

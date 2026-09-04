@@ -105,17 +105,20 @@ http_status_is_ok() {
   esac
 }
 
-# Run one curl and return success only for 2xx/3xx.
+# Run one curl and return success only when the complete transfer succeeds with
+# 2xx/3xx. A server can send a 200 header and then truncate the body; the HTTP
+# code alone is therefore not an honest request outcome.
 do_one_curl() {
   local label="$1" target="$2"; shift 2
-  local code
-  code=$(curl --silent --output /dev/null \
+  local code curl_rc=0
+  code=$(curl --silent --show-error --output /dev/null \
       --max-time 30 \
       --fail-with-body \
       --write-out '%{http_code}' \
-      "$@" "$target" 2>>"$LOG_DIR/${label}.log") || true
-  printf '%s\n' "$code" >>"$LOG_DIR/${label}.log"
-  http_status_is_ok "$code"
+      "$@" "$target" 2>>"$LOG_DIR/${label}.log") || curl_rc=$?
+  [[ "$code" =~ ^[0-9]{3}$ ]] || code=000
+  printf '%s curl_exit=%s\n' "$code" "$curl_rc" >>"$LOG_DIR/${label}.log"
+  (( curl_rc == 0 )) && http_status_is_ok "$code"
 }
 
 # Run sequential curls until DURATION elapses.
@@ -135,26 +138,25 @@ loop_http() {
   (( fail == 0 ))
 }
 
-# Many curls in parallel via xargs.
+# Many curls in a bounded parallel batch, preserving each child's exit status.
 loop_pool() {
   local label="$1" target="$2"; shift 2
-  local end=$((SECONDS + DURATION)) iter=0
+  local end=$((SECONDS + DURATION)) iter=0 ok=0 fail=0
   while (( SECONDS < end )); do
-    seq 1 "$CONCURRENCY" \
-      | xargs -P "$CONCURRENCY" -I{} \
-        curl --silent --output /dev/null \
-          --max-time 30 \
-          --fail-with-body \
-          --write-out '%{http_code} %{time_total}s\n' \
-          "$@" "$target" \
-          >>"$LOG_DIR/${label}.log" 2>/dev/null || true
+    local batch_pids=() worker_pid worker
+    for ((worker=0; worker<CONCURRENCY; worker++)); do
+      do_one_curl "$label" "$target" "$@" &
+      batch_pids+=("$!")
+    done
+    for worker_pid in "${batch_pids[@]}"; do
+      if wait "$worker_pid"; then
+        ok=$((ok + 1))
+      else
+        fail=$((fail + 1))
+      fi
+    done
     iter=$((iter + CONCURRENCY))
   done
-  local ok fail
-  ok=$(awk '$1 ~ /^[23][0-9][0-9]$/ { count++ } END { print count + 0 }' \
-    "$LOG_DIR/${label}.log" 2>/dev/null)
-  ok=${ok:-0}
-  fail=$((iter - ok))
   printf '%s done: iters=%d ok=%d fail=%d\n' "$label" "$iter" "$ok" "$fail" \
     >"$LOG_DIR/${label}.summary"
   (( fail == 0 ))
@@ -189,15 +191,16 @@ liveness_probe() {
     say "${RED}liveness: pid $pid not running — sysext is gone${RESET}"
     return 1
   fi
-  local code
-  code=$(curl --silent --output /dev/null --max-time 10 \
+  local code curl_rc=0
+  code=$(curl --silent --show-error --output /dev/null --max-time 10 \
       --write-out '%{http_code}' \
-      "$HTTPS_TARGET" 2>/dev/null) || true
-  if [[ "$code" =~ ^2 ]]; then
+      "$HTTPS_TARGET" 2>/dev/null) || curl_rc=$?
+  [[ "$code" =~ ^[0-9]{3}$ ]] || code=000
+  if (( curl_rc == 0 )) && [[ "$code" =~ ^2 ]]; then
     say "${GREEN}liveness: probe got $code (proxy reachable, traffic flowing)${RESET}"
     return 0
   fi
-  say "${RED}liveness: probe got '$code' against $HTTPS_TARGET${RESET}"
+  say "${RED}liveness: probe got '$code' curl_exit=$curl_rc against $HTTPS_TARGET${RESET}"
   say "  proxy may not be intercepting, sysext may be down, or upstream is rate-limiting"
   say "  set STRESS_SKIP_LIVENESS=1 to run anyway"
   return 1
@@ -309,7 +312,7 @@ fi
 
 if compgen -G "$LOG_DIR/*.log" >/dev/null; then
   hdr "errors per worker (top 5)"
-  err_re='^(000|[45][0-9]{2})( |$)|^curl: \([0-9]+\) '
+  err_re='^(000|[45][0-9]{2})( |$)|curl_exit=[1-9][0-9]*|^curl: \([0-9]+\) '
   for f in "$LOG_DIR"/*.log; do
     name=$(basename "$f" .log)
     err_count=$(grep -cE "$err_re" "$f" 2>/dev/null)

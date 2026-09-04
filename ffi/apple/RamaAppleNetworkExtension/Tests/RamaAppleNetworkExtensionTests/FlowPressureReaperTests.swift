@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import NetworkExtension
 import XCTest
 
 @testable import RamaAppleNetworkExtension
@@ -207,6 +208,155 @@ final class FlowPressureReaperTests: XCTestCase {
             idle.wasTornDown && core.testPressureEvictedTotal == 1
         }
         XCTAssertEqual(core.udpFlowCount, 1)
+    }
+
+    func testPendingCloseUdpAdmissionCreditsReliefBeforePressureScan() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let generation = core.attachEngine(makeEngine())
+        let firstQueue = DispatchQueue(label: "rama.test.pressure.pending-udp.first")
+        let secondQueue = DispatchQueue(label: "rama.test.pressure.pending-udp.second")
+        let tcp = [
+            Fx(core: core, idleSeconds: 30, flowQueue: firstQueue),
+            Fx(core: core, idleSeconds: 20, flowQueue: secondQueue),
+        ]
+        insert(core, tcp)
+
+        // Keep the claimed UDP anchor resident after its pending close is
+        // replayed. The pressure scan therefore observes registry occupancy 3;
+        // its pre-announced natural relief must reduce projected occupancy to
+        // 2 and select exactly one TCP victim toward low-water 1.
+        let udpFlow = MockUdpFlow()
+        let udpSession = UdpFlowSession(
+            core: core, flow: udpFlow, meta: makeMeta(protocolRaw: 2))
+        udpSession.ctx.engineGeneration = generation
+        udpSession.installTerminate()
+        udpSession.buildClientWritePump()
+        udpSession.ctx.writer?.markOpened()
+        let endpoint = NWHostEndpoint(hostname: "127.0.0.1", port: "443")
+        udpSession.ctx.writer?.enqueue(Data("hold-drain".utf8), sentBy: endpoint)
+        udpSession.flowQueue.sync {}
+        XCTAssertFalse(udpSession.ctx.registrationGate.recordServerClose())
+
+        let decision = core.registerUdpFlowAndScheduleStartupDecision(
+            udpSession.flowId,
+            anchor: udpSession,
+            appId: "com.example.pending-close-pressure",
+            engineGeneration: generation,
+            on: udpSession.flowQueue,
+            body: { XCTFail("pending close must suppress UDP open") },
+            pendingServerClose: {
+                udpSession.replayPendingServerCloseBeforeStartup()
+            })
+        guard case .started = decision else {
+            return XCTFail("pending-close UDP should still transfer ownership")
+        }
+
+        pollUntil("pending-close admission pressure scan selects one victim") {
+            core.testPressureSelectionsTotal >= 1
+        }
+        drain(firstQueue)
+        drain(secondQueue)
+        pollUntil("the single required pressure victim leaves") {
+            core.testPressureEvictedTotal == 1 && core.tcpFlowCount == 1
+        }
+        XCTAssertEqual(core.testPressureSelectionsTotal, 1)
+        XCTAssertEqual(tcp.filter(\.wasTornDown).count, 1)
+        XCTAssertEqual(core.udpFlowCount, 1, "UDP drain is intentionally held")
+        XCTAssertEqual(core.testPressurePendingRemovalCount, 1)
+
+        XCTAssertTrue(udpFlow.completePendingWrite(error: nil))
+        udpSession.flowQueue.sync {}
+        pollUntil("pending-close UDP drain removes its anchor") {
+            core.udpFlowCount == 0
+        }
+        XCTAssertEqual(
+            core.tcpFlowCount + core.udpFlowCount, 1,
+            "natural UDP relief plus one eviction must stop at low-water")
+        XCTAssertEqual(core.testPressureEvictedTotal, 1)
+    }
+
+    func testPendingCloseUdpSelfReliefPreservesExistingVictimCredit() {
+        defaultFlowPressureSoftCap = 5
+        defaultFlowPressureLowWater = 2
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let generation = core.attachEngine(makeEngine())
+        let blockedQueue = DispatchQueue(
+            label: "rama.test.pressure.pending-udp.existing-victim")
+        let releaseBlockedVictim = DispatchSemaphore(value: 0)
+        blockedQueue.async { releaseBlockedVictim.wait() }
+        defer { releaseBlockedVictim.signal() }
+
+        // Six eligible flows select four toward low-water. The first three
+        // tear down immediately; the fourth (the newest selected victim) is
+        // held on its queue, leaving occupancy 3 with one victim credit.
+        let tcp = [
+            Fx(core: core, idleSeconds: 60),
+            Fx(core: core, idleSeconds: 50),
+            Fx(core: core, idleSeconds: 40),
+            Fx(core: core, idleSeconds: 30, flowQueue: blockedQueue),
+            Fx(core: core, idleSeconds: 20),
+            Fx(core: core, idleSeconds: 10),
+        ]
+        insert(core, tcp)
+        core.testReapIdleUnderPressure()
+        pollUntil("three responsive victims leave while one stays selected") {
+            core.tcpFlowCount == 3
+                && core.testPressureEvictedTotal == 3
+                && core.testPressurePendingVictimCount == 1
+        }
+
+        // Registering this already-closing UDP flow raises physical occupancy
+        // to 4 and contributes its own pending-removal credit. That credit
+        // offsets only the new UDP entry; it must coexist with, rather than
+        // cancel, the blocked TCP victim selected by the earlier scan.
+        let udpFlow = MockUdpFlow()
+        let udpSession = UdpFlowSession(
+            core: core, flow: udpFlow, meta: makeMeta(protocolRaw: 2))
+        udpSession.ctx.engineGeneration = generation
+        udpSession.installTerminate()
+        udpSession.buildClientWritePump()
+        udpSession.ctx.writer?.markOpened()
+        let endpoint = NWHostEndpoint(hostname: "127.0.0.1", port: "443")
+        udpSession.ctx.writer?.enqueue(Data("hold-drain".utf8), sentBy: endpoint)
+        udpSession.flowQueue.sync {}
+        XCTAssertFalse(udpSession.ctx.registrationGate.recordServerClose())
+
+        let decision = core.registerUdpFlowAndScheduleStartupDecision(
+            udpSession.flowId,
+            anchor: udpSession,
+            appId: "com.example.pending-close-existing-victim",
+            engineGeneration: generation,
+            on: udpSession.flowQueue,
+            body: { XCTFail("pending close must suppress UDP open") },
+            pendingServerClose: {
+                udpSession.replayPendingServerCloseBeforeStartup()
+            })
+        guard case .started = decision else {
+            return XCTFail("pending-close UDP should transfer ownership")
+        }
+        XCTAssertEqual(core.tcpFlowCount + core.udpFlowCount, 4)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 1)
+        XCTAssertEqual(core.testPressurePendingRemovalCount, 1)
+        XCTAssertEqual(core.testPressureCanceledTotal, 0)
+
+        XCTAssertTrue(udpFlow.completePendingWrite(error: nil))
+        udpSession.flowQueue.sync {}
+        pollUntil("UDP self-offset relief lands without consuming victim credit") {
+            core.udpFlowCount == 0 && core.testPressurePendingVictimCount == 1
+        }
+
+        releaseBlockedVictim.signal()
+        drain(blockedQueue)
+        pollUntil("the preserved victim converges occupancy to low-water") {
+            core.tcpFlowCount == 2 && core.testPressureEvictedTotal == 4
+        }
+        XCTAssertEqual(core.testPressureCanceledTotal, 0)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 0)
+        XCTAssertEqual(core.tcpFlowCount + core.udpFlowCount, 2)
     }
 
     private func insert(_ core: TransparentProxyCore, _ fxs: [Fx]) {

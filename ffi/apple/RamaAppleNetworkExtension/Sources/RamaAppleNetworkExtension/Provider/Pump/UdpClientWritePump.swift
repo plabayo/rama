@@ -99,16 +99,20 @@ final class UdpClientWritePump: @unchecked Sendable {
     /// the engine and each `enqueue` supplies its own `sentBy`, so
     /// this field is rarely consulted in production.
     private var sentByEndpoint: NWEndpoint?
-    /// Sticky flag that fires a debug log exactly once when
+    /// Lifetime-sticky flag that fires a debug log exactly once when
     /// `flushLocked` cannot make progress because neither the
     /// per-datagram `sentBy` nor the cached `sentByEndpoint` is
     /// known. Without this the pump silently stalls until either
     /// a future datagram arrives with a peer or the engine's
     /// UDP max-lifetime backstop closes the flow — invisible in
-    /// `log show`. The flag clears whenever a write finally
-    /// progresses, so flapping is logged once per stall episode.
+    /// `log show`. It never resets: alternating peerless and attributed
+    /// datagrams must not turn a diagnostic into a packet-rate log source.
     private var unresolvedEndpointLogged = false
     #if DEBUG
+        /// Counts real delayed drain backstops. An empty drain completes before
+        /// allocating or scheduling one, so close churn cannot leave canceled
+        /// no-op work items retained by the dispatch queue until their deadline.
+        private(set) var testDrainBackstopScheduleCount = 0
         /// Test-only instrumentation. Counts every
         /// `setSentByEndpoint` invocation that supplies a non-nil
         /// endpoint; the read-loop in
@@ -365,16 +369,24 @@ final class UdpClientWritePump: @unchecked Sendable {
         guard drainCompletion == nil else { return }
         drainCompletion = completion
 
+        // The common empty/pre-activation close is already drained. Complete
+        // it before allocating a delayed work item: canceling a scheduled GCD
+        // item does not remove the queue's retention through its deadline.
+        finishDrainIfReadyLocked()
+        guard drainCompletion != nil else { return }
+
         let backstop = DispatchWorkItem { [weak self] in
             guard let self, self.drainCompletion != nil else { return }
             self.completeDrainLocked(drained: false)
         }
         drainBackstop = backstop
+        #if DEBUG
+            testDrainBackstopScheduleCount += 1
+        #endif
         queue.asyncAfter(
             deadline: .now() + .milliseconds(Int(timeoutMs)),
             execute: backstop
         )
-        finishDrainIfReadyLocked()
     }
 
     private func finishDrainIfReadyLocked() {
@@ -485,8 +497,6 @@ final class UdpClientWritePump: @unchecked Sendable {
             // Keep as a safety net.
             return
         }
-        unresolvedEndpointLogged = false
-
         #if DEBUG
             testBeforeWriteGate?()
         #endif

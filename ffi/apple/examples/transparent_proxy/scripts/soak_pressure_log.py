@@ -1,5 +1,6 @@
 """Stable parser for pressure telemetry emitted by TransparentProxyCore."""
 
+from datetime import datetime
 from decimal import Decimal
 import json
 import re
@@ -30,6 +31,8 @@ ENGINE_LIFECYCLE_RE = re.compile(
     r"\b(?:startProxy|stopProxy|engine created|engine detached)\b",
     re.IGNORECASE,
 )
+SYSTEM_SLEEP_RE = re.compile(r"^system sleep\b", re.IGNORECASE)
+SYSTEM_WAKE_RE = re.compile(r"^system wake\b", re.IGNORECASE)
 
 PRESSURE_COUNTER_KEYS = (
     "triggers",
@@ -114,23 +117,38 @@ def parse_epoch(value):
     return epoch if epoch.is_finite() else None
 
 
-def parse_ndjson_lines(lines):
-    """Decode an ndjson stream and report malformed interior records.
+def parse_oslog_timestamp(value):
+    """Parse one complete timestamp emitted by ``log --style ndjson``.
 
-    Killing `log stream` can leave one final partial JSON object, which is not
-    evidence of a capture gap. Any malformed non-final record is different: it
-    proves that an interior portion of the artifact cannot be trusted.
+    Do not accept a valid-looking prefix followed by an unknown timezone or
+    arbitrary suffix: phase attribution is evidence, not best-effort display.
     """
+    if not isinstance(value, str):
+        return None
+    formats = (
+        "%Y-%m-%d %H:%M:%S.%f%z",
+        "%Y-%m-%d %H:%M:%S%z",
+    )
+    for timestamp_format in formats:
+        try:
+            parsed = datetime.strptime(value, timestamp_format).timestamp()
+        except (TypeError, ValueError, OverflowError):
+            continue
+        return parse_epoch(f"{parsed:.6f}")
+    return None
+
+
+def parse_ndjson_lines(lines):
+    """Decode an ndjson stream and report every malformed record."""
     records = [(line_number, raw.strip()) for line_number, raw in enumerate(lines, 1)
                if raw.strip()]
     decoded = []
     issues = []
-    for index, (line_number, line) in enumerate(records):
+    for line_number, line in records:
         try:
             value = json.loads(line)
         except json.JSONDecodeError:
-            if index != len(records) - 1:
-                issues.append(f"malformed interior NDJSON record at line {line_number}")
+            issues.append(f"malformed NDJSON record at line {line_number}")
             continue
         if not isinstance(value, dict):
             issues.append(f"non-object NDJSON record at line {line_number}")
@@ -139,36 +157,230 @@ def parse_ndjson_lines(lines):
     return decoded, issues
 
 
+def filter_provider_ndjson_records(records, provider_pid, subsystem):
+    """Keep only records provably emitted by one provider process."""
+    try:
+        provider_pid = int(provider_pid)
+    except (TypeError, ValueError):
+        return [], ["provider pid is missing or invalid"]
+    if provider_pid <= 0 or not subsystem:
+        return [], ["provider identity is missing or invalid"]
+
+    accepted = []
+    missing_pid = mismatched_pid = mismatched_subsystem = 0
+    for record in records:
+        process_id = record.get("processID")
+        if isinstance(process_id, bool) or not isinstance(process_id, int):
+            missing_pid += 1
+            continue
+        if process_id != provider_pid:
+            mismatched_pid += 1
+            continue
+        if record.get("subsystem") != subsystem:
+            mismatched_subsystem += 1
+            continue
+        accepted.append(record)
+
+    issues = []
+    if missing_pid:
+        issues.append(f"{missing_pid} NDJSON record(s) have no numeric processID")
+    if mismatched_pid:
+        issues.append(
+            f"{mismatched_pid} NDJSON record(s) came from a different processID"
+        )
+    if mismatched_subsystem:
+        issues.append(
+            f"{mismatched_subsystem} NDJSON record(s) came from a different subsystem"
+        )
+    return accepted, issues
+
+
+def parse_phase_marker_lines(lines, expected_order):
+    """Parse paired, ordered, non-overlapping phase markers."""
+    order = {name: index for index, name in enumerate(expected_order)}
+    starts = {}
+    ends = {}
+    phases = []
+    issues = []
+    active = None
+    last_started_index = -1
+
+    for line_number, raw in enumerate(lines, 1):
+        fields = raw.rstrip("\n").split("\t")
+        if len(fields) < 3:
+            if raw.strip():
+                issues.append(f"malformed phase marker at line {line_number}")
+            continue
+        name, kind, raw_epoch = fields[:3]
+        epoch = parse_epoch(raw_epoch)
+        if name not in order:
+            issues.append(f"unexpected phase {name!r} at line {line_number}")
+            continue
+        if epoch is None:
+            issues.append(f"invalid phase timestamp at line {line_number}")
+            continue
+        if kind == "start":
+            if name in starts:
+                issues.append(f"duplicate start marker for phase {name!r}")
+                continue
+            if active is not None:
+                issues.append(
+                    f"phase {name!r} started before phase {active!r} ended"
+                )
+            if order[name] <= last_started_index:
+                issues.append(f"phase {name!r} is out of order")
+            starts[name] = epoch
+            active = name
+            last_started_index = max(last_started_index, order[name])
+        elif kind == "end":
+            if name not in starts:
+                issues.append(f"phase {name!r} ended without a start marker")
+                continue
+            if name in ends:
+                issues.append(f"duplicate end marker for phase {name!r}")
+                continue
+            if active != name:
+                issues.append(f"phase {name!r} ended while phase {active!r} was active")
+            if epoch <= starts[name]:
+                issues.append(f"phase {name!r} has a non-positive duration")
+                continue
+            ends[name] = epoch
+            phases.append((name, starts[name], epoch))
+            if active == name:
+                active = None
+        else:
+            issues.append(f"invalid phase marker kind at line {line_number}")
+
+    incomplete = set(starts) - set(ends)
+    ordered_phases = sorted(phases, key=lambda phase: order[phase[0]])
+    for previous, current in zip(ordered_phases, ordered_phases[1:]):
+        if current[1] < previous[2]:
+            issues.append(
+                f"phase {current[0]!r} overlaps phase {previous[0]!r}"
+            )
+    starts_us = {name: int(epoch * 1_000_000) for name, epoch in starts.items()}
+    ends_us = {name: int(epoch * 1_000_000) for name, epoch in ends.items()}
+    return ordered_phases, incomplete, starts_us, ends_us, issues
+
+
 def engine_lifecycle_event(message):
     """Return the generation-changing lifecycle text in one log message."""
     match = ENGINE_LIFECYCLE_RE.search(message)
     return match.group(0) if match else None
 
 
+def lifecycle_category_issue(message, category):
+    """Return an issue when a lifecycle-only signal has untrusted provenance."""
+    is_lifecycle = (
+        engine_lifecycle_event(message) is not None
+        or SYSTEM_SLEEP_RE.search(message) is not None
+        or SYSTEM_WAKE_RE.search(message) is not None
+        or pressure_episode(message) is not None
+    )
+    if is_lifecycle and category != "lifecycle":
+        return f"lifecycle evidence used non-lifecycle category {category!r}"
+    return None
+
+
 def flow_pool_status(
     established_sustained,
     target,
     occupancy_samples,
+    gauge_samples,
     soft_cap,
+    hard_cap,
     sustained_intervals,
     phase,
+    pool_bracket=None,
 ):
-    """Prove established workers plus correlated provider occupancy."""
+    """Prove established workers plus bracketed provider-PID correlation.
+
+    The provider does not expose worker identities. Require the strongest
+    available cold-path evidence instead: fresh provider gauges immediately
+    before spawning, while the target is sustained, and after killing it. The
+    rise and fall must both cover the cap-aware contribution documented by
+    the bracket artifact; this proves aggregate correlation, not identities.
+    """
     if established_sustained == "skipped":
         return "skipped"
     if established_sustained not in (0, 1, "0", "1"):
         return None
-    if str(established_sustained) == "0":
-        return "0"
     try:
         target = int(target)
         soft_cap = int(soft_cap)
+        hard_cap = int(hard_cap)
         _, phase_start, phase_end = phase
+        (
+            baseline_epoch,
+            baseline_total,
+            peak_epoch,
+            peak_total,
+            post_epoch,
+            post_total,
+            recorded_contribution,
+        ) = pool_bracket
+        baseline_epoch = parse_epoch(baseline_epoch)
+        baseline_total = int(baseline_total)
+        peak_epoch = parse_epoch(peak_epoch)
+        peak_total = int(peak_total)
+        post_epoch = parse_epoch(post_epoch)
+        post_total = int(post_total)
+        recorded_contribution = int(recorded_contribution)
     except (TypeError, ValueError):
         return None
-    if target <= 0 or soft_cap < 0:
+    if (
+        target <= 0
+        or soft_cap < 0
+        or hard_cap < 0
+        or baseline_epoch is None
+        or peak_epoch is None
+        or post_epoch is None
+        or baseline_total < 0
+        or peak_total < 0
+        or post_total < 0
+        or not (phase_start <= baseline_epoch <= peak_epoch < post_epoch < phase_end)
+    ):
         return None
-    required_peak = min(target, soft_cap) if soft_cap else target
+    try:
+        occupancy = {
+            (parse_epoch(epoch), int(total)) for epoch, total in occupancy_samples
+        }
+        gauges = {(parse_epoch(epoch), int(total)) for epoch, total in gauge_samples}
+    except (TypeError, ValueError):
+        return None
+    if not {
+        (baseline_epoch, baseline_total),
+        (peak_epoch, peak_total),
+        (post_epoch, post_total),
+    }.issubset(occupancy):
+        return None
+    if not {
+        (baseline_epoch, baseline_total),
+        (post_epoch, post_total),
+    }.issubset(gauges):
+        return None
+    if str(established_sustained) == "0":
+        return "0"
+
+    # This is aggregate correlation, not flow identity. In cap-validation mode
+    # the promised contribution is the delta needed to reach softCap because
+    # pressure may evict pre-existing idle flows during the ramp. Otherwise the
+    # full target is required unless an enabled hardCap is the nearer ceiling.
+    if soft_cap:
+        if hard_cap and hard_cap <= soft_cap:
+            return None
+        expected_contribution = min(target, max(0, soft_cap - baseline_total))
+    elif hard_cap and hard_cap < baseline_total + target:
+        expected_contribution = min(target, max(0, hard_cap - baseline_total))
+    else:
+        expected_contribution = target
+    if (
+        expected_contribution <= 0
+        or recorded_contribution != expected_contribution
+        or peak_total - baseline_total < expected_contribution
+        or peak_total - post_total < expected_contribution
+    ):
+        return None
     for raw_start, raw_end in sustained_intervals:
         interval_start = parse_epoch(raw_start)
         interval_end = parse_epoch(raw_end)
@@ -180,53 +392,188 @@ def flow_pool_status(
             or interval_end > phase_end
         ):
             continue
-        for epoch, total in occupancy_samples:
-            if interval_start <= epoch <= interval_end and total >= required_peak:
-                return "1"
+        if interval_start <= peak_epoch <= interval_end:
+            return "1"
     return None
 
 
-def sleep_wake_evidence_issues(command_outcome, sleep_markers, wake_markers):
-    """Return missing/failed sleep-cycle proof for an attempted cycle."""
-    if command_outcome == "skipped":
-        return []
+def flow_pool_evidence_issues(label, raw_status, correlated_status, has_bracket):
+    """Return missing correlation evidence without masking workload failure."""
+    if raw_status in (0, 1, "0", "1") and not has_bracket:
+        return [f"{label} has no provider flow-pool bracket"]
+    if raw_status in (0, 1, "0", "1") and correlated_status is None:
+        return [f"{label} has no correlated phase-local provider occupancy evidence"]
+    return []
+
+
+def probe_succeeded(record):
+    """Return whether one parsed probe completed cleanly with HTTP 2xx."""
+    _, _, curl_rc, code = record
+    return curl_rc == 0 and code.startswith("2")
+
+
+def parse_probe_lines(lines, label="liveness probe"):
+    """Parse start/completion/ISO/curl-rc/http-code probe records."""
+    records = []
+    issues = []
+    previous_completion = None
+    for line_number, raw in enumerate(lines, 1):
+        if not raw.strip():
+            continue
+        fields = raw.rstrip("\n").split("\t")
+        if len(fields) != 5:
+            issues.append(f"malformed {label} at line {line_number}")
+            continue
+        started = parse_epoch(fields[0])
+        completed = parse_epoch(fields[1])
+        try:
+            curl_rc = int(fields[3])
+        except ValueError:
+            curl_rc = -1
+        if (
+            started is None
+            or completed is None
+            or completed < started
+            or curl_rc < 0
+            or re.fullmatch(r"\d{3}", fields[4]) is None
+        ):
+            issues.append(f"malformed {label} at line {line_number}")
+            continue
+        if previous_completion is not None and completed < previous_completion:
+            issues.append(f"out-of-order {label} at line {line_number}")
+            continue
+        records.append((started, completed, curl_rc, fields[4]))
+        previous_completion = completed
+    return records, issues
+
+
+def sleep_wake_evidence(
+    command_outcome,
+    recovery_outcome,
+    command_started,
+    command_completed,
+    sleep_epochs,
+    wake_epochs,
+    recovery_probes,
+    phase,
+):
+    """Return ordered sleep proof issues and its corroborated outage window."""
+    if command_outcome == "skipped" and recovery_outcome == "skipped":
+        return {"issues": [], "outage_window": None}
+
     issues = []
     if command_outcome not in (0, 1, "0", "1"):
         issues.append("sleep command outcome is missing")
-    if sleep_markers < 1:
-        issues.append("sleep-wake phase has no system sleep marker")
-    if wake_markers < 1:
-        issues.append("sleep-wake phase has no system wake marker")
-    return issues
+    if recovery_outcome not in (0, 1, "0", "1"):
+        issues.append("post-wake recovery outcome is missing")
+    command_started = parse_epoch(command_started)
+    command_completed = parse_epoch(command_completed)
+    try:
+        _, phase_start, phase_end = phase
+    except (TypeError, ValueError):
+        phase_start = phase_end = None
+    if (
+        command_started is None
+        or command_completed is None
+        or command_completed < command_started
+        or phase_start is None
+        or not (phase_start <= command_started <= command_completed < phase_end)
+    ):
+        issues.append("sleep command timing is missing, invalid, or outside its phase")
+        return {"issues": issues, "outage_window": None}
+
+    # A failed pmset invocation is a complete observed workload failure. It is
+    # not additionally missing lifecycle markers that should never have fired.
+    if str(command_outcome) == "0":
+        return {"issues": issues, "outage_window": None}
+
+    sleeps = sorted(
+        epoch for raw in sleep_epochs
+        if (
+            (epoch := parse_epoch(raw)) is not None
+            and command_started <= epoch < phase_end
+        )
+    )
+    wakes = sorted(
+        epoch for raw in wake_epochs
+        if (
+            (epoch := parse_epoch(raw)) is not None
+            and phase_start <= epoch <= command_completed
+        )
+    )
+    ordered_pair = next(
+        ((sleep, wake) for sleep in sleeps for wake in wakes if wake > sleep),
+        None,
+    )
+    if ordered_pair is None:
+        issues.append("sleep-wake phase has no ordered command-local sleep/wake markers")
+        return {"issues": issues, "outage_window": None}
+
+    sleep_epoch, wake_epoch = ordered_pair
+    probes_after_wake = [
+        probe for probe in recovery_probes
+        if command_completed <= probe[0] <= probe[1] <= phase_end
+    ]
+    if not probes_after_wake:
+        issues.append("sleep-wake phase has no probe attempted after the wake marker")
+        return {"issues": issues, "outage_window": None}
+
+    successful_probe = next(
+        (probe for probe in probes_after_wake if probe_succeeded(probe)), None
+    )
+    if str(recovery_outcome) == "1":
+        if successful_probe is None:
+            issues.append("claimed post-wake recovery lacks a successful paired probe")
+            return {"issues": issues, "outage_window": None}
+        return {
+            "issues": issues,
+            "outage_window": (sleep_epoch, wake_epoch),
+        }
+    if successful_probe is not None:
+        issues.append("failed post-wake outcome conflicts with a successful paired probe")
+    return {"issues": issues, "outage_window": None}
 
 
 def parse_ceiling_probe_lines(lines):
-    """Parse timestamp/code/occupancy ceiling probes without guessing."""
+    """Parse paired timestamp/rc/code/occupancy ceiling probes."""
     records = []
     issues = []
+    previous_completion = None
     for line_number, raw in enumerate(lines, 1):
         line = raw.strip()
         if not line:
             continue
         fields = line.split("\t")
-        if len(fields) != 4:
+        if len(fields) != 6:
             issues.append(f"malformed ceiling probe at line {line_number}")
             continue
-        epoch = parse_epoch(fields[0])
-        gauge_epoch = parse_epoch(fields[3])
+        started = parse_epoch(fields[0])
+        completed = parse_epoch(fields[1])
+        gauge_epoch = parse_epoch(fields[5])
         try:
-            occupancy = int(fields[2])
+            curl_rc = int(fields[2])
+            occupancy = int(fields[4])
         except ValueError:
+            curl_rc = -1
             occupancy = -1
         if (
-            epoch is None
+            started is None
+            or completed is None
+            or completed < started
             or gauge_epoch is None
-            or re.fullmatch(r"\d{3}", fields[1]) is None
+            or curl_rc < 0
+            or re.fullmatch(r"\d{3}", fields[3]) is None
             or occupancy < 0
         ):
             issues.append(f"malformed ceiling probe at line {line_number}")
             continue
-        records.append((epoch, fields[1], occupancy, gauge_epoch))
+        if previous_completion is not None and completed < previous_completion:
+            issues.append(f"out-of-order ceiling probe at line {line_number}")
+            continue
+        records.append(
+            (started, completed, curl_rc, fields[3], occupancy, gauge_epoch)
+        )
+        previous_completion = completed
     return records, issues
 
 
@@ -240,21 +587,22 @@ def ceiling_outage_window(records, baseline_total, phase):
     run = 0
     first_failure = None
     proved_start = None
-    for epoch, code, occupancy, gauge_epoch in records:
-        if not (start <= epoch < end):
+    for started, completed, curl_rc, code, occupancy, gauge_epoch in records:
+        if not (start <= started <= completed < end):
             continue
-        if code.startswith("2"):
+        if curl_rc == 0 and code.startswith("2"):
             if proved_start is not None:
-                return proved_start, epoch
+                return proved_start, completed
             run = 0
             first_failure = None
             continue
         gauge_is_fresh = (
-            start <= gauge_epoch <= epoch and epoch - gauge_epoch <= Decimal("70")
+            start <= gauge_epoch <= started
+            and started - gauge_epoch <= Decimal("70")
         )
         if occupancy > baseline_total and gauge_is_fresh:
             if run == 0:
-                first_failure = epoch
+                first_failure = completed
             run += 1
             if run >= 2:
                 proved_start = first_failure
@@ -290,6 +638,59 @@ def unexpected_probe_failure_count(failure_epochs, outage_window):
         return len(failure_epochs)
     start, end = outage_window
     return sum(1 for epoch in failure_epochs if not (start <= epoch < end))
+
+
+def parse_leaks_output(text):
+    """Return parsed ``leaks`` totals, or ``None`` for unknown output."""
+    if not isinstance(text, str):
+        return None
+    matches = re.findall(
+        r"\b([0-9][0-9,]*)\s+leaks?\s+for\s+"
+        r"([0-9][0-9,]*)\s+total leaked bytes\b",
+        text,
+        re.IGNORECASE,
+    )
+    if len(matches) != 1:
+        return None
+    leaks, leaked_bytes = matches[0]
+    return {
+        "leaks": int(leaks.replace(",", "")),
+        "bytes": int(leaked_bytes.replace(",", "")),
+    }
+
+
+def leak_evidence(command_rc, text):
+    """Return fail-closed leaks-tool evidence and the parsed leak count."""
+    issues = []
+    try:
+        command_rc = int(command_rc)
+    except (TypeError, ValueError):
+        command_rc = None
+    parsed = parse_leaks_output(text)
+    if parsed is None:
+        issues.append("leaks output is missing or unparseable")
+        leaks = leaked_bytes = 0
+    else:
+        leaks = parsed["leaks"]
+        leaked_bytes = parsed["bytes"]
+    if command_rc is None or command_rc < 0:
+        issues.append("leaks command outcome is missing or invalid")
+    elif command_rc > 1:
+        issues.append(f"leaks command failed with exit {command_rc}")
+    elif parsed is not None:
+        summary_is_zero = leaks == 0 and leaked_bytes == 0
+        summary_is_nonzero = leaks > 0 and leaked_bytes > 0
+        if not (summary_is_zero or summary_is_nonzero):
+            issues.append("leaks output has inconsistent allocation and byte totals")
+        elif (command_rc == 0 and not summary_is_zero) or (
+            command_rc == 1 and not summary_is_nonzero
+        ):
+            issues.append("leaks command outcome contradicts its parsed summary")
+    return {
+        "issues": issues,
+        "leaks": leaks,
+        "bytes": leaked_bytes,
+    }
 
 
 def parse_evidence_status_lines(lines):
@@ -518,6 +919,7 @@ def classify_soak_result(
     probe_failures,
     body_errors,
     reaper_status,
+    leak_count=0,
 ):
     """Return orthogonal evidence completeness and product verdict state."""
     issues = list(evidence_issues)
@@ -564,6 +966,8 @@ def classify_soak_result(
         failures.append(f"{probe_failures} liveness probe(s) failed")
     if body_errors:
         failures.append(f"{body_errors} body decode/relay error(s) were observed")
+    if leak_count:
+        failures.append(f"leaks reported {leak_count} leaked allocation(s)")
 
     complete = not issues
     passed = complete and not failures

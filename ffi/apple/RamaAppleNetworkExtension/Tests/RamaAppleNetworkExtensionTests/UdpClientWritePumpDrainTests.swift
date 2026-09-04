@@ -98,6 +98,7 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         wait(for: [forced], timeout: 2)
         queue.sync {}
         XCTAssertEqual(drainResult, false)
+        XCTAssertEqual(pump.testDrainBackstopScheduleCount, 1)
         XCTAssertTrue(pump.testAdmissionSnapshot.closed)
         XCTAssertEqual(pump.testAdmissionSnapshot.waiting, 0)
         XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
@@ -123,6 +124,9 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
 
         wait(for: [drained], timeout: 2)
         XCTAssertEqual(drainResult, true)
+        XCTAssertEqual(
+            pump.testDrainBackstopScheduleCount, 0,
+            "an empty drain must not leave a canceled delayed work item")
         XCTAssertTrue(pump.testAdmissionSnapshot.closed)
         XCTAssertTrue(flow.writtenBatches.isEmpty)
     }

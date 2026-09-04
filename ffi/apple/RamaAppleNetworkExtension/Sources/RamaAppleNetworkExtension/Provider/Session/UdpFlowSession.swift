@@ -146,6 +146,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         installRequestRead()
 
         guard let decision = requestEngineSession() else {
+            ctx.registrationGate.abandon()
             core?.logDebug("handleNewFlow udp engine unavailable; bypassing")
             return .passthrough
         }
@@ -159,9 +160,9 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 "udp_flow_handling=started",
                 privateMetadata: "initial_remote=\(initialRemote)"
             )
-            sessionHandle = session
-            ctx.session = session
+            installEngineSession(session)
             guard let engineGeneration, let core else {
+                ctx.registrationGate.abandon()
                 session.onClientClose()
                 return .passthrough
             }
@@ -178,6 +179,9 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                     body: { [self] in
                         guard ctx.readState != .closed else { return }
                         openKernelFlow()
+                    },
+                    pendingServerClose: { [self] in
+                        replayPendingServerCloseBeforeStartup()
                     })
             switch registration {
             case .started:
@@ -200,9 +204,11 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 return .blocked
             }
         case .passthrough:
+            ctx.registrationGate.abandon()
             core?.logDebug("handleNewFlow udp bypassed by rust flow policy")
             return .passthrough
         case .blocked:
+            ctx.registrationGate.abandon()
             core?.logLifecycle("handleNewFlow udp blocked by rust flow policy")
             let error = blockedFlowError()
             flow.closeReadWithError(error)
@@ -248,6 +254,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 // The strong `ctx` capture still guarantees kernel teardown.
                 guard ctx.readState != .closed else { return }
                 ctx.readState = .closed
+                ctx.defersRegistryRemovalForGracefulDrain = false
                 ctx.writer?.close()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
@@ -274,6 +281,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     ) {
         guard !teardownFinished else { return }
         teardownFinished = true
+        ctx.defersRegistryRemovalForGracefulDrain = false
         let readWasOpen = ctx.readState != .closed
         ctx.readState = .closed
         closeActivityGates()
@@ -284,17 +292,31 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         retainedCore?.removeUdpFlow(flowId, engineGeneration: ctx.engineGeneration)
     }
 
-    /// Called directly by the Rust callback thread. Admission is stopped
+    /// Called directly by the Rust callback thread. Before ownership is
+    /// decided the gate records only; after claim, admission is stopped
     /// synchronously before dispatch so callbacks racing behind the natural
     /// close cannot add work to the drain set.
     func requestGracefulServerClose() {
+        guard ctx.registrationGate.recordServerClose() else { return }
         ctx.writer?.stopAcceptingForDrain()
         flowQueue.async { [self] in beginGracefulServerClose() }
+    }
+
+    /// Replay a close which arrived before core admission claimed this flow.
+    /// Core calls this synchronously on `flowQueue` after publishing the
+    /// registry anchor. There cannot be an activated Rust service yet, but use
+    /// the ordinary graceful path so any defensively pre-accepted writer work
+    /// remains retained and bounded until its completion/backstop.
+    func replayPendingServerCloseBeforeStartup() {
+        dispatchPrecondition(condition: .onQueue(flowQueue))
+        ctx.writer?.stopAcceptingForDrain()
+        beginGracefulServerClose()
     }
 
     private func beginGracefulServerClose() {
         guard !teardownFinished, !gracefulServerCloseStarted else { return }
         gracefulServerCloseStarted = true
+        ctx.defersRegistryRemovalForGracefulDrain = true
         ctx.readState = .closed
         closeActivityGates()
         flow.closeReadWithError(nil)
@@ -315,6 +337,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         guard gracefulServerCloseStarted, !teardownFinished else { return }
         teardownFinished = true
         gracefulServerCloseStarted = false
+        ctx.defersRegistryRemovalForGracefulDrain = false
         if !drained {
             core?.logDebug(
                 "udp graceful server-close drain exceeded \(gracefulDrainTimeoutMs) ms; forcing write-side close"
@@ -565,6 +588,13 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
 
     func requestEngineSession() -> RamaTransparentProxyUdpSessionDecision? {
         guard let lease = core?.engineLeaseForNewFlow() else { return nil }
+        // Publish identity before entering FFI: the Rust max-lifetime task can
+        // win immediately and invoke `onServerClosed` before this call returns.
+        // That callback touches only the registration gate until core claims
+        // ownership, and the claim lock then supplies the publication edge to
+        // subsequent teardown.
+        engineGeneration = lease.generation
+        ctx.engineGeneration = lease.generation
         let decision = lease.engine.newUdpSession(
             meta: meta,
             onServerDatagram: { [weak ctx] view, peerView in
@@ -576,9 +606,22 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             onClientReadDemand: { [weak ctx] in ctx?.requestRead?() },
             onServerClosed: { [weak self] in self?.requestGracefulServerClose() }
         )
-        engineGeneration = lease.generation
-        ctx.engineGeneration = lease.generation
         return decision
+    }
+
+    /// The handle and its weak context view are flow-queue-confined once
+    /// installed. A pre-claim Rust close records only in `registrationGate`,
+    /// so this synchronous publication cannot be overtaken by teardown.
+    private func installEngineSession(_ session: RamaUdpSessionHandle) {
+        let install = {
+            self.sessionHandle = session
+            self.ctx.session = session
+        }
+        if DispatchQueue.getSpecific(key: flowQueueKey) != nil {
+            install()
+        } else {
+            flowQueue.sync(execute: install)
+        }
     }
 
     /// Execute one asynchronous open completion only while this session's

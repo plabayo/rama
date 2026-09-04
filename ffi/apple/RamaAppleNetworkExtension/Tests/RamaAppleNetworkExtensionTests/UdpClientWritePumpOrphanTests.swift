@@ -16,7 +16,7 @@ import XCTest
 /// peerless reply until the engine's UDP max-flow-lifetime backstop.
 ///
 /// **The fix.** When the head is unresolvable, *drop* it (UDP is
-/// lossy by design); log once per stall episode; continue to the
+/// lossy by design); log once per flow; continue to the
 /// next item.
 final class UdpClientWritePumpOrphanTests: XCTestCase {
 
@@ -138,5 +138,36 @@ final class UdpClientWritePumpOrphanTests: XCTestCase {
             flow.writtenBatches.count, 0,
             "dropped orphan must not be resurrected by a later cache update"
         )
+    }
+
+    /// A valid write between orphan drops must not re-arm the diagnostic.
+    /// Otherwise an alternating peerless/attributed stream emits and allocates
+    /// one log record every other datagram on the packet path.
+    func testOrphanDiagnosticIsLifetimeStickyAcrossSuccessfulWrites() {
+        let flow = MockUdpFlow()
+        let logs = TestValue<[FlowLogMessage]>([])
+        let pump = UdpClientWritePump(
+            flow: flow,
+            queue: Self.queue,
+            logger: { message in logs.update { $0.append(message) } },
+            onTerminalError: { _ in }
+        )
+        pump.markOpened()
+        sync()
+
+        for index in 0..<3 {
+            pump.enqueue(Data("orphan-\(index)".utf8), sentBy: nil)
+            pump.enqueue(
+                Data("valid-\(index)".utf8),
+                sentBy: attributedEndpoint(port: UInt16(5_353 + index)))
+            sync()
+            XCTAssertTrue(flow.completePendingWrite(error: nil))
+            sync()
+        }
+
+        let orphanLogs = logs.get().filter {
+            $0.text.contains("udp write pump dropped")
+        }
+        XCTAssertEqual(orphanLogs.count, 1)
     }
 }

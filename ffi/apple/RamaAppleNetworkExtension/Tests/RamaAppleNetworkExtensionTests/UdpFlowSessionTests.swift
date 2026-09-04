@@ -23,6 +23,11 @@ final class UdpFlowSessionTests: XCTestCase {
                 sourceAppAuditToken: nil, sourceAppPid: 4242)
             self.session = UdpFlowSession(core: core, flow: flow, meta: meta)
         }
+
+        func claimRegistration() {
+            precondition(
+                session.ctx.registrationGate.claim(publishing: { _ in () }) != nil)
+        }
     }
 
     /// init() leaves ctx in idle state — no writer / no terminate.
@@ -60,6 +65,7 @@ final class UdpFlowSessionTests: XCTestCase {
 
     func testNaturalServerCloseDrainsRepliesBeforeClosingWriteSide() {
         let fx = Fixture()
+        fx.claimRegistration()
         fx.session.buildClientWritePump()
         fx.session.ctx.writer?.markOpened()
         let endpoint = NWHostEndpoint(hostname: "127.0.0.1", port: "53")
@@ -88,6 +94,7 @@ final class UdpFlowSessionTests: XCTestCase {
 
     func testImmediateTerminateWinsInProgressNaturalDrain() {
         let fx = Fixture()
+        fx.claimRegistration()
         fx.session.installTerminate()
         fx.session.buildClientWritePump()
         fx.session.ctx.writer?.markOpened()
@@ -112,6 +119,7 @@ final class UdpFlowSessionTests: XCTestCase {
 
     func testQueuedWriteErrorPreemptsLaterNaturalClose() {
         let fx = Fixture()
+        fx.claimRegistration()
         fx.session.installTerminate()
         fx.session.buildClientWritePump()
         fx.session.ctx.writer?.markOpened()
@@ -144,6 +152,7 @@ final class UdpFlowSessionTests: XCTestCase {
 
     func testNaturalServerCloseBackstopTerminatesStuckKernelWrite() {
         let fx = Fixture()
+        fx.claimRegistration()
         fx.session.gracefulDrainTimeoutMs = 20
         fx.session.buildClientWritePump()
         fx.session.ctx.writer?.markOpened()

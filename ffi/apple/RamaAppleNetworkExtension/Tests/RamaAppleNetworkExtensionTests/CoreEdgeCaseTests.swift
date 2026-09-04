@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import NetworkExtension
 import XCTest
 
 @testable import RamaAppleNetworkExtension
@@ -375,6 +376,138 @@ final class CoreEdgeCaseTests: XCTestCase {
         waitFor("post-insertion reconciliation removes already-closed UDP session") {
             core.udpFlowCount == 0
         }
+    }
+
+    func testPendingUdpCloseIsAbandonedWhenDetachRejectsRegistration() {
+        let core = TransparentProxyCore()
+        core.attachEngine(makeEngine())
+        let staleGeneration = core.testEngineGeneration
+        core.detachEngine(reason: 0)
+
+        let flow = MockUdpFlow()
+        let ctx = UdpFlowContext()
+        let queue = DispatchQueue(label: "rama.test.udp.pending-close.detach-reject")
+        ctx.flowQueue = queue
+        XCTAssertFalse(
+            ctx.registrationGate.recordServerClose(),
+            "pre-claim close must only be recorded")
+
+        let replayCount = TestValue(0)
+        let decision = core.registerUdpFlowAndScheduleStartupDecision(
+            ObjectIdentifier(flow),
+            anchor: _TestUdpFlowSessionAnchor(ctx: ctx),
+            appId: "com.example.pending-close",
+            engineGeneration: staleGeneration,
+            on: queue,
+            body: { XCTFail("detached registration must not start") },
+            pendingServerClose: { replayCount.set(replayCount.get() + 1) })
+
+        guard case .unavailable = decision else {
+            return XCTFail("stale generation must be unavailable")
+        }
+        XCTAssertFalse(ctx.registrationGate.recordServerClose())
+        queue.sync {}
+        XCTAssertEqual(replayCount.get(), 0)
+        XCTAssertFalse(flow.openWasInvoked)
+        XCTAssertEqual(flow.closeReadCallCount, 0)
+        XCTAssertEqual(flow.closeWriteCallCount, 0)
+        XCTAssertEqual(core.udpFlowCount, 0)
+    }
+
+    func testPendingUdpClosePublishesLeavingAnchorAndReplaysExactlyOnce() {
+        let core = TransparentProxyCore()
+        core.attachEngine(makeEngine())
+        defer { core.testDetachAndDrainFlowQueues() }
+        let generation = core.testEngineGeneration
+        let flow = MockUdpFlow()
+        let endpoint = NWHostEndpoint(hostname: "127.0.0.1", port: "53")
+        weak var retainedSession: UdpFlowSession<MockUdpFlow>?
+        var flowQueue: DispatchQueue?
+
+        autoreleasepool {
+            var session: UdpFlowSession<MockUdpFlow>? = UdpFlowSession(
+                core: core, flow: flow, meta: makeMeta(protocolRaw: 2, port: 5000))
+            guard let liveSession = session else { return XCTFail("session") }
+            retainedSession = liveSession
+            flowQueue = liveSession.flowQueue
+            liveSession.ctx.engineGeneration = generation
+            liveSession.installTerminate()
+            liveSession.buildClientWritePump()
+            liveSession.ctx.writer?.markOpened()
+            liveSession.ctx.writer?.enqueue(Data("retained".utf8), sentBy: endpoint)
+            liveSession.flowQueue.sync {}
+
+            XCTAssertFalse(liveSession.ctx.registrationGate.recordServerClose())
+            XCTAssertFalse(liveSession.ctx.registrationGate.recordServerClose())
+            let replayCount = TestValue(0)
+            let decision = core.registerUdpFlowAndScheduleStartupDecision(
+                liveSession.flowId,
+                anchor: liveSession,
+                appId: "com.example.pending-close",
+                engineGeneration: generation,
+                on: liveSession.flowQueue,
+                body: { XCTFail("a recorded close must suppress open") },
+                pendingServerClose: {
+                    replayCount.set(replayCount.get() + 1)
+                    liveSession.replayPendingServerCloseBeforeStartup()
+                })
+            guard case .started = decision else {
+                return XCTFail("current generation should claim the flow")
+            }
+
+            XCTAssertEqual(replayCount.get(), 1)
+            XCTAssertFalse(liveSession.ctx.registrationGate.recordServerClose())
+            XCTAssertFalse(flow.openWasInvoked)
+            XCTAssertEqual(flow.closeReadCallCount, 1)
+            XCTAssertEqual(flow.closeWriteCallCount, 0)
+            XCTAssertEqual(core.udpFlowCount, 1, "registry retains the draining owner")
+            XCTAssertEqual(
+                core.testPressurePendingRemovalCount, 1,
+                "the retained closing entry must already count as pressure relief")
+            session = nil
+        }
+
+        XCTAssertNotNil(retainedSession, "registry must retain the drain owner")
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+        flowQueue?.sync {}
+        waitFor("pending-close drain removes retained session") {
+            core.udpFlowCount == 0 && retainedSession == nil
+        }
+        XCTAssertEqual(flow.closeWriteCallCount, 1)
+        XCTAssertEqual(core.testPressurePendingRemovalCount, 0)
+    }
+
+    func testUdpRegistrationGatePublishesGenerationBeforeClaimedCallback() {
+        let ctx = UdpFlowContext()
+        let generation: UInt64 = 0xA11C_E55
+        let publishing = DispatchSemaphore(value: 0)
+        let callbackAttempting = DispatchSemaphore(value: 0)
+        let done = DispatchGroup()
+        let observed = TestValue<UInt64?>(nil)
+
+        done.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            // Intentionally non-atomic: the gate unlock/acquire is the
+            // production happens-before edge exercised under TSan.
+            ctx.engineGeneration = generation
+            _ = ctx.registrationGate.claim { _ in
+                publishing.signal()
+                callbackAttempting.wait()
+            }
+            done.leave()
+        }
+        done.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            publishing.wait()
+            callbackAttempting.signal()
+            if ctx.registrationGate.recordServerClose() {
+                observed.set(ctx.engineGeneration)
+            }
+            done.leave()
+        }
+
+        XCTAssertEqual(done.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(observed.get(), generation)
     }
 
     func testValidStartupsStayConcurrentAndDetachWaitsForThem() {
