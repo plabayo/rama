@@ -44,6 +44,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
     private let flow: any TcpFlowReadable & TcpFlowWritable
     private let connection: any NwConnectionLike
     private let queue: DispatchQueue
+    private let queueKey = DispatchSpecificKey<UInt8>()
     private let logger: (FlowLogMessage) -> Void
     /// Fired once both directions reach `.finished` (or the
     /// forwarder is externally cancelled). The registry uses
@@ -77,7 +78,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// tears the entire flow down with the original error; an orderly FIN
     /// would present a reset connection as a clean half-close.
     private let onReadError: (Error) -> Void
-    /// Fired in the transport callback, before delivery hops to `queue`.
+    /// Fired in the transport callback, before queue-normalized delivery.
     /// Production atomically bumps `ctx.lastActivityAt` or rejects bytes after
     /// pressure teardown has committed, so an active flow is never selected
     /// from a stale pre-callback timestamp.
@@ -228,6 +229,18 @@ final class TcpDirectForwarder: @unchecked Sendable {
         self.onActivity = onActivity
         self.closeClientWrite = closeClientWrite
         self.onTerminal = onTerminal
+        queue.setSpecific(key: queueKey, value: 1)
+    }
+
+    /// Network.framework receive callbacks already arrive on the queue passed
+    /// to `NWConnection.start(queue:)`. Process those inline while retaining a
+    /// defensive async fallback for mocks that invoke completions off-queue.
+    private func runOnQueue(_ work: @escaping @Sendable () -> Void) {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            work()
+        } else {
+            queue.async(execute: work)
+        }
     }
 
     // ── Carryover sinks (called by cancelForPromote on the
@@ -552,27 +565,34 @@ final class TcpDirectForwarder: @unchecked Sendable {
             [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let data, !data.isEmpty, !self.onActivity() { return }
-            self.queue.async { [weak self] in
-                guard let self else { return }
+            self.runOnQueue { [self] in
                 self.inFlightReceive = false
                 guard !self.cancelled, self.s2cPhase == .active else { return }
+
+                // Latch terminal state before delivering a final payload.
+                // `writeS2CLocked` can drain synchronously and would otherwise
+                // observe an apparently-live source and issue one redundant
+                // post-EOF receive before this callback records the terminal.
+                let terminalObserved = isComplete || error != nil
+                if terminalObserved {
+                    self.s2cEofBuffered = true
+                    if let error { self.s2cTerminalError = error }
+                    self.noteS2CTerminalLocked()
+                }
                 if let data, !data.isEmpty {
                     self.writeS2CLocked(data)
                 }
-                if isComplete || error != nil {
-                    // EOF/error: mark the terminal flag and let
-                    // the flush function finish once the buffer
-                    // drains. If the buffer is empty and we're
-                    // not paused, finish now.
-                    self.s2cEofBuffered = true
-                    if let error { self.s2cTerminalError = error }
+                if terminalObserved {
+                    // Let the flush function finish once the final buffer
+                    // drains. If there was no payload, finish immediately.
                     // Signal closing at EOF-observed time: a client that
                     // stops reading strands the buffered tail, `.finishing`
                     // is never entered, and the closing-stuck watchdog
                     // would otherwise not see the flow at all. Its idle
                     // gate still spares a drain that is making progress.
-                    self.noteS2CTerminalLocked()
-                    if self.s2cBuffer.isEmpty && !self.s2cWritePaused {
+                    if self.s2cPhase == .active,
+                        self.s2cBuffer.isEmpty, !self.s2cWritePaused
+                    {
                         self.finishS2CLocked()
                     }
                     return
@@ -818,9 +838,12 @@ final class TcpDirectForwarder: @unchecked Sendable {
         // Both directions are terminal and the egress FIN send completed.
         // Only now may the bounded connection-release linger begin; arming it
         // at local FIN would truncate a valid quiet response half.
+        // The terminal callback first moves the connection from registered
+        // occupancy into the retirement ledger. Arm immediately afterward so
+        // its release closure is present before the linger can fire.
+        onTerminal()
         if armLinger {
             egressWritePump.armTerminalLingerCancel()
         }
-        onTerminal()
     }
 }

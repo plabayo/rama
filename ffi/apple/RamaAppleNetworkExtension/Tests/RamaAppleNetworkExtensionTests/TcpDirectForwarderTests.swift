@@ -47,8 +47,8 @@ final class TcpDirectForwarderTests: XCTestCase {
         /// Counts the forwarder's `onActivity` callback — fired on every
         /// byte moved in either direction. Production routes this to
         /// `ctx.lastActivityAt` for the promoted-idle reaper. The callback
-        /// deliberately fires before the `queue` hop, so this counter is
-        /// independently locked.
+        /// deliberately fires before queue normalization, so this counter is
+        /// independently locked even when an off-queue mock drives it.
         let activityCount = TestValue(0)
         /// Background thread that auto-fires pending send
         /// completions on the mock connection. The egress
@@ -321,6 +321,25 @@ final class TcpDirectForwarderTests: XCTestCase {
         }
     }
 
+    func testServerReceiveOnFlowQueueProcessesInlineAndRearmsInOrder() {
+        let h = Harness("active.s2c.inline")
+        h.forwarder.markRustS2CDone()
+        h.drain()
+        XCTAssertEqual(h.conn.pendingReceiveCount, 1)
+
+        let payload = Data([0xD1, 0xD2])
+        h.queue.sync {
+            XCTAssertTrue(h.conn.completePendingReceive(
+                data: payload, isComplete: false, error: nil))
+            XCTAssertEqual(
+                h.conn.pendingReceiveCount, 1,
+                "the direct forwarder must rearm before an on-queue receive callback returns")
+        }
+        waitFor("inline payload reaches client flow", timeout: 1.0) {
+            h.flow.writes.contains(payload)
+        }
+    }
+
     /// Every byte moved in either direction fires `onActivity`.
     /// Production routes that to `ctx.lastActivityAt` so the
     /// promoted-idle reaper only drops genuinely-quiet flows; here we
@@ -385,11 +404,18 @@ final class TcpDirectForwarderTests: XCTestCase {
             releaseBlocker.wait()
         }
         XCTAssertEqual(blockerEntered.wait(timeout: .now() + 1), .success)
-        defer { releaseBlocker.signal() }
 
         XCTAssertTrue(h.conn.completePendingReceive(
             data: Data([0x02]), isComplete: false, error: nil))
         XCTAssertEqual(h.activityCount.get(), 1)
+        XCTAssertEqual(
+            h.conn.pendingReceiveCount, 0,
+            "an off-queue mock completion must remain parked behind the flow queue")
+
+        releaseBlocker.signal()
+        waitFor("off-queue receive delivery and rearm", timeout: 1.0) {
+            h.conn.pendingReceiveCount == 1
+        }
     }
 
     func testRejectedClientReadIsNotForwardedOrRearmed() {
@@ -455,6 +481,29 @@ final class TcpDirectForwarderTests: XCTestCase {
         waitFor("s2c direction finished", timeout: 2.0) {
             h.s2cPhase == .finished
         }
+    }
+
+    func testFinalServerPayloadLatchesTerminalBeforeDeliveryAndDoesNotRearm() {
+        let h = Harness("eof.conn.final.payload")
+        h.forwarder.markRustS2CDone()
+        h.drain()
+        XCTAssertEqual(h.conn.pendingReceiveCount, 1)
+
+        let tail = Data([0xFA, 0xCE])
+        h.queue.sync {
+            XCTAssertTrue(h.conn.completePendingReceive(
+                data: tail, isComplete: true, error: nil))
+            XCTAssertEqual(
+                h.conn.pendingReceiveCount, 0,
+                "terminal must be visible while the final payload drains")
+        }
+        waitFor("final server payload reaches client flow", timeout: 1.0) {
+            h.flow.writes.contains(tail)
+        }
+        h.drain()
+        XCTAssertEqual(
+            h.conn.pendingReceiveCount, 0,
+            "a final payload must not trigger a redundant post-terminal receive")
     }
 
     /// Both directions finished → onTerminal fires exactly once.
@@ -895,6 +944,9 @@ final class TcpDirectForwarderTests: XCTestCase {
         }
         XCTAssertNil(h.queue.sync { h.readError })
         XCTAssertEqual(h.flow.writes, [tail])
+        XCTAssertEqual(
+            h.conn.pendingReceiveCount, 0,
+            "an error-bearing final payload must not rearm the server receive")
 
         XCTAssertTrue(h.flow.completeNextWrite())
         waitFor("tail drain escalates original error", timeout: 1.0) {

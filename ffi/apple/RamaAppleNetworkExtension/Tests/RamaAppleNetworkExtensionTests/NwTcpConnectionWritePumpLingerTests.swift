@@ -283,6 +283,35 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         )
     }
 
+    func testDrainWhileWaitingDefersFinUntilReadyRecovery() {
+        let mock = MockNwConnection()
+        mock.transition(to: .waiting(.posix(.ENETDOWN)))
+        let queue = makeQueue()
+        let drained = expectation(description: "FIN completion drains")
+        let pump = NwTcpConnectionWritePump(
+            connection: mock,
+            queue: queue,
+            lingerCloseDeadline: .milliseconds(300),
+            onDrained: {}
+        )
+
+        pump.closeWhenDrained { drained.fulfill() }
+        waitForQueueDrain(queue)
+        XCTAssertEqual(mock.cancelCount, 0)
+        XCTAssertEqual(mock.sentChunks.count, 0)
+
+        mock.transition(to: .ready)
+        pump.connectionBecameReady()
+        waitForQueueDrain(queue)
+        XCTAssertEqual(mock.cancelCount, 0)
+        XCTAssertEqual(mock.sentChunks.count, 1)
+        XCTAssertTrue(
+            mock.sentChunks[0].contentContext
+                === NWConnection.ContentContext.finalMessage)
+        XCTAssertTrue(mock.completePendingSend(error: nil))
+        wait(for: [drained], timeout: 1.0)
+    }
+
     /// The terminal release remains activity-aware as a defensive guard for
     /// late callbacks and cancels only after a full quiet window.
     func testTerminalLingerDefersWhileLateActivityMoves() {
@@ -323,5 +352,53 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         // The flow goes quiet; the next re-armed check force-cancels.
         idle.value = 10_000
         pollUntil("linger watchdog cancels once the flow is quiet") { mock.cancelCount == 1 }
+    }
+
+    func testRetirementInstalledAfterEarlierForceCancelReleasesImmediately() {
+        let core = TransparentProxyCore()
+        let mock = MockNwConnection()
+        mock.transition(to: .preparing)
+        let queue = makeQueue()
+        let pump = NwTcpConnectionWritePump(
+            connection: mock,
+            queue: queue,
+            lingerCloseDeadline: .milliseconds(300),
+            onDrained: {})
+
+        pump.closeWhenDrained()
+        waitForQueueDrain(queue)
+        XCTAssertEqual(mock.cancelCount, 1)
+
+        let release = core.beginResourceRetirement()
+        XCTAssertEqual(core.testRetiringResourceCount, 1)
+        queue.sync { pump.installTerminalResourceRelease(release) }
+        XCTAssertEqual(
+            core.testRetiringResourceCount, 0,
+            "an already-issued cancel must not retain new retirement accounting")
+    }
+
+    func testNeverLingerRetainsRetirementAndDoesNotCancel() {
+        let core = TransparentProxyCore()
+        let mock = MockNwConnection()
+        mock.transition(to: .ready)
+        let queue = makeQueue()
+        let pump = NwTcpConnectionWritePump(
+            connection: mock,
+            queue: queue,
+            lingerCloseDeadline: .never,
+            onDrained: {})
+        let release = core.beginResourceRetirement()
+
+        queue.sync { pump.installTerminalResourceRelease(release) }
+        pump.armTerminalLingerCancel()
+        waitForQueueDrain(queue)
+
+        XCTAssertEqual(mock.cancelCount, 0)
+        XCTAssertEqual(
+            core.testRetiringResourceCount, 1,
+            "disabled cancellation must conservatively retain its live resource")
+        release()  // explicit test cleanup; also exercises token idempotence.
+        release()
+        XCTAssertEqual(core.testRetiringResourceCount, 0)
     }
 }

@@ -387,6 +387,14 @@ final class TcpFlowContext: @unchecked Sendable {
     func applyPromotedTerminal() {
         guard !isDone else { return }
         isDone = true
+        // Move this flow from reclaimable registry occupancy into the hard-cap
+        // retirement ledger before its async registry removal can expose a
+        // replacement slot. The write pump releases the token only at the
+        // linger's actual `cancelAndDetach` point.
+        if let core, let egressWritePump {
+            egressWritePump.installTerminalResourceRelease(
+                core.beginResourceRetirement())
+        }
         closeClientReadOnce(nil)
         closeClientWriteOnce(nil)
         connection?.stateUpdateHandler = nil

@@ -742,4 +742,62 @@ final class TcpClientWritePumpTests: XCTestCase {
         XCTAssertEqual(flow.writes[0], Data([0x01, 0x02, 0x03]))
         XCTAssertEqual(flow.writes[1], Data([0x04, 0x05]))
     }
+
+    func testWriteCoreChargesInFlightBytesUntilCompletion() {
+        let queue = makeQueue()
+        let writeCompletion = TestValue<(@Sendable (Error?) -> Void)?>(nil)
+        let core = TcpWritePumpCore(
+            queue: queue,
+            onDrained: {},
+            doWrite: { _, completion in writeCompletion.set(completion) },
+            logHwm: { _ in }
+        )
+        queue.sync { core.markOpen() }
+
+        let first = Data(repeating: 0xA1, count: writePumpMaxPendingBytes - 1)
+        XCTAssertEqual(core.enqueue(first), .accepted)
+        queue.sync {}
+        XCTAssertEqual(core.state.withLock { $0.pendingBytes }, first.count)
+        XCTAssertEqual(
+            core.enqueue(Data([0xB1, 0xB2])),
+            .paused,
+            "an in-flight write must continue consuming the byte budget"
+        )
+
+        writeCompletion.get()?(nil)
+        queue.sync {}
+        XCTAssertEqual(core.state.withLock { $0.pendingBytes }, 0)
+    }
+
+    func testWriteCoreLogsOnlyFirstHighWaterThresholdCrossing() {
+        let queue = makeQueue()
+        let queueEntered = expectation(description: "writer queue blocked")
+        let releaseQueue = DispatchSemaphore(value: 0)
+        queue.async {
+            queueEntered.fulfill()
+            releaseQueue.wait()
+        }
+        wait(for: [queueEntered], timeout: 1.0)
+
+        let logCount = NSLock_Counter()
+        let core = TcpWritePumpCore(
+            queue: queue,
+            onDrained: {},
+            doWrite: { _, _ in XCTFail("blocked queue must not write") },
+            logHwm: { _ in logCount.increment() }
+        )
+        XCTAssertEqual(
+            core.enqueue(Data(repeating: 0x01, count: writePumpHwmLogThresholdBytes)),
+            .accepted
+        )
+        for _ in 0..<64 {
+            XCTAssertEqual(core.enqueue(Data([0x02])), .accepted)
+        }
+        XCTAssertEqual(logCount.value, 1)
+
+        let cleanup = core.prepareCancel()
+        queue.async(execute: cleanup)
+        releaseQueue.signal()
+        queue.sync {}
+    }
 }

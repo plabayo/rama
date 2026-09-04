@@ -1,6 +1,7 @@
 """Stable parser for pressure telemetry emitted by TransparentProxyCore."""
 
 from decimal import Decimal
+import json
 import re
 
 
@@ -12,6 +13,7 @@ NO_HEADROOM_RE = re.compile(
 )
 GAUGE_RE = re.compile(
     r"live-flow counts tcp=(\d+) udp=(\d+) total=(\d+) peak=(\d+) softCap=(\d+)"
+    r"(?: hardCap=(\d+))?"
 )
 PRESSURE_COUNTER_RE = re.compile(
     r"pressure\[triggers=(\d+) scans=(\d+) skipped=(\d+) selected=(\d+) "
@@ -72,14 +74,65 @@ def flow_gauge(message):
     match = GAUGE_RE.search(message)
     if not match:
         return None
-    tcp, udp, total, peak, soft_cap = map(int, match.groups())
+    tcp, udp, total, peak, soft_cap = map(int, match.groups()[:5])
+    hard_cap = int(match.group(6)) if match.group(6) is not None else None
     return {
         "tcp": tcp,
         "udp": udp,
         "total": total,
         "peak": peak,
         "soft_cap": soft_cap,
+        "hard_cap": hard_cap,
     }
+
+
+def phase_for_epoch(epoch, phases):
+    """Return the half-open phase containing `epoch`.
+
+    Phase and sample epochs should retain their producer precision. In
+    particular, callers must not round a probe down to whole seconds before
+    using this helper.
+    """
+    if epoch is None:
+        return "?"
+    for name, start, end in phases:
+        if start <= epoch < end:
+            return name
+    return "-"
+
+
+def parse_epoch(value):
+    """Parse one decimal epoch without discarding sub-second precision."""
+    try:
+        epoch = Decimal(str(value))
+    except (ValueError, ArithmeticError):
+        return None
+    return epoch if epoch.is_finite() else None
+
+
+def parse_ndjson_lines(lines):
+    """Decode an ndjson stream and report malformed interior records.
+
+    Killing `log stream` can leave one final partial JSON object, which is not
+    evidence of a capture gap. Any malformed non-final record is different: it
+    proves that an interior portion of the artifact cannot be trusted.
+    """
+    records = [(line_number, raw.strip()) for line_number, raw in enumerate(lines, 1)
+               if raw.strip()]
+    decoded = []
+    issues = []
+    for index, (line_number, line) in enumerate(records):
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            if index != len(records) - 1:
+                issues.append(f"malformed interior NDJSON record at line {line_number}")
+            continue
+        if not isinstance(value, dict):
+            issues.append(f"non-object NDJSON record at line {line_number}")
+            continue
+        decoded.append(value)
+    return decoded, issues
 
 
 def pressure_counters(message):
@@ -144,7 +197,7 @@ def settled_final_flow_gauge(
         gauge = flow_gauge(message)
         if (
             epoch is not None
-            and settle_start_epoch <= epoch <= settle_end_epoch
+            and settle_start_epoch <= epoch < settle_end_epoch
             and gauge
         ):
             samples_by_epoch[epoch] = gauge
@@ -157,6 +210,34 @@ def settled_final_flow_gauge(
     return last_gauge
 
 
+def ceiling_configuration_issues(soft_cap, hard_cap):
+    """Return configuration errors that invalidate a raw ceiling search."""
+    issues = []
+    if soft_cap is None:
+        issues.append("flow-pressure soft cap was not observed")
+    elif soft_cap != 0:
+        issues.append(f"flow-pressure soft cap is enabled ({soft_cap})")
+    if hard_cap is None:
+        issues.append("live-flow hard cap was not observed")
+    elif hard_cap != 0:
+        issues.append(f"live-flow hard cap is enabled ({hard_cap})")
+    return issues
+
+
+def _phase_sample_issue(name, kind, start, end, samples, maximum_gap):
+    samples = sorted({sample for sample in samples if start <= sample < end})
+    if not samples:
+        return f"phase {name!r} has no {kind} coverage"
+    points = [start, *samples, end]
+    largest_gap = max(right - left for left, right in zip(points, points[1:]))
+    if largest_gap > maximum_gap:
+        return (
+            f"phase {name!r} has a {kind} gap of "
+            f"{float(largest_gap):.3f}s (maximum {maximum_gap}s)"
+        )
+    return None
+
+
 def soak_evidence_issues(
     meta,
     *,
@@ -165,19 +246,26 @@ def soak_evidence_issues(
     probe_count,
     incomplete_phases=(),
     phase_coverage=(),
+    required_phases=(),
+    capture_issues=(),
     final_gauge_required=True,
     final_gauge_present=False,
+    maximum_probe_gap=20,
+    maximum_gauge_gap=70,
 ):
     """Return reasons a soak report must not claim a GOOD verdict.
 
-    `phase_coverage` contains `(name, duration, probes, gauges)` tuples. Short
-    phases are allowed to fall between periodic samples; sustained phases are
-    required to prove that both monitors covered them.
+    `phase_coverage` contains `(name, start, end, probe_epochs, gauge_epochs)`
+    tuples. Short phases are allowed to fall between periodic samples;
+    sustained phases must have bounded gaps from both phase edges and between
+    samples, proving that a monitor did not merely die and restart later.
     """
 
     def meta_true(key):
         return meta.get(key) == "1"
 
+    phase_coverage = list(phase_coverage)
+    incomplete_phases = set(incomplete_phases)
     issues = []
     if not meta_true("log_stream_started"):
         issues.append("log stream did not start")
@@ -195,18 +283,107 @@ def soak_evidence_issues(
         issues.append("fewer than two flow-gauge samples were captured")
     if probe_count < 2:
         issues.append("fewer than two non-sleep liveness probes were captured")
+    issues.extend(capture_issues)
     for name in sorted(incomplete_phases):
         issues.append(f"phase {name!r} has no end marker")
-    for name, duration, probes, gauges in phase_coverage:
+    completed_phases = {name for name, *_ in phase_coverage}
+    for name in sorted(set(required_phases) - completed_phases - incomplete_phases):
+        issues.append(f"phase {name!r} has no complete marker pair")
+    for name, start, end, probes, gauges in phase_coverage:
         if name == "sleep-wake":
             continue
-        if duration >= 20 and probes == 0:
-            issues.append(f"phase {name!r} has no liveness probe coverage")
-        if duration >= 75 and gauges == 0:
-            issues.append(f"phase {name!r} has no flow-gauge coverage")
+        duration = end - start
+        if duration >= maximum_probe_gap:
+            issue = _phase_sample_issue(
+                name, "liveness probe", start, end, probes, maximum_probe_gap)
+            if issue:
+                issues.append(issue)
+        if duration >= 75:
+            issue = _phase_sample_issue(
+                name, "flow-gauge", start, end, gauges, maximum_gauge_gap)
+            if issue:
+                issues.append(issue)
     if final_gauge_required and not final_gauge_present:
         issues.append("idle tail has no trustworthy final flow gauge")
     return issues
+
+
+def pressure_reaper_status(pressure, soft_cap, evidence_complete):
+    """Classify whether this run itself proved a successful pressure reap."""
+    if not evidence_complete:
+        return "inconclusive"
+    if soft_cap <= 0:
+        return "disabled"
+    if pressure["validated_eviction_episodes"] > 0:
+        return "good"
+    if pressure["observed_peak"] >= soft_cap:
+        return "crossed-without-attributable-eviction"
+    return "not-observed"
+
+
+def classify_soak_result(
+    meta,
+    evidence_issues,
+    *,
+    probe_failures,
+    body_errors,
+    reaper_status,
+):
+    """Return orthogonal evidence completeness and product verdict state."""
+    issues = list(evidence_issues)
+    failures = []
+    mode = meta.get("mode")
+    if not mode:
+        issues.append("run mode is missing")
+
+    if mode == "find-ceiling":
+        for key, label in (
+            ("ceiling_found", "ceiling-finder outcome"),
+            ("ceiling_recovered", "post-ceiling recovery outcome"),
+        ):
+            if meta.get(key) not in ("0", "1"):
+                issues.append(f"{label} is missing")
+        if meta.get("ceiling_found") == "0":
+            failures.append("ceiling finder exhausted its ramp without finding the ceiling")
+        if meta.get("ceiling_recovered") == "0":
+            failures.append("network did not recover after the ceiling probe failed")
+    elif mode:
+        workload_fields = (
+            ("download_host_preflight_ok", "download-host preflight"),
+            ("stress_ok", "stress workload"),
+            ("fanout_ok", "fanout target"),
+            ("idle_holders_ok", "idle-holder target"),
+            ("real_download_ok", "real download"),
+            ("post_wake_ok", "post-wake recovery"),
+        )
+        for key, label in workload_fields:
+            value = meta.get(key)
+            if value not in ("0", "1", "skipped"):
+                issues.append(f"{label} outcome is missing")
+            elif value == "0":
+                failures.append(f"{label} failed")
+        if mode == "cap-validate" and reaper_status not in ("good", "inconclusive"):
+            failures.append(
+                "cap-validation mode did not prove an attributable successful reap"
+            )
+        if mode == "cap-hard-limited":
+            failures.append("live-flow hard cap prevents pressure-cap validation")
+
+    if probe_failures:
+        failures.append(f"{probe_failures} liveness probe(s) failed")
+    if body_errors:
+        failures.append(f"{body_errors} body decode/relay error(s) were observed")
+
+    complete = not issues
+    passed = complete and not failures
+    exit_code = 0 if passed else (2 if not complete else 1)
+    return {
+        "complete": complete,
+        "passed": passed,
+        "exit_code": exit_code,
+        "evidence_issues": issues,
+        "failures": failures,
+    }
 
 
 def summarize_pressure_rows(
@@ -237,6 +414,7 @@ def summarize_pressure_rows(
         "periodic_intervals": 0,
         "periodic": {key: 0 for key in PRESSURE_COUNTER_KEYS[:-1]},
         "episodes": 0,
+        "validated_eviction_episodes": 0,
         "episode": {
             key: 0
             for key in ("selected", "evicted", "spared", "canceled", "expired")
@@ -323,6 +501,12 @@ def summarize_pressure_rows(
             ):
                 continue
             result["episodes"] += 1
+            if (
+                episode["soft_cap"] > 0
+                and episode["peak_occupancy"] >= episode["soft_cap"]
+                and episode["evicted"] > 0
+            ):
+                result["validated_eviction_episodes"] += 1
             result["observed_peak"] = max(
                 result["observed_peak"], episode["peak_occupancy"])
             result["soft_caps"].add(episode["soft_cap"])

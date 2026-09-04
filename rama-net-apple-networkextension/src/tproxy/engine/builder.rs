@@ -9,8 +9,8 @@ use rama_core::{
 
 use super::{
     DecisionDeadlineAction, DefaultTransparentProxyAsyncRuntimeFactory,
-    TransparentProxyAsyncRuntimeFactory, TransparentProxyEngine, TransparentProxyHandlerFactory,
-    TransparentProxyServiceContext,
+    TransparentProxyAsyncRuntimeFactory, TransparentProxyEngine, TransparentProxyHandler,
+    TransparentProxyHandlerFactory, TransparentProxyServiceContext,
 };
 
 pub struct TransparentProxyEngineBuilder<F, R = DefaultTransparentProxyAsyncRuntimeFactory> {
@@ -85,8 +85,12 @@ where
     RF: TransparentProxyAsyncRuntimeFactory,
 {
     rama_utils::macros::generate_set_and_with! {
-        /// No effect; per-flow buffering is bounded by
-        /// [`Self::tcp_channel_capacity`].
+        /// Maximum bytes handed to one borrowed Rust→Swift TCP write
+        /// callback. The effective limit is the smaller of this value and
+        /// [`TransparentProxyConfig::tcp_write_pump_max_pending_bytes`].
+        /// `None` uses the 16 KiB default.
+        ///
+        /// [`TransparentProxyConfig::tcp_write_pump_max_pending_bytes`]: crate::tproxy::TransparentProxyConfig::tcp_write_pump_max_pending_bytes
         pub fn tcp_flow_buffer_size(mut self, size: Option<usize>) -> Self
         {
             self.tcp_flow_buffer_size = size;
@@ -323,10 +327,15 @@ where
         let handler = rt
             .block_on_borrowed(handler_factory.create_transparent_proxy_handler(ctx))
             .map_err(Into::into)?;
+        // Startup configuration is immutable for one engine lifecycle on the
+        // Swift side. Cache the same snapshot here so the Rust→Swift write
+        // chunk bound cannot drift from the value Swift applies to its pumps.
+        let transparent_proxy_config = handler.transparent_proxy_config();
 
         Ok(TransparentProxyEngine {
             rt: Some(rt),
             handler,
+            transparent_proxy_config,
             tcp_flow_buffer_size: tcp_flow_buffer_size
                 .unwrap_or(super::DEFAULT_TCP_FLOW_BUFFER_SIZE),
             tcp_channel_capacity: tcp_channel_capacity

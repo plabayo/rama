@@ -111,6 +111,65 @@ final class TcpReadPumpReplayTests: XCTestCase {
         XCTAssertEqual(activityCount.get(), 2, "each new read records one activity edge")
     }
 
+    func testClientReadPumpResumeRunsInlineWhenAlreadyOnFlowQueue() {
+        let sink = ScriptedBytesSink([.paused, .accepted])
+        let flow = MockTcpFlow()
+        let queue = makeQueue()
+        let pump = TcpClientReadPump(
+            flow: flow, session: sink, queue: queue, logger: { _ in }, onTerminal: { _ in })
+
+        pump.requestRead()
+        pollUntil("client read is pending") { flow.pendingReadCount == 1 }
+        let chunk = Data([0x31, 0x32])
+        flow.completeRead(data: chunk, error: nil)
+        pollUntil("client chunk is held") { sink.received.count == 1 }
+        queue.sync {}
+
+        queue.sync {
+            pump.resume()
+            XCTAssertEqual(
+                sink.received, [chunk, chunk],
+                "queue-local demand must replay before resume() returns")
+            XCTAssertEqual(
+                flow.pendingReadCount, 1,
+                "a successful queue-local replay must synchronously request the next read")
+        }
+    }
+
+    func testClientReadPumpResumeDispatchesWhenCalledOffFlowQueue() {
+        let sink = ScriptedBytesSink([.paused, .accepted])
+        let flow = MockTcpFlow()
+        let queue = makeQueue()
+        let pump = TcpClientReadPump(
+            flow: flow, session: sink, queue: queue, logger: { _ in }, onTerminal: { _ in })
+
+        pump.requestRead()
+        pollUntil("client read is pending") { flow.pendingReadCount == 1 }
+        let chunk = Data([0x33, 0x34])
+        flow.completeRead(data: chunk, error: nil)
+        pollUntil("client chunk is held") { sink.received.count == 1 }
+        queue.sync {}
+
+        let blockerEntered = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        queue.async {
+            blockerEntered.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerEntered.wait(timeout: .now() + 1), .success)
+
+        pump.resume()
+        XCTAssertEqual(
+            sink.received, [chunk],
+            "off-queue resume must not mutate queue-confined replay state inline")
+        XCTAssertEqual(flow.pendingReadCount, 0)
+
+        releaseBlocker.signal()
+        pollUntil("off-queue resume replays and reads") {
+            sink.received.count == 2 && flow.pendingReadCount == 1
+        }
+    }
+
     func testClientReadPublishesActivityBeforeItsQueueHop() {
         let sink = ScriptedBytesSink([.accepted])
         let flow = MockTcpFlow()
@@ -203,6 +262,102 @@ final class TcpReadPumpReplayTests: XCTestCase {
         XCTAssertEqual(activityCount.get(), 2, "each new receive records one activity edge")
     }
 
+    func testEgressReadPumpResumeRunsInlineWhenAlreadyOnFlowQueue() {
+        let sink = ScriptedBytesSink([.paused, .accepted])
+        let conn = MockNwConnection()
+        conn.transition(to: .ready)
+        let queue = makeQueue()
+        let pump = NwTcpConnectionReadPump(
+            connection: conn,
+            session: sink,
+            queue: queue,
+            eofGraceDeadline: .seconds(60))
+
+        pump.start()
+        pollUntil("egress receive is pending") { conn.pendingReceiveCount == 1 }
+        let chunk = Data([0x41, 0x42])
+        XCTAssertTrue(
+            conn.completePendingReceive(data: chunk, isComplete: false, error: nil))
+        pollUntil("egress chunk is held") { sink.received.count == 1 }
+        queue.sync {}
+
+        queue.sync {
+            pump.resume()
+            XCTAssertEqual(
+                sink.received, [chunk, chunk],
+                "queue-local demand must replay before resume() returns")
+            XCTAssertEqual(
+                conn.pendingReceiveCount, 1,
+                "a successful queue-local replay must synchronously issue the next receive")
+        }
+    }
+
+    func testEgressReadPumpResumeDispatchesWhenCalledOffFlowQueue() {
+        let sink = ScriptedBytesSink([.paused, .accepted])
+        let conn = MockNwConnection()
+        conn.transition(to: .ready)
+        let queue = makeQueue()
+        let pump = NwTcpConnectionReadPump(
+            connection: conn,
+            session: sink,
+            queue: queue,
+            eofGraceDeadline: .seconds(60))
+
+        pump.start()
+        pollUntil("egress receive is pending") { conn.pendingReceiveCount == 1 }
+        let chunk = Data([0x43, 0x44])
+        XCTAssertTrue(
+            conn.completePendingReceive(data: chunk, isComplete: false, error: nil))
+        pollUntil("egress chunk is held") { sink.received.count == 1 }
+        queue.sync {}
+
+        let blockerEntered = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        queue.async {
+            blockerEntered.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerEntered.wait(timeout: .now() + 1), .success)
+
+        pump.resume()
+        XCTAssertEqual(
+            sink.received, [chunk],
+            "off-queue resume must not mutate queue-confined replay state inline")
+        XCTAssertEqual(conn.pendingReceiveCount, 0)
+
+        releaseBlocker.signal()
+        pollUntil("off-queue resume replays and receives") {
+            sink.received.count == 2 && conn.pendingReceiveCount == 1
+        }
+    }
+
+    func testEgressReceiveOnFlowQueueProcessesInlineAndRearmsInOrder() {
+        let sink = ScriptedBytesSink([.accepted])
+        let conn = MockNwConnection()
+        conn.transition(to: .ready)
+        let queue = makeQueue()
+        let pump = NwTcpConnectionReadPump(
+            connection: conn,
+            session: sink,
+            queue: queue,
+            eofGraceDeadline: .seconds(60))
+
+        pump.start()
+        pollUntil("egress receive is pending") { conn.pendingReceiveCount == 1 }
+        let chunk = Data([0x51, 0x52])
+
+        queue.sync {
+            XCTAssertTrue(
+                conn.completePendingReceive(data: chunk, isComplete: false, error: nil))
+            XCTAssertEqual(
+                sink.received, [chunk],
+                "a Network.framework callback on the start queue must be consumed inline")
+            XCTAssertEqual(
+                conn.pendingReceiveCount, 1,
+                "the next receive must be armed before the inline callback returns")
+        }
+    }
+
     func testEgressReceivePublishesActivityBeforeItsQueueHop() {
         let sink = ScriptedBytesSink([.accepted])
         let conn = MockNwConnection()
@@ -227,9 +382,13 @@ final class TcpReadPumpReplayTests: XCTestCase {
                 error: nil))
         pollUntil("activity published before delivery") { activityCount.get() == 1 }
         XCTAssertTrue(sink.received.isEmpty, "delivery remains parked behind the queue gate")
+        XCTAssertEqual(
+            conn.pendingReceiveCount, 0,
+            "an off-queue mock completion must dispatch before delivering or rearming")
 
         gate.signal()
         pollUntil("delivery resumes") { sink.received.count == 1 }
+        XCTAssertEqual(conn.pendingReceiveCount, 1)
     }
 
     // MARK: - cancelForPromote hands the held replay buffer to carryover

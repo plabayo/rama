@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import NetworkExtension
 import XCTest
 
 @testable import RamaAppleNetworkExtension
@@ -55,6 +56,79 @@ final class UdpFlowSessionTests: XCTestCase {
         XCTAssertEqual(fx.session.ctx.readState, .closed)
         XCTAssertEqual(fx.flow.closeReadCallCount, 1)
         XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
+    }
+
+    func testNaturalServerCloseDrainsRepliesBeforeClosingWriteSide() {
+        let fx = Fixture()
+        fx.session.buildClientWritePump()
+        fx.session.ctx.writer?.markOpened()
+        let endpoint = NWHostEndpoint(hostname: "127.0.0.1", port: "53")
+        fx.session.ctx.writer?.enqueue(Data("one".utf8), sentBy: endpoint)
+        fx.session.ctx.writer?.enqueue(Data("two".utf8), sentBy: endpoint)
+        fx.session.flowQueue.sync {}
+
+        fx.session.requestGracefulServerClose()
+        fx.session.ctx.writer?.enqueue(Data("late".utf8), sentBy: endpoint)
+        fx.session.flowQueue.sync {}
+
+        XCTAssertEqual(fx.flow.closeReadCallCount, 1)
+        XCTAssertEqual(fx.flow.closeWriteCallCount, 0)
+        XCTAssertEqual(fx.flow.writtenBatches.first?.datagrams, [Data("one".utf8)])
+
+        XCTAssertTrue(fx.flow.completePendingWrite(error: nil))
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(fx.flow.closeWriteCallCount, 0)
+        XCTAssertEqual(fx.flow.writtenBatches.first?.datagrams, [Data("two".utf8)])
+
+        XCTAssertTrue(fx.flow.completePendingWrite(error: nil))
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
+        XCTAssertTrue(fx.flow.writtenBatches.isEmpty)
+    }
+
+    func testImmediateTerminateWinsInProgressNaturalDrain() {
+        let fx = Fixture()
+        fx.session.installTerminate()
+        fx.session.buildClientWritePump()
+        fx.session.ctx.writer?.markOpened()
+        let endpoint = NWHostEndpoint(hostname: "127.0.0.1", port: "53")
+        fx.session.ctx.writer?.enqueue(Data("stuck".utf8), sentBy: endpoint)
+        fx.session.flowQueue.sync {}
+
+        fx.session.requestGracefulServerClose()
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(fx.flow.closeWriteCallCount, 0)
+
+        fx.session.ctx.terminate?(
+            NSError(domain: NSPOSIXErrorDomain, code: Int(ECANCELED)))
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(fx.flow.closeReadCallCount, 1)
+        XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
+
+        XCTAssertTrue(fx.flow.completePendingWrite(error: nil))
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
+    }
+
+    func testNaturalServerCloseBackstopTerminatesStuckKernelWrite() {
+        let fx = Fixture()
+        fx.session.gracefulDrainTimeoutMs = 20
+        fx.session.buildClientWritePump()
+        fx.session.ctx.writer?.markOpened()
+        let endpoint = NWHostEndpoint(hostname: "127.0.0.1", port: "53")
+        fx.session.ctx.writer?.enqueue(Data("stuck".utf8), sentBy: endpoint)
+        fx.session.flowQueue.sync {}
+
+        fx.session.requestGracefulServerClose()
+        let backstopObserved = expectation(description: "graceful close backstop fired")
+        fx.session.flowQueue.asyncAfter(deadline: .now() + .milliseconds(100)) {
+            backstopObserved.fulfill()
+        }
+        wait(for: [backstopObserved], timeout: 2)
+
+        XCTAssertEqual(fx.flow.closeReadCallCount, 1)
+        XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
+        XCTAssertTrue(fx.session.ctx.writer?.testAdmissionSnapshot.closed == true)
     }
 
     /// Without an engine attached, `requestEngineSession()` returns nil.

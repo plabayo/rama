@@ -4,10 +4,17 @@
 import unittest
 
 from soak_pressure_log import (
+    ceiling_configuration_issues,
+    classify_soak_result,
+    flow_gauge,
     is_no_headroom,
     no_headroom_event,
+    parse_epoch,
+    parse_ndjson_lines,
+    phase_for_epoch,
     pressure_counters,
     pressure_episode,
+    pressure_reaper_status,
     selected_count,
     selection_event,
     settled_final_flow_gauge,
@@ -17,6 +24,23 @@ from soak_pressure_log import (
 
 
 class SoakPressureLogTests(unittest.TestCase):
+    @staticmethod
+    def complete_meta(mode="stress-only"):
+        return {
+            "log_stream_started": "1",
+            "log_stream_alive_end": "1",
+            "baseline_gauge_seen": "1",
+            "probe_monitor_alive_end": "1",
+            "provider_continuous": "1",
+            "mode": mode,
+            "download_host_preflight_ok": "1",
+            "stress_ok": "1",
+            "fanout_ok": "1",
+            "idle_holders_ok": "1",
+            "real_download_ok": "1",
+            "post_wake_ok": "skipped",
+        }
+
     def test_current_selection_line(self):
         message = (
             "flow pressure: occupancy 460 over soft cap 450; selected 100 "
@@ -42,8 +66,19 @@ class SoakPressureLogTests(unittest.TestCase):
     def test_periodic_outcomes_are_authoritative(self):
         message = (
             "tproxy live-flow counts tcp=351 udp=0 total=351 peak=460 "
-            "softCap=450 pressure[triggers=12 scans=2 skipped=10 "
+            "softCap=450 hardCap=0 pressure[triggers=12 scans=2 skipped=10 "
             "selected=100 evicted=96 spared=2 canceled=1 expired=1 pending=0]"
+        )
+        self.assertEqual(
+            flow_gauge(message),
+            {
+                "tcp": 351,
+                "udp": 0,
+                "total": 351,
+                "peak": 460,
+                "soft_cap": 450,
+                "hard_cap": 0,
+            },
         )
         self.assertEqual(
             pressure_counters(message),
@@ -58,6 +93,30 @@ class SoakPressureLogTests(unittest.TestCase):
                 "expired": 1,
                 "pending": 0,
             },
+        )
+
+    def test_legacy_gauge_exposes_missing_hard_cap(self):
+        gauge = flow_gauge(
+            "live-flow counts tcp=1 udp=2 total=3 peak=4 softCap=5"
+        )
+        self.assertIsNotNone(gauge)
+        self.assertIsNone(gauge["hard_cap"])
+
+    def test_ceiling_search_requires_both_caps_to_be_observed_and_disabled(self):
+        self.assertEqual(ceiling_configuration_issues(0, 0), [])
+        self.assertEqual(
+            ceiling_configuration_issues(None, 500),
+            [
+                "flow-pressure soft cap was not observed",
+                "live-flow hard cap is enabled (500)",
+            ],
+        )
+        self.assertEqual(
+            ceiling_configuration_issues(450, None),
+            [
+                "flow-pressure soft cap is enabled (450)",
+                "live-flow hard cap was not observed",
+            ],
         )
 
     def test_obsolete_messages_do_not_match(self):
@@ -206,6 +265,54 @@ class SoakPressureLogTests(unittest.TestCase):
         self.assertEqual(after["episodes"], 1)
         self.assertTrue(after["eviction_observed"])
 
+    def test_reaper_good_requires_an_attributable_post_boundary_episode(self):
+        delayed_pre_baseline = [
+            (
+                99,
+                "live-flow counts tcp=20 udp=0 total=20 peak=480 softCap=450 "
+                "pressure[triggers=0 scans=0 skipped=0 selected=0 evicted=0 "
+                "spared=0 canceled=0 expired=0 pending=0]",
+            ),
+            (
+                120,
+                "live-flow counts tcp=20 udp=0 total=20 peak=480 softCap=450 "
+                "pressure[triggers=0 scans=0 skipped=0 selected=0 evicted=0 "
+                "spared=0 canceled=0 expired=0 pending=0]",
+            ),
+            (
+                180,
+                "live-flow counts tcp=20 udp=0 total=20 peak=480 softCap=450 "
+                "pressure[triggers=1 scans=1 skipped=0 selected=1 evicted=1 "
+                "spared=0 canceled=0 expired=0 pending=0]",
+            ),
+        ]
+        pressure = summarize_pressure_rows(
+            delayed_pre_baseline, baseline_end_epoch=100
+        )
+        self.assertTrue(pressure["eviction_observed"])
+        self.assertEqual(pressure["validated_eviction_episodes"], 0)
+        self.assertEqual(
+            pressure_reaper_status(pressure, 450, True), "not-observed"
+        )
+
+        attributable = summarize_pressure_rows(
+            [
+                (
+                    101,
+                    "flow pressure episode ended: startEpochMs=100500 "
+                    "durationMs=500 peakOccupancy=470 softCap=450 scans=1 "
+                    "skipped=0 selected=20 evicted=20 spared=0 canceled=0 "
+                    "expired=0 startEpochUs=100500501",
+                )
+            ],
+            baseline_end_epoch=100.5005,
+            baseline_end_epoch_us=100_500_500,
+        )
+        self.assertEqual(attributable["validated_eviction_episodes"], 1)
+        self.assertEqual(
+            pressure_reaper_status(attributable, 450, True), "good"
+        )
+
     def test_legacy_episode_in_boundary_millisecond_is_conservative(self):
         rows = [
             (
@@ -249,6 +356,52 @@ class SoakPressureLogTests(unittest.TestCase):
             [gauge(105, 10), gauge(120, 8)], 100, 235))
         self.assertIsNone(settled_final_flow_gauge(
             [gauge(100, 0), gauge(100, 0)], 100, 100))
+
+    def test_final_gauge_excludes_the_exact_phase_end(self):
+        def gauge(epoch, total):
+            return (
+                epoch,
+                f"live-flow counts tcp={total} udp=0 total={total} "
+                f"peak={total} softCap=450 hardCap=0",
+            )
+
+        self.assertIsNone(
+            settled_final_flow_gauge(
+                [gauge(120, 10), gauge(235, 0)], 100, 235
+            )
+        )
+
+    def test_phase_attribution_is_microsecond_precise_and_half_open(self):
+        phases = [
+            (
+                "stress",
+                parse_epoch("100.100000"),
+                parse_epoch("101.100000"),
+            )
+        ]
+        self.assertEqual(phase_for_epoch(parse_epoch("100.099999"), phases), "-")
+        self.assertEqual(
+            phase_for_epoch(parse_epoch("100.100000"), phases), "stress"
+        )
+        self.assertEqual(
+            phase_for_epoch(parse_epoch("101.099999"), phases), "stress"
+        )
+        self.assertEqual(phase_for_epoch(parse_epoch("101.100000"), phases), "-")
+
+    def test_malformed_interior_ndjson_is_incomplete_but_tail_is_tolerated(self):
+        decoded, issues = parse_ndjson_lines(
+            ['{"eventMessage":"a"}\n', '{broken}\n', '{"eventMessage":"b"}\n']
+        )
+        self.assertEqual([row["eventMessage"] for row in decoded], ["a", "b"])
+        self.assertEqual(
+            issues, ["malformed interior NDJSON record at line 2"]
+        )
+
+        decoded, issues = parse_ndjson_lines(
+            ['{"eventMessage":"a"}\n', '{"eventMessage":']
+        )
+        self.assertEqual([row["eventMessage"] for row in decoded], ["a"])
+        self.assertEqual(issues, [])
 
     def test_baseline_occupancy_is_not_run_peak_evidence(self):
         rows = [
@@ -322,20 +475,23 @@ class SoakPressureLogTests(unittest.TestCase):
         self.assertEqual(evidence["periodic"]["evicted"], 3)
 
     def test_complete_soak_evidence_has_no_issues(self):
-        meta = {
-            "log_stream_started": "1",
-            "log_stream_alive_end": "1",
-            "baseline_gauge_seen": "1",
-            "probe_monitor_alive_end": "1",
-            "provider_continuous": "1",
-        }
+        start = parse_epoch("100")
+        end = parse_epoch("280")
         self.assertEqual(
             soak_evidence_issues(
-                meta,
+                self.complete_meta(),
                 rows_count=20,
                 gauge_count=3,
                 probe_count=20,
-                phase_coverage=[("stress", 180, 20, 3)],
+                phase_coverage=[
+                    (
+                        "stress",
+                        start,
+                        end,
+                        [parse_epoch(str(value)) for value in range(110, 280, 10)],
+                        [parse_epoch("160"), parse_epoch("220")],
+                    )
+                ],
                 final_gauge_present=True,
             ),
             [],
@@ -348,7 +504,9 @@ class SoakPressureLogTests(unittest.TestCase):
             gauge_count=0,
             probe_count=0,
             incomplete_phases=["idle-tail"],
-            phase_coverage=[("stress", 180, 0, 0)],
+            phase_coverage=[
+                ("stress", parse_epoch("0"), parse_epoch("180"), [], [])
+            ],
             final_gauge_present=False,
         )
         self.assertIn("provider process identity changed or disappeared", issues)
@@ -359,24 +517,184 @@ class SoakPressureLogTests(unittest.TestCase):
         self.assertIn("idle tail has no trustworthy final flow gauge", issues)
 
     def test_short_phase_does_not_require_periodic_samples(self):
-        meta = {
-            "log_stream_started": "1",
-            "log_stream_alive_end": "1",
-            "baseline_gauge_seen": "1",
-            "probe_monitor_alive_end": "1",
-            "provider_continuous": "1",
-        }
         self.assertEqual(
             soak_evidence_issues(
-                meta,
+                self.complete_meta(),
                 rows_count=2,
                 gauge_count=2,
                 probe_count=2,
-                phase_coverage=[("real-download", 3, 0, 0)],
+                phase_coverage=[
+                    (
+                        "real-download",
+                        parse_epoch("10"),
+                        parse_epoch("13"),
+                        [],
+                        [],
+                    )
+                ],
                 final_gauge_required=False,
             ),
             [],
         )
+
+    def test_phase_coverage_rejects_large_interior_and_edge_gaps(self):
+        issues = soak_evidence_issues(
+            self.complete_meta(),
+            rows_count=20,
+            gauge_count=3,
+            probe_count=20,
+            phase_coverage=[
+                (
+                    "stress",
+                    parse_epoch("100"),
+                    parse_epoch("280"),
+                    [parse_epoch("110"), parse_epoch("275")],
+                    [parse_epoch("105"), parse_epoch("270")],
+                )
+            ],
+            final_gauge_present=True,
+        )
+        self.assertIn(
+            "phase 'stress' has a liveness probe gap of 165.000s (maximum 20s)",
+            issues,
+        )
+        self.assertIn(
+            "phase 'stress' has a flow-gauge gap of 165.000s (maximum 70s)",
+            issues,
+        )
+
+    def test_required_phase_cannot_vanish_without_making_evidence_incomplete(self):
+        issues = soak_evidence_issues(
+            self.complete_meta("find-ceiling"),
+            rows_count=20,
+            gauge_count=3,
+            probe_count=20,
+            phase_coverage=[],
+            required_phases={"baseline", "ceiling"},
+            final_gauge_required=False,
+        )
+        self.assertIn("phase 'baseline' has no complete marker pair", issues)
+        self.assertIn("phase 'ceiling' has no complete marker pair", issues)
+
+    def test_result_classification_separates_incomplete_from_failed(self):
+        passed = classify_soak_result(
+            self.complete_meta(),
+            [],
+            probe_failures=0,
+            body_errors=0,
+            reaper_status="disabled",
+        )
+        self.assertTrue(passed["complete"])
+        self.assertTrue(passed["passed"])
+        self.assertEqual(passed["exit_code"], 0)
+
+        failed = classify_soak_result(
+            self.complete_meta(),
+            [],
+            probe_failures=2,
+            body_errors=0,
+            reaper_status="disabled",
+        )
+        self.assertTrue(failed["complete"])
+        self.assertFalse(failed["passed"])
+        self.assertEqual(failed["exit_code"], 1)
+
+        workload_meta = self.complete_meta()
+        workload_meta["stress_ok"] = "0"
+        workload_failed = classify_soak_result(
+            workload_meta,
+            [],
+            probe_failures=0,
+            body_errors=0,
+            reaper_status="disabled",
+        )
+        self.assertTrue(workload_failed["complete"])
+        self.assertEqual(workload_failed["exit_code"], 1)
+        self.assertIn("stress workload failed", workload_failed["failures"])
+
+        incomplete = classify_soak_result(
+            self.complete_meta(),
+            ["malformed interior NDJSON record at line 2"],
+            probe_failures=2,
+            body_errors=0,
+            reaper_status="inconclusive",
+        )
+        self.assertFalse(incomplete["complete"])
+        self.assertFalse(incomplete["passed"])
+        self.assertEqual(incomplete["exit_code"], 2)
+
+        incomplete_cap = classify_soak_result(
+            self.complete_meta("cap-validate"),
+            ["log stream did not cover the complete run"],
+            probe_failures=0,
+            body_errors=0,
+            reaper_status="inconclusive",
+        )
+        self.assertEqual(incomplete_cap["exit_code"], 2)
+        self.assertEqual(
+            incomplete_cap["failures"], [],
+            "missing evidence must not be relabeled as a product failure",
+        )
+
+    def test_cap_validation_and_ceiling_outcomes_are_failures_not_gaps(self):
+        cap_meta = self.complete_meta("cap-validate")
+        not_crossed = classify_soak_result(
+            cap_meta,
+            [],
+            probe_failures=0,
+            body_errors=0,
+            reaper_status="not-observed",
+        )
+        self.assertTrue(not_crossed["complete"])
+        self.assertEqual(not_crossed["exit_code"], 1)
+
+        hard_limited = classify_soak_result(
+            self.complete_meta("cap-hard-limited"),
+            [],
+            probe_failures=0,
+            body_errors=0,
+            reaper_status="not-observed",
+        )
+        self.assertTrue(hard_limited["complete"])
+        self.assertEqual(hard_limited["exit_code"], 1)
+        self.assertIn(
+            "live-flow hard cap prevents pressure-cap validation",
+            hard_limited["failures"],
+        )
+
+        ceiling_meta = self.complete_meta("find-ceiling")
+        ceiling_meta.update(ceiling_found="0", ceiling_recovered="1")
+        no_ceiling = classify_soak_result(
+            ceiling_meta,
+            [],
+            probe_failures=0,
+            body_errors=0,
+            reaper_status="disabled",
+        )
+        self.assertTrue(no_ceiling["complete"])
+        self.assertEqual(no_ceiling["exit_code"], 1)
+
+        ceiling_meta["ceiling_found"] = "1"
+        found = classify_soak_result(
+            ceiling_meta,
+            [],
+            probe_failures=0,
+            body_errors=0,
+            reaper_status="disabled",
+        )
+        self.assertTrue(found["passed"])
+        self.assertEqual(found["exit_code"], 0)
+
+        del ceiling_meta["ceiling_recovered"]
+        missing = classify_soak_result(
+            ceiling_meta,
+            [],
+            probe_failures=0,
+            body_errors=0,
+            reaper_status="disabled",
+        )
+        self.assertFalse(missing["complete"])
+        self.assertEqual(missing["exit_code"], 2)
 
 
 if __name__ == "__main__":

@@ -181,6 +181,17 @@ pub(super) fn build_engine(handler: TestHandler) -> TransparentProxyEngine<TestH
         .expect("build engine")
 }
 
+pub(super) fn build_engine_with_tcp_flow_buffer_size(
+    handler: TestHandler,
+    size: usize,
+) -> TransparentProxyEngine<TestHandler> {
+    TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(TestRuntimeFactory)
+        .with_tcp_flow_buffer_size(size)
+        .build()
+        .expect("build engine")
+}
+
 pub(super) fn build_engine_with_tcp_channel_capacity(
     handler: TestHandler,
     capacity: usize,

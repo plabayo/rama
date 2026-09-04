@@ -683,12 +683,15 @@ impl std::fmt::Display for FlowRefusalAction {
 pub struct TransparentProxyConfig {
     tunnel_remote_address: ArcStr,
     rules: Vec<TransparentProxyNetworkRule>,
-    /// Per-flow TCP write-pump back-pressure cap in bytes. The Swift pump
-    /// enqueues bytes up to this limit; once exceeded it signals `.paused`
-    /// to the Rust bridge so the ingress side stops reading until the queue
-    /// drains below the cap. Defaults to 256 KiB (262,144 bytes) — two
-    /// pumps per flow ⇒ 512 KiB worst-case write-side per flow, sized for
-    /// the common many-concurrent-flows / modest-per-flow-throughput shape.
+    /// Per-flow TCP write-pump queue cap in bytes. The Swift pump enqueues
+    /// bytes up to this limit; once exceeded it signals `.paused` to the Rust
+    /// bridge so the ingress side stops writing until the queue drains below
+    /// the cap. Rust also limits every borrowed Swift sink callback to no more
+    /// than this value (and normally to the engine's smaller 16 KiB bridge
+    /// chunk default), so one large service write cannot bypass the bound.
+    /// Defaults to 256 KiB (262,144 bytes). Queued and serialized in-flight
+    /// callbacks share this budget; the in-flight chunk remains charged until
+    /// Network.framework releases it.
     ///
     /// Lowering this value reduces peak per-flow memory at the cost of
     /// slightly more frequent pause/resume cycles; raising it helps absorb

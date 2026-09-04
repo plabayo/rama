@@ -20,6 +20,8 @@ protocol TcpWritePumpCoreDelegate: AnyObject {
 final class TcpWritePumpCore: @unchecked Sendable {
     let state = Locked(TcpWriterState())
     let queue: DispatchQueue
+    private let queueKey = DispatchSpecificKey<UInt8>()
+    private let inlineWriteCompletionWhenOnQueue: Bool
     private let onDrained: @Sendable () -> Void
     private let doWrite: (Data, @escaping @Sendable (Error?) -> Void) -> Void
     private let logHwm: @Sendable (Int) -> Void
@@ -47,6 +49,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
         onDrained: @escaping @Sendable () -> Void,
         doWrite: @escaping (Data, @escaping @Sendable (Error?) -> Void) -> Void,
         logHwm: @escaping @Sendable (Int) -> Void,
+        inlineWriteCompletionWhenOnQueue: Bool = false,
         onActivity: @escaping @Sendable () -> Bool = { true }
     ) {
         self.queue = queue
@@ -54,7 +57,9 @@ final class TcpWritePumpCore: @unchecked Sendable {
         self.onDrained = onDrained
         self.doWrite = doWrite
         self.logHwm = logHwm
+        self.inlineWriteCompletionWhenOnQueue = inlineWriteCompletionWhenOnQueue
         self.onActivity = onActivity
+        queue.setSpecific(key: queueKey, value: 1)
     }
 
     func isClosed() -> Bool { state.withLock { $0.closed } }
@@ -125,9 +130,15 @@ final class TcpWritePumpCore: @unchecked Sendable {
             }
             s.pendingBytes += data.count
             var newHwm: Int? = nil
-            if s.pendingBytes > s.pendingBytesHwm {
+            let previousHwm = s.pendingBytesHwm
+            if s.pendingBytes > previousHwm {
                 s.pendingBytesHwm = s.pendingBytes
-                if s.pendingBytes >= writePumpHwmLogThresholdBytes {
+                // Keep the exact HWM, but log only the first threshold
+                // crossing. Logging every byte-level peak lets one stalled
+                // flow manufacture O(cap) strings and log calls.
+                if previousHwm < writePumpHwmLogThresholdBytes,
+                    s.pendingBytes >= writePumpHwmLogThresholdBytes
+                {
                     newHwm = s.pendingBytes
                 }
             }
@@ -186,21 +197,10 @@ final class TcpWritePumpCore: @unchecked Sendable {
         writing = true
         guard let chunk = pending.popFront() else { return }
 
-        let fireDrain: Bool = state.withLock { s in
-            s.pendingBytes -= chunk.count
-            if s.pausedSignaled && s.pendingBytes < writePumpMaxPendingBytes {
-                s.pausedSignaled = false
-                return true
-            }
-            return false
-        }
-        // Edge-triggered drain signal — wakes Rust before the current write
-        // completes so it can start producing in parallel.
-        if fireDrain { onDrained() }
-
         doWrite(chunk) { [weak self] error in
             guard let self else { return }
-            self.queue.async {
+            let finish: @Sendable () -> Void = { [weak self] in
+                guard let self else { return }
                 // If `cancel()` ran while this write was in flight and
                 // its queue cleanup (`pending.removeAll`, `retrying = nil`,
                 // `pendingBytes = 0`) landed *before* this completion,
@@ -236,7 +236,6 @@ final class TcpWritePumpCore: @unchecked Sendable {
                             deadline = now + .milliseconds(writeRetryHardDeadlineMs)
                         }
                         self.pending.pushFront(chunk)
-                        self.state.withLock { $0.pendingBytes += chunk.count }
                         self.retrying = WriteRetry(
                             delayMs: min(currentDelayMs * 2, writeRetryMaxDelayMs),
                             deadline: deadline
@@ -251,6 +250,21 @@ final class TcpWritePumpCore: @unchecked Sendable {
                     self.terminateLocked(with: error)
                     return
                 }
+                let fireDrain = self.state.withLock { s in
+                    s.pendingBytes = max(0, s.pendingBytes - chunk.count)
+                    if s.pausedSignaled
+                        && s.pendingBytes < writePumpMaxPendingBytes
+                    {
+                        s.pausedSignaled = false
+                        return true
+                    }
+                    return false
+                }
+                // Keep the in-flight Data charged until the transport has
+                // released it. This makes pendingBytes the documented
+                // queued-or-in-flight bound, while still waking Rust as soon
+                // as real capacity becomes available.
+                if fireDrain { self.onDrained() }
                 // Only the closing path needs a second activity edge. Keep
                 // ordinary streaming at its existing one lock per accepted
                 // chunk, while a drain with no new enqueues still refreshes
@@ -258,6 +272,13 @@ final class TcpWritePumpCore: @unchecked Sendable {
                 if self.lifecycle == .draining { _ = self.onActivity() }
                 self.retrying = nil
                 self.flush()
+            }
+            if self.inlineWriteCompletionWhenOnQueue,
+                DispatchQueue.getSpecific(key: self.queueKey) != nil
+            {
+                finish()
+            } else {
+                self.queue.async(execute: finish)
             }
         }
     }

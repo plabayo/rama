@@ -63,6 +63,28 @@ final class TransparentProxyCore: @unchecked Sendable {
     private var engineGeneration: UInt64 = 0
     private var acceptingFlows = false
 
+    /// Resources whose registry ownership has ended but whose underlying
+    /// kernel/NWConnection teardown has not run yet. Tokens, rather than flow
+    /// object identities, keep detach/re-attach and allocator reuse from
+    /// conflating different resource generations.
+    private struct RetiringResourceState {
+        var nextToken: UInt64 = 0
+        var activeTokens: Set<UInt64> = []
+
+        mutating func acquire() -> UInt64 {
+            precondition(nextToken < .max, "retiring-resource token space exhausted")
+            nextToken += 1
+            activeTokens.insert(nextToken)
+            return nextToken
+        }
+    }
+
+    /// Intentionally independent of `stateQueue` maintenance state: queued
+    /// teardown from an old engine generation must continue consuming hard-cap
+    /// headroom after an immediate re-attach. Each operation is O(1), and no
+    /// retiring flow queue ever synchronously waits on `stateQueue`.
+    private let retiringResources = Locked(RetiringResourceState())
+
     struct EngineFlowLease {
         let engine: RamaTransparentProxyEngineHandle
         let generation: UInt64
@@ -168,8 +190,16 @@ final class TransparentProxyCore: @unchecked Sendable {
             self.engineGeneration &+= 1
             let engine = self.engineStorage
             self.engineStorage = nil
-            let tcp = Array(self.tcpSessions.values)
-            let udp = Array(self.udpSessions.values)
+            // Reserve retirement capacity before dropping registry ownership.
+            // This deliberately permits a brief conservative double-count
+            // (registered + retiring), but never an under-count visible to an
+            // immediately attached generation.
+            let tcp = self.tcpSessions.values.map {
+                (session: $0, release: self.beginResourceRetirement())
+            }
+            let udp = self.udpSessions.values.map {
+                (session: $0, release: self.beginResourceRetirement())
+            }
             self.tcpSessions.removeAll(keepingCapacity: false)
             self.udpSessions.removeAll(keepingCapacity: false)
             self.pauseFlowCountReportingLocked()
@@ -188,12 +218,35 @@ final class TransparentProxyCore: @unchecked Sendable {
         // The snapshots retain every context/session until its teardown has
         // been dispatched, so clearing registry ownership above cannot orphan
         // the egress connection even though Rust callbacks are about to stop.
-        for session in detached.tcp {
-            let ctx = session.ctx
-            runFlowTeardown(ctx) { ctx.applyEngineDetached() }
+        for retired in detached.tcp {
+            let ctx = retired.session.ctx
+            let release = retired.release
+            runFlowTeardown(ctx) {
+                ctx.applyEngineDetached()
+                release()
+            }
         }
-        for session in detached.udp { session.ctx.terminate?(engineDetachedError()) }
+        for retired in detached.udp {
+            retired.session.terminateForEngineDetach(
+                engineDetachedError(), onResourceReleased: retired.release)
+        }
         detached.engine?.stop(reason: reason)
+    }
+
+    /// Begin accounting for one resource that is leaving a reclaimable
+    /// registry but is not released yet. The returned closure is idempotent and
+    /// may be called from any flow queue after the actual close/cancel.
+    func beginResourceRetirement() -> @Sendable () -> Void {
+        let token = retiringResources.withLock { $0.acquire() }
+        return { [weak self] in
+            self?.retiringResources.withLock { state in
+                state.activeTokens.remove(token)
+            }
+        }
+    }
+
+    private var retiringResourceCount: Int {
+        retiringResources.withLock { $0.activeTokens.count }
     }
 
     /// Detach only the engine published by one asynchronous provider start.
@@ -1729,7 +1782,8 @@ final class TransparentProxyCore: @unchecked Sendable {
         // serialised correctly.
         let tcp = self.tcpSessions.count
         let udp = self.udpSessions.count
-        let total = tcp + udp
+        let retiring = self.retiringResourceCount
+        let total = tcp + udp + retiring
         if total > self.flowCountHighWater { self.flowCountHighWater = total }
         // Tick-driven breaker pass: catches the state where pressure arrived
         // through admissions under the soft cap after a slow completion, so
@@ -1755,7 +1809,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         let countSummary =
             "tproxy live-flow counts tcp=\(tcp) udp=\(udp) total=\(total) "
             + "peak=\(self.flowCountHighWater) softCap=\(defaultFlowPressureSoftCap) "
-            + "hardCap=\(defaultLiveFlowHardCap)"
+            + "hardCap=\(defaultLiveFlowHardCap) retiring=\(retiring)"
         let overloadSummary =
             "tcpStartsInFlight=\(overloadSnapshot.startsInFlight) "
             + "tcpStartsInFlightPeak=\(overloadSnapshot.startsInFlightPeak) "
@@ -2174,6 +2228,8 @@ final class TransparentProxyCore: @unchecked Sendable {
             }
             let hadReservation = self.overload.liveFlowReservations.remove(flowId) != nil
             let occupancyBefore = self.tcpSessions.count + self.udpSessions.count
+                + self.overload.liveFlowReservations.count
+                + self.retiringResourceCount
             let hardCap = Int(defaultLiveFlowHardCap)
             guard hadReservation || hardCap == 0 || occupancyBefore < hardCap else {
                 return nil
@@ -2277,6 +2333,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             }
             let projected = self.tcpSessions.count + self.udpSessions.count
                 + self.overload.liveFlowReservations.count
+                + self.retiringResourceCount
             let hardCap = Int(defaultLiveFlowHardCap)
             if hardCap > 0, projected >= hardCap {
                 self.overload.shedLiveCapUdpSinceTick += 1
@@ -2439,6 +2496,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             let liveHardCap = Int(defaultLiveFlowHardCap)
             let projectedLive = self.tcpSessions.count + self.udpSessions.count
                 + self.overload.liveFlowReservations.count
+                + self.retiringResourceCount
             if liveHardCap > 0, projectedLive >= liveHardCap {
                 self.overload.shedLiveCapTcpSinceTick += 1
                 return self.recordShedLocked(
@@ -2799,6 +2857,8 @@ final class TransparentProxyCore: @unchecked Sendable {
         func testFinishTcpStart(_ token: TcpAdmissionToken, outcome: TcpStartOutcome) {
             finishTcpStart(token, outcome: outcome)
         }
+
+        var testRetiringResourceCount: Int { retiringResourceCount }
 
         var testTcpStartsInFlight: Int {
             stateQueue.sync { self.overload.startsInFlight.count }

@@ -124,6 +124,10 @@ final class UdpReadEndpointMismatchTests: XCTestCase {
             (writer.testLastSentByEndpoint as? NWHostEndpoint)?.hostname, "10.0.0.1",
             "the one cached endpoint must be endpoints[0], not a fabrication"
         )
+        XCTAssertTrue(
+            writer.testLastSentByEndpoint === firstEndpoint,
+            "the hot path must cache Apple's original endpoint object instead of reconstructing it"
+        )
     }
 
     /// 3 datagrams + 3 endpoints: cache updated 3 times (once per

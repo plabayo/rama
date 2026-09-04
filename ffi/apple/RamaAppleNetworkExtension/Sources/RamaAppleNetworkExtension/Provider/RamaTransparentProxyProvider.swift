@@ -866,22 +866,18 @@ struct TcpWriterState {
     /// then clear — edge-triggered so we never spam Rust with
     /// redundant drain signals while the queue churns at-cap.
     var pausedSignaled: Bool = false
-    /// All-time peak of `pendingBytes` for this pump instance.  Updated
-    /// atomically under the lock so the high-water telemetry log fires
-    /// exactly once per new peak above `writePumpHwmLogThresholdBytes`.
+    /// All-time peak of `pendingBytes` for this pump instance. Updated
+    /// atomically under the lock; telemetry logs only its first threshold
+    /// crossing so a byte-at-a-time producer cannot amplify logging.
     var pendingBytesHwm: Int = 0
 }
 
-/// Delegates lifecycle callbacks from `TcpWritePumpCore` to its owner.
-/// All calls are made on `core.queue`, never on a Tokio or FFI thread.
+/// Sendable wrapper for Apple's provider-start completion while it is
+/// captured by the settings callback.
 ///
-/// **Re-entrancy constraint:** implementations MUST NOT call back into
-/// `core` or acquire `core.state` from within either method.
-/// `Locked<T>` wraps a non-reentrant `NSLock`; a nested `withLock` on
-/// the same instance deadlocks deterministically.  Both methods are
-/// invoked after the lock has been released, so there is no active lock
-/// to re-enter — but future implementors should not assume otherwise.
-
+/// Invocation is deliberately unsynchronised: the caller must leave all
+/// lifecycle locks and group leases before entering this external callback,
+/// which is allowed to synchronously re-enter provider teardown.
 private final class ProviderStartCompletion: @unchecked Sendable {
     private let body: (Error?) -> Void
 
@@ -1008,14 +1004,27 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
                 }
                 return
             }
-            let completed = core.withActiveEngineGeneration(engineGeneration) {
-                core.logLifecycle("setTunnelNetworkSettings ok")
-                completion(nil)
-            }
-            if !completed {
-                completion(Self.supersededStartError())
+            Self.completeStartAfterSettingsSuccess(
+                core: core,
+                engineGeneration: engineGeneration
+            ) { error in
+                completion(error)
             }
         }
+    }
+
+    /// Linearise a successful settings callback against engine replacement,
+    /// then notify Apple only after the lifecycle-group lease has been left.
+    /// The external completion may synchronously call back into `stopProxy`.
+    internal static func completeStartAfterSettingsSuccess(
+        core: TransparentProxyCore,
+        engineGeneration: UInt64,
+        completion: (Error?) -> Void
+    ) {
+        let completed = core.withActiveEngineGeneration(engineGeneration) {
+            core.logLifecycle("setTunnelNetworkSettings ok")
+        }
+        completion(completed ? nil : supersededStartError())
     }
 
     private static func supersededStartError() -> NSError {

@@ -89,6 +89,11 @@ pub(crate) struct FfiBridgeStream {
 
     // ── write side (service → FFI peer) ──
     sink: BytesStatusSink,
+    /// Maximum slice handed to one Rust→Swift sink callback. The Swift
+    /// callback copies this borrowed slice before returning, so bounding it
+    /// here prevents one large `AsyncWrite` buffer from bypassing the pump's
+    /// configured byte budget.
+    write_chunk_limit: usize,
     on_closed: ClosedSink,
     closed_fired: bool,
     paused_drain_max_wait: Duration,
@@ -119,13 +124,16 @@ impl FfiBridgeStream {
         close_reason: CloseReasonCell,
         direction: BridgeDirection,
         paused_drain_max_wait: Duration,
+        write_chunk_limit: usize,
     ) -> Self {
+        assert!(write_chunk_limit > 0, "write chunk limit must be non-zero");
         Self {
             rx,
             read_cursor: None,
             on_read_demand,
             read_failed: None,
             sink,
+            write_chunk_limit,
             on_closed,
             closed_fired: false,
             paused_drain_max_wait,
@@ -233,14 +241,15 @@ impl AsyncWrite for FfiBridgeStream {
         // it. A spurious wake on `Accepted` just costs one poll.
         this.signals.drain(this.direction).register(cx.waker());
 
-        match (this.sink)(buf) {
+        let chunk = &buf[..buf.len().min(this.write_chunk_limit)];
+        match (this.sink)(chunk) {
             TcpDeliverStatus::Accepted => {
                 this.counters
                     .sent(this.direction)
-                    .fetch_add(buf.len() as u64, Ordering::Relaxed);
+                    .fetch_add(chunk.len() as u64, Ordering::Relaxed);
                 // Progress: end the pause episode so the next one arms fresh.
                 this.paused_backstop = None;
-                Poll::Ready(Ok(buf.len()))
+                Poll::Ready(Ok(chunk.len()))
             }
             // Peer gone → broken pipe; the forwarder tears the flow down.
             TcpDeliverStatus::Closed => {
@@ -318,6 +327,8 @@ mod tests {
     use std::task::{Context, Wake, Waker};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
+    const TEST_WRITE_CHUNK_LIMIT: usize = 16 * 1024;
+
     /// Waker that counts how many times it was woken.
     struct CountWaker(AtomicUsize);
     impl Wake for CountWaker {
@@ -374,6 +385,7 @@ mod tests {
             Arc::new(Mutex::new(None)),
             dir,
             max_wait,
+            TEST_WRITE_CHUNK_LIMIT,
         )
     }
 
@@ -395,6 +407,7 @@ mod tests {
             cell.clone(),
             dir,
             max_wait,
+            TEST_WRITE_CHUNK_LIMIT,
         );
         (s, cell)
     }
@@ -487,6 +500,79 @@ mod tests {
         );
         s.write_all(b"abcd").await.unwrap();
         assert_eq!(counters.snapshot(BridgeDirection::Egress).1, 4);
+    }
+
+    #[tokio::test]
+    async fn write_splits_multi_limit_buffer_before_each_sink_callback() {
+        const LIMIT: usize = 7;
+        let (_tx, rx) = mpsc::channel::<Bytes>(4);
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let sink_observed = observed.clone();
+        let sink: BytesStatusSink = Arc::new(move |chunk: &[u8]| {
+            sink_observed.lock().push(chunk.len());
+            TcpDeliverStatus::Accepted
+        });
+        let counters = Arc::new(TcpFlowByteCounters::default());
+        let mut s = FfiBridgeStream::new(
+            rx,
+            sink,
+            noop(),
+            noop(),
+            Arc::new(TcpPerFlowSignals::new()),
+            counters.clone(),
+            Arc::new(Mutex::new(None)),
+            BridgeDirection::Ingress,
+            Duration::from_secs(60),
+            LIMIT,
+        );
+
+        let payload = [0xA5; LIMIT * 3 + 2];
+        s.write_all(&payload).await.unwrap();
+
+        assert_eq!(&*observed.lock(), &[LIMIT, LIMIT, LIMIT, 2]);
+        assert_eq!(
+            counters.snapshot(BridgeDirection::Ingress).1,
+            payload.len() as u64
+        );
+    }
+
+    #[tokio::test]
+    async fn paused_oversized_write_retries_the_same_bounded_prefix_after_drain() {
+        const LIMIT: usize = 3;
+        let (_tx, rx) = mpsc::channel::<Bytes>(4);
+        let code = Arc::new(AtomicU8::new(TcpDeliverStatus::Paused as u8));
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let sink_code = code.clone();
+        let sink_observed = observed.clone();
+        let sink: BytesStatusSink = Arc::new(move |chunk: &[u8]| {
+            sink_observed.lock().push(chunk.to_vec());
+            TcpDeliverStatus::from_ffi_u8(sink_code.load(Ordering::SeqCst))
+        });
+        let signals = Arc::new(TcpPerFlowSignals::new());
+        let mut s = FfiBridgeStream::new(
+            rx,
+            sink,
+            noop(),
+            noop(),
+            signals.clone(),
+            Arc::new(TcpFlowByteCounters::default()),
+            Arc::new(Mutex::new(None)),
+            BridgeDirection::Ingress,
+            Duration::from_secs(60),
+            LIMIT,
+        );
+        let (_w, waker) = count_waker();
+        let mut cx = Context::from_waker(&waker);
+
+        assert!(Pin::new(&mut s).poll_write(&mut cx, b"abcdef").is_pending());
+        signals.drain(BridgeDirection::Ingress).wake();
+        code.store(TcpDeliverStatus::Accepted as u8, Ordering::SeqCst);
+        assert!(matches!(
+            Pin::new(&mut s).poll_write(&mut cx, b"abcdef"),
+            Poll::Ready(Ok(LIMIT))
+        ));
+
+        assert_eq!(&*observed.lock(), &[b"abc".to_vec(), b"abc".to_vec()]);
     }
 
     #[tokio::test]

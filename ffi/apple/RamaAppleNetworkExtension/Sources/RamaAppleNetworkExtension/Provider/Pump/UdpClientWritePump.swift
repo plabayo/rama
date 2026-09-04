@@ -15,6 +15,9 @@ enum UdpWritePumpPhase {
 
 private struct UdpWriterSharedState {
     var closed = false
+    /// False once natural server completion has stopped admission. Existing
+    /// accepted work may still drain until `closed` becomes true.
+    var accepting = true
     /// Accepted datagrams not yet handed to `writeDatagrams`. This covers
     /// both dispatch blocks waiting for the flow queue and `pending` entries.
     var waiting = 0
@@ -32,6 +35,26 @@ private struct UdpWriterSharedState {
 }
 
 final class UdpClientWritePump: @unchecked Sendable {
+    private struct PendingDatagram {
+        let data: Data
+        let sentBy: NWEndpoint?
+        /// Legacy/native Swift enqueue calls may use the flow's latest cached
+        /// peer. A borrowed Rust callback with an absent peer must not: nil is
+        /// explicit absence in that ABI and is dropped as an orphan.
+        let allowsFallback: Bool
+    }
+
+    /// The callback is queue-confined after construction. The box carries it
+    /// across GCD's `@Sendable` boundary without imposing an unnecessary
+    /// Sendable requirement on callers.
+    private final class DrainCompletionBox: @unchecked Sendable {
+        let body: (Bool) -> Void
+
+        init(_ body: @escaping (Bool) -> Void) {
+            self.body = body
+        }
+    }
+
     // Held behind the protocol so tests can drive the pump with a
     // capture-mock; production passes a concrete NEAppProxyUDPFlow.
     private let flow: any UdpFlowWritable
@@ -58,14 +81,16 @@ final class UdpClientWritePump: @unchecked Sendable {
     // `ChunkQueue` replaces `[(Data, NWEndpoint?)]` so dequeue is
     // amortised O(1) instead of O(n) on every drain step (UDP pumps
     // can queue up to `udpWritePumpMaxPending` entries under burst).
-    private var pending: ChunkQueue<(Data, NWEndpoint?)> = ChunkQueue()
+    private var pending: ChunkQueue<PendingDatagram> = ChunkQueue()
     /// Lifecycle phase — replaces the former `writing`, `closed`, and
     /// `opened` boolean triple.
     private var phase: UdpWritePumpPhase = .pending
-    /// All-time peak of `pending.count`; used to gate high-water logs
-    /// so each new peak above `udpWritePumpHwmLogThreshold` is emitted
-    /// exactly once per pump lifetime.
+    /// All-time peak of `pending.count`. Log emission is separately bucketed
+    /// so a ramp to the cap emits at most three messages, not one per depth.
     private var pendingCountHwm: Int = 0
+    private var pendingHwmLogBucket: Int = 0
+    private var drainCompletion: DrainCompletionBox?
+    private var drainBackstop: DispatchWorkItem?
     /// Most-recently-seen source endpoint from `readDatagrams`.
     /// Used only as a *fallback* `sentBy` endpoint for callers that
     /// `enqueue` without an explicit peer (e.g. early bootstrap
@@ -106,6 +131,7 @@ final class UdpClientWritePump: @unchecked Sendable {
         /// Test-only rendezvous immediately before the write/close gate.
         /// Release builds carry no hook storage or branch.
         var testBeforeWriteGate: (() -> Void)?
+        internal private(set) var testPendingHwmLogCount: Int = 0
     #endif
 
     init(
@@ -131,6 +157,7 @@ final class UdpClientWritePump: @unchecked Sendable {
             else { return }
             self.phase = .idle
             self.flushLocked()
+            self.finishDrainIfReadyLocked()
         }
     }
 
@@ -171,7 +198,7 @@ final class UdpClientWritePump: @unchecked Sendable {
     /// captured via `setSentByEndpoint` (used by tests and very
     /// early bootstrap before the first per-peer read).
     func enqueue(_ data: Data, sentBy: NWEndpoint? = nil) {
-        enqueue(byteCount: data.count) { (data, sentBy) }
+        enqueue(byteCount: data.count, allowsFallback: true) { (data, sentBy) }
     }
 
     /// Rust-backed counterpart. The borrowed FFI views are materialized only
@@ -179,7 +206,7 @@ final class UdpClientWritePump: @unchecked Sendable {
     /// Rust. Raw pointers never escape onto `queue`.
     func enqueueBorrowed(_ view: RamaBytesView, peerView: RamaUdpPeerView) {
         let byteCount = Int(view.len)
-        enqueue(byteCount: byteCount, borrowed: true) {
+        enqueue(byteCount: byteCount, borrowed: true, allowsFallback: false) {
             (
                 dataFromView(view),
                 peerFromView(peerView)?.toNetworkExtensionEndpoint()
@@ -190,6 +217,7 @@ final class UdpClientWritePump: @unchecked Sendable {
     private func enqueue(
         byteCount: Int,
         borrowed: Bool = false,
+        allowsFallback: Bool,
         materialize: () -> (Data, NWEndpoint?)
     ) {
         // RFC 768 admits zero-length UDP datagrams. Forward them
@@ -201,7 +229,7 @@ final class UdpClientWritePump: @unchecked Sendable {
             case closed
         }
         let admission = shared.withLock { state -> Admission in
-            guard !state.closed else { return .closed }
+            guard !state.closed, state.accepting else { return .closed }
             guard state.waiting < udpWritePumpMaxPending,
                 byteCount >= 0,
                 byteCount <= udpWritePumpMaxRetainedBytes,
@@ -217,7 +245,7 @@ final class UdpClientWritePump: @unchecked Sendable {
             }
 
             let (data, explicitEndpoint) = materialize()
-            let endpoint = explicitEndpoint ?? state.fallbackEndpoint
+            let endpoint = explicitEndpoint ?? (allowsFallback ? state.fallbackEndpoint : nil)
             state.waiting += 1
             state.retainedBytes += byteCount
             #if DEBUG
@@ -227,7 +255,15 @@ final class UdpClientWritePump: @unchecked Sendable {
             // Submit while holding the admission lock. Two concurrent callers
             // therefore reach the serial queue in the same order in which
             // their capacity slots were reserved.
-            queue.async { self.acceptLocked(data, sentBy: endpoint) }
+            queue.async {
+                self.acceptLocked(
+                    PendingDatagram(
+                        data: data,
+                        sentBy: endpoint,
+                        allowsFallback: allowsFallback
+                    )
+                )
+            }
             return .accepted
         }
 
@@ -248,30 +284,105 @@ final class UdpClientWritePump: @unchecked Sendable {
         }
     }
 
-    private func acceptLocked(_ data: Data, sentBy: NWEndpoint?) {
+    private func acceptLocked(_ datagram: PendingDatagram) {
         guard phase != .closed,
             !shared.withLock({ $0.closed })
         else {
-            releaseReservation(count: 1, bytes: data.count)
+            releaseReservation(count: 1, bytes: datagram.data.count)
             return
         }
-        pending.pushBack((data, sentBy))
+        pending.pushBack(datagram)
         let depth = pending.count
         if depth > pendingCountHwm {
             pendingCountHwm = depth
-            if depth > udpWritePumpHwmLogThreshold {
+            let bucket: Int
+            if depth >= udpWritePumpMaxPending {
+                bucket = 3
+            } else if depth >= (udpWritePumpMaxPending * 3) / 4 {
+                bucket = 2
+            } else if depth > udpWritePumpHwmLogThreshold {
+                bucket = 1
+            } else {
+                bucket = 0
+            }
+            if bucket > pendingHwmLogBucket {
+                pendingHwmLogBucket = bucket
+                #if DEBUG
+                    testPendingHwmLogCount += 1
+                #endif
                 RamaLog.trace(
-                    "udp client write pump queue depth hwm=\(depth) cap=\(udpWritePumpMaxPending)"
+                    "udp client write pump queue depth hwm=\(depth) cap=\(udpWritePumpMaxPending) bucket=\(bucket)/3"
                 )
             }
         }
         flushLocked()
     }
 
+    /// Stops new admission synchronously. Accepted dispatch blocks and queued
+    /// or in-flight datagrams remain owned by the pump and may still drain.
+    func stopAcceptingForDrain() {
+        shared.withLock { state in
+            guard !state.closed else { return }
+            state.accepting = false
+        }
+    }
+
+    /// Gracefully drains work accepted before admission was stopped. The
+    /// completion runs on the pump queue with `true` for a natural drain and
+    /// `false` when the bounded backstop forced the pump closed.
+    func closeWhenDrained(timeoutMs: UInt32, completion: @escaping (Bool) -> Void) {
+        stopAcceptingForDrain()
+        let completionBox = DrainCompletionBox(completion)
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            beginDrainLocked(timeoutMs: timeoutMs, completion: completionBox)
+        } else {
+            queue.async {
+                self.beginDrainLocked(timeoutMs: timeoutMs, completion: completionBox)
+            }
+        }
+    }
+
+    private func beginDrainLocked(timeoutMs: UInt32, completion: DrainCompletionBox) {
+        guard phase != .closed, !shared.withLock({ $0.closed }) else {
+            completion.body(false)
+            return
+        }
+        guard drainCompletion == nil else { return }
+        drainCompletion = completion
+
+        let backstop = DispatchWorkItem { [weak self] in
+            guard let self, self.drainCompletion != nil else { return }
+            self.completeDrainLocked(drained: false)
+        }
+        drainBackstop = backstop
+        queue.asyncAfter(
+            deadline: .now() + .milliseconds(Int(timeoutMs)),
+            execute: backstop
+        )
+        finishDrainIfReadyLocked()
+    }
+
+    private func finishDrainIfReadyLocked() {
+        guard drainCompletion != nil, pending.isEmpty,
+            phase == .idle || phase == .pending
+        else { return }
+        completeDrainLocked(drained: true)
+    }
+
+    private func completeDrainLocked(drained: Bool) {
+        guard let completion = drainCompletion else { return }
+        drainCompletion = nil
+        drainBackstop?.cancel()
+        drainBackstop = nil
+        closeLocked()
+        completion.body(drained)
+    }
+
     func close() {
         if DispatchQueue.getSpecific(key: queueKey) != nil {
             shared.withLock { state in
                 state.closed = true
+                state.accepting = false
                 state.fallbackEndpoint = nil
             }
             closeLocked()
@@ -280,17 +391,22 @@ final class UdpClientWritePump: @unchecked Sendable {
         shared.withLock { state in
             guard !state.closed else { return }
             state.closed = true
+            state.accepting = false
             state.fallbackEndpoint = nil
             queue.async { self.closeLocked() }
         }
     }
 
     private func closeLocked() {
+        drainBackstop?.cancel()
+        drainBackstop = nil
+        drainCompletion = nil
         phase = .closed
         pending.removeAll()
         sentByEndpoint = nil
         shared.withLock { state in
             state.closed = true
+            state.accepting = false
             state.waiting = 0
             state.retainedBytes = 0
             state.fallbackEndpoint = nil
@@ -317,18 +433,17 @@ final class UdpClientWritePump: @unchecked Sendable {
         // the flow. UDP is lossy by design; dropping the orphan
         // is the correct trade-off.
         //
-        // The cache-nil check is loop-invariant — `sentByEndpoint`
-        // is mutated only by `setSentByEndpoint`, which runs on
-        // the same serial queue and therefore cannot interleave.
-        // Hoist it out so the inner loop is one branch instead of
-        // two on the dominant (cache-present) path.
+        // `sentByEndpoint` is queue-confined, so endpoint resolution remains
+        // stable throughout this loop. Borrowed explicit absence bypasses the
+        // cache; native fallback-eligible entries can still use it.
         var droppedOrphans = 0
         var droppedOrphanBytes = 0
-        if sentByEndpoint == nil {
-            while let head = pending.first(), head.1 == nil {
-                droppedOrphanBytes += pending.popFront()!.0.count
-                droppedOrphans += 1
-            }
+        while let head = pending.first(),
+            head.sentBy == nil,
+            !head.allowsFallback || sentByEndpoint == nil
+        {
+            droppedOrphanBytes += pending.popFront()!.data.count
+            droppedOrphans += 1
         }
         releaseReservation(count: droppedOrphans, bytes: droppedOrphanBytes)
         if droppedOrphans > 0 && !unresolvedEndpointLogged {
@@ -341,12 +456,15 @@ final class UdpClientWritePump: @unchecked Sendable {
                 )
             )
         }
-        guard let head = pending.first() else { return }
-        // `head.1 ?? sentByEndpoint` is now guaranteed non-nil for
+        guard let head = pending.first() else {
+            finishDrainIfReadyLocked()
+            return
+        }
+        // `head.sentBy ?? sentByEndpoint` is now guaranteed non-nil for
         // the head because the orphan-drain above already removed
-        // any leading entry where both were nil. If `head.1` is
+        // any leading entry where both were nil. If `head.sentBy` is
         // nil here, `sentByEndpoint` must be non-nil.
-        guard let endpoint = head.1 ?? sentByEndpoint else {
+        guard let endpoint = head.sentBy ?? (head.allowsFallback ? sentByEndpoint : nil) else {
             // Defensive: should be unreachable after the orphan drain.
             // Keep as a safety net.
             return
@@ -364,7 +482,7 @@ final class UdpClientWritePump: @unchecked Sendable {
             phase = .writing
             // Safe: `first()` returned non-nil, no other thread mutates
             // `pending` (single-queue confinement).
-            let chunk = pending.popFront()!.0
+            let chunk = pending.popFront()!.data
             state.waiting = max(0, state.waiting - 1)
             let chunkBytes = chunk.count
             // `[weak self]` breaks the flow→completion→pump cycle.
@@ -374,12 +492,6 @@ final class UdpClientWritePump: @unchecked Sendable {
                     guard let self else { return }
                     guard self.phase == .writing else { return }
                     if let error {
-                        self.shared.withLock { state in
-                            state.closed = true
-                            state.waiting = 0
-                            state.retainedBytes = 0
-                            state.fallbackEndpoint = nil
-                        }
                         self.logger(
                             classifyFlowCallbackError(
                                 error,
@@ -387,9 +499,7 @@ final class UdpClientWritePump: @unchecked Sendable {
                                 isClosing: self.phase == .closed
                             )
                         )
-                        self.phase = .closed
-                        self.pending.removeAll()
-                        self.sentByEndpoint = nil
+                        self.closeLocked()
                         self.onTerminalError(error)
                         return
                     }
@@ -397,6 +507,7 @@ final class UdpClientWritePump: @unchecked Sendable {
                     self.releaseReservation(bytes: chunkBytes)
                     self.phase = .idle
                     self.flushLocked()
+                    self.finishDrainIfReadyLocked()
                 }
             }
             return true

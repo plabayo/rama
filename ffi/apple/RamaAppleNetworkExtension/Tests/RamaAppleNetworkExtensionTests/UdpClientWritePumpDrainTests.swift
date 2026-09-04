@@ -45,6 +45,88 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         XCTAssertEqual(flow.writtenBatches.first.map { tagOf($0.datagrams[0]) }, 2)
     }
 
+    func testGracefulCloseStopsAdmissionAndDrainsAcceptedRepliesInFIFOOrder() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        let pump = UdpClientWritePump(
+            flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+        pump.markOpened()
+        pump.enqueue(tag(1), sentBy: ep())
+        pump.enqueue(tag(2), sentBy: ep())
+        queue.sync {}
+
+        var drainResult: Bool?
+        let drained = expectation(description: "accepted replies drained")
+        pump.closeWhenDrained(timeoutMs: 1_000) { result in
+            drainResult = result
+            drained.fulfill()
+        }
+        // Admission closes synchronously, before the queue-side drain block.
+        pump.enqueue(tag(3), sentBy: ep())
+        XCTAssertEqual(pump.testAdmissionSnapshot.acceptedDispatches, 2)
+
+        XCTAssertEqual(flow.writtenBatches.first.map { tagOf($0.datagrams[0]) }, 1)
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+        queue.sync {}
+        XCTAssertEqual(flow.writtenBatches.first.map { tagOf($0.datagrams[0]) }, 2)
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+
+        wait(for: [drained], timeout: 2)
+        queue.sync {}
+        XCTAssertEqual(drainResult, true)
+        XCTAssertTrue(pump.testAdmissionSnapshot.closed)
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
+    }
+
+    func testGracefulCloseBackstopForcesClosedWhenKernelWriteNeverCompletes() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        let pump = UdpClientWritePump(
+            flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+        pump.markOpened()
+        pump.enqueue(tag(1), sentBy: ep())
+        pump.enqueue(tag(2), sentBy: ep())
+        queue.sync {}
+
+        var drainResult: Bool?
+        let forced = expectation(description: "drain backstop")
+        pump.closeWhenDrained(timeoutMs: 20) { result in
+            drainResult = result
+            forced.fulfill()
+        }
+
+        wait(for: [forced], timeout: 2)
+        queue.sync {}
+        XCTAssertEqual(drainResult, false)
+        XCTAssertTrue(pump.testAdmissionSnapshot.closed)
+        XCTAssertEqual(pump.testAdmissionSnapshot.waiting, 0)
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
+
+        // A late kernel completion is ignored and cannot restart the pump.
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+        queue.sync {}
+        XCTAssertTrue(flow.writtenBatches.isEmpty)
+    }
+
+    func testGracefulCloseBeforeOpenCompletesWhenNothingWasAccepted() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        let pump = UdpClientWritePump(
+            flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+
+        var drainResult: Bool?
+        let drained = expectation(description: "unopened empty pump drained")
+        pump.closeWhenDrained(timeoutMs: 1_000) { result in
+            drainResult = result
+            drained.fulfill()
+        }
+
+        wait(for: [drained], timeout: 2)
+        XCTAssertEqual(drainResult, true)
+        XCTAssertTrue(pump.testAdmissionSnapshot.closed)
+        XCTAssertTrue(flow.writtenBatches.isEmpty)
+    }
+
     // MARK: - write-error terminate
 
     /// A non-nil `writeDatagrams` completion error must terminate the pump:
@@ -222,6 +304,24 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         XCTAssertEqual(closed.retainedBytes, 0)
     }
 
+    func testHighWaterLogCountIsBoundedToConstantBuckets() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        let pump = UdpClientWritePump(
+            flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+
+        // While unopened, accepted entries accumulate to every HWM bucket.
+        for n in 0..<udpWritePumpMaxPending {
+            pump.enqueue(tag(n), sentBy: ep())
+        }
+        pump.markOpened()
+        queue.sync {}
+
+        XCTAssertEqual(pump.testPendingHwmLogCount, 3)
+        pump.close()
+        queue.sync {}
+    }
+
     func testRetainedByteBudgetIncludesInFlightWrite() {
         let flow = MockUdpFlow()
         let queue = makeQueue()
@@ -336,6 +436,38 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
                     scope_id: 0))
         }
         XCTAssertEqual(pump.testAdmissionSnapshot.borrowedMaterializations, 1)
+    }
+
+    func testBorrowedAbsentPeerRemainsOrphanDespiteCachedFallback() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        let pump = UdpClientWritePump(
+            flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+        pump.markOpened()
+        pump.setSentByEndpoint(ep())
+        queue.sync {}
+
+        var payload = Array("orphan".utf8)
+        payload.withUnsafeMutableBufferPointer { buffer in
+            pump.enqueueBorrowed(
+                RamaBytesView(ptr: buffer.baseAddress, len: buffer.count),
+                peerView: RamaUdpPeerView(
+                    present: false,
+                    host_utf8: nil,
+                    host_utf8_len: 0,
+                    port: 0,
+                    scope_id: 0))
+        }
+        queue.sync {}
+
+        XCTAssertTrue(flow.writtenBatches.isEmpty)
+        XCTAssertEqual(pump.testAdmissionSnapshot.borrowedMaterializations, 1)
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
+
+        // Native nil retains the documented cached-fallback behavior.
+        pump.enqueue(Data("native".utf8), sentBy: nil)
+        queue.sync {}
+        XCTAssertEqual(flow.writtenBatches.first?.datagrams, [Data("native".utf8)])
     }
 
     func testInlineEndpointUpdatesAreCapturedInOrder() {

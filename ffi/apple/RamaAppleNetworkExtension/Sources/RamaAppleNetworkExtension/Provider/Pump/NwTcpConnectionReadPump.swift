@@ -80,13 +80,24 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         queue.async { self.scheduleReadLocked() }
     }
 
+    /// Run queue-confined work inline when Network.framework has already
+    /// delivered on the connection's start queue; retain the async fallback
+    /// for mocks and any defensive caller arriving from another executor.
+    private func runOnQueue(_ work: @escaping @Sendable () -> Void) {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            work()
+        } else {
+            queue.async(execute: work)
+        }
+    }
+
     /// Whether the EOF-grace backstop is armed; read on `queue`. Test seam.
     var isEofBackstopArmed: Bool { eofWork != nil }
 
     /// Resume scheduling receives after the Rust side has freed egress
     /// capacity. No-op unless the pump is currently paused.
     func resume() {
-        queue.async {
+        runOnQueue {
             guard self.phase == .paused else { return }
             self.phase = .open
             self.scheduleReadLocked()
@@ -101,18 +112,11 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         onError: @escaping @Sendable (Error) -> Void = { _ in },
         onComplete: @escaping @Sendable () -> Void
     ) {
-        if DispatchQueue.getSpecific(key: queueKey) != nil {
-            cancelForPromoteLocked(
+        runOnQueue {
+            self.cancelForPromoteLocked(
                 onCarryover: onCarryover,
                 onError: onError,
                 onComplete: onComplete)
-        } else {
-            queue.async {
-                self.cancelForPromoteLocked(
-                    onCarryover: onCarryover,
-                    onError: onError,
-                    onComplete: onComplete)
-            }
         }
     }
 
@@ -206,13 +210,14 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) {
             [weak self] data, _, isComplete, error in
             guard let self else { return }
-            // Publish before the queue hop so a concurrently queued pressure
-            // eviction cannot commit using an idle timestamp from before these
-            // bytes arrived. Replays never pass this boundary a second time.
+            // Publish before queue normalization so a concurrently queued
+            // pressure eviction cannot commit using an idle timestamp from
+            // before these bytes arrived. Replays never pass this boundary a
+            // second time.
             if let data, !data.isEmpty {
                 self.onActivity()
             }
-            self.queue.async {
+            self.runOnQueue {
                 if self.phase == .closed {
                     // Receive in flight while the pump was
                     // cancelled. If a promote-cutover installed

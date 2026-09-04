@@ -259,6 +259,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 clientWritePump.enqueue(data)
             },
             onClientReadDemand: { [weak self] in
+                // The pump's queue-specific resume fast path makes this the
+                // sole normalization hop from an arbitrary Rust worker.
                 self?.flowQueue.async { [weak self] in
                     self?.ctx.clientReadPump?.resume()
                 }
@@ -535,6 +537,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             waitingWork?.cancel()
             waitingWork = nil
             ctx.postReadyWaitingArmed = false
+            ctx.egressWritePump?.connectionBecameReady()
             return
         }
         egressReady = true
@@ -592,6 +595,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 egressWritePump?.enqueue(data) ?? .closed
             },
             onEgressReadDemand: { [weak self] in
+                // As above, `resume()` runs inline once this sole hop reaches
+                // the flow queue instead of posting a second queue item.
                 self?.flowQueue.async { [weak self] in
                     self?.ctx.egressReadPump?.resume()
                 }

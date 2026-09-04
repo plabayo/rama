@@ -11,8 +11,8 @@ import RamaAppleNEFFI
 /// shouldn't have to know about the session's generic flow type
 /// (`UdpFlowSession<NEAppProxyUDPFlow>` in production,
 /// `UdpFlowSession<MockUdpFlow>` in tests). This protocol is the
-/// minimal surface the core actually uses: the per-flow `ctx`,
-/// reached on sleep to fire `terminate`.
+/// minimal surface the core actually uses: the per-flow `ctx`, plus the
+/// asynchronous detach teardown used to account for physical resource release.
 ///
 /// Replaces the previous `UdpFlowContext.lifetimeAnchor` cycle —
 /// the context no longer holds the session; the core holds the
@@ -20,6 +20,28 @@ import RamaAppleNEFFI
 /// cycle to break.
 protocol UdpFlowSessionAnchor: AnyObject {
     var ctx: UdpFlowContext { get }
+}
+
+extension UdpFlowSessionAnchor {
+    /// Queue one detach teardown and acknowledge resource release only after
+    /// the already-queued `terminate` block has closed the kernel flow and Rust
+    /// session. FIFO ordering provides the completion without synchronously
+    /// waiting on a potentially blocked flow queue.
+    func terminateForEngineDetach(
+        _ error: Error,
+        onResourceReleased: @escaping @Sendable () -> Void
+    ) {
+        guard let terminate = ctx.terminate else {
+            onResourceReleased()
+            return
+        }
+        terminate(error)
+        if let flowQueue = ctx.flowQueue {
+            flowQueue.async(execute: onResourceReleased)
+        } else {
+            onResourceReleased()
+        }
+    }
 }
 
 private struct UdpIdleActivityState {
@@ -54,6 +76,15 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
 
     var sessionHandle: RamaUdpSessionHandle?
     private var engineGeneration: UInt64?
+    /// Queue-confined lifecycle gates. Natural server completion first enters
+    /// a draining phase; errors and detach skip directly to teardown.
+    private var gracefulServerCloseStarted = false
+    private var teardownFinished = false
+
+    /// Bounded allowance for already-accepted kernel-bound replies after the
+    /// Rust service completes naturally. Tests override this with a short
+    /// deterministic interval.
+    var gracefulDrainTimeoutMs: UInt32 = 2_000
 
     /// Wall-clock cap on per-flow idle (no datagrams in either
     /// direction). 0 disables the watchdog. Defaults to
@@ -195,24 +226,89 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             let core = core
             let session = self
             flowQueue.async {
+                if let session {
+                    session.terminateImmediately(error, retainedCore: core)
+                    return
+                }
+
+                // Defensive fallback if the session anchor was already lost.
+                // The strong `ctx` capture still guarantees kernel teardown.
                 guard ctx.readState != .closed else { return }
                 ctx.readState = .closed
-                session?.closeReadDemandGate()
-                session?.idleWork?.cancel()
-                session?.idleWork = nil
-                session?.idleActivity.withLock { state in
-                    state.closed = true
-                    state.lastUptimeNs = nil
-                }
                 ctx.writer?.close()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
                 ctx.session?.onClientClose()
-                core?.removeUdpFlow(
-                    flowId,
-                    engineGeneration: ctx.engineGeneration)
+                core?.removeUdpFlow(flowId, engineGeneration: ctx.engineGeneration)
             }
         }
+    }
+
+    private func closeActivityGates() {
+        closeReadDemandGate()
+        idleWork?.cancel()
+        idleWork = nil
+        idleActivity.withLock { state in
+            state.closed = true
+            state.lastUptimeNs = nil
+        }
+    }
+
+    /// Error, detach, and explicit client close remain immediate. This method
+    /// also wins a race against an in-progress graceful drain.
+    private func terminateImmediately(
+        _ error: Error?, retainedCore: TransparentProxyCore?
+    ) {
+        guard !teardownFinished else { return }
+        teardownFinished = true
+        let readWasOpen = ctx.readState != .closed
+        ctx.readState = .closed
+        closeActivityGates()
+        ctx.writer?.close()
+        if readWasOpen { flow.closeReadWithError(error) }
+        flow.closeWriteWithError(error)
+        ctx.session?.onClientClose()
+        retainedCore?.removeUdpFlow(flowId, engineGeneration: ctx.engineGeneration)
+    }
+
+    /// Called directly by the Rust callback thread. Admission is stopped
+    /// synchronously before dispatch so callbacks racing behind the natural
+    /// close cannot add work to the drain set.
+    func requestGracefulServerClose() {
+        ctx.writer?.stopAcceptingForDrain()
+        flowQueue.async { [self] in beginGracefulServerClose() }
+    }
+
+    private func beginGracefulServerClose() {
+        guard !teardownFinished, !gracefulServerCloseStarted else { return }
+        gracefulServerCloseStarted = true
+        ctx.readState = .closed
+        closeActivityGates()
+        flow.closeReadWithError(nil)
+        // Stops Rust callbacks/read demand while preserving payloads already
+        // copied into the writer's accepted/in-flight set.
+        ctx.session?.onClientClose()
+
+        guard let writer = ctx.writer else {
+            finishGracefulServerClose(drained: true)
+            return
+        }
+        writer.closeWhenDrained(timeoutMs: gracefulDrainTimeoutMs) { [weak self] drained in
+            self?.finishGracefulServerClose(drained: drained)
+        }
+    }
+
+    private func finishGracefulServerClose(drained: Bool) {
+        guard gracefulServerCloseStarted, !teardownFinished else { return }
+        teardownFinished = true
+        gracefulServerCloseStarted = false
+        if !drained {
+            core?.logDebug(
+                "udp graceful server-close drain exceeded \(gracefulDrainTimeoutMs) ms; forcing write-side close"
+            )
+        }
+        flow.closeWriteWithError(nil)
+        core?.removeUdpFlow(flowId, engineGeneration: ctx.engineGeneration)
     }
 
     /// Start the idle watchdog after `flow.open` succeeds. Repeated
@@ -441,8 +537,11 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 index < eps.count ? eps[index] : nil
             }
             let peer = endpoint.flatMap(ramaUdpPeer(from:))
-            if let peer {
-                ctx.writer?.setSentByEndpoint(peer.toNetworkExtensionEndpoint())
+            if peer != nil {
+                // Preserve Apple's original endpoint object. Reconstructing it
+                // from the Rama peer adds parsing/allocation on every packet
+                // and can discard endpoint representation details.
+                ctx.writer?.setSentByEndpoint(endpoint)
             }
             session.onClientDatagram(datagram, peer: peer)
         }
@@ -459,7 +558,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 ctx?.writer?.enqueueBorrowed(view, peerView: peerView)
             },
             onClientReadDemand: { [weak ctx] in ctx?.requestRead?() },
-            onServerClosed: { [weak ctx] in ctx?.terminate?(nil) }
+            onServerClosed: { [weak self] in self?.requestGracefulServerClose() }
         )
         engineGeneration = lease.generation
         ctx.engineGeneration = lease.generation

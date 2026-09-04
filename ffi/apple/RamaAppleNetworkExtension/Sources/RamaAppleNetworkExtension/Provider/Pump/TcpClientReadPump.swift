@@ -67,14 +67,24 @@ final class TcpClientReadPump: @unchecked Sendable {
         queue.setSpecific(key: queueKey, value: 1)
     }
 
+    /// Normalize callers onto the pump queue without paying another dispatch
+    /// when the owning flow state machine is already executing there.
+    private func runOnQueue(_ work: @escaping @Sendable () -> Void) {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            work()
+        } else {
+            queue.async(execute: work)
+        }
+    }
+
     func requestRead() {
-        queue.async { self.requestReadLocked() }
+        runOnQueue { self.requestReadLocked() }
     }
 
     /// Resume reading after the Rust side has freed capacity in the per-flow
     /// ingress channel. No-op unless the pump is currently paused.
     func resume() {
-        queue.async {
+        runOnQueue {
             guard self.phase == .paused else { return }
             self.phase = .open
             self.requestReadLocked()
@@ -113,18 +123,11 @@ final class TcpClientReadPump: @unchecked Sendable {
         onError: @escaping @Sendable (Error) -> Void = { _ in },
         onComplete: @escaping @Sendable () -> Void
     ) {
-        if DispatchQueue.getSpecific(key: queueKey) != nil {
-            cancelForPromoteLocked(
+        runOnQueue {
+            self.cancelForPromoteLocked(
                 onCarryover: onCarryover,
                 onError: onError,
                 onComplete: onComplete)
-        } else {
-            queue.async {
-                self.cancelForPromoteLocked(
-                    onCarryover: onCarryover,
-                    onError: onError,
-                    onComplete: onComplete)
-            }
         }
     }
 

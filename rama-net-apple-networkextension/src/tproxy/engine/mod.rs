@@ -137,8 +137,8 @@ impl std::fmt::Display for DecisionDeadlineAction {
 }
 
 /// Default for the [`TransparentProxyEngineBuilder::tcp_flow_buffer_size`]
-/// setter, which has no effect — per-flow buffering is bounded by
-/// [`DEFAULT_TCP_CHANNEL_CAPACITY`].
+/// setter. This bounds each borrowed Rust→Swift TCP byte callback; the actual
+/// limit is the smaller of this value and Swift's configured write-pump cap.
 const DEFAULT_TCP_FLOW_BUFFER_SIZE: usize = kib(16);
 /// Number of `Bytes` chunks each TCP per-flow channel (ingress and egress)
 /// buffers before backpressuring Swift. Each chunk is whatever Swift hands
@@ -249,6 +249,9 @@ pub struct TransparentProxyEngine<H> {
     /// unwrap is unreachable for engine entry points.
     rt: Option<TransparentProxyAsyncRuntime>,
     handler: H,
+    /// Startup snapshot exported to Swift and used to derive matching bridge
+    /// limits for the lifetime of this engine.
+    transparent_proxy_config: crate::tproxy::TransparentProxyConfig,
     tcp_flow_buffer_size: usize,
     tcp_channel_capacity: usize,
     udp_channel_capacity: usize,
@@ -304,7 +307,7 @@ where
     H: TransparentProxyHandler,
 {
     pub fn transparent_proxy_config(&self) -> crate::tproxy::TransparentProxyConfig {
-        self.handler.transparent_proxy_config()
+        self.transparent_proxy_config.clone()
     }
 
     /// Fire-and-forget notification that the system is going to
@@ -401,7 +404,10 @@ where
             return SessionFlowAction::Passthrough;
         };
 
-        let tcp_flow_buffer_size = self.tcp_flow_buffer_size;
+        let tcp_write_chunk_limit = self.tcp_flow_buffer_size.min(
+            self.transparent_proxy_config
+                .tcp_write_pump_max_pending_bytes(),
+        );
         let tcp_channel_capacity = self.tcp_channel_capacity;
         let tcp_idle_timeout = self.tcp_idle_timeout;
         let tcp_paused_drain_max_wait = self.tcp_paused_drain_max_wait;
@@ -418,7 +424,7 @@ where
                 guard,
                 exec,
                 meta,
-                tcp_flow_buffer_size,
+                tcp_write_chunk_limit,
                 tcp_channel_capacity,
                 tcp_idle_timeout,
                 tcp_paused_drain_max_wait,
@@ -553,6 +559,8 @@ struct TcpSessionPendingData {
     on_server_closed: ClosedSink,
     /// Capacity of the bounded ingress and egress mpsc channels (in chunks).
     tcp_channel_capacity: usize,
+    /// Maximum borrowed byte slice sent through either Rust→Swift TCP sink.
+    tcp_write_chunk_limit: usize,
     /// Optional override for [`DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT`] applied to
     /// both per-flow stream write sides. `None` means "use the engine default".
     tcp_paused_drain_max_wait: Option<Duration>,
@@ -872,6 +880,7 @@ impl TransparentProxyTcpSession {
             on_server_bytes,
             on_server_closed,
             tcp_channel_capacity,
+            tcp_write_chunk_limit,
             tcp_paused_drain_max_wait,
             byte_counters,
             ingress_close_reason,
@@ -899,6 +908,7 @@ impl TransparentProxyTcpSession {
             ingress_close_reason,
             BridgeDirection::Ingress,
             paused_drain_wait,
+            tcp_write_chunk_limit,
         );
         let ingress_stream = TcpFlow::new(ingress_inner, Some(Executor::graceful(flow_guard)));
         ingress_stream.extensions().insert_arc(meta_arc);
@@ -941,6 +951,7 @@ impl TransparentProxyTcpSession {
             egress_close_reason,
             BridgeDirection::Egress,
             paused_drain_wait,
+            tcp_write_chunk_limit,
         )
         .with_read_error_flag(self.egress_read_failed.clone());
         let egress_stream = NwTcpStream::new(egress_inner);
@@ -1078,8 +1089,7 @@ async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
     parent_guard: ShutdownGuard,
     exec: Executor,
     meta: TransparentProxyFlowMeta,
-    // No effect; channel capacity bounds per-flow buffering.
-    _tcp_flow_buffer_size: usize,
+    tcp_write_chunk_limit: usize,
     tcp_channel_capacity: usize,
     tcp_idle_timeout: Option<Duration>,
     tcp_paused_drain_max_wait: Option<Duration>,
@@ -1315,6 +1325,7 @@ where
         on_server_bytes: on_server_bytes_guarded,
         on_server_closed: on_server_closed_guarded,
         tcp_channel_capacity,
+        tcp_write_chunk_limit,
         tcp_paused_drain_max_wait,
         byte_counters,
         ingress_close_reason,
@@ -1618,6 +1629,11 @@ where
 {
     let flow_id = meta.flow_id;
     let flow_protocol = meta.protocol;
+    // One absolute deadline begins at session creation. In particular, time
+    // spent in policy matching and waiting for Swift activation is part of the
+    // max lifetime rather than an unbounded prefix before the timer starts.
+    let udp_lifetime_deadline =
+        udp_max_flow_lifetime.map(|lifetime| tokio::time::Instant::now() + lifetime);
     #[cfg(feature = "dial9")]
     let flow_source_pid = meta.source_app_pid;
     let Ok(flow_action) =
@@ -1712,16 +1728,47 @@ where
     let idle_notify_for_task = idle_notify.clone();
     // Boxed for the same small-FFI-stack reason as the TCP service task.
     let service_task = Executor::graceful(flow_guard).spawn_task(Box::pin(async move {
-        let Ok(flow) = flow_rx.await else {
-            // Cancelled before activate — emit a synthetic close so post-mortem
-            // logs still account for the flow.
-            emit_udp_session_close_event(BridgeCloseReason::Shutdown, &meta_for_close);
-            #[cfg(feature = "dial9")]
-            {
-                let age_ms = u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
-                crate::tproxy::dial9::record_flow_closed(meta_for_close.flow_id, age_ms, 0, 0);
+        let lifetime_fut = async {
+            if let Some(deadline) = udp_lifetime_deadline {
+                tokio::time::sleep_until(deadline).await;
+            } else {
+                std::future::pending::<()>().await;
             }
-            return;
+        };
+        tokio::pin!(lifetime_fut);
+
+        // Activation is part of the same lifetime race. `biased` makes an
+        // already-expired deadline win over an activation that becomes ready
+        // in the same poll; cooperative shutdown still has highest priority.
+        let flow = tokio::select! {
+            biased;
+            () = flow_guard_for_task.cancelled() => Err(BridgeCloseReason::Shutdown),
+            () = &mut lifetime_fut => {
+                tracing::warn!(
+                    target: "rama_apple_ne::tproxy",
+                    flow_id = meta_for_close.flow_id,
+                    lifetime_ms = udp_max_flow_lifetime
+                        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+                        .unwrap_or(0),
+                    "transparent proxy udp flow exceeded max lifetime before activation; closing",
+                );
+                Err(BridgeCloseReason::IdleTimeout)
+            }
+            flow = flow_rx => flow.map_err(|_closed| BridgeCloseReason::Shutdown),
+        };
+        let flow = match flow {
+            Ok(flow) => flow,
+            Err(close_reason) => {
+                emit_udp_session_close_event(close_reason, &meta_for_close);
+                #[cfg(feature = "dial9")]
+                {
+                    let age_ms =
+                        u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
+                    crate::tproxy::dial9::record_flow_closed(meta_for_close.flow_id, age_ms, 0, 0);
+                }
+                closed_sink();
+                return;
+            }
         };
         // Drive `service.serve(flow)` to completion, but observe up to
         // three additional terminators:
@@ -1740,19 +1787,13 @@ where
         //     fast-feedback path for short-lived bursty flows
         //     (DNS, mDNS, NAT-keepalive probes) that would otherwise
         //     live until `udp_max_flow_lifetime`.
-        //   * `udp_max_flow_lifetime` — when configured, a hard cap
-        //     from flow start. Survives traffic; backstops a
+        //   * `udp_max_flow_lifetime` — when configured, the same hard cap
+        //     created with the session (and already raced while waiting for
+        //     activation). Survives traffic; backstops a
         //     misbehaving idle reaper or a service-side wedge that
         //     keeps the idle signal alive without making real progress.
         //     See builder doc for semantics.
         let mut serve_fut = std::pin::pin!(service.serve(flow));
-        let lifetime_fut = async {
-            if let Some(lifetime) = udp_max_flow_lifetime {
-                tokio::time::sleep(lifetime).await;
-            } else {
-                std::future::pending::<()>().await;
-            }
-        };
         let idle_fut = async {
             let (Some(timeout), Some(notify)) = (udp_idle_timeout, idle_notify_for_task.as_ref())
             else {
@@ -1778,7 +1819,7 @@ where
                 );
                 BridgeCloseReason::IdleTimeout
             }
-            () = lifetime_fut => {
+            () = &mut lifetime_fut => {
                 tracing::warn!(
                     target: "rama_apple_ne::tproxy",
                     flow_id = meta_for_close.flow_id,

@@ -67,6 +67,71 @@ fn tcp_bridge_delivers_server_bytes() {
 }
 
 #[test]
+fn tcp_bridge_bounds_each_server_callback_to_exported_write_pump_cap() {
+    const CONFIGURED_CAP: usize = 256 * 1024;
+    const PAYLOAD_LEN: usize = CONFIGURED_CAP * 2 + 13;
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(
+                |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+                    let BridgeIo(mut ingress, _egress) = bridge;
+                    ingress.write_all(&vec![0xA5; PAYLOAD_LEN]).await.unwrap();
+                    Ok(())
+                },
+            )
+            .boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    // Make the legacy bridge-size knob larger than the exported pump cap so
+    // this test proves the authoritative config value is the limiting side of
+    // the production `min(flow_buffer_size, pump_cap)` plumbing.
+    let engine = build_engine_with_tcp_flow_buffer_size(handler, CONFIGURED_CAP * 4);
+    assert_eq!(
+        engine
+            .transparent_proxy_config()
+            .tcp_write_pump_max_pending_bytes(),
+        CONFIGURED_CAP
+    );
+
+    let callback_sizes = Arc::new(Mutex::new(Vec::new()));
+    let sizes_for_callback = callback_sizes.clone();
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel::<()>();
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(80)),
+        move |bytes| {
+            sizes_for_callback.lock().push(bytes.len());
+            TcpDeliverStatus::Accepted
+        },
+        || {},
+        move || {
+            _ = closed_tx.send(());
+        },
+    ) else {
+        panic!("expected intercept session");
+    };
+
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+    closed_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("service completed and fired close callback");
+
+    assert_eq!(
+        &*callback_sizes.lock(),
+        &[CONFIGURED_CAP, CONFIGURED_CAP, 13],
+        "every Rust→Swift callback must be bounded and write_all must deliver the remainder"
+    );
+    engine.stop(0);
+}
+
+#[test]
 fn tcp_cancel_many_idle_sessions_suppresses_callbacks_and_stops_fast() {
     let closed_count = Arc::new(AtomicUsize::new(0));
     let bytes_count = Arc::new(AtomicUsize::new(0));

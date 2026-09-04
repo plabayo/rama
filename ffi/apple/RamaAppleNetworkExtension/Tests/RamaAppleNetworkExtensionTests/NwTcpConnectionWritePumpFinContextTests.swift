@@ -102,6 +102,64 @@ final class NwTcpConnectionWritePumpFinContextTests: XCTestCase {
         XCTAssertTrue(callbackOnQueue.get())
     }
 
+    func testDataCompletionAlreadyOnConnectionQueueRunsInline() {
+        let mock = MockNwConnection()
+        mock.transition(to: .ready)
+        let queue = makeQueue()
+        let drained = TestValue(0)
+        let pump = NwTcpConnectionWritePump(
+            connection: mock,
+            queue: queue,
+            lingerCloseDeadline: .milliseconds(2_000),
+            onDrained: { drained.update { $0 += 1 } }
+        )
+
+        XCTAssertEqual(
+            pump.enqueue(Data(repeating: 0xA1, count: writePumpMaxPendingBytes)),
+            .accepted)
+        waitForQueueDrain(queue)
+        XCTAssertEqual(pump.enqueue(Data([0xB1])), .paused)
+
+        queue.sync {
+            XCTAssertTrue(mock.completePendingSend(error: nil))
+            XCTAssertEqual(
+                drained.get(), 1,
+                "NW completion already delivered on its queue must not add a hop")
+        }
+    }
+
+    func testDataCompletionOffConnectionQueueIsNormalized() {
+        let mock = MockNwConnection()
+        mock.transition(to: .ready)
+        let queue = makeQueue()
+        let drained = TestValue(0)
+        let pump = NwTcpConnectionWritePump(
+            connection: mock,
+            queue: queue,
+            lingerCloseDeadline: .milliseconds(2_000),
+            onDrained: { drained.update { $0 += 1 } }
+        )
+
+        XCTAssertEqual(
+            pump.enqueue(Data(repeating: 0xA1, count: writePumpMaxPendingBytes)),
+            .accepted)
+        waitForQueueDrain(queue)
+        XCTAssertEqual(pump.enqueue(Data([0xB1])), .paused)
+        let blockerEntered = expectation(description: "queue blocker entered")
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        queue.async {
+            blockerEntered.fulfill()
+            releaseBlocker.wait()
+        }
+        wait(for: [blockerEntered], timeout: 1.0)
+
+        XCTAssertTrue(mock.completePendingSend(error: nil))
+        XCTAssertEqual(drained.get(), 0, "off-queue completion must be dispatched")
+        releaseBlocker.signal()
+        waitForQueueDrain(queue)
+        XCTAssertEqual(drained.get(), 1)
+    }
+
     func testDataSendErrorReachesTerminalBeforeDrainWaiter() {
         let mock = MockNwConnection()
         mock.transition(to: .ready)

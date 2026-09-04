@@ -238,6 +238,57 @@ fn udp_max_flow_lifetime_closes_stuck_service() {
     engine.stop(0);
 }
 
+/// The max lifetime starts when the session is created, not after Swift
+/// activates it. A missing `flow.open` completion must therefore still reap
+/// the pending Rust task and notify Swift to close its registration.
+#[test]
+fn udp_max_flow_lifetime_closes_session_that_never_activates() {
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|_bridge: crate::UdpFlow| async move {
+                std::future::pending::<()>().await;
+                Ok(())
+            })
+            .boxed(),
+        }),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine_with_udp_max_flow_lifetime(handler, Duration::from_millis(150));
+
+    let closed = Arc::new(AtomicUsize::new(0));
+    let closed_cb = closed.clone();
+    let SessionFlowAction::Intercept(_session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(53)),
+        |_bytes| {},
+        || {},
+        move || {
+            closed_cb.fetch_add(1, Ordering::Relaxed);
+        },
+    ) else {
+        panic!("expected intercept session");
+    };
+    // Deliberately do not call activate().
+
+    let deadline = Instant::now() + Duration::from_millis(750);
+    while closed.load(Ordering::Relaxed) == 0 {
+        if Instant::now() > deadline {
+            panic!(
+                "udp_max_flow_lifetime did not include the pre-activation wait (configured 150ms)"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    assert_eq!(closed.load(Ordering::Relaxed), 1);
+    engine.stop(0);
+}
+
 /// UDP `on_client_read_demand` must fire on every accepted *and*
 /// dropped-on-Full datagram. Swift's `requestRead` re-issues
 /// `flow.readDatagrams` only when `demandPending` is set during the

@@ -445,6 +445,37 @@ final class CoreEdgeCaseTests: XCTestCase {
         XCTAssertEqual(detachReturned.wait(timeout: .now() + 1), .success)
     }
 
+    func testProviderStartCompletionMaySynchronouslyDetachEngine() {
+        let core = TransparentProxyCore()
+        let generation = core.attachEngine(makeEngine())
+        let completionCalled = DispatchSemaphore(value: 0)
+        let helperReturned = DispatchSemaphore(value: 0)
+        let completionReceivedSuccess = TestValue(false)
+
+        DispatchQueue.global().async {
+            RamaTransparentProxyProvider.completeStartAfterSettingsSuccess(
+                core: core,
+                engineGeneration: generation
+            ) { error in
+                completionReceivedSuccess.set(error == nil)
+                completionCalled.signal()
+                // Re-enter teardown synchronously, exactly as an external
+                // provider callback is permitted to do.
+                core.detachEngine(reason: 0)
+            }
+            helperReturned.signal()
+        }
+
+        XCTAssertEqual(completionCalled.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(
+            helperReturned.wait(timeout: .now() + 1),
+            .success,
+            "provider completion must run after the lifecycle lease is released"
+        )
+        XCTAssertTrue(completionReceivedSuccess.get())
+        XCTAssertNil(core.engine)
+    }
+
     func testQueuedTcpReadyCannotActivateDetachedGeneration() {
         let core = TransparentProxyCore()
         core.attachEngine(makeEngine())
