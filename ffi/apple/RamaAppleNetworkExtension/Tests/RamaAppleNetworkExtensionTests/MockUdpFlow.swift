@@ -25,6 +25,7 @@ final class MockUdpFlow: UdpFlowLike, @unchecked Sendable {
     private var _openLocalEndpoint: NWHostEndpoint??
     private var _closeReadErrors: [Error?] = []
     private var _closeWriteErrors: [Error?] = []
+    private var _writeAfterCloseCount: Int = 0
     private var _applyMetadataCount: Int = 0
 
     // MARK: - UdpFlowLike
@@ -43,6 +44,9 @@ final class MockUdpFlow: UdpFlowLike, @unchecked Sendable {
         completionHandler: @escaping @Sendable (Error?) -> Void
     ) {
         lock.lock()
+        if !_closeWriteErrors.isEmpty {
+            _writeAfterCloseCount += 1
+        }
         _writtenBatches.append(
             WrittenBatch(datagrams: datagrams, sentBy: remoteEndpoints, completion: completionHandler)
         )
@@ -147,6 +151,11 @@ final class MockUdpFlow: UdpFlowLike, @unchecked Sendable {
     var closeWriteCallCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _closeWriteErrors.count
+    }
+
+    var writeAfterCloseCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _writeAfterCloseCount
     }
 
     var applyMetadataCallCount: Int {

@@ -10,6 +10,7 @@ from soak_pressure_log import (
     pressure_episode,
     selected_count,
     selection_event,
+    settled_final_flow_gauge,
     summarize_pressure_rows,
 )
 
@@ -75,13 +76,14 @@ class SoakPressureLogTests(unittest.TestCase):
             "flow pressure episode interrupted: startEpochMs=100250 "
             "durationMs=1250 "
             "peakOccupancy=478 softCap=450 scans=3 skipped=7 selected=28 "
-            "evicted=18 spared=4 canceled=5 expired=1"
+            "evicted=18 spared=4 canceled=5 expired=1 startEpochUs=100250999"
         )
         self.assertEqual(
             pressure_episode(message),
             {
                 "outcome": "interrupted",
                 "start_epoch_ms": 100250,
+                "start_epoch_us": 100250999,
                 "duration_ms": 1250,
                 "peak_occupancy": 478,
                 "soft_cap": 450,
@@ -178,6 +180,67 @@ class SoakPressureLogTests(unittest.TestCase):
         evidence = summarize_pressure_rows(rows, baseline_end_epoch=100.5005)
         self.assertEqual(evidence["episodes"], 0)
         self.assertFalse(evidence["eviction_observed"])
+
+    def test_precise_episode_boundary_includes_only_post_boundary_start(self):
+        def episode(start_us):
+            return (
+                100.751,
+                "flow pressure episode ended: startEpochMs=100500 "
+                "durationMs=1 peakOccupancy=470 softCap=450 scans=1 "
+                "skipped=0 selected=1 evicted=1 spared=0 canceled=0 "
+                f"expired=0 startEpochUs={start_us}",
+            )
+
+        before = summarize_pressure_rows(
+            [episode(100_500_100)],
+            baseline_end_epoch=100.5005,
+            baseline_end_epoch_us=100_500_500,
+        )
+        after = summarize_pressure_rows(
+            [episode(100_500_900)],
+            baseline_end_epoch=100.5005,
+            baseline_end_epoch_us=100_500_500,
+        )
+        self.assertEqual(before["episodes"], 0)
+        self.assertEqual(after["episodes"], 1)
+        self.assertTrue(after["eviction_observed"])
+
+    def test_legacy_episode_in_boundary_millisecond_is_conservative(self):
+        rows = [
+            (
+                100.751,
+                "flow pressure episode ended: startEpochMs=100500 "
+                "durationMs=1 peakOccupancy=470 softCap=450 scans=1 "
+                "skipped=0 selected=1 evicted=1 spared=0 canceled=0 "
+                "expired=0",
+            )
+        ]
+        evidence = summarize_pressure_rows(
+            rows,
+            baseline_end_epoch=100.5005,
+            baseline_end_epoch_us=100_500_500,
+        )
+        self.assertEqual(evidence["episodes"], 0)
+
+    def test_settled_final_gauge_requires_two_fresh_tail_samples(self):
+        def gauge(epoch, total):
+            return (
+                epoch,
+                f"live-flow counts tcp={total} udp=0 total={total} "
+                f"peak={total} softCap=450",
+            )
+
+        self.assertIsNone(settled_final_flow_gauge(
+            [gauge(90, 10)], 100, 235))
+        self.assertIsNone(settled_final_flow_gauge(
+            [gauge(120, 10)], 100, 235))
+        accepted = settled_final_flow_gauge(
+            [gauge(120, 10), gauge(180, 8)], 100, 235)
+        self.assertEqual(accepted["total"], 8)
+        self.assertIsNone(settled_final_flow_gauge(
+            [gauge(105, 10), gauge(120, 8)], 100, 235))
+        self.assertIsNone(settled_final_flow_gauge(
+            [gauge(100, 0), gauge(100, 0)], 100, 100))
 
     def test_baseline_occupancy_is_not_run_peak_evidence(self):
         rows = [

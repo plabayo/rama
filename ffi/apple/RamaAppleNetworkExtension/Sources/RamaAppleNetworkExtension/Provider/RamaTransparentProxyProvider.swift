@@ -309,17 +309,16 @@ nonisolated(unsafe) var writePumpHwmLogThresholdBytes: Int = writePumpMaxPending
 /// log — same 50 % heuristic as the TCP byte threshold.
 let udpWritePumpHwmLogThreshold: Int = udpWritePumpMaxPending / 2
 
-/// Default wall-clock cap on how long the egress NWConnection lingers
-/// after the local side has sent its FIN before Swift force-cancels
-/// it. Applied when `RamaTcpEgressConnectOptions.has_linger_close_ms`
+/// Default wall-clock grace after a promoted flow reaches terminal before
+/// Swift force-cancels its egress NWConnection. Applied when
+/// `RamaTcpEgressConnectOptions.has_linger_close_ms`
 /// is `false`; an explicit Rust-side `NwTcpConnectOptions.linger_close_timeout`
-/// overrides. 5 seconds is generous enough for any healthy peer to
-/// FIN-ACK and short enough that 200 slow-closing flows cap at a few
-/// hundred concurrent FIN_WAIT_1 sockets rather than accumulating.
+/// overrides. A successful local FIN does not start this grace because the
+/// opposite response half may remain quiet and legally resume later.
 ///
 /// `var` for tests that need a short linger to keep ARC-leak-check
 /// runtime bounded — same pattern as `defaultEgressWaitingToleranceMs`.
-/// The linger watchdog holds `connection` strongly until it fires;
+/// The terminal linger watchdog holds `connection` strongly until it fires;
 /// tests that assert `weakConn == nil` after teardown need to clamp
 /// this so the watchdog releases before the polling deadline.
 nonisolated(unsafe) var defaultLingerCloseMs: UInt32 = 5_000
@@ -488,11 +487,42 @@ nonisolated(unsafe) var defaultPromotedIdleTimeoutMs: UInt32 = 900_000
 // undocumented (~600 live flows observed at the failure edge); `…SoftCap` sits
 // below that with margin. They MUST be calibrated against an on-device
 // burst/soak run (see scripts/soak_test.sh + the burst regression test) before
-// being trusted. `…SoftCap == 0` disables the backstop. `var` for test tuning,
-// same pattern as the other `default…Ms` knobs above.
-nonisolated(unsafe) var defaultFlowPressureSoftCap: UInt32 = 450
-nonisolated(unsafe) var defaultFlowPressureLowWater: UInt32 = 350
-nonisolated(unsafe) var defaultFlowPressureIdleFloorMs: UInt32 = 120_000
+// being trusted. `…SoftCap == 0` disables the backstop. These controls share
+// one lock because provider startup applies them as a unit while maintenance
+// may already exist in defensive/test configurations. They are not read on
+// the per-byte or per-datagram data path.
+private struct FlowPressureDefaults {
+    var softCap: UInt32 = 450
+    var lowWater: UInt32 = 350
+    var idleFloorMs: UInt32 = 120_000
+}
+
+private let flowPressureDefaults = Locked(FlowPressureDefaults())
+
+var defaultFlowPressureSoftCap: UInt32 {
+    get { flowPressureDefaults.withLock { $0.softCap } }
+    set { flowPressureDefaults.withLock { $0.softCap = newValue } }
+}
+
+var defaultFlowPressureLowWater: UInt32 {
+    get { flowPressureDefaults.withLock { $0.lowWater } }
+    set { flowPressureDefaults.withLock { $0.lowWater = newValue } }
+}
+
+var defaultFlowPressureIdleFloorMs: UInt32 {
+    get { flowPressureDefaults.withLock { $0.idleFloorMs } }
+    set { flowPressureDefaults.withLock { $0.idleFloorMs = newValue } }
+}
+
+private func setFlowPressureDefaults(
+    softCap: UInt32, lowWater: UInt32, idleFloorMs: UInt32
+) {
+    flowPressureDefaults.withLock { defaults in
+        defaults.softCap = softCap
+        defaults.lowWater = lowWater
+        defaults.idleFloorMs = idleFloorMs
+    }
+}
 
 /// Keep an enabled reaper's target strictly below its trigger. This guarantees
 /// at least one slot of hysteresis; deployments that want a larger batch gap
@@ -916,17 +946,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             )
             return
         }
-        core.attachEngine(engine)
-        core.logLifecycle("engine created")
-
         guard let startup = engine.config() else {
             core.logLifecycleError("failed to get transparent proxy config from rust")
-            // Apple does NOT call `stopProxy` to clean up after a failed
-            // `startProxy`, so any state we attached above must be torn
-            // down locally before we surface the error — otherwise the
-            // engine and the 60s flow-count telemetry timer leak until
-            // the next provider lifecycle.
-            core.detachEngine(reason: 0)
+            // The core is deliberately not attached until configuration is
+            // installed. Stop this locally-owned engine because Apple does
+            // not compensate a failed `startProxy` with `stopProxy`.
+            engine.stop(reason: 0)
             let error = NSError(
                 domain: "RamaTransparentProxy.Startup",
                 code: 2,
@@ -948,6 +973,10 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         Self.applyRuntimeConfig(from: startup) { [core] msg in
             core.logLifecycle(msg)
         }
+        // Publish the engine only after every startup policy is installed.
+        // No maintenance task or flow callback can observe a partial config.
+        core.attachEngine(engine)
+        core.logLifecycle("engine created")
 
         let settings = Self.buildNetworkSettings(
             from: startup,
@@ -1147,11 +1176,13 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     ) {
         writePumpMaxPendingBytes = startup.tcpWritePumpMaxPendingBytes
         writePumpHwmLogThresholdBytes = writePumpMaxPendingBytes / 2
-        defaultFlowPressureSoftCap = startup.flowPressureSoftCap
-        defaultFlowPressureLowWater = normalizedFlowPressureLowWater(
+        let flowPressureLowWater = normalizedFlowPressureLowWater(
             softCap: startup.flowPressureSoftCap,
             lowWater: startup.flowPressureLowWater)
-        defaultFlowPressureIdleFloorMs = startup.flowPressureIdleFloorMs
+        setFlowPressureDefaults(
+            softCap: startup.flowPressureSoftCap,
+            lowWater: flowPressureLowWater,
+            idleFloorMs: startup.flowPressureIdleFloorMs)
         defaultTcpStartInFlightHardCap = startup.tcpStartInFlightHardCap
         defaultTcpStartInFlightSoftCap = startup.tcpStartInFlightSoftCap
         defaultTcpStartLatencyBreakerP95Ms = startup.tcpStartLatencyBreakerP95Ms
@@ -1160,10 +1191,10 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         defaultTcpBreakerConnectTimeoutMs = startup.tcpBreakerConnectTimeoutMs
         defaultFlowRefusalPassthrough = startup.flowRefusalPassthrough
 
-        if defaultFlowPressureLowWater != startup.flowPressureLowWater {
+        if flowPressureLowWater != startup.flowPressureLowWater {
             logLifecycle(
                 "flow pressure lowWater=\(startup.flowPressureLowWater) outside 0..<"
-                    + "\(startup.flowPressureSoftCap); using \(defaultFlowPressureLowWater)"
+                    + "\(startup.flowPressureSoftCap); using \(flowPressureLowWater)"
             )
         }
         logLifecycle("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")

@@ -29,10 +29,9 @@ extension RamaTcpEgressConnectOptions {
         has_connect_timeout_ms ? connect_timeout_ms : nil
     }
 
-    /// Wall-clock cap on the egress writer's linger after
-    /// FIN, in milliseconds. `nil` when the engine didn't
-    /// set one (caller should fall back to
-    /// `defaultLingerCloseMs`).
+    /// Grace after a promoted flow reaches terminal before its egress
+    /// connection is force-cancelled, in milliseconds. `nil` when the engine
+    /// didn't set one (caller should fall back to `defaultLingerCloseMs`).
     var lingerCloseMs: UInt32? {
         has_linger_close_ms ? linger_close_ms : nil
     }

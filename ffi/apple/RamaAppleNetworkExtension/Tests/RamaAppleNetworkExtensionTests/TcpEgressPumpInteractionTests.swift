@@ -6,12 +6,12 @@ import XCTest
 
 /// Cross-pump interaction tests for the egress side of a TCP session.
 ///
-/// The linger-cancel watchdog and hard-stop fallback in the read pump are
+/// The terminal-release watchdog and hard-stop fallback in the read pump are
 /// each tested in isolation by their own suites. The bugs that
 /// actually showed up in the field, though, came from the
 /// *interaction* between the two pumps and the NWConnection
 /// state machine — a
-/// connection that lingered after FIN AND then peer-EOFed mid-linger,
+/// connection whose pumps terminate along different paths,
 /// for example, has to leave nothing leaked regardless of which
 /// backstop fires first.
 ///
@@ -81,10 +81,8 @@ final class TcpEgressPumpInteractionTests: XCTestCase {
 
     // MARK: - Drain + peer EOF interaction
 
-    /// Local FIN sent, then peer EOF arrives before the linger
-    /// watchdog fires. The expected end state: connection cancelled
-    /// (by one of the backstops), pumps both off, no orphan timer
-    /// outstanding. Pump cancel must invalidate both watchdogs.
+    /// Local FIN sent, then peer EOF arrives. Neither half-close alone starts
+    /// the terminal grace. External pump cancellation must leave no timer.
     func testDrainThenPeerEofBeforeLinger() {
         let engine = makeEngine()
         defer { engine.stop(reason: 0) }
@@ -112,8 +110,8 @@ final class TcpEgressPumpInteractionTests: XCTestCase {
         XCTAssertEqual(mock.sentChunks.count, 1, "FIN should have been sent")
         XCTAssertEqual(mock.cancelCount, 0, "no watchdog should have fired yet")
 
-        // Simulate peer EOF on the read side. It is a legal half-close, so the
-        // write-side linger is the only short backstop that remains armed.
+        // Peer EOF is also a legal half-close at the pump level. The owner
+        // composes both directions and arms terminal release when appropriate.
         mock.completePendingReceive(isComplete: true)
         waitForQueueDrain(queue)
 
@@ -161,6 +159,7 @@ final class TcpEgressPumpInteractionTests: XCTestCase {
 
         readPump.start()
         writePump.closeWhenDrained()
+        writePump.armTerminalLingerCancel()
         mock.completePendingReceive(
             isComplete: false,
             error: NWError.posix(.ECONNRESET))
@@ -276,6 +275,7 @@ final class TcpEgressPumpInteractionTests: XCTestCase {
 
             readPump.start()
             writePump.closeWhenDrained()
+            writePump.armTerminalLingerCancel()
             mock.completePendingReceive(
                 isComplete: false,
                 error: NWError.posix(.ECONNRESET))

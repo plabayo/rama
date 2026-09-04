@@ -787,7 +787,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// Only mutated on `stateQueue`.
     private struct PressureEpisode {
         var startNs: UInt64
-        var startEpochMs: UInt64
+        var startEpochUs: UInt64
         var peakOccupancy: UInt64
         var scans = 0
         var skips = 0
@@ -864,8 +864,8 @@ final class TransparentProxyCore: @unchecked Sendable {
         return (nowNs - sinceNs) / 1_000_000
     }
 
-    private static func wallClockEpochMs() -> UInt64 {
-        UInt64(max(Date().timeIntervalSince1970 * 1_000, 0))
+    private static func wallClockEpochUs() -> UInt64 {
+        UInt64(max(Date().timeIntervalSince1970 * 1_000_000, 0))
     }
 
     private static func pressureLowWater() -> UInt64 {
@@ -1088,7 +1088,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         var episode = pressureEpisode
             ?? PressureEpisode(
                 startNs: nowNs,
-                startEpochMs: Self.wallClockEpochMs(),
+                startEpochUs: Self.wallClockEpochUs(),
                 peakOccupancy: occupancy)
         episode.scans += 1
         episode.peakOccupancy = max(episode.peakOccupancy, occupancy)
@@ -2006,6 +2006,20 @@ final class TransparentProxyCore: @unchecked Sendable {
             stateQueue.sync { self.pressureVictimDispatchLeaseMs = value }
         }
 
+        /// Stop this test core, wait for every registered flow queue to apply
+        /// teardown, then drain the resulting registry callbacks. Tests that
+        /// temporarily mutate process-global policy must use this boundary
+        /// before restoring it.
+        func testDetachAndDrainFlowQueues() {
+            let flowQueues: [DispatchQueue] = stateQueue.sync {
+                tcpSessions.values.compactMap { $0.ctx.flowQueue }
+                    + udpSessions.values.compactMap { $0.ctx.flowQueue }
+            }
+            detachEngine(reason: 0)
+            for queue in flowQueues { queue.sync {} }
+            stateQueue.sync {}
+        }
+
         var testPressureVictimDispatchLeaseMs: UInt64 {
             stateQueue.sync { self.pressureVictimDispatchLeaseMs }
         }
@@ -2615,15 +2629,17 @@ final class TransparentProxyCore: @unchecked Sendable {
         let durationMs = Self.elapsedMs(
             nowNs: DispatchTime.now().uptimeNanoseconds,
             sinceNs: episode.startNs)
+        let startEpochMs = episode.startEpochUs / 1_000
         logLifecycle(
-            "flow pressure episode \(outcome): startEpochMs=\(episode.startEpochMs) "
+            "flow pressure episode \(outcome): startEpochMs=\(startEpochMs) "
                 + "durationMs=\(durationMs) "
                 + "peakOccupancy=\(episode.peakOccupancy) "
                 + "softCap=\(defaultFlowPressureSoftCap) "
                 + "scans=\(episode.scans) skipped=\(episode.skips) "
                 + "selected=\(episode.selections) evicted=\(episode.evicted) "
                 + "spared=\(episode.spared) canceled=\(episode.canceled) "
-                + "expired=\(episode.expired)")
+                + "expired=\(episode.expired) "
+                + "startEpochUs=\(episode.startEpochUs)")
     }
 
     /// Count of currently-registered TCP flows. Test-only signal for

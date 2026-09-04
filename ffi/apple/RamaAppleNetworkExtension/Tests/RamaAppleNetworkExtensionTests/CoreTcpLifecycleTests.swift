@@ -460,8 +460,10 @@ final class CoreTcpLifecycleTests: XCTestCase {
         waitFor("via-Rust egress receive is pending") {
             conn.pendingReceiveCount > 0
         }
-        guard let ctx = fx.core.testInspectTcpContext(for: flow) else {
-            return XCTFail("registered context")
+        guard let ctx = fx.core.testInspectTcpContext(for: flow),
+            let flowQueue = ctx.flowQueue
+        else {
+            return XCTFail("registered context with flow queue")
         }
         XCTAssertEqual(ctx.mode, .viaRust)
 
@@ -471,7 +473,7 @@ final class CoreTcpLifecycleTests: XCTestCase {
             isComplete: false,
             error: error)
         waitFor("egress receive error reaches the session") {
-            ctx.egressReadError != nil
+            flowQueue.sync { ctx.egressReadError != nil }
         }
         XCTAssertEqual(
             flow.pendingReadCount, 1,
@@ -480,11 +482,12 @@ final class CoreTcpLifecycleTests: XCTestCase {
         waitFor("egress receive error removes the flow", timeout: 3.0) {
             fx.core.tcpFlowCount == 0
         }
+        let lifecycle = flowQueue.sync { (mode: ctx.mode, done: ctx.isDone) }
         guard case .posix(.ECONNRESET)? = flow.lastCloseReadError as? NWError else {
             return XCTFail(
                 "read close must preserve ECONNRESET, got "
                     + "\(String(describing: flow.lastCloseReadError)); "
-                    + "mode=\(ctx.mode) done=\(ctx.isDone) "
+                    + "mode=\(lifecycle.mode) done=\(lifecycle.done) "
                     + "readCloses=\(flow.closeReadCallCount)")
         }
         guard case .posix(.ECONNRESET)? = flow.lastCloseWriteError as? NWError else {

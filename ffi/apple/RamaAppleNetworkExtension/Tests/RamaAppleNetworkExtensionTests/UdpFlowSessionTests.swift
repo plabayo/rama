@@ -85,6 +85,20 @@ final class UdpFlowSessionTests: XCTestCase {
         XCTAssertEqual(fx.session.ctx.readState, .reading)
     }
 
+    func testRequestReadFromFlowQueueNeverReentersReadDatagrams() {
+        let fx = Fixture()
+        fx.session.installRequestRead()
+
+        fx.session.flowQueue.sync {
+            fx.session.ctx.requestRead?()
+            XCTAssertEqual(
+                fx.flow.pendingReadCount, 0,
+                "Rust demand must unwind before a kernel read is issued")
+        }
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(fx.flow.pendingReadCount, 1)
+    }
+
     /// While a read is in flight, a second `requestRead` coalesces
     /// into the `readingWithDemand` state — does NOT issue a second
     /// concurrent `readDatagrams`.
@@ -100,5 +114,70 @@ final class UdpFlowSessionTests: XCTestCase {
         wait(for: [exp], timeout: 2.0)
         XCTAssertEqual(fx.flow.pendingReadCount, 1, "second demand must not issue a second concurrent read")
         XCTAssertEqual(fx.session.ctx.readState, .readingWithDemand)
+    }
+
+    func testRequestReadBurstQueuesOneSaturatingRunner() {
+        let fx = Fixture()
+        fx.session.installRequestRead()
+        guard let requestRead = fx.session.ctx.requestRead else {
+            return XCTFail("requestRead installed")
+        }
+
+        let blockerStarted = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        fx.session.flowQueue.async {
+            blockerStarted.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerStarted.wait(timeout: .now() + 1), .success)
+
+        DispatchQueue.concurrentPerform(iterations: 50_000) { _ in requestRead() }
+        let saturated = fx.session.testReadDemandSnapshot
+        XCTAssertEqual(saturated.credits, 2)
+        XCTAssertTrue(saturated.runnerQueued)
+        XCTAssertEqual(saturated.runnerSchedules, 1)
+        XCTAssertEqual(fx.flow.pendingReadCount, 0)
+
+        releaseBlocker.signal()
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(fx.flow.pendingReadCount, 1)
+        XCTAssertEqual(fx.session.ctx.readState, .readingWithDemand)
+    }
+
+    func testReadErrorClosesDemandBeforeQueuedRunner() {
+        let fx = Fixture()
+        fx.session.installTerminate()
+        fx.session.installRequestRead()
+        fx.session.ctx.requestRead?()
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(fx.flow.pendingReadCount, 1)
+
+        XCTAssertTrue(
+            fx.flow.completePendingRead(
+                error: NSError(domain: NSPOSIXErrorDomain, code: Int(ECONNRESET))))
+        // This runner lands behind the error handler but ahead of the teardown
+        // block that the handler queues. The closed demand gate must stop it
+        // from issuing a post-terminal kernel read.
+        fx.session.ctx.requestRead?()
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(fx.flow.pendingReadCount, 0)
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(fx.session.ctx.readState, .closed)
+    }
+
+    func testIdleActivityIsMonotonicAndStopsAtTermination() {
+        let fx = Fixture()
+        fx.session.idleTimeoutMs = 1_000
+        fx.session.installTerminate()
+        fx.session.recordIdleActivity(nowUptimeNs: 200)
+        fx.session.recordIdleActivity(nowUptimeNs: 100)
+        XCTAssertEqual(fx.session.testIdleActivitySnapshot.lastUptimeNs, 200)
+
+        fx.session.ctx.terminate?(nil)
+        fx.session.flowQueue.sync {}
+        fx.session.recordIdleActivity(nowUptimeNs: 300)
+        let closed = fx.session.testIdleActivitySnapshot
+        XCTAssertTrue(closed.closed)
+        XCTAssertNil(closed.lastUptimeNs)
     }
 }

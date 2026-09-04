@@ -498,12 +498,9 @@ typedef struct {
     /// Whether `linger_close_ms` carries a meaningful value;
     /// `false` ⇒ Swift uses its built-in default.
     bool has_linger_close_ms;
-    /// Wall-clock cap (ms) on how long the egress NWConnection lingers
-    /// after the local side has sent its FIN before Swift force-cancels
-    /// the connection. Without this watchdog a peer that fails to send
-    /// its own FIN-ACK keeps the socket pinned in FIN_WAIT_1 and the
-    /// macOS NECP flow registration alive, which compounds with new
-    /// flow starts into the path-evaluator slowdown.
+    /// Grace (ms) after a promoted flow reaches terminal before Swift
+    /// force-cancels its egress NWConnection. A successful local FIN alone
+    /// does not start this grace because the response half may remain quiet.
     uint32_t linger_close_ms;
     /// Whether `egress_eof_grace_ms` carries a meaningful value;
     /// `false` ⇒ Swift uses its built-in default.

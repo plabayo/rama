@@ -101,6 +101,39 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         XCTAssertEqual(terminalCount, 0)
     }
 
+    func testOnQueueClosePrecedesAlreadyQueuedWriteCompletion() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        let pump = UdpClientWritePump(
+            flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+        pump.markOpened()
+        pump.enqueue(tag(1), sentBy: ep())
+        pump.enqueue(tag(2), sentBy: ep())
+        queue.sync {}
+
+        let blockerStarted = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        queue.async {
+            blockerStarted.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerStarted.wait(timeout: .now() + 1), .success)
+
+        // Termination is ahead of the in-flight completion on the same queue.
+        // Closing the pump must be immediate in that block; otherwise the
+        // completion flushes tag 2 after the kernel write half is closed.
+        queue.async {
+            pump.close()
+            flow.closeWriteWithError(nil)
+        }
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+        releaseBlocker.signal()
+        queue.sync {}
+
+        XCTAssertTrue(flow.writtenBatches.isEmpty)
+        XCTAssertEqual(flow.writeAfterCloseCount, 0)
+    }
+
     // MARK: - drop-on-full lossy bound
 
     /// UDP is lossy: once `pending.count >= udpWritePumpMaxPending` (256) the
@@ -142,5 +175,74 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         XCTAssertEqual(
             drained, Array(0...256),
             "the oldest 257 datagrams are retained in FIFO order; the newest are dropped on overflow")
+    }
+
+    func testDispatchBacklogIsBoundedBeforeFlowQueueRuns() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        var activityCount = 0
+        let pump = UdpClientWritePump(
+            flow: flow,
+            queue: queue,
+            logger: { _ in },
+            onTerminalError: { _ in },
+            onActivity: { activityCount += 1 }
+        )
+        pump.markOpened()
+        pump.enqueue(tag(0), sentBy: ep())
+        queue.sync {}
+
+        let blockerStarted = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        queue.async {
+            blockerStarted.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerStarted.wait(timeout: .now() + 1), .success)
+
+        for n in 1...10_000 { pump.enqueue(tag(n), sentBy: ep()) }
+        let saturated = pump.testAdmissionSnapshot
+        XCTAssertEqual(saturated.waiting, udpWritePumpMaxPending)
+        XCTAssertEqual(saturated.acceptedDispatches, 257)
+        XCTAssertEqual(saturated.droppedFull, 9_744)
+        XCTAssertEqual(saturated.fullLogCount, 1)
+        XCTAssertEqual(activityCount, 10_001)
+
+        pump.close()
+        for n in 10_001...10_100 { pump.enqueue(tag(n), sentBy: ep()) }
+        XCTAssertEqual(pump.testAdmissionSnapshot.acceptedDispatches, 257)
+        XCTAssertEqual(activityCount, 10_001)
+
+        releaseBlocker.signal()
+        queue.sync {}
+        let closed = pump.testAdmissionSnapshot
+        XCTAssertTrue(closed.closed)
+        XCTAssertEqual(closed.waiting, 0)
+    }
+
+    func testInlineEndpointUpdatesAreCapturedInOrder() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        let pump = UdpClientWritePump(
+            flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+        pump.markOpened()
+        queue.sync {}
+
+        let first = ep(5353)
+        let second = ep(5354)
+        queue.sync {
+            pump.setSentByEndpoint(first)
+            XCTAssertEqual(pump.testSentByEndpointSetCount, 1)
+            pump.enqueue(tag(1))
+            pump.setSentByEndpoint(second)
+            XCTAssertEqual(pump.testSentByEndpointSetCount, 2)
+            pump.enqueue(tag(2))
+        }
+        queue.sync {}
+
+        XCTAssertEqual(String(describing: flow.writtenBatches[0].sentBy[0]), String(describing: first))
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+        queue.sync {}
+        XCTAssertEqual(String(describing: flow.writtenBatches[0].sentBy[0]), String(describing: second))
     }
 }

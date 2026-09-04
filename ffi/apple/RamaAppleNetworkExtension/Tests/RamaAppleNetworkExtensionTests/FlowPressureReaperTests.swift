@@ -14,19 +14,20 @@ import XCTest
 /// peers) or the idle reaper (minutes) reclaim, and exhaustion freezes ALL
 /// proxied networking (`NECP_CLIENT_ACTION_ADD_FLOW … ENOMEM`).
 ///
-/// The backstop: when admitting a flow pushes the COMBINED live count to/over
-/// `defaultFlowPressureSoftCap`, reap `.promoted` flows idle past
-/// `defaultFlowPressureIdleFloorMs`, oldest-idle first (LRU), down to
-/// `defaultFlowPressureLowWater` — freeing slots for SUBSEQUENT flows while
-/// NEVER refusing the new one and NEVER touching an active flow.
+/// The backstop reaps established idle TCP flows in either `.viaRust` or
+/// `.promoted` mode, oldest-idle first, toward normalized low-water. It never
+/// refuses the new flow or selects an active flow.
 ///
-/// These drive the reap synchronously via `testReapIdleUnderPressure` and push
-/// `lastActivityAt` into the past instead of waiting real time.
+/// Selection-focused tests use the synchronous test seam and synthetic
+/// activity times. Admission and composition tests use production entry points
+/// and real per-flow queues.
 final class FlowPressureReaperTests: XCTestCase {
 
     private var savedSoftCap: UInt32 = 0
     private var savedLowWater: UInt32 = 0
     private var savedFloorMs: UInt32 = 0
+    private var cores: [TransparentProxyCore] = []
+    private var pressureFlowQueues: [DispatchQueue] = []
 
     override class func setUp() {
         super.setUp()
@@ -41,6 +42,11 @@ final class FlowPressureReaperTests: XCTestCase {
     }
 
     override func tearDown() {
+        for core in cores { core.testDetachAndDrainFlowQueues() }
+        for queue in pressureFlowQueues { queue.sync {} }
+        for core in cores { _ = core.testPressureSelectionsTotal }
+        pressureFlowQueues.removeAll(keepingCapacity: false)
+        cores.removeAll(keepingCapacity: false)
         LifecycleLog.noticeOverride = nil
         defaultFlowPressureSoftCap = savedSoftCap
         defaultFlowPressureLowWater = savedLowWater
@@ -92,6 +98,7 @@ final class FlowPressureReaperTests: XCTestCase {
     private func makeCore(dispatchLeaseMs: UInt64 = 5_000) -> TransparentProxyCore {
         let core = TransparentProxyCore()
         core.testSetPressureVictimDispatchLeaseMs(dispatchLeaseMs)
+        cores.append(core)
         return core
     }
 
@@ -203,7 +210,10 @@ final class FlowPressureReaperTests: XCTestCase {
     }
 
     private func insert(_ core: TransparentProxyCore, _ fxs: [Fx]) {
-        for fx in fxs { core.testInsertTcpContext(fx.flowId, fx.ctx) }
+        for fx in fxs {
+            if let queue = fx.ctx.flowQueue { pressureFlowQueues.append(queue) }
+            core.testInsertTcpContext(fx.flowId, fx.ctx)
+        }
     }
 
     // MARK: - Reap idle down to low-water
@@ -1581,7 +1591,7 @@ final class FlowPressureReaperTests: XCTestCase {
         defaultFlowPressureSoftCap = 2
         defaultFlowPressureLowWater = 1
         defaultFlowPressureIdleFloorMs = 5_000
-        let core = TransparentProxyCore()
+        let core = makeCore(dispatchLeaseMs: 250)
         XCTAssertEqual(core.testPressureVictimDispatchLeaseMs, 250)
         let (queue, gate) = gatedQueue("exact-production-lease")
         defer { gate.signal() }

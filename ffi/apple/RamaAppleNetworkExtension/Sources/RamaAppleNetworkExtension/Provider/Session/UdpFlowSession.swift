@@ -21,6 +21,22 @@ protocol UdpFlowSessionAnchor: AnyObject {
     var ctx: UdpFlowContext { get }
 }
 
+private struct UdpIdleActivityState {
+    var closed = false
+    var lastUptimeNs: UInt64?
+}
+
+private struct UdpReadDemandGate {
+    var closed = false
+    /// One credit starts a read; the second preserves the single follow-up
+    /// represented by `UdpFlowReadState.readingWithDemand`.
+    var credits: UInt8 = 0
+    var runnerQueued = false
+    #if DEBUG
+        var runnerSchedules: UInt64 = 0
+    #endif
+}
+
 /// Per-UDP-flow state machine.
 ///
 /// Replaces the body of `TransparentProxyCore.handleUdpFlow`.
@@ -45,11 +61,15 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     var idleTimeoutMs: UInt32 = defaultUdpIdleTimeoutMs
 
     /// Pending one-shot idle work item and monotonic activity time,
-    /// both queue-confined. Datagram activity only updates the
-    /// timestamp. The outstanding timer observes it when it fires
+    /// with the timer queue-confined and the timestamp lock-protected.
+    /// Datagram activity can originate on the Rust callback thread and only
+    /// updates the timestamp. The outstanding timer observes it when it fires
     /// and re-arms once for any remaining idle interval.
     var idleWork: DispatchWorkItem?
-    private var idleLastActivityAtUptimeNs: UInt64?
+    private let idleActivity = Locked(UdpIdleActivityState())
+    /// Cross-thread demand is saturated before dispatch so one Rust callback
+    /// per datagram cannot allocate one flow-queue block per datagram.
+    private let readDemand = Locked(UdpReadDemandGate())
 
     #if DEBUG
         /// Test-only count of actual queue schedules, not activity
@@ -153,9 +173,13 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             flowQueue.async {
                 guard ctx.readState != .closed else { return }
                 ctx.readState = .closed
+                session?.closeReadDemandGate()
                 session?.idleWork?.cancel()
                 session?.idleWork = nil
-                session?.idleLastActivityAtUptimeNs = nil
+                session?.idleActivity.withLock { state in
+                    state.closed = true
+                    state.lastUptimeNs = nil
+                }
                 ctx.writer?.close()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
@@ -189,22 +213,31 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         guard timeout > 0 else {
             idleWork?.cancel()
             idleWork = nil
-            idleLastActivityAtUptimeNs = nil
+            idleActivity.withLock { $0.lastUptimeNs = nil }
             return
         }
-        idleLastActivityAtUptimeNs = nowUptimeNs
+        let active = idleActivity.withLock { state in
+            guard !state.closed else { return false }
+            state.lastUptimeNs = max(state.lastUptimeNs ?? 0, nowUptimeNs)
+            return true
+        }
+        guard active else { return }
         guard idleWork == nil else { return }
         scheduleIdleTimer(afterNs: UInt64(timeout) * 1_000_000)
     }
 
-    /// Record one datagram in either direction. This is deliberately
-    /// only a monotonic timestamp write on the flow queue: high-rate
-    /// traffic must not cancel, allocate, or enqueue timer work.
+    /// Record one datagram in either direction. This thread-safe operation is
+    /// deliberately only a monotonic timestamp update: high-rate traffic must
+    /// not cancel, allocate, or enqueue timer work. Taking the maximum keeps
+    /// out-of-order callback threads from moving the clock backward.
     func recordIdleActivity(
         nowUptimeNs: UInt64 = DispatchTime.now().uptimeNanoseconds
     ) {
         guard idleTimeoutMs > 0 else { return }
-        idleLastActivityAtUptimeNs = nowUptimeNs
+        idleActivity.withLock { state in
+            guard !state.closed else { return }
+            state.lastUptimeNs = max(state.lastUptimeNs ?? 0, nowUptimeNs)
+        }
     }
 
     private func scheduleIdleTimer(afterNs delayNs: UInt64) {
@@ -232,10 +265,11 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         guard ctx.readState != .closed else { return }
         let timeout = idleTimeoutMs
         guard timeout > 0 else {
-            idleLastActivityAtUptimeNs = nil
+            idleActivity.withLock { $0.lastUptimeNs = nil }
             return
         }
-        guard let lastActivityAt = idleLastActivityAtUptimeNs else {
+        let lastActivityAt = idleActivity.withLock { $0.lastUptimeNs }
+        guard let lastActivityAt else {
             armIdleTimer(nowUptimeNs: nowUptimeNs)
             return
         }
@@ -270,26 +304,59 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     }
 
     func installRequestRead() {
-        let flow = self.flow
-        let flowQueue = self.flowQueue
-        // Use a weak self capture only on the readDatagrams
-        // completion — that's the only branch that needs to call
-        // back into the session's `handleReadCompletion`. If self
-        // is gone by then the flow is being torn down and
-        // dropping the bytes is safe (the read pump is closed).
-        ctx.requestRead = { [weak ctx, weak self] in
-            flowQueue.async { [weak ctx, weak self] in
-                guard let ctx, ctx.readState != .closed else { return }
-                if ctx.readState == .reading || ctx.readState == .readingWithDemand {
-                    ctx.readState = .readingWithDemand
-                    return
-                }
-                ctx.readState = .reading
-                flow.readDatagrams { [weak self] datagrams, endpoints, error in
-                    self?.handleReadCompletion(
-                        datagrams: datagrams, endpoints: endpoints, error: error)
-                }
+        ctx.requestRead = { [weak self] in
+            self?.enqueueReadDemand()
+        }
+    }
+
+    private func enqueueReadDemand() {
+        readDemand.withLock { state in
+            guard !state.closed else { return }
+            state.credits = min(2, state.credits &+ 1)
+            guard !state.runnerQueued else { return }
+            state.runnerQueued = true
+            #if DEBUG
+                state.runnerSchedules &+= 1
+            #endif
+            flowQueue.async { [weak self] in self?.runReadDemand() }
+        }
+    }
+
+    private func runReadDemand() {
+        let credits = readDemand.withLock { state -> UInt8 in
+            guard !state.closed else {
+                state.credits = 0
+                state.runnerQueued = false
+                return 0
             }
+            let credits = state.credits
+            state.credits = 0
+            state.runnerQueued = false
+            return credits
+        }
+        guard credits > 0 else { return }
+
+        switch ctx.readState {
+        case .idle:
+            ctx.readState = credits > 1 ? .readingWithDemand : .reading
+            flow.readDatagrams { [weak self] datagrams, endpoints, error in
+                self?.handleReadCompletion(
+                    datagrams: datagrams, endpoints: endpoints, error: error)
+            }
+        case .reading:
+            ctx.readState = .readingWithDemand
+        case .readingWithDemand:
+            break
+        case .closed:
+            closeReadDemandGate()
+        }
+    }
+
+    private func closeReadDemandGate() {
+        readDemand.withLock { state in
+            state.closed = true
+            state.credits = 0
+            state.runnerQueued = false
         }
     }
 
@@ -304,17 +371,20 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             if let error {
                 let msg = classifyFlowCallbackError(error, operation: "udp flow.read")
                 self.core?.logFlowMessage(msg)
+                self.closeReadDemandGate()
                 ctx.terminate?(error)
                 return
             }
             guard let datagrams, !datagrams.isEmpty else {
                 self.core?.logTrace("flow.readDatagrams eof")
+                self.closeReadDemandGate()
                 ctx.terminate?(nil)
                 return
             }
             guard let session = ctx.session else {
                 self.core?.logDebug(
                     "udp flow read received but session no longer active; closing flow")
+                self.closeReadDemandGate()
                 ctx.terminate?(nil)
                 return
             }
@@ -412,4 +482,18 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             }
         }
     }
+
+    #if DEBUG
+        var testReadDemandSnapshot: (
+            closed: Bool, credits: UInt8, runnerQueued: Bool, runnerSchedules: UInt64
+        ) {
+            readDemand.withLock { state in
+                (state.closed, state.credits, state.runnerQueued, state.runnerSchedules)
+            }
+        }
+
+        var testIdleActivitySnapshot: (closed: Bool, lastUptimeNs: UInt64?) {
+            idleActivity.withLock { ($0.closed, $0.lastUptimeNs) }
+        }
+    #endif
 }

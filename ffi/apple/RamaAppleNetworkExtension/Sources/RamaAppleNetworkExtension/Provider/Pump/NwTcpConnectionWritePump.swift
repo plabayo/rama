@@ -17,23 +17,16 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
     /// the egress is dead and wedges → flow leak. See
     /// `pumpCore(_:didTerminateWith:)`.
     private let onTerminal: @Sendable (Error) -> Void
-    /// Wall-clock cap on how long the egress NWConnection lingers after
-    /// the local side has sent its FIN (an empty `send` with
-    /// `isComplete: true`) before this pump force-cancels the
-    /// connection. A peer that fails to send its own FIN-ACK would
-    /// otherwise keep the kernel socket in FIN_WAIT_1 and the macOS
-    /// NECP flow registration alive — accumulating leaked
-    /// registrations is what makes new `nw_connection_start` calls
-    /// linearly slower on the workloop queue.
+    /// Grace after the whole promoted flow reaches terminal before this pump
+    /// force-cancels the egress connection. It is deliberately not armed by a
+    /// successful local FIN: a quiet response half is still valid TCP.
     private let lingerCloseDeadline: DispatchTimeInterval
     /// Scheduled linger-cancel work, retained so we can invalidate it
     /// when the connection closes naturally before the deadline (or
     /// when the pump is externally cancelled).
     private var lingerWork: DispatchWorkItem?
     /// Milliseconds since the flow last moved a byte, read on `core.queue`.
-    /// The linger watchdog consults this before force-cancelling: a FIN with
-    /// the read direction still streaming is a legitimate half-close, so it
-    /// re-arms while activity is recent and only cancels a quiet connection.
+    /// The terminal linger watchdog consults this before force-cancelling.
     /// Default `.max` (always idle) keeps the plain bounded linger for
     /// callers without a flow-activity clock.
     private let readSideIdleMs: @Sendable () -> UInt64
@@ -125,12 +118,9 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
                 return
             }
             if self.core.isClosed() {
-                // Core already closed: no FIN, so the linger watchdog that
-                // normally cancels the connection was never armed. In
-                // promoted mode `applyPromotedTerminal` delegates the cancel
-                // to this pump, so cancel here or the connection (and the
-                // graph anchored by its stateUpdateHandler) leaks. Safe — no
-                // FIN to clip on a closed core — and idempotent.
+                // Core already closed: no FIN and no later natural terminal
+                // can arm the release grace. Cancel here or the connection
+                // graph can leak. Safe — no FIN to clip — and idempotent.
                 self.connection.cancelAndDetach()
                 onDrained?()
                 return
@@ -150,10 +140,7 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
         let coreCleanup = core.prepareCancel()
         core.queue.async { [weak self] in
             coreCleanup()
-            // External cancel makes any outstanding linger watchdog
-            // moot — its only job is to force-cancel a connection
-            // whose peer never closed, and that path has now been
-            // pre-empted.
+            // External cancel pre-empts any terminal linger watchdog.
             self?.lingerWork?.cancel()
             self?.lingerWork = nil
             // Fire any pending closeWhenDrained callback so a
@@ -184,8 +171,8 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
 extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
     internal func pumpCore(_ core: TcpWritePumpCore, didTerminateWith error: Error) {
         // A terminal write error closes the core WITHOUT reaching
-        // `pumpCoreDidFinishDraining` — so no FIN is sent and no linger
-        // watchdog is armed. Two things must still happen, mirroring
+        // `pumpCoreDidFinishDraining` — so no FIN is sent and no terminal
+        // release grace can be armed. Two things must still happen, mirroring
         // `TcpClientWritePump.pumpCore(_:didTerminateWith:)` and the
         // `cancel()` path. Without them the promoted (`TcpDirectForwarder`)
         // hot path leaks:
@@ -199,8 +186,8 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
         //     waiting for the very `.finished` this callback unblocks.
         //
         //  2. Force-cancel the connection so its NECP registration is
-        //     released. The FIN → linger watchdog sequence that normally
-        //     owns connection teardown is skipped on the error path, and
+        //     released. The natural terminal-release sequence is skipped on
+        //     the error path, and
         //     `fireTerminalLocked` deliberately does NOT cancel the
         //     connection (it delegates to that watchdog). The nastiest
         //     trigger makes this load-bearing: the transient-backpressure
@@ -250,8 +237,8 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
             // Can't FIN on a non-`.ready` connection (e.g. the path
             // dropped to `.waiting`). The promoted terminal path
             // (`TcpDirectForwarder.fireTerminalLocked`) delegates the
-            // NWConnection cancel to the linger watchdog armed below —
-            // which we skip in this branch — so force-cancel here.
+            // NWConnection cancel to the later terminal-release grace, which
+            // this branch cannot reach, so force-cancel here.
             // Otherwise the connection (and the `connection → session →
             // ctx → connection` cycle + its NECP entry) leaks: a later
             // duplicate `.ready` even disarms the state handler's
@@ -263,9 +250,8 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
         // `.finalMessage` + `isComplete: true` is the documented way
         // to trigger a TCP half-close (FIN) on a `NWConnection`. Using
         // `.defaultMessage` only marks the logical message complete and
-        // leaves the stream open — the peer would never observe a
-        // half-close and the linger watchdog would have to escalate to
-        // a force-cancel. See
+        // leaves the stream open, so the peer would never observe a
+        // half-close. See
         // <https://developer.apple.com/documentation/network/nwconnection/contentcontext/finalmessage>.
         let callbackQueue = self.callbackQueue
         let callbackQueueKey = self.callbackQueueKey
@@ -294,21 +280,25 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
                 }
             })
         )
-        // The FIN is queued. Schedule the linger watchdog so the
-        // NWConnection registration is released even if the peer
-        // never replies with its own FIN. `cancel()` is idempotent.
-        armLingerCancel(afterMs: lingerCloseMs)
     }
 
-    /// Arm (or re-arm) the linger force-cancel `afterMs` from now. At fire
-    /// time it re-arms while `readSideIdleMs()` shows recent activity (a
-    /// live half-close) and cancels only a quiet connection.
+    /// Start the bounded release only after both promoted directions reached
+    /// terminal. Calling this before a quiet response half closes would impose
+    /// an application response deadline and truncate valid TCP traffic.
+    func armTerminalLingerCancel() {
+        if DispatchQueue.getSpecific(key: callbackQueueKey) != nil {
+            armLingerCancel(afterMs: lingerCloseMs)
+        } else {
+            core.queue.async { self.armLingerCancel(afterMs: self.lingerCloseMs) }
+        }
+    }
+
+    /// Arm (or re-arm) terminal force-cancel `afterMs` from now.
     ///
     /// Capture `connection` strongly: a promote teardown can drop the
     /// per-flow ctx (and us with it) right after the FIN send completes —
     /// `[weak self]` alone would no-op and leak the NWConnection. A gone
-    /// pump means the whole per-flow graph is gone and nothing can move
-    /// more bytes, so the cancel then proceeds unconditionally.
+    /// pump means the whole per-flow graph is gone, so cancellation proceeds.
     private func armLingerCancel(afterMs: UInt64) {
         guard afterMs != .max else { return }  // `.never` deadline: no watchdog
         let conn = connection

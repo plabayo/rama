@@ -149,13 +149,11 @@ run-tproxy-ffi-e2e-swift: build-tproxy-rs-debug
         -Xlinker -framework -Xlinker NetworkExtension \
         -Xlinker -framework -Xlinker SystemConfiguration
 
-# Swift unit tests under ThreadSanitizer. The suppression file matches only
-# remaining test-target polling of queue-confined state; production-side
-# suppressions are forbidden. Prefer queue barriers in new tests. See the file
-# header in RamaAppleNetworkExtension/tsan-suppressions.txt.
+# Full Swift unit suite under ThreadSanitizer. Suppressions are deliberately
+# forbidden: any reported race must fail this recipe and be fixed at its source.
 [working-directory: '.']
 run-tproxy-ffi-e2e-swift-tsan: build-tproxy-rs-debug
-    TSAN_OPTIONS="suppressions=$(pwd)/../../RamaAppleNetworkExtension/tsan-suppressions.txt" \
+    TSAN_OPTIONS="halt_on_error=1:exitcode=66" \
     swift test --sanitize=thread \
         -Xlinker -L$(pwd)/tproxy_rs/target/debug \
         -Xlinker -lrama_tproxy_example \

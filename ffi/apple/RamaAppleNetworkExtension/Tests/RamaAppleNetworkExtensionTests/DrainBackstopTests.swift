@@ -72,14 +72,18 @@ final class DrainBackstopTests: XCTestCase {
             fx.session.ctx.terminalSignalled,
             "terminalSignalled must be set synchronously so the watchdog can observe it")
         XCTAssertFalse(
-            fx.session.ctx.isDone,
+            fx.session.flowQueue.sync { fx.session.ctx.isDone },
             "teardown must not fire before the backstop deadline")
 
         fx.drainFlowQueue(afterMs: 60)
 
-        XCTAssertTrue(fx.session.ctx.isDone, "backstop must force a full teardown")
+        XCTAssertTrue(
+            fx.session.flowQueue.sync { fx.session.ctx.isDone },
+            "backstop must force a full teardown")
         XCTAssertEqual(fx.conn.cancelCount, 1, "egress connection cancelled exactly once")
-        XCTAssertNil(fx.session.ctx.connection, "connection slot nilled by applyFullTeardown")
+        XCTAssertNil(
+            fx.session.flowQueue.sync { fx.session.ctx.connection },
+            "connection slot nilled by applyFullTeardown")
     }
 
     /// If the graceful close already completed (teardown `done`), the
@@ -91,7 +95,7 @@ final class DrainBackstopTests: XCTestCase {
         fx.session.flowQueue.sync {
             fx.session.ctx.applyDrainedClose(wasOpened: true)
         }
-        XCTAssertTrue(fx.session.ctx.isDone)
+        XCTAssertTrue(fx.session.flowQueue.sync { fx.session.ctx.isDone })
         let cancelsAfterGraceful = fx.conn.cancelCount
 
         fx.session.flowQueue.sync { fx.session.armTerminalDrainBackstop() }

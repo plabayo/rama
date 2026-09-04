@@ -1,5 +1,6 @@
 """Stable parser for pressure telemetry emitted by TransparentProxyCore."""
 
+from decimal import Decimal
 import re
 
 
@@ -22,6 +23,7 @@ PRESSURE_EPISODE_RE = re.compile(
     r"peakOccupancy=(\d+) softCap=(\d+) scans=(\d+) skipped=(\d+) "
     r"selected=(\d+) evicted=(\d+) spared=(\d+) canceled=(\d+) expired=(\d+)"
 )
+START_EPOCH_US_RE = re.compile(r"\bstartEpochUs=(\d+)\b")
 
 PRESSURE_COUNTER_KEYS = (
     "triggers",
@@ -108,10 +110,51 @@ def pressure_episode(message):
         "canceled",
         "expired",
     )
-    return dict(zip(keys, (values[0], *map(int, values[1:]))))
+    event = dict(zip(keys, (values[0], *map(int, values[1:]))))
+    precise_start = START_EPOCH_US_RE.search(message)
+    event["start_epoch_us"] = (
+        int(precise_start.group(1))
+        if precise_start
+        else event["start_epoch_ms"] * 1_000
+    )
+    return event
 
 
-def summarize_pressure_rows(rows, baseline_end_epoch=None):
+def settled_final_flow_gauge(
+    rows,
+    settle_start_epoch,
+    settle_end_epoch,
+    minimum_samples=2,
+    nominal_period=60,
+    maximum_sample_age=70,
+):
+    """Return a trustworthy final gauge from a completed quiet tail.
+
+    A baseline or stress-phase gauge cannot prove that flows later settled.
+    Require a long-enough quiet phase, at least two samples from that phase,
+    and a sample near its end. `None` means the soak evidence is incomplete.
+    """
+    if settle_start_epoch is None or settle_end_epoch is None:
+        return None
+    if settle_end_epoch - settle_start_epoch < minimum_samples * nominal_period:
+        return None
+
+    samples = []
+    for epoch, message in rows:
+        gauge = flow_gauge(message)
+        if epoch is not None and epoch >= settle_start_epoch and gauge:
+            samples.append((epoch, gauge))
+    if len(samples) < minimum_samples:
+        return None
+    last_epoch, last_gauge = samples[-1]
+    if last_epoch < settle_end_epoch - maximum_sample_age:
+        return None
+    return last_gauge
+
+
+def summarize_pressure_rows(
+    rows, baseline_end_epoch=None, baseline_end_epoch_us=None
+):
     """Build non-double-counting pressure evidence from `(epoch, message)` rows.
 
     A lifecycle peak first observed after the boundary is not attributable to
@@ -123,6 +166,11 @@ def summarize_pressure_rows(rows, baseline_end_epoch=None):
     episode attribution never guesses from monotonic duration. Periodic deltas
     and episode totals overlap and callers must never sum them.
     """
+    if baseline_end_epoch_us is None and baseline_end_epoch is not None:
+        baseline_end_epoch_us = int(
+            Decimal(str(baseline_end_epoch)) * 1_000_000
+        )
+
     result = {
         "observed_peak": 0,
         "soft_caps": set(),
@@ -213,9 +261,8 @@ def summarize_pressure_rows(rows, baseline_end_epoch=None):
         episode = pressure_episode(message)
         if episode:
             if (
-                baseline_end_epoch is not None
-                and episode["start_epoch_ms"]
-                <= baseline_end_epoch * 1_000
+                baseline_end_epoch_us is not None
+                and episode["start_epoch_us"] <= baseline_end_epoch_us
             ):
                 continue
             result["episodes"] += 1

@@ -566,9 +566,8 @@ pub struct TcpEgressConnectOptions {
     /// Whether `linger_close_ms` carries a meaningful value.
     /// `false` ⇒ Swift uses its built-in default.
     pub has_linger_close_ms: bool,
-    /// Wall-clock cap (milliseconds) on how long the egress
-    /// `NWConnection` is allowed to linger after the local side has
-    /// sent its FIN before the Swift side force-cancels it.
+    /// Grace (milliseconds) after a promoted flow reaches terminal before
+    /// Swift force-cancels its egress `NWConnection`.
     ///
     /// See [`crate::tproxy::NwTcpConnectOptions::linger_close_timeout`].
     pub linger_close_ms: u32,

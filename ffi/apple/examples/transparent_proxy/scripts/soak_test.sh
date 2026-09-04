@@ -552,12 +552,14 @@ PYX="$(command -v python3 || true)"
 if [[ -n "$PYX" ]]; then
   "$PYX" - "$OUT" "$EXAMPLE_DIR/scripts" <<'PYEOF'
 import json, os, re, sys
+from decimal import Decimal
 from datetime import datetime, timezone
 
 sys.path.insert(0, sys.argv[2])
 from soak_pressure_log import (
     no_headroom_event,
     selection_event,
+    settled_final_flow_gauge,
     summarize_pressure_rows,
 )
 
@@ -576,19 +578,25 @@ phases = []
 pf = os.path.join(out, "phases.tsv")
 if os.path.exists(pf):
     starts = {}
+    phase_starts_us = {}
+    phase_ends_us = {}
     for ln in open(pf):
         p = ln.rstrip("\n").split("\t")
         if len(p) < 3:
             continue
         name, kind, epoch = p[0], p[1], p[2]
         try:
-            e = float(epoch)
-        except ValueError:
+            epoch_decimal = Decimal(epoch)
+            e = float(epoch_decimal)
+            e_us = int(epoch_decimal * 1_000_000)
+        except (ValueError, ArithmeticError):
             continue
         if kind == "start":
             starts[name] = e
+            phase_starts_us[name] = e_us
         elif kind == "end" and name in starts:
             phases.append([name, starts[name], e])
+            phase_ends_us[name] = e_us
 
 def phase_of(ep):
     if ep is None:
@@ -612,6 +620,7 @@ def to_epoch(ts):
 
 baseline_end_epoch = next(
     (end for name, _, end in phases if name == "baseline"), None)
+baseline_end_epoch_us = phase_ends_us.get("baseline")
 
 def is_in_run(ep):
     return baseline_end_epoch is None or (
@@ -650,7 +659,6 @@ life_re = re.compile(r"(startProxy|stopProxy|system sleep|system wake|engine cre
 
 peak_tcp = peak_udp = peak_total = 0
 softcap_seen = set()
-last_tcp = last_udp = None
 n_gauge = 0
 c = dict(admit_and_ride=0, wd_idle=0,
          wd_wedged=0, wd_prerdy=0, drain_backstop=0, body_err=0,
@@ -660,7 +668,16 @@ per_phase = {}
 
 pressure = summarize_pressure_rows(
     ((to_epoch(ts), msg) for ts, msg, _ in rows),
-    baseline_end_epoch=baseline_end_epoch)
+    baseline_end_epoch=baseline_end_epoch,
+    baseline_end_epoch_us=baseline_end_epoch_us)
+
+idle_tail = next(
+    ((start, end) for name, start, end in phases if name == "idle-tail"),
+    (None, None))
+final_gauge = settled_final_flow_gauge(
+    ((to_epoch(ts), msg) for ts, msg, _ in rows),
+    settle_start_epoch=idle_tail[0],
+    settle_end_epoch=idle_tail[1])
 
 def ph(n):
     return per_phase.setdefault(n, dict(peak_total=0, ride=0, body_err=0, gauge=0))
@@ -674,7 +691,7 @@ with open(os.path.join(out, "flow-counts.txt"), "w") as g, \
             tcp, udp, total, pk, sc = map(int, m.groups())
             g.write(f"{ts}  [{pname}]  tcp={tcp} udp={udp} total={total} peak={pk} softCap={sc}\n")
             peak_tcp = max(peak_tcp, tcp); peak_udp = max(peak_udp, udp); peak_total = max(peak_total, total)
-            last_tcp, last_udp = tcp, udp; softcap_seen.add(sc); n_gauge += 1
+            softcap_seen.add(sc); n_gauge += 1
             p = ph(pname); p["peak_total"] = max(p["peak_total"], total); p["gauge"] += 1
         selection = selection_event(msg)
         if selection is not None and is_in_run(ep):
@@ -743,7 +760,7 @@ if os.path.exists(fof):
                 fo_bad += 1
 
 baseline_total = int(meta.get("baseline_total", "0") or "0")
-final_total = (last_tcp or 0) + (last_udp or 0)
+final_total = final_gauge["total"] if final_gauge else None
 softcap_seen.update(pressure["soft_caps"])
 sc = max(softcap_seen) if softcap_seen else int(meta.get("softcap", "0") or "0")
 observed_peak = pressure["observed_peak"]
@@ -764,9 +781,9 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
     w("")
     w("--- leak (baseline-relative; assumes a quiet idle tail) ---")
     w(f"baseline live flows:      {baseline_total}")
-    w(f"final live flows:         {final_total}")
-    if last_tcp is None:
-        w("leak verdict:             (no gauge tick captured)")
+    w(f"final live flows:         {final_total if final_total is not None else 'n/a'}")
+    if final_total is None:
+        w("leak verdict:             INCONCLUSIVE — no trustworthy idle-tail gauge")
     elif final_total <= baseline_total + 5:
         w(f"leak verdict:             GOOD — settled to ≈baseline ({final_total} ≤ {baseline_total}+5)")
     else:

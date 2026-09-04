@@ -242,6 +242,9 @@ final class ExcludedSniPromotionTests: XCTestCase {
     }
 
     func testExcludedSniPromotionKeepsDownloadAliveAfterClientHalfClose() {
+        let savedLingerCloseMs = defaultLingerCloseMs
+        defaultLingerCloseMs = 75
+        defer { defaultLingerCloseMs = savedLingerCloseMs }
         let fixture = makeFixture()
         defer { fixture.core.detachEngine(reason: 0) }
 
@@ -258,11 +261,19 @@ final class ExcludedSniPromotionTests: XCTestCase {
 
         active.flow.completeRead(data: nil, error: nil)
         waitFor("client half-close finished") {
-            active.context.directForwarder?.c2sPhase == .finished
+            active.context.flowQueue?.sync {
+                active.context.directForwarder?.c2sPhase == .finished
+            } ?? false
         }
         waitFor("server receive remains active") {
             active.connection.pendingReceiveCount > 0
         }
+
+        Thread.sleep(forTimeInterval: 0.25)
+        active.context.flowQueue?.sync {}
+        XCTAssertEqual(
+            active.connection.cancelCount, 0,
+            "local FIN must not impose a deadline on a quiet response half")
 
         let download = payload("download", index: 1, size: 16 * 1024)
         XCTAssertTrue(
@@ -278,6 +289,9 @@ final class ExcludedSniPromotionTests: XCTestCase {
         XCTAssertEqual(active.connection.cancelCount, 0)
 
         finish(fixture, activeFlows: [active])
+        waitFor("terminal release cancels the promoted connection") {
+            active.connection.cancelCount == 1
+        }
     }
 
     func testConcurrentExcludedSniPromotionChurnPreservesBytesAndCleansUp() {

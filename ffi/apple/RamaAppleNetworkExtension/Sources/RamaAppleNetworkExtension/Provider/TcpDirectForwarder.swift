@@ -618,9 +618,8 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// NWConnection lifecycle hygiene — firing terminal
     /// (and consequently dropping the per-flow ctx) BEFORE
     /// the pump's drain → FIN sequence completes risked the
-    /// pump being deallocated mid-flight, losing the FIN, and
-    /// leaving the NWConnection registration parked in the
-    /// system until the linger watchdog or OS reaps it.
+    /// pump being deallocated mid-flight, losing the FIN, and leaving the
+    /// NWConnection registration parked until an outer teardown reaps it.
     ///
     /// `closeWhenDrained`'s completion ALWAYS fires (after
     /// FIN send completion, on external cancel, or as a
@@ -816,13 +815,10 @@ final class TcpDirectForwarder: @unchecked Sendable {
         c2sBackstop = nil
         s2cBackstop?.cancel()
         s2cBackstop = nil
-        // Do NOT cancel the NWConnection here — the egress
-        // write pump's `beginDraining` → FIN → linger watchdog
-        // sequence handles connection lifecycle. Cancelling
-        // pre-emptively short-circuits the FIN flush. The
-        // forwarder's owner (`onTerminal`) is responsible for
-        // any further cleanup (close kernel flow, remove from
-        // registry).
+        // Both directions are terminal and the egress FIN send completed.
+        // Only now may the bounded connection-release linger begin; arming it
+        // at local FIN would truncate a valid quiet response half.
+        egressWritePump.armTerminalLingerCancel()
         onTerminal()
     }
 }

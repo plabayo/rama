@@ -749,9 +749,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             onActivity: { [weak self] in
                 self?.ctx.recordActivityUnlessPressureEvicted() ?? false
             },
-            // Post-FIN the only activity bumps come from the still-open
-            // read direction, so the linger can tell a live half-close
-            // from a quiet connection. A gone ctx reads as fully idle.
+            // The release grace is armed only once the whole promoted flow is
+            // terminal. Keep the activity clock as a defensive guard against
+            // a future caller arming it while a late callback is still moving.
             readSideIdleMs: { [weak ctx] in
                 guard let ctx else { return .max }
                 return ctx.idleMs()

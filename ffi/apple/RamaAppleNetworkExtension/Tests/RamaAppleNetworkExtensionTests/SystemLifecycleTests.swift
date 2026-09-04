@@ -319,6 +319,12 @@ final class SystemLifecycleTests: XCTestCase {
     private func wireViabilityHandler(
         conn: MockNwConnection, ctx: TcpFlowContext, core: TransparentProxyCore
     ) {
+        if let flowQueue = ctx.flowQueue {
+            // NWConnection delivers viability on its start queue. Register the
+            // mock with that queue so this test never calls a queue-confined
+            // production handler synchronously from the XCTest thread.
+            conn.start(queue: flowQueue)
+        }
         conn.viabilityUpdateHandler = { [weak ctx] viable in
             guard let ctx else { return }
             ctx.lastPathViable = viable
@@ -431,8 +437,10 @@ final class SystemLifecycleTests: XCTestCase {
         f.conn.simulateViability(false)
 
         XCTAssertFalse(
-            f.ctx.deadPathRecheckPending, "kill switch must schedule nothing")
-        XCTAssertFalse(f.ctx.lastPathViable, "loss is still cached for wake")
+            queue.sync { f.ctx.deadPathRecheckPending },
+            "kill switch must schedule nothing")
+        XCTAssertFalse(
+            queue.sync { f.ctx.lastPathViable }, "loss is still cached for wake")
         let exp = expectation(description: "settle window elapsed")
         queue.asyncAfter(deadline: .now() + .milliseconds(100)) { exp.fulfill() }
         wait(for: [exp], timeout: 2.0)

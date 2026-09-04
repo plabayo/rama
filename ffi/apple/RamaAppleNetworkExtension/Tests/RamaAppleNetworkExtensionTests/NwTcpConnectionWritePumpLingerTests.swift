@@ -4,21 +4,20 @@ import XCTest
 
 @testable import RamaAppleNetworkExtension
 
-/// Tests for the linger-cancel watchdog in `NwTcpConnectionWritePump`.
+/// Tests for terminal connection release in `NwTcpConnectionWritePump`.
 ///
-/// The watchdog exists so that a peer which never replies to our FIN
-/// cannot pin the macOS NWConnection registration alive. Each test
-/// drives the pump through a slightly different drain → wait → expect
-/// sequence to verify:
+/// A local FIN is only a half-close and must not impose a response deadline.
+/// The bounded cancellation grace starts once the whole promoted flow reaches
+/// terminal. Each test verifies:
 ///
 /// 1. The FIN is actually sent on the wire (empty send with isComplete = true).
-/// 2. `cancel()` fires after the linger deadline if nothing else closed
-///    the connection first.
-/// 3. External `pump.cancel()` invalidates the watchdog before it fires.
-/// 4. A non-ready connection short-circuits the drain path — no FIN,
+/// 2. A local FIN alone never cancels the connection.
+/// 3. Terminal release eventually cancels the connection.
+/// 4. External `pump.cancel()` invalidates the watchdog before it fires.
+/// 5. A non-ready connection short-circuits the drain path — no FIN,
 ///    no watchdog.
 ///
-/// All tests use a short `lingerCloseDeadline` (≤ 200ms) so the suite
+/// All tests use a short `lingerCloseDeadline` (≤ 600ms) so the suite
 /// stays fast even under CI noise. The lower bound on "watchdog fired"
 /// is asserted by waiting past the deadline plus a slack margin.
 final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
@@ -36,7 +35,7 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         wait(for: [exp], timeout: timeout)
     }
 
-    func testDrainSendsFinAndArmsLingerWatchdog() {
+    func testDrainSendsFinWithoutStartingResponseDeadline() {
         let mock = MockNwConnection()
         mock.transition(to: .ready)
         let queue = makeQueue()
@@ -50,17 +49,16 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         pump.closeWhenDrained()
         waitForQueueDrain(queue)
 
-        // Drain with no pending bytes emits exactly one FIN — content
-        // nil with isComplete = true. The watchdog has been scheduled
-        // but has not yet fired.
+        // Drain with no pending bytes emits exactly one FIN. A successful
+        // local half-close must not start whole-connection cancellation.
         XCTAssertEqual(mock.sentChunks.count, 1, "expected exactly one send (the FIN)")
         XCTAssertNil(mock.sentChunks.first?.content, "FIN send should have nil content")
         XCTAssertEqual(mock.sentChunks.first?.isComplete, true, "FIN send should have isComplete=true")
-        XCTAssertEqual(mock.cancelCount, 0, "linger watchdog must not fire before its deadline")
-
-        // Poll for the watchdog to fire (robust to a loaded runner stalling
-        // past the deadline).
-        pollUntil("linger watchdog force-cancels the connection") { mock.cancelCount == 1 }
+        Thread.sleep(forTimeInterval: 0.45)
+        waitForQueueDrain(queue)
+        XCTAssertEqual(
+            mock.cancelCount, 0,
+            "a quiet response half must survive beyond the terminal grace")
     }
 
     func testExternalPumpCancelInvalidatesLingerWatchdog() {
@@ -78,6 +76,9 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         waitForQueueDrain(queue)
         XCTAssertEqual(mock.sentChunks.count, 1)
         XCTAssertEqual(mock.cancelCount, 0)
+
+        pump.armTerminalLingerCancel()
+        waitForQueueDrain(queue)
 
         // Cancel the pump while the watchdog is still pending. External
         // cancel is the path that the per-flow context's teardown
@@ -117,6 +118,8 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
             pump.closeWhenDrained()
             waitForQueueDrain(queue)
             XCTAssertEqual(mock.sentChunks.count, 1, "FIN was sent")
+            pump.armTerminalLingerCancel()
+            waitForQueueDrain(queue)
             // No `cancelCount == 0` assertion here: the watchdog fires
             // on a wall-clock deadline, so "not yet fired" races a
             // loaded CI runner that can stall past the deadline before
@@ -280,10 +283,9 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         )
     }
 
-    /// The linger watchdog defers while the flow still moves bytes (a live
-    /// half-close) and only force-cancels once the connection has been
-    /// quiet for a full linger window.
-    func testLingerDefersWhileReadSideActive() {
+    /// The terminal release remains activity-aware as a defensive guard for
+    /// late callbacks and cancels only after a full quiet window.
+    func testTerminalLingerDefersWhileLateActivityMoves() {
         final class IdleClock: @unchecked Sendable {
             private let lock = NSLock()
             private var ms: UInt64 = 0
@@ -307,6 +309,8 @@ final class NwTcpConnectionWritePumpLingerTests: XCTestCase {
         pump.closeWhenDrained()
         waitForQueueDrain(queue)
         XCTAssertEqual(mock.sentChunks.count, 1, "the FIN itself is unaffected")
+        pump.armTerminalLingerCancel()
+        waitForQueueDrain(queue)
 
         // Well past the linger deadline the connection must still be alive:
         // every expiry observed recent activity and re-armed.
