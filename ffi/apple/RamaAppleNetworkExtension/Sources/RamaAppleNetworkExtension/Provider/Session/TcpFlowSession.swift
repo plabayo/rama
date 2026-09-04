@@ -764,6 +764,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             session: session,
             queue: flowQueue,
             eofGraceDeadline: .milliseconds(Int(egressEofGraceMs)),
+            onTerminalObserved: { [weak ctx] in
+                ctx?.terminalSignalled = true
+            },
             onReadError: { [weak ctx] error in ctx?.egressReadError = error },
             onActivity: { [weak ctx] in
                 _ = ctx?.recordActivityUnlessPressureEvicted()
@@ -820,7 +823,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             // half-close and matched the Rust engine's asymmetric
             // on_client_eof / on_egress_eof contract incorrectly.
             onNaturalEof: { [weak self, weak session] in
-                self?.core?.logTrace(
+                guard let self, !self.ctx.isDone else { return }
+                self.core?.logTrace(
                     "tcp client read EOF (half-close): forward to egress, keep download open")
                 flow.closeReadWithError(nil)
                 session?.onClientEof()

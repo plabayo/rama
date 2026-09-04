@@ -108,10 +108,8 @@ final class CoreTcpLifecycleTests: XCTestCase {
     ///   1. EOF on BOTH directions (kernel C→S and connection S→C)
     ///      routed through cancelForPromote's carryover sinks. We
     ///      have to wait for the mode change before firing them
-    ///      because firing pre-cutover would either consume the
-    ///      EOFs via the in-Rust pumps' normal handlers (egress)
-    ///      or trip the `!saw_client_bytes → cancel` fast-path
-    ///      which suppresses Swift cleanup callbacks (ingress).
+    ///      because firing pre-cutover consumes the EOFs through
+    ///      the in-Rust pumps and changes the lifecycle scenario.
     ///   2. The egress write pump's FIN send to actually complete.
     ///      Real `NWConnection` auto-completes sends; the mock
     ///      queues them on `_pendingSendCompletions` until the
@@ -189,6 +187,47 @@ final class CoreTcpLifecycleTests: XCTestCase {
             fx.core, flow: flow, conn: conn,
             description: "flow removed from registration map"
         )
+    }
+
+    func testActivatedZeroByteClientEofReleasesViaRustFlow() {
+        let savedLingerCloseMs = defaultLingerCloseMs
+        defaultLingerCloseMs = 100
+        defer { defaultLingerCloseMs = savedLingerCloseMs }
+        let fx = makeFixture()
+        defer { tearDown(fx) }
+
+        let flow = MockTcpFlow()
+        XCTAssertTrue(fx.core.handleTcpFlow(flow, meta: makeMeta()))
+        let conn = fx.capture.waitForLastConnection()
+        conn.transition(to: .ready)
+        waitFor("flow.open called") { flow.openWasInvoked }
+        flow.completeOpen(error: nil)
+        waitFor("both via-Rust read pumps are active") {
+            flow.pendingReadCount > 0 && conn.pendingReceiveCount > 0
+        }
+        guard let ctx = fx.core.testInspectTcpContext(for: flow) else {
+            return XCTFail("registered context")
+        }
+        XCTAssertEqual(ctx.mode, .viaRust)
+
+        let completer = AtomicFlag()
+        DispatchQueue.global().async {
+            while !completer.load() {
+                _ = conn.completePendingSend(error: nil)
+                _ = conn.completePendingReceive(isComplete: true)
+                flow.completeRead(data: nil, error: nil)
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+        }
+        defer { completer.store(true) }
+
+        waitFor("zero-byte activated EOF releases the registry", timeout: 3.0) {
+            fx.core.tcpFlowCount == 0
+        }
+        XCTAssertGreaterThanOrEqual(flow.closeWriteCallCount, 1)
+        waitFor("zero-byte activated EOF releases the connection") {
+            conn.cancelCount >= 1
+        }
     }
 
     // MARK: - Engine detach
@@ -396,6 +435,59 @@ final class CoreTcpLifecycleTests: XCTestCase {
             "post-ready failure must close the flow's read side"
         )
         XCTAssertGreaterThanOrEqual(flow.closeWriteCallCount, 1)
+    }
+
+    func testViaRustEgressReceiveErrorPreservesTransportError() {
+        let fx = makeFixture()
+        defer { tearDown(fx) }
+
+        let flow = MockTcpFlow()
+        XCTAssertTrue(fx.core.handleTcpFlow(flow, meta: makeMeta()))
+        let conn = fx.capture.waitForLastConnection()
+        conn.transition(to: .ready)
+        waitFor("flow.open called") { flow.openWasInvoked }
+        flow.completeOpen(error: nil)
+        waitFor("via-Rust egress receive is pending") {
+            conn.pendingReceiveCount > 0
+        }
+        guard let ctx = fx.core.testInspectTcpContext(for: flow) else {
+            return XCTFail("registered context")
+        }
+        XCTAssertEqual(ctx.mode, .viaRust)
+
+        let error = NWError.posix(.ECONNRESET)
+        _ = conn.completePendingReceive(
+            data: nil,
+            isComplete: false,
+            error: error)
+        waitFor("egress receive error reaches the session") {
+            ctx.egressReadError != nil
+        }
+        let completer = AtomicFlag()
+        DispatchQueue.global().async {
+            while !completer.load() {
+                _ = conn.completePendingSend(error: nil)
+                flow.completeRead(data: nil, error: nil)
+                Thread.sleep(forTimeInterval: 0.001)
+            }
+        }
+        defer { completer.store(true) }
+        waitFor("egress receive error removes the flow", timeout: 3.0) {
+            fx.core.tcpFlowCount == 0
+        }
+        guard case .posix(.ECONNRESET)? = flow.lastCloseReadError as? NWError else {
+            return XCTFail(
+                "read close must preserve ECONNRESET, got "
+                    + "\(String(describing: flow.lastCloseReadError)); "
+                    + "mode=\(ctx.mode) done=\(ctx.isDone) "
+                    + "readCloses=\(flow.closeReadCallCount)")
+        }
+        guard case .posix(.ECONNRESET)? = flow.lastCloseWriteError as? NWError else {
+            return XCTFail(
+                "write close must preserve ECONNRESET, got "
+                    + "\(String(describing: flow.lastCloseWriteError))")
+        }
+        XCTAssertGreaterThanOrEqual(conn.cancelCount, 1)
     }
 
     func testPostReadyWaitingRecoversWithoutTeardown() {

@@ -1434,6 +1434,31 @@ final class FlowPressureReaperTests: XCTestCase {
         XCTAssertEqual(core.testPressureSelectionsTotal, 2)
     }
 
+    func testProductionDispatchLeaseExpiresAtExactBoundary() {
+        defaultFlowPressureSoftCap = 2
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = TransparentProxyCore()
+        XCTAssertEqual(core.testPressureVictimDispatchLeaseMs, 250)
+        let (queue, gate) = gatedQueue("exact-production-lease")
+        defer { gate.signal() }
+        let victim = Fx(core: core, idleSeconds: 30, flowQueue: queue)
+        let active = Fx(core: core, idleSeconds: 0)
+        insert(core, [victim, active])
+
+        let selectedAtNs = DispatchTime.now().uptimeNanoseconds
+        let victims = core.testCollectPressureVictims(nowNs: selectedAtNs)
+        core.testFirePressureEvictions(victims)
+        let expiredTotals = core.testRunPressureRechecks(nowNsValues: [
+            selectedAtNs + 249_999_999,
+            selectedAtNs + 250_000_000,
+        ])
+
+        XCTAssertEqual(expiredTotals, [0, 1])
+        XCTAssertEqual(core.testPressureExpiredTotal, 1)
+        XCTAssertFalse(victim.wasTornDown)
+    }
+
     func testDispatchLeaseKeepsCreditForVictimAlreadyRemoving() {
         defaultFlowPressureSoftCap = 2
         defaultFlowPressureLowWater = 1
@@ -1694,7 +1719,10 @@ final class FlowPressureReaperTests: XCTestCase {
             stale.wasTornDown && core.tcpFlowCount == 1
         }
         XCTAssertFalse(admission.wasTornDown)
-        XCTAssertEqual(core.testPressureScanCount, 3)
+        XCTAssertEqual(
+            core.testPressureScanCount,
+            2,
+            "the acknowledged flow-local check is re-armed without a full sort")
         XCTAssertEqual(core.testPressureEvictedTotal, 1)
     }
 
@@ -1726,6 +1754,166 @@ final class FlowPressureReaperTests: XCTestCase {
         XCTAssertEqual(core.testPressureSelectionsTotal, 3)
         XCTAssertEqual(core.testPressureEvictedTotal, 0)
         XCTAssertEqual(core.testPressurePendingVictimCount, 0)
+    }
+
+    func testLateFinalSpareRepairsAfterSiblingVictimsLeave() {
+        defaultFlowPressureSoftCap = 4
+        defaultFlowPressureLowWater = 2
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let (lateQueue, lateGate) = gatedQueue("late-spare")
+        let (firstQueue, firstGate) = gatedQueue("late-spare-first")
+        let (secondQueue, secondGate) = gatedQueue("late-spare-second")
+        defer {
+            lateGate.signal()
+            firstGate.signal()
+            secondGate.signal()
+        }
+        let late = Fx(core: core, idleSeconds: 100, flowQueue: lateQueue)
+        let first = Fx(core: core, idleSeconds: 90, flowQueue: firstQueue)
+        let second = Fx(core: core, idleSeconds: 80, flowQueue: secondQueue)
+        let replacement = Fx(core: core, idleSeconds: 70)
+        let active = Fx(core: core, idleSeconds: 0)
+        insert(core, [late, first, second, replacement, active])
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 3)
+
+        let stateGate = core.testHoldStateQueue()
+        defer { stateGate.signal() }
+        firstGate.signal()
+        secondGate.signal()
+        drain(firstQueue)
+        drain(secondQueue)
+        late.markActiveNow()
+        lateGate.signal()
+        drain(lateQueue)
+        stateGate.signal()
+
+        pollUntil("late spare replacement reaches low-water") {
+            core.tcpFlowCount == 2 && core.testPressurePendingVictimCount == 0
+        }
+        XCTAssertFalse(late.wasTornDown)
+        XCTAssertTrue(first.wasTornDown)
+        XCTAssertTrue(second.wasTornDown)
+        XCTAssertTrue(replacement.wasTornDown)
+        XCTAssertEqual(core.testPressureScanCount, 2)
+        XCTAssertEqual(core.testPressureSelectionsTotal, 4)
+        XCTAssertEqual(core.testPressureEvictedTotal, 3)
+        XCTAssertEqual(core.testPressureSparedTotal, 1)
+    }
+
+    func testLateFinalExpiryRepairsAfterSiblingVictimsLeave() {
+        defaultFlowPressureSoftCap = 4
+        defaultFlowPressureLowWater = 2
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let (lateQueue, lateGate) = gatedQueue("late-expiry")
+        defer { lateGate.signal() }
+        let late = Fx(core: core, idleSeconds: 100, flowQueue: lateQueue)
+        let first = Fx(core: core, idleSeconds: 90)
+        let second = Fx(core: core, idleSeconds: 80)
+        let replacement = Fx(core: core, idleSeconds: 70)
+        let active = Fx(core: core, idleSeconds: 0)
+        insert(core, [late, first, second, replacement, active])
+        triggerAndDrain(core)
+        pollUntil("responsive siblings leave before expiry") {
+            core.tcpFlowCount == 3 && core.testPressureEvictedTotal == 2
+        }
+
+        core.testRunPressureRecheck(afterMs: 6_000)
+        pollUntil("expired credit is repaired to low-water") {
+            core.tcpFlowCount == 2 && core.testPressurePendingVictimCount == 0
+        }
+        XCTAssertFalse(late.wasTornDown)
+        XCTAssertTrue(replacement.wasTornDown)
+        XCTAssertEqual(core.testPressureScanCount, 2)
+        XCTAssertEqual(core.testPressureSelectionsTotal, 4)
+        XCTAssertEqual(core.testPressureEvictedTotal, 3)
+        XCTAssertEqual(core.testPressureExpiredTotal, 1)
+
+        lateGate.signal()
+        drain(lateQueue)
+        XCTAssertEqual(core.tcpFlowCount, 2)
+        XCTAssertFalse(late.wasTornDown)
+    }
+
+    func testAdmissionBelowCapIsProtectedDuringActiveRepair() {
+        defaultFlowPressureSoftCap = 5
+        defaultFlowPressureLowWater = 2
+        defaultFlowPressureIdleFloorMs = 0
+        let core = makeCore()
+        let (lateQueue, lateGate) = gatedQueue("below-cap-admission")
+        defer { lateGate.signal() }
+        let late = Fx(core: core, idleSeconds: 100, flowQueue: lateQueue)
+        let siblings = (0..<3).map {
+            Fx(core: core, idleSeconds: 90 - UInt64($0))
+        }
+        let replacement = Fx(core: core, idleSeconds: 70)
+        let connecting = Fx(core: core, idleSeconds: 0, ready: false)
+        insert(core, [late] + siblings + [replacement, connecting])
+        triggerAndDrain(core)
+        pollUntil("siblings leave below cap while one victim remains") {
+            core.tcpFlowCount == 3 && core.testPressureEvictedTotal == 3
+        }
+
+        let admitted = Fx(core: core, idleSeconds: 10)
+        XCTAssertEqual(
+            core.registerTcpFlow(
+                admitted.flowId,
+                anchor: _TestTcpFlowSessionAnchor(ctx: admitted.ctx)),
+            4,
+            "admission lands below the soft cap while the episode is active")
+        late.markActiveNow()
+        lateGate.signal()
+
+        pollUntil("late spare chooses only the older replacement") {
+            replacement.wasTornDown && core.testPressureSparedTotal == 1
+        }
+        XCTAssertEqual(core.tcpFlowCount, 3)
+        XCTAssertFalse(admitted.wasTornDown)
+        XCTAssertFalse(late.wasTornDown)
+        XCTAssertEqual(core.testPressureSelectionsTotal, 5)
+        XCTAssertEqual(core.testPressureEvictedTotal, 4)
+    }
+
+    func testExpiredAcknowledgmentClusterAddsOnlyOneFullScan() {
+        defaultFlowPressureSoftCap = 450
+        defaultFlowPressureLowWater = 350
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let (queue, gate) = gatedQueue("expired-ack-cluster")
+        defer { gate.signal() }
+        let expired = (0..<100).map {
+            Fx(core: core, idleSeconds: 30 + UInt64($0), flowQueue: queue)
+        }
+        let connecting = (0..<350).map {
+            _ in Fx(core: core, idleSeconds: 0, ready: false)
+        }
+        insert(core, expired + connecting)
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressureSelectionsTotal, 100)
+
+        core.testRunPressureRecheck(afterMs: 6_000)
+        XCTAssertEqual(core.testPressureExpiredTotal, 100)
+        XCTAssertEqual(core.testPressureScanCount, 2)
+        XCTAssertFalse(core.testPressureRecheckScheduled)
+        expired.forEach { $0.markActiveNow() }
+
+        let stateGate = core.testHoldStateQueue()
+        defer { stateGate.signal() }
+        gate.signal()
+        drain(queue, timeout: 5.0)
+        stateGate.signal()
+        pollUntil("clustered acknowledgments settle", timeout: 5.0) {
+            core.testPressureScanCount == 3
+        }
+
+        XCTAssertEqual(core.testPressureScanCount, 3)
+        XCTAssertEqual(core.testPressureSelectionsTotal, 100)
+        XCTAssertEqual(core.testPressureEvictionBodyRuns, 100)
+        XCTAssertEqual(core.testPressureEvictedTotal, 0)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 0)
+        XCTAssertEqual(core.tcpFlowCount, 450)
     }
 
     func testRemovalChurnCannotBypassNoHeadroomSuppression() {

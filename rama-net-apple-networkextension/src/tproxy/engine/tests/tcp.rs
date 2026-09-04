@@ -728,10 +728,12 @@ fn tcp_client_eof_after_server_bytes_keeps_egress_alive() {
     engine.stop(0);
 }
 
-/// Preconnect-churn case: client EOFs having sent nothing and the server never
-/// spoke either — still fast-cancels the flow.
+/// Preconnect churn that closes before activation still fast-cancels without
+/// exposing either FFI close callback.
 #[test]
-fn tcp_client_eof_with_no_bytes_either_side_fast_cancels() {
+fn tcp_client_eof_before_activate_with_no_bytes_fast_cancels() {
+    let server_closed = Arc::new(AtomicUsize::new(0));
+    let egress_closed = Arc::new(AtomicUsize::new(0));
     let handler = TestHandler {
         app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
@@ -748,25 +750,120 @@ fn tcp_client_eof_with_no_bytes_either_side_fast_cancels() {
     };
     let engine = build_engine(handler);
 
+    let server_closed_cb = server_closed.clone();
     let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
         |_| TcpDeliverStatus::Accepted,
         || {},
-        || {},
+        move || {
+            server_closed_cb.fetch_add(1, Ordering::Relaxed);
+        },
     ) else {
         panic!("expected intercept session");
     };
-    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
-
     session.on_client_eof();
+    let egress_closed_cb = egress_closed.clone();
+    session.activate(
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        move || {
+            egress_closed_cb.fetch_add(1, Ordering::Relaxed);
+        },
+    );
 
-    // Fast-cancel fired: byte delivery now reports Closed.
     assert_eq!(
         session.on_egress_bytes(b"x"),
         TcpDeliverStatus::Closed,
-        "byte-less EOF with no server response must fast-cancel the flow",
+        "pre-activate byte-less EOF must fast-cancel the flow",
     );
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(server_closed.load(Ordering::Relaxed), 0);
+    assert_eq!(egress_closed.load(Ordering::Relaxed), 0);
+
+    engine.stop(0);
+}
+
+#[test]
+fn tcp_client_eof_after_activate_with_no_bytes_half_closes() {
+    let server_closed = Arc::new(AtomicUsize::new(0));
+    let egress_closed = Arc::new(AtomicUsize::new(0));
+    let (eof_seen_tx, eof_seen_rx) = std::sync::mpsc::channel::<()>();
+    let release = Arc::new(tokio::sync::Notify::new());
+
+    let release_for_matcher = release.clone();
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(move |meta| {
+            let release = release_for_matcher.clone();
+            let eof_seen_tx = eof_seen_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(
+                    move |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| {
+                        let release = release.clone();
+                        let eof_seen_tx = eof_seen_tx.clone();
+                        async move {
+                            let BridgeIo(mut ingress, egress) = bridge;
+                            let mut sink = Vec::new();
+                            _ = ingress.read_to_end(&mut sink).await;
+                            _ = eof_seen_tx.send(());
+                            release.notified().await;
+                            drop((ingress, egress));
+                            Ok(())
+                        }
+                    },
+                )
+                .boxed(),
+            }
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine(handler);
+
+    let server_closed_cb = server_closed.clone();
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp)
+            .with_remote_endpoint(HostWithPort::example_domain_with_port(443)),
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        move || {
+            server_closed_cb.fetch_add(1, Ordering::Relaxed);
+        },
+    ) else {
+        panic!("expected intercept session");
+    };
+    let egress_closed_cb = egress_closed.clone();
+    session.activate(
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        move || {
+            egress_closed_cb.fetch_add(1, Ordering::Relaxed);
+        },
+    );
+
+    session.on_client_eof();
+    eof_seen_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("service must observe the activated client EOF");
+    assert_eq!(
+        session.on_egress_bytes(b"response-after-empty-request"),
+        TcpDeliverStatus::Accepted,
+        "activated client EOF must leave the response direction alive",
+    );
+    release.notify_one();
+
+    let started = Instant::now();
+    while (server_closed.load(Ordering::Relaxed) == 0 || egress_closed.load(Ordering::Relaxed) == 0)
+        && started.elapsed() < Duration::from_secs(2)
+    {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(server_closed.load(Ordering::Relaxed), 1);
+    assert_eq!(egress_closed.load(Ordering::Relaxed), 1);
 
     engine.stop(0);
 }

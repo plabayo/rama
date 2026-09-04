@@ -25,12 +25,11 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
     /// [`TcpClientReadPump.session`].
     private weak var session: (any NwEgressBytesSink)?
     private let queue: DispatchQueue
-    /// Grace window between observing peer EOF / error and force-
-    /// cancelling the underlying connection. The clean teardown path
-    /// (`on_server_closed` → cancel) depends on the originating app
-    /// being able to drain; the grace gives the clean path a chance to
-    /// run before the backstop fires.
+    /// Grace window after observing peer EOF / error. It bounds a stalled
+    /// client-writer drain or error path; a completed clean half-close
+    /// disarms it so the opposite upload half may continue.
     private let eofGraceDeadline: DispatchTimeInterval
+    private let onTerminalObserved: @Sendable () -> Void
     private let onReadError: @Sendable (Error) -> Void
     private let onActivity: @Sendable () -> Void
     /// Scheduled EOF-cancel work, retained so we can invalidate it
@@ -58,6 +57,7 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         session: any NwEgressBytesSink,
         queue: DispatchQueue,
         eofGraceDeadline: DispatchTimeInterval,
+        onTerminalObserved: @escaping @Sendable () -> Void = {},
         onReadError: @escaping @Sendable (Error) -> Void = { _ in },
         onActivity: @escaping @Sendable () -> Void = {}
     ) {
@@ -65,6 +65,7 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         self.session = session
         self.queue = queue
         self.eofGraceDeadline = eofGraceDeadline
+        self.onTerminalObserved = onTerminalObserved
         self.onReadError = onReadError
         self.onActivity = onActivity
     }
@@ -268,6 +269,11 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
     private func finishTerminalLocked(_ terminal: EgressReadTerminal) {
         phase = .closed
         observedTerminal = terminal
+        // Publish the transport terminal before entering Rust. A promote
+        // request can race the one-shot Rust close callback; the shared
+        // lifecycle bit makes Swift reject that cutover instead of losing
+        // the callback edge under a newly created forwarder.
+        onTerminalObserved()
         switch terminal {
         case .eof:
             session?.onEgressEof()

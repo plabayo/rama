@@ -324,13 +324,12 @@ let udpWritePumpHwmLogThreshold: Int = udpWritePumpMaxPending / 2
 /// this so the watchdog releases before the polling deadline.
 nonisolated(unsafe) var defaultLingerCloseMs: UInt32 = 5_000
 
-/// Default grace window between the egress read pump observing peer
-/// EOF / read error and the backstop `connection.cancel()` firing.
-/// Applied when `RamaTcpEgressConnectOptions.has_egress_eof_grace_ms`
-/// is `false`. 2 seconds is enough headroom for the clean teardown
-/// path (`on_server_closed` → `closeWhenDrained` → cancel) to
-/// complete on the common case, while still bounding cleanup when
-/// the originating app has stopped reading.
+/// Default grace window after the egress read pump observes peer EOF or
+/// a read error. Applied when
+/// `RamaTcpEgressConnectOptions.has_egress_eof_grace_ms` is `false`.
+/// It bounds a stalled client-writer drain or error path. A completed
+/// clean server→client half-close disarms it so a still-active upload may
+/// continue under the separate progress-aware linger.
 let defaultEgressEofGraceMs: UInt32 = 2_000
 
 /// Default tolerance window for a post-ready `NWConnection` sitting

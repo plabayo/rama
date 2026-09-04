@@ -716,11 +716,13 @@ impl TransparentProxyTcpSession {
     /// buffered chunks then sees `None` (EOF). Dropping the sender (vs a
     /// side-channel flag) keeps the final chunk and the EOF strictly ordered.
     ///
-    /// With no bytes either way, fast-cancel (preconnect churn). If the server
-    /// already spoke, only close ingress so its response can still be relayed.
-    /// Asymmetric with [`Self::on_egress_eof`]; see there.
+    /// With no bytes either way, fast-cancel only before activation
+    /// (preconnect churn). Once activated, EOF is always a TCP half-close: the
+    /// service and the egress direction must remain able to finish naturally,
+    /// including a response to an empty request. Asymmetric with
+    /// [`Self::on_egress_eof`]; see there.
     pub fn on_client_eof(&mut self) {
-        if !self.saw_client_bytes && !self.saw_server_bytes {
+        if self.pending.is_some() && !self.saw_client_bytes && !self.saw_server_bytes {
             self.cancel();
             return;
         }

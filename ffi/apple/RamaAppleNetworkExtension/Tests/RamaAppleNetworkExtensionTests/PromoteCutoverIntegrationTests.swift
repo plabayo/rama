@@ -244,6 +244,56 @@ final class PromoteCutoverIntegrationTests: XCTestCase {
         XCTAssertNil(ctx.directForwarder)
     }
 
+    func testCutoverRejectsFlowWhoseTerminalDrainAlreadyBegan() {
+        let fx = makeFixture(); defer { tearDown(fx) }
+
+        let flow = MockTcpFlow()
+        let (_, ctx) = driveToActivePumps(fx, flow: flow)
+        ctx.withMaintenanceStateLocked { state in
+            state.terminalSignalled = true
+            state.drainClosePending = true
+        }
+
+        let flowQueue = DispatchQueue(label: "test.fwd.terminal-reject")
+        fx.core.beginPromoteCutover(
+            ctx: ctx,
+            flow: flow,
+            flowQueue: flowQueue,
+            flowId: ObjectIdentifier(flow))
+        flowQueue.sync {}
+
+        XCTAssertEqual(ctx.mode, .viaRust)
+        XCTAssertNil(ctx.directForwarder)
+    }
+
+    func testClientCarryoverReadErrorTearsDownWithOriginalError() {
+        let fx = makeFixture(); defer { tearDown(fx) }
+
+        let flow = MockTcpFlow()
+        let (_, ctx) = driveToActivePumps(fx, flow: flow)
+        let flowQueue = DispatchQueue(label: "test.fwd.carryover-error")
+        fx.core.beginPromoteCutover(
+            ctx: ctx,
+            flow: flow,
+            flowQueue: flowQueue,
+            flowId: ObjectIdentifier(flow))
+        flowQueue.sync {}
+
+        let error = NSError(domain: "test.promote.carryover", code: 73)
+        flow.completeRead(data: nil, error: error)
+        waitFor("carryover error tears down the promoted flow") {
+            ctx.isDone && fx.core.tcpFlowCount == 0
+        }
+        XCTAssertEqual(
+            (flow.lastCloseReadError as NSError?)?.domain,
+            "test.promote.carryover")
+        XCTAssertEqual((flow.lastCloseReadError as NSError?)?.code, 73)
+        XCTAssertEqual(
+            (flow.lastCloseWriteError as NSError?)?.domain,
+            "test.promote.carryover")
+        XCTAssertEqual((flow.lastCloseWriteError as NSError?)?.code, 73)
+    }
+
     // MARK: - Direct-forward post-cutover byte flow
 
     /// After the cutover, kernel bytes flowing in via

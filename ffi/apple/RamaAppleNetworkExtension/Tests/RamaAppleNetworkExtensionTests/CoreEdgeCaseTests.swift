@@ -413,6 +413,38 @@ final class CoreEdgeCaseTests: XCTestCase {
         XCTAssertTrue(contexts.allSatisfy(\.isDone))
     }
 
+    func testDetachWaitsForCallbackAlreadyInsideLifecycleGate() {
+        let core = TransparentProxyCore()
+        core.attachEngine(makeEngine())
+        let generation = core.testEngineGeneration
+        let callbackEntered = DispatchSemaphore(value: 0)
+        let releaseCallback = DispatchSemaphore(value: 0)
+        let callbackReturned = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            XCTAssertTrue(core.withActiveEngineGeneration(generation) {
+                callbackEntered.signal()
+                releaseCallback.wait()
+            })
+            callbackReturned.signal()
+        }
+        XCTAssertEqual(callbackEntered.wait(timeout: .now() + 1), .success)
+
+        let detachReturned = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            core.detachEngine(reason: 0)
+            detachReturned.signal()
+        }
+        waitFor("detach closes callback admission") { core.engine == nil }
+        XCTAssertEqual(
+            detachReturned.wait(timeout: .now()),
+            .timedOut,
+            "detach must wait for a callback already inside the gate")
+
+        releaseCallback.signal()
+        XCTAssertEqual(callbackReturned.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(detachReturned.wait(timeout: .now() + 1), .success)
+    }
+
     func testQueuedTcpReadyCannotActivateDetachedGeneration() {
         let core = TransparentProxyCore()
         core.attachEngine(makeEngine())
