@@ -341,6 +341,113 @@ final class TcpClientWritePumpTests: XCTestCase {
         XCTAssertGreaterThan(flow.writeCount, 1, "should have retried at least once before giving up")
     }
 
+    /// Once a transient error arms its delay, later accepted enqueues must only
+    /// append behind the failed head. They must not retry it immediately or arm
+    /// parallel timers. A generation also makes duplicate/stale scheduler
+    /// callbacks harmless after the next delay or a successful drain.
+    func testWriteCoreRetryDelayGatesEnqueuesAndInvalidatesStaleTimers() {
+        let queue = makeQueue()
+        let writes = TestValue<[UInt8]>([])
+        let retryDelays = TestValue<[Int]>([])
+        let scheduledRetries = TestValue<[@Sendable () -> Void]>([])
+
+        let core = TcpWritePumpCore(
+            queue: queue,
+            onDrained: {},
+            doWrite: { data, completion in
+                let attempt = writes.update { observed -> Int in
+                    observed.append(data[0])
+                    return observed.count
+                }
+                completion(attempt <= 2 ? transientENOBUFS() : nil)
+            },
+            logHwm: { _ in },
+            inlineWriteCompletionWhenOnQueue: true,
+            retryScheduler: { delayMs, work in
+                retryDelays.update { $0.append(delayMs) }
+                scheduledRetries.update { $0.append(work) }
+            }
+        )
+        queue.sync { core.markOpen() }
+
+        XCTAssertEqual(core.enqueue(Data([0xA0])), .accepted)
+        queue.sync {}
+        XCTAssertEqual(writes.get(), [0xA0])
+        XCTAssertEqual(retryDelays.get(), [writeRetryInitialDelayMs])
+        XCTAssertEqual(scheduledRetries.get().count, 1)
+        XCTAssertTrue(queue.sync { core.testInvariantSnapshot().retryDelayPending })
+
+        for byte in UInt8(0xB0)...UInt8(0xB3) {
+            XCTAssertEqual(core.enqueue(Data([byte])), .accepted)
+        }
+        queue.sync {}
+        XCTAssertEqual(
+            writes.get(), [0xA0],
+            "enqueues during the retry delay must not bypass its backoff"
+        )
+        XCTAssertEqual(
+            scheduledRetries.get().count, 1,
+            "one retry episode must have only one live scheduler callback"
+        )
+
+        // Closing while delayed must retain the failed head and the newly
+        // accepted tail until the valid retry callback reopens the pump.
+        queue.sync { core.beginDraining() }
+        XCTAssertFalse(core.isClosed())
+
+        guard let firstRetry = scheduledRetries.update({ callbacks in
+            callbacks.isEmpty ? nil : callbacks.removeFirst()
+        }) else {
+            XCTFail("missing first retry callback")
+            return
+        }
+        firstRetry()
+        queue.sync {}
+        XCTAssertEqual(writes.get(), [0xA0, 0xA0])
+        let secondDelay = min(writeRetryInitialDelayMs * 2, writeRetryMaxDelayMs)
+        XCTAssertEqual(
+            retryDelays.get(),
+            [writeRetryInitialDelayMs, secondDelay]
+        )
+        XCTAssertEqual(scheduledRetries.get().count, 1)
+
+        // Replaying an already-consumed callback models a stale timer. Its
+        // generation must no longer be allowed to flush or schedule work.
+        firstRetry()
+        queue.sync {}
+        XCTAssertEqual(writes.get(), [0xA0, 0xA0])
+        XCTAssertEqual(scheduledRetries.get().count, 1)
+
+        guard let secondRetry = scheduledRetries.update({ callbacks in
+            callbacks.isEmpty ? nil : callbacks.removeFirst()
+        }) else {
+            XCTFail("missing second retry callback")
+            return
+        }
+        secondRetry()
+        queue.sync {}
+
+        XCTAssertEqual(
+            writes.get(),
+            [0xA0, 0xA0, 0xA0, 0xB0, 0xB1, 0xB2, 0xB3],
+            "the valid retry must preserve FIFO and drain every accepted item"
+        )
+        XCTAssertTrue(
+            core.isClosed(),
+            "draining must finish after the retried queue succeeds"
+        )
+        XCTAssertEqual(core.state.withLock { $0.pendingBytes }, 0)
+        XCTAssertEqual(core.state.withLock { $0.pendingItems }, 0)
+        XCTAssertFalse(queue.sync { core.testInvariantSnapshot().retryDelayPending })
+        XCTAssertTrue(scheduledRetries.get().isEmpty)
+
+        // Success invalidates the just-consumed generation too.
+        secondRetry()
+        queue.sync {}
+        XCTAssertEqual(writes.get().count, 7)
+        XCTAssertTrue(scheduledRetries.get().isEmpty)
+    }
+
     /// `cancel()` must short-circuit any in-flight retry chain so the
     /// dispatcher's hard-error teardown is immediate, not deadline-
     /// bounded. Without an explicit cancel, the only termination
@@ -539,28 +646,39 @@ final class TcpClientWritePumpTests: XCTestCase {
         )
     }
 
-    /// A single oversized chunk (larger than the byte cap) must go
-    /// through unconditionally — the bridge has no way to break a
-    /// payload up, so a strict cap would deadlock the relay.
-    func testFirstOversizedChunkIsAccepted() {
-        let flow = MockTcpFlow()
+    /// Every producer slices before enqueueing, so even an empty pump must
+    /// reject an oversized chunk without retaining or charging it. This keeps
+    /// the configured byte cap authoritative rather than a soft first-item
+    /// threshold.
+    func testFirstOversizedChunkIsPausedWithoutExceedingBudget() {
         let queue = makeQueue()
         let releaseQueue = DispatchSemaphore(value: 0)
         queue.async { releaseQueue.wait() }
-        defer { releaseQueue.signal() }
-        let pump = TcpClientWritePump(
-            flow: flow,
+        let core = TcpWritePumpCore(
             queue: queue,
-            logger: { _ in },
-            onTerminalError: { _ in },
-            onDrained: {}
+            onDrained: {},
+            doWrite: { _, _ in XCTFail("blocked queue must not write") },
+            logHwm: { _ in }
         )
-        pump.markOpened()
         let oversize = Data(repeating: 0xAA, count: writePumpMaxPendingBytes + 4096)
-        XCTAssertEqual(pump.enqueue(oversize), .accepted)
-        // After the oversize chunk is queued we should pause additions.
-        let secondary = Data(repeating: 0xBB, count: 64)
-        XCTAssertEqual(pump.enqueue(secondary), .paused)
+        XCTAssertEqual(core.enqueue(oversize), .paused)
+        XCTAssertEqual(core.state.withLock { $0.pendingBytes }, 0)
+        XCTAssertEqual(core.state.withLock { $0.pendingItems }, 0)
+
+        // A legitimate at-cap chunk remains admissible, proving the rejected
+        // call did not poison the queue or consume either admission budget.
+        let atCap = Data(repeating: 0xBB, count: writePumpMaxPendingBytes)
+        XCTAssertEqual(core.enqueue(atCap), .accepted)
+        XCTAssertEqual(
+            core.state.withLock { $0.pendingBytes },
+            writePumpMaxPendingBytes
+        )
+        XCTAssertEqual(core.state.withLock { $0.pendingItems }, 1)
+
+        let cleanup = core.prepareCancel()
+        queue.async(execute: cleanup)
+        releaseQueue.signal()
+        queue.sync {}
     }
 
     /// `cancel()` racing with an in-progress `closeWhenDrained` must
@@ -895,6 +1013,7 @@ final class TcpClientWritePumpTests: XCTestCase {
         let snapshot = queue.sync { core.testInvariantSnapshot() }
         XCTAssertTrue(snapshot.pendingEmpty)
         XCTAssertTrue(snapshot.retryingNil)
+        XCTAssertFalse(snapshot.retryDelayPending)
         XCTAssertEqual(snapshot.pendingBytes, 0)
         XCTAssertEqual(snapshot.pendingItems, 0)
     }

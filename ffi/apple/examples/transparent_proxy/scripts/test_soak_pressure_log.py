@@ -12,6 +12,7 @@ import threading
 import unittest
 
 from soak_pressure_log import (
+    cap_validation_hard_limited,
     ceiling_configuration_issues,
     ceiling_probe_evidence_issues,
     ceiling_outage_window,
@@ -21,10 +22,13 @@ from soak_pressure_log import (
     flow_pool_evidence_issues,
     flow_pool_status,
     flow_gauge,
+    flow_gauge_issue,
     is_no_headroom,
     leak_evidence,
     lifecycle_category_issue,
     no_headroom_event,
+    parse_artifact_epoch,
+    parse_artifact_uint,
     parse_epoch,
     parse_evidence_status_lines,
     parse_ceiling_probe_lines,
@@ -45,6 +49,7 @@ from soak_pressure_log import (
     soak_evidence_issues,
     summarize_pressure_rows,
     unexpected_probe_failure_count,
+    unexpected_probe_failure_count_across_outages,
 )
 
 
@@ -54,17 +59,26 @@ class SoakPressureLogTests(unittest.TestCase):
         return {
             "log_stream_started": "1",
             "log_stream_alive_end": "1",
+            "log_stream_child_rc": "143",
+            "log_stream_joined": "1",
             "baseline_gauge_seen": "1",
+            "baseline_gauge_phase_local": "1",
             "probe_monitor_alive_end": "1",
+            "probe_monitor_child_rc": "143",
+            "probe_monitor_joined": "1",
             "provider_continuous": "1",
             "mode": mode,
             "download_host_preflight_ok": "1",
             "stress_ok": "1",
             "fanout_ok": "1",
+            "fanout_established_target_sustained": "1",
             "idle_holders_ok": "1",
+            "idle_holders_established_target_sustained": "1",
             "real_download_ok": "1",
             "post_wake_ok": "skipped",
             "sleep_command_ok": "skipped",
+            "baseline_total": "5",
+            "final_total": "5",
         }
 
     def test_current_selection_line(self):
@@ -92,7 +106,7 @@ class SoakPressureLogTests(unittest.TestCase):
     def test_periodic_outcomes_are_authoritative(self):
         message = (
             "tproxy live-flow counts tcp=351 udp=0 total=351 peak=460 "
-            "softCap=450 hardCap=0 pressure[triggers=12 scans=2 skipped=10 "
+            "softCap=450 hardCap=0 retiring=0 pressure[triggers=12 scans=2 skipped=10 "
             "selected=100 evicted=96 spared=2 canceled=1 expired=1 pending=0]"
         )
         self.assertEqual(
@@ -100,6 +114,9 @@ class SoakPressureLogTests(unittest.TestCase):
             {
                 "tcp": 351,
                 "udp": 0,
+                "registered": 351,
+                "retiring": 0,
+                "allocated": 351,
                 "total": 351,
                 "peak": 460,
                 "soft_cap": 450,
@@ -127,6 +144,31 @@ class SoakPressureLogTests(unittest.TestCase):
         )
         self.assertIsNotNone(gauge)
         self.assertIsNone(gauge["hard_cap"])
+        self.assertIsNone(gauge["retiring"])
+
+    def test_flow_gauge_separates_registered_and_allocated_and_validates_retiring(self):
+        message = (
+            "live-flow counts tcp=4 udp=3 total=12 peak=15 softCap=10 "
+            "hardCap=20 retiring=5"
+        )
+        gauge = flow_gauge(message)
+        self.assertEqual(gauge["registered"], 7)
+        self.assertEqual(gauge["allocated"], 12)
+        self.assertEqual(gauge["retiring"], 5)
+        self.assertIsNone(flow_gauge_issue(message))
+
+        inconsistent = message.replace("retiring=5", "retiring=4")
+        self.assertIsNone(flow_gauge(inconsistent))
+        self.assertIn("inconsistent", flow_gauge_issue(inconsistent))
+        over_hard = message.replace("hardCap=20", "hardCap=11")
+        self.assertIsNone(flow_gauge(over_hard))
+        self.assertIn("hard-cap", flow_gauge_issue(over_hard))
+        self.assertIn(
+            "omitted retiring",
+            flow_gauge_issue(
+                "live-flow counts tcp=4 udp=3 total=7 peak=15 softCap=10 hardCap=20"
+            ),
+        )
 
     def test_ceiling_search_requires_both_caps_to_be_observed_and_disabled(self):
         self.assertEqual(ceiling_configuration_issues(0, 0), [])
@@ -144,6 +186,28 @@ class SoakPressureLogTests(unittest.TestCase):
                 "live-flow hard cap was not observed",
             ],
         )
+
+    def test_cap_validation_mode_uses_allocated_effective_headroom(self):
+        self.assertFalse(cap_validation_hard_limited(80, 80, 5, 5))
+        self.assertTrue(cap_validation_hard_limited(80, 80, 5, 6))
+        self.assertTrue(cap_validation_hard_limited(80, 79, 5, 5))
+        self.assertFalse(cap_validation_hard_limited(80, 90, 5, 6))
+        self.assertFalse(cap_validation_hard_limited(80, 0, 5, 80))
+        self.assertIsNone(cap_validation_hard_limited("080", "80", "5", "5"))
+        self.assertIsNone(cap_validation_hard_limited(80, 80, 6, 5))
+        self.assertIsNone(cap_validation_hard_limited(80, 80, 5, 81))
+
+    def test_artifact_numbers_require_canonical_bounded_text(self):
+        self.assertEqual(parse_artifact_uint("0"), 0)
+        self.assertEqual(parse_artifact_uint("18446744073709551615"), 2**64 - 1)
+        for value in (0, True, "", "00", "+1", "1.0", "1e2", " 1", "1 "):
+            with self.subTest(value=value):
+                self.assertIsNone(parse_artifact_uint(value))
+        self.assertIsNone(parse_artifact_uint("18446744073709551616"))
+        self.assertEqual(parse_artifact_epoch("100.000001"), parse_epoch("100.000001"))
+        for value in (100, "00", "1.", "1.0000000", "1e2", "-1", "nan"):
+            with self.subTest(epoch=value):
+                self.assertIsNone(parse_artifact_epoch(value))
 
     def test_obsolete_messages_do_not_match(self):
         self.assertIsNone(
@@ -469,14 +533,23 @@ class SoakPressureLogTests(unittest.TestCase):
                 "1 NDJSON record(s) came from a different subsystem",
             ],
         )
+        for invalid_pid in (True, "010", "10.0", -1):
+            with self.subTest(provider_pid=invalid_pid):
+                accepted, issues = filter_provider_ndjson_records(
+                    [valid], invalid_pid, "org.example.provider"
+                )
+                self.assertEqual(accepted, [])
+                self.assertEqual(
+                    issues, ["provider identity is missing or invalid"]
+                )
 
     def test_phase_markers_must_be_monotonic_and_nonoverlapping(self):
         phases, incomplete, _, _, issues = parse_phase_marker_lines(
             [
-                "baseline\tstart\t100\tx\n",
-                "stress\tstart\t101\tx\n",
-                "baseline\tend\t102\tx\n",
-                "stress\tend\t103\tx\n",
+                "baseline\tstart\t100\t1970-01-01T00:01:40Z\n",
+                "stress\tstart\t101\t1970-01-01T00:01:41Z\n",
+                "baseline\tend\t102\t1970-01-01T00:01:42Z\n",
+                "stress\tend\t103\t1970-01-01T00:01:43Z\n",
             ],
             ["baseline", "stress"],
         )
@@ -487,14 +560,37 @@ class SoakPressureLogTests(unittest.TestCase):
 
         _, _, _, _, reversed_issues = parse_phase_marker_lines(
             [
-                "stress\tstart\t100\tx\n",
-                "stress\tend\t101\tx\n",
-                "baseline\tstart\t101\tx\n",
-                "baseline\tend\t102\tx\n",
+                "stress\tstart\t100\t1970-01-01T00:01:40Z\n",
+                "stress\tend\t101\t1970-01-01T00:01:41Z\n",
+                "baseline\tstart\t101\t1970-01-01T00:01:41Z\n",
+                "baseline\tend\t102\t1970-01-01T00:01:42Z\n",
             ],
             ["baseline", "stress"],
         )
         self.assertTrue(any("out of order" in issue for issue in reversed_issues))
+
+    def test_phase_markers_require_exact_schema_and_matching_utc_iso(self):
+        expected = ["baseline"]
+        for row in (
+            "baseline\tstart\t100\n",
+            "baseline\tstart\t100\t1970-01-01T00:01:40Z\textra\n",
+        ):
+            phases, _, _, _, issues = parse_phase_marker_lines([row], expected)
+            self.assertEqual(phases, [])
+            self.assertIn("malformed phase marker at line 1", issues)
+
+        _, _, _, _, invalid_iso = parse_phase_marker_lines(
+            ["baseline\tstart\t100\t1970-01-01 00:01:40Z\n"], expected
+        )
+        self.assertIn("invalid phase ISO timestamp at line 1", invalid_iso)
+        _, _, _, _, mismatch = parse_phase_marker_lines(
+            ["baseline\tstart\t100.5\t1970-01-01T00:01:41Z\n"], expected
+        )
+        self.assertIn("phase epoch/ISO mismatch at line 1", mismatch)
+        _, _, _, _, negative = parse_phase_marker_lines(
+            ["baseline\tstart\t-1\t1969-12-31T23:59:59Z\n"], expected
+        )
+        self.assertIn("invalid phase timestamp at line 1", negative)
 
     def test_baseline_occupancy_is_not_run_peak_evidence(self):
         rows = [
@@ -609,6 +705,43 @@ class SoakPressureLogTests(unittest.TestCase):
         self.assertIn("phase 'stress' has no flow-gauge coverage", issues)
         self.assertIn("idle tail has no trustworthy final flow gauge", issues)
 
+    def test_unjoined_capture_children_and_stale_baseline_are_incomplete(self):
+        meta = self.complete_meta()
+        meta.update(
+            log_stream_joined="0",
+            probe_monitor_joined="0",
+            baseline_gauge_phase_local="0",
+        )
+        issues = soak_evidence_issues(
+            meta,
+            rows_count=2,
+            gauge_count=2,
+            probe_count=2,
+            final_gauge_required=False,
+        )
+        self.assertIn("log stream capture was not quiesced and joined", issues)
+        self.assertIn("probe monitor capture was not quiesced and joined", issues)
+        self.assertIn(
+            "baseline gauge was not captured within the baseline phase", issues
+        )
+
+        bad_outcomes = self.complete_meta()
+        bad_outcomes.update(
+            log_stream_child_rc="137",
+            probe_monitor_child_rc="missing",
+        )
+        outcome_issues = soak_evidence_issues(
+            bad_outcomes,
+            rows_count=2,
+            gauge_count=2,
+            probe_count=2,
+            final_gauge_required=False,
+        )
+        self.assertIn("log stream child outcome is missing or invalid", outcome_issues)
+        self.assertIn(
+            "probe monitor child outcome is missing or invalid", outcome_issues
+        )
+
     def test_short_phase_does_not_require_periodic_samples(self):
         self.assertEqual(
             soak_evidence_issues(
@@ -655,6 +788,30 @@ class SoakPressureLogTests(unittest.TestCase):
             "phase 'stress' has a flow-gauge gap of 165.000s (maximum 70s)",
             issues,
         )
+
+    def test_phase_probe_coverage_uses_full_request_intervals(self):
+        issues = soak_evidence_issues(
+            self.complete_meta(),
+            rows_count=20,
+            gauge_count=3,
+            probe_count=2,
+            phase_coverage=[
+                (
+                    "stress",
+                    parse_epoch("100"),
+                    parse_epoch("140"),
+                    [
+                        (parse_epoch("105"), parse_epoch("125")),
+                        (parse_epoch("130"), parse_epoch("139")),
+                    ],
+                    [],
+                )
+            ],
+            final_gauge_required=False,
+            maximum_probe_gap=6,
+        )
+        self.assertNotIn("phase 'stress' has no liveness probe coverage", issues)
+        self.assertFalse(any("liveness probe gap" in issue for issue in issues))
 
     def test_required_phase_cannot_vanish_without_making_evidence_incomplete(self):
         issues = soak_evidence_issues(
@@ -728,6 +885,89 @@ class SoakPressureLogTests(unittest.TestCase):
             incomplete_cap["failures"], [],
             "missing evidence must not be relabeled as a product failure",
         )
+
+    def test_result_rejects_unknown_mode_and_noncanonical_numeric_inputs(self):
+        invalid_mode = self.complete_meta("typo-mode")
+        result = classify_soak_result(
+            invalid_mode,
+            [],
+            probe_failures=0,
+            body_errors=0,
+            reaper_status="disabled",
+        )
+        self.assertEqual(result["exit_code"], 2)
+        self.assertIn("run mode is missing or invalid", result["evidence_issues"])
+
+        result = classify_soak_result(
+            self.complete_meta(),
+            [],
+            probe_failures="1.0",
+            body_errors=-1,
+            reaper_status="disabled",
+            leak_count=True,
+        )
+        self.assertEqual(result["exit_code"], 2)
+        self.assertIn("probe failure count is missing or invalid", result["evidence_issues"])
+        self.assertIn("body error count is missing or invalid", result["evidence_issues"])
+        self.assertIn("leak count is missing or invalid", result["evidence_issues"])
+
+    def test_final_allocated_flows_must_settle_to_baseline(self):
+        result = classify_soak_result(
+            self.complete_meta(),
+            [],
+            probe_failures=0,
+            body_errors=0,
+            reaper_status="disabled",
+            baseline_total=5,
+            final_total=500,
+            settlement_tolerance=5,
+        )
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["exit_code"], 1)
+        self.assertIn(
+            "final allocated-flow total did not settle to the baseline tolerance "
+            "(500 > 5 + 5)",
+            result["failures"],
+        )
+
+        missing = classify_soak_result(
+            {**self.complete_meta(), "final_total": "missing"},
+            [],
+            probe_failures=0,
+            body_errors=0,
+            reaper_status="disabled",
+        )
+        self.assertEqual(missing["exit_code"], 2)
+        self.assertIn(
+            "final allocated-flow total is missing or invalid",
+            missing["evidence_issues"],
+        )
+
+    def test_known_raw_pool_failure_survives_missing_correlation(self):
+        for correlated_key, raw_key, label in (
+            ("fanout_ok", "fanout_established_target_sustained", "fanout target"),
+            (
+                "idle_holders_ok",
+                "idle_holders_established_target_sustained",
+                "idle-holder target",
+            ),
+        ):
+            with self.subTest(label=label):
+                meta = self.complete_meta()
+                meta[raw_key] = "0"
+                meta[correlated_key] = None
+                result = classify_soak_result(
+                    meta,
+                    [f"{label} has no provider flow-pool bracket"],
+                    probe_failures=0,
+                    body_errors=0,
+                    reaper_status="disabled",
+                )
+                self.assertEqual(result["exit_code"], 2)
+                self.assertIn(f"{label} failed", result["failures"])
+                self.assertIn(
+                    f"{label} outcome is missing", result["evidence_issues"]
+                )
 
     def test_cap_validation_and_ceiling_outcomes_are_failures_not_gaps(self):
         cap_meta = self.complete_meta("cap-validate")
@@ -834,138 +1074,232 @@ class SoakPressureLogTests(unittest.TestCase):
             )
         )
 
-    def test_flow_pool_requires_bracketed_provider_rise_and_post_kill_fall(self):
+    def test_flow_pool_uses_registered_or_allocated_cap_metric(self):
         phase = ("fanout", parse_epoch("100"), parse_epoch("200"))
-        gauges = [
-            (parse_epoch("105"), 5),
-            (parse_epoch("115"), 105),
-            (parse_epoch("140"), 5),
-        ]
-        bracket = ("105", 5, "115", 105, "140", 5, 100)
+
+        def samples(*rows):
+            gauges = [
+                (parse_epoch(epoch), registered, allocated)
+                for epoch, registered, allocated in rows
+            ]
+            occupancy = [(epoch, registered) for epoch, registered, _ in gauges]
+            return occupancy, gauges
+
+        def bracket(baseline, peak, post, contribution):
+            return (
+                baseline[0], baseline[1], baseline[2],
+                peak[0], peak[1], peak[2],
+                post[0], post[1], post[2], contribution,
+            )
+
+        base_rows = (("105", 5, 5), ("115", 105, 105), ("140", 5, 5))
+        occupancy, gauges = samples(*base_rows)
+        base_bracket = bracket(*base_rows, 100)
         self.assertEqual(
             flow_pool_status(
-                "1", 100, gauges, gauges, 0, 0,
-                [("110", "120")], phase, bracket
+                "1", 100, occupancy, gauges, 0, 0,
+                [("110", "120")], phase, base_bracket
             ),
             "1",
         )
-        cap_gauges = [
-            (parse_epoch("105"), 5),
-            (parse_epoch("115"), 80),
-            (parse_epoch("140"), 5),
-        ]
+
+        cap_rows = (("105", 5, 5), ("115", 80, 80), ("140", 5, 5))
+        cap_occupancy, cap_gauges = samples(*cap_rows)
         self.assertEqual(
             flow_pool_status(
-                "1",
-                100,
-                cap_gauges,
-                cap_gauges,
-                80,
-                0,
-                [("110", "120")],
-                phase,
-                ("105", 5, "115", 80, "140", 5, 75),
+                "1", 100, cap_occupancy, cap_gauges, 80, 0,
+                [("110", "120")], phase, bracket(*cap_rows, 75)
             ),
             "1",
-            "cap validation documents only the aggregate delta needed to reach softCap",
+            "soft-cap correlation uses registered flows",
         )
-        self.assertIsNone(
+        self.assertEqual(
             flow_pool_status(
-                "1", 100,
-                [(parse_epoch("105"), 5), (parse_epoch("115"), 55),
-                 (parse_epoch("140"), 5)],
-                [(parse_epoch("105"), 5), (parse_epoch("115"), 55),
-                 (parse_epoch("140"), 5)],
-                80, 0, [("110", "120")], phase,
-                ("105", 5, "115", 55, "140", 5, 75),
+                "1", 100, cap_occupancy, cap_gauges, 80, 80,
+                [("110", "120")], phase, bracket(*cap_rows, 75)
             ),
-            "a smaller provider delta cannot satisfy the documented threshold",
+            "1",
+            "an equal hard cap still admits the transition that reaches softCap",
+        )
+        self.assertEqual(
+            flow_pool_status(
+                "0", 100, cap_occupancy, cap_gauges, 80, 80,
+                [], phase, bracket(*cap_rows, 75)
+            ),
+            "0",
+            "equal caps preserve a validated raw workload failure",
+        )
+
+        cleared_retiring_rows = (
+            ("105", 5, 6), ("115", 80, 80), ("140", 5, 5),
+        )
+        cleared_occupancy, cleared_gauges = samples(*cleared_retiring_rows)
+        self.assertEqual(
+            flow_pool_status(
+                "1", 100, cleared_occupancy, cleared_gauges, 80, 80,
+                [("110", "120")], phase,
+                bracket(*cleared_retiring_rows, 74),
+            ),
+            "1",
+            "baseline retirement may clear before the equal-cap peak",
+        )
+
+        over_hard_rows = (
+            ("105", 5, 5), ("115", 80, 81), ("140", 5, 5),
+        )
+        over_hard_occupancy, over_hard_gauges = samples(*over_hard_rows)
+        self.assertIsNone(
+            flow_pool_status(
+                "1", 100, over_hard_occupancy, over_hard_gauges, 80, 80,
+                [("110", "120")], phase,
+                bracket(*over_hard_rows, 75),
+            ),
+            "allocated resources cannot exceed an enabled hard cap",
+        )
+
+        strict_hard_limit_rows = (
+            ("105", 5, 5), ("115", 55, 55), ("140", 5, 5),
+        )
+        strict_limit_occupancy, strict_limit_gauges = samples(
+            *strict_hard_limit_rows
         )
         self.assertIsNone(
             flow_pool_status(
-                "1", 100, gauges[:-1], gauges[:-1], 0, 0,
-                [("110", "120")], phase, bracket
+                "1", 50, strict_limit_occupancy, strict_limit_gauges, 80, 60,
+                [("110", "120")], phase,
+                bracket(*strict_hard_limit_rows, 50),
+            ),
+            "a hard cap strictly below softCap cannot reach the trigger",
+        )
+
+        retiring_only_rows = (
+            ("105", 60, 60), ("115", 60, 80), ("140", 60, 60),
+        )
+        retiring_occupancy, retiring_gauges = samples(*retiring_only_rows)
+        self.assertIsNone(
+            flow_pool_status(
+                "1", 20, retiring_occupancy, retiring_gauges, 80, 0,
+                [("110", "120")], phase,
+                bracket(*retiring_only_rows, 20),
+            ),
+            "retiring allocations cannot masquerade as soft-cap worker growth",
+        )
+
+        equality_blocked_rows = (
+            ("105", 5, 6), ("115", 79, 80), ("140", 5, 5),
+        )
+        equality_blocked_occupancy, equality_blocked_gauges = samples(
+            *equality_blocked_rows
+        )
+        self.assertEqual(
+            flow_pool_status(
+                "1", 74, equality_blocked_occupancy, equality_blocked_gauges,
+                80, 80, [("110", "120")], phase,
+                bracket(*equality_blocked_rows, 74),
+            ),
+            "1",
+            "correlation can prove only the effective headroom while mode logic "
+            "separately marks the trigger unreachable",
+        )
+
+        hard_rows = (("105", 5, 5), ("115", 75, 80), ("140", 5, 5))
+        hard_occupancy, hard_gauges = samples(*hard_rows)
+        self.assertEqual(
+            flow_pool_status(
+                "1", 100, hard_occupancy, hard_gauges, 0, 80,
+                [("110", "120")], phase, bracket(*hard_rows, 75),
+            ),
+            "1",
+            "with softCap disabled, hardCap correlation uses allocated flows",
+        )
+
+        smaller_rows = (("105", 5, 5), ("115", 55, 55), ("140", 5, 5))
+        smaller_occupancy, smaller_gauges = samples(*smaller_rows)
+        self.assertIsNone(
+            flow_pool_status(
+                "1", 100, smaller_occupancy, smaller_gauges, 80, 0,
+                [("110", "120")], phase,
+                bracket(*smaller_rows, 75),
+            )
+        )
+        self.assertIsNone(
+            flow_pool_status(
+                "1", 100, occupancy[:-1], gauges[:-1], 0, 0,
+                [("110", "120")], phase, base_bracket
             ),
             "missing post-kill provider evidence is inconclusive",
         )
+
+        bad_post = (("105", 5, 5), ("115", 105, 105), ("140", 20, 20))
+        bad_occupancy, bad_gauges = samples(*bad_post)
         self.assertIsNone(
             flow_pool_status(
-                "1", 100, gauges, gauges, 0, 0, [("110", "120")], phase,
-                ("105", 5, "115", 105, "140", 20, 100),
+                "1", 100, bad_occupancy, bad_gauges, 0, 0,
+                [("110", "120")], phase, bracket(*bad_post, 100),
+            )
+        )
+        self.assertIsNone(
+            flow_pool_status(
+                "1", 100, occupancy, [gauges[1]], 0, 0,
+                [("110", "120")], phase, base_bracket,
             ),
-            "the post-kill fall must account for the full target",
+            "event occupancy cannot replace missing baseline/post gauges",
         )
-        self.assertEqual(
-            flow_pool_status("0", 100, gauges, gauges, 0, 0, [], phase, bracket),
-            "0",
-            "missing establishment is a workload failure",
-        )
-        self.assertIsNone(
-            flow_pool_status("0", 100, gauges, gauges, 0, 0, [], phase, None),
-            "missing bracket evidence remains incomplete when establishment failed",
-        )
-        self.assertEqual(
-            flow_pool_status("skipped", None, [], [], 0, 0, [], None, None),
-            "skipped",
-        )
-        later_gauges = [
-            (parse_epoch("105"), 5),
-            (parse_epoch("135"), 105),
-            (parse_epoch("150"), 5),
-        ]
+
+        later_rows = (("105", 5, 5), ("135", 105, 105), ("150", 5, 5))
+        later_occupancy, later_gauges = samples(*later_rows)
         self.assertEqual(
             flow_pool_status(
-                "1", 100, later_gauges, later_gauges, 0, 0,
+                "1", 100, later_occupancy, later_gauges, 0, 0,
                 [("110", "120"), ("130", "140")], phase,
-                ("105", 5, "135", 105, "150", 5, 100),
+                bracket(*later_rows, 100),
             ),
             "1",
-            "a later correlated sustained interval can replace an earlier miss",
         )
-        hard_cap_gauges = [
-            (parse_epoch("105"), 5),
-            (parse_epoch("115"), 80),
-            (parse_epoch("140"), 5),
-        ]
-        self.assertEqual(
+
+        self.assertIsNone(
             flow_pool_status(
-                "1", 100, hard_cap_gauges, hard_cap_gauges, 0, 80,
-                [("110", "120")], phase,
-                ("105", 5, "115", 80, "140", 5, 75),
-            ),
-            "1",
-            "with softCap disabled, an enabled hardCap bounds the attributable delta",
+                "1", 100, cap_occupancy, cap_gauges, 80, 0,
+                [("110", "120")], phase, bracket(*cap_rows, 100),
+            )
         )
         self.assertIsNone(
             flow_pool_status(
-                "1", 100, cap_gauges, cap_gauges, 80, 0,
-                [("110", "120")], phase,
-                ("105", 5, "115", 80, "140", 5, 100),
-            ),
-            "the persisted delta must equal the value recomputed from caps and baseline",
+                "1", 100, cap_occupancy, cap_gauges, 80, 60,
+                [("110", "120")], phase, bracket(*cap_rows, 55),
+            )
         )
+
+    def test_known_pool_failure_cannot_bypass_correlation_validation(self):
         self.assertIsNone(
-            flow_pool_status(
-                "1", 100, cap_gauges, cap_gauges, 80, 60,
-                [("110", "120")], phase,
-                ("105", 5, "115", 80, "140", 5, 55),
-            ),
-            "a hard cap below softCap cannot prove cap-validation occupancy",
-        )
-        self.assertIsNone(
-            flow_pool_status(
-                "1", 100, gauges, [(parse_epoch("115"), 105)], 0, 0,
-                [("110", "120")], phase, bracket,
-            ),
-            "generic occupancy events cannot stand in for baseline/post gauges",
+            flow_pool_status("0", None, [], [], 0, 0, [], None, None),
         )
         self.assertEqual(
-            flow_pool_evidence_issues("fanout", "0", "0", False),
+            flow_pool_evidence_issues("fanout", "0", None, False),
             ["fanout has no provider flow-pool bracket"],
-            "failed establishment and missing evidence remain orthogonal",
         )
+
+        phase = ("fanout", parse_epoch("100"), parse_epoch("200"))
+        occupancy = [(parse_epoch("115"), 5)]
+        gauges = [
+            (parse_epoch("105"), 5, 5),
+            (parse_epoch("115"), 5, 5),
+            (parse_epoch("140"), 5, 5),
+        ]
+        bracket = ("105", 5, 5, "115", 5, 5, "140", 5, 5, 100)
         self.assertEqual(
-            flow_pool_evidence_issues("fanout", "0", "0", True), []
+            flow_pool_status(
+                "0", 100, occupancy, gauges, 0, 0, [], phase, bracket
+            ),
+            "0",
+            "the raw workload failure survives once its provider bracket validates",
+        )
+        self.assertIsNone(
+            flow_pool_status(
+                "0", 100, occupancy, gauges, 0, 0, [], phase,
+                (*bracket[:-1], 99),
+            ),
+            "a raw failure cannot bless a contradictory contribution field",
         )
 
     def test_sleep_wake_requires_ordered_command_local_events_and_recovery(self):
@@ -974,10 +1308,22 @@ class SoakPressureLogTests(unittest.TestCase):
         )
         self.assertEqual(skipped, {"issues": [], "outage_window": None})
 
+        workload = {
+            "started": "91",
+            "established": "95",
+            "http_code": "200",
+            "alive_at_command": "1",
+            "established_nonzero_bytes": "1",
+            "established_bytes": "64",
+            "child_rc": "143",
+            "joined": "1",
+        }
+
         recovered = sleep_wake_evidence(
             "1", "1", "100", "151", ["110"], ["150"],
             [(parse_epoch("151.1"), parse_epoch("152"), 0, "200")],
             ("sleep-wake", parse_epoch("90"), parse_epoch("160")),
+            workload_evidence=workload,
         )
         self.assertEqual(recovered["issues"], [])
         self.assertEqual(
@@ -990,6 +1336,7 @@ class SoakPressureLogTests(unittest.TestCase):
             "1", "1", "100", "151", ["110"], ["105"],
             [(parse_epoch("151"), parse_epoch("152"), 0, "200")],
             ("sleep-wake", parse_epoch("90"), parse_epoch("160")),
+            workload_evidence=workload,
         )
         self.assertTrue(any("ordered" in issue for issue in reversed_events["issues"]))
 
@@ -997,6 +1344,7 @@ class SoakPressureLogTests(unittest.TestCase):
             "1", "1", "100", "151", ["170"], ["180"],
             [(parse_epoch("181"), parse_epoch("182"), 0, "200")],
             ("sleep-wake", parse_epoch("90"), parse_epoch("160")),
+            workload_evidence=workload,
         )
         self.assertTrue(any("ordered" in issue for issue in later_cycle["issues"]))
 
@@ -1004,6 +1352,7 @@ class SoakPressureLogTests(unittest.TestCase):
             "1", "1", "100", "151", ["110"], ["150"],
             [(parse_epoch("151"), parse_epoch("152"), 18, "200")],
             ("sleep-wake", parse_epoch("90"), parse_epoch("160")),
+            workload_evidence=workload,
         )
         self.assertTrue(
             any("successful paired probe" in issue for issue in truncated_200["issues"])
@@ -1013,9 +1362,35 @@ class SoakPressureLogTests(unittest.TestCase):
             "0", "1", "100", "101", [], [],
             [(parse_epoch("102"), parse_epoch("103"), 0, "200")],
             ("sleep-wake", parse_epoch("90"), parse_epoch("110")),
+            workload_evidence=workload,
         )
         self.assertEqual(failed_command["issues"], [])
         self.assertIsNone(failed_command["outage_window"])
+
+        missing_workload = sleep_wake_evidence(
+            "1", "1", "100", "151", ["110"], ["150"],
+            [(parse_epoch("151.1"), parse_epoch("152"), 0, "200")],
+            ("sleep-wake", parse_epoch("90"), parse_epoch("160")),
+        )
+        self.assertIn(
+            "sleep-wake phase has no in-flight workload evidence",
+            missing_workload["issues"],
+        )
+
+        empty_body = sleep_wake_evidence(
+            "1", "1", "100", "151", ["110"], ["150"],
+            [(parse_epoch("151.1"), parse_epoch("152"), 0, "200")],
+            ("sleep-wake", parse_epoch("90"), parse_epoch("160")),
+            workload_evidence={
+                **workload,
+                "established_nonzero_bytes": "0",
+                "established_bytes": "0",
+            },
+        )
+        self.assertIn(
+            "sleep-wake workload lacks established nonzero body bytes",
+            empty_body["issues"],
+        )
 
     def test_ceiling_proof_is_microsecond_precise_half_open_and_consecutive(self):
         records, issues = parse_ceiling_probe_lines(
@@ -1054,22 +1429,46 @@ class SoakPressureLogTests(unittest.TestCase):
             window, (parse_epoch("100.100010"), parse_epoch("100.500010"))
         )
         failures = [
-            parse_epoch("100.100009"),
-            parse_epoch("100.100010"),
-            parse_epoch("100.500009"),
-            parse_epoch("100.500010"),
+            (parse_epoch("100.000000"), parse_epoch("100.100009"), 28, "000"),
+            (parse_epoch("100.000000"), parse_epoch("100.100010"), 28, "000"),
+            (parse_epoch("100.400000"), parse_epoch("100.600000"), 28, "000"),
+            (parse_epoch("100.500010"), parse_epoch("100.600000"), 28, "000"),
         ]
         self.assertEqual(
             unexpected_probe_failure_count(failures, window),
             2,
-            "failures before proof and at/after direct recovery stay reportable",
+            "straddling failures overlap the outage; failures wholly before or "
+            "starting at recovery stay reportable",
         )
+
+        later_window = (parse_epoch("100.550000"), parse_epoch("100.700000"))
+        self.assertEqual(
+            unexpected_probe_failure_count_across_outages(
+                failures, [window, later_window]
+            ),
+            1,
+            "each full failed request is waived once if it overlaps any proved outage",
+        )
+
+        overlapping, overlap_issues = parse_ceiling_probe_lines(
+            [
+                "100.000000\t100.200000\t28\t000\t501\t99.900000\n",
+                "100.100000\t100.300000\t28\t000\t502\t100.050000\n",
+            ]
+        )
+        self.assertEqual(len(overlapping), 1)
+        self.assertIn("out-of-order ceiling probe at line 2", overlap_issues)
+
+        _, whitespace_issues = parse_ceiling_probe_lines(
+            [" 100.000000\t100.100000\t28\t000\t501\t99.900000\n"]
+        )
+        self.assertIn("malformed ceiling probe at line 1", whitespace_issues)
 
     def test_paired_probe_requires_ordered_timing_rc_and_status(self):
         records, issues = parse_probe_lines(
             [
-                "100.000000\t100.100000\tiso\t0\t200\n",
-                "101.000000\t101.100000\tiso\t18\t200\n",
+                "100.000000\t100.100000\t1970-01-01T00:01:40Z\t0\t200\n",
+                "101.000000\t101.100000\t1970-01-01T00:01:41Z\t18\t200\n",
             ]
         )
         self.assertEqual(issues, [])
@@ -1077,9 +1476,24 @@ class SoakPressureLogTests(unittest.TestCase):
         self.assertFalse(probe_succeeded(records[1]))
 
         _, malformed = parse_probe_lines(
-            ["102\t101\tiso\t0\t200\n", "100\t101\tiso\tnan\t200\n"]
+            [
+                "102\t101\t1970-01-01T00:01:41Z\t0\t200\n",
+                "100\t101\t1970-01-01T00:01:41Z\tnan\t200\n",
+                "100\t101\tnot-iso\t0\t200\n",
+                "100\t101\t1970-01-01T00:01:40Z\t0\t200\n",
+                "1e2\t101\t1970-01-01T00:01:41Z\t0\t200\n",
+            ]
         )
-        self.assertEqual(len(malformed), 2)
+        self.assertEqual(len(malformed), 5)
+
+        overlapping, overlap_issues = parse_probe_lines(
+            [
+                "100.000000\t101.000000\t1970-01-01T00:01:41Z\t0\t200\n",
+                "100.500000\t102.000000\t1970-01-01T00:01:42Z\t0\t200\n",
+            ]
+        )
+        self.assertEqual(len(overlapping), 1)
+        self.assertIn("out-of-order liveness probe at line 2", overlap_issues)
 
     def test_leaks_output_requires_one_parseable_summary(self):
         self.assertEqual(
@@ -1316,37 +1730,52 @@ class SoakPressureLogTests(unittest.TestCase):
         marker = "<<'PYEOF'\n"
         extractor = shell.split(marker, 1)[1].split("\nPYEOF", 1)[0]
         gauge = (
-            "live-flow counts tcp=0 udp=0 total=0 peak=0 softCap=0 hardCap=0 "
+            "live-flow counts tcp=0 udp=0 total=0 peak=0 softCap=0 hardCap=0 retiring=0 "
             "pressure[triggers=0 scans=0 skipped=0 selected=0 evicted=0 "
             "spared=0 canceled=0 expired=0 pending=0]"
         )
         with tempfile.TemporaryDirectory() as artifact_dir:
             out = Path(artifact_dir)
-            def write_meta(leaks_rc, provider_end_pid=10):
+            def write_meta(
+                leaks_rc,
+                provider_end_pid="10",
+                softcap="0",
+                hardcap="0",
+                baseline_registered="0",
+                baseline_total="0",
+                mode="find-ceiling",
+                outage_start="101.110000",
+                outage_end="101.410000",
+            ):
                 (out / "run-meta.tsv").write_text(
                     "log_stream_started\t1\n"
                     "log_stream_alive_end\t1\n"
+                    "log_stream_child_rc\t143\nlog_stream_joined\t1\n"
                     "baseline_gauge_seen\t1\n"
+                    "baseline_gauge_phase_local\t1\n"
                     "probe_monitor_alive_end\t1\n"
+                    "probe_monitor_child_rc\t143\nprobe_monitor_joined\t1\n"
                     "provider_continuous\t1\n"
                     "provider_start_pid\t10\nprovider_start_time\tstart\n"
                     f"provider_end_pid\t{provider_end_pid}\nprovider_end_time\tstart\n"
                     "provider_bundle\torg.example.provider\n"
                     "log_stream_pid\t20\nprobe_monitor_pid\t30\n"
                     f"leaks_command_rc\t{leaks_rc}\n"
-                    "mode\tfind-ceiling\n"
-                    "softcap\t0\nhardcap\t0\nbaseline_total\t0\n"
+                    f"mode\t{mode}\n"
+                    f"softcap\t{softcap}\nhardcap\t{hardcap}\n"
+                    f"baseline_registered\t{baseline_registered}\n"
+                    f"baseline_total\t{baseline_total}\n"
                     "ceiling_found\t1\nceiling_recovered\t1\n"
-                    "ceiling_outage_start\t101.110000\n"
-                    "ceiling_outage_end\t101.410000\n"
+                    f"ceiling_outage_start\t{outage_start}\n"
+                    f"ceiling_outage_end\t{outage_end}\n"
                 )
 
             write_meta(0)
             (out / "phases.tsv").write_text(
-                "baseline\tstart\t100.000000\tx\n"
-                "baseline\tend\t101.000000\tx\n"
-                "ceiling\tstart\t101.000000\tx\n"
-                "ceiling\tend\t102.000000\tx\n"
+                "baseline\tstart\t100.000000\t1970-01-01T00:01:40Z\n"
+                "baseline\tend\t101.000000\t1970-01-01T00:01:41Z\n"
+                "ceiling\tstart\t101.000000\t1970-01-01T00:01:41Z\n"
+                "ceiling\tend\t102.000000\t1970-01-01T00:01:42Z\n"
             )
             rows = [
                 {
@@ -1370,8 +1799,8 @@ class SoakPressureLogTests(unittest.TestCase):
                 "".join(json.dumps(row) + "\n" for row in rows)
             )
             (out / "probe-timeline.txt").write_text(
-                "100.200000\t100.300000\tx\t0\t200\n"
-                "101.200000\t101.300000\tx\t0\t200\n"
+                "100.200000\t100.300000\t1970-01-01T00:01:40Z\t0\t200\n"
+                "101.200000\t101.300000\t1970-01-01T00:01:41Z\t0\t200\n"
             )
             (out / "ceiling-probes.tsv").write_text(
                 "101.100000\t101.110000\t28\t000\t1\t101.050000\n"
@@ -1427,6 +1856,74 @@ class SoakPressureLogTests(unittest.TestCase):
             write_meta(0, provider_end_pid=11)
             status, output = run_extractor()
             self.assertEqual(status, 2, output)
+
+            write_meta(0, softcap="1")
+            rows[0]["eventMessage"] = gauge.replace("softCap=0", "softCap=1")
+            rows[1]["eventMessage"] = rows[0]["eventMessage"]
+            (out / "system.ndjson").write_text(
+                "".join(json.dumps(row) + "\n" for row in rows)
+            )
+            status, output = run_extractor()
+            self.assertEqual(status, 2, output)
+            self.assertIn("flow-pressure soft cap is enabled (1)", output)
+
+            write_meta(
+                0,
+                softcap="80",
+                hardcap="80",
+                baseline_registered="5",
+                baseline_total="6",
+                mode="cap-validate",
+            )
+            status, output = run_extractor()
+            self.assertEqual(status, 2, output)
+            self.assertIn(
+                "cap-validation mode conflicts with effective live-flow hard-cap headroom",
+                output,
+            )
+
+            rows[0]["eventMessage"] = gauge
+            rows[1]["eventMessage"] = gauge
+            (out / "system.ndjson").write_text(
+                "".join(json.dumps(row) + "\n" for row in rows)
+            )
+            for kwargs, expected in (
+                ({"baseline_total": "00"}, "run metadata 'baseline_total'"),
+                (
+                    {"outage_start": "1.0111e2"},
+                    "recorded ceiling outage window does not match direct probes",
+                ),
+                (
+                    {"provider_end_pid": "010"},
+                    "run metadata 'provider_end_pid' is not a positive integer",
+                ),
+            ):
+                with self.subTest(kwargs=kwargs):
+                    write_meta(0, **kwargs)
+                    status, output = run_extractor()
+                    self.assertEqual(status, 2, output)
+                    self.assertIn(expected, output)
+
+            write_meta(0)
+            for artifact, contents, expected in (
+                (
+                    "pool-intervals.tsv",
+                    "fanout\t1e2\t106.000000\n",
+                    "invalid established-pool interval at line 1",
+                ),
+                (
+                    "pool-brackets.tsv",
+                    "fanout\t0100\t0\t0\t101\t0\t0\t102\t0\t0\t1\n",
+                    "invalid provider flow-pool bracket at line 1",
+                ),
+            ):
+                with self.subTest(artifact=artifact):
+                    artifact_path = out / artifact
+                    artifact_path.write_text(contents)
+                    status, output = run_extractor()
+                    self.assertEqual(status, 2, output)
+                    self.assertIn(expected, output)
+                    artifact_path.write_text("")
 
 
 if __name__ == "__main__":

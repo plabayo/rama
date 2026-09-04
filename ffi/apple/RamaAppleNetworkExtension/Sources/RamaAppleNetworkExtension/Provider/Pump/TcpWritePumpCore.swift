@@ -1,5 +1,9 @@
 import Foundation
 
+typealias TcpWritePumpRetryScheduler = @Sendable (
+    _ delayMs: Int, _ work: @escaping @Sendable () -> Void
+) -> Void
+
 protocol TcpWritePumpCoreDelegate: AnyObject {
     /// The core has encountered a terminal write error and has closed its
     /// internal state.  The delegate performs its own teardown here.
@@ -25,6 +29,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
     private let onDrained: @Sendable () -> Void
     private let doWrite: (Data, @escaping @Sendable (Error?) -> Void) -> Void
     private let logHwm: @Sendable (Int) -> Void
+    private let retryScheduler: TcpWritePumpRetryScheduler
     weak var delegate: TcpWritePumpCoreDelegate?
 
     // Queue-only mutable state — never read/written outside a block
@@ -35,6 +40,13 @@ final class TcpWritePumpCore: @unchecked Sendable {
     private var writing = false
     private var lifecycle: WritePumpLifecycle
     private var retrying: WriteRetry?
+    /// True while the one valid retry timer is waiting to reopen `flush()`.
+    /// New enqueues may append while this is set, but cannot bypass the
+    /// transport's backoff interval.
+    private var retryDelayPending = false
+    /// Invalidates delayed callbacks after success, termination, or cancel.
+    /// It also makes an accidentally repeated scheduler callback harmless.
+    private var retryDelayGeneration: UInt64 = 0
 
     /// Fired before an accepted chunk is reported and, while draining, again
     /// when its underlying write completes successfully. The first edge
@@ -50,7 +62,8 @@ final class TcpWritePumpCore: @unchecked Sendable {
         doWrite: @escaping (Data, @escaping @Sendable (Error?) -> Void) -> Void,
         logHwm: @escaping @Sendable (Int) -> Void,
         inlineWriteCompletionWhenOnQueue: Bool = false,
-        onActivity: @escaping @Sendable () -> Bool = { true }
+        onActivity: @escaping @Sendable () -> Bool = { true },
+        retryScheduler: TcpWritePumpRetryScheduler? = nil
     ) {
         self.queue = queue
         self.lifecycle = initialLifecycle
@@ -59,6 +72,12 @@ final class TcpWritePumpCore: @unchecked Sendable {
         self.logHwm = logHwm
         self.inlineWriteCompletionWhenOnQueue = inlineWriteCompletionWhenOnQueue
         self.onActivity = onActivity
+        self.retryScheduler = retryScheduler ?? { [queue] delayMs, work in
+            queue.asyncAfter(
+                deadline: .now() + .milliseconds(delayMs),
+                execute: work
+            )
+        }
         queue.setSpecific(key: queueKey, value: 1)
     }
 
@@ -68,18 +87,21 @@ final class TcpWritePumpCore: @unchecked Sendable {
         /// Test-only snapshot of the queue-only fields that should be
         /// quiescent after `cancel()` cleanup runs. Used to verify the
         /// post-cancel invariant
-        ///   `closed ⇒ pending empty ∧ retrying nil ∧ pendingBytes 0
-        ///              ∧ pendingItems 0`
+        ///   `closed ⇒ pending empty ∧ retrying nil ∧ retry delay absent
+        ///              ∧ pendingBytes 0 ∧ pendingItems 0`
         /// is preserved across the race window where a write's
         /// completion lands after cleanup.  Must be called on `queue`.
         internal func testInvariantSnapshot()
             -> (
-                pendingEmpty: Bool, retryingNil: Bool,
+                pendingEmpty: Bool, retryingNil: Bool, retryDelayPending: Bool,
                 pendingBytes: Int, pendingItems: Int
             )
         {
             let accounting = state.withLock { ($0.pendingBytes, $0.pendingItems) }
-            return (pending.isEmpty, retrying == nil, accounting.0, accounting.1)
+            return (
+                pending.isEmpty, retrying == nil, retryDelayPending,
+                accounting.0, accounting.1
+            )
         }
     #endif
 
@@ -97,6 +119,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
         return { [self] in
             self.pending.removeAll()
             self.retrying = nil
+            self.invalidateRetryDelayLocked()
         }
     }
 
@@ -125,10 +148,11 @@ final class TcpWritePumpCore: @unchecked Sendable {
 
         let (decision, hwm): (RamaTcpDeliverStatusBridge, Int?) = state.withLock { s in
             if s.closed { return (.closed, nil) }
-            // First chunk always passes through — an oversized single
-            // chunk must not deadlock the bridge.
-            let byteCapReached = s.pendingBytes > 0
-                && s.pendingBytes + data.count > writePumpMaxPendingBytes
+            // Every production producer slices to this cap before enqueueing,
+            // so it is safe to reject an oversized first chunk too. Keep the
+            // subtraction form overflow-safe for adversarial Data lengths.
+            let byteCapReached = data.count > writePumpMaxPendingBytes
+                || s.pendingBytes > writePumpMaxPendingBytes - data.count
             let itemCapReached = s.pendingItems >= tcpWritePumpMaxPendingItems
             if byteCapReached || itemCapReached {
                 s.pausedSignaled = true
@@ -195,12 +219,13 @@ final class TcpWritePumpCore: @unchecked Sendable {
         lifecycle = .draining
         pending.removeAll()
         retrying = nil
+        invalidateRetryDelayLocked()
         delegate?.pumpCore(self, didTerminateWith: error)
     }
 
     private func flush() {
         if isClosed() { return }
-        if writing || pending.isEmpty || lifecycle == .pending {
+        if writing || retryDelayPending || pending.isEmpty || lifecycle == .pending {
             finishCloseIfDrained()
             return
         }
@@ -253,11 +278,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
                             delayMs: min(currentDelayMs * 2, writeRetryMaxDelayMs),
                             deadline: deadline
                         )
-                        self.queue.asyncAfter(
-                            deadline: .now() + .milliseconds(currentDelayMs)
-                        ) { [weak self] in
-                            self?.flush()
-                        }
+                        self.scheduleRetryLocked(after: currentDelayMs)
                         return
                     }
                     self.terminateLocked(with: error)
@@ -286,6 +307,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
                 // its progress clock before advancing to the next chunk.
                 if self.lifecycle == .draining { _ = self.onActivity() }
                 self.retrying = nil
+                self.invalidateRetryDelayLocked()
                 self.flush()
             }
             if self.inlineWriteCompletionWhenOnQueue,
@@ -298,8 +320,36 @@ final class TcpWritePumpCore: @unchecked Sendable {
         }
     }
 
+    /// Arm exactly one retry delay for the current backoff generation.
+    /// Scheduler callbacks may arrive on any queue; all generation state is
+    /// inspected and mutated only after hopping back to `queue`.
+    private func scheduleRetryLocked(after delayMs: Int) {
+        retryDelayGeneration &+= 1
+        let generation = retryDelayGeneration
+        retryDelayPending = true
+        retryScheduler(delayMs) { [weak self] in
+            guard let self else { return }
+            self.queue.async { [weak self] in
+                guard let self,
+                    self.retryDelayPending,
+                    self.retryDelayGeneration == generation
+                else { return }
+                self.retryDelayPending = false
+                self.flush()
+            }
+        }
+    }
+
+    /// Make every previously scheduled callback stale before clearing the
+    /// delay gate. Must run on `queue`.
+    private func invalidateRetryDelayLocked() {
+        retryDelayGeneration &+= 1
+        retryDelayPending = false
+    }
+
     private func finishCloseIfDrained() {
-        guard lifecycle == .draining, !writing, pending.isEmpty else { return }
+        guard lifecycle == .draining, !writing, !retryDelayPending, pending.isEmpty
+        else { return }
         // Also require both admission charges to be zero: `enqueue` bumps them
         // and returns `.accepted` on the FFI thread, then appends to `pending`
         // via `queue.async`. Between those, `pending.isEmpty` is true while a

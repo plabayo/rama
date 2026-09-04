@@ -27,6 +27,7 @@ final class FlowPressureReaperTests: XCTestCase {
     private var savedSoftCap: UInt32 = 0
     private var savedLowWater: UInt32 = 0
     private var savedFloorMs: UInt32 = 0
+    private var savedHardCap: UInt32 = 0
     private var cores: [TransparentProxyCore] = []
     private var pressureFlowQueues: [DispatchQueue] = []
 
@@ -40,6 +41,7 @@ final class FlowPressureReaperTests: XCTestCase {
         savedSoftCap = defaultFlowPressureSoftCap
         savedLowWater = defaultFlowPressureLowWater
         savedFloorMs = defaultFlowPressureIdleFloorMs
+        savedHardCap = defaultLiveFlowHardCap
     }
 
     override func tearDown() {
@@ -52,6 +54,7 @@ final class FlowPressureReaperTests: XCTestCase {
         defaultFlowPressureSoftCap = savedSoftCap
         defaultFlowPressureLowWater = savedLowWater
         defaultFlowPressureIdleFloorMs = savedFloorMs
+        defaultLiveFlowHardCap = savedHardCap
         super.tearDown()
     }
 
@@ -127,6 +130,28 @@ final class FlowPressureReaperTests: XCTestCase {
             sourceAppPid: 4242)
     }
 
+    private func applyFlowPressureRuntimeConfig(
+        softCap: UInt32, lowWater: UInt32, idleFloorMs: UInt32,
+        hardCap: UInt32
+    ) {
+        RamaTransparentProxyProvider.applyRuntimeConfig(
+            from: RamaTransparentProxyConfigBridge(
+                tunnelRemoteAddress: "240.0.0.1",
+                rules: [],
+                tcpWritePumpMaxPendingBytes: writePumpMaxPendingBytes,
+                flowPressureSoftCap: softCap,
+                flowPressureLowWater: lowWater,
+                flowPressureIdleFloorMs: idleFloorMs,
+                liveFlowHardCap: hardCap,
+                tcpStartInFlightHardCap: defaultTcpStartInFlightHardCap,
+                tcpStartInFlightSoftCap: defaultTcpStartInFlightSoftCap,
+                tcpStartLatencyBreakerP95Ms: defaultTcpStartLatencyBreakerP95Ms,
+                tcpStartLatencyBreakerCloseP95Ms: defaultTcpStartLatencyBreakerCloseP95Ms,
+                tcpPressureConnectTimeoutMs: defaultTcpPressureConnectTimeoutMs,
+                tcpBreakerConnectTimeoutMs: defaultTcpBreakerConnectTimeoutMs,
+                flowRefusalPassthrough: defaultFlowRefusalPassthrough))
+    }
+
     func testProductionDispatchLeaseDefaultIsPinned() {
         XCTAssertEqual(TransparentProxyCore().testPressureVictimDispatchLeaseMs, 250)
     }
@@ -167,9 +192,9 @@ final class FlowPressureReaperTests: XCTestCase {
     }
 
     func testTcpAdmissionDrivesProductionPressureTrigger() {
-        defaultFlowPressureSoftCap = 2
-        defaultFlowPressureLowWater = 1
-        defaultFlowPressureIdleFloorMs = 5_000
+        applyFlowPressureRuntimeConfig(
+            softCap: 2, lowWater: 1, idleFloorMs: 5_000, hardCap: 2)
+        XCTAssertEqual(defaultFlowPressureSoftCap, defaultLiveFlowHardCap)
         let core = makeCore()
         let engine = makeEngine()
         core.attachEngine(engine)
@@ -189,9 +214,9 @@ final class FlowPressureReaperTests: XCTestCase {
     }
 
     func testUdpAdmissionDrivesProductionPressureTrigger() {
-        defaultFlowPressureSoftCap = 2
-        defaultFlowPressureLowWater = 1
-        defaultFlowPressureIdleFloorMs = 5_000
+        applyFlowPressureRuntimeConfig(
+            softCap: 2, lowWater: 1, idleFloorMs: 5_000, hardCap: 2)
+        XCTAssertEqual(defaultFlowPressureSoftCap, defaultLiveFlowHardCap)
         let core = makeCore()
         let engine = makeEngine()
         core.attachEngine(engine)
@@ -208,6 +233,179 @@ final class FlowPressureReaperTests: XCTestCase {
             idle.wasTornDown && core.testPressureEvictedTotal == 1
         }
         XCTAssertEqual(core.udpFlowCount, 1)
+    }
+
+    func testRetirementTemporarilyBlocksEqualCapPressureTrigger() {
+        applyFlowPressureRuntimeConfig(
+            softCap: 2, lowWater: 1, idleFloorMs: 5_000, hardCap: 2)
+        let core = makeCore()
+        let generation = core.attachEngine(makeEngine())
+        let victim = Fx(core: core, idleSeconds: 30)
+        insert(core, [victim])
+        let releaseRetirement = core.beginResourceRetirement()
+        let admitted = MockTcpFlow()
+        let admittedId = ObjectIdentifier(admitted)
+
+        guard case .reject = core.admitTcpStart(
+            flowId: admittedId,
+            meta: makeMeta(protocolRaw: 1),
+            engineGeneration: generation)
+        else {
+            return XCTFail("a retiring allocation must consume the last hard-cap slot")
+        }
+        XCTAssertFalse(
+            core.testPressureReapScheduled,
+            "a below-soft refusal cannot benefit from queued reaper work")
+
+        releaseRetirement()
+        guard case .admit(let token) = core.admitTcpStart(
+            flowId: admittedId,
+            meta: makeMeta(protocolRaw: 1),
+            engineGeneration: generation)
+        else {
+            return XCTFail("releasing retirement must restore the boundary slot")
+        }
+        let queue = DispatchQueue(label: "rama.test.pressure.equal-cap-retirement")
+        pressureFlowQueues.append(queue)
+        let ctx = TcpFlowContext()
+        ctx.core = core
+        ctx.flow = admitted
+        ctx.flowId = admittedId
+        ctx.flowQueue = queue
+        ctx.egressReady = true
+        XCTAssertTrue(
+            core.registerTcpFlowAndScheduleStartup(
+                admittedId,
+                anchor: _TestTcpFlowSessionAnchor(ctx: ctx),
+                appId: token.appId,
+                engineGeneration: generation,
+                on: queue,
+                body: {}))
+        core.finishTcpStart(token, outcome: .ready)
+
+        pollUntil("equal-cap boundary registration triggers pressure reap") {
+            victim.wasTornDown && core.tcpFlowCount == 1
+        }
+        XCTAssertEqual(core.testPressureEvictedTotal, 1)
+    }
+
+    func testTcpLiveCapRefusalWakesReaperAfterVictimBecomesEligible() {
+        applyFlowPressureRuntimeConfig(
+            softCap: 2, lowWater: 0, idleFloorMs: 1_000, hardCap: 1)
+        XCTAssertEqual(defaultFlowPressureSoftCap, 1)
+        let core = makeCore()
+        let victim = Fx(core: core, idleSeconds: 0)
+        insert(core, [victim])
+
+        // Establish the production failure mode without sleeping: at the
+        // synthetic first scan the flow is fresh, and its suppression deadline
+        // is already past by the time the real admission below runs.
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        let eligibleActivityNs = nowNs > 2_000_000_000 ? nowNs - 2_000_000_000 : 1
+        victim.ctx.lastActivityAt = DispatchTime(uptimeNanoseconds: nowNs)
+        XCTAssertTrue(core.testCollectPressureVictimsIfDue(nowNs: eligibleActivityNs).isEmpty)
+        XCTAssertEqual(core.testPressureScanCount, 1)
+
+        victim.ctx.lastActivityAt = DispatchTime(uptimeNanoseconds: eligibleActivityNs)
+        let refused = MockTcpFlow()
+        guard case .reject = core.admitTcpStart(
+            flowId: ObjectIdentifier(refused),
+            meta: makeMeta(protocolRaw: 1))
+        else {
+            return XCTFail("TCP must be refused while the registered victim holds the live cap")
+        }
+
+        pollUntil("TCP live-cap refusal wakes pressure reap") {
+            victim.wasTornDown && core.tcpFlowCount == 0
+        }
+        XCTAssertEqual(core.testPressureScanCount, 2)
+        XCTAssertEqual(core.testPressureEvictedTotal, 1)
+    }
+
+    func testUdpLiveCapRefusalWakesReaperAfterVictimBecomesEligible() {
+        applyFlowPressureRuntimeConfig(
+            softCap: 2, lowWater: 0, idleFloorMs: 1_000, hardCap: 1)
+        XCTAssertEqual(defaultFlowPressureSoftCap, 1)
+        let core = makeCore()
+        let generation = core.attachEngine(makeEngine())
+        let victim = Fx(core: core, idleSeconds: 0)
+        insert(core, [victim])
+
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        let eligibleActivityNs = nowNs > 2_000_000_000 ? nowNs - 2_000_000_000 : 1
+        victim.ctx.lastActivityAt = DispatchTime(uptimeNanoseconds: nowNs)
+        XCTAssertTrue(core.testCollectPressureVictimsIfDue(nowNs: eligibleActivityNs).isEmpty)
+        XCTAssertEqual(core.testPressureScanCount, 1)
+
+        victim.ctx.lastActivityAt = DispatchTime(uptimeNanoseconds: eligibleActivityNs)
+        let refused = MockUdpFlow()
+        let refusedContext = UdpFlowContext()
+        let decision = core.registerUdpFlowAndScheduleStartupDecision(
+            ObjectIdentifier(refused),
+            anchor: _TestUdpFlowSessionAnchor(ctx: refusedContext),
+            appId: "com.example.pressure-cap",
+            engineGeneration: generation,
+            on: DispatchQueue(label: "rama.test.pressure.udp-live-cap-refusal"),
+            body: { XCTFail("capacity-refused UDP must not start") })
+        guard case .capacityRefused = decision else {
+            return XCTFail("UDP must be refused while the registered victim holds the live cap")
+        }
+
+        pollUntil("UDP live-cap refusal wakes pressure reap") {
+            victim.wasTornDown && core.tcpFlowCount == 0
+        }
+        XCTAssertEqual(core.testPressureScanCount, 2)
+        XCTAssertEqual(core.testPressureEvictedTotal, 1)
+    }
+
+    func testRepeatedLiveCapRefusalsRemainSuppressedToOneScan() {
+        defaultFlowPressureSoftCap = 1
+        defaultFlowPressureLowWater = 0
+        defaultFlowPressureIdleFloorMs = 60_000
+        defaultLiveFlowHardCap = 1
+        let core = makeCore()
+        let victim = Fx(core: core, idleSeconds: 0)
+        insert(core, [victim])
+
+        let firstRefused = MockTcpFlow()
+        guard case .reject = core.admitTcpStart(
+            flowId: ObjectIdentifier(firstRefused),
+            meta: makeMeta(protocolRaw: 1))
+        else {
+            return XCTFail("first TCP flow must be refused at the live cap")
+        }
+        pollUntil("first refusal scan finishes") {
+            core.testPressureScanCount == 1 && !core.testPressureReapScheduled
+        }
+        XCTAssertGreaterThan(core.testPressureRescanSuppressedForMs, 0)
+
+        var refusedFlows: [AnyObject] = []
+        for _ in 0..<20 {
+            let tcp = MockTcpFlow()
+            refusedFlows.append(tcp)
+            guard case .reject = core.admitTcpStart(
+                flowId: ObjectIdentifier(tcp),
+                meta: makeMeta(protocolRaw: 1))
+            else {
+                return XCTFail("repeated TCP flow must be refused at the live cap")
+            }
+
+            let udp = MockUdpFlow()
+            refusedFlows.append(udp)
+            XCTAssertNil(
+                core.registerUdpFlow(
+                    ObjectIdentifier(udp),
+                    anchor: _TestUdpFlowSessionAnchor(ctx: UdpFlowContext()),
+                    appId: "com.example.pressure-cap"))
+        }
+
+        pollUntil("coalesced refusal triggers drain") { !core.testPressureReapScheduled }
+        XCTAssertEqual(
+            core.testPressureScanCount, 1,
+            "refusal storms must ride the outstanding slot or suppression deadline")
+        XCTAssertFalse(victim.wasTornDown)
+        XCTAssertEqual(core.tcpFlowCount, 1)
+        _ = refusedFlows  // Retain unique identities through every refusal.
     }
 
     func testPendingCloseUdpAdmissionCreditsReliefBeforePressureScan() {

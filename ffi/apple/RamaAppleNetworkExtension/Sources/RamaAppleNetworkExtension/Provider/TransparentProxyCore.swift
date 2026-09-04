@@ -2354,16 +2354,17 @@ final class TransparentProxyCore: @unchecked Sendable {
         appId: String,
         engineGeneration: UInt64?
     ) -> UdpFlowRegistrationPlan {
-        stateQueue.sync {
+        let result: (plan: UdpFlowRegistrationPlan, wakePressureReaper: Bool) = stateQueue.sync {
             if let engineGeneration {
                 guard self.acceptingFlows,
                     engineGeneration == self.engineGeneration
                 else {
                     anchor.ctx.registrationGate.abandon()
-                    return .unavailable
+                    return (plan: .unavailable, wakePressureReaper: false)
                 }
             }
-            let projected = self.tcpSessions.count + self.udpSessions.count
+            let registered = self.tcpSessions.count + self.udpSessions.count
+            let projected = registered
                 + self.overload.liveFlowReservations.count
                 + self.retiringResourceCount
             let hardCap = Int(defaultLiveFlowHardCap)
@@ -2375,7 +2376,10 @@ final class TransparentProxyCore: @unchecked Sendable {
                     reason: reason, appId: appId)
                 else { preconditionFailure("shed recorder must reject") }
                 anchor.ctx.registrationGate.abandon()
-                return .capacityRefused(reason: reason, persist: persist)
+                return (
+                    plan: .capacityRefused(reason: reason, persist: persist),
+                    wakePressureReaper: defaultFlowPressureSoftCap > 0
+                        && registered >= Int(defaultFlowPressureSoftCap))
             }
 
             // `stateQueue -> registrationGate -> pressureVictimState` is the
@@ -2401,12 +2405,21 @@ final class TransparentProxyCore: @unchecked Sendable {
                     return occupancy
                 })
             else {
-                return .unavailable
+                return (plan: .unavailable, wakePressureReaper: false)
             }
-            return .started(
-                occupancy: claim.value,
-                pendingServerClose: claim.pendingServerClose)
+            return (
+                plan: .started(
+                    occupancy: claim.value,
+                    pendingServerClose: claim.pendingServerClose),
+                wakePressureReaper: false)
         }
+        // A refused flow never reaches the post-registration pressure trigger.
+        // Wake the trigger-driven reaper after leaving `stateQueue` so a TCP
+        // flow that became idle while the live cap was closed can release a
+        // slot. The reaper's outstanding-slot and suppression gates keep a
+        // refusal storm bounded.
+        if result.wakePressureReaper { reapIdleUnderPressure() }
+        return result.plan
     }
 
     /// UDP counterpart of `registerTcpFlowAndScheduleStartup`.
@@ -2567,23 +2580,27 @@ final class TransparentProxyCore: @unchecked Sendable {
         meta: RamaTransparentProxyFlowMetaBridge,
         engineGeneration: UInt64? = nil
     ) -> TcpAdmissionDecision? {
-        stateQueue.sync {
+        let result: (decision: TcpAdmissionDecision?, wakePressureReaper: Bool) = stateQueue.sync {
             if let engineGeneration {
                 guard self.acceptingFlows,
                     engineGeneration == self.engineGeneration
-                else { return nil }
+                else { return (decision: nil, wakePressureReaper: false) }
             }
             let appId = self.overload.appId(for: meta)
             let liveHardCap = Int(defaultLiveFlowHardCap)
-            let projectedLive = self.tcpSessions.count + self.udpSessions.count
+            let registered = self.tcpSessions.count + self.udpSessions.count
+            let projectedLive = registered
                 + self.overload.liveFlowReservations.count
                 + self.retiringResourceCount
             if liveHardCap > 0, projectedLive >= liveHardCap {
                 self.overload.shedLiveCapTcpSinceTick += 1
-                return self.recordShedLocked(
-                    reason:
-                        "combined live-flow hard cap reached projected=\(projectedLive) hardCap=\(liveHardCap) protocol=tcp",
-                    appId: appId)
+                let reason =
+                    "combined live-flow hard cap reached projected=\(projectedLive) "
+                    + "hardCap=\(liveHardCap) protocol=tcp"
+                return (
+                    decision: self.recordShedLocked(reason: reason, appId: appId),
+                    wakePressureReaper: defaultFlowPressureSoftCap > 0
+                        && registered >= Int(defaultFlowPressureSoftCap))
             }
             let hardCap = Int(defaultTcpStartInFlightHardCap)
             let softCap = Int(defaultTcpStartInFlightSoftCap)
@@ -2599,15 +2616,19 @@ final class TransparentProxyCore: @unchecked Sendable {
             }
             if hardCap > 0, inFlight >= hardCap {
                 self.overload.shedHardCapSinceTick += 1
-                return self.recordShedLocked(
-                    reason: "hard start cap reached inFlight=\(inFlight) hardCap=\(hardCap)",
-                    appId: appId)
+                return (
+                    decision: self.recordShedLocked(
+                        reason: "hard start cap reached inFlight=\(inFlight) hardCap=\(hardCap)",
+                        appId: appId),
+                    wakePressureReaper: false)
             }
             if self.overload.breakerOpen, softCap > 0, inFlight >= softCap {
                 self.overload.shedBreakerSinceTick += 1
-                return self.recordShedLocked(
-                    reason: "latency breaker open inFlight=\(inFlight) softCap=\(softCap)",
-                    appId: appId)
+                return (
+                    decision: self.recordShedLocked(
+                        reason: "latency breaker open inFlight=\(inFlight) softCap=\(softCap)",
+                        appId: appId),
+                    wakePressureReaper: false)
             }
             let token = TcpAdmissionToken(flowId: flowId, startedAt: .now(), appId: appId)
             self.overload.startsInFlight[flowId] = token
@@ -2615,8 +2636,14 @@ final class TransparentProxyCore: @unchecked Sendable {
             self.overload.admissionsSinceTick += 1
             self.overload.startsInFlightPeakSinceTick = max(
                 self.overload.startsInFlightPeakSinceTick, self.overload.startsInFlight.count)
-            return .admit(token)
+            return (decision: .admit(token), wakePressureReaper: false)
         }
+        // The live-cap branch cannot rely on the ordinary post-registration
+        // trigger because this flow was not registered. Run the wake outside
+        // `stateQueue`; start-cap and latency-breaker refusals do not represent
+        // live-flow pressure and deliberately do not trigger it.
+        if result.wakePressureReaper { reapIdleUnderPressure() }
+        return result.decision
     }
 
     /// Count a refusal and decide whether its per-flow line may be

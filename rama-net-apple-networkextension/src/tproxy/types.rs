@@ -703,6 +703,8 @@ pub struct TransparentProxyConfig {
     tcp_write_pump_max_pending_bytes: usize,
     /// Combined TCP+UDP live-flow soft cap that triggers Swift's idle TCP
     /// pressure reaper. `0` disables this established-flow pressure reaper.
+    /// When both flow caps are enabled, the Apple provider bounds the effective
+    /// soft cap by the live-flow hard cap at its logged FFI boundary.
     flow_pressure_soft_cap: u32,
     /// Requested combined live-flow count after a pressure reap. The Apple
     /// provider normalizes this below `soft_cap` at its logged FFI boundary.
@@ -784,6 +786,8 @@ impl TransparentProxyConfig {
 
     /// Combined TCP+UDP live-flow soft cap that triggers Swift's idle TCP
     /// pressure reaper. `0` disables this established-flow pressure reaper.
+    /// When both flow caps are enabled, Swift uses the smaller of this value
+    /// and [`Self::live_flow_hard_cap`].
     #[must_use]
     pub fn flow_pressure_soft_cap(&self) -> u32 {
         self.flow_pressure_soft_cap
@@ -913,6 +917,8 @@ impl TransparentProxyConfig {
     generate_set_and_with! {
         /// Set the combined TCP+UDP live-flow soft cap that triggers Swift's
         /// idle TCP pressure reaper. `0` disables this established-flow reaper.
+        /// If the live-flow hard cap is also enabled, Swift bounds the effective
+        /// soft cap by that admission ceiling.
         pub fn flow_pressure_soft_cap(mut self, value: u32) -> Self {
             self.flow_pressure_soft_cap = value;
             self

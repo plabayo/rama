@@ -542,6 +542,16 @@ private func setFlowPressureDefaults(
     }
 }
 
+/// Keep an enabled pressure-reaper trigger at or below an enabled admission
+/// ceiling. Otherwise a hard-cap refusal can wake the reaper while registered
+/// occupancy is still below its trigger, making the wake an unconditional
+/// no-op. Zero retains its documented meaning on either side: a zero soft cap
+/// disables reaping, while a zero hard cap leaves admission unbounded.
+func normalizedFlowPressureSoftCap(softCap: UInt32, hardCap: UInt32) -> UInt32 {
+    guard softCap > 0, hardCap > 0 else { return softCap }
+    return min(softCap, hardCap)
+}
+
 /// Keep an enabled reaper's target strictly below its trigger. This guarantees
 /// at least one slot of hysteresis; deployments that want a larger batch gap
 /// configure a lower target. A cap of one has the sole meaningful target zero.
@@ -1224,11 +1234,14 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
     ) {
         writePumpMaxPendingBytes = startup.tcpWritePumpMaxPendingBytes
         writePumpHwmLogThresholdBytes = writePumpMaxPendingBytes / 2
-        let flowPressureLowWater = normalizedFlowPressureLowWater(
+        let flowPressureSoftCap = normalizedFlowPressureSoftCap(
             softCap: startup.flowPressureSoftCap,
+            hardCap: startup.liveFlowHardCap)
+        let flowPressureLowWater = normalizedFlowPressureLowWater(
+            softCap: flowPressureSoftCap,
             lowWater: startup.flowPressureLowWater)
         setFlowPressureDefaults(
-            softCap: startup.flowPressureSoftCap,
+            softCap: flowPressureSoftCap,
             lowWater: flowPressureLowWater,
             idleFloorMs: startup.flowPressureIdleFloorMs,
             hardCap: startup.liveFlowHardCap)
@@ -1240,10 +1253,16 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         defaultTcpBreakerConnectTimeoutMs = startup.tcpBreakerConnectTimeoutMs
         defaultFlowRefusalPassthrough = startup.flowRefusalPassthrough
 
+        if flowPressureSoftCap != startup.flowPressureSoftCap {
+            logLifecycle(
+                "flow pressure softCap=\(startup.flowPressureSoftCap) exceeds enabled "
+                    + "liveHardCap=\(startup.liveFlowHardCap); using \(flowPressureSoftCap)"
+            )
+        }
         if flowPressureLowWater != startup.flowPressureLowWater {
             logLifecycle(
                 "flow pressure lowWater=\(startup.flowPressureLowWater) outside 0..<"
-                    + "\(startup.flowPressureSoftCap); using \(flowPressureLowWater)"
+                    + "\(flowPressureSoftCap); using \(flowPressureLowWater)"
             )
         }
         logLifecycle("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")

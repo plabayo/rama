@@ -6,13 +6,13 @@
 #
 # It AUTO-DETECTS the running build's flow-pressure soft cap from the gauge
 # log line ("… softCap=N") and adapts safely:
-#   softCap > MAX_SAFE_FLOWS → CAP-TOO-HIGH-TO-CROSS: the cap cannot be exceeded
+#   softCap > MAX_SAFE_FLOWS → CAP-TOO-HIGH-TO-CROSS: the cap cannot be reached
 #       without nearing the (~600) kernel nexus ceiling, which would risk the
 #       very machine freeze the cap prevents. The session runs at a SAFE
 #       concurrency (under the cap) and validates leak/freeze/wake/keepalive
 #       only; it tells you to use a LOW-CAP build to validate eviction.
-#   0 < softCap ≤ MAX_SAFE_FLOWS → CAP-VALIDATE: safe to cross the (low) cap;
-#       drive occupancy past it and prove the reaper invariants hold.
+#   0 < softCap ≤ MAX_SAFE_FLOWS → CAP-VALIDATE: safe to reach the (low) cap;
+#       drive occupancy to/above it and prove the reaper invariants hold.
 #   softCap == 0 → (only with FIND_CEILING=1) CEILING-FINDER: carefully ramp
 #       until the nexus allocation is exhausted, report the gauge peak, back off.
 #
@@ -67,13 +67,14 @@
 #   REPO            repo root. Default: /Users/glendc/code/github.com/plabayo/rama
 #   OUT             artifact dir. Default: ~/rama-tproxy-soak/<timestamp>
 #   DO_INSTALL      1 = `just install-tproxy-dev` first. Default 0.
-#   STRESS_SECONDS  phase-1 stress duration. Default 180.
-#   CONCURRENCY     phase-1 stress pool size. Default 24.
+#   STRESS_SECONDS  phase-1 stress duration (0..86400; positive unless skipped). Default 180.
+#   CONCURRENCY     phase-1 stress pool size (1..512). Default 24.
 #   DL_HOST         download/holder host (rama http-test). Default http-test.ramaproxy.org.
 #   FANOUT_TARGET   phase-2 concurrent active flows. Default auto
-#                   (min(softCap+25%, MAX_SAFE_FLOWS), floored at 40).
+#                   (min(softCap+25%, MAX_SAFE_FLOWS), floored at 40, then
+#                   bounded by enabled hard-cap headroom from the baseline).
 #   FANOUT_HOLD     phase-2 sustain seconds. Default 90.
-#   MAX_SAFE_FLOWS  max concurrency the AUTO target will request, to stay well
+#   MAX_SAFE_FLOWS  max concurrency the AUTO target will request (1..1024), to stay well
 #                   under the ~600 nexus ceiling. Default 300.
 #   ALLOW_UNSAFE_LOAD 1 = let an explicit FANOUT_TARGET/IDLE_TARGET exceed
 #                   MAX_SAFE_FLOWS on a high-cap build (freeze risk!). Default 0.
@@ -100,24 +101,24 @@ DIAL9_DIR="/var/root/Library/Application Support/rama/tproxy/dial9-traces"
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT="${OUT:-$HOME/rama-tproxy-soak/$STAMP}"
-DO_INSTALL="${DO_INSTALL:-0}"
-STRESS_SECONDS="${STRESS_SECONDS:-180}"
-CONCURRENCY="${CONCURRENCY:-24}"
-FANOUT_TARGET="${FANOUT_TARGET:-0}"      # 0 = auto from softCap
-FANOUT_HOLD="${FANOUT_HOLD:-90}"
-MAX_SAFE_FLOWS="${MAX_SAFE_FLOWS:-300}"
-ALLOW_UNSAFE_LOAD="${ALLOW_UNSAFE_LOAD:-0}"
-IDLE_TARGET="${IDLE_TARGET:-0}"          # 0 = auto (= FANOUT_TARGET)
-IDLE_HOLD="${IDLE_HOLD:-150}"
-SKIP_STRESS="${SKIP_STRESS:-0}"
-SKIP_FANOUT="${SKIP_FANOUT:-0}"
-SKIP_IDLE="${SKIP_IDLE:-0}"
-SKIP_SLEEP="${SKIP_SLEEP:-0}"
-IDLE_TAIL="${IDLE_TAIL:-135}"
-FIND_CEILING="${FIND_CEILING:-0}"
-CEIL_STEP="${CEIL_STEP:-40}"
-CEIL_SETTLE="${CEIL_SETTLE:-8}"
-ASSUME_YES="${ASSUME_YES:-0}"
+DO_INSTALL="${DO_INSTALL-0}"
+STRESS_SECONDS="${STRESS_SECONDS-180}"
+CONCURRENCY="${CONCURRENCY-24}"
+FANOUT_TARGET="${FANOUT_TARGET-0}"      # 0 = auto from softCap
+FANOUT_HOLD="${FANOUT_HOLD-90}"
+MAX_SAFE_FLOWS="${MAX_SAFE_FLOWS-300}"
+ALLOW_UNSAFE_LOAD="${ALLOW_UNSAFE_LOAD-0}"
+IDLE_TARGET="${IDLE_TARGET-0}"          # 0 = auto (= FANOUT_TARGET)
+IDLE_HOLD="${IDLE_HOLD-150}"
+SKIP_STRESS="${SKIP_STRESS-0}"
+SKIP_FANOUT="${SKIP_FANOUT-0}"
+SKIP_IDLE="${SKIP_IDLE-0}"
+SKIP_SLEEP="${SKIP_SLEEP-0}"
+IDLE_TAIL="${IDLE_TAIL-135}"
+FIND_CEILING="${FIND_CEILING-0}"
+CEIL_STEP="${CEIL_STEP-40}"
+CEIL_SETTLE="${CEIL_SETTLE-8}"
+ASSUME_YES="${ASSUME_YES-0}"
 
 LOGBUF=""; command -v stdbuf >/dev/null 2>&1 && LOGBUF="stdbuf -oL"
 PYTHON_BIN="$(command -v python3 || true)"
@@ -131,7 +132,7 @@ fi
 say()  { printf '%s[soak]%s %s\n' "$DIM" "$RESET" "$*"; }
 hdr()  { printf '\n%s[soak]%s %s%s%s\n' "$DIM" "$RESET" "$BOLD" "$*" "$RESET"; }
 warn() { printf '%s[soak]%s %s%s%s\n' "$DIM" "$RESET" "$YEL" "$*" "$RESET" >&2; }
-die()  { printf '%s[soak]%s %s%s%s\n' "$DIM" "$RESET" "$RED" "$*" "$RESET" >&2; exit 1; }
+die()  { printf '%s[soak]%s %s%s%s\n' "$DIM" "$RESET" "$RED" "$*" "$RESET" >&2; exit 2; }
 
 write_incomplete_status() {
   local reason="$1" tmp="$OUT/.evidence-status.$$"
@@ -142,14 +143,86 @@ write_incomplete_status() {
   } > "$tmp" && mv -f "$tmp" "$OUT/evidence-status.tsv"
 }
 
-for _n in STRESS_SECONDS CONCURRENCY FANOUT_TARGET FANOUT_HOLD MAX_SAFE_FLOWS \
-          IDLE_TARGET IDLE_HOLD IDLE_TAIL CEIL_STEP CEIL_SETTLE; do
-  _v="${!_n}"
-  [[ "$_v" =~ ^[0-9]+$ ]] || die "$_n must be a non-negative integer (got '$_v')"
+# Reject ambiguous or oversized environment values before they enter Bash
+# arithmetic. Leading-zero values are intentionally rejected because Bash
+# interprets them as octal; oversized integers otherwise wrap silently.
+require_bounded_uint() {
+  local name="$1" value="$2" maximum="$3"
+  local LC_ALL=C
+  [[ "$value" =~ ^(0|[1-9][0-9]*)$ ]] \
+    || die "$name must be a canonical non-negative decimal integer (got '$value')"
+  if [[ ${#value} -gt ${#maximum} ]] \
+    || [[ ${#value} -eq ${#maximum} && "$value" > "$maximum" ]]
+  then
+    die "$name must be at most $maximum (got '$value')"
+  fi
+}
+
+require_boolean() {
+  local name="$1" value="$2"
+  [[ "$value" == 0 || "$value" == 1 ]] \
+    || die "$name must be 0 or 1 (got '$value')"
+}
+
+# Return success when the enabled hard cap cannot accommodate the registered
+# growth needed to reach the soft trigger from this baseline. The hard cap
+# counts allocated resources (including retiring ones); the soft trigger counts
+# only registered TCP+UDP flows.
+cap_validation_hard_limited() {
+  local soft="$1" hard="$2" registered="$3" allocated="$4"
+  local soft_headroom=0 hard_headroom=0
+  (( hard > 0 )) || return 1
+  (( hard < soft )) && return 0
+  (( soft > registered )) && soft_headroom=$(( soft - registered ))
+  (( hard > allocated )) && hard_headroom=$(( hard - allocated ))
+  (( hard_headroom < soft_headroom ))
+}
+
+# Compute the provider rise/fall that can be attributed to one worker pool.
+# The soft cap is registered-flow headroom; an enabled hard cap additionally
+# bounds it by allocated headroom so retiring resources cannot be counted as
+# workers or silently exceeded.
+flow_pool_expected_contribution() {
+  local target="$1" soft="$2" hard="$3" registered="$4" allocated="$5"
+  local contribution="$target" hard_headroom=0
+  if (( soft > 0 && hard > 0 && hard < soft )); then
+    contribution=0
+  elif (( soft > 0 )); then
+    (( soft - registered < contribution )) \
+      && contribution=$(( soft - registered ))
+    if (( hard > 0 )); then
+      (( hard > allocated )) && hard_headroom=$(( hard - allocated ))
+      (( hard_headroom < contribution )) && contribution="$hard_headroom"
+    fi
+  elif (( hard > 0 )); then
+    (( hard - allocated < contribution )) \
+      && contribution=$(( hard - allocated ))
+  fi
+  (( contribution < 0 )) && contribution=0
+  printf '%s\n' "$contribution"
+}
+
+require_bounded_uint STRESS_SECONDS "$STRESS_SECONDS" 86400
+require_bounded_uint CONCURRENCY "$CONCURRENCY" 512
+require_bounded_uint FANOUT_TARGET "$FANOUT_TARGET" 1024
+require_bounded_uint FANOUT_HOLD "$FANOUT_HOLD" 86400
+require_bounded_uint MAX_SAFE_FLOWS "$MAX_SAFE_FLOWS" 1024
+require_bounded_uint IDLE_TARGET "$IDLE_TARGET" 1024
+require_bounded_uint IDLE_HOLD "$IDLE_HOLD" 86400
+require_bounded_uint IDLE_TAIL "$IDLE_TAIL" 86400
+require_bounded_uint CEIL_STEP "$CEIL_STEP" 512
+require_bounded_uint CEIL_SETTLE "$CEIL_SETTLE" 3600
+
+for _n in DO_INSTALL ALLOW_UNSAFE_LOAD SKIP_STRESS SKIP_FANOUT SKIP_IDLE \
+          SKIP_SLEEP FIND_CEILING ASSUME_YES; do
+  require_boolean "$_n" "${!_n}"
 done
-(( CEIL_STEP > 0 )) || die "CEIL_STEP must be greater than zero"
-(( CONCURRENCY > 0 )) || die "CONCURRENCY must be greater than zero"
-(( MAX_SAFE_FLOWS > 0 )) || die "MAX_SAFE_FLOWS must be greater than zero"
+
+[[ "$CEIL_STEP" != 0 ]] || die "CEIL_STEP must be greater than zero"
+[[ "$CONCURRENCY" != 0 ]] || die "CONCURRENCY must be greater than zero"
+[[ "$MAX_SAFE_FLOWS" != 0 ]] || die "MAX_SAFE_FLOWS must be greater than zero"
+[[ "$SKIP_STRESS" == 1 || "$STRESS_SECONDS" != 0 ]] \
+  || die "STRESS_SECONDS must be greater than zero when the stress phase is enabled"
 
 # ── Teardown ──────────────────────────────────────────────────────────
 LOG_STREAM_STARTED=0
@@ -163,6 +236,7 @@ FLOW_POOL_MAX_ESTABLISHED=0
 HOLDER_SEQUENCE=0
 FLOW_POOL_LABEL=""
 CURRENT_PHASE_START=""
+WAKE_DL_PID=""
 kill_holders() {
   # Kill every flow-pool worker we launched (pidfile is the source of truth;
   # the pattern kill is a scoped backup for the drip curls).
@@ -176,6 +250,7 @@ kill_holders() {
 }
 cleanup() {
   [[ -n "$PROBE_MON_PID" ]] && kill "$PROBE_MON_PID" 2>/dev/null || true
+  [[ -n "$WAKE_DL_PID" ]] && kill "$WAKE_DL_PID" 2>/dev/null || true
   kill_holders
   [[ -n "$SUDO_KEEPALIVE_PID" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
   if (( LOG_STREAM_STARTED )) && [[ -n "$LOG_STREAM_PID" ]]; then
@@ -185,6 +260,65 @@ cleanup() {
   [[ -n "$_j" ]] && kill $_j 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
+
+# Bash 3.2 on macOS has no timed `wait`. Poll the shell's job table, escalate
+# TERM to KILL after a bounded interval, and call `wait` only after the job is no
+# longer active. The caller treats anything except a clean exit or TERM as
+# incomplete evidence.
+child_job_is_active() {
+  jobs -p | grep -Fqx -- "$1"
+}
+
+signal_child() {
+  local pid="$1" signal="$2" privilege="$3"
+  if [[ "$privilege" == sudo ]]; then
+    sudo -n pkill "-$signal" -P "$pid" 2>/dev/null || true
+    sudo -n kill "-$signal" "$pid" 2>/dev/null || true
+  else
+    pkill "-$signal" -P "$pid" 2>/dev/null || true
+    kill "-$signal" "$pid" 2>/dev/null || true
+  fi
+}
+
+BOUNDED_CHILD_RC=missing
+BOUNDED_CHILD_OK=0
+BOUNDED_CHILD_REAPED=0
+BOUNDED_CHILD_FORCED=0
+bounded_stop_and_join() {
+  local pid="$1" timeout="$2" privilege="$3"
+  local deadline force_deadline child_rc
+  BOUNDED_CHILD_RC=missing
+  BOUNDED_CHILD_OK=0
+  BOUNDED_CHILD_REAPED=0
+  BOUNDED_CHILD_FORCED=0
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
+  if child_job_is_active "$pid"; then
+    signal_child "$pid" TERM "$privilege"
+  fi
+  deadline=$(( $(date +%s) + timeout ))
+  while child_job_is_active "$pid" && (( $(date +%s) < deadline )); do
+    sleep 0.1
+  done
+  if child_job_is_active "$pid"; then
+    BOUNDED_CHILD_FORCED=1
+    signal_child "$pid" KILL "$privilege"
+    force_deadline=$(( $(date +%s) + 2 ))
+    while child_job_is_active "$pid" && (( $(date +%s) < force_deadline )); do
+      sleep 0.1
+    done
+  fi
+  child_job_is_active "$pid" && return 0
+  if wait "$pid" 2>/dev/null; then
+    child_rc=0
+  else
+    child_rc=$?
+  fi
+  BOUNDED_CHILD_RC="$child_rc"
+  BOUNDED_CHILD_REAPED=1
+  if (( ! BOUNDED_CHILD_FORCED )) && [[ "$child_rc" == 0 || "$child_rc" == 143 ]]; then
+    BOUNDED_CHILD_OK=1
+  fi
+}
 
 # ── Helpers ───────────────────────────────────────────────────────────
 # Output: start_epoch<TAB>completion_epoch<TAB>curl_rc<TAB>http_code.
@@ -217,6 +351,27 @@ epoch_now() {
   fi
 }
 
+# Render the exact whole second represented by an epoch captured above. Keeping
+# the epoch and its display timestamp on one clock read prevents a second-boundary
+# rollover from making an otherwise valid phase/probe row self-contradictory.
+iso_for_epoch() {
+  local epoch="$1" whole_seconds="${1%%.*}"
+  if [[ -n "$PYTHON_BIN" ]]; then
+    "$PYTHON_BIN" - "$epoch" <<'PY'
+from datetime import datetime, timezone
+from decimal import Decimal
+import sys
+
+seconds = int(Decimal(sys.argv[1]))
+print(datetime.fromtimestamp(seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+  elif date -u -r "$whole_seconds" +%Y-%m-%dT%H:%M:%SZ >/dev/null 2>&1; then
+    date -u -r "$whole_seconds" +%Y-%m-%dT%H:%M:%SZ
+  else
+    date -u -d "@$whole_seconds" +%Y-%m-%dT%H:%M:%SZ
+  fi
+}
+
 gauge_is_fresh() {
   awk -v gauge="$1" -v probe="$2" -v phase_start="$3" \
     'BEGIN { exit !(gauge >= phase_start && gauge <= probe && probe - gauge <= 70) }'
@@ -233,14 +388,17 @@ dl_url() {
 }
 
 phase_mark() {
-  local epoch
+  local epoch iso
   epoch="$(epoch_now)"
-  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$epoch" "$(date -u +%FT%TZ)" >> "$OUT/phases.tsv"
+  iso="$(iso_for_epoch "$epoch")"
+  printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$epoch" "$iso" >> "$OUT/phases.tsv"
   [[ "$2" == "start" ]] && CURRENT_PHASE_START="$epoch"
 }
 
 # Latest target-provider gauge sample →
-# "epoch softcap hardcap tcp udp total" (or empty).
+# "epoch softcap hardcap tcp udp registered allocated" (or empty). `registered`
+# is the registry population used by the pressure soft cap; `allocated` also
+# includes retiring kernel resources and is the live hard-cap population.
 read_gauge() {
   if [[ -n "$PYTHON_BIN" ]]; then
     "$PYTHON_BIN" - "$OUT/system.ndjson" "$PID" "$PROVIDER_BUNDLE" \
@@ -264,7 +422,8 @@ try:
                     continue
                 latest = (
                     f"{epoch:.6f} {gauge['soft_cap']} {gauge['hard_cap']} "
-                    f"{gauge['tcp']} {gauge['udp']} {gauge['total']}"
+                    f"{gauge['tcp']} {gauge['udp']} "
+                    f"{gauge['registered']} {gauge['allocated']}"
                 )
             except (ValueError, TypeError, json.JSONDecodeError):
                 continue
@@ -275,24 +434,15 @@ if latest:
 PY
   fi
 }
-wait_for_gauge() {
-  local deadline=$(( $(date +%s) + $1 )) g
-  while (( $(date +%s) < deadline )); do
-    g="$(read_gauge)"; [[ -n "$g" ]] && { echo "$g"; return 0; }
-    sleep 3
-  done
-  echo ""
-}
-
 wait_for_fresh_gauge() {
-  local not_before="$1" timeout="$2" deadline g gauge_epoch
+  local not_before="$1" timeout="$2" deadline g gauge_epoch observed_now
   deadline=$(( $(date +%s) + timeout ))
   while (( $(date +%s) < deadline )); do
     g="$(read_gauge)"
     if [[ -n "$g" ]]; then
       gauge_epoch="${g%% *}"
-      if awk -v gauge="$gauge_epoch" -v boundary="$not_before" \
-        'BEGIN { exit !(gauge >= boundary) }'; then
+      observed_now="$(epoch_now)"
+      if gauge_is_fresh "$gauge_epoch" "$observed_now" "$not_before"; then
         printf '%s\n' "$g"
         return 0
       fi
@@ -307,7 +457,7 @@ start_probe_monitor() {
       _record="$(probe_record)"
       IFS=$'\t' read -r _started _completed _curl_rc _code <<< "$_record"
       printf '%s\t%s\t%s\t%s\t%s\n' "$_started" "$_completed" \
-        "$(date -u +%FT%TZ)" "$_curl_rc" "$_code" >> "$OUT/probe-timeline.txt"
+        "$(iso_for_epoch "$_completed")" "$_curl_rc" "$_code" >> "$OUT/probe-timeline.txt"
       sleep 5
     done ) &
   PROBE_MON_PID=$!
@@ -364,19 +514,27 @@ run_flow_pool() {
   local live established need g counts
   local sustained_since_seconds="" sustained_since_epoch="" now_seconds now_epoch
   local last_established_epoch=""
-  local baseline_gauge baseline_epoch="" baseline_total=""
-  local peak_epoch="" peak_total=-1 gauge_epoch gauge_total
-  local post_boundary post_gauge post_epoch="" post_total="" contribution=0
+  local baseline_gauge baseline_epoch="" baseline_registered="" baseline_allocated=""
+  local peak_epoch="" peak_registered=-1 peak_allocated=-1 peak_basis=-1
+  local gauge_epoch gauge_registered gauge_allocated gauge_basis
+  local post_boundary post_gauge post_epoch="" post_registered="" post_allocated=""
+  local contribution=0
   FLOW_POOL_LABEL="$label"
   FLOW_POOL_ATTAINED=0
   FLOW_POOL_MAX_LIVE=0
   FLOW_POOL_MAX_ESTABLISHED=0
   baseline_gauge="$(wait_for_fresh_gauge "$CURRENT_PHASE_START" 70)"
   if [[ -n "$baseline_gauge" ]]; then
-    baseline_epoch="${baseline_gauge%% *}"
-    baseline_total="${baseline_gauge##* }"
+    read -r baseline_epoch _ _ _ _ baseline_registered baseline_allocated \
+      <<< "$baseline_gauge"
     peak_epoch="$baseline_epoch"
-    peak_total="$baseline_total"
+    peak_registered="$baseline_registered"
+    peak_allocated="$baseline_allocated"
+    if (( SOFTCAP > 0 || HARDCAP == 0 )); then
+      peak_basis="$peak_registered"
+    else
+      peak_basis="$peak_allocated"
+    fi
   else
     warn "$label has no fresh target-provider gauge before spawning"
   fi
@@ -409,18 +567,31 @@ run_flow_pool() {
       sustained_since_epoch=""
       last_established_epoch=""
     fi
+    gauge_registered=""
+    gauge_allocated=""
+    gauge_basis=""
     g="$(read_gauge)"
     if [[ -n "$g" ]]; then
-      gauge_epoch="${g%% *}"
-      gauge_total="${g##* }"
-      if [[ "$gauge_total" =~ ^[0-9]+$ ]] && (( gauge_total >= peak_total )); then
+      read -r gauge_epoch _ _ _ _ gauge_registered gauge_allocated <<< "$g"
+      if (( SOFTCAP > 0 || HARDCAP == 0 )); then
+        gauge_basis="$gauge_registered"
+      else
+        gauge_basis="$gauge_allocated"
+      fi
+      if [[ "$gauge_basis" =~ ^[0-9]+$ ]] && (( gauge_basis >= peak_basis )); then
         peak_epoch="$gauge_epoch"
-        peak_total="$gauge_total"
+        peak_registered="$gauge_registered"
+        peak_allocated="$gauge_allocated"
+        peak_basis="$gauge_basis"
       fi
     fi
-    printf '%s\t%s\tlive=%s\testablished=%s\tgauge_total=%s\n' "$(date -u +%FT%TZ)" "$label" "$live" "$established" "${g##* }" >> "$OUT/holders.log"
-    printf '\r[soak] %s live=%s established=%s gauge_total=%s  %ds left   ' "$label" "$live" "$established" "${g##* }" "$(( end - $(date +%s) ))"
-    probe_ok || warn "probe failed during $label (gauge_total=${g##* }) — watch for freeze"
+    printf '%s\t%s\tlive=%s\testablished=%s\tregistered=%s\tallocated=%s\n' \
+      "$(date -u +%FT%TZ)" "$label" "$live" "$established" \
+      "${gauge_registered:-?}" "${gauge_allocated:-?}" >> "$OUT/holders.log"
+    printf '\r[soak] %s live=%s established=%s registered=%s allocated=%s  %ds left   ' \
+      "$label" "$live" "$established" "${gauge_registered:-?}" \
+      "${gauge_allocated:-?}" "$(( end - $(date +%s) ))"
+    probe_ok || warn "probe failed during $label (registered=${gauge_registered:-?} allocated=${gauge_allocated:-?}) — watch for freeze"
     sleep 5
   done
   if [[ -n "$sustained_since_seconds" ]] \
@@ -433,26 +604,21 @@ run_flow_pool() {
   post_boundary="$(epoch_now)"
   post_gauge="$(wait_for_fresh_gauge "$post_boundary" 70)"
   if [[ -n "$post_gauge" ]]; then
-    post_epoch="${post_gauge%% *}"
-    post_total="${post_gauge##* }"
+    read -r post_epoch _ _ _ _ post_registered post_allocated <<< "$post_gauge"
   else
     warn "$label has no fresh target-provider gauge after killing workers"
   fi
-  if [[ "$baseline_total" =~ ^[0-9]+$ ]]; then
-    contribution="$target"
-    if (( SOFTCAP > 0 && HARDCAP > 0 && HARDCAP <= SOFTCAP )); then
-      contribution=0
-    elif (( SOFTCAP > 0 && SOFTCAP - baseline_total < contribution )); then
-      contribution=$(( SOFTCAP - baseline_total ))
-    elif (( SOFTCAP == 0 && HARDCAP > 0 && HARDCAP - baseline_total < contribution )); then
-      contribution=$(( HARDCAP - baseline_total ))
-    fi
-    (( contribution < 0 )) && contribution=0
+  if [[ "$baseline_registered" =~ ^[0-9]+$ && "$baseline_allocated" =~ ^[0-9]+$ ]]; then
+    contribution="$(flow_pool_expected_contribution \
+      "$target" "$SOFTCAP" "$HARDCAP" \
+      "$baseline_registered" "$baseline_allocated")"
   fi
   if [[ -n "$baseline_epoch" && -n "$peak_epoch" && -n "$post_epoch" ]]; then
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$label" \
-      "$baseline_epoch" "$baseline_total" "$peak_epoch" "$peak_total" \
-      "$post_epoch" "$post_total" "$contribution" >> "$OUT/pool-brackets.tsv"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$label" \
+      "$baseline_epoch" "$baseline_registered" "$baseline_allocated" \
+      "$peak_epoch" "$peak_registered" "$peak_allocated" \
+      "$post_epoch" "$post_registered" "$post_allocated" "$contribution" \
+      >> "$OUT/pool-brackets.tsv"
   fi
 }
 
@@ -526,6 +692,7 @@ printf 'provider_start_pid\t%s\nprovider_start_time\t%s\nprovider_bundle\t%s\n' 
 
 # ── Start live log capture (debug — the gauge is debug) ────────────────
 hdr "starting log capture"
+LOG_STREAM_START_EPOCH="$(epoch_now)"
 sudo $LOGBUF log stream --level debug --style ndjson \
   --predicate "processID == $PID AND subsystem == \"$PROVIDER_BUNDLE\"" \
   > "$OUT/system.ndjson" 2>/dev/null &
@@ -538,6 +705,7 @@ else
   printf 'log_stream_started\t0\nlog_stream_pid\t%s\n' "$LOG_STREAM_PID" >> "$OUT/run-meta.tsv"
   warn "log stream did not stay alive — evidence verdicts will be inconclusive"
 fi
+printf 'log_stream_start_epoch\t%s\n' "$LOG_STREAM_START_EPOCH" >> "$OUT/run-meta.tsv"
 say "streaming → $OUT/system.ndjson"
 start_probe_monitor
 printf 'probe_monitor_pid\t%s\n' "$PROBE_MON_PID" >> "$OUT/run-meta.tsv"
@@ -546,18 +714,39 @@ say "probe monitor → $OUT/probe-timeline.txt (freeze detector)"
 # ── Phase 0: baseline + softCap detection ─────────────────────────────
 phase_mark baseline start
 hdr "phase 0 — baseline (detecting softCap from the gauge; ≤65s)"
-G0="$(wait_for_gauge 65)"
+G0="$(wait_for_fresh_gauge "$CURRENT_PHASE_START" 65)"
 if [[ -z "$G0" ]]; then
   warn "no gauge tick seen in 65s — evidence verdicts will be inconclusive"
-  SOFTCAP_KNOWN=0; SOFTCAP=0; HARDCAP=0; BASELINE_TOTAL=0
+  SOFTCAP_KNOWN=0; SOFTCAP=0; HARDCAP=0
+  BASELINE_REGISTERED=0; BASELINE_TOTAL=0; BASELINE_GAUGE_PHASE_LOCAL=0
 else
   SOFTCAP_KNOWN=1
-  read -r BASELINE_GAUGE_EPOCH SOFTCAP HARDCAP _ _ BASELINE_TOTAL <<< "$G0"
-  say "detected ${BOLD}softCap=$SOFTCAP hardCap=$HARDCAP${RESET}, baseline live flows=$BASELINE_TOTAL"
+  read -r BASELINE_GAUGE_EPOCH SOFTCAP HARDCAP _ _ \
+    BASELINE_REGISTERED BASELINE_TOTAL <<< "$G0"
+  BASELINE_GAUGE_PHASE_LOCAL=0
+  if awk -v gauge="$BASELINE_GAUGE_EPOCH" -v phase="$CURRENT_PHASE_START" \
+    -v capture="$LOG_STREAM_START_EPOCH" \
+    'BEGIN { exit !(gauge >= phase && gauge >= capture) }'; then
+    BASELINE_GAUGE_PHASE_LOCAL=1
+  fi
+  say "detected ${BOLD}softCap=$SOFTCAP hardCap=$HARDCAP${RESET}, baseline registered=$BASELINE_REGISTERED allocated=$BASELINE_TOTAL"
 fi
-printf 'softcap\t%s\nhardcap\t%s\nbaseline_total\t%s\n' \
-  "$SOFTCAP" "$HARDCAP" "$BASELINE_TOTAL" >> "$OUT/run-meta.tsv"
-printf 'baseline_gauge_seen\t%s\n' "$SOFTCAP_KNOWN" >> "$OUT/run-meta.tsv"
+printf 'softcap\t%s\nhardcap\t%s\nbaseline_gauge_epoch\t%s\nbaseline_registered\t%s\nbaseline_total\t%s\n' \
+  "$SOFTCAP" "$HARDCAP" "${BASELINE_GAUGE_EPOCH:-missing}" \
+  "$BASELINE_REGISTERED" "$BASELINE_TOTAL" \
+  >> "$OUT/run-meta.tsv"
+printf 'baseline_gauge_seen\t%s\nbaseline_gauge_phase_local\t%s\n' \
+  "$SOFTCAP_KNOWN" "$BASELINE_GAUGE_PHASE_LOCAL" >> "$OUT/run-meta.tsv"
+
+SOFT_TRIGGER_HEADROOM=0
+(( SOFTCAP > BASELINE_REGISTERED )) \
+  && SOFT_TRIGGER_HEADROOM=$(( SOFTCAP - BASELINE_REGISTERED ))
+LIVE_HARD_HEADROOM=-1
+if (( HARDCAP > 0 )); then
+  LIVE_HARD_HEADROOM=0
+  (( HARDCAP > BASELINE_TOTAL )) \
+    && LIVE_HARD_HEADROOM=$(( HARDCAP - BASELINE_TOTAL ))
+fi
 
 # Resolve mode.
 MODE="cap-validate"
@@ -569,8 +758,10 @@ if (( FIND_CEILING )); then
 elif (( SOFTCAP_KNOWN )) && (( SOFTCAP == 0 )); then
   warn "softCap=0 (cap DISABLED) but FIND_CEILING!=1 — running stress only; pass FIND_CEILING=1 to ramp to the ceiling."
   MODE="stress-only"
-elif (( SOFTCAP_KNOWN )) && (( HARDCAP > 0 )) && (( HARDCAP <= SOFTCAP )); then
-  warn "hardCap=$HARDCAP prevents crossing softCap=$SOFTCAP; pressure validation is configuration-limited"
+elif (( SOFTCAP_KNOWN )) && cap_validation_hard_limited \
+  "$SOFTCAP" "$HARDCAP" "$BASELINE_REGISTERED" "$BASELINE_TOTAL"
+then
+  warn "hardCap=$HARDCAP has effective headroom=$LIVE_HARD_HEADROOM, below the registered headroom=$SOFT_TRIGGER_HEADROOM needed to reach softCap=$SOFTCAP; pressure validation is configuration-limited"
   MODE="cap-hard-limited"
 elif (( SOFTCAP_KNOWN )) && (( SOFTCAP > MAX_SAFE_FLOWS )); then
   MODE="cap-too-high"
@@ -578,15 +769,20 @@ fi
 say "mode:        ${BOLD}$MODE${RESET}"
 printf 'mode\t%s\n' "$MODE" >> "$OUT/run-meta.tsv"
 
-# Derive auto target. AUTO never exceeds MAX_SAFE_FLOWS — on a high-cap build
-# crossing the cap means nearing the ~600 nexus ceiling = the freeze we test
-# against. To validate eviction, use a LOW-CAP build (then auto safely crosses).
+# Derive an auto target that never exceeds MAX_SAFE_FLOWS or the enabled hard
+# cap's currently allocated headroom. On a high-soft-cap build, reaching the
+# trigger means nearing the ~600 nexus ceiling; use a LOW-CAP build instead.
 auto_target() {
-  local base=$MAX_SAFE_FLOWS
+  local base=$MAX_SAFE_FLOWS hard_headroom=0
   (( SOFTCAP_KNOWN )) && (( SOFTCAP > 0 )) && base=$(( SOFTCAP + SOFTCAP / 4 ))
   (( base > MAX_SAFE_FLOWS )) && base=$MAX_SAFE_FLOWS
   (( base < 40 )) && base=40
-  echo "$base"
+  if (( HARDCAP > 0 )); then
+    (( HARDCAP > BASELINE_TOTAL )) && hard_headroom=$(( HARDCAP - BASELINE_TOTAL ))
+    (( base > hard_headroom )) && base="$hard_headroom"
+  fi
+  (( base > 0 )) || return 1
+  printf '%s\n' "$base"
 }
 clamp_safe() {  # clamp an explicit target unless ALLOW_UNSAFE_LOAD on a high-cap build
   local v="$1" name="$2"
@@ -599,7 +795,12 @@ clamp_safe() {  # clamp an explicit target unless ALLOW_UNSAFE_LOAD on a high-ca
     echo "$v"
   fi
 }
-if (( FANOUT_TARGET == 0 )); then FANOUT_TARGET="$(auto_target)"; else FANOUT_TARGET="$(clamp_safe "$FANOUT_TARGET" FANOUT_TARGET)"; fi
+if (( FANOUT_TARGET == 0 )); then
+  FANOUT_TARGET="$(auto_target)" \
+    || die "no effective live-flow hard-cap headroom remains for an automatic fanout target"
+else
+  FANOUT_TARGET="$(clamp_safe "$FANOUT_TARGET" FANOUT_TARGET)"
+fi
 if (( IDLE_TARGET == 0 )); then IDLE_TARGET=$FANOUT_TARGET; else IDLE_TARGET="$(clamp_safe "$IDLE_TARGET" IDLE_TARGET)"; fi
 say "resolved targets: fanout=$FANOUT_TARGET idle=$IDLE_TARGET (MAX_SAFE_FLOWS=$MAX_SAFE_FLOWS)"
 [[ "$MODE" == "cap-too-high" ]] && warn "softCap=$SOFTCAP > MAX_SAFE_FLOWS=$MAX_SAFE_FLOWS: this run validates leak/freeze/wake only, NOT cap eviction. Use a low-cap build to exercise the reaper."
@@ -615,8 +816,8 @@ phase_mark baseline end
 
 # ═════════════ CEILING-FINDER (opt-in, both caps disabled) ════════════
 if [[ "$MODE" == "find-ceiling" ]]; then
-  CEILING_START_EPOCH="$(epoch_now)"
-  printf '%s\tstart\t%s\t%s\n' ceiling "$CEILING_START_EPOCH" "$(date -u +%FT%TZ)" >> "$OUT/phases.tsv"
+  phase_mark ceiling start
+  CEILING_START_EPOCH="$CURRENT_PHASE_START"
   hdr "CEILING-FINDER"
   warn "This deliberately exhausts the kernel nexus-flow allocation and can"
   warn "briefly FREEZE ALL networking on this Mac. It backs off + kills load the"
@@ -769,6 +970,14 @@ if [[ "$SKIP_SLEEP" == 1 || ! -t 0 ]]; then
   [[ ! -t 0 && "$SKIP_SLEEP" != 1 ]] && warn "no TTY — skipping sleep/wake (needs a manual wake)"
   POST_WAKE_OK=skipped
   SLEEP_COMMAND_OK=skipped
+  WAKE_WORKLOAD_STARTED=skipped
+  WAKE_WORKLOAD_ESTABLISHED=skipped
+  WAKE_WORKLOAD_ESTABLISHED_NONZERO_BYTES=skipped
+  WAKE_WORKLOAD_ESTABLISHED_BYTES=skipped
+  WAKE_WORKLOAD_HTTP_CODE=skipped
+  WAKE_WORKLOAD_ALIVE_AT_SLEEP_COMMAND=skipped
+  WAKE_WORKLOAD_CHILD_RC=skipped
+  WAKE_WORKLOAD_JOINED=skipped
 else
   phase_mark sleep-wake start
   hdr "phase 5 — sleep/wake"
@@ -780,13 +989,51 @@ else
   # Long drip so a transfer is genuinely mid-stream across sleep/wake (bounded
   # by --max-time; the server's ~60s timeout may cut the SAME flow — this proves
   # post-wake RECOVERY, not that one flow survives the gap).
-  ( curl -L -s -o /dev/null --max-time 600 \
+  WAKE_WORKLOAD_STARTED="$(epoch_now)"
+  WAKE_WORKLOAD_ESTABLISHED=missing
+  WAKE_WORKLOAD_ESTABLISHED_NONZERO_BYTES=0
+  WAKE_WORKLOAD_ESTABLISHED_BYTES=0
+  WAKE_WORKLOAD_HTTP_CODE=000
+  WAKE_WORKLOAD_ALIVE_AT_SLEEP_COMMAND=0
+  WAKE_WORKLOAD_CHILD_RC=missing
+  WAKE_WORKLOAD_JOINED=0
+  : > "$OUT/wake-download-headers.txt"
+  : > "$OUT/wake-download.body"
+  curl -L -f -sS --no-buffer -o "$OUT/wake-download.body" \
+      --dump-header "$OUT/wake-download-headers.txt" --max-time 600 \
       -w 'wake-download: code=%{http_code} size=%{size_download} time=%{time_total}s\n' \
-      "$(dl_url "$DL_MAX_BYTES" 16384 250)" > "$OUT/wake-download.txt" 2>&1 ) &
+      "$(dl_url "$DL_MAX_BYTES" 16384 250)" > "$OUT/wake-download.txt" 2>&1 &
   WAKE_DL_PID=$!
-  sleep 8
+  WAKE_ESTABLISH_DEADLINE=$(( $(date +%s) + 20 ))
+  while (( $(date +%s) < WAKE_ESTABLISH_DEADLINE )); do
+    WAKE_WORKLOAD_HTTP_CODE="$(
+      awk '/^HTTP\/[0-9.]+ [0-9][0-9][0-9]/ { code=$2 } END { print code }' \
+        "$OUT/wake-download-headers.txt"
+    )"
+    [[ "$WAKE_WORKLOAD_HTTP_CODE" =~ ^[0-9]{3}$ ]] \
+      || WAKE_WORKLOAD_HTTP_CODE=000
+    WAKE_WORKLOAD_ESTABLISHED_BYTES="$(
+      wc -c < "$OUT/wake-download.body" 2>/dev/null | tr -d ' ' || echo 0
+    )"
+    WAKE_WORKLOAD_ESTABLISHED_BYTES="${WAKE_WORKLOAD_ESTABLISHED_BYTES:-0}"
+    if [[ "$WAKE_WORKLOAD_HTTP_CODE" =~ ^2 ]] \
+      && [[ "$WAKE_WORKLOAD_ESTABLISHED_BYTES" =~ ^[0-9]+$ ]] \
+      && (( WAKE_WORKLOAD_ESTABLISHED_BYTES > 0 )) \
+      && kill -0 "$WAKE_DL_PID" 2>/dev/null
+    then
+      WAKE_WORKLOAD_ESTABLISHED="$(epoch_now)"
+      WAKE_WORKLOAD_ESTABLISHED_NONZERO_BYTES=1
+      break
+    fi
+    kill -0 "$WAKE_DL_PID" 2>/dev/null || break
+    sleep 1
+  done
+  if [[ "$WAKE_WORKLOAD_ESTABLISHED_NONZERO_BYTES" != 1 ]]; then
+    warn "sleep workload did not establish a live 2xx response with nonzero bytes"
+  fi
   warn ">>> SLEEPING NOW — wake the Mac manually in ~45s <<<"
   SLEEP_COMMAND_START="$(epoch_now)"
+  kill -0 "$WAKE_DL_PID" 2>/dev/null && WAKE_WORKLOAD_ALIVE_AT_SLEEP_COMMAND=1
   if sudo pmset sleepnow; then
     SLEEP_COMMAND_OK=1
   else
@@ -804,7 +1051,8 @@ else
     IFS=$'\t' read -r WAKE_PROBE_START WAKE_PROBE_END WAKE_PROBE_RC WCODE \
       <<< "$WAKE_PROBE_RECORD"
     printf '%s\t%s\t%s\t%s\t%s\n' "$WAKE_PROBE_START" "$WAKE_PROBE_END" \
-      "$(date -u +%FT%TZ)" "$WAKE_PROBE_RC" "$WCODE" >> "$OUT/sleep-probes.tsv"
+      "$(iso_for_epoch "$WAKE_PROBE_END")" "$WAKE_PROBE_RC" "$WCODE" \
+      >> "$OUT/sleep-probes.tsv"
     printf 'post-wake probe %d: http=%s curl_exit=%s\n' "$i" "$WCODE" \
       "$WAKE_PROBE_RC" | tee -a "$OUT/post-wake.txt"
     if (( WAKE_PROBE_RC == 0 )) && [[ "$WCODE" =~ ^2 ]]; then
@@ -820,12 +1068,27 @@ else
     warn "post-wake: traffic did NOT recover (last code '$WCODE') — this is the bug we're hunting"
   fi
   sleep 5
-  kill "$WAKE_DL_PID" 2>/dev/null || true
+  bounded_stop_and_join "$WAKE_DL_PID" 5 direct
+  WAKE_WORKLOAD_CHILD_RC="$BOUNDED_CHILD_RC"
+  WAKE_WORKLOAD_JOINED="$BOUNDED_CHILD_REAPED"
+  (( BOUNDED_CHILD_FORCED )) \
+    && warn "sleep workload ignored TERM and required forced termination"
+  (( BOUNDED_CHILD_REAPED )) && WAKE_DL_PID=""
   [[ -f "$OUT/wake-download.txt" ]] && cat "$OUT/wake-download.txt"
   phase_mark sleep-wake end
 fi
-printf 'post_wake_ok\t%s\n' "$POST_WAKE_OK" >> "$OUT/run-meta.tsv"
-printf 'sleep_command_ok\t%s\n' "$SLEEP_COMMAND_OK" >> "$OUT/run-meta.tsv"
+{
+  printf 'post_wake_ok\t%s\n' "$POST_WAKE_OK"
+  printf 'sleep_command_ok\t%s\n' "$SLEEP_COMMAND_OK"
+  printf 'wake_workload_started\t%s\nwake_workload_established\t%s\n' \
+    "$WAKE_WORKLOAD_STARTED" "$WAKE_WORKLOAD_ESTABLISHED"
+  printf 'wake_workload_established_nonzero_bytes\t%s\nwake_workload_established_bytes\t%s\n' \
+    "$WAKE_WORKLOAD_ESTABLISHED_NONZERO_BYTES" "$WAKE_WORKLOAD_ESTABLISHED_BYTES"
+  printf 'wake_workload_http_code\t%s\nwake_workload_alive_at_sleep_command\t%s\n' \
+    "$WAKE_WORKLOAD_HTTP_CODE" "$WAKE_WORKLOAD_ALIVE_AT_SLEEP_COMMAND"
+  printf 'wake_workload_child_rc\t%s\nwake_workload_joined\t%s\n' \
+    "$WAKE_WORKLOAD_CHILD_RC" "$WAKE_WORKLOAD_JOINED"
+} >> "$OUT/run-meta.tsv"
 
 phase_mark idle-tail start
 hdr "phase 6 — idle ${IDLE_TAIL}s (quiesce; keep the machine idle for a clean leak read)"
@@ -885,14 +1148,36 @@ hdr "stopping log capture"
 PROBE_MONITOR_ALIVE=0
 [[ -n "$PROBE_MON_PID" ]] && kill -0 "$PROBE_MON_PID" 2>/dev/null && PROBE_MONITOR_ALIVE=1
 printf 'probe_monitor_alive_end\t%s\n' "$PROBE_MONITOR_ALIVE" >> "$OUT/run-meta.tsv"
-[[ -n "$PROBE_MON_PID" ]] && kill "$PROBE_MON_PID" 2>/dev/null || true; PROBE_MON_PID=""
+PROBE_MONITOR_CHILD_RC=missing
+PROBE_MONITOR_JOINED=0
+if [[ -n "$PROBE_MON_PID" ]]; then
+  bounded_stop_and_join "$PROBE_MON_PID" 5 direct
+  PROBE_MONITOR_CHILD_RC="$BOUNDED_CHILD_RC"
+  PROBE_MONITOR_JOINED="$BOUNDED_CHILD_REAPED"
+  (( BOUNDED_CHILD_FORCED )) \
+    && warn "probe monitor ignored TERM and required forced termination"
+  (( BOUNDED_CHILD_REAPED )) && PROBE_MON_PID=""
+fi
+printf 'probe_monitor_child_rc\t%s\nprobe_monitor_joined\t%s\n' \
+  "$PROBE_MONITOR_CHILD_RC" "$PROBE_MONITOR_JOINED" >> "$OUT/run-meta.tsv"
 LOG_STREAM_ALIVE=0
 [[ -n "$LOG_STREAM_PID" ]] && sudo -n kill -0 "$LOG_STREAM_PID" 2>/dev/null && LOG_STREAM_ALIVE=1
 printf 'log_stream_alive_end\t%s\n' "$LOG_STREAM_ALIVE" >> "$OUT/run-meta.tsv"
-[[ -n "$LOG_STREAM_PID" ]] && sudo -n kill "$LOG_STREAM_PID" 2>/dev/null || true
-LOG_STREAM_STARTED=0
-LOG_STREAM_PID=""
-sleep 1
+LOG_STREAM_CHILD_RC=missing
+LOG_STREAM_JOINED=0
+if [[ -n "$LOG_STREAM_PID" ]]; then
+  bounded_stop_and_join "$LOG_STREAM_PID" 5 sudo
+  LOG_STREAM_CHILD_RC="$BOUNDED_CHILD_RC"
+  LOG_STREAM_JOINED="$BOUNDED_CHILD_REAPED"
+  (( BOUNDED_CHILD_FORCED )) \
+    && warn "log stream ignored TERM and required forced termination"
+  if (( BOUNDED_CHILD_REAPED )); then
+    LOG_STREAM_PID=""
+    LOG_STREAM_STARTED=0
+  fi
+fi
+printf 'log_stream_child_rc\t%s\nlog_stream_joined\t%s\n' \
+  "$LOG_STREAM_CHILD_RC" "$LOG_STREAM_JOINED" >> "$OUT/run-meta.tsv"
 NDJSON_LINES="$(wc -l < "$OUT/system.ndjson" 2>/dev/null | tr -d ' ' || echo 0)"
 say "captured $NDJSON_LINES ndjson lines"
 
@@ -917,6 +1202,8 @@ from decimal import Decimal
 
 sys.path.insert(0, sys.argv[2])
 from soak_pressure_log import (
+    cap_validation_hard_limited,
+    ceiling_configuration_issues,
     ceiling_outage_window,
     ceiling_probe_evidence_issues,
     classify_soak_result,
@@ -925,9 +1212,12 @@ from soak_pressure_log import (
     flow_pool_evidence_issues,
     flow_pool_status,
     flow_gauge,
+    flow_gauge_issue,
     leak_evidence,
     lifecycle_category_issue,
     no_headroom_event,
+    parse_artifact_epoch,
+    parse_artifact_uint,
     parse_epoch,
     parse_ndjson_lines,
     parse_ceiling_probe_lines,
@@ -943,7 +1233,7 @@ from soak_pressure_log import (
     settled_final_flow_gauge,
     soak_evidence_issues,
     summarize_pressure_rows,
-    unexpected_probe_failure_count,
+    unexpected_probe_failure_count_across_outages,
 )
 
 out = sys.argv[1]
@@ -962,9 +1252,9 @@ if os.path.exists(mf):
         elif ln.strip():
             meta_issues.append(f"malformed run metadata at line {line_number}")
 
-for key in ("softcap", "hardcap", "baseline_total"):
+for key in ("softcap", "hardcap", "baseline_registered", "baseline_total"):
     value = meta.get(key)
-    if value is None or re.fullmatch(r"\d+", value) is None:
+    if parse_artifact_uint(value) is None:
         meta_issues.append(f"run metadata {key!r} is missing or invalid")
 for key in (
     "provider_start_pid", "provider_start_time", "provider_end_pid",
@@ -973,7 +1263,8 @@ for key in (
     if not meta.get(key):
         meta_issues.append(f"run metadata {key!r} is missing")
 for key in ("provider_start_pid", "provider_end_pid", "log_stream_pid", "probe_monitor_pid"):
-    if re.fullmatch(r"[1-9]\d*", meta.get(key, "")) is None:
+    parsed_pid = parse_artifact_uint(meta.get(key), maximum=2_147_483_647)
+    if parsed_pid is None or parsed_pid == 0:
         meta_issues.append(f"run metadata {key!r} is not a positive integer")
 if (
     meta.get("provider_start_pid") != meta.get("provider_end_pid")
@@ -1067,6 +1358,8 @@ gauge_epochs_per_phase = {}
 occupancy_samples_per_phase = {}
 gauge_samples_per_phase = {}
 lifecycle_category_issues = []
+flow_gauge_issues = []
+numeric_log_issues = []
 pressure_rows = []
 for ts, msg, _, category in rows:
     epoch = parse_oslog_timestamp(ts)
@@ -1102,12 +1395,18 @@ with open(os.path.join(out, "flow-counts.txt"), "w") as g, \
      open(os.path.join(out, "timeline.txt"), "w") as t:
     for ts, msg, mtype, category in rows:
         ep = parse_oslog_timestamp(ts); pname = phase_of(ep)
+        gauge_issue = flow_gauge_issue(msg)
+        if gauge_issue:
+            flow_gauge_issues.append(gauge_issue)
         gauge = flow_gauge(msg)
         if gauge:
-            tcp = gauge["tcp"]; udp = gauge["udp"]; total = gauge["total"]
+            tcp = gauge["tcp"]; udp = gauge["udp"]
+            registered = gauge["registered"]; allocated = gauge["allocated"]
+            total = allocated
             pk = gauge["peak"]; sc = gauge["soft_cap"]; hc = gauge["hard_cap"]
             g.write(
-                f"{ts}  [{pname}]  tcp={tcp} udp={udp} total={total} "
+                f"{ts}  [{pname}]  tcp={tcp} udp={udp} "
+                f"registered={registered} allocated={allocated} "
                 f"peak={pk} softCap={sc} hardCap={hc if hc is not None else 'missing'}\n"
             )
             if ep is not None:
@@ -1119,8 +1418,10 @@ with open(os.path.join(out, "flow-counts.txt"), "w") as g, \
                     missing_hardcap_gauges += 1
                 p = ph(pname); p["peak_total"] = max(p["peak_total"], total); p["gauge"] += 1
                 gauge_epochs_per_phase.setdefault(pname, []).append(ep)
-                occupancy_samples_per_phase.setdefault(pname, []).append((ep, total))
-                gauge_samples_per_phase.setdefault(pname, []).append((ep, total))
+                occupancy_samples_per_phase.setdefault(pname, []).append(
+                    (ep, registered))
+                gauge_samples_per_phase.setdefault(pname, []).append(
+                    (ep, registered, allocated))
         selection = selection_event(msg)
         if selection is not None and is_in_run(ep):
             ph(pname)["peak_total"] = max(
@@ -1137,7 +1438,12 @@ with open(os.path.join(out, "flow-counts.txt"), "w") as g, \
         for rx, key in ((wd_idle_re, "wd_idle"), (wd_wedged_re, "wd_wedged"), (wd_prerdy_re, "wd_prerdy")):
             mm = rx.search(msg)
             if mm:
-                c[key] += int(mm.group(1))
+                count = parse_artifact_uint(mm.group(1))
+                if count is None:
+                    numeric_log_issues.append(
+                        f"{key} event has an invalid numeric count")
+                else:
+                    c[key] += count
         if drain_re.search(msg):
             c["drain_backstop"] += 1
         if body_err_re.search(msg):
@@ -1146,7 +1452,13 @@ with open(os.path.join(out, "flow-counts.txt"), "w") as g, \
             c["relay_drop"] += 1
         ef = egress_fail_re.search(msg)
         if ef:
-            egress_fail[ef.group(1)] = egress_fail.get(ef.group(1), 0) + 1
+            code = parse_artifact_uint(ef.group(1))
+            if code is None:
+                numeric_log_issues.append(
+                    "egress failure event has an invalid numeric code")
+            else:
+                code_text = str(code)
+                egress_fail[code_text] = egress_fail.get(code_text, 0) + 1
         if mtype in ("Error", "Fault") or life_re.search(msg):
             t.write(f"{ts}  [{pname}] [{mtype or 'Default'}]  {msg}\n")
             if mtype in ("Error", "Fault"):
@@ -1166,7 +1478,7 @@ with open(os.path.join(out, "flow-counts.txt"), "w") as g, \
 # Freeze detector (start \t completion \t iso \t curl_rc \t http_code).
 probe_fail = probe_total = max_fail_run = probe_skipped = 0
 probe_per_phase = {}
-probe_failure_epochs = {}
+probe_failure_records = []
 probe_issues = []
 probe_records = []
 ptl = os.path.join(out, "probe-timeline.txt")
@@ -1178,12 +1490,13 @@ if os.path.exists(ptl):
         probe_phase = phase_of(completed)
         probe_total += 1
         if probe_phase not in ("?", "-"):
-            probe_per_phase.setdefault(probe_phase, []).append(completed)
+            probe_per_phase.setdefault(probe_phase, []).append(
+                (started, completed))
         else:
             probe_phase = "outside-phase"
         if not probe_succeeded((started, completed, curl_rc, code)):
             probe_fail += 1; run += 1; max_fail_run = max(max_fail_run, run)
-            probe_failure_epochs.setdefault(probe_phase, []).append(completed)
+            probe_failure_records.append((started, completed, curl_rc, code))
         else:
             run = 0
 
@@ -1202,11 +1515,8 @@ if os.path.exists(fof):
 def meta_true(key):
     return meta.get(key) == "1"
 
-def meta_int(key, default=0):
-    try:
-        return int(meta.get(key, str(default)))
-    except (TypeError, ValueError):
-        return default
+def meta_uint(key):
+    return parse_artifact_uint(meta.get(key))
 
 pool_intervals = {"fanout": [], "idle-holders": []}
 pool_interval_issues = []
@@ -1218,8 +1528,8 @@ if os.path.exists(pool_interval_file):
             pool_interval_issues.append(
                 f"malformed established-pool interval at line {line_number}")
             continue
-        start = parse_epoch(fields[1])
-        end = parse_epoch(fields[2])
+        start = parse_artifact_epoch(fields[1])
+        end = parse_artifact_epoch(fields[2])
         if start is None or end is None or end - start < Decimal("5"):
             pool_interval_issues.append(
                 f"invalid established-pool interval at line {line_number}")
@@ -1232,7 +1542,7 @@ pool_bracket_file = os.path.join(out, "pool-brackets.tsv")
 if os.path.exists(pool_bracket_file):
     for line_number, line in enumerate(open(pool_bracket_file), 1):
         fields = line.rstrip("\n").split("\t")
-        if len(fields) != 8 or fields[0] not in pool_intervals:
+        if len(fields) != 11 or fields[0] not in pool_intervals:
             pool_bracket_issues.append(
                 f"malformed provider flow-pool bracket at line {line_number}")
             continue
@@ -1240,26 +1550,46 @@ if os.path.exists(pool_bracket_file):
             pool_bracket_issues.append(
                 f"duplicate provider flow-pool bracket for {fields[0]!r}")
             continue
-        epochs = [parse_epoch(fields[index]) for index in (1, 3, 5)]
-        try:
-            counts = [int(fields[index]) for index in (2, 4, 6, 7)]
-        except ValueError:
-            counts = [-1]
-        if any(epoch is None for epoch in epochs) or any(value < 0 for value in counts):
+        epochs = [parse_artifact_epoch(fields[index]) for index in (1, 4, 7)]
+        counts = [
+            parse_artifact_uint(fields[index])
+            for index in (2, 3, 5, 6, 8, 9, 10)
+        ]
+        if any(epoch is None for epoch in epochs) or any(
+            value is None for value in counts
+        ):
             pool_bracket_issues.append(
                 f"invalid provider flow-pool bracket at line {line_number}")
             continue
         pool_brackets[fields[0]] = (
-            epochs[0], counts[0], epochs[1], counts[1], epochs[2], counts[2],
-            counts[3],
+            epochs[0], counts[0], counts[1],
+            epochs[1], counts[2], counts[3],
+            epochs[2], counts[4], counts[5], counts[6],
         )
 
 # Event-local cap values participate in configuration consistency too; checking
 # only periodic gauges could bless an episode from another generation/config.
 softcap_seen.update(pressure["soft_caps"])
-baseline_total = meta_int("baseline_total")
-configured_softcap = meta_int("softcap")
-configured_hardcap = meta_int("hardcap")
+baseline_total = meta_uint("baseline_total")
+baseline_registered = meta_uint("baseline_registered")
+configured_softcap = meta_uint("softcap")
+configured_hardcap = meta_uint("hardcap")
+hard_limited_configuration = cap_validation_hard_limited(
+    configured_softcap, configured_hardcap,
+    baseline_registered, baseline_total)
+mode_configuration_issues = []
+if hard_limited_configuration is None:
+    mode_configuration_issues.append(
+        "baseline flow counts conflict with live-flow cap invariants")
+elif meta.get("mode") == "cap-validate" and hard_limited_configuration is True:
+    mode_configuration_issues.append(
+        "cap-validation mode conflicts with effective live-flow hard-cap headroom")
+elif (
+    meta.get("mode") == "cap-hard-limited"
+    and hard_limited_configuration is False
+):
+    mode_configuration_issues.append(
+        "hard-limited mode conflicts with effective live-flow hard-cap headroom")
 fanout_status = flow_pool_status(
     meta.get("fanout_established_target_sustained"),
     meta.get("fanout_target"),
@@ -1294,6 +1624,8 @@ if os.path.exists(ceiling_file):
 ceiling_phase = next((p for p in phases if p[0] == "ceiling"), None)
 ceiling_proof_issues = []
 if meta.get("mode") == "find-ceiling":
+    ceiling_proof_issues.extend(ceiling_configuration_issues(
+        configured_softcap, configured_hardcap))
     ceiling_proof_issues.extend(ceiling_parse_issues)
     ceiling_proof_issues.extend(ceiling_probe_evidence_issues(
         ceiling_records, meta.get("ceiling_found"), baseline_total, ceiling_phase,
@@ -1305,8 +1637,8 @@ ceiling_window = (
 )
 if ceiling_window is not None:
     recorded_window = (
-        parse_epoch(meta.get("ceiling_outage_start")),
-        parse_epoch(meta.get("ceiling_outage_end")),
+        parse_artifact_epoch(meta.get("ceiling_outage_start")),
+        parse_artifact_epoch(meta.get("ceiling_outage_end")),
     )
     if recorded_window != ceiling_window:
         ceiling_proof_issues.append("recorded ceiling outage window does not match direct probes")
@@ -1333,6 +1665,18 @@ if meta.get("mode") != "find-ceiling" and meta.get("post_wake_ok") != "skipped":
         [epoch for epoch in wake_epochs if phase_of(epoch) == "sleep-wake"],
         sleep_probe_records,
         sleep_phase,
+        workload_evidence={
+            "started": meta.get("wake_workload_started"),
+            "established": meta.get("wake_workload_established"),
+            "established_nonzero_bytes": meta.get(
+                "wake_workload_established_nonzero_bytes"),
+            "established_bytes": meta.get("wake_workload_established_bytes"),
+            "http_code": meta.get("wake_workload_http_code"),
+            "alive_at_command": meta.get(
+                "wake_workload_alive_at_sleep_command"),
+            "child_rc": meta.get("wake_workload_child_rc"),
+            "joined": meta.get("wake_workload_joined"),
+        },
     )
 
 leaks_path = os.path.join(out, "leaks.txt")
@@ -1348,7 +1692,8 @@ leak_count = leak_result["leaks"]
 capture_issues = (
     list(ndjson_issues) + provider_source_issues + meta_issues + phase_issues
     + timestamp_issues + probe_issues + pool_interval_issues + pool_bracket_issues
-    + lifecycle_category_issues + ceiling_proof_issues + sleep_probe_issues
+    + lifecycle_category_issues + flow_gauge_issues + numeric_log_issues
+    + mode_configuration_issues + ceiling_proof_issues + sleep_probe_issues
     + sleep_result["issues"] + leak_issues
 )
 for label, status, raw_status in (
@@ -1404,28 +1749,23 @@ evidence_issues = soak_evidence_issues(
     final_gauge_present=final_gauge is not None,
 )
 final_total = final_gauge["total"] if final_gauge else None
-sc = configured_softcap
+settlement_tolerance = 5
+sc = configured_softcap if configured_softcap is not None else 0
 observed_peak = pressure["observed_peak"]
 periodic = pressure["periodic"]
 episode = pressure["episode"]
 reaper_status = pressure_reaper_status(pressure, sc, not evidence_issues)
-unexpected_probe_failures = (
-    probe_fail + sum(1 for probe in sleep_probe_records if not probe_succeeded(probe))
-)
+proved_outage_windows = []
 if ceiling_window is not None and ceiling_window[1] is not None and not ceiling_proof_issues:
-    ceiling_failures = probe_failure_epochs.get("ceiling", [])
-    unexpected_ceiling_failures = unexpected_probe_failure_count(
-        ceiling_failures, ceiling_window
-    )
-    unexpected_probe_failures -= len(ceiling_failures) - unexpected_ceiling_failures
+    proved_outage_windows.append(ceiling_window)
 sleep_window = sleep_result["outage_window"]
 if sleep_window is not None:
-    sleep_failures = probe_failure_epochs.get("sleep-wake", [])
-    unexpected_sleep_failures = unexpected_probe_failure_count(
-        sleep_failures, sleep_window
-    )
-    probe_skipped = len(sleep_failures) - unexpected_sleep_failures
-    unexpected_probe_failures -= probe_skipped
+    proved_outage_windows.append(sleep_window)
+unexpected_monitor_failures = unexpected_probe_failure_count_across_outages(
+    probe_failure_records, proved_outage_windows)
+probe_skipped = probe_fail - unexpected_monitor_failures
+unexpected_probe_failures = unexpected_monitor_failures + sum(
+    1 for probe in sleep_probe_records if not probe_succeeded(probe))
 run_result = classify_soak_result(
     meta,
     evidence_issues,
@@ -1433,6 +1773,9 @@ run_result = classify_soak_result(
     body_errors=c["body_err"],
     reaper_status=reaper_status,
     leak_count=leak_count,
+    baseline_total=baseline_total,
+    final_total=final_total,
+    settlement_tolerance=settlement_tolerance,
 )
 evidence_issues = run_result["evidence_issues"]
 evidence_complete = run_result["complete"]
@@ -1467,19 +1810,18 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
     else:
         w("leaks tool verdict:       GOOD — parsed report contains zero leaks")
     w("flow-count settling (baseline-relative; assumes a quiet idle tail):")
-    w(f"baseline live flows:      {baseline_total}")
-    w(f"final live flows:         {final_total if final_total is not None else 'n/a'}")
+    w(f"baseline allocated flows: {baseline_total}")
+    w(f"final allocated flows:    {final_total if final_total is not None else 'n/a'}")
     if not evidence_complete:
-        w("leak verdict:             INCONCLUSIVE — evidence or provider continuity is incomplete")
+        w("flow-settlement verdict: INCONCLUSIVE — evidence or provider continuity is incomplete")
     elif final_total is None:
-        w("leak verdict:             NOT EVALUATED — ceiling mode has no required idle tail")
-    elif final_total <= baseline_total + 5:
-        w(f"leak verdict:             GOOD — settled to ≈baseline ({final_total} ≤ {baseline_total}+5)")
+        w("flow-settlement verdict: NOT EVALUATED — ceiling mode has no required idle tail")
+    elif final_total <= baseline_total + settlement_tolerance:
+        w("flow-settlement verdict: GOOD — allocated flows settled to the "
+          f"baseline tolerance ({final_total} ≤ {baseline_total}+{settlement_tolerance})")
     else:
-        w(f"leak verdict:             INFO — final {final_total} above baseline {baseline_total} by "
-          f"{final_total-baseline_total}; a transparent proxy counts ALL machine traffic, so this is")
-        w("                          likely live ambient traffic, not a leak. Re-check with a quiet,")
-        w("                          longer idle tail + cross-check leaks.txt before suspecting a leak.")
+        w("flow-settlement verdict: FAIL — final allocated flows exceeded the "
+          f"baseline tolerance ({final_total} > {baseline_total}+{settlement_tolerance})")
     w("")
     w("--- flow-pressure reaper (keyed on emitted log lines) ---")
     w(f"pressure selections:      {pressure['selection_events']}  "
@@ -1499,12 +1841,12 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
         if not evidence_complete:
             w("reaper verdict:           INCONCLUSIVE — evidence or provider continuity is incomplete")
         elif reaper_status == "good":
-            w("reaper verdict:           GOOD — cap crossed and reaper evicted idle flows.")
+            w("reaper verdict:           GOOD — cap reached and reaper evicted idle flows.")
         elif reaper_status == "crossed-without-attributable-eviction":
-            w("reaper verdict:           cap crossed with no post-boundary finalized eviction episode;")
+            w("reaper verdict:           cap reached with no post-boundary finalized eviction episode;")
             w("                          periodic deltas alone are not attributable to this run.")
         else:
-            w("reaper verdict:           cap crossing NOT OBSERVED. A between-tick burst can evade sampled")
+            w("reaper verdict:           cap reach NOT OBSERVED. A between-tick burst can evade sampled")
             w("                          gauges; use a LOW-CAP build and require event/episode evidence.")
     w("")
     w("--- watchdog / drain teardowns ---")
@@ -1529,12 +1871,12 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
         w("body verdict:             GOOD — no body decode/relay errors")
     w("")
     w("--- freeze detector (liveness probe; sleep-wake excluded) ---")
-    w(f"monitor probes:           {probe_total} (failures {probe_fail}, longest run {max_fail_run}, asleep-window waived {probe_skipped})")
+    w(f"monitor probes:           {probe_total} (failures {probe_fail}, longest run {max_fail_run}, proved-outage waived {probe_skipped})")
     w(f"post-wake direct probes:  {len(sleep_probe_records)} (failures {sum(1 for probe in sleep_probe_records if not probe_succeeded(probe))})")
     if unexpected_probe_failures > 0:
         w(f"freeze verdict:           !! {unexpected_probe_failures} unexpected probe failures — investigate nexus exhaustion / network blip")
     elif probe_fail > 0:
-        w("freeze verdict:           GOOD — phase-local failures match proved ceiling exhaustion")
+        w("freeze verdict:           GOOD — failures overlap proved outage window(s)")
     elif not evidence_complete:
         w("freeze verdict:           INCONCLUSIVE — probe coverage or provider continuity is incomplete")
     else:

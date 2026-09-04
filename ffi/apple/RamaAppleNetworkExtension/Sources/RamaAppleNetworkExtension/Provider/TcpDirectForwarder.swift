@@ -83,6 +83,12 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// pressure teardown has committed, so an active flow is never selected
     /// from a stale pre-callback timestamp.
     private let onActivity: @Sendable () -> Bool
+    /// Maximum payload handed to either write pump in one enqueue. Rust-backed
+    /// producers already honor the configured pump cap; the promoted path must
+    /// do the same because `NEAppProxyTCPFlow.readData` and promotion carryover
+    /// can each surface a larger `Data` value. Snapshot the process policy when
+    /// the forwarder is built so one flow cannot change chunking mid-stream.
+    private let writeChunkLimit: Int
     /// Closes the kernel flow's write half once S→C finished draining, so
     /// the client app sees the server's EOF (the `flow` type here has no
     /// close surface, hence the injected hook). Without it a client that
@@ -131,10 +137,35 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// (the `.paused` replay buffer and any in-flight `readData`
     /// result). Flushed in FIFO order on the `.active`
     /// transition.
-    private var c2sBuffer = ChunkQueue<Data>()
+    /// One source callback remains one queue entry even when it exceeds the
+    /// configured write cap. `consumed` advances only after a bounded prefix is
+    /// accepted, so a paused pump retains exactly one unsent remainder without
+    /// fanning the payload out into an array of copied chunks.
+    private struct BufferedPayload {
+        let data: Data
+        var consumed = 0
+
+        var isEmpty: Bool { consumed >= data.count }
+
+        func prefix(maxBytes: Int) -> Data {
+            let remaining = data.count - consumed
+            precondition(remaining > 0)
+            if consumed == 0, remaining <= maxBytes { return data }
+            let length = min(remaining, maxBytes)
+            let start = data.index(data.startIndex, offsetBy: consumed)
+            let end = data.index(start, offsetBy: length)
+            return data[start..<end]
+        }
+
+        mutating func advance(by count: Int) {
+            consumed += count
+        }
+    }
+
+    private var c2sBuffer = ChunkQueue<BufferedPayload>()
     /// Same for S→C — bytes captured by
     /// `NwTcpConnectionReadPump.cancelForPromote`.
-    private var s2cBuffer = ChunkQueue<Data>()
+    private var s2cBuffer = ChunkQueue<BufferedPayload>()
     /// `true` if a carryover handler signalled EOF for this
     /// direction during the buffering phase (e.g. an in-flight
     /// `readData` returned `(nil, nil)`). On the `.active`
@@ -211,6 +242,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
         onDrainStall: @escaping () -> Void = {},
         onReadError: @escaping (Error) -> Void = { _ in },
         onActivity: @escaping @Sendable () -> Bool = { true },
+        writeChunkLimit: Int = writePumpMaxPendingBytes,
         closeClientWrite: @escaping (Error?) -> Void = { _ in },
         onTerminal: @escaping () -> Void
     ) {
@@ -227,6 +259,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
         self.onDrainStall = onDrainStall
         self.onReadError = onReadError
         self.onActivity = onActivity
+        self.writeChunkLimit = max(writeChunkLimit, 1)
         self.closeClientWrite = closeClientWrite
         self.onTerminal = onTerminal
         queue.setSpecific(key: queueKey, value: 1)
@@ -265,7 +298,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
             switch self.c2sPhase {
             case .buffering:
                 if let data = payload, !data.isEmpty {
-                    self.c2sBuffer.pushBack(data)
+                    self.c2sBuffer.pushBack(BufferedPayload(data: data))
                 } else {
                     self.c2sEofBuffered = true
                     self.signalClosingLocked()
@@ -307,7 +340,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
             switch self.s2cPhase {
             case .buffering:
                 if let data = payload, !data.isEmpty {
-                    self.s2cBuffer.pushBack(data)
+                    self.s2cBuffer.pushBack(BufferedPayload(data: data))
                 } else {
                     self.s2cEofBuffered = true
                     self.noteS2CTerminalLocked()
@@ -423,13 +456,13 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// for every C→S write in the `.active` phase so the paused/
     /// buffered-replay logic lives in exactly one place.
     private func writeC2SLocked(_ data: Data) {
-        c2sBuffer.pushBack(data)
+        c2sBuffer.pushBack(BufferedPayload(data: data))
         flushC2SBufferLocked()
     }
 
     /// S→C counterpart.
     private func writeS2CLocked(_ data: Data) {
-        s2cBuffer.pushBack(data)
+        s2cBuffer.pushBack(BufferedPayload(data: data))
         flushS2CBufferLocked()
     }
 
@@ -440,11 +473,14 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// EOF/read transitions.
     private func flushC2SBufferLocked() {
         guard !cancelled, c2sPhase == .active else { return }
-        while let chunk = c2sBuffer.first() {
+        while var payload = c2sBuffer.first() {
+            let chunk = payload.prefix(maxBytes: writeChunkLimit)
             let status = egressWritePump.enqueue(chunk)
             switch status {
             case .accepted:
                 _ = c2sBuffer.popFront()
+                payload.advance(by: chunk.count)
+                if !payload.isEmpty { c2sBuffer.pushFront(payload) }
             case .paused:
                 // Head stays in buffer. Pump's drain edge will
                 // re-enter via `onEgressPumpDrained`.
@@ -477,11 +513,14 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// S→C counterpart.
     private func flushS2CBufferLocked() {
         guard !cancelled, s2cPhase == .active else { return }
-        while let chunk = s2cBuffer.first() {
+        while var payload = s2cBuffer.first() {
+            let chunk = payload.prefix(maxBytes: writeChunkLimit)
             let status = clientWritePump.enqueue(chunk)
             switch status {
             case .accepted:
                 _ = s2cBuffer.popFront()
+                payload.advance(by: chunk.count)
+                if !payload.isEmpty { s2cBuffer.pushFront(payload) }
             case .paused:
                 s2cWritePaused = true
                 return
@@ -561,7 +600,10 @@ final class TcpDirectForwarder: @unchecked Sendable {
         guard !cancelled, s2cPhase == .active,
               !inFlightReceive, !s2cWritePaused else { return }
         inFlightReceive = true
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) {
+        connection.receive(
+            minimumIncompleteLength: 1,
+            maximumLength: min(65_536, writeChunkLimit)
+        ) {
             [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let data, !data.isEmpty, !self.onActivity() { return }

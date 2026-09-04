@@ -14,10 +14,10 @@
 #   - plain HTTP                  (peek path, no MITM)
 #
 # Tunables (env):
-#   STRESS_DURATION       wall-clock seconds, per worker. Default 60.
-#   STRESS_CONCURRENCY    parallel curls in the pool worker. Default 16.
-#   STRESS_LARGE_BYTES    bytes for the large-GET worker. Default 16 MiB.
-#   STRESS_POST_BYTES     bytes for the POST-body worker. Default 8 MiB.
+#   STRESS_DURATION       wall-clock seconds, per worker (0..86400). Default 60.
+#   STRESS_CONCURRENCY    parallel curls in the pool worker (1..512). Default 16.
+#   STRESS_LARGE_BYTES    bytes for the large-GET worker (max 1 GiB). Default 16 MiB.
+#   STRESS_POST_BYTES     bytes for the POST-body worker (max 1 GiB). Default 8 MiB.
 #   STRESS_HTTP_TARGET    plain-HTTP target. Default http-test /method
 #   STRESS_HTTPS_TARGET   HTTPS target. Default http-test /method
 #   STRESS_LARGE_TARGET   large-download target. Default http-test /bytes
@@ -45,23 +45,58 @@
 
 set -uo pipefail
 
-DURATION="${STRESS_DURATION:-60}"
-CONCURRENCY="${STRESS_CONCURRENCY:-16}"
-LARGE_BYTES="${STRESS_LARGE_BYTES:-16777216}"   # 16 MiB
-POST_BYTES="${STRESS_POST_BYTES:-8388608}"      # 8 MiB
+DURATION="${STRESS_DURATION-60}"
+CONCURRENCY="${STRESS_CONCURRENCY-16}"
+LARGE_BYTES="${STRESS_LARGE_BYTES-16777216}"   # 16 MiB
+POST_BYTES="${STRESS_POST_BYTES-8388608}"      # 8 MiB
+MONITOR_PID="${STRESS_MONITOR_PID:-}"
+NDJSON_PATH="${STRESS_NDJSON:-}"
+SKIP_LIVENESS="${STRESS_SKIP_LIVENESS-0}"
 
-for numeric_name in DURATION CONCURRENCY LARGE_BYTES POST_BYTES; do
-  numeric_value="${!numeric_name}"
-  if [[ ! "$numeric_value" =~ ^[0-9]+$ ]]; then
-    printf '[stress] %s must be a non-negative integer (got %q)\n' \
-      "$numeric_name" "$numeric_value" >&2
+# Keep user-controlled values out of Bash arithmetic until they are known to be
+# canonical decimal strings and within workload-sized bounds. In particular,
+# Bash treats a leading zero as octal and silently wraps overflowing integers.
+require_bounded_uint() {
+  local name="$1" value="$2" maximum="$3"
+  local LC_ALL=C
+  if [[ ! "$value" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    printf '[stress] %s must be a canonical non-negative decimal integer (got %q)\n' \
+      "$name" "$value" >&2
     exit 2
   fi
-done
-if (( CONCURRENCY == 0 )); then
-  printf '[stress] CONCURRENCY must be greater than zero\n' >&2
-  exit 2
+  if [[ ${#value} -gt ${#maximum} ]] \
+    || [[ ${#value} -eq ${#maximum} && "$value" > "$maximum" ]]
+  then
+    printf '[stress] %s must be at most %s (got %s)\n' \
+      "$name" "$maximum" "$value" >&2
+    exit 2
+  fi
+}
+
+require_boolean() {
+  local name="$1" value="$2"
+  if [[ "$value" != 0 && "$value" != 1 ]]; then
+    printf '[stress] %s must be 0 or 1 (got %q)\n' "$name" "$value" >&2
+    exit 2
+  fi
+}
+
+require_bounded_uint STRESS_DURATION "$DURATION" 86400
+require_bounded_uint STRESS_CONCURRENCY "$CONCURRENCY" 512
+require_bounded_uint STRESS_LARGE_BYTES "$LARGE_BYTES" 1073741824
+require_bounded_uint STRESS_POST_BYTES "$POST_BYTES" 1073741824
+require_boolean STRESS_SKIP_LIVENESS "$SKIP_LIVENESS"
+if [[ -n "$MONITOR_PID" ]]; then
+  require_bounded_uint STRESS_MONITOR_PID "$MONITOR_PID" 2147483647
+  [[ "$MONITOR_PID" != 0 ]] || {
+    printf '[stress] STRESS_MONITOR_PID must be greater than zero\n' >&2
+    exit 2
+  }
 fi
+[[ "$CONCURRENCY" != 0 ]] || {
+  printf '[stress] STRESS_CONCURRENCY must be greater than zero\n' >&2
+  exit 2
+}
 
 HTTP_TARGET="${STRESS_HTTP_TARGET:-http://http-test.ramaproxy.org/method}"
 HTTPS_TARGET="${STRESS_HTTPS_TARGET:-https://http-test.ramaproxy.org/method}"
@@ -71,14 +106,22 @@ LARGE_TARGET="${STRESS_LARGE_TARGET:-https://http-test.ramaproxy.org/bytes?size=
 LOG_DIR="${STRESS_LOG_DIR:-$(mktemp -d /tmp/rama-stress.XXXXXX)}"
 mkdir -p "$LOG_DIR"
 
-MONITOR_PID="${STRESS_MONITOR_PID:-}"
-NDJSON_PATH="${STRESS_NDJSON:-}"
-SKIP_LIVENESS="${STRESS_SKIP_LIVENESS:-}"
 ANALYZE_ONLY=0
 TRAFFIC_FAILED=0
-if (( DURATION <= 0 )); then
+if [[ "$DURATION" == 0 ]]; then
   ANALYZE_ONLY=1
 fi
+
+TRAFFIC_WORKERS=(
+  small_https
+  small_http1
+  plain_http
+  large_get
+  post_large
+  head_only
+  churn_close
+  parallel_pool
+)
 
 # Pretty terminal output without forcing color where the env doesn't
 # claim to support it.
@@ -135,7 +178,7 @@ loop_http() {
   done
   printf '%s done: iters=%d ok=%d fail=%d\n' "$label" "$iter" "$ok" "$fail" \
     >"$LOG_DIR/${label}.summary"
-  (( fail == 0 ))
+  (( iter > 0 && fail == 0 ))
 }
 
 # Many curls in a bounded parallel batch, preserving each child's exit status.
@@ -159,7 +202,34 @@ loop_pool() {
   done
   printf '%s done: iters=%d ok=%d fail=%d\n' "$label" "$iter" "$ok" "$fail" \
     >"$LOG_DIR/${label}.summary"
-  (( fail == 0 ))
+  (( iter > 0 && fail == 0 ))
+}
+
+# A clean child exit is not sufficient evidence that the requested workload ran:
+# a delayed worker can miss its deadline and exit after zero loop iterations.
+verify_worker_progress() {
+  local worker summary summary_line summary_pattern
+  local progress_failed=0
+  for worker in "${TRAFFIC_WORKERS[@]}"; do
+    summary="$LOG_DIR/${worker}.summary"
+    if [[ ! -r "$summary" ]]; then
+      say "${RED}${worker}: missing worker summary${RESET}"
+      progress_failed=1
+      continue
+    fi
+    summary_line=$(<"$summary")
+    summary_pattern="^${worker} done: iters=([0-9]+) ok=([0-9]+) fail=([0-9]+)$"
+    if [[ ! "$summary_line" =~ $summary_pattern ]]; then
+      say "${RED}${worker}: malformed worker summary${RESET}"
+      progress_failed=1
+      continue
+    fi
+    if [[ "${BASH_REMATCH[1]}" == 0 ]]; then
+      say "${RED}${worker}: worker reported iters=0${RESET}"
+      progress_failed=1
+    fi
+  done
+  (( progress_failed == 0 ))
 }
 
 # One-shot snapshot of a target pid: rss/vsz, vmmap summary, heap totals.
@@ -245,7 +315,7 @@ if (( ! ANALYZE_ONLY )); then
 fi
 
 if (( ! ANALYZE_ONLY )); then
-  if [[ -z "$SKIP_LIVENESS" ]]; then
+  if [[ "$SKIP_LIVENESS" == 0 ]]; then
     if ! liveness_probe "$MONITOR_PID"; then
       exit 1
     fi
@@ -259,9 +329,9 @@ if (( ! ANALYZE_ONLY )); then
 
   START_TS=$(date -u +%s)
 
-  for worker_name in small_https small_http1 plain_http large_get post_large \
-    head_only churn_close parallel_pool; do
+  for worker_name in "${TRAFFIC_WORKERS[@]}"; do
     : > "$LOG_DIR/${worker_name}.log"
+    : > "$LOG_DIR/${worker_name}.summary"
   done
 
   TRAFFIC_PIDS=()
@@ -295,6 +365,7 @@ if (( ! ANALYZE_ONLY )); then
     wait "$worker_pid" || TRAFFIC_FAILED=1
   done
   [[ -n "$MONITOR_JOB_PID" ]] && wait "$MONITOR_JOB_PID" || true
+  verify_worker_progress || TRAFFIC_FAILED=1
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────
