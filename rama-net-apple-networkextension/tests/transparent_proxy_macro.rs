@@ -8,15 +8,29 @@ use rama_net_apple_networkextension::{
     },
     transparent_proxy_ffi,
 };
-use std::future::Future;
+use std::{
+    future::Future,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+static INIT_SHOULD_PANIC: AtomicBool = AtomicBool::new(false);
+static CONFIG_SHOULD_PANIC: AtomicBool = AtomicBool::new(false);
 
 fn init(
     _config: Option<&rama_net_apple_networkextension::ffi::tproxy::TransparentProxyInitConfig>,
 ) -> bool {
+    assert!(
+        !INIT_SHOULD_PANIC.swap(false, Ordering::SeqCst),
+        "synthetic initialization panic"
+    );
     true
 }
 
 fn proxy_config() -> TransparentProxyConfig {
+    assert!(
+        !CONFIG_SHOULD_PANIC.swap(false, Ordering::SeqCst),
+        "synthetic configuration panic"
+    );
     TransparentProxyConfig::new().with_rules(vec![
         TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Tcp),
     ])
@@ -64,6 +78,8 @@ fn macro_generates_direct_dependency_ffi_symbols() {
             *mut RamaTransparentProxyEngine,
             rama_net_apple_networkextension::ffi::BytesView,
         ) -> rama_net_apple_networkextension::ffi::BytesOwned;
+    _ = rama_transparent_proxy_engine_udp_idle_timeout_ms
+        as unsafe extern "C" fn(*mut RamaTransparentProxyEngine) -> u64;
 }
 
 #[test]
@@ -80,4 +96,25 @@ fn macro_generates_promote_ffi_symbols() {
             *const ::std::ffi::c_char,
             usize,
         );
+}
+
+#[test]
+fn initialization_panic_is_contained_at_c_boundary() {
+    INIT_SHOULD_PANIC.store(true, Ordering::SeqCst);
+    assert!(!unsafe { rama_transparent_proxy_initialize(std::ptr::null()) });
+}
+
+#[test]
+fn engine_build_panic_is_contained_at_c_boundary() {
+    CONFIG_SHOULD_PANIC.store(true, Ordering::SeqCst);
+    let engine = unsafe { rama_transparent_proxy_engine_new() };
+    assert!(engine.is_null());
+
+    let engine = unsafe { rama_transparent_proxy_engine_new() };
+    assert!(!engine.is_null());
+    assert_eq!(
+        unsafe { rama_transparent_proxy_engine_udp_idle_timeout_ms(engine) },
+        60_000
+    );
+    unsafe { rama_transparent_proxy_engine_free(engine) };
 }

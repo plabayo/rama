@@ -11,6 +11,7 @@ use std::{
 use rama_core::{
     bytes::Bytes,
     extensions::ExtensionsRef,
+    futures::FutureExt,
     graceful::{Shutdown, ShutdownGuard},
     io::BridgeIo,
     rt::{Executor, OwnedRuntimeHandle},
@@ -45,7 +46,7 @@ pub(crate) mod ffi_stream;
 mod boxed;
 pub use self::boxed::{
     BoxedClosedSink, BoxedDemandSink, BoxedServerBytesSink, BoxedServerDatagramSink,
-    BoxedTransparentProxyEngine, log_engine_build_error,
+    BoxedTransparentProxyEngine, log_engine_build_error, log_engine_build_panic,
 };
 
 mod handler;
@@ -308,6 +309,14 @@ where
 {
     pub fn transparent_proxy_config(&self) -> crate::tproxy::TransparentProxyConfig {
         self.transparent_proxy_config.clone()
+    }
+
+    /// Effective per-flow UDP idle timeout exported to Swift so its watchdog
+    /// mirrors the Rust service timer. Zero is the cross-FFI disabled sentinel.
+    pub fn udp_idle_timeout_ms(&self) -> u64 {
+        self.udp_idle_timeout
+            .map(|timeout| u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0)
     }
 
     /// Fire-and-forget notification that the system is going to
@@ -1793,7 +1802,18 @@ where
         //     misbehaving idle reaper or a service-side wedge that
         //     keeps the idle signal alive without making real progress.
         //     See builder doc for semantics.
-        let mut serve_fut = std::pin::pin!(service.serve(flow));
+        // A user service can panic either while constructing its future or
+        // while that future is polled. Keep both inside the task so the common
+        // close epilogue and Swift `on_server_closed` notification still run.
+        let mut serve_fut = std::pin::pin!(async move {
+            let future = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                service.serve(flow)
+            })) {
+                Ok(future) => future,
+                Err(panic) => return Err(panic),
+            };
+            std::panic::AssertUnwindSafe(future).catch_unwind().await
+        });
         let idle_fut = async {
             let (Some(timeout), Some(notify)) = (udp_idle_timeout, idle_notify_for_task.as_ref())
             else {
@@ -1805,7 +1825,17 @@ where
         let close_reason = tokio::select! {
             () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,
             res = &mut serve_fut => {
-                _ = res;
+                match res {
+                    Ok(service_result) => _ = service_result,
+                    Err(panic) => {
+                        tracing::error!(
+                            target: "rama_apple_ne::tproxy",
+                            flow_id = meta_for_close.flow_id,
+                            panic_message = %panic_payload_message(panic.as_ref()),
+                            "transparent proxy udp service panicked; closing flow",
+                        );
+                    }
+                }
                 BridgeCloseReason::PeerEofLeft
             }
             () = idle_fut => {

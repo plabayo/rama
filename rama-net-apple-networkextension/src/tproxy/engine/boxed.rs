@@ -28,6 +28,7 @@ pub type BoxedDemandSink = Arc<dyn Fn() + Send + Sync + 'static>;
 
 trait BoxedTransparentProxyEngineInner: Send + Sync + 'static {
     fn transparent_proxy_config(&self) -> TransparentProxyConfig;
+    fn udp_idle_timeout_ms(&self) -> u64;
     fn handle_app_message(&self, message: Bytes) -> Option<Bytes>;
     fn notify_system_sleep(&self);
     fn notify_system_wake(&self);
@@ -54,6 +55,10 @@ where
 {
     fn transparent_proxy_config(&self) -> TransparentProxyConfig {
         self.transparent_proxy_config()
+    }
+
+    fn udp_idle_timeout_ms(&self) -> u64 {
+        self.udp_idle_timeout_ms()
     }
 
     fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {
@@ -110,6 +115,10 @@ pub struct BoxedTransparentProxyEngine(Box<dyn BoxedTransparentProxyEngineInner>
 impl BoxedTransparentProxyEngine {
     pub fn transparent_proxy_config(&self) -> TransparentProxyConfig {
         self.0.transparent_proxy_config()
+    }
+
+    pub fn udp_idle_timeout_ms(&self) -> u64 {
+        self.0.udp_idle_timeout_ms()
     }
 
     pub fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {
@@ -170,4 +179,10 @@ where
 
 pub fn log_engine_build_error(err: &(dyn std::error::Error + 'static), context: &'static str) {
     tracing::error!(%err, context, "transparent proxy engine build error");
+}
+
+/// Log a panic caught at an exported C boundary without attempting to carry
+/// its opaque payload across that boundary.
+pub fn log_engine_build_panic(context: &'static str) {
+    tracing::error!(context, "transparent proxy application callback panicked");
 }

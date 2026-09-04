@@ -425,7 +425,7 @@ nonisolated(unsafe) var defaultEgressPreReadyWaitingBudgetMs: UInt32 = 3_000
 ///
 /// `var` for tests that need a short timeout to keep ARC-leak-check
 /// runtime bounded — same pattern as `defaultLingerCloseMs`.
-nonisolated(unsafe) var defaultUdpIdleTimeoutMs: UInt32 = 60_000
+nonisolated(unsafe) var defaultUdpIdleTimeoutMs: UInt64 = 60_000
 
 /// Idle (no-progress) reaper deadline for promoted-path TCP flows
 /// (`TcpDirectForwarder`), in milliseconds. `0` disables the reaper.
@@ -548,6 +548,14 @@ private func setFlowPressureDefaults(
 /// no-op. Zero retains its documented meaning on either side: a zero soft cap
 /// disables reaping, while a zero hard cap leaves admission unbounded.
 func normalizedFlowPressureSoftCap(softCap: UInt32, hardCap: UInt32) -> UInt32 {
+    guard softCap > 0, hardCap > 0 else { return softCap }
+    return min(softCap, hardCap)
+}
+
+/// Keep the latency/timeout pressure threshold reachable below an enabled
+/// in-flight admission ceiling. Zero preserves its documented disable meaning
+/// for either threshold.
+func normalizedTcpStartSoftCap(softCap: UInt32, hardCap: UInt32) -> UInt32 {
     guard softCap > 0, hardCap > 0 else { return softCap }
     return min(softCap, hardCap)
 }
@@ -1245,8 +1253,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             lowWater: flowPressureLowWater,
             idleFloorMs: startup.flowPressureIdleFloorMs,
             hardCap: startup.liveFlowHardCap)
+        defaultUdpIdleTimeoutMs = startup.udpIdleTimeoutMs
+        let tcpStartSoftCap = normalizedTcpStartSoftCap(
+            softCap: startup.tcpStartInFlightSoftCap,
+            hardCap: startup.tcpStartInFlightHardCap)
         defaultTcpStartInFlightHardCap = startup.tcpStartInFlightHardCap
-        defaultTcpStartInFlightSoftCap = startup.tcpStartInFlightSoftCap
+        defaultTcpStartInFlightSoftCap = tcpStartSoftCap
         defaultTcpStartLatencyBreakerP95Ms = startup.tcpStartLatencyBreakerP95Ms
         defaultTcpStartLatencyBreakerCloseP95Ms = startup.tcpStartLatencyBreakerCloseP95Ms
         defaultTcpPressureConnectTimeoutMs = startup.tcpPressureConnectTimeoutMs
@@ -1263,6 +1275,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             logLifecycle(
                 "flow pressure lowWater=\(startup.flowPressureLowWater) outside 0..<"
                     + "\(flowPressureSoftCap); using \(flowPressureLowWater)"
+            )
+        }
+        if tcpStartSoftCap != startup.tcpStartInFlightSoftCap {
+            logLifecycle(
+                "tcp start softCap=\(startup.tcpStartInFlightSoftCap) exceeds enabled "
+                    + "hardCap=\(startup.tcpStartInFlightHardCap); using \(tcpStartSoftCap)"
             )
         }
         logLifecycle("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")

@@ -128,7 +128,7 @@ pub use self::{
         TransparentProxyAsyncRuntime, TransparentProxyAsyncRuntimeFactory, TransparentProxyEngine,
         TransparentProxyEngineBuilder, TransparentProxyHandler, TransparentProxyHandlerFactory,
         TransparentProxyServiceContext, TransparentProxyTcpSession, TransparentProxyUdpSession,
-        log_engine_build_error,
+        log_engine_build_error, log_engine_build_panic,
     },
     types::{
         DEFAULT_FLOW_PRESSURE_IDLE_FLOOR_MS, DEFAULT_FLOW_PRESSURE_LOW_WATER,

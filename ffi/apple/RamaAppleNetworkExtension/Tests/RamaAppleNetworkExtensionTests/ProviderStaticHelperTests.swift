@@ -319,6 +319,7 @@ final class ProviderStaticHelperTests: XCTestCase {
         let savedFlowLowWater = defaultFlowPressureLowWater
         let savedFlowIdleFloor = defaultFlowPressureIdleFloorMs
         let savedLiveHardCap = defaultLiveFlowHardCap
+        let savedUdpIdleTimeout = defaultUdpIdleTimeoutMs
         let savedHardCap = defaultTcpStartInFlightHardCap
         let savedSoftCap = defaultTcpStartInFlightSoftCap
         let savedOpenP95 = defaultTcpStartLatencyBreakerP95Ms
@@ -333,6 +334,7 @@ final class ProviderStaticHelperTests: XCTestCase {
             defaultFlowPressureLowWater = savedFlowLowWater
             defaultFlowPressureIdleFloorMs = savedFlowIdleFloor
             defaultLiveFlowHardCap = savedLiveHardCap
+            defaultUdpIdleTimeoutMs = savedUdpIdleTimeout
             defaultTcpStartInFlightHardCap = savedHardCap
             defaultTcpStartInFlightSoftCap = savedSoftCap
             defaultTcpStartLatencyBreakerP95Ms = savedOpenP95
@@ -350,6 +352,7 @@ final class ProviderStaticHelperTests: XCTestCase {
             flowPressureLowWater: 12,
             flowPressureIdleFloorMs: 13,
             liveFlowHardCap: 20,
+            udpIdleTimeoutMs: 12_345,
             tcpStartInFlightHardCap: 14,
             tcpStartInFlightSoftCap: 15,
             tcpStartLatencyBreakerP95Ms: 16,
@@ -368,15 +371,17 @@ final class ProviderStaticHelperTests: XCTestCase {
         XCTAssertEqual(defaultFlowPressureLowWater, 10)
         XCTAssertEqual(defaultFlowPressureIdleFloorMs, 13)
         XCTAssertEqual(defaultLiveFlowHardCap, 20)
+        XCTAssertEqual(defaultUdpIdleTimeoutMs, 12_345)
         XCTAssertEqual(defaultTcpStartInFlightHardCap, 14)
-        XCTAssertEqual(defaultTcpStartInFlightSoftCap, 15)
+        XCTAssertEqual(defaultTcpStartInFlightSoftCap, 14)
         XCTAssertEqual(defaultTcpStartLatencyBreakerP95Ms, 16)
         XCTAssertEqual(defaultTcpStartLatencyBreakerCloseP95Ms, 17)
         XCTAssertEqual(defaultTcpPressureConnectTimeoutMs, 18)
         XCTAssertEqual(defaultTcpBreakerConnectTimeoutMs, 19)
         XCTAssertFalse(defaultFlowRefusalPassthrough)
-        XCTAssertEqual(logs.count, 5)
+        XCTAssertEqual(logs.count, 6)
         XCTAssertTrue(logs.contains { $0.contains("lowWater=12 outside 0..<11; using 10") })
+        XCTAssertTrue(logs.contains { $0.contains("tcp start softCap=15 exceeds enabled hardCap=14; using 14") })
     }
 
     func testFlowPressureLowWaterNormalization() {
@@ -393,6 +398,14 @@ final class ProviderStaticHelperTests: XCTestCase {
         XCTAssertEqual(normalizedFlowPressureSoftCap(softCap: 0, hardCap: 10), 0)
         XCTAssertEqual(normalizedFlowPressureSoftCap(softCap: 10, hardCap: 0), 10)
         XCTAssertEqual(normalizedFlowPressureSoftCap(softCap: 0, hardCap: 0), 0)
+    }
+
+    func testTcpStartSoftCapNormalizationPreservesDisableSemantics() {
+        XCTAssertEqual(normalizedTcpStartSoftCap(softCap: 10, hardCap: 20), 10)
+        XCTAssertEqual(normalizedTcpStartSoftCap(softCap: 20, hardCap: 10), 10)
+        XCTAssertEqual(normalizedTcpStartSoftCap(softCap: 0, hardCap: 10), 0)
+        XCTAssertEqual(normalizedTcpStartSoftCap(softCap: 10, hardCap: 0), 10)
+        XCTAssertEqual(normalizedTcpStartSoftCap(softCap: 0, hardCap: 0), 0)
     }
 
     func testApplyRuntimeConfigBoundsSoftCapByHardCapThenNormalizesLowWater() {

@@ -63,6 +63,42 @@ fn udp_bridge_delivers_server_datagram() {
     assert_eq!(got.lock().as_slice(), b"ping");
 }
 
+#[test]
+fn udp_service_panic_still_notifies_swift_close() {
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|_flow: crate::UdpFlow| async move {
+                panic!("synthetic udp service panic")
+            })
+            .boxed(),
+        }),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine(handler);
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel::<()>();
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        |_| {},
+        || {},
+        move || _ = closed_tx.send(()),
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate();
+
+    closed_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("panicking service must still notify Swift close");
+    session.on_client_close();
+    engine.stop(0);
+}
+
 /// End-to-end UDP loopback: client sends a datagram, the service
 /// (owning egress) sends it via `send_to`, a real loopback UDP
 /// "server" replies, and the reply is delivered back through

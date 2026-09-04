@@ -67,7 +67,22 @@ class StressTrafficValidationTests(unittest.TestCase):
                     """\
                     #!/usr/bin/env bash
                     sleep 0.05
-                    printf '204'
+                    downloaded=1
+                    uploaded=0
+                    version=1.1
+                    previous=""
+                    for argument in "$@"; do
+                      [[ "$argument" == --http2 ]] && version=2
+                      if [[ "$argument" == *'size=1024'* ]]; then
+                        downloaded=1024
+                      fi
+                      if [[ "$previous" == --data-binary ]]; then
+                        body="${argument#@}"
+                        uploaded="$(wc -c < "$body" | tr -d ' ')"
+                      fi
+                      previous="$argument"
+                    done
+                    printf '204\t%s\t%s\t%s' "$downloaded" "$uploaded" "$version"
                     """
                 )
             )
@@ -78,6 +93,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                 PATH=f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
                 STRESS_DURATION="1",
                 STRESS_CONCURRENCY="1",
+                STRESS_LARGE_BYTES="1024",
                 STRESS_POST_BYTES="1024",
                 STRESS_SKIP_LIVENESS="1",
             )
@@ -93,6 +109,25 @@ class StressTrafficValidationTests(unittest.TestCase):
                 iterations, ok, failed = map(int, match.groups())
                 self.assertGreater(iterations, 0, summary.read_text())
                 self.assertEqual(iterations, ok + failed, summary.read_text())
+
+    def test_status_only_curl_cannot_fake_transfer_or_protocol_evidence(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_curl = fake_bin / "curl"
+            fake_curl.write_text("#!/usr/bin/env bash\nprintf '204'\n")
+            fake_curl.chmod(0o755)
+            result = self.run_stress(
+                root / "logs",
+                PATH=f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                STRESS_DURATION="1",
+                STRESS_CONCURRENCY="1",
+                STRESS_LARGE_BYTES="1024",
+                STRESS_POST_BYTES="1024",
+                STRESS_SKIP_LIVENESS="1",
+            )
+            self.assertEqual(result.returncode, 1, result.stdout)
 
 
 class SoakConfigurationValidationTests(unittest.TestCase):
@@ -132,6 +167,29 @@ class SoakConfigurationValidationTests(unittest.TestCase):
                 self.assertIn(expected, result.stdout)
                 self.assertFalse(output_dir.exists(), result.stdout)
 
+    def test_real_download_requires_exact_successful_byte_count(self):
+        function = self.soak_function(SOAK_SCRIPT.read_text(), "real_download_matches")
+
+        def matches(curl_rc: str, code: str, downloaded: str, expected: str) -> bool:
+            result = subprocess.run(
+                [
+                    "bash", "-c",
+                    function + "\nreal_download_matches \"$1\" \"$2\" \"$3\" \"$4\"",
+                    "test", curl_rc, code, downloaded, expected,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=2,
+            )
+            return result.returncode == 0
+
+        self.assertTrue(matches("0", "200", "33554432", "33554432"))
+        self.assertFalse(matches("0", "204", "0", "33554432"))
+        self.assertFalse(matches("0", "302", "33554432", "33554432"))
+        self.assertFalse(matches("18", "200", "33554432", "33554432"))
+        self.assertFalse(matches("0", "200", "33554431", "33554432"))
+
     def test_bounded_child_join_accepts_term_and_rejects_forced_kill(self):
         shell = SOAK_SCRIPT.read_text()
         start = shell.index("child_job_is_active() {")
@@ -139,12 +197,23 @@ class SoakConfigurationValidationTests(unittest.TestCase):
         helpers = shell[start:end]
         python = shlex.quote(sys.executable)
 
-        def join_result(child: str, timeout: int) -> tuple[str, str, str, str]:
+        def join_result(
+            child: str, timeout: int, readiness_file=None
+        ) -> tuple[str, str, str, str]:
+            readiness = "sleep 0.1\n"
+            if readiness_file is not None:
+                quoted_ready = shlex.quote(str(readiness_file))
+                readiness = (
+                    f"for _ in $(seq 1 200); do [[ -e {quoted_ready} ]] && break; "
+                    "sleep 0.01; done\n"
+                    f"[[ -e {quoted_ready} ]] || exit 9\n"
+                )
             program = (
                 helpers
                 + "\n"
                 + child
-                + " &\npid=$!\nsleep 0.1\n"
+                + " &\npid=$!\n"
+                + readiness
                 + f'bounded_stop_and_join "$pid" {timeout} direct\n'
                 + "printf '%s %s %s %s\\n' \"$BOUNDED_CHILD_RC\" "
                 + '"$BOUNDED_CHILD_OK" "$BOUNDED_CHILD_REAPED" '
@@ -168,14 +237,54 @@ class SoakConfigurationValidationTests(unittest.TestCase):
             join_result(f"{python} -c 'pass'", 2),
             ("0", "1", "1", "0"),
         )
-        self.assertEqual(
-            join_result(
-                f"{python} -c 'import signal,time; "
-                "signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)'",
-                1,
-            ),
-            ("137", "0", "1", "1"),
-        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            ready = Path(temp_dir) / "ready"
+            child_program = (
+                "import signal,time,pathlib; "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                f"pathlib.Path({str(ready)!r}).touch(); time.sleep(30)"
+            )
+            self.assertEqual(
+                join_result(
+                    f"{python} -c {shlex.quote(child_program)}", 1, ready
+                ),
+                ("137", "0", "1", "1"),
+            )
+
+    def test_holder_cleanup_is_pid_scoped_and_joins_the_batch(self):
+        shell = SOAK_SCRIPT.read_text()
+        cleanup = self.soak_function(shell, "kill_holders")
+        active = self.soak_function(shell, "child_job_is_active")
+        signal = self.soak_function(shell, "signal_child")
+        self.assertNotIn("pkill -f", cleanup)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pidfile = root / "holders.tsv"
+            program = (
+                active + signal + cleanup
+                + f"\nOUT={shlex.quote(str(root))}\n"
+                + f"HOLDER_PIDFILE={shlex.quote(str(pidfile))}\n"
+                + "FLOW_POOL_LABEL=test\nHOLDER_CLEANUP_OK=1\n"
+                + "sleep 30 & first=$!\nsleep 30 & second=$!\n"
+                + "printf '%s\\tmarker\\n%s\\tmarker\\n' \"$first\" \"$second\" "
+                + '> "$HOLDER_PIDFILE"\nkill_holders\n'
+                + "printf 'ok=%s jobs=%s\\n' \"$HOLDER_CLEANUP_OK\" "
+                + '"$(jobs -p | wc -l | tr -d \' \')"\n'
+                + 'cat "$OUT/holder-cleanup.tsv"\n'
+            )
+            result = subprocess.run(
+                ["bash", "-c", program],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("ok=1 jobs=0", result.stdout)
+            self.assertIn(
+                "test\ttotal=2\treaped=2\tforced=0\tunreaped=0",
+                result.stdout,
+            )
 
     def test_equal_caps_use_effective_headroom_and_reachable_auto_targets(self):
         shell = SOAK_SCRIPT.read_text()

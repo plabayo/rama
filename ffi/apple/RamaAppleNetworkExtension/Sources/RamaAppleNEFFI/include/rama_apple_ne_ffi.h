@@ -696,6 +696,13 @@ bool rama_transparent_proxy_initialize(const RamaTransparentProxyInitConfig* _Nu
 /// Caller must release it with `rama_transparent_proxy_config_free`.
 RamaTransparentProxyConfig* _Nullable rama_transparent_proxy_get_config(RamaTransparentProxyEngine* engine);
 
+/// Effective UDP idle timeout used by this engine, in milliseconds.
+/// Zero means the builder disabled UDP idle expiration. Swift mirrors this
+/// value for its independent kernel-flow watchdog.
+uint64_t rama_transparent_proxy_engine_udp_idle_timeout_ms(
+    RamaTransparentProxyEngine* engine
+);
+
 /// Free a config previously returned by `rama_transparent_proxy_get_config`.
 ///
 /// NULL is allowed and ignored.

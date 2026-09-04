@@ -47,6 +47,9 @@ struct RamaTransparentProxyConfigBridge {
     var flowPressureLowWater: UInt32
     var flowPressureIdleFloorMs: UInt32
     var liveFlowHardCap: UInt32
+    /// Effective builder-owned UDP idle timeout. Zero disables both the Rust
+    /// service timer and Swift's independent kernel-flow watchdog.
+    var udpIdleTimeoutMs: UInt64 = 60_000
     var tcpStartInFlightHardCap: UInt32
     var tcpStartInFlightSoftCap: UInt32
     var tcpStartLatencyBreakerP95Ms: UInt32
@@ -645,6 +648,7 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
                 flowPressureLowWater: out.flow_pressure_low_water,
                 flowPressureIdleFloorMs: out.flow_pressure_idle_floor_ms,
                 liveFlowHardCap: out.live_flow_hard_cap,
+                udpIdleTimeoutMs: rama_transparent_proxy_engine_udp_idle_timeout_ms(p),
                 tcpStartInFlightHardCap: out.tcp_start_in_flight_hard_cap,
                 tcpStartInFlightSoftCap: out.tcp_start_in_flight_soft_cap,
                 tcpStartLatencyBreakerP95Ms: out.tcp_start_latency_breaker_p95_ms,

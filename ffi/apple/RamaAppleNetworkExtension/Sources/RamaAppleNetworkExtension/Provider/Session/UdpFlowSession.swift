@@ -2,6 +2,12 @@ import Foundation
 import RamaAppleNEFFI
 @preconcurrency import NetworkExtension
 
+func udpIdleTimeoutNanoseconds(_ timeoutMs: UInt64) -> UInt64 {
+    timeoutMs > UInt64.max / 1_000_000
+        ? UInt64.max
+        : timeoutMs * 1_000_000
+}
+
 /// Type-erased anchor that `TransparentProxyCore` retains for each
 /// intercepted UDP flow.
 ///
@@ -91,7 +97,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     /// direction). 0 disables the watchdog. Defaults to
     /// `defaultUdpIdleTimeoutMs`; override in tests by setting
     /// this on the session before calling `start()`.
-    var idleTimeoutMs: UInt32 = defaultUdpIdleTimeoutMs
+    var idleTimeoutMs: UInt64 = defaultUdpIdleTimeoutMs
 
     /// Pending one-shot idle work item and monotonic activity time,
     /// with the timer queue-confined and the timestamp lock-protected.
@@ -379,7 +385,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         }
         guard active else { return }
         guard idleWork == nil else { return }
-        scheduleIdleTimer(afterNs: UInt64(timeout) * 1_000_000)
+        scheduleIdleTimer(afterNs: udpIdleTimeoutNanoseconds(timeout))
     }
 
     /// Record one datagram in either direction. This thread-safe operation is
@@ -430,7 +436,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             return
         }
 
-        let timeoutNs = UInt64(timeout) * 1_000_000
+        let timeoutNs = udpIdleTimeoutNanoseconds(timeout)
         let idleNs = nowUptimeNs >= lastActivityAt
             ? nowUptimeNs - lastActivityAt
             : 0

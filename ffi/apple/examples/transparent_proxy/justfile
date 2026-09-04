@@ -168,6 +168,7 @@ check-spec-parity:
 
 test-soak-log-parser:
     python3 ./scripts/test_soak_pressure_log.py
+    python3 ./scripts/test_stress_traffic.py
 
 qa: qa-rust check-spec-parity test-soak-log-parser build-tproxy-dev
 

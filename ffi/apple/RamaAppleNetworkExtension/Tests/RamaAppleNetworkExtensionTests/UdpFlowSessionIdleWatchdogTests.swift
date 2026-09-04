@@ -19,7 +19,7 @@ final class UdpFlowSessionIdleWatchdogTests: XCTestCase {
         let flow: MockUdpFlow
         let session: UdpFlowSession<MockUdpFlow>
 
-        init(idleTimeoutMs: UInt32) {
+        init(idleTimeoutMs: UInt64) {
             self.core = TransparentProxyCore()
             self.flow = MockUdpFlow()
             let meta = RamaTransparentProxyFlowMetaBridge(
@@ -39,6 +39,19 @@ final class UdpFlowSessionIdleWatchdogTests: XCTestCase {
             session.flowQueue.async { drained.fulfill() }
             _ = XCTWaiter.wait(for: [drained], timeout: 2.0)
         }
+    }
+
+    func testTimeoutConversionSaturatesInsteadOfWrapping() {
+        XCTAssertEqual(udpIdleTimeoutNanoseconds(60_000), 60_000_000_000)
+        XCTAssertEqual(
+            udpIdleTimeoutNanoseconds(UInt64.max / 1_000_000),
+            (UInt64.max / 1_000_000) * 1_000_000
+        )
+        XCTAssertEqual(
+            udpIdleTimeoutNanoseconds(UInt64.max / 1_000_000 + 1),
+            UInt64.max
+        )
+        XCTAssertEqual(udpIdleTimeoutNanoseconds(UInt64.max), UInt64.max)
     }
 
     /// With `idleTimeoutMs == 0` the watchdog is disabled: `armIdleTimer`

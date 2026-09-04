@@ -235,18 +235,60 @@ FLOW_POOL_MAX_LIVE=0
 FLOW_POOL_MAX_ESTABLISHED=0
 HOLDER_SEQUENCE=0
 FLOW_POOL_LABEL=""
+HOLDER_CLEANUP_OK=1
 CURRENT_PHASE_START=""
 WAKE_DL_PID=""
 kill_holders() {
-  # Kill every flow-pool worker we launched (pidfile is the source of truth;
-  # the pattern kill is a scoped backup for the drip curls).
-  if [[ -n "$HOLDER_PIDFILE" && -f "$HOLDER_PIDFILE" ]]; then
-    while IFS=$'\t' read -r _p _marker; do
-      [[ -n "$_p" ]] && kill "$_p" 2>/dev/null || true
-    done < "$HOLDER_PIDFILE"
-    : > "$HOLDER_PIDFILE"
-  fi
-  pkill -f "$DL_HOST/bytes" 2>/dev/null || true
+  # PID ownership is the only cleanup authority: never pattern-kill unrelated
+  # user traffic. Signal the complete batch first, then join it under one
+  # shared deadline so cleanup remains bounded even with hundreds of holders.
+  [[ -n "$HOLDER_PIDFILE" && -f "$HOLDER_PIDFILE" ]] || return 0
+  local holder_pids=() _p _marker deadline force_deadline active
+  local forced=0 reaped=0 unreaped=0
+  while IFS=$'\t' read -r _p _marker; do
+    [[ "$_p" =~ ^[1-9][0-9]*$ ]] && holder_pids+=("$_p")
+  done < "$HOLDER_PIDFILE"
+  (( ${#holder_pids[@]} > 0 )) || return 0
+  for _p in "${holder_pids[@]}"; do
+    child_job_is_active "$_p" && signal_child "$_p" TERM direct
+  done
+  deadline=$(( $(date +%s) + 5 ))
+  while (( $(date +%s) < deadline )); do
+    active=0
+    for _p in "${holder_pids[@]}"; do
+      child_job_is_active "$_p" && { active=1; break; }
+    done
+    (( active )) || break
+    sleep 0.1
+  done
+  for _p in "${holder_pids[@]}"; do
+    if child_job_is_active "$_p"; then
+      forced=$((forced + 1))
+      signal_child "$_p" KILL direct
+    fi
+  done
+  force_deadline=$(( $(date +%s) + 2 ))
+  while (( $(date +%s) < force_deadline )); do
+    active=0
+    for _p in "${holder_pids[@]}"; do
+      child_job_is_active "$_p" && { active=1; break; }
+    done
+    (( active )) || break
+    sleep 0.1
+  done
+  for _p in "${holder_pids[@]}"; do
+    if child_job_is_active "$_p"; then
+      unreaped=$((unreaped + 1))
+      continue
+    fi
+    wait "$_p" 2>/dev/null || true
+    reaped=$((reaped + 1))
+  done
+  : > "$HOLDER_PIDFILE"
+  (( unreaped == 0 )) || HOLDER_CLEANUP_OK=0
+  printf '%s\ttotal=%s\treaped=%s\tforced=%s\tunreaped=%s\n' \
+    "${FLOW_POOL_LABEL:-unknown}" "${#holder_pids[@]}" "$reaped" \
+    "$forced" "$unreaped" >> "$OUT/holder-cleanup.tsv"
 }
 cleanup() {
   [[ -n "$PROBE_MON_PID" ]] && kill "$PROBE_MON_PID" 2>/dev/null || true
@@ -340,6 +382,14 @@ probe_once() {
   else
     printf 'curl-exit-%s-http-%s\n' "$curl_rc" "$code"
   fi
+}
+
+real_download_matches() {
+  local curl_rc="$1" code="$2" downloaded="$3" expected="$4"
+  (( curl_rc == 0 )) \
+    && [[ "$code" =~ ^2[0-9][0-9]$ ]] \
+    && [[ "$downloaded" =~ ^(0|[1-9][0-9]*)$ ]] \
+    && [[ "$downloaded" == "$expected" ]]
 }
 probe_ok() { [[ "$(probe_once)" =~ ^2 ]]; }
 
@@ -538,8 +588,11 @@ run_flow_pool() {
   else
     warn "$label has no fresh target-provider gauge before spawning"
   fi
-  local end=$(( $(date +%s) + hold ))
-  while (( $(date +%s) < end )); do
+  # Allow a bounded 70-second establishment window, then require one
+  # uninterrupted interval at the full target for the entire requested hold.
+  # A short early success followed by collapse is not a sustained pool.
+  local deadline=$(( $(date +%s) + hold + 70 ))
+  while (( $(date +%s) < deadline && ! FLOW_POOL_ATTAINED )); do
     counts="$(recount_holders)"; read -r live established <<< "$counts"
     need=$(( target - live ))
     (( need > 0 )) && { local k; for ((k=0; k<need; k++)); do "$spawn_fn"; done; }
@@ -554,12 +607,11 @@ run_flow_pool() {
         sustained_since_epoch="$now_epoch"
       fi
       last_established_epoch="$now_epoch"
-      if (( now_seconds - sustained_since_seconds >= 5 )); then
+      if (( now_seconds - sustained_since_seconds >= hold )); then
         FLOW_POOL_ATTAINED=1
       fi
     else
-      if [[ -n "$sustained_since_seconds" ]] \
-        && (( now_seconds - sustained_since_seconds >= 5 )); then
+      if [[ -n "$sustained_since_seconds" ]]; then
         printf '%s\t%s\t%s\n' "$label" "$sustained_since_epoch" \
           "$last_established_epoch" >> "$OUT/pool-intervals.tsv"
       fi
@@ -590,12 +642,12 @@ run_flow_pool() {
       "${gauge_registered:-?}" "${gauge_allocated:-?}" >> "$OUT/holders.log"
     printf '\r[soak] %s live=%s established=%s registered=%s allocated=%s  %ds left   ' \
       "$label" "$live" "$established" "${gauge_registered:-?}" \
-      "${gauge_allocated:-?}" "$(( end - $(date +%s) ))"
+      "${gauge_allocated:-?}" "$(( deadline - $(date +%s) ))"
     probe_ok || warn "probe failed during $label (registered=${gauge_registered:-?} allocated=${gauge_allocated:-?}) — watch for freeze"
+    (( FLOW_POOL_ATTAINED )) && break
     sleep 5
   done
-  if [[ -n "$sustained_since_seconds" ]] \
-    && (( $(date +%s) - sustained_since_seconds >= 5 )); then
+  if [[ -n "$sustained_since_seconds" ]]; then
     printf '%s\t%s\t%s\n' "$label" "$sustained_since_epoch" \
       "$last_established_epoch" >> "$OUT/pool-intervals.tsv"
   fi
@@ -635,6 +687,7 @@ fi
 : > "$OUT/ceiling-probes.tsv"
 : > "$OUT/pool-intervals.tsv"
 : > "$OUT/pool-brackets.tsv"
+: > "$OUT/holder-cleanup.tsv"
 : > "$OUT/sleep-probes.tsv"
 mkdir -p "$OUT/holder-markers"
 write_incomplete_status "soak did not reach evidence extraction"
@@ -828,6 +881,7 @@ if [[ "$MODE" == "find-ceiling" ]]; then
     [[ "$_ans" == "CEILING" ]] || die "aborted"
   fi
   launched=0; last_good=0; ceiling=""; CEILING_FOUND=0; CEILING_ABORTED=0
+  FLOW_POOL_LABEL=ceiling
   CEILING_OUTAGE_START=""; CEILING_OUTAGE_END=""
   while (( launched < MAX_SAFE_FLOWS * 3 )); do
     for ((i=0; i<CEIL_STEP; i++)); do spawn_active; launched=$((launched+1)); done
@@ -849,14 +903,15 @@ if [[ "$MODE" == "find-ceiling" ]]; then
         <<< "$confirm_record"
       printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$confirm_started" "$confirm_completed" \
         "$confirm_curl_rc" "$confirm_code" "$confirm_occ" "$confirm_gauge_epoch" >> "$OUT/ceiling-probes.tsv"
-      if ! { (( confirm_curl_rc == 0 )) && [[ "$confirm_code" =~ ^2 ]]; } \
+      if (( probe_curl_rc != 0 && confirm_curl_rc != 0 )) \
+        && [[ "$code" == 000 && "$confirm_code" == 000 ]] \
         && [[ "$occ" =~ ^[0-9]+$ && "$confirm_occ" =~ ^[0-9]+$ ]] \
         && (( occ > BASELINE_TOTAL && confirm_occ > BASELINE_TOTAL )) \
         && gauge_is_fresh "$gauge_epoch" "$probe_started" "$CEILING_START_EPOCH" \
         && gauge_is_fresh "$confirm_gauge_epoch" "$confirm_started" "$CEILING_START_EPOCH"; then
         ceiling="$confirm_occ"; CEILING_FOUND=1
         CEILING_OUTAGE_START="$probe_completed"
-        warn "two elevated probes failed at gauge_total=$confirm_occ — ceiling proved. Backing off."
+        warn "two elevated transport probes failed before HTTP at gauge_total=$confirm_occ — ceiling proved. Backing off."
         break
       elif ! { (( confirm_curl_rc == 0 )) && [[ "$confirm_code" =~ ^2 ]]; }; then
         CEILING_ABORTED=1
@@ -933,6 +988,7 @@ else
   FANOUT_ESTABLISHED_TARGET_SUSTAINED=skipped
 fi
 printf 'fanout_established_target_sustained\t%s\n' "$FANOUT_ESTABLISHED_TARGET_SUSTAINED" >> "$OUT/run-meta.tsv"
+printf 'fanout_hold_seconds\t%s\n' "$FANOUT_HOLD" >> "$OUT/run-meta.tsv"
 
 if [[ "$SKIP_IDLE" != 1 ]]; then
   phase_mark idle-holders start
@@ -951,16 +1007,32 @@ else
   IDLE_HOLDERS_ESTABLISHED_TARGET_SUSTAINED=skipped
 fi
 printf 'idle_holders_established_target_sustained\t%s\n' "$IDLE_HOLDERS_ESTABLISHED_TARGET_SUSTAINED" >> "$OUT/run-meta.tsv"
+printf 'idle_holders_hold_seconds\t%s\n' "$IDLE_HOLD" >> "$OUT/run-meta.tsv"
 
 phase_mark real-download start
 hdr "phase 4 — real-world download (32 MiB steady stream)"
-if curl -L -f -s -o /dev/null --max-time 120 \
-    -w 'real-download: code=%{http_code} size=%{size_download} avg=%{speed_download}B/s time=%{time_total}s\n' \
-    "$(dl_url "$DL_MAX_BYTES" 32768 5)" 2>&1 | tee "$OUT/real-download.txt"; then
+REAL_DOWNLOAD_METRICS=""
+REAL_DOWNLOAD_CURL_RC=0
+REAL_DOWNLOAD_METRICS="$(curl -L -f -sS -o /dev/null --max-time 120 \
+    --header 'Accept-Encoding: identity' \
+    -w $'%{http_code}\t%{size_download}\t%{speed_download}\t%{time_total}' \
+    "$(dl_url "$DL_MAX_BYTES" 32768 5)" 2>"$OUT/real-download.curl.log")" \
+  || REAL_DOWNLOAD_CURL_RC=$?
+IFS=$'\t' read -r REAL_DOWNLOAD_CODE REAL_DOWNLOAD_BYTES \
+  REAL_DOWNLOAD_SPEED REAL_DOWNLOAD_TIME <<< "$REAL_DOWNLOAD_METRICS"
+{
+  cat "$OUT/real-download.curl.log"
+  printf 'real-download: code=%s curl_exit=%s size=%s expected=%s avg=%sB/s time=%ss\n' \
+    "${REAL_DOWNLOAD_CODE:-000}" "$REAL_DOWNLOAD_CURL_RC" \
+    "${REAL_DOWNLOAD_BYTES:-?}" "$DL_MAX_BYTES" \
+    "${REAL_DOWNLOAD_SPEED:-?}" "${REAL_DOWNLOAD_TIME:-?}"
+} | tee "$OUT/real-download.txt"
+if real_download_matches "$REAL_DOWNLOAD_CURL_RC" "$REAL_DOWNLOAD_CODE" \
+  "$REAL_DOWNLOAD_BYTES" "$DL_MAX_BYTES"; then
   REAL_DOWNLOAD_OK=1
 else
   REAL_DOWNLOAD_OK=0
-  warn "real download failed"
+  warn "real download failed or transferred an unexpected byte count"
 fi
 printf 'real_download_ok\t%s\n' "$REAL_DOWNLOAD_OK" >> "$OUT/run-meta.tsv"
 phase_mark real-download end
@@ -1142,6 +1214,7 @@ fi
 printf 'leaks_command_rc\t%s\n' "$LEAKS_COMMAND_RC" >> "$OUT/run-meta.tsv"
 LEAK_LINE="$(grep -E 'leaks for|total leaked|Process .* leaks' "$OUT/leaks.txt" 2>/dev/null | head -1)"
 say "${LEAK_LINE:-(leaks output unavailable or unparseable; see leaks.txt)}"
+printf 'holder_cleanup_ok\t%s\n' "$HOLDER_CLEANUP_OK" >> "$OUT/run-meta.tsv"
 
 # ── Stop log capture ──────────────────────────────────────────────────
 hdr "stopping log capture"
@@ -1600,6 +1673,7 @@ fanout_status = flow_pool_status(
     pool_intervals["fanout"],
     next((p for p in phases if p[0] == "fanout"), None),
     pool_brackets.get("fanout"),
+    meta.get("fanout_hold_seconds"),
 )
 idle_status = flow_pool_status(
     meta.get("idle_holders_established_target_sustained"),
@@ -1611,6 +1685,7 @@ idle_status = flow_pool_status(
     pool_intervals["idle-holders"],
     next((p for p in phases if p[0] == "idle-holders"), None),
     pool_brackets.get("idle-holders"),
+    meta.get("idle_holders_hold_seconds"),
 )
 meta["fanout_ok"] = fanout_status
 meta["idle_holders_ok"] = idle_status
@@ -1937,23 +2012,37 @@ echo
 hdr "hand me: $OUT  (or the tarball)"
 STATUS_LAST="$(awk 'NF { line=$0 } END { print line }' "$OUT/evidence-status.tsv" 2>/dev/null)"
 STATUS_KEYS="$(awk -F '\t' '$1 == "complete" || $1 == "passed" || $1 == "exit_code" || $1 == "schema_complete" { count[$1]++ } END { print count["complete"]+0, count["passed"]+0, count["exit_code"]+0, count["schema_complete"]+0 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
+STATUS_DIAGNOSTICS="$(awk -F '\t' '$1 == "issue" { issues++ } $1 == "failure" { failures++ } END { print issues+0, failures+0 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
 STATUS_BAD_LINES="$(awk -F '\t' 'NF && (NF != 2 || ($1 != "complete" && $1 != "passed" && $1 != "exit_code" && $1 != "issue" && $1 != "failure" && $1 != "schema_complete")) { bad++ } END { print bad+0 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
 EVIDENCE_COMPLETE="$(awk -F '\t' '$1 == "complete" { print $2 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
 RUN_PASSED="$(awk -F '\t' '$1 == "passed" { print $2 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
 DECLARED_EXIT="$(awk -F '\t' '$1 == "exit_code" { print $2 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
+read -r STATUS_ISSUES STATUS_FAILURES <<< "$STATUS_DIAGNOSTICS"
 if [[ "$STATUS_LAST" != $'schema_complete\t1' || "$STATUS_KEYS" != "1 1 1 1" || "$STATUS_BAD_LINES" != 0 ]]; then
   warn "evidence status is truncated or schema-incomplete"
   exit 2
 fi
 case "$EVIDENCE_COMPLETE:$RUN_PASSED:$DECLARED_EXIT" in
-  1:1:0) exit 0 ;;
+  1:1:0)
+    (( STATUS_ISSUES == 0 && STATUS_FAILURES == 0 )) || {
+      warn "successful evidence verdict contains issue/failure diagnostics"
+      exit 2
+    }
+    exit 0
+    ;;
   1:0:1)
+    (( STATUS_ISSUES == 0 && STATUS_FAILURES > 0 )) || {
+      warn "failed evidence verdict lacks a consistent failure diagnostic"
+      exit 2
+    }
     warn "soak evidence is complete, but one or more validation checks failed; see evidence-status.tsv"
     exit 1
     ;;
   0:0:2)
-  warn "soak completed, but evidence is incomplete; see evidence-status.tsv"
-  exit 2
+    (( STATUS_ISSUES > 0 )) \
+      || warn "incomplete evidence verdict lacks an issue diagnostic"
+    warn "soak completed, but evidence is incomplete; see evidence-status.tsv"
+    exit 2
     ;;
   *)
     warn "evidence status contains an inconsistent verdict tuple"

@@ -127,6 +127,17 @@ fn builder_without_udp_idle_timeout_sets_none() {
 }
 
 #[test]
+fn engine_exports_disabled_udp_idle_timeout_as_zero() {
+    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
+        .with_runtime_factory(TestRuntimeFactory)
+        .without_udp_idle_timeout()
+        .build()
+        .expect("build engine");
+    assert_eq!(engine.udp_idle_timeout_ms(), 0);
+    engine.stop(0);
+}
+
+#[test]
 fn default_tcp_paused_drain_max_wait_constant_is_one_minute() {
     assert_eq!(DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT, Duration::from_mins(1));
 }

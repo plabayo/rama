@@ -20,7 +20,7 @@ from soak_pressure_log import (
     engine_lifecycle_event,
     filter_provider_ndjson_records,
     flow_pool_evidence_issues,
-    flow_pool_status,
+    flow_pool_status as _flow_pool_status,
     flow_gauge,
     flow_gauge_issue,
     is_no_headroom,
@@ -53,6 +53,12 @@ from soak_pressure_log import (
 )
 
 
+def flow_pool_status(*args, **kwargs):
+    """Keep legacy fixtures explicit about their five-second hold."""
+    kwargs.setdefault("required_hold_seconds", 5)
+    return _flow_pool_status(*args, **kwargs)
+
+
 class SoakPressureLogTests(unittest.TestCase):
     @staticmethod
     def complete_meta(mode="stress-only"):
@@ -67,6 +73,7 @@ class SoakPressureLogTests(unittest.TestCase):
             "probe_monitor_child_rc": "143",
             "probe_monitor_joined": "1",
             "provider_continuous": "1",
+            "holder_cleanup_ok": "1",
             "mode": mode,
             "download_host_preflight_ok": "1",
             "stress_ok": "1",
@@ -247,6 +254,27 @@ class SoakPressureLogTests(unittest.TestCase):
             },
         )
 
+    def test_ended_episode_rejects_impossible_counters_and_timestamps(self):
+        inconsistent_counters = (
+            "flow pressure episode ended: startEpochMs=100250 durationMs=1250 "
+            "peakOccupancy=478 softCap=450 scans=3 skipped=7 selected=0 "
+            "evicted=1 spared=0 canceled=0 expired=0 startEpochUs=100250999"
+        )
+        inconsistent_timestamp = (
+            "flow pressure episode ended: startEpochMs=100251 durationMs=1250 "
+            "peakOccupancy=478 softCap=450 scans=3 skipped=7 selected=1 "
+            "evicted=1 spared=0 canceled=0 expired=0 startEpochUs=100250999"
+        )
+        self.assertIsNone(pressure_episode(inconsistent_counters))
+        self.assertIsNone(pressure_episode(inconsistent_timestamp))
+
+        future_start = (
+            "flow pressure episode ended: startEpochMs=200000 durationMs=10 "
+            "peakOccupancy=451 softCap=450 scans=1 skipped=0 selected=1 "
+            "evicted=1 spared=0 canceled=0 expired=0 startEpochUs=200000000"
+        )
+        pressure = summarize_pressure_rows([(100, future_start)])
+        self.assertEqual(pressure["validated_eviction_episodes"], 0)
     def test_fast_burst_uses_event_peak_and_keeps_outcomes_separate(self):
         rows = [
             (
@@ -1274,6 +1302,38 @@ class SoakPressureLogTests(unittest.TestCase):
         self.assertIsNone(
             flow_pool_status("0", None, [], [], 0, 0, [], None, None),
         )
+
+    def test_pool_success_requires_the_full_configured_hold(self):
+        phase = ("fanout", parse_epoch("100"), parse_epoch("250"))
+        rows = (("105", 5, 5), ("115", 105, 105), ("220", 5, 5))
+        gauges = [
+            (parse_epoch(epoch), registered, allocated)
+            for epoch, registered, allocated in rows
+        ]
+        occupancy = [(epoch, registered) for epoch, registered, _ in gauges]
+        bracket = (
+            "105", 5, 5, "115", 105, 105, "220", 5, 5, 100,
+        )
+        common = (
+            "1", 100, occupancy, gauges, 0, 0,
+        )
+        self.assertIsNone(
+            _flow_pool_status(*common, [("110", "200")], phase, bracket),
+            "artifact validation must not invent an omitted hold duration",
+        )
+        self.assertEqual(
+            flow_pool_status(
+                *common, [("110", "200")], phase, bracket,
+                required_hold_seconds=90,
+            ),
+            "1",
+        )
+        self.assertIsNone(
+            flow_pool_status(
+                *common, [("110", "199.999999")], phase, bracket,
+                required_hold_seconds=90,
+            )
+        )
         self.assertEqual(
             flow_pool_evidence_issues("fanout", "0", None, False),
             ["fanout has no provider flow-pool bracket"],
@@ -1396,7 +1456,7 @@ class SoakPressureLogTests(unittest.TestCase):
         records, issues = parse_ceiling_probe_lines(
             [
                 "100.090000\t100.099999\t28\t000\t510\t100.089999\n",
-                "100.100000\t100.100010\t18\t200\t510\t100.100000\n",
+                "100.100000\t100.100010\t18\t000\t510\t100.100000\n",
                 "100.100011\t100.100020\t28\t000\t511\t100.100010\n",
                 "100.500000\t100.500010\t0\t200\t511\t100.400000\n",
                 "101.099999\t101.100000\t28\t000\t512\t101.099999\n",
@@ -1427,6 +1487,21 @@ class SoakPressureLogTests(unittest.TestCase):
         window = ceiling_outage_window(records, 500, phase)
         self.assertEqual(
             window, (parse_epoch("100.100010"), parse_epoch("100.500010"))
+        )
+        application_failures = [
+            (parse_epoch("100.2"), parse_epoch("100.21"), 0, "503", 510,
+             parse_epoch("100.2")),
+            (parse_epoch("100.3"), parse_epoch("100.31"), 0, "503", 511,
+             parse_epoch("100.3")),
+            (parse_epoch("100.4"), parse_epoch("100.41"), 0, "200", 511,
+             parse_epoch("100.4")),
+        ]
+        self.assertIsNone(ceiling_outage_window(application_failures, 500, phase))
+        self.assertNotEqual(
+            ceiling_probe_evidence_issues(
+                application_failures, "1", 500, phase, "1"
+            ),
+            [],
         )
         failures = [
             (parse_epoch("100.000000"), parse_epoch("100.100009"), 28, "000"),
@@ -1567,15 +1642,29 @@ class SoakPressureLogTests(unittest.TestCase):
         )
         self.assertEqual(
             parse_evidence_status_lines(
-                ["complete\t1\n", "passed\t0\n", "exit_code\t1\n", "schema_complete\t1\n"]
+                [
+                    "complete\t1\n", "passed\t0\n", "exit_code\t1\n",
+                    "failure\tworkload failed\n", "schema_complete\t1\n",
+                ]
             ),
             1,
         )
         self.assertEqual(
             parse_evidence_status_lines(
-                ["complete\t0\n", "passed\t0\n", "exit_code\t2\n", "schema_complete\t1\n"]
+                [
+                    "complete\t0\n", "passed\t0\n", "exit_code\t2\n",
+                    "issue\tmissing evidence\n", "schema_complete\t1\n",
+                ]
             ),
             2,
+        )
+        self.assertIsNone(
+            parse_evidence_status_lines(
+                [
+                    "complete\t1\n", "passed\t1\n", "exit_code\t0\n",
+                    "issue\tcontradiction\n", "schema_complete\t1\n",
+                ]
+            )
         )
         self.assertIsNone(parse_evidence_status_lines(["complete\t1\n", "passed\t1\n"]))
         self.assertIsNone(
@@ -1756,6 +1845,7 @@ class SoakPressureLogTests(unittest.TestCase):
                     "probe_monitor_alive_end\t1\n"
                     "probe_monitor_child_rc\t143\nprobe_monitor_joined\t1\n"
                     "provider_continuous\t1\n"
+                    "holder_cleanup_ok\t1\n"
                     "provider_start_pid\t10\nprovider_start_time\tstart\n"
                     f"provider_end_pid\t{provider_end_pid}\nprovider_end_time\tstart\n"
                     "provider_bundle\torg.example.provider\n"

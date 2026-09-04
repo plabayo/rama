@@ -424,6 +424,7 @@ def flow_pool_status(
     sustained_intervals,
     phase,
     pool_bracket=None,
+    required_hold_seconds=None,
 ):
     """Prove established workers plus bracketed provider-PID correlation.
 
@@ -438,6 +439,9 @@ def flow_pool_status(
     if isinstance(established_sustained, bool) or established_sustained not in (
         0, 1, "0", "1"
     ):
+        return None
+    required_hold_seconds = _nonnegative_int(required_hold_seconds)
+    if required_hold_seconds is None or required_hold_seconds <= 0:
         return None
     try:
         _, phase_start, phase_end = phase
@@ -581,9 +585,11 @@ def flow_pool_status(
         if (
             interval_start is None
             or interval_end is None
-            or interval_end - interval_start < Decimal("5")
+            or interval_end - interval_start < Decimal(required_hold_seconds)
             or interval_start < phase_start
             or interval_end > phase_end
+            or interval_start < baseline_epoch
+            or interval_end > post_epoch
         ):
             continue
         if interval_start <= peak_epoch <= interval_end:
@@ -602,8 +608,14 @@ def flow_pool_evidence_issues(label, raw_status, correlated_status, has_bracket)
 
 def probe_succeeded(record):
     """Return whether one parsed probe completed cleanly with HTTP 2xx."""
-    _, _, curl_rc, code = record
+    _, _, curl_rc, code, *_ = record
     return curl_rc == 0 and code.startswith("2")
+
+
+def ceiling_transport_failed(record):
+    """Return whether a probe failed before receiving any HTTP response."""
+    _, _, curl_rc, code, *_ = record
+    return curl_rc != 0 and code == "000"
 
 
 def parse_probe_lines(lines, label="liveness probe"):
@@ -841,9 +853,14 @@ def ceiling_outage_window(records, baseline_total, phase):
     for started, completed, curl_rc, code, occupancy, gauge_epoch in records:
         if not (start <= started <= completed < end):
             continue
-        if curl_rc == 0 and code.startswith("2"):
+        record = (started, completed, curl_rc, code, occupancy, gauge_epoch)
+        if probe_succeeded(record):
             if proved_start is not None:
                 return proved_start, completed
+            run = 0
+            first_failure = None
+            continue
+        if not ceiling_transport_failed(record):
             run = 0
             first_failure = None
             continue
@@ -1017,13 +1034,16 @@ def parse_evidence_status_lines(lines):
             values[key] = value
     if not pairs or pairs[-1] != ["schema_complete", "1"]:
         return None
-    expected = {
-        ("1", "1", "0"),
-        ("1", "0", "1"),
-        ("0", "0", "2"),
-    }
     verdict = (values.get("complete"), values.get("passed"), values.get("exit_code"))
-    return int(verdict[2]) if verdict in expected else None
+    issue_count = sum(key == "issue" for key, _ in pairs)
+    failure_count = sum(key == "failure" for key, _ in pairs)
+    if verdict == ("1", "1", "0") and issue_count == 0 and failure_count == 0:
+        return 0
+    if verdict == ("1", "0", "1") and issue_count == 0 and failure_count > 0:
+        return 1
+    if verdict == ("0", "0", "2") and issue_count > 0:
+        return 2
+    return None
 
 
 def pressure_counters(message):
@@ -1070,6 +1090,12 @@ def pressure_episode(message):
         start_epoch_us = event["start_epoch_ms"] * 1_000
         if start_epoch_us > MAX_ARTIFACT_UINT:
             return None
+    if start_epoch_us // 1_000 != event["start_epoch_ms"]:
+        return None
+    if event["outcome"] == "ended" and event["selected"] != sum(
+        event[key] for key in ("evicted", "spared", "canceled", "expired")
+    ):
+        return None
     event["start_epoch_us"] = start_epoch_us
     return event
 
@@ -1209,6 +1235,8 @@ def soak_evidence_issues(
         issues.append("probe monitor child outcome is missing or invalid")
     if not meta_true("provider_continuous"):
         issues.append("provider process identity changed or disappeared")
+    if not meta_true("holder_cleanup_ok"):
+        issues.append("one or more flow-holder workers were not joined")
     if rows_count == 0:
         issues.append("system log contains no parseable rows")
     if gauge_count < 2:
@@ -1496,6 +1524,12 @@ def summarize_pressure_rows(
             result["soft_caps"].add(no_headroom["soft_cap"])
 
         episode = pressure_episode(message)
+        row_epoch = parse_epoch(epoch)
+        if episode and (
+            row_epoch is None
+            or Decimal(episode["start_epoch_us"]) / Decimal(1_000_000) > row_epoch
+        ):
+            episode = None
         if episode:
             if (
                 baseline_end_epoch_us is not None

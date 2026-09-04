@@ -138,30 +138,57 @@ trap 'kill $(jobs -p) 2>/dev/null || true' EXIT INT TERM
 
 # ── Worker primitives ─────────────────────────────────────────────────
 
-# Treat every non-2xx/3xx outcome as failure, including `000`
+# Treat every non-2xx outcome as failure, including redirects and `000`
 # transport errors.
 http_status_is_ok() {
   local code="$1"
   case "$code" in
-    2?? | 3??) return 0 ;;
+    2??) return 0 ;;
     *) return 1 ;;
   esac
 }
 
+transfer_matches_workload() {
+  local label="$1" downloaded="$2" uploaded="$3" http_version="$4"
+  [[ "$downloaded" =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+  [[ "$uploaded" =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+  case "$label" in
+    large_get)
+      [[ "$downloaded" == "$LARGE_BYTES" && "$http_version" == 2 ]]
+      ;;
+    post_large)
+      [[ "$uploaded" == "$POST_BYTES" ]]
+      ;;
+    small_https)
+      [[ "$http_version" == 2 ]]
+      ;;
+    small_http1)
+      [[ "$http_version" == 1.1 ]]
+      ;;
+    *) return 0 ;;
+  esac
+}
+
 # Run one curl and return success only when the complete transfer succeeds with
-# 2xx/3xx. A server can send a 200 header and then truncate the body; the HTTP
+# 2xx. A server can send a 200 header and then truncate the body; the HTTP
 # code alone is therefore not an honest request outcome.
 do_one_curl() {
   local label="$1" target="$2"; shift 2
-  local code curl_rc=0
-  code=$(curl --silent --show-error --output /dev/null \
+  local metrics code downloaded uploaded http_version curl_rc=0
+  metrics=$(curl --silent --show-error --output /dev/null \
       --max-time 30 \
       --fail-with-body \
-      --write-out '%{http_code}' \
+      --write-out $'%{http_code}\t%{size_download}\t%{size_upload}\t%{http_version}' \
       "$@" "$target" 2>>"$LOG_DIR/${label}.log") || curl_rc=$?
+  IFS=$'\t' read -r code downloaded uploaded http_version <<< "$metrics"
   [[ "$code" =~ ^[0-9]{3}$ ]] || code=000
-  printf '%s curl_exit=%s\n' "$code" "$curl_rc" >>"$LOG_DIR/${label}.log"
-  (( curl_rc == 0 )) && http_status_is_ok "$code"
+  printf '%s curl_exit=%s downloaded=%s uploaded=%s http_version=%s\n' \
+    "$code" "$curl_rc" "${downloaded:-?}" "${uploaded:-?}" \
+    "${http_version:-?}" >>"$LOG_DIR/${label}.log"
+  (( curl_rc == 0 )) \
+    && http_status_is_ok "$code" \
+    && transfer_matches_workload \
+      "$label" "${downloaded:-}" "${uploaded:-}" "${http_version:-}"
 }
 
 # Run sequential curls until DURATION elapses.
@@ -338,7 +365,8 @@ if (( ! ANALYZE_ONLY )); then
   loop_http small_https "$HTTPS_TARGET" --http2 & TRAFFIC_PIDS+=("$!")
   loop_http small_http1 "$HTTPS_TARGET" --http1.1 & TRAFFIC_PIDS+=("$!")
   loop_http plain_http "$HTTP_TARGET" & TRAFFIC_PIDS+=("$!")
-  loop_http large_get "$LARGE_TARGET" --http2 & TRAFFIC_PIDS+=("$!")
+  loop_http large_get "$LARGE_TARGET" --http2 \
+    --header 'Accept-Encoding: identity' & TRAFFIC_PIDS+=("$!")
   loop_http post_large "$POST_TARGET" --data-binary "@$POST_FILE" & TRAFFIC_PIDS+=("$!")
   loop_http head_only "$HTTPS_TARGET" --head & TRAFFIC_PIDS+=("$!")
   loop_http churn_close "$HTTPS_TARGET" --header 'Connection: close' & TRAFFIC_PIDS+=("$!")
