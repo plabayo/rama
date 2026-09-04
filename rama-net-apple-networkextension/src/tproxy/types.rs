@@ -640,20 +640,21 @@ impl TransparentProxyNetworkRule {
 }
 
 /// How the provider treats a flow it declines to intercept for its OWN reasons
-/// — the pre-ready TCP start hard cap / latency breaker tripping, or a missing /
-/// invalid session — as distinct from a [`crate::tproxy::FlowAction::Blocked`]
-/// your handler returns. The chosen action is always logged at the decision
-/// site.
+/// — decision-concurrency saturation, the pre-ready TCP start hard cap /
+/// latency breaker tripping, or a missing / invalid session — as distinct from
+/// a [`crate::tproxy::FlowAction::Blocked`] your handler returns. The chosen
+/// action is always logged at the decision site.
 ///
 /// Default [`Passthrough`](Self::Passthrough) (fail open). These refusals are
-/// capacity decisions, not policy: the flow is one the handler WOULD have
-/// intercepted, and the direct route still exists. Declining hands it to that
-/// route per the transparent-provider contract (see the crate-level `tproxy`
-/// docs) — the same path every policy-passthrough flow already takes, so it
-/// adds no new exposure class. Blocking instead turns a transient overload into
-/// hard connect errors for every app on the machine, and a client retry storm
-/// (the usual reaction to those errors) then feeds the very overload that
-/// caused them.
+/// capacity decisions, not policy: at decision-concurrency saturation the
+/// handler verdict is not yet known; at later admission sites the handler has
+/// already chosen interception. In both cases the direct route still exists.
+/// Declining hands the flow to that route per the transparent-provider
+/// contract (see the crate-level `tproxy` docs) — the same path every
+/// policy-passthrough flow already takes. Blocking instead turns a transient
+/// overload into hard connect errors for every app on the machine, and a
+/// client retry storm (the usual reaction to those errors) then feeds the very
+/// overload that caused them.
 ///
 /// Set [`Block`](Self::Block) only where an uninspected flow is worse than no
 /// flow AND you accept a machine-wide outage under load as the cost.
@@ -728,7 +729,8 @@ pub struct TransparentProxyConfig {
     /// Connect-timeout clamp while the start-latency breaker is open.
     tcp_breaker_connect_timeout_ms: u32,
     /// How to treat a flow the provider declines to intercept for its own
-    /// reasons (start hard cap / latency breaker, or a missing session).
+    /// reasons (decision-concurrency saturation, start hard cap / latency
+    /// breaker, or a missing session).
     /// Default [`FlowRefusalAction::Passthrough`].
     flow_refusal_action: FlowRefusalAction,
 }
@@ -861,9 +863,10 @@ impl TransparentProxyConfig {
 
     generate_set_and_with! {
         /// Set how the provider treats a flow it declines to intercept for its
-        /// own reasons — start hard cap / latency breaker, or a missing session.
-        /// Default [`FlowRefusalAction::Passthrough`] (fail open); see the type
-        /// docs before choosing [`FlowRefusalAction::Block`].
+        /// own reasons — decision-concurrency saturation, start hard cap /
+        /// latency breaker, or a missing session. Default
+        /// [`FlowRefusalAction::Passthrough`] (fail open); see the type docs
+        /// before choosing [`FlowRefusalAction::Block`].
         pub fn flow_refusal_action(mut self, action: FlowRefusalAction) -> Self {
             self.flow_refusal_action = action;
             self

@@ -46,11 +46,12 @@ where
             udp_channel_capacity: None,
             udp_ingress_per_flow_max_bytes: None,
             udp_ingress_global_max_bytes: None,
-            // Backstop defaults; opt out via the macro-generated
-            // `without_*()` methods.
+            // Timer defaults. The UDP idle timeout reaps quiet flows, while
+            // the absolute UDP max lifetime is intentionally opt-in so active
+            // long-lived QUIC / HTTP/3 sessions are not killed by age alone.
             tcp_idle_timeout: Some(super::DEFAULT_TCP_IDLE_TIMEOUT),
             tcp_paused_drain_max_wait: Some(super::DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT),
-            udp_max_flow_lifetime: Some(super::DEFAULT_UDP_MAX_FLOW_LIFETIME),
+            udp_max_flow_lifetime: None,
             udp_idle_timeout: Some(super::DEFAULT_UDP_IDLE_TIMEOUT),
             decision_deadline: None,
             decision_deadline_action: None,
@@ -186,11 +187,14 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
-        /// Max-lifetime cap on a per-flow UDP service task (NOT idle
-        /// detection). Defaults to [`DEFAULT_UDP_MAX_FLOW_LIFETIME`]
-        /// (15 minutes); opt out with `without_udp_max_flow_lifetime`.
-        /// Pick longer than your longest legitimate UDP flow (DNS
-        /// sub-second; QUIC / long-poll tens of minutes).
+        /// Optional max-lifetime cap on a per-flow UDP service task (NOT idle
+        /// detection). Disabled by default so active long-lived QUIC / HTTP/3
+        /// sessions are not terminated solely because of their age. Opt in
+        /// with `with_udp_max_flow_lifetime`; the cap is absolute from session
+        /// creation and does not reset on traffic. Pick a value longer than
+        /// every legitimate UDP flow your application supports. Callers that
+        /// want the conventional 15-minute value can pass
+        /// [`DEFAULT_UDP_MAX_FLOW_LIFETIME`].
         ///
         /// [`DEFAULT_UDP_MAX_FLOW_LIFETIME`]: super::DEFAULT_UDP_MAX_FLOW_LIFETIME
         pub fn udp_max_flow_lifetime(mut self, lifetime: Option<Duration>) -> Self
@@ -212,10 +216,10 @@ where
         /// hard wall-clock cap from flow start (whether active or
         /// idle), this is reset-on-activity. Without it, a typical
         /// burst-then-quiet flow (a satisfied DNS query, a NAT
-        /// binding probe, an mDNS announcement, …) lives until the
-        /// max-lifetime cap fires — long enough to accumulate
-        /// thousands of leaked sessions under sustained device
-        /// traffic.
+        /// binding probe, an mDNS announcement, …) remains registered until
+        /// the service, Swift, engine shutdown, or an explicitly configured
+        /// max-lifetime cap closes it — long enough to accumulate thousands
+        /// of stale sessions under sustained device traffic.
         ///
         /// [`DEFAULT_UDP_IDLE_TIMEOUT`]: super::DEFAULT_UDP_IDLE_TIMEOUT
         pub fn udp_idle_timeout(mut self, timeout: Option<Duration>) -> Self
@@ -253,8 +257,10 @@ where
     rama_utils::macros::generate_set_and_with! {
         /// Maximum number of TCP and UDP flow-policy decisions polled
         /// concurrently by one engine generation. Saturated flows use the
-        /// configured [`DecisionDeadlineAction`] without invoking policy.
-        /// `None` uses [`DEFAULT_DECISION_CONCURRENCY_LIMIT`] (64).
+        /// handler's configured
+        /// [`crate::tproxy::TransparentProxyConfig::flow_refusal_action`]
+        /// without invoking policy. `None` uses
+        /// [`DEFAULT_DECISION_CONCURRENCY_LIMIT`] (64).
         ///
         /// This is independent of admitted-flow limits and exists to bound
         /// pre-decision work when Apple delivers new-flow callbacks in

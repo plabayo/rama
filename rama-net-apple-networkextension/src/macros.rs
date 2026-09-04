@@ -95,6 +95,8 @@ macro_rules! __transparent_proxy_ffi_emit {
             $crate::ffi::tproxy::TransparentProxyTcpSessionCallbacks;
         pub type RamaTransparentProxyUdpSessionCallbacks =
             $crate::ffi::tproxy::TransparentProxyUdpSessionCallbacks;
+        pub type RamaTransparentProxyUdpSessionCallbacksV2 =
+            $crate::ffi::tproxy::TransparentProxyUdpSessionCallbacksV2;
         pub type RamaNwEgressParameters = $crate::ffi::tproxy::NwEgressParameters;
         pub type RamaTcpEgressConnectOptions = $crate::ffi::tproxy::TcpEgressConnectOptions;
         pub type RamaTransparentProxyTcpEgressCallbacks =
@@ -174,6 +176,30 @@ macro_rules! __transparent_proxy_ffi_emit {
             }
             let engine = unsafe { &*engine };
             engine.udp_idle_timeout_ms()
+        }
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_engine_udp_channel_capacity(
+            engine: *mut RamaTransparentProxyEngine,
+        ) -> usize {
+            if engine.is_null() { return 0; }
+            unsafe { &*engine }.udp_channel_capacity()
+        }
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_engine_udp_ingress_per_flow_max_bytes(
+            engine: *mut RamaTransparentProxyEngine,
+        ) -> usize {
+            if engine.is_null() { return 0; }
+            unsafe { &*engine }.udp_ingress_per_flow_max_bytes()
+        }
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_engine_udp_ingress_global_max_bytes(
+            engine: *mut RamaTransparentProxyEngine,
+        ) -> usize {
+            if engine.is_null() { return 0; }
+            unsafe { &*engine }.udp_ingress_global_max_bytes()
         }
 
         #[unsafe(no_mangle)]
@@ -584,7 +610,6 @@ macro_rules! __transparent_proxy_ffi_emit {
                     session: ::std::ptr::null_mut(),
                 };
             }
-
             let typed_meta = if meta.is_null() {
                 $crate::tproxy::TransparentProxyFlowMeta::new(
                     $crate::tproxy::TransparentProxyFlowProtocol::Udp,
@@ -604,6 +629,91 @@ macro_rules! __transparent_proxy_ffi_emit {
                     }
                 }
             };
+            let context = callbacks.context as usize;
+            let on_server_datagram = callbacks.on_server_datagram;
+            let on_client_read_demand = callbacks.on_client_read_demand;
+            let on_server_closed = callbacks.on_server_closed;
+            let engine = unsafe { &*engine };
+            let result = engine.new_udp_session(
+                typed_meta,
+                ::std::sync::Arc::new(
+                    move |bytes: &[u8], peer: ::std::option::Option<::std::net::SocketAddr>| {
+                        let Some(callback) = on_server_datagram else { return; };
+                        let peer_scratch = $crate::ffi::UdpPeerScratch::new(peer);
+                        unsafe {
+                            callback(
+                                context as *mut ::std::ffi::c_void,
+                                $crate::ffi::BytesView {
+                                    ptr: bytes.as_ptr(),
+                                    len: bytes.len(),
+                                },
+                                peer_scratch.as_view(),
+                            );
+                        }
+                        let _ = &peer_scratch;
+                    },
+                ),
+                ::std::sync::Arc::new(move || {
+                    if let Some(callback) = on_client_read_demand {
+                        unsafe { callback(context as *mut ::std::ffi::c_void) };
+                    }
+                }),
+                ::std::sync::Arc::new(move || {
+                    if let Some(callback) = on_server_closed {
+                        unsafe { callback(context as *mut ::std::ffi::c_void) };
+                    }
+                }),
+            );
+            match result {
+                $crate::tproxy::SessionFlowAction::Intercept(session) => {
+                    RamaTransparentProxyUdpSessionResult {
+                        action: RamaTransparentProxyFlowAction::Intercept,
+                        session: ::std::boxed::Box::into_raw(::std::boxed::Box::new(session)),
+                    }
+                }
+                $crate::tproxy::SessionFlowAction::Blocked => RamaTransparentProxyUdpSessionResult {
+                    action: RamaTransparentProxyFlowAction::Blocked,
+                    session: ::std::ptr::null_mut(),
+                },
+                $crate::tproxy::SessionFlowAction::Passthrough => RamaTransparentProxyUdpSessionResult {
+                    action: RamaTransparentProxyFlowAction::Passthrough,
+                    session: ::std::ptr::null_mut(),
+                },
+            }
+        }
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_engine_new_udp_session_v2(
+            engine: *mut RamaTransparentProxyEngine,
+            meta: *const RamaTransparentProxyFlowMeta,
+            callbacks: RamaTransparentProxyUdpSessionCallbacksV2,
+        ) -> RamaTransparentProxyUdpSessionResult {
+            if engine.is_null() {
+                return RamaTransparentProxyUdpSessionResult {
+                    action: RamaTransparentProxyFlowAction::Passthrough,
+                    session: ::std::ptr::null_mut(),
+                };
+            }
+
+            let typed_meta = if meta.is_null() {
+                $crate::tproxy::TransparentProxyFlowMeta::new(
+                    $crate::tproxy::TransparentProxyFlowProtocol::Udp,
+                )
+            } else {
+                match unsafe { (*meta).as_owned_rust_type() } {
+                    Ok(meta) => meta,
+                    Err(invalid) => {
+                        $crate::__private::tracing::warn!(
+                            invalid_protocol = invalid,
+                            "rama_transparent_proxy_engine_new_udp_session_v2: unknown protocol code; passing flow through"
+                        );
+                        return RamaTransparentProxyUdpSessionResult {
+                            action: RamaTransparentProxyFlowAction::Passthrough,
+                            session: ::std::ptr::null_mut(),
+                        };
+                    }
+                }
+            };
 
             let context = callbacks.context as usize;
             let on_server_datagram = callbacks.on_server_datagram;
@@ -611,7 +721,7 @@ macro_rules! __transparent_proxy_ffi_emit {
             let on_server_closed = callbacks.on_server_closed;
 
             let engine = unsafe { &*engine };
-            let result = engine.new_udp_session(
+            let result = engine.new_udp_session_with_probe(
                 typed_meta,
                 ::std::sync::Arc::new(
                     move |bytes: &[u8], peer: ::std::option::Option<::std::net::SocketAddr>| {
@@ -643,9 +753,9 @@ macro_rules! __transparent_proxy_ffi_emit {
                         let _ = &peer_scratch;
                     },
                 ),
-                ::std::sync::Arc::new(move || {
+                ::std::sync::Arc::new(move |probe_id| {
                     if let Some(callback) = on_client_read_demand {
-                        unsafe { callback(context as *mut ::std::ffi::c_void) };
+                        unsafe { callback(context as *mut ::std::ffi::c_void, probe_id) };
                     }
                 }),
                 ::std::sync::Arc::new(move || {
@@ -703,6 +813,15 @@ macro_rules! __transparent_proxy_ffi_emit {
             let peer = unsafe { peer.into_socket_addr() };
             let slice = unsafe { bytes.into_slice() };
             unsafe { (*session).on_client_datagram(slice, peer) };
+        }
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_udp_session_on_client_read_complete(
+            session: *mut RamaTransparentProxyUdpSession,
+            probe_id: u64,
+        ) {
+            if session.is_null() { return; }
+            unsafe { (*session).on_client_read_complete(probe_id) };
         }
 
         #[unsafe(no_mangle)]

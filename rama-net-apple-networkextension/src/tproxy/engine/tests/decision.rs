@@ -4,7 +4,8 @@
 use super::common::*;
 use crate::tproxy::engine::*;
 use crate::tproxy::{
-    TransparentProxyConfig, TransparentProxyFlowMeta, TransparentProxyFlowProtocol,
+    FlowRefusalAction, TransparentProxyConfig, TransparentProxyFlowMeta,
+    TransparentProxyFlowProtocol,
 };
 use rama_core::bytes::Bytes;
 use rama_core::error::BoxError;
@@ -29,6 +30,7 @@ enum DecisionProbeHold {
 #[derive(Clone)]
 struct DecisionProbe {
     hold: DecisionProbeHold,
+    config: TransparentProxyConfig,
     tcp_calls: Arc<AtomicUsize>,
     udp_calls: Arc<AtomicUsize>,
     active: Arc<AtomicUsize>,
@@ -44,6 +46,11 @@ impl Drop for ProbeActiveGuard {
 }
 
 impl DecisionProbe {
+    fn with_flow_refusal_action(mut self, action: FlowRefusalAction) -> Self {
+        self.config = self.config.with_flow_refusal_action(action);
+        self
+    }
+
     async fn enter(&self) {
         let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
         self.peak.fetch_max(active, Ordering::Relaxed);
@@ -137,7 +144,7 @@ impl Drop for ReleaseDecisionLatchOnDrop {
 
 impl TransparentProxyHandler for DecisionProbe {
     fn transparent_proxy_config(&self) -> TransparentProxyConfig {
-        TransparentProxyConfig::new()
+        self.config.clone()
     }
 
     async fn match_tcp_flow(
@@ -181,6 +188,7 @@ impl TransparentProxyHandlerFactory for DecisionProbeFactory {
 fn decision_probe(delay: Duration) -> DecisionProbe {
     DecisionProbe {
         hold: DecisionProbeHold::Delay(delay),
+        config: TransparentProxyConfig::new(),
         tcp_calls: Arc::new(AtomicUsize::new(0)),
         udp_calls: Arc::new(AtomicUsize::new(0)),
         active: Arc::new(AtomicUsize::new(0)),
@@ -192,6 +200,7 @@ fn latched_decision_probe() -> (DecisionProbe, DecisionLatch) {
     let latch = DecisionLatch::new();
     let probe = DecisionProbe {
         hold: DecisionProbeHold::Latch(latch.clone()),
+        config: TransparentProxyConfig::new(),
         tcp_calls: Arc::new(AtomicUsize::new(0)),
         udp_calls: Arc::new(AtomicUsize::new(0)),
         active: Arc::new(AtomicUsize::new(0)),
@@ -536,7 +545,7 @@ fn decision_concurrency_limit_rejects_zero_at_build_time() {
 }
 
 #[test]
-fn shared_tcp_udp_decision_gate_never_exceeds_limit() {
+fn shared_tcp_udp_decision_gate_uses_default_refusal_independently_of_block_deadline() {
     assert_shared_tcp_udp_decision_gate(Some(4));
 }
 
@@ -551,7 +560,8 @@ fn assert_shared_tcp_udp_decision_gate(configured_limit: Option<usize>) {
     let _release_on_drop = ReleaseDecisionLatchOnDrop(latch.clone());
     let mut builder = TransparentProxyEngineBuilder::new(DecisionProbeFactory(probe.clone()))
         .with_runtime_factory(TestRuntimeFactory)
-        .with_decision_deadline(Duration::from_secs(30));
+        .with_decision_deadline(Duration::from_secs(30))
+        .with_decision_deadline_action(DecisionDeadlineAction::Block);
     if let Some(limit) = configured_limit {
         builder = builder.with_decision_concurrency_limit(limit);
     }
@@ -593,8 +603,8 @@ fn assert_shared_tcp_udp_decision_gate(configured_limit: Option<usize>) {
         || {},
         || {},
     );
-    assert!(matches!(tcp_overload, SessionFlowAction::Blocked));
-    assert!(matches!(udp_overload, SessionFlowAction::Blocked));
+    assert!(matches!(tcp_overload, SessionFlowAction::Passthrough));
+    assert!(matches!(udp_overload, SessionFlowAction::Passthrough));
     assert_eq!(
         probe.calls(),
         expected_limit,
@@ -620,8 +630,9 @@ fn assert_shared_tcp_udp_decision_gate(configured_limit: Option<usize>) {
 }
 
 #[test]
-fn saturated_decision_gate_honors_passthrough_action() {
+fn saturated_decision_gate_honors_block_refusal_independently_of_deadline() {
     let (probe, latch) = latched_decision_probe();
+    let probe = probe.with_flow_refusal_action(FlowRefusalAction::Block);
     let _release_on_drop = ReleaseDecisionLatchOnDrop(latch.clone());
     let engine = Arc::new(
         TransparentProxyEngineBuilder::new(DecisionProbeFactory(probe.clone()))
@@ -650,7 +661,14 @@ fn saturated_decision_gate_honors_passthrough_action() {
         || {},
         || {},
     );
-    assert!(matches!(overload, SessionFlowAction::Passthrough));
+    let udp_overload = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        |_| {},
+        || {},
+        || {},
+    );
+    assert!(matches!(overload, SessionFlowAction::Blocked));
+    assert!(matches!(udp_overload, SessionFlowAction::Blocked));
     assert_eq!(probe.calls(), 1, "overload must not invoke policy");
     latch.release();
     assert!(matches!(
@@ -659,7 +677,7 @@ fn saturated_decision_gate_honors_passthrough_action() {
     ));
     let snapshot = engine.decision_concurrency_snapshot_for_test();
     assert_eq!(snapshot.active, 0);
-    assert_eq!(snapshot.overload_refusals, 1);
+    assert_eq!(snapshot.overload_refusals, 2);
     if let Ok(engine) = Arc::try_unwrap(engine) {
         engine.stop(0);
     }

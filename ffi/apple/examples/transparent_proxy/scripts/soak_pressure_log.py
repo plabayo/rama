@@ -2,7 +2,9 @@
 
 from datetime import datetime, timezone
 from decimal import Decimal
+import hashlib
 import json
+import os
 import re
 
 
@@ -16,6 +18,7 @@ GAUGE_RE = re.compile(
     r"live-flow counts tcp=(\d+) udp=(\d+) total=(\d+) peak=(\d+) softCap=(\d+)"
     r"(?: hardCap=(\d+)(?=\s|$))?"
     r"(?: retiring=(\d+)(?=\s|$))?"
+    r"(?: retirementOverlap=(\d+)(?=\s|$))?"
 )
 PRESSURE_COUNTER_RE = re.compile(
     r"pressure\[triggers=(\d+) scans=(\d+) skipped=(\d+) selected=(\d+) "
@@ -26,6 +29,33 @@ PRESSURE_EPISODE_RE = re.compile(
     r"durationMs=(\d+) "
     r"peakOccupancy=(\d+) softCap=(\d+) scans=(\d+) skipped=(\d+) "
     r"selected=(\d+) evicted=(\d+) spared=(\d+) canceled=(\d+) expired=(\d+)"
+)
+UDP_PRESSURE_DROP_MARKER = "UDP ingress pressure dropped datagram"
+UDP_PRESSURE_RESUME_MARKER = "UDP ingress pressure resumed flow"
+UDP_PRESSURE_REASONS = ("channel_count", "flow_bytes", "global_bytes")
+SWIFT_UDP_STAGING_DROP_MARKER = "UDP Swift ingress staging dropped datagrams"
+SWIFT_UDP_STAGING_DROP_REASONS = (
+    "flow_items", "flow_bytes", "generation_items", "generation_bytes"
+)
+UDP_PRESSURE_DROP_RE = re.compile(
+    rf"{UDP_PRESSURE_DROP_MARKER} "
+    rf'pressure="({"|".join(UDP_PRESSURE_REASONS)})" '
+    r"cumulative_drops=(\d+) global_retained_bytes=(\d+) "
+    r"global_max_retained_bytes=(\d+)(?=\s|$)"
+)
+UDP_PRESSURE_RESUME_RE = re.compile(
+    rf"{UDP_PRESSURE_RESUME_MARKER} "
+    rf'pressure="({"|".join(UDP_PRESSURE_REASONS)})" '
+    r"cumulative_resumptions=(\d+) global_retained_bytes=(\d+) "
+    r"global_max_retained_bytes=(\d+)(?=\s|$)"
+)
+SWIFT_UDP_STAGING_DROP_RE = re.compile(
+    rf"{SWIFT_UDP_STAGING_DROP_MARKER} "
+    rf'reason="({"|".join(SWIFT_UDP_STAGING_DROP_REASONS)})" '
+    r"cumulative_drop_events=(\d+) cumulative_dropped_items=(\d+) "
+    r"cumulative_dropped_bytes_lower_bound=(\d+) "
+    r"generation_retained_items=(\d+) generation_max_retained_items=(\d+) "
+    r"generation_retained_bytes=(\d+) generation_max_retained_bytes=(\d+)(?=\s|$)"
 )
 START_EPOCH_US_RE = re.compile(r"\bstartEpochUs=(\d+)\b")
 ENGINE_LIFECYCLE_RE = re.compile(
@@ -122,15 +152,29 @@ def flow_gauge(message):
         if match.group(7) is not None
         else None
     )
+    retirement_overlap = (
+        parse_artifact_uint(match.group(8))
+        if match.group(8) is not None
+        else None
+    )
     gauge_text = message[match.start():]
     if (
         (" hardCap=" in gauge_text and hard_cap is None)
         or (" retiring=" in gauge_text and retiring is None)
+        or (" retirementOverlap=" in gauge_text and retirement_overlap is None)
     ):
         return None
     registered = tcp + udp
     if registered > MAX_ARTIFACT_UINT or (
-        retiring is not None and total != registered + retiring
+        retiring is not None
+        and total != registered - (retirement_overlap or 0) + retiring
+    ) or (
+        retirement_overlap is not None
+        and (
+            retiring is None
+            or retirement_overlap > retiring
+            or retirement_overlap > registered
+        )
     ) or (
         hard_cap is not None and hard_cap > 0 and total > hard_cap
     ):
@@ -140,6 +184,7 @@ def flow_gauge(message):
         "udp": udp,
         "registered": registered,
         "retiring": retiring,
+        "retirement_overlap": retirement_overlap,
         "allocated": total,
         "total": total,
         "peak": peak,
@@ -184,6 +229,13 @@ def pressure_telemetry_issue(message):
         ("flow pressure episode", pressure_episode, "pressure-episode"),
         ("; selected ", selection_event, "pressure-selection"),
         ("but no flow idle", no_headroom_event, "pressure-no-headroom"),
+        (UDP_PRESSURE_DROP_MARKER, udp_pressure_event, "UDP-pressure-drop"),
+        (UDP_PRESSURE_RESUME_MARKER, udp_pressure_event, "UDP-pressure-resume"),
+        (
+            SWIFT_UDP_STAGING_DROP_MARKER,
+            udp_pressure_event,
+            "Swift-UDP-staging-drop",
+        ),
     )
     for marker, parser, label in signals:
         count = message.count(marker)
@@ -207,12 +259,246 @@ def pressure_telemetry_issue(message):
         return "pressure lifecycle sample is malformed or unrecognized"
 
     selection = selection_event(message)
-    if selection is not None and selection["occupancy"] <= selection["soft_cap"]:
-        return "pressure selection does not exceed its soft cap"
+    if selection is not None and selection["occupancy"] < selection["soft_cap"]:
+        return "pressure selection is below its soft cap"
     no_headroom = no_headroom_event(message)
-    if no_headroom is not None and no_headroom["occupancy"] <= no_headroom["soft_cap"]:
-        return "pressure no-headroom event does not exceed its soft cap"
+    if no_headroom is not None and no_headroom["occupancy"] < no_headroom["soft_cap"]:
+        return "pressure no-headroom event is below its soft cap"
     return flow_gauge_issue(message)
+
+
+def udp_pressure_event(message):
+    """Parse one canonical UDP pressure transition with cumulative counters."""
+    if not isinstance(message, str):
+        return None
+    drop_count = message.count(UDP_PRESSURE_DROP_MARKER)
+    resume_count = message.count(UDP_PRESSURE_RESUME_MARKER)
+    staging_count = message.count(SWIFT_UDP_STAGING_DROP_MARKER)
+    if drop_count + resume_count + staging_count != 1:
+        return None
+    if staging_count:
+        match = SWIFT_UDP_STAGING_DROP_RE.search(message)
+        if match is None:
+            return None
+        fields = (
+            "reason",
+            "cumulative_drop_events",
+            "cumulative_dropped_items",
+            "cumulative_dropped_bytes_lower_bound",
+            "generation_retained_items",
+            "generation_max_retained_items",
+            "generation_retained_bytes",
+            "generation_max_retained_bytes",
+        )
+        if any(len(re.findall(rf"\b{field}=", message)) != 1 for field in fields):
+            return None
+        if re.search(r"\bcumulative_(?:drops|resumptions)=", message):
+            return None
+        suffix = message[match.end():]
+        if suffix and re.fullmatch(r"\s+spans=\[.*\]", suffix) is None:
+            return None
+        values = [parse_artifact_uint(value) for value in match.groups()[1:]]
+        if any(value is None for value in values):
+            return None
+        (
+            events,
+            items,
+            bytes_lower_bound,
+            retained_items,
+            maximum_items,
+            retained,
+            maximum,
+        ) = values
+        if (
+            events == 0
+            or events & (events - 1) != 0
+            or items < events
+            or maximum_items == 0
+            or retained_items > maximum_items
+            or maximum == 0
+            or retained > maximum
+        ):
+            return None
+        return {
+            "layer": "swift_staging",
+            "transition": "drop",
+            "pressure": match.group(1),
+            "cumulative": events,
+            "cumulative_dropped_items": items,
+            "cumulative_dropped_bytes_lower_bound": bytes_lower_bound,
+            "generation_retained_items": retained_items,
+            "generation_max_retained_items": maximum_items,
+            "generation_retained_bytes": retained,
+            "generation_max_retained_bytes": maximum,
+        }
+    transition = "drop" if drop_count else "resume"
+    match = (
+        UDP_PRESSURE_DROP_RE.search(message)
+        if transition == "drop"
+        else UDP_PRESSURE_RESUME_RE.search(message)
+    )
+    if match is None:
+        return None
+    counter_field = (
+        "cumulative_drops" if transition == "drop" else "cumulative_resumptions"
+    )
+    forbidden_counter = (
+        "cumulative_resumptions" if transition == "drop" else "cumulative_drops"
+    )
+    for field in (
+        "pressure",
+        counter_field,
+        "global_retained_bytes",
+        "global_max_retained_bytes",
+    ):
+        if len(re.findall(rf"\b{field}=", message)) != 1:
+            return None
+    if re.search(rf"\b{forbidden_counter}=", message):
+        return None
+    suffix = message[match.end():]
+    if suffix and re.fullmatch(r"\s+spans=\[.*\]", suffix) is None:
+        return None
+    values = [parse_artifact_uint(value) for value in match.groups()[1:]]
+    if any(value is None for value in values):
+        return None
+    cumulative, retained, maximum = values
+    if cumulative == 0 or maximum == 0 or retained > maximum:
+        return None
+    return {
+        "layer": "rust_ingress",
+        "transition": transition,
+        "pressure": match.group(1),
+        "cumulative": cumulative,
+        "global_retained_bytes": retained,
+        "global_max_retained_bytes": maximum,
+    }
+
+
+def summarize_udp_pressure_rows(
+    rows, *, workload_exercised, mode, baseline_end_epoch=None
+):
+    """Return a fail-closed, transition-based UDP pressure verdict.
+
+    Counters are sampled cumulative producer counters, so skipped values are
+    valid but repeats and rollbacks are not. Normal modes reject every
+    attributable Rust-ingress drop. Ceiling mode accepts those drops only when
+    a later sampled recovery exists for every affected pressure reason. Swift
+    pre-queue staging has no recovery transition, so every staging drop fails.
+    """
+    result = {
+        "status": "NOT EXERCISED",
+        "events": 0,
+        "drop_transitions": 0,
+        "resume_transitions": 0,
+        "latest_drops": {},
+        "latest_resumptions": {},
+        "swift_staging_drop_samples": 0,
+        "latest_swift_staging_drop": None,
+        "unrecovered": [],
+        "issues": [],
+        "failures": [],
+    }
+    if workload_exercised not in (True, False):
+        result["status"] = "INCOMPLETE"
+        result["issues"].append("UDP workload exercise state is missing or invalid")
+        return result
+    if not workload_exercised:
+        return result
+
+    latest = {"drop": {}, "resume": {}}
+    last_in_run_transition = {}
+    for epoch, message in rows:
+        has_marker = isinstance(message, str) and (
+            UDP_PRESSURE_DROP_MARKER in message
+            or UDP_PRESSURE_RESUME_MARKER in message
+            or SWIFT_UDP_STAGING_DROP_MARKER in message
+        )
+        event = udp_pressure_event(message)
+        if has_marker and event is None:
+            result["issues"].append(
+                "UDP pressure telemetry is malformed or internally inconsistent"
+            )
+            continue
+        if event is None:
+            continue
+        in_run = baseline_end_epoch is None or (
+            epoch is not None and epoch > baseline_end_epoch
+        )
+        if event["layer"] == "swift_staging":
+            previous = result["latest_swift_staging_drop"]
+            if previous is not None and (
+                event["cumulative"] <= previous["cumulative"]
+                or event["cumulative_dropped_items"]
+                <= previous["cumulative_dropped_items"]
+                or event["cumulative_dropped_bytes_lower_bound"]
+                < previous["cumulative_dropped_bytes_lower_bound"]
+                or event["generation_max_retained_items"]
+                != previous["generation_max_retained_items"]
+                or event["generation_max_retained_bytes"]
+                != previous["generation_max_retained_bytes"]
+            ):
+                result["issues"].append(
+                    "Swift UDP staging cumulative counters repeated, rolled back, "
+                    "or changed generation limit"
+                )
+            result["latest_swift_staging_drop"] = event
+            if in_run:
+                result["events"] += 1
+                result["swift_staging_drop_samples"] += 1
+            continue
+        transition = event["transition"]
+        reason = event["pressure"]
+        previous = latest[transition].get(reason)
+        if previous is not None and event["cumulative"] <= previous:
+            result["issues"].append(
+                f"UDP pressure {transition} counter for {reason} repeated or rolled back"
+            )
+        latest[transition][reason] = event["cumulative"]
+        if not in_run:
+            continue
+        result["events"] += 1
+        result[f"{transition}_transitions"] += 1
+        last_in_run_transition[reason] = transition
+
+    result["latest_drops"] = dict(sorted(latest["drop"].items()))
+    result["latest_resumptions"] = dict(sorted(latest["resume"].items()))
+    result["unrecovered"] = sorted(
+        reason
+        for reason, transition in last_in_run_transition.items()
+        if transition == "drop"
+    )
+    if result["issues"]:
+        result["status"] = "INCOMPLETE"
+        return result
+    if mode not in {
+        "stress-only",
+        "cap-validate",
+        "cap-hard-limited",
+        "cap-too-high",
+        "find-ceiling",
+    }:
+        result["status"] = "INCOMPLETE"
+        result["issues"].append("UDP pressure run mode is missing or invalid")
+        return result
+    if mode == "find-ceiling":
+        if result["unrecovered"]:
+            result["failures"].append(
+                "UDP pressure did not recover after ceiling-mode drops: "
+                + ", ".join(result["unrecovered"])
+            )
+    elif result["drop_transitions"]:
+        result["failures"].append(
+            f"{result['drop_transitions']} UDP ingress pressure drop transition(s) were observed"
+        )
+    if result["swift_staging_drop_samples"]:
+        latest_staging = result["latest_swift_staging_drop"]
+        result["failures"].append(
+            f"{result['swift_staging_drop_samples']} Swift UDP ingress staging drop "
+            f"sample(s) were observed ({latest_staging['cumulative']} cumulative "
+            f"event(s), {latest_staging['cumulative_dropped_items']} dropped item(s))"
+        )
+    result["status"] = "FAILED" if result["failures"] else "GOOD"
+    return result
 
 
 def phase_for_epoch(epoch, phases):
@@ -467,6 +753,7 @@ def lifecycle_category_issue(message, category):
         or pressure_counters(message) is not None
         or selection_event(message) is not None
         or no_headroom_event(message) is not None
+        or udp_pressure_event(message) is not None
         or provider_allocation_failure(message)
         or any(
             marker in message
@@ -475,6 +762,9 @@ def lifecycle_category_issue(message, category):
                 "pressure[",
                 "flow pressure episode",
                 "flow pressure: occupancy",
+                UDP_PRESSURE_DROP_MARKER,
+                UDP_PRESSURE_RESUME_MARKER,
+                SWIFT_UDP_STAGING_DROP_MARKER,
                 "kernel flow allocation exhausted:",
             )
         )
@@ -1238,6 +1528,123 @@ def artifact_identity_issues(meta):
     return issues
 
 
+def dial9_evidence_issues(meta, summary, trace_directory):
+    """Validate current-only copied dial9 segments and their decoded-pair summary."""
+    issues = []
+    if meta.get("dial9_baseline_ready") != "1":
+        issues.append("pre-workload dial9 trace identity is unavailable")
+    if meta.get("dial9_collection_ok") != "1":
+        issues.append("sealed current-run dial9 flow evidence is unavailable")
+    baseline = meta.get("dial9_baseline_max_index")
+    if baseline == "none":
+        baseline_index = None
+    else:
+        baseline_index = parse_artifact_uint(baseline, maximum=2**32 - 1)
+        if baseline_index is None:
+            issues.append("dial9 baseline maximum index is invalid")
+    if not isinstance(summary, dict):
+        issues.append("dial9 evidence summary is missing or malformed")
+        return issues
+    if (
+        type(summary.get("schema_version")) is not int
+        or summary.get("schema_version") != 1
+        or summary.get("schema_complete") is not True
+    ):
+        issues.append("dial9 evidence summary schema is incomplete or unsupported")
+    summary_baseline = summary.get("baseline_max_index")
+    if (
+        summary_baseline is not None
+        and (type(summary_baseline) is not int or not 0 <= summary_baseline < 2**32)
+    ) or summary_baseline != baseline_index:
+        issues.append("dial9 evidence summary baseline does not match the run baseline")
+    artifacts = summary.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        issues.append("dial9 evidence summary contains no current sealed segments")
+        return issues
+    expected_count = parse_artifact_uint(meta.get("dial9_current_segment_count"))
+    pair_count = parse_artifact_uint(meta.get("dial9_required_pair_count"))
+    summary_count = summary.get("current_segment_count")
+    if (
+        expected_count != len(artifacts)
+        or type(summary_count) is not int
+        or summary_count != len(artifacts)
+    ):
+        issues.append("dial9 current segment count does not match its manifest")
+    summary_pair_count = summary.get("required_pair_count")
+    if (
+        pair_count is None
+        or pair_count < 1
+        or type(summary_pair_count) is not int
+        or summary_pair_count != pair_count
+    ):
+        issues.append("dial9 evidence does not contain a decoded open/close pair")
+    seen_indices = set()
+    expected_names = []
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            issues.append("dial9 evidence manifest contains a malformed artifact")
+            continue
+        name = artifact.get("name")
+        match = (
+            re.fullmatch(r"trace\.(\d+)\.bin(?:\.gz)?", name)
+            if isinstance(name, str)
+            else None
+        )
+        if match is None:
+            issues.append("dial9 evidence manifest contains a non-canonical artifact name")
+            continue
+        index = int(match.group(1))
+        if str(index) != match.group(1):
+            issues.append(f"dial9 artifact {name!r} has a non-canonical index")
+        expected_encoding = "gzip" if name.endswith(".gz") else "raw"
+        if artifact.get("state") != "sealed":
+            issues.append(f"dial9 artifact {name!r} is not declared sealed")
+        if artifact.get("encoding") != expected_encoding:
+            issues.append(f"dial9 artifact {name!r} encoding does not match its name")
+        if type(artifact.get("index")) is not int or artifact.get("index") != index:
+            issues.append(f"dial9 artifact {name!r} index does not match its name")
+        if index in seen_indices:
+            issues.append(f"dial9 trace index {index} has multiple retained representations")
+        seen_indices.add(index)
+        if baseline_index is not None and index <= baseline_index:
+            issues.append(f"dial9 artifact {name!r} is not newer than the baseline")
+        size = artifact.get("size")
+        digest = artifact.get("sha256")
+        if (
+            type(size) is not int
+            or size < 1
+            or not isinstance(digest, str)
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            issues.append(f"dial9 artifact {name!r} has invalid size/hash identity")
+            continue
+        path = os.path.join(trace_directory, name)
+        try:
+            with open(path, "rb") as trace_input:
+                content = trace_input.read()
+        except OSError:
+            issues.append(f"dial9 artifact {name!r} is missing from the copied bundle")
+            continue
+        if len(content) != size or hashlib.sha256(content).hexdigest() != digest:
+            issues.append(f"dial9 artifact {name!r} does not match its copied hash identity")
+        expected_names.append(name)
+    current_indices = summary.get("current_indices")
+    if not isinstance(current_indices, list) or any(
+        type(index) is not int for index in current_indices
+    ) or current_indices != sorted(seen_indices):
+        issues.append("dial9 current index list does not match its manifest")
+    try:
+        copied_names = sorted(
+            name for name in os.listdir(trace_directory)
+            if os.path.isfile(os.path.join(trace_directory, name))
+        )
+    except OSError:
+        copied_names = []
+    if copied_names != sorted(expected_names):
+        issues.append("copied dial9 trace directory does not match its manifest")
+    return issues
+
+
 def pressure_counters(message):
     """Return one periodic pressure-counter delta, or None."""
     match = PRESSURE_COUNTER_RE.search(message)
@@ -1294,7 +1701,7 @@ def pressure_episode(message):
         event[key] for key in ("evicted", "spared", "canceled", "expired")
     ):
         return None
-    if event["peak_occupancy"] <= event["soft_cap"]:
+    if event["peak_occupancy"] < event["soft_cap"]:
         return None
     event["start_epoch_us"] = start_epoch_us
     return event
@@ -1495,6 +1902,7 @@ def classify_soak_result(
     settlement_tolerance=5,
     provider_faults=0,
     unknown_provider_errors=0,
+    udp_pressure_failures=(),
 ):
     """Return orthogonal evidence completeness and product verdict state."""
     issues = list(evidence_issues)
@@ -1596,6 +2004,7 @@ def classify_soak_result(
         failures.append(
             f"{unknown_provider_errors} unclassified provider Error log(s) were observed"
         )
+    failures.extend(udp_pressure_failures)
 
     if mode in valid_modes - {"find-ceiling"}:
         if baseline_total is None:

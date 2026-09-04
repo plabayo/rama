@@ -66,14 +66,10 @@ async fn udp_idle_wait_accepts_unrepresentably_large_timeout_and_activity() {
     waiter.abort();
 }
 
-// The TCP idle backstop, the UDP max-lifetime cap and the TCP paused-
-// drain wait are the three timer-based safety nets that keep a wedged
-// per-flow bridge from holding the macOS NWConnection registration
-// forever. The tests below pin both the constant values and the fact
-// that the builder applies them as defaults — a regression that
-// silently flips any of them back to `None` would let one wedged flow
-// per leak path live indefinitely, which is exactly the failure mode
-// these backstops exist to prevent.
+// TCP idle, UDP idle, and TCP paused-drain timers are default backstops. The
+// UDP absolute max lifetime is intentionally different: it remains available
+// as an explicit policy but defaults to `None`, allowing active long-lived
+// QUIC / HTTP/3 flows to outlive the conventional 15-minute value.
 
 #[test]
 fn default_tcp_idle_timeout_constant_is_fifteen_minutes() {
@@ -99,14 +95,22 @@ fn builder_without_tcp_idle_timeout_sets_none() {
 }
 
 #[test]
-fn default_udp_max_flow_lifetime_constant_is_fifteen_minutes() {
+fn udp_max_flow_lifetime_opt_in_constant_is_fifteen_minutes() {
     assert_eq!(DEFAULT_UDP_MAX_FLOW_LIFETIME, Duration::from_mins(15));
 }
 
 #[test]
-fn builder_default_udp_max_flow_lifetime_is_the_constant() {
+fn builder_default_udp_max_flow_lifetime_is_none() {
     let builder =
         TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()));
+    assert_eq!(builder.current_udp_max_flow_lifetime(), None);
+}
+
+#[test]
+fn builder_udp_max_flow_lifetime_remains_explicitly_configurable() {
+    let builder =
+        TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
+            .with_udp_max_flow_lifetime(DEFAULT_UDP_MAX_FLOW_LIFETIME);
     assert_eq!(
         builder.current_udp_max_flow_lifetime(),
         Some(DEFAULT_UDP_MAX_FLOW_LIFETIME)

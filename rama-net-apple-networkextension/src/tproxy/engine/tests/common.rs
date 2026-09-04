@@ -339,6 +339,14 @@ pub(super) fn flow_was_closed(flow_id: u64) -> bool {
     closed_flows().lock().iter().any(|(id, _)| *id == flow_id)
 }
 
+pub(super) fn flow_close_count(flow_id: u64) -> usize {
+    closed_flows()
+        .lock()
+        .iter()
+        .filter(|(id, _)| *id == flow_id)
+        .count()
+}
+
 pub(super) fn flow_close_reason(flow_id: u64) -> Option<String> {
     closed_flows()
         .lock()

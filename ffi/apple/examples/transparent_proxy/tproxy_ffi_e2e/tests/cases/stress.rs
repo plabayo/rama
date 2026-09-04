@@ -59,8 +59,8 @@ async fn ffi_stress_tcp_sequential_churn() {
     ingress.shutdown().await;
 }
 
-/// 16 sequential UDP roundtrips through `activate` / `on_client_close`
-/// / no-lifetime-cap teardown.
+/// 16 sequential UDP roundtrips through demand-gated ingress, attributed
+/// replies, and callback-suppressed client-close teardown.
 #[tokio::test]
 #[serial]
 async fn ffi_stress_udp_sequential_churn() {
@@ -222,11 +222,11 @@ async fn ffi_stress_mixed_concurrent_load_with_large_body() {
     ingress.shutdown().await;
 }
 
-/// 4 × 4 concurrent UDP roundtrips — covers per-datagram peer
-/// attribution and concurrent churn across multiple flows. Each task
-/// independently sends/receives via the engine, so any cross-flow
-/// state corruption (egress socket mix-up, mis-routed reply) surfaces
-/// as a mismatched payload.
+/// 4 × 4 concurrent UDP roundtrips — covers demand-gated ingress,
+/// per-datagram peer attribution, and concurrent churn across multiple
+/// flows. Each task independently sends/receives via the engine, so any
+/// cross-flow state corruption (egress socket mix-up, mis-routed reply)
+/// surfaces as a mismatched payload or peer.
 #[tokio::test]
 #[serial]
 async fn ffi_stress_udp_concurrent_churn() {

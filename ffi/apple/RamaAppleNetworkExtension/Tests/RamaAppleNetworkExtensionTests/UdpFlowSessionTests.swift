@@ -259,6 +259,200 @@ final class UdpFlowSessionTests: XCTestCase {
         XCTAssertEqual(fx.session.ctx.readState, .readingWithDemand)
     }
 
+    func testProbeIdsPreserveFirstSecondAndAckSaturatedDemand() {
+        let fx = Fixture()
+        fx.session.installRequestRead()
+        let acknowledged = Locked<[UInt64]>([])
+        fx.session.testProbeAcknowledger = { id in
+            acknowledged.withLock { $0.append(id) }
+        }
+
+        let blockerStarted = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        fx.session.flowQueue.async {
+            blockerStarted.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerStarted.wait(timeout: .now() + 1), .success)
+        fx.session.ctx.requestReadWithProbe?(11)
+        fx.session.ctx.requestReadWithProbe?(22)
+        fx.session.ctx.requestReadWithProbe?(33)
+        XCTAssertEqual(fx.session.testReadDemandSnapshot.firstProbeId, 11)
+        XCTAssertEqual(fx.session.testReadDemandSnapshot.secondProbeId, 22)
+        XCTAssertEqual(
+            acknowledged.withLock { $0 }, [],
+            "saturated demand callback must return without synchronous FFI ACK re-entry"
+        )
+
+        releaseBlocker.signal()
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(acknowledged.withLock { $0 }, [33])
+        XCTAssertEqual(fx.flow.pendingReadCount, 1)
+        XCTAssertEqual(fx.session.ctx.readState, .readingWithDemand)
+        XCTAssertTrue(fx.flow.completePendingRead(datagrams: [Data([1])], endpoints: nil))
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(acknowledged.withLock { $0 }, [33, 11, 22])
+    }
+
+    func testProbeIdsAckOnErrorAndEofBranches() {
+        for (probeId, datagrams, error) in [
+            (UInt64(41), Optional<[Data]>.none,
+             Optional<Error>.some(NSError(domain: NSPOSIXErrorDomain, code: Int(EIO)))),
+            (UInt64(42), Optional<[Data]>.some([]), Optional<Error>.none),
+        ] {
+            let fx = Fixture()
+            fx.session.installRequestRead()
+            let acknowledged = Locked<[UInt64]>([])
+            fx.session.testProbeAcknowledger = { id in
+                acknowledged.withLock { $0.append(id) }
+            }
+            fx.session.ctx.requestReadWithProbe?(probeId)
+            fx.session.ctx.requestReadWithProbe?(probeId + 100)
+            fx.session.flowQueue.sync {}
+            XCTAssertTrue(
+                fx.flow.completePendingRead(datagrams: datagrams, endpoints: nil, error: error))
+            fx.session.flowQueue.sync {}
+            XCTAssertEqual(acknowledged.withLock { $0 }, [probeId, probeId + 100])
+        }
+    }
+
+    func testSessionMissingAcksCurrentAndPendingProbeIds() {
+        let fx = Fixture()
+        fx.session.installRequestRead()
+        let acknowledged = Locked<[UInt64]>([])
+        fx.session.testProbeAcknowledger = { id in
+            acknowledged.withLock { $0.append(id) }
+        }
+        fx.session.ctx.requestReadWithProbe?(51)
+        fx.session.ctx.requestReadWithProbe?(52)
+        fx.session.flowQueue.sync {}
+        XCTAssertTrue(fx.flow.completePendingRead(datagrams: [Data([1])], endpoints: nil))
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(acknowledged.withLock { $0 }, [51, 52])
+    }
+
+    func testStagingRejectAcksExactProbeAndIssuesOneReplacementRead() {
+        let fx = Fixture()
+        fx.session.installRequestRead()
+        let acknowledged = Locked<[UInt64]>([])
+        fx.session.testProbeAcknowledger = { id in
+            acknowledged.withLock { $0.append(id) }
+        }
+        let retained = fx.session.testFillIngressStaging()
+        XCTAssertNotNil(retained)
+        fx.session.ctx.requestReadWithProbe?(61)
+        fx.session.ctx.requestReadWithProbe?(62)
+        fx.session.flowQueue.sync {}
+        XCTAssertTrue(fx.flow.completePendingRead(datagrams: [Data([1])], endpoints: nil))
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(acknowledged.withLock { $0 }, [61])
+        XCTAssertTrue(fx.session.testStagingCapacityWaiting)
+        XCTAssertEqual(
+            fx.flow.pendingReadCount, 0,
+            "a hot source must stop reading while Swift staging remains full")
+
+        retained?.release()
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(fx.flow.pendingReadCount, 1)
+        XCTAssertEqual(fx.session.ctx.readState, .reading)
+        XCTAssertTrue(fx.flow.completePendingRead(datagrams: [], endpoints: nil))
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(acknowledged.withLock { $0 }, [61, 62])
+    }
+
+    func testTerminateOvertakesQueuedStagingGrantWithoutIssuingRead() {
+        let fx = Fixture()
+        fx.session.installTerminate()
+        fx.session.installRequestRead()
+        let acknowledged = Locked<[UInt64]>([])
+        fx.session.testProbeAcknowledger = { id in
+            acknowledged.withLock { $0.append(id) }
+        }
+        let retained = fx.session.testFillIngressStaging()
+        XCTAssertNotNil(retained)
+        fx.session.ctx.requestReadWithProbe?(81)
+        fx.session.ctx.requestReadWithProbe?(82)
+        fx.session.flowQueue.sync {}
+        XCTAssertTrue(fx.flow.completePendingRead(datagrams: [Data([1])], endpoints: nil))
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(acknowledged.withLock { $0 }, [81])
+        XCTAssertTrue(fx.session.testStagingCapacityWaiting)
+        XCTAssertEqual(fx.flow.pendingReadCount, 0)
+
+        let blockerStarted = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        fx.session.flowQueue.async {
+            blockerStarted.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerStarted.wait(timeout: .now() + 30), .success)
+
+        // Queue terminal teardown first. Releasing capacity then installs a
+        // provisional grant and queues its resume behind that teardown. Once
+        // the queue drains, close must cancel the grant, ACK the parked probe,
+        // and make the stale resume incapable of starting an Apple read.
+        fx.session.ctx.terminate?(nil)
+        retained?.release()
+        releaseBlocker.signal()
+        fx.session.flowQueue.sync {}
+
+        XCTAssertEqual(acknowledged.withLock { $0 }, [81, 82])
+        XCTAssertEqual(fx.session.ctx.readState, .closed)
+        XCTAssertFalse(fx.session.testStagingCapacityWaiting)
+        XCTAssertEqual(fx.flow.pendingReadCount, 0)
+        XCTAssertEqual(fx.flow.closeReadCallCount, 1)
+        XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
+    }
+
+    func testOversizedStagingDatagramTerminatesAndLogsWithoutParking() {
+        let fx = Fixture()
+        fx.session.installTerminate()
+        fx.session.installRequestRead()
+        let notices = Locked<[String]>([])
+        LifecycleLog.noticeOverride = { message in notices.withLock { $0.append(message) } }
+        defer { LifecycleLog.noticeOverride = nil }
+
+        fx.session.ctx.requestRead?()
+        fx.session.flowQueue.sync {}
+        XCTAssertTrue(
+            fx.flow.completePendingRead(
+                datagrams: [Data(count: UdpIngressStagingPolicy.testDefaults.maxBytesPerFlow + 1)],
+                endpoints: nil))
+        fx.session.flowQueue.sync {}
+
+        XCTAssertEqual(fx.session.ctx.readState, .closed)
+        XCTAssertFalse(fx.session.testStagingCapacityWaiting)
+        XCTAssertEqual(fx.flow.pendingReadCount, 0)
+        XCTAssertEqual(fx.flow.closeReadCallCount, 1)
+        XCTAssertEqual(fx.flow.closeWriteCallCount, 1)
+        XCTAssertTrue(
+            notices.withLock { messages in
+                messages.contains { message in
+                    message.contains("reason=\"oversized_bytes\"")
+                        && message.contains("terminating flow")
+                }
+            })
+    }
+
+    func testCloseAcksQueuedPendingProbeExactlyOnce() {
+        let fx = Fixture()
+        fx.session.installTerminate()
+        fx.session.installRequestRead()
+        let acknowledged = Locked<[UInt64]>([])
+        fx.session.testProbeAcknowledger = { id in
+            acknowledged.withLock { $0.append(id) }
+        }
+        fx.session.ctx.requestReadWithProbe?(71)
+        fx.session.ctx.requestReadWithProbe?(72)
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(fx.session.ctx.readState, .readingWithDemand)
+
+        fx.session.ctx.terminate?(nil)
+        fx.session.flowQueue.sync {}
+        XCTAssertEqual(acknowledged.withLock { $0 }, [72])
+        XCTAssertEqual(fx.session.ctx.readState, .closed)
+    }
+
     func testReadErrorClosesDemandBeforeQueuedRunner() {
         let fx = Fixture()
         fx.session.installTerminate()

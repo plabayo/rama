@@ -99,6 +99,11 @@ HTTPS_PROBE="https://http-test.ramaproxy.org/method"
 DL_HOST="${DL_HOST:-http-test.ramaproxy.org}"
 DL_MAX_BYTES=$(( 32 * 1024 * 1024 ))   # http-test /bytes server cap (MAX_BYTES)
 DIAL9_DIR="/var/root/Library/Application Support/rama/tproxy/dial9-traces"
+case "$(uname -m)" in
+  arm64) DIAL9_EVIDENCE_BIN="$EXAMPLE_DIR/tproxy_rs/target/aarch64-apple-darwin/debug/dial9_evidence" ;;
+  x86_64) DIAL9_EVIDENCE_BIN="$EXAMPLE_DIR/tproxy_rs/target/x86_64-apple-darwin/debug/dial9_evidence" ;;
+  *) DIAL9_EVIDENCE_BIN="" ;;
+esac
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT="${OUT:-$HOME/rama-tproxy-soak/$STAMP}"
@@ -259,6 +264,7 @@ CURRENT_PHASE_START=""
 WAKE_DL_PID=""
 CLEANUP_STARTED=0
 ACTIVE_CHILD_PID=""
+ACTIVE_CHILD_PRIVILEGE=root-only
 kill_holders() {
   # PID ownership is the only cleanup authority: never pattern-kill unrelated
   # user traffic. Signal the complete batch first, then join it under one
@@ -316,8 +322,9 @@ cleanup() {
   (( CLEANUP_STARTED == 0 )) || return 0
   CLEANUP_STARTED=1
   if [[ -n "$ACTIVE_CHILD_PID" ]]; then
-    bounded_stop_and_join "$ACTIVE_CHILD_PID" 5 root-only
+    bounded_stop_and_join "$ACTIVE_CHILD_PID" 5 "$ACTIVE_CHILD_PRIVILEGE"
     ACTIVE_CHILD_PID=""
+    ACTIVE_CHILD_PRIVILEGE=root-only
   fi
   if [[ -n "$PROBE_MON_PID" ]]; then
     bounded_stop_and_join "$PROBE_MON_PID" 5 direct
@@ -805,6 +812,8 @@ run_flow_pool() {
 hdr "rama transparent proxy soak — comprehensive single session"
 [[ -x "$(command -v curl)" ]] || die "curl not found"
 [[ -f "$STRESS_SH" ]] || die "stress script not found at $STRESS_SH (is REPO correct?)"
+[[ -x "$DIAL9_EVIDENCE_BIN" ]] \
+  || die "dial9 evidence collector not found; build the tproxy Rust crate first"
 REPO_HEAD="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
 [[ "$REPO_HEAD" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
   || die "could not resolve the repository commit identity"
@@ -833,6 +842,7 @@ fi
 mkdir -p "$OUT/holder-markers"
 {
   printf 'repo_head\t%s\nrepo_dirty\t%s\n' "$REPO_HEAD" "$REPO_DIRTY"
+  printf 'udp_workload_exercised\t0\n'
   printf 'soak_script_sha256\t%s\nstress_script_sha256\t%s\npressure_parser_sha256\t%s\n' \
     "$SOAK_SCRIPT_SHA256" "$STRESS_SCRIPT_SHA256" "$PRESSURE_PARSER_SHA256"
 } >> "$OUT/run-meta.tsv"
@@ -945,6 +955,34 @@ else
 fi
 printf 'log_stream_start_epoch\t%s\n' "$LOG_STREAM_START_EPOCH" >> "$OUT/run-meta.tsv"
 say "streaming → $OUT/system.ndjson"
+
+# The maximum pre-workload index (including the active segment) is the identity
+# boundary for current-run evidence. A later seal of that active segment remains
+# pre-run and is deliberately excluded.
+DIAL9_BASELINE_READY=0
+DIAL9_BASELINE_MAX_INDEX=none
+# The unprivileged shell intentionally owns the artifact redirections.
+# shellcheck disable=SC2024
+if sudo -n "$DIAL9_EVIDENCE_BIN" snapshot "$DIAL9_DIR" \
+  > "$OUT/dial9-baseline.json" 2> "$OUT/dial9-baseline.err"
+then
+  DIAL9_BASELINE_READY=1
+  if [[ -n "$PYTHON_BIN" ]]; then
+    DIAL9_BASELINE_MAX_INDEX=$(
+      "$PYTHON_BIN" - "$OUT/dial9-baseline.json" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1])).get("max_index")
+print("none" if value is None else value)
+PY
+    ) || DIAL9_BASELINE_READY=0
+  else
+    DIAL9_BASELINE_READY=0
+  fi
+else
+  warn "could not capture pre-workload dial9 trace identity"
+fi
+printf 'dial9_baseline_ready\t%s\ndial9_baseline_max_index\t%s\n' \
+  "$DIAL9_BASELINE_READY" "$DIAL9_BASELINE_MAX_INDEX" >> "$OUT/run-meta.tsv"
 start_probe_monitor
 printf 'probe_monitor_pid\t%s\n' "$PROBE_MON_PID" >> "$OUT/run-meta.tsv"
 say "probe monitor → $OUT/probe-timeline.txt (freeze detector)"
@@ -1436,6 +1474,51 @@ LEAK_LINE="$(grep -E 'leaks for|total leaked|Process .* leaks' "$OUT/leaks.txt" 
 say "${LEAK_LINE:-(leaks output unavailable or unparseable; see leaks.txt)}"
 printf 'holder_cleanup_ok\t%s\n' "$HOLDER_CLEANUP_OK" >> "$OUT/run-meta.tsv"
 
+# ── dial9 traces ──────────────────────────────────────────────────────
+# Keep the probe monitor alive while waiting: if the run was very short, a
+# current-only segment may need two one-minute rotations after the baseline.
+hdr "collecting current-run dial9 traces"
+DIAL9_COLLECTION_OK=0
+DIAL9_CURRENT_SEGMENT_COUNT=0
+DIAL9_REQUIRED_PAIR_COUNT=0
+if (( DIAL9_BASELINE_READY == 1 )); then
+  DIAL9_COLLECT_RC=0
+  # The unprivileged shell intentionally owns the artifact redirections.
+  # shellcheck disable=SC2024
+  sudo -n "$DIAL9_EVIDENCE_BIN" collect \
+    "$DIAL9_DIR" "$OUT/dial9-baseline.json" "$OUT/dial9-traces" \
+    --wait-seconds 135 \
+    > "$OUT/dial9-evidence.json" 2> "$OUT/dial9-collect.err" &
+  ACTIVE_CHILD_PID=$!
+  ACTIVE_CHILD_PRIVILEGE=sudo
+  wait "$ACTIVE_CHILD_PID" || DIAL9_COLLECT_RC=$?
+  ACTIVE_CHILD_PID=""
+  ACTIVE_CHILD_PRIVILEGE=root-only
+  if (( DIAL9_COLLECT_RC == 0 )) \
+    && sudo -n chown -R "$(id -u):$(id -g)" "$OUT/dial9-traces" 2>/dev/null
+  then
+    DIAL9_METRICS=$(
+      "$PYTHON_BIN" - "$OUT/dial9-evidence.json" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1]))
+if value.get("schema_version") != 1 or value.get("schema_complete") is not True:
+    raise SystemExit(2)
+print(value.get("current_segment_count", 0), value.get("required_pair_count", 0))
+PY
+    ) || DIAL9_METRICS="0 0"
+    read -r DIAL9_CURRENT_SEGMENT_COUNT DIAL9_REQUIRED_PAIR_COUNT <<< "$DIAL9_METRICS"
+    if (( DIAL9_CURRENT_SEGMENT_COUNT > 0 && DIAL9_REQUIRED_PAIR_COUNT > 0 )); then
+      DIAL9_COLLECTION_OK=1
+      say "→ $OUT/dial9-traces ($DIAL9_CURRENT_SEGMENT_COUNT current segments, $DIAL9_REQUIRED_PAIR_COUNT paired flows)"
+    fi
+  else
+    warn "could not collect a sealed current-run dial9 flow pair"
+  fi
+fi
+printf 'dial9_collection_ok\t%s\ndial9_current_segment_count\t%s\ndial9_required_pair_count\t%s\n' \
+  "$DIAL9_COLLECTION_OK" "$DIAL9_CURRENT_SEGMENT_COUNT" \
+  "$DIAL9_REQUIRED_PAIR_COUNT" >> "$OUT/run-meta.tsv"
+
 # ── Stop log capture ──────────────────────────────────────────────────
 hdr "stopping log capture"
 PROBE_MONITOR_ALIVE=0
@@ -1474,26 +1557,12 @@ printf 'log_stream_child_rc\t%s\nlog_stream_joined\t%s\n' \
 NDJSON_LINES="$(wc -l < "$OUT/system.ndjson" 2>/dev/null | tr -d ' ' || echo 0)"
 say "captured $NDJSON_LINES ndjson lines"
 
-# ── dial9 traces ──────────────────────────────────────────────────────
-hdr "collecting dial9 traces"
-if sudo -n test -d "$DIAL9_DIR" 2>/dev/null; then
-  if sudo cp -R "$DIAL9_DIR" "$OUT/dial9-traces" 2>/dev/null \
-    && sudo chown -R "$(whoami)" "$OUT/dial9-traces" 2>/dev/null
-  then
-    say "→ $OUT/dial9-traces ($(find "$OUT/dial9-traces" -type f | wc -l | tr -d ' ') files)"
-  else
-    warn "could not copy dial9 traces"
-  fi
-else
-  say "(no dial9 traces present)"
-fi
-
 # ── Extract the signals that matter from the ndjson ───────────────────
 hdr "extracting signals"
 PYX="$(command -v python3 || true)"
 if [[ -n "$PYX" ]]; then
   if "$PYX" - "$OUT" "$EXAMPLE_DIR/scripts" <<'PYEOF'
-import os, re, sys
+import json, os, re, sys
 from decimal import Decimal
 
 sys.path.insert(0, sys.argv[2])
@@ -1504,6 +1573,7 @@ from soak_pressure_log import (
     ceiling_outage_window,
     ceiling_probe_evidence_issues,
     classify_soak_result,
+    dial9_evidence_issues,
     engine_lifecycle_event,
     filter_provider_ndjson_records,
     flow_pool_evidence_issues,
@@ -1532,6 +1602,7 @@ from soak_pressure_log import (
     settled_final_flow_gauge,
     soak_evidence_issues,
     summarize_pressure_rows,
+    summarize_udp_pressure_rows,
     unexpected_probe_failure_count_across_outages,
 )
 
@@ -1562,6 +1633,8 @@ for key in (
 ):
     if not meta.get(key):
         meta_issues.append(f"run metadata {key!r} is missing")
+if meta.get("udp_workload_exercised") not in ("0", "1"):
+    meta_issues.append("run metadata 'udp_workload_exercised' is missing or invalid")
 for key in ("provider_start_pid", "provider_end_pid", "log_stream_pid", "probe_monitor_pid"):
     parsed_pid = parse_artifact_uint(meta.get(key), maximum=2_147_483_647)
     if parsed_pid is None or parsed_pid == 0:
@@ -1690,6 +1763,12 @@ pressure = summarize_pressure_rows(
     pressure_rows,
     baseline_end_epoch=baseline_end_epoch,
     baseline_end_epoch_us=baseline_end_epoch_us)
+udp_pressure = summarize_udp_pressure_rows(
+    pressure_rows,
+    workload_exercised=meta.get("udp_workload_exercised") == "1",
+    mode=meta.get("mode"),
+    baseline_end_epoch=baseline_end_epoch,
+)
 
 idle_tail = next(
     ((start, end) for name, start, end in phases if name == "idle-tail"),
@@ -1716,11 +1795,13 @@ with open(os.path.join(out, "flow-counts.txt"), "w") as g, \
         if gauge:
             tcp = gauge["tcp"]; udp = gauge["udp"]
             registered = gauge["registered"]; allocated = gauge["allocated"]
+            retirement_overlap = gauge["retirement_overlap"]
             total = allocated
             pk = gauge["peak"]; sc = gauge["soft_cap"]; hc = gauge["hard_cap"]
             g.write(
                 f"{ts}  [{pname}]  tcp={tcp} udp={udp} "
                 f"registered={registered} allocated={allocated} "
+                f"retirementOverlap={retirement_overlap if retirement_overlap is not None else 'legacy'} "
                 f"peak={pk} softCap={sc} hardCap={hc if hc is not None else 'missing'}\n"
             )
             if ep is not None:
@@ -2047,14 +2128,23 @@ leak_result = leak_evidence(meta.get("leaks_command_rc"), leaks_text)
 leak_issues = leak_result["issues"]
 leak_count = leak_result["leaks"]
 
+dial9_summary_path = os.path.join(out, "dial9-evidence.json")
+try:
+    with open(dial9_summary_path) as dial9_input:
+        dial9_summary = json.load(dial9_input)
+except (OSError, ValueError):
+    dial9_summary = None
+dial9_issues = dial9_evidence_issues(
+    meta, dial9_summary, os.path.join(out, "dial9-traces"))
+
 capture_issues = (
     list(ndjson_issues) + provider_source_issues + meta_issues + phase_issues
     + provider_identity_issues + timestamp_issues + probe_issues
     + pool_interval_issues + pool_bracket_issues
     + lifecycle_category_issues + pressure_telemetry_issues + pressure["issues"]
-    + numeric_log_issues
+    + udp_pressure["issues"] + numeric_log_issues
     + mode_configuration_issues + ceiling_proof_issues + sleep_probe_issues
-    + sleep_result["issues"] + leak_issues
+    + sleep_result["issues"] + leak_issues + dial9_issues
 )
 for label, status, raw_status in (
     ("fanout", fanout_status, meta.get("fanout_established_target_sustained")),
@@ -2139,6 +2229,7 @@ run_result = classify_soak_result(
     settlement_tolerance=settlement_tolerance,
     provider_faults=c["fault"],
     unknown_provider_errors=c["unknown_error"],
+    udp_pressure_failures=udp_pressure["failures"],
 )
 evidence_issues = run_result["evidence_issues"]
 evidence_complete = run_result["complete"]
@@ -2175,6 +2266,15 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
     w(f"run verdict:              {'GOOD' if run_passed else 'FAIL'}")
     for failure in run_failures:
         w(f"  failure: {failure}")
+    w(f"UDP pressure verdict:     {udp_pressure['status']} "
+      f"(drops={udp_pressure['drop_transitions']} "
+      f"resumes={udp_pressure['resume_transitions']})")
+    w(f"UDP cumulative drops:     {udp_pressure['latest_drops'] or '-'}")
+    w(f"UDP cumulative resumes:   {udp_pressure['latest_resumptions'] or '-'}")
+    w(f"Swift UDP staging drops:  {udp_pressure['swift_staging_drop_samples']} sample(s)")
+    w(f"Swift staging cumulative: {udp_pressure['latest_swift_staging_drop'] or '-'}")
+    for reason in udp_pressure["unrecovered"]:
+        w(f"  unrecovered: {reason}")
     w("")
     w("--- leak evidence ---")
     if leak_issues:

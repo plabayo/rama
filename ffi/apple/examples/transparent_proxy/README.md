@@ -251,6 +251,14 @@ Teams do not have to distribute the `Developer ID Application` private key to ev
 
 This example does not implement a specific cloud-signing provider, but the distribution mode is compatible with that workflow: the important requirement is that the final distribution build is signed with the correct `Developer ID Application` identity and the matching distribution provisioning profiles.
 
+### Sanitizer coverage
+
+`just test-e2e-sanitizers` runs two complementary passes. Rust AddressSanitizer
+exercises the FFI stress cases for memory errors such as use-after-free; ASan
+does not detect data races. Swift ThreadSanitizer covers instrumented Swift-side
+code, but it does not instrument the linked Rust static library. The combined
+recipe therefore does not claim complete Rust race coverage.
+
 ### Why the split exists
 
 A non-admin developer cannot usually rely on self-service `Developer ID` signing the way they can rely on `Apple Development` signing in Xcode.
@@ -285,7 +293,16 @@ The test first reaches every public resource with an unblocked profile, then
 enables the exact blocked-DNS override. It captures the provider's structured
 Rust log, verifies the exact remote address/port and Rama decision, verifies
 pass-through flows never enter provider handling, and checks that the accepted
-NTP endpoint reaches Rama's UDP forwarding service. On macOS 15+, an exact
+NTP endpoint reaches Rama's UDP forwarding service. It also snapshots the
+root-owned Dial9 trace directory before the run, restores the default profile
+afterward, waits for a new sealed segment, and decodes an exact
+`TproxyFlowOpened`/`TproxyFlowClosed` pair for that NTP flow ID and UDP protocol.
+Stale or still-active trace segments cannot satisfy the gate. The terminal
+`udp-evidence-status.tsv` artifact distinguishes a complete product failure
+from an infrastructure/cleanup failure and records probe, log-join, profile
+restore, Dial9, Rust UDP-ingress pressure, and Swift pre-queue staging counts.
+Malformed/redacted pressure lines make the evidence incomplete; any observed
+ingress or staging drop makes the signed healthy-path gate fail. On macOS 15+, an exact
 initial endpoint reaching Rust also proves that the modern typed callback
 delivered the flow; the generic fallback has no public remote endpoint to
 forward. The UDP/443 request uses Apple's
@@ -310,7 +327,10 @@ Internet access. They can be replaced for a restricted runner with
 `RAMA_TPROXY_E2E_PASSTHROUGH_DNS`, `RAMA_TPROXY_E2E_INTERCEPT_NTP`,
 `RAMA_TPROXY_E2E_BLOCKED_DNS`, and `RAMA_TPROXY_E2E_HTTP3_URL`. The first three
 values must be IP literals so callback-log assertions remain deterministic.
-No local privileged bind or `sudo` is required by this test.
+Cached `sudo` credentials are required to read and copy the extension's
+root-owned Dial9 segments. Prime them with `sudo -v` immediately before the
+recipe; the script itself uses non-interactive `sudo -n` and fails incomplete
+instead of prompting mid-run.
 
 The legacy callback remains compile- and unit-tested on current CI. On the
 oldest supported pre-macOS-15 signing host, run the same real-socket probe with

@@ -150,7 +150,8 @@ run-tproxy-ffi-e2e-swift: build-tproxy-rs-debug
         -Xlinker -framework -Xlinker SystemConfiguration
 
 # Full Swift unit suite under ThreadSanitizer. Suppressions are deliberately
-# forbidden: any reported race must fail this recipe and be fixed at its source.
+# forbidden: any reported Swift-side race must fail this recipe. The linked
+# Rust static library is not instrumented by this Swift TSan invocation.
 [working-directory: '.']
 run-tproxy-ffi-e2e-swift-tsan: build-tproxy-rs-debug
     TSAN_OPTIONS="halt_on_error=1:exitcode=66" \
@@ -186,13 +187,13 @@ test-modern-udp-signed: build-tproxy-rs build-tproxy-app-dev
 # the modern UDP callback paths and HTTP/3 pass-through against the live sysext.
 test-full: qa test-e2e test-modern-udp-signed
 
-# Run the FFI e2e suite under AddressSanitizer to surface UAF / data races.
+# Run the Rust FFI e2e suite under AddressSanitizer to surface memory errors,
+# including use-after-free. ASan does not detect data races.
 #
 # Requires nightly Rust (`rustup toolchain install nightly`). The static lib
 # (`tproxy_rs`) and the test crate (`tproxy_ffi_e2e`) must both be built with
-# the sanitizer flag — otherwise instrumentation is incomplete and races slip
-# past. See the `cases::stress::*` tests for the high-churn scenarios that
-# give the sanitizer enough race windows to land on a real bug.
+# the sanitizer flag, otherwise memory accesses across that boundary are not
+# fully instrumented. See `cases::stress::*` for high-churn memory-safety cases.
 [working-directory: './tproxy_rs']
 build-tproxy-rs-asan:
     RUSTFLAGS="-Z sanitizer=address -D warnings --cfg tokio_unstable" \
@@ -209,8 +210,8 @@ run-tproxy-ffi-e2e-asan:
 # cases under it. Slower than `test-e2e` and requires nightly.
 test-e2e-asan: build-tproxy-rs-asan run-tproxy-ffi-e2e-asan
 
-# Convenience target for the two sanitizer passes that exercise the Swift/C/Rust
-# transparent-proxy bridge: Rust ASan stress cases plus Swift ThreadSanitizer.
+# Complementary sanitizer passes: Rust ASan memory-safety stress plus Swift-side
+# TSan. This does not provide TSan race coverage for the linked Rust staticlib.
 test-e2e-sanitizers: test-e2e-asan run-tproxy-ffi-e2e-swift-tsan
 
 # Generate live traffic against public HTTP/HTTPS endpoints to stress

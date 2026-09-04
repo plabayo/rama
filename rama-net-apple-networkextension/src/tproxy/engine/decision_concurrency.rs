@@ -3,8 +3,7 @@ use std::sync::{
     atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 
-use super::DecisionDeadlineAction;
-use crate::tproxy::TransparentProxyFlowProtocol;
+use crate::tproxy::{FlowRefusalAction, TransparentProxyFlowProtocol};
 
 /// Shared decision-poll concurrency for one immutable engine generation.
 ///
@@ -40,7 +39,7 @@ impl DecisionConcurrencyGate {
     pub(super) fn try_acquire(self: &Arc<Self>) -> Option<DecisionPermit> {
         let _previous = self
             .active
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |active| {
                 (active < self.limit).then_some(active + 1)
             })
             .ok()?;
@@ -56,7 +55,7 @@ impl DecisionConcurrencyGate {
         &self,
         flow_id: u64,
         protocol: TransparentProxyFlowProtocol,
-        action: DecisionDeadlineAction,
+        action: FlowRefusalAction,
     ) {
         let total = self
             .overload_refusals

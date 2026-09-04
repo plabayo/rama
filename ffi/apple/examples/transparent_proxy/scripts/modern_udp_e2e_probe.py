@@ -9,6 +9,14 @@ import sys
 import time
 
 
+PRODUCT_VIOLATION_EXIT = 10
+PROBE_ERROR_EXIT = 20
+
+
+class ProductViolation(RuntimeError):
+    """A valid response disproved the requested product behavior."""
+
+
 def dns_query(server: str, name: str, timeout: float, expect_no_response: bool) -> None:
     transaction_id = secrets.randbits(16)
     labels = name.rstrip(".").split(".")
@@ -22,10 +30,14 @@ def dns_query(server: str, name: str, timeout: float, expect_no_response: bool) 
         sock.sendto(query, (server, 53))
         try:
             response, peer = sock.recvfrom(65535)
-        except (socket.timeout, OSError) as error:
+        except socket.timeout as error:
             if expect_no_response:
                 print(f"DNS {server}:53 produced no response as expected ({error})")
                 return
+            raise
+        except OSError:
+            # A local routing, permission, or socket failure is not evidence that
+            # the proxy blocked a valid DNS response.
             raise
     finally:
         try:
@@ -36,8 +48,6 @@ def dns_query(server: str, name: str, timeout: float, expect_no_response: bool) 
             if not expect_no_response:
                 raise
 
-    if expect_no_response:
-        raise RuntimeError(f"blocked DNS endpoint {server}:53 unexpectedly replied")
     if len(response) < 12:
         raise RuntimeError(f"DNS {server}:53 returned a truncated header")
 
@@ -55,6 +65,14 @@ def dns_query(server: str, name: str, timeout: float, expect_no_response: bool) 
     if question_count != 1 or answer_count < 1:
         raise RuntimeError(
             f"DNS {server}:53 missing expected answer (qd={question_count}, an={answer_count})"
+        )
+    if peer[0] != server or peer[1] != 53:
+        raise RuntimeError(
+            f"DNS {server}:53 response came from unexpected peer {peer[0]}:{peer[1]}"
+        )
+    if expect_no_response:
+        raise ProductViolation(
+            f"blocked DNS endpoint {server}:53 returned a valid matching response"
         )
     print(f"DNS {name} round-trip ok via {peer[0]}:{peer[1]}")
 
@@ -88,6 +106,10 @@ def ntp_query(server: str, timeout: float) -> None:
         raise RuntimeError(f"NTP {server}:123 returned invalid stratum={stratum}")
     if response[24:32] != transmit_timestamp:
         raise RuntimeError(f"NTP {server}:123 originate timestamp mismatch")
+    if peer[0] != server or peer[1] != 123:
+        raise RuntimeError(
+            f"NTP {server}:123 response came from unexpected peer {peer[0]}:{peer[1]}"
+        )
     print(f"NTP round-trip ok via {peer[0]}:{peer[1]} (stratum={stratum})")
 
 
@@ -115,6 +137,9 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
+    except ProductViolation as error:
+        print(f"modern UDP E2E product violation: {error}", file=sys.stderr)
+        raise SystemExit(PRODUCT_VIOLATION_EXIT)
     except Exception as error:
         print(f"modern UDP E2E probe failed: {error}", file=sys.stderr)
-        raise
+        raise SystemExit(PROBE_ERROR_EXIT)

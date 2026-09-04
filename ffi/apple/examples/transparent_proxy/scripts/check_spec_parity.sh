@@ -42,6 +42,18 @@ source = (
     root.parent.parent
     / "RamaAppleNetworkExtension/Sources/RamaAppleNetworkExtension/Provider/TransparentProxyCore.swift"
 ).read_text()
+udp_source = (
+    root.parents[3]
+    / "rama-net-apple-networkextension/src/tproxy/engine/udp_ingress.rs"
+).read_text()
+swift_udp_source = (
+    root.parent.parent
+    / "RamaAppleNetworkExtension/Sources/RamaAppleNetworkExtension/Provider/Session/UdpFlowSession.swift"
+).read_text()
+swift_udp_staging_source = (
+    root.parent.parent
+    / "RamaAppleNetworkExtension/Sources/RamaAppleNetworkExtension/Provider/UdpIngressStaging.swift"
+).read_text()
 
 def require_order(anchor, tokens, span=5000):
     start = source.find(anchor)
@@ -68,9 +80,40 @@ def require_literals(anchor, literals, span=5000):
                 f"Swift telemetry emitter literal diverged after {anchor}: {literal}"
             )
 
+def require_udp_order(anchor, tokens, span=1200):
+    start = udp_source.find(anchor)
+    if start < 0:
+        raise SystemExit(f"Rust UDP telemetry emitter anchor missing: {anchor}")
+    block = udp_source[start:start + span]
+    cursor = 0
+    for token in tokens:
+        found = block.find(token, cursor)
+        if found < 0:
+            raise SystemExit(
+                f"Rust UDP telemetry field missing/out of order after {anchor}: {token}"
+            )
+        cursor = found + len(token)
+
+def require_swift_udp_order(anchor, tokens, span=1200):
+    start = swift_udp_source.find(anchor)
+    if start < 0:
+        raise SystemExit(f"Swift UDP staging emitter anchor missing: {anchor}")
+    block = swift_udp_source[start:start + span]
+    cursor = 0
+    for token in tokens:
+        found = block.find(token, cursor)
+        if found < 0:
+            raise SystemExit(
+                f"Swift UDP staging field missing/out of order after {anchor}: {token}"
+            )
+        cursor = found + len(token)
+
 require_order(
     "let countSummary =",
-    ("tcp=", "udp=", "total=", "peak=", "softCap=", "hardCap=", "retiring="),
+    (
+        "tcp=", "udp=", "total=", "peak=", "softCap=", "hardCap=",
+        "retiring=", "retirementOverlap=",
+    ),
     1200,
 )
 require_literals(
@@ -78,7 +121,8 @@ require_literals(
     (
         '"tproxy live-flow counts tcp=\\(tcp) udp=\\(udp) total=\\(total) "',
         '"peak=\\(self.flowCountHighWater) softCap=\\(flowPressurePolicy.softCap) "',
-        '"hardCap=\\(flowPressurePolicy.liveHardCap) retiring=\\(retiring)"',
+        '"hardCap=\\(flowPressurePolicy.liveHardCap) retiring=\\(retiring) "',
+        '"retirementOverlap=\\(retirementOverlap)"',
     ),
     1200,
 )
@@ -159,7 +203,8 @@ require_literals(
 
 fixtures = (
     "tproxy live-flow counts tcp=1 udp=2 total=4 peak=4 softCap=10 "
-    "hardCap=20 retiring=1 pressure[triggers=1 scans=1 skipped=0 selected=1 "
+    "hardCap=20 retiring=1 retirementOverlap=0 "
+    "pressure[triggers=1 scans=1 skipped=0 selected=1 "
     "evicted=1 spared=0 canceled=0 expired=0 pending=0]",
     "flow pressure: occupancy 11 over soft cap 10; selected 1 idle flow(s) "
     "toward low-water 8 (1 pending teardown)",
@@ -173,13 +218,85 @@ for fixture in fixtures:
     issue = pressure_telemetry_issue(fixture)
     if issue is not None:
         raise SystemExit(f"canonical Swift telemetry fixture rejected: {issue}")
+
+require_udp_order(
+    "fn record_drop",
+    (
+        "pressure", "cumulative_drops", "global_retained_bytes",
+        "global_max_retained_bytes",
+        '"UDP ingress pressure dropped datagram pressure=\\"{}\\" '
+        'cumulative_drops={} global_retained_bytes={} '
+        'global_max_retained_bytes={}"',
+    ),
+)
+require_swift_udp_order(
+    '"UDP Swift ingress staging dropped datagrams reason=\\"',
+    (
+        "sample.reason.rawValue", "cumulative_drop_events=",
+        "cumulative_dropped_items=", "cumulative_dropped_bytes_lower_bound=",
+        "generation_retained_items=", "generation_max_retained_items=",
+        "generation_retained_bytes=", "generation_max_retained_bytes=",
+    ),
+)
+if "guard reason.isRetryableCapacityPressure else { return nil }" not in swift_udp_staging_source:
+    raise SystemExit("Swift UDP staging teardown drops are not suppressed")
+for case_name, public_reason in (
+    ("flowItems", "flow_items"),
+    ("flowBytes", "flow_bytes"),
+    ("generationItems", "generation_items"),
+    ("generationBytes", "generation_bytes"),
+):
+    literal = f'case {case_name} = "{public_reason}"'
+    if literal not in swift_udp_staging_source:
+        raise SystemExit(f"Swift UDP staging pressure reason missing: {literal}")
+require_udp_order(
+    "fn record_recovery",
+    (
+        "pressure", "cumulative_resumptions", "global_retained_bytes",
+        "global_max_retained_bytes",
+        '"UDP ingress pressure resumed flow pressure=\\"{}\\" '
+        'cumulative_resumptions={} global_retained_bytes={} '
+        'global_max_retained_bytes={}"',
+    ),
+)
+for reason in ("channel_count", "flow_bytes", "global_bytes"):
+    if f'"{reason}"' not in udp_source:
+        raise SystemExit(f"Rust UDP telemetry reason missing: {reason}")
+
+udp_fixtures = (
+    'UDP ingress pressure dropped datagram pressure="channel_count" '
+    'cumulative_drops=1 global_retained_bytes=1 global_max_retained_bytes=2',
+    'UDP ingress pressure resumed flow pressure="channel_count" '
+    'cumulative_resumptions=1 global_retained_bytes=0 global_max_retained_bytes=2',
+    'UDP Swift ingress staging dropped datagrams reason="flow_items" '
+    'cumulative_drop_events=1 cumulative_dropped_items=1 '
+    'cumulative_dropped_bytes_lower_bound=0 generation_retained_items=0 '
+    'generation_max_retained_items=2 generation_retained_bytes=0 '
+    'generation_max_retained_bytes=2',
+    'UDP Swift ingress staging dropped datagrams reason="generation_items" '
+    'cumulative_drop_events=2 cumulative_dropped_items=3 '
+    'cumulative_dropped_bytes_lower_bound=0 generation_retained_items=2 '
+    'generation_max_retained_items=2 generation_retained_bytes=0 '
+    'generation_max_retained_bytes=2',
+)
+for fixture in udp_fixtures:
+    issue = pressure_telemetry_issue(fixture)
+    if issue is not None:
+        raise SystemExit(f"canonical UDP telemetry fixture rejected: {issue}")
+for redacted in (
+    "UDP ingress pressure dropped datagram",
+    'UDP ingress pressure resumed flow pressure="<private>"',
+    'UDP Swift ingress staging dropped datagrams reason="<private>"',
+):
+    if pressure_telemetry_issue(redacted) is None:
+        raise SystemExit("redacted UDP telemetry was not rejected")
 PY
 then
-    echo "Swift pressure telemetry emitters diverged from soak parser" >&2
+    echo "pressure telemetry emitters diverged from soak parser" >&2
     fail=1
 fi
 
 if [ "$fail" -ne 0 ]; then
     exit 1
 fi
-echo "spec parity OK (dev/dist products, keychain names, pressure telemetry schema)"
+echo "spec parity OK (dev/dist products, keychain names, TCP/UDP pressure telemetry schema)"

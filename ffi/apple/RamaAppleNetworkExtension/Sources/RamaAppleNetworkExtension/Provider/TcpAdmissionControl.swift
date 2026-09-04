@@ -1,6 +1,12 @@
 import Foundation
 
+struct TcpAdmissionIdentity: Hashable, Sendable {
+    let engineGeneration: UInt64
+    let nonce: UInt64
+}
+
 struct TcpAdmissionToken: Sendable {
+    let identity: TcpAdmissionIdentity
     let flowId: ObjectIdentifier
     let startedAt: DispatchTime
     let appId: String
@@ -49,7 +55,9 @@ struct TcpOverloadState {
     var startsInFlight: [ObjectIdentifier: TcpAdmissionToken] = [:]
     /// TCP starts admitted but not yet inserted into the live-flow registry.
     /// Counted by the combined hard cap so UDP cannot race through the gap.
-    var liveFlowReservations: Set<ObjectIdentifier> = []
+    /// The operation identity, rather than the reusable object address alone,
+    /// prevents delayed completion from consuming a replacement admission.
+    var liveFlowReservations: [ObjectIdentifier: TcpAdmissionIdentity] = [:]
     var flowApps: [ObjectIdentifier: String] = [:]
     var perAppFlowCounts: [String: Int] = [:]
     private(set) var startLatencyMsWindow: [UInt64] = []

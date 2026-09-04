@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, btree_map::Entry},
     future::{Future, poll_fn},
     sync::{
         Arc, Weak,
@@ -12,7 +12,7 @@ use std::{
 use atomic_waker::AtomicWaker;
 use rama_core::{bytes::Bytes, graceful::ShutdownGuard};
 
-use super::DemandSink;
+use super::UdpDemandSink;
 
 pub const MAX_UDP_DATAGRAM_PAYLOAD_SIZE: usize = u16::MAX as usize;
 pub const DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES: usize = 256 * 1024;
@@ -30,10 +30,40 @@ const NO_GLOBAL_WAITER: u64 = u64::MAX;
 /// byte counter; this only bounds speculative read fanout when capacity is
 /// released.
 const GLOBAL_WAKE_BATCH: usize = 4;
-/// One engine-scoped timer spaces retry batches. A quiet selected flow does
-/// not consume the newly available capacity, so later batches must receive an
-/// opportunity without depending on another payload release.
+/// Bound cold-path FIFO rotation work independently from callback fanout.
+/// At 8,192 waiters this caps a full no-fit pass at 256 paced turns while
+/// keeping the coordinator mutex hold to a small constant.
+const GLOBAL_SCAN_BATCH: usize = 32;
+/// Pace bounded coordinator turns independently of ACK/release signals. This
+/// limits both callback fanout and finite no-fit queue scans to one turn per
+/// millisecond.
 const GLOBAL_WAKE_RETRY: Duration = Duration::from_millis(1);
+/// A selected Apple read which never completes cannot pin provisional global
+/// capacity forever. Completion normally ACKs immediately; this is only the
+/// liveness backstop for a lost/stuck framework callback.
+const GLOBAL_PROBE_LEASE: Duration = Duration::from_millis(10);
+
+struct UdpIngressProbeLease {
+    bytes: usize,
+    expires_at: tokio::time::Instant,
+    flow: Weak<UdpIngressFlowControl>,
+}
+
+#[derive(Default)]
+struct UdpIngressCoordinatorState {
+    waiters: BTreeMap<(u64, usize), Weak<UdpIngressFlowControl>>,
+    leases: BTreeMap<u64, UdpIngressProbeLease>,
+    provisional_bytes: usize,
+    /// Global probe issue pacing. ACK/close signals may free lease slots
+    /// immediately, but cannot cause another coordinator issue turn before
+    /// this instant.
+    wake_not_before: Option<tokio::time::Instant>,
+    /// Remaining waiters in the current bounded rotation pass. Capacity or
+    /// provisional-credit release and new registration start a fresh pass;
+    /// ordinary coalesced signals do not.
+    scan_remaining: usize,
+    observed_opportunity_epoch: u64,
+}
 
 struct UdpIngressCoordinatorSignal {
     pending: AtomicBool,
@@ -106,6 +136,9 @@ pub(super) struct UdpIngressSnapshot {
     pub(super) paused_transitions: u64,
     pub(super) resumed_transitions: u64,
     pub(super) global_waiters: usize,
+    pub(super) provisional_probe_bytes: usize,
+    pub(super) provisional_probe_count: usize,
+    pub(super) coordinator_waiter_inspections: u64,
 }
 
 /// One immutable, engine-generation-scoped UDP ingress budget.
@@ -118,11 +151,13 @@ pub(super) struct UdpIngressBudget {
     retained_bytes: AtomicUsize,
     #[cfg(test)]
     peak_retained_bytes: AtomicUsize,
-    /// Sequence-first ordering provides FIFO opportunity among all fitting
-    /// waiters. Coordinator scans are intentionally cold-path work; with the
-    /// expected hundreds of flows they avoid size-based starvation cheaply.
-    waiters: parking_lot::Mutex<BTreeMap<(u64, usize), Weak<UdpIngressFlowControl>>>,
+    /// Sequence-first ordering provides FIFO opportunity. A bounded turn
+    /// rotates nonfitting heads to the tail, so mixed sizes make progress
+    /// without an O(waiter-count) scan or permanent head-of-line starvation.
+    coordinator: parking_lot::Mutex<UdpIngressCoordinatorState>,
     next_waiter_sequence: AtomicU64,
+    next_probe_id: AtomicU64,
+    opportunity_epoch: AtomicU64,
     waiter_count: AtomicUsize,
     coordinator_signal: Arc<UdpIngressCoordinatorSignal>,
     #[cfg(test)]
@@ -139,6 +174,8 @@ pub(super) struct UdpIngressBudget {
     paused_transitions: AtomicU64,
     #[cfg(test)]
     resumed_transitions: AtomicU64,
+    #[cfg(test)]
+    coordinator_waiter_inspections: AtomicU64,
 }
 
 impl UdpIngressBudget {
@@ -148,8 +185,10 @@ impl UdpIngressBudget {
             retained_bytes: AtomicUsize::new(0),
             #[cfg(test)]
             peak_retained_bytes: AtomicUsize::new(0),
-            waiters: parking_lot::Mutex::new(BTreeMap::new()),
+            coordinator: parking_lot::Mutex::new(UdpIngressCoordinatorState::default()),
             next_waiter_sequence: AtomicU64::new(0),
+            next_probe_id: AtomicU64::new(1),
+            opportunity_epoch: AtomicU64::new(1),
             waiter_count: AtomicUsize::new(0),
             coordinator_signal: Arc::new(UdpIngressCoordinatorSignal::new()),
             #[cfg(test)]
@@ -166,7 +205,13 @@ impl UdpIngressBudget {
             paused_transitions: AtomicU64::new(0),
             #[cfg(test)]
             resumed_transitions: AtomicU64::new(0),
+            #[cfg(test)]
+            coordinator_waiter_inspections: AtomicU64::new(0),
         }
+    }
+
+    pub(super) fn max_retained_bytes(&self) -> usize {
+        self.max_retained_bytes
     }
 
     fn try_reserve(&self, len: usize) -> bool {
@@ -175,7 +220,7 @@ impl UdpIngressBudget {
         }
         let Ok(_previous) =
             self.retained_bytes
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                     current
                         .checked_add(len)
                         .filter(|next| *next <= self.max_retained_bytes)
@@ -196,6 +241,7 @@ impl UdpIngressBudget {
         let previous = self.retained_bytes.fetch_sub(len, Ordering::AcqRel);
         debug_assert!(previous >= len, "UDP global byte reservation underflow");
         if self.waiter_count.load(Ordering::Acquire) != 0 {
+            self.opportunity_epoch.fetch_add(1, Ordering::Release);
             self.coordinator_signal.kick();
         }
     }
@@ -213,30 +259,35 @@ impl UdpIngressBudget {
     }
 
     fn register_waiter(&self, flow: &Arc<UdpIngressFlowControl>) {
-        let mut waiters = self.waiters.lock();
+        let mut coordinator = self.coordinator.lock();
         if flow.state.load(Ordering::Acquire) != INGRESS_PAUSED_GLOBAL_BYTES
             || flow.global_waiter_sequence.load(Ordering::Relaxed) != NO_GLOBAL_WAITER
         {
             return;
         }
-        let Ok(sequence) = self.next_waiter_sequence.fetch_update(
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-            |current| current.checked_add(1),
-        ) else {
+        let Ok(sequence) =
+            self.next_waiter_sequence
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    current.checked_add(1)
+                })
+        else {
             // Exhaustion requires 2^64 registrations in one engine lifetime.
             // Fail live instead of leaving the flow permanently paused.
-            drop(waiters);
-            _ = flow.resume(INGRESS_PAUSED_GLOBAL_BYTES);
+            drop(coordinator);
+            _ = flow.resume(INGRESS_PAUSED_GLOBAL_BYTES, 0);
             return;
         };
         let needed_bytes = flow.blocked_bytes.load(Ordering::Acquire);
         flow.global_waiter_sequence
             .store(sequence, Ordering::Release);
-        let replaced = waiters.insert((sequence, needed_bytes), Arc::downgrade(flow));
+        let replaced = coordinator
+            .waiters
+            .insert((sequence, needed_bytes), Arc::downgrade(flow));
         debug_assert!(replaced.is_none(), "UDP global waiter key collision");
         self.waiter_count.fetch_add(1, Ordering::Release);
-        drop(waiters);
+        self.opportunity_epoch.fetch_add(1, Ordering::Release);
+        let provisional = coordinator.provisional_bytes;
+        drop(coordinator);
 
         // Close the classic missed-wakeup store-buffering race without a
         // lock or sequentially-consistent fence on normal release.
@@ -246,7 +297,8 @@ impl UdpIngressBudget {
         // publication and kicks.
         let retained = self.retained_bytes.fetch_add(0, Ordering::AcqRel);
         if retained
-            .checked_add(needed_bytes)
+            .checked_add(provisional)
+            .and_then(|used| used.checked_add(needed_bytes))
             .is_some_and(|next| next <= self.max_retained_bytes)
         {
             self.coordinator_signal.kick();
@@ -254,7 +306,7 @@ impl UdpIngressBudget {
     }
 
     fn remove_waiter(&self, flow: &UdpIngressFlowControl) {
-        let mut waiters = self.waiters.lock();
+        let mut coordinator = self.coordinator.lock();
         let sequence = flow
             .global_waiter_sequence
             .swap(NO_GLOBAL_WAITER, Ordering::AcqRel);
@@ -262,7 +314,7 @@ impl UdpIngressBudget {
             return;
         }
         let needed_bytes = flow.blocked_bytes.load(Ordering::Acquire);
-        let removed = waiters.remove(&(sequence, needed_bytes));
+        let removed = coordinator.waiters.remove(&(sequence, needed_bytes));
         debug_assert_eq!(
             removed.as_ref().map(Weak::as_ptr),
             Some(flow as *const _),
@@ -273,46 +325,234 @@ impl UdpIngressBudget {
         }
     }
 
-    /// Give at most [`GLOBAL_WAKE_BATCH`] fitting flows one retry opportunity.
-    ///
-    /// Wakes are deliberately not byte reservations: the exact CAS in
-    /// `try_reserve` remains authoritative, while bounded speculative fanout
-    /// lets multiple flows make progress without creating an unbounded FFI
-    /// callback herd.
-    fn wake_fitting_batch(&self) -> usize {
+    /// Give at most [`GLOBAL_WAKE_BATCH`] fitting flows one leased retry.
+    /// Provisional bytes are scheduling credits, not payload reservations:
+    /// `try_reserve` remains the authoritative admission CAS. Subtracting each
+    /// issued credit makes callback fanout respect the exact byte headroom.
+    fn wake_fitting_batch(&self, now: tokio::time::Instant) -> usize {
         let selected = {
-            let mut waiters = self.waiters.lock();
-            let available = self
+            let mut coordinator = self.coordinator.lock();
+            self.expire_probe_leases_locked(&mut coordinator, now);
+            let opportunity_epoch = self.opportunity_epoch.load(Ordering::Acquire);
+            if coordinator.observed_opportunity_epoch != opportunity_epoch {
+                coordinator.observed_opportunity_epoch = opportunity_epoch;
+                coordinator.scan_remaining = coordinator.waiters.len();
+            }
+            if coordinator
+                .wake_not_before
+                .is_some_and(|not_before| now < not_before)
+            {
+                return 0;
+            }
+            coordinator.wake_not_before = None;
+            let mut available = self
                 .max_retained_bytes
-                .saturating_sub(self.retained_bytes.load(Ordering::Acquire));
-            let mut selected = Vec::with_capacity(GLOBAL_WAKE_BATCH);
+                .saturating_sub(self.retained_bytes.load(Ordering::Acquire))
+                .saturating_sub(coordinator.provisional_bytes);
+            let available_probe_slots = GLOBAL_WAKE_BATCH.saturating_sub(coordinator.leases.len());
+            let mut selected = Vec::with_capacity(available_probe_slots);
+            let mut inspected = 0;
 
-            while selected.len() < GLOBAL_WAKE_BATCH {
-                let candidate_key = waiters
-                    .keys()
-                    .find(|(_, needed_bytes)| *needed_bytes <= available)
-                    .copied();
-                let Some(key) = candidate_key else {
+            // Inspect at most `GLOBAL_SCAN_BATCH` FIFO heads while issuing at
+            // most `GLOBAL_WAKE_BATCH` callbacks. A nonfitting or
+            // already-leased flow rotates to the tail, providing eventual
+            // opportunity for mixed sizes without an O(waiter-count) fitting
+            // scan.
+            while selected.len() < available_probe_slots
+                && inspected < GLOBAL_SCAN_BATCH
+                && coordinator.scan_remaining > 0
+            {
+                let Some((key, candidate)) = coordinator
+                    .waiters
+                    .first_key_value()
+                    .map(|(&key, candidate)| (key, candidate.clone()))
+                else {
                     break;
                 };
-                let Some(candidate) = waiters.remove(&key) else {
+                inspected += 1;
+                coordinator.scan_remaining -= 1;
+                #[cfg(test)]
+                self.coordinator_waiter_inspections
+                    .fetch_add(1, Ordering::Relaxed);
+                let Some(flow) = candidate.upgrade() else {
+                    _ = coordinator.waiters.remove(&key);
+                    self.waiter_count.fetch_sub(1, Ordering::Release);
+                    continue;
+                };
+                let needed_bytes = key.1;
+                if needed_bytes > available || flow.global_probe_id.load(Ordering::Acquire) != 0 {
+                    let Some(_) = coordinator.waiters.remove(&key) else {
+                        break;
+                    };
+                    let Ok(new_sequence) = self.next_waiter_sequence.try_update(
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                        |current| current.checked_add(1),
+                    ) else {
+                        // Sequence exhaustion is unreachable in practice;
+                        // retain the waiter and quiesce rather than spin.
+                        coordinator.waiters.insert(key, Arc::downgrade(&flow));
+                        coordinator.scan_remaining = 0;
+                        break;
+                    };
+                    flow.global_waiter_sequence
+                        .store(new_sequence, Ordering::Release);
+                    let replaced = coordinator
+                        .waiters
+                        .insert((new_sequence, needed_bytes), Arc::downgrade(&flow));
+                    debug_assert!(replaced.is_none(), "UDP rotated waiter key collision");
+                    continue;
+                }
+                let Some(_) = coordinator.waiters.remove(&key) else {
                     break;
                 };
                 self.waiter_count.fetch_sub(1, Ordering::Release);
-                if let Some(flow) = candidate.upgrade() {
-                    flow.global_waiter_sequence
-                        .store(NO_GLOBAL_WAITER, Ordering::Release);
-                    selected.push(flow);
-                }
+                let Ok(probe_id) = self.next_probe_id.try_update(
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                    |current| current.checked_add(1),
+                ) else {
+                    // Never reuse an ID or issue an unaccounted callback.
+                    // Exhaustion requires 2^64 probes in one generation;
+                    // leave this waiter registered and fail safely.
+                    coordinator.waiters.insert(key, Arc::downgrade(&flow));
+                    self.waiter_count.fetch_add(1, Ordering::Release);
+                    break;
+                };
+                available -= needed_bytes;
+                coordinator.provisional_bytes += needed_bytes;
+                let previous = flow.global_probe_id.swap(probe_id, Ordering::AcqRel);
+                debug_assert_eq!(previous, 0, "UDP flow received overlapping probe leases");
+                let replaced = coordinator.leases.insert(
+                    probe_id,
+                    UdpIngressProbeLease {
+                        bytes: needed_bytes,
+                        expires_at: now + GLOBAL_PROBE_LEASE,
+                        flow: Arc::downgrade(&flow),
+                    },
+                );
+                debug_assert!(replaced.is_none(), "UDP probe ID collision");
+                flow.global_waiter_sequence
+                    .store(NO_GLOBAL_WAITER, Ordering::Release);
+                selected.push((flow, probe_id));
+            }
+            if inspected != 0 {
+                coordinator.wake_not_before = Some(now + GLOBAL_WAKE_RETRY);
             }
             selected
         };
 
         let selected_count = selected.len();
-        for flow in selected {
-            _ = flow.resume(INGRESS_PAUSED_GLOBAL_BYTES);
+        for (flow, probe_id) in selected {
+            if !flow.resume(INGRESS_PAUSED_GLOBAL_BYTES, probe_id) && probe_id != 0 {
+                self.release_probe_lease(&flow, probe_id);
+            }
         }
         selected_count
+    }
+
+    fn expire_probe_leases_locked(
+        &self,
+        coordinator: &mut UdpIngressCoordinatorState,
+        now: tokio::time::Instant,
+    ) {
+        let expired: Vec<_> = coordinator
+            .leases
+            .iter()
+            .filter_map(|(&id, lease)| (lease.expires_at <= now).then_some(id))
+            .collect();
+        let released_any = !expired.is_empty();
+        for id in expired {
+            let Some(lease) = coordinator.leases.remove(&id) else {
+                continue;
+            };
+            assert!(
+                coordinator.provisional_bytes >= lease.bytes,
+                "UDP provisional byte reservation underflow"
+            );
+            coordinator.provisional_bytes -= lease.bytes;
+            if let Some(flow) = lease.flow.upgrade() {
+                _ = flow.global_probe_id.compare_exchange(
+                    id,
+                    0,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+            }
+        }
+        if released_any && self.waiter_count.load(Ordering::Acquire) != 0 {
+            self.opportunity_epoch.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    fn release_probe_lease(&self, flow: &UdpIngressFlowControl, probe_id: u64) -> bool {
+        if probe_id == 0 {
+            return false;
+        }
+        let released = {
+            let mut coordinator = self.coordinator.lock();
+            match coordinator.leases.entry(probe_id) {
+                Entry::Vacant(_) => false,
+                Entry::Occupied(entry) => {
+                    let matches = entry
+                        .get()
+                        .flow
+                        .upgrade()
+                        .is_some_and(|owner| std::ptr::eq(Arc::as_ptr(&owner), flow));
+                    if !matches {
+                        false
+                    } else {
+                        let lease = entry.remove();
+                        assert!(
+                            coordinator.provisional_bytes >= lease.bytes,
+                            "UDP provisional byte reservation underflow"
+                        );
+                        coordinator.provisional_bytes -= lease.bytes;
+                        _ = flow.global_probe_id.compare_exchange(
+                            probe_id,
+                            0,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        );
+                        true
+                    }
+                }
+            }
+        };
+        if released && self.waiter_count.load(Ordering::Acquire) != 0 {
+            self.opportunity_epoch.fetch_add(1, Ordering::Release);
+            self.coordinator_signal.kick();
+        }
+        released
+    }
+
+    fn next_coordinator_deadline(&self, now: tokio::time::Instant) -> Option<tokio::time::Instant> {
+        let mut coordinator = self.coordinator.lock();
+        let opportunity_epoch = self.opportunity_epoch.load(Ordering::Acquire);
+        if coordinator.observed_opportunity_epoch != opportunity_epoch {
+            coordinator.observed_opportunity_epoch = opportunity_epoch;
+            coordinator.scan_remaining = coordinator.waiters.len();
+        }
+        let lease_deadline = coordinator
+            .leases
+            .values()
+            .map(|lease| lease.expires_at)
+            .min();
+        if coordinator.leases.len() >= GLOBAL_WAKE_BATCH {
+            return lease_deadline;
+        }
+        let waiter_deadline = (coordinator.scan_remaining != 0 && !coordinator.waiters.is_empty())
+            .then(|| {
+                coordinator
+                    .wake_not_before
+                    .filter(|not_before| *not_before > now)
+                    .unwrap_or(now + GLOBAL_WAKE_RETRY)
+            });
+        match (waiter_deadline, lease_deadline) {
+            (Some(waiter), Some(lease)) => Some(waiter.min(lease)),
+            (Some(waiter), None) => Some(waiter),
+            (None, lease) => lease,
+        }
     }
 
     #[cfg(test)]
@@ -329,12 +569,17 @@ impl UdpIngressBudget {
         };
         let total = saturating_increment(counter);
         if telemetry_sample(total) {
+            let retained = self.retained_bytes.load(Ordering::Relaxed);
             tracing::warn!(
                 pressure,
                 cumulative_drops = total,
-                global_retained_bytes = self.retained_bytes.load(Ordering::Relaxed),
+                global_retained_bytes = retained,
                 global_max_retained_bytes = self.max_retained_bytes,
-                "UDP ingress pressure dropped datagram"
+                "UDP ingress pressure dropped datagram pressure=\"{}\" cumulative_drops={} global_retained_bytes={} global_max_retained_bytes={}",
+                pressure,
+                total,
+                retained,
+                self.max_retained_bytes,
             );
         }
     }
@@ -348,18 +593,24 @@ impl UdpIngressBudget {
         };
         let total = saturating_increment(counter);
         if telemetry_sample(total) {
+            let retained = self.retained_bytes.load(Ordering::Relaxed);
             tracing::info!(
                 pressure,
                 cumulative_resumptions = total,
-                global_retained_bytes = self.retained_bytes.load(Ordering::Relaxed),
+                global_retained_bytes = retained,
                 global_max_retained_bytes = self.max_retained_bytes,
-                "UDP ingress pressure resumed flow"
+                "UDP ingress pressure resumed flow pressure=\"{}\" cumulative_resumptions={} global_retained_bytes={} global_max_retained_bytes={}",
+                pressure,
+                total,
+                retained,
+                self.max_retained_bytes,
             );
         }
     }
 
     #[cfg(test)]
     pub(super) fn snapshot(&self) -> UdpIngressSnapshot {
+        let coordinator = self.coordinator.lock();
         UdpIngressSnapshot {
             retained_bytes: self.retained_bytes.load(Ordering::Acquire),
             peak_retained_bytes: self.peak_retained_bytes.load(Ordering::Relaxed),
@@ -374,6 +625,11 @@ impl UdpIngressBudget {
             paused_transitions: self.paused_transitions.load(Ordering::Relaxed),
             resumed_transitions: self.resumed_transitions.load(Ordering::Relaxed),
             global_waiters: self.waiter_count.load(Ordering::Acquire),
+            provisional_probe_bytes: coordinator.provisional_bytes,
+            provisional_probe_count: coordinator.leases.len(),
+            coordinator_waiter_inspections: self
+                .coordinator_waiter_inspections
+                .load(Ordering::Relaxed),
         }
     }
 }
@@ -383,7 +639,7 @@ fn telemetry_sample(total: u64) -> bool {
 }
 
 fn saturating_increment(counter: &AtomicU64) -> u64 {
-    match counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+    match counter.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
         Some(current.saturating_add(1))
     }) {
         Ok(previous) => previous.saturating_add(1),
@@ -401,42 +657,31 @@ async fn run_udp_ingress_coordinator<F>(
     F: Future<Output = ()>,
 {
     tokio::pin!(shutdown);
-    // One timer allocation for this engine generation. It is reset only on
-    // the global-overload path and never touched by normal packet release.
-    let retry = tokio::time::sleep(Duration::ZERO);
-    tokio::pin!(retry);
-
+    let mut deadline = None;
     'coordinator: loop {
-        tokio::select! {
-            biased;
-            () = &mut shutdown => break 'coordinator,
-            () = signal.wait() => {}
-        }
-
-        loop {
-            let Some(budget) = budget.upgrade() else {
-                break 'coordinator;
-            };
-            let resumed = budget.wake_fitting_batch();
-            drop(budget);
-            if resumed == 0 {
-                break;
-            }
-
-            retry
-                .as_mut()
-                .reset(tokio::time::Instant::now() + GLOBAL_WAKE_RETRY);
+        if let Some(at) = deadline {
             tokio::select! {
                 biased;
                 () = &mut shutdown => break 'coordinator,
-                () = &mut retry => {}
+                () = signal.wait() => {}
+                () = tokio::time::sleep_until(at) => {
+                    signal.coalesce_before_probe();
+                }
             }
-            // Any edges accumulated during the cooldown are represented by
-            // the capacity probe immediately below. A later racing edge stays
-            // pending and is consumed by the outer loop if that probe finds
-            // nothing to resume.
-            signal.coalesce_before_probe();
+        } else {
+            tokio::select! {
+                biased;
+                () = &mut shutdown => break 'coordinator,
+                () = signal.wait() => {}
+            }
         }
+
+        let Some(budget) = budget.upgrade() else {
+            break 'coordinator;
+        };
+        let now = tokio::time::Instant::now();
+        _ = budget.wake_fitting_batch(now);
+        deadline = budget.next_coordinator_deadline(now);
     }
 
     // `AtomicWaker::wake` normally consumes its stored waker. Shutdown can
@@ -451,16 +696,28 @@ pub(super) struct UdpIngressFlowControl {
     state: AtomicU8,
     blocked_bytes: AtomicUsize,
     global_waiter_sequence: AtomicU64,
+    global_probe_id: AtomicU64,
     demand_gate: parking_lot::Mutex<()>,
-    demand: DemandSink,
+    demand: UdpDemandSink,
+    auto_ack_probe_after_demand: bool,
     global: Arc<UdpIngressBudget>,
 }
 
 impl UdpIngressFlowControl {
+    #[cfg(test)]
     pub(super) fn new(
         max_retained_bytes: usize,
         global: Arc<UdpIngressBudget>,
-        demand: DemandSink,
+        demand: UdpDemandSink,
+    ) -> Arc<Self> {
+        Self::new_with_auto_ack(max_retained_bytes, global, demand, false)
+    }
+
+    pub(super) fn new_with_auto_ack(
+        max_retained_bytes: usize,
+        global: Arc<UdpIngressBudget>,
+        demand: UdpDemandSink,
+        auto_ack_probe_after_demand: bool,
     ) -> Arc<Self> {
         Arc::new(Self {
             max_retained_bytes,
@@ -468,18 +725,24 @@ impl UdpIngressFlowControl {
             state: AtomicU8::new(INGRESS_OPEN),
             blocked_bytes: AtomicUsize::new(0),
             global_waiter_sequence: AtomicU64::new(NO_GLOBAL_WAITER),
+            global_probe_id: AtomicU64::new(0),
             demand_gate: parking_lot::Mutex::new(()),
             demand,
+            auto_ack_probe_after_demand,
             global,
         })
     }
 
     pub(super) fn request_read(&self) {
-        self.dispatch_demand_if_open();
+        self.dispatch_demand_if_open(0);
+    }
+
+    pub(super) fn acknowledge_probe(&self, probe_id: u64) {
+        _ = self.global.release_probe_lease(self, probe_id);
     }
 
     pub(super) fn on_channel_capacity_released(&self) {
-        self.resume(INGRESS_PAUSED_COUNT);
+        self.resume(INGRESS_PAUSED_COUNT, 0);
     }
 
     pub(super) fn close(self: &Arc<Self>) {
@@ -492,6 +755,10 @@ impl UdpIngressFlowControl {
         };
         if old_state == INGRESS_PAUSED_GLOBAL_BYTES {
             self.global.remove_waiter(self);
+        }
+        let probe_id = self.global_probe_id.load(Ordering::Acquire);
+        if probe_id != 0 {
+            _ = self.global.release_probe_lease(self, probe_id);
         }
     }
 
@@ -525,7 +792,7 @@ impl UdpIngressFlowControl {
             // reservation and immediately drops it, rather than trusting a
             // potentially stale capacity snapshot. Re-open immediately instead
             // of stranding an empty flow after its only release edge.
-            self.resume(INGRESS_PAUSED_COUNT);
+            self.resume(INGRESS_PAUSED_COUNT, 0);
         }
     }
 
@@ -536,7 +803,7 @@ impl UdpIngressFlowControl {
         let len = bytes.len();
         let Ok(_) =
             self.retained_bytes
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                     current
                         .checked_add(len)
                         .filter(|next| *next <= self.max_retained_bytes)
@@ -591,7 +858,7 @@ impl UdpIngressFlowControl {
         true
     }
 
-    fn resume(&self, expected_state: u8) -> bool {
+    fn resume(&self, expected_state: u8, probe_id: u64) -> bool {
         if self
             .state
             .compare_exchange(
@@ -614,14 +881,17 @@ impl UdpIngressFlowControl {
             .resumed_transitions
             .fetch_add(1, Ordering::Relaxed);
         self.global.record_recovery(expected_state);
-        self.dispatch_demand_if_open();
+        self.dispatch_demand_if_open(probe_id);
         true
     }
 
-    fn dispatch_demand_if_open(&self) {
+    fn dispatch_demand_if_open(&self, probe_id: u64) {
         let _gate = self.demand_gate.lock();
         if self.state.load(Ordering::Acquire) == INGRESS_OPEN {
-            (self.demand)();
+            (self.demand)(probe_id);
+            if self.auto_ack_probe_after_demand {
+                self.acknowledge_probe(probe_id);
+            }
         }
     }
 
@@ -647,7 +917,7 @@ impl UdpIngressFlowControl {
             .checked_add(needed)
             .is_some_and(|next| next <= self.max_retained_bytes);
         if fits {
-            self.resume(INGRESS_PAUSED_FLOW_BYTES);
+            self.resume(INGRESS_PAUSED_FLOW_BYTES, 0);
         }
     }
 }
@@ -693,7 +963,7 @@ mod tests {
                 let control = UdpIngressFlowControl::new(
                     MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
                     global,
-                    Arc::new(|| {}),
+                    Arc::new(|_| {}),
                 );
                 let bytes = vec![0xA5; MAX_UDP_DATAGRAM_PAYLOAD_SIZE];
                 barrier.wait();
@@ -735,7 +1005,7 @@ mod tests {
         let control = UdpIngressFlowControl::new(
             DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES,
             global.clone(),
-            Arc::new(move || {
+            Arc::new(move |_| {
                 demand_count_for_sink.fetch_add(1, Ordering::Relaxed);
             }),
         );
@@ -756,7 +1026,7 @@ mod tests {
     #[test]
     fn coordinator_wakes_a_fitting_waiter_not_the_newest_waiter() {
         let global = Arc::new(UdpIngressBudget::new(100));
-        let holder = UdpIngressFlowControl::new(100, global.clone(), Arc::new(|| {}));
+        let holder = UdpIngressFlowControl::new(100, global.clone(), Arc::new(|_| {}));
         let held_small = holder.try_copy_payload(&[0; 10]).expect("reserve 10");
         let held_large = holder.try_copy_payload(&[0; 90]).expect("reserve 90");
 
@@ -765,7 +1035,7 @@ mod tests {
         let small = UdpIngressFlowControl::new(
             100,
             global.clone(),
-            Arc::new(move || {
+            Arc::new(move |_| {
                 small_demands_sink.fetch_add(1, Ordering::Relaxed);
             }),
         );
@@ -774,7 +1044,7 @@ mod tests {
         let large = UdpIngressFlowControl::new(
             100,
             global.clone(),
-            Arc::new(move || {
+            Arc::new(move |_| {
                 large_demands_sink.fetch_add(1, Ordering::Relaxed);
             }),
         );
@@ -789,7 +1059,7 @@ mod tests {
             0,
             "payload drop must not synchronously dispatch demand"
         );
-        assert_eq!(global.wake_fitting_batch(), 1);
+        assert_eq!(global.wake_fitting_batch(tokio::time::Instant::now()), 1);
         assert_eq!(small_demands.load(Ordering::Relaxed), 1);
         assert_eq!(large_demands.load(Ordering::Relaxed), 0);
         assert_eq!(global.snapshot().global_waiters, 1);
@@ -802,9 +1072,9 @@ mod tests {
     }
 
     #[test]
-    fn one_coordinator_turn_has_strictly_bounded_fifo_fanout() {
+    fn coordinator_never_over_wakes_byte_capacity_and_ack_advances_fifo() {
         let global = Arc::new(UdpIngressBudget::new(20));
-        let holder = UdpIngressFlowControl::new(20, global.clone(), Arc::new(|| {}));
+        let holder = UdpIngressFlowControl::new(20, global.clone(), Arc::new(|_| {}));
         let released = holder
             .try_copy_payload(&[0; 10])
             .expect("reserve first half");
@@ -819,7 +1089,7 @@ mod tests {
             let flow = UdpIngressFlowControl::new(
                 20,
                 global.clone(),
-                Arc::new(move || order.lock().push(index)),
+                Arc::new(move |probe_id| order.lock().push((index, probe_id))),
             );
             assert!(flow.try_copy_payload(&[0; 10]).is_none());
             flows.push(flow);
@@ -827,13 +1097,28 @@ mod tests {
 
         drop(released);
         assert!(order.lock().is_empty(), "release must only atomically kick");
-        assert_eq!(global.wake_fitting_batch(), GLOBAL_WAKE_BATCH);
-        assert_eq!(&*order.lock(), &[0, 1, 2, 3]);
-        assert_eq!(global.snapshot().global_waiters, 2);
+        let mut now = tokio::time::Instant::now();
+        assert_eq!(global.wake_fitting_batch(now), 1);
+        assert_eq!(order.lock().len(), 1);
+        assert_eq!(global.snapshot().provisional_probe_bytes, 10);
+        assert_eq!(global.snapshot().provisional_probe_count, 1);
 
-        assert_eq!(global.wake_fitting_batch(), 2);
-        assert_eq!(&*order.lock(), &[0, 1, 2, 3, 4, 5]);
+        // The same 10 bytes of headroom cannot provision another 10-byte
+        // callback until the exact first lease is acknowledged.
+        assert_eq!(global.wake_fitting_batch(now), 0);
+        for expected_index in 0..GLOBAL_WAKE_BATCH + 2 {
+            let (index, probe_id) = order.lock()[expected_index];
+            assert_eq!(index, expected_index);
+            assert_ne!(probe_id, 0);
+            flows[index].acknowledge_probe(probe_id);
+            if expected_index + 1 < GLOBAL_WAKE_BATCH + 2 {
+                assert_eq!(global.wake_fitting_batch(now), 0);
+                now += GLOBAL_WAKE_RETRY;
+                assert_eq!(global.wake_fitting_batch(now), 1);
+            }
+        }
         assert_eq!(global.snapshot().global_waiters, 0);
+        assert_eq!(global.snapshot().provisional_probe_bytes, 0);
 
         for flow in flows {
             flow.close();
@@ -846,7 +1131,7 @@ mod tests {
     #[test]
     fn global_release_does_not_wake_when_no_waiter_fits() {
         let global = Arc::new(UdpIngressBudget::new(100));
-        let holder = UdpIngressFlowControl::new(100, global.clone(), Arc::new(|| {}));
+        let holder = UdpIngressFlowControl::new(100, global.clone(), Arc::new(|_| {}));
         let released = holder.try_copy_payload(&[0; 10]).expect("reserve 10");
         let retained = holder.try_copy_payload(&[0; 90]).expect("reserve 90");
         let demands = Arc::new(AtomicUsize::new(0));
@@ -854,7 +1139,7 @@ mod tests {
         let waiter = UdpIngressFlowControl::new(
             100,
             global.clone(),
-            Arc::new(move || {
+            Arc::new(move |_| {
                 demands_sink.fetch_add(1, Ordering::Relaxed);
             }),
         );
@@ -862,7 +1147,7 @@ mod tests {
 
         drop(released);
         assert_eq!(demands.load(Ordering::Relaxed), 0);
-        assert_eq!(global.wake_fitting_batch(), 0);
+        assert_eq!(global.wake_fitting_batch(tokio::time::Instant::now()), 0);
         assert_eq!(global.snapshot().global_waiters, 1);
 
         waiter.close();
@@ -874,22 +1159,23 @@ mod tests {
     #[test]
     fn republished_waiter_kicks_after_release_in_pop_gap() {
         let global = Arc::new(UdpIngressBudget::new(10));
-        let holder = UdpIngressFlowControl::new(10, global.clone(), Arc::new(|| {}));
+        let holder = UdpIngressFlowControl::new(10, global.clone(), Arc::new(|_| {}));
         let retained = holder.try_copy_payload(&[0; 10]).expect("fill budget");
         let demands = Arc::new(AtomicUsize::new(0));
         let demands_for_sink = demands.clone();
         let waiter = UdpIngressFlowControl::new(
             10,
             global.clone(),
-            Arc::new(move || {
+            Arc::new(move |_| {
                 demands_for_sink.fetch_add(1, Ordering::Relaxed);
             }),
         );
         assert!(waiter.try_copy_payload(&[0; 10]).is_none());
 
         {
-            let mut waiters = global.waiters.lock();
-            let ((_sequence, _needed), candidate) = waiters.pop_first().expect("registered waiter");
+            let mut coordinator = global.coordinator.lock();
+            let ((_sequence, _needed), candidate) =
+                coordinator.waiters.pop_first().expect("registered waiter");
             let selected = candidate.upgrade().expect("live waiter");
             assert!(Arc::ptr_eq(&selected, &waiter));
             waiter
@@ -904,7 +1190,7 @@ mod tests {
         assert_eq!(demands.load(Ordering::Relaxed), 0);
         global.register_waiter(&waiter);
         assert!(global.coordinator_signal.pending.load(Ordering::Acquire));
-        assert_eq!(global.wake_fitting_batch(), 1);
+        assert_eq!(global.wake_fitting_batch(tokio::time::Instant::now()), 1);
         assert_eq!(demands.load(Ordering::Relaxed), 1);
         assert_eq!(global.snapshot().global_waiters, 0);
 
@@ -915,14 +1201,14 @@ mod tests {
     #[test]
     fn resume_never_clobbers_a_new_waiter_blocked_size() {
         let global = Arc::new(UdpIngressBudget::new(10));
-        let holder = UdpIngressFlowControl::new(10, global.clone(), Arc::new(|| {}));
+        let holder = UdpIngressFlowControl::new(10, global.clone(), Arc::new(|_| {}));
         let retained = holder.try_copy_payload(&[0; 10]).expect("fill budget");
-        let waiter = UdpIngressFlowControl::new(10, global.clone(), Arc::new(|| {}));
+        let waiter = UdpIngressFlowControl::new(10, global.clone(), Arc::new(|_| {}));
         assert!(waiter.try_copy_payload(&[0; 7]).is_none());
         assert_eq!(waiter.blocked_bytes.load(Ordering::Acquire), 7);
 
         global.remove_waiter(&waiter);
-        assert!(waiter.resume(INGRESS_PAUSED_GLOBAL_BYTES));
+        assert!(waiter.resume(INGRESS_PAUSED_GLOBAL_BYTES, 0));
         assert_eq!(
             waiter.blocked_bytes.load(Ordering::Acquire),
             7,
@@ -948,7 +1234,7 @@ mod tests {
         let control = UdpIngressFlowControl::new(
             10,
             global.clone(),
-            Arc::new(move || {
+            Arc::new(move |_| {
                 demands_for_sink.fetch_add(1, Ordering::Relaxed);
             }),
         );
@@ -978,12 +1264,12 @@ mod tests {
         let retaining_control = UdpIngressFlowControl::new(
             MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
             global.clone(),
-            Arc::new(|| {}),
+            Arc::new(|_| {}),
         );
         let waiting_control = UdpIngressFlowControl::new(
             MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
             global.clone(),
-            Arc::new(move || {
+            Arc::new(move |_| {
                 demand_count_for_sink.fetch_add(1, Ordering::Relaxed);
             }),
         );
@@ -1003,14 +1289,91 @@ mod tests {
         retaining_control.close();
     }
 
+    #[test]
+    fn stale_probe_ack_cannot_release_a_newer_lease() {
+        let global = Arc::new(UdpIngressBudget::new(10));
+        let holder = UdpIngressFlowControl::new(10, global.clone(), Arc::new(|_| {}));
+        let retained = holder.try_copy_payload(&[0; 10]).expect("fill budget");
+        let first_id = Arc::new(AtomicU64::new(0));
+        let first_id_sink = first_id.clone();
+        let first = UdpIngressFlowControl::new(
+            10,
+            global.clone(),
+            Arc::new(move |id| first_id_sink.store(id, Ordering::Release)),
+        );
+        let second_id = Arc::new(AtomicU64::new(0));
+        let second_id_sink = second_id.clone();
+        let second = UdpIngressFlowControl::new(
+            10,
+            global.clone(),
+            Arc::new(move |id| second_id_sink.store(id, Ordering::Release)),
+        );
+        assert!(first.try_copy_payload(&[0; 10]).is_none());
+        assert!(second.try_copy_payload(&[0; 10]).is_none());
+        drop(retained);
+        let now = tokio::time::Instant::now();
+        assert_eq!(global.wake_fitting_batch(now), 1);
+        let old_id = first_id.load(Ordering::Acquire);
+        assert_ne!(old_id, 0);
+        first.acknowledge_probe(old_id);
+        assert_eq!(global.wake_fitting_batch(now), 0);
+        assert_eq!(global.wake_fitting_batch(now + GLOBAL_WAKE_RETRY), 1);
+        let new_id = second_id.load(Ordering::Acquire);
+        assert_ne!(new_id, 0);
+        assert_ne!(new_id, old_id);
+
+        first.acknowledge_probe(old_id);
+        assert_eq!(global.snapshot().provisional_probe_count, 1);
+        assert_eq!(global.snapshot().provisional_probe_bytes, 10);
+        second.acknowledge_probe(new_id);
+        assert_eq!(global.snapshot().provisional_probe_count, 0);
+
+        first.close();
+        second.close();
+        holder.close();
+    }
+
+    #[test]
+    fn close_releases_an_active_probe_once_and_advances_fifo() {
+        let global = Arc::new(UdpIngressBudget::new(10));
+        let holder = UdpIngressFlowControl::new(10, global.clone(), Arc::new(|_| {}));
+        let retained = holder.try_copy_payload(&[0; 10]).expect("fill budget");
+        let first = UdpIngressFlowControl::new(10, global.clone(), Arc::new(|_| {}));
+        let second_demands = Arc::new(AtomicUsize::new(0));
+        let second_demands_sink = second_demands.clone();
+        let second = UdpIngressFlowControl::new(
+            10,
+            global.clone(),
+            Arc::new(move |_| {
+                second_demands_sink.fetch_add(1, Ordering::Relaxed);
+            }),
+        );
+        assert!(first.try_copy_payload(&[0; 10]).is_none());
+        assert!(second.try_copy_payload(&[0; 10]).is_none());
+        drop(retained);
+        let now = tokio::time::Instant::now();
+        assert_eq!(global.wake_fitting_batch(now), 1);
+        assert_eq!(global.snapshot().provisional_probe_count, 1);
+
+        first.close();
+        assert_eq!(global.snapshot().provisional_probe_count, 0);
+        assert_eq!(global.wake_fitting_batch(now), 0);
+        assert_eq!(global.wake_fitting_batch(now + GLOBAL_WAKE_RETRY), 1);
+        assert_eq!(second_demands.load(Ordering::Relaxed), 1);
+
+        second.close();
+        assert_eq!(global.snapshot().provisional_probe_count, 0);
+        holder.close();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn coordinator_eventually_visits_500_quiet_waiters_at_bounded_rate() {
         const FLOW_COUNT: usize = 500;
-        let global = Arc::new(UdpIngressBudget::new(20));
-        let holder = UdpIngressFlowControl::new(20, global.clone(), Arc::new(|| {}));
+        let global = Arc::new(UdpIngressBudget::new(50));
+        let holder = UdpIngressFlowControl::new(50, global.clone(), Arc::new(|_| {}));
         let released = holder
-            .try_copy_payload(&[0; 10])
-            .expect("reserve released half");
+            .try_copy_payload(&[0; 40])
+            .expect("reserve released headroom");
         let retained = holder
             .try_copy_payload(&[0; 10])
             .expect("reserve retained half");
@@ -1022,7 +1385,7 @@ mod tests {
             let flow = UdpIngressFlowControl::new(
                 20,
                 global.clone(),
-                Arc::new(move || order.lock().push(index)),
+                Arc::new(move |_| order.lock().push(index)),
             );
             assert!(flow.try_copy_payload(&[0; 10]).is_none());
             flows.push(flow);
@@ -1045,11 +1408,29 @@ mod tests {
         );
         tokio::task::yield_now().await;
         assert_eq!(order.lock().len(), GLOBAL_WAKE_BATCH);
+        assert_eq!(global.snapshot().provisional_probe_count, GLOBAL_WAKE_BATCH);
+
+        let Some(before_probe_expiry) = GLOBAL_PROBE_LEASE.checked_sub(Duration::from_millis(1))
+        else {
+            panic!("UDP probe lease must exceed one millisecond");
+        };
+        tokio::time::advance(before_probe_expiry).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            order.lock().len(),
+            GLOBAL_WAKE_BATCH,
+            "quiet callbacks must not accumulate beyond the engine-wide lease cap"
+        );
 
         let turns = FLOW_COUNT.div_ceil(GLOBAL_WAKE_BATCH);
         for completed_turns in 1..turns {
             let before = order.lock().len();
-            tokio::time::advance(GLOBAL_WAKE_RETRY).await;
+            let advance = if completed_turns == 1 {
+                Duration::from_millis(1)
+            } else {
+                GLOBAL_PROBE_LEASE
+            };
+            tokio::time::advance(advance).await;
             tokio::task::yield_now().await;
             let after = order.lock().len();
             assert!(
@@ -1057,6 +1438,7 @@ mod tests {
                 "turn {completed_turns} resumed {} flows, above batch {GLOBAL_WAKE_BATCH}",
                 after - before
             );
+            assert!(global.snapshot().provisional_probe_count <= GLOBAL_WAKE_BATCH);
         }
 
         let observed = order.lock().clone();
@@ -1076,6 +1458,189 @@ mod tests {
         holder.close();
         drop(retained);
         assert_eq!(global.snapshot().retained_bytes, 0);
+    }
+
+    #[test]
+    fn coordinator_8192_waiters_are_fifo_constant_inspection_and_four_per_millisecond() {
+        const FLOW_COUNT: usize = 8_192;
+        let global = Arc::new(UdpIngressBudget::new(GLOBAL_WAKE_BATCH));
+        let holder =
+            UdpIngressFlowControl::new(GLOBAL_WAKE_BATCH, global.clone(), Arc::new(|_| {}));
+        let retained = holder
+            .try_copy_payload(&[0; GLOBAL_WAKE_BATCH])
+            .expect("fill global budget");
+        let observed = Arc::new(parking_lot::Mutex::new(Vec::with_capacity(FLOW_COUNT)));
+        let mut flows = Vec::with_capacity(FLOW_COUNT);
+
+        for index in 0..FLOW_COUNT {
+            let observed = observed.clone();
+            let flow = UdpIngressFlowControl::new(
+                1,
+                global.clone(),
+                Arc::new(move |probe_id| observed.lock().push((index, probe_id))),
+            );
+            assert!(flow.try_copy_payload(&[0]).is_none());
+            flows.push(flow);
+        }
+        drop(retained);
+
+        let mut now = tokio::time::Instant::now();
+        for turn in 0..FLOW_COUNT.div_ceil(GLOBAL_WAKE_BATCH) {
+            let before_len = observed.lock().len();
+            let before_inspections = global.snapshot().coordinator_waiter_inspections;
+            assert_eq!(global.wake_fitting_batch(now), GLOBAL_WAKE_BATCH);
+            let after_inspections = global.snapshot().coordinator_waiter_inspections;
+            assert_eq!(
+                after_inspections - before_inspections,
+                GLOBAL_WAKE_BATCH as u64,
+                "turn {turn} inspected more waiters than it could issue"
+            );
+            let issued = observed.lock()[before_len..].to_vec();
+            assert_eq!(issued.len(), GLOBAL_WAKE_BATCH);
+            for (expected, (index, probe_id)) in ((turn * GLOBAL_WAKE_BATCH)..).zip(issued) {
+                assert_eq!(index, expected);
+                flows[index].acknowledge_probe(probe_id);
+            }
+            assert_eq!(
+                global.wake_fitting_batch(now),
+                0,
+                "immediate ACKs bypassed the coordinator cooldown"
+            );
+            now += GLOBAL_WAKE_RETRY;
+        }
+
+        assert_eq!(observed.lock().len(), FLOW_COUNT);
+        let snapshot = global.snapshot();
+        assert_eq!(snapshot.global_waiters, 0);
+        assert_eq!(snapshot.provisional_probe_count, 0);
+        assert_eq!(
+            snapshot.coordinator_waiter_inspections, FLOW_COUNT as u64,
+            "strict FIFO selection must inspect each waiter exactly once"
+        );
+        for flow in flows {
+            flow.close();
+        }
+        holder.close();
+    }
+
+    #[test]
+    fn bounded_rotation_reaches_small_waiter_behind_nonfitting_oldest() {
+        let global = Arc::new(UdpIngressBudget::new(2));
+        let holder = UdpIngressFlowControl::new(2, global.clone(), Arc::new(|_| {}));
+        let released = holder
+            .try_copy_payload(&[0])
+            .expect("reserve released byte");
+        let retained = holder
+            .try_copy_payload(&[0])
+            .expect("reserve retained byte");
+        let order = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let large_order = order.clone();
+        let large = UdpIngressFlowControl::new(
+            2,
+            global.clone(),
+            Arc::new(move |_| large_order.lock().push("large")),
+        );
+        let small_order = order.clone();
+        let small = UdpIngressFlowControl::new(
+            1,
+            global.clone(),
+            Arc::new(move |_| small_order.lock().push("small")),
+        );
+        assert!(large.try_copy_payload(&[0; 2]).is_none());
+        assert!(small.try_copy_payload(&[0]).is_none());
+        drop(released);
+
+        let before = global.snapshot().coordinator_waiter_inspections;
+        assert_eq!(global.wake_fitting_batch(tokio::time::Instant::now()), 1);
+        assert_eq!(&*order.lock(), &["small"]);
+        assert_eq!(
+            global.snapshot().coordinator_waiter_inspections - before,
+            2,
+            "one bounded turn must rotate the nonfit head then reach the fitting waiter"
+        );
+
+        large.close();
+        small.close();
+        holder.close();
+        drop(retained);
+    }
+
+    #[test]
+    fn all_nonfitting_8192_waiters_make_one_finite_pass_then_quiesce() {
+        const FLOW_COUNT: usize = 8_192;
+        let global = Arc::new(UdpIngressBudget::new(100));
+        let holder = UdpIngressFlowControl::new(100, global.clone(), Arc::new(|_| {}));
+        let retained = holder.try_copy_payload(&[0; 90]).expect("retain occupancy");
+        let mut flows = Vec::with_capacity(FLOW_COUNT);
+        for _ in 0..FLOW_COUNT {
+            let flow = UdpIngressFlowControl::new(20, global.clone(), Arc::new(|_| {}));
+            assert!(flow.try_copy_payload(&[0; 20]).is_none());
+            flows.push(flow);
+        }
+
+        let mut now = tokio::time::Instant::now();
+        for _ in 0..FLOW_COUNT.div_ceil(GLOBAL_SCAN_BATCH) {
+            assert_eq!(global.wake_fitting_batch(now), 0);
+            now += GLOBAL_WAKE_RETRY;
+        }
+        let inspections = global.snapshot().coordinator_waiter_inspections;
+        assert_eq!(inspections, FLOW_COUNT as u64);
+        assert_eq!(global.wake_fitting_batch(now), 0);
+        assert_eq!(
+            global.snapshot().coordinator_waiter_inspections,
+            inspections
+        );
+        assert_eq!(global.next_coordinator_deadline(now), None);
+
+        for flow in flows {
+            flow.close();
+        }
+        holder.close();
+        drop(retained);
+    }
+
+    #[test]
+    fn legacy_no_probe_mode_auto_acks_after_callback_and_stays_paced() {
+        const FLOW_COUNT: usize = GLOBAL_WAKE_BATCH * 2;
+        let global = Arc::new(UdpIngressBudget::new(GLOBAL_WAKE_BATCH));
+        let holder =
+            UdpIngressFlowControl::new(GLOBAL_WAKE_BATCH, global.clone(), Arc::new(|_| {}));
+        let retained = holder
+            .try_copy_payload(&[0; GLOBAL_WAKE_BATCH])
+            .expect("fill budget");
+        let callbacks = Arc::new(AtomicUsize::new(0));
+        let mut flows = Vec::with_capacity(FLOW_COUNT);
+        for _ in 0..FLOW_COUNT {
+            let callbacks = callbacks.clone();
+            let flow = UdpIngressFlowControl::new_with_auto_ack(
+                1,
+                global.clone(),
+                Arc::new(move |_| {
+                    callbacks.fetch_add(1, Ordering::Relaxed);
+                }),
+                true,
+            );
+            assert!(flow.try_copy_payload(&[0]).is_none());
+            flows.push(flow);
+        }
+        drop(retained);
+
+        let now = tokio::time::Instant::now();
+        assert_eq!(global.wake_fitting_batch(now), GLOBAL_WAKE_BATCH);
+        assert_eq!(callbacks.load(Ordering::Relaxed), GLOBAL_WAKE_BATCH);
+        assert_eq!(global.snapshot().provisional_probe_count, 0);
+        assert_eq!(global.wake_fitting_batch(now), 0);
+        assert_eq!(
+            global.wake_fitting_batch(now + GLOBAL_WAKE_RETRY),
+            GLOBAL_WAKE_BATCH
+        );
+        assert_eq!(callbacks.load(Ordering::Relaxed), FLOW_COUNT);
+        assert_eq!(global.snapshot().provisional_probe_count, 0);
+
+        for flow in flows {
+            flow.close();
+        }
+        holder.close();
     }
 
     #[test]

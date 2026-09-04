@@ -412,10 +412,9 @@ nonisolated(unsafe) var defaultEgressPreReadyWaitingBudgetMs: UInt32 = 3_000
 /// observes errors / EOF on explicit close). Without a watchdog, a
 /// flow that completes a few request/response datagrams and then
 /// goes quiet (DNS, mDNS probes, NAT-binding pings, …) stays
-/// registered in `TransparentProxyCore.udpSessions` until the
-/// engine-side `udp_max_flow_lifetime` cap fires — 15 min by
-/// default, which is long enough to accumulate thousands of
-/// pinned sessions under normal device traffic.
+/// registered in `TransparentProxyCore.udpSessions` indefinitely. Rust's
+/// independent `udp_max_flow_lifetime` defaults to `None` so active QUIC/H3
+/// flows are not cut off; deployments may opt into an absolute cap.
 ///
 /// 60 s is the smallest window that comfortably exceeds typical
 /// real-world UDP-flow idle gaps (DNS retry cadence, NAT-keepalive

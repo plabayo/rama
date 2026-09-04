@@ -14,13 +14,11 @@ pub(crate) type DemoTlsMitmRelay =
 use rama::{
     crypto::cert::boring::generate_certificate_authority_x509,
     error::{BoxError, ErrorContext as _},
-    net::{
-        apple::networkextension::system_keychain::{
-            self,
-            // function-namespace import — does not clash with our `mod secure_enclave;`
-            // which lives in the type namespace.
-            secure_enclave::is_available as secure_enclave_is_available,
-        },
+    net::apple::networkextension::system_keychain::{
+        self,
+        // function-namespace import — does not clash with our `mod secure_enclave;`
+        // which lives in the type namespace.
+        secure_enclave::is_available as secure_enclave_is_available,
     },
     telemetry::tracing,
     tls::{

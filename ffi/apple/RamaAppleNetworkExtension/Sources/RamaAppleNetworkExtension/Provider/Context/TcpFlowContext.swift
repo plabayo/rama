@@ -39,6 +39,11 @@ struct TcpFlowMaintenanceState {
     /// Set in the same lock scope that commits a pressure reservation. Data
     /// producers use it to avoid reporting accepted bytes after teardown won.
     var pressureEvictionCommitted = false
+    /// Created only for promoted retirement or detach, not on the normal
+    /// data/admission path. Sharing this stable handle lets those two terminal
+    /// paths claim one physical NWConnection without relying on reusable object
+    /// addresses.
+    var resourceRetirementIdentity: ResourceRetirementIdentity?
 }
 
 /// Mutable flow state is confined to its dedicated serial queue. Fields read
@@ -178,6 +183,17 @@ final class TcpFlowContext: @unchecked Sendable {
 
     func maintenanceSnapshot() -> TcpFlowMaintenanceState {
         maintenanceState.withLock { $0 }
+    }
+
+    func retirementIdentity() -> ResourceRetirementIdentity {
+        maintenanceState.withLock { state in
+            if let identity = state.resourceRetirementIdentity {
+                return identity
+            }
+            let identity = ResourceRetirementIdentity()
+            state.resourceRetirementIdentity = identity
+            return identity
+        }
     }
 
     /// Saturating idle age at one lock-defined instant. Activity may publish
@@ -392,8 +408,21 @@ final class TcpFlowContext: @unchecked Sendable {
         // replacement slot. The write pump releases the token only at the
         // linger's actual `cancelAndDetach` point.
         if let core, let egressWritePump {
-            egressWritePump.installTerminalResourceRelease(
-                core.beginResourceRetirement())
+            let identity = retirementIdentity()
+            let release: @Sendable () -> Void
+            if let flowId {
+                release = core.transferRegisteredResourceToRetirement(
+                    flowId: flowId,
+                    contextId: ObjectIdentifier(self),
+                    engineGeneration: engineGeneration,
+                    identity: identity)
+            } else {
+                // Defensive engine-less fallback: without a registry key there
+                // is no ownership overlap to transfer, but the live connection
+                // must still consume retirement capacity until cancellation.
+                release = core.beginResourceRetirement()
+            }
+            egressWritePump.installTerminalResourceRelease(release)
         }
         closeClientReadOnce(nil)
         closeClientWriteOnce(nil)

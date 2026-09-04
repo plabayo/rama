@@ -20,6 +20,12 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
     }
     private func tag(_ n: Int) -> Data { Data([UInt8(n >> 8), UInt8(n & 0xff)]) }
     private func tagOf(_ d: Data) -> Int { Int(d[0]) << 8 | Int(d[1]) }
+    private func taggedPayload(_ n: Int, byteCount: Int) -> Data {
+        precondition(byteCount >= 2)
+        var data = tag(n)
+        data.append(Data(repeating: UInt8(truncatingIfNeeded: n), count: byteCount - 2))
+        return data
+    }
 
     // MARK: - success drain
 
@@ -43,6 +49,96 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         queue.sync {}
         XCTAssertEqual(flow.writtenBatches.count, 1, "second reply now flushed after the first drained")
         XCTAssertEqual(flow.writtenBatches.first.map { tagOf($0.datagrams[0]) }, 2)
+    }
+
+    func testBacklogUsesBoundedBatchesAndPreservesFIFO() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        let pump = UdpClientWritePump(
+            flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+        pump.markOpened()
+
+        // Keep one call in flight so the following arrivals form a
+        // deterministic backlog rather than racing the serial flow queue.
+        pump.enqueue(tag(0), sentBy: ep(5_000))
+        queue.sync {}
+        for n in 1...70 {
+            pump.enqueue(tag(n), sentBy: ep(UInt16(5_000 + n)))
+        }
+        queue.sync {}
+
+        var batchSizes: [Int] = []
+        var drainedTags: [Int] = []
+        while let batch = flow.writtenBatches.first {
+            batchSizes.append(batch.datagrams.count)
+            XCTAssertEqual(batch.datagrams.count, batch.sentBy.count)
+            XCTAssertLessThanOrEqual(batch.datagrams.count, udpWritePumpMaxBatchItems)
+            XCTAssertLessThanOrEqual(
+                batch.datagrams.reduce(0) { $0 + $1.count },
+                udpWritePumpMaxBatchBytes)
+
+            for (datagram, endpoint) in zip(batch.datagrams, batch.sentBy) {
+                let n = tagOf(datagram)
+                drainedTags.append(n)
+                XCTAssertEqual(
+                    String(describing: endpoint),
+                    String(describing: ep(UInt16(5_000 + n))),
+                    "payload and peer must remain paired at every batch index")
+            }
+            XCTAssertTrue(flow.completePendingWrite(error: nil))
+            queue.sync {}
+        }
+
+        XCTAssertEqual(batchSizes, [1, 32, 32, 6])
+        XCTAssertEqual(drainedTags, Array(0...70))
+        XCTAssertEqual(pump.testAdmissionSnapshot.waiting, 0)
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
+    }
+
+    func testBatchByteCeilingPreservesPairingAndReservationAccounting() throws {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        let pump = UdpClientWritePump(
+            flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+        pump.markOpened()
+        pump.enqueue(tag(0), sentBy: ep(5_000))
+        queue.sync {}
+
+        let itemBytes = udpWritePumpMaxBatchBytes / 2
+        for n in 1...3 {
+            pump.enqueue(
+                taggedPayload(n, byteCount: itemBytes),
+                sentBy: ep(UInt16(5_000 + n)))
+        }
+        queue.sync {}
+        XCTAssertEqual(pump.testAdmissionSnapshot.waiting, 3)
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 2 + 3 * itemBytes)
+
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+        queue.sync {}
+        var batch = try XCTUnwrap(flow.writtenBatches.first)
+        XCTAssertEqual(batch.datagrams.map(tagOf), [1, 2])
+        XCTAssertEqual(
+            batch.datagrams.reduce(0) { $0 + $1.count },
+            udpWritePumpMaxBatchBytes)
+        XCTAssertEqual(
+            batch.sentBy.map(String.init(describing:)),
+            [ep(5_001), ep(5_002)].map(String.init(describing:)))
+        // The in-flight batch remains charged; only its waiting count moved.
+        XCTAssertEqual(pump.testAdmissionSnapshot.waiting, 1)
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 3 * itemBytes)
+
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+        queue.sync {}
+        batch = try XCTUnwrap(flow.writtenBatches.first)
+        XCTAssertEqual(batch.datagrams.map(tagOf), [3])
+        XCTAssertEqual(batch.sentBy.map(String.init(describing:)), [String(describing: ep(5_003))])
+        XCTAssertEqual(pump.testAdmissionSnapshot.waiting, 0)
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, itemBytes)
+
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+        queue.sync {}
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
     }
 
     func testGracefulCloseStopsAdmissionAndDrainsAcceptedRepliesInFIFOOrder() {
@@ -182,9 +278,17 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
             flow: flow, queue: queue, logger: { _ in }, onTerminalError: { terminalError = $0 })
         pump.markOpened()
 
-        pump.enqueue(tag(1), sentBy: ep())
-        pump.enqueue(tag(2), sentBy: ep())  // queued behind the in-flight one
+        pump.enqueue(tag(0), sentBy: ep())
         queue.sync {}
+        for n in 1...40 { pump.enqueue(tag(n), sentBy: ep()) }
+        queue.sync {}
+
+        // Move the backlog into one full in-flight batch plus an eight-item
+        // tail, then fail the batched call.
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+        queue.sync {}
+        XCTAssertEqual(flow.writtenBatches.first?.datagrams.count, udpWritePumpMaxBatchItems)
+        XCTAssertEqual(pump.testAdmissionSnapshot.waiting, 8)
 
         XCTAssertTrue(
             flow.completePendingWrite(error: NSError(domain: NSPOSIXErrorDomain, code: Int(EPIPE))))
@@ -192,10 +296,13 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
 
         XCTAssertEqual(
             (terminalError as NSError?)?.code, Int(EPIPE), "write error must fire onTerminalError")
+        XCTAssertTrue(pump.testAdmissionSnapshot.closed)
+        XCTAssertEqual(pump.testAdmissionSnapshot.waiting, 0)
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
 
-        // Pump is closed: the queued reply was dropped and further enqueues
+        // Pump is closed: the queued tail was dropped and further enqueues
         // produce no writes.
-        pump.enqueue(tag(3), sentBy: ep())
+        pump.enqueue(tag(41), sentBy: ep())
         queue.sync {}
         XCTAssertTrue(
             flow.writtenBatches.isEmpty, "a terminated pump must not issue further writes")
@@ -211,19 +318,25 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
             logger: { _ in },
             onTerminalError: { _ in terminalCount += 1 })
         pump.markOpened()
-        pump.enqueue(tag(1), sentBy: ep())
-        pump.enqueue(tag(2), sentBy: ep())
+        pump.enqueue(tag(0), sentBy: ep())
+        queue.sync {}
+        for n in 1...3 { pump.enqueue(tag(n), sentBy: ep()) }
         queue.sync {}
 
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+        queue.sync {}
+        XCTAssertEqual(flow.writtenBatches.first?.datagrams.map(tagOf), [1, 2, 3])
         pump.close()
         queue.sync {}
         XCTAssertTrue(flow.completePendingWrite(error: nil))
         queue.sync {}
 
-        pump.enqueue(tag(3), sentBy: ep())
+        pump.enqueue(tag(4), sentBy: ep())
         queue.sync {}
         XCTAssertTrue(flow.writtenBatches.isEmpty)
         XCTAssertEqual(terminalCount, 0)
+        XCTAssertEqual(pump.testAdmissionSnapshot.waiting, 0)
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
     }
 
     func testOnQueueClosePrecedesAlreadyQueuedWriteCompletion() {
@@ -299,8 +412,10 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         )
 
         var drained: [Int] = []
+        var batchSizes: [Int] = []
         while let batch = flow.writtenBatches.first {
-            drained.append(tagOf(batch.datagrams[0]))
+            batchSizes.append(batch.datagrams.count)
+            drained.append(contentsOf: batch.datagrams.map(tagOf))
             XCTAssertTrue(flow.completePendingWrite(error: nil))
             queue.sync {}
         }
@@ -308,6 +423,9 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         XCTAssertEqual(
             drained, Array(0...256),
             "the oldest 257 datagrams are retained in FIFO order; the newest are dropped on overflow")
+        XCTAssertEqual(
+            batchSizes, [1] + Array(repeating: udpWritePumpMaxBatchItems, count: 8),
+            "257 retained datagrams require nine callbacks rather than one callback per datagram")
     }
 
     func testDispatchBacklogIsBoundedBeforeFlowQueueRuns() {
@@ -379,10 +497,9 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
             flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
         pump.markOpened()
 
-        let half = Data(repeating: 0x5a, count: udpWritePumpMaxRetainedBytes / 2)
-        pump.enqueue(half, sentBy: ep())
-        queue.sync {}
-        pump.enqueue(half, sentBy: ep())
+        let packet = Data(repeating: 0x5a, count: udpWritePumpMaxDatagramBytes)
+        for _ in 0..<4 { pump.enqueue(packet, sentBy: ep()) }
+        pump.enqueue(Data(repeating: 0x5a, count: 4), sentBy: ep())
         queue.sync {}
         pump.enqueue(Data([0xff]), sentBy: ep())
         queue.sync {}
@@ -390,29 +507,44 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         var snapshot = pump.testAdmissionSnapshot
         XCTAssertEqual(snapshot.retainedBytes, udpWritePumpMaxRetainedBytes)
         XCTAssertEqual(snapshot.droppedFull, 1)
-        XCTAssertTrue(flow.completePendingWrite(error: nil))
-        queue.sync {}
-        snapshot = pump.testAdmissionSnapshot
-        XCTAssertEqual(snapshot.retainedBytes, half.count)
-        XCTAssertTrue(flow.completePendingWrite(error: nil))
-        queue.sync {}
+        let retainedAfterCompletion = [
+            3 * packet.count + 4,
+            2 * packet.count + 4,
+            packet.count + 4,
+            4,
+            0,
+        ]
+        for expectedRetainedBytes in retainedAfterCompletion {
+            XCTAssertTrue(flow.completePendingWrite(error: nil))
+            queue.sync {}
+            snapshot = pump.testAdmissionSnapshot
+            XCTAssertEqual(snapshot.retainedBytes, expectedRetainedBytes)
+        }
         XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
     }
 
-    func testOversizedDatagramIsDroppedBeforeKernelWrite() {
+    func testDatagramAdmissionMatchesExactRustU16Boundary() {
         let flow = MockUdpFlow()
         let queue = makeQueue()
         let pump = UdpClientWritePump(
             flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
         pump.markOpened()
         pump.enqueue(
-            Data(repeating: 0, count: udpWritePumpMaxRetainedBytes + 1),
+            Data(repeating: 0, count: udpWritePumpMaxDatagramBytes),
+            sentBy: ep())
+        pump.enqueue(
+            Data(repeating: 0, count: udpWritePumpMaxDatagramBytes + 1),
             sentBy: ep())
         queue.sync {}
 
-        XCTAssertTrue(flow.writtenBatches.isEmpty)
-        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
+        XCTAssertEqual(
+            flow.writtenBatches.first?.datagrams.first?.count,
+            udpWritePumpMaxDatagramBytes)
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, udpWritePumpMaxDatagramBytes)
         XCTAssertEqual(pump.testAdmissionSnapshot.droppedFull, 1)
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+        queue.sync {}
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
     }
 
     func testOffQueueCloseWinsFinalWriteGate() {
@@ -420,7 +552,7 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         let queue = makeQueue()
         let pump = UdpClientWritePump(
             flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
-        pump.markOpened()
+        for n in 1...5 { pump.enqueue(tag(n), sentBy: ep(UInt16(5_000 + n))) }
         queue.sync {}
 
         let atGate = DispatchSemaphore(value: 0)
@@ -429,7 +561,7 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
             atGate.signal()
             releaseGate.wait()
         }
-        pump.enqueue(tag(1), sentBy: ep())
+        pump.markOpened()
         XCTAssertEqual(atGate.wait(timeout: .now() + 1), .success)
         pump.close()
         releaseGate.signal()
@@ -470,9 +602,13 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
             String(describing: ep()))
         XCTAssertEqual(pump.testAdmissionSnapshot.borrowedMaterializations, 1)
 
+        // Fill the remaining retained-byte budget with individually valid
+        // datagrams; the rejected borrowed callback must not materialize.
+        for _ in 0..<3 {
+            pump.enqueue(Data(repeating: 0, count: udpWritePumpMaxDatagramBytes), sentBy: ep())
+        }
         pump.enqueue(
-            Data(repeating: 0, count: udpWritePumpMaxRetainedBytes - 5),
-            sentBy: ep())
+            Data(repeating: 0, count: udpWritePumpMaxDatagramBytes - 1), sentBy: ep())
         queue.sync {}
         var dropped = [UInt8](repeating: 1, count: 1)
         dropped.withUnsafeMutableBufferPointer { buffer in

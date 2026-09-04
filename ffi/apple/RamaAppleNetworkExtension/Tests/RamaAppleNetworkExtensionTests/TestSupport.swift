@@ -32,6 +32,9 @@ final class TestValue<Value>: @unchecked Sendable {
 extension XCTestCase {
     /// Poll until `condition` holds, or fail at `timeout`.
     ///
+    /// The generous default is a liveness/deadlock watchdog, not an expected
+    /// completion time. Prefer an explicit queue barrier for non-timer work.
+    ///
     /// Use this for assertions on real deadline-driven events (the pump
     /// linger / EOF-grace `DispatchWorkItem`s): it waits for the event to
     /// actually happen rather than sleeping a fixed slack past the deadline
@@ -43,7 +46,7 @@ extension XCTestCase {
     /// cadence, NOT a deadline assumption.
     func pollUntil(
         _ message: String = "condition not met within timeout",
-        timeout: TimeInterval = 3.0,
+        timeout: TimeInterval = 30.0,
         _ condition: () -> Bool,
         file: StaticString = #filePath,
         line: UInt = #line

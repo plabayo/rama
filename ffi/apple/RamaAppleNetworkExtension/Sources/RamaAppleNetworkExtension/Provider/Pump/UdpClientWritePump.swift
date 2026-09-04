@@ -2,6 +2,14 @@ import Foundation
 import RamaAppleNEFFI
 @preconcurrency import NetworkExtension
 
+/// Bound each NetworkExtension write call so a backlogged UDP flow amortizes
+/// callback overhead without creating a large transient array or monopolizing
+/// the flow queue. A valid non-jumbogram UDP payload fits within 64 KiB.
+let udpWritePumpMaxBatchItems = 32
+let udpWritePumpMaxBatchBytes = 64 * 1024
+/// Keep Swift admission aligned with Rust's `u16::MAX` single-datagram bound.
+let udpWritePumpMaxDatagramBytes = Int(UInt16.max)
+
 enum UdpWritePumpPhase {
     /// `markOpened()` has not yet been called.
     case pending
@@ -103,8 +111,8 @@ final class UdpClientWritePump: @unchecked Sendable {
     /// `flushLocked` cannot make progress because neither the
     /// per-datagram `sentBy` nor the cached `sentByEndpoint` is
     /// known. Without this the pump silently stalls until either
-    /// a future datagram arrives with a peer or the engine's
-    /// UDP max-lifetime backstop closes the flow — invisible in
+    /// a future datagram arrives with a peer or the idle watchdog (or an
+    /// explicitly configured Rust max lifetime) closes the flow — invisible in
     /// `log show`. It never resets: alternating peerless and attributed
     /// datagrams must not turn a diagnostic into a packet-rate log source.
     private var unresolvedEndpointLogged = false
@@ -251,6 +259,7 @@ final class UdpClientWritePump: @unchecked Sendable {
             guard !state.closed, state.accepting else { return .closed }
             guard state.waiting < udpWritePumpMaxPending,
                 byteCount >= 0,
+                byteCount <= udpWritePumpMaxDatagramBytes,
                 byteCount <= udpWritePumpMaxRetainedBytes,
                 state.retainedBytes <= udpWritePumpMaxRetainedBytes - byteCount
             else {
@@ -295,7 +304,7 @@ final class UdpClientWritePump: @unchecked Sendable {
             if !activityRecordedAtEntry { onActivity() }
             if shouldLog {
                 RamaLog.trace(
-                    "udp client write pump full (count cap \(udpWritePumpMaxPending), byte cap \(udpWritePumpMaxRetainedBytes)), dropping subsequent arrivals"
+                    "udp client write pump full (count cap \(udpWritePumpMaxPending), datagram byte cap \(udpWritePumpMaxDatagramBytes), retained byte cap \(udpWritePumpMaxRetainedBytes)), dropping subsequent arrivals"
                 )
             }
         case .closed:
@@ -457,7 +466,7 @@ final class UdpClientWritePump: @unchecked Sendable {
         // fallback has no kernel-acceptable peer. Holding it would
         // head-of-line block every later (attributed) reply in the
         // FIFO until either a future `setSentByEndpoint` populates
-        // the cache or the engine's UDP max-flow-lifetime closes
+        // the cache or the idle watchdog / explicit max-flow-lifetime closes
         // the flow. UDP is lossy by design; dropping the orphan
         // is the correct trade-off.
         //
@@ -488,11 +497,10 @@ final class UdpClientWritePump: @unchecked Sendable {
             finishDrainIfReadyLocked()
             return
         }
-        // `head.sentBy ?? sentByEndpoint` is now guaranteed non-nil for
-        // the head because the orphan-drain above already removed
-        // any leading entry where both were nil. If `head.sentBy` is
-        // nil here, `sentByEndpoint` must be non-nil.
-        guard let endpoint = head.sentBy ?? (head.allowsFallback ? sentByEndpoint : nil) else {
+        // The head is now guaranteed to have a usable endpoint. Later orphan
+        // entries stop this batch; they are dropped by the next flush before
+        // any newer attributed datagram can pass them.
+        guard (head.sentBy ?? (head.allowsFallback ? sentByEndpoint : nil)) != nil else {
             // Defensive: should be unreachable after the orphan drain.
             // Keep as a safety net.
             return
@@ -506,13 +514,39 @@ final class UdpClientWritePump: @unchecked Sendable {
         let started = shared.withLock { state -> Bool in
             guard !state.closed else { return false }
             phase = .writing
-            // Safe: `first()` returned non-nil, no other thread mutates
-            // `pending` (single-queue confinement).
-            let chunk = pending.popFront()!.data
-            state.waiting = max(0, state.waiting - 1)
-            let chunkBytes = chunk.count
+
+            var datagrams: [Data] = []
+            var endpoints: [NWEndpoint] = []
+            datagrams.reserveCapacity(min(udpWritePumpMaxBatchItems, pending.count))
+            endpoints.reserveCapacity(min(udpWritePumpMaxBatchItems, pending.count))
+            var batchBytes = 0
+
+            while datagrams.count < udpWritePumpMaxBatchItems,
+                let next = pending.first(),
+                let endpoint = next.sentBy
+                    ?? (next.allowsFallback ? sentByEndpoint : nil),
+                next.data.count <= udpWritePumpMaxBatchBytes - batchBytes
+            {
+                // Safe: `pending` is confined to this serial queue. Payload
+                // and peer are popped and appended in the same iteration so
+                // the parallel NetworkExtension arrays remain exactly paired.
+                let item = pending.popFront()!
+                datagrams.append(item.data)
+                endpoints.append(endpoint)
+                batchBytes += item.data.count
+            }
+
+            // The orphan drain and per-datagram admission ceiling guarantee
+            // that the first entry fits and resolves. Keep a defensive guard
+            // so an internal invariant violation cannot issue an empty write.
+            guard !datagrams.isEmpty else {
+                phase = .idle
+                return false
+            }
+            state.waiting = max(0, state.waiting - datagrams.count)
+            let retainedBatchBytes = batchBytes
             // `[weak self]` breaks the flow→completion→pump cycle.
-            flow.writeDatagrams([chunk], sentBy: [endpoint]) { [weak self] error in
+            flow.writeDatagrams(datagrams, sentBy: endpoints) { [weak self] error in
                 guard let self else { return }
                 self.queue.async { [weak self] in
                     guard let self else { return }
@@ -530,7 +564,7 @@ final class UdpClientWritePump: @unchecked Sendable {
                         return
                     }
 
-                    self.releaseReservation(bytes: chunkBytes)
+                    self.releaseReservation(bytes: retainedBatchBytes)
                     self.phase = .idle
                     self.flushLocked()
                     self.finishDrainIfReadyLocked()

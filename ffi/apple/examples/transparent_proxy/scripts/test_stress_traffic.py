@@ -5,12 +5,19 @@ from pathlib import Path
 import re
 import signal
 import shlex
+import shutil
+import socket
 import subprocess
+import struct
 import sys
 import tempfile
 import textwrap
 import time
 import unittest
+from unittest import mock
+
+from modern_udp_e2e_probe import ProductViolation, dns_query, ntp_query
+from modern_udp_evidence import parse_signed_udp_status_lines
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -864,15 +871,198 @@ class SignedUdpGateWiringTests(unittest.TestCase):
         )
         self.assertIn("test-modern-udp-signed", full_recipe.split())
 
-    def test_signed_udp_evidence_requires_all_runtime_probes(self):
+    def test_sanitizer_docs_do_not_claim_asan_or_swift_tsan_race_coverage(self):
+        justfile = (SCRIPT_DIR.parent / "justfile").read_text()
+        readme = (SCRIPT_DIR.parent / "README.md").read_text()
+        self.assertIn("ASan does not detect data races", justfile)
+        self.assertIn("Rust static library is not instrumented", justfile)
+        self.assertIn("ASan\ndoes not detect data races", readme)
+        self.assertIn("does not instrument the linked Rust static library", readme)
+
+    @staticmethod
+    def status_lines(verdict=(1, 1, 0), attempts=5, passes=5, diagnostics=()):
+        complete, passed, exit_code = verdict
+        rows = [
+            ("complete", complete), ("passed", passed), ("exit_code", exit_code),
+            ("udp_probe_attempt_count", attempts), ("udp_probe_pass_count", passes),
+            ("udp_pressure_log_checked", 1),
+            ("rust_udp_drop_transitions", 0),
+            ("rust_udp_resume_transitions", 0),
+            ("swift_udp_staging_drop_samples", 0),
+            ("log_stream_started", 1), ("log_stream_alive_end", 1),
+            ("log_stream_joined", 1), ("profile_restored", 1),
+            ("callback_generation", "modern"),
+            ("dial9_baseline_max_index", 8),
+            ("dial9_required_flow_id", 77),
+            ("dial9_current_segment_count", 1),
+            ("dial9_required_pair_count", 1),
+            ("schema_version", 1),
+            *diagnostics,
+            ("schema_complete", 1),
+        ]
+        return [f"{key}\t{value}\n" for key, value in rows]
+
+    def test_signed_udp_evidence_requires_terminal_cleanup_and_exact_trace_pair(self):
         shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()
-        self.assertEqual(
-            shell.count("UDP_PROBE_COUNT=$((UDP_PROBE_COUNT + 1))"), 5
+        self.assertIn("UDP_PROBE_ATTEMPT_COUNT", shell)
+        self.assertIn("UDP_PROBE_PASS_COUNT", shell)
+        self.assertIn("stop_log_capture", shell)
+        self.assertIn("restore_profile", shell)
+        self.assertIn("check_udp_pressure_logs", shell)
+        self.assertIn("swift_udp_staging_drop_samples", shell)
+        self.assertIn("--flow-id \"$NTP_FLOW_ID\" --protocol 2", shell)
+        self.assertIn("modern_udp_evidence.py", shell)
+
+    def test_signed_udp_preflight_failure_still_writes_terminal_incomplete_status(self):
+        result = subprocess.run(
+            [str(SCRIPT_DIR / "test_modern_udp_flow.sh"), "/definitely/missing/app"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=5,
         )
-        self.assertIn('[[ "$UDP_PROBE_COUNT" != 5 ]]', shell)
-        final_check = shell.index('[[ "$UDP_PROBE_COUNT" != 5 ]]')
-        final_green = shell.index("write_evidence_status 1 1 0")
-        self.assertLess(final_check, final_green)
+        self.assertEqual(result.returncode, 2, result.stdout)
+        match = re.search(r"modern UDP E2E artifacts: (.+)", result.stdout)
+        self.assertIsNotNone(match, result.stdout)
+        artifact_dir = Path(match.group(1))
+        try:
+            with (artifact_dir / "udp-evidence-status.tsv").open() as status_input:
+                self.assertEqual(parse_signed_udp_status_lines(status_input), 2)
+        finally:
+            shutil.rmtree(artifact_dir)
+
+    def test_signed_udp_status_parser_distinguishes_pass_failure_and_incomplete(self):
+        self.assertEqual(parse_signed_udp_status_lines(self.status_lines()), 0)
+        failure = self.status_lines(
+            verdict=(1, 0, 1), passes=4,
+            diagnostics=(("failure", "blocked DNS replied"),),
+        )
+        self.assertEqual(parse_signed_udp_status_lines(failure), 1)
+        incomplete = self.status_lines(
+            verdict=(0, 0, 2), passes=4,
+            diagnostics=(
+                ("issue", "provider log stream died"),
+                ("observed_failure", "blocked DNS replied"),
+            ),
+        )
+        self.assertEqual(parse_signed_udp_status_lines(incomplete), 2)
+        early = self.status_lines(
+            verdict=(0, 0, 2), attempts=0, passes=0,
+            diagnostics=(("issue", "preflight failed"),),
+        )
+        early[13] = "callback_generation\tunknown\n"
+        early[15] = "dial9_required_flow_id\tnone\n"
+        self.assertEqual(parse_signed_udp_status_lines(early), 2)
+        self.assertIsNone(parse_signed_udp_status_lines(self.status_lines(passes=4)))
+        duplicate = self.status_lines()[:-1] + ["complete\t1\n", "schema_complete\t1\n"]
+        self.assertIsNone(parse_signed_udp_status_lines(duplicate))
+
+        for invalid in ("-1", "+1", "01", "1.0", str(2**64)):
+            with self.subTest(invalid=invalid):
+                malformed = self.status_lines()
+                malformed[3] = f"udp_probe_attempt_count\t{invalid}\n"
+                self.assertIsNone(parse_signed_udp_status_lines(malformed))
+        malformed_baseline = self.status_lines()
+        malformed_baseline[14] = "dial9_baseline_max_index\t01\n"
+        self.assertIsNone(parse_signed_udp_status_lines(malformed_baseline))
+        duplicate_required_pair = self.status_lines()
+        duplicate_required_pair[17] = "dial9_required_pair_count\t2\n"
+        self.assertIsNone(parse_signed_udp_status_lines(duplicate_required_pair))
+        pressure_loss_pass = self.status_lines()
+        pressure_loss_pass[6] = "rust_udp_drop_transitions\t1\n"
+        self.assertIsNone(parse_signed_udp_status_lines(pressure_loss_pass))
+        pressure_loss_failure = self.status_lines(
+            verdict=(1, 0, 1),
+            diagnostics=(("failure", "UDP ingress pressure loss"),),
+        )
+        pressure_loss_failure[8] = "swift_udp_staging_drop_samples\t1\n"
+        self.assertEqual(parse_signed_udp_status_lines(pressure_loss_failure), 1)
+        unsupported_schema = self.status_lines()
+        unsupported_schema[-2] = "schema_version\t2\n"
+        self.assertIsNone(parse_signed_udp_status_lines(unsupported_schema))
+
+    def test_blocked_dns_requires_timeout_or_a_valid_matching_response(self):
+        transaction_id = 0x1234
+        valid = struct.pack(
+            "!HHHHHH", transaction_id, 0x8180, 1, 1, 0, 0
+        ) + b"\0" * 16
+
+        class FakeSocket:
+            def __init__(self, outcome):
+                self.outcome = outcome
+
+            def settimeout(self, _):
+                pass
+
+            def sendto(self, *_):
+                pass
+
+            def recvfrom(self, _):
+                if isinstance(self.outcome, BaseException):
+                    raise self.outcome
+                return self.outcome, ("8.8.8.8", 53)
+
+            def close(self):
+                pass
+
+        with mock.patch("modern_udp_e2e_probe.secrets.randbits", return_value=transaction_id):
+            with mock.patch(
+                "modern_udp_e2e_probe.socket.socket",
+                return_value=FakeSocket(socket.timeout("timeout")),
+            ):
+                dns_query("8.8.8.8", "example.com", 0.01, True)
+            with mock.patch(
+                "modern_udp_e2e_probe.socket.socket",
+                return_value=FakeSocket(valid),
+            ):
+                with self.assertRaises(ProductViolation):
+                    dns_query("8.8.8.8", "example.com", 0.01, True)
+            with mock.patch(
+                "modern_udp_e2e_probe.socket.socket",
+                return_value=FakeSocket(b"short"),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "truncated"):
+                    dns_query("8.8.8.8", "example.com", 0.01, True)
+            with mock.patch(
+                "modern_udp_e2e_probe.socket.socket",
+                return_value=FakeSocket(OSError("network down")),
+            ):
+                with self.assertRaises(OSError):
+                    dns_query("8.8.8.8", "example.com", 0.01, True)
+
+    def test_ntp_response_is_bound_to_request_and_exact_peer(self):
+        class FakeSocket:
+            def __init__(self, peer):
+                self.peer = peer
+                self.packet = None
+
+            def settimeout(self, _):
+                pass
+
+            def sendto(self, packet, _):
+                self.packet = packet
+
+            def recvfrom(self, _):
+                response = bytearray(48)
+                response[0] = 0x24  # NTPv4, server mode
+                response[1] = 1
+                response[24:32] = self.packet[40:48]
+                return bytes(response), self.peer
+
+            def close(self):
+                pass
+
+        with mock.patch(
+            "modern_udp_e2e_probe.socket.socket",
+            return_value=FakeSocket(("162.159.200.1", 123)),
+        ):
+            ntp_query("162.159.200.1", 0.01)
+        with mock.patch(
+            "modern_udp_e2e_probe.socket.socket",
+            return_value=FakeSocket(("162.159.200.2", 123)),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "unexpected peer"):
+                ntp_query("162.159.200.1", 0.01)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ use rama_core::{
     service::{Service, service_fn},
 };
 use std::{convert::Infallible, sync::Arc, time::Duration};
+use tokio::io::AsyncReadExt as _;
 
 /// Serializes tests that build an enabled dial9 recorder, since
 /// dial9 allows a single recorder per process (a second `build()` while one is
@@ -184,6 +185,108 @@ fn tcp_service_panic_pairs_dial9_open_and_close() {
     assert_eq!(
         dial9_flow_closed_reasons(temp_dir.path()),
         vec![(FLOW_ID, 14)]
+    );
+}
+
+#[test]
+fn tcp_engine_stop_before_activate_pairs_dial9_open_and_shutdown_close() {
+    const FLOW_ID: u64 = 0xE1E1_3003;
+    let _slot = recorder_slot();
+    let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(
+                |_bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+                    std::future::pending::<()>().await;
+                    Ok(())
+                },
+            )
+            .boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_dial9_engine(handler, temp_dir.path());
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp);
+    meta.flow_id = FLOW_ID;
+    let SessionFlowAction::Intercept(session) =
+        engine.new_tcp_session(meta, |_| TcpDeliverStatus::Accepted, || {}, || {})
+    else {
+        panic!("expected intercept session");
+    };
+
+    // Retain the pending session (and therefore bridge_tx) across stop. The
+    // task must wake from flow cancellation and record its own close epilogue.
+    engine.stop(0);
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowOpened"), 1);
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowClosed"), 1);
+    assert_eq!(
+        dial9_flow_closed_reasons(temp_dir.path()),
+        vec![(FLOW_ID, 1)]
+    );
+
+    drop(session);
+}
+
+#[test]
+fn tcp_egress_read_error_records_direction_correct_dial9_reason() {
+    const FLOW_ID: u64 = 0xE1E1_3004;
+    let _slot = recorder_slot();
+    install_close_capture();
+    let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(
+                |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+                    let BridgeIo(_ingress, mut egress) = bridge;
+                    let mut byte = [0_u8; 1];
+                    let error = egress
+                        .read(&mut byte)
+                        .await
+                        .expect_err("synthetic egress read failure");
+                    assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+                    Ok(())
+                },
+            )
+            .boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_dial9_engine(handler, temp_dir.path());
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp);
+    meta.flow_id = FLOW_ID;
+    let SessionFlowAction::Intercept(mut session) =
+        engine.new_tcp_session(meta, |_| TcpDeliverStatus::Accepted, || {}, || {})
+    else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+    session.on_egress_error();
+
+    let started = std::time::Instant::now();
+    while flow_close_count(FLOW_ID) < 2 && started.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        flow_close_count(FLOW_ID),
+        2,
+        "both directional structured close events must precede trace sealing"
+    );
+    engine.stop(0);
+
+    assert_eq!(
+        dial9_flow_closed_reasons(temp_dir.path()),
+        vec![(FLOW_ID, 6)],
+        "egress read failure is ReadErrorRight, not an ingress clean EOF"
     );
 }
 

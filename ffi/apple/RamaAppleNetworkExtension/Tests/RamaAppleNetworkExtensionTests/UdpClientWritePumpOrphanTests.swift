@@ -13,7 +13,8 @@ import XCTest
 /// datagram appended to the back of the queue was held behind an
 /// orphan head forever (an attributed enqueue does not retroactively
 /// fix the head's missing peer). Real flows could wedge on a single
-/// peerless reply until the engine's UDP max-flow-lifetime backstop.
+/// peerless reply until the idle watchdog (or an explicitly configured Rust
+/// max-flow-lifetime backstop) closed it.
 ///
 /// **The fix.** When the head is unresolvable, *drop* it (UDP is
 /// lossy by design); log once per flow; continue to the

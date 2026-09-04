@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regression tests for the on-device soak pressure-log schema."""
 
+import hashlib
 import os
 from pathlib import Path
 import json
@@ -18,6 +19,7 @@ from soak_pressure_log import (
     ceiling_probe_evidence_issues,
     ceiling_outage_window,
     classify_soak_result,
+    dial9_evidence_issues,
     engine_lifecycle_event,
     filter_provider_ndjson_records,
     flow_pool_evidence_issues,
@@ -52,6 +54,8 @@ from soak_pressure_log import (
     settled_final_flow_gauge,
     soak_evidence_issues,
     summarize_pressure_rows,
+    summarize_udp_pressure_rows,
+    udp_pressure_event,
     unexpected_probe_failure_count,
     unexpected_probe_failure_count_across_outages,
 )
@@ -61,6 +65,37 @@ def flow_pool_status(*args, **kwargs):
     """Keep legacy fixtures explicit about their five-second hold."""
     kwargs.setdefault("required_hold_seconds", 5)
     return _flow_pool_status(*args, **kwargs)
+
+
+def require_loopback_round_trip(testcase):
+    """Skip quickly when bind works but sandboxed loopback traffic is blackholed."""
+    listener = socket.socket()
+    listener.settimeout(0.25)
+    worker = None
+    try:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+
+        def respond():
+            try:
+                connection, _ = listener.accept()
+                with connection:
+                    connection.sendall(b"ok")
+            except OSError:
+                pass
+
+        worker = threading.Thread(target=respond, daemon=True)
+        worker.start()
+        with socket.create_connection(listener.getsockname(), timeout=0.25) as client:
+            client.settimeout(0.25)
+            if client.recv(2) != b"ok":
+                raise OSError("loopback response mismatch")
+    except OSError as error:
+        testcase.skipTest(f"host sandbox has no end-to-end loopback reachability: {error}")
+    finally:
+        listener.close()
+        if worker is not None:
+            worker.join(timeout=0.5)
 
 
 class SoakPressureLogTests(unittest.TestCase):
@@ -78,6 +113,7 @@ class SoakPressureLogTests(unittest.TestCase):
             "probe_monitor_joined": "1",
             "provider_continuous": "1",
             "holder_cleanup_ok": "1",
+            "udp_workload_exercised": "0",
             "mode": mode,
             "download_host_preflight_ok": "1",
             "stress_ok": "1",
@@ -127,6 +163,7 @@ class SoakPressureLogTests(unittest.TestCase):
                 "udp": 0,
                 "registered": 351,
                 "retiring": 0,
+                "retirement_overlap": None,
                 "allocated": 351,
                 "total": 351,
                 "peak": 460,
@@ -159,19 +196,22 @@ class SoakPressureLogTests(unittest.TestCase):
 
     def test_flow_gauge_separates_registered_and_allocated_and_validates_retiring(self):
         message = (
-            "live-flow counts tcp=4 udp=3 total=12 peak=15 softCap=10 "
-            "hardCap=20 retiring=5"
+            "live-flow counts tcp=4 udp=3 total=10 peak=15 softCap=10 "
+            "hardCap=20 retiring=5 retirementOverlap=2"
         )
         gauge = flow_gauge(message)
         self.assertEqual(gauge["registered"], 7)
-        self.assertEqual(gauge["allocated"], 12)
+        self.assertEqual(gauge["allocated"], 10)
         self.assertEqual(gauge["retiring"], 5)
+        self.assertEqual(gauge["retirement_overlap"], 2)
         self.assertIsNone(flow_gauge_issue(message))
 
-        inconsistent = message.replace("retiring=5", "retiring=4")
+        inconsistent = message.replace("total=10", "total=11")
         self.assertIsNone(flow_gauge(inconsistent))
         self.assertIn("inconsistent", flow_gauge_issue(inconsistent))
-        over_hard = message.replace("hardCap=20", "hardCap=11")
+        impossible_overlap = message.replace("retirementOverlap=2", "retirementOverlap=6")
+        self.assertIsNone(flow_gauge(impossible_overlap))
+        over_hard = message.replace("hardCap=20", "hardCap=9")
         self.assertIsNone(flow_gauge(over_hard))
         self.assertIn("hard-cap", flow_gauge_issue(over_hard))
         self.assertIn(
@@ -295,7 +335,7 @@ class SoakPressureLogTests(unittest.TestCase):
             "spared=0 canceled=0 expired=0 pending=0]"
         )
         contradictory_selection = (
-            "flow pressure: occupancy 450 over soft cap 450; selected 1 idle flow(s)"
+            "flow pressure: occupancy 449 over soft cap 450; selected 1 idle flow(s)"
         )
         duplicated_gauge = (
             "live-flow counts tcp=1 udp=0 total=1 peak=1 softCap=10 hardCap=20 "
@@ -320,6 +360,237 @@ class SoakPressureLogTests(unittest.TestCase):
         self.assertIsNone(pressure_telemetry_issue(valid_gauge))
         self.assertIsNone(lifecycle_category_issue(valid_gauge, "lifecycle"))
         self.assertIsNotNone(lifecycle_category_issue(valid_gauge, "tproxy"))
+
+    def test_soft_cap_boundary_is_pressure_for_every_event_schema(self):
+        selection = (
+            "flow pressure: occupancy 450 over soft cap 450; selected 1 idle flow(s)"
+        )
+        no_headroom = (
+            "flow pressure: occupancy 450, soft cap 450, but no flow idle long enough"
+        )
+        episode = (
+            "flow pressure episode ended: startEpochMs=100250 durationMs=1250 "
+            "peakOccupancy=450 softCap=450 scans=1 skipped=0 selected=1 "
+            "evicted=1 spared=0 canceled=0 expired=0 startEpochUs=100250000"
+        )
+        for message in (selection, no_headroom, episode):
+            with self.subTest(message=message):
+                self.assertIsNone(pressure_telemetry_issue(message))
+        summarized = summarize_pressure_rows(
+            [(101, selection), (102, no_headroom), (103, episode)]
+        )
+        self.assertEqual(summarized["observed_peak"], 450)
+        self.assertEqual(summarized["validated_eviction_episodes"], 1)
+
+    def test_udp_pressure_schema_and_normal_mode_drop_failure(self):
+        drop = (
+            'UDP ingress pressure dropped datagram pressure="flow_bytes" '
+            "cumulative_drops=1 global_retained_bytes=4096 "
+            "global_max_retained_bytes=8192"
+        )
+        parsed = udp_pressure_event(drop)
+        self.assertEqual(parsed["transition"], "drop")
+        self.assertEqual(parsed["pressure"], "flow_bytes")
+        self.assertIsNone(lifecycle_category_issue(drop, "lifecycle"))
+        self.assertIsNotNone(lifecycle_category_issue(drop, "tproxy"))
+        result = summarize_udp_pressure_rows(
+            [(101, drop)], workload_exercised=True, mode="stress-only"
+        )
+        self.assertEqual(result["status"], "FAILED")
+        self.assertEqual(result["drop_transitions"], 1)
+        self.assertTrue(result["failures"])
+
+    def test_udp_pressure_ceiling_requires_later_recovery(self):
+        drop = (
+            'UDP ingress pressure dropped datagram pressure="global_bytes" '
+            "cumulative_drops=2 global_retained_bytes=8192 "
+            "global_max_retained_bytes=8192"
+        )
+        resume = (
+            'UDP ingress pressure resumed flow pressure="global_bytes" '
+            "cumulative_resumptions=1 global_retained_bytes=1024 "
+            "global_max_retained_bytes=8192"
+        )
+        failed = summarize_udp_pressure_rows(
+            [(101, drop)], workload_exercised=True, mode="find-ceiling"
+        )
+        self.assertEqual(failed["status"], "FAILED")
+        self.assertEqual(failed["unrecovered"], ["global_bytes"])
+        recovered = summarize_udp_pressure_rows(
+            [(101, drop), (102, resume)],
+            workload_exercised=True,
+            mode="find-ceiling",
+        )
+        self.assertEqual(recovered["status"], "GOOD")
+        self.assertEqual(recovered["unrecovered"], [])
+
+    def test_swift_udp_staging_drop_is_distinct_and_always_unhealthy(self):
+        drop = (
+            'UDP Swift ingress staging dropped datagrams reason="generation_bytes" '
+            "cumulative_drop_events=1 cumulative_dropped_items=3 "
+            "cumulative_dropped_bytes_lower_bound=1200 "
+            "generation_retained_items=8 generation_max_retained_items=8 "
+            "generation_retained_bytes=8192 generation_max_retained_bytes=8192"
+        )
+        parsed = udp_pressure_event(drop)
+        self.assertEqual(parsed["layer"], "swift_staging")
+        self.assertEqual(parsed["cumulative"], 1)
+        self.assertEqual(parsed["cumulative_dropped_items"], 3)
+        generation_items = drop.replace(
+            'reason="generation_bytes"', 'reason="generation_items"'
+        )
+        self.assertEqual(
+            udp_pressure_event(generation_items)["pressure"], "generation_items"
+        )
+        for mode in ("stress-only", "find-ceiling"):
+            with self.subTest(mode=mode):
+                result = summarize_udp_pressure_rows(
+                    [(101, drop)], workload_exercised=True, mode=mode
+                )
+                self.assertEqual(result["status"], "FAILED")
+                self.assertEqual(result["swift_staging_drop_samples"], 1)
+                self.assertEqual(result["drop_transitions"], 0)
+                self.assertTrue(
+                    any("Swift UDP ingress staging" in failure
+                        for failure in result["failures"])
+                )
+
+    def test_swift_udp_staging_schema_and_counters_fail_closed(self):
+        first = (
+            'UDP Swift ingress staging dropped datagrams reason="flow_items" '
+            "cumulative_drop_events=2 cumulative_dropped_items=4 "
+            "cumulative_dropped_bytes_lower_bound=10 "
+            "generation_retained_items=1 generation_max_retained_items=8192 "
+            "generation_retained_bytes=1 generation_max_retained_bytes=8192"
+        )
+        rollback = first.replace(
+            "cumulative_drop_events=2", "cumulative_drop_events=1"
+        )
+        result = summarize_udp_pressure_rows(
+            [(101, first), (102, rollback)],
+            workload_exercised=True,
+            mode="stress-only",
+        )
+        self.assertEqual(result["status"], "INCOMPLETE")
+        self.assertTrue(any("Swift UDP staging" in issue for issue in result["issues"]))
+        for malformed in (
+            first.replace("cumulative_drop_events=2", "cumulative_drop_events=3"),
+            first.replace("cumulative_dropped_items=4", "cumulative_dropped_items=1"),
+            first.replace("generation_retained_items=1", "generation_retained_items=8193"),
+            first.replace('reason="flow_items"', 'reason="<private>"'),
+            first.replace('reason="flow_items"', 'reason="closed"'),
+            first + " cumulative_drop_events=4",
+        ):
+            with self.subTest(malformed=malformed):
+                self.assertIsNone(udp_pressure_event(malformed))
+                self.assertIsNotNone(pressure_telemetry_issue(malformed))
+
+    def test_udp_pressure_rejects_malformed_and_counter_rollback(self):
+        malformed = (
+            'UDP ingress pressure dropped datagram pressure="global_bytes" '
+            "cumulative_drops=1 global_retained_bytes=8193 "
+            "global_max_retained_bytes=8192"
+        )
+        self.assertIsNone(udp_pressure_event(malformed))
+        self.assertIsNotNone(pressure_telemetry_issue(malformed))
+        first = (
+            'UDP ingress pressure dropped datagram pressure="channel_count" '
+            "cumulative_drops=4 global_retained_bytes=1 "
+            "global_max_retained_bytes=8192"
+        )
+        rollback = first.replace("cumulative_drops=4", "cumulative_drops=2")
+        result = summarize_udp_pressure_rows(
+            [(101, first), (102, rollback)],
+            workload_exercised=True,
+            mode="stress-only",
+        )
+        self.assertEqual(result["status"], "INCOMPLETE")
+        self.assertTrue(any("rolled back" in issue for issue in result["issues"]))
+        duplicated = first + " cumulative_drops=8"
+        self.assertIsNone(udp_pressure_event(duplicated))
+        self.assertIsNotNone(pressure_telemetry_issue(duplicated))
+
+    def test_udp_pressure_without_udp_workload_is_not_exercised(self):
+        result = summarize_udp_pressure_rows(
+            [(101, "UDP ingress pressure dropped datagram")],
+            workload_exercised=False,
+            mode="stress-only",
+        )
+        self.assertEqual(result["status"], "NOT EXERCISED")
+        self.assertEqual(result["failures"], [])
+        self.assertEqual(result["issues"], [])
+
+    def test_udp_pressure_parser_matches_engine_emitter_schema(self):
+        repository = Path(__file__).resolve().parents[5]
+        source = (
+            repository
+            / "rama-net-apple-networkextension/src/tproxy/engine/udp_ingress.rs"
+        ).read_text()
+        for public_body in (
+            '"UDP ingress pressure dropped datagram pressure=\\"{}\\" '
+            'cumulative_drops={} global_retained_bytes={} '
+            'global_max_retained_bytes={}"',
+            '"UDP ingress pressure resumed flow pressure=\\"{}\\" '
+            'cumulative_resumptions={} global_retained_bytes={} '
+            'global_max_retained_bytes={}"',
+        ):
+            with self.subTest(public_body=public_body):
+                self.assertIn(public_body, source)
+        for reason in ("channel_count", "flow_bytes", "global_bytes"):
+            self.assertIn(f'"{reason}"', source)
+        self.assertIn("global_retained_bytes", source)
+        self.assertIn("global_max_retained_bytes", source)
+
+        swift_source = (
+            repository
+            / "ffi/apple/RamaAppleNetworkExtension/Sources/"
+            "RamaAppleNetworkExtension/Provider/Session/UdpFlowSession.swift"
+        ).read_text()
+        self.assertIn(
+            '"UDP Swift ingress staging dropped datagrams reason=\\"'
+            "\\(sample.reason.rawValue)\\\" ",
+            swift_source,
+        )
+        for field in (
+            "cumulative_drop_events",
+            "cumulative_dropped_items",
+            "cumulative_dropped_bytes_lower_bound",
+            "generation_retained_items",
+            "generation_max_retained_items",
+            "generation_retained_bytes",
+            "generation_max_retained_bytes",
+        ):
+            self.assertIn(field, swift_source)
+        swift_staging_source = (
+            repository
+            / "ffi/apple/RamaAppleNetworkExtension/Sources/"
+            "RamaAppleNetworkExtension/Provider/UdpIngressStaging.swift"
+        ).read_text()
+        self.assertIn(
+            "guard reason.isRetryableCapacityPressure else { return nil }",
+            swift_staging_source,
+        )
+        self.assertIn('case generationItems = "generation_items"', swift_staging_source)
+
+    def test_udp_pressure_redacted_or_incomplete_public_message_fails_closed(self):
+        for message in (
+            "UDP ingress pressure dropped datagram",
+            'UDP ingress pressure dropped datagram pressure="<private>" '
+            "cumulative_drops=<private> global_retained_bytes=<private> "
+            "global_max_retained_bytes=<private>",
+            'UDP ingress pressure resumed flow pressure="global_bytes"',
+            "UDP Swift ingress staging dropped datagrams",
+            'UDP Swift ingress staging dropped datagrams reason="<private>" '
+            "cumulative_drop_events=<private>",
+        ):
+            with self.subTest(message=message):
+                self.assertIsNone(udp_pressure_event(message))
+                self.assertIsNotNone(pressure_telemetry_issue(message))
+                verdict = summarize_udp_pressure_rows(
+                    [(101, message)], workload_exercised=True, mode="stress-only"
+                )
+                self.assertEqual(verdict["status"], "INCOMPLETE")
+                self.assertTrue(verdict["issues"])
 
     def test_only_explicit_provider_exhaustion_is_an_allocation_failure_signal(self):
         signal = "kernel flow allocation exhausted: resource=nexus"
@@ -1017,6 +1288,19 @@ class SoakPressureLogTests(unittest.TestCase):
             "2 active fanout transfer failure(s) were observed",
             fanout_failed["failures"],
         )
+
+        udp_failed = classify_soak_result(
+            self.complete_meta(),
+            [],
+            probe_failures=0,
+            body_errors=0,
+            reaper_status="disabled",
+            udp_pressure_failures=[
+                "1 UDP ingress pressure drop transition(s) were observed"
+            ],
+        )
+        self.assertEqual(udp_failed["exit_code"], 1)
+        self.assertTrue(udp_failed["failures"])
 
         incomplete = classify_soak_result(
             self.complete_meta(),
@@ -1922,6 +2206,7 @@ class SoakPressureLogTests(unittest.TestCase):
         self.assertIn("2 NDJSON record(s) have invalid timestamps", issues)
 
     def test_stress_refused_targets_exit_nonzero_without_negative_counts(self):
+        require_loopback_round_trip(self)
         script = Path(__file__).with_name("stress_traffic.sh")
         with tempfile.TemporaryDirectory() as log_dir:
             env = os.environ.copy()
@@ -1942,7 +2227,7 @@ class SoakPressureLogTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                timeout=30,
+                timeout=15,
             )
             self.assertNotEqual(result.returncode, 0, result.stdout)
             summaries = list(Path(log_dir).glob("*.summary"))
@@ -1956,6 +2241,7 @@ class SoakPressureLogTests(unittest.TestCase):
                 self.assertGreater(failed, 0)
 
     def test_stress_truncated_http_200_body_is_a_failed_transfer(self):
+        require_loopback_round_trip(self)
         server = socket.socket()
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -2010,7 +2296,7 @@ class SoakPressureLogTests(unittest.TestCase):
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
-                    timeout=30,
+                    timeout=15,
                 )
                 self.assertEqual(result.returncode, 1, result.stdout)
                 large_summary = Path(log_dir, "large_get.summary").read_text()
@@ -2040,6 +2326,59 @@ class SoakPressureLogTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2, result.stdout)
         self.assertIn("CONCURRENCY must be greater than zero", result.stdout)
+
+    def test_dial9_evidence_requires_newer_hash_matched_sealed_pair(self):
+        content = b"current trace"
+        meta = {
+            "dial9_baseline_ready": "1",
+            "dial9_baseline_max_index": "7",
+            "dial9_collection_ok": "1",
+            "dial9_current_segment_count": "1",
+            "dial9_required_pair_count": "1",
+        }
+        with tempfile.TemporaryDirectory() as trace_dir:
+            path = Path(trace_dir) / "trace.8.bin"
+            path.write_bytes(content)
+            summary = {
+                "schema_version": 1,
+                "schema_complete": True,
+                "baseline_max_index": 7,
+                "current_segment_count": 1,
+                "current_indices": [8],
+                "required_pair_count": 1,
+                "artifacts": [{
+                    "name": path.name,
+                    "index": 8,
+                    "state": "sealed",
+                    "encoding": "raw",
+                    "size": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                }],
+            }
+            self.assertEqual(dial9_evidence_issues(meta, summary, trace_dir), [])
+
+            stale = dict(meta, dial9_baseline_max_index="8")
+            self.assertTrue(any(
+                "not newer" in issue
+                for issue in dial9_evidence_issues(stale, summary, trace_dir)
+            ))
+            active = json.loads(json.dumps(summary))
+            active["artifacts"][0]["state"] = "active"
+            self.assertTrue(any(
+                "not declared sealed" in issue
+                for issue in dial9_evidence_issues(meta, active, trace_dir)
+            ))
+            malformed = json.loads(json.dumps(summary))
+            malformed["artifacts"][0]["name"] = 8
+            self.assertTrue(any(
+                "non-canonical artifact name" in issue
+                for issue in dial9_evidence_issues(meta, malformed, trace_dir)
+            ))
+            path.write_bytes(b"tampered")
+            self.assertTrue(any(
+                "hash identity" in issue
+                for issue in dial9_evidence_issues(meta, summary, trace_dir)
+            ))
 
     def test_embedded_extractor_wires_provider_ceiling_and_leak_verdicts(self):
         script_dir = Path(__file__).parent
@@ -2089,11 +2428,17 @@ class SoakPressureLogTests(unittest.TestCase):
                     "provider_codesign_cdhash\tabcdef\n"
                     "provider_codesign_team\tTEAM123\n"
                     "log_stream_pid\t20\nprobe_monitor_pid\t30\n"
+                    "udp_workload_exercised\t0\n"
                     f"leaks_command_rc\t{leaks_rc}\n"
                     f"mode\t{mode}\n"
                     f"softcap\t{softcap}\nhardcap\t{hardcap}\n"
                     f"baseline_registered\t{baseline_registered}\n"
                     f"baseline_total\t{baseline_total}\n"
+                    "dial9_baseline_ready\t1\n"
+                    "dial9_baseline_max_index\t8\n"
+                    "dial9_collection_ok\t1\n"
+                    "dial9_current_segment_count\t1\n"
+                    "dial9_required_pair_count\t1\n"
                     "ceiling_found\t1\nceiling_recovered\t1\n"
                     f"ceiling_outage_start\t{outage_start}\n"
                     f"ceiling_outage_end\t{outage_end}\n"
@@ -2152,6 +2497,29 @@ class SoakPressureLogTests(unittest.TestCase):
             (out / "leaks.txt").write_text(
                 "Process 10: 0 leaks for 0 total leaked bytes.\n"
             )
+            trace_content = b"fixture-current-dial9-trace"
+            (out / "dial9-traces").mkdir()
+            (out / "dial9-traces" / "trace.9.bin").write_bytes(trace_content)
+            (out / "dial9-evidence.json").write_text(json.dumps({
+                "schema_version": 1,
+                "baseline_max_index": 8,
+                "current_segment_count": 1,
+                "current_indices": [9],
+                "artifacts": [{
+                    "name": "trace.9.bin",
+                    "index": 9,
+                    "state": "sealed",
+                    "encoding": "raw",
+                    "size": len(trace_content),
+                    "sha256": hashlib.sha256(trace_content).hexdigest(),
+                }],
+                "tproxy_open_count": 1,
+                "tproxy_close_count": 1,
+                "paired_flow_count": 1,
+                "udp_paired_flow_count": 1,
+                "required_pair_count": 1,
+                "schema_complete": True,
+            }))
 
             def run_extractor():
                 result = subprocess.run(

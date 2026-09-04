@@ -192,6 +192,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                     flowId,
                     anchor: self,
                     appId: token.appId,
+                    admissionToken: token,
                     engineGeneration: engineGeneration,
                     runtimePolicy: effectiveRuntimePolicy,
                     on: flowQueue,

@@ -740,6 +740,55 @@ fn tcp_cancel_after_activate_still_emits_close_telemetry() {
     engine.stop(0);
 }
 
+/// Engine shutdown must wake a TCP task that is still waiting for `activate`.
+/// The pending session deliberately retains `bridge_tx`, so sender closure
+/// cannot be what releases the task.
+#[test]
+fn tcp_engine_stop_before_activate_emits_exactly_one_shutdown_close() {
+    const FLOW_ID: u64 = 0xE1E1_0002;
+    install_close_capture();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(
+                |_bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+                    std::future::pending::<()>().await;
+                    Ok(())
+                },
+            )
+            .boxed(),
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine(handler);
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp);
+    meta.flow_id = FLOW_ID;
+
+    let SessionFlowAction::Intercept(session) =
+        engine.new_tcp_session(meta, |_| TcpDeliverStatus::Accepted, || {}, || {})
+    else {
+        panic!("expected intercept session");
+    };
+
+    // Keep `session` alive and unactivated across stop: the service task must
+    // observe engine cancellation directly instead of waiting for bridge_tx.
+    engine.stop(0);
+    assert_eq!(flow_close_count(FLOW_ID), 1);
+    assert_eq!(flow_close_reason(FLOW_ID).as_deref(), Some("shutdown"));
+
+    drop(session);
+    assert_eq!(
+        flow_close_count(FLOW_ID),
+        1,
+        "dropping the retained pending session must not emit a second close"
+    );
+}
+
 fn assert_tcp_service_panic_runs_close_epilogue(flow_id: u64, panic_while_polling: bool) {
     install_close_capture();
 

@@ -80,6 +80,34 @@ fn macro_generates_direct_dependency_ffi_symbols() {
         ) -> rama_net_apple_networkextension::ffi::BytesOwned;
     _ = rama_transparent_proxy_engine_udp_idle_timeout_ms
         as unsafe extern "C" fn(*mut RamaTransparentProxyEngine) -> u64;
+    _ = rama_transparent_proxy_engine_new_udp_session
+        as unsafe extern "C" fn(
+            *mut RamaTransparentProxyEngine,
+            *const RamaTransparentProxyFlowMeta,
+            RamaTransparentProxyUdpSessionCallbacks,
+        ) -> RamaTransparentProxyUdpSessionResult;
+    _ = rama_transparent_proxy_engine_new_udp_session_v2
+        as unsafe extern "C" fn(
+            *mut RamaTransparentProxyEngine,
+            *const RamaTransparentProxyFlowMeta,
+            RamaTransparentProxyUdpSessionCallbacksV2,
+        ) -> RamaTransparentProxyUdpSessionResult;
+    let _v1: Option<unsafe extern "C" fn(*mut std::ffi::c_void)> =
+        RamaTransparentProxyUdpSessionCallbacks {
+            context: std::ptr::null_mut(),
+            on_server_datagram: None,
+            on_client_read_demand: None,
+            on_server_closed: None,
+        }
+        .on_client_read_demand;
+    let _v2: Option<unsafe extern "C" fn(*mut std::ffi::c_void, u64)> =
+        RamaTransparentProxyUdpSessionCallbacksV2 {
+            context: std::ptr::null_mut(),
+            on_server_datagram: None,
+            on_client_read_demand: None,
+            on_server_closed: None,
+        }
+        .on_client_read_demand;
 }
 
 #[test]

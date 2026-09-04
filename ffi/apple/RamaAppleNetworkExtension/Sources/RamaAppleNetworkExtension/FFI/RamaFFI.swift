@@ -1,6 +1,10 @@
 import Foundation
 import RamaAppleNEFFI
 
+func clampedFFISizeToInt<T: BinaryInteger>(_ value: T) -> Int {
+    Int(clamping: value)
+}
+
 struct RamaTransparentProxyFlowMetaBridge {
     var protocolRaw: UInt32
     var remoteHost: String?
@@ -49,6 +53,11 @@ struct RamaTransparentProxyConfigBridge {
     /// Effective builder-owned UDP idle timeout. Zero disables both the Rust
     /// service timer and Swift's independent kernel-flow watchdog.
     var udpIdleTimeoutMs: UInt64 = 60_000
+    /// Effective Rust UDP ingress limits. Swift mirrors these exactly for the
+    /// pre-queue Apple callback staging bound of the same engine generation.
+    var udpChannelCapacity: Int = 32
+    var udpIngressPerFlowMaxBytes: Int = 256 * 1024
+    var udpIngressGlobalMaxBytes: Int = 16 * 1024 * 1024
     var tcpStartInFlightHardCap: UInt32
     var tcpStartInFlightSoftCap: UInt32
     var tcpStartLatencyBreakerP95Ms: UInt32
@@ -176,12 +185,12 @@ final class UdpSessionCallbackBox {
     /// returns. Keeping the views raw lets the bounded writer reject overload
     /// without first allocating and copying a datagram that it will drop.
     let onServerDatagram: (RamaBytesView, RamaUdpPeerView) -> Void
-    let onClientReadDemand: () -> Void
+    let onClientReadDemand: (UInt64) -> Void
     let onServerClosed: () -> Void
 
     init(
         onServerDatagram: @escaping (RamaBytesView, RamaUdpPeerView) -> Void,
-        onClientReadDemand: @escaping () -> Void,
+        onClientReadDemand: @escaping (UInt64) -> Void,
         onServerClosed: @escaping () -> Void
     ) {
         self.onServerDatagram = onServerDatagram
@@ -439,11 +448,12 @@ private let ramaUdpOnServerClosedCallback: @convention(c) (UnsafeMutableRawPoint
     box.onServerClosed()
 }
 
-private let ramaUdpOnClientReadDemandCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void =
-    { context in
+private let ramaUdpOnClientReadDemandCallback:
+    @convention(c) (UnsafeMutableRawPointer?, UInt64) -> Void =
+    { context, probeId in
         guard let context else { return }
         let box = Unmanaged<UdpSessionCallbackBox>.fromOpaque(context).takeUnretainedValue()
-        box.onClientReadDemand()
+        box.onClientReadDemand(probeId)
     }
 
 // ── Egress C callbacks ────────────────────────────────────────────────────────
@@ -606,7 +616,8 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
     }
 
     func config() -> RamaTransparentProxyConfigBridge? {
-        lifetime.withEngine(default: nil) { p in
+        lifetime.withEngine(default: Optional<RamaTransparentProxyConfigBridge>.none) {
+            p -> RamaTransparentProxyConfigBridge? in
             guard let outPtr = rama_transparent_proxy_get_config(p) else { return nil }
             defer { rama_transparent_proxy_config_free(outPtr) }
             let out = outPtr.pointee
@@ -653,6 +664,12 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
                 flowPressureIdleFloorMs: out.flow_pressure_idle_floor_ms,
                 liveFlowHardCap: out.live_flow_hard_cap,
                 udpIdleTimeoutMs: rama_transparent_proxy_engine_udp_idle_timeout_ms(p),
+                udpChannelCapacity: clampedFFISizeToInt(
+                    rama_transparent_proxy_engine_udp_channel_capacity(p)),
+                udpIngressPerFlowMaxBytes: clampedFFISizeToInt(
+                    rama_transparent_proxy_engine_udp_ingress_per_flow_max_bytes(p)),
+                udpIngressGlobalMaxBytes: clampedFFISizeToInt(
+                    rama_transparent_proxy_engine_udp_ingress_global_max_bytes(p)),
                 tcpStartInFlightHardCap: out.tcp_start_in_flight_hard_cap,
                 tcpStartInFlightSoftCap: out.tcp_start_in_flight_soft_cap,
                 tcpStartLatencyBreakerP95Ms: out.tcp_start_latency_breaker_p95_ms,
@@ -765,7 +782,7 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
     func newUdpSession(
         meta: RamaTransparentProxyFlowMetaBridge,
         onServerDatagram: @escaping (RamaBytesView, RamaUdpPeerView) -> Void,
-        onClientReadDemand: @escaping () -> Void,
+        onClientReadDemand: @escaping (UInt64) -> Void,
         onServerClosed: @escaping () -> Void,
         flowRefusalPolicy: FlowRefusalPolicy = FlowRefusalPolicy(
             passthrough: defaultFlowRefusalPassthrough)
@@ -777,7 +794,7 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
                     onClientReadDemand: onClientReadDemand,
                     onServerClosed: onServerClosed
                 ))
-            let callbacks = RamaTransparentProxyUdpSessionCallbacks(
+            let callbacks = RamaTransparentProxyUdpSessionCallbacksV2(
                 context: callbackBox.toOpaque(),
                 on_server_datagram: ramaUdpOnServerDatagramCallback,
                 on_client_read_demand: ramaUdpOnClientReadDemandCallback,
@@ -785,7 +802,7 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
             )
 
             let result = withFlowMeta(meta) { metaPtr in
-                rama_transparent_proxy_engine_new_udp_session(p, metaPtr, callbacks)
+                rama_transparent_proxy_engine_new_udp_session_v2(p, metaPtr, callbacks)
             }
             guard let action = RamaTransparentProxyFlowActionBridge(rawValue: result.action.rawValue)
             else {
@@ -1128,6 +1145,9 @@ final class RamaUdpSessionHandle: @unchecked Sendable {
     private var sessionPtr: OpaquePointer?
     private let callbackBox: Unmanaged<UdpSessionCallbackBox>
     private var cancelled = false
+    #if DEBUG
+        private var testAfterCancelledBeforeRustClose: (@Sendable () -> Void)?
+    #endif
 
     fileprivate init(sessionPtr: OpaquePointer, callbackBox: Unmanaged<UdpSessionCallbackBox>) {
         self.sessionPtr = sessionPtr
@@ -1183,11 +1203,47 @@ final class RamaUdpSessionHandle: @unchecked Sendable {
         rama_transparent_proxy_udp_session_activate(s)
     }
 
-    func onClientClose() {
+    /// Release the exact provisional global-pressure scheduling credit tied
+    /// to one completed Apple read. Zero/stale IDs are harmless no-ops.
+    func completeClientRead(probeId: UInt64) {
         lock.lock()
         defer { lock.unlock() }
         guard !cancelled, let s = sessionPtr else { return }
+        rama_transparent_proxy_udp_session_on_client_read_complete(s, probeId)
+    }
+
+    #if DEBUG
+        func testSetAfterCancelledBeforeRustClose(_ hook: (@Sendable () -> Void)?) {
+            lock.lock()
+            testAfterCancelledBeforeRustClose = hook
+            lock.unlock()
+        }
+    #endif
+
+    func onClientClose() {
+        lock.lock()
+        guard !cancelled, let s = sessionPtr else {
+            lock.unlock()
+            return
+        }
         cancelled = true
-        rama_transparent_proxy_udp_session_on_client_close(s)
+        #if DEBUG
+            let afterCancelled = testAfterCancelledBeforeRustClose
+        #endif
+        lock.unlock()
+
+        #if DEBUG
+            afterCancelled?()
+        #endif
+
+        // Rust close waits for any in-flight demand callback to leave its
+        // demand gate. Do not hold this handle lock across that wait: a demand
+        // callback may concurrently finish by attempting an ACK through the
+        // same handle. The cancelled publication prevents any new FFI entry,
+        // while this explicit lifetime keeps the callback box/session storage
+        // alive until Rust has drained the callback and returned.
+        withExtendedLifetime(self) {
+            rama_transparent_proxy_udp_session_on_client_close(s)
+        }
     }
 }

@@ -24,6 +24,20 @@ private enum UdpFlowRegistrationPlan {
     }
 }
 
+/// Stable identity for one underlying kernel/network resource while ownership
+/// moves between the live registry, detach teardown, and a promoted FIN linger.
+/// The accounting ledger retains this tiny object while claims are live, so
+/// allocator reuse of a flow/context address cannot conflate two resources.
+final class ResourceRetirementIdentity: Hashable, @unchecked Sendable {
+    static func == (lhs: ResourceRetirementIdentity, rhs: ResourceRetirementIdentity) -> Bool {
+        lhs === rhs
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(ObjectIdentifier(self))
+    }
+}
+
 /// Home of the transparent-proxy per-flow state machine, the engine
 /// handle ownership, and the session / context registration maps.
 ///
@@ -79,35 +93,22 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// matching engine. Sessions copy this through `EngineFlowLease`, so
     /// retiring callbacks never consult a replacement generation's policy.
     private var runtimePolicyStorage: TransparentProxyRuntimePolicy?
+    /// Generation-owned Apple callback staging budget. Retiring sessions keep
+    /// their old object through `EngineFlowLease`; replacement generations can
+    /// never charge or release one another's bound.
+    private var udpIngressStagingBudgetStorage: UdpIngressGenerationStagingBudget?
     private var engineGeneration: UInt64 = 0
+    /// Queue-confined and intentionally never reset across detach/attach.
+    /// Combined with the engine generation, this identifies one admission
+    /// operation even when an ObjectIdentifier is reused.
+    private var nextTcpAdmissionNonce: UInt64 = 0
     private var acceptingFlows = false
-
-    /// Resources whose registry ownership has ended but whose underlying
-    /// kernel/NWConnection teardown has not run yet. Tokens, rather than flow
-    /// object identities, keep detach/re-attach and allocator reuse from
-    /// conflating different resource generations.
-    private struct RetiringResourceState {
-        var nextToken: UInt64 = 0
-        var activeTokens: Set<UInt64> = []
-
-        mutating func acquire() -> UInt64 {
-            precondition(nextToken < .max, "retiring-resource token space exhausted")
-            nextToken += 1
-            activeTokens.insert(nextToken)
-            return nextToken
-        }
-    }
-
-    /// Intentionally independent of `stateQueue` maintenance state: queued
-    /// teardown from an old engine generation must continue consuming hard-cap
-    /// headroom after an immediate re-attach. Each operation is O(1), and no
-    /// retiring flow queue ever synchronously waits on `stateQueue`.
-    private let retiringResources = Locked(RetiringResourceState())
 
     struct EngineFlowLease {
         let engine: RamaTransparentProxyEngineHandle
         let generation: UInt64
         let runtimePolicy: TransparentProxyRuntimePolicy
+        let udpIngressStagingBudget: UdpIngressGenerationStagingBudget
     }
 
     /// Queue-confined policy lookup. Engine-less tests retain their historical
@@ -222,6 +223,9 @@ final class TransparentProxyCore: @unchecked Sendable {
             self.engineGeneration &+= 1
             self.engineStorage = engine
             self.runtimePolicyStorage = runtimePolicy
+            let effectivePolicy = runtimePolicy ?? .testDefaultsSnapshot
+            self.udpIngressStagingBudgetStorage = UdpIngressGenerationStagingBudget(
+                policy: effectivePolicy.udpIngressStaging)
             self.acceptingFlows = true
             self.pressureVictimState.withLock {
                 $0.activeEngineGeneration = self.engineGeneration
@@ -249,11 +253,15 @@ final class TransparentProxyCore: @unchecked Sendable {
             let engine = self.engineStorage
             self.engineStorage = nil
             // Reserve retirement capacity before dropping registry ownership.
-            // This deliberately permits a brief conservative double-count
-            // (registered + retiring), but never an under-count visible to an
-            // immediately attached generation.
+            // TCP uses its stable resource identity so a promoted linger which
+            // races this detach becomes a second claimant, not a second slot.
+            // Admission is closed throughout this state-queue transaction.
             let tcp = self.tcpSessions.values.map {
-                (session: $0, release: self.beginResourceRetirement())
+                (
+                    session: $0,
+                    release: self.beginResourceRetirement(
+                        identity: $0.ctx.retirementIdentity())
+                )
             }
             let udp = self.udpSessions.values.map {
                 (session: $0, release: self.beginResourceRetirement())
@@ -267,6 +275,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             // lifecycle-group wait and relabel an interrupted episode ended.
             self.resetMaintenanceStateLocked()
             self.runtimePolicyStorage = nil
+            self.udpIngressStagingBudgetStorage = nil
             return (engine: engine, tcp: tcp, udp: udp)
         }
         // Registration enters this group while admission and generation are
@@ -298,17 +307,59 @@ final class TransparentProxyCore: @unchecked Sendable {
         detached.engine?.stop(reason: reason)
     }
 
-    /// Begin accounting for one resource that is leaving a reclaimable
-    /// registry but is not released yet. The returned closure is idempotent and
-    /// may be called from any flow queue after the actual close/cancel.
+    /// Begin accounting for one unique resource which has no overlapping live
+    /// registry owner. Used by UDP detach and test-created independent
+    /// retirements. The returned closure is idempotent.
     func beginResourceRetirement() -> @Sendable () -> Void {
-        let token = retiringResources.withLock { $0.acquire() }
+        beginResourceRetirement(identity: ResourceRetirementIdentity())
+    }
+
+    /// Add one claimant to a stable physical resource. Detach and promoted
+    /// terminal can both claim the same TCP connection; only the last release
+    /// restores hard-cap capacity.
+    private func beginResourceRetirement(
+        identity: ResourceRetirementIdentity
+    ) -> @Sendable () -> Void {
+        let token = pressureVictimState.withLock {
+            $0.acquireRetirementClaim(for: identity)
+        }
+        return retirementReleaseClosure(for: token)
+    }
+
+    /// Atomically publish a promoted connection's registry removal intent and
+    /// its retirement claim. Direct admission subtracts the recorded overlap;
+    /// pressure projection uses the matching removal credit plus retirement.
+    func transferRegisteredResourceToRetirement(
+        flowId: ObjectIdentifier,
+        contextId: ObjectIdentifier?,
+        engineGeneration: UInt64?,
+        identity: ResourceRetirementIdentity
+    ) -> @Sendable () -> Void {
+        let token = pressureVictimState.withLock { state in
+            let token = state.acquireRetirementClaim(for: identity)
+            let announcement = state.announceRemoval(
+                flowId: flowId,
+                contextId: contextId,
+                engineGeneration: engineGeneration,
+                mayCancelSelectedVictim: true)
+            if announcement.announced {
+                state.markRegisteredRetirementOverlap(
+                    flowId: flowId,
+                    identity: identity)
+            }
+            return token
+        }
+        return retirementReleaseClosure(for: token)
+    }
+
+    private func retirementReleaseClosure(
+        for token: UInt64?
+    ) -> @Sendable () -> Void {
+        guard let token else { return {} }
         return { [weak self] in
             guard let self else { return }
             let result = self.pressureVictimState.withLock { pressureState in
-                let released = self.retiringResources.withLock { state in
-                    state.activeTokens.remove(token) != nil
-                }
+                let released = pressureState.releaseRetirementClaim(token)
                 guard released else { return (released: false, canceled: false) }
                 return (
                     released: true,
@@ -323,7 +374,24 @@ final class TransparentProxyCore: @unchecked Sendable {
     }
 
     private var retiringResourceCount: Int {
-        retiringResources.withLock { $0.activeTokens.count }
+        pressureVictimState.withLock { $0.retiringResourceCount }
+    }
+
+    private func retirementOccupancySnapshot() -> (retiring: Int, overlap: Int) {
+        pressureVictimState.withLock {
+            ($0.retiringResourceCount, $0.registeredRetirementOverlapCount)
+        }
+    }
+
+    /// Exact physical occupancy for direct hard-cap admission. Registered
+    /// retirement overlaps are counted once; pending TCP starts remain unique
+    /// reservations until registration transfers their exact admission token.
+    /// MUST run on `stateQueue`.
+    private func liveResourceOccupancyLocked(registered: Int) -> Int {
+        let retirement = retirementOccupancySnapshot()
+        return max(registered - retirement.overlap, 0)
+            + overload.liveFlowReservations.count
+            + retirement.retiring
     }
 
     /// Detach only the engine published by one asynchronous provider start.
@@ -343,11 +411,15 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     func engineLeaseForNewFlow() -> EngineFlowLease? {
         stateQueue.sync {
-            guard acceptingFlows, let engine = engineStorage else { return nil }
+            guard acceptingFlows,
+                let engine = engineStorage,
+                let udpIngressStagingBudget = udpIngressStagingBudgetStorage
+            else { return nil }
             return EngineFlowLease(
                 engine: engine,
                 generation: engineGeneration,
-                runtimePolicy: runtimePolicyLocked())
+                runtimePolicy: runtimePolicyLocked(),
+                udpIngressStagingBudget: udpIngressStagingBudget)
         }
     }
 
@@ -761,6 +833,15 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// Selection, expiry, reconciliation, and telemetry remain serialized on
     /// `stateQueue`.
     private struct PressureVictimState {
+        private struct RetirementRecord {
+            var claimCount: Int
+            var overlappingFlowId: ObjectIdentifier?
+            /// The physical resource was released while its asynchronous
+            /// registry removal was still pending. Keep this tombstone until
+            /// registry ownership ends so detach cannot resurrect the slot.
+            var resourceReleased: Bool
+        }
+
         var reservations: [ObjectIdentifier: PressureVictimReservation] = [:]
         /// Token order for selected reservations. Phase changes leave lazy
         /// tombstones here; pruning from either end is amortized O(1), avoiding
@@ -790,6 +871,19 @@ final class TransparentProxyCore: @unchecked Sendable {
         /// of a pressure victim; `false` when it is that victim's own removal.
         var pendingRemovalFlowIds: [ObjectIdentifier: Bool] = [:]
         var naturalReliefCount = 0
+        /// Retirement lives under this same lock as removal credit. A
+        /// registered-to-retiring transfer and every pressure projection
+        /// therefore observe either the old pair or the new pair, never a torn
+        /// mix.
+        private var nextRetirementClaimToken: UInt64 = 0
+        private var retirementClaims: [UInt64: ResourceRetirementIdentity] = [:]
+        private var retirementRecords: [ResourceRetirementIdentity: RetirementRecord] = [:]
+        private var registeredRetirementByFlow:
+            [ObjectIdentifier: ResourceRetirementIdentity] = [:]
+        private(set) var retiringResourceCount = 0
+        var registeredRetirementOverlapCount: Int {
+            registeredRetirementByFlow.count
+        }
         /// Outcome decisions made off `stateQueue`, waiting to be folded into
         /// the queue-confined lifecycle counters. Keeping this tiny ledger
         /// under the reservation lock makes detach an exactly-once boundary:
@@ -867,6 +961,136 @@ final class TransparentProxyCore: @unchecked Sendable {
             }
         }
 
+        mutating func announceRemoval(
+            flowId: ObjectIdentifier,
+            contextId: ObjectIdentifier?,
+            engineGeneration: UInt64?,
+            mayCancelSelectedVictim: Bool
+        ) -> (announced: Bool, canceled: Bool) {
+            if let engineGeneration {
+                guard activeEngineGeneration == engineGeneration else {
+                    return (false, false)
+                }
+            }
+            guard pendingRemovalFlowIds[flowId] == nil,
+                registeredFlowIds.remove(flowId) != nil
+            else {
+                return (false, false)
+            }
+            let providesRelief: Bool
+            switch contextId.flatMap({ reservations[$0]?.phase }) {
+            case .some(.selected), .some(.committed):
+                providesRelief = false
+            case .some(.spareAwaitingAccounting), .some(.canceled),
+                .some(.expired), .none:
+                providesRelief = true
+            }
+            insertPendingRemoval(providesRelief, for: flowId)
+            guard providesRelief, mayCancelSelectedVictim else {
+                return (true, false)
+            }
+            return (true, cancelNewestSelected())
+        }
+
+        /// Add one claimant for a physical resource. Multiple detach/promoted
+        /// claimants share one resource count and release it only when the last
+        /// claim completes. `nil` means that resource was already physically
+        /// released while a stale registry owner remained.
+        mutating func acquireRetirementClaim(
+            for identity: ResourceRetirementIdentity
+        ) -> UInt64? {
+            if retirementRecords[identity]?.resourceReleased == true {
+                return nil
+            }
+            precondition(
+                nextRetirementClaimToken < .max,
+                "retiring-resource token space exhausted")
+            nextRetirementClaimToken += 1
+            let token = nextRetirementClaimToken
+            retirementClaims[token] = identity
+            if var record = retirementRecords[identity] {
+                record.claimCount += 1
+                retirementRecords[identity] = record
+            } else {
+                retirementRecords[identity] = RetirementRecord(
+                    claimCount: 1,
+                    overlappingFlowId: nil,
+                    resourceReleased: false)
+                retiringResourceCount += 1
+            }
+            return token
+        }
+
+        /// Returns true only when this claim released physical capacity.
+        mutating func releaseRetirementClaim(_ token: UInt64) -> Bool {
+            guard let identity = retirementClaims.removeValue(forKey: token),
+                var record = retirementRecords[identity]
+            else {
+                return false
+            }
+            precondition(record.claimCount > 0)
+            record.claimCount -= 1
+            guard record.claimCount == 0 else {
+                retirementRecords[identity] = record
+                return false
+            }
+            retiringResourceCount -= 1
+            if record.overlappingFlowId != nil {
+                record.resourceReleased = true
+                retirementRecords[identity] = record
+            } else {
+                retirementRecords.removeValue(forKey: identity)
+            }
+            return true
+        }
+
+        mutating func markRegisteredRetirementOverlap(
+            flowId: ObjectIdentifier,
+            identity: ResourceRetirementIdentity
+        ) {
+            guard var record = retirementRecords[identity] else {
+                preconditionFailure("retirement overlap without a resource record")
+            }
+            if let oldIdentity = registeredRetirementByFlow[flowId] {
+                precondition(oldIdentity === identity)
+                return
+            }
+            precondition(record.overlappingFlowId == nil)
+            record.overlappingFlowId = flowId
+            retirementRecords[identity] = record
+            registeredRetirementByFlow[flowId] = identity
+        }
+
+        mutating func endRegisteredRetirementOverlap(for flowId: ObjectIdentifier) {
+            guard let identity = registeredRetirementByFlow.removeValue(forKey: flowId),
+                var record = retirementRecords[identity]
+            else {
+                return
+            }
+            precondition(record.overlappingFlowId == flowId)
+            record.overlappingFlowId = nil
+            if record.claimCount == 0 {
+                retirementRecords.removeValue(forKey: identity)
+            } else {
+                retirementRecords[identity] = record
+            }
+        }
+
+        private mutating func endAllRegisteredRetirementOverlaps() {
+            let overlaps = registeredRetirementByFlow
+            registeredRetirementByFlow.removeAll(keepingCapacity: false)
+            for (flowId, identity) in overlaps {
+                guard var record = retirementRecords[identity] else { continue }
+                precondition(record.overlappingFlowId == flowId)
+                record.overlappingFlowId = nil
+                if record.claimCount == 0 {
+                    retirementRecords.removeValue(forKey: identity)
+                } else {
+                    retirementRecords[identity] = record
+                }
+            }
+        }
+
         mutating func recordOutcome(
             _ phase: PressureVictimPhase,
             goal: PressureVictimGoal
@@ -905,6 +1129,10 @@ final class TransparentProxyCore: @unchecked Sendable {
             unresolvedReservationCount = 0
             naturalReliefCount = 0
             activeEngineGeneration = nil
+            // Detach clears both registries in the same `stateQueue`
+            // transaction. Claims survive into the next generation, but no
+            // old registry owner remains to overlap them.
+            endAllRegisteredRetirementOverlaps()
             return outcomes
         }
 
@@ -1278,7 +1506,8 @@ final class TransparentProxyCore: @unchecked Sendable {
         let pressure = pressureVictimState.withLock { state in
             (
                 credited: state.victimCreditCount + state.naturalReliefCount,
-                hardCapReplacement: state.hasOutstandingHardCapReplacement)
+                hardCapReplacement: state.hasOutstandingHardCapReplacement,
+                retiring: state.retiringResourceCount)
         }
         let projected = max(occupancy - pressure.credited, 0)
         let selectionGoal: PressureVictimGoal
@@ -1316,7 +1545,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 let hardCap = Int(pressurePolicy.liveHardCap)
                 let projectedLive = projected
                     + self.overload.liveFlowReservations.count
-                    + self.retiringResourceCount
+                    + pressure.retiring
                 guard hardCap > 0, projected > 0, projectedLive >= hardCap else {
                     clearPressureProtectionsIfIdleLocked(nowNs: nowNs)
                     return []
@@ -1391,7 +1620,8 @@ final class TransparentProxyCore: @unchecked Sendable {
             (reservations: $0.reservations,
              pendingRemovalFlowIds: Set($0.pendingRemovalFlowIds.keys),
              victimCreditCount: $0.victimCreditCount,
-             naturalReliefCount: $0.naturalReliefCount)
+             naturalReliefCount: $0.naturalReliefCount,
+             retiringResourceCount: $0.retiringResourceCount)
         }
         let reservations = pressureState.reservations
         let pending = UInt64(pressureState.victimCreditCount)
@@ -1410,7 +1640,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             let hardCap = UInt64(pressurePolicy.liveHardCap)
             let projectedLive = projected
                 &+ UInt64(self.overload.liveFlowReservations.count)
-                &+ UInt64(self.retiringResourceCount)
+                &+ UInt64(pressureState.retiringResourceCount)
             guard hardCap > 0, projected > 0, projectedLive >= hardCap else {
                 clearPressureProtectionsIfIdleLocked(nowNs: nowNs)
                 return []
@@ -1545,7 +1775,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             case .hardCapReplacement:
                 let currentLive = currentProjected
                     + self.overload.liveFlowReservations.count
-                    + self.retiringResources.withLock { $0.activeTokens.count }
+                    + state.retiringResourceCount
                 let hardCap = Int(pressurePolicy.liveHardCap)
                 currentWant = !state.hasOutstandingHardCapReplacement
                     && hardCap > 0 && currentLive >= hardCap ? 1 : 0
@@ -1639,7 +1869,8 @@ final class TransparentProxyCore: @unchecked Sendable {
         let pressure = pressureVictimState.withLock {
             (
                 credited: $0.victimCreditCount + $0.naturalReliefCount,
-                hardCapReplacement: $0.hasOutstandingHardCapReplacement)
+                hardCapReplacement: $0.hasOutstandingHardCapReplacement,
+                retiring: $0.retiringResourceCount)
         }
         let projectedRegistered = max(registered - pressure.credited, 0)
         if projectedRegistered >= softCap { return true }
@@ -1648,7 +1879,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         guard hardCap > 0, projectedRegistered > 0 else { return false }
         let projectedLive = projectedRegistered
             + overload.liveFlowReservations.count
-            + retiringResourceCount
+            + pressure.retiring
         return projectedLive >= hardCap
     }
 
@@ -2184,8 +2415,10 @@ final class TransparentProxyCore: @unchecked Sendable {
         // serialised correctly.
         let tcp = self.tcpSessions.count
         let udp = self.udpSessions.count
-        let retiring = self.retiringResourceCount
-        let total = tcp + udp + retiring
+        let retirement = self.retirementOccupancySnapshot()
+        let retiring = retirement.retiring
+        let retirementOverlap = retirement.overlap
+        let total = max(tcp + udp - retirementOverlap, 0) + retiring
         if total > self.flowCountHighWater { self.flowCountHighWater = total }
         // Tick-driven breaker pass: catches the state where pressure arrived
         // through admissions under the soft cap after a slow completion, so
@@ -2211,7 +2444,8 @@ final class TransparentProxyCore: @unchecked Sendable {
         let countSummary =
             "tproxy live-flow counts tcp=\(tcp) udp=\(udp) total=\(total) "
             + "peak=\(self.flowCountHighWater) softCap=\(flowPressurePolicy.softCap) "
-            + "hardCap=\(flowPressurePolicy.liveHardCap) retiring=\(retiring)"
+            + "hardCap=\(flowPressurePolicy.liveHardCap) retiring=\(retiring) "
+            + "retirementOverlap=\(retirementOverlap)"
         let overloadSummary =
             "tcpStartsInFlight=\(overloadSnapshot.startsInFlight) "
             + "tcpStartsInFlightPeak=\(overloadSnapshot.startsInFlightPeak) "
@@ -2466,6 +2700,41 @@ final class TransparentProxyCore: @unchecked Sendable {
             pressureReapSlot.withLock { $0.outstandingToken != nil }
         }
 
+        /// Lock-only diagnostics remain readable even when `stateQueue` is the
+        /// queue that failed to make progress.
+        var testPressureAsyncDiagnosticSnapshot: String {
+            let slot = pressureReapSlot.withLock {
+                (
+                    scheduled: $0.outstandingToken != nil,
+                    protected: $0.protectedFlowIds.count,
+                    ordinary: $0.ordinaryPressureRequested,
+                    hard: $0.hardCapReplacementGeneration != nil
+                        || $0.unscopedHardCapReplacementRequested)
+            }
+            let victims = pressureVictimState.withLock {
+                (
+                    reservations: $0.reservations.count,
+                    credit: $0.victimCreditCount,
+                    unresolved: $0.unresolvedReservationCount,
+                    pendingRemovals: $0.pendingRemovalFlowIds.count)
+            }
+            return "reapScheduled=\(slot.scheduled) protected=\(slot.protected) "
+                + "ordinaryRequested=\(slot.ordinary) hardRequested=\(slot.hard) "
+                + "reservations=\(victims.reservations) credit=\(victims.credit) "
+                + "unresolved=\(victims.unresolved) "
+                + "pendingRemovals=\(victims.pendingRemovals)"
+        }
+
+        /// Enqueue an observation after pressure work already submitted to
+        /// `stateQueue`. Tests combine this with flow-queue barriers to drive
+        /// dispatch handoffs deterministically; their timeout remains only a
+        /// deadlock watchdog, not the signal that work should have settled.
+        func testSchedulePressureStateObservation(
+            _ observe: @escaping @Sendable () -> Void
+        ) {
+            stateQueue.async(execute: observe)
+        }
+
         var testPressureRecheckScheduled: Bool {
             stateQueue.sync { self.pressureRecheckWork != nil }
         }
@@ -2603,6 +2872,12 @@ final class TransparentProxyCore: @unchecked Sendable {
             }
         }
 
+        /// Fire the currently scheduled released-protection continuation now.
+        /// The work item's token makes its later real deadline a no-op.
+        func testRunPressureProtectionRetry() {
+            stateQueue.sync { self.pressureProtectionRetryWork?.perform() }
+        }
+
         /// Test hook: park `stateQueue` until the returned semaphore is
         /// signalled, so a test can pile triggers up behind it. Do not call
         /// any `stateQueue.sync` hook while it is held.
@@ -2659,6 +2934,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         _ flowId: ObjectIdentifier,
         anchor: TcpFlowSessionAnchor,
         appId: String? = nil,
+        admissionToken: TcpAdmissionToken? = nil,
         engineGeneration: UInt64? = nil
     ) -> Int? {
         stateQueue.sync {
@@ -2668,10 +2944,25 @@ final class TransparentProxyCore: @unchecked Sendable {
                     engineGeneration == self.engineGeneration
                 else { return nil }
             }
-            let hadReservation = self.overload.liveFlowReservations.remove(flowId) != nil
-            let occupancyBefore = self.tcpSessions.count + self.udpSessions.count
-                + self.overload.liveFlowReservations.count
-                + self.retiringResourceCount
+            let hadReservation: Bool
+            if let admissionToken {
+                let expectedGeneration = engineGeneration ?? self.engineGeneration
+                guard admissionToken.flowId == flowId,
+                    admissionToken.identity.engineGeneration == expectedGeneration,
+                    self.overload.startsInFlight[flowId]?.identity == admissionToken.identity,
+                    self.overload.liveFlowReservations[flowId] == admissionToken.identity
+                else { return nil }
+                self.overload.liveFlowReservations.removeValue(forKey: flowId)
+                hadReservation = true
+            } else {
+                // An admitted start must transfer its exact reservation. A
+                // tokenless direct registration remains available for tests
+                // and internal registry fixtures that never reserved a slot.
+                guard self.overload.liveFlowReservations[flowId] == nil else { return nil }
+                hadReservation = false
+            }
+            let occupancyBefore = self.liveResourceOccupancyLocked(
+                registered: self.tcpSessions.count + self.udpSessions.count)
             let hardCap = Int(pressurePolicy.liveHardCap)
             guard hadReservation || hardCap == 0 || occupancyBefore < hardCap else {
                 return nil
@@ -2706,6 +2997,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         _ flowId: ObjectIdentifier,
         anchor: TcpFlowSessionAnchor,
         appId: String?,
+        admissionToken: TcpAdmissionToken? = nil,
         engineGeneration: UInt64,
         runtimePolicy: TransparentProxyRuntimePolicy? = nil,
         on flowQueue: DispatchQueue,
@@ -2719,6 +3011,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 flowId,
                 anchor: anchor,
                 appId: appId,
+                admissionToken: admissionToken,
                 engineGeneration: engineGeneration)
         else {
             lifecycleLock.unlock()
@@ -2799,9 +3092,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 }
             }
             let registered = self.tcpSessions.count + self.udpSessions.count
-            let projected = registered
-                + self.overload.liveFlowReservations.count
-                + self.retiringResourceCount
+            let projected = self.liveResourceOccupancyLocked(registered: registered)
             let hardCap = Int(pressurePolicy.liveHardCap)
             if hardCap > 0, projected >= hardCap {
                 self.overload.shedLiveCapUdpSinceTick += 1
@@ -2976,16 +3267,16 @@ final class TransparentProxyCore: @unchecked Sendable {
                 return
             }
             self.drainPressureVictimOutcomesLocked()
-            self.pressureVictimState.withLock {
-                $0.removePendingRemoval(for: flowId)
+            let removedAnchor = self.tcpSessions.removeValue(forKey: flowId)
+            let reservation = self.pressureVictimState.withLock { state in
+                state.removePendingRemoval(for: flowId)
+                state.endRegisteredRetirementOverlap(for: flowId)
+                return removedAnchor.map {
+                    state.removeReservation(for: ObjectIdentifier($0.ctx))
+                } ?? nil
             }
-            var resolvedPressureReservation = false
-            if let anchor = self.tcpSessions.removeValue(forKey: flowId) {
-                let id = ObjectIdentifier(anchor.ctx)
-                let reservation = self.pressureVictimState.withLock {
-                    $0.removeReservation(for: id)
-                }
-                resolvedPressureReservation = reservation != nil
+            let resolvedPressureReservation = reservation != nil
+            if removedAnchor != nil {
                 switch reservation?.phase {
                 case .selected:
                     self.pressureCanceledTotal += 1
@@ -3052,9 +3343,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             let appId = self.overload.appId(for: meta)
             let liveHardCap = Int(pressurePolicy.liveHardCap)
             let registered = self.tcpSessions.count + self.udpSessions.count
-            let projectedLive = registered
-                + self.overload.liveFlowReservations.count
-                + self.retiringResourceCount
+            let projectedLive = self.liveResourceOccupancyLocked(registered: registered)
             if liveHardCap > 0, projectedLive >= liveHardCap {
                 self.overload.shedLiveCapTcpSinceTick += 1
                 let reason =
@@ -3097,9 +3386,19 @@ final class TransparentProxyCore: @unchecked Sendable {
                     wakePressureReaper: false,
                     flowPressurePolicy: pressurePolicy)
             }
-            let token = TcpAdmissionToken(flowId: flowId, startedAt: .now(), appId: appId)
+            precondition(
+                self.nextTcpAdmissionNonce < .max,
+                "tcp-admission nonce space exhausted")
+            self.nextTcpAdmissionNonce += 1
+            let token = TcpAdmissionToken(
+                identity: TcpAdmissionIdentity(
+                    engineGeneration: self.engineGeneration,
+                    nonce: self.nextTcpAdmissionNonce),
+                flowId: flowId,
+                startedAt: .now(),
+                appId: appId)
             self.overload.startsInFlight[flowId] = token
-            self.overload.liveFlowReservations.insert(flowId)
+            self.overload.liveFlowReservations[flowId] = token.identity
             self.overload.admissionsSinceTick += 1
             self.overload.startsInFlightPeakSinceTick = max(
                 self.overload.startsInFlightPeakSinceTick, self.overload.startsInFlight.count)
@@ -3135,11 +3434,31 @@ final class TransparentProxyCore: @unchecked Sendable {
     }
 
     func finishTcpStart(_ token: TcpAdmissionToken, outcome: TcpStartOutcome) {
+        // Capture completion on the caller's queue. `stateQueue` serializes
+        // accounting, but time spent waiting behind unrelated state work is
+        // not connect/start latency and must not feed the overload breaker.
+        let completedAtNs = DispatchTime.now().uptimeNanoseconds
+        finishTcpStart(token, outcome: outcome, completedAtNs: completedAtNs)
+    }
+
+    private func finishTcpStart(
+        _ token: TcpAdmissionToken,
+        outcome: TcpStartOutcome,
+        completedAtNs: UInt64
+    ) {
         stateQueue.async {
-            let releasedLiveReservation =
-                self.overload.liveFlowReservations.remove(token.flowId) != nil
-            guard self.overload.startsInFlight.removeValue(forKey: token.flowId) != nil else {
+            guard
+                self.overload.startsInFlight[token.flowId]?.identity == token.identity
+            else {
                 return
+            }
+            self.overload.startsInFlight.removeValue(forKey: token.flowId)
+            let releasedLiveReservation: Bool
+            if self.overload.liveFlowReservations[token.flowId] == token.identity {
+                self.overload.liveFlowReservations.removeValue(forKey: token.flowId)
+                releasedLiveReservation = true
+            } else {
+                releasedLiveReservation = false
             }
             if releasedLiveReservation {
                 self.hardCapNoHeadroomLogged = false
@@ -3151,12 +3470,10 @@ final class TransparentProxyCore: @unchecked Sendable {
                     self.reschedulePressureRecheckLocked()
                 }
             }
-            // Latency comes from the token the CALLER hands back, not the
-            // stored one — on purpose: tests shape the latency window by
-            // backdating `startedAt`. Production always passes the token it
-            // was issued, so the two are identical there.
+            // Use the caller's matching admission token and the completion
+            // instant captured before this work was enqueued.
             let latencyMs =
-                (DispatchTime.now().uptimeNanoseconds &- token.startedAt.uptimeNanoseconds)
+                (completedAtNs &- token.startedAt.uptimeNanoseconds)
                 / 1_000_000
             self.overload.insertLatency(latencyMs)
             if outcome == .timeout {
@@ -3253,38 +3570,12 @@ final class TransparentProxyCore: @unchecked Sendable {
         engineGeneration: UInt64?,
         mayCancelSelectedVictim: Bool = true
     ) -> Bool {
-        pressureVictimState.withLock { state in
-            if let engineGeneration {
-                guard state.activeEngineGeneration == engineGeneration else {
-                    return false
-                }
-            }
-            guard state.pendingRemovalFlowIds[flowId] == nil else {
-                return false
-            }
-            guard state.registeredFlowIds.remove(flowId) != nil else {
-                return false
-            }
-            let providesRelief: Bool
-            switch contextId.flatMap({ state.reservations[$0]?.phase }) {
-            case .some(.selected), .some(.committed):
-                // This flow is already counted as leaving.
-                providesRelief = false
-            case .some(.spareAwaitingAccounting), .some(.canceled),
-                .some(.expired), .none:
-                // These phases carry no projected-occupancy credit. A natural
-                // removal is independent relief and may retire another victim.
-                providesRelief = true
-            }
-            state.insertPendingRemoval(providesRelief, for: flowId)
-            // A pre-closed registration adds and removes the same occupancy in
-            // one ownership transaction. Its relief must offset that new entry
-            // without consuming credit already carried by an older selected
-            // victim. Ordinary removals still supersede one queued selection.
-            guard providesRelief, mayCancelSelectedVictim else {
-                return false
-            }
-            return state.cancelNewestSelected()
+        pressureVictimState.withLock {
+            $0.announceRemoval(
+                flowId: flowId,
+                contextId: contextId,
+                engineGeneration: engineGeneration,
+                mayCancelSelectedVictim: mayCancelSelectedVictim).canceled
         }
     }
 
@@ -3482,10 +3773,59 @@ final class TransparentProxyCore: @unchecked Sendable {
             finishTcpStart(token, outcome: outcome)
         }
 
+        func testFinishTcpStart(
+            _ token: TcpAdmissionToken,
+            outcome: TcpStartOutcome,
+            latencyMs: UInt64
+        ) {
+            finishTcpStart(
+                token,
+                outcome: outcome,
+                completedAtNs: token.startedAt.uptimeNanoseconds
+                    &+ (latencyMs &* 1_000_000))
+        }
+
+        /// Insert a completed-start latency without consulting wall clock.
+        /// Breaker tests use this to describe an exact latency distribution;
+        /// production samples still enter only through `finishTcpStart`.
+        func testInsertTcpStartLatencyMs(_ latencyMs: UInt64) {
+            stateQueue.sync {
+                self.overload.insertLatency(latencyMs)
+                self.updateTcpAdmissionBreakerLocked(trigger: "test completion")
+            }
+        }
+
         var testRetiringResourceCount: Int { retiringResourceCount }
+
+        var testRegisteredRetirementOverlapCount: Int {
+            pressureVictimState.withLock { $0.registeredRetirementOverlapCount }
+        }
+
+        var testLiveResourceOccupancy: Int {
+            stateQueue.sync {
+                self.liveResourceOccupancyLocked(
+                    registered: self.tcpSessions.count + self.udpSessions.count)
+            }
+        }
 
         var testTcpStartsInFlight: Int {
             stateQueue.sync { self.overload.startsInFlight.count }
+        }
+
+        var testTcpLiveFlowReservations: Int {
+            stateQueue.sync { self.overload.liveFlowReservations.count }
+        }
+
+        var testTcpStartLatencySampleCount: Int {
+            stateQueue.sync { self.overload.startLatencyMsWindow.count }
+        }
+
+        func testTcpStartLatencyPercentile(_ percentile: Double) -> UInt64 {
+            stateQueue.sync { self.overload.percentile(percentile) }
+        }
+
+        var testTcpTimeoutsSinceTick: Int {
+            stateQueue.sync { self.overload.timeoutsSinceTick }
         }
 
         var testTcpOverloadBreakerOpen: Bool {

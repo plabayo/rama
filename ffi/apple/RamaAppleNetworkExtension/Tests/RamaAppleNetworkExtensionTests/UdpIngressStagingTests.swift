@@ -1,0 +1,769 @@
+import Foundation
+@preconcurrency import NetworkExtension
+import XCTest
+
+@testable import RamaAppleNetworkExtension
+
+final class UdpIngressStagingTests: XCTestCase {
+    private func makeFlow(
+        items: Int = 4,
+        flowBytes: Int = 16,
+        generationBytes: Int = 64
+    ) -> (UdpIngressGenerationStagingBudget, UdpIngressFlowStaging) {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: items,
+                maxBytesPerFlow: flowBytes,
+                maxBytesPerGeneration: generationBytes))
+        return (generation, UdpIngressFlowStaging(generation: generation))
+    }
+
+    func testOversizedArrayInspectsAndRetainsOnlyBoundedPrefix() {
+        let (generation, flow) = makeFlow(items: 4)
+        let outcome = flow.stage(
+            datagrams: Array(repeating: Data([0xAA]), count: 10_000),
+            endpoints: nil)
+
+        XCTAssertEqual(outcome.batch?.itemCount, 4)
+        XCTAssertEqual(outcome.batch?.byteCount, 4)
+        XCTAssertEqual(outcome.dropSample?.reason, .flowItems)
+        XCTAssertEqual(outcome.dropSample?.cumulativeDroppedItems, 9_996)
+        XCTAssertEqual(generation.testLastInspectedItems, 4)
+        XCTAssertEqual(generation.testRetainedBytes, 4)
+        outcome.batch?.release()
+        XCTAssertEqual(generation.testRetainedBytes, 0)
+    }
+
+    func testZeroLengthDatagramsAreBoundedByItemCount() {
+        let (generation, flow) = makeFlow(items: 3, flowBytes: 1, generationBytes: 1)
+        let outcome = flow.stage(
+            datagrams: Array(repeating: Data(), count: 100),
+            endpoints: nil)
+
+        XCTAssertEqual(outcome.batch?.itemCount, 3)
+        XCTAssertEqual(outcome.batch?.byteCount, 0)
+        XCTAssertEqual(outcome.dropSample?.reason, .flowItems)
+        XCTAssertEqual(outcome.dropSample?.cumulativeDroppedItems, 97)
+        XCTAssertEqual(outcome.dropSample?.cumulativeDroppedBytesLowerBound, 0)
+        XCTAssertEqual(flow.testSnapshot.items, 3)
+        outcome.batch?.release()
+        XCTAssertEqual(flow.testSnapshot.items, 0)
+        XCTAssertEqual(generation.testRetainedBytes, 0)
+    }
+
+    func testAdmissiblePrefixPreservesEndpointMismatchAndPairing() {
+        let (_, flow) = makeFlow(items: 3)
+        let endpoints: [NWEndpoint] = [
+            NWHostEndpoint(hostname: "192.0.2.1", port: "53"),
+            NWHostEndpoint(hostname: "192.0.2.2", port: "54"),
+        ]
+        let outcome = flow.stage(
+            datagrams: [Data([1]), Data([2]), Data([3]), Data([4])],
+            endpoints: endpoints)
+
+        XCTAssertEqual(outcome.batch?.datagrams, [Data([1]), Data([2]), Data([3])])
+        XCTAssertEqual(outcome.batch?.endpoints?.count, 2)
+        XCTAssertEqual(outcome.batch?.sourceDatagramCount, 4)
+        XCTAssertEqual(outcome.batch?.sourceEndpointCount, 2)
+        outcome.batch?.release()
+    }
+
+    func testCloseRejectsNewCaptureButOutstandingBatchReleasesExactlyOnce() {
+        let (generation, flow) = makeFlow()
+        let batch = flow.stage(datagrams: [Data([1, 2, 3])], endpoints: nil).batch
+        XCTAssertEqual(generation.testRetainedBytes, 3)
+
+        flow.close()
+        let rejected = flow.stage(datagrams: [Data([4])], endpoints: nil)
+        XCTAssertNil(rejected.batch)
+        XCTAssertNil(rejected.dropSample, "normal teardown is not pressure telemetry")
+        XCTAssertEqual(generation.testRetainedBytes, 3)
+
+        batch?.release()
+        batch?.release()
+        XCTAssertEqual(generation.testRetainedBytes, 0)
+        XCTAssertEqual(flow.testSnapshot.items, 0)
+    }
+
+    func testFiveHundredFlowsShareOneExactGenerationCap() {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 1,
+                maxItemsPerGeneration: 100,
+                maxBytesPerFlow: 1,
+                maxBytesPerGeneration: 100))
+        let flows = (0..<500).map { _ in UdpIngressFlowStaging(generation: generation) }
+        let batches = Locked<[UdpIngressStagedBatch]>([])
+        DispatchQueue.concurrentPerform(iterations: flows.count) { index in
+            if let batch = flows[index]
+                .stage(datagrams: [Data()], endpoints: nil).batch
+            {
+                batches.withLock { $0.append(batch) }
+            }
+        }
+
+        XCTAssertEqual(batches.withLock { $0.count }, 100)
+        XCTAssertEqual(generation.testRetainedItems, 100)
+        XCTAssertEqual(generation.testRetainedBytes, 0)
+        DispatchQueue.concurrentPerform(iterations: batches.withLock { $0.count }) { index in
+            batches.withLock { $0[index] }.release()
+        }
+        XCTAssertEqual(generation.testRetainedBytes, 0)
+        XCTAssertEqual(generation.testRetainedItems, 0)
+    }
+
+    func testFlowAndGenerationByteReasonsAreDistinct() {
+        let (_, flowLimited) = makeFlow(items: 4, flowBytes: 2, generationBytes: 10)
+        let flowHeld = flowLimited.stage(datagrams: [Data([1])], endpoints: nil).batch
+        let flowDrop = flowLimited.stage(datagrams: [Data([2, 3])], endpoints: nil)
+        XCTAssertNil(flowDrop.batch)
+        XCTAssertEqual(flowDrop.dropSample?.reason, .flowBytes)
+        XCTAssertEqual(flowDrop.dropSample?.cumulativeDroppedBytesLowerBound, 2)
+        flowHeld?.release()
+
+        let (_, generationLimited) = makeFlow(items: 4, flowBytes: 10, generationBytes: 2)
+        let generationHeld = generationLimited.stage(
+            datagrams: [Data([1])], endpoints: nil
+        ).batch
+        let generationDrop = generationLimited.stage(datagrams: [Data([2, 3])], endpoints: nil)
+        XCTAssertNil(generationDrop.batch)
+        XCTAssertEqual(generationDrop.dropSample?.reason, .generationBytes)
+        XCTAssertEqual(generationDrop.dropSample?.cumulativeDroppedBytesLowerBound, 2)
+        generationHeld?.release()
+    }
+
+    func testPermanentlyOversizedFirstDatagramIsNonretryable() {
+        let (_, flowLimited) = makeFlow(items: 4, flowBytes: 2, generationBytes: 10)
+        let flowDrop = flowLimited.stage(datagrams: [Data(count: 3)], endpoints: nil)
+        XCTAssertNil(flowDrop.batch)
+        XCTAssertEqual(flowDrop.blockedReason, .oversizedBytes)
+        XCTAssertNil(flowDrop.dropSample)
+        XCTAssertFalse(
+            flowLimited.waitForCapacity(
+                reason: .oversizedBytes,
+                neededItems: flowDrop.neededItems,
+                neededBytes: flowDrop.neededBytes
+            ) { _ in XCTFail("oversized input must never arm a capacity waiter") })
+
+        let (_, generationLimited) = makeFlow(items: 4, flowBytes: 10, generationBytes: 2)
+        let generationDrop = generationLimited.stage(
+            datagrams: [Data(count: 3)], endpoints: nil)
+        XCTAssertNil(generationDrop.batch)
+        XCTAssertEqual(generationDrop.blockedReason, .oversizedBytes)
+        XCTAssertNil(generationDrop.dropSample)
+    }
+
+    func testTerminalReasonsCannotArmCapacityWaiters() {
+        let (_, flow) = makeFlow()
+        for reason in [UdpIngressStagingDropReason.oversizedBytes, .closed] {
+            XCTAssertFalse(
+                flow.waitForCapacity(reason: reason, neededItems: 1, neededBytes: 1) { _ in
+                    XCTFail("terminal reason must never receive a capacity grant")
+                })
+        }
+        XCTAssertFalse(flow.testWaitSnapshot.waiting)
+        XCTAssertEqual(flow.testWaitSnapshot.activeTicket, 0)
+    }
+
+    func testGenerationItemReasonBoundsZeroLengthDatagramsAcrossFlows() {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 1,
+                maxItemsPerGeneration: 1,
+                maxBytesPerFlow: 1,
+                maxBytesPerGeneration: 1))
+        let first = UdpIngressFlowStaging(generation: generation)
+        let second = UdpIngressFlowStaging(generation: generation)
+        let held = first.stage(datagrams: [Data()], endpoints: nil).batch
+        let rejected = second.stage(datagrams: [Data()], endpoints: nil)
+
+        XCTAssertNil(rejected.batch)
+        XCTAssertEqual(rejected.dropSample?.reason, .generationItems)
+        XCTAssertEqual(generation.testRetainedItems, 1)
+        held?.release()
+        XCTAssertEqual(generation.testRetainedItems, 0)
+    }
+
+    func testPerFlowReleaseBeforeWaitPublicationWakesExactlyOnce() {
+        let (generation, flow) = makeFlow(items: 1, flowBytes: 1, generationBytes: 10)
+        let held = flow.stage(datagrams: [Data([1])], endpoints: nil).batch
+        let rejected = flow.stage(datagrams: [Data([2])], endpoints: nil)
+        XCTAssertEqual(rejected.blockedReason, .flowItems)
+
+        held?.release()
+        let tickets = Locked<[UInt64]>([])
+        XCTAssertTrue(
+            flow.waitForCapacity(
+                reason: rejected.blockedReason!,
+                neededItems: rejected.neededItems,
+                neededBytes: rejected.neededBytes
+            ) { ticket in
+                tickets.withLock { $0.append(ticket) }
+            })
+        let granted = tickets.withLock { $0 }
+        XCTAssertEqual(granted.count, 1)
+        XCTAssertNotEqual(granted[0], 0)
+        XCTAssertFalse(flow.testWaitSnapshot.waiting)
+        XCTAssertEqual(flow.testWaitSnapshot.activeTicket, granted[0])
+        XCTAssertEqual(generation.testGrantCount, 1)
+        let resumed = flow.stage(
+            datagrams: [Data([2])], endpoints: nil, grantTicket: granted[0])
+        XCTAssertNotNil(resumed.batch)
+        XCTAssertEqual(generation.testGrantCount, 0)
+        resumed.batch?.release()
+        XCTAssertEqual(generation.testRetainedItems, 0)
+    }
+
+    func testManyLocalByteWaitersUseBoundedGenerationHeadroom() {
+        let flowCount = 64
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 2,
+                maxItemsPerGeneration: flowCount * 2,
+                maxBytesPerFlow: 10,
+                maxBytesPerGeneration: flowCount + 10),
+            automaticScheduling: false)
+        let flows = (0..<flowCount).map { _ in UdpIngressFlowStaging(generation: generation) }
+        var held: [UdpIngressStagedBatch] = []
+        held.reserveCapacity(flowCount)
+        let granted = Locked<[(Int, UInt64)]>([])
+
+        for (index, flow) in flows.enumerated() {
+            guard let batch = flow.stage(datagrams: [Data([0])], endpoints: nil).batch else {
+                return XCTFail("initial byte must fit")
+            }
+            held.append(batch)
+            let rejected = flow.stage(datagrams: [Data(count: 10)], endpoints: nil)
+            XCTAssertEqual(rejected.blockedReason, .flowBytes)
+            XCTAssertTrue(
+                flow.waitForCapacity(
+                    reason: rejected.blockedReason!,
+                    neededItems: rejected.neededItems,
+                    neededBytes: rejected.neededBytes
+                ) { ticket in granted.withLock { $0.append((index, ticket)) } })
+        }
+
+        held.forEach { $0.release() }
+        let initialGrants = granted.withLock { $0 }
+        XCTAssertEqual(initialGrants.count, udpIngressStagingMaxGrants)
+        XCTAssertTrue(initialGrants.allSatisfy { $0.1 != 0 })
+        XCTAssertEqual(generation.testGrantCount, udpIngressStagingMaxGrants)
+        XCTAssertEqual(generation.testWaiterCount, flowCount - udpIngressStagingMaxGrants)
+        XCTAssertLessThanOrEqual(generation.testPeakGrantCount, udpIngressStagingMaxGrants)
+
+        flows.forEach { $0.close() }
+        XCTAssertEqual(generation.testGrantCount, 0)
+        XCTAssertEqual(generation.testWaiterCount, 0)
+    }
+
+    func testGenerationCoordinatorCapsFourQuietGrantsAndFifthAdvancesOnLeaseExpiry() {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 1,
+                maxItemsPerGeneration: 10,
+                maxBytesPerFlow: 4,
+                maxBytesPerGeneration: 4),
+            automaticScheduling: false)
+        let holder = UdpIngressFlowStaging(generation: generation)
+        let held = holder.stage(datagrams: [Data(count: 4)], endpoints: nil).batch
+        let flows = (0..<5).map { _ in UdpIngressFlowStaging(generation: generation) }
+        let granted = Locked<[(Int, UInt64)]>([])
+        for (index, flow) in flows.enumerated() {
+            let rejected = flow.stage(datagrams: [Data([1])], endpoints: nil)
+            XCTAssertEqual(rejected.blockedReason, .generationBytes)
+            XCTAssertTrue(
+                flow.waitForCapacity(
+                    reason: rejected.blockedReason!,
+                    neededItems: rejected.neededItems,
+                    neededBytes: rejected.neededBytes
+                ) { ticket in
+                    granted.withLock { $0.append((index, ticket)) }
+                })
+        }
+
+        held?.release()
+        XCTAssertEqual(granted.withLock { $0.map(\.0) }, [0, 1, 2, 3])
+        XCTAssertEqual(generation.testGrantCount, 4)
+        XCTAssertEqual(generation.testPeakGrantCount, 4)
+        generation.testRunCoordinator(now: UInt64.max)
+        XCTAssertEqual(granted.withLock { $0.map(\.0) }, [0, 1, 2, 3, 4])
+        XCTAssertEqual(generation.testGrantCount, 1)
+
+        flows.forEach { $0.close() }
+        holder.close()
+        XCTAssertEqual(generation.testGrantCount, 0)
+        XCTAssertEqual(generation.testWaiterCount, 0)
+    }
+
+    func testGenerationGrantCloseReleasesAndAdvancesNextWaiter() {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 1,
+                maxItemsPerGeneration: 10,
+                maxBytesPerFlow: 1,
+                maxBytesPerGeneration: 1),
+            automaticScheduling: false)
+        let holder = UdpIngressFlowStaging(generation: generation)
+        let first = UdpIngressFlowStaging(generation: generation)
+        let second = UdpIngressFlowStaging(generation: generation)
+        let held = holder.stage(datagrams: [Data([0])], endpoints: nil).batch
+        let granted = Locked<[Int]>([])
+        for (index, flow) in [first, second].enumerated() {
+            let rejected = flow.stage(datagrams: [Data([1])], endpoints: nil)
+            XCTAssertTrue(
+                flow.waitForCapacity(
+                    reason: rejected.blockedReason!, neededItems: 1, neededBytes: 1
+                ) { _ in granted.withLock { $0.append(index) } })
+        }
+        held?.release()
+        XCTAssertEqual(granted.withLock { $0 }, [0])
+        XCTAssertEqual(generation.testGrantCount, 1)
+        first.close()
+        XCTAssertEqual(granted.withLock { $0 }, [0, 1])
+        XCTAssertEqual(generation.testGrantCount, 1)
+        second.close()
+        holder.close()
+        XCTAssertEqual(generation.testGrantCount, 0)
+    }
+
+    func testCloseWhileGenerationWaitingCancelsBeforeCapacityReturns() {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 1,
+                maxItemsPerGeneration: 2,
+                maxBytesPerFlow: 1,
+                maxBytesPerGeneration: 1),
+            automaticScheduling: false)
+        let holder = UdpIngressFlowStaging(generation: generation)
+        let waiter = UdpIngressFlowStaging(generation: generation)
+        let held = holder.stage(datagrams: [Data([0])], endpoints: nil).batch
+        let rejected = waiter.stage(datagrams: [Data([1])], endpoints: nil)
+
+        XCTAssertEqual(rejected.blockedReason, .generationBytes)
+        XCTAssertTrue(
+            waiter.waitForCapacity(
+                reason: rejected.blockedReason!, neededItems: 1, neededBytes: 1
+            ) { _ in XCTFail("a closed waiter must never receive a late grant") })
+        XCTAssertEqual(generation.testWaiterCount, 1)
+        XCTAssertTrue(waiter.testWaitSnapshot.waiting)
+
+        waiter.close()
+        XCTAssertTrue(waiter.testSnapshot.closed)
+        XCTAssertFalse(waiter.testWaitSnapshot.waiting)
+        XCTAssertEqual(generation.testWaiterCount, 0)
+        XCTAssertEqual(generation.testGrantCount, 0)
+
+        held?.release()
+        generation.testRunCoordinator(now: UInt64.max)
+        XCTAssertEqual(generation.testWaiterCount, 0)
+        XCTAssertEqual(generation.testGrantCount, 0)
+        XCTAssertEqual(generation.testRetainedBytes, 0)
+        holder.close()
+    }
+
+    func testCloseDuringGrantCallbackReleasesCreditAndAdvancesNextWaiter() {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 1,
+                maxItemsPerGeneration: 3,
+                maxBytesPerFlow: 1,
+                maxBytesPerGeneration: 1),
+            automaticScheduling: false)
+        let holder = UdpIngressFlowStaging(generation: generation)
+        let first = UdpIngressFlowStaging(generation: generation)
+        let second = UdpIngressFlowStaging(generation: generation)
+        let held = holder.stage(datagrams: [Data([0])], endpoints: nil).batch
+        let firstTicket = Locked<UInt64>(0)
+        let secondTicket = Locked<UInt64>(0)
+        let firstCallbackStarted = DispatchSemaphore(value: 0)
+        let allowFirstCallbackReturn = DispatchSemaphore(value: 0)
+
+        let firstCallback: @Sendable (UInt64) -> Void = { ticket in
+            firstTicket.withLock { $0 = ticket }
+            firstCallbackStarted.signal()
+            allowFirstCallbackReturn.wait()
+        }
+        let secondCallback: @Sendable (UInt64) -> Void = { ticket in
+            secondTicket.withLock { $0 = ticket }
+        }
+        let waitingFlows: [(UdpIngressFlowStaging, @Sendable (UInt64) -> Void)] = [
+            (first, firstCallback), (second, secondCallback),
+        ]
+        for (flow, callback) in waitingFlows {
+            let rejected = flow.stage(datagrams: [Data([1])], endpoints: nil)
+            XCTAssertTrue(
+                flow.waitForCapacity(
+                    reason: rejected.blockedReason!, neededItems: 1, neededBytes: 1,
+                    onReady: callback))
+        }
+
+        let releaseFinished = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            held?.release()
+            releaseFinished.signal()
+        }
+        XCTAssertEqual(
+            firstCallbackStarted.wait(timeout: .now() + 30), .success,
+            "grant callback did not start")
+        XCTAssertNotEqual(firstTicket.withLock { $0 }, 0)
+        XCTAssertEqual(generation.testGrantCount, 1)
+        XCTAssertEqual(first.testWaitSnapshot.activeTicket, firstTicket.withLock { $0 })
+
+        // `receiveGenerationGrant` has installed the ticket and entered the
+        // consumer callback. Closing during that delivery must release the
+        // provisional credit exactly once and synchronously advance FIFO.
+        first.close()
+        first.close()
+        XCTAssertTrue(first.testSnapshot.closed)
+        XCTAssertEqual(first.testWaitSnapshot.activeTicket, 0)
+        XCTAssertNotEqual(secondTicket.withLock { $0 }, 0)
+        XCTAssertEqual(second.testWaitSnapshot.activeTicket, secondTicket.withLock { $0 })
+        XCTAssertEqual(generation.testGrantCount, 1)
+
+        allowFirstCallbackReturn.signal()
+        XCTAssertEqual(
+            releaseFinished.wait(timeout: .now() + 30), .success,
+            "in-flight grant callback did not return")
+        second.close()
+        holder.close()
+        XCTAssertEqual(generation.testGrantCount, 0)
+        XCTAssertEqual(generation.testWaiterCount, 0)
+        XCTAssertEqual(generation.testRetainedBytes, 0)
+    }
+
+    func testStaleGrantFallsBackToExactAdmissionAndReparks() {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 1,
+                maxItemsPerGeneration: 10,
+                maxBytesPerFlow: 1,
+                maxBytesPerGeneration: 1),
+            automaticScheduling: false)
+        let holder = UdpIngressFlowStaging(generation: generation)
+        let waiter = UdpIngressFlowStaging(generation: generation)
+        let thief = UdpIngressFlowStaging(generation: generation)
+        let held = holder.stage(datagrams: [Data([0])], endpoints: nil).batch
+        let tickets = Locked<[UInt64]>([])
+        let initialDrop = waiter.stage(datagrams: [Data([1])], endpoints: nil)
+        XCTAssertTrue(
+            waiter.waitForCapacity(
+                reason: initialDrop.blockedReason!, neededItems: 1, neededBytes: 1
+            ) { ticket in tickets.withLock { $0.append(ticket) } })
+        held?.release()
+        let staleTicket = tickets.withLock { $0[0] }
+        generation.testRunCoordinator(now: UInt64.max)
+        XCTAssertEqual(generation.testGrantCount, 0)
+
+        let stolen = thief.stage(datagrams: [Data([9])], endpoints: nil).batch
+        let late = waiter.stage(
+            datagrams: [Data([2])], endpoints: nil, grantTicket: staleTicket)
+        XCTAssertNil(late.batch)
+        XCTAssertEqual(late.blockedReason, .generationBytes)
+        XCTAssertTrue(
+            waiter.waitForCapacity(
+                reason: late.blockedReason!, neededItems: 1, neededBytes: 1
+            ) { ticket in tickets.withLock { $0.append(ticket) } })
+        stolen?.release()
+        XCTAssertEqual(tickets.withLock { $0.count }, 2)
+        XCTAssertNotEqual(tickets.withLock { $0[1] }, staleTicket)
+
+        waiter.close()
+        thief.close()
+        holder.close()
+    }
+
+    func testGenerationGrantCanArriveDuringArmWithoutMissedWake() {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 1,
+                maxItemsPerGeneration: 1,
+                maxBytesPerFlow: 1,
+                maxBytesPerGeneration: 1),
+            automaticScheduling: false)
+        let flow = UdpIngressFlowStaging(generation: generation)
+        let tickets = Locked<[UInt64]>([])
+        XCTAssertTrue(
+            flow.waitForCapacity(
+                reason: .generationBytes, neededItems: 1, neededBytes: 1
+            ) { ticket in tickets.withLock { $0.append(ticket) } })
+        let granted = tickets.withLock { $0 }
+        XCTAssertEqual(granted.count, 1)
+        let ticket = granted[0]
+        XCTAssertNotEqual(ticket, 0)
+        let staged = flow.stage(
+            datagrams: [Data([1])], endpoints: nil, grantTicket: ticket)
+        XCTAssertNotNil(staged.batch)
+        staged.batch?.release()
+        flow.close()
+        XCTAssertEqual(generation.testGrantCount, 0)
+    }
+
+    func testErrorOrEofCompletionReleasesActiveGrantImmediately() {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 1,
+                maxItemsPerGeneration: 1,
+                maxBytesPerFlow: 1,
+                maxBytesPerGeneration: 1),
+            automaticScheduling: false)
+        let flow = UdpIngressFlowStaging(generation: generation)
+        let tickets = Locked<[UInt64]>([])
+        XCTAssertTrue(
+            flow.waitForCapacity(
+                reason: .generationBytes, neededItems: 1, neededBytes: 1
+            ) { ticket in tickets.withLock { $0.append(ticket) } })
+        let ticket = tickets.withLock { $0[0] }
+        XCTAssertEqual(generation.testGrantCount, 1)
+        flow.completeWithoutStaging(grantTicket: ticket)
+        XCTAssertEqual(generation.testGrantCount, 0)
+        XCTAssertEqual(flow.testWaitSnapshot.activeTicket, 0)
+        flow.close()
+    }
+
+    func testEightThousandOneHundredNinetyTwoNonfitWaitersMakeOneBoundedPassThenQuiesce() {
+        let flowCount = 8_192
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 1,
+                maxItemsPerGeneration: flowCount + 1,
+                maxBytesPerFlow: 10,
+                maxBytesPerGeneration: 10),
+            automaticScheduling: false)
+        let holder = UdpIngressFlowStaging(generation: generation)
+        let held = holder.stage(datagrams: [Data(count: 9)], endpoints: nil).batch
+        var flows: [UdpIngressFlowStaging] = []
+        flows.reserveCapacity(flowCount)
+        var beforeLastRegistration: UInt64 = 0
+
+        for index in 0..<flowCount {
+            let flow = UdpIngressFlowStaging(generation: generation)
+            let rejected = flow.stage(datagrams: [Data(count: 2)], endpoints: nil)
+            XCTAssertEqual(rejected.blockedReason, .generationBytes)
+            if index == flowCount - 1 {
+                // `stage` is its own bounded coordinator opportunity. Measure
+                // the fresh pass begun by the final waiter publication.
+                beforeLastRegistration = generation.testCoordinatorInspections
+            }
+            XCTAssertTrue(
+                flow.waitForCapacity(
+                    reason: .generationBytes, neededItems: 1, neededBytes: 2
+                ) { _ in XCTFail("nonfitting waiter received a grant") })
+            flows.append(flow)
+        }
+
+        let afterLastRegistration = generation.testCoordinatorInspections
+        XCTAssertLessThanOrEqual(
+            afterLastRegistration - beforeLastRegistration,
+            UInt64(udpIngressStagingMaxInspectionsPerTurn))
+        while generation.testScanRemaining > 0 {
+            let before = generation.testCoordinatorInspections
+            generation.testRunCoordinator(now: DispatchTime.now().uptimeNanoseconds)
+            XCTAssertLessThanOrEqual(
+                generation.testCoordinatorInspections - before,
+                UInt64(udpIngressStagingMaxInspectionsPerTurn))
+        }
+        XCTAssertEqual(
+            generation.testCoordinatorInspections - beforeLastRegistration,
+            UInt64(flowCount),
+            "the newest registration starts exactly one finite queue pass")
+        let quiescent = generation.testCoordinatorInspections
+        generation.testRunCoordinator(now: UInt64.max)
+        XCTAssertEqual(generation.testCoordinatorInspections, quiescent)
+        XCTAssertEqual(generation.testGrantCount, 0)
+        XCTAssertLessThanOrEqual(generation.testPeakGrantCount, udpIngressStagingMaxGrants)
+
+        flows.forEach { $0.close() }
+        held?.release()
+        holder.close()
+        XCTAssertEqual(generation.testWaiterCount, 0)
+        XCTAssertEqual(generation.testRetainedBytes, 0)
+    }
+
+    func testBoundedRotationFindsSmallTailBehindLargeWaiters() {
+        let largeCount = 64
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 2,
+                maxItemsPerGeneration: 100,
+                maxBytesPerFlow: 2,
+                maxBytesPerGeneration: 2),
+            automaticScheduling: false)
+        let holder = UdpIngressFlowStaging(generation: generation)
+        let released = holder.stage(datagrams: [Data([0])], endpoints: nil).batch
+        let retained = holder.stage(datagrams: [Data([0])], endpoints: nil).batch
+        var flows: [UdpIngressFlowStaging] = []
+        let granted = Locked<[Int]>([])
+        for index in 0..<largeCount {
+            let flow = UdpIngressFlowStaging(generation: generation)
+            let rejected = flow.stage(datagrams: [Data(count: 2)], endpoints: nil)
+            XCTAssertTrue(
+                flow.waitForCapacity(
+                    reason: rejected.blockedReason!, neededItems: 1, neededBytes: 2
+                ) { _ in granted.withLock { $0.append(index) } })
+            flows.append(flow)
+        }
+        let small = UdpIngressFlowStaging(generation: generation)
+        let smallDrop = small.stage(datagrams: [Data([1])], endpoints: nil)
+        XCTAssertTrue(
+            small.waitForCapacity(
+                reason: smallDrop.blockedReason!, neededItems: 1, neededBytes: 1
+            ) { _ in granted.withLock { $0.append(largeCount) } })
+        flows.append(small)
+
+        let beforeRelease = generation.testCoordinatorInspections
+        released?.release()
+        for _ in 0..<3 where granted.withLock({ !$0.contains(largeCount) }) {
+            let before = generation.testCoordinatorInspections
+            generation.testRunCoordinator(now: DispatchTime.now().uptimeNanoseconds)
+            XCTAssertLessThanOrEqual(
+                generation.testCoordinatorInspections - before,
+                UInt64(udpIngressStagingMaxInspectionsPerTurn))
+        }
+        XCTAssertTrue(granted.withLock { $0.contains(largeCount) })
+        XCTAssertLessThanOrEqual(
+            generation.testCoordinatorInspections - beforeRelease,
+            UInt64((largeCount + 1) + udpIngressStagingMaxInspectionsPerTurn))
+        XCTAssertLessThanOrEqual(generation.testPeakGrantCount, udpIngressStagingMaxGrants)
+
+        flows.forEach { $0.close() }
+        retained?.release()
+        holder.close()
+        XCTAssertEqual(generation.testGrantCount, 0)
+        XCTAssertEqual(generation.testWaiterCount, 0)
+    }
+
+    func testAutomaticSchedulingFindsFittingTailWithinOneBoundedPass() {
+        let largeCount = 512
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 2,
+                maxItemsPerGeneration: largeCount + 16,
+                maxBytesPerFlow: 3,
+                maxBytesPerGeneration: 3))
+        let holder = UdpIngressFlowStaging(generation: generation)
+        let released = holder.stage(datagrams: [Data([0])], endpoints: nil).batch
+        let retained = holder.stage(datagrams: [Data(count: 2)], endpoints: nil).batch
+
+        let large = (0..<largeCount).map { _ in
+            UdpIngressFlowStaging(generation: generation)
+        }
+        for flow in large {
+            XCTAssertTrue(
+                flow.waitForCapacity(
+                    reason: .generationBytes, neededItems: 1, neededBytes: 2
+                ) { _ in XCTFail("two-byte waiter must not fit one-byte headroom") })
+        }
+        let small = UdpIngressFlowStaging(generation: generation)
+        let smallGranted = DispatchSemaphore(value: 0)
+        let smallTicket = Locked<UInt64>(0)
+        let inspectionsAtSmallGrant = Locked<UInt64>(0)
+        XCTAssertTrue(
+            small.waitForCapacity(
+                reason: .generationBytes, neededItems: 1, neededBytes: 1
+            ) { ticket in
+                smallTicket.withLock { $0 = ticket }
+                inspectionsAtSmallGrant.withLock {
+                    $0 = generation.testCoordinatorInspections
+                }
+                // Consume the short production lease from the callback so
+                // scheduler delay after fulfillment cannot affect cleanup.
+                small.completeWithoutStaging(grantTicket: ticket)
+                smallGranted.signal()
+            })
+        XCTAssertEqual(generation.testWaiterCount, largeCount + 1)
+        XCTAssertEqual(generation.testGrantCount, 0)
+
+        // Registration deliberately occurs against a full byte budget. Wait
+        // for that finite no-fit pass to quiesce before measuring the release
+        // edge; the 30-second cap is only a deadlock watchdog, not a scheduler
+        // latency assertion.
+        pollUntil("automatic coordinator did not quiesce the initial no-fit pass") {
+            generation.testScanRemaining == 0
+        }
+        let beforeWake = generation.testCoordinatorInspections
+        released?.release()
+        XCTAssertEqual(
+            smallGranted.wait(timeout: .now() + 30), .success,
+            "automatic coordinator did not reach the fitting tail")
+
+        XCTAssertNotEqual(smallTicket.withLock { $0 }, 0)
+        XCTAssertEqual(
+            inspectionsAtSmallGrant.withLock { $0 } - beforeWake,
+            UInt64(largeCount + 1))
+        XCTAssertEqual(generation.testGrantCount, 0)
+        XCTAssertLessThanOrEqual(generation.testPeakGrantCount, udpIngressStagingMaxGrants)
+
+        small.close()
+        large.forEach { $0.close() }
+        retained?.release()
+        holder.close()
+        XCTAssertEqual(generation.testGrantCount, 0)
+        XCTAssertEqual(generation.testWaiterCount, 0)
+        XCTAssertEqual(generation.testRetainedBytes, 0)
+    }
+
+    func testHealthyStageReleaseDoesNotReprogramDisarmedLeaseTimer() {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 4,
+                maxItemsPerGeneration: 16,
+                maxBytesPerFlow: 64,
+                maxBytesPerGeneration: 256))
+        let flow = UdpIngressFlowStaging(generation: generation)
+
+        for _ in 0..<1_000 {
+            let batch = flow.stage(datagrams: [Data([1])], endpoints: nil).batch
+            XCTAssertNotNil(batch)
+            batch?.release()
+        }
+
+        XCTAssertEqual(generation.testLeaseTimerReprograms, 0)
+        XCTAssertEqual(generation.testGrantCount, 0)
+        XCTAssertEqual(generation.testRetainedItems, 0)
+        XCTAssertEqual(generation.testRetainedBytes, 0)
+        flow.close()
+    }
+
+    func testLeaseTimerProgramsOnlyOnGrantDeadlineTransitions() {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 1,
+                maxItemsPerGeneration: 2,
+                maxBytesPerFlow: 1,
+                maxBytesPerGeneration: 1))
+        let holder = UdpIngressFlowStaging(generation: generation)
+        let waiter = UdpIngressFlowStaging(generation: generation)
+        let held = holder.stage(datagrams: [Data([0])], endpoints: nil).batch
+        let resumedBatch = Locked<UdpIngressStagedBatch?>(nil)
+
+        XCTAssertTrue(
+            waiter.waitForCapacity(
+                reason: .generationBytes, neededItems: 1, neededBytes: 1
+            ) { ticket in
+                resumedBatch.withLock { batch in
+                    batch = waiter.stage(
+                        datagrams: [Data([1])], endpoints: nil,
+                        grantTicket: ticket
+                    ).batch
+                }
+            })
+        XCTAssertEqual(generation.testLeaseTimerReprograms, 0)
+
+        held?.release()
+        XCTAssertNotNil(resumedBatch.withLock { $0 })
+        XCTAssertEqual(
+            generation.testLeaseTimerReprograms, 2,
+            "one grant arm and its exact consume/disarm are the only timer programs")
+        XCTAssertEqual(generation.testGrantCount, 0)
+
+        resumedBatch.withLock { batch in
+            batch?.release()
+            batch = nil
+        }
+        waiter.close()
+        holder.close()
+        XCTAssertEqual(generation.testLeaseTimerReprograms, 2)
+        XCTAssertEqual(generation.testRetainedItems, 0)
+        XCTAssertEqual(generation.testRetainedBytes, 0)
+    }
+}

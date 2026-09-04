@@ -1,4 +1,11 @@
-use std::{ffi::c_void, ptr, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    ffi::c_void,
+    net::{IpAddr, SocketAddr, SocketAddrV6},
+    ptr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use rama::{
     Layer, Service,
@@ -45,13 +52,83 @@ use super::{
 pub(crate) type ClientService = BoxService<Request, Response, BoxError>;
 
 struct UdpCallbackContext {
-    sender: mpsc::UnboundedSender<Vec<u8>>,
+    sender: mpsc::UnboundedSender<UdpCallbackEvent>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+enum UdpCallbackEvent {
+    ClientReadDemand { probe_id: u64, observed_at: Instant },
+    ServerDatagram(UdpDatagram),
+    ServerClosed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct OwnedUdpPeer {
+    pub(crate) host_utf8: Vec<u8>,
+    pub(crate) port: u16,
+    pub(crate) scope_id: u32,
+}
+
+impl OwnedUdpPeer {
+    pub(crate) fn from_socket_addr(addr: SocketAddr) -> Self {
+        let scope_id = match addr {
+            SocketAddr::V4(_) => 0,
+            SocketAddr::V6(addr) => addr.scope_id(),
+        };
+        Self {
+            host_utf8: addr.ip().to_string().into_bytes(),
+            port: addr.port(),
+            scope_id,
+        }
+    }
+
+    pub(crate) fn socket_addr(&self) -> SocketAddr {
+        let host = std::str::from_utf8(&self.host_utf8)
+            .expect("FFI UDP callback peer host must be UTF-8")
+            .parse::<IpAddr>()
+            .expect("FFI UDP callback peer host must be an IP literal");
+        match host {
+            IpAddr::V4(addr) => SocketAddr::new(IpAddr::V4(addr), self.port),
+            IpAddr::V6(addr) => {
+                SocketAddr::V6(SocketAddrV6::new(addr, self.port, 0, self.scope_id))
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct UdpDatagram {
+    pub(crate) payload: Vec<u8>,
+    pub(crate) peer: Option<OwnedUdpPeer>,
+}
+
+fn copy_udp_peer(peer: bindings::RamaUdpPeerView) -> Option<OwnedUdpPeer> {
+    if !peer.present {
+        return None;
+    }
+    let host_utf8 = if peer.host_utf8_len == 0 {
+        Vec::new()
+    } else if peer.host_utf8.is_null() {
+        // This is an invalid producer view. Do not dereference it in the C
+        // callback; retaining an empty host makes the later assertion fail
+        // safely on the Rust test thread instead of unwinding across FFI.
+        Vec::new()
+    } else {
+        unsafe {
+            std::slice::from_raw_parts(peer.host_utf8.cast::<u8>(), peer.host_utf8_len).to_vec()
+        }
+    };
+    Some(OwnedUdpPeer {
+        host_utf8,
+        port: peer.port,
+        scope_id: peer.scope_id,
+    })
 }
 
 unsafe extern "C" fn on_udp_server_datagram(
     ctx: *mut c_void,
     bytes: bindings::RamaBytesView,
-    _peer: bindings::RamaUdpPeerView,
+    peer: bindings::RamaUdpPeerView,
 ) {
     let ctx = unsafe { &*(ctx as *const UdpCallbackContext) };
     let payload = if bytes.ptr.is_null() || bytes.len == 0 {
@@ -59,12 +136,34 @@ unsafe extern "C" fn on_udp_server_datagram(
     } else {
         unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len).to_vec() }
     };
-    _ = ctx.sender.send(payload);
+    _ = ctx
+        .sender
+        .send(UdpCallbackEvent::ServerDatagram(UdpDatagram {
+            payload,
+            peer: copy_udp_peer(peer),
+        }));
 }
 
-unsafe extern "C" fn on_udp_server_closed(_ctx: *mut c_void) {}
+unsafe extern "C" fn on_udp_server_closed(ctx: *mut c_void) {
+    let ctx = unsafe { &*(ctx as *const UdpCallbackContext) };
+    _ = ctx.sender.send(UdpCallbackEvent::ServerClosed);
+}
 
-unsafe extern "C" fn on_udp_client_read_demand(_ctx: *mut c_void) {}
+unsafe extern "C" fn on_udp_client_read_demand(ctx: *mut c_void) {
+    let ctx = unsafe { &*(ctx as *const UdpCallbackContext) };
+    _ = ctx.sender.send(UdpCallbackEvent::ClientReadDemand {
+        probe_id: 0,
+        observed_at: Instant::now(),
+    });
+}
+
+unsafe extern "C" fn on_udp_client_read_demand_v2(ctx: *mut c_void, probe_id: u64) {
+    let ctx = unsafe { &*(ctx as *const UdpCallbackContext) };
+    _ = ctx.sender.send(UdpCallbackEvent::ClientReadDemand {
+        probe_id,
+        observed_at: Instant::now(),
+    });
+}
 
 pub(crate) fn build_http_client(
     cert_store: Option<Arc<rama::tls::boring::core::x509::store::X509Store>>,
@@ -438,22 +537,48 @@ where
     buf
 }
 
-/// One-shot UDP echo round-trip through the FFI proxy engine.
+/// Live UDP session driven through the exported C ABI.
 ///
-/// Rust owns the egress UDP socket (one unconnected `tokio::net::UdpSocket`
-/// per intercepted flow); the harness no longer simulates Swift's
-/// `NWConnection`. We just intercept the flow, activate, push one
-/// datagram tagged with the upstream peer, and wait for the reply on
-/// `on_server_datagram`.
-pub(crate) async fn udp_roundtrip(
-    engine: Arc<EngineHandle>,
-    remote_addr: std::net::SocketAddr,
-    payload: &[u8],
-) -> Vec<u8> {
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    let ctx_ptr = Box::into_raw(Box::new(UdpCallbackContext { sender: tx })) as usize;
+/// The callback context deliberately records demand, attributed datagrams,
+/// and terminal close as distinct events. This mirrors Swift's production
+/// contract: client reads begin only after Rust requests one, callback views
+/// are copied before returning across FFI, and callback storage remains alive
+/// until service close or client-close quiescence has been observed and the
+/// session is freed.
+pub(crate) struct UdpFfiSession {
+    _engine: Arc<EngineHandle>,
+    session: usize,
+    context: usize,
+    events: mpsc::UnboundedReceiver<UdpCallbackEvent>,
+    pending_demands: VecDeque<(u64, Instant)>,
+    demand_permits: VecDeque<u64>,
+    pending_datagrams: VecDeque<UdpDatagram>,
+}
 
-    let session = {
+#[derive(Clone, Copy)]
+enum UdpCallbackAbi {
+    V1,
+    V2,
+}
+
+impl UdpFfiSession {
+    /// Create a probe-aware V2 session, matching the current Swift bridge.
+    pub(crate) fn new(engine: Arc<EngineHandle>, remote_addr: SocketAddr) -> Self {
+        Self::new_with_abi(engine, remote_addr, UdpCallbackAbi::V2)
+    }
+
+    /// Create a legacy V1 session to keep the additive ABI honest.
+    pub(crate) fn new_v1(engine: Arc<EngineHandle>, remote_addr: SocketAddr) -> Self {
+        Self::new_with_abi(engine, remote_addr, UdpCallbackAbi::V1)
+    }
+
+    fn new_with_abi(
+        engine: Arc<EngineHandle>,
+        remote_addr: SocketAddr,
+        abi: UdpCallbackAbi,
+    ) -> Self {
+        let (tx, events) = mpsc::unbounded_channel();
+        let context = Box::into_raw(Box::new(UdpCallbackContext { sender: tx })) as usize;
         let remote_host = remote_addr.ip().to_string().into_bytes();
         let meta = bindings::RamaTransparentProxyFlowMeta {
             protocol: bindings::RamaTransparentProxyFlowProtocol_RAMA_FLOW_PROTOCOL_UDP,
@@ -487,16 +612,28 @@ pub(crate) async fn udp_roundtrip(
             is_bound_is_set: false,
         };
         let result = unsafe {
-            bindings::rama_transparent_proxy_engine_new_udp_session(
-                engine.raw,
-                &meta,
-                bindings::RamaTransparentProxyUdpSessionCallbacks {
-                    context: ctx_ptr as *mut c_void,
-                    on_server_datagram: Some(on_udp_server_datagram),
-                    on_client_read_demand: Some(on_udp_client_read_demand),
-                    on_server_closed: Some(on_udp_server_closed),
-                },
-            )
+            match abi {
+                UdpCallbackAbi::V1 => bindings::rama_transparent_proxy_engine_new_udp_session(
+                    engine.raw,
+                    &meta,
+                    bindings::RamaTransparentProxyUdpSessionCallbacks {
+                        context: context as *mut c_void,
+                        on_server_datagram: Some(on_udp_server_datagram),
+                        on_client_read_demand: Some(on_udp_client_read_demand),
+                        on_server_closed: Some(on_udp_server_closed),
+                    },
+                ),
+                UdpCallbackAbi::V2 => bindings::rama_transparent_proxy_engine_new_udp_session_v2(
+                    engine.raw,
+                    &meta,
+                    bindings::RamaTransparentProxyUdpSessionCallbacksV2 {
+                        context: context as *mut c_void,
+                        on_server_datagram: Some(on_udp_server_datagram),
+                        on_client_read_demand: Some(on_udp_client_read_demand_v2),
+                        on_server_closed: Some(on_udp_server_closed),
+                    },
+                ),
+            }
         };
         assert_eq!(
             result.action,
@@ -505,52 +642,429 @@ pub(crate) async fn udp_roundtrip(
         );
         let raw = result.session;
         assert!(!raw.is_null(), "ffi udp session must allocate");
-        raw as usize
-    };
-
-    unsafe {
-        bindings::rama_transparent_proxy_udp_session_activate(
-            session as *mut bindings::RamaTransparentProxyUdpSession,
-        );
+        Self {
+            _engine: engine,
+            session: raw as usize,
+            context,
+            events,
+            pending_demands: VecDeque::new(),
+            demand_permits: VecDeque::new(),
+            pending_datagrams: VecDeque::new(),
+        }
     }
 
-    // Build a peer view tagged with `remote_addr`. The engine's send
-    // pump uses this as the `send_to` destination.
-    let peer_host = remote_addr.ip().to_string().into_bytes();
-    let scope_id = match remote_addr {
-        std::net::SocketAddr::V6(v6) => v6.scope_id(),
-        std::net::SocketAddr::V4(_) => 0,
-    };
-    let peer_view = bindings::RamaUdpPeerView {
-        present: true,
-        host_utf8: peer_host.as_ptr().cast(),
-        host_utf8_len: peer_host.len(),
-        port: remote_addr.port(),
-        scope_id,
-    };
-    unsafe {
-        bindings::rama_transparent_proxy_udp_session_on_client_datagram(
-            session as *mut bindings::RamaTransparentProxyUdpSession,
-            bindings::RamaBytesView {
-                ptr: payload.as_ptr(),
-                len: payload.len(),
+    pub(crate) fn activate(&self) {
+        unsafe {
+            bindings::rama_transparent_proxy_udp_session_activate(
+                self.session as *mut bindings::RamaTransparentProxyUdpSession,
+            );
+        }
+    }
+
+    async fn next_event(&mut self) -> UdpCallbackEvent {
+        tokio::time::timeout(Duration::from_secs(10), self.events.recv())
+            .await
+            .expect("UDP FFI callback event timed out")
+            .expect("UDP FFI callback channel closed before session teardown")
+    }
+
+    pub(crate) async fn wait_for_read_demand(&mut self) -> u64 {
+        if let Some((probe_id, _)) = self.pending_demands.pop_front() {
+            self.demand_permits.push_back(probe_id);
+            return probe_id;
+        }
+        loop {
+            match self.next_event().await {
+                UdpCallbackEvent::ClientReadDemand { probe_id, .. } => {
+                    self.demand_permits.push_back(probe_id);
+                    return probe_id;
+                }
+                UdpCallbackEvent::ServerDatagram(datagram) => {
+                    self.pending_datagrams.push_back(datagram);
+                }
+                UdpCallbackEvent::ServerClosed => {
+                    panic!("UDP server closed before requesting the next client read")
+                }
+            }
+        }
+    }
+
+    /// Wait specifically for a leased global-pressure retry. Ordinary
+    /// zero-ID demands are retained for their own later reads. Seeing any
+    /// server datagram first proves the supposedly rejected datagram reached
+    /// the service and fails the boundary test immediately.
+    pub(crate) async fn wait_for_probe_read_demand(&mut self) -> u64 {
+        if let Some(position) = self.pending_demands.iter().position(|(id, _)| *id != 0) {
+            let (probe_id, _) = self
+                .pending_demands
+                .remove(position)
+                .expect("located UDP probe demand");
+            self.demand_permits.push_back(probe_id);
+            return probe_id;
+        }
+        loop {
+            match self.next_event().await {
+                UdpCallbackEvent::ClientReadDemand {
+                    probe_id: 0,
+                    observed_at,
+                } => {
+                    self.pending_demands.push_back((0, observed_at));
+                }
+                UdpCallbackEvent::ClientReadDemand { probe_id, .. } => {
+                    self.demand_permits.push_back(probe_id);
+                    return probe_id;
+                }
+                UdpCallbackEvent::ServerDatagram(datagram) => {
+                    panic!(
+                        "globally stalled UDP flow delivered a datagram before probe demand: {datagram:?}"
+                    )
+                }
+                UdpCallbackEvent::ServerClosed => {
+                    panic!("globally stalled UDP flow closed before probe demand")
+                }
+            }
+        }
+    }
+
+    /// Submit one datagram after the caller has consumed a read-demand event.
+    /// Returns the exact V2 probe ID associated with that read (zero for an
+    /// ordinary V2 demand and for every legacy V1 demand).
+    pub(crate) fn send_client_datagram(&mut self, payload: &[u8], peer: Option<SocketAddr>) -> u64 {
+        let probe_id = self
+            .demand_permits
+            .pop_front()
+            .expect("UDP client datagram submitted without a preceding read-demand callback");
+        self.deliver_client_datagram(payload, peer);
+        probe_id
+    }
+
+    /// Stage ingress on an inactive session through the public C ABI. This is
+    /// used only by the global-budget boundary test: keeping the service
+    /// unactivated makes retained-byte ownership deterministic while avoiding
+    /// any engine-internal test hooks.
+    pub(crate) fn stage_client_datagram_before_activation(
+        &self,
+        payload: &[u8],
+        peer: Option<SocketAddr>,
+    ) {
+        self.deliver_client_datagram(payload, peer);
+    }
+
+    /// Stage caller-owned payload and peer-host views through the public ABI.
+    /// The caller may overwrite both buffers as soon as this method returns;
+    /// Rust must already have copied/parsed everything it retains.
+    pub(crate) fn stage_borrowed_client_datagram_before_activation(
+        &self,
+        payload: &[u8],
+        peer_host_utf8: &[u8],
+        port: u16,
+        scope_id: u32,
+    ) {
+        self.deliver_client_datagram_view(
+            payload,
+            bindings::RamaUdpPeerView {
+                present: true,
+                host_utf8: peer_host_utf8.as_ptr().cast(),
+                host_utf8_len: peer_host_utf8.len(),
+                port,
+                scope_id,
             },
-            peer_view,
         );
     }
 
-    let response = tokio::time::timeout(Duration::from_secs(2), rx.recv())
-        .await
-        .expect("udp callback timeout")
-        .expect("udp callback payload");
-
-    unsafe {
-        bindings::rama_transparent_proxy_udp_session_on_client_close(
-            session as *mut bindings::RamaTransparentProxyUdpSession,
-        );
+    fn deliver_client_datagram(&self, payload: &[u8], peer: Option<SocketAddr>) {
+        let peer_host = peer.map(|addr| addr.ip().to_string().into_bytes());
+        let peer_view = match (peer, peer_host.as_ref()) {
+            (Some(addr), Some(host)) => bindings::RamaUdpPeerView {
+                present: true,
+                host_utf8: host.as_ptr().cast(),
+                host_utf8_len: host.len(),
+                port: addr.port(),
+                scope_id: match addr {
+                    SocketAddr::V4(_) => 0,
+                    SocketAddr::V6(addr) => addr.scope_id(),
+                },
+            },
+            (None, None) => bindings::RamaUdpPeerView {
+                present: false,
+                host_utf8: ptr::null(),
+                host_utf8_len: 0,
+                port: 0,
+                scope_id: 0,
+            },
+            _ => unreachable!("peer and its encoded host are created together"),
+        };
+        self.deliver_client_datagram_view(payload, peer_view);
     }
 
-    response
+    fn deliver_client_datagram_view(&self, payload: &[u8], peer_view: bindings::RamaUdpPeerView) {
+        unsafe {
+            bindings::rama_transparent_proxy_udp_session_on_client_datagram(
+                self.session as *mut bindings::RamaTransparentProxyUdpSession,
+                bindings::RamaBytesView {
+                    ptr: payload.as_ptr(),
+                    len: payload.len(),
+                },
+                peer_view,
+            );
+        }
+    }
+
+    pub(crate) fn acknowledge_client_read(&self, probe_id: u64) {
+        unsafe {
+            bindings::rama_transparent_proxy_udp_session_on_client_read_complete(
+                self.session as *mut bindings::RamaTransparentProxyUdpSession,
+                probe_id,
+            );
+        }
+    }
+
+    /// Wait for a probe callback for at most `timeout`, returning `None` when
+    /// no callback arrived. This is used with a deadline strictly shorter than
+    /// Rust's 10 ms probe lease to distinguish an explicit ACK from expiry.
+    pub(crate) async fn wait_for_probe_read_demand_before(
+        &mut self,
+        timeout: Duration,
+    ) -> Option<u64> {
+        tokio::time::timeout(timeout, self.wait_for_probe_read_demand())
+            .await
+            .ok()
+    }
+
+    /// Like `wait_for_probe_read_demand`, but also returns the timestamp taken
+    /// at C callback entry. Tests can prove progress preceded the lease-expiry
+    /// backstop without depending on when their own task was scheduled.
+    pub(crate) async fn wait_for_probe_read_demand_observed(&mut self) -> (u64, Instant) {
+        if let Some(position) = self.pending_demands.iter().position(|(id, _)| *id != 0) {
+            let observed = self
+                .pending_demands
+                .remove(position)
+                .expect("located UDP probe demand");
+            self.demand_permits.push_back(observed.0);
+            return observed;
+        }
+        loop {
+            match self.next_event().await {
+                UdpCallbackEvent::ClientReadDemand {
+                    probe_id: 0,
+                    observed_at,
+                } => self.pending_demands.push_back((0, observed_at)),
+                UdpCallbackEvent::ClientReadDemand {
+                    probe_id,
+                    observed_at,
+                } => {
+                    self.demand_permits.push_back(probe_id);
+                    return (probe_id, observed_at);
+                }
+                UdpCallbackEvent::ServerDatagram(datagram) => {
+                    panic!(
+                        "globally stalled UDP flow delivered a datagram before probe demand: {datagram:?}"
+                    )
+                }
+                UdpCallbackEvent::ServerClosed => {
+                    panic!("globally stalled UDP flow closed before probe demand")
+                }
+            }
+        }
+    }
+
+    /// After another callback has provided a synchronization edge, prove this
+    /// inactive flow was not selected as a global waiter. No deadline or sleep
+    /// is involved: coordinator callbacks preceding that edge are already in
+    /// this session's queue.
+    pub(crate) fn assert_no_callbacks_queued(&mut self) {
+        assert!(
+            self.pending_demands.is_empty()
+                && self.demand_permits.is_empty()
+                && self.pending_datagrams.is_empty(),
+            "UDP session retained an unexpected buffered callback"
+        );
+        if let Ok(event) = self.events.try_recv() {
+            panic!("unexpected queued UDP callback: {event:?}");
+        }
+    }
+
+    pub(crate) async fn recv_server_datagram(&mut self) -> UdpDatagram {
+        if let Some(datagram) = self.pending_datagrams.pop_front() {
+            return datagram;
+        }
+        loop {
+            match self.next_event().await {
+                UdpCallbackEvent::ClientReadDemand {
+                    probe_id,
+                    observed_at,
+                } => {
+                    self.pending_demands.push_back((probe_id, observed_at));
+                }
+                UdpCallbackEvent::ServerDatagram(datagram) => return datagram,
+                UdpCallbackEvent::ServerClosed => {
+                    panic!("UDP server closed before delivering its expected datagram")
+                }
+            }
+        }
+    }
+
+    /// Close from the client through the C ABI, optionally issuing the
+    /// idempotency probe twice, then prove that teardown suppresses all later
+    /// server callbacks before releasing the callback context.
+    pub(crate) fn close_from_client_and_assert(mut self, close_calls: usize) {
+        assert!(
+            close_calls > 0,
+            "a UDP FFI session must be closed at least once"
+        );
+        for _ in 0..close_calls {
+            unsafe {
+                bindings::rama_transparent_proxy_udp_session_on_client_close(
+                    self.session as *mut bindings::RamaTransparentProxyUdpSession,
+                );
+            }
+        }
+
+        unsafe {
+            bindings::rama_transparent_proxy_udp_session_free(
+                self.session as *mut bindings::RamaTransparentProxyUdpSession,
+            );
+        }
+        self.session = 0;
+
+        // `on_client_close` returns only after taking the same callback gate
+        // used by every Rust-to-Swift dispatch and switching it off. Therefore
+        // this absence check needs no sleep: callbacks in the queue happened
+        // before close, while future callbacks are contractually suppressed.
+        let mut close_count = 0;
+        while let Ok(event) = self.events.try_recv() {
+            match event {
+                UdpCallbackEvent::ClientReadDemand { .. } => {}
+                UdpCallbackEvent::ServerDatagram(datagram) => {
+                    panic!("unexpected unconsumed UDP server datagram at close: {datagram:?}")
+                }
+                UdpCallbackEvent::ServerClosed => close_count += 1,
+            }
+        }
+        assert_eq!(
+            close_count, 0,
+            "client-close teardown must suppress the server-close callback"
+        );
+        assert!(
+            self.pending_datagrams.is_empty(),
+            "all UDP server datagrams must be consumed before close"
+        );
+
+        unsafe {
+            drop(Box::from_raw(self.context as *mut UdpCallbackContext));
+        }
+        self.context = 0;
+    }
+
+    /// Wait for the service to close the server side, prove its terminal
+    /// callback fires exactly once, and only then release the callback context.
+    pub(crate) async fn assert_server_close_and_free(mut self) {
+        let mut close_count = 0;
+        loop {
+            match self.next_event().await {
+                UdpCallbackEvent::ClientReadDemand {
+                    probe_id,
+                    observed_at,
+                } => {
+                    self.pending_demands.push_back((probe_id, observed_at));
+                }
+                UdpCallbackEvent::ServerDatagram(datagram) => {
+                    self.pending_datagrams.push_back(datagram);
+                }
+                UdpCallbackEvent::ServerClosed => {
+                    close_count += 1;
+                    break;
+                }
+            }
+        }
+
+        // The service task has completed after dispatching the close callback.
+        // Closing now disables any stray dispatch before the callback box is
+        // released; freeing the session also makes duplicate events impossible.
+        unsafe {
+            bindings::rama_transparent_proxy_udp_session_on_client_close(
+                self.session as *mut bindings::RamaTransparentProxyUdpSession,
+            );
+            bindings::rama_transparent_proxy_udp_session_free(
+                self.session as *mut bindings::RamaTransparentProxyUdpSession,
+            );
+        }
+        self.session = 0;
+
+        while let Ok(event) = self.events.try_recv() {
+            match event {
+                UdpCallbackEvent::ClientReadDemand { .. } => {}
+                UdpCallbackEvent::ServerDatagram(datagram) => {
+                    panic!("unexpected UDP server datagram after service close: {datagram:?}")
+                }
+                UdpCallbackEvent::ServerClosed => close_count += 1,
+            }
+        }
+        assert_eq!(
+            close_count, 1,
+            "service-side UDP close callback must fire exactly once"
+        );
+        assert!(
+            self.pending_datagrams.is_empty(),
+            "unexpected UDP server datagram remained at service close"
+        );
+
+        unsafe {
+            drop(Box::from_raw(self.context as *mut UdpCallbackContext));
+        }
+        self.context = 0;
+    }
+}
+
+/// One-shot UDP echo round-trip through the real example static library.
+///
+/// Unlike the old payload-only helper, this follows Rust's read-demand before
+/// submitting and asserts the reply's per-datagram peer before proving clean
+/// terminal callback delivery.
+pub(crate) async fn udp_roundtrip(
+    engine: Arc<EngineHandle>,
+    remote_addr: SocketAddr,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut session = UdpFfiSession::new(engine, remote_addr);
+    session.activate();
+    let probe_id = session.wait_for_read_demand().await;
+    assert_eq!(probe_id, 0, "ordinary V2 UDP demand must use ID zero");
+    let delivered_probe_id = session.send_client_datagram(payload, Some(remote_addr));
+    assert_eq!(delivered_probe_id, probe_id);
+    session.acknowledge_client_read(delivered_probe_id);
+    let response = session.recv_server_datagram().await;
+    assert_eq!(
+        response.peer,
+        Some(OwnedUdpPeer::from_socket_addr(remote_addr)),
+        "UDP FFI reply must retain the real recv_from peer"
+    );
+    session.close_from_client_and_assert(1);
+    response.payload
+}
+
+/// Legacy V1 one-shot path. V1 deliberately has no probe ID; the callback is
+/// normalized to zero in the harness while payload and peer assertions remain
+/// identical to V2.
+pub(crate) async fn udp_roundtrip_v1(
+    engine: Arc<EngineHandle>,
+    remote_addr: SocketAddr,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut session = UdpFfiSession::new_v1(engine, remote_addr);
+    session.activate();
+    let probe_id = session.wait_for_read_demand().await;
+    assert_eq!(probe_id, 0, "V1 UDP demand must normalize to ID zero");
+    let delivered_probe_id = session.send_client_datagram(payload, Some(remote_addr));
+    assert_eq!(delivered_probe_id, 0);
+    let response = session.recv_server_datagram().await;
+    assert_eq!(
+        response.peer,
+        Some(OwnedUdpPeer::from_socket_addr(remote_addr)),
+        "V1 UDP reply must retain the real recv_from peer"
+    );
+    session.close_from_client_and_assert(1);
+    response.payload
 }
 
 fn proxy_address(proxy_kind: ProxyKind, proxy_addr: std::net::SocketAddr) -> Option<ProxyAddress> {
@@ -568,4 +1082,111 @@ fn proxy_address(proxy_kind: ProxyKind, proxy_addr: std::net::SocketAddr) -> Opt
         },
     };
     Some(proxy_address)
+}
+
+#[cfg(test)]
+mod udp_callback_tests {
+    use super::*;
+
+    #[test]
+    fn v2_demand_callback_preserves_probe_id() {
+        let (sender, mut events) = mpsc::unbounded_channel();
+        let context = UdpCallbackContext { sender };
+
+        unsafe {
+            on_udp_client_read_demand_v2(ptr::from_ref(&context).cast_mut().cast(), 0xfeed_beef);
+        }
+
+        assert!(matches!(
+            events.try_recv().expect("V2 demand callback event"),
+            UdpCallbackEvent::ClientReadDemand {
+                probe_id: 0xfeed_beef,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn datagram_callback_copies_payload_and_scoped_ipv6_peer() {
+        let (sender, mut events) = mpsc::unbounded_channel();
+        let context = UdpCallbackContext { sender };
+        let mut payload = b"borrowed payload".to_vec();
+        let mut host = b"fe80::1234".to_vec();
+
+        unsafe {
+            on_udp_server_datagram(
+                ptr::from_ref(&context).cast_mut().cast(),
+                bindings::RamaBytesView {
+                    ptr: payload.as_ptr(),
+                    len: payload.len(),
+                },
+                bindings::RamaUdpPeerView {
+                    present: true,
+                    host_utf8: host.as_ptr().cast(),
+                    host_utf8_len: host.len(),
+                    port: 5353,
+                    scope_id: 17,
+                },
+            );
+        }
+
+        // Both views are borrowed only for the callback. Destroy their source
+        // bytes before inspecting the channel event to catch retained pointers.
+        payload.fill(0);
+        host.fill(0);
+
+        let event = events.try_recv().expect("datagram callback event");
+        let expected_peer = OwnedUdpPeer {
+            host_utf8: b"fe80::1234".to_vec(),
+            port: 5353,
+            scope_id: 17,
+        };
+        assert_eq!(
+            event,
+            UdpCallbackEvent::ServerDatagram(UdpDatagram {
+                payload: b"borrowed payload".to_vec(),
+                peer: Some(expected_peer.clone()),
+            })
+        );
+        assert_eq!(
+            expected_peer.socket_addr(),
+            SocketAddr::V6(SocketAddrV6::new(
+                "fe80::1234".parse().expect("IPv6 address"),
+                5353,
+                0,
+                17,
+            ))
+        );
+    }
+
+    #[test]
+    fn datagram_callback_preserves_absent_peer_and_zero_length_payload() {
+        let (sender, mut events) = mpsc::unbounded_channel();
+        let context = UdpCallbackContext { sender };
+
+        unsafe {
+            on_udp_server_datagram(
+                ptr::from_ref(&context).cast_mut().cast(),
+                bindings::RamaBytesView {
+                    ptr: ptr::null(),
+                    len: 0,
+                },
+                bindings::RamaUdpPeerView {
+                    present: false,
+                    host_utf8: ptr::null(),
+                    host_utf8_len: 0,
+                    port: 0,
+                    scope_id: 0,
+                },
+            );
+        }
+
+        assert_eq!(
+            events.try_recv().expect("datagram callback event"),
+            UdpCallbackEvent::ServerDatagram(UdpDatagram {
+                payload: Vec::new(),
+                peer: None,
+            })
+        );
+    }
 }

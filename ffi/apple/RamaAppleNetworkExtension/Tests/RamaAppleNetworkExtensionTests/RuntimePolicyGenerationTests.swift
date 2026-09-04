@@ -112,6 +112,57 @@ final class RuntimePolicyGenerationTests: XCTestCase {
             "production policy construction must not publish through test globals")
     }
 
+    func testUdpStagingItemBudgetUsesBoundedFallbackWhenLiveHardCapIsDisabled() {
+        let policy = makePolicy(
+            writeCap: 1_024,
+            liveHardCap: 0,
+            udpIdleTimeoutMs: 60_000,
+            refusalPassthrough: false)
+
+        XCTAssertEqual(policy.udpIngressStaging.maxItemsPerFlow, 32)
+        XCTAssertEqual(
+            policy.udpIngressStaging.maxItemsPerGeneration,
+            32 * udpIngressStagingUnboundedLiveFlowPopulation)
+        XCTAssertEqual(policy.udpIngressStaging.maxItemsPerGeneration, 262_144)
+    }
+
+    func testUdpStagingItemBudgetUsesFiniteHardCapAndSaturatesOverflow() {
+        let finite = TransparentProxyRuntimePolicy(
+            tcpWritePumpMaxPendingBytes: 1_024,
+            flowPressureSoftCap: 0,
+            flowPressureLowWater: 0,
+            flowPressureIdleFloorMs: 1_000,
+            liveFlowHardCap: 500,
+            udpIdleTimeoutMs: 60_000,
+            tcpStartInFlightHardCap: 8,
+            tcpStartInFlightSoftCap: 4,
+            tcpStartLatencyBreakerP95Ms: 100,
+            tcpStartLatencyBreakerCloseP95Ms: 50,
+            tcpPressureConnectTimeoutMs: 80,
+            tcpBreakerConnectTimeoutMs: 40,
+            flowRefusalPassthrough: false,
+            udpChannelCapacity: 32)
+        XCTAssertEqual(finite.udpIngressStaging.maxItemsPerGeneration, 16_000)
+
+        let overflow = TransparentProxyRuntimePolicy(
+            tcpWritePumpMaxPendingBytes: 1_024,
+            flowPressureSoftCap: 0,
+            flowPressureLowWater: 0,
+            flowPressureIdleFloorMs: 1_000,
+            liveFlowHardCap: 2,
+            udpIdleTimeoutMs: 60_000,
+            tcpStartInFlightHardCap: 8,
+            tcpStartInFlightSoftCap: 4,
+            tcpStartLatencyBreakerP95Ms: 100,
+            tcpStartLatencyBreakerCloseP95Ms: 50,
+            tcpPressureConnectTimeoutMs: 80,
+            tcpBreakerConnectTimeoutMs: 40,
+            flowRefusalPassthrough: false,
+            udpChannelCapacity: Int.max)
+        XCTAssertEqual(overflow.udpIngressStaging.maxItemsPerFlow, Int.max)
+        XCTAssertEqual(overflow.udpIngressStaging.maxItemsPerGeneration, Int.max)
+    }
+
     func testReplacementPublishesOneCoherentPolicyAndOldLeaseKeepsSnapshot() {
         let core = TransparentProxyCore()
         let first = makePolicy(
@@ -188,6 +239,70 @@ final class RuntimePolicyGenerationTests: XCTestCase {
                 meta: makeMeta(protocolRaw: 1),
                 engineGeneration: secondGeneration)
         else { return XCTFail("replacement generation hard cap must be two") }
+    }
+
+    func testPriorGenerationCompletionCannotReleaseReplacementAdmission() {
+        let core = TransparentProxyCore()
+        let policy = makePolicy(
+            writeCap: 1_024,
+            liveHardCap: 1,
+            udpIdleTimeoutMs: 111,
+            tcpStartHardCap: 2,
+            tcpStartSoftCap: 2,
+            refusalPassthrough: true)
+        let reusedFlowIdentity = NSObject()
+        let flowId = ObjectIdentifier(reusedFlowIdentity)
+
+        let oldGeneration = core.attachEngine(makeEngine(), runtimePolicy: policy)
+        guard
+            case .admit(let oldToken) = core.admitTcpStart(
+                flowId: flowId,
+                meta: makeMeta(protocolRaw: 1),
+                engineGeneration: oldGeneration)
+        else { return XCTFail("old generation admission") }
+
+        let replacementGeneration = core.attachEngine(makeEngine(), runtimePolicy: policy)
+        defer { core.detachEngine(reason: 0) }
+        guard
+            case .admit(let replacementToken) = core.admitTcpStart(
+                flowId: flowId,
+                meta: makeMeta(protocolRaw: 1),
+                engineGeneration: replacementGeneration)
+        else { return XCTFail("replacement generation admission") }
+        XCTAssertNotEqual(
+            oldToken.identity.engineGeneration,
+            replacementToken.identity.engineGeneration)
+        XCTAssertNotEqual(oldToken.identity.nonce, replacementToken.identity.nonce)
+
+        core.finishTcpStart(oldToken, outcome: .timeout)
+
+        XCTAssertEqual(core.testTcpStartsInFlight, 1)
+        XCTAssertEqual(core.testTcpLiveFlowReservations, 1)
+        XCTAssertEqual(core.testTcpStartLatencySampleCount, 0)
+        XCTAssertEqual(core.testTcpTimeoutsSinceTick, 0)
+
+        let otherFlow = NSObject()
+        guard
+            case .reject(let reason, _, _) = core.admitTcpStart(
+                flowId: ObjectIdentifier(otherFlow),
+                meta: makeMeta(protocolRaw: 1),
+                engineGeneration: replacementGeneration)
+        else {
+            return XCTFail("replacement reservation must retain the only live-cap slot")
+        }
+        XCTAssertTrue(reason.contains("combined live-flow hard cap reached"))
+
+        core.finishTcpStart(replacementToken, outcome: .failed)
+        XCTAssertEqual(core.testTcpStartsInFlight, 0)
+        XCTAssertEqual(core.testTcpLiveFlowReservations, 0)
+
+        guard
+            case .admit(let nextToken) = core.admitTcpStart(
+                flowId: ObjectIdentifier(otherFlow),
+                meta: makeMeta(protocolRaw: 1),
+                engineGeneration: replacementGeneration)
+        else { return XCTFail("exact replacement completion must release capacity") }
+        core.finishTcpStart(nextToken, outcome: .failed)
     }
 
     func testRestartCompletesWithBlockedRetiringFlowAndPumpKeepsOldCap() {

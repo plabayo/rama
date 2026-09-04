@@ -92,6 +92,7 @@ final class LiveFlowHardCapTests: XCTestCase {
                 ObjectIdentifier(tcpFlow),
                 anchor: _TestTcpFlowSessionAnchor(ctx: TcpFlowContext()),
                 appId: token.appId,
+                admissionToken: token,
                 engineGeneration: generation),
             2)
         core.finishTcpStart(token, outcome: .ready)
@@ -233,6 +234,213 @@ final class LiveFlowHardCapTests: XCTestCase {
         XCTAssertNotNil(core.engine)
         XCTAssertTrue(core.detachEngine(ifGeneration: second, reason: 0))
         XCTAssertNil(core.engine)
+    }
+
+    func testRegisteredRetirementTransferDoesNotDoubleCountBeforeRemoval() {
+        defaultLiveFlowHardCap = 3
+        let core = TransparentProxyCore()
+        let first = MockTcpFlow()
+        let firstId = ObjectIdentifier(first)
+        let firstContext = TcpFlowContext()
+        firstContext.core = core
+        firstContext.flow = first
+        firstContext.flowId = firstId
+        let second = MockTcpFlow()
+        let secondId = ObjectIdentifier(second)
+        let secondContext = TcpFlowContext()
+        secondContext.core = core
+        secondContext.flow = second
+        secondContext.flowId = secondId
+        XCTAssertEqual(
+            core.registerTcpFlow(
+                firstId, anchor: _TestTcpFlowSessionAnchor(ctx: firstContext)),
+            1)
+        XCTAssertEqual(
+            core.registerTcpFlow(
+                secondId, anchor: _TestTcpFlowSessionAnchor(ctx: secondContext)),
+            2)
+
+        let release = core.transferRegisteredResourceToRetirement(
+            flowId: firstId,
+            contextId: ObjectIdentifier(firstContext),
+            engineGeneration: nil,
+            identity: firstContext.retirementIdentity())
+        defer {
+            core.removeTcpFlow(firstId, context: firstContext)
+            core.removeTcpFlow(secondId, context: secondContext)
+            release()
+            _ = core.tcpFlowCount
+        }
+
+        XCTAssertEqual(core.tcpFlowCount, 2, "async registry removal is intentionally held")
+        XCTAssertEqual(core.testRetiringResourceCount, 1)
+        XCTAssertEqual(core.testRegisteredRetirementOverlapCount, 1)
+        XCTAssertEqual(core.testLiveResourceOccupancy, 2)
+
+        let notices = Locked([String]())
+        LifecycleLog.noticeOverride = { message in notices.withLock { $0.append(message) } }
+        core.testRunPeriodicMaintenance()
+        LifecycleLog.noticeOverride = nil
+        let countLine = notices.withLock {
+            $0.last { $0.contains("tproxy live-flow counts") } ?? ""
+        }
+        XCTAssertTrue(countLine.contains("tcp=2 udp=0 total=2"), countLine)
+        XCTAssertTrue(countLine.contains("retiring=1 retirementOverlap=1"), countLine)
+
+        let admitted = MockTcpFlow()
+        guard case .admit(let token) = core.admitTcpStart(
+            flowId: ObjectIdentifier(admitted),
+            meta: meta(protocolRaw: 1, port: 443))
+        else {
+            return XCTFail("the transferred flow must consume exactly one live slot")
+        }
+        core.finishTcpStart(token, outcome: .failed)
+        XCTAssertEqual(core.testTcpLiveFlowReservations, 0)
+
+        let directTcp = MockTcpFlow()
+        let directTcpId = ObjectIdentifier(directTcp)
+        let directTcpContext = TcpFlowContext()
+        XCTAssertEqual(
+            core.registerTcpFlow(
+                directTcpId,
+                anchor: _TestTcpFlowSessionAnchor(ctx: directTcpContext)),
+            3,
+            "tokenless fallback registration must use overlap-aware occupancy")
+        core.removeTcpFlow(directTcpId, context: directTcpContext)
+        XCTAssertEqual(core.tcpFlowCount, 2)
+
+        let udp = MockUdpFlow()
+        let udpId = ObjectIdentifier(udp)
+        XCTAssertEqual(
+            core.registerUdpFlow(
+                udpId,
+                anchor: _TestUdpFlowSessionAnchor(ctx: UdpFlowContext())),
+            3,
+            "UDP admission must use the same overlap-aware occupancy")
+        core.removeUdpFlow(udpId)
+        XCTAssertEqual(core.udpFlowCount, 0)
+    }
+
+    func testReleasedRetirementStillOffsetsStaleRegistryOwner() {
+        defaultLiveFlowHardCap = 1
+        let core = TransparentProxyCore()
+        let flow = MockTcpFlow()
+        let flowId = ObjectIdentifier(flow)
+        let context = TcpFlowContext()
+        context.core = core
+        context.flow = flow
+        context.flowId = flowId
+        XCTAssertEqual(
+            core.registerTcpFlow(
+                flowId, anchor: _TestTcpFlowSessionAnchor(ctx: context)),
+            1)
+
+        let release = core.transferRegisteredResourceToRetirement(
+            flowId: flowId,
+            contextId: ObjectIdentifier(context),
+            engineGeneration: nil,
+            identity: context.retirementIdentity())
+        release()
+        release()
+        XCTAssertEqual(core.testRetiringResourceCount, 0)
+        XCTAssertEqual(core.testRegisteredRetirementOverlapCount, 1)
+        XCTAssertEqual(
+            core.testLiveResourceOccupancy, 0,
+            "a released connection must not be resurrected by its stale map owner")
+
+        let replacement = MockUdpFlow()
+        let replacementId = ObjectIdentifier(replacement)
+        XCTAssertEqual(
+            core.registerUdpFlow(
+                replacementId,
+                anchor: _TestUdpFlowSessionAnchor(ctx: UdpFlowContext())),
+            2)
+        core.removeTcpFlow(flowId, context: context)
+        XCTAssertEqual(core.tcpFlowCount, 0)
+        XCTAssertEqual(core.testRegisteredRetirementOverlapCount, 0)
+        XCTAssertEqual(core.testLiveResourceOccupancy, 1)
+        core.removeUdpFlow(replacementId)
+        XCTAssertEqual(core.udpFlowCount, 0)
+    }
+
+    func testDetachAndQueuedPromotedTerminalShareOnePhysicalClaim() {
+        defaultLiveFlowHardCap = 2
+        let core = TransparentProxyCore()
+        let firstGeneration = core.attachEngine(makeEngine())
+        let flow = MockTcpFlow()
+        let flowId = ObjectIdentifier(flow)
+        let connection = MockNwConnection()
+        connection.transition(to: .ready)
+        let queue = DispatchQueue(label: "rama.test.live-cap.detach-promoted-claim")
+        let startPromoted = DispatchSemaphore(value: 0)
+        let promotedApplied = DispatchSemaphore(value: 0)
+        let releaseQueue = DispatchSemaphore(value: 0)
+        let pump = NwTcpConnectionWritePump(
+            connection: connection,
+            queue: queue,
+            lingerCloseDeadline: .milliseconds(40),
+            onDrained: {})
+        let context = TcpFlowContext()
+        context.core = core
+        context.flow = flow
+        context.flowId = flowId
+        context.flowQueue = queue
+        context.connection = connection
+        context.egressWritePump = pump
+        context.engineGeneration = firstGeneration
+        XCTAssertEqual(
+            core.registerTcpFlow(
+                flowId,
+                anchor: _TestTcpFlowSessionAnchor(ctx: context),
+                engineGeneration: firstGeneration),
+            1)
+        queue.async {
+            startPromoted.wait()
+            context.applyPromotedTerminal()
+            promotedApplied.signal()
+            releaseQueue.wait()
+        }
+        defer {
+            startPromoted.signal()
+            releaseQueue.signal()
+            queue.sync {}
+            core.testDetachAndDrainFlowQueues()
+        }
+
+        core.detachEngine(reason: 0)
+        let secondGeneration = core.attachEngine(makeEngine())
+        XCTAssertEqual(core.testRetiringResourceCount, 1)
+
+        startPromoted.signal()
+        XCTAssertEqual(promotedApplied.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(
+            core.testRetiringResourceCount, 1,
+            "detach and promoted linger are claimants of one physical connection")
+        XCTAssertEqual(core.testRegisteredRetirementOverlapCount, 0)
+
+        let replacement = MockUdpFlow()
+        let replacementId = ObjectIdentifier(replacement)
+        XCTAssertEqual(
+            core.registerUdpFlow(
+                replacementId,
+                anchor: _TestUdpFlowSessionAnchor(ctx: UdpFlowContext()),
+                engineGeneration: secondGeneration),
+            1,
+            "one old connection leaves one of two new-generation slots available")
+
+        releaseQueue.signal()
+        queue.sync {}
+        XCTAssertEqual(
+            core.testRetiringResourceCount, 1,
+            "detach release must not release the promoted pump's claim")
+        XCTAssertEqual(connection.cancelCount, 0)
+
+        pump.armTerminalLingerCancel()
+        pollUntil("promoted linger releases the shared retirement resource") {
+            core.testRetiringResourceCount == 0 && connection.cancelCount == 1
+        }
+        core.removeUdpFlow(replacementId, engineGeneration: secondGeneration)
+        XCTAssertEqual(core.udpFlowCount, 0)
     }
 
     func testPromotedTerminalStillConsumesCapBeforeLingerIsArmed() {

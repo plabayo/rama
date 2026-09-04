@@ -189,7 +189,8 @@ fn udp_e2e_diagnostic(
     }
 
     Some(format!(
-        "udp_e2e_decision rama_decision={action} remote_endpoint={remote_endpoint} source_app={source_app}"
+        "udp_e2e_decision rama_decision={action} flow_id={} remote_endpoint={remote_endpoint} source_app={source_app}",
+        meta.flow_id,
     ))
 }
 
@@ -550,11 +551,13 @@ mod udp_policy_tests {
     #[test]
     fn e2e_diagnostics_are_gated_and_allowlisted() {
         let python = udp_meta_for_app("1.1.1.1:53", "com.apple.python3");
+        let expected = format!(
+            "udp_e2e_decision rama_decision=passthrough flow_id={} remote_endpoint=1.1.1.1:53 source_app=com.apple.python3",
+            python.flow_id,
+        );
         assert_eq!(
             udp_e2e_diagnostic(true, &python, TransparentProxyFlowAction::Passthrough).as_deref(),
-            Some(
-                "udp_e2e_decision rama_decision=passthrough remote_endpoint=1.1.1.1:53 source_app=com.apple.python3"
-            )
+            Some(expected.as_str())
         );
         assert_eq!(
             udp_e2e_diagnostic(false, &python, TransparentProxyFlowAction::Passthrough),
@@ -571,9 +574,10 @@ mod udp_policy_tests {
 
 apple_ne::transparent_proxy_ffi! {
     init = init,
-    // Engine defaults (15 min TCP idle backstop, 15 min UDP max-lifetime,
-    // 3s decision deadline) are applied automatically. Opt out via
-    // `.without_tcp_idle_timeout()` / `.without_udp_max_flow_lifetime()`.
+    // Engine defaults include the 15 min TCP idle backstop and 3s decision
+    // deadline. UDP has no absolute max lifetime by default so active QUIC/H3
+    // flows remain viable; deployments can opt into a cap explicitly with
+    // `.with_udp_max_flow_lifetime(...)`.
     engine_builder = TransparentProxyEngineBuilder::new(DemoEngineFactory)
         // dial9 runtime telemetry. Enabled when the FFI init handed
         // us a storage directory (the production code path); falls

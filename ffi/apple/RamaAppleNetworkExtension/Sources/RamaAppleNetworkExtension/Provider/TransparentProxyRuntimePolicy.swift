@@ -79,6 +79,7 @@ struct TransparentProxyRuntimePolicy: Sendable, Equatable {
     let tcpWritePump: TcpWritePumpPolicy
     let flowPressure: FlowPressurePolicy
     let udpIdleTimeoutMs: UInt64
+    let udpIngressStaging: UdpIngressStagingPolicy
     let tcpStartAdmission: TcpStartAdmissionPolicy
     let flowRefusal: FlowRefusalPolicy
 
@@ -95,7 +96,10 @@ struct TransparentProxyRuntimePolicy: Sendable, Equatable {
         tcpStartLatencyBreakerCloseP95Ms: UInt32,
         tcpPressureConnectTimeoutMs: UInt32,
         tcpBreakerConnectTimeoutMs: UInt32,
-        flowRefusalPassthrough: Bool
+        flowRefusalPassthrough: Bool,
+        udpChannelCapacity: Int = 32,
+        udpIngressPerFlowMaxBytes: Int = 256 * 1024,
+        udpIngressGlobalMaxBytes: Int = 16 * 1024 * 1024
     ) {
         let pressureSoftCap = normalizedFlowPressureSoftCap(
             softCap: flowPressureSoftCap,
@@ -115,6 +119,20 @@ struct TransparentProxyRuntimePolicy: Sendable, Equatable {
             idleFloorMs: flowPressureIdleFloorMs,
             liveHardCap: liveFlowHardCap)
         self.udpIdleTimeoutMs = udpIdleTimeoutMs
+        // A zero hard cap intentionally disables live-flow admission limiting;
+        // it must not collapse the independent generation-wide staging budget
+        // to one item. Keep that configuration bounded with the documented
+        // conservative population used by the staging layer itself.
+        let stagingFlowPopulation = liveFlowHardCap == 0
+            ? udpIngressStagingUnboundedLiveFlowPopulation
+            : Int(liveFlowHardCap)
+        let (generationItems, generationItemsOverflow) = udpChannelCapacity
+            .multipliedReportingOverflow(by: stagingFlowPopulation)
+        self.udpIngressStaging = UdpIngressStagingPolicy(
+            maxItemsPerFlow: udpChannelCapacity,
+            maxItemsPerGeneration: generationItemsOverflow ? Int.max : generationItems,
+            maxBytesPerFlow: udpIngressPerFlowMaxBytes,
+            maxBytesPerGeneration: udpIngressGlobalMaxBytes)
         self.tcpStartAdmission = TcpStartAdmissionPolicy(
             hardCap: tcpStartInFlightHardCap,
             softCap: tcpStartSoftCap,
@@ -139,7 +157,10 @@ struct TransparentProxyRuntimePolicy: Sendable, Equatable {
             tcpStartLatencyBreakerCloseP95Ms: startup.tcpStartLatencyBreakerCloseP95Ms,
             tcpPressureConnectTimeoutMs: startup.tcpPressureConnectTimeoutMs,
             tcpBreakerConnectTimeoutMs: startup.tcpBreakerConnectTimeoutMs,
-            flowRefusalPassthrough: startup.flowRefusalPassthrough)
+            flowRefusalPassthrough: startup.flowRefusalPassthrough,
+            udpChannelCapacity: startup.udpChannelCapacity,
+            udpIngressPerFlowMaxBytes: startup.udpIngressPerFlowMaxBytes,
+            udpIngressGlobalMaxBytes: startup.udpIngressGlobalMaxBytes)
     }
 
     /// Compatibility snapshot for engine-less and narrowly-scoped unit tests.
@@ -161,3 +182,9 @@ struct TransparentProxyRuntimePolicy: Sendable, Equatable {
             flowRefusalPassthrough: defaultFlowRefusalPassthrough)
     }
 }
+
+/// Conservative item-budget population when the live-flow admission hard cap
+/// is explicitly disabled. This remains an independent memory-safety bound:
+/// at the default 32-item Rust channel capacity, one generation may stage at
+/// most 262,144 datagrams, including zero-length datagrams.
+let udpIngressStagingUnboundedLiveFlowPopulation = 8_192

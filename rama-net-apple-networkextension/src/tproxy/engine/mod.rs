@@ -35,7 +35,7 @@ use std::net::SocketAddr;
 
 use crate::{
     Datagram, NwTcpStream, TcpFlow, UdpFlow,
-    tproxy::{TransparentProxyFlowMeta, types::NwTcpConnectOptions},
+    tproxy::{FlowRefusalAction, TransparentProxyFlowMeta, types::NwTcpConnectOptions},
 };
 
 mod svc_context;
@@ -91,16 +91,20 @@ pub const DEFAULT_DECISION_CONCURRENCY_LIMIT: usize = 64;
 /// idle aging.
 pub const DEFAULT_TCP_IDLE_TIMEOUT: Duration = Duration::from_mins(15);
 
-/// Default per-flow UDP max-lifetime cap. Mirrors
-/// [`DEFAULT_TCP_IDLE_TIMEOUT`] for UDP; opt out via
-/// [`TransparentProxyEngineBuilder::without_udp_max_flow_lifetime`].
+/// Conventional 15-minute value for callers that explicitly opt into a
+/// per-flow UDP max-lifetime cap. The builder does **not** install an absolute
+/// lifetime by default: active long-lived QUIC / HTTP/3 flows instead remain
+/// alive while traffic keeps resetting [`DEFAULT_UDP_IDLE_TIMEOUT`].
+///
+/// This constant is retained as a convenient, source-compatible policy value;
+/// enable it with [`TransparentProxyEngineBuilder::with_udp_max_flow_lifetime`].
 pub const DEFAULT_UDP_MAX_FLOW_LIFETIME: Duration = Duration::from_mins(15);
 
 /// Default per-UDP-flow idle timeout — close the flow when no
 /// datagrams have been observed in either direction for this long.
-/// Distinct from [`DEFAULT_UDP_MAX_FLOW_LIFETIME`]: that is a hard
-/// wall-clock cap from flow start (whether active or idle); this
-/// resets on each datagram. Opt out via
+/// Distinct from an explicitly configured UDP max lifetime: that is a hard
+/// wall-clock cap from flow start (whether active or idle); this resets on
+/// each datagram. Opt out via
 /// [`TransparentProxyEngineBuilder::without_udp_idle_timeout`].
 ///
 /// 60 s is the smallest window that comfortably exceeds typical
@@ -193,6 +197,7 @@ type BytesStatusSink = Arc<dyn Fn(&[u8]) -> TcpDeliverStatus + Send + Sync + 'st
 type DatagramSink = Arc<dyn Fn(Datagram) + Send + Sync + 'static>;
 type ClosedSink = Arc<dyn Fn() + Send + Sync + 'static>;
 type DemandSink = Arc<dyn Fn() + Send + Sync + 'static>;
+type UdpDemandSink = Arc<dyn Fn(u64) + Send + Sync + 'static>;
 
 pub enum SessionFlowAction<S> {
     Intercept(S),
@@ -347,6 +352,21 @@ where
             .unwrap_or(0)
     }
 
+    /// Effective bounded UDP channel item capacity for this engine generation.
+    pub fn udp_channel_capacity(&self) -> usize {
+        self.udp_channel_capacity
+    }
+
+    /// Effective retained client-payload byte cap for one UDP flow.
+    pub fn udp_ingress_per_flow_max_bytes(&self) -> usize {
+        self.udp_ingress_per_flow_max_bytes
+    }
+
+    /// Effective retained client-payload byte cap across this engine generation.
+    pub fn udp_ingress_global_max_bytes(&self) -> usize {
+        self.udp_ingress_budget.max_retained_bytes()
+    }
+
     /// Fire-and-forget notification that the system is going to
     /// sleep. Drives `TransparentProxyHandler::on_system_sleep` on
     /// the engine's runtime. Returns once the dispatch is queued
@@ -442,12 +462,10 @@ where
         };
 
         let Some(decision_permit) = self.decision_concurrency.try_acquire() else {
-            self.decision_concurrency.record_overload(
-                meta.flow_id,
-                meta.protocol,
-                self.decision_deadline_action,
-            );
-            return session_action_from_decision_action(self.decision_deadline_action);
+            let action = self.transparent_proxy_config.flow_refusal_action();
+            self.decision_concurrency
+                .record_overload(meta.flow_id, meta.protocol, action);
+            return session_action_from_flow_refusal_action(action);
         };
 
         let tcp_write_chunk_limit = self.tcp_flow_buffer_size.min(
@@ -510,6 +528,52 @@ where
         OnClosed: Fn() + Send + Sync + 'static,
         OnDemand: Fn() + Send + Sync + 'static,
     {
+        self.new_udp_session_inner(
+            meta,
+            on_server_datagram,
+            move |_| on_client_read_demand(),
+            on_server_closed,
+            true,
+        )
+    }
+
+    /// Variant used by the Apple bridge to carry leased global-pressure probe
+    /// IDs through the read-completion ACK path. Ordinary embedders can keep
+    /// using [`Self::new_udp_session`].
+    pub fn new_udp_session_with_probe<OnDatagram, OnClosed, OnDemand>(
+        &self,
+        meta: TransparentProxyFlowMeta,
+        on_server_datagram: OnDatagram,
+        on_client_read_demand: OnDemand,
+        on_server_closed: OnClosed,
+    ) -> SessionFlowAction<TransparentProxyUdpSession>
+    where
+        OnDatagram: Fn(Datagram) + Send + Sync + 'static,
+        OnClosed: Fn() + Send + Sync + 'static,
+        OnDemand: Fn(u64) + Send + Sync + 'static,
+    {
+        self.new_udp_session_inner(
+            meta,
+            on_server_datagram,
+            on_client_read_demand,
+            on_server_closed,
+            false,
+        )
+    }
+
+    fn new_udp_session_inner<OnDatagram, OnClosed, OnDemand>(
+        &self,
+        meta: TransparentProxyFlowMeta,
+        on_server_datagram: OnDatagram,
+        on_client_read_demand: OnDemand,
+        on_server_closed: OnClosed,
+        auto_ack_probe_after_demand: bool,
+    ) -> SessionFlowAction<TransparentProxyUdpSession>
+    where
+        OnDatagram: Fn(Datagram) + Send + Sync + 'static,
+        OnClosed: Fn() + Send + Sync + 'static,
+        OnDemand: Fn(u64) + Send + Sync + 'static,
+    {
         let Some((guard, rt)) = self.live() else {
             tracing::error!(
                 protocol = ?meta.protocol,
@@ -519,12 +583,10 @@ where
         };
 
         let Some(decision_permit) = self.decision_concurrency.try_acquire() else {
-            self.decision_concurrency.record_overload(
-                meta.flow_id,
-                meta.protocol,
-                self.decision_deadline_action,
-            );
-            return session_action_from_decision_action(self.decision_deadline_action);
+            let action = self.transparent_proxy_config.flow_refusal_action();
+            self.decision_concurrency
+                .record_overload(meta.flow_id, meta.protocol, action);
+            return session_action_from_flow_refusal_action(action);
         };
 
         let udp_channel_capacity = self.udp_channel_capacity;
@@ -548,6 +610,7 @@ where
                 udp_channel_capacity,
                 udp_ingress_per_flow_max_bytes,
                 udp_ingress_budget,
+                auto_ack_probe_after_demand,
                 udp_max_flow_lifetime,
                 udp_idle_timeout,
                 decision_deadline,
@@ -649,6 +712,9 @@ struct TcpSessionPendingData {
     /// by the service task to label that direction's close event.
     ingress_close_reason: CloseReasonCell,
     egress_close_reason: CloseReasonCell,
+    /// First normalized terminal reason across both directions; used by the
+    /// single per-flow Dial9 close event.
+    flow_close_reason: CloseReasonCell,
     /// Per-flow metadata inserted into `TcpFlow` extensions at activate.
     meta: TransparentProxyFlowMeta,
     /// Flow-scoped guard, cloned into the per-flow stream executor.
@@ -963,6 +1029,7 @@ impl TransparentProxyTcpSession {
             byte_counters,
             ingress_close_reason,
             egress_close_reason,
+            flow_close_reason,
             meta,
             flow_guard,
             rt_handle,
@@ -984,6 +1051,7 @@ impl TransparentProxyTcpSession {
             signals.clone(),
             byte_counters.clone(),
             ingress_close_reason,
+            flow_close_reason.clone(),
             BridgeDirection::Ingress,
             paused_drain_wait,
             tcp_write_chunk_limit,
@@ -1027,6 +1095,7 @@ impl TransparentProxyTcpSession {
             signals,
             byte_counters,
             egress_close_reason,
+            flow_close_reason,
             BridgeDirection::Egress,
             paused_drain_wait,
             tcp_write_chunk_limit,
@@ -1236,6 +1305,7 @@ where
     let byte_counters = Arc::new(TcpFlowByteCounters::default());
     let ingress_close_reason: CloseReasonCell = Arc::new(parking_lot::Mutex::new(None));
     let egress_close_reason: CloseReasonCell = Arc::new(parking_lot::Mutex::new(None));
+    let flow_close_reason: CloseReasonCell = Arc::new(parking_lot::Mutex::new(None));
 
     let callback_active = Arc::new(parking_lot::Mutex::new(true));
     let on_server_bytes_guarded =
@@ -1263,6 +1333,7 @@ where
     let counters_for_close = byte_counters.clone();
     let ingress_reason_cell = ingress_close_reason.clone();
     let egress_reason_cell = egress_close_reason.clone();
+    let flow_reason_cell = flow_close_reason.clone();
     let idle_guard = flow_guard.clone();
 
     // Leak probe: a live gauge of per-flow bridge tasks. The task owns the
@@ -1305,10 +1376,17 @@ where
     // by value through the spawn chain overflows them in debug builds.
     let service_task = Executor::graceful(flow_guard.clone()).spawn_task(Box::pin(async move {
         let _task_guard = TcpFlowTaskGuard::new();
-        let Ok(bridge) = bridge_rx.await else {
-            // Cancelled before `activate`. Emit a synthetic close so
-            // every `record_flow_opened` has a matching close in the
-            // logs / dial9 trace. Mirrors the UDP path.
+        let bridge = tokio::select! {
+            biased;
+            // Shutdown must win a tie with activation so the pre-activation
+            // close epilogue runs deterministically.
+            () = idle_guard.cancelled() => Err(BridgeCloseReason::Shutdown),
+            bridge = bridge_rx => bridge.map_err(|_recv_error| BridgeCloseReason::Shutdown),
+        };
+        let Ok(bridge) = bridge else {
+            // Cancelled before `activate`, or the session was dropped. Emit a
+            // synthetic close so every `record_flow_opened` has a matching
+            // close in the logs / Dial9 trace. Mirrors the UDP path.
             let age_ms = u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
             tracing::info!(
                 target: "rama_apple_ne::tproxy",
@@ -1398,11 +1476,14 @@ where
         let (ingress_received, ingress_sent) =
             counters_for_close.snapshot(BridgeDirection::Ingress);
         let (egress_received, egress_sent) = counters_for_close.snapshot(BridgeDirection::Egress);
-        let (ingress_reason, egress_reason) = resolve_tcp_close_reasons(
+        let (ingress_reason, egress_reason, dial9_reason) = resolve_tcp_close_reasons(
             reason,
+            *flow_reason_cell.lock(),
             *ingress_reason_cell.lock(),
             *egress_reason_cell.lock(),
         );
+        #[cfg(not(feature = "dial9"))]
+        let _ = dial9_reason;
         emit_tcp_bridge_close_event(
             BridgeDirection::Ingress,
             ingress_reason,
@@ -1417,14 +1498,15 @@ where
             egress_received,
             egress_sent,
         );
-        // dial9 records one row per flow using the INGRESS orientation
+        // Dial9 records one row per flow. Its reason is the first normalized
+        // terminal bridge reason, while byte counts retain INGRESS orientation
         // (received = client→service, sent = service→client).
         #[cfg(feature = "dial9")]
         {
             let age_ms = u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
             crate::tproxy::dial9::record_flow_closed(
                 meta_for_close.flow_id,
-                ingress_reason,
+                dial9_reason,
                 age_ms,
                 ingress_received,
                 ingress_sent,
@@ -1445,6 +1527,7 @@ where
         byte_counters,
         ingress_close_reason,
         egress_close_reason,
+        flow_close_reason,
         meta,
         flow_guard,
         rt_handle,
@@ -1559,6 +1642,13 @@ async fn wait_for_udp_idle(timeout: Duration, notify: &tokio::sync::Notify) {
 }
 
 impl TransparentProxyUdpSession {
+    /// Acknowledge completion of the Apple `readDatagrams` operation issued
+    /// for `probe_id`. ID zero denotes an ordinary service demand and needs no
+    /// coordinator accounting; stale/non-matching IDs are harmless no-ops.
+    pub fn on_client_read_complete(&self, probe_id: u64) {
+        self.ingress_control.acknowledge_probe(probe_id);
+    }
+
     /// Deliver one client→service datagram. `peer` is the destination
     /// the originating app addressed it to; preserving it through the
     /// bridge is what makes multi-peer UDP (DNS, NTP, mDNS, gaming)
@@ -1736,6 +1826,7 @@ async fn new_udp_session_flow_action<OnDatagram, OnClosed, OnDemand, H>(
     udp_channel_capacity: usize,
     udp_ingress_per_flow_max_bytes: usize,
     udp_ingress_budget: Arc<UdpIngressBudget>,
+    auto_ack_probe_after_demand: bool,
     udp_max_flow_lifetime: Option<Duration>,
     udp_idle_timeout: Option<Duration>,
     decision_deadline: Duration,
@@ -1749,7 +1840,7 @@ async fn new_udp_session_flow_action<OnDatagram, OnClosed, OnDemand, H>(
 where
     OnDatagram: Fn(Datagram) + Send + Sync + 'static,
     OnClosed: Fn() + Send + Sync + 'static,
-    OnDemand: Fn() + Send + Sync + 'static,
+    OnDemand: Fn(u64) + Send + Sync + 'static,
     H: TransparentProxyHandler,
 {
     let flow_id = meta.flow_id;
@@ -1833,12 +1924,14 @@ where
         guarded_datagram_sink(callback_active.clone(), on_server_datagram_with_idle);
     let closed_sink: ClosedSink =
         guarded_closed_sink(callback_active.clone(), Arc::new(on_server_closed));
-    let user_demand_sink: DemandSink = Arc::new(on_client_read_demand);
-    let client_read_demand_sink = guarded_demand_sink(callback_active.clone(), user_demand_sink);
-    let ingress_control = UdpIngressFlowControl::new(
+    let user_demand_sink: UdpDemandSink = Arc::new(on_client_read_demand);
+    let client_read_demand_sink =
+        guarded_udp_demand_sink(callback_active.clone(), user_demand_sink);
+    let ingress_control = UdpIngressFlowControl::new_with_auto_ack(
         udp_ingress_per_flow_max_bytes,
         udp_ingress_budget,
         client_read_demand_sink,
+        auto_ack_probe_after_demand,
     );
 
     tracing::debug!(protocol = ?meta.protocol, "new udp session (pending egress connection)");
@@ -2112,6 +2205,13 @@ fn session_action_from_decision_action<S>(action: DecisionDeadlineAction) -> Ses
     }
 }
 
+fn session_action_from_flow_refusal_action<S>(action: FlowRefusalAction) -> SessionFlowAction<S> {
+    match action {
+        FlowRefusalAction::Block => SessionFlowAction::Blocked,
+        FlowRefusalAction::Passthrough => SessionFlowAction::Passthrough,
+    }
+}
+
 impl<H> Drop for TransparentProxyEngine<H> {
     fn drop(&mut self) {
         self.shutdown_blocking(0);
@@ -2372,6 +2472,19 @@ fn guarded_demand_sink(
     })
 }
 
+fn guarded_udp_demand_sink(
+    callback_active: Arc<parking_lot::Mutex<bool>>,
+    user_demand_sink: UdpDemandSink,
+) -> UdpDemandSink {
+    Arc::new(move |probe_id| {
+        let active = callback_active.lock();
+        if !*active {
+            return;
+        }
+        user_demand_sink(probe_id);
+    })
+}
+
 /// Guards a Swift-bound datagram callback against a teardown race:
 /// `on_client_close` flips `callback_active` to `false` under the
 /// same mutex, so any callback already past the active-check has
@@ -2534,24 +2647,27 @@ fn emit_decision_deadline_event(
     );
 }
 
-/// Resolve the per-direction close reasons for a flow's two close events.
+/// Resolve the per-direction close reasons and the single Dial9 flow reason.
 ///
 /// `flow_reason` is the service task's outcome: `Shutdown`, `IdleTimeout`, and
-/// `ServicePanic` are flow-wide and apply to both directions; otherwise each direction
-/// reports the reason its own stream recorded (defaulting to a clean
-/// `PeerEofLeft` if it terminated without recording one).
+/// `ServicePanic` are flow-wide and apply to every result. Otherwise each
+/// direction reports the reason its own stream recorded, while Dial9 uses the
+/// first normalized terminal reason observed across both streams. Missing
+/// reasons default to a clean `PeerEofLeft`.
 fn resolve_tcp_close_reasons(
     flow_reason: BridgeCloseReason,
+    first_terminal: Option<BridgeCloseReason>,
     ingress: Option<BridgeCloseReason>,
     egress: Option<BridgeCloseReason>,
-) -> (BridgeCloseReason, BridgeCloseReason) {
+) -> (BridgeCloseReason, BridgeCloseReason, BridgeCloseReason) {
     match flow_reason {
         BridgeCloseReason::Shutdown
         | BridgeCloseReason::IdleTimeout
-        | BridgeCloseReason::ServicePanic => (flow_reason, flow_reason),
+        | BridgeCloseReason::ServicePanic => (flow_reason, flow_reason, flow_reason),
         _ => (
             ingress.unwrap_or(BridgeCloseReason::PeerEofLeft),
             egress.unwrap_or(BridgeCloseReason::PeerEofLeft),
+            first_terminal.unwrap_or(BridgeCloseReason::PeerEofLeft),
         ),
     }
 }
@@ -2564,16 +2680,21 @@ mod close_reason_resolution {
     #[test]
     fn flow_level_reasons_apply_to_both_directions() {
         assert_eq!(
-            resolve_tcp_close_reasons(Shutdown, Some(PeerEofRight), None),
-            (Shutdown, Shutdown)
+            resolve_tcp_close_reasons(Shutdown, Some(ReadErrorRight), Some(PeerEofRight), None,),
+            (Shutdown, Shutdown, Shutdown)
         );
         assert_eq!(
-            resolve_tcp_close_reasons(IdleTimeout, None, Some(PausedTimeout)),
-            (IdleTimeout, IdleTimeout)
+            resolve_tcp_close_reasons(IdleTimeout, Some(ReadErrorRight), None, Some(PausedTimeout),),
+            (IdleTimeout, IdleTimeout, IdleTimeout)
         );
         assert_eq!(
-            resolve_tcp_close_reasons(ServicePanic, Some(PeerEofRight), Some(PausedTimeout)),
-            (ServicePanic, ServicePanic)
+            resolve_tcp_close_reasons(
+                ServicePanic,
+                Some(ReadErrorRight),
+                Some(PeerEofRight),
+                Some(PausedTimeout),
+            ),
+            (ServicePanic, ServicePanic, ServicePanic)
         );
     }
 
@@ -2582,16 +2703,21 @@ mod close_reason_resolution {
         // A write-side failure on one direction must NOT be logged as a
         // clean EOF — this is the bug the per-direction cells fix.
         assert_eq!(
-            resolve_tcp_close_reasons(PeerEofLeft, Some(PausedTimeout), Some(PeerEofRight)),
-            (PausedTimeout, PeerEofRight)
+            resolve_tcp_close_reasons(
+                PeerEofLeft,
+                Some(ReadErrorRight),
+                Some(PausedTimeout),
+                Some(PeerEofRight),
+            ),
+            (PausedTimeout, PeerEofRight, ReadErrorRight)
         );
     }
 
     #[test]
     fn serve_completed_defaults_unrecorded_direction_to_clean_eof() {
         assert_eq!(
-            resolve_tcp_close_reasons(PeerEofLeft, None, None),
-            (PeerEofLeft, PeerEofLeft)
+            resolve_tcp_close_reasons(PeerEofLeft, None, None, None),
+            (PeerEofLeft, PeerEofLeft, PeerEofLeft)
         );
     }
 }

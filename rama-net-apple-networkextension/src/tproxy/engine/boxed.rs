@@ -25,10 +25,14 @@ pub(crate) type BoxedServerBytesStatusSink =
 pub type BoxedServerDatagramSink = Arc<dyn Fn(&[u8], Option<SocketAddr>) + Send + Sync + 'static>;
 pub type BoxedClosedSink = Arc<dyn Fn() + Send + Sync + 'static>;
 pub type BoxedDemandSink = Arc<dyn Fn() + Send + Sync + 'static>;
+type BoxedUdpDemandSink = Arc<dyn Fn(u64) + Send + Sync + 'static>;
 
 trait BoxedTransparentProxyEngineInner: Send + Sync + 'static {
     fn transparent_proxy_config(&self) -> TransparentProxyConfig;
     fn udp_idle_timeout_ms(&self) -> u64;
+    fn udp_channel_capacity(&self) -> usize;
+    fn udp_ingress_per_flow_max_bytes(&self) -> usize;
+    fn udp_ingress_global_max_bytes(&self) -> usize;
     fn handle_app_message(&self, message: Bytes) -> Option<Bytes>;
     fn notify_system_sleep(&self);
     fn notify_system_wake(&self);
@@ -47,6 +51,13 @@ trait BoxedTransparentProxyEngineInner: Send + Sync + 'static {
         on_client_read_demand: BoxedDemandSink,
         on_server_closed: BoxedClosedSink,
     ) -> SessionFlowAction<TransparentProxyUdpSession>;
+    fn new_udp_session_with_probe(
+        &self,
+        meta: TransparentProxyFlowMeta,
+        on_server_datagram: BoxedServerDatagramSink,
+        on_client_read_demand: BoxedUdpDemandSink,
+        on_server_closed: BoxedClosedSink,
+    ) -> SessionFlowAction<TransparentProxyUdpSession>;
 }
 
 impl<H> BoxedTransparentProxyEngineInner for TransparentProxyEngine<H>
@@ -59,6 +70,18 @@ where
 
     fn udp_idle_timeout_ms(&self) -> u64 {
         self.udp_idle_timeout_ms()
+    }
+
+    fn udp_channel_capacity(&self) -> usize {
+        self.udp_channel_capacity()
+    }
+
+    fn udp_ingress_per_flow_max_bytes(&self) -> usize {
+        self.udp_ingress_per_flow_max_bytes()
+    }
+
+    fn udp_ingress_global_max_bytes(&self) -> usize {
+        self.udp_ingress_global_max_bytes()
     }
 
     fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {
@@ -108,6 +131,23 @@ where
             move || on_server_closed(),
         )
     }
+
+    fn new_udp_session_with_probe(
+        &self,
+        meta: TransparentProxyFlowMeta,
+        on_server_datagram: BoxedServerDatagramSink,
+        on_client_read_demand: BoxedUdpDemandSink,
+        on_server_closed: BoxedClosedSink,
+    ) -> SessionFlowAction<TransparentProxyUdpSession> {
+        self.new_udp_session_with_probe(
+            meta,
+            move |datagram: crate::Datagram| {
+                on_server_datagram(datagram.payload.as_ref(), datagram.peer)
+            },
+            move |probe_id| on_client_read_demand(probe_id),
+            move || on_server_closed(),
+        )
+    }
 }
 
 pub struct BoxedTransparentProxyEngine(Box<dyn BoxedTransparentProxyEngineInner>);
@@ -119,6 +159,18 @@ impl BoxedTransparentProxyEngine {
 
     pub fn udp_idle_timeout_ms(&self) -> u64 {
         self.0.udp_idle_timeout_ms()
+    }
+
+    pub fn udp_channel_capacity(&self) -> usize {
+        self.0.udp_channel_capacity()
+    }
+
+    pub fn udp_ingress_per_flow_max_bytes(&self) -> usize {
+        self.0.udp_ingress_per_flow_max_bytes()
+    }
+
+    pub fn udp_ingress_global_max_bytes(&self) -> usize {
+        self.0.udp_ingress_global_max_bytes()
     }
 
     pub fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {
@@ -160,6 +212,26 @@ impl BoxedTransparentProxyEngine {
         on_server_closed: BoxedClosedSink,
     ) -> SessionFlowAction<TransparentProxyUdpSession> {
         self.0.new_udp_session(
+            meta,
+            on_server_datagram,
+            on_client_read_demand,
+            on_server_closed,
+        )
+    }
+
+    #[doc(hidden)]
+    pub fn new_udp_session_with_probe<OnDemand>(
+        &self,
+        meta: TransparentProxyFlowMeta,
+        on_server_datagram: BoxedServerDatagramSink,
+        on_client_read_demand: Arc<OnDemand>,
+        on_server_closed: BoxedClosedSink,
+    ) -> SessionFlowAction<TransparentProxyUdpSession>
+    where
+        OnDemand: Fn(u64) + Send + Sync + 'static,
+    {
+        let on_client_read_demand: BoxedUdpDemandSink = on_client_read_demand;
+        self.0.new_udp_session_with_probe(
             meta,
             on_server_datagram,
             on_client_read_demand,

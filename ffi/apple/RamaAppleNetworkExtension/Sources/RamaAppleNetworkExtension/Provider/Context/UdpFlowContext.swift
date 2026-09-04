@@ -122,10 +122,16 @@ final class UdpFlowContext: @unchecked Sendable {
     /// endpoint is set from Rust's per-datagram peer attribution.
     var writer: UdpClientWritePump?
     var requestRead: (() -> Void)?
+    /// Probe-aware Rust demand path. The legacy no-argument closure above is
+    /// retained for ordinary service demand and focused phase tests.
+    var requestReadWithProbe: ((UInt64) -> Void)?
     var terminate: ((Error?) -> Void)?
     /// Read-side lifecycle — replaces the former `closed: Bool`,
     /// `readPending: Bool`, and `demandPending: Bool` triple.
     var readState: UdpFlowReadState = .idle
+    /// Valid when `readState == .readingWithDemand`; zero is an ordinary
+    /// service demand, not an absence marker.
+    var pendingReadProbeId: UInt64 = 0
     /// Queue-confined exception to the generic post-start reconciliation:
     /// graceful close intentionally keeps the registry anchor after closing
     /// reads, until accepted client-bound datagrams drain or hit the backstop.

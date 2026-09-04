@@ -39,7 +39,8 @@ final class UdpSessionLifecycleTests: XCTestCase {
 
     private func newInterceptedUdpSession(
         on engine: RamaTransparentProxyEngineHandle,
-        onServerDatagram: @escaping (RamaBytesView, RamaUdpPeerView) -> Void = { _, _ in }
+        onServerDatagram: @escaping (RamaBytesView, RamaUdpPeerView) -> Void = { _, _ in },
+        onClientReadDemand: @escaping (UInt64) -> Void = { _ in }
     ) -> RamaUdpSessionHandle {
         // Port 5000 (not 53): the demo handler treats DNS as passthrough
         // to avoid a circular dependency with the system resolver.
@@ -56,7 +57,7 @@ final class UdpSessionLifecycleTests: XCTestCase {
         let decision = engine.newUdpSession(
             meta: meta,
             onServerDatagram: onServerDatagram,
-            onClientReadDemand: {},
+            onClientReadDemand: onClientReadDemand,
             onServerClosed: {}
         )
         guard case .intercept(let s) = decision else {
@@ -135,5 +136,109 @@ final class UdpSessionLifecycleTests: XCTestCase {
             "concurrent udp activate+close churn timed out"
         )
     }
+
+    #if DEBUG
+        /// Rust holds its demand gate across the synchronous V2 callback. Close
+        /// must publish cancellation and release the Swift handle lock before it
+        /// asks Rust to drain that gate, or a callback-triggered ACK forms the
+        /// inverse lock order and deadlocks.
+        func testCloseReleasesHandleLockBeforeDrainingInflightV2Demand() {
+            let engine = makeEngine()
+            defer { engine.stop(reason: 0) }
+
+            let sessionRef = TestValue<RamaUdpSessionHandle?>(nil)
+            defer { sessionRef.set(nil) }
+            let probeId = TestValue<UInt64?>(nil)
+            let callbackAckCompleted = TestValue(false)
+            let ackCallReturned = TestValue(false)
+
+            let ackWorkerReady = DispatchSemaphore(value: 0)
+            let startAck = DispatchSemaphore(value: 0)
+            let demandEntered = DispatchSemaphore(value: 0)
+            let callbackReturned = DispatchSemaphore(value: 0)
+            let closeReachedSeam = DispatchSemaphore(value: 0)
+            let continueClose = DispatchSemaphore(value: 0)
+            let closeReturned = DispatchSemaphore(value: 0)
+            let ackWork = DispatchGroup()
+            ackWork.enter()
+
+            // Prestart the ACK worker so the liveness assertion does not depend
+            // on creating or scheduling a worker after the lock cycle is armed.
+            let ackQueue = DispatchQueue(label: "rama.tests.udp-close-demand-ack")
+            ackQueue.async {
+                ackWorkerReady.signal()
+                startAck.wait()
+                if let session = sessionRef.get(), let probeId = probeId.get() {
+                    session.completeClientRead(probeId: probeId)
+                    ackCallReturned.set(true)
+                }
+                ackWork.leave()
+            }
+
+            // Rescue every deliberately parked participant if an earlier wiring
+            // assertion fails. Extra semaphore signals are harmless.
+            defer {
+                continueClose.signal()
+                startAck.signal()
+            }
+
+            let session = newInterceptedUdpSession(
+                on: engine,
+                onClientReadDemand: { callbackProbeId in
+                    probeId.set(callbackProbeId)
+                    demandEntered.signal()
+                    // This is a liveness-only rescue for a bug-preserving build:
+                    // after 30 seconds the callback returns, releases Rust's
+                    // demand gate, and lets close plus the ACK worker unwind.
+                    callbackAckCompleted.set(
+                        ackWork.wait(timeout: .now() + 30) == .success)
+                    callbackReturned.signal()
+                })
+            sessionRef.set(session)
+            session.testSetAfterCancelledBeforeRustClose {
+                closeReachedSeam.signal()
+                continueClose.wait()
+            }
+            defer { session.testSetAfterCancelledBeforeRustClose(nil) }
+
+            XCTAssertEqual(
+                ackWorkerReady.wait(timeout: .now() + 30), .success,
+                "prestarted ACK worker did not become ready")
+
+            session.activate()
+            XCTAssertEqual(
+                demandEntered.wait(timeout: .now() + 30), .success,
+                "real V2 UDP demand callback was not entered")
+            XCTAssertEqual(probeId.get(), 0, "initial ordinary V2 demand must use probe ID zero")
+
+            DispatchQueue.global(qos: .userInitiated).async {
+                session.onClientClose()
+                closeReturned.signal()
+            }
+            XCTAssertEqual(
+                closeReachedSeam.wait(timeout: .now() + 30), .success,
+                "close did not publish cancellation at the DEBUG seam")
+
+            // At this instant the demand callback owns Rust's demand gate and
+            // close has published `cancelled`. Releasing both workers forces the
+            // exact former inversion without relying on sleeps or scheduler luck.
+            continueClose.signal()
+            startAck.signal()
+
+            XCTAssertEqual(
+                callbackReturned.wait(timeout: .now() + 35), .success,
+                "V2 demand callback did not leave after its liveness rescue")
+            XCTAssertTrue(
+                callbackAckCompleted.get(),
+                "callback-triggered ACK could not acquire the Swift handle lock before close drained Rust's demand gate")
+            XCTAssertEqual(
+                closeReturned.wait(timeout: .now() + 30), .success,
+                "UDP close did not return after the demand callback left")
+            XCTAssertEqual(
+                ackWork.wait(timeout: .now() + 30), .success,
+                "ACK worker remained blocked after close returned")
+            XCTAssertTrue(ackCallReturned.get(), "ACK worker did not call completeClientRead")
+        }
+    #endif
 
 }

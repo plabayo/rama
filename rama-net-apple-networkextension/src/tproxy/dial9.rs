@@ -36,8 +36,9 @@ pub struct TproxyFlowClosed {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
     pub flow_id: u64,
-    /// Structured close reason. For TCP this is the resolved ingress-oriented
-    /// reason, matching the byte-count orientation below.
+    /// Structured close reason. For TCP this is the first normalized terminal
+    /// reason observed across both bridge directions; flow-wide shutdown,
+    /// idle-timeout, and service-panic outcomes override it.
     pub reason: BridgeCloseReason,
     /// Wall-clock age of the flow at close time, in milliseconds.
     pub age_ms: u64,

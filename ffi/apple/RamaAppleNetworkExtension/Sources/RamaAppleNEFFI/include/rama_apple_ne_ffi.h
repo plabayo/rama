@@ -429,6 +429,7 @@ typedef struct {
 
 typedef void (*RamaUdpServerDatagramFn)(void* _Nullable context, RamaBytesView bytes, RamaUdpPeerView peer);
 typedef void (*RamaUdpClientReadDemandFn)(void* _Nullable context);
+typedef void (*RamaUdpClientReadDemandFnV2)(void* _Nullable context, uint64_t probe_id);
 typedef void (*RamaUdpServerClosedFn)(void* _Nullable context);
 
 /// Callbacks Swift provides for Rust UDP session events.
@@ -447,6 +448,21 @@ typedef struct {
     /// Called when Rust closes server-side UDP flow.
     RamaUdpServerClosedFn on_server_closed;
 } RamaTransparentProxyUdpSessionCallbacks;
+
+/// Additive probe-aware UDP callback ABI. The original callback struct and
+/// constructor remain unchanged for existing clients.
+typedef struct {
+    void* context;
+    RamaUdpServerDatagramFn on_server_datagram;
+    RamaUdpClientReadDemandFnV2 on_client_read_demand;
+    RamaUdpServerClosedFn on_server_closed;
+} RamaTransparentProxyUdpSessionCallbacksV2;
+
+_Static_assert(
+    sizeof(RamaTransparentProxyUdpSessionCallbacksV2) ==
+        sizeof(RamaTransparentProxyUdpSessionCallbacks),
+    "Rama UDP callback V2 ABI layout drift"
+);
 
 // ── Egress (NWConnection) options ────────────────────────────────────────────
 
@@ -703,6 +719,16 @@ uint64_t rama_transparent_proxy_engine_udp_idle_timeout_ms(
     RamaTransparentProxyEngine* engine
 );
 
+size_t rama_transparent_proxy_engine_udp_channel_capacity(
+    RamaTransparentProxyEngine* engine
+);
+size_t rama_transparent_proxy_engine_udp_ingress_per_flow_max_bytes(
+    RamaTransparentProxyEngine* engine
+);
+size_t rama_transparent_proxy_engine_udp_ingress_global_max_bytes(
+    RamaTransparentProxyEngine* engine
+);
+
 /// Free a config previously returned by `rama_transparent_proxy_get_config`.
 ///
 /// NULL is allowed and ignored.
@@ -930,6 +956,12 @@ RamaTransparentProxyUdpSessionResult rama_transparent_proxy_engine_new_udp_sessi
     RamaTransparentProxyUdpSessionCallbacks callbacks
 );
 
+RamaTransparentProxyUdpSessionResult rama_transparent_proxy_engine_new_udp_session_v2(
+    RamaTransparentProxyEngine* engine,
+    const RamaTransparentProxyFlowMeta* _Nullable meta,
+    RamaTransparentProxyUdpSessionCallbacksV2 callbacks
+);
+
 /// Free a UDP session.
 ///
 /// NULL is allowed and ignored.
@@ -945,6 +977,14 @@ void rama_transparent_proxy_udp_session_on_client_datagram(
     RamaTransparentProxyUdpSession* session,
     RamaBytesView bytes,
     RamaUdpPeerView peer
+);
+
+/// ACK completion of the Apple read associated with `probe_id`. Zero and
+/// stale IDs are accepted as no-ops; ACKing one ID can never release a newer
+/// provisional coordinator credit.
+void rama_transparent_proxy_udp_session_on_client_read_complete(
+    RamaTransparentProxyUdpSession* session,
+    uint64_t probe_id
 );
 
 /// Signal UDP flow closure from client side.

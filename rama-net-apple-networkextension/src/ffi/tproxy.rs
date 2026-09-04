@@ -438,6 +438,20 @@ pub struct TransparentProxyUdpSessionCallbacks {
     pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
+/// Additive probe-aware UDP callback ABI. V1 remains unchanged for existing
+/// C clients; Swift uses V2 to ACK bounded coordinator scheduling credits.
+#[repr(C)]
+pub struct TransparentProxyUdpSessionCallbacksV2 {
+    pub context: *mut c_void,
+    pub on_server_datagram:
+        Option<unsafe extern "C" fn(*mut c_void, BytesView, crate::ffi::UdpPeerView)>,
+    /// `probe_id == 0` is an ordinary service demand. A non-zero ID carries
+    /// one leased global-pressure scheduling credit which must be ACKed via
+    /// `rama_transparent_proxy_udp_session_on_client_read_complete`.
+    pub on_client_read_demand: Option<unsafe extern "C" fn(*mut c_void, u64)>,
+    pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
+}
+
 // ── Egress (NWConnection) options ─────────────────────────────────────────────
 
 /// C representation of `NwEgressParameters` — NWParameters-level settings

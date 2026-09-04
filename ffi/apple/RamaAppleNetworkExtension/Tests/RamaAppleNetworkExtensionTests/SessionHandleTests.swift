@@ -9,6 +9,11 @@ final class SessionHandleTests: XCTestCase {
         TestFixtures.ensureInitialized()
     }
 
+    func testFFISizeLimitConversionClampsInsteadOfTrapping() {
+        XCTAssertEqual(clampedFFISizeToInt(UInt(Int.max)), Int.max)
+        XCTAssertEqual(clampedFFISizeToInt(UInt.max), Int.max)
+    }
+
     private func makeEngine() -> RamaTransparentProxyEngineHandle {
         guard
             let h = RamaTransparentProxyEngineHandle(
@@ -79,7 +84,7 @@ final class SessionHandleTests: XCTestCase {
         let decision = engine.newUdpSession(
             meta: udpMeta(),
             onServerDatagram: { _, _ in },
-            onClientReadDemand: {},
+            onClientReadDemand: { _ in },
             onServerClosed: {}
         )
         guard case .intercept(let session) = decision else {

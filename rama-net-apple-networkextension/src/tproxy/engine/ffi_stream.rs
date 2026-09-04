@@ -31,8 +31,9 @@ use super::{
     BridgeDirection, BytesStatusSink, ClosedSink, DemandSink, TcpDeliverStatus, TcpPerFlowSignals,
 };
 
-/// First terminal close reason observed for one direction's stream; read by
-/// the service task to label that direction's close event.
+/// First terminal close reason observed by a stream. Per-direction cells label
+/// structured close events; one cell shared by both streams labels the Dial9
+/// flow row with the first normalized bridge reason.
 pub(crate) type CloseReasonCell = Arc<Mutex<Option<BridgeCloseReason>>>;
 
 /// Per-flow byte tallies, indexed by [`BridgeDirection`]; read by the
@@ -109,6 +110,7 @@ pub(crate) struct FfiBridgeStream {
     signals: Arc<TcpPerFlowSignals>,
     counters: Arc<TcpFlowByteCounters>,
     close_reason: CloseReasonCell,
+    flow_close_reason: CloseReasonCell,
     direction: BridgeDirection,
 }
 
@@ -122,6 +124,7 @@ impl FfiBridgeStream {
         signals: Arc<TcpPerFlowSignals>,
         counters: Arc<TcpFlowByteCounters>,
         close_reason: CloseReasonCell,
+        flow_close_reason: CloseReasonCell,
         direction: BridgeDirection,
         paused_drain_max_wait: Duration,
         write_chunk_limit: usize,
@@ -142,13 +145,36 @@ impl FfiBridgeStream {
             signals,
             counters,
             close_reason,
+            flow_close_reason,
             direction,
         }
     }
 
-    /// Record this direction's terminal close reason (first wins).
+    /// Record this direction's and the whole bridge's first terminal reason.
     fn record_reason(&self, reason: BridgeCloseReason) {
+        self.flow_close_reason.lock().get_or_insert(reason);
         self.close_reason.lock().get_or_insert(reason);
+    }
+
+    fn read_eof_reason(&self) -> BridgeCloseReason {
+        match self.direction {
+            BridgeDirection::Ingress => BridgeCloseReason::PeerEofLeft,
+            BridgeDirection::Egress => BridgeCloseReason::PeerEofRight,
+        }
+    }
+
+    fn read_error_reason(&self) -> BridgeCloseReason {
+        match self.direction {
+            BridgeDirection::Ingress => BridgeCloseReason::ReadErrorLeft,
+            BridgeDirection::Egress => BridgeCloseReason::ReadErrorRight,
+        }
+    }
+
+    fn write_error_reason(&self) -> BridgeCloseReason {
+        match self.direction {
+            BridgeDirection::Ingress => BridgeCloseReason::WriteErrorLeft,
+            BridgeDirection::Egress => BridgeCloseReason::WriteErrorRight,
+        }
     }
 
     pub(crate) fn with_read_error_flag(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
@@ -210,13 +236,13 @@ impl AsyncRead for FfiBridgeStream {
                         .as_ref()
                         .is_some_and(|flag| flag.load(Ordering::Acquire))
                     {
-                        this.record_reason(BridgeCloseReason::ReadErrorLeft);
+                        this.record_reason(this.read_error_reason());
                         return Poll::Ready(Err(io::Error::new(
                             io::ErrorKind::ConnectionReset,
                             "transparent proxy: ffi peer read failed",
                         )));
                     }
-                    this.record_reason(BridgeCloseReason::PeerEofLeft);
+                    this.record_reason(this.read_eof_reason());
                     return Poll::Ready(Ok(()));
                 }
                 Poll::Pending => return Poll::Pending,
@@ -254,7 +280,7 @@ impl AsyncWrite for FfiBridgeStream {
             // Peer gone → broken pipe; the forwarder tears the flow down.
             TcpDeliverStatus::Closed => {
                 this.paused_backstop = None;
-                this.record_reason(BridgeCloseReason::PeerEofRight);
+                this.record_reason(this.write_error_reason());
                 Poll::Ready(Err(io::Error::new(
                     io::ErrorKind::BrokenPipe,
                     "transparent proxy: ffi peer closed the write side",
@@ -383,20 +409,22 @@ mod tests {
             signals,
             counters,
             Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
             dir,
             max_wait,
             TEST_WRITE_CHUNK_LIMIT,
         )
     }
 
-    /// Stream with sane defaults + an inspectable close-reason cell.
-    fn stream_with_reason(
+    /// Stream with sane defaults + inspectable directional and flow cells.
+    fn stream_with_reasons(
         rx: mpsc::Receiver<Bytes>,
         sink: BytesStatusSink,
         dir: BridgeDirection,
         max_wait: Duration,
-    ) -> (FfiBridgeStream, CloseReasonCell) {
-        let cell: CloseReasonCell = Arc::new(Mutex::new(None));
+    ) -> (FfiBridgeStream, CloseReasonCell, CloseReasonCell) {
+        let direction_cell: CloseReasonCell = Arc::new(Mutex::new(None));
+        let flow_cell: CloseReasonCell = Arc::new(Mutex::new(None));
         let s = FfiBridgeStream::new(
             rx,
             sink,
@@ -404,12 +432,13 @@ mod tests {
             noop(),
             Arc::new(TcpPerFlowSignals::new()),
             Arc::new(TcpFlowByteCounters::default()),
-            cell.clone(),
+            direction_cell.clone(),
+            flow_cell.clone(),
             dir,
             max_wait,
             TEST_WRITE_CHUNK_LIMIT,
         );
-        (s, cell)
+        (s, direction_cell, flow_cell)
     }
 
     #[tokio::test]
@@ -521,6 +550,7 @@ mod tests {
             Arc::new(TcpPerFlowSignals::new()),
             counters.clone(),
             Arc::new(Mutex::new(None)),
+            Arc::new(Mutex::new(None)),
             BridgeDirection::Ingress,
             Duration::from_secs(60),
             LIMIT,
@@ -556,6 +586,7 @@ mod tests {
             noop(),
             signals.clone(),
             Arc::new(TcpFlowByteCounters::default()),
+            Arc::new(Mutex::new(None)),
             Arc::new(Mutex::new(None)),
             BridgeDirection::Ingress,
             Duration::from_secs(60),
@@ -744,7 +775,7 @@ mod tests {
     async fn read_eof_records_peer_eof_left() {
         let (tx, rx) = mpsc::channel::<Bytes>(4);
         drop(tx);
-        let (mut s, cell) = stream_with_reason(
+        let (mut s, cell, flow_cell) = stream_with_reasons(
             rx,
             accept_sink(),
             BridgeDirection::Ingress,
@@ -753,6 +784,23 @@ mod tests {
         let mut buf = [0u8; 8];
         let _ = s.read(&mut buf).await.unwrap();
         assert_eq!(*cell.lock(), Some(BridgeCloseReason::PeerEofLeft));
+        assert_eq!(*flow_cell.lock(), Some(BridgeCloseReason::PeerEofLeft));
+    }
+
+    #[tokio::test]
+    async fn egress_read_eof_records_peer_eof_right() {
+        let (tx, rx) = mpsc::channel::<Bytes>(4);
+        drop(tx);
+        let (mut s, cell, flow_cell) = stream_with_reasons(
+            rx,
+            accept_sink(),
+            BridgeDirection::Egress,
+            Duration::from_secs(60),
+        );
+        let mut buf = [0u8; 8];
+        let _ = s.read(&mut buf).await.unwrap();
+        assert_eq!(*cell.lock(), Some(BridgeCloseReason::PeerEofRight));
+        assert_eq!(*flow_cell.lock(), Some(BridgeCloseReason::PeerEofRight));
     }
 
     #[tokio::test]
@@ -761,7 +809,7 @@ mod tests {
         tx.try_send(Bytes::from_static(b"tail")).unwrap();
         let failed = Arc::new(AtomicBool::new(true));
         drop(tx);
-        let (s, cell) = stream_with_reason(
+        let (s, cell, flow_cell) = stream_with_reasons(
             rx,
             accept_sink(),
             BridgeDirection::Egress,
@@ -775,26 +823,42 @@ mod tests {
         let mut next = [0_u8; 1];
         let error = s.read(&mut next).await.unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
-        assert_eq!(*cell.lock(), Some(BridgeCloseReason::ReadErrorLeft));
+        assert_eq!(*cell.lock(), Some(BridgeCloseReason::ReadErrorRight));
+        assert_eq!(*flow_cell.lock(), Some(BridgeCloseReason::ReadErrorRight));
     }
 
     #[tokio::test]
-    async fn write_closed_records_peer_eof_right() {
+    async fn ingress_write_closed_records_write_error_left() {
         let (_tx, rx) = mpsc::channel::<Bytes>(4);
-        let (mut s, cell) = stream_with_reason(
+        let (mut s, cell, flow_cell) = stream_with_reasons(
+            rx,
+            const_sink(TcpDeliverStatus::Closed),
+            BridgeDirection::Ingress,
+            Duration::from_secs(60),
+        );
+        assert!(s.write_all(b"abc").await.is_err());
+        assert_eq!(*cell.lock(), Some(BridgeCloseReason::WriteErrorLeft));
+        assert_eq!(*flow_cell.lock(), Some(BridgeCloseReason::WriteErrorLeft));
+    }
+
+    #[tokio::test]
+    async fn egress_write_closed_records_write_error_right() {
+        let (_tx, rx) = mpsc::channel::<Bytes>(4);
+        let (mut s, cell, flow_cell) = stream_with_reasons(
             rx,
             const_sink(TcpDeliverStatus::Closed),
             BridgeDirection::Egress,
             Duration::from_secs(60),
         );
         assert!(s.write_all(b"abc").await.is_err());
-        assert_eq!(*cell.lock(), Some(BridgeCloseReason::PeerEofRight));
+        assert_eq!(*cell.lock(), Some(BridgeCloseReason::WriteErrorRight));
+        assert_eq!(*flow_cell.lock(), Some(BridgeCloseReason::WriteErrorRight));
     }
 
     #[tokio::test(start_paused = true)]
     async fn backstop_records_paused_timeout() {
         let (_tx, rx) = mpsc::channel::<Bytes>(4);
-        let (mut s, cell) = stream_with_reason(
+        let (mut s, cell, flow_cell) = stream_with_reasons(
             rx,
             const_sink(TcpDeliverStatus::Paused),
             BridgeDirection::Ingress,
@@ -809,5 +873,59 @@ mod tests {
             Poll::Ready(Err(_))
         ));
         assert_eq!(*cell.lock(), Some(BridgeCloseReason::PausedTimeout));
+        assert_eq!(*flow_cell.lock(), Some(BridgeCloseReason::PausedTimeout));
+    }
+
+    #[tokio::test]
+    async fn shared_flow_reason_keeps_first_terminal_event_across_directions() {
+        let (ingress_tx, ingress_rx) = mpsc::channel::<Bytes>(1);
+        let (egress_tx, egress_rx) = mpsc::channel::<Bytes>(1);
+        let flow_cell: CloseReasonCell = Arc::new(Mutex::new(None));
+        let ingress_cell: CloseReasonCell = Arc::new(Mutex::new(None));
+        let egress_cell: CloseReasonCell = Arc::new(Mutex::new(None));
+        let mut ingress = FfiBridgeStream::new(
+            ingress_rx,
+            accept_sink(),
+            noop(),
+            noop(),
+            Arc::new(TcpPerFlowSignals::new()),
+            Arc::new(TcpFlowByteCounters::default()),
+            ingress_cell.clone(),
+            flow_cell.clone(),
+            BridgeDirection::Ingress,
+            Duration::from_secs(60),
+            TEST_WRITE_CHUNK_LIMIT,
+        );
+        let mut egress = FfiBridgeStream::new(
+            egress_rx,
+            accept_sink(),
+            noop(),
+            noop(),
+            Arc::new(TcpPerFlowSignals::new()),
+            Arc::new(TcpFlowByteCounters::default()),
+            egress_cell.clone(),
+            flow_cell.clone(),
+            BridgeDirection::Egress,
+            Duration::from_secs(60),
+            TEST_WRITE_CHUNK_LIMIT,
+        )
+        .with_read_error_flag(Arc::new(AtomicBool::new(true)));
+
+        drop(egress_tx);
+        let mut byte = [0_u8; 1];
+        assert_eq!(
+            egress.read(&mut byte).await.unwrap_err().kind(),
+            io::ErrorKind::ConnectionReset
+        );
+        drop(ingress_tx);
+        assert_eq!(ingress.read(&mut byte).await.unwrap(), 0);
+
+        assert_eq!(*egress_cell.lock(), Some(BridgeCloseReason::ReadErrorRight));
+        assert_eq!(*ingress_cell.lock(), Some(BridgeCloseReason::PeerEofLeft));
+        assert_eq!(
+            *flow_cell.lock(),
+            Some(BridgeCloseReason::ReadErrorRight),
+            "the first normalized terminal reason must win for the whole bridge"
+        );
     }
 }

@@ -60,6 +60,8 @@ private struct UdpReadDemandGate {
     /// One credit starts a read; the second preserves the single follow-up
     /// represented by `UdpFlowReadState.readingWithDemand`.
     var credits: UInt8 = 0
+    var firstProbeId: UInt64 = 0
+    var secondProbeId: UInt64 = 0
     var runnerQueued = false
     #if DEBUG
         var runnerSchedules: UInt64 = 0
@@ -123,12 +125,20 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     /// Cross-thread demand is saturated before dispatch so one Rust callback
     /// per datagram cannot allocate one flow-queue block per datagram.
     private let readDemand = Locked(UdpReadDemandGate())
+    private var ingressStaging = UdpIngressFlowStaging(
+        generation: UdpIngressGenerationStagingBudget(policy: .testDefaults))
+    /// Queue-confined replacement read held behind Swift staging capacity.
+    /// It is logically `.reading`, so one additional Rust demand continues to
+    /// coalesce in `pendingReadProbeId` without issuing another Apple read.
+    private var stagingCapacityWaiting = false
+    private var stagingWaitProbeId: UInt64 = 0
 
     #if DEBUG
         /// Test-only count of actual queue schedules, not activity
         /// observations. Pins that a datagram burst creates no timers
         /// without adding field storage or increments in Release.
         private(set) var idleTimerScheduleCount: UInt64 = 0
+        var testProbeAcknowledger: ((UInt64) -> Void)?
     #endif
 
     init(core: TransparentProxyCore, flow: F, meta: RamaTransparentProxyFlowMetaBridge) {
@@ -292,6 +302,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
 
     private func closeActivityGates() {
         closeReadDemandGate()
+        ingressStaging.close()
         idleWork?.cancel()
         idleWork = nil
         idleActivity.withLock { state in
@@ -383,8 +394,9 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     /// `flow.readDatagrams` callback only observes errors / EOF on
     /// explicit close). Without this watchdog a flow that completes
     /// a few request/response datagrams and goes quiet stays
-    /// registered until the engine-side `udp_max_flow_lifetime`
-    /// cap fires.
+    /// registered indefinitely. Rust defaults the independent maximum
+    /// lifetime to `None` for long-lived QUIC/H3; deployments may still opt
+    /// into an absolute cap explicitly.
     ///
     /// Must run on `flowQueue`. `idleTimeoutMs == 0` disables the
     /// watchdog (used in tests that exercise other code paths).
@@ -487,14 +499,29 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
 
     func installRequestRead() {
         ctx.requestRead = { [weak self] in
-            self?.enqueueReadDemand()
+            self?.enqueueReadDemand(probeId: 0)
+        }
+        ctx.requestReadWithProbe = { [weak self] probeId in
+            self?.enqueueReadDemand(probeId: probeId)
         }
     }
 
-    private func enqueueReadDemand() {
+    private func enqueueReadDemand(probeId: UInt64) {
+        var rejectedProbeId: UInt64 = 0
         readDemand.withLock { state in
-            guard !state.closed else { return }
-            state.credits = min(2, state.credits &+ 1)
+            guard !state.closed else {
+                rejectedProbeId = probeId
+                return
+            }
+            if state.credits == 0 {
+                state.firstProbeId = probeId
+                state.credits = 1
+            } else if state.credits == 1 {
+                state.secondProbeId = probeId
+                state.credits = 2
+            } else {
+                rejectedProbeId = probeId
+            }
             guard !state.runnerQueued else { return }
             state.runnerQueued = true
             #if DEBUG
@@ -502,74 +529,216 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             #endif
             flowQueue.async { [weak self] in self?.runReadDemand() }
         }
+        let probeToAck = rejectedProbeId
+        if probeToAck != 0 {
+            // This method is entered synchronously from Rust while its demand
+            // lifetime gate is held. Never re-enter FFI here: close may be
+            // draining that gate. Queue-confined ACK also keeps overload
+            // callback work bounded to the existing serial runner domain.
+            flowQueue.async { [weak self] in
+                self?.acknowledgeProbe(probeToAck)
+            }
+        }
     }
 
     private func runReadDemand() {
-        let credits = readDemand.withLock { state -> UInt8 in
+        let demands = readDemand.withLock { state -> (UInt8, UInt64, UInt64) in
             guard !state.closed else {
                 state.credits = 0
+                let first = state.firstProbeId
+                let second = state.secondProbeId
+                state.firstProbeId = 0
+                state.secondProbeId = 0
                 state.runnerQueued = false
-                return 0
+                return (0, first, second)
             }
             let credits = state.credits
+            let first = state.firstProbeId
+            let second = state.secondProbeId
             state.credits = 0
+            state.firstProbeId = 0
+            state.secondProbeId = 0
             state.runnerQueued = false
-            return credits
+            return (credits, first, second)
         }
-        guard credits > 0 else { return }
+        let (credits, firstProbeId, secondProbeId) = demands
+        guard credits > 0 else {
+            acknowledgeProbe(firstProbeId)
+            acknowledgeProbe(secondProbeId)
+            return
+        }
 
         switch ctx.readState {
         case .idle:
             ctx.readState = credits > 1 ? .readingWithDemand : .reading
+            if credits > 1 { ctx.pendingReadProbeId = secondProbeId }
             flow.readDatagrams { [weak self] datagrams, endpoints, error in
                 self?.handleReadCompletion(
-                    datagrams: datagrams, endpoints: endpoints, error: error)
+                    datagrams: datagrams,
+                    endpoints: endpoints,
+                    error: error,
+                    probeId: firstProbeId)
             }
         case .reading:
             ctx.readState = .readingWithDemand
+            ctx.pendingReadProbeId = firstProbeId
+            if credits > 1 { acknowledgeProbe(secondProbeId) }
         case .readingWithDemand:
-            break
+            acknowledgeProbe(firstProbeId)
+            if credits > 1 { acknowledgeProbe(secondProbeId) }
         case .closed:
+            acknowledgeProbe(firstProbeId)
+            if credits > 1 { acknowledgeProbe(secondProbeId) }
             closeReadDemandGate()
         }
     }
 
     private func closeReadDemandGate() {
-        readDemand.withLock { state in
+        let pending = readDemand.withLock { state -> (UInt8, UInt64, UInt64) in
+            let pending = (state.credits, state.firstProbeId, state.secondProbeId)
             state.closed = true
             state.credits = 0
+            state.firstProbeId = 0
+            state.secondProbeId = 0
             state.runnerQueued = false
+            return pending
         }
+        if pending.0 > 0 { acknowledgeProbe(pending.1) }
+        if pending.0 > 1 { acknowledgeProbe(pending.2) }
+        acknowledgeProbe(ctx.pendingReadProbeId)
+        ctx.pendingReadProbeId = 0
+        acknowledgeProbe(stagingWaitProbeId)
+        stagingWaitProbeId = 0
+        stagingCapacityWaiting = false
     }
 
-    func handleReadCompletion(datagrams: [Data]?, endpoints: [NWEndpoint]?, error: Error?) {
+    private func acknowledgeProbe(_ probeId: UInt64) {
+        guard probeId != 0 else { return }
+        #if DEBUG
+            testProbeAcknowledger?(probeId)
+        #endif
+        sessionHandle?.completeClientRead(probeId: probeId)
+    }
+
+    func handleReadCompletion(
+        datagrams: [Data]?,
+        endpoints: [NWEndpoint]?,
+        error: Error?,
+        probeId: UInt64 = 0,
+        stagingGrantTicket: UInt64 = 0
+    ) {
         // Timestamp ingress at callback entry. The flow queue can be delayed
         // behind an already-due idle timer; recording only inside its block
         // would let that timer reap a datagram that arrived first.
         if let datagrams, !datagrams.isEmpty {
             recordIdleActivity()
         }
+        // Reserve before capturing into the queue. The original Apple arrays
+        // remain framework-transient; only this admissible prefix survives the
+        // callback return. ACK after that decision, without queue delay.
+        let hadKernelDatagrams = datagrams?.isEmpty == false
+        if error != nil || datagrams == nil {
+            ingressStaging.completeWithoutStaging(grantTicket: stagingGrantTicket)
+        }
+        let stagingOutcome = error == nil
+            ? datagrams.map {
+                ingressStaging.stage(
+                    datagrams: $0,
+                    endpoints: endpoints,
+                    grantTicket: stagingGrantTicket)
+            }
+            : nil
+        let staged = stagingOutcome?.batch
+        if let sample = stagingOutcome?.dropSample {
+            core?.logLifecycle(
+                "UDP Swift ingress staging dropped datagrams reason=\"\(sample.reason.rawValue)\" "
+                    + "cumulative_drop_events=\(sample.cumulativeDropEvents) "
+                    + "cumulative_dropped_items=\(sample.cumulativeDroppedItems) "
+                    + "cumulative_dropped_bytes_lower_bound=\(sample.cumulativeDroppedBytesLowerBound) "
+                    + "generation_retained_items=\(sample.generationRetainedItems) "
+                    + "generation_max_retained_items=\(sample.generationMaxRetainedItems) "
+                    + "generation_retained_bytes=\(sample.generationRetainedBytes) "
+                    + "generation_max_retained_bytes=\(sample.generationMaxRetainedBytes)"
+            )
+        }
+        acknowledgeProbe(probeId)
         flowQueue.async { [weak self] in
+            defer { staged?.release() }
             guard let self else { return }
             let ctx = self.ctx
             guard ctx.readState != .closed else { return }
             let hadPendingDemand = ctx.readState == .readingWithDemand
+            let pendingProbeId = ctx.pendingReadProbeId
+            ctx.pendingReadProbeId = 0
             ctx.readState = .idle
 
             if let error {
+                if hadPendingDemand { self.acknowledgeProbe(pendingProbeId) }
                 let msg = classifyFlowCallbackError(error, operation: "udp flow.read")
                 self.core?.logFlowMessage(msg)
                 self.closeReadDemandGate()
                 ctx.terminate?(error)
                 return
             }
-            guard let datagrams, !datagrams.isEmpty else {
+            guard hadKernelDatagrams else {
+                if hadPendingDemand { self.acknowledgeProbe(pendingProbeId) }
                 self.core?.logTrace("flow.readDatagrams eof")
                 self.closeReadDemandGate()
                 ctx.terminate?(nil)
                 return
             }
+            guard let staged else {
+                guard hadKernelDatagrams,
+                    let blockedReason = stagingOutcome?.blockedReason,
+                    blockedReason != .closed
+                else {
+                    if hadPendingDemand { self.acknowledgeProbe(pendingProbeId) }
+                    return
+                }
+                if blockedReason == .oversizedBytes {
+                    if hadPendingDemand { self.acknowledgeProbe(pendingProbeId) }
+                    let datagramBytes = stagingOutcome?.neededBytes ?? 0
+                    self.core?.logLifecycle(
+                        "UDP Swift ingress staging rejected nonretryable datagram; "
+                            + "terminating flow reason=\"\(blockedReason.rawValue)\" "
+                            + "datagram_bytes=\(datagramBytes)"
+                    )
+                    self.closeReadDemandGate()
+                    ctx.terminate?(
+                        NSError(
+                            domain: NSPOSIXErrorDomain,
+                            code: Int(EMSGSIZE),
+                            userInfo: [
+                                NSLocalizedDescriptionKey:
+                                    "UDP datagram exceeds Swift ingress staging capacity"
+                            ]))
+                    return
+                }
+                // No payload crossed into Rust, but retrying immediately while
+                // the staging budget is full creates a hot Apple read loop.
+                // Keep exactly one logical read outstanding and let the
+                // generation/per-flow capacity coordinator grant its restart.
+                ctx.readState = .reading
+                self.stagingCapacityWaiting = true
+                self.stagingWaitProbeId = hadPendingDemand ? pendingProbeId : 0
+                let armed = self.ingressStaging.waitForCapacity(
+                    reason: blockedReason,
+                    neededItems: stagingOutcome?.neededItems ?? 1,
+                    neededBytes: stagingOutcome?.neededBytes ?? 0
+                ) { [weak self] ticket in
+                    self?.resumeReadAfterStagingCapacity(grantTicket: ticket)
+                }
+                if !armed {
+                    let strandedProbeId = self.stagingWaitProbeId
+                    self.stagingWaitProbeId = 0
+                    self.stagingCapacityWaiting = false
+                    ctx.readState = .idle
+                    self.acknowledgeProbe(strandedProbeId)
+                }
+                return
+            }
             guard let session = ctx.session else {
+                if hadPendingDemand { self.acknowledgeProbe(pendingProbeId) }
                 self.core?.logDebug(
                     "udp flow read received but session no longer active; closing flow")
                 self.closeReadDemandGate()
@@ -577,8 +746,30 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 return
             }
 
-            self.forwardDatagrams(datagrams: datagrams, endpoints: endpoints, session: session)
-            if hadPendingDemand { ctx.requestRead?() }
+            self.forwardDatagrams(
+                datagrams: staged.datagrams,
+                endpoints: staged.endpoints,
+                session: session,
+                sourceCounts: (staged.sourceDatagramCount, staged.sourceEndpointCount))
+            if hadPendingDemand { self.enqueueReadDemand(probeId: pendingProbeId) }
+        }
+    }
+
+    private func resumeReadAfterStagingCapacity(grantTicket: UInt64) {
+        flowQueue.async { [weak self] in
+            guard let self else { return }
+            guard self.ctx.readState != .closed, self.stagingCapacityWaiting else { return }
+            self.stagingCapacityWaiting = false
+            let probeId = self.stagingWaitProbeId
+            self.stagingWaitProbeId = 0
+            self.flow.readDatagrams { [weak self] datagrams, endpoints, error in
+                self?.handleReadCompletion(
+                    datagrams: datagrams,
+                    endpoints: endpoints,
+                    error: error,
+                    probeId: probeId,
+                    stagingGrantTicket: grantTicket)
+            }
         }
     }
 
@@ -588,13 +779,17 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     /// its intended peer. Surplus datagrams get `peer = nil`
     /// rather than a fabricated attribution to `eps.first`.
     func forwardDatagrams(
-        datagrams: [Data], endpoints: [NWEndpoint]?, session: RamaUdpSessionHandle
+        datagrams: [Data],
+        endpoints: [NWEndpoint]?,
+        session: RamaUdpSessionHandle,
+        sourceCounts: (Int, Int?)? = nil
     ) {
-        let mismatch = endpoints != nil && (endpoints?.count ?? 0) != datagrams.count
+        let counts = sourceCounts ?? (datagrams.count, endpoints?.count)
+        let mismatch = counts.1 != nil && counts.1 != counts.0
         if mismatch && !ctx.endpointMismatchLogged {
             ctx.endpointMismatchLogged = true
             core?.logDebug(
-                "udp flow.readDatagrams returned mismatched array lengths (datagrams=\(datagrams.count), endpoints=\(endpoints?.count ?? 0)); surplus datagrams will be forwarded with peer = nil. First-occurrence-only log per flow."
+                "udp flow.readDatagrams returned mismatched array lengths (datagrams=\(counts.0), endpoints=\(counts.1 ?? 0)); surplus datagrams will be forwarded with peer = nil. First-occurrence-only log per flow."
             )
         }
         for (index, datagram) in datagrams.enumerated() {
@@ -620,6 +815,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
 
     private func installEngineLease(_ lease: TransparentProxyCore.EngineFlowLease) {
         runtimePolicy = lease.runtimePolicy
+        ingressStaging = UdpIngressFlowStaging(generation: lease.udpIngressStagingBudget)
         if !idleTimeoutWasExplicitlySet {
             idleTimeoutMsStorage = lease.runtimePolicy.udpIdleTimeoutMs
         }
@@ -643,7 +839,9 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 // dispatch for the idle watchdog.
                 ctx?.writer?.enqueueBorrowed(view, peerView: peerView)
             },
-            onClientReadDemand: { [weak ctx] in ctx?.requestRead?() },
+            onClientReadDemand: { [weak ctx] probeId in
+                ctx?.requestReadWithProbe?(probeId)
+            },
             onServerClosed: { [weak self] in self?.requestGracefulServerClose() },
             flowRefusalPolicy: effectiveRuntimePolicy.flowRefusal
         )
@@ -698,7 +896,8 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                     self.ctx.session?.activate()
                     // Arm the idle watchdog. Subsequent datagrams in either
                     // direction push the deadline forward. Without this, the
-                    // session stays registered until Rust's max-lifetime cap.
+                    // a quiet session stays registered indefinitely (Rust's
+                    // active-flow-safe max-lifetime default is `None`).
                     self.armIdleTimer()
                     // Rust's first `UdpFlow.recv()` supplies the first read
                     // credit. Do not prefetch here: a service that has not
@@ -712,12 +911,27 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
 
     #if DEBUG
         var testReadDemandSnapshot: (
-            closed: Bool, credits: UInt8, runnerQueued: Bool, runnerSchedules: UInt64
+            closed: Bool, credits: UInt8, firstProbeId: UInt64,
+            secondProbeId: UInt64, runnerQueued: Bool, runnerSchedules: UInt64
         ) {
             readDemand.withLock { state in
-                (state.closed, state.credits, state.runnerQueued, state.runnerSchedules)
+                (
+                    state.closed, state.credits, state.firstProbeId,
+                    state.secondProbeId, state.runnerQueued, state.runnerSchedules
+                )
             }
         }
+
+        func testCloseIngressStaging() { ingressStaging.close() }
+
+        func testFillIngressStaging() -> UdpIngressStagedBatch? {
+            ingressStaging.stage(
+                datagrams: [Data(count: effectiveRuntimePolicy.udpIngressStaging.maxBytesPerFlow)],
+                endpoints: nil
+            ).batch
+        }
+
+        var testStagingCapacityWaiting: Bool { stagingCapacityWaiting }
 
         var testIdleActivitySnapshot: (closed: Bool, lastUptimeNs: UInt64?) {
             idleActivity.withLock { ($0.closed, $0.lastUptimeNs) }

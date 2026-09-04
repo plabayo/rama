@@ -36,6 +36,9 @@ final class EngineHandleTests: XCTestCase {
         XCTAssertEqual(config.flowPressureSoftCap, 450)
         XCTAssertEqual(config.flowPressureLowWater, 350)
         XCTAssertEqual(config.flowPressureIdleFloorMs, 120_000)
+        XCTAssertEqual(config.udpChannelCapacity, 32)
+        XCTAssertEqual(config.udpIngressPerFlowMaxBytes, 262_144)
+        XCTAssertEqual(config.udpIngressGlobalMaxBytes, 16_777_216)
     }
 
     /// Malformed / wrong-shape engine config must fail the FALLIBLE init
