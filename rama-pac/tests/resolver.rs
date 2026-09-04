@@ -643,7 +643,9 @@ async fn a_worker_wedged_in_a_host_fn_fails_the_lookup_instead_of_hanging() {
     });
     let resolver = PacResolver::builder()
         .with_runtime(runtime)
-        .with_execution_time_limit(Duration::from_millis(100))
+        // Bound the uninterruptible callback directly without giving the
+        // healthy priming call an unrealistically short execution deadline.
+        .with_timeout(Duration::from_secs(2))
         .build_static(
             "function FindProxyForURL(u, h) { \
              if (h === 'wedged.example') wedge(); return 'DIRECT'; }",
