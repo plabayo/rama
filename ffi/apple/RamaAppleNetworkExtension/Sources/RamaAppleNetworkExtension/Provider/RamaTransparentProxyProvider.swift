@@ -295,6 +295,9 @@ nonisolated(unsafe) var writePumpMaxPendingBytes: Int = 256 * 1024
 /// (e.g. waiting for the first client read so `sentByEndpoint` is
 /// known) without blowing up under a misbehaving producer.
 let udpWritePumpMaxPending: Int = 256
+/// Total payload bytes retained by one UDP kernel-write pump, including the
+/// in-flight datagram. Count and byte bounds are both enforced.
+let udpWritePumpMaxRetainedBytes: Int = 256 * 1024
 
 // ── High-water telemetry thresholds ──────────────────────────────────────────
 
@@ -495,6 +498,7 @@ private struct FlowPressureDefaults {
     var softCap: UInt32 = 450
     var lowWater: UInt32 = 350
     var idleFloorMs: UInt32 = 120_000
+    var hardCap: UInt32 = 500
 }
 
 private let flowPressureDefaults = Locked(FlowPressureDefaults())
@@ -514,13 +518,20 @@ var defaultFlowPressureIdleFloorMs: UInt32 {
     set { flowPressureDefaults.withLock { $0.idleFloorMs = newValue } }
 }
 
+var defaultLiveFlowHardCap: UInt32 {
+    get { flowPressureDefaults.withLock { $0.hardCap } }
+    set { flowPressureDefaults.withLock { $0.hardCap = newValue } }
+}
+
 private func setFlowPressureDefaults(
-    softCap: UInt32, lowWater: UInt32, idleFloorMs: UInt32
+    softCap: UInt32, lowWater: UInt32, idleFloorMs: UInt32,
+    hardCap: UInt32
 ) {
     flowPressureDefaults.withLock { defaults in
         defaults.softCap = softCap
         defaults.lowWater = lowWater
         defaults.idleFloorMs = idleFloorMs
+        defaults.hardCap = hardCap
     }
 }
 
@@ -975,7 +986,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         }
         // Publish the engine only after every startup policy is installed.
         // No maintenance task or flow callback can observe a partial config.
-        core.attachEngine(engine)
+        let engineGeneration = core.attachEngine(engine)
         core.logLifecycle("engine created")
 
         let settings = Self.buildNetworkSettings(
@@ -987,17 +998,34 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         let completion = ProviderStartCompletion(completionHandler)
         setTunnelNetworkSettings(settings) { [core, completion] error in
             if let error {
-                core.logLifecycleError("setTunnelNetworkSettings error: \(error)")
-                // Same reason as the `engine.config()` failure path:
-                // Apple won't compensate via `stopProxy`, so we must
-                // tear down the engine + telemetry timer locally.
-                core.detachEngine(reason: 0)
-                completion(error)
+                if core.detachEngine(ifGeneration: engineGeneration, reason: 0) {
+                    core.logLifecycleError("setTunnelNetworkSettings error: \(error)")
+                    // Apple won't compensate via `stopProxy`, so the current
+                    // failed start must tear down its own engine locally.
+                    completion(error)
+                } else {
+                    completion(Self.supersededStartError())
+                }
                 return
             }
-            core.logLifecycle("setTunnelNetworkSettings ok")
-            completion(nil)
+            let completed = core.withActiveEngineGeneration(engineGeneration) {
+                core.logLifecycle("setTunnelNetworkSettings ok")
+                completion(nil)
+            }
+            if !completed {
+                completion(Self.supersededStartError())
+            }
         }
+    }
+
+    private static func supersededStartError() -> NSError {
+        NSError(
+            domain: "RamaTransparentProxy.Startup",
+            code: 3,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "transparent proxy start was stopped or superseded before settings completed"
+            ])
     }
 
     public override func stopProxy(
@@ -1182,7 +1210,8 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         setFlowPressureDefaults(
             softCap: startup.flowPressureSoftCap,
             lowWater: flowPressureLowWater,
-            idleFloorMs: startup.flowPressureIdleFloorMs)
+            idleFloorMs: startup.flowPressureIdleFloorMs,
+            hardCap: startup.liveFlowHardCap)
         defaultTcpStartInFlightHardCap = startup.tcpStartInFlightHardCap
         defaultTcpStartInFlightSoftCap = startup.tcpStartInFlightSoftCap
         defaultTcpStartLatencyBreakerP95Ms = startup.tcpStartLatencyBreakerP95Ms
@@ -1205,7 +1234,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             "tcp overload config hardCap=\(defaultTcpStartInFlightHardCap) softCap=\(defaultTcpStartInFlightSoftCap) openP95Ms=\(defaultTcpStartLatencyBreakerP95Ms) closeP95Ms=\(defaultTcpStartLatencyBreakerCloseP95Ms) pressureTimeoutMs=\(defaultTcpPressureConnectTimeoutMs) breakerTimeoutMs=\(defaultTcpBreakerConnectTimeoutMs)"
         )
         logLifecycle(
-            "flow pressure config softCap=\(defaultFlowPressureSoftCap) lowWater=\(defaultFlowPressureLowWater) idleFloorMs=\(defaultFlowPressureIdleFloorMs)"
+            "flow pressure config softCap=\(defaultFlowPressureSoftCap) lowWater=\(defaultFlowPressureLowWater) idleFloorMs=\(defaultFlowPressureIdleFloorMs) liveHardCap=\(defaultLiveFlowHardCap)"
         )
     }
 

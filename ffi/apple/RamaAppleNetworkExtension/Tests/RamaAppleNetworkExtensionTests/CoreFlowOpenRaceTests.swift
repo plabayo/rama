@@ -149,6 +149,40 @@ final class CoreFlowOpenRaceTests: XCTestCase {
         )
     }
 
+    /// A clean Rust terminal can arrive while `flow.open` is pending. Opening
+    /// the client writer then completes that pending drain synchronously, so
+    /// the read-pump starts must re-check the session after `markOpened`.
+    func testTcpFlowOpenDrainCompletionDoesNotStartReadsAfterTeardown() {
+        let fx = makeFixture()
+        defer { tearDownFixture(fx) }
+
+        let flow = MockTcpFlow()
+        let session = TcpFlowSession(core: fx.core, flow: flow, meta: makeTcpMeta())
+        XCTAssertTrue(session.start())
+        let conn = fx.capture.waitForLastConnection()
+        conn.transition(to: .ready)
+        waitFor("flow.open pending") { flow.openWasInvoked }
+
+        session.flowQueue.sync {
+            session.closeClientAfterRustDrain()
+            session.closeEgressAfterRustDrain()
+        }
+        waitFor("egress FIN queued") { conn.pendingSendCount > 0 }
+        XCTAssertTrue(conn.completePendingSend(error: nil))
+        session.flowQueue.sync {}
+        XCTAssertEqual(fx.core.tcpFlowCount, 1)
+
+        XCTAssertTrue(flow.completeOpen(error: nil))
+        // The open callback queues `markOpened`, so two barriers cover both
+        // the callback block and the nested writer transition.
+        session.flowQueue.sync {}
+        session.flowQueue.sync {}
+
+        XCTAssertEqual(fx.core.tcpFlowCount, 0)
+        XCTAssertEqual(flow.pendingReadCount, 0)
+        XCTAssertEqual(conn.pendingReceiveCount, 0)
+    }
+
     // MARK: - CRIT-C: .ready reached over an already-non-viable path
 
     /// `viabilityUpdateHandler` fires only on CHANGE. If the path goes

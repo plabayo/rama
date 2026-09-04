@@ -812,13 +812,30 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                         return
                     }
                     self.core?.logTrace("flow.open ok (tcp, egress pre-connected)")
-                    self.ctx.clientWritePump?.markOpened()
-                    readPump.start()
-                    self.armReadTerminal(session: session)
-                    // `armPromoteCallback()` was moved to
-                    // `handleEgressReady` (before `session.activate`) to close
-                    // the registration race with the service task.
-                    self.ctx.clientReadPump?.requestRead()
+                    let finishOpen: @Sendable () -> Void = { [weak self] in
+                        guard let self else { return }
+                        self.withActiveEngineGeneration {
+                            // `markOpened` can synchronously finish a clean
+                            // drain that arrived while `flow.open` was pending.
+                            // Re-check after that transition before starting
+                            // either read pump against torn-down transports.
+                            guard !self.ctx.isDone,
+                                self.ctx.connection != nil
+                            else { return }
+                            readPump.start()
+                            self.armReadTerminal(session: session)
+                            // `armPromoteCallback()` was moved to
+                            // `handleEgressReady` (before `session.activate`)
+                            // to close the registration race with the service
+                            // task.
+                            self.ctx.clientReadPump?.requestRead()
+                        }
+                    }
+                    if let clientWritePump = self.ctx.clientWritePump {
+                        clientWritePump.markOpened(finishOpen)
+                    } else {
+                        finishOpen()
+                    }
                 }
             }
         }

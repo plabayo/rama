@@ -1,5 +1,6 @@
 import Foundation
 import NetworkExtension
+import RamaAppleNEFFI
 import XCTest
 
 @testable import RamaAppleNetworkExtension
@@ -218,6 +219,123 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         let closed = pump.testAdmissionSnapshot
         XCTAssertTrue(closed.closed)
         XCTAssertEqual(closed.waiting, 0)
+        XCTAssertEqual(closed.retainedBytes, 0)
+    }
+
+    func testRetainedByteBudgetIncludesInFlightWrite() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        let pump = UdpClientWritePump(
+            flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+        pump.markOpened()
+
+        let half = Data(repeating: 0x5a, count: udpWritePumpMaxRetainedBytes / 2)
+        pump.enqueue(half, sentBy: ep())
+        queue.sync {}
+        pump.enqueue(half, sentBy: ep())
+        queue.sync {}
+        pump.enqueue(Data([0xff]), sentBy: ep())
+        queue.sync {}
+
+        var snapshot = pump.testAdmissionSnapshot
+        XCTAssertEqual(snapshot.retainedBytes, udpWritePumpMaxRetainedBytes)
+        XCTAssertEqual(snapshot.droppedFull, 1)
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+        queue.sync {}
+        snapshot = pump.testAdmissionSnapshot
+        XCTAssertEqual(snapshot.retainedBytes, half.count)
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+        queue.sync {}
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
+    }
+
+    func testOversizedDatagramIsDroppedBeforeKernelWrite() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        let pump = UdpClientWritePump(
+            flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+        pump.markOpened()
+        pump.enqueue(
+            Data(repeating: 0, count: udpWritePumpMaxRetainedBytes + 1),
+            sentBy: ep())
+        queue.sync {}
+
+        XCTAssertTrue(flow.writtenBatches.isEmpty)
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
+        XCTAssertEqual(pump.testAdmissionSnapshot.droppedFull, 1)
+    }
+
+    func testOffQueueCloseWinsFinalWriteGate() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        let pump = UdpClientWritePump(
+            flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+        pump.markOpened()
+        queue.sync {}
+
+        let atGate = DispatchSemaphore(value: 0)
+        let releaseGate = DispatchSemaphore(value: 0)
+        pump.testBeforeWriteGate = {
+            atGate.signal()
+            releaseGate.wait()
+        }
+        pump.enqueue(tag(1), sentBy: ep())
+        XCTAssertEqual(atGate.wait(timeout: .now() + 1), .success)
+        pump.close()
+        releaseGate.signal()
+        queue.sync {}
+
+        XCTAssertTrue(flow.writtenBatches.isEmpty)
+        XCTAssertEqual(flow.writeAfterCloseCount, 0)
+    }
+
+    func testBorrowedViewsAreCopiedOnlyAfterAdmission() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        let pump = UdpClientWritePump(
+            flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+        pump.markOpened()
+
+        var payload = Array("hello".utf8)
+        var host = Array("127.0.0.1".utf8)
+        payload.withUnsafeMutableBufferPointer { payloadBuffer in
+            host.withUnsafeMutableBufferPointer { hostBuffer in
+                pump.enqueueBorrowed(
+                    RamaBytesView(ptr: payloadBuffer.baseAddress, len: payloadBuffer.count),
+                    peerView: RamaUdpPeerView(
+                        present: true,
+                        host_utf8: UnsafePointer(hostBuffer.baseAddress),
+                        host_utf8_len: hostBuffer.count,
+                        port: 5353,
+                        scope_id: 0))
+            }
+        }
+        payload = Array(repeating: 0, count: payload.count)
+        host = Array(repeating: 0, count: host.count)
+        queue.sync {}
+
+        XCTAssertEqual(flow.writtenBatches.first?.datagrams, [Data("hello".utf8)])
+        XCTAssertEqual(
+            flow.writtenBatches.first?.sentBy.first.map(String.init(describing:)),
+            String(describing: ep()))
+        XCTAssertEqual(pump.testAdmissionSnapshot.borrowedMaterializations, 1)
+
+        pump.enqueue(
+            Data(repeating: 0, count: udpWritePumpMaxRetainedBytes - 5),
+            sentBy: ep())
+        queue.sync {}
+        var dropped = [UInt8](repeating: 1, count: 1)
+        dropped.withUnsafeMutableBufferPointer { buffer in
+            pump.enqueueBorrowed(
+                RamaBytesView(ptr: buffer.baseAddress, len: buffer.count),
+                peerView: RamaUdpPeerView(
+                    present: false,
+                    host_utf8: nil,
+                    host_utf8_len: 0,
+                    port: 0,
+                    scope_id: 0))
+        }
+        XCTAssertEqual(pump.testAdmissionSnapshot.borrowedMaterializations, 1)
     }
 
     func testInlineEndpointUpdatesAreCapturedInOrder() {

@@ -39,9 +39,15 @@ final class TcpClientWritePump: @unchecked Sendable {
     }
 
 
-    func markOpened() {
+    func markOpened(
+        _ completion: @escaping @Sendable () -> Void = {}
+    ) {
         core.queue.async { [weak self] in
-            guard let self else { return }
+            guard let self else {
+                completion()
+                return
+            }
+            defer { completion() }
             if self.core.isClosed() { return }
             self.wasEverOpened = true
             // `closeWhenDrained` may have arrived while flow.open was in

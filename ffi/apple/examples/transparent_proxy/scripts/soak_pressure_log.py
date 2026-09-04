@@ -139,17 +139,74 @@ def settled_final_flow_gauge(
     if settle_end_epoch - settle_start_epoch < minimum_samples * nominal_period:
         return None
 
-    samples = []
+    samples_by_epoch = {}
     for epoch, message in rows:
         gauge = flow_gauge(message)
-        if epoch is not None and epoch >= settle_start_epoch and gauge:
-            samples.append((epoch, gauge))
+        if (
+            epoch is not None
+            and settle_start_epoch <= epoch <= settle_end_epoch
+            and gauge
+        ):
+            samples_by_epoch[epoch] = gauge
+    samples = sorted(samples_by_epoch.items())
     if len(samples) < minimum_samples:
         return None
     last_epoch, last_gauge = samples[-1]
     if last_epoch < settle_end_epoch - maximum_sample_age:
         return None
     return last_gauge
+
+
+def soak_evidence_issues(
+    meta,
+    *,
+    rows_count,
+    gauge_count,
+    probe_count,
+    incomplete_phases=(),
+    phase_coverage=(),
+    final_gauge_required=True,
+    final_gauge_present=False,
+):
+    """Return reasons a soak report must not claim a GOOD verdict.
+
+    `phase_coverage` contains `(name, duration, probes, gauges)` tuples. Short
+    phases are allowed to fall between periodic samples; sustained phases are
+    required to prove that both monitors covered them.
+    """
+
+    def meta_true(key):
+        return meta.get(key) == "1"
+
+    issues = []
+    if not meta_true("log_stream_started"):
+        issues.append("log stream did not start")
+    if not meta_true("log_stream_alive_end"):
+        issues.append("log stream did not cover the complete run")
+    if not meta_true("baseline_gauge_seen"):
+        issues.append("baseline gauge was not observed")
+    if not meta_true("probe_monitor_alive_end"):
+        issues.append("probe monitor did not cover the complete run")
+    if not meta_true("provider_continuous"):
+        issues.append("provider process identity changed or disappeared")
+    if rows_count == 0:
+        issues.append("system log contains no parseable rows")
+    if gauge_count < 2:
+        issues.append("fewer than two flow-gauge samples were captured")
+    if probe_count < 2:
+        issues.append("fewer than two non-sleep liveness probes were captured")
+    for name in sorted(incomplete_phases):
+        issues.append(f"phase {name!r} has no end marker")
+    for name, duration, probes, gauges in phase_coverage:
+        if name == "sleep-wake":
+            continue
+        if duration >= 20 and probes == 0:
+            issues.append(f"phase {name!r} has no liveness probe coverage")
+        if duration >= 75 and gauges == 0:
+            issues.append(f"phase {name!r} has no flow-gauge coverage")
+    if final_gauge_required and not final_gauge_present:
+        issues.append("idle tail has no trustworthy final flow gauge")
+    return issues
 
 
 def summarize_pressure_rows(

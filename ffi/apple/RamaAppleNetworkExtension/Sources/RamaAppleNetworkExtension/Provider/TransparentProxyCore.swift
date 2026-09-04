@@ -3,6 +3,12 @@ import Network
 import NetworkExtension
 import RamaAppleNEFFI
 
+enum UdpFlowRegistrationDecision {
+    case started(occupancy: Int)
+    case unavailable
+    case capacityRefused(reason: String, persist: Bool)
+}
+
 /// Home of the transparent-proxy per-flow state machine, the engine
 /// handle ownership, and the session / context registration maps.
 ///
@@ -121,7 +127,8 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// `setTunnelNetworkSettings`) and then publishes the resulting
     /// engine here. Per-flow handling becomes available only after
     /// this is called.
-    func attachEngine(_ engine: RamaTransparentProxyEngineHandle) {
+    @discardableResult
+    func attachEngine(_ engine: RamaTransparentProxyEngineHandle) -> UInt64 {
         lifecycleLock.lock()
         defer { lifecycleLock.unlock() }
         // Single-shot in production (`startProxy` calls us once per
@@ -132,15 +139,17 @@ final class TransparentProxyCore: @unchecked Sendable {
         if self.engine != nil {
             detachEngine(reason: 0)
         }
-        stateQueue.sync {
+        let generation = stateQueue.sync {
             self.engineGeneration &+= 1
             self.engineStorage = engine
             self.acceptingFlows = true
             self.pressureVictimState.withLock {
                 $0.activeEngineGeneration = self.engineGeneration
             }
+            return self.engineGeneration
         }
         startFlowCountReporting()
+        return generation
     }
 
     /// Symmetric counterpart of `attachEngine` invoked from
@@ -185,6 +194,21 @@ final class TransparentProxyCore: @unchecked Sendable {
         }
         for session in detached.udp { session.ctx.terminate?(engineDetachedError()) }
         detached.engine?.stop(reason: reason)
+    }
+
+    /// Detach only the engine published by one asynchronous provider start.
+    /// The generation check and detach are one lifecycle-lock transaction, so
+    /// a stale settings callback can never tear down a newer engine.
+    @discardableResult
+    func detachEngine(ifGeneration generation: UInt64, reason: Int32) -> Bool {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        let isCurrent = stateQueue.sync {
+            acceptingFlows && engineStorage != nil && engineGeneration == generation
+        }
+        guard isCurrent else { return false }
+        detachEngine(reason: reason)
+        return true
     }
 
     func engineLeaseForNewFlow() -> EngineFlowLease? {
@@ -1730,14 +1754,18 @@ final class TransparentProxyCore: @unchecked Sendable {
             + "p99=\(overloadSnapshot.p99StartMs)"
         let countSummary =
             "tproxy live-flow counts tcp=\(tcp) udp=\(udp) total=\(total) "
-            + "peak=\(self.flowCountHighWater) softCap=\(defaultFlowPressureSoftCap)"
+            + "peak=\(self.flowCountHighWater) softCap=\(defaultFlowPressureSoftCap) "
+            + "hardCap=\(defaultLiveFlowHardCap)"
         let overloadSummary =
             "tcpStartsInFlight=\(overloadSnapshot.startsInFlight) "
             + "tcpStartsInFlightPeak=\(overloadSnapshot.startsInFlightPeak) "
             + "hardCap=\(defaultTcpStartInFlightHardCap) "
             + "admissionRate=\(admissionRate)/s timeoutRate=\(timeoutRate)/s "
             + "shedRate=\(shedRate)/s shedHardCap=\(overloadSnapshot.shedHardCap) "
-            + "shedBreaker=\(overloadSnapshot.shedBreaker) shedApps=\(shedAppSummary) "
+            + "shedBreaker=\(overloadSnapshot.shedBreaker) "
+            + "shedLiveCapTcp=\(overloadSnapshot.shedLiveCapTcp) "
+            + "shedLiveCapUdp=\(overloadSnapshot.shedLiveCapUdp) "
+            + "shedApps=\(shedAppSummary) "
             + "startLatencyMs[\(latencySummary)] breaker=\(breaker)"
         let triggers = self.pressureTriggersTotal.withLock { $0 }
         let scans = self.pressureScansTotal.withLock { $0 }
@@ -2144,6 +2172,12 @@ final class TransparentProxyCore: @unchecked Sendable {
                     engineGeneration == self.engineGeneration
                 else { return nil }
             }
+            let hadReservation = self.overload.liveFlowReservations.remove(flowId) != nil
+            let occupancyBefore = self.tcpSessions.count + self.udpSessions.count
+            let hardCap = Int(defaultLiveFlowHardCap)
+            guard hadReservation || hardCap == 0 || occupancyBefore < hardCap else {
+                return nil
+            }
             self.tcpSessions[flowId] = anchor
             self.pressureVictimState.withLock {
                 $0.registeredFlowIds.insert(flowId)
@@ -2215,39 +2249,70 @@ final class TransparentProxyCore: @unchecked Sendable {
     func registerUdpFlow(
         _ flowId: ObjectIdentifier,
         anchor: UdpFlowSessionAnchor,
+        appId: String = "pid:unknown",
         engineGeneration: UInt64? = nil
     ) -> Int? {
+        switch registerUdpFlowDecision(
+            flowId,
+            anchor: anchor,
+            appId: appId,
+            engineGeneration: engineGeneration)
+        {
+        case .started(let occupancy): return occupancy
+        case .unavailable, .capacityRefused: return nil
+        }
+    }
+
+    private func registerUdpFlowDecision(
+        _ flowId: ObjectIdentifier,
+        anchor: UdpFlowSessionAnchor,
+        appId: String,
+        engineGeneration: UInt64?
+    ) -> UdpFlowRegistrationDecision {
         stateQueue.sync {
             if let engineGeneration {
                 guard self.acceptingFlows,
                     engineGeneration == self.engineGeneration
-                else { return nil }
+                else { return .unavailable }
+            }
+            let projected = self.tcpSessions.count + self.udpSessions.count
+                + self.overload.liveFlowReservations.count
+            let hardCap = Int(defaultLiveFlowHardCap)
+            if hardCap > 0, projected >= hardCap {
+                self.overload.shedLiveCapUdpSinceTick += 1
+                let reason =
+                    "combined live-flow hard cap reached projected=\(projected) hardCap=\(hardCap) protocol=udp"
+                guard case .reject(_, _, let persist) = self.recordShedLocked(
+                    reason: reason, appId: appId)
+                else { preconditionFailure("shed recorder must reject") }
+                return .capacityRefused(reason: reason, persist: persist)
             }
             self.udpSessions[flowId] = anchor
             self.pressureVictimState.withLock {
                 $0.registeredFlowIds.insert(flowId)
             }
-            return self.tcpSessions.count + self.udpSessions.count
+            return .started(occupancy: self.tcpSessions.count + self.udpSessions.count)
         }
     }
 
     /// UDP counterpart of `registerTcpFlowAndScheduleStartup`.
-    func registerUdpFlowAndScheduleStartup(
+    func registerUdpFlowAndScheduleStartupDecision(
         _ flowId: ObjectIdentifier,
         anchor: UdpFlowSessionAnchor,
+        appId: String,
         engineGeneration: UInt64,
         on flowQueue: DispatchQueue,
         body: @escaping @Sendable () -> Void
-    ) -> Bool {
+    ) -> UdpFlowRegistrationDecision {
         lifecycleLock.lock()
-        guard
-            let occupancy = registerUdpFlow(
-                flowId,
-                anchor: anchor,
-                engineGeneration: engineGeneration)
-        else {
+        let registration = registerUdpFlowDecision(
+            flowId,
+            anchor: anchor,
+            appId: appId,
+            engineGeneration: engineGeneration)
+        guard case .started(let occupancy) = registration else {
             lifecycleLock.unlock()
-            return false
+            return registration
         }
         flowLifecycleGroup.enter()
         lifecycleLock.unlock()
@@ -2258,7 +2323,29 @@ final class TransparentProxyCore: @unchecked Sendable {
         {
             reapIdleUnderPressure()
         }
-        return true
+        return .started(occupancy: occupancy)
+    }
+
+    /// Compatibility-shaped test/helper entry point. Production uses the rich
+    /// decision above so it can apply fail-open/fail-closed at the hard cap.
+    func registerUdpFlowAndScheduleStartup(
+        _ flowId: ObjectIdentifier,
+        anchor: UdpFlowSessionAnchor,
+        engineGeneration: UInt64,
+        on flowQueue: DispatchQueue,
+        body: @escaping @Sendable () -> Void
+    ) -> Bool {
+        if case .started = registerUdpFlowAndScheduleStartupDecision(
+            flowId,
+            anchor: anchor,
+            appId: "pid:unknown",
+            engineGeneration: engineGeneration,
+            on: flowQueue,
+            body: body)
+        {
+            return true
+        }
+        return false
     }
 
     func removeTcpFlow(
@@ -2349,6 +2436,16 @@ final class TransparentProxyCore: @unchecked Sendable {
                 else { return nil }
             }
             let appId = self.overload.appId(for: meta)
+            let liveHardCap = Int(defaultLiveFlowHardCap)
+            let projectedLive = self.tcpSessions.count + self.udpSessions.count
+                + self.overload.liveFlowReservations.count
+            if liveHardCap > 0, projectedLive >= liveHardCap {
+                self.overload.shedLiveCapTcpSinceTick += 1
+                return self.recordShedLocked(
+                    reason:
+                        "combined live-flow hard cap reached projected=\(projectedLive) hardCap=\(liveHardCap) protocol=tcp",
+                    appId: appId)
+            }
             let hardCap = Int(defaultTcpStartInFlightHardCap)
             let softCap = Int(defaultTcpStartInFlightSoftCap)
             let inFlight = self.overload.startsInFlight.count
@@ -2375,6 +2472,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             }
             let token = TcpAdmissionToken(flowId: flowId, startedAt: .now(), appId: appId)
             self.overload.startsInFlight[flowId] = token
+            self.overload.liveFlowReservations.insert(flowId)
             self.overload.admissionsSinceTick += 1
             self.overload.startsInFlightPeakSinceTick = max(
                 self.overload.startsInFlightPeakSinceTick, self.overload.startsInFlight.count)
@@ -2394,6 +2492,7 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     func finishTcpStart(_ token: TcpAdmissionToken, outcome: TcpStartOutcome) {
         stateQueue.async {
+            self.overload.liveFlowReservations.remove(token.flowId)
             guard self.overload.startsInFlight.removeValue(forKey: token.flowId) != nil else {
                 return
             }

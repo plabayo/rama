@@ -248,6 +248,8 @@ pub struct TransparentProxyConfig {
     /// breaker, or missing session): `0` = Block, `1` = Passthrough (default).
     /// See [`tproxy::FlowRefusalAction`].
     pub flow_refusal_action: u32,
+    /// See [`tproxy::TransparentProxyConfig::live_flow_hard_cap`].
+    pub live_flow_hard_cap: u32,
 }
 
 #[repr(C)]
@@ -343,6 +345,7 @@ impl TransparentProxyConfig {
                 tproxy::FlowRefusalAction::Block => 0,
                 tproxy::FlowRefusalAction::Passthrough => 1,
             },
+            live_flow_hard_cap: config.live_flow_hard_cap(),
         }
     }
 
@@ -884,6 +887,7 @@ mod tests {
             .with_flow_pressure_soft_cap(10)
             .with_flow_pressure_low_water(9)
             .with_flow_pressure_idle_floor_ms(8)
+            .with_live_flow_hard_cap(20)
             .with_tcp_start_in_flight_hard_cap(7)
             .with_tcp_start_in_flight_soft_cap(6)
             .with_tcp_start_latency_breaker_p95_ms(5)
@@ -1008,7 +1012,7 @@ mod tests {
         assert_eq!(offset_of!(FfiTransparentProxyNetworkRule, protocol), 44);
         assert_eq!(offset_of!(FfiTransparentProxyNetworkRule, exclude), 48);
 
-        assert_eq!(size_of::<TransparentProxyConfig>(), 80);
+        assert_eq!(size_of::<TransparentProxyConfig>(), 88);
         assert_eq!(offset_of!(TransparentProxyConfig, rules), 16);
         assert_eq!(
             offset_of!(TransparentProxyConfig, tcp_write_pump_max_pending_bytes),
@@ -1022,8 +1026,10 @@ mod tests {
             offset_of!(TransparentProxyConfig, tcp_breaker_connect_timeout_ms),
             72
         );
-        // Slots into the former tail padding, so `sizeof` stays 80.
         assert_eq!(offset_of!(TransparentProxyConfig, flow_refusal_action), 76);
+        // Appended for source compatibility; the eight-byte struct alignment
+        // rounds the new 84-byte payload up to 88 bytes.
+        assert_eq!(offset_of!(TransparentProxyConfig, live_flow_hard_cap), 80);
 
         assert_eq!(size_of::<FfiTransparentProxyInitConfig>(), 48);
         assert_eq!(
@@ -1126,6 +1132,7 @@ mod tests {
             .with_flow_pressure_soft_cap(11)
             .with_flow_pressure_low_water(12)
             .with_flow_pressure_idle_floor_ms(13)
+            .with_live_flow_hard_cap(20)
             .with_tcp_start_in_flight_hard_cap(14)
             .with_tcp_start_in_flight_soft_cap(15)
             .with_tcp_start_latency_breaker_p95_ms(16)
@@ -1137,6 +1144,7 @@ mod tests {
         assert_eq!(ffi.flow_pressure_soft_cap, 11);
         assert_eq!(ffi.flow_pressure_low_water, 12);
         assert_eq!(ffi.flow_pressure_idle_floor_ms, 13);
+        assert_eq!(ffi.live_flow_hard_cap, 20);
         assert_eq!(ffi.tcp_start_in_flight_hard_cap, 14);
         assert_eq!(ffi.tcp_start_in_flight_soft_cap, 15);
         assert_eq!(ffi.tcp_start_latency_breaker_p95_ms, 16);

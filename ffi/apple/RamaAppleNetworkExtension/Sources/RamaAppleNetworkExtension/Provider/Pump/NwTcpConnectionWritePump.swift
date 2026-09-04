@@ -329,4 +329,13 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
         @unknown default: return UInt64(defaultLingerCloseMs)
         }
     }
+
+    #if DEBUG
+        var testHasTerminalLinger: Bool {
+            if DispatchQueue.getSpecific(key: callbackQueueKey) != nil {
+                return lingerWork != nil
+            }
+            return core.queue.sync { lingerWork != nil }
+        }
+    #endif
 }

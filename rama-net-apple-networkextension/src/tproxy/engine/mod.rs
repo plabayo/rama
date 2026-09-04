@@ -1399,6 +1399,23 @@ pub struct TransparentProxyUdpSession {
     idle_notify: Option<Arc<tokio::sync::Notify>>,
 }
 
+/// Wait until a UDP flow has seen no activity for `timeout` while reusing one
+/// Tokio timer allocation. Activity wins a deadline tie, matching the previous
+/// `timeout(notify.notified())` polling order.
+async fn wait_for_udp_idle(timeout: Duration, notify: &tokio::sync::Notify) {
+    let deadline = tokio::time::sleep(timeout);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            biased;
+            _ = notify.notified() => {
+                deadline.as_mut().reset(tokio::time::Instant::now() + timeout);
+            }
+            _ = &mut deadline => return,
+        }
+    }
+}
+
 impl TransparentProxyUdpSession {
     /// Deliver one client→service datagram. `peer` is the destination
     /// the originating app addressed it to; preserving it through the
@@ -1742,13 +1759,7 @@ where
                 std::future::pending::<()>().await;
                 return;
             };
-            loop {
-                let notified = notify.notified();
-                if let Err(err) = tokio::time::timeout(timeout, notified).await {
-                    tracing::debug!("UDP idle notifier timed out after {err:?}");
-                    return;
-                }
-            }
+            wait_for_udp_idle(timeout, notify).await;
         };
         let close_reason = tokio::select! {
             () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,

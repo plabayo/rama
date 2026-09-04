@@ -16,9 +16,13 @@
 #   softCap == 0 → (only with FIND_CEILING=1) CEILING-FINDER: carefully ramp
 #       until the nexus allocation is exhausted, report the gauge peak, back off.
 #
-# To VALIDATE the pressure reaper on-device, build with a low cap + short floor:
-#   defaultFlowPressureSoftCap=80, defaultFlowPressureLowWater=60,
-#   defaultFlowPressureIdleFloorMs=10_000   (then run this script normally).
+# To VALIDATE the pressure reaper on-device, configure the Rust builder in
+# tproxy_rs/src/lib.rs before installing the app:
+#   .with_flow_pressure_soft_cap(80)
+#   .with_flow_pressure_low_water(60)
+#   .with_flow_pressure_idle_floor_ms(10_000)
+# Keep the live-flow hard cap enabled. Ceiling-finder runs additionally require
+# `.with_live_flow_hard_cap(0)` and are intentionally unsafe.
 #
 # Phases (default giant session):
 #   0  baseline      detect softCap + baseline flow count + mem
@@ -113,7 +117,6 @@ CEIL_STEP="${CEIL_STEP:-40}"
 CEIL_SETTLE="${CEIL_SETTLE:-8}"
 ASSUME_YES="${ASSUME_YES:-0}"
 
-LOG_MATCH='log stream --level debug.*ramaproxy'
 LOGBUF=""; command -v stdbuf >/dev/null 2>&1 && LOGBUF="stdbuf -oL"
 
 # ── Pretty output ─────────────────────────────────────────────────────
@@ -135,6 +138,7 @@ done
 
 # ── Teardown ──────────────────────────────────────────────────────────
 LOG_STREAM_STARTED=0
+LOG_STREAM_PID=""
 SUDO_KEEPALIVE_PID=""
 PROBE_MON_PID=""
 HOLDER_PIDFILE=""
@@ -151,8 +155,8 @@ cleanup() {
   [[ -n "$PROBE_MON_PID" ]] && kill "$PROBE_MON_PID" 2>/dev/null || true
   kill_holders
   [[ -n "$SUDO_KEEPALIVE_PID" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
-  if (( LOG_STREAM_STARTED )); then
-    sudo pkill -f "$LOG_MATCH" 2>/dev/null || true
+  if (( LOG_STREAM_STARTED )) && [[ -n "$LOG_STREAM_PID" ]]; then
+    sudo -n kill "$LOG_STREAM_PID" 2>/dev/null || true
   fi
   local _j; _j="$(jobs -p 2>/dev/null)"
   [[ -n "$_j" ]] && kill $_j 2>/dev/null || true
@@ -299,18 +303,29 @@ DL_CHECK="$(curl -s -o /dev/null --max-time 20 -w '%{http_code}' "$(dl_url 65536
 
 PID="$(pgrep -f "$PROVIDER_BUNDLE" | head -1 || true)"
 [[ -n "$PID" ]] || die "could not find the sysext process ($PROVIDER_BUNDLE). Is it enabled?"
+PROVIDER_START_TIME="$(ps -o lstart= -p "$PID" 2>/dev/null | sed -E 's/^[[:space:]]+//')"
+[[ -n "$PROVIDER_START_TIME" ]] || die "could not read sysext process identity for pid $PID"
 say "sysext pid:  $PID"
+printf 'provider_start_pid\t%s\nprovider_start_time\t%s\n' \
+  "$PID" "$PROVIDER_START_TIME" >> "$OUT/run-meta.tsv"
 
 # ── Start live log capture (debug — the gauge is debug) ────────────────
 hdr "starting log capture"
 sudo $LOGBUF log stream --level debug --style ndjson \
   --predicate "subsystem BEGINSWITH \"$SUBSYSTEM_PREFIX\"" \
   > "$OUT/system.ndjson" 2>/dev/null &
+LOG_STREAM_PID=$!
 LOG_STREAM_STARTED=1
 sleep 2
-pgrep -f "$LOG_MATCH" >/dev/null || warn "log stream may not have started — system.ndjson could be empty"
+if sudo -n kill -0 "$LOG_STREAM_PID" 2>/dev/null; then
+  printf 'log_stream_started\t1\nlog_stream_pid\t%s\n' "$LOG_STREAM_PID" >> "$OUT/run-meta.tsv"
+else
+  printf 'log_stream_started\t0\nlog_stream_pid\t%s\n' "$LOG_STREAM_PID" >> "$OUT/run-meta.tsv"
+  warn "log stream did not stay alive — evidence verdicts will be inconclusive"
+fi
 say "streaming → $OUT/system.ndjson"
 start_probe_monitor
+printf 'probe_monitor_pid\t%s\n' "$PROBE_MON_PID" >> "$OUT/run-meta.tsv"
 say "probe monitor → $OUT/probe-timeline.txt (freeze detector)"
 
 # ── Phase 0: baseline + softCap detection ─────────────────────────────
@@ -318,19 +333,20 @@ phase_mark baseline start
 hdr "phase 0 — baseline (detecting softCap from the gauge; ≤65s)"
 G0="$(wait_for_gauge 65)"
 if [[ -z "$G0" ]]; then
-  warn "no gauge tick seen in 65s — proceeding without auto-detect (cap verdicts limited)"
+  warn "no gauge tick seen in 65s — evidence verdicts will be inconclusive"
   SOFTCAP_KNOWN=0; SOFTCAP=0; BASELINE_TOTAL=0
 else
   SOFTCAP_KNOWN=1; SOFTCAP="${G0%% *}"; BASELINE_TOTAL="${G0##* }"
   say "detected ${BOLD}softCap=$SOFTCAP${RESET}, baseline live flows=$BASELINE_TOTAL"
 fi
 printf 'softcap\t%s\nbaseline_total\t%s\n' "$SOFTCAP" "$BASELINE_TOTAL" >> "$OUT/run-meta.tsv"
+printf 'baseline_gauge_seen\t%s\n' "$SOFTCAP_KNOWN" >> "$OUT/run-meta.tsv"
 
 # Resolve mode.
 MODE="cap-validate"
 if (( FIND_CEILING )); then
   if (( SOFTCAP_KNOWN )) && (( SOFTCAP != 0 )); then
-    die "FIND_CEILING=1 but softCap=$SOFTCAP — the cap would reap before the ceiling. Rebuild with defaultFlowPressureSoftCap=0 to find the raw ceiling."
+    die "FIND_CEILING=1 but softCap=$SOFTCAP — rebuild with Rust flow-pressure soft cap and live-flow hard cap both set to 0."
   fi
   MODE="find-ceiling"
 elif (( SOFTCAP_KNOWN )) && (( SOFTCAP == 0 )); then
@@ -438,7 +454,7 @@ if [[ "$SKIP_IDLE" != 1 ]]; then
   say "raw silent TCP flows (no data) → ages toward the idle floor → eviction reaper"
   warn "NOTE: the rama test host cuts idle conns at ~60s, and the prod idle floor"
   warn "is 120s, so on a PROD build expect admit-and-ride (no eviction). Build with"
-  warn "a short idle floor (defaultFlowPressureIdleFloorMs≈10s) to see evictions."
+  warn "a short Rust flow-pressure idle floor (≈10s) to see evictions."
   run_flow_pool idle-holders "$IDLE_TARGET" "$IDLE_HOLD" spawn_silent
   phase_mark idle-holders end
 fi
@@ -501,12 +517,24 @@ fi  # end cap-validate vs ceiling-finder
 
 # ── Final memory snapshot (re-resolve pid; detect a restart) ──────────
 hdr "final memory snapshot"
-PID2="$(pgrep -f "$PROVIDER_BUNDLE" | head -1 || true)"
+PID2=""
+if kill -0 "$PID" 2>/dev/null; then
+  PID2="$PID"
+else
+  PID2="$(pgrep -f "$PROVIDER_BUNDLE" | head -1 || true)"
+fi
+PROVIDER_END_TIME=""
+[[ -n "$PID2" ]] && PROVIDER_END_TIME="$(ps -o lstart= -p "$PID2" 2>/dev/null | sed -E 's/^[[:space:]]+//')"
+PROVIDER_CONTINUOUS=1
 if [[ -z "$PID2" ]]; then
   warn "sysext process is GONE after the run (crashed or uninstalled)"
-elif [[ "$PID2" != "$PID" ]]; then
+  PROVIDER_CONTINUOUS=0
+elif [[ "$PID2" != "$PID" || "$PROVIDER_END_TIME" != "$PROVIDER_START_TIME" ]]; then
   warn "sysext RESTARTED during the run: $PID → $PID2 (watchdog churn / crash — itself a signal)"
+  PROVIDER_CONTINUOUS=0
 fi
+printf 'provider_end_pid\t%s\nprovider_end_time\t%s\nprovider_continuous\t%s\n' \
+  "${PID2:-gone}" "${PROVIDER_END_TIME:-gone}" "$PROVIDER_CONTINUOUS" >> "$OUT/run-meta.tsv"
 SNAP_PID="${PID2:-$PID}"
 {
   printf '=== final snapshot @ %s ===\n' "$(date -u +%FT%TZ)"
@@ -528,9 +556,16 @@ say "${LEAK_LINE:-(see leaks.txt)}"
 
 # ── Stop log capture ──────────────────────────────────────────────────
 hdr "stopping log capture"
+PROBE_MONITOR_ALIVE=0
+[[ -n "$PROBE_MON_PID" ]] && kill -0 "$PROBE_MON_PID" 2>/dev/null && PROBE_MONITOR_ALIVE=1
+printf 'probe_monitor_alive_end\t%s\n' "$PROBE_MONITOR_ALIVE" >> "$OUT/run-meta.tsv"
 [[ -n "$PROBE_MON_PID" ]] && kill "$PROBE_MON_PID" 2>/dev/null || true; PROBE_MON_PID=""
-sudo pkill -f "$LOG_MATCH" 2>/dev/null || true
+LOG_STREAM_ALIVE=0
+[[ -n "$LOG_STREAM_PID" ]] && sudo -n kill -0 "$LOG_STREAM_PID" 2>/dev/null && LOG_STREAM_ALIVE=1
+printf 'log_stream_alive_end\t%s\n' "$LOG_STREAM_ALIVE" >> "$OUT/run-meta.tsv"
+[[ -n "$LOG_STREAM_PID" ]] && sudo -n kill "$LOG_STREAM_PID" 2>/dev/null || true
 LOG_STREAM_STARTED=0
+LOG_STREAM_PID=""
 sleep 1
 NDJSON_LINES="$(wc -l < "$OUT/system.ndjson" 2>/dev/null | tr -d ' ' || echo 0)"
 say "captured $NDJSON_LINES ndjson lines"
@@ -560,6 +595,7 @@ from soak_pressure_log import (
     no_headroom_event,
     selection_event,
     settled_final_flow_gauge,
+    soak_evidence_issues,
     summarize_pressure_rows,
 )
 
@@ -576,8 +612,9 @@ if os.path.exists(mf):
 
 phases = []
 pf = os.path.join(out, "phases.tsv")
+starts = {}
+ended_phases = set()
 if os.path.exists(pf):
-    starts = {}
     phase_starts_us = {}
     phase_ends_us = {}
     for ln in open(pf):
@@ -597,6 +634,7 @@ if os.path.exists(pf):
         elif kind == "end" and name in starts:
             phases.append([name, starts[name], e])
             phase_ends_us[name] = e_us
+            ended_phases.add(name)
 
 def phase_of(ep):
     if ep is None:
@@ -639,7 +677,7 @@ try:
                 continue
             rows.append((o.get("timestamp", ""), o.get("eventMessage", ""), o.get("messageType", "")))
 except FileNotFoundError:
-    print("no system.ndjson"); sys.exit(0)
+    pass
 
 gauge_re = re.compile(r"live-flow counts tcp=(\d+) udp=(\d+) total=(\d+) peak=(\d+) softCap=(\d+)")
 # Reaper signals are summarized separately below. Periodic deltas and episode
@@ -727,6 +765,7 @@ with open(os.path.join(out, "flow-counts.txt"), "w") as g, \
 
 # Freeze detector (probe-timeline epoch \t iso \t code); exclude sleep-wake.
 probe_fail = probe_total = max_fail_run = probe_skipped = 0
+probe_per_phase = {}
 ptl = os.path.join(out, "probe-timeline.txt")
 if os.path.exists(ptl):
     run = 0
@@ -742,6 +781,8 @@ if os.path.exists(ptl):
         if phase_of(ep) == "sleep-wake":
             probe_skipped += 1; run = 0; continue
         probe_total += 1
+        probe_phase = phase_of(ep)
+        probe_per_phase[probe_phase] = probe_per_phase.get(probe_phase, 0) + 1
         if not code.startswith("2"):
             probe_fail += 1; run += 1; max_fail_run = max(max_fail_run, run)
         else:
@@ -758,6 +799,24 @@ if os.path.exists(fof):
                 fo_ok += 1
             else:
                 fo_bad += 1
+
+def meta_true(key):
+    return meta.get(key) == "1"
+
+evidence_issues = soak_evidence_issues(
+    meta,
+    rows_count=len(rows),
+    gauge_count=n_gauge,
+    probe_count=probe_total,
+    incomplete_phases=set(starts) - ended_phases,
+    phase_coverage=(
+        (name, end - start, probe_per_phase.get(name, 0), ph(name)["gauge"])
+        for name, start, end in phases
+    ),
+    final_gauge_required=meta.get("mode") != "find-ceiling",
+    final_gauge_present=final_gauge is not None,
+)
+evidence_complete = not evidence_issues
 
 baseline_total = int(meta.get("baseline_total", "0") or "0")
 final_total = final_gauge["total"] if final_gauge else None
@@ -778,12 +837,16 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
     w(f"gauge ticks:              {n_gauge}")
     w(f"sampled peak flows:       tcp={peak_tcp} udp={peak_udp} total={peak_total}")
     w(f"observed event peak:      total={observed_peak}")
+    w(f"provider continuity:      {'GOOD' if meta_true('provider_continuous') else 'FAIL'}")
+    w(f"evidence completeness:    {'GOOD' if evidence_complete else 'INCONCLUSIVE'}")
+    for issue in evidence_issues:
+        w(f"  missing: {issue}")
     w("")
     w("--- leak (baseline-relative; assumes a quiet idle tail) ---")
     w(f"baseline live flows:      {baseline_total}")
     w(f"final live flows:         {final_total if final_total is not None else 'n/a'}")
-    if final_total is None:
-        w("leak verdict:             INCONCLUSIVE — no trustworthy idle-tail gauge")
+    if not evidence_complete:
+        w("leak verdict:             INCONCLUSIVE — evidence or provider continuity is incomplete")
     elif final_total <= baseline_total + 5:
         w(f"leak verdict:             GOOD — settled to ≈baseline ({final_total} ≤ {baseline_total}+5)")
     else:
@@ -807,7 +870,9 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
         head = sc - observed_peak
         w(f"peak vs softCap:          observed_peak={observed_peak} softCap={sc} "
           f"({'UNDER by %d' % head if head >= 0 else 'OVER by %d (rode)' % (-head)})")
-        if pressure["eviction_observed"]:
+        if not evidence_complete:
+            w("reaper verdict:           INCONCLUSIVE — evidence or provider continuity is incomplete")
+        elif pressure["eviction_observed"]:
             w("reaper verdict:           GOOD — cap crossed and reaper evicted idle flows.")
         elif observed_peak >= sc:
             w("reaper verdict:           cap crossed with no confirmed eviction — admit-and-ride or")
@@ -832,13 +897,19 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
     if c["body_err"] > 0:
         w("body verdict:             !! response-body decode/relay errors — clients can see truncated/")
         w("                          aborted streams ('authenticity could not be verified'). See timeline.txt.")
+    elif not evidence_complete:
+        w("body verdict:             INCONCLUSIVE — log coverage or provider continuity is incomplete")
     else:
         w("body verdict:             GOOD — no body decode/relay errors")
     w("")
     w("--- freeze detector (liveness probe; sleep-wake excluded) ---")
     w(f"probes:                   {probe_total} (failures {probe_fail}, longest run {max_fail_run}, sleep-wake skipped {probe_skipped})")
-    w("freeze verdict:           " + ("GOOD — proxy stayed live (no freeze)" if probe_fail == 0
-      else f"!! {probe_fail} probe failures — investigate nexus exhaustion / network blip"))
+    if probe_fail > 0:
+        w(f"freeze verdict:           !! {probe_fail} probe failures — investigate nexus exhaustion / network blip")
+    elif not evidence_complete:
+        w("freeze verdict:           INCONCLUSIVE — probe coverage or provider continuity is incomplete")
+    else:
+        w("freeze verdict:           GOOD — proxy stayed live (no freeze)")
     w("")
     w(f"sleep markers: {c['sleep']}   wake markers: {c['wake']}   error/fault lines: {c['err']}")
     w(f"fanout active outcomes:   ok={fo_ok} non-2xx/err={fo_bad} (descriptive; top-up kills pollute codes)")
@@ -853,12 +924,18 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
         w("(eviction deltas are intentionally not phase-attributed: reporting ticks can cross phases)")
     w("")
     w("see flow-counts.txt, timeline.txt, probe-timeline.txt, holders.log, leaks.txt")
+
+with open(os.path.join(out, "evidence-status.tsv"), "w") as status:
+    status.write(f"complete\t{1 if evidence_complete else 0}\n")
+    for issue in evidence_issues:
+        status.write(f"issue\t{issue}\n")
 PYEOF
 else
   warn "python3 not found — falling back to grep"
   grep -oE 'live-flow counts[^"]*' "$OUT/system.ndjson" > "$OUT/flow-counts.txt" 2>/dev/null || true
   grep -iE 'flow pressure|drain backstop|force-tear|brotli error|drop MITM relay|system sleep|system wake' \
     "$OUT/system.ndjson" > "$OUT/timeline.txt" 2>/dev/null || true
+  printf 'complete\t0\nissue\tpython3 unavailable\n' > "$OUT/evidence-status.tsv"
 fi
 
 # ── Bundle ────────────────────────────────────────────────────────────
@@ -871,3 +948,8 @@ echo
 [[ -f "$OUT/extract-summary.txt" ]] && cat "$OUT/extract-summary.txt"
 echo
 hdr "hand me: $OUT  (or the tarball)"
+EVIDENCE_COMPLETE="$(awk -F '\t' '$1 == "complete" { print $2; exit }' "$OUT/evidence-status.tsv" 2>/dev/null)"
+if [[ "$EVIDENCE_COMPLETE" != 1 ]]; then
+  warn "soak completed, but evidence is incomplete; see evidence-status.tsv"
+  exit 2
+fi

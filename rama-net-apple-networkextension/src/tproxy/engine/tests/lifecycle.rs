@@ -7,6 +7,47 @@ use rama_core::bytes::Bytes;
 use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
+#[tokio::test(start_paused = true)]
+async fn udp_idle_wait_reuses_and_resets_one_deadline() {
+    let timeout = Duration::from_millis(100);
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let waiter_notify = notify.clone();
+    let waiter = tokio::spawn(async move {
+        wait_for_udp_idle(timeout, &waiter_notify).await;
+    });
+    tokio::task::yield_now().await;
+
+    for _ in 0..3 {
+        tokio::time::advance(Duration::from_millis(80)).await;
+        notify.notify_one();
+        tokio::task::yield_now().await;
+        assert!(!waiter.is_finished());
+    }
+    tokio::time::advance(Duration::from_millis(99)).await;
+    tokio::task::yield_now().await;
+    assert!(!waiter.is_finished());
+    tokio::time::advance(Duration::from_millis(1)).await;
+    waiter.await.expect("idle waiter task");
+}
+
+#[tokio::test(start_paused = true)]
+async fn udp_idle_activity_wins_a_deadline_tie() {
+    let timeout = Duration::from_millis(100);
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let waiter_notify = notify.clone();
+    let waiter = tokio::spawn(async move {
+        wait_for_udp_idle(timeout, &waiter_notify).await;
+    });
+    tokio::task::yield_now().await;
+
+    tokio::time::advance(timeout).await;
+    notify.notify_one();
+    tokio::task::yield_now().await;
+    assert!(!waiter.is_finished());
+    tokio::time::advance(timeout).await;
+    waiter.await.expect("idle waiter task");
+}
+
 // The TCP idle backstop, the UDP max-lifetime cap and the TCP paused-
 // drain wait are the three timer-based safety nets that keep a wedged
 // per-flow bridge from holding the macOS NWConnection registration

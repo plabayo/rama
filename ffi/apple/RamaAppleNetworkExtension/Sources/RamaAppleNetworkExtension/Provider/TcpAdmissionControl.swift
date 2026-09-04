@@ -35,6 +35,8 @@ struct TcpOverloadSnapshot {
     var startsInFlightPeak: Int
     var shedHardCap: Int
     var shedBreaker: Int
+    var shedLiveCapTcp: Int
+    var shedLiveCapUdp: Int
     var p50StartMs: UInt64
     var p95StartMs: UInt64
     var p99StartMs: UInt64
@@ -45,6 +47,9 @@ struct TcpOverloadState {
     private static let startLatencyWindowCapacity = 128
 
     var startsInFlight: [ObjectIdentifier: TcpAdmissionToken] = [:]
+    /// TCP starts admitted but not yet inserted into the live-flow registry.
+    /// Counted by the combined hard cap so UDP cannot race through the gap.
+    var liveFlowReservations: Set<ObjectIdentifier> = []
     var flowApps: [ObjectIdentifier: String] = [:]
     var perAppFlowCounts: [String: Int] = [:]
     private(set) var startLatencyMsWindow: [UInt64] = []
@@ -61,6 +66,8 @@ struct TcpOverloadState {
     var shedsSinceTick = 0
     var shedHardCapSinceTick = 0
     var shedBreakerSinceTick = 0
+    var shedLiveCapTcpSinceTick = 0
+    var shedLiveCapUdpSinceTick = 0
     var shedsByAppSinceTick: [String: Int] = [:]
     var startsInFlightPeakSinceTick = 0
     var breakerOpen = false
@@ -170,6 +177,8 @@ struct TcpOverloadState {
             startsInFlightPeak: max(startsInFlightPeakSinceTick, startsInFlight.count),
             shedHardCap: shedHardCapSinceTick,
             shedBreaker: shedBreakerSinceTick,
+            shedLiveCapTcp: shedLiveCapTcpSinceTick,
+            shedLiveCapUdp: shedLiveCapUdpSinceTick,
             p50StartMs: latencyPercentiles.p50,
             p95StartMs: latencyPercentiles.p95,
             p99StartMs: latencyPercentiles.p99,
@@ -180,6 +189,8 @@ struct TcpOverloadState {
         shedsSinceTick = 0
         shedHardCapSinceTick = 0
         shedBreakerSinceTick = 0
+        shedLiveCapTcpSinceTick = 0
+        shedLiveCapUdpSinceTick = 0
         shedsByAppSinceTick.removeAll(keepingCapacity: true)
         startsInFlightPeakSinceTick = startsInFlight.count
         return snapshot

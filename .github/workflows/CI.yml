@@ -255,6 +255,7 @@ jobs:
 
   test-rama-apple-ne-swift-ffi:
     runs-on: macos-latest
+    timeout-minutes: 90
     needs:
       - precheck-rust
       - precheck-docs
@@ -285,6 +286,8 @@ jobs:
             -o "quit" \
             -- "$(xcrun --find xctest)" \
             .build/arm64-apple-macosx/debug/RamaAppleNetworkExtensionPackageTests.xctest
+      - name: Run Swift-side ThreadSanitizer battery
+        run: just ./ffi/apple/examples/transparent_proxy/run-tproxy-ffi-e2e-swift-tsan
 
   test-rama-apple-xpc:
     runs-on: macos-latest

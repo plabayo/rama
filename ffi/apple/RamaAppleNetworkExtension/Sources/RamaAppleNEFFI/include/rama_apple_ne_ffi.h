@@ -281,6 +281,8 @@ typedef struct {
     /// hard cap / latency breaker, or a missing session): `0` = Block (fail
     /// closed), `1` = Passthrough (default, fail open). Always logged either way.
     uint32_t flow_refusal_action;
+    /// Combined TCP+UDP live-flow admission ceiling. 0 disables the ceiling.
+    uint32_t live_flow_hard_cap;
 } RamaTransparentProxyConfig;
 
 /// Initialization config passed once before using engine APIs.
@@ -320,10 +322,11 @@ _Static_assert(offsetof(RamaTransparentProxyFlowMeta, is_bound) == 151, "RamaTra
 _Static_assert(sizeof(RamaTransparentProxyNetworkRule) == 56, "RamaTransparentProxyNetworkRule ABI drift");
 _Static_assert(offsetof(RamaTransparentProxyNetworkRule, local_network_utf8) == 24, "RamaTransparentProxyNetworkRule.local_network_utf8 offset drift");
 _Static_assert(offsetof(RamaTransparentProxyNetworkRule, protocol) == 44, "RamaTransparentProxyNetworkRule.protocol offset drift");
-_Static_assert(sizeof(RamaTransparentProxyConfig) == 80, "RamaTransparentProxyConfig ABI drift");
+_Static_assert(sizeof(RamaTransparentProxyConfig) == 88, "RamaTransparentProxyConfig ABI drift");
 _Static_assert(offsetof(RamaTransparentProxyConfig, flow_pressure_soft_cap) == 40, "RamaTransparentProxyConfig.flow_pressure_soft_cap offset drift");
 _Static_assert(offsetof(RamaTransparentProxyConfig, tcp_breaker_connect_timeout_ms) == 72, "RamaTransparentProxyConfig.tcp_breaker_connect_timeout_ms offset drift");
 _Static_assert(offsetof(RamaTransparentProxyConfig, flow_refusal_action) == 76, "RamaTransparentProxyConfig.flow_refusal_action offset drift");
+_Static_assert(offsetof(RamaTransparentProxyConfig, live_flow_hard_cap) == 80, "RamaTransparentProxyConfig.live_flow_hard_cap offset drift");
 _Static_assert(sizeof(RamaTransparentProxyInitConfig) == 48, "RamaTransparentProxyInitConfig ABI drift");
 _Static_assert(offsetof(RamaTransparentProxyInitConfig, bundle_identifier_utf8) == 32, "RamaTransparentProxyInitConfig.bundle_identifier_utf8 offset drift");
 #endif

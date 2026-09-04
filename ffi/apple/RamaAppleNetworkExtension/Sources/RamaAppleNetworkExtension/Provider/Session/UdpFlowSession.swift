@@ -1,4 +1,5 @@
 import Foundation
+import RamaAppleNEFFI
 @preconcurrency import NetworkExtension
 
 /// Type-erased anchor that `TransparentProxyCore` retains for each
@@ -127,21 +128,44 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             )
             sessionHandle = session
             ctx.session = session
-            guard let engineGeneration,
-                core?.registerUdpFlowAndScheduleStartup(
+            guard let engineGeneration, let core else {
+                session.onClientClose()
+                return .passthrough
+            }
+            let appId = meta.sourceAppBundleIdentifier
+                ?? meta.sourceAppSigningIdentifier
+                ?? meta.sourceAppPid.map { "pid:\($0)" }
+                ?? "pid:unknown"
+            let registration = core.registerUdpFlowAndScheduleStartupDecision(
                     flowId,
                     anchor: self,
+                    appId: appId,
                     engineGeneration: engineGeneration,
                     on: flowQueue,
                     body: { [self] in
                         guard ctx.readState != .closed else { return }
                         openKernelFlow()
-                    }) == true
-            else {
+                    })
+            switch registration {
+            case .started:
+                return .intercept
+            case .unavailable:
                 session.onClientClose()
                 return .passthrough
+            case .capacityRefused(let reason, let persist):
+                let line =
+                    "udp admission rejected: \(reason); "
+                    + (defaultFlowRefusalPassthrough
+                        ? "passing through (fail open)" : "blocking (fail closed)")
+                    + " app=\(appId)"
+                if persist { core.logLifecycle(line) } else { core.logDebug(line) }
+                session.onClientClose()
+                if defaultFlowRefusalPassthrough { return .passthrough }
+                let error = blockedFlowError()
+                flow.closeReadWithError(error)
+                flow.closeWriteWithError(error)
+                return .blocked
             }
-            return .intercept
         case .passthrough:
             core?.logDebug("handleNewFlow udp bypassed by rust flow policy")
             return .passthrough
@@ -428,11 +452,11 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         guard let lease = core?.engineLeaseForNewFlow() else { return nil }
         let decision = lease.engine.newUdpSession(
             meta: meta,
-            onServerDatagram: { [weak ctx] data, peer in
+            onServerDatagram: { [weak ctx] view, peerView in
                 // The writer's existing queue-normalisation block also
                 // records activity, avoiding a second dispatch for the
                 // idle watchdog on every server datagram.
-                ctx?.writer?.enqueue(data, sentBy: peer?.toNetworkExtensionEndpoint())
+                ctx?.writer?.enqueueBorrowed(view, peerView: peerView)
             },
             onClientReadDemand: { [weak ctx] in ctx?.requestRead?() },
             onServerClosed: { [weak ctx] in ctx?.terminate?(nil) }

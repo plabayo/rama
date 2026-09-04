@@ -26,6 +26,9 @@ const MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES: usize = kib(8192);
 /// Default combined TCP+UDP live-flow soft cap that triggers the Swift-side
 /// idle TCP pressure reaper.
 pub const DEFAULT_FLOW_PRESSURE_SOFT_CAP: u32 = 450;
+/// Default combined TCP+UDP live-flow hard cap. This is a final admission
+/// backstop below the observed kernel nexus exhaustion edge (~600 flows).
+pub const DEFAULT_LIVE_FLOW_HARD_CAP: u32 = 500;
 /// Default target live-flow count after a pressure reap.
 pub const DEFAULT_FLOW_PRESSURE_LOW_WATER: u32 = 350;
 /// Default minimum idle age before a TCP flow is eligible for pressure reaping.
@@ -703,6 +706,8 @@ pub struct TransparentProxyConfig {
     flow_pressure_low_water: u32,
     /// Minimum idle age before a TCP flow is eligible for pressure reaping.
     flow_pressure_idle_floor_ms: u32,
+    /// Combined TCP+UDP live-flow admission ceiling. `0` disables the ceiling.
+    live_flow_hard_cap: u32,
     /// Hard cap on pre-ready TCP egress `NWConnection.start` calls. `0`
     /// disables hard start admission refusal.
     tcp_start_in_flight_hard_cap: u32,
@@ -738,6 +743,7 @@ impl TransparentProxyConfig {
             flow_pressure_soft_cap: DEFAULT_FLOW_PRESSURE_SOFT_CAP,
             flow_pressure_low_water: DEFAULT_FLOW_PRESSURE_LOW_WATER,
             flow_pressure_idle_floor_ms: DEFAULT_FLOW_PRESSURE_IDLE_FLOOR_MS,
+            live_flow_hard_cap: DEFAULT_LIVE_FLOW_HARD_CAP,
             tcp_start_in_flight_hard_cap: DEFAULT_TCP_START_IN_FLIGHT_HARD_CAP,
             tcp_start_in_flight_soft_cap: DEFAULT_TCP_START_IN_FLIGHT_SOFT_CAP,
             tcp_start_latency_breaker_p95_ms: DEFAULT_TCP_START_LATENCY_BREAKER_P95_MS,
@@ -778,6 +784,12 @@ impl TransparentProxyConfig {
     #[must_use]
     pub fn flow_pressure_soft_cap(&self) -> u32 {
         self.flow_pressure_soft_cap
+    }
+
+    /// Combined TCP+UDP live-flow admission ceiling. `0` disables it.
+    #[must_use]
+    pub fn live_flow_hard_cap(&self) -> u32 {
+        self.live_flow_hard_cap
     }
 
     /// Requested target combined live-flow count after a pressure reap.
@@ -913,6 +925,16 @@ impl TransparentProxyConfig {
     }
 
     generate_set_and_with! {
+        /// Set the combined TCP+UDP live-flow admission ceiling. `0` disables
+        /// it. Values near the undocumented kernel edge require on-device
+        /// calibration; the default keeps a conservative margin.
+        pub fn live_flow_hard_cap(mut self, value: u32) -> Self {
+            self.live_flow_hard_cap = value;
+            self
+        }
+    }
+
+    generate_set_and_with! {
         /// Set the minimum idle age before a TCP flow is eligible for pressure
         /// reaping, in milliseconds.
         pub fn flow_pressure_idle_floor_ms(mut self, value: u32) -> Self {
@@ -1028,6 +1050,7 @@ mod transparent_proxy_config_tests {
     fn overload_defaults_match_swift_fallbacks() {
         let cfg = TransparentProxyConfig::new();
         assert_eq!(cfg.flow_pressure_soft_cap(), DEFAULT_FLOW_PRESSURE_SOFT_CAP);
+        assert_eq!(cfg.live_flow_hard_cap(), DEFAULT_LIVE_FLOW_HARD_CAP);
         assert_eq!(
             cfg.flow_pressure_low_water(),
             DEFAULT_FLOW_PRESSURE_LOW_WATER
@@ -1068,6 +1091,7 @@ mod transparent_proxy_config_tests {
             .with_flow_pressure_soft_cap(2)
             .with_flow_pressure_low_water(1)
             .with_flow_pressure_idle_floor_ms(3)
+            .with_live_flow_hard_cap(10)
             .with_tcp_start_in_flight_hard_cap(4)
             .with_tcp_start_in_flight_soft_cap(5)
             .with_tcp_start_latency_breaker_p95_ms(6)
@@ -1078,6 +1102,7 @@ mod transparent_proxy_config_tests {
         assert_eq!(cfg.flow_pressure_soft_cap(), 2);
         assert_eq!(cfg.flow_pressure_low_water(), 1);
         assert_eq!(cfg.flow_pressure_idle_floor_ms(), 3);
+        assert_eq!(cfg.live_flow_hard_cap(), 10);
         assert_eq!(cfg.tcp_start_in_flight_hard_cap(), 4);
         assert_eq!(cfg.tcp_start_in_flight_soft_cap(), 5);
         assert_eq!(cfg.tcp_start_latency_breaker_p95_ms(), 6);

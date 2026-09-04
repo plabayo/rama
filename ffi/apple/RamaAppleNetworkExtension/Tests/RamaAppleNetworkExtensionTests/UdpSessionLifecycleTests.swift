@@ -1,4 +1,5 @@
 import Foundation
+import RamaAppleNEFFI
 import XCTest
 
 @testable import RamaAppleNetworkExtension
@@ -38,7 +39,7 @@ final class UdpSessionLifecycleTests: XCTestCase {
 
     private func newInterceptedUdpSession(
         on engine: RamaTransparentProxyEngineHandle,
-        onServerDatagram: @escaping (Data, RamaUdpPeer?) -> Void = { _, _ in }
+        onServerDatagram: @escaping (RamaBytesView, RamaUdpPeerView) -> Void = { _, _ in }
     ) -> RamaUdpSessionHandle {
         // Port 5000 (not 53): the demo handler treats DNS as passthrough
         // to avoid a circular dependency with the system resolver.

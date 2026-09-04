@@ -46,6 +46,7 @@ struct RamaTransparentProxyConfigBridge {
     var flowPressureSoftCap: UInt32
     var flowPressureLowWater: UInt32
     var flowPressureIdleFloorMs: UInt32
+    var liveFlowHardCap: UInt32
     var tcpStartInFlightHardCap: UInt32
     var tcpStartInFlightSoftCap: UInt32
     var tcpStartLatencyBreakerP95Ms: UInt32
@@ -163,12 +164,16 @@ final class UdpSessionCallbackBox {
     /// `flow.writeDatagrams`, which preserves per-datagram peer
     /// attribution all the way back to the kernel. `nil` is the
     /// safety valve for paths without attribution.
-    let onServerDatagram: (Data, RamaUdpPeer?) -> Void
+    /// Both views are borrowed from Rust and valid only for this synchronous
+    /// callback. The consumer must copy accepted payload/peer data before it
+    /// returns. Keeping the views raw lets the bounded writer reject overload
+    /// without first allocating and copying a datagram that it will drop.
+    let onServerDatagram: (RamaBytesView, RamaUdpPeerView) -> Void
     let onClientReadDemand: () -> Void
     let onServerClosed: () -> Void
 
     init(
-        onServerDatagram: @escaping (Data, RamaUdpPeer?) -> Void,
+        onServerDatagram: @escaping (RamaBytesView, RamaUdpPeerView) -> Void,
         onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) {
@@ -227,7 +232,7 @@ final class TcpEgressCallbackBox {
     }
 }
 
-private func dataFromView(_ view: RamaBytesView) -> Data {
+func dataFromView(_ view: RamaBytesView) -> Data {
     guard let ptr = view.ptr, view.len > 0 else {
         return Data()
     }
@@ -240,7 +245,7 @@ private func dataFromView(_ view: RamaBytesView) -> Data {
 /// or empty, or when the bytes don't form valid UTF-8. The Rust
 /// side guarantees UTF-8 for all peers it emits, so a failure here
 /// is treated the same as `present == false` (no attribution).
-private func peerFromView(_ view: RamaUdpPeerView) -> RamaUdpPeer? {
+func peerFromView(_ view: RamaUdpPeerView) -> RamaUdpPeer? {
     guard view.present, let ptr = view.host_utf8, view.host_utf8_len > 0 else {
         return nil
     }
@@ -414,11 +419,10 @@ private let ramaUdpOnServerDatagramCallback:
     ) -> Void = { context, view, peerView in
         guard let context else { return }
         let box = Unmanaged<UdpSessionCallbackBox>.fromOpaque(context).takeUnretainedValue()
-        let data = dataFromView(view)
         // RFC 768: zero-length UDP datagrams are valid; forward
         // unchanged. The matching filter on TCP (`onServerBytes`)
         // is correct because an empty TCP read is a non-event.
-        box.onServerDatagram(data, peerFromView(peerView))
+        box.onServerDatagram(view, peerView)
     }
 
 private let ramaUdpOnServerClosedCallback: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
@@ -640,6 +644,7 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
                 flowPressureSoftCap: out.flow_pressure_soft_cap,
                 flowPressureLowWater: out.flow_pressure_low_water,
                 flowPressureIdleFloorMs: out.flow_pressure_idle_floor_ms,
+                liveFlowHardCap: out.live_flow_hard_cap,
                 tcpStartInFlightHardCap: out.tcp_start_in_flight_hard_cap,
                 tcpStartInFlightSoftCap: out.tcp_start_in_flight_soft_cap,
                 tcpStartLatencyBreakerP95Ms: out.tcp_start_latency_breaker_p95_ms,
@@ -746,7 +751,7 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
 
     func newUdpSession(
         meta: RamaTransparentProxyFlowMetaBridge,
-        onServerDatagram: @escaping (Data, RamaUdpPeer?) -> Void,
+        onServerDatagram: @escaping (RamaBytesView, RamaUdpPeerView) -> Void,
         onClientReadDemand: @escaping () -> Void,
         onServerClosed: @escaping () -> Void
     ) -> RamaTransparentProxyUdpSessionDecision {

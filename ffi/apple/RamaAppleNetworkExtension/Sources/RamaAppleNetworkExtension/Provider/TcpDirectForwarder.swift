@@ -386,7 +386,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
             self.c2sPhase = .finished
             self.s2cPhase = .finished
             self.updateDrainPendingLocked()
-            self.fireTerminalLocked()
+            self.fireTerminalLocked(armLinger: false)
         }
     }
 
@@ -804,10 +804,10 @@ final class TcpDirectForwarder: @unchecked Sendable {
     private func maybeFireTerminalLocked() {
         guard !terminalFired else { return }
         guard c2sPhase == .finished, s2cPhase == .finished else { return }
-        fireTerminalLocked()
+        fireTerminalLocked(armLinger: true)
     }
 
-    private func fireTerminalLocked() {
+    private func fireTerminalLocked(armLinger: Bool) {
         guard !terminalFired else { return }
         terminalFired = true
         // Any pending drain backstop is moot now.
@@ -818,7 +818,9 @@ final class TcpDirectForwarder: @unchecked Sendable {
         // Both directions are terminal and the egress FIN send completed.
         // Only now may the bounded connection-release linger begin; arming it
         // at local FIN would truncate a valid quiet response half.
-        egressWritePump.armTerminalLingerCancel()
+        if armLinger {
+            egressWritePump.armTerminalLingerCancel()
+        }
         onTerminal()
     }
 }

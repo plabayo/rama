@@ -11,6 +11,7 @@ from soak_pressure_log import (
     selected_count,
     selection_event,
     settled_final_flow_gauge,
+    soak_evidence_issues,
     summarize_pressure_rows,
 )
 
@@ -237,6 +238,13 @@ class SoakPressureLogTests(unittest.TestCase):
         accepted = settled_final_flow_gauge(
             [gauge(120, 10), gauge(180, 8)], 100, 235)
         self.assertEqual(accepted["total"], 8)
+        bounded = settled_final_flow_gauge(
+            [gauge(180, 8), gauge(500, 1), gauge(120, 10)], 100, 235)
+        self.assertEqual(bounded["total"], 8)
+        self.assertIsNone(settled_final_flow_gauge(
+            [gauge(500, 1), gauge(501, 0)], 100, 235))
+        self.assertIsNone(settled_final_flow_gauge(
+            [gauge(180, 8), gauge(180, 7)], 100, 235))
         self.assertIsNone(settled_final_flow_gauge(
             [gauge(105, 10), gauge(120, 8)], 100, 235))
         self.assertIsNone(settled_final_flow_gauge(
@@ -312,6 +320,63 @@ class SoakPressureLogTests(unittest.TestCase):
         )
         self.assertEqual(evidence["periodic_intervals"], 1)
         self.assertEqual(evidence["periodic"]["evicted"], 3)
+
+    def test_complete_soak_evidence_has_no_issues(self):
+        meta = {
+            "log_stream_started": "1",
+            "log_stream_alive_end": "1",
+            "baseline_gauge_seen": "1",
+            "probe_monitor_alive_end": "1",
+            "provider_continuous": "1",
+        }
+        self.assertEqual(
+            soak_evidence_issues(
+                meta,
+                rows_count=20,
+                gauge_count=3,
+                probe_count=20,
+                phase_coverage=[("stress", 180, 20, 3)],
+                final_gauge_present=True,
+            ),
+            [],
+        )
+
+    def test_empty_or_restarted_soak_evidence_is_inconclusive(self):
+        issues = soak_evidence_issues(
+            {},
+            rows_count=0,
+            gauge_count=0,
+            probe_count=0,
+            incomplete_phases=["idle-tail"],
+            phase_coverage=[("stress", 180, 0, 0)],
+            final_gauge_present=False,
+        )
+        self.assertIn("provider process identity changed or disappeared", issues)
+        self.assertIn("system log contains no parseable rows", issues)
+        self.assertIn("phase 'idle-tail' has no end marker", issues)
+        self.assertIn("phase 'stress' has no liveness probe coverage", issues)
+        self.assertIn("phase 'stress' has no flow-gauge coverage", issues)
+        self.assertIn("idle tail has no trustworthy final flow gauge", issues)
+
+    def test_short_phase_does_not_require_periodic_samples(self):
+        meta = {
+            "log_stream_started": "1",
+            "log_stream_alive_end": "1",
+            "baseline_gauge_seen": "1",
+            "probe_monitor_alive_end": "1",
+            "provider_continuous": "1",
+        }
+        self.assertEqual(
+            soak_evidence_issues(
+                meta,
+                rows_count=2,
+                gauge_count=2,
+                probe_count=2,
+                phase_coverage=[("real-download", 3, 0, 0)],
+                final_gauge_required=False,
+            ),
+            [],
+        )
 
 
 if __name__ == "__main__":

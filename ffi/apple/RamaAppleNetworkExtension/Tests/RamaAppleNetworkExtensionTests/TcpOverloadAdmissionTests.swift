@@ -354,7 +354,10 @@ final class TcpOverloadAdmissionTests: XCTestCase {
         XCTAssertTrue(joined.contains("breaker="))
         XCTAssertTrue(joined.contains("hardCap=10"), "the cap the peak is measured against")
         XCTAssertTrue(joined.contains("shedHardCap=0"))
-        XCTAssertTrue(joined.contains("shedBreaker=0 shedApps=-"))
+        XCTAssertTrue(joined.contains("shedBreaker=0"))
+        XCTAssertTrue(joined.contains("shedLiveCapTcp=0"))
+        XCTAssertTrue(joined.contains("shedLiveCapUdp=0"))
+        XCTAssertTrue(joined.contains("shedApps=-"))
         XCTAssertTrue(
             joined.contains(
                 "pressure[triggers=0 scans=0 skipped=0 selected=0 evicted=0 "

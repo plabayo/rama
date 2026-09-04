@@ -293,6 +293,7 @@ final class ProviderStaticHelperTests: XCTestCase {
             flowPressureSoftCap: defaultFlowPressureSoftCap,
             flowPressureLowWater: defaultFlowPressureLowWater,
             flowPressureIdleFloorMs: defaultFlowPressureIdleFloorMs,
+            liveFlowHardCap: defaultLiveFlowHardCap,
             tcpStartInFlightHardCap: defaultTcpStartInFlightHardCap,
             tcpStartInFlightSoftCap: defaultTcpStartInFlightSoftCap,
             tcpStartLatencyBreakerP95Ms: defaultTcpStartLatencyBreakerP95Ms,
@@ -317,6 +318,7 @@ final class ProviderStaticHelperTests: XCTestCase {
         let savedFlowSoftCap = defaultFlowPressureSoftCap
         let savedFlowLowWater = defaultFlowPressureLowWater
         let savedFlowIdleFloor = defaultFlowPressureIdleFloorMs
+        let savedLiveHardCap = defaultLiveFlowHardCap
         let savedHardCap = defaultTcpStartInFlightHardCap
         let savedSoftCap = defaultTcpStartInFlightSoftCap
         let savedOpenP95 = defaultTcpStartLatencyBreakerP95Ms
@@ -330,6 +332,7 @@ final class ProviderStaticHelperTests: XCTestCase {
             defaultFlowPressureSoftCap = savedFlowSoftCap
             defaultFlowPressureLowWater = savedFlowLowWater
             defaultFlowPressureIdleFloorMs = savedFlowIdleFloor
+            defaultLiveFlowHardCap = savedLiveHardCap
             defaultTcpStartInFlightHardCap = savedHardCap
             defaultTcpStartInFlightSoftCap = savedSoftCap
             defaultTcpStartLatencyBreakerP95Ms = savedOpenP95
@@ -346,6 +349,7 @@ final class ProviderStaticHelperTests: XCTestCase {
             flowPressureSoftCap: 11,
             flowPressureLowWater: 12,
             flowPressureIdleFloorMs: 13,
+            liveFlowHardCap: 20,
             tcpStartInFlightHardCap: 14,
             tcpStartInFlightSoftCap: 15,
             tcpStartLatencyBreakerP95Ms: 16,
@@ -363,6 +367,7 @@ final class ProviderStaticHelperTests: XCTestCase {
         XCTAssertEqual(defaultFlowPressureSoftCap, 11)
         XCTAssertEqual(defaultFlowPressureLowWater, 10)
         XCTAssertEqual(defaultFlowPressureIdleFloorMs, 13)
+        XCTAssertEqual(defaultLiveFlowHardCap, 20)
         XCTAssertEqual(defaultTcpStartInFlightHardCap, 14)
         XCTAssertEqual(defaultTcpStartInFlightSoftCap, 15)
         XCTAssertEqual(defaultTcpStartLatencyBreakerP95Ms, 16)
@@ -397,6 +402,7 @@ final class ProviderStaticHelperTests: XCTestCase {
                 flowPressureSoftCap: softCap,
                 flowPressureLowWater: lowWater,
                 flowPressureIdleFloorMs: defaultFlowPressureIdleFloorMs,
+                liveFlowHardCap: defaultLiveFlowHardCap,
                 tcpStartInFlightHardCap: defaultTcpStartInFlightHardCap,
                 tcpStartInFlightSoftCap: defaultTcpStartInFlightSoftCap,
                 tcpStartLatencyBreakerP95Ms: defaultTcpStartLatencyBreakerP95Ms,
