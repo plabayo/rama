@@ -34,6 +34,10 @@ ENGINE_LIFECYCLE_RE = re.compile(
 )
 SYSTEM_SLEEP_RE = re.compile(r"^system sleep\b", re.IGNORECASE)
 SYSTEM_WAKE_RE = re.compile(r"^system wake\b", re.IGNORECASE)
+PROVIDER_ALLOCATION_FAILURE_RE = re.compile(
+    r"\bkernel flow allocation exhausted: resource=(?:nexus|necp)\b",
+    re.IGNORECASE,
+)
 
 PRESSURE_COUNTER_KEYS = (
     "triggers",
@@ -156,6 +160,59 @@ def flow_gauge_issue(message):
     if gauge["peak"] < gauge["allocated"]:
         return "flow-gauge peak is below its current allocated total"
     return None
+
+
+def provider_allocation_failure(message):
+    """Whether a provider log explicitly identifies kernel-flow exhaustion.
+
+    A curl transport error cannot identify the failing layer, and ENOBUFS is
+    also emitted for ordinary transient write backpressure.  Accept only a
+    dedicated provider statement naming the exhausted nexus/NECP allocation.
+    Current runtimes that do not emit this signal correctly remain heuristic.
+    """
+    return PROVIDER_ALLOCATION_FAILURE_RE.search(message) is not None
+
+
+def pressure_telemetry_issue(message):
+    """Reject present-but-malformed or locally contradictory telemetry."""
+    if not isinstance(message, str):
+        return "pressure telemetry message is not text"
+
+    signals = (
+        ("live-flow counts", flow_gauge, "flow-gauge"),
+        ("pressure[", pressure_counters, "pressure-counter"),
+        ("flow pressure episode", pressure_episode, "pressure-episode"),
+        ("; selected ", selection_event, "pressure-selection"),
+        ("but no flow idle", no_headroom_event, "pressure-no-headroom"),
+    )
+    for marker, parser, label in signals:
+        count = message.count(marker)
+        if count > 1:
+            return f"{label} sample contains duplicate telemetry markers"
+        if count == 1 and parser(message) is None:
+            return f"{label} sample is malformed or internally inconsistent"
+
+    allocation_marker = "kernel flow allocation exhausted:"
+    allocation_count = message.lower().count(allocation_marker)
+    if allocation_count > 1:
+        return "provider allocation-exhaustion sample contains duplicate telemetry markers"
+    if allocation_count == 1 and not provider_allocation_failure(message):
+        return "provider allocation-exhaustion sample is malformed or unrecognized"
+
+    if (
+        "flow pressure: occupancy" in message
+        and selection_event(message) is None
+        and no_headroom_event(message) is None
+    ):
+        return "pressure lifecycle sample is malformed or unrecognized"
+
+    selection = selection_event(message)
+    if selection is not None and selection["occupancy"] <= selection["soft_cap"]:
+        return "pressure selection does not exceed its soft cap"
+    no_headroom = no_headroom_event(message)
+    if no_headroom is not None and no_headroom["occupancy"] <= no_headroom["soft_cap"]:
+        return "pressure no-headroom event does not exceed its soft cap"
+    return flow_gauge_issue(message)
 
 
 def phase_for_epoch(epoch, phases):
@@ -362,6 +419,37 @@ def parse_phase_marker_lines(lines, expected_order):
     return ordered_phases, incomplete, starts_us, ends_us, issues
 
 
+def parse_provider_identity_lines(lines, expected_identity):
+    """Validate every periodic provider identity observation."""
+    if re.fullmatch(r"[0-9a-f]{64}", expected_identity or "") is None:
+        return [], ["provider start identity is missing or invalid"]
+    epochs = []
+    issues = []
+    previous = None
+    for line_number, raw in enumerate(lines, 1):
+        if not raw.strip():
+            continue
+        fields = raw.rstrip("\n").split("\t")
+        if len(fields) != 2:
+            issues.append(f"malformed provider identity sample at line {line_number}")
+            continue
+        epoch = parse_artifact_epoch(fields[0])
+        identity = fields[1]
+        if epoch is None or re.fullmatch(r"[0-9a-f]{64}", identity) is None:
+            issues.append(f"malformed provider identity sample at line {line_number}")
+            continue
+        if previous is not None and epoch < previous:
+            issues.append(f"out-of-order provider identity sample at line {line_number}")
+            continue
+        if identity != expected_identity:
+            issues.append(f"provider identity changed at line {line_number}")
+        epochs.append(epoch)
+        previous = epoch
+    if len(epochs) < 2:
+        issues.append("fewer than two provider identity samples were captured")
+    return epochs, issues
+
+
 def engine_lifecycle_event(message):
     """Return the generation-changing lifecycle text in one log message."""
     match = ENGINE_LIFECYCLE_RE.search(message)
@@ -375,6 +463,21 @@ def lifecycle_category_issue(message, category):
         or SYSTEM_SLEEP_RE.search(message) is not None
         or SYSTEM_WAKE_RE.search(message) is not None
         or pressure_episode(message) is not None
+        or flow_gauge(message) is not None
+        or pressure_counters(message) is not None
+        or selection_event(message) is not None
+        or no_headroom_event(message) is not None
+        or provider_allocation_failure(message)
+        or any(
+            marker in message
+            for marker in (
+                "live-flow counts",
+                "pressure[",
+                "flow pressure episode",
+                "flow pressure: occupancy",
+                "kernel flow allocation exhausted:",
+            )
+        )
     )
     if is_lifecycle and category != "lifecycle":
         return f"lifecycle evidence used non-lifecycle category {category!r}"
@@ -613,9 +716,14 @@ def probe_succeeded(record):
 
 
 def ceiling_transport_failed(record):
-    """Return whether a probe failed before receiving any HTTP response."""
+    """Return whether a probe had a non-DNS, non-TLS transport interruption."""
     _, _, curl_rc, code, *_ = record
-    return curl_rc != 0 and code == "000"
+    # These curl outcomes can describe a stalled/reset data path.  Connection,
+    # name-resolution, certificate, and TLS setup failures are deliberately
+    # excluded; even this subset is only a heuristic until a dedicated provider
+    # nexus/NECP allocation-exhaustion signal corroborates it in
+    # ``ceiling_outage_window``.
+    return curl_rc in (28, 52, 55, 56) and code == "000"
 
 
 def parse_probe_lines(lines, label="liveness probe"):
@@ -836,8 +944,14 @@ def parse_ceiling_probe_lines(lines):
     return records, issues
 
 
-def ceiling_outage_window(records, baseline_total, phase):
-    """Return the proved direct-failure to direct-recovery half-open window."""
+def ceiling_outage_window(
+    records,
+    baseline_total,
+    phase,
+    gauge_samples=(),
+    allocation_failure_epochs=(),
+):
+    """Return a provider-corroborated failure-to-recovery half-open window."""
     try:
         _, start, end = phase
     except (TypeError, ValueError):
@@ -847,8 +961,23 @@ def ceiling_outage_window(records, baseline_total, phase):
     end = parse_epoch(end)
     if baseline_total is None or start is None or end is None or end <= start:
         return None
+    try:
+        gauges = {
+            (parse_epoch(epoch), _nonnegative_int(occupancy))
+            for epoch, occupancy in gauge_samples
+        }
+        allocation_epochs = {
+            parse_epoch(epoch) for epoch in allocation_failure_epochs
+        }
+    except (TypeError, ValueError):
+        return None
+    if any(epoch is None or occupancy is None for epoch, occupancy in gauges):
+        return None
+    if any(epoch is None for epoch in allocation_epochs):
+        return None
     run = 0
     first_failure = None
+    first_gauge_epoch = None
     proved_start = None
     for started, completed, curl_rc, code, occupancy, gauge_epoch in records:
         if not (start <= started <= completed < end):
@@ -867,34 +996,57 @@ def ceiling_outage_window(records, baseline_total, phase):
         gauge_is_fresh = (
             start <= gauge_epoch <= started
             and started - gauge_epoch <= Decimal("70")
+            and (gauge_epoch, occupancy) in gauges
         )
         if occupancy > baseline_total and gauge_is_fresh:
             if run == 0:
                 first_failure = completed
+                first_gauge_epoch = gauge_epoch
             run += 1
-            if run >= 2:
+            allocation_corroborated = any(
+                first_gauge_epoch <= epoch <= completed
+                for epoch in allocation_epochs
+            )
+            if run >= 2 and allocation_corroborated:
                 proved_start = first_failure
         else:
             run = 0
             first_failure = None
+            first_gauge_epoch = None
     if proved_start is not None:
         return proved_start, None
     return None
 
 
 def ceiling_probe_evidence_issues(
-    records, ceiling_found, baseline_total, phase, ceiling_recovered=None
+    records,
+    ceiling_found,
+    baseline_total,
+    phase,
+    ceiling_recovered=None,
+    gauge_samples=(),
+    allocation_failure_epochs=(),
 ):
     """Require attributable consecutive failure and claimed direct recovery."""
     if isinstance(ceiling_found, bool) or ceiling_found not in (0, 1, "0", "1"):
         return ["ceiling-finder outcome is missing"]
     if str(ceiling_found) != "1":
         return []
-    window = ceiling_outage_window(records, baseline_total, phase)
+    window = ceiling_outage_window(
+        records,
+        baseline_total,
+        phase,
+        gauge_samples,
+        allocation_failure_epochs,
+    )
     if window is None:
         if phase is None:
             return ["ceiling failure proof has invalid baseline or phase"]
-        return ["ceiling failure lacks two consecutive elevated, phase-local probes"]
+        return [
+            "ceiling failure lacks two consecutive provider-gauge-corroborated "
+            "transport probes plus a phase-local explicit provider allocation-exhaustion signal; "
+            "transport pattern is heuristic only"
+        ]
     if str(ceiling_recovered) == "1" and window[1] is None:
         return ["ceiling recovery lacks a phase-local direct success probe"]
     return []
@@ -1028,11 +1180,15 @@ def parse_evidence_status_lines(lines):
             "schema_complete",
         ):
             return None
+        if value == "":
+            return None
         if key in ("complete", "passed", "exit_code", "schema_complete"):
             if key in values:
                 return None
             values[key] = value
     if not pairs or pairs[-1] != ["schema_complete", "1"]:
+        return None
+    if [key for key, _ in pairs[:3]] != ["complete", "passed", "exit_code"]:
         return None
     verdict = (values.get("complete"), values.get("passed"), values.get("exit_code"))
     issue_count = sum(key == "issue" for key, _ in pairs)
@@ -1044,6 +1200,42 @@ def parse_evidence_status_lines(lines):
     if verdict == ("0", "0", "2") and issue_count > 0:
         return 2
     return None
+
+
+def artifact_identity_issues(meta):
+    """Validate locally attainable source, script, binary, and signing identity."""
+    issues = []
+    if not isinstance(meta, dict):
+        return ["artifact identity metadata is missing"]
+    if re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", meta.get("repo_head", "")) is None:
+        issues.append("repository commit identity is missing or invalid")
+    if meta.get("repo_dirty") not in ("0", "1"):
+        issues.append("repository dirty-state identity is missing or invalid")
+    for key, label in (
+        ("soak_script_sha256", "soak script"),
+        ("stress_script_sha256", "stress script"),
+        ("pressure_parser_sha256", "pressure parser"),
+        ("provider_binary_sha256", "provider binary"),
+    ):
+        if re.fullmatch(r"[0-9a-f]{64}", meta.get(key, "")) is None:
+            issues.append(f"{label} SHA-256 identity is missing or invalid")
+    executable = meta.get("provider_executable", "")
+    if not isinstance(executable, str) or not executable.startswith("/") or "\t" in executable:
+        issues.append("provider executable identity is missing or invalid")
+    bundle = meta.get("provider_bundle")
+    signing_identifier = meta.get("provider_codesign_identifier")
+    if not isinstance(bundle, str) or not bundle:
+        issues.append("provider bundle identity is missing or invalid")
+    if signing_identifier != bundle:
+        issues.append("provider code-signing identifier does not match its log subsystem")
+    for key, label in (
+        ("provider_codesign_cdhash", "provider code-signing CDHash"),
+        ("provider_codesign_team", "provider code-signing team"),
+    ):
+        value = meta.get(key, "")
+        if not isinstance(value, str) or not value or value == "unavailable" or "\t" in value:
+            issues.append(f"{label} is missing or unavailable")
+    return issues
 
 
 def pressure_counters(message):
@@ -1082,6 +1274,8 @@ def pressure_episode(message):
         return None
     event = dict(zip(keys, (values[0], *numeric_values)))
     precise_start = START_EPOCH_US_RE.search(message)
+    if "startEpochUs=" in message and precise_start is None:
+        return None
     if precise_start:
         start_epoch_us = parse_artifact_uint(precise_start.group(1))
         if start_epoch_us is None:
@@ -1095,6 +1289,12 @@ def pressure_episode(message):
     if event["outcome"] == "ended" and event["selected"] != sum(
         event[key] for key in ("evicted", "spared", "canceled", "expired")
     ):
+        return None
+    if event["outcome"] == "interrupted" and event["selected"] < sum(
+        event[key] for key in ("evicted", "spared", "canceled", "expired")
+    ):
+        return None
+    if event["peak_occupancy"] <= event["soft_cap"]:
         return None
     event["start_epoch_us"] = start_epoch_us
     return event
@@ -1288,10 +1488,13 @@ def classify_soak_result(
     probe_failures,
     body_errors,
     reaper_status,
+    fanout_failures=0,
     leak_count=0,
     baseline_total=None,
     final_total=None,
     settlement_tolerance=5,
+    provider_faults=0,
+    unknown_provider_errors=0,
 ):
     """Return orthogonal evidence completeness and product verdict state."""
     issues = list(evidence_issues)
@@ -1360,7 +1563,10 @@ def classify_soak_result(
     for name, value in (
         ("probe failure count", probe_failures),
         ("body error count", body_errors),
+        ("fanout transfer failure count", fanout_failures),
         ("leak count", leak_count),
+        ("provider Fault count", provider_faults),
+        ("unknown provider Error count", unknown_provider_errors),
     ):
         parsed = _nonnegative_int(value)
         if parsed is None:
@@ -1370,13 +1576,26 @@ def classify_soak_result(
 
     probe_failures = numeric_values["probe failure count"]
     body_errors = numeric_values["body error count"]
+    fanout_failures = numeric_values["fanout transfer failure count"]
     leak_count = numeric_values["leak count"]
+    provider_faults = numeric_values["provider Fault count"]
+    unknown_provider_errors = numeric_values["unknown provider Error count"]
     if probe_failures:
         failures.append(f"{probe_failures} liveness probe(s) failed")
     if body_errors:
         failures.append(f"{body_errors} body decode/relay error(s) were observed")
+    if fanout_failures:
+        failures.append(
+            f"{fanout_failures} active fanout transfer failure(s) were observed"
+        )
     if leak_count:
         failures.append(f"leaks reported {leak_count} leaked allocation(s)")
+    if provider_faults:
+        failures.append(f"{provider_faults} provider Fault log(s) were observed")
+    if unknown_provider_errors:
+        failures.append(
+            f"{unknown_provider_errors} unclassified provider Error log(s) were observed"
+        )
 
     if mode in valid_modes - {"find-ceiling"}:
         if baseline_total is None:
@@ -1435,6 +1654,7 @@ def summarize_pressure_rows(
         )
 
     result = {
+        "issues": [],
         "observed_peak": 0,
         "soft_caps": set(),
         "selection_events": 0,
@@ -1529,6 +1749,9 @@ def summarize_pressure_rows(
             row_epoch is None
             or Decimal(episode["start_epoch_us"]) / Decimal(1_000_000) > row_epoch
         ):
+            result["issues"].append(
+                "pressure episode start timestamp is later than its log record"
+            )
             episode = None
         if episode:
             if (

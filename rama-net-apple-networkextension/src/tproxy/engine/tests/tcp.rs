@@ -9,6 +9,7 @@ use parking_lot::Mutex;
 use rama_core::io::BridgeIo;
 use rama_core::service::service_fn;
 use rama_net::address::HostWithPort;
+use std::convert::Infallible;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -737,6 +738,79 @@ fn tcp_cancel_after_activate_still_emits_close_telemetry() {
     );
 
     engine.stop(0);
+}
+
+fn assert_tcp_service_panic_runs_close_epilogue(flow_id: u64, panic_while_polling: bool) {
+    install_close_capture();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(move |meta| {
+            let service: TestTcpService = if panic_while_polling {
+                service_fn(
+                    |_bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async move {
+                        panic!("synthetic tcp service poll panic")
+                    },
+                )
+                .boxed()
+            } else {
+                service_fn(
+                    |_bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| -> std::future::Ready<
+                        Result<(), Infallible>,
+                    > { panic!("synthetic tcp service construction panic") },
+                )
+                .boxed()
+            };
+            FlowAction::Intercept { meta, service }
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine(handler);
+    let (closed_tx, closed_rx) = std::sync::mpsc::sync_channel(1);
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp);
+    meta.flow_id = flow_id;
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        meta,
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        move || _ = closed_tx.send(()),
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+
+    closed_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("panicking service must still notify Swift close");
+    let started = Instant::now();
+    while !flow_was_closed(flow_id) && started.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        flow_was_closed(flow_id),
+        "panicking service must still run structured and dial9 close epilogue"
+    );
+    assert_eq!(
+        flow_close_reason(flow_id).as_deref(),
+        Some("service_panic"),
+        "construction and poll panics must retain their distinct flow-wide close reason",
+    );
+
+    engine.stop(0);
+}
+
+#[test]
+fn tcp_service_construction_panic_runs_close_epilogue() {
+    assert_tcp_service_panic_runs_close_epilogue(0xE1E1_1001, false);
+}
+
+#[test]
+fn tcp_service_poll_panic_runs_close_epilogue() {
+    assert_tcp_service_panic_runs_close_epilogue(0xE1E1_1002, true);
 }
 
 /// A server-speaks-first flow whose client half-closes without sending must not

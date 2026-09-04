@@ -61,12 +61,28 @@ pub use self::runtime::{
     TransparentProxyAsyncRuntimeFactory,
 };
 
+mod decision_concurrency;
+use self::decision_concurrency::{DecisionConcurrencyGate, DecisionPermit};
+
+mod udp_ingress;
+pub use self::udp_ingress::{
+    DEFAULT_UDP_INGRESS_GLOBAL_MAX_BYTES, DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES,
+    MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
+};
+use self::udp_ingress::{UdpIngressBudget, UdpIngressFlowControl};
+
 mod promote;
 pub use self::promote::{Promote, PromoteError, PromoteHandle, PromoteLayer};
 
 /// Default deadline for flow-handler decisions. Tuned via
 /// [`TransparentProxyEngineBuilder::with_decision_deadline`].
 pub const DEFAULT_DECISION_DEADLINE: Duration = Duration::from_secs(3);
+
+/// Maximum flow-policy decisions polled concurrently by one engine
+/// generation. This bounds pre-decision futures and FFI callback state when
+/// macOS delivers a burst of new TCP and UDP flows concurrently. It is not an
+/// admitted-flow limit and has no packet-path cost.
+pub const DEFAULT_DECISION_CONCURRENCY_LIMIT: usize = 64;
 
 /// Default per-flow TCP idle backstop. The engine applies this when
 /// the builder's `tcp_idle_timeout` is left unset; explicit `None` via
@@ -256,12 +272,15 @@ pub struct TransparentProxyEngine<H> {
     tcp_flow_buffer_size: usize,
     tcp_channel_capacity: usize,
     udp_channel_capacity: usize,
+    udp_ingress_per_flow_max_bytes: usize,
+    udp_ingress_budget: Arc<UdpIngressBudget>,
     tcp_idle_timeout: Option<Duration>,
     tcp_paused_drain_max_wait: Option<Duration>,
     udp_max_flow_lifetime: Option<Duration>,
     udp_idle_timeout: Option<Duration>,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
+    decision_concurrency: Arc<DecisionConcurrencyGate>,
     /// `None` ⇒ fall back to `decision_deadline`; see the builder
     /// doc on [`TransparentProxyEngineBuilder::app_message_deadline`].
     app_message_deadline: Option<Duration>,
@@ -315,7 +334,16 @@ where
     /// mirrors the Rust service timer. Zero is the cross-FFI disabled sentinel.
     pub fn udp_idle_timeout_ms(&self) -> u64 {
         self.udp_idle_timeout
-            .map(|timeout| u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX))
+            .map(|timeout| {
+                // Reserve zero for `None`: an explicitly enabled zero or
+                // sub-millisecond timeout still means "expire immediately"
+                // and therefore needs an enabled Swift watchdog. Round up so
+                // every positive fractional millisecond remains non-zero on
+                // the wire, then saturate values wider than the FFI integer.
+                u64::try_from(timeout.as_nanos().div_ceil(1_000_000))
+                    .unwrap_or(u64::MAX)
+                    .max(1)
+            })
             .unwrap_or(0)
     }
 
@@ -413,6 +441,15 @@ where
             return SessionFlowAction::Passthrough;
         };
 
+        let Some(decision_permit) = self.decision_concurrency.try_acquire() else {
+            self.decision_concurrency.record_overload(
+                meta.flow_id,
+                meta.protocol,
+                self.decision_deadline_action,
+            );
+            return session_action_from_decision_action(self.decision_deadline_action);
+        };
+
         let tcp_write_chunk_limit = self.tcp_flow_buffer_size.min(
             self.transparent_proxy_config
                 .tcp_write_pump_max_pending_bytes(),
@@ -439,6 +476,7 @@ where
                 tcp_paused_drain_max_wait,
                 decision_deadline,
                 decision_deadline_action,
+                decision_permit,
                 on_server_bytes,
                 on_client_read_demand,
                 on_server_closed,
@@ -480,7 +518,18 @@ where
             return SessionFlowAction::Passthrough;
         };
 
+        let Some(decision_permit) = self.decision_concurrency.try_acquire() else {
+            self.decision_concurrency.record_overload(
+                meta.flow_id,
+                meta.protocol,
+                self.decision_deadline_action,
+            );
+            return session_action_from_decision_action(self.decision_deadline_action);
+        };
+
         let udp_channel_capacity = self.udp_channel_capacity;
+        let udp_ingress_per_flow_max_bytes = self.udp_ingress_per_flow_max_bytes;
+        let udp_ingress_budget = self.udp_ingress_budget.clone();
         let udp_max_flow_lifetime = self.udp_max_flow_lifetime;
         let udp_idle_timeout = self.udp_idle_timeout;
         let decision_deadline = self.decision_deadline;
@@ -497,10 +546,13 @@ where
                 exec,
                 meta,
                 udp_channel_capacity,
+                udp_ingress_per_flow_max_bytes,
+                udp_ingress_budget,
                 udp_max_flow_lifetime,
                 udp_idle_timeout,
                 decision_deadline,
                 decision_deadline_action,
+                decision_permit,
                 on_server_datagram,
                 on_client_read_demand,
                 on_server_closed,
@@ -524,6 +576,23 @@ where
 
     pub fn stop(mut self, reason: i32) {
         self.shutdown_blocking(reason);
+    }
+
+    #[cfg(test)]
+    fn udp_ingress_budget_for_test(&self) -> Arc<UdpIngressBudget> {
+        self.udp_ingress_budget.clone()
+    }
+
+    #[cfg(test)]
+    fn udp_ingress_per_flow_max_bytes_for_test(&self) -> usize {
+        self.udp_ingress_per_flow_max_bytes
+    }
+
+    #[cfg(test)]
+    fn decision_concurrency_snapshot_for_test(
+        &self,
+    ) -> decision_concurrency::DecisionConcurrencySnapshot {
+        self.decision_concurrency.snapshot()
     }
 
     fn shutdown_guard(&self) -> Option<ShutdownGuard> {
@@ -1104,6 +1173,7 @@ async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
     tcp_paused_drain_max_wait: Option<Duration>,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
+    decision_permit: DecisionPermit,
     on_server_bytes: OnBytes,
     on_client_read_demand: OnDemand,
     on_server_closed: OnClosed,
@@ -1120,9 +1190,10 @@ where
     let flow_protocol = meta.protocol;
     #[cfg(feature = "dial9")]
     let flow_source_pid = meta.source_app_pid;
-    let Ok(flow_action) =
-        tokio::time::timeout(decision_deadline, handler.match_tcp_flow(exec, meta)).await
-    else {
+    let decision =
+        tokio::time::timeout(decision_deadline, handler.match_tcp_flow(exec, meta)).await;
+    drop(decision_permit);
+    let Ok(flow_action) = decision else {
         emit_decision_deadline_event(
             flow_id,
             flow_protocol,
@@ -1254,7 +1325,13 @@ where
                 "transparent proxy tcp flow closed before activate",
             );
             #[cfg(feature = "dial9")]
-            crate::tproxy::dial9::record_flow_closed(meta_for_close.flow_id, age_ms, 0, 0);
+            crate::tproxy::dial9::record_flow_closed(
+                meta_for_close.flow_id,
+                BridgeCloseReason::Shutdown,
+                age_ms,
+                0,
+                0,
+            );
             return;
         };
 
@@ -1262,7 +1339,19 @@ where
         // guard here (the streams don't). On idle/shutdown we drop `serve`,
         // whose streams' `Drop` fires the gated close callbacks.
         let reason = {
-            let mut serve = std::pin::pin!(service.serve(bridge));
+            // Match the UDP boundary below: a user service can panic while
+            // constructing its future or while that future is polled. Keep
+            // both failure modes inside this task so the directional close
+            // events and dial9 `record_flow_closed` epilogue always run.
+            let mut serve = std::pin::pin!(async move {
+                let future = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    service.serve(bridge)
+                })) {
+                    Ok(future) => future,
+                    Err(panic) => return Err(panic),
+                };
+                std::panic::AssertUnwindSafe(future).catch_unwind().await
+            });
             let mut idle = tcp_idle_timeout.map(IdleGuard::new);
             let mut last_progress = counters_for_close.total();
             loop {
@@ -1285,7 +1374,23 @@ where
                         }
                         break BridgeCloseReason::IdleTimeout;
                     }
-                    _ = serve.as_mut() => break BridgeCloseReason::PeerEofLeft,
+                    result = serve.as_mut() => {
+                        break match result {
+                            Ok(service_result) => {
+                                _ = service_result;
+                                BridgeCloseReason::PeerEofLeft
+                            }
+                            Err(panic) => {
+                                tracing::error!(
+                                    target: "rama_apple_ne::tproxy",
+                                    flow_id = meta_for_close.flow_id,
+                                    panic_message = %panic_payload_message(panic.as_ref()),
+                                    "transparent proxy tcp service panicked; closing flow",
+                                );
+                                BridgeCloseReason::ServicePanic
+                            }
+                        };
+                    }
                 }
             }
         };
@@ -1319,6 +1424,7 @@ where
             let age_ms = u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
             crate::tproxy::dial9::record_flow_closed(
                 meta_for_close.flow_id,
+                ingress_reason,
                 age_ms,
                 ingress_received,
                 ingress_sent,
@@ -1388,8 +1494,9 @@ struct UdpSessionPendingData {
     /// datagram's peer is the `sentBy` endpoint Swift uses when calling
     /// `NEAppProxyUDPFlow.writeDatagrams(_:sentBy:)`.
     on_server_datagram: DatagramSink,
-    /// Demand sink captured into `UdpFlow` at activate.
-    client_read_demand_sink: DemandSink,
+    /// Shared ingress pressure/demand state captured into `UdpFlow` at
+    /// activation and retained by every charged payload clone.
+    ingress_control: Arc<UdpIngressFlowControl>,
     /// Per-flow metadata. Shared as `Arc` because the service task
     /// also needs it (close-event emission); a single refcount-bumped
     /// clone is cheaper than copying the whole struct.
@@ -1398,7 +1505,7 @@ struct UdpSessionPendingData {
 
 pub struct TransparentProxyUdpSession {
     client_tx: Option<mpsc::Sender<Datagram>>,
-    on_client_read_demand: DemandSink,
+    ingress_control: Arc<UdpIngressFlowControl>,
 
     flow_stop_tx: Option<oneshot::Sender<()>>,
     pending: Option<UdpSessionPendingData>,
@@ -1423,13 +1530,28 @@ pub struct TransparentProxyUdpSession {
 /// Tokio timer allocation. Activity wins a deadline tie, matching the previous
 /// `timeout(notify.notified())` polling order.
 async fn wait_for_udp_idle(timeout: Duration, notify: &tokio::sync::Notify) {
-    let deadline = tokio::time::sleep(timeout);
+    let Some(deadline_at) = tokio::time::Instant::now().checked_add(timeout) else {
+        // The requested deadline lies outside `Instant`'s platform range. It
+        // cannot be observed during this process lifetime, so remain pending
+        // instead of panicking while preserving the outer task's shutdown and
+        // max-lifetime select arms.
+        std::future::pending::<()>().await;
+        return;
+    };
+    let deadline = tokio::time::sleep_until(deadline_at);
     tokio::pin!(deadline);
     loop {
         tokio::select! {
             biased;
             _ = notify.notified() => {
-                deadline.as_mut().reset(tokio::time::Instant::now() + timeout);
+                let Some(deadline_at) = tokio::time::Instant::now().checked_add(timeout) else {
+                    // Activity moved an otherwise representable deadline past
+                    // the platform limit. Treat it as unreachable; the outer
+                    // flow select can still cancel and run its close epilogue.
+                    std::future::pending::<()>().await;
+                    return;
+                };
+                deadline.as_mut().reset(deadline_at);
             }
             _ = &mut deadline => return,
         }
@@ -1456,63 +1578,43 @@ impl TransparentProxyUdpSession {
         // (DTLS heartbeats, NAT-binding probes, keep-alives) rely on
         // them. Forward them through the bridge unchanged — the
         // service decides whether to filter, not the framework.
-        if let Some(tx) = self.client_tx.as_mut() {
-            // Bounded channel + lossy semantics: when the service can't keep up
-            // we drop the datagram rather than block the FFI thread or grow the
-            // queue without bound. UDP is lossy by design, so this matches what
-            // the wire protocol already tolerates.
-            //
-            // Demand wiring: `on_client_read_demand` is the engine→Swift
-            // signal that re-arms the kernel `flow.readDatagrams` cycle.
-            // Swift's `requestRead` checks an internal `demandPending` flag
-            // at the end of each in-flight read; if no demand call has come
-            // in by then, Swift stops pumping. We therefore MUST fire
-            // demand even on the `Full` arm — otherwise a saturating burst
-            // that drops one datagram leaves Swift's `demandPending = false`
-            // and Swift never re-issues `readDatagrams`, stalling the flow
-            // permanently. Swift is already idempotent against
-            // simultaneous demand calls (its `readPending` flag), so the
-            // redundancy is harmless.
-            //
-            // Only the `Closed` arm skips the demand: the session is gone,
-            // no point asking Swift to read more.
-            //
-            // Allocation is gated on free capacity so the overload
-            // path (saturating burst that would be dropped) skips
-            // the `Bytes::copy_from_slice` heap allocation entirely.
-            // `Sender::capacity()` returns 0 on a closed channel too
-            // — so the closed check MUST come first, otherwise a
-            // closed-channel datagram would fire demand against a
-            // Swift side whose session is already gone (the exact
-            // contract `Closed` arm is meant to suppress).
-            // `Sender::is_closed()` is a single atomic load; cheap
-            // enough to do unconditionally on the hot path.
-            if tx.is_closed() {
-                return;
-            }
-            if tx.capacity() == 0 {
-                (self.on_client_read_demand)();
-                return;
-            }
-            let datagram = Datagram {
-                payload: Bytes::copy_from_slice(bytes),
-                peer,
-            };
-            match tx.try_send(datagram) {
-                Ok(()) | Err(TrySendError::Full(_)) => {
-                    (self.on_client_read_demand)();
-                }
-                Err(TrySendError::Closed(_)) => {}
-            }
+        let Some(tx) = self.client_tx.as_mut() else {
+            return;
+        };
+        if self.ingress_control.drop_while_paused() {
+            return;
         }
+
+        // Reserve the bounded channel slot before allocating/copying. The
+        // byte reservations below are likewise acquired before the copy, so
+        // every overload path is allocation-free.
+        let permit = match tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(TrySendError::Full(())) => {
+                self.ingress_control
+                    .reject_count_full(|| tx.try_reserve().is_ok());
+                return;
+            }
+            Err(TrySendError::Closed(())) => {
+                self.ingress_control.close();
+                return;
+            }
+        };
+        let Some(payload) = self.ingress_control.try_copy_payload(bytes) else {
+            return;
+        };
+        permit.send(Datagram { payload, peer });
+        #[cfg(test)]
+        self.ingress_control.record_accepted(bytes.len());
     }
 
     pub fn on_client_close(&mut self) {
-        // Same teardown discipline as `TransparentProxyTcpSession::cancel`:
-        // flip the active-flag *first* so any callback already past
-        // the active-check has its dispatch dropped instead of
-        // reaching the Swift `context` after the FFI session is
-        // freed and the Swift callback boxes are released.
+        // Stop ingress demand first. `close` serializes with an in-flight
+        // demand dispatch, removes any global-pressure waiter, and guarantees
+        // that no later retained-payload release can request another read.
+        self.ingress_control.close();
+        // Then apply the shared callback-box lifetime gate used by every
+        // Swift-bound UDP callback before the FFI session frees those boxes.
         *self.callback_active.lock() = false;
         // Signal cooperative shutdown so the service task's
         // `flow_guard.cancelled()` arm fires; the task then runs its
@@ -1550,6 +1652,11 @@ impl TransparentProxyUdpSession {
         _ = self.service_task.take();
     }
 
+    #[cfg(test)]
+    fn udp_ingress_retained_bytes_for_test(&self) -> usize {
+        self.ingress_control.retained_bytes()
+    }
+
     /// Activate the session.
     ///
     /// Hands the prepared [`UdpFlow`] to the waiting service task.
@@ -1570,15 +1677,21 @@ impl TransparentProxyUdpSession {
             flow_tx,
             client_rx,
             on_server_datagram,
-            client_read_demand_sink,
+            ingress_control,
             meta,
         } = pending;
 
         // ingress flow (client ↔ service)
+        let demand_control = ingress_control.clone();
+        let received_control = ingress_control.clone();
         let ingress_flow = UdpFlow::new_with_io_demand(
             client_rx,
             on_server_datagram,
-            Some(client_read_demand_sink),
+            Some(Arc::new(move || demand_control.request_read())),
+            Some(Arc::new(move || {
+                received_control.on_channel_capacity_released()
+            })),
+            Some(Arc::new(move || ingress_control.close())),
         );
         let remote_endpoint = meta.remote_endpoint.clone();
         let protocol = meta.protocol;
@@ -1621,10 +1734,13 @@ async fn new_udp_session_flow_action<OnDatagram, OnClosed, OnDemand, H>(
     exec: Executor,
     meta: TransparentProxyFlowMeta,
     udp_channel_capacity: usize,
+    udp_ingress_per_flow_max_bytes: usize,
+    udp_ingress_budget: Arc<UdpIngressBudget>,
     udp_max_flow_lifetime: Option<Duration>,
     udp_idle_timeout: Option<Duration>,
     decision_deadline: Duration,
     decision_deadline_action: DecisionDeadlineAction,
+    decision_permit: DecisionPermit,
     on_server_datagram: OnDatagram,
     on_client_read_demand: OnDemand,
     on_server_closed: OnClosed,
@@ -1641,13 +1757,14 @@ where
     // One absolute deadline begins at session creation. In particular, time
     // spent in policy matching and waiting for Swift activation is part of the
     // max lifetime rather than an unbounded prefix before the timer starts.
-    let udp_lifetime_deadline =
-        udp_max_flow_lifetime.map(|lifetime| tokio::time::Instant::now() + lifetime);
+    let udp_lifetime_deadline = udp_max_flow_lifetime
+        .and_then(|lifetime| tokio::time::Instant::now().checked_add(lifetime));
     #[cfg(feature = "dial9")]
     let flow_source_pid = meta.source_app_pid;
-    let Ok(flow_action) =
-        tokio::time::timeout(decision_deadline, handler.match_udp_flow(exec, meta)).await
-    else {
+    let decision =
+        tokio::time::timeout(decision_deadline, handler.match_udp_flow(exec, meta)).await;
+    drop(decision_permit);
+    let Ok(flow_action) = decision else {
         emit_decision_deadline_event(
             flow_id,
             flow_protocol,
@@ -1718,6 +1835,11 @@ where
         guarded_closed_sink(callback_active.clone(), Arc::new(on_server_closed));
     let user_demand_sink: DemandSink = Arc::new(on_client_read_demand);
     let client_read_demand_sink = guarded_demand_sink(callback_active.clone(), user_demand_sink);
+    let ingress_control = UdpIngressFlowControl::new(
+        udp_ingress_per_flow_max_bytes,
+        udp_ingress_budget,
+        client_read_demand_sink,
+    );
 
     tracing::debug!(protocol = ?meta.protocol, "new udp session (pending egress connection)");
 
@@ -1761,7 +1883,7 @@ where
                         .unwrap_or(0),
                     "transparent proxy udp flow exceeded max lifetime before activation; closing",
                 );
-                Err(BridgeCloseReason::IdleTimeout)
+                Err(BridgeCloseReason::MaxLifetime)
             }
             flow = flow_rx => flow.map_err(|_closed| BridgeCloseReason::Shutdown),
         };
@@ -1773,7 +1895,13 @@ where
                 {
                     let age_ms =
                         u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
-                    crate::tproxy::dial9::record_flow_closed(meta_for_close.flow_id, age_ms, 0, 0);
+                    crate::tproxy::dial9::record_flow_closed(
+                        meta_for_close.flow_id,
+                        close_reason,
+                        age_ms,
+                        0,
+                        0,
+                    );
                 }
                 closed_sink();
                 return;
@@ -1826,7 +1954,10 @@ where
             () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,
             res = &mut serve_fut => {
                 match res {
-                    Ok(service_result) => _ = service_result,
+                    Ok(service_result) => {
+                        _ = service_result;
+                        BridgeCloseReason::PeerEofLeft
+                    }
                     Err(panic) => {
                         tracing::error!(
                             target: "rama_apple_ne::tproxy",
@@ -1834,9 +1965,9 @@ where
                             panic_message = %panic_payload_message(panic.as_ref()),
                             "transparent proxy udp service panicked; closing flow",
                         );
+                        BridgeCloseReason::ServicePanic
                     }
                 }
-                BridgeCloseReason::PeerEofLeft
             }
             () = idle_fut => {
                 tracing::debug!(
@@ -1858,14 +1989,20 @@ where
                         .unwrap_or(0),
                     "transparent proxy udp flow exceeded max lifetime; closing",
                 );
-                BridgeCloseReason::IdleTimeout
+                BridgeCloseReason::MaxLifetime
             }
         };
         emit_udp_session_close_event(close_reason, &meta_for_close);
         #[cfg(feature = "dial9")]
         {
             let age_ms = u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
-            crate::tproxy::dial9::record_flow_closed(meta_for_close.flow_id, age_ms, 0, 0);
+            crate::tproxy::dial9::record_flow_closed(
+                meta_for_close.flow_id,
+                close_reason,
+                age_ms,
+                0,
+                0,
+            );
         }
         closed_sink();
     }));
@@ -1874,13 +2011,13 @@ where
         flow_tx,
         client_rx,
         on_server_datagram: datagram_sink,
-        client_read_demand_sink: client_read_demand_sink.clone(),
+        ingress_control: ingress_control.clone(),
         meta: meta_arc,
     };
 
     SessionFlowAction::Intercept(TransparentProxyUdpSession {
         client_tx: Some(client_tx),
-        on_client_read_demand: client_read_demand_sink,
+        ingress_control,
         flow_stop_tx: Some(flow_stop_tx),
         pending: Some(pending),
         service_task: Some(service_task),
@@ -2003,6 +2140,27 @@ const STOP_HARD_CAP_SLACK: Duration = Duration::from_secs(2);
 /// the wedged path the join is skipped entirely ([`Duration::ZERO`]).
 const RUNTIME_DISPOSE_GRACE: Duration = Duration::from_secs(1);
 
+/// Clamp a timer duration until `duration + headroom` fits in the platform's
+/// monotonic [`tokio::time::Instant`] range.
+///
+/// `Duration` itself is much wider than `Instant` on Apple platforms. Tokio's
+/// duration-based timer constructors add the duration to `Instant::now()` and
+/// panic on overflow, so a valid public builder value such as
+/// [`Duration::MAX`] must be reduced before it reaches those constructors.
+/// Halving is only used for values outside the clock range; the resulting cap
+/// remains far beyond a process lifetime while leaving ample setup headroom.
+fn clamp_timer_duration(duration: Duration, headroom: Duration) -> Duration {
+    let now = tokio::time::Instant::now();
+    let mut candidate = duration;
+    while now
+        .checked_add(candidate.saturating_add(headroom))
+        .is_none()
+    {
+        candidate /= 2;
+    }
+    candidate
+}
+
 impl<H> TransparentProxyEngine<H> {
     fn shutdown_blocking(&mut self, reason: i32) {
         let Some(pair) = self.shutdown.lock().take() else {
@@ -2023,8 +2181,14 @@ impl<H> TransparentProxyEngine<H> {
         //     by THIS thread, so `stop` returns even when the runtime
         //     cannot poll the drain (or anything else) at all. The
         //     inner wins in every non-pathological case.
-        let max_wait = self.stop_drain_max_wait;
-        let hard_cap = max_wait + STOP_HARD_CAP_SLACK;
+        let max_wait = clamp_timer_duration(
+            self.stop_drain_max_wait,
+            // Leave enough representable headroom for both the outer slack
+            // and the small delay between this check and construction of the
+            // inner Tokio timer.
+            STOP_HARD_CAP_SLACK.saturating_add(Duration::from_secs(1)),
+        );
+        let hard_cap = max_wait.saturating_add(STOP_HARD_CAP_SLACK);
 
         let Some(rt) = self.rt.take() else {
             // Unreachable: `rt` is only taken here, and the pair-take
@@ -2372,8 +2536,8 @@ fn emit_decision_deadline_event(
 
 /// Resolve the per-direction close reasons for a flow's two close events.
 ///
-/// `flow_reason` is the service task's outcome: `Shutdown` / `IdleTimeout`
-/// are flow-wide and apply to both directions; otherwise each direction
+/// `flow_reason` is the service task's outcome: `Shutdown`, `IdleTimeout`, and
+/// `ServicePanic` are flow-wide and apply to both directions; otherwise each direction
 /// reports the reason its own stream recorded (defaulting to a clean
 /// `PeerEofLeft` if it terminated without recording one).
 fn resolve_tcp_close_reasons(
@@ -2382,7 +2546,9 @@ fn resolve_tcp_close_reasons(
     egress: Option<BridgeCloseReason>,
 ) -> (BridgeCloseReason, BridgeCloseReason) {
     match flow_reason {
-        BridgeCloseReason::Shutdown | BridgeCloseReason::IdleTimeout => (flow_reason, flow_reason),
+        BridgeCloseReason::Shutdown
+        | BridgeCloseReason::IdleTimeout
+        | BridgeCloseReason::ServicePanic => (flow_reason, flow_reason),
         _ => (
             ingress.unwrap_or(BridgeCloseReason::PeerEofLeft),
             egress.unwrap_or(BridgeCloseReason::PeerEofLeft),
@@ -2404,6 +2570,10 @@ mod close_reason_resolution {
         assert_eq!(
             resolve_tcp_close_reasons(IdleTimeout, None, Some(PausedTimeout)),
             (IdleTimeout, IdleTimeout)
+        );
+        assert_eq!(
+            resolve_tcp_close_reasons(ServicePanic, Some(PeerEofRight), Some(PausedTimeout)),
+            (ServicePanic, ServicePanic)
         );
     }
 

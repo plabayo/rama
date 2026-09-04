@@ -17,7 +17,9 @@ final class TcpClientWritePump: @unchecked Sendable {
         logger: @escaping @Sendable (FlowLogMessage) -> Void,
         onTerminalError: @escaping @Sendable (Error) -> Void,
         onDrained: @escaping @Sendable () -> Void,
-        onActivity: @escaping @Sendable () -> Bool = { true }
+        onActivity: @escaping @Sendable () -> Bool = { true },
+        writePolicy: TcpWritePumpPolicy =
+            TcpWritePumpPolicy(maxPendingBytes: writePumpMaxPendingBytes)
     ) {
         self.logger = logger
         self.onTerminalError = onTerminalError
@@ -29,10 +31,11 @@ final class TcpClientWritePump: @unchecked Sendable {
             logHwm: { hwm in
                 logger(FlowLogMessage(
                     level: .trace,
-                    text: "tcp client write pump pendingBytes hwm=\(hwm) cap=\(writePumpMaxPendingBytes)"
+                    text: "tcp client write pump pendingBytes hwm=\(hwm) cap=\(writePolicy.maxPendingBytes)"
                 ))
             },
-            onActivity: onActivity
+            onActivity: onActivity,
+            writePolicy: writePolicy
         )
         self.core = core
         core.delegate = self
@@ -67,6 +70,8 @@ final class TcpClientWritePump: @unchecked Sendable {
     func enqueue(_ data: Data) -> RamaTcpDeliverStatusBridge {
         core.enqueue(data)
     }
+
+    var maxPendingBytes: Int { core.writePolicy.maxPendingBytes }
 
     func closeWhenDrained(
         _ onDrainedClose: @escaping @Sendable (_ wasOpened: Bool) -> Void

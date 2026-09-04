@@ -242,7 +242,8 @@ final class TcpDirectForwarder: @unchecked Sendable {
         onDrainStall: @escaping () -> Void = {},
         onReadError: @escaping (Error) -> Void = { _ in },
         onActivity: @escaping @Sendable () -> Bool = { true },
-        writeChunkLimit: Int = writePumpMaxPendingBytes,
+        writeChunkLimit: Int =
+            writePumpMaxPendingBytes,
         closeClientWrite: @escaping (Error?) -> Void = { _ in },
         onTerminal: @escaping () -> Void
     ) {

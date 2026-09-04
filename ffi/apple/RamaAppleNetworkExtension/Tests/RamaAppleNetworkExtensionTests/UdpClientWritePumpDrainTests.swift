@@ -279,11 +279,19 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         )
         pump.markOpened()
 
+        // Establish the first write in flight before filling the waiting-work
+        // budget. Otherwise the producer loop races the flow queue: a starved
+        // queue accepts only 256 waiting datagrams, while a scheduled queue
+        // moves tag 0 in flight soon enough to accept 257 total.
+        pump.enqueue(tag(0), sentBy: ep())
+        queue.sync {}
+        XCTAssertEqual(flow.writtenBatches.count, 1)
+
         // 260 attributed datagrams; never complete the in-flight write so the
         // queue backs up to the cap. Retained = 1 in-flight + 256 queued =
         // tags 0...256; tags 257,258,259 are dropped (newest-first).
         let total = 260
-        for n in 0..<total { pump.enqueue(tag(n), sentBy: ep()) }
+        for n in 1..<total { pump.enqueue(tag(n), sentBy: ep()) }
         queue.sync {}
         XCTAssertEqual(
             activityCount, total,

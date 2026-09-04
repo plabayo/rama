@@ -77,7 +77,8 @@
 #   MAX_SAFE_FLOWS  max concurrency the AUTO target will request (1..1024), to stay well
 #                   under the ~600 nexus ceiling. Default 300.
 #   ALLOW_UNSAFE_LOAD 1 = let an explicit FANOUT_TARGET/IDLE_TARGET exceed
-#                   MAX_SAFE_FLOWS on a high-cap build (freeze risk!). Default 0.
+#                   MAX_SAFE_FLOWS (freeze risk!). Effective hard-cap headroom
+#                   remains mandatory. Default 0.
 #   IDLE_TARGET     phase-3 concurrent silent holders. Default = FANOUT_TARGET.
 #   IDLE_HOLD       phase-3 sustain seconds. Default 150.
 #   SKIP_STRESS / SKIP_FANOUT / SKIP_IDLE   1 = skip that phase. Default 0.
@@ -224,6 +225,24 @@ done
 [[ "$SKIP_STRESS" == 1 || "$STRESS_SECONDS" != 0 ]] \
   || die "STRESS_SECONDS must be greater than zero when the stress phase is enabled"
 
+sha256_path() {
+  local path="$1" digest
+  digest="$(shasum -a 256 -- "$path" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  if [[ ! "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+    digest="$(sudo -n shasum -a 256 -- "$path" 2>/dev/null | awk 'NR == 1 { print $1 }')"
+  fi
+  printf '%s\n' "${digest:-unavailable}"
+}
+
+process_identity() {
+  local pid="$1" snapshot digest
+  snapshot="$(ps -ww -o pid= -o lstart= -o command= -p "$pid" 2>/dev/null)"
+  [[ -n "$snapshot" ]] || return 1
+  digest="$(printf '%s' "$snapshot" | shasum -a 256 | awk 'NR == 1 { print $1 }')"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s\n' "$digest"
+}
+
 # ── Teardown ──────────────────────────────────────────────────────────
 LOG_STREAM_STARTED=0
 LOG_STREAM_PID=""
@@ -238,6 +257,8 @@ FLOW_POOL_LABEL=""
 HOLDER_CLEANUP_OK=1
 CURRENT_PHASE_START=""
 WAKE_DL_PID=""
+CLEANUP_STARTED=0
+ACTIVE_CHILD_PID=""
 kill_holders() {
   # PID ownership is the only cleanup authority: never pattern-kill unrelated
   # user traffic. Signal the complete batch first, then join it under one
@@ -252,8 +273,8 @@ kill_holders() {
   for _p in "${holder_pids[@]}"; do
     child_job_is_active "$_p" && signal_child "$_p" TERM direct
   done
-  deadline=$(( $(date +%s) + 5 ))
-  while (( $(date +%s) < deadline )); do
+  deadline=$(( SECONDS + 5 ))
+  while (( SECONDS < deadline )); do
     active=0
     for _p in "${holder_pids[@]}"; do
       child_job_is_active "$_p" && { active=1; break; }
@@ -267,8 +288,8 @@ kill_holders() {
       signal_child "$_p" KILL direct
     fi
   done
-  force_deadline=$(( $(date +%s) + 2 ))
-  while (( $(date +%s) < force_deadline )); do
+  force_deadline=$(( SECONDS + 2 ))
+  while (( SECONDS < force_deadline )); do
     active=0
     for _p in "${holder_pids[@]}"; do
       child_job_is_active "$_p" && { active=1; break; }
@@ -290,18 +311,33 @@ kill_holders() {
     "${FLOW_POOL_LABEL:-unknown}" "${#holder_pids[@]}" "$reaped" \
     "$forced" "$unreaped" >> "$OUT/holder-cleanup.tsv"
 }
+# shellcheck disable=SC2329  # invoked by the EXIT/INT/TERM handlers
 cleanup() {
-  [[ -n "$PROBE_MON_PID" ]] && kill "$PROBE_MON_PID" 2>/dev/null || true
-  [[ -n "$WAKE_DL_PID" ]] && kill "$WAKE_DL_PID" 2>/dev/null || true
-  kill_holders
-  [[ -n "$SUDO_KEEPALIVE_PID" ]] && kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
-  if (( LOG_STREAM_STARTED )) && [[ -n "$LOG_STREAM_PID" ]]; then
-    sudo -n kill "$LOG_STREAM_PID" 2>/dev/null || true
+  (( CLEANUP_STARTED == 0 )) || return 0
+  CLEANUP_STARTED=1
+  if [[ -n "$ACTIVE_CHILD_PID" ]]; then
+    bounded_stop_and_join "$ACTIVE_CHILD_PID" 5 root-only
+    ACTIVE_CHILD_PID=""
   fi
-  local _j; _j="$(jobs -p 2>/dev/null)"
-  [[ -n "$_j" ]] && kill $_j 2>/dev/null || true
+  if [[ -n "$PROBE_MON_PID" ]]; then
+    bounded_stop_and_join "$PROBE_MON_PID" 5 direct
+    PROBE_MON_PID=""
+  fi
+  if [[ -n "$WAKE_DL_PID" ]]; then
+    bounded_stop_and_join "$WAKE_DL_PID" 5 direct
+    WAKE_DL_PID=""
+  fi
+  kill_holders
+  if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
+    bounded_stop_and_join "$SUDO_KEEPALIVE_PID" 5 direct
+    SUDO_KEEPALIVE_PID=""
+  fi
+  if (( LOG_STREAM_STARTED )) && [[ -n "$LOG_STREAM_PID" ]]; then
+    bounded_stop_and_join "$LOG_STREAM_PID" 5 sudo
+    LOG_STREAM_PID=""
+    LOG_STREAM_STARTED=0
+  fi
 }
-trap cleanup EXIT INT TERM
 
 # Bash 3.2 on macOS has no timed `wait`. Poll the shell's job table, escalate
 # TERM to KILL after a bounded interval, and call `wait` only after the job is no
@@ -313,15 +349,22 @@ child_job_is_active() {
 
 signal_child() {
   local pid="$1" signal="$2" privilege="$3"
+  local child
+  if [[ "$privilege" != root-only ]]; then
+    while IFS= read -r child; do
+      [[ "$child" =~ ^[1-9][0-9]*$ ]] || continue
+      signal_child "$child" "$signal" "$privilege"
+    done < <(pgrep -P "$pid" 2>/dev/null || true)
+  fi
   if [[ "$privilege" == sudo ]]; then
-    sudo -n pkill "-$signal" -P "$pid" 2>/dev/null || true
     sudo -n kill "-$signal" "$pid" 2>/dev/null || true
   else
-    pkill "-$signal" -P "$pid" 2>/dev/null || true
     kill "-$signal" "$pid" 2>/dev/null || true
   fi
 }
 
+# BOUNDED_CHILD_OK is also consumed by the function-level regression harness.
+# shellcheck disable=SC2034
 BOUNDED_CHILD_RC=missing
 BOUNDED_CHILD_OK=0
 BOUNDED_CHILD_REAPED=0
@@ -337,15 +380,19 @@ bounded_stop_and_join() {
   if child_job_is_active "$pid"; then
     signal_child "$pid" TERM "$privilege"
   fi
-  deadline=$(( $(date +%s) + timeout ))
-  while child_job_is_active "$pid" && (( $(date +%s) < deadline )); do
+  deadline=$(( SECONDS + timeout ))
+  while child_job_is_active "$pid" && (( SECONDS < deadline )); do
     sleep 0.1
   done
   if child_job_is_active "$pid"; then
     BOUNDED_CHILD_FORCED=1
-    signal_child "$pid" KILL "$privilege"
-    force_deadline=$(( $(date +%s) + 2 ))
-    while child_job_is_active "$pid" && (( $(date +%s) < force_deadline )); do
+    if [[ "$privilege" == root-only ]]; then
+      signal_child "$pid" KILL direct
+    else
+      signal_child "$pid" KILL "$privilege"
+    fi
+    force_deadline=$(( SECONDS + 2 ))
+    while child_job_is_active "$pid" && (( SECONDS < force_deadline )); do
       sleep 0.1
     done
   fi
@@ -358,11 +405,32 @@ bounded_stop_and_join() {
   BOUNDED_CHILD_RC="$child_rc"
   BOUNDED_CHILD_REAPED=1
   if (( ! BOUNDED_CHILD_FORCED )) && [[ "$child_rc" == 0 || "$child_rc" == 143 ]]; then
+    # shellcheck disable=SC2034  # asserted by the function-level regression harness
     BOUNDED_CHILD_OK=1
   fi
 }
 
+# shellcheck disable=SC2329  # invoked through trap
+handle_signal() {
+  local exit_code="$1"
+  trap - EXIT INT TERM
+  cleanup
+  exit "$exit_code"
+}
+
+# shellcheck disable=SC2329  # invoked through trap
+handle_exit() {
+  local exit_code=$?
+  trap - EXIT INT TERM
+  cleanup
+  exit "$exit_code"
+}
+
 # ── Helpers ───────────────────────────────────────────────────────────
+trap handle_exit EXIT
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
+
 # Output: start_epoch<TAB>completion_epoch<TAB>curl_rc<TAB>http_code.
 probe_record() {
   local started completed code curl_rc=0
@@ -386,10 +454,24 @@ probe_once() {
 
 real_download_matches() {
   local curl_rc="$1" code="$2" downloaded="$3" expected="$4"
+  local speed="$5" elapsed="$6"
   (( curl_rc == 0 )) \
     && [[ "$code" =~ ^2[0-9][0-9]$ ]] \
     && [[ "$downloaded" =~ ^(0|[1-9][0-9]*)$ ]] \
-    && [[ "$downloaded" == "$expected" ]]
+    && [[ "$downloaded" == "$expected" ]] \
+    && [[ "$speed" =~ ^(0|[1-9][0-9]*)(\.[0-9]+)?$ ]] \
+    && [[ ! "$speed" =~ ^0(\.0+)?$ ]] \
+    && [[ "$elapsed" =~ ^(0|[1-9][0-9]*)(\.[0-9]+)?$ ]] \
+    && [[ ! "$elapsed" =~ ^0(\.0+)?$ ]]
+}
+
+ceiling_transport_candidate() {
+  local curl_rc="$1" code="$2"
+  [[ "$code" == 000 ]] || return 1
+  case "$curl_rc" in
+    28|52|55|56) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 probe_ok() { [[ "$(probe_once)" =~ ^2 ]]; }
 
@@ -486,8 +568,8 @@ PY
 }
 wait_for_fresh_gauge() {
   local not_before="$1" timeout="$2" deadline g gauge_epoch observed_now
-  deadline=$(( $(date +%s) + timeout ))
-  while (( $(date +%s) < deadline )); do
+  deadline=$(( SECONDS + timeout ))
+  while (( SECONDS < deadline )); do
     g="$(read_gauge)"
     if [[ -n "$g" ]]; then
       gauge_epoch="${g%% *}"
@@ -504,10 +586,18 @@ wait_for_fresh_gauge() {
 
 start_probe_monitor() {
   ( while true; do
+      _provider_identity="$(process_identity "$PID" || true)"
+      printf '%s\t%s\n' "$(epoch_now)" "${_provider_identity:-gone}" \
+        >> "$OUT/provider-timeline.tsv"
+      [[ "$_provider_identity" == "$PROVIDER_START_IDENTITY" ]] || exit 42
       _record="$(probe_record)"
       IFS=$'\t' read -r _started _completed _curl_rc _code <<< "$_record"
       printf '%s\t%s\t%s\t%s\t%s\n' "$_started" "$_completed" \
         "$(iso_for_epoch "$_completed")" "$_curl_rc" "$_code" >> "$OUT/probe-timeline.txt"
+      _provider_identity="$(process_identity "$PID" || true)"
+      printf '%s\t%s\n' "$(epoch_now)" "${_provider_identity:-gone}" \
+        >> "$OUT/provider-timeline.tsv"
+      [[ "$_provider_identity" == "$PROVIDER_START_IDENTITY" ]] || exit 42
       sleep 5
     done ) &
   PROBE_MON_PID=$!
@@ -520,11 +610,41 @@ recount_holders() {
     if [[ -n "$p" ]] && kill -0 "$p" 2>/dev/null; then
       printf '%s\t%s\n' "$p" "$marker" >> "$tmp"
       live=$((live+1))
-      [[ -s "$marker" ]] && established=$((established+1))
+      holder_marker_established "$marker" && established=$((established+1))
     fi
   done < "$HOLDER_PIDFILE"
   mv "$tmp" "$HOLDER_PIDFILE"
   echo "$live $established"
+}
+
+# Active holders are established only after the origin has produced an HTTP 2xx
+# response. A nonempty 4xx/5xx header file is not successful flow evidence.
+holder_marker_established() {
+  local marker="$1"
+  if [[ "$marker" == *.active.headers ]]; then
+    awk '
+      /^HTTP\/[0-9.]+[[:space:]]+2[0-9][0-9]([[:space:]]|$)/ { found = 1 }
+      END { exit found ? 0 : 1 }
+    ' "$marker" 2>/dev/null
+  else
+    [[ -s "$marker" ]]
+  fi
+}
+
+run_active_holder() {
+  local phase_label="$1" marker="$2" target="$3"
+  local metrics code downloaded elapsed curl_rc=0
+  metrics="$(curl -sS -o /dev/null --dump-header "$marker" --max-time 70 \
+    -w $'%{http_code}\t%{size_download}\t%{time_total}' "$target" \
+    2>> "$OUT/fanout.curl.log")" || curl_rc=$?
+  IFS=$'\t' read -r code downloaded elapsed <<< "$metrics"
+  [[ "$code" =~ ^[0-9]{3}$ ]] || code=000
+  [[ "$downloaded" =~ ^(0|[1-9][0-9]*)$ ]] || downloaded=0
+  [[ "$elapsed" =~ ^(0|[1-9][0-9]*)(\.[0-9]+)?$ ]] || elapsed=0
+  printf '%s\t%s\t%s\t%s\tcurl_exit=%s\n' \
+    "$phase_label" "$code" "$downloaded" "$elapsed" "$curl_rc" \
+    >> "$OUT/fanout.txt"
+  (( curl_rc == 0 )) && [[ "$code" =~ ^2[0-9][0-9]$ ]]
 }
 
 # spawn one ACTIVE flow: a slow server-side drip (~45s, refilled by top-up as
@@ -534,9 +654,8 @@ spawn_active() {
   HOLDER_SEQUENCE=$((HOLDER_SEQUENCE + 1))
   marker="$OUT/holder-markers/${FLOW_POOL_LABEL}.${HOLDER_SEQUENCE}.active.headers"
   : > "$marker"
-  curl -s -o /dev/null --dump-header "$marker" --max-time 70 \
-    -w '%{http_code} %{size_download} %{time_total}\n' \
-    "$(dl_url "$DL_MAX_BYTES" 16384 "$delay")" >> "$OUT/fanout.txt" 2>&1 &
+  run_active_holder "$FLOW_POOL_LABEL" "$marker" \
+    "$(dl_url "$DL_MAX_BYTES" 16384 "$delay")" &
   printf '%s\t%s\n' "$!" "$marker" >> "$HOLDER_PIDFILE"
 }
 
@@ -545,6 +664,7 @@ spawn_active() {
 # ClientHello, then passes it through → an established silent flow that ages
 # toward the idle floor. (On a long-floor build the server's ~60s timeout cuts
 # it before the floor → admit-and-ride; on a short-floor build it gets evicted.)
+# shellcheck disable=SC2329  # selected dynamically by run_flow_pool
 spawn_silent() {
   local marker
   HOLDER_SEQUENCE=$((HOLDER_SEQUENCE + 1))
@@ -554,6 +674,28 @@ spawn_silent() {
       && IFS= read -r -t "$IDLE_HOLD" -u 3 _ ) \
     >/dev/null 2>&1 &
   printf '%s\t%s\n' "$!" "$marker" >> "$HOLDER_PIDFILE"
+}
+
+update_sustained_hold() {
+  local target="$1" established="$2" now_seconds="$3" now_epoch="$4" hold="$5"
+  if (( established >= target )); then
+    if [[ -z "$sustained_since_seconds" ]]; then
+      sustained_since_seconds="$now_seconds"
+      sustained_since_epoch="$now_epoch"
+    fi
+    last_established_epoch="$now_epoch"
+    if (( now_seconds - sustained_since_seconds >= hold )); then
+      FLOW_POOL_ATTAINED=1
+    fi
+    return 0
+  fi
+  if [[ -n "$sustained_since_seconds" ]]; then
+    printf '%s\t%s\t%s\n' "$FLOW_POOL_LABEL" "$sustained_since_epoch" \
+      "$last_established_epoch" >> "$OUT/pool-intervals.tsv"
+  fi
+  sustained_since_seconds=""
+  sustained_since_epoch=""
+  last_established_epoch=""
 }
 
 # Sustain a pool of `target` flows for `hold` seconds via top-up, logging the
@@ -591,34 +733,19 @@ run_flow_pool() {
   # Allow a bounded 70-second establishment window, then require one
   # uninterrupted interval at the full target for the entire requested hold.
   # A short early success followed by collapse is not a sustained pool.
-  local deadline=$(( $(date +%s) + hold + 70 ))
-  while (( $(date +%s) < deadline && ! FLOW_POOL_ATTAINED )); do
+  local deadline=$(( SECONDS + hold + 70 ))
+  while (( SECONDS < deadline && ! FLOW_POOL_ATTAINED )); do
     counts="$(recount_holders)"; read -r live established <<< "$counts"
+    now_seconds="$SECONDS"; now_epoch="$(epoch_now)"
+    update_sustained_hold "$target" "$established" "$now_seconds" "$now_epoch" "$hold"
     need=$(( target - live ))
     (( need > 0 )) && { local k; for ((k=0; k<need; k++)); do "$spawn_fn"; done; }
     sleep 1
     counts="$(recount_holders)"; read -r live established <<< "$counts"
     (( live > FLOW_POOL_MAX_LIVE )) && FLOW_POOL_MAX_LIVE=$live
     (( established > FLOW_POOL_MAX_ESTABLISHED )) && FLOW_POOL_MAX_ESTABLISHED=$established
-    now_seconds="$(date +%s)"; now_epoch="$(epoch_now)"
-    if (( established >= target )); then
-      if [[ -z "$sustained_since_seconds" ]]; then
-        sustained_since_seconds="$now_seconds"
-        sustained_since_epoch="$now_epoch"
-      fi
-      last_established_epoch="$now_epoch"
-      if (( now_seconds - sustained_since_seconds >= hold )); then
-        FLOW_POOL_ATTAINED=1
-      fi
-    else
-      if [[ -n "$sustained_since_seconds" ]]; then
-        printf '%s\t%s\t%s\n' "$label" "$sustained_since_epoch" \
-          "$last_established_epoch" >> "$OUT/pool-intervals.tsv"
-      fi
-      sustained_since_seconds=""
-      sustained_since_epoch=""
-      last_established_epoch=""
-    fi
+    now_seconds="$SECONDS"; now_epoch="$(epoch_now)"
+    update_sustained_hold "$target" "$established" "$now_seconds" "$now_epoch" "$hold"
     gauge_registered=""
     gauge_allocated=""
     gauge_basis=""
@@ -642,7 +769,7 @@ run_flow_pool() {
       "${gauge_registered:-?}" "${gauge_allocated:-?}" >> "$OUT/holders.log"
     printf '\r[soak] %s live=%s established=%s registered=%s allocated=%s  %ds left   ' \
       "$label" "$live" "$established" "${gauge_registered:-?}" \
-      "${gauge_allocated:-?}" "$(( deadline - $(date +%s) ))"
+      "${gauge_allocated:-?}" "$(( deadline - SECONDS ))"
     probe_ok || warn "probe failed during $label (registered=${gauge_registered:-?} allocated=${gauge_allocated:-?}) — watch for freeze"
     (( FLOW_POOL_ATTAINED )) && break
     sleep 5
@@ -678,6 +805,19 @@ run_flow_pool() {
 hdr "rama transparent proxy soak — comprehensive single session"
 [[ -x "$(command -v curl)" ]] || die "curl not found"
 [[ -f "$STRESS_SH" ]] || die "stress script not found at $STRESS_SH (is REPO correct?)"
+REPO_HEAD="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
+[[ "$REPO_HEAD" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
+  || die "could not resolve the repository commit identity"
+REPO_DIRTY=0
+[[ -z "$(git -C "$REPO" status --porcelain --untracked-files=normal 2>/dev/null)" ]] \
+  || REPO_DIRTY=1
+SOAK_SCRIPT_SHA256="$(sha256_path "$0")"
+STRESS_SCRIPT_SHA256="$(sha256_path "$STRESS_SH")"
+PRESSURE_PARSER_SHA256="$(sha256_path "$EXAMPLE_DIR/scripts/soak_pressure_log.py")"
+[[ "$SOAK_SCRIPT_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "could not hash soak_test.sh"
+[[ "$STRESS_SCRIPT_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "could not hash stress_traffic.sh"
+[[ "$PRESSURE_PARSER_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+  || die "could not hash soak_pressure_log.py"
 mkdir -p "$OUT" || die "cannot create OUT=$OUT"
 if [[ -n "$(find "$OUT" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
   die "OUT=$OUT is not empty; use a fresh artifact directory"
@@ -689,7 +829,13 @@ fi
 : > "$OUT/pool-brackets.tsv"
 : > "$OUT/holder-cleanup.tsv"
 : > "$OUT/sleep-probes.tsv"
+: > "$OUT/provider-timeline.tsv"
 mkdir -p "$OUT/holder-markers"
+{
+  printf 'repo_head\t%s\nrepo_dirty\t%s\n' "$REPO_HEAD" "$REPO_DIRTY"
+  printf 'soak_script_sha256\t%s\nstress_script_sha256\t%s\npressure_parser_sha256\t%s\n' \
+    "$SOAK_SCRIPT_SHA256" "$STRESS_SCRIPT_SHA256" "$PRESSURE_PARSER_SHA256"
+} >> "$OUT/run-meta.tsv"
 write_incomplete_status "soak did not reach evidence extraction"
 HOLDER_PIDFILE="$OUT/holders.pids"; : > "$HOLDER_PIDFILE"
 ulimit -n 16384 2>/dev/null || true
@@ -739,13 +885,52 @@ PID="$(pgrep -f "$PROVIDER_BUNDLE" | head -1 || true)"
 [[ -n "$PID" ]] || die "could not find the sysext process ($PROVIDER_BUNDLE). Is it enabled?"
 PROVIDER_START_TIME="$(ps -o lstart= -p "$PID" 2>/dev/null | sed -E 's/^[[:space:]]+//')"
 [[ -n "$PROVIDER_START_TIME" ]] || die "could not read sysext process identity for pid $PID"
+PROVIDER_START_IDENTITY="$(process_identity "$PID" || true)"
+[[ "$PROVIDER_START_IDENTITY" =~ ^[0-9a-f]{64}$ ]] \
+  || die "could not fingerprint sysext process identity for pid $PID"
+PROVIDER_EXECUTABLE="$(
+  sudo -n lsof -a -p "$PID" -d txt -Fn 2>/dev/null \
+    | sed -n 's/^n//p' | head -1
+)"
+if [[ ! "$PROVIDER_EXECUTABLE" == /* ]]; then
+  PROVIDER_EXECUTABLE="$(ps -ww -o comm= -p "$PID" 2>/dev/null | sed -E 's/^[[:space:]]+//')"
+fi
+[[ "$PROVIDER_EXECUTABLE" == /* ]] \
+  || die "could not resolve the running sysext executable path"
+PROVIDER_BINARY_SHA256="$(sha256_path "$PROVIDER_EXECUTABLE")"
+[[ "$PROVIDER_BINARY_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+  || die "could not hash the running sysext executable"
+PROVIDER_CODESIGN_INFO="$(codesign -dvvv "$PROVIDER_EXECUTABLE" 2>&1 || true)"
+PROVIDER_CODESIGN_IDENTIFIER="$(
+  printf '%s\n' "$PROVIDER_CODESIGN_INFO" | sed -n 's/^Identifier=//p' | head -1
+)"
+PROVIDER_CODESIGN_CDHASH="$(
+  printf '%s\n' "$PROVIDER_CODESIGN_INFO" | sed -n 's/^CDHash=//p' | head -1
+)"
+PROVIDER_CODESIGN_TEAM="$(
+  printf '%s\n' "$PROVIDER_CODESIGN_INFO" | sed -n 's/^TeamIdentifier=//p' | head -1
+)"
+[[ "$PROVIDER_CODESIGN_IDENTIFIER" == "$PROVIDER_BUNDLE" ]] \
+  || die "running sysext signing identifier does not match $PROVIDER_BUNDLE"
+[[ -n "$PROVIDER_CODESIGN_CDHASH" && -n "$PROVIDER_CODESIGN_TEAM" ]] \
+  || die "could not resolve running sysext CDHash/team identity"
 say "sysext pid:  $PID"
-printf 'provider_start_pid\t%s\nprovider_start_time\t%s\nprovider_bundle\t%s\n' \
-  "$PID" "$PROVIDER_START_TIME" "$PROVIDER_BUNDLE" >> "$OUT/run-meta.tsv"
+{
+  printf 'provider_start_pid\t%s\nprovider_start_time\t%s\nprovider_start_identity\t%s\n' \
+    "$PID" "$PROVIDER_START_TIME" "$PROVIDER_START_IDENTITY"
+  printf 'provider_bundle\t%s\nprovider_executable\t%s\nprovider_binary_sha256\t%s\n' \
+    "$PROVIDER_BUNDLE" "$PROVIDER_EXECUTABLE" "$PROVIDER_BINARY_SHA256"
+  printf 'provider_codesign_identifier\t%s\nprovider_codesign_cdhash\t%s\nprovider_codesign_team\t%s\n' \
+    "$PROVIDER_CODESIGN_IDENTIFIER" "$PROVIDER_CODESIGN_CDHASH" \
+    "$PROVIDER_CODESIGN_TEAM"
+} >> "$OUT/run-meta.tsv"
 
 # ── Start live log capture (debug — the gauge is debug) ────────────────
 hdr "starting log capture"
 LOG_STREAM_START_EPOCH="$(epoch_now)"
+# Word splitting intentionally expands optional `stdbuf -oL`; the destination
+# is user-owned even though the log reader itself runs through sudo.
+# shellcheck disable=SC2086,SC2024
 sudo $LOGBUF log stream --level debug --style ndjson \
   --predicate "processID == $PID AND subsystem == \"$PROVIDER_BUNDLE\"" \
   > "$OUT/system.ndjson" 2>/dev/null &
@@ -769,9 +954,7 @@ phase_mark baseline start
 hdr "phase 0 — baseline (detecting softCap from the gauge; ≤65s)"
 G0="$(wait_for_fresh_gauge "$CURRENT_PHASE_START" 65)"
 if [[ -z "$G0" ]]; then
-  warn "no gauge tick seen in 65s — evidence verdicts will be inconclusive"
-  SOFTCAP_KNOWN=0; SOFTCAP=0; HARDCAP=0
-  BASELINE_REGISTERED=0; BASELINE_TOTAL=0; BASELINE_GAUGE_PHASE_LOCAL=0
+  die "no fresh target-provider gauge was seen in 65s; refusing to generate load with unknown live-flow headroom"
 else
   SOFTCAP_KNOWN=1
   read -r BASELINE_GAUGE_EPOCH SOFTCAP HARDCAP _ _ \
@@ -837,24 +1020,40 @@ auto_target() {
   (( base > 0 )) || return 1
   printf '%s\n' "$base"
 }
-clamp_safe() {  # clamp an explicit target unless ALLOW_UNSAFE_LOAD on a high-cap build
+clamp_safe() {  # clamp explicit targets to the safety limit and effective hard-cap headroom
   local v="$1" name="$2"
-  if (( v > MAX_SAFE_FLOWS )) && (( SOFTCAP >= MAX_SAFE_FLOWS )) && (( ALLOW_UNSAFE_LOAD != 1 )); then
-    warn "$name=$v exceeds MAX_SAFE_FLOWS=$MAX_SAFE_FLOWS on a softCap=$SOFTCAP build — clamping to avoid"
+  local hard_headroom=-1
+  if (( v > MAX_SAFE_FLOWS )) && (( ALLOW_UNSAFE_LOAD != 1 )); then
+    warn "$name=$v exceeds MAX_SAFE_FLOWS=$MAX_SAFE_FLOWS — clamping to avoid"
     warn "  nearing the ~600 nexus ceiling (machine-freeze risk). Set ALLOW_UNSAFE_LOAD=1 to override,"
-    warn "  or use a low-cap build to validate eviction safely."
-    echo "$MAX_SAFE_FLOWS"
-  else
-    echo "$v"
+    warn "  only when the host is intentionally prepared for unsafe load."
+    v=$MAX_SAFE_FLOWS
   fi
+  if (( HARDCAP > 0 )); then
+    hard_headroom=0
+    (( HARDCAP > BASELINE_TOTAL )) \
+      && hard_headroom=$(( HARDCAP - BASELINE_TOTAL ))
+    if (( v > hard_headroom )); then
+      warn "$name=$v exceeds effective hard-cap headroom=$hard_headroom — clamping to a reachable target"
+      v=$hard_headroom
+    fi
+  fi
+  (( v > 0 )) || return 1
+  echo "$v"
 }
 if (( FANOUT_TARGET == 0 )); then
   FANOUT_TARGET="$(auto_target)" \
     || die "no effective live-flow hard-cap headroom remains for an automatic fanout target"
 else
-  FANOUT_TARGET="$(clamp_safe "$FANOUT_TARGET" FANOUT_TARGET)"
+  FANOUT_TARGET="$(clamp_safe "$FANOUT_TARGET" FANOUT_TARGET)" \
+    || die "no effective live-flow hard-cap headroom remains for FANOUT_TARGET"
 fi
-if (( IDLE_TARGET == 0 )); then IDLE_TARGET=$FANOUT_TARGET; else IDLE_TARGET="$(clamp_safe "$IDLE_TARGET" IDLE_TARGET)"; fi
+if (( IDLE_TARGET == 0 )); then
+  IDLE_TARGET=$FANOUT_TARGET
+else
+  IDLE_TARGET="$(clamp_safe "$IDLE_TARGET" IDLE_TARGET)" \
+    || die "no effective live-flow hard-cap headroom remains for IDLE_TARGET"
+fi
 say "resolved targets: fanout=$FANOUT_TARGET idle=$IDLE_TARGET (MAX_SAFE_FLOWS=$MAX_SAFE_FLOWS)"
 [[ "$MODE" == "cap-too-high" ]] && warn "softCap=$SOFTCAP > MAX_SAFE_FLOWS=$MAX_SAFE_FLOWS: this run validates leak/freeze/wake only, NOT cap eviction. Use a low-cap build to exercise the reaper."
 
@@ -876,11 +1075,14 @@ if [[ "$MODE" == "find-ceiling" ]]; then
   warn "briefly FREEZE ALL networking on this Mac. It backs off + kills load the"
   warn "instant the probe fails. NOTE: against a 60s-timeout server it may"
   warn "plateau BELOW the true ceiling (flows die before enough accumulate)."
-  if [[ -t 0 && "$ASSUME_YES" != 1 ]]; then
+  if [[ "$ASSUME_YES" != 1 ]]; then
+    if [[ ! -t 0 ]]; then
+      die "non-interactive ceiling-finder requires ASSUME_YES=1"
+    fi
     printf '%s[soak]%s type CEILING to proceed: ' "$DIM" "$RESET"; read -r _ans
     [[ "$_ans" == "CEILING" ]] || die "aborted"
   fi
-  launched=0; last_good=0; ceiling=""; CEILING_FOUND=0; CEILING_ABORTED=0
+  launched=0; last_good=0; ceiling=""; CEILING_FOUND=0
   FLOW_POOL_LABEL=ceiling
   CEILING_OUTAGE_START=""; CEILING_OUTAGE_END=""
   while (( launched < MAX_SAFE_FLOWS * 3 )); do
@@ -903,18 +1105,17 @@ if [[ "$MODE" == "find-ceiling" ]]; then
         <<< "$confirm_record"
       printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$confirm_started" "$confirm_completed" \
         "$confirm_curl_rc" "$confirm_code" "$confirm_occ" "$confirm_gauge_epoch" >> "$OUT/ceiling-probes.tsv"
-      if (( probe_curl_rc != 0 && confirm_curl_rc != 0 )) \
-        && [[ "$code" == 000 && "$confirm_code" == 000 ]] \
+      if ceiling_transport_candidate "$probe_curl_rc" "$code" \
+        && ceiling_transport_candidate "$confirm_curl_rc" "$confirm_code" \
         && [[ "$occ" =~ ^[0-9]+$ && "$confirm_occ" =~ ^[0-9]+$ ]] \
         && (( occ > BASELINE_TOTAL && confirm_occ > BASELINE_TOTAL )) \
         && gauge_is_fresh "$gauge_epoch" "$probe_started" "$CEILING_START_EPOCH" \
         && gauge_is_fresh "$confirm_gauge_epoch" "$confirm_started" "$CEILING_START_EPOCH"; then
         ceiling="$confirm_occ"; CEILING_FOUND=1
         CEILING_OUTAGE_START="$probe_completed"
-        warn "two elevated transport probes failed before HTTP at gauge_total=$confirm_occ — ceiling proved. Backing off."
+        warn "two elevated transport probes produced a ceiling candidate at gauge_total=$confirm_occ; final evidence still requires an explicit provider allocation-exhaustion signal. Backing off."
         break
       elif ! { (( confirm_curl_rc == 0 )) && [[ "$confirm_code" =~ ^2 ]]; }; then
-        CEILING_ABORTED=1
         warn "repeated failure was not backed by elevated gauge evidence; aborting as unproven"
         break
       else
@@ -945,8 +1146,8 @@ if [[ "$MODE" == "find-ceiling" ]]; then
   {
     printf 'ceiling-finder result\n'
     printf 'last gauge_total with probe OK: %s\n' "$last_good"
-    printf 'gauge_total at first probe FAIL: %s\n' "${ceiling:-none}"
-    printf 'set softCap ~70%% and lowWater ~55%% of the ceiling.\n'
+    printf 'gauge_total at first repeated transport candidate: %s\n' "${ceiling:-none}"
+    printf 'This tuple is heuristic until extract-summary.txt correlates exact provider gauges and an explicit allocation-exhaustion signal; do not tune caps from an inconclusive result.\n'
   } | tee "$OUT/ceiling.txt"
   printf 'ceiling_found\t%s\nceiling_recovered\t%s\nceiling_outage_start\t%s\nceiling_outage_end\t%s\n' \
     "$CEILING_FOUND" "$CEILING_RECOVERED" "$CEILING_OUTAGE_START" \
@@ -959,19 +1160,26 @@ else
 if [[ "$SKIP_STRESS" != 1 ]]; then
   phase_mark stress start
   hdr "phase 1 — stress traffic (${STRESS_SECONDS}s @ $CONCURRENCY)"
-  if STRESS_DURATION="$STRESS_SECONDS" STRESS_CONCURRENCY="$CONCURRENCY" \
+  STRESS_DURATION="$STRESS_SECONDS" STRESS_CONCURRENCY="$CONCURRENCY" \
     STRESS_MONITOR_PID="$PID" STRESS_LOG_DIR="$OUT/stress" STRESS_SKIP_LIVENESS=1 \
-      bash "$STRESS_SH" | tee "$OUT/stress-run.txt"; then
+      bash "$STRESS_SH" > "$OUT/stress-run.txt" 2>&1 &
+  ACTIVE_CHILD_PID=$!
+  if wait "$ACTIVE_CHILD_PID"; then
     STRESS_OK=1
   else
     STRESS_OK=0
     warn "stress run returned nonzero"
   fi
+  ACTIVE_CHILD_PID=""
+  cat "$OUT/stress-run.txt"
+  STRESS_ATTRIBUTION=provider-monitored-traffic-only
   phase_mark stress end
 else
   STRESS_OK=skipped
+  STRESS_ATTRIBUTION=skipped
 fi
-printf 'stress_ok\t%s\n' "$STRESS_OK" >> "$OUT/run-meta.tsv"
+printf 'stress_ok\t%s\nstress_attribution\t%s\n' \
+  "$STRESS_OK" "$STRESS_ATTRIBUTION" >> "$OUT/run-meta.tsv"
 
 if [[ "$SKIP_FANOUT" != 1 ]]; then
   phase_mark fanout start
@@ -1013,11 +1221,16 @@ phase_mark real-download start
 hdr "phase 4 — real-world download (32 MiB steady stream)"
 REAL_DOWNLOAD_METRICS=""
 REAL_DOWNLOAD_CURL_RC=0
-REAL_DOWNLOAD_METRICS="$(curl -L -f -sS -o /dev/null --max-time 120 \
-    --header 'Accept-Encoding: identity' \
-    -w $'%{http_code}\t%{size_download}\t%{speed_download}\t%{time_total}' \
-    "$(dl_url "$DL_MAX_BYTES" 32768 5)" 2>"$OUT/real-download.curl.log")" \
-  || REAL_DOWNLOAD_CURL_RC=$?
+: > "$OUT/real-download.metrics"
+curl -L -f -sS -o /dev/null --max-time 120 \
+  --header 'Accept-Encoding: identity' \
+  -w $'%{http_code}\t%{size_download}\t%{speed_download}\t%{time_total}' \
+  "$(dl_url "$DL_MAX_BYTES" 32768 5)" > "$OUT/real-download.metrics" \
+  2>"$OUT/real-download.curl.log" &
+ACTIVE_CHILD_PID=$!
+wait "$ACTIVE_CHILD_PID" || REAL_DOWNLOAD_CURL_RC=$?
+ACTIVE_CHILD_PID=""
+REAL_DOWNLOAD_METRICS="$(<"$OUT/real-download.metrics")"
 IFS=$'\t' read -r REAL_DOWNLOAD_CODE REAL_DOWNLOAD_BYTES \
   REAL_DOWNLOAD_SPEED REAL_DOWNLOAD_TIME <<< "$REAL_DOWNLOAD_METRICS"
 {
@@ -1028,11 +1241,12 @@ IFS=$'\t' read -r REAL_DOWNLOAD_CODE REAL_DOWNLOAD_BYTES \
     "${REAL_DOWNLOAD_SPEED:-?}" "${REAL_DOWNLOAD_TIME:-?}"
 } | tee "$OUT/real-download.txt"
 if real_download_matches "$REAL_DOWNLOAD_CURL_RC" "$REAL_DOWNLOAD_CODE" \
-  "$REAL_DOWNLOAD_BYTES" "$DL_MAX_BYTES"; then
+  "$REAL_DOWNLOAD_BYTES" "$DL_MAX_BYTES" "$REAL_DOWNLOAD_SPEED" \
+  "$REAL_DOWNLOAD_TIME"; then
   REAL_DOWNLOAD_OK=1
 else
   REAL_DOWNLOAD_OK=0
-  warn "real download failed or transferred an unexpected byte count"
+  warn "real download failed, transferred an unexpected byte count, or reported no throughput"
 fi
 printf 'real_download_ok\t%s\n' "$REAL_DOWNLOAD_OK" >> "$OUT/run-meta.tsv"
 phase_mark real-download end
@@ -1180,16 +1394,20 @@ else
 fi
 PROVIDER_END_TIME=""
 [[ -n "$PID2" ]] && PROVIDER_END_TIME="$(ps -o lstart= -p "$PID2" 2>/dev/null | sed -E 's/^[[:space:]]+//')"
+PROVIDER_END_IDENTITY=""
+[[ -n "$PID2" ]] && PROVIDER_END_IDENTITY="$(process_identity "$PID2" || true)"
 PROVIDER_CONTINUOUS=1
 if [[ -z "$PID2" ]]; then
   warn "sysext process is GONE after the run (crashed or uninstalled)"
   PROVIDER_CONTINUOUS=0
-elif [[ "$PID2" != "$PID" || "$PROVIDER_END_TIME" != "$PROVIDER_START_TIME" ]]; then
+elif [[ "$PID2" != "$PID" || "$PROVIDER_END_TIME" != "$PROVIDER_START_TIME" \
+  || "$PROVIDER_END_IDENTITY" != "$PROVIDER_START_IDENTITY" ]]; then
   warn "sysext RESTARTED during the run: $PID → $PID2 (watchdog churn / crash — itself a signal)"
   PROVIDER_CONTINUOUS=0
 fi
-printf 'provider_end_pid\t%s\nprovider_end_time\t%s\nprovider_continuous\t%s\n' \
-  "${PID2:-gone}" "${PROVIDER_END_TIME:-gone}" "$PROVIDER_CONTINUOUS" >> "$OUT/run-meta.tsv"
+printf 'provider_end_pid\t%s\nprovider_end_time\t%s\nprovider_end_identity\t%s\nprovider_continuous\t%s\n' \
+  "${PID2:-gone}" "${PROVIDER_END_TIME:-gone}" \
+  "${PROVIDER_END_IDENTITY:-gone}" "$PROVIDER_CONTINUOUS" >> "$OUT/run-meta.tsv"
 SNAP_PID="${PID2:-$PID}"
 {
   printf '=== final snapshot @ %s ===\n' "$(date -u +%FT%TZ)"
@@ -1206,6 +1424,8 @@ say "→ $OUT/final-mem.txt"
 # ── leaks pass ────────────────────────────────────────────────────────
 hdr "leaks pass"
 LEAKS_COMMAND_RC=0
+# The privileged command writes through the invoking shell into user-owned OUT.
+# shellcheck disable=SC2024
 if sudo leaks "$SNAP_PID" > "$OUT/leaks.txt" 2>&1; then
   :
 else
@@ -1257,10 +1477,13 @@ say "captured $NDJSON_LINES ndjson lines"
 # ── dial9 traces ──────────────────────────────────────────────────────
 hdr "collecting dial9 traces"
 if sudo -n test -d "$DIAL9_DIR" 2>/dev/null; then
-  sudo cp -R "$DIAL9_DIR" "$OUT/dial9-traces" 2>/dev/null \
-    && sudo chown -R "$(whoami)" "$OUT/dial9-traces" 2>/dev/null \
-    && say "→ $OUT/dial9-traces ($(find "$OUT/dial9-traces" -type f | wc -l | tr -d ' ') files)" \
-    || warn "could not copy dial9 traces"
+  if sudo cp -R "$DIAL9_DIR" "$OUT/dial9-traces" 2>/dev/null \
+    && sudo chown -R "$(whoami)" "$OUT/dial9-traces" 2>/dev/null
+  then
+    say "→ $OUT/dial9-traces ($(find "$OUT/dial9-traces" -type f | wc -l | tr -d ' ') files)"
+  else
+    warn "could not copy dial9 traces"
+  fi
 else
   say "(no dial9 traces present)"
 fi
@@ -1275,6 +1498,7 @@ from decimal import Decimal
 
 sys.path.insert(0, sys.argv[2])
 from soak_pressure_log import (
+    artifact_identity_issues,
     cap_validation_hard_limited,
     ceiling_configuration_issues,
     ceiling_outage_window,
@@ -1285,7 +1509,6 @@ from soak_pressure_log import (
     flow_pool_evidence_issues,
     flow_pool_status,
     flow_gauge,
-    flow_gauge_issue,
     leak_evidence,
     lifecycle_category_issue,
     no_headroom_event,
@@ -1296,10 +1519,13 @@ from soak_pressure_log import (
     parse_ceiling_probe_lines,
     parse_oslog_timestamp,
     parse_phase_marker_lines,
+    parse_provider_identity_lines,
     parse_probe_lines,
     phase_for_epoch,
     pressure_episode,
+    pressure_telemetry_issue,
     pressure_reaper_status,
+    provider_allocation_failure,
     probe_succeeded,
     selection_event,
     sleep_wake_evidence,
@@ -1331,7 +1557,8 @@ for key in ("softcap", "hardcap", "baseline_registered", "baseline_total"):
         meta_issues.append(f"run metadata {key!r} is missing or invalid")
 for key in (
     "provider_start_pid", "provider_start_time", "provider_end_pid",
-    "provider_end_time", "provider_bundle", "log_stream_pid", "probe_monitor_pid",
+    "provider_end_time", "provider_start_identity", "provider_end_identity",
+    "provider_bundle", "log_stream_pid", "probe_monitor_pid",
 ):
     if not meta.get(key):
         meta_issues.append(f"run metadata {key!r} is missing")
@@ -1342,8 +1569,19 @@ for key in ("provider_start_pid", "provider_end_pid", "log_stream_pid", "probe_m
 if (
     meta.get("provider_start_pid") != meta.get("provider_end_pid")
     or meta.get("provider_start_time") != meta.get("provider_end_time")
+    or meta.get("provider_start_identity") != meta.get("provider_end_identity")
 ):
     meta_issues.append("provider start/end process identity does not match")
+meta_issues.extend(artifact_identity_issues(meta))
+
+provider_identity_issues = []
+provider_identity_path = os.path.join(out, "provider-timeline.tsv")
+if os.path.exists(provider_identity_path):
+    with open(provider_identity_path) as provider_identity_input:
+        _, provider_identity_issues = parse_provider_identity_lines(
+            provider_identity_input, meta.get("provider_start_identity"))
+else:
+    provider_identity_issues.append("provider identity timeline is missing")
 
 pf = os.path.join(out, "phases.tsv")
 expected_phase_order = (
@@ -1424,23 +1662,28 @@ missing_hardcap_gauges = 0
 n_gauge = 0
 c = dict(admit_and_ride=0, wd_idle=0,
          wd_wedged=0, wd_prerdy=0, drain_backstop=0, body_err=0,
-         relay_drop=0, sleep=0, wake=0, err=0)
+         relay_drop=0, sleep=0, wake=0, err=0, fault=0, unknown_error=0)
 egress_fail = {}   # posix code -> count
 per_phase = {}
 gauge_epochs_per_phase = {}
 occupancy_samples_per_phase = {}
 gauge_samples_per_phase = {}
 lifecycle_category_issues = []
-flow_gauge_issues = []
+pressure_telemetry_issues = []
 numeric_log_issues = []
 pressure_rows = []
-for ts, msg, _, category in rows:
+trusted_rows = []
+for ts, msg, mtype, category in rows:
     epoch = parse_oslog_timestamp(ts)
     category_issue = lifecycle_category_issue(msg, category)
     if category_issue:
         lifecycle_category_issues.append(category_issue)
-        if pressure_episode(msg) is not None:
-            continue
+        continue
+    telemetry_issue = pressure_telemetry_issue(msg)
+    if telemetry_issue:
+        pressure_telemetry_issues.append(telemetry_issue)
+        continue
+    trusted_rows.append((ts, msg, mtype, category))
     pressure_rows.append((epoch, msg))
 
 pressure = summarize_pressure_rows(
@@ -1452,7 +1695,7 @@ idle_tail = next(
     ((start, end) for name, start, end in phases if name == "idle-tail"),
     (None, None))
 final_gauge = settled_final_flow_gauge(
-    ((parse_oslog_timestamp(ts), msg) for ts, msg, _, _ in rows),
+    ((parse_oslog_timestamp(ts), msg) for ts, msg, _, _ in trusted_rows),
     settle_start_epoch=idle_tail[0],
     settle_end_epoch=idle_tail[1])
 
@@ -1463,14 +1706,12 @@ def ph(n):
 generation_events = []
 sleep_epochs = []
 wake_epochs = []
+allocation_failure_epochs = []
 
 with open(os.path.join(out, "flow-counts.txt"), "w") as g, \
      open(os.path.join(out, "timeline.txt"), "w") as t:
-    for ts, msg, mtype, category in rows:
+    for ts, msg, mtype, category in trusted_rows:
         ep = parse_oslog_timestamp(ts); pname = phase_of(ep)
-        gauge_issue = flow_gauge_issue(msg)
-        if gauge_issue:
-            flow_gauge_issues.append(gauge_issue)
         gauge = flow_gauge(msg)
         if gauge:
             tcp = gauge["tcp"]; udp = gauge["udp"]
@@ -1523,6 +1764,8 @@ with open(os.path.join(out, "flow-counts.txt"), "w") as g, \
             c["body_err"] += 1; ph(pname)["body_err"] += 1
         if relay_drop_re.search(msg):
             c["relay_drop"] += 1
+        if ep is not None and provider_allocation_failure(msg):
+            allocation_failure_epochs.append(ep)
         ef = egress_fail_re.search(msg)
         if ef:
             code = parse_artifact_uint(ef.group(1))
@@ -1536,6 +1779,18 @@ with open(os.path.join(out, "flow-counts.txt"), "w") as g, \
             t.write(f"{ts}  [{pname}] [{mtype or 'Default'}]  {msg}\n")
             if mtype in ("Error", "Fault"):
                 c["err"] += 1
+            if mtype == "Fault":
+                c["fault"] += 1
+            elif mtype == "Error" and not (
+                body_err_re.search(msg)
+                or relay_drop_re.search(msg)
+                or (
+                    meta.get("mode") == "find-ceiling"
+                    and pname == "ceiling"
+                    and provider_allocation_failure(msg)
+                )
+            ):
+                c["unknown_error"] += 1
             if sleep_event_re.search(msg) and category == "lifecycle":
                 c["sleep"] += 1; ph(pname)["sleep"] += 1
                 if ep is not None:
@@ -1573,17 +1828,38 @@ if os.path.exists(ptl):
         else:
             run = 0
 
-# Fanout active-flow outcomes (descriptive; killed-by-topup pollutes codes).
-fo_ok = fo_bad = 0
+# Completed active-flow outcomes. Intentional phase-end kills do not emit a row;
+# every recorded non-2xx, truncated body, or nonzero curl outcome is a failure.
+fo_ok = fo_bad = ceiling_fo_ok = ceiling_fo_bad = 0
 fof = os.path.join(out, "fanout.txt")
 if os.path.exists(fof):
-    for ln in open(fof, errors="replace"):
-        mm = re.match(r"\s*(\d{3})\s", ln)
-        if mm:
-            if mm.group(1)[0] in "23":
-                fo_ok += 1
-            else:
-                fo_bad += 1
+    for line_number, ln in enumerate(open(fof, errors="replace"), 1):
+        mm = re.fullmatch(
+            r"(fanout|ceiling)\t(\d{3})\t(\d+)\t"
+            r"(?:0|[1-9]\d*)(?:\.\d+)?\tcurl_exit=(\d+)\n?",
+            ln,
+        )
+        if mm is None:
+            numeric_log_issues.append(
+                f"malformed active fanout outcome at line {line_number}")
+            continue
+        phase_label, code, downloaded, curl_rc = mm.groups()
+        transfer_ok = (
+            code.startswith("2")
+            and parse_artifact_uint(downloaded) == 32 * 1024 * 1024
+            and parse_artifact_uint(curl_rc) == 0
+        )
+        if phase_label == "fanout" and transfer_ok:
+            fo_ok += 1
+        elif phase_label == "fanout":
+            fo_bad += 1
+        elif transfer_ok:
+            ceiling_fo_ok += 1
+        else:
+            # Ceiling-finder transfer failures are expected candidate signals;
+            # they are reported separately and never weaken the independent,
+            # phase-local allocation-exhaustion proof.
+            ceiling_fo_bad += 1
 
 def meta_true(key):
     return meta.get(key) == "1"
@@ -1697,6 +1973,10 @@ if os.path.exists(ceiling_file):
     with open(ceiling_file) as ceiling_input:
         ceiling_records, ceiling_parse_issues = parse_ceiling_probe_lines(ceiling_input)
 ceiling_phase = next((p for p in phases if p[0] == "ceiling"), None)
+ceiling_gauges = [
+    (epoch, allocated)
+    for epoch, _, allocated in gauge_samples_per_phase.get("ceiling", [])
+]
 ceiling_proof_issues = []
 if meta.get("mode") == "find-ceiling":
     ceiling_proof_issues.extend(ceiling_configuration_issues(
@@ -1704,9 +1984,12 @@ if meta.get("mode") == "find-ceiling":
     ceiling_proof_issues.extend(ceiling_parse_issues)
     ceiling_proof_issues.extend(ceiling_probe_evidence_issues(
         ceiling_records, meta.get("ceiling_found"), baseline_total, ceiling_phase,
-        meta.get("ceiling_recovered")))
+        meta.get("ceiling_recovered"), ceiling_gauges,
+        allocation_failure_epochs))
 ceiling_window = (
-    ceiling_outage_window(ceiling_records, baseline_total, ceiling_phase)
+    ceiling_outage_window(
+        ceiling_records, baseline_total, ceiling_phase, ceiling_gauges,
+        allocation_failure_epochs)
     if meta.get("mode") == "find-ceiling" and meta.get("ceiling_found") == "1"
     else None
 )
@@ -1766,8 +2049,10 @@ leak_count = leak_result["leaks"]
 
 capture_issues = (
     list(ndjson_issues) + provider_source_issues + meta_issues + phase_issues
-    + timestamp_issues + probe_issues + pool_interval_issues + pool_bracket_issues
-    + lifecycle_category_issues + flow_gauge_issues + numeric_log_issues
+    + provider_identity_issues + timestamp_issues + probe_issues
+    + pool_interval_issues + pool_bracket_issues
+    + lifecycle_category_issues + pressure_telemetry_issues + pressure["issues"]
+    + numeric_log_issues
     + mode_configuration_issues + ceiling_proof_issues + sleep_probe_issues
     + sleep_result["issues"] + leak_issues
 )
@@ -1845,12 +2130,15 @@ run_result = classify_soak_result(
     meta,
     evidence_issues,
     probe_failures=unexpected_probe_failures,
-    body_errors=c["body_err"],
+    body_errors=c["body_err"] + c["relay_drop"],
     reaper_status=reaper_status,
+    fanout_failures=fo_bad,
     leak_count=leak_count,
     baseline_total=baseline_total,
     final_total=final_total,
     settlement_tolerance=settlement_tolerance,
+    provider_faults=c["fault"],
+    unknown_provider_errors=c["unknown_error"],
 )
 evidence_issues = run_result["evidence_issues"]
 evidence_complete = run_result["complete"]
@@ -1862,6 +2150,17 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
         print(line); s.write(line + "\n")
     w("=== soak extract summary ===")
     w(f"mode:                     {meta.get('mode','?')}")
+    w("workload attribution:     aggregate provider correlation for holder pools; "
+      "HTTP stress/download traffic is not individually attributed to proxy flows")
+    w(f"repository identity:      {meta.get('repo_head','?')} "
+      f"({'dirty' if meta.get('repo_dirty') == '1' else 'clean'})")
+    w(f"evidence script hashes:   soak={meta.get('soak_script_sha256','?')} "
+      f"stress={meta.get('stress_script_sha256','?')} "
+      f"parser={meta.get('pressure_parser_sha256','?')}")
+    w(f"provider binary SHA-256:  {meta.get('provider_binary_sha256','?')}")
+    w(f"provider signing:         {meta.get('provider_codesign_identifier','?')} "
+      f"team={meta.get('provider_codesign_team','?')} "
+      f"CDHash={meta.get('provider_codesign_cdhash','?')}")
     w(f"ndjson rows parsed:       {len(rows)}")
     w(f"phases:                   {', '.join(p[0] for p in phases) or '(none)'}")
     w(f"softCap (gauge):          {sorted(softcap_seen) or sc}")
@@ -1957,8 +2256,10 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
     else:
         w("freeze verdict:           GOOD — proxy stayed live (no freeze)")
     w("")
-    w(f"sleep markers: {c['sleep']}   wake markers: {c['wake']}   error/fault lines: {c['err']}")
-    w(f"fanout active outcomes:   ok={fo_ok} non-2xx/err={fo_bad} (descriptive; top-up kills pollute codes)")
+    w(f"sleep markers: {c['sleep']}   wake markers: {c['wake']}   "
+      f"error/fault lines: {c['err']} (unknown Error={c['unknown_error']} Fault={c['fault']})")
+    w(f"fanout active outcomes:   ok={fo_ok} failed/non-2xx/truncated={fo_bad}")
+    w(f"ceiling active outcomes:  ok={ceiling_fo_ok} candidate-failures={ceiling_fo_bad}")
     w("")
     if phases:
         w("--- per-phase ---")
@@ -2003,14 +2304,18 @@ fi
 # ── Bundle ────────────────────────────────────────────────────────────
 hdr "done"
 TARBALL="$OUT.tgz"
-tar -czf "$TARBALL" -C "$(dirname "$OUT")" "$(basename "$OUT")" 2>/dev/null \
-  && say "tarball:   $TARBALL" || warn "could not create tarball"
+if tar -czf "$TARBALL" -C "$(dirname "$OUT")" "$(basename "$OUT")" 2>/dev/null; then
+  say "tarball:   $TARBALL"
+else
+  warn "could not create tarball"
+fi
 say "dir:       $OUT"
 echo
 [[ -f "$OUT/extract-summary.txt" ]] && cat "$OUT/extract-summary.txt"
 echo
 hdr "hand me: $OUT  (or the tarball)"
 STATUS_LAST="$(awk 'NF { line=$0 } END { print line }' "$OUT/evidence-status.tsv" 2>/dev/null)"
+STATUS_ORDER="$(awk -F '\t' 'NF { print $1; seen++; if (seen == 3) exit }' "$OUT/evidence-status.tsv" 2>/dev/null | paste -sd ' ' -)"
 STATUS_KEYS="$(awk -F '\t' '$1 == "complete" || $1 == "passed" || $1 == "exit_code" || $1 == "schema_complete" { count[$1]++ } END { print count["complete"]+0, count["passed"]+0, count["exit_code"]+0, count["schema_complete"]+0 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
 STATUS_DIAGNOSTICS="$(awk -F '\t' '$1 == "issue" { issues++ } $1 == "failure" { failures++ } END { print issues+0, failures+0 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
 STATUS_BAD_LINES="$(awk -F '\t' 'NF && (NF != 2 || ($1 != "complete" && $1 != "passed" && $1 != "exit_code" && $1 != "issue" && $1 != "failure" && $1 != "schema_complete")) { bad++ } END { print bad+0 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
@@ -2018,7 +2323,9 @@ EVIDENCE_COMPLETE="$(awk -F '\t' '$1 == "complete" { print $2 }' "$OUT/evidence-
 RUN_PASSED="$(awk -F '\t' '$1 == "passed" { print $2 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
 DECLARED_EXIT="$(awk -F '\t' '$1 == "exit_code" { print $2 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
 read -r STATUS_ISSUES STATUS_FAILURES <<< "$STATUS_DIAGNOSTICS"
-if [[ "$STATUS_LAST" != $'schema_complete\t1' || "$STATUS_KEYS" != "1 1 1 1" || "$STATUS_BAD_LINES" != 0 ]]; then
+if [[ "$STATUS_LAST" != $'schema_complete\t1' \
+  || "$STATUS_ORDER" != "complete passed exit_code" \
+  || "$STATUS_KEYS" != "1 1 1 1" || "$STATUS_BAD_LINES" != 0 ]]; then
   warn "evidence status is truncated or schema-incomplete"
   exit 2
 fi

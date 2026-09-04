@@ -39,6 +39,10 @@
 #                         can spend 180s pounding nothing if the
 #                         sysext crashed or is uninstalled.
 #
+# Evidence scope is explicit: without STRESS_MONITOR_PID this is traffic-only.
+# With a pid it additionally proves that one stable provider process stayed
+# alive, but individual HTTP requests are still not attributed to proxy flows.
+#
 # All workers run in parallel for STRESS_DURATION seconds. When
 # `STRESS_DURATION=0`, the script skips traffic generation and runs
 # only the artifact-analysis summary.
@@ -97,6 +101,10 @@ fi
   printf '[stress] STRESS_CONCURRENCY must be greater than zero\n' >&2
   exit 2
 }
+if [[ "$DURATION" != 0 && ( "$LARGE_BYTES" == 0 || "$POST_BYTES" == 0 ) ]]; then
+  printf '[stress] STRESS_LARGE_BYTES and STRESS_POST_BYTES must be greater than zero when traffic is enabled\n' >&2
+  exit 2
+fi
 
 HTTP_TARGET="${STRESS_HTTP_TARGET:-http://http-test.ramaproxy.org/method}"
 HTTPS_TARGET="${STRESS_HTTPS_TARGET:-https://http-test.ramaproxy.org/method}"
@@ -108,9 +116,64 @@ mkdir -p "$LOG_DIR"
 
 ANALYZE_ONLY=0
 TRAFFIC_FAILED=0
+ANALYSIS_FAILED=0
 if [[ "$DURATION" == 0 ]]; then
   ANALYZE_ONLY=1
 fi
+
+EVIDENCE_MODE=traffic-only
+[[ -n "$MONITOR_PID" ]] && EVIDENCE_MODE=provider-monitored-traffic-only
+(( ANALYZE_ONLY )) && EVIDENCE_MODE=artifact-analysis-only
+TRAFFIC_PIDS=()
+MONITOR_JOB_PID=""
+MONITOR_STOP_FILE="$LOG_DIR/.monitor.stop"
+CLEANUP_STARTED=0
+rm -f -- "$MONITOR_STOP_FILE"
+
+# Capture the source verdict before analysis-only mode replaces the status file
+# with its own terminal verdict. A re-analysis is meaningful only when it is
+# anchored to a completed, successful traffic run rather than an arbitrary
+# directory containing stale or hand-written summaries.
+ANALYSIS_SOURCE_STATUS_OK=0
+if (( ANALYZE_ONLY )) && [[ -r "$LOG_DIR/stress-status.tsv" ]]; then
+  if awk -F '\t' '
+    BEGIN { ok = 1 }
+    NF != 2 { ok = 0; next }
+    $1 == "complete" { complete++; ok = ok && $2 == "1"; next }
+    $1 == "passed" { passed++; ok = ok && $2 == "1"; next }
+    $1 == "exit_code" { exit_code++; ok = ok && $2 == "0"; next }
+    $1 == "evidence_mode" {
+      mode++
+      ok = ok && ($2 == "traffic-only" || $2 == "provider-monitored-traffic-only")
+      next
+    }
+    $1 == "proxy_attributed" { attributed++; ok = ok && $2 == "0"; next }
+    $1 == "schema_complete" { schema++; ok = ok && $2 == "1"; last_schema = NR; next }
+    { ok = 0 }
+    END {
+      exit !(ok && complete == 1 && passed == 1 && exit_code == 1 \
+        && mode == 1 && attributed == 1 && schema == 1 && last_schema == NR)
+    }
+  ' "$LOG_DIR/stress-status.tsv"
+  then
+    ANALYSIS_SOURCE_STATUS_OK=1
+  fi
+fi
+
+write_stress_status() {
+  local complete="$1" passed="$2" exit_code="$3" issue="${4:-}"
+  local tmp="$LOG_DIR/stress-status.tsv.tmp.$$"
+  {
+    printf 'complete\t%s\npassed\t%s\nexit_code\t%s\n' \
+      "$complete" "$passed" "$exit_code"
+    printf 'evidence_mode\t%s\nproxy_attributed\t0\n' "$EVIDENCE_MODE"
+    [[ -z "$issue" ]] || printf 'issue\t%s\n' "$issue"
+    printf 'schema_complete\t1\n'
+  } > "$tmp"
+  mv "$tmp" "$LOG_DIR/stress-status.tsv"
+}
+
+write_stress_status 0 0 2 "stress run did not reach its terminal verdict"
 
 TRAFFIC_WORKERS=(
   small_https
@@ -134,7 +197,139 @@ fi
 say() { printf '%s[stress]%s %s\n' "$DIM" "$RESET" "$*"; }
 hdr() { printf '%s[stress]%s %s%s%s\n' "$DIM" "$RESET" "$BOLD" "$*" "$RESET"; }
 
-trap 'kill $(jobs -p) 2>/dev/null || true' EXIT INT TERM
+# Fingerprint pid + kernel start time + complete command. A reused pid cannot
+# silently retain cleanup authority merely because the replacement is alive.
+pid_identity() {
+  local pid="$1" snapshot digest
+  snapshot="$(ps -ww -o pid= -o lstart= -o command= -p "$pid" 2>/dev/null)"
+  [[ -n "$snapshot" ]] || return 1
+  digest="$(printf '%s' "$snapshot" | shasum -a 256 | awk 'NR == 1 { print $1 }')"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s\n' "$digest"
+}
+
+owned_job_is_active() {
+  jobs -p | grep -Fqx -- "$1"
+}
+
+collect_owned_tree() {
+  local pid="$1" expected_identity="$2" child child_identity observed_identity
+  while IFS= read -r child; do
+    [[ "$child" =~ ^[1-9][0-9]*$ ]] || continue
+    child_identity="$(pid_identity "$child" || true)"
+    [[ "$child_identity" =~ ^[0-9a-f]{64}$ ]] || continue
+    if kill -STOP "$child" 2>/dev/null; then
+      observed_identity="$(pid_identity "$child" || true)"
+      if [[ "$observed_identity" == "$child_identity" ]]; then
+        collect_owned_tree "$child" "$child_identity"
+      else
+        # We may have raced process exit/reuse while acquiring authority. Never
+        # retain or signal the replacement; undo our best-effort STOP only when
+        # it is still the same observed process.
+        [[ "$observed_identity" =~ ^[0-9a-f]{64}$ ]] \
+          && kill -CONT "$child" 2>/dev/null || true
+      fi
+    fi
+  done < <(pgrep -P "$pid" 2>/dev/null || true)
+  printf '%s\t%s\n' "$pid" "$expected_identity"
+}
+
+signal_owned_identity() {
+  local pid="$1" expected_identity="$2" signal="$3" observed_identity
+  observed_identity="$(pid_identity "$pid" || true)"
+  [[ "$observed_identity" == "$expected_identity" ]] || return 1
+  kill "-$signal" "$pid" 2>/dev/null
+}
+
+cleanup_owned_jobs() {
+  (( CLEANUP_STARTED == 0 )) || return 0
+  CLEANUP_STARTED=1
+  : > "$MONITOR_STOP_FILE"
+  local pid identity observed_identity deadline active tree_text=""
+  local owned=() frozen=()
+  set +u
+  owned=("${TRAFFIC_PIDS[@]}")
+  [[ -z "$MONITOR_JOB_PID" ]] || owned+=("$MONITOR_JOB_PID")
+  # Freeze each direct worker before walking its descendants. This closes the
+  # race where a worker starts another curl between a tree snapshot and TERM,
+  # leaving that just-created process orphaned outside our cleanup authority.
+  for pid in "${owned[@]}"; do
+    identity="$(pid_identity "$pid" || true)"
+    if owned_job_is_active "$pid" \
+      && [[ "$identity" =~ ^[0-9a-f]{64}$ ]] \
+      && kill -STOP "$pid" 2>/dev/null
+    then
+      observed_identity="$(pid_identity "$pid" || true)"
+      if [[ "$observed_identity" == "$identity" ]]; then
+        frozen+=("$pid" "$identity")
+      else
+        [[ "$observed_identity" =~ ^[0-9a-f]{64}$ ]] \
+          && kill -CONT "$pid" 2>/dev/null || true
+      fi
+    fi
+  done
+  for ((index=0; index<${#frozen[@]}; index+=2)); do
+    pid="${frozen[index]}"
+    identity="${frozen[index+1]}"
+    tree_text="${tree_text}$(collect_owned_tree "$pid" "$identity")"$'\n'
+  done
+  while IFS=$'\t' read -r pid identity; do
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+    [[ "$identity" =~ ^[0-9a-f]{64}$ ]] || continue
+    signal_owned_identity "$pid" "$identity" TERM || true
+  done <<< "$tree_text"
+  while IFS=$'\t' read -r pid identity; do
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+    [[ "$identity" =~ ^[0-9a-f]{64}$ ]] || continue
+    signal_owned_identity "$pid" "$identity" CONT || true
+  done <<< "$tree_text"
+  deadline=$(( SECONDS + 5 ))
+  while (( SECONDS < deadline )); do
+    active=0
+    for pid in "${owned[@]}"; do
+      owned_job_is_active "$pid" && { active=1; break; }
+    done
+    (( active )) || break
+    sleep 0.1
+  done
+  while IFS=$'\t' read -r pid identity; do
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+    [[ "$identity" =~ ^[0-9a-f]{64}$ ]] || continue
+    signal_owned_identity "$pid" "$identity" KILL || true
+  done <<< "$tree_text"
+  deadline=$(( SECONDS + 2 ))
+  while (( SECONDS < deadline )); do
+    active=0
+    for pid in "${owned[@]}"; do
+      owned_job_is_active "$pid" && { active=1; break; }
+    done
+    (( active )) || break
+    sleep 0.1
+  done
+  for pid in "${owned[@]}"; do
+    wait "$pid" 2>/dev/null || true
+  done
+  set -u
+}
+
+handle_signal() {
+  local exit_code="$1"
+  trap - EXIT INT TERM
+  cleanup_owned_jobs
+  write_stress_status 0 0 2 "stress run interrupted by signal"
+  exit "$exit_code"
+}
+
+handle_exit() {
+  local exit_code=$?
+  trap - EXIT INT TERM
+  cleanup_owned_jobs
+  exit "$exit_code"
+}
+
+trap handle_exit EXIT
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
 
 # ── Worker primitives ─────────────────────────────────────────────────
 
@@ -157,7 +352,7 @@ transfer_matches_workload() {
       [[ "$downloaded" == "$LARGE_BYTES" && "$http_version" == 2 ]]
       ;;
     post_large)
-      [[ "$uploaded" == "$POST_BYTES" ]]
+      [[ "$uploaded" == "$POST_BYTES" && "$downloaded" == "$POST_BYTES" ]]
       ;;
     small_https)
       [[ "$http_version" == 2 ]]
@@ -174,8 +369,13 @@ transfer_matches_workload() {
 # code alone is therefore not an honest request outcome.
 do_one_curl() {
   local label="$1" target="$2"; shift 2
-  local metrics code downloaded uploaded http_version curl_rc=0
-  metrics=$(curl --silent --show-error --output /dev/null \
+  local metrics code downloaded uploaded http_version curl_rc=0 matched=1
+  local response_file="" output_file=/dev/null
+  if [[ "$label" == post_large ]]; then
+    response_file="$LOG_DIR/.post-response.${BASHPID:-$$}.$RANDOM"
+    output_file="$response_file"
+  fi
+  metrics=$(curl --silent --show-error --output "$output_file" \
       --max-time 30 \
       --fail-with-body \
       --write-out $'%{http_code}\t%{size_download}\t%{size_upload}\t%{http_version}' \
@@ -188,7 +388,11 @@ do_one_curl() {
   (( curl_rc == 0 )) \
     && http_status_is_ok "$code" \
     && transfer_matches_workload \
-      "$label" "${downloaded:-}" "${uploaded:-}" "${http_version:-}"
+      "$label" "${downloaded:-}" "${uploaded:-}" "${http_version:-}" \
+    && { [[ "$label" != post_large ]] || cmp -s "$POST_FILE" "$response_file"; } \
+    || matched=0
+  [[ -z "$response_file" ]] || rm -f -- "$response_file"
+  (( matched == 1 ))
 }
 
 # Run sequential curls until DURATION elapses.
@@ -235,7 +439,7 @@ loop_pool() {
 # A clean child exit is not sufficient evidence that the requested workload ran:
 # a delayed worker can miss its deadline and exit after zero loop iterations.
 verify_worker_progress() {
-  local worker summary summary_line summary_pattern
+  local worker summary summary_line summary_pattern iters ok failed
   local progress_failed=0
   for worker in "${TRAFFIC_WORKERS[@]}"; do
     summary="$LOG_DIR/${worker}.summary"
@@ -251,8 +455,11 @@ verify_worker_progress() {
       progress_failed=1
       continue
     fi
-    if [[ "${BASH_REMATCH[1]}" == 0 ]]; then
-      say "${RED}${worker}: worker reported iters=0${RESET}"
+    iters="${BASH_REMATCH[1]}"
+    ok="${BASH_REMATCH[2]}"
+    failed="${BASH_REMATCH[3]}"
+    if (( iters == 0 || ok == 0 || failed != 0 || iters != ok + failed )); then
+      say "${RED}${worker}: worker summary has no clean, internally consistent progress${RESET}"
       progress_failed=1
     fi
   done
@@ -261,8 +468,12 @@ verify_worker_progress() {
 
 # One-shot snapshot of a target pid: rss/vsz, vmmap summary, heap totals.
 snapshot_pid() {
-  local pid="$1" label="$2"
+  local pid="$1" label="$2" expected_identity="${3:-}" observed_identity
   local out="$LOG_DIR/${label}.txt"
+  if [[ -n "$expected_identity" ]]; then
+    observed_identity="$(pid_identity "$pid" || true)"
+    [[ "$observed_identity" == "$expected_identity" ]] || return 1
+  fi
   {
     printf '=== %s @ %s ===\n' "$label" "$(date -u +%FT%TZ)"
     ps -o pid,rss,vsz,%cpu,state -p "$pid" 2>/dev/null \
@@ -279,6 +490,10 @@ snapshot_pid() {
       || echo "heap unavailable (need sudo; cache with 'sudo -v' before the run)"
     printf '\n'
   } >"$out"
+  if [[ -n "$expected_identity" ]]; then
+    observed_identity="$(pid_identity "$pid" || true)"
+    [[ "$observed_identity" == "$expected_identity" ]] || return 1
+  fi
 }
 
 # Pre-flight liveness probe.
@@ -294,7 +509,7 @@ liveness_probe() {
       "$HTTPS_TARGET" 2>/dev/null) || curl_rc=$?
   [[ "$code" =~ ^[0-9]{3}$ ]] || code=000
   if (( curl_rc == 0 )) && [[ "$code" =~ ^2 ]]; then
-    say "${GREEN}liveness: probe got $code (proxy reachable, traffic flowing)${RESET}"
+    say "${GREEN}liveness: probe got $code (target reachable; interception is not attributed)${RESET}"
     return 0
   fi
   say "${RED}liveness: probe got '$code' curl_exit=$curl_rc against $HTTPS_TARGET${RESET}"
@@ -305,11 +520,16 @@ liveness_probe() {
 
 # Optional sampling of a target pid every 5s.
 monitor_pid() {
-  local pid="$1"
-  local end=$((SECONDS + DURATION))
+  local pid="$1" expected_identity="$2" observed_identity
   local out="$LOG_DIR/monitor.$pid.log"
-  echo "monitoring pid=$pid -> $out" >>"$out"
-  while (( SECONDS < end )); do
+  echo "monitoring pid=$pid -> $out" >"$out"
+  while [[ ! -e "$MONITOR_STOP_FILE" ]]; do
+    observed_identity="$(pid_identity "$pid" || true)"
+    if [[ "$observed_identity" != "$expected_identity" ]]; then
+      printf '\n=== %s ===\nprovider identity changed or disappeared\n' \
+        "$(date -u +%FT%TZ)" >> "$out"
+      return 42
+    fi
     {
       printf '\n=== %s ===\n' "$(date -u +%FT%TZ)"
       ps -o pid,rss,vsz,%cpu,state -p "$pid" 2>/dev/null \
@@ -323,6 +543,8 @@ monitor_pid() {
     } >>"$out"
     sleep 5
   done
+  observed_identity="$(pid_identity "$pid" || true)"
+  [[ "$observed_identity" == "$expected_identity" ]]
 }
 
 # ── Plan + launch ────────────────────────────────────────────────────
@@ -333,11 +555,17 @@ say "concurrency: $CONCURRENCY"
 say "log dir:     $LOG_DIR"
 [[ -n "$MONITOR_PID" ]] && say "monitor pid: $MONITOR_PID"
 (( ANALYZE_ONLY )) && say "analysis:    artifact-only (no workers)"
+say "evidence:    $EVIDENCE_MODE (individual requests are not proxy-attributed)"
 
 POST_FILE="$LOG_DIR/post.body"
 if (( ! ANALYZE_ONLY )); then
-  dd if=/dev/zero of="$POST_FILE" bs=1024 \
-     count=$((POST_BYTES / 1024)) 2>/dev/null
+  dd if=/dev/zero of="$POST_FILE" bs=1048576 \
+    count=$((POST_BYTES / 1048576)) 2>/dev/null
+  POST_REMAINDER=$((POST_BYTES % 1048576))
+  if (( POST_REMAINDER > 0 )); then
+    dd if=/dev/zero bs="$POST_REMAINDER" count=1 \
+      >> "$POST_FILE" 2>/dev/null
+  fi
   say "post body:   $(du -h "$POST_FILE" | cut -f1)"
 fi
 
@@ -349,8 +577,17 @@ if (( ! ANALYZE_ONLY )); then
   fi
 
   if [[ -n "$MONITOR_PID" ]]; then
-    if snapshot_pid "$MONITOR_PID" preflight; then
+    MONITOR_IDENTITY="$(pid_identity "$MONITOR_PID" || true)"
+    if [[ ! "$MONITOR_IDENTITY" =~ ^[0-9a-f]{64}$ ]]; then
+      say "${RED}monitor: pid $MONITOR_PID has no stable process identity${RESET}"
+      exit 1
+    fi
+    printf '%s\n' "$MONITOR_IDENTITY" > "$LOG_DIR/monitor.identity.sha256"
+    if snapshot_pid "$MONITOR_PID" preflight "$MONITOR_IDENTITY"; then
       say "preflight:   $LOG_DIR/preflight.txt"
+    else
+      say "${RED}preflight: monitored provider identity changed or disappeared${RESET}"
+      exit 1
     fi
   fi
 
@@ -374,7 +611,7 @@ if (( ! ANALYZE_ONLY )); then
 
   MONITOR_JOB_PID=""
   if [[ -n "$MONITOR_PID" ]]; then
-    monitor_pid "$MONITOR_PID" &
+    monitor_pid "$MONITOR_PID" "$MONITOR_IDENTITY" &
     MONITOR_JOB_PID="$!"
   fi
 
@@ -392,8 +629,27 @@ if (( ! ANALYZE_ONLY )); then
   for worker_pid in "${TRAFFIC_PIDS[@]}"; do
     wait "$worker_pid" || TRAFFIC_FAILED=1
   done
-  [[ -n "$MONITOR_JOB_PID" ]] && wait "$MONITOR_JOB_PID" || true
+  : > "$MONITOR_STOP_FILE"
+  if [[ -n "$MONITOR_JOB_PID" ]]; then
+    if ! wait "$MONITOR_JOB_PID"; then
+      say "${RED}monitored provider died or changed identity during traffic${RESET}"
+      TRAFFIC_FAILED=1
+    fi
+    MONITOR_JOB_PID=""
+  fi
   verify_worker_progress || TRAFFIC_FAILED=1
+else
+  if (( ! ANALYSIS_SOURCE_STATUS_OK )); then
+    say "${RED}analysis: source stress-status.tsv is missing, invalid, or not a successful traffic run${RESET}"
+    ANALYSIS_FAILED=1
+  fi
+  verify_worker_progress || ANALYSIS_FAILED=1
+  for worker_name in "${TRAFFIC_WORKERS[@]}"; do
+    if [[ ! -s "$LOG_DIR/${worker_name}.log" ]]; then
+      say "${RED}analysis: ${worker_name}.log is missing or empty${RESET}"
+      ANALYSIS_FAILED=1
+    fi
+  done
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────
@@ -447,11 +703,14 @@ fi
 
 # Post-flight memory snapshot.
 if [[ -n "$MONITOR_PID" && $ANALYZE_ONLY -eq 0 ]]; then
-  if snapshot_pid "$MONITOR_PID" postflight; then
+  if snapshot_pid "$MONITOR_PID" postflight "$MONITOR_IDENTITY"; then
     hdr "memory snapshot"
     say "preflight  → $LOG_DIR/preflight.txt"
     say "postflight → $LOG_DIR/postflight.txt"
     say "diff       → diff $LOG_DIR/preflight.txt $LOG_DIR/postflight.txt"
+  else
+    say "${RED}postflight: monitored provider identity changed or disappeared${RESET}"
+    TRAFFIC_FAILED=1
   fi
 fi
 
@@ -460,6 +719,7 @@ if [[ -n "$NDJSON_PATH" ]]; then
   hdr "close-reason histogram (from $NDJSON_PATH)"
   if [[ ! -r "$NDJSON_PATH" ]]; then
     say "${RED}cannot read $NDJSON_PATH${RESET}"
+    (( ANALYZE_ONLY )) && ANALYSIS_FAILED=1
   else
     awk -v pid="${MONITOR_PID:-}" '
       /transparent proxy (tcp|udp) flow closed/ {
@@ -495,7 +755,14 @@ fi
 
 hdr "logs at $LOG_DIR"
 say "done"
+if (( ANALYZE_ONLY && ANALYSIS_FAILED )); then
+  say "${RED}artifact analysis is incomplete or invalid${RESET}"
+  write_stress_status 0 0 2 "artifact analysis requires a successful source status and complete worker artifacts"
+  exit 2
+fi
 if (( ! ANALYZE_ONLY && TRAFFIC_FAILED )); then
   say "${RED}one or more traffic workers observed request failures${RESET}"
+  write_stress_status 1 0 1
   exit 1
 fi
+write_stress_status 1 1 0

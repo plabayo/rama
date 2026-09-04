@@ -83,6 +83,13 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
 
     var sessionHandle: RamaUdpSessionHandle?
     private var engineGeneration: UInt64?
+    private var runtimePolicy: TransparentProxyRuntimePolicy?
+    private var effectiveRuntimePolicy: TransparentProxyRuntimePolicy {
+        runtimePolicy ?? .testDefaultsSnapshot
+    }
+    #if DEBUG
+        var testRuntimePolicy: TransparentProxyRuntimePolicy? { runtimePolicy }
+    #endif
     /// Queue-confined lifecycle gates. Natural server completion first enters
     /// a draining phase; errors and detach skip directly to teardown.
     private var gracefulServerCloseStarted = false
@@ -95,9 +102,16 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
 
     /// Wall-clock cap on per-flow idle (no datagrams in either
     /// direction). 0 disables the watchdog. Defaults to
-    /// `defaultUdpIdleTimeoutMs`; override in tests by setting
-    /// this on the session before calling `start()`.
-    var idleTimeoutMs: UInt64 = defaultUdpIdleTimeoutMs
+    /// the attached engine policy; tests may override it before `start()`.
+    private var idleTimeoutMsStorage: UInt64 = 60_000
+    private var idleTimeoutWasExplicitlySet = false
+    var idleTimeoutMs: UInt64 {
+        get { idleTimeoutMsStorage }
+        set {
+            idleTimeoutMsStorage = newValue
+            idleTimeoutWasExplicitlySet = true
+        }
+    }
 
     /// Pending one-shot idle work item and monotonic activity time,
     /// with the timer queue-confined and the timestamp lock-protected.
@@ -147,11 +161,17 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     /// Rich form of `start()` used by the Network Extension adapter so it can
     /// log Rama's exact policy result before converting it to Apple's Bool.
     func startWithDecision() -> UdpFlowHandlingDecision {
+        guard let lease = core?.engineLeaseForNewFlow() else {
+            ctx.registrationGate.abandon()
+            core?.logDebug("handleNewFlow udp engine unavailable; bypassing")
+            return .passthrough
+        }
+        installEngineLease(lease)
         installTerminate()
         buildClientWritePump()
         installRequestRead()
 
-        guard let decision = requestEngineSession() else {
+        guard let decision = requestEngineSession(using: lease) else {
             ctx.registrationGate.abandon()
             core?.logDebug("handleNewFlow udp engine unavailable; bypassing")
             return .passthrough
@@ -181,6 +201,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                     anchor: self,
                     appId: appId,
                     engineGeneration: engineGeneration,
+                    runtimePolicy: effectiveRuntimePolicy,
                     on: flowQueue,
                     body: { [self] in
                         guard ctx.readState != .closed else { return }
@@ -198,12 +219,11 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             case .capacityRefused(let reason, let persist):
                 let line =
                     "udp admission rejected: \(reason); "
-                    + (defaultFlowRefusalPassthrough
-                        ? "passing through (fail open)" : "blocking (fail closed)")
+                    + effectiveRuntimePolicy.flowRefusal.logDescription
                     + " app=\(appId)"
                 if persist { core.logLifecycle(line) } else { core.logDebug(line) }
                 session.onClientClose()
-                if defaultFlowRefusalPassthrough { return .passthrough }
+                if effectiveRuntimePolicy.flowRefusal.isPassthrough { return .passthrough }
                 let error = blockedFlowError()
                 flow.closeReadWithError(error)
                 flow.closeWriteWithError(error)
@@ -594,6 +614,15 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
 
     func requestEngineSession() -> RamaTransparentProxyUdpSessionDecision? {
         guard let lease = core?.engineLeaseForNewFlow() else { return nil }
+        installEngineLease(lease)
+        return requestEngineSession(using: lease)
+    }
+
+    private func installEngineLease(_ lease: TransparentProxyCore.EngineFlowLease) {
+        runtimePolicy = lease.runtimePolicy
+        if !idleTimeoutWasExplicitlySet {
+            idleTimeoutMsStorage = lease.runtimePolicy.udpIdleTimeoutMs
+        }
         // Publish identity before entering FFI: the Rust max-lifetime task can
         // win immediately and invoke `onServerClosed` before this call returns.
         // That callback touches only the registration gate until core claims
@@ -601,6 +630,11 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         // subsequent teardown.
         engineGeneration = lease.generation
         ctx.engineGeneration = lease.generation
+    }
+
+    private func requestEngineSession(
+        using lease: TransparentProxyCore.EngineFlowLease
+    ) -> RamaTransparentProxyUdpSessionDecision? {
         let decision = lease.engine.newUdpSession(
             meta: meta,
             onServerDatagram: { [weak ctx] view, peerView in
@@ -610,7 +644,8 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 ctx?.writer?.enqueueBorrowed(view, peerView: peerView)
             },
             onClientReadDemand: { [weak ctx] in ctx?.requestRead?() },
-            onServerClosed: { [weak self] in self?.requestGracefulServerClose() }
+            onServerClosed: { [weak self] in self?.requestGracefulServerClose() },
+            flowRefusalPolicy: effectiveRuntimePolicy.flowRefusal
         )
         return decision
     }
@@ -665,7 +700,11 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                     // direction push the deadline forward. Without this, the
                     // session stays registered until Rust's max-lifetime cap.
                     self.armIdleTimer()
-                    self.ctx.requestRead?()
+                    // Rust's first `UdpFlow.recv()` supplies the first read
+                    // credit. Do not prefetch here: a service that has not
+                    // asked for ingress must not fill its bounded queue, and
+                    // activation plus the first recv must not create two
+                    // credits for one consumer request.
                 }
             }
         }

@@ -234,6 +234,38 @@ final class TcpFlowSessionTests: XCTestCase {
         XCTAssertEqual(fx.conn.cancelCount, 1)
     }
 
+    func testPreReadyEnomemEmitsExplicitAllocationExhaustionSignal() {
+        let fx = Fixture()
+        let errors = TestValue<[String]>([])
+        LifecycleLog.errorOverride = { message in
+            errors.update { $0.append(message) }
+        }
+        defer { LifecycleLog.errorOverride = nil }
+
+        fx.session.handleEgressFailed(.posix(.ENOMEM))
+
+        XCTAssertEqual(
+            errors.get(),
+            [
+                "kernel flow allocation exhausted: resource=necp "
+                    + "errno=ENOMEM protocol=tcp phase=connect_pre_ready"
+            ])
+    }
+
+    func testPostReadyEnomemIsNotClassifiedAsAllocationExhaustion() {
+        let fx = Fixture()
+        let errors = TestValue<[String]>([])
+        LifecycleLog.errorOverride = { message in
+            errors.update { $0.append(message) }
+        }
+        defer { LifecycleLog.errorOverride = nil }
+        fx.session.egressReady = true
+
+        fx.session.handleEgressFailed(.posix(.ENOMEM))
+
+        XCTAssertTrue(errors.get().isEmpty)
+    }
+
     // MARK: - connect-timeout fire
 
     /// The connect-timeout timer ACTUALLY FIRING (not just being cancelled):

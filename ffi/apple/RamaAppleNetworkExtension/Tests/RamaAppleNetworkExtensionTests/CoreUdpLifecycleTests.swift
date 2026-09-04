@@ -129,6 +129,10 @@ final class CoreUdpLifecycleTests: XCTestCase {
         flow.completeOpen(error: nil)
 
         waitFor("client read pump issued first read") { flow.pendingReadCount > 0 }
+        XCTAssertEqual(
+            fx.core.testInspectUdpFlowReadState(for: flow),
+            .reading,
+            "activation must consume exactly Rust's first recv demand")
 
         // EOF on the read side — empty datagrams array signals
         // end-of-data in production.

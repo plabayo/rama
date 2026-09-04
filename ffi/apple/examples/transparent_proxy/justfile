@@ -182,7 +182,9 @@ test-e2e: build-tproxy-rs-debug clippy-tproxy-ffi-e2e cleanup-tproxy-ffi-e2e run
 test-modern-udp-signed: build-tproxy-rs build-tproxy-app-dev
     ./scripts/test_modern_udp_flow.sh "{{tproxy_built_app_dev}}"
 
-test-full: qa test-e2e
+# The explicit full gate is signed/on-device: unlike ordinary `qa`, it must prove
+# the modern UDP callback paths and HTTP/3 pass-through against the live sysext.
+test-full: qa test-e2e test-modern-udp-signed
 
 # Run the FFI e2e suite under AddressSanitizer to surface UAF / data races.
 #

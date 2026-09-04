@@ -12,6 +12,7 @@ import threading
 import unittest
 
 from soak_pressure_log import (
+    artifact_identity_issues,
     cap_validation_hard_limited,
     ceiling_configuration_issues,
     ceiling_probe_evidence_issues,
@@ -36,11 +37,14 @@ from soak_pressure_log import (
     parse_ndjson_lines,
     parse_oslog_timestamp,
     parse_phase_marker_lines,
+    parse_provider_identity_lines,
     parse_probe_lines,
     phase_for_epoch,
     pressure_counters,
     pressure_episode,
+    pressure_telemetry_issue,
     pressure_reaper_status,
+    provider_allocation_failure,
     probe_succeeded,
     selected_count,
     selection_event,
@@ -275,6 +279,69 @@ class SoakPressureLogTests(unittest.TestCase):
         )
         pressure = summarize_pressure_rows([(100, future_start)])
         self.assertEqual(pressure["validated_eviction_episodes"], 0)
+        self.assertEqual(
+            pressure["issues"],
+            ["pressure episode start timestamp is later than its log record"],
+        )
+
+    def test_pressure_telemetry_is_fail_closed_and_lifecycle_only(self):
+        inconsistent = (
+            "flow pressure episode ended: startEpochMs=100250 durationMs=1250 "
+            "peakOccupancy=478 softCap=450 scans=3 skipped=7 selected=0 "
+            "evicted=1 spared=0 canceled=0 expired=0 startEpochUs=100250999"
+        )
+        malformed_counter = (
+            "pressure[triggers=1 scans=x skipped=0 selected=0 evicted=0 "
+            "spared=0 canceled=0 expired=0 pending=0]"
+        )
+        contradictory_selection = (
+            "flow pressure: occupancy 450 over soft cap 450; selected 1 idle flow(s)"
+        )
+        duplicated_gauge = (
+            "live-flow counts tcp=1 udp=0 total=1 peak=1 softCap=10 hardCap=20 "
+            "retiring=0 live-flow counts tcp=1 udp=0 total=1 peak=1 softCap=10 "
+            "hardCap=20 retiring=0"
+        )
+        for message in (
+            inconsistent,
+            malformed_counter,
+            contradictory_selection,
+            duplicated_gauge,
+        ):
+            with self.subTest(message=message):
+                self.assertIsNotNone(pressure_telemetry_issue(message))
+                self.assertIsNotNone(lifecycle_category_issue(message, "tproxy"))
+
+        valid_gauge = (
+            "tproxy live-flow counts tcp=1 udp=2 total=3 peak=3 softCap=10 "
+            "hardCap=20 retiring=0 pressure[triggers=0 scans=0 skipped=0 "
+            "selected=0 evicted=0 spared=0 canceled=0 expired=0 pending=0]"
+        )
+        self.assertIsNone(pressure_telemetry_issue(valid_gauge))
+        self.assertIsNone(lifecycle_category_issue(valid_gauge, "lifecycle"))
+        self.assertIsNotNone(lifecycle_category_issue(valid_gauge, "tproxy"))
+
+    def test_only_explicit_provider_exhaustion_is_an_allocation_failure_signal(self):
+        signal = "kernel flow allocation exhausted: resource=nexus"
+        self.assertTrue(provider_allocation_failure(signal))
+        self.assertIsNone(pressure_telemetry_issue(signal))
+        self.assertIsNone(lifecycle_category_issue(signal, "lifecycle"))
+        self.assertIsNotNone(lifecycle_category_issue(signal, "tproxy"))
+        for malformed in (
+            "kernel flow allocation exhausted: resource=socket",
+            signal + "; kernel flow allocation exhausted: resource=necp",
+        ):
+            self.assertIsNotNone(pressure_telemetry_issue(malformed), malformed)
+        for message in (
+            "curl: (60) SSL certificate problem",
+            "egress NWConnection failed before flow opened: dns failure",
+            "egress NWConnection failed before flow opened: "
+            "POSIXErrorCode(rawValue: 55): No buffer space available",
+            "egress NWConnection failed after flow opened: rawValue: 54",
+            "origin returned HTTP 503",
+        ):
+            self.assertFalse(provider_allocation_failure(message), message)
+
     def test_fast_burst_uses_event_peak_and_keeps_outcomes_separate(self):
         rows = [
             (
@@ -570,6 +637,52 @@ class SoakPressureLogTests(unittest.TestCase):
                 self.assertEqual(
                     issues, ["provider identity is missing or invalid"]
                 )
+
+    def test_provider_identity_timeline_detects_death_reuse_and_malformed_rows(self):
+        identity = "a" * 64
+        epochs, issues = parse_provider_identity_lines(
+            [f"100.000001\t{identity}\n", f"101.000001\t{identity}\n"],
+            identity,
+        )
+        self.assertEqual(issues, [])
+        self.assertEqual(epochs, [parse_epoch("100.000001"), parse_epoch("101.000001")])
+
+        _, issues = parse_provider_identity_lines(
+            [
+                f"100.000001\t{identity}\n",
+                f"101.000001\t{'b' * 64}\n",
+                "102.000001\tgone\n",
+            ],
+            identity,
+        )
+        self.assertIn("provider identity changed at line 2", issues)
+        self.assertIn("malformed provider identity sample at line 3", issues)
+
+    def test_artifact_identity_requires_git_script_binary_and_signing_tuple(self):
+        meta = {
+            "repo_head": "1" * 40,
+            "repo_dirty": "1",
+            "soak_script_sha256": "2" * 64,
+            "stress_script_sha256": "3" * 64,
+            "pressure_parser_sha256": "6" * 64,
+            "provider_binary_sha256": "4" * 64,
+            "provider_executable": "/Applications/Proxy.app/Contents/MacOS/Proxy",
+            "provider_bundle": "org.example.provider",
+            "provider_codesign_identifier": "org.example.provider",
+            "provider_codesign_cdhash": "5" * 40,
+            "provider_codesign_team": "TEAM123",
+        }
+        self.assertEqual(artifact_identity_issues(meta), [])
+        meta["provider_codesign_identifier"] = "org.example.other"
+        meta["provider_binary_sha256"] = "unavailable"
+        issues = artifact_identity_issues(meta)
+        self.assertIn(
+            "provider code-signing identifier does not match its log subsystem",
+            issues,
+        )
+        self.assertIn(
+            "provider binary SHA-256 identity is missing or invalid", issues
+        )
 
     def test_phase_markers_must_be_monotonic_and_nonoverlapping(self):
         phases, incomplete, _, _, issues = parse_phase_marker_lines(
@@ -890,6 +1003,21 @@ class SoakPressureLogTests(unittest.TestCase):
         self.assertEqual(workload_failed["exit_code"], 1)
         self.assertIn("stress workload failed", workload_failed["failures"])
 
+        fanout_failed = classify_soak_result(
+            self.complete_meta(),
+            [],
+            probe_failures=0,
+            body_errors=0,
+            reaper_status="disabled",
+            fanout_failures=2,
+        )
+        self.assertTrue(fanout_failed["complete"])
+        self.assertEqual(fanout_failed["exit_code"], 1)
+        self.assertIn(
+            "2 active fanout transfer failure(s) were observed",
+            fanout_failed["failures"],
+        )
+
         incomplete = classify_soak_result(
             self.complete_meta(),
             ["malformed interior NDJSON record at line 2"],
@@ -952,6 +1080,23 @@ class SoakPressureLogTests(unittest.TestCase):
         )
         self.assertTrue(result["complete"])
         self.assertEqual(result["exit_code"], 1)
+
+        log_failure = classify_soak_result(
+            self.complete_meta(),
+            [],
+            probe_failures=0,
+            body_errors=0,
+            reaper_status="good",
+            provider_faults=1,
+            unknown_provider_errors=2,
+        )
+        self.assertTrue(log_failure["complete"])
+        self.assertEqual(log_failure["exit_code"], 1)
+        self.assertIn("1 provider Fault log(s) were observed", log_failure["failures"])
+        self.assertIn(
+            "2 unclassified provider Error log(s) were observed",
+            log_failure["failures"],
+        )
         self.assertIn(
             "final allocated-flow total did not settle to the baseline tolerance "
             "(500 > 5 + 5)",
@@ -1456,7 +1601,7 @@ class SoakPressureLogTests(unittest.TestCase):
         records, issues = parse_ceiling_probe_lines(
             [
                 "100.090000\t100.099999\t28\t000\t510\t100.089999\n",
-                "100.100000\t100.100010\t18\t000\t510\t100.100000\n",
+                "100.100000\t100.100010\t28\t000\t510\t100.100000\n",
                 "100.100011\t100.100020\t28\t000\t511\t100.100010\n",
                 "100.500000\t100.500010\t0\t200\t511\t100.400000\n",
                 "101.099999\t101.100000\t28\t000\t512\t101.099999\n",
@@ -1464,11 +1609,19 @@ class SoakPressureLogTests(unittest.TestCase):
         )
         self.assertEqual(issues, [])
         phase = ("ceiling", parse_epoch("100.100000"), parse_epoch("101.100000"))
+        gauges = [(record[5], record[4]) for record in records]
+        allocation_epochs = [parse_epoch("100.100015")]
         self.assertEqual(
-            ceiling_probe_evidence_issues(records, "1", 500, phase, "1"), []
+            ceiling_probe_evidence_issues(
+                records, "1", 500, phase, "1", gauges, allocation_epochs
+            ),
+            [],
         )
         self.assertNotEqual(
-            ceiling_probe_evidence_issues(records[:2], "1", 500, phase), []
+            ceiling_probe_evidence_issues(
+                records[:2], "1", 500, phase, None, gauges, allocation_epochs
+            ),
+            [],
         )
         low = [
             (parse_epoch("100.2"), parse_epoch("100.21"), 28, "000", 500,
@@ -1476,15 +1629,29 @@ class SoakPressureLogTests(unittest.TestCase):
             (parse_epoch("100.3"), parse_epoch("100.31"), 28, "000", 501,
              parse_epoch("100.3")),
         ]
-        self.assertNotEqual(ceiling_probe_evidence_issues(low, "1", 500, phase), [])
+        self.assertNotEqual(
+            ceiling_probe_evidence_issues(
+                low, "1", 500, phase, None,
+                [(record[5], record[4]) for record in low], allocation_epochs,
+            ),
+            [],
+        )
         stale = [
             (parse_epoch("100.2"), parse_epoch("100.21"), 28, "000", 510,
              parse_epoch("99.9")),
             (parse_epoch("100.3"), parse_epoch("100.31"), 28, "000", 511,
              parse_epoch("99.9")),
         ]
-        self.assertNotEqual(ceiling_probe_evidence_issues(stale, "1", 500, phase), [])
-        window = ceiling_outage_window(records, 500, phase)
+        self.assertNotEqual(
+            ceiling_probe_evidence_issues(
+                stale, "1", 500, phase, None,
+                [(record[5], record[4]) for record in stale], allocation_epochs,
+            ),
+            [],
+        )
+        window = ceiling_outage_window(
+            records, 500, phase, gauges, allocation_epochs
+        )
         self.assertEqual(
             window, (parse_epoch("100.100010"), parse_epoch("100.500010"))
         )
@@ -1496,12 +1663,53 @@ class SoakPressureLogTests(unittest.TestCase):
             (parse_epoch("100.4"), parse_epoch("100.41"), 0, "200", 511,
              parse_epoch("100.4")),
         ]
-        self.assertIsNone(ceiling_outage_window(application_failures, 500, phase))
+        self.assertIsNone(
+            ceiling_outage_window(
+                application_failures,
+                500,
+                phase,
+                [(record[5], record[4]) for record in application_failures],
+                allocation_epochs,
+            )
+        )
         self.assertNotEqual(
             ceiling_probe_evidence_issues(
-                application_failures, "1", 500, phase, "1"
+                application_failures,
+                "1",
+                500,
+                phase,
+                "1",
+                [(record[5], record[4]) for record in application_failures],
+                allocation_epochs,
             ),
             [],
+        )
+        self.assertIsNone(
+            ceiling_outage_window(records, 500, phase, gauges, []),
+            "transport failures without provider allocation telemetry are heuristic",
+        )
+        mismatched_gauges = [(epoch, occupancy + 1) for epoch, occupancy in gauges]
+        self.assertIsNone(
+            ceiling_outage_window(
+                records, 500, phase, mismatched_gauges, allocation_epochs
+            ),
+            "probe occupancy must be an exact accepted provider gauge tuple",
+        )
+        tls_failures = [
+            (parse_epoch("100.2"), parse_epoch("100.21"), 60, "000", 510,
+             parse_epoch("100.2")),
+            (parse_epoch("100.3"), parse_epoch("100.31"), 60, "000", 511,
+             parse_epoch("100.3")),
+        ]
+        self.assertIsNone(
+            ceiling_outage_window(
+                tls_failures,
+                500,
+                phase,
+                [(record[5], record[4]) for record in tls_failures],
+                [parse_epoch("100.25")],
+            ),
+            "TLS failures cannot prove a kernel ceiling even near ENOBUFS",
         )
         failures = [
             (parse_epoch("100.000000"), parse_epoch("100.100009"), 28, "000"),
@@ -1666,6 +1874,22 @@ class SoakPressureLogTests(unittest.TestCase):
                 ]
             )
         )
+        self.assertIsNone(
+            parse_evidence_status_lines(
+                [
+                    "passed\t0\n", "complete\t0\n", "exit_code\t2\n",
+                    "issue\tmissing\n", "schema_complete\t1\n",
+                ]
+            )
+        )
+        self.assertIsNone(
+            parse_evidence_status_lines(
+                [
+                    "complete\t0\n", "passed\t0\n", "exit_code\t2\n",
+                    "issue\t\n", "schema_complete\t1\n",
+                ]
+            )
+        )
         self.assertIsNone(parse_evidence_status_lines(["complete\t1\n", "passed\t1\n"]))
         self.assertIsNone(
             parse_evidence_status_lines(
@@ -1734,7 +1958,11 @@ class SoakPressureLogTests(unittest.TestCase):
     def test_stress_truncated_http_200_body_is_a_failed_transfer(self):
         server = socket.socket()
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server.bind(("127.0.0.1", 0))
+        try:
+            server.bind(("127.0.0.1", 0))
+        except PermissionError:
+            server.close()
+            self.skipTest("host sandbox does not permit loopback sockets")
         server.listen()
         server.settimeout(0.1)
         port = server.getsockname()[1]
@@ -1837,6 +2065,10 @@ class SoakPressureLogTests(unittest.TestCase):
                 outage_end="101.410000",
             ):
                 (out / "run-meta.tsv").write_text(
+                    f"repo_head\t{'1' * 40}\nrepo_dirty\t0\n"
+                    f"soak_script_sha256\t{'2' * 64}\n"
+                    f"stress_script_sha256\t{'3' * 64}\n"
+                    f"pressure_parser_sha256\t{'4' * 64}\n"
                     "log_stream_started\t1\n"
                     "log_stream_alive_end\t1\n"
                     "log_stream_child_rc\t143\nlog_stream_joined\t1\n"
@@ -1847,8 +2079,15 @@ class SoakPressureLogTests(unittest.TestCase):
                     "provider_continuous\t1\n"
                     "holder_cleanup_ok\t1\n"
                     "provider_start_pid\t10\nprovider_start_time\tstart\n"
+                    f"provider_start_identity\t{'4' * 64}\n"
                     f"provider_end_pid\t{provider_end_pid}\nprovider_end_time\tstart\n"
+                    f"provider_end_identity\t{'4' * 64}\n"
                     "provider_bundle\torg.example.provider\n"
+                    "provider_executable\t/Applications/Provider\n"
+                    f"provider_binary_sha256\t{'5' * 64}\n"
+                    "provider_codesign_identifier\torg.example.provider\n"
+                    "provider_codesign_cdhash\tabcdef\n"
+                    "provider_codesign_team\tTEAM123\n"
                     "log_stream_pid\t20\nprobe_monitor_pid\t30\n"
                     f"leaks_command_rc\t{leaks_rc}\n"
                     f"mode\t{mode}\n"
@@ -1872,7 +2111,7 @@ class SoakPressureLogTests(unittest.TestCase):
                     "timestamp": "1970-01-01 00:01:40.200000+0000",
                     "processID": 10,
                     "subsystem": "org.example.provider",
-                    "category": "tproxy",
+                    "category": "lifecycle",
                     "eventMessage": gauge,
                     "messageType": "Debug",
                 },
@@ -1880,11 +2119,24 @@ class SoakPressureLogTests(unittest.TestCase):
                     "timestamp": "1970-01-01 00:01:41.050000+0000",
                     "processID": 10,
                     "subsystem": "org.example.provider",
-                    "category": "tproxy",
-                    "eventMessage": gauge,
+                    "category": "lifecycle",
+                    "eventMessage": gauge.replace(
+                        "total=0 peak=0", "total=1 peak=1"
+                    ).replace("tcp=0", "tcp=1", 1),
                     "messageType": "Debug",
                 },
+                {
+                    "timestamp": "1970-01-01 00:01:41.150000+0000",
+                    "processID": 10,
+                    "subsystem": "org.example.provider",
+                    "category": "lifecycle",
+                    "eventMessage": "kernel flow allocation exhausted: resource=nexus",
+                    "messageType": "Error",
+                },
             ]
+            (out / "provider-timeline.tsv").write_text(
+                f"100.100000\t{'4' * 64}\n101.900000\t{'4' * 64}\n"
+            )
             (out / "system.ndjson").write_text(
                 "".join(json.dumps(row) + "\n" for row in rows)
             )
@@ -1915,6 +2167,71 @@ class SoakPressureLogTests(unittest.TestCase):
 
             status, output = run_extractor()
             self.assertEqual(status, 0, output)
+
+            (out / "fanout.txt").write_text(
+                "fanout\t503\t0\t0.250000\tcurl_exit=22\n"
+            )
+            status, output = run_extractor()
+            self.assertEqual(status, 1, output)
+            self.assertIn("active fanout transfer failure", output)
+            (out / "fanout.txt").write_text(
+                "ceiling\t000\t0\t1.000000\tcurl_exit=28\n"
+            )
+            status, output = run_extractor()
+            self.assertEqual(status, 0, output)
+            (out / "fanout.txt").unlink()
+
+            rows[2]["timestamp"] = "1970-01-01 00:01:40.900000+0000"
+            (out / "system.ndjson").write_text(
+                "".join(json.dumps(row) + "\n" for row in rows)
+            )
+            status, output = run_extractor()
+            self.assertEqual(status, 2, output)
+            self.assertIn("unclassified provider Error", output)
+            rows[2]["timestamp"] = "1970-01-01 00:01:41.150000+0000"
+            (out / "system.ndjson").write_text(
+                "".join(json.dumps(row) + "\n" for row in rows)
+            )
+
+            malformed_episode = {
+                "timestamp": "1970-01-01 00:01:41.300000+0000",
+                "processID": 10,
+                "subsystem": "org.example.provider",
+                "category": "lifecycle",
+                "eventMessage": (
+                    "flow pressure episode ended: startEpochMs=101200 durationMs=10 "
+                    "peakOccupancy=2 softCap=0 scans=1 skipped=0 selected=0 "
+                    "evicted=1 spared=0 canceled=0 expired=0 startEpochUs=101200000"
+                ),
+                "messageType": "Default",
+            }
+            (out / "system.ndjson").write_text(
+                "".join(json.dumps(row) + "\n" for row in rows + [malformed_episode])
+            )
+            status, output = run_extractor()
+            self.assertEqual(status, 2, output)
+            self.assertIn("pressure-episode sample is malformed", output)
+            (out / "system.ndjson").write_text(
+                "".join(json.dumps(row) + "\n" for row in rows)
+            )
+
+            unknown_error = {
+                "timestamp": "1970-01-01 00:01:41.300000+0000",
+                "processID": 10,
+                "subsystem": "org.example.provider",
+                "category": "tproxy",
+                "eventMessage": "unexpected opaque provider failure",
+                "messageType": "Error",
+            }
+            (out / "system.ndjson").write_text(
+                "".join(json.dumps(row) + "\n" for row in rows + [unknown_error])
+            )
+            status, output = run_extractor()
+            self.assertEqual(status, 1, output)
+            self.assertIn("unclassified provider Error", output)
+            (out / "system.ndjson").write_text(
+                "".join(json.dumps(row) + "\n" for row in rows)
+            )
 
             write_meta(1)
             (out / "leaks.txt").write_text(
@@ -1973,7 +2290,9 @@ class SoakPressureLogTests(unittest.TestCase):
             )
 
             rows[0]["eventMessage"] = gauge
-            rows[1]["eventMessage"] = gauge
+            rows[1]["eventMessage"] = gauge.replace(
+                "total=0 peak=0", "total=1 peak=1"
+            ).replace("tcp=0", "tcp=1", 1)
             (out / "system.ndjson").write_text(
                 "".join(json.dumps(row) + "\n" for row in rows)
             )

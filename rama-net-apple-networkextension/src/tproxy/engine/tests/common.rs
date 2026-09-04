@@ -263,22 +263,23 @@ pub(super) fn build_engine_with_stop_drain_max_wait(
 // ── close-telemetry capture ────────────────────────────────────────────────
 //
 // On `cancel()` the Swift-facing callbacks are suppressed, so the only signal
-// the close epilogue ran is the `"tcp flow closed"` tracing event. A global
+// the close epilogue ran is the TCP/UDP `"flow closed"` tracing event. A global
 // subscriber records each closed `flow_id`; tests filter by a unique id so they
 // hold whether run per-process (nextest) or shared (`cargo test`).
 
 use std::sync::{Once, OnceLock};
 
-static CLOSED_FLOW_IDS: OnceLock<parking_lot::Mutex<Vec<u64>>> = OnceLock::new();
+static CLOSED_FLOWS: OnceLock<parking_lot::Mutex<Vec<(u64, Option<String>)>>> = OnceLock::new();
 static INSTALL_CAPTURE: Once = Once::new();
 
-fn closed_flow_ids() -> &'static parking_lot::Mutex<Vec<u64>> {
-    CLOSED_FLOW_IDS.get_or_init(|| parking_lot::Mutex::new(Vec::new()))
+fn closed_flows() -> &'static parking_lot::Mutex<Vec<(u64, Option<String>)>> {
+    CLOSED_FLOWS.get_or_init(|| parking_lot::Mutex::new(Vec::new()))
 }
 
 #[derive(Default)]
 struct CloseVisitor {
     flow_id: Option<u64>,
+    reason: Option<String>,
     is_close: bool,
 }
 
@@ -289,8 +290,12 @@ impl tracing::field::Visit for CloseVisitor {
         }
     }
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "message" && format!("{value:?}").contains("tcp flow closed") {
-            self.is_close = true;
+        if field.name() == "reason" {
+            self.reason = Some(format!("{value:?}").trim_matches('"').to_owned());
+        } else if field.name() == "message" {
+            let message = format!("{value:?}");
+            self.is_close =
+                message.contains("transparent proxy") && message.contains("flow closed");
         }
     }
 }
@@ -312,7 +317,7 @@ impl tracing::Subscriber for CloseCaptureSubscriber {
         if visitor.is_close
             && let Some(id) = visitor.flow_id
         {
-            closed_flow_ids().lock().push(id);
+            closed_flows().lock().push((id, visitor.reason));
         }
     }
     fn enter(&self, _: &tracing::span::Id) {}
@@ -329,7 +334,15 @@ pub(super) fn install_close_capture() {
     });
 }
 
-/// Whether a `"tcp flow closed"` telemetry event has been observed for `flow_id`.
+/// Whether a TCP/UDP `"flow closed"` telemetry event has been observed for `flow_id`.
 pub(super) fn flow_was_closed(flow_id: u64) -> bool {
-    closed_flow_ids().lock().contains(&flow_id)
+    closed_flows().lock().iter().any(|(id, _)| *id == flow_id)
+}
+
+pub(super) fn flow_close_reason(flow_id: u64) -> Option<String> {
+    closed_flows()
+        .lock()
+        .iter()
+        .rev()
+        .find_map(|(id, reason)| (*id == flow_id).then(|| reason.clone()).flatten())
 }

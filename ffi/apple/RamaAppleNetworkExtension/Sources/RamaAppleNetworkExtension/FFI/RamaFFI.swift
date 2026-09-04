@@ -38,10 +38,9 @@ struct RamaTransparentProxyConfigBridge {
     var tunnelRemoteAddress: String
     var rules: [RamaTransparentProxyRuleBridge]
     /// Per-flow TCP write-pump back-pressure cap in bytes.
-    /// Authoritative — `startProxy` assigns this verbatim to
-    /// `writePumpMaxPendingBytes`. The Rust engine guarantees a
-    /// non-zero default via its builder, so the Swift-side initial
-    /// value is never consulted in practice.
+    /// Authoritative — `startProxy` captures this in the immutable policy
+    /// attached with the engine. The Rust engine guarantees a non-zero
+    /// default via its builder.
     var tcpWritePumpMaxPendingBytes: Int
     var flowPressureSoftCap: UInt32
     var flowPressureLowWater: UInt32
@@ -64,9 +63,14 @@ struct RamaTransparentProxyConfigBridge {
 }
 
 /// Log and decide fail-open (passthrough) vs fail-closed (blocked) for a flow the
-/// provider declines for its own reasons. Driven by `defaultFlowRefusalPassthrough`.
-func failOpenOnFlowRefusal(_ reason: String) -> Bool {
-    let passthrough = defaultFlowRefusalPassthrough
+/// provider declines for its own reasons. Production callers pass the policy
+/// captured by their engine lease; the default preserves direct FFI unit tests.
+func failOpenOnFlowRefusal(
+    _ reason: String,
+    policy: FlowRefusalPolicy = FlowRefusalPolicy(
+        passthrough: defaultFlowRefusalPassthrough)
+) -> Bool {
+    let passthrough = policy.isPassthrough
     NSLog(
         "RamaFFI: \(reason); \(passthrough ? "passing flow through (fail open)" : "blocking flow (fail closed)")"
     )
@@ -706,7 +710,9 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
         meta: RamaTransparentProxyFlowMetaBridge,
         onServerBytes: @escaping (Data) -> RamaTcpDeliverStatusBridge,
         onClientReadDemand: @escaping () -> Void,
-        onServerClosed: @escaping () -> Void
+        onServerClosed: @escaping () -> Void,
+        flowRefusalPolicy: FlowRefusalPolicy = FlowRefusalPolicy(
+            passthrough: defaultFlowRefusalPassthrough)
     ) -> RamaTransparentProxyTcpSessionDecision {
         lifetime.withEngine(default: .passthrough) { p in
             let callbackBox = Unmanaged.passRetained(
@@ -729,12 +735,15 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
             else {
                 callbackBox.release()
                 return failOpenOnFlowRefusal(
-                    "ffi returned unknown tcp flow action \(result.action.rawValue)")
+                    "ffi returned unknown tcp flow action \(result.action.rawValue)",
+                    policy: flowRefusalPolicy)
                     ? .passthrough : .blocked
             }
             if action == .intercept, result.session == nil {
                 callbackBox.release()
-                return failOpenOnFlowRefusal("ffi returned tcp intercept without a session pointer")
+                return failOpenOnFlowRefusal(
+                    "ffi returned tcp intercept without a session pointer",
+                    policy: flowRefusalPolicy)
                     ? .passthrough : .blocked
             }
             guard action == .intercept, let sessionPtr = result.session else {
@@ -757,7 +766,9 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
         meta: RamaTransparentProxyFlowMetaBridge,
         onServerDatagram: @escaping (RamaBytesView, RamaUdpPeerView) -> Void,
         onClientReadDemand: @escaping () -> Void,
-        onServerClosed: @escaping () -> Void
+        onServerClosed: @escaping () -> Void,
+        flowRefusalPolicy: FlowRefusalPolicy = FlowRefusalPolicy(
+            passthrough: defaultFlowRefusalPassthrough)
     ) -> RamaTransparentProxyUdpSessionDecision {
         lifetime.withEngine(default: .passthrough) { p in
             let callbackBox = Unmanaged.passRetained(
@@ -780,12 +791,15 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
             else {
                 callbackBox.release()
                 return failOpenOnFlowRefusal(
-                    "ffi returned unknown udp flow action \(result.action.rawValue)")
+                    "ffi returned unknown udp flow action \(result.action.rawValue)",
+                    policy: flowRefusalPolicy)
                     ? .passthrough : .blocked
             }
             if action == .intercept, result.session == nil {
                 callbackBox.release()
-                return failOpenOnFlowRefusal("ffi returned udp intercept without a session pointer")
+                return failOpenOnFlowRefusal(
+                    "ffi returned udp intercept without a session pointer",
+                    policy: flowRefusalPolicy)
                     ? .passthrough : .blocked
             }
             guard action == .intercept, let sessionPtr = result.session else {

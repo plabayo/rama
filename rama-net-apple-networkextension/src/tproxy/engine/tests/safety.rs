@@ -289,23 +289,19 @@ fn udp_max_flow_lifetime_closes_session_that_never_activates() {
     engine.stop(0);
 }
 
-/// UDP `on_client_read_demand` must fire on every accepted *and*
-/// dropped-on-Full datagram. Swift's `requestRead` re-issues
-/// `flow.readDatagrams` only when `demandPending` is set during the
-/// in-flight read; omitting demand on overflow strands the flow
-/// after the first saturating burst.
+/// UDP `on_client_read_demand` is service pull, not a producer-side retry
+/// loop. A full flow must stop asking Swift for more datagrams until the
+/// receiver or retained-byte owner actually releases capacity.
 #[test]
-fn udp_on_client_datagram_fires_demand_on_overflow_so_swift_keeps_pumping() {
+fn udp_on_client_datagram_stops_demand_on_overflow() {
     use std::convert::Infallible;
     let handler = TestHandler {
         app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(|meta| FlowAction::Intercept {
             meta,
-            // A service that never reads: the bridge channel saturates
-            // on the first burst. We rely on `on_client_datagram` to
-            // keep pumping demand so Swift eventually issues another
-            // `readDatagrams` once the consumer drains.
+            // A service that never reads: the bridge channel saturates on
+            // the first burst and must remain paused.
             //
             // The bridge MUST be moved into the future and held — an
             // `async move` only captures names referenced in its
@@ -349,18 +345,17 @@ fn udp_on_client_datagram_fires_demand_on_overflow_so_swift_keeps_pumping() {
     };
     session.activate();
 
-    // Push 8 datagrams. Channel capacity is 2 and the service never
-    // reads, so 6 will hit `Full`. Demand must fire on every push.
-    let pushed = 8usize;
-    for i in 0..pushed {
+    // Push 8 datagrams. Channel capacity is 2 and the service never reads,
+    // so the first Full transition pauses the flow. Producer-side delivery
+    // must not manufacture read demand while it is saturated.
+    for i in 0..8 {
         session.on_client_datagram(format!("datagram {i}").as_bytes(), None);
     }
 
     assert_eq!(
         demand_calls.load(Ordering::Relaxed),
-        pushed,
-        "on_client_read_demand must fire on every datagram (Ok and Full both); \
-         dropping demand on Full stalls Swift's `requestRead` cycle"
+        0,
+        "Full must stop read demand until real capacity is released"
     );
 
     session.on_client_close();
@@ -480,8 +475,8 @@ fn udp_on_client_close_suppresses_subsequent_dispatch() {
     };
     session.activate();
 
-    // Push a datagram; the demand sink should fire (and the bridge
-    // should accept the datagram into the channel).
+    // Push a datagram; producer delivery itself does not request another
+    // read. We capture the current count only to assert close cannot add one.
     session.on_client_datagram(b"hello", None);
     // Tear down. After this returns, no further user callbacks fire.
     session.on_client_close();

@@ -1006,12 +1006,12 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
             return
         }
 
-        Self.applyRuntimeConfig(from: startup) { [core] msg in
+        let runtimePolicy = Self.makeRuntimePolicy(from: startup) { [core] msg in
             core.logLifecycle(msg)
         }
-        // Publish the engine only after every startup policy is installed.
+        // Publish the engine and its fully-built policy in one core transaction.
         // No maintenance task or flow callback can observe a partial config.
-        let engineGeneration = core.attachEngine(engine)
+        let engineGeneration = core.attachEngine(engine, runtimePolicy: runtimePolicy)
         core.logLifecycle("engine created")
 
         let settings = Self.buildNetworkSettings(
@@ -1231,69 +1231,84 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         return settings
     }
 
-    /// Apply engine-provided runtime knobs that live outside Apple's
-    /// `NETransparentProxyNetworkSettings`.
+    /// Build the immutable engine-generation policy for runtime knobs that live
+    /// outside Apple's `NETransparentProxyNetworkSettings`.
     ///
-    /// Rust's `TransparentProxyConfig` is authoritative for these values; the
-    /// Swift globals are fallbacks for tests and startup failure paths only.
+    /// Rust's `TransparentProxyConfig` is authoritative. This function is pure
+    /// apart from logging: a replacement start must not mutate policy observed
+    /// by the still-active or retiring generation before atomic attachment.
+    internal static func makeRuntimePolicy(
+        from startup: RamaTransparentProxyConfigBridge,
+        logLifecycle: (String) -> Void = { _ in }
+    ) -> TransparentProxyRuntimePolicy {
+        let policy = TransparentProxyRuntimePolicy(startup: startup)
+        let flowPressure = policy.flowPressure
+        let tcpStart = policy.tcpStartAdmission
+
+        if flowPressure.softCap != startup.flowPressureSoftCap {
+            logLifecycle(
+                "flow pressure softCap=\(startup.flowPressureSoftCap) exceeds enabled "
+                    + "liveHardCap=\(startup.liveFlowHardCap); using \(flowPressure.softCap)"
+            )
+        }
+        if flowPressure.lowWater != startup.flowPressureLowWater {
+            logLifecycle(
+                "flow pressure lowWater=\(startup.flowPressureLowWater) outside 0..<"
+                    + "\(flowPressure.softCap); using \(flowPressure.lowWater)"
+            )
+        }
+        if tcpStart.softCap != startup.tcpStartInFlightSoftCap {
+            logLifecycle(
+                "tcp start softCap=\(startup.tcpStartInFlightSoftCap) exceeds enabled "
+                    + "hardCap=\(startup.tcpStartInFlightHardCap); using \(tcpStart.softCap)"
+            )
+        }
+        logLifecycle(
+            "tcp write pump cap set to \(policy.tcpWritePump.maxPendingBytes) bytes from engine config")
+        logLifecycle(
+            "flow refusal action=\(policy.flowRefusal == .passthrough ? "passthrough (fail open)" : "block (fail closed)")"
+        )
+        logLifecycle(
+            "tcp overload config hardCap=\(tcpStart.hardCap) softCap=\(tcpStart.softCap) openP95Ms=\(tcpStart.breakerOpenP95Ms) closeP95Ms=\(tcpStart.breakerCloseP95Ms) pressureTimeoutMs=\(tcpStart.pressureConnectTimeoutMs) breakerTimeoutMs=\(tcpStart.breakerConnectTimeoutMs)"
+        )
+        logLifecycle(
+            "flow pressure config softCap=\(flowPressure.softCap) lowWater=\(flowPressure.lowWater) idleFloorMs=\(flowPressure.idleFloorMs) liveHardCap=\(flowPressure.liveHardCap)"
+        )
+        return policy
+    }
+
+    #if DEBUG
+    /// Compatibility shim for tests that intentionally exercise the legacy
+    /// engine-less defaults. Production startup never calls this mutating
+    /// helper; it builds `makeRuntimePolicy` and publishes the value with the
+    /// engine instead.
+    @discardableResult
     internal static func applyRuntimeConfig(
         from startup: RamaTransparentProxyConfigBridge,
         logLifecycle: (String) -> Void = { _ in }
-    ) {
-        writePumpMaxPendingBytes = startup.tcpWritePumpMaxPendingBytes
-        writePumpHwmLogThresholdBytes = writePumpMaxPendingBytes / 2
-        let flowPressureSoftCap = normalizedFlowPressureSoftCap(
-            softCap: startup.flowPressureSoftCap,
-            hardCap: startup.liveFlowHardCap)
-        let flowPressureLowWater = normalizedFlowPressureLowWater(
-            softCap: flowPressureSoftCap,
-            lowWater: startup.flowPressureLowWater)
+    ) -> TransparentProxyRuntimePolicy {
+        let policy = makeRuntimePolicy(from: startup, logLifecycle: logLifecycle)
+        writePumpMaxPendingBytes = policy.tcpWritePump.maxPendingBytes
+        writePumpHwmLogThresholdBytes = policy.tcpWritePump.hwmLogThresholdBytes
         setFlowPressureDefaults(
-            softCap: flowPressureSoftCap,
-            lowWater: flowPressureLowWater,
-            idleFloorMs: startup.flowPressureIdleFloorMs,
-            hardCap: startup.liveFlowHardCap)
-        defaultUdpIdleTimeoutMs = startup.udpIdleTimeoutMs
-        let tcpStartSoftCap = normalizedTcpStartSoftCap(
-            softCap: startup.tcpStartInFlightSoftCap,
-            hardCap: startup.tcpStartInFlightHardCap)
-        defaultTcpStartInFlightHardCap = startup.tcpStartInFlightHardCap
-        defaultTcpStartInFlightSoftCap = tcpStartSoftCap
-        defaultTcpStartLatencyBreakerP95Ms = startup.tcpStartLatencyBreakerP95Ms
-        defaultTcpStartLatencyBreakerCloseP95Ms = startup.tcpStartLatencyBreakerCloseP95Ms
-        defaultTcpPressureConnectTimeoutMs = startup.tcpPressureConnectTimeoutMs
-        defaultTcpBreakerConnectTimeoutMs = startup.tcpBreakerConnectTimeoutMs
-        defaultFlowRefusalPassthrough = startup.flowRefusalPassthrough
-
-        if flowPressureSoftCap != startup.flowPressureSoftCap {
-            logLifecycle(
-                "flow pressure softCap=\(startup.flowPressureSoftCap) exceeds enabled "
-                    + "liveHardCap=\(startup.liveFlowHardCap); using \(flowPressureSoftCap)"
-            )
-        }
-        if flowPressureLowWater != startup.flowPressureLowWater {
-            logLifecycle(
-                "flow pressure lowWater=\(startup.flowPressureLowWater) outside 0..<"
-                    + "\(flowPressureSoftCap); using \(flowPressureLowWater)"
-            )
-        }
-        if tcpStartSoftCap != startup.tcpStartInFlightSoftCap {
-            logLifecycle(
-                "tcp start softCap=\(startup.tcpStartInFlightSoftCap) exceeds enabled "
-                    + "hardCap=\(startup.tcpStartInFlightHardCap); using \(tcpStartSoftCap)"
-            )
-        }
-        logLifecycle("tcp write pump cap set to \(writePumpMaxPendingBytes) bytes from engine config")
-        logLifecycle(
-            "flow refusal action=\(defaultFlowRefusalPassthrough ? "passthrough (fail open)" : "block (fail closed)")"
-        )
-        logLifecycle(
-            "tcp overload config hardCap=\(defaultTcpStartInFlightHardCap) softCap=\(defaultTcpStartInFlightSoftCap) openP95Ms=\(defaultTcpStartLatencyBreakerP95Ms) closeP95Ms=\(defaultTcpStartLatencyBreakerCloseP95Ms) pressureTimeoutMs=\(defaultTcpPressureConnectTimeoutMs) breakerTimeoutMs=\(defaultTcpBreakerConnectTimeoutMs)"
-        )
-        logLifecycle(
-            "flow pressure config softCap=\(defaultFlowPressureSoftCap) lowWater=\(defaultFlowPressureLowWater) idleFloorMs=\(defaultFlowPressureIdleFloorMs) liveHardCap=\(defaultLiveFlowHardCap)"
-        )
+            softCap: policy.flowPressure.softCap,
+            lowWater: policy.flowPressure.lowWater,
+            idleFloorMs: policy.flowPressure.idleFloorMs,
+            hardCap: policy.flowPressure.liveHardCap)
+        defaultUdpIdleTimeoutMs = policy.udpIdleTimeoutMs
+        defaultTcpStartInFlightHardCap = policy.tcpStartAdmission.hardCap
+        defaultTcpStartInFlightSoftCap = policy.tcpStartAdmission.softCap
+        defaultTcpStartLatencyBreakerP95Ms = policy.tcpStartAdmission.breakerOpenP95Ms
+        defaultTcpStartLatencyBreakerCloseP95Ms =
+            policy.tcpStartAdmission.breakerCloseP95Ms
+        defaultTcpPressureConnectTimeoutMs =
+            policy.tcpStartAdmission.pressureConnectTimeoutMs
+        defaultTcpBreakerConnectTimeoutMs =
+            policy.tcpStartAdmission.breakerConnectTimeoutMs
+        defaultFlowRefusalPassthrough = policy.flowRefusal.isPassthrough
+        return policy
     }
+    #endif
 
     /// Translate one Rust-side rule into one or more
     /// `NENetworkRule`s. Returns an empty array on invalid

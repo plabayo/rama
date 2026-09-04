@@ -56,6 +56,16 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     // Late-bound: only set once the engine decision is .intercept.
     var sessionHandle: RamaTcpSessionHandle?
     private var engineGeneration: UInt64?
+    /// Installed from the engine lease before any pump or FFI callback is
+    /// created. Value semantics keep this generation's behavior stable while
+    /// a replacement engine starts and the old flow retires.
+    private var runtimePolicy: TransparentProxyRuntimePolicy?
+    private var effectiveRuntimePolicy: TransparentProxyRuntimePolicy {
+        runtimePolicy ?? .testDefaultsSnapshot
+    }
+    #if DEBUG
+        var testRuntimePolicy: TransparentProxyRuntimePolicy? { runtimePolicy }
+    #endif
 
     // Configured by `start`; defaults applied here so phase methods
     // can run in tests without going through the engine decision.
@@ -113,9 +123,14 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     /// (intercepted or blocked), `false` if the engine
     /// decided to pass through.
     func start() -> Bool {
+        guard let lease = core?.engineLeaseForNewFlow() else {
+            core?.logDebug("handleNewFlow tcp engine unavailable; bypassing")
+            return false
+        }
+        installEngineLease(lease)
         buildClientWritePump()
 
-        guard let decision = requestEngineSession() else {
+        guard let decision = requestEngineSession(using: lease) else {
             core?.logDebug("handleNewFlow tcp engine unavailable; bypassing")
             return false
         }
@@ -158,11 +173,10 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 // the counts and the top refusing apps.
                 let line =
                     "tcp admission rejected: \(reason); "
-                    + (defaultFlowRefusalPassthrough
-                        ? "passing through (fail open)" : "blocking (fail closed)")
+                    + effectiveRuntimePolicy.flowRefusal.logDescription
                     + " app=\(appId)"
                 if persist { core.logLifecycle(line) } else { core.logDebug(line) }
-                if defaultFlowRefusalPassthrough {
+                if effectiveRuntimePolicy.flowRefusal.isPassthrough {
                     session.cancel()
                     return false
                 }
@@ -179,6 +193,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                     anchor: self,
                     appId: token.appId,
                     engineGeneration: engineGeneration,
+                    runtimePolicy: effectiveRuntimePolicy,
                     on: flowQueue,
                     body: { [self, session] in
                         guard !ctx.isDone else { return }
@@ -238,7 +253,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             // transferring flow of EITHER mode is never reaped as "idle".
             onActivity: { [weak ctx] in
                 ctx?.recordActivityUnlessPressureEvicted() ?? false
-            }
+            },
+            writePolicy: effectiveRuntimePolicy.tcpWritePump
         )
         ctx.clientWritePump = writer
     }
@@ -247,6 +263,19 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
 
     func requestEngineSession() -> RamaTransparentProxyTcpSessionDecision? {
         guard let lease = core?.engineLeaseForNewFlow() else { return nil }
+        installEngineLease(lease)
+        return requestEngineSession(using: lease)
+    }
+
+    private func installEngineLease(_ lease: TransparentProxyCore.EngineFlowLease) {
+        runtimePolicy = lease.runtimePolicy
+        engineGeneration = lease.generation
+        ctx.engineGeneration = lease.generation
+    }
+
+    private func requestEngineSession(
+        using lease: TransparentProxyCore.EngineFlowLease
+    ) -> RamaTransparentProxyTcpSessionDecision? {
         guard let clientWritePump = ctx.clientWritePump else { return nil }
         let decision = lease.engine.newTcpSession(
             meta: meta,
@@ -274,10 +303,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                     }
                     self.closeClientAfterRustDrain()
                 }
-            }
+            },
+            flowRefusalPolicy: effectiveRuntimePolicy.flowRefusal
         )
-        engineGeneration = lease.generation
-        ctx.engineGeneration = lease.generation
         return decision
     }
 
@@ -308,7 +336,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         let egressOpts = session.getEgressConnectOptions()
         let requestedConnectTimeoutMs = egressOpts?.connectTimeoutMs ?? 10_000
         let connectTimeoutMs =
-            core?.tcpConnectTimeoutMs(base: requestedConnectTimeoutMs) ?? requestedConnectTimeoutMs
+            core?.tcpConnectTimeoutMs(
+                base: requestedConnectTimeoutMs,
+                engineGeneration: engineGeneration) ?? requestedConnectTimeoutMs
         lingerCloseMs = egressOpts?.lingerCloseMs ?? defaultLingerCloseMs
         egressEofGraceMs = egressOpts?.egressEofGraceMs ?? defaultEgressEofGraceMs
         // Mirror the linger budget onto the ctx so a later promote
@@ -634,6 +664,16 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             core?.logDebug(
                 "egress NWConnection failed before flow opened: \(String(describing: error))"
             )
+            if case .posix(.ENOMEM)? = error {
+                // A pre-ready ENOMEM is the provider-visible signature that
+                // allocating the outbound NECP/NWConnection flow failed. Keep
+                // this public, structured marker distinct from generic DNS,
+                // TLS, origin, and socket-backpressure failures so the signed
+                // ceiling probe can corroborate rather than infer exhaustion.
+                core?.logLifecycleError(
+                    "kernel flow allocation exhausted: resource=necp "
+                        + "errno=ENOMEM protocol=tcp phase=connect_pre_ready")
+            }
             ctx.applyPreReadyFailure()
         } else {
             core?.logDebug(
@@ -760,7 +800,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             readSideIdleMs: { [weak ctx] in
                 guard let ctx else { return .max }
                 return ctx.idleMs()
-            }
+            },
+            writePolicy: effectiveRuntimePolicy.tcpWritePump
         )
         ctx.egressWritePump = pump
     }

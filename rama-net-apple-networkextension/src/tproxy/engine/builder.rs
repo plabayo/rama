@@ -18,12 +18,15 @@ pub struct TransparentProxyEngineBuilder<F, R = DefaultTransparentProxyAsyncRunt
     tcp_flow_buffer_size: Option<usize>,
     tcp_channel_capacity: Option<usize>,
     udp_channel_capacity: Option<usize>,
+    udp_ingress_per_flow_max_bytes: Option<usize>,
+    udp_ingress_global_max_bytes: Option<usize>,
     tcp_idle_timeout: Option<Duration>,
     tcp_paused_drain_max_wait: Option<Duration>,
     udp_max_flow_lifetime: Option<Duration>,
     udp_idle_timeout: Option<Duration>,
     decision_deadline: Option<Duration>,
     decision_deadline_action: Option<DecisionDeadlineAction>,
+    decision_concurrency_limit: Option<usize>,
     app_message_deadline: Option<Duration>,
     stop_drain_max_wait: Option<Duration>,
     opaque_config: Option<Arc<[u8]>>,
@@ -41,6 +44,8 @@ where
             tcp_flow_buffer_size: None,
             tcp_channel_capacity: None,
             udp_channel_capacity: None,
+            udp_ingress_per_flow_max_bytes: None,
+            udp_ingress_global_max_bytes: None,
             // Backstop defaults; opt out via the macro-generated
             // `without_*()` methods.
             tcp_idle_timeout: Some(super::DEFAULT_TCP_IDLE_TIMEOUT),
@@ -49,6 +54,7 @@ where
             udp_idle_timeout: Some(super::DEFAULT_UDP_IDLE_TIMEOUT),
             decision_deadline: None,
             decision_deadline_action: None,
+            decision_concurrency_limit: None,
             app_message_deadline: None,
             stop_drain_max_wait: Some(super::DEFAULT_STOP_DRAIN_MAX_WAIT),
             opaque_config: None,
@@ -65,12 +71,15 @@ where
             tcp_flow_buffer_size: self.tcp_flow_buffer_size,
             tcp_channel_capacity: self.tcp_channel_capacity,
             udp_channel_capacity: self.udp_channel_capacity,
+            udp_ingress_per_flow_max_bytes: self.udp_ingress_per_flow_max_bytes,
+            udp_ingress_global_max_bytes: self.udp_ingress_global_max_bytes,
             tcp_idle_timeout: self.tcp_idle_timeout,
             tcp_paused_drain_max_wait: self.tcp_paused_drain_max_wait,
             udp_max_flow_lifetime: self.udp_max_flow_lifetime,
             udp_idle_timeout: self.udp_idle_timeout,
             decision_deadline: self.decision_deadline,
             decision_deadline_action: self.decision_deadline_action,
+            decision_concurrency_limit: self.decision_concurrency_limit,
             app_message_deadline: self.app_message_deadline,
             stop_drain_max_wait: self.stop_drain_max_wait,
             opaque_config: self.opaque_config,
@@ -115,6 +124,30 @@ where
         pub fn udp_channel_capacity(mut self, capacity: Option<usize>) -> Self
         {
             self.udp_channel_capacity = capacity;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum retained client-ingress payload bytes for one UDP flow.
+        /// Reservations survive `Bytes` clones and are released only when the
+        /// final payload owner drops. `None` uses 256 KiB. Values below the
+        /// maximum UDP payload size (65,535 bytes) are rejected at build time.
+        pub fn udp_ingress_per_flow_max_bytes(mut self, max_bytes: Option<usize>) -> Self
+        {
+            self.udp_ingress_per_flow_max_bytes = max_bytes;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Engine-wide maximum retained client-ingress UDP payload bytes.
+        /// Shared by every flow created by this immutable engine generation.
+        /// `None` uses 16 MiB. The value must be at least the configured
+        /// per-flow byte cap.
+        pub fn udp_ingress_global_max_bytes(mut self, max_bytes: Option<usize>) -> Self
+        {
+            self.udp_ingress_global_max_bytes = max_bytes;
             self
         }
     }
@@ -218,6 +251,24 @@ where
     }
 
     rama_utils::macros::generate_set_and_with! {
+        /// Maximum number of TCP and UDP flow-policy decisions polled
+        /// concurrently by one engine generation. Saturated flows use the
+        /// configured [`DecisionDeadlineAction`] without invoking policy.
+        /// `None` uses [`DEFAULT_DECISION_CONCURRENCY_LIMIT`] (64).
+        ///
+        /// This is independent of admitted-flow limits and exists to bound
+        /// pre-decision work when Apple delivers new-flow callbacks in
+        /// parallel. It adds no per-packet work.
+        ///
+        /// [`DEFAULT_DECISION_CONCURRENCY_LIMIT`]: super::DEFAULT_DECISION_CONCURRENCY_LIMIT
+        pub fn decision_concurrency_limit(mut self, limit: Option<usize>) -> Self
+        {
+            self.decision_concurrency_limit = limit;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
         /// Max time `handle_app_message` may run before being
         /// abandoned (provider gets a `None` reply). Apple dispatches
         /// `handleAppMessage` synchronously on the provider queue, so
@@ -277,12 +328,15 @@ where
             tcp_flow_buffer_size,
             tcp_channel_capacity,
             udp_channel_capacity,
+            udp_ingress_per_flow_max_bytes,
+            udp_ingress_global_max_bytes,
             tcp_idle_timeout,
             tcp_paused_drain_max_wait,
             udp_max_flow_lifetime,
             udp_idle_timeout,
             decision_deadline,
             decision_deadline_action,
+            decision_concurrency_limit,
             app_message_deadline,
             stop_drain_max_wait,
             opaque_config,
@@ -310,6 +364,30 @@ where
                 "udp_channel_capacity must be > 0",
             ));
         }
+        if matches!(decision_concurrency_limit, Some(0)) {
+            return Err(BoxError::from_static_str(
+                "decision_concurrency_limit must be > 0",
+            ));
+        }
+        let udp_ingress_per_flow_max_bytes =
+            udp_ingress_per_flow_max_bytes.unwrap_or(super::DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES);
+        if udp_ingress_per_flow_max_bytes < super::MAX_UDP_DATAGRAM_PAYLOAD_SIZE {
+            return Err(BoxError::from_static_str(
+                "udp_ingress_per_flow_max_bytes must be >= 65535",
+            ));
+        }
+        let udp_ingress_global_max_bytes =
+            udp_ingress_global_max_bytes.unwrap_or(super::DEFAULT_UDP_INGRESS_GLOBAL_MAX_BYTES);
+        if udp_ingress_global_max_bytes == 0 {
+            return Err(BoxError::from_static_str(
+                "udp_ingress_global_max_bytes must be > 0",
+            ));
+        }
+        if udp_ingress_global_max_bytes < udp_ingress_per_flow_max_bytes {
+            return Err(BoxError::from_static_str(
+                "udp_ingress_global_max_bytes must be >= udp_ingress_per_flow_max_bytes",
+            ));
+        }
 
         let rt = runtime_factory
             .create_async_runtime(opaque_config.as_deref())
@@ -318,7 +396,7 @@ where
         let pair = super::build_shutdown_pair(&rt);
         let guard = pair.shutdown.guard();
         let ctx = TransparentProxyServiceContext {
-            executor: Executor::graceful(guard),
+            executor: Executor::graceful(guard.clone()),
             opaque_config,
         };
         // Handler construction may borrow from the factory, so use the
@@ -331,6 +409,9 @@ where
         // Swift side. Cache the same snapshot here so the Rust→Swift write
         // chunk bound cannot drift from the value Swift applies to its pumps.
         let transparent_proxy_config = handler.transparent_proxy_config();
+        let udp_ingress_budget =
+            Arc::new(super::UdpIngressBudget::new(udp_ingress_global_max_bytes));
+        udp_ingress_budget.start_coordinator(&rt, guard);
 
         Ok(TransparentProxyEngine {
             rt: Some(rt),
@@ -342,6 +423,8 @@ where
                 .unwrap_or(super::DEFAULT_TCP_CHANNEL_CAPACITY),
             udp_channel_capacity: udp_channel_capacity
                 .unwrap_or(super::DEFAULT_UDP_CHANNEL_CAPACITY),
+            udp_ingress_per_flow_max_bytes,
+            udp_ingress_budget,
             tcp_idle_timeout,
             tcp_paused_drain_max_wait,
             udp_max_flow_lifetime,
@@ -349,6 +432,9 @@ where
             decision_deadline: decision_deadline.unwrap_or(super::DEFAULT_DECISION_DEADLINE),
             decision_deadline_action: decision_deadline_action
                 .unwrap_or(DecisionDeadlineAction::Block),
+            decision_concurrency: Arc::new(super::DecisionConcurrencyGate::new(
+                decision_concurrency_limit.unwrap_or(super::DEFAULT_DECISION_CONCURRENCY_LIMIT),
+            )),
             // `None` here resolves to `decision_deadline` at use-site
             // (see `handle_app_message`); we don't bake the resolution
             // in here so future `set_decision_deadline`-style

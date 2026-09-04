@@ -110,7 +110,7 @@ where
 /// With the `dial9` feature it resolves the `DIAL9_*` environment when creating
 /// the runtime and instruments it against the resulting recorder. The
 /// environment default is telemetry-disabled unless `DIAL9_ENABLED` requests it.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct DefaultTransparentProxyAsyncRuntimeFactory {
     #[cfg(feature = "dial9")]
     dial9_recorder: FactoryDial9Recorder,
@@ -119,22 +119,12 @@ pub struct DefaultTransparentProxyAsyncRuntimeFactory {
 }
 
 #[cfg(feature = "dial9")]
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum FactoryDial9Recorder {
+    #[default]
     FromEnv,
     Disabled,
     Custom(Box<::dial9::Recorder>),
-}
-
-impl Default for DefaultTransparentProxyAsyncRuntimeFactory {
-    fn default() -> Self {
-        Self {
-            #[cfg(feature = "dial9")]
-            dial9_recorder: FactoryDial9Recorder::FromEnv,
-            #[cfg(feature = "dial9")]
-            dial9_attach_options: None,
-        }
-    }
 }
 
 impl DefaultTransparentProxyAsyncRuntimeFactory {

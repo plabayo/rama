@@ -24,6 +24,10 @@ protocol TcpWritePumpCoreDelegate: AnyObject {
 final class TcpWritePumpCore: @unchecked Sendable {
     let state = Locked(TcpWriterState())
     let queue: DispatchQueue
+    /// Immutable for the pump lifetime. In production this comes from the
+    /// engine lease, so a replacement generation cannot change admission or
+    /// wake thresholds underneath a retiring write.
+    let writePolicy: TcpWritePumpPolicy
     private let queueKey = DispatchSpecificKey<UInt8>()
     private let inlineWriteCompletionWhenOnQueue: Bool
     private let onDrained: @Sendable () -> Void
@@ -63,9 +67,12 @@ final class TcpWritePumpCore: @unchecked Sendable {
         logHwm: @escaping @Sendable (Int) -> Void,
         inlineWriteCompletionWhenOnQueue: Bool = false,
         onActivity: @escaping @Sendable () -> Bool = { true },
-        retryScheduler: TcpWritePumpRetryScheduler? = nil
+        retryScheduler: TcpWritePumpRetryScheduler? = nil,
+        writePolicy: TcpWritePumpPolicy =
+            TcpWritePumpPolicy(maxPendingBytes: writePumpMaxPendingBytes)
     ) {
         self.queue = queue
+        self.writePolicy = writePolicy
         self.lifecycle = initialLifecycle
         self.onDrained = onDrained
         self.doWrite = doWrite
@@ -151,8 +158,8 @@ final class TcpWritePumpCore: @unchecked Sendable {
             // Every production producer slices to this cap before enqueueing,
             // so it is safe to reject an oversized first chunk too. Keep the
             // subtraction form overflow-safe for adversarial Data lengths.
-            let byteCapReached = data.count > writePumpMaxPendingBytes
-                || s.pendingBytes > writePumpMaxPendingBytes - data.count
+            let byteCapReached = data.count > writePolicy.maxPendingBytes
+                || s.pendingBytes > writePolicy.maxPendingBytes - data.count
             let itemCapReached = s.pendingItems >= tcpWritePumpMaxPendingItems
             if byteCapReached || itemCapReached {
                 s.pausedSignaled = true
@@ -167,8 +174,8 @@ final class TcpWritePumpCore: @unchecked Sendable {
                 // Keep the exact HWM, but log only the first threshold
                 // crossing. Logging every byte-level peak lets one stalled
                 // flow manufacture O(cap) strings and log calls.
-                if previousHwm < writePumpHwmLogThresholdBytes,
-                    s.pendingBytes >= writePumpHwmLogThresholdBytes
+                if previousHwm < writePolicy.hwmLogThresholdBytes,
+                    s.pendingBytes >= writePolicy.hwmLogThresholdBytes
                 {
                     newHwm = s.pendingBytes
                 }
@@ -288,7 +295,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
                     s.pendingBytes = max(0, s.pendingBytes - chunk.count)
                     s.pendingItems = max(0, s.pendingItems - 1)
                     if s.pausedSignaled
-                        && s.pendingBytes < writePumpMaxPendingBytes
+                        && s.pendingBytes < self.writePolicy.maxPendingBytes
                         && s.pendingItems < tcpWritePumpMaxPendingItems
                     {
                         s.pausedSignaled = false

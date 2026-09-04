@@ -48,6 +48,24 @@ async fn udp_idle_activity_wins_a_deadline_tie() {
     waiter.await.expect("idle waiter task");
 }
 
+#[tokio::test(start_paused = true)]
+async fn udp_idle_wait_accepts_unrepresentably_large_timeout_and_activity() {
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let waiter_notify = notify.clone();
+    let waiter = tokio::spawn(async move {
+        wait_for_udp_idle(Duration::MAX, &waiter_notify).await;
+    });
+    tokio::task::yield_now().await;
+    assert!(!waiter.is_finished());
+
+    // An activity notification must not reintroduce the `Instant + Duration`
+    // overflow that this path used to contain.
+    notify.notify_one();
+    tokio::task::yield_now().await;
+    assert!(!waiter.is_finished());
+    waiter.abort();
+}
+
 // The TCP idle backstop, the UDP max-lifetime cap and the TCP paused-
 // drain wait are the three timer-based safety nets that keep a wedged
 // per-flow bridge from holding the macOS NWConnection registration
@@ -138,6 +156,26 @@ fn engine_exports_disabled_udp_idle_timeout_as_zero() {
 }
 
 #[test]
+fn engine_exports_enabled_udp_idle_timeout_as_ceil_nonzero_millis() {
+    for (timeout, expected_ms) in [
+        (Duration::ZERO, 1),
+        (Duration::from_nanos(1), 1),
+        (Duration::from_nanos(999_999), 1),
+        (Duration::from_nanos(1_000_001), 2),
+        (Duration::MAX, u64::MAX),
+    ] {
+        let engine =
+            TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
+                .with_runtime_factory(TestRuntimeFactory)
+                .with_udp_idle_timeout(timeout)
+                .build()
+                .expect("build engine");
+        assert_eq!(engine.udp_idle_timeout_ms(), expected_ms, "{timeout:?}");
+        engine.stop(0);
+    }
+}
+
+#[test]
 fn default_tcp_paused_drain_max_wait_constant_is_one_minute() {
     assert_eq!(DEFAULT_TCP_PAUSED_DRAIN_MAX_WAIT, Duration::from_mins(1));
 }
@@ -167,6 +205,17 @@ fn engine_builds_live_and_stop_is_terminal() {
 }
 
 #[test]
+fn engine_stop_accepts_maximum_drain_wait_without_timer_overflow() {
+    let engine = build_engine_with_stop_drain_max_wait(TestHandler::passthrough(), Duration::MAX);
+    let started = std::time::Instant::now();
+    engine.stop(0);
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "a clean engine with a huge configured backstop must still stop promptly"
+    );
+}
+
+#[test]
 fn builder_rejects_zero_channel_capacity() {
     // `tokio::sync::mpsc::channel(0)` panics; an explicit `Some(0)` is
     // treated as a misconfiguration rather than silently substituting the
@@ -183,6 +232,39 @@ fn builder_rejects_zero_channel_capacity() {
     assert!(make(Some(0), None).is_err(), "Some(0) tcp must error");
     assert!(make(None, Some(0)).is_err(), "Some(0) udp must error");
     let engine = make(None, None).expect("None defaults must build");
+    engine.stop(0);
+}
+
+#[test]
+fn udp_ingress_byte_limits_are_immutable_validated_builder_state() {
+    let build = |per_flow: Option<usize>, global: Option<usize>| {
+        let mut builder =
+            TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
+                .with_runtime_factory(TestRuntimeFactory);
+        builder = builder.maybe_with_udp_ingress_per_flow_max_bytes(per_flow);
+        builder = builder.maybe_with_udp_ingress_global_max_bytes(global);
+        builder.build()
+    };
+
+    assert!(build(Some(0), None).is_err());
+    assert!(build(Some(MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1), None).is_err());
+    assert!(build(None, Some(0)).is_err());
+    assert!(
+        build(
+            Some(MAX_UDP_DATAGRAM_PAYLOAD_SIZE + 1),
+            Some(MAX_UDP_DATAGRAM_PAYLOAD_SIZE),
+        )
+        .is_err()
+    );
+
+    let engine = build(None, None).expect("default UDP ingress byte limits must build");
+    assert_eq!(
+        engine.udp_ingress_per_flow_max_bytes_for_test(),
+        DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES
+    );
+    let snapshot = engine.udp_ingress_budget_for_test().snapshot();
+    assert_eq!(snapshot.retained_bytes, 0);
+    assert_eq!(DEFAULT_UDP_INGRESS_GLOBAL_MAX_BYTES, 16 * 1024 * 1024);
     engine.stop(0);
 }
 

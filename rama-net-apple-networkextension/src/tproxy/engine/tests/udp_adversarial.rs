@@ -64,8 +64,7 @@ impl Mulberry32 {
 #[derive(Clone, Debug)]
 enum Action {
     Datagram {
-        len: usize,
-        #[expect(dead_code, reason = "captured for failure-trace readability")]
+        payload: Vec<u8>,
         peer: Option<SocketAddr>,
     },
     ClientClose,
@@ -96,7 +95,7 @@ fn run_one_scenario(seed: u32) -> Vec<Action> {
     // Service captures whatever datagrams arrive; the test asserts that
     // each one matches the ordinal-encoded payload it was sent with
     // (drops are OK, content corruption is not).
-    let received = Arc::new(Mutex::new(Vec::<(usize, Option<SocketAddr>)>::new()));
+    let received = Arc::new(Mutex::new(Vec::<(Vec<u8>, Option<SocketAddr>)>::new()));
     let received_clone = received.clone();
     let service_exited = Arc::new(AtomicUsize::new(0));
     let service_exited_cb = service_exited.clone();
@@ -116,7 +115,7 @@ fn run_one_scenario(seed: u32) -> Vec<Action> {
                         while let Some(datagram) = flow.recv().await {
                             received
                                 .lock()
-                                .push((datagram.payload.len(), datagram.peer));
+                                .push((datagram.payload.to_vec(), datagram.peer));
                         }
                         service_exited.fetch_add(1, Ordering::Relaxed);
                         Ok::<_, std::convert::Infallible>(())
@@ -183,7 +182,7 @@ fn run_one_scenario(seed: u32) -> Vec<Action> {
         let peer = random_peer(&mut rng);
         let payload = deterministic_payload(len, i);
         session.on_client_datagram(&payload, peer);
-        trace.push(Action::Datagram { len, peer });
+        trace.push(Action::Datagram { payload, peer });
     }
 
     // Random per-scenario tail choice:
@@ -219,36 +218,33 @@ fn run_one_scenario(seed: u32) -> Vec<Action> {
 
     // Content integrity: every received payload must match what was sent.
     // Drops are allowed (lossy bounded channel), but bytes can't change.
-    // We can't easily map drops 1-to-1, so we just verify each received
-    // length appears as a "Datagram" action with the same length, in
-    // order. (Engine guarantees FIFO per-flow.)
+    // We can't map drops 1-to-1, so verify that every exact payload-and-peer
+    // pair appears in send order. (Engine guarantees FIFO per-flow.)
     let got = received.lock().clone();
-    let sent_lens: Vec<usize> = trace
+    let sent_count = trace
         .iter()
-        .filter_map(|a| match a {
-            Action::Datagram { len, .. } => Some(*len),
-            _ => None,
-        })
-        .collect();
+        .filter(|action| matches!(action, Action::Datagram { .. }))
+        .count();
     assert!(
-        got.len() <= sent_lens.len(),
+        got.len() <= sent_count,
         "seed={seed} received more datagrams than sent; got={}, sent={}; trace: {trace:?}",
         got.len(),
-        sent_lens.len()
+        sent_count
     );
     // received must be a (FIFO) subsequence of sent.
-    let mut sent_iter = sent_lens.into_iter();
-    for (rx_len, _peer) in &got {
-        let mut matched = false;
-        for tx_len in sent_iter.by_ref() {
-            if tx_len == *rx_len {
-                matched = true;
-                break;
-            }
-        }
+    let mut sent_iter = trace.iter().filter_map(|action| match action {
+        Action::Datagram { payload, peer } => Some((payload.as_slice(), *peer)),
+        _ => None,
+    });
+    for (rx_payload, rx_peer) in &got {
+        let matched = sent_iter.any(|(tx_payload, tx_peer)| {
+            tx_payload == rx_payload.as_slice() && tx_peer == *rx_peer
+        });
         assert!(
             matched,
-            "seed={seed} received datagram length {rx_len} not a FIFO subsequence of sent; trace: {trace:?}"
+            "seed={seed} received datagram (len={}, peer={rx_peer:?}) not an exact FIFO \
+             subsequence of sent payload-and-peer pairs; trace: {trace:?}",
+            rx_payload.len(),
         );
     }
 

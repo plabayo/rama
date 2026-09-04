@@ -6,6 +6,7 @@ use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};
 use parking_lot::Mutex;
 use rama_core::service::service_fn;
 use rama_net::address::HostWithPort;
+use std::convert::Infallible;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -63,17 +64,26 @@ fn udp_bridge_delivers_server_datagram() {
     assert_eq!(got.lock().as_slice(), b"ping");
 }
 
-#[test]
-fn udp_service_panic_still_notifies_swift_close() {
+fn assert_udp_service_panic_runs_close_epilogue(flow_id: u64, panic_while_polling: bool) {
+    install_close_capture();
     let handler = TestHandler {
         app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
-        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
-            meta,
-            service: service_fn(|_flow: crate::UdpFlow| async move {
-                panic!("synthetic udp service panic")
-            })
-            .boxed(),
+        udp_matcher: Arc::new(move |meta| {
+            let service: TestUdpService = if panic_while_polling {
+                service_fn(|_flow: crate::UdpFlow| async move {
+                    panic!("synthetic udp service poll panic")
+                })
+                .boxed()
+            } else {
+                service_fn(
+                    |_flow: crate::UdpFlow| -> std::future::Ready<Result<(), Infallible>> {
+                        panic!("synthetic udp service construction panic")
+                    },
+                )
+                .boxed()
+            };
+            FlowAction::Intercept { meta, service }
         }),
         tcp_egress_options: None,
         on_sleep: None,
@@ -81,13 +91,12 @@ fn udp_service_panic_still_notifies_swift_close() {
     };
     let engine = build_engine(handler);
     let (closed_tx, closed_rx) = std::sync::mpsc::channel::<()>();
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+    meta.flow_id = flow_id;
 
-    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
-        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
-        |_| {},
-        || {},
-        move || _ = closed_tx.send(()),
-    ) else {
+    let SessionFlowAction::Intercept(mut session) =
+        engine.new_udp_session(meta, |_| {}, || {}, move || _ = closed_tx.send(()))
+    else {
         panic!("expected intercept session");
     };
     session.activate();
@@ -95,6 +104,125 @@ fn udp_service_panic_still_notifies_swift_close() {
     closed_rx
         .recv_timeout(Duration::from_secs(1))
         .expect("panicking service must still notify Swift close");
+    let started = std::time::Instant::now();
+    while flow_close_reason(flow_id).is_none() && started.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        flow_close_reason(flow_id).as_deref(),
+        Some("service_panic"),
+        "construction and poll panics must retain their distinct close reason",
+    );
+    session.on_client_close();
+    engine.stop(0);
+}
+
+#[test]
+fn udp_service_construction_panic_runs_close_epilogue() {
+    assert_udp_service_panic_runs_close_epilogue(0xE1E1_2101, false);
+}
+
+#[test]
+fn udp_service_poll_panic_runs_close_epilogue() {
+    assert_udp_service_panic_runs_close_epilogue(0xE1E1_2102, true);
+}
+
+#[test]
+fn udp_huge_lifetime_and_idle_timeout_still_reach_close_epilogue() {
+    const FLOW_ID: u64 = 0xE1E1_2001;
+    install_close_capture();
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|flow: crate::UdpFlow| async move {
+                let _hold = flow;
+                std::future::pending::<()>().await;
+                Ok(())
+            })
+            .boxed(),
+        }),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(TestRuntimeFactory)
+        .with_udp_max_flow_lifetime(Duration::MAX)
+        .with_udp_idle_timeout(Duration::MAX)
+        .build()
+        .expect("build engine");
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+    meta.flow_id = FLOW_ID;
+
+    let SessionFlowAction::Intercept(mut session) =
+        engine.new_udp_session(meta, |_| {}, || {}, || {})
+    else {
+        panic!("expected intercept session");
+    };
+    session.activate();
+    session.on_client_datagram(b"activity", None);
+    std::thread::sleep(Duration::from_millis(20));
+    session.on_client_close();
+
+    let started = std::time::Instant::now();
+    while !flow_was_closed(FLOW_ID) && started.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        flow_was_closed(FLOW_ID),
+        "huge timer values must remain cancellable and run the close epilogue"
+    );
+    engine.stop(0);
+}
+
+#[test]
+fn udp_max_lifetime_has_distinct_close_reason() {
+    const FLOW_ID: u64 = 0xE1E1_2002;
+    install_close_capture();
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|flow: crate::UdpFlow| async move {
+                let _hold = flow;
+                std::future::pending::<()>().await;
+                Ok(())
+            })
+            .boxed(),
+        }),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(TestRuntimeFactory)
+        .with_udp_max_flow_lifetime(Duration::from_millis(30))
+        .without_udp_idle_timeout()
+        .build()
+        .expect("build engine");
+    let (closed_tx, closed_rx) = std::sync::mpsc::sync_channel(1);
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+    meta.flow_id = FLOW_ID;
+
+    let SessionFlowAction::Intercept(mut session) =
+        engine.new_udp_session(meta, |_| {}, || {}, move || _ = closed_tx.send(()))
+    else {
+        panic!("expected intercept session");
+    };
+    session.activate();
+    closed_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("max lifetime must notify Swift close");
+
+    let started = std::time::Instant::now();
+    while flow_close_reason(FLOW_ID).is_none() && started.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(flow_close_reason(FLOW_ID).as_deref(), Some("max_lifetime"));
     session.on_client_close();
     engine.stop(0);
 }
@@ -623,25 +751,20 @@ fn udp_large_datagram_near_max_payload_roundtrips() {
     use std::net::{Ipv4Addr, SocketAddr};
     const PAYLOAD_LEN: usize = 65_507; // IPv4 max UDP payload
 
-    let received_len = Arc::new(AtomicUsize::new(0));
-    let received_len_clone = received_len.clone();
-    let (notify_tx, notify_rx) = std::sync::mpsc::channel::<()>();
+    let (received_tx, received_rx) = std::sync::mpsc::sync_channel(1);
 
     let handler = TestHandler {
         app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
         udp_matcher: Arc::new(move |meta| {
-            let received_len = received_len_clone.clone();
-            let notify_tx = notify_tx.clone();
+            let received_tx = received_tx.clone();
             FlowAction::Intercept {
                 meta,
                 service: service_fn(move |mut flow: crate::UdpFlow| {
-                    let received_len = received_len.clone();
-                    let notify_tx = notify_tx.clone();
+                    let received_tx = received_tx.clone();
                     async move {
                         if let Some(datagram) = flow.recv().await {
-                            received_len.store(datagram.payload.len(), Ordering::Relaxed);
-                            _ = notify_tx.send(());
+                            _ = received_tx.send((datagram.payload.to_vec(), datagram.peer));
                         }
                         Ok::<_, std::convert::Infallible>(())
                     }
@@ -665,18 +788,22 @@ fn udp_large_datagram_near_max_payload_roundtrips() {
     };
 
     session.activate();
-    let payload = vec![0xABu8; PAYLOAD_LEN];
+    let mut payload: Vec<u8> = (0..PAYLOAD_LEN)
+        .map(|index| (index as u8).wrapping_mul(0xB5).wrapping_add(0x3D))
+        .collect();
+    let expected_payload = payload.clone();
     let peer = SocketAddr::from((Ipv4Addr::LOCALHOST, 53));
     session.on_client_datagram(&payload, Some(peer));
+    payload.fill(0);
+    drop(payload);
 
-    _ = notify_rx.recv_timeout(Duration::from_secs(2));
+    let (received_payload, received_peer) = received_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("large datagram must reach the service");
     engine.stop(0);
 
-    assert_eq!(
-        received_len.load(Ordering::Relaxed),
-        PAYLOAD_LEN,
-        "large datagram must round-trip without truncation"
-    );
+    assert_eq!(received_peer, Some(peer));
+    assert_eq!(received_payload, expected_payload);
 }
 
 /// Contract: when a service sends a `Datagram` whose peer is an
@@ -754,4 +881,428 @@ fn udp_send_preserves_ipv6_scope_id_through_engine_callback() {
         }
         std::net::SocketAddr::V4(_) => panic!("expected V6"),
     }
+}
+
+#[test]
+fn udp_max_payload_charge_survives_bytes_clones_and_resumes_after_final_drop() {
+    use std::net::{Ipv6Addr, SocketAddrV6};
+
+    let (received_tx, received_rx) = std::sync::mpsc::sync_channel(1);
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(move |meta| {
+            let received_tx = received_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |mut flow: crate::UdpFlow| {
+                    let received_tx = received_tx.clone();
+                    async move {
+                        if let Some(datagram) = flow.recv().await {
+                            _ = received_tx.send(datagram);
+                        }
+                        let _hold = flow;
+                        std::future::pending::<Result<(), std::convert::Infallible>>().await
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(TestRuntimeFactory)
+        .with_udp_ingress_per_flow_max_bytes(MAX_UDP_DATAGRAM_PAYLOAD_SIZE)
+        .with_udp_ingress_global_max_bytes(MAX_UDP_DATAGRAM_PAYLOAD_SIZE * 2)
+        .build()
+        .expect("build engine");
+    let budget = engine.udp_ingress_budget_for_test();
+    let demand_count = Arc::new(AtomicUsize::new(0));
+    let demand_count_for_sink = demand_count.clone();
+    let (initial_demand_tx, initial_demand_rx) = std::sync::mpsc::sync_channel(1);
+
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        |_| {},
+        move || {
+            let previous = demand_count_for_sink.fetch_add(1, Ordering::Relaxed);
+            if previous == 0 {
+                _ = initial_demand_tx.send(());
+            }
+        },
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate();
+    initial_demand_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("service recv must request initial read");
+
+    let peer = std::net::SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 443, 0, 7));
+    let mut payload: Vec<u8> = (0..MAX_UDP_DATAGRAM_PAYLOAD_SIZE)
+        .map(|index| (index as u8).wrapping_mul(0x6D).wrapping_add(0xA7))
+        .collect();
+    let expected_payload = payload.clone();
+    session.on_client_datagram(&payload, Some(peer));
+    payload.fill(0);
+    drop(payload);
+    let datagram = received_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("service must receive maximum-size datagram");
+    assert_eq!(datagram.peer, Some(peer));
+    assert_eq!(datagram.payload.as_ref(), expected_payload.as_slice());
+    assert_eq!(
+        session.udp_ingress_retained_bytes_for_test(),
+        MAX_UDP_DATAGRAM_PAYLOAD_SIZE
+    );
+
+    let retained_clone = datagram.payload.clone();
+    drop(datagram);
+    let blocked_payload = vec![0; MAX_UDP_DATAGRAM_PAYLOAD_SIZE];
+    session.on_client_datagram(&blocked_payload, Some(peer));
+    let full_snapshot = budget.snapshot();
+    assert_eq!(full_snapshot.retained_bytes, MAX_UDP_DATAGRAM_PAYLOAD_SIZE);
+    assert_eq!(full_snapshot.dropped_flow_bytes_full, 1);
+    assert_eq!(
+        demand_count.load(Ordering::Relaxed),
+        1,
+        "byte Full must not request another read"
+    );
+    assert_eq!(retained_clone.as_ref(), expected_payload.as_slice());
+
+    drop(retained_clone);
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while demand_count.load(Ordering::Relaxed) < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "final Bytes clone drop did not resume the byte-stalled flow"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(budget.snapshot().retained_bytes, 0);
+    session.on_client_close();
+    engine.stop(0);
+}
+
+#[test]
+fn udp_count_full_resumes_only_after_recv_releases_a_slot() {
+    let (start_tx, start_rx) = tokio::sync::watch::channel(false);
+    let (received_tx, received_rx) = std::sync::mpsc::sync_channel(1);
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(move |meta| {
+            let start_rx = start_rx.clone();
+            let received_tx = received_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |mut flow: crate::UdpFlow| {
+                    let mut start_rx = start_rx.clone();
+                    let received_tx = received_tx.clone();
+                    async move {
+                        _ = start_rx.wait_for(|start| *start).await;
+                        if let Some(datagram) = flow.recv().await {
+                            _ = received_tx.send(datagram);
+                        }
+                        Ok::<_, std::convert::Infallible>(())
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(TestRuntimeFactory)
+        .with_udp_channel_capacity(2)
+        .build()
+        .expect("build engine");
+    let budget = engine.udp_ingress_budget_for_test();
+    let demand_count = Arc::new(AtomicUsize::new(0));
+    let demand_count_for_sink = demand_count.clone();
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        |_| {},
+        move || {
+            demand_count_for_sink.fetch_add(1, Ordering::Relaxed);
+        },
+        || {},
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate();
+
+    session.on_client_datagram(b"one", None);
+    session.on_client_datagram(b"two", None);
+    session.on_client_datagram(b"full", None);
+    assert_eq!(budget.snapshot().dropped_count_full, 1);
+    assert_eq!(demand_count.load(Ordering::Relaxed), 0);
+
+    start_tx.send(true).expect("start service receive");
+    let received = received_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("service must receive one queued datagram");
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while demand_count.load(Ordering::Relaxed) == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "count capacity release did not resume the flow"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    drop(received);
+    session.on_client_close();
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while budget.snapshot().retained_bytes != 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "close leaked UDP bytes"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    engine.stop(0);
+}
+
+#[test]
+fn udp_global_release_wakes_a_stalled_flow_with_an_empty_local_queue() {
+    const FLOW_A: u64 = 0xA001;
+    const FLOW_B: u64 = 0xB001;
+    let (a_tx, a_rx) = std::sync::mpsc::sync_channel(1);
+    let (b_tx, b_rx) = std::sync::mpsc::sync_channel(1);
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(move |meta| {
+            let received_tx = if meta.flow_id == FLOW_A {
+                a_tx.clone()
+            } else {
+                b_tx.clone()
+            };
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |mut flow: crate::UdpFlow| {
+                    let received_tx = received_tx.clone();
+                    async move {
+                        if let Some(datagram) = flow.recv().await {
+                            _ = received_tx.send(datagram);
+                        }
+                        let _hold = flow;
+                        std::future::pending::<Result<(), std::convert::Infallible>>().await
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(TestRuntimeFactory)
+        .with_udp_ingress_per_flow_max_bytes(MAX_UDP_DATAGRAM_PAYLOAD_SIZE)
+        .with_udp_ingress_global_max_bytes(MAX_UDP_DATAGRAM_PAYLOAD_SIZE)
+        .build()
+        .expect("build engine");
+    let budget = engine.udp_ingress_budget_for_test();
+    let a_demands = Arc::new(AtomicUsize::new(0));
+    let b_demands = Arc::new(AtomicUsize::new(0));
+    let a_demands_cb = a_demands.clone();
+    let b_demands_cb = b_demands.clone();
+
+    let mut meta_a = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+    meta_a.flow_id = FLOW_A;
+    let SessionFlowAction::Intercept(mut session_a) = engine.new_udp_session(
+        meta_a,
+        |_| {},
+        move || {
+            a_demands_cb.fetch_add(1, Ordering::Relaxed);
+        },
+        || {},
+    ) else {
+        panic!("expected flow A");
+    };
+    let mut meta_b = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+    meta_b.flow_id = FLOW_B;
+    let SessionFlowAction::Intercept(mut session_b) = engine.new_udp_session(
+        meta_b,
+        |_| {},
+        move || {
+            b_demands_cb.fetch_add(1, Ordering::Relaxed);
+        },
+        || {},
+    ) else {
+        panic!("expected flow B");
+    };
+    session_a.activate();
+    session_b.activate();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while a_demands.load(Ordering::Relaxed) == 0 || b_demands.load(Ordering::Relaxed) == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "initial pull demand missing"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    let payload = vec![0x61; MAX_UDP_DATAGRAM_PAYLOAD_SIZE];
+    session_a.on_client_datagram(&payload, None);
+    let held_a = a_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("flow A must retain the global budget");
+    session_b.on_client_datagram(&payload, None);
+    let snapshot = budget.snapshot();
+    assert_eq!(snapshot.dropped_global_bytes_full, 1);
+    assert_eq!(snapshot.global_waiters, 1);
+    assert!(
+        b_rx.try_recv().is_err(),
+        "globally full flow B queue must be empty"
+    );
+
+    let demands_before_release = b_demands.load(Ordering::Relaxed);
+    drop(held_a);
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while b_demands.load(Ordering::Relaxed) == demands_before_release {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "global release did not wake one stalled empty flow"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(budget.snapshot().global_waiters, 0);
+
+    session_b.on_client_datagram(&payload, None);
+    let held_b = b_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("resumed flow B must receive the next datagram");
+    drop(held_b);
+    session_a.on_client_close();
+    session_b.on_client_close();
+    engine.stop(0);
+    assert_eq!(budget.snapshot().retained_bytes, 0);
+}
+
+#[test]
+fn udp_default_global_budget_bounds_many_flows_and_engine_stop_releases_queues() {
+    const FLOW_COUNT: usize = 65;
+    const FILLED_FLOW_COUNT: usize = 64;
+    const DATAGRAMS_PER_FLOW: usize = 4;
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|flow: crate::UdpFlow| async move {
+                let _hold = flow;
+                std::future::pending::<Result<(), std::convert::Infallible>>().await
+            })
+            .boxed(),
+        }),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine(handler);
+    let budget = engine.udp_ingress_budget_for_test();
+    let mut sessions = Vec::with_capacity(FLOW_COUNT);
+    for flow_id in 1..=FLOW_COUNT {
+        let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+        meta.flow_id = flow_id as u64;
+        let SessionFlowAction::Intercept(mut session) =
+            engine.new_udp_session(meta, |_| {}, || {}, || {})
+        else {
+            panic!("expected intercepted flow {flow_id}");
+        };
+        session.activate();
+        sessions.push(session);
+    }
+
+    let payload = vec![0xC3; MAX_UDP_DATAGRAM_PAYLOAD_SIZE];
+    for session in sessions.iter_mut().take(FILLED_FLOW_COUNT) {
+        for _ in 0..DATAGRAMS_PER_FLOW {
+            session.on_client_datagram(&payload, None);
+        }
+    }
+    sessions[FILLED_FLOW_COUNT].on_client_datagram(&payload, None);
+
+    let expected = FILLED_FLOW_COUNT * DATAGRAMS_PER_FLOW * MAX_UDP_DATAGRAM_PAYLOAD_SIZE;
+    let snapshot = budget.snapshot();
+    assert_eq!(expected, 16_776_960);
+    assert_eq!(snapshot.retained_bytes, expected);
+    assert!(snapshot.retained_bytes <= DEFAULT_UDP_INGRESS_GLOBAL_MAX_BYTES);
+    assert_eq!(snapshot.peak_retained_bytes, expected);
+    assert_eq!(snapshot.accepted_datagrams, 256);
+    assert_eq!(snapshot.dropped_global_bytes_full, 1);
+
+    engine.stop(0);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while budget.snapshot().retained_bytes != 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "engine stop did not release queued UDP payloads"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(budget.snapshot().global_waiters, 0);
+    drop(sessions);
+    assert_eq!(budget.snapshot().global_waiters, 0);
+}
+
+#[test]
+fn udp_service_panic_releases_retained_ingress_and_closes_demand() {
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|mut flow: crate::UdpFlow| async move {
+                let datagram = flow.recv().await.expect("test datagram");
+                assert_eq!(datagram.payload.as_ref(), b"panic-payload");
+                panic!("synthetic panic after retaining UDP ingress")
+            })
+            .boxed(),
+        }),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine(handler);
+    let budget = engine.udp_ingress_budget_for_test();
+    let demand_count = Arc::new(AtomicUsize::new(0));
+    let demand_count_cb = demand_count.clone();
+    let (closed_tx, closed_rx) = std::sync::mpsc::sync_channel(1);
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        |_| {},
+        move || {
+            demand_count_cb.fetch_add(1, Ordering::Relaxed);
+        },
+        move || _ = closed_tx.send(()),
+    ) else {
+        panic!("expected intercepted flow");
+    };
+    session.activate();
+    session.on_client_datagram(b"panic-payload", None);
+    closed_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("panic must run close epilogue");
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while budget.snapshot().retained_bytes != 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "panic leaked UDP bytes"
+        );
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let demand_after_close = demand_count.load(Ordering::Relaxed);
+    session.on_client_datagram(b"late", None);
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(demand_count.load(Ordering::Relaxed), demand_after_close);
+    session.on_client_close();
+    engine.stop(0);
 }

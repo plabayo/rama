@@ -69,6 +69,12 @@ pub enum BridgeCloseReason {
     /// [`IdleTimeout`](Self::IdleTimeout), which only fires when *neither*
     /// direction moves (a silent origin still receives the client's bytes).
     FirstByteTimeout,
+    /// A configured absolute flow-lifetime cap elapsed. Unlike
+    /// [`IdleTimeout`](Self::IdleTimeout), activity does not reset this cap.
+    MaxLifetime,
+    /// The user-provided service panicked while constructing or polling its
+    /// per-flow future. The engine contained the panic and ran its close path.
+    ServicePanic,
 }
 
 impl core::fmt::Display for BridgeCloseReason {
@@ -86,7 +92,31 @@ impl core::fmt::Display for BridgeCloseReason {
             Self::HandlerDeadline => "handler_deadline",
             Self::PausedTimeout => "paused_timeout",
             Self::FirstByteTimeout => "first_byte_timeout",
+            Self::MaxLifetime => "max_lifetime",
+            Self::ServicePanic => "service_panic",
         })
+    }
+}
+
+#[cfg(feature = "dial9")]
+impl BridgeCloseReason {
+    const fn dial9_code(self) -> u8 {
+        match self {
+            Self::Shutdown => 1,
+            Self::IdleTimeout => 2,
+            Self::PeerEofLeft => 3,
+            Self::PeerEofRight => 4,
+            Self::ReadErrorLeft => 5,
+            Self::ReadErrorRight => 6,
+            Self::WriteErrorLeft => 7,
+            Self::WriteErrorRight => 8,
+            Self::PeekTimeout => 9,
+            Self::HandlerDeadline => 10,
+            Self::PausedTimeout => 11,
+            Self::FirstByteTimeout => 12,
+            Self::MaxLifetime => 13,
+            Self::ServicePanic => 14,
+        }
     }
 }
 
@@ -101,21 +131,7 @@ impl dial9_trace_format::TraceField for BridgeCloseReason {
         &self,
         enc: &mut dial9_trace_format::EventEncoder<'_, W>,
     ) -> std::io::Result<()> {
-        let code = match self {
-            Self::Shutdown => 1,
-            Self::IdleTimeout => 2,
-            Self::PeerEofLeft => 3,
-            Self::PeerEofRight => 4,
-            Self::ReadErrorLeft => 5,
-            Self::ReadErrorRight => 6,
-            Self::WriteErrorLeft => 7,
-            Self::WriteErrorRight => 8,
-            Self::PeekTimeout => 9,
-            Self::HandlerDeadline => 10,
-            Self::PausedTimeout => 11,
-            Self::FirstByteTimeout => 12,
-        };
-        enc.write_u8(code)
+        enc.write_u8(self.dial9_code())
     }
 }
 
@@ -355,6 +371,20 @@ mod tests {
     use super::*;
     use futures::channel::mpsc;
     use std::time::Instant;
+
+    #[test]
+    fn max_lifetime_has_distinct_telemetry_identity() {
+        assert_eq!(BridgeCloseReason::MaxLifetime.to_string(), "max_lifetime");
+        #[cfg(feature = "dial9")]
+        assert_eq!(BridgeCloseReason::MaxLifetime.dial9_code(), 13);
+    }
+
+    #[test]
+    fn service_panic_has_distinct_telemetry_identity() {
+        assert_eq!(BridgeCloseReason::ServicePanic.to_string(), "service_panic");
+        #[cfg(feature = "dial9")]
+        assert_eq!(BridgeCloseReason::ServicePanic.dial9_code(), 14);
+    }
 
     /// Build a pair of duplex endpoints over `mpsc` channels for testing.
     /// `(a, b)` are wired such that items sent on `a` arrive on `b.next()`

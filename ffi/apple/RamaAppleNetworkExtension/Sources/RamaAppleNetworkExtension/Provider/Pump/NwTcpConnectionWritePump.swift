@@ -58,7 +58,9 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
         onDrained: @escaping @Sendable () -> Void,
         onTerminal: @escaping @Sendable (Error) -> Void = { _ in },
         onActivity: @escaping @Sendable () -> Bool = { true },
-        readSideIdleMs: @escaping @Sendable () -> UInt64 = { .max }
+        readSideIdleMs: @escaping @Sendable () -> UInt64 = { .max },
+        writePolicy: TcpWritePumpPolicy =
+            TcpWritePumpPolicy(maxPendingBytes: writePumpMaxPendingBytes)
     ) {
         self.connection = connection
         self.lingerCloseDeadline = lingerCloseDeadline
@@ -84,11 +86,12 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
             },
             logHwm: { hwm in
                 RamaLog.trace(
-                    "tcp egress write pump pendingBytes hwm=\(hwm) cap=\(writePumpMaxPendingBytes)"
+                    "tcp egress write pump pendingBytes hwm=\(hwm) cap=\(writePolicy.maxPendingBytes)"
                 )
             },
             inlineWriteCompletionWhenOnQueue: true,
-            onActivity: onActivity
+            onActivity: onActivity,
+            writePolicy: writePolicy
         )
         self.core = core
         core.delegate = self

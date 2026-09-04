@@ -45,8 +45,25 @@ fi
 TMP_DIR="$(mktemp -d /tmp/rama-modern-udp-e2e.XXXXXX)"
 PROVIDER_LOG="$TMP_DIR/provider.log"
 HTTP3_RESULT="$TMP_DIR/http3-result.log"
+EVIDENCE_STATUS="$TMP_DIR/udp-evidence-status.tsv"
 LOG_PID=""
 PROFILE_NEEDS_RESTORE=0
+UDP_PROBE_COUNT=0
+
+write_evidence_status() {
+  local complete="$1" passed="$2" exit_code="$3" issue="${4:-}"
+  local tmp="$EVIDENCE_STATUS.tmp.$$"
+  {
+    printf 'complete\t%s\npassed\t%s\nexit_code\t%s\n' \
+      "$complete" "$passed" "$exit_code"
+    printf 'udp_probe_count\t%s\n' "$UDP_PROBE_COUNT"
+    [[ -z "$issue" ]] || printf 'issue\t%s\n' "$issue"
+    printf 'schema_complete\t1\n'
+  } > "$tmp"
+  mv "$tmp" "$EVIDENCE_STATUS"
+}
+
+write_evidence_status 0 0 2 "signed UDP E2E did not reach its terminal verdict"
 
 cleanup() {
   if [[ -n "$LOG_PID" ]]; then
@@ -136,8 +153,11 @@ sleep 1
 UDP_ERROR_PROVIDER_LOG_LINE="$(provider_log_line)"
 
 /usr/bin/python3 "$PROBE" dns --server "$PASSTHROUGH_DNS"
+UDP_PROBE_COUNT=$((UDP_PROBE_COUNT + 1))
 /usr/bin/python3 "$PROBE" ntp --server "$INTERCEPT_NTP"
+UDP_PROBE_COUNT=$((UDP_PROBE_COUNT + 1))
 /usr/bin/python3 "$PROBE" dns --server "$BLOCKED_DNS"
+UDP_PROBE_COUNT=$((UDP_PROBE_COUNT + 1))
 
 HTTP3_SEPARATOR='?'
 if [[ "$HTTP3_URL" == *\?* ]]; then
@@ -152,6 +172,7 @@ if ! grep -Fq 'http=http/3' "$HTTP3_RESULT"; then
   cat "$HTTP3_RESULT" >&2
   exit 1
 fi
+UDP_PROBE_COUNT=$((UDP_PROBE_COUNT + 1))
 
 # Reinstall with one exact public DNS endpoint blocked. A new client socket is
 # used below, so this must create a fresh NE flow and decision.
@@ -163,6 +184,7 @@ wait_for_connected "$CONTAINER_LOG_LINE"
 
 /usr/bin/python3 "$PROBE" dns --server "$BLOCKED_DNS" \
   --timeout 4 --expect-no-response
+UDP_PROBE_COUNT=$((UDP_PROBE_COUNT + 1))
 
 # Let os_log and the Rust tracing bridge flush the per-flow decision/service
 # records before assertions.
@@ -217,6 +239,12 @@ CONTAINER_LOG_LINE="$(container_log_line)"
   "--udp-blocked-endpoints="
 wait_for_connected "$CONTAINER_LOG_LINE"
 PROFILE_NEEDS_RESTORE=0
+
+if [[ "$UDP_PROBE_COUNT" != 5 ]]; then
+  echo "signed UDP E2E completed without all five required UDP probes" >&2
+  exit 1
+fi
+write_evidence_status 1 1 0
 
 echo "$CALLBACK_GENERATION UDP Network Extension E2E passed with public resources"
 echo "pass-through DNS=$PASSTHROUGH_DNS:53 intercept NTP=$INTERCEPT_NTP:123 blocked DNS=$BLOCKED_DNS:53 UDP/443=$HTTP3_URL"

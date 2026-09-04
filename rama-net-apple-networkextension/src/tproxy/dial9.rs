@@ -14,6 +14,7 @@
 use dial9::Dial9Handle;
 use dial9::core::clock_monotonic_ns;
 use dial9_trace_format::TraceEvent;
+use rama_net::proxy::BridgeCloseReason;
 
 /// Emitted right after the engine has assigned a `flow_id` to a new
 /// transparent-proxy flow and decided how to handle it.
@@ -35,6 +36,9 @@ pub struct TproxyFlowClosed {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
     pub flow_id: u64,
+    /// Structured close reason. For TCP this is the resolved ingress-oriented
+    /// reason, matching the byte-count orientation below.
+    pub reason: BridgeCloseReason,
     /// Wall-clock age of the flow at close time, in milliseconds.
     pub age_ms: u64,
     /// Bytes carried in the client → server / "in" direction.
@@ -68,12 +72,19 @@ pub(crate) fn record_flow_opened(flow_id: u64, protocol: u32, pid: Option<i32>) 
 }
 
 #[inline]
-pub(crate) fn record_flow_closed(flow_id: u64, age_ms: u64, bytes_in: u64, bytes_out: u64) {
+pub(crate) fn record_flow_closed(
+    flow_id: u64,
+    reason: BridgeCloseReason,
+    age_ms: u64,
+    bytes_in: u64,
+    bytes_out: u64,
+) {
     let handle = Dial9Handle::current();
     if handle.is_enabled() {
         handle.record_event(TproxyFlowClosed {
             timestamp_ns: clock_monotonic_ns(),
             flow_id,
+            reason,
             age_ms,
             bytes_in,
             bytes_out,

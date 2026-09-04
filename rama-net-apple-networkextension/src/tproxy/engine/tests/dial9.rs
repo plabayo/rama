@@ -4,6 +4,8 @@ use super::common::*;
 use crate::tproxy::engine::*;
 use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};
 use dial9::Dial9Handle;
+use dial9_trace_format::decoder::Decoder;
+use dial9_trace_format::types::FieldValueRef;
 use parking_lot::Mutex;
 use rama_core::{
     extensions::ExtensionsRef,
@@ -43,6 +45,73 @@ fn build_dial9_engine(
         .expect("build dial9 engine")
 }
 
+fn build_dial9_engine_with_udp_max_flow_lifetime(
+    handler: TestHandler,
+    trace_dir: &std::path::Path,
+    lifetime: Duration,
+) -> TransparentProxyEngine<TestHandler> {
+    let writer = dial9::DiskBuffer::builder()
+        .base_path(trace_dir)
+        .max_file_size(rama_utils::octets::mib_u64(1))
+        .max_total_size(rama_utils::octets::mib_u64(4))
+        .build();
+    let recorder = dial9::recorder_or_disabled(writer).build();
+    assert!(
+        recorder.handle().is_enabled(),
+        "expected an enabled recorder; is another one still alive?"
+    );
+
+    TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(
+            DefaultTransparentProxyAsyncRuntimeFactory::new().with_dial9_recorder(recorder),
+        )
+        .with_udp_max_flow_lifetime(lifetime)
+        .without_udp_idle_timeout()
+        .build()
+        .expect("build dial9 engine")
+}
+
+fn count_dial9_events(trace_dir: &std::path::Path, event_name: &str) -> usize {
+    let bytes = std::fs::read(trace_dir.join("trace.0.bin")).expect("sealed dial9 trace");
+    let mut decoder = Decoder::new(&bytes).expect("valid dial9 trace");
+    let mut count = 0;
+    decoder
+        .for_each_event(|event| {
+            if event.name == event_name {
+                count += 1;
+            }
+        })
+        .expect("decode dial9 events");
+    count
+}
+
+fn dial9_flow_closed_reasons(trace_dir: &std::path::Path) -> Vec<(u64, u64)> {
+    let bytes = std::fs::read(trace_dir.join("trace.0.bin")).expect("sealed dial9 trace");
+    let mut decoder = Decoder::new(&bytes).expect("valid dial9 trace");
+    let mut closed = Vec::new();
+    decoder
+        .for_each_event(|event| {
+            if event.name != "TproxyFlowClosed" {
+                return;
+            }
+            let mut flow_id = None;
+            let mut reason = None;
+            for (name, value) in event.field_names().zip(event.fields.iter()) {
+                match (name, value) {
+                    ("flow_id", FieldValueRef::Varint(value)) => flow_id = Some(*value),
+                    ("reason", FieldValueRef::Varint(value)) => reason = Some(*value),
+                    _ => {}
+                }
+            }
+            closed.push((
+                flow_id.expect("TproxyFlowClosed flow_id field"),
+                reason.expect("TproxyFlowClosed reason field"),
+            ));
+        })
+        .expect("decode dial9 events");
+    closed
+}
+
 #[test]
 fn synchronous_app_message_works_with_dial9_runtime() {
     let _slot = recorder_slot();
@@ -57,6 +126,118 @@ fn synchronous_app_message_works_with_dial9_runtime() {
     assert_eq!(reply.as_ref(), &[42]);
 
     engine.stop(0);
+}
+
+#[test]
+fn tcp_service_panic_pairs_dial9_open_and_close() {
+    const FLOW_ID: u64 = 0xE1E1_3001;
+    let _slot = recorder_slot();
+    install_close_capture();
+    let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|meta| {
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(
+                    |_bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| -> std::future::Ready<
+                        Result<(), Infallible>,
+                    > { panic!("synthetic tcp construction panic under dial9") },
+                )
+                .boxed(),
+            }
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_dial9_engine(handler, temp_dir.path());
+    let (closed_tx, closed_rx) = std::sync::mpsc::sync_channel(1);
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp);
+    meta.flow_id = FLOW_ID;
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        meta,
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        move || _ = closed_tx.send(()),
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+    closed_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("panicking service must close");
+    let started = std::time::Instant::now();
+    while !flow_was_closed(FLOW_ID) && started.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        flow_was_closed(FLOW_ID),
+        "structured close must precede trace sealing"
+    );
+    assert_eq!(flow_close_reason(FLOW_ID).as_deref(), Some("service_panic"));
+    engine.stop(0);
+
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowOpened"), 1);
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowClosed"), 1);
+    assert_eq!(
+        dial9_flow_closed_reasons(temp_dir.path()),
+        vec![(FLOW_ID, 14)]
+    );
+}
+
+#[test]
+fn udp_pre_activation_max_lifetime_records_decoded_dial9_reason() {
+    const FLOW_ID: u64 = 0xE1E1_3002;
+    let _slot = recorder_slot();
+    install_close_capture();
+    let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|flow: crate::UdpFlow| async move {
+                let _hold = flow;
+                std::future::pending::<()>().await;
+                Ok(())
+            })
+            .boxed(),
+        }),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_dial9_engine_with_udp_max_flow_lifetime(
+        handler,
+        temp_dir.path(),
+        Duration::from_millis(30),
+    );
+    let (closed_tx, closed_rx) = std::sync::mpsc::sync_channel(1);
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+    meta.flow_id = FLOW_ID;
+    let SessionFlowAction::Intercept(mut session) =
+        engine.new_udp_session(meta, |_| {}, || {}, move || _ = closed_tx.send(()))
+    else {
+        panic!("expected intercept session");
+    };
+
+    closed_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("pre-activation max lifetime must close the flow");
+    let started = std::time::Instant::now();
+    while flow_close_reason(FLOW_ID).is_none() && started.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(flow_close_reason(FLOW_ID).as_deref(), Some("max_lifetime"));
+    session.on_client_close();
+    engine.stop(0);
+
+    assert_eq!(
+        dial9_flow_closed_reasons(temp_dir.path()),
+        vec![(FLOW_ID, 13)]
+    );
 }
 
 #[test]
