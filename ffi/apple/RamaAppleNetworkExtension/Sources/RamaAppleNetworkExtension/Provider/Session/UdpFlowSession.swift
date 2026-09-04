@@ -317,33 +317,43 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         return decision
     }
 
+    /// Execute one asynchronous open completion only while this session's
+    /// engine generation is still attached. The fallback is for phase-level
+    /// tests that construct a session without engine admission.
+    private func withActiveEngineGeneration(_ body: () -> Void) {
+        guard let engineGeneration else {
+            body()
+            return
+        }
+        guard let core else { return }
+        core.withActiveEngineGeneration(engineGeneration, body)
+    }
+
     func openKernelFlow() {
         flow.open(withLocalEndpoint: nil) { [weak self] error in
             self?.flowQueue.async { [weak self] in
                 guard let self else { return }
-                guard self.ctx.readState != .closed else { return }
-                if let error {
-                    let message = classifyFlowCallbackError(
-                        error,
-                        operation: "udp flow.open"
-                    )
-                    self.core?.logFlowMessage(message)
-                    self.ctx.terminate?(error)
-                    return
+                self.withActiveEngineGeneration {
+                    guard self.ctx.readState != .closed else { return }
+                    if let error {
+                        let message = classifyFlowCallbackError(
+                            error,
+                            operation: "udp flow.open"
+                        )
+                        self.core?.logFlowMessage(message)
+                        self.ctx.terminate?(error)
+                        return
+                    }
+                    self.core?.logTrace(
+                        "flow.open ok (udp; egress on Rust-owned BSD socket)")
+                    self.ctx.writer?.markOpened()
+                    self.ctx.session?.activate()
+                    // Arm the idle watchdog. Subsequent datagrams in either
+                    // direction push the deadline forward. Without this, the
+                    // session stays registered until Rust's max-lifetime cap.
+                    self.armIdleTimer()
+                    self.ctx.requestRead?()
                 }
-                self.core?.logTrace("flow.open ok (udp; egress on Rust-owned BSD socket)")
-                self.ctx.writer?.markOpened()
-                self.ctx.session?.activate()
-                // Arm the idle watchdog. Subsequent datagrams in
-                // either direction push the deadline forward; an
-                // idle peer (DNS that's answered and gone quiet,
-                // NAT-binding probe with no response, …) trips the
-                // watchdog and we terminate cleanly. Without this,
-                // the session stays registered until the engine-
-                // side `udp_max_flow_lifetime` cap fires (15 min
-                // by default).
-                self.armIdleTimer()
-                self.ctx.requestRead?()
             }
         }
     }

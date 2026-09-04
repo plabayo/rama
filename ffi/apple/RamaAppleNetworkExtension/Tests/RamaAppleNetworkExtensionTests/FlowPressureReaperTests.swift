@@ -1069,6 +1069,43 @@ final class FlowPressureReaperTests: XCTestCase {
         XCTAssertEqual(core.testPressureEvictedTotal, 3)
     }
 
+    func testSpareIsReplacedAcrossMultiSlotLowWaterGap() {
+        defaultFlowPressureSoftCap = 4
+        defaultFlowPressureLowWater = 2
+        defaultFlowPressureIdleFloorMs = 5_000
+        let core = makeCore()
+        let (queue, gate) = gatedQueue("multi-slot-spare")
+        defer { gate.signal() }
+        let spared = Fx(core: core, idleSeconds: 50, flowQueue: queue)
+        let first = Fx(core: core, idleSeconds: 40, flowQueue: queue)
+        let second = Fx(core: core, idleSeconds: 30, flowQueue: queue)
+        let replacement = Fx(core: core, idleSeconds: 20, flowQueue: queue)
+        let survivor = Fx(core: core, idleSeconds: 10, flowQueue: queue)
+        insert(core, [spared, first, second, replacement, survivor])
+
+        // Five flows toward low-water two reserves three victims. Reviving
+        // one drops projected relief to only two; replacement must continue
+        // toward low-water even though projected occupancy is below cap four.
+        triggerAndDrain(core)
+        XCTAssertEqual(core.testPressureSelectionsTotal, 3)
+        spared.markActiveNow()
+        gate.signal()
+
+        pollUntil("multi-slot spare replacement reaches low-water") {
+            core.tcpFlowCount == 2
+        }
+        drain(queue)
+        XCTAssertFalse(spared.wasTornDown)
+        XCTAssertTrue(first.wasTornDown)
+        XCTAssertTrue(second.wasTornDown)
+        XCTAssertTrue(replacement.wasTornDown)
+        XCTAssertFalse(survivor.wasTornDown)
+        XCTAssertEqual(core.testPressureSelectionsTotal, 4)
+        XCTAssertEqual(core.testPressureEvictedTotal, 3)
+        XCTAssertEqual(core.testPressureSparedTotal, 1)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 0)
+    }
+
     /// Spared for a reason other than activity: a graceful drain began on
     /// the victim between selection and re-check. It must leave the pending
     /// set like an activity spare does, or it could never be selected again
@@ -1454,6 +1491,9 @@ final class FlowPressureReaperTests: XCTestCase {
         XCTAssertEqual(core.testPressureSelectionsTotal, 1)
         XCTAssertEqual(core.testPressureEvictionBodyRuns, 0)
         XCTAssertEqual(core.testPressurePendingVictimCount, 0)
+        XCTAssertFalse(
+            core.testPressureRecheckScheduled,
+            "an expired tombstone must not create autonomous retry polling")
 
         gate.signal()
         drain(blockedQueue)

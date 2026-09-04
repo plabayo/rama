@@ -194,10 +194,10 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
             "EOF on in-flight read must surface as `nil` to the carryover sink")
     }
 
-    /// Same shape but the in-flight `readData` returns an error.
-    /// Mapped to `.none` per cutover-EOF semantics: the direct
-    /// forwarder uses the FIN path either way.
-    func testClientReadPumpCarryoverErrorMapsToNone() {
+    /// Same shape but the in-flight `readData` returns an error. It must use
+    /// the distinct error channel; mapping it to EOF would make the promoted
+    /// forwarder close a reset kernel flow cleanly.
+    func testClientReadPumpCarryoverPreservesError() {
         let engine = makeEngine(); defer { engine.stop(reason: 0) }
         let session = interceptSession(engine)
         let flow = MockTcpFlow()
@@ -211,21 +211,24 @@ final class PromoteReadPumpCarryoverTests: XCTestCase {
         pump.requestRead()
         waitForReadDataIssued(flow)
 
-        let carryoverFired = expectation(description: "carryover fired")
+        let errorFired = expectation(description: "error fired")
         let completeFired = expectation(description: "onComplete fired")
-        let captured = TestValue<Data?>(Data([0xAA]))
+        let captured = TestValue<Error?>(nil)
         pump.cancelForPromote(
-            onCarryover: { data in
-                captured.set(data)
-                carryoverFired.fulfill()
+            onCarryover: { _ in
+                XCTFail("hard read error must not be mapped to EOF")
+            },
+            onError: { error in
+                captured.set(error)
+                errorFired.fulfill()
             },
             onComplete: { completeFired.fulfill() })
 
         flow.completeRead(data: nil, error: NSError(domain: "test", code: 1))
-        wait(for: [carryoverFired, completeFired], timeout: 2.0,
+        wait(for: [errorFired, completeFired], timeout: 2.0,
              enforceOrder: true)
-        XCTAssertNil(captured.get(),
-            "error on in-flight read must surface as `nil` to the carryover sink")
+        XCTAssertEqual((captured.get() as NSError?)?.domain, "test")
+        XCTAssertEqual((captured.get() as NSError?)?.code, 1)
     }
 
     /// `cancelForPromote` called twice is a no-op on the second

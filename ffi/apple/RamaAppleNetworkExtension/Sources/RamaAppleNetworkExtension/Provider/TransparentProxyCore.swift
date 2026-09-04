@@ -52,7 +52,7 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     private let stateQueue = DispatchQueue(label: "rama.tproxy.core.state")
     private let lifecycleLock = NSRecursiveLock()
-    private let flowStartupGroup = DispatchGroup()
+    private let flowLifecycleGroup = DispatchGroup()
     private var engineStorage: RamaTransparentProxyEngineHandle?
     private var engineGeneration: UInt64 = 0
     private var acceptingFlows = false
@@ -154,9 +154,18 @@ final class TransparentProxyCore: @unchecked Sendable {
             self.tcpSessions.removeAll(keepingCapacity: false)
             self.udpSessions.removeAll(keepingCapacity: false)
             self.pauseFlowCountReportingLocked()
-            self.resetMaintenanceStateLocked()
             return (engine: engine, tcp: tcp, udp: udp)
         }
+        // Registration enters this group while admission and generation are
+        // still protected by `lifecycleLock`, then performs the short startup
+        // submission on its flow queue. Close admission first, wait for those
+        // already-entered submissions, and only then dispatch teardown: a
+        // startup and teardown can never mutate one flow concurrently.
+        // The following state-queue barrier also drains any pressure triggers
+        // those submissions published before leaving the group, so no stale
+        // old-generation maintenance work can survive into the next attach.
+        flowLifecycleGroup.wait()
+        stateQueue.sync { self.resetMaintenanceStateLocked() }
         // The snapshots retain every context/session until its teardown has
         // been dispatched, so clearing registry ownership above cannot orphan
         // the egress connection even though Rust callbacks are about to stop.
@@ -165,12 +174,6 @@ final class TransparentProxyCore: @unchecked Sendable {
             runFlowTeardown(ctx) { ctx.applyEngineDetached() }
         }
         for session in detached.udp { session.ctx.terminate?(engineDetachedError()) }
-        // A startup that passed its execution-time generation check before
-        // admission closed may still be inside its short transport-start
-        // body. Let it finish before stopping the Rust engine. Queued starts
-        // that have not entered the group are blocked by `lifecycleLock` and
-        // reject the detached generation after this method releases it.
-        flowStartupGroup.wait()
         detached.engine?.stop(reason: reason)
     }
 
@@ -179,6 +182,31 @@ final class TransparentProxyCore: @unchecked Sendable {
             guard acceptingFlows, let engine = engineStorage else { return nil }
             return EngineFlowLease(engine: engine, generation: engineGeneration)
         }
+    }
+
+    /// Linearize an asynchronous transport callback with engine detach.
+    /// Callers enter while the generation is current, then perform only their
+    /// short queue-confined state transition. Detach closes admission under
+    /// the same lock and waits for all entrants before dispatching teardown or
+    /// stopping Rust. A callback arriving after that boundary is discarded.
+    @discardableResult
+    func withActiveEngineGeneration(
+        _ generation: UInt64,
+        _ body: () -> Void
+    ) -> Bool {
+        lifecycleLock.lock()
+        guard acceptingFlows,
+            engineStorage != nil,
+            engineGeneration == generation
+        else {
+            lifecycleLock.unlock()
+            return false
+        }
+        flowLifecycleGroup.enter()
+        lifecycleLock.unlock()
+        defer { flowLifecycleGroup.leave() }
+        body()
+        return true
     }
 
     /// Run a teardown for a registered flow on its own `flowQueue`
@@ -791,7 +819,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// measured net of pending victims, like the scan itself.
     private func collectPressureVictimsIfDueLocked(
         nowNs: UInt64 = DispatchTime.now().uptimeNanoseconds,
-        continuingEpisode: Bool = false,
+        continuation: PressureContinuation = .newEpisode,
         excluding protectedFlowIds: Set<ObjectIdentifier> = []
     ) -> [PressureVictim] {
         mergePressureProtectionsLocked(protectedFlowIds)
@@ -804,15 +832,23 @@ final class TransparentProxyCore: @unchecked Sendable {
             state.victimCreditCount + state.naturalReliefCount
         }
         let projected = max(occupancy - pending, 0)
-        if continuingEpisode {
+        switch continuation {
+        case .newEpisode:
+            guard projected >= Int(defaultFlowPressureSoftCap) else {
+                clearPressureProtectionsIfIdleLocked()
+                return []
+            }
+        case .aboveSoftCap:
             guard pressureEpisode != nil,
                 projected >= Int(defaultFlowPressureSoftCap)
             else {
                 clearPressureProtectionsIfIdleLocked()
                 return []
             }
-        } else {
-            guard projected >= Int(defaultFlowPressureSoftCap) else {
+        case .towardLowWater:
+            guard pressureEpisode != nil,
+                projected > Int(defaultFlowPressureLowWater)
+            else {
                 clearPressureProtectionsIfIdleLocked()
                 return []
             }
@@ -1143,7 +1179,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             let id = ObjectIdentifier(victim.ctx)
             guard self.resolvePressureVictimLocked(id, token: victim.token) else { return }
             self.endPressureEpisodeIfUnderCapLocked()
-            self.continuePressureEpisodeIfDueLocked()
+            self.continuePressureEpisodeIfDueLocked(towardLowWater: true)
         }
     }
 
@@ -1159,7 +1195,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             // newer pressure episode. Once its old closure acknowledges, drop
             // the stale no-headroom view and re-evaluate current occupancy.
             if phase == .expired || phase == .canceled {
-                self.continuePressureEpisodeIfDueLocked()
+                self.continuePressureEpisodeIfDueLocked(towardLowWater: true)
             }
         }
     }
@@ -1781,11 +1817,12 @@ final class TransparentProxyCore: @unchecked Sendable {
         }
     }
 
-    /// Register and enqueue transport startup while holding the lifecycle
-    /// lock. The queued body re-checks that lifecycle under the same lock when
-    /// it actually executes: if detach wins after registration but before a
-    /// backlogged flow queue runs, the stale body becomes a no-op instead of
-    /// starting an old-generation transport after detach returned.
+    /// Register and bracket transport startup against detach. Registration and
+    /// group entry are atomic under `lifecycleLock`; the short startup body then
+    /// runs synchronously on its new per-flow queue. This preserves queue
+    /// confinement and caller priority, while independent flows remain free to
+    /// start concurrently. Detach closes admission under the same lock and
+    /// waits for entrants before it dispatches teardown or stops the engine.
     func registerTcpFlowAndScheduleStartup(
         _ flowId: ObjectIdentifier,
         anchor: TcpFlowSessionAnchor,
@@ -1795,18 +1832,20 @@ final class TransparentProxyCore: @unchecked Sendable {
         body: @escaping @Sendable () -> Void
     ) -> Bool {
         lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
         guard
             let occupancy = registerTcpFlow(
                 flowId,
                 anchor: anchor,
                 appId: appId,
                 engineGeneration: engineGeneration)
-        else { return false }
-        scheduleRegisteredStartup(
-            generation: engineGeneration,
-            on: flowQueue,
-            body: body)
+        else {
+            lifecycleLock.unlock()
+            return false
+        }
+        flowLifecycleGroup.enter()
+        lifecycleLock.unlock()
+        defer { flowLifecycleGroup.leave() }
+        flowQueue.sync(execute: body)
         if defaultFlowPressureSoftCap > 0,
             occupancy >= Int(defaultFlowPressureSoftCap)
         {
@@ -1852,52 +1891,25 @@ final class TransparentProxyCore: @unchecked Sendable {
         body: @escaping @Sendable () -> Void
     ) -> Bool {
         lifecycleLock.lock()
-        defer { lifecycleLock.unlock() }
         guard
             let occupancy = registerUdpFlow(
                 flowId,
                 anchor: anchor,
                 engineGeneration: engineGeneration)
-        else { return false }
-        scheduleRegisteredStartup(
-            generation: engineGeneration,
-            on: flowQueue,
-            body: body)
+        else {
+            lifecycleLock.unlock()
+            return false
+        }
+        flowLifecycleGroup.enter()
+        lifecycleLock.unlock()
+        defer { flowLifecycleGroup.leave() }
+        flowQueue.sync(execute: body)
         if defaultFlowPressureSoftCap > 0,
             occupancy >= Int(defaultFlowPressureSoftCap)
         {
             reapIdleUnderPressure()
         }
         return true
-    }
-
-    /// Execute a registered transport start inside the lifecycle bracket.
-    /// `acceptingFlows`, `engineStorage`, and `engineGeneration` are written
-    /// only while this lock is held (their state-queue transaction is nested
-    /// inside it), so this execution-time read needs no extra hot-path sync.
-    /// The group, entered atomically with that check, gives detach a strict
-    /// boundary without serializing concurrent starts: either the body
-    /// finishes before detach returns, or it never begins for that generation.
-    private func scheduleRegisteredStartup(
-        generation: UInt64,
-        on flowQueue: DispatchQueue,
-        body: @escaping @Sendable () -> Void
-    ) {
-        flowQueue.async { [weak self] in
-            guard let self else { return }
-            self.lifecycleLock.lock()
-            guard self.acceptingFlows,
-                self.engineStorage != nil,
-                self.engineGeneration == generation
-            else {
-                self.lifecycleLock.unlock()
-                return
-            }
-            self.flowStartupGroup.enter()
-            self.lifecycleLock.unlock()
-            defer { self.flowStartupGroup.leave() }
-            body()
-        }
     }
 
     func removeTcpFlow(
@@ -2188,13 +2200,20 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// to leave occupancy at or above the cap. Do not chase arrivals below the
     /// cap one by one; the next threshold crossing starts a fresh batch.
     /// MUST run on `stateQueue`.
+    private enum PressureContinuation {
+        case newEpisode
+        case aboveSoftCap
+        case towardLowWater
+    }
+
     private func continuePressureEpisodeIfDueLocked(
-        nowNs: UInt64 = DispatchTime.now().uptimeNanoseconds
+        nowNs: UInt64 = DispatchTime.now().uptimeNanoseconds,
+        towardLowWater: Bool = false
     ) {
         firePressureEvictions(
             collectPressureVictimsIfDueLocked(
                 nowNs: nowNs,
-                continuingEpisode: true))
+                continuation: towardLowWater ? .towardLowWater : .aboveSoftCap))
     }
 
     /// MUST be called on `stateQueue` after a registry removal. The reaper
@@ -2487,6 +2506,9 @@ final class TransparentProxyCore: @unchecked Sendable {
             onCarryover: { [weak forwarder] data in
                 forwarder?.acceptClientCarryover(data)
             },
+            onError: { [weak forwarder] error in
+                forwarder?.acceptClientCarryoverError(error)
+            },
             onComplete: { [weak forwarder] in
                 forwarder?.markClientReadDrained()
             })
@@ -2530,6 +2552,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             queue: flowQueue,
             logger: { [weak self] message in self?.logFlowMessage(message) },
             drainStallDeadline: .milliseconds(Int(ctx.lingerCloseMs)),
+            drainIdleMs: { [weak ctx] in ctx?.idleMs() ?? .max },
             // Mark the ctx so the on-`stateQueue` maintenance watchdog can also
             // reap this promoted flow if `flowQueue` later starves — the same
             // `terminalSignalled` net the `viaRust` close path arms.
@@ -2541,6 +2564,9 @@ final class TransparentProxyCore: @unchecked Sendable {
             // route through the shared full-teardown reaper. Idempotent via
             // the sticky `isDone`.
             onDrainStall: { [weak ctx] in ctx?.applyDrainBackstop() },
+            onReadError: { [weak ctx] error in
+                ctx?.applyReadHardError(error)
+            },
             // Bump the promoted-idle reaper clock on every byte moved.
             onActivity: { [weak ctx] in
                 ctx?.recordActivityUnlessPressureEvicted() ?? false

@@ -204,6 +204,27 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         XCTAssertGreaterThan(session.ctx.lastActivityAt.uptimeNanoseconds, 1)
     }
 
+    func testSuccessfulClientWriteRefreshesTerminalDrainProgress() {
+        let (session, core, flow, _, queue) = makeArmedSession()
+        defer { core.detachEngine(reason: 0) }
+        flow.captureWriteCompletions = true
+        session.buildClientWritePump()
+        session.ctx.clientWritePump?.markOpened()
+        XCTAssertEqual(
+            session.ctx.clientWritePump?.enqueue(Data([0x01])),
+            .accepted)
+        waitFor("client write is in flight") {
+            flow.pendingWriteCompletionCount == 1
+        }
+        queue.sync { session.closeClientAfterRustDrain() }
+        session.ctx.lastActivityAt = DispatchTime(uptimeNanoseconds: 1)
+
+        XCTAssertTrue(flow.completeNextWrite())
+        waitFor("successful drain write refreshes progress clock") {
+            session.ctx.lastActivityAt.uptimeNanoseconds > 1
+        }
+    }
+
     func testSessionWritePumpsRejectAfterPressureCommit() {
         let (session, core, _, conn, queue) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }
@@ -296,14 +317,54 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         }
     }
 
+    func testEgressFinFailureTearsDownViaRustSessionWithError() {
+        let (session, core, flow, conn, queue) = makeArmedSession()
+        defer { core.detachEngine(reason: 0) }
+        session.buildClientWritePump()
+        session.ctx.clientWritePump?.markOpened()
+        queue.sync { session.closeClientAfterRustDrain() }
+        waitFor("client writer completes first drain") {
+            flow.closeWriteCallCount == 1
+        }
+        conn.transition(to: .ready)
+        queue.sync { session.handleEgressReady(connection: conn) }
+
+        queue.sync { session.closeEgressAfterRustDrain() }
+        waitFor("egress FIN send") { conn.pendingSendCount == 1 }
+        XCTAssertTrue(conn.completePendingSend(error: .posix(.ECONNRESET)))
+
+        waitFor("FIN error tears session down") {
+            queue.sync { session.ctx.isDone }
+        }
+        guard case .posix(.ECONNRESET)? = flow.lastCloseReadError as? NWError else {
+            return XCTFail("read half must preserve the FIN error")
+        }
+        guard case .posix(.ECONNRESET)? = flow.lastCloseWriteError as? NWError else {
+            return XCTFail("write half must preserve the FIN error")
+        }
+    }
+
     func testPromotedEgressWriteFailurePreservesError() {
         let (session, core, flow, conn, queue) = makeArmedSession()
         defer { core.detachEngine(reason: 0) }
+        session.buildClientWritePump()
+        session.ctx.clientWritePump?.markOpened()
         conn.transition(to: .ready)
         queue.sync {
             session.handleEgressReady(connection: conn)
             session.ctx.mode = .promoted
+            guard let clientWriter = session.ctx.clientWritePump,
+                let egressWriter = session.ctx.egressWritePump
+            else { return }
+            _ = core.makePromotedForwarder(
+                ctx: session.ctx,
+                flow: flow,
+                connection: conn,
+                clientWritePump: clientWriter,
+                egressWritePump: egressWriter,
+                flowQueue: queue)
         }
+        XCTAssertNotNil(session.ctx.directForwarder)
         guard let writer = session.ctx.egressWritePump else {
             return XCTFail("egress writer built")
         }
@@ -320,6 +381,83 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         guard case .posix(.ECONNRESET)? = flow.lastCloseWriteError as? NWError else {
             return XCTFail("promoted write close must preserve the send error")
         }
+    }
+
+    func testPromotedEgressFinFailurePreservesError() {
+        let (session, core, flow, conn, queue) = makeArmedSession()
+        defer { core.detachEngine(reason: 0) }
+        session.buildClientWritePump()
+        session.ctx.clientWritePump?.markOpened()
+        conn.transition(to: .ready)
+        queue.sync {
+            session.handleEgressReady(connection: conn)
+            session.ctx.mode = .promoted
+            guard let clientWriter = session.ctx.clientWritePump,
+                let egressWriter = session.ctx.egressWritePump
+            else { return }
+            _ = core.makePromotedForwarder(
+                ctx: session.ctx,
+                flow: flow,
+                connection: conn,
+                clientWritePump: clientWriter,
+                egressWritePump: egressWriter,
+                flowQueue: queue)
+        }
+        guard let forwarder = session.ctx.directForwarder else {
+            return XCTFail("production promoted forwarder installed")
+        }
+
+        forwarder.acceptClientCarryover(.none)
+        forwarder.markClientReadDrained()
+        forwarder.markRustC2SDone()
+        waitFor("promoted C-to-S FIN send") { conn.pendingSendCount == 1 }
+        XCTAssertTrue(conn.completePendingSend(error: .posix(.ECONNRESET)))
+
+        waitFor("promoted FIN error tears the session down") {
+            queue.sync { session.ctx.isDone }
+        }
+        guard case .posix(.ECONNRESET)? = flow.lastCloseReadError as? NWError else {
+            return XCTFail("promoted read half must preserve the FIN error")
+        }
+        guard case .posix(.ECONNRESET)? = flow.lastCloseWriteError as? NWError else {
+            return XCTFail("promoted write half must preserve the FIN error")
+        }
+    }
+
+    func testPromotedClientReadFailureUsesErrorfulContextTeardown() {
+        let (session, core, flow, conn, queue) = makeArmedSession()
+        defer { core.detachEngine(reason: 0) }
+        session.buildClientWritePump()
+        session.ctx.clientWritePump?.markOpened()
+        conn.transition(to: .ready)
+        queue.sync {
+            session.handleEgressReady(connection: conn)
+            session.ctx.mode = .promoted
+            guard let clientWriter = session.ctx.clientWritePump,
+                let egressWriter = session.ctx.egressWritePump
+            else { return }
+            _ = core.makePromotedForwarder(
+                ctx: session.ctx,
+                flow: flow,
+                connection: conn,
+                clientWritePump: clientWriter,
+                egressWritePump: egressWriter,
+                flowQueue: queue)
+        }
+        let error = NSError(domain: "test.promoted.client-read", code: 23)
+        session.ctx.directForwarder?.acceptClientCarryoverError(error)
+
+        waitFor("promoted client read error tears down context") {
+            queue.sync { session.ctx.isDone }
+        }
+        XCTAssertEqual(
+            (flow.lastCloseReadError as NSError?)?.domain,
+            "test.promoted.client-read")
+        XCTAssertEqual((flow.lastCloseReadError as NSError?)?.code, 23)
+        XCTAssertEqual(
+            (flow.lastCloseWriteError as NSError?)?.domain,
+            "test.promoted.client-read")
+        XCTAssertEqual((flow.lastCloseWriteError as NSError?)?.code, 23)
     }
 
     func testCompletedEgressFinClearsDrainPending() {

@@ -39,11 +39,10 @@ final class TcpClientReadPump: @unchecked Sendable {
     /// would surface "bad record MAC" once the gap reaches the decryptor.
     private var pendingData: Data?
     /// Set by `cancelForPromote(onCarryover:)` to route in-flight
-    /// `readData` results to a `TcpDirectForwarder` instead of
-    /// dropping them. `Data?` payload: `.some(data)` for bytes,
-    /// `.none` for EOF (or error). Fires at most once, then
-    /// clears.
-    private var onPromoteCarryover: (@Sendable (Data?) -> Void)?
+    /// `readData` results to a `TcpDirectForwarder` instead of dropping them.
+    /// The separate error channel keeps a hard kernel-read failure distinct
+    /// from clean EOF across the cutover. Fires at most once, then clears.
+    private var onPromoteCarryover: (@Sendable (_ payload: Data?, _ error: Error?) -> Void)?
 
     init(
         flow: any TcpFlowReadable,
@@ -84,10 +83,8 @@ final class TcpClientReadPump: @unchecked Sendable {
     ///     buffer (if non-nil), and for the result of an
     ///     in-flight `readData` once its completion handler
     ///     fires.
-    ///   * `onCarryover(.none)` — if the in-flight read returned
-    ///     EOF or an error (the cutover treats these uniformly:
-    ///     the direct forwarder propagates EOF to its egress
-    ///     pump).
+    ///   * `onCarryover(.none)` — if the in-flight read returned EOF.
+    ///   * `onError(error)` — if the in-flight read failed.
     ///   * `onComplete()` — fires exactly once, AFTER any
     ///     `onCarryover` invocations, when the pump guarantees
     ///     no more carryover will be delivered. The direct
@@ -106,6 +103,7 @@ final class TcpClientReadPump: @unchecked Sendable {
     /// this point on.
     func cancelForPromote(
         onCarryover: @escaping @Sendable (Data?) -> Void,
+        onError: @escaping @Sendable (Error) -> Void = { _ in },
         onComplete: @escaping @Sendable () -> Void
     ) {
         queue.async {
@@ -127,8 +125,12 @@ final class TcpClientReadPump: @unchecked Sendable {
             // idle pump (no in-flight read) we fire `onComplete`
             // immediately — no further carryover can land.
             if hadInFlightRead {
-                self.onPromoteCarryover = { payload in
-                    onCarryover(payload)
+                self.onPromoteCarryover = { payload, error in
+                    if let error {
+                        onError(error)
+                    } else {
+                        onCarryover(payload)
+                    }
                     onComplete()
                 }
             } else {
@@ -196,10 +198,12 @@ final class TcpClientReadPump: @unchecked Sendable {
                     let sink = self.onPromoteCarryover
                     self.onPromoteCarryover = nil
                     if let sink {
-                        if let data, !data.isEmpty {
-                            sink(.some(data))
+                        if let error {
+                            sink(nil, error)
+                        } else if let data, !data.isEmpty {
+                            sink(.some(data), nil)
                         } else {
-                            sink(.none)
+                            sink(.none, nil)
                         }
                     }
                     return

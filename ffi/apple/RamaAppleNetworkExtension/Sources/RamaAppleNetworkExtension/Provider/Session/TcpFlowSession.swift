@@ -273,6 +273,19 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         return decision
     }
 
+    /// Execute one asynchronous transport transition only while this
+    /// session's engine generation is still attached. Production sessions
+    /// always carry a generation; the fallback keeps phase-level unit tests
+    /// that construct a session without engine admission usable.
+    private func withActiveEngineGeneration(_ body: () -> Void) {
+        guard let engineGeneration else {
+            body()
+            return
+        }
+        guard let core else { return }
+        core.withActiveEngineGeneration(engineGeneration, body)
+    }
+
     // MARK: - Phase: egress connection
 
     func startEgressConnection(session: RamaTcpSessionHandle) -> Bool {
@@ -470,7 +483,10 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         // that arrives just before a connect/waiting deadline cancels that
         // timer BEFORE it fires — no reordering, no recovered-flow reset.
         connection.stateUpdateHandler = { [weak self] state in
-            self?.handleEgressState(state)
+            guard let self else { return }
+            self.withActiveEngineGeneration {
+                self.handleEgressState(state)
+            }
         }
         // Cache path viability so the post-wake reconcile can read a plain
         // Bool (`ctx.lastPathViable`) instead of polling `currentPath`,
@@ -487,12 +503,13 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         // Direct assignment lands the value in FIFO order with the callback.
         connection.viabilityUpdateHandler = { [weak self] viable in
             guard let self else { return }
-            self.ctx.lastPathViable = viable
-            // Mid-session loss (roam / interface switch / VPN toggle):
-            // schedule the settle-delayed dead-path re-check now instead of
-            // waiting for a wake that never comes. No-op when
-            // `defaultViabilityLossRecheckMs == 0`.
-            if !viable { self.core?.handleEgressViabilityLoss(self.ctx) }
+            self.withActiveEngineGeneration {
+                self.ctx.lastPathViable = viable
+                // Mid-session loss (roam / interface switch / VPN toggle):
+                // schedule the settle-delayed dead-path re-check now instead
+                // of waiting for a wake that never comes.
+                if !viable { self.core?.handleEgressViabilityLoss(self.ctx) }
+            }
         }
     }
 
@@ -766,26 +783,28 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         flow.open(withLocalEndpoint: nil) { [weak self] error in
             self?.flowQueue.async { [weak self] in
                 guard let self else { return }
-                if let error {
-                    self.core?.logDebug("flow.open error after egress ready: \(error)")
-                    self.ctx.applyFlowOpenFailure(error)
-                    return
+                self.withActiveEngineGeneration {
+                    if let error {
+                        self.core?.logDebug("flow.open error after egress ready: \(error)")
+                        self.ctx.applyFlowOpenFailure(error)
+                        return
+                    }
+                    // Teardown may have raced ahead while flow.open was in
+                    // flight; `ctx.connection == nil` is the local signal.
+                    guard self.ctx.connection != nil else {
+                        self.core?.logTrace(
+                            "flow.open completion observed teardown; dropping")
+                        return
+                    }
+                    self.core?.logTrace("flow.open ok (tcp, egress pre-connected)")
+                    self.ctx.clientWritePump?.markOpened()
+                    readPump.start()
+                    self.armReadTerminal(session: session)
+                    // `armPromoteCallback()` was moved to
+                    // `handleEgressReady` (before `session.activate`) to close
+                    // the registration race with the service task.
+                    self.ctx.clientReadPump?.requestRead()
                 }
-                // Teardown may have raced ahead while flow.open
-                // was in flight; `ctx.connection == nil` is the
-                // canonical signal.
-                guard self.ctx.connection != nil else {
-                    self.core?.logTrace("flow.open completion observed teardown; dropping")
-                    return
-                }
-                self.core?.logTrace("flow.open ok (tcp, egress pre-connected)")
-                self.ctx.clientWritePump?.markOpened()
-                readPump.start()
-                self.armReadTerminal(session: session)
-                // `armPromoteCallback()` was moved to `handleEgressReady`
-                // (before `session.activate`) to close the registration
-                // race with the service task — see the comment there.
-                self.ctx.clientReadPump?.requestRead()
             }
         }
     }

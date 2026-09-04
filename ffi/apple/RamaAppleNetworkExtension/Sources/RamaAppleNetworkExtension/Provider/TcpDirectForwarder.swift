@@ -55,7 +55,11 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// `closeWhenDrained` pending) before the drain is declared wedged
     /// and the flow force-torn-down. Mirrors the `viaRust` path's
     /// `lingerCloseMs`. See `armC2SBackstopLocked`.
-    private let drainStallDeadline: DispatchTimeInterval
+    private let drainStallMs: UInt64
+    /// Milliseconds since any byte last made transport progress. Production
+    /// supplies the context clock shared by both directions; a live half-close
+    /// therefore postpones full-flow teardown while either side still moves.
+    private let drainIdleMs: @Sendable () -> UInt64
     /// Fired once when either direction observes EOF. Production sets
     /// `ctx.terminalSignalled` so the
     /// on-`stateQueue` maintenance watchdog can also reap this flow if
@@ -70,6 +74,10 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// to `ctx.applyDrainBackstop()` (a full teardown), the
     /// same reaper the `viaRust` backstop uses.
     private let onDrainStall: () -> Void
+    /// Fatal kernel-read failure. Unlike EOF, this must tear the entire flow
+    /// down with the original error; attempting an orderly FIN would present a
+    /// reset client connection as a clean half-close.
+    private let onReadError: (Error) -> Void
     /// Fired in the transport callback, before delivery hops to `queue`.
     /// Production atomically bumps `ctx.lastActivityAt` or rejects bytes after
     /// pressure teardown has committed, so an active flow is never selected
@@ -192,9 +200,11 @@ final class TcpDirectForwarder: @unchecked Sendable {
         queue: DispatchQueue,
         logger: @escaping (FlowLogMessage) -> Void,
         drainStallDeadline: DispatchTimeInterval = .milliseconds(Int(defaultLingerCloseMs)),
+        drainIdleMs: @escaping @Sendable () -> UInt64 = { .max },
         onClosing: @escaping () -> Void = {},
         onDrainPendingChanged: @escaping (Bool) -> Void = { _ in },
         onDrainStall: @escaping () -> Void = {},
+        onReadError: @escaping (Error) -> Void = { _ in },
         onActivity: @escaping @Sendable () -> Bool = { true },
         closeClientWrite: @escaping (Error?) -> Void = { _ in },
         onTerminal: @escaping () -> Void
@@ -205,10 +215,12 @@ final class TcpDirectForwarder: @unchecked Sendable {
         self.egressWritePump = egressWritePump
         self.queue = queue
         self.logger = logger
-        self.drainStallDeadline = drainStallDeadline
+        self.drainStallMs = Self.millis(from: drainStallDeadline)
+        self.drainIdleMs = drainIdleMs
         self.onClosing = onClosing
         self.onDrainPendingChanged = onDrainPendingChanged
         self.onDrainStall = onDrainStall
+        self.onReadError = onReadError
         self.onActivity = onActivity
         self.closeClientWrite = closeClientWrite
         self.onTerminal = onTerminal
@@ -305,6 +317,15 @@ final class TcpDirectForwarder: @unchecked Sendable {
         queue.async {
             guard !self.cancelled else { return }
             self.s2cTerminalError = error
+        }
+    }
+
+    /// Fatal client-read result captured while the Rust-bound read pump was
+    /// being cancelled for promotion. Preserve it across the cutover instead
+    /// of turning it into an orderly C→S EOF.
+    func acceptClientCarryoverError(_ error: Error) {
+        queue.async {
+            self.failClientReadLocked(error)
         }
     }
 
@@ -502,9 +523,10 @@ final class TcpDirectForwarder: @unchecked Sendable {
                 self.inFlightRead = false
                 guard !self.cancelled, self.c2sPhase == .active else { return }
                 if let error {
-                    self.logger(classifyFlowCallbackError(
-                        error, operation: "direct flow.read"))
-                    self.finishC2SLocked()
+                    self.logger(
+                        classifyFlowCallbackError(
+                            error, operation: "direct flow.read"))
+                    self.failClientReadLocked(error)
                     return
                 }
                 guard let data, !data.isEmpty else {
@@ -566,6 +588,20 @@ final class TcpDirectForwarder: @unchecked Sendable {
     }
 
     // ── Internal: direction finish ───────────────────────────────
+
+    private func failClientReadLocked(_ error: Error) {
+        guard !cancelled, !terminalFired else { return }
+        cancelled = true
+        c2sPhase = .finished
+        s2cPhase = .finished
+        updateDrainPendingLocked()
+        c2sBackstop?.cancel()
+        c2sBackstop = nil
+        s2cBackstop?.cancel()
+        s2cBackstop = nil
+        terminalFired = true
+        onReadError(error)
+    }
 
     /// Transition C→S to `.finishing`: send FIN via the egress
     /// write pump and wait for the drain to actually complete
@@ -654,10 +690,22 @@ final class TcpDirectForwarder: @unchecked Sendable {
         signalClosingLocked()
         updateDrainPendingLocked()
         guard c2sBackstop == nil else { return }
+        scheduleC2SBackstopLocked(afterMs: drainStallMs)
+    }
+
+    private func scheduleC2SBackstopLocked(afterMs: UInt64) {
+        guard afterMs != .max else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.cancelled, !self.terminalFired,
                 self.c2sPhase == .finishing
             else { return }
+            self.c2sBackstop = nil
+            let idleMs = self.drainIdleMs()
+            if idleMs < self.drainStallMs {
+                self.scheduleC2SBackstopLocked(
+                    afterMs: max(self.drainStallMs - idleMs, 50))
+                return
+            }
             self.logger(
                 FlowLogMessage(
                     level: .debug,
@@ -667,7 +715,9 @@ final class TcpDirectForwarder: @unchecked Sendable {
             self.onDrainStall()
         }
         c2sBackstop = work
-        queue.asyncAfter(deadline: .now() + drainStallDeadline, execute: work)
+        queue.asyncAfter(
+            deadline: .now() + .milliseconds(Int(min(afterMs, UInt64(Int.max)))),
+            execute: work)
     }
 
     /// S→C counterpart of `armC2SBackstopLocked`.
@@ -675,10 +725,22 @@ final class TcpDirectForwarder: @unchecked Sendable {
         signalClosingLocked()
         updateDrainPendingLocked()
         guard s2cBackstop == nil else { return }
+        scheduleS2CBackstopLocked(afterMs: drainStallMs)
+    }
+
+    private func scheduleS2CBackstopLocked(afterMs: UInt64) {
+        guard afterMs != .max else { return }
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.cancelled, !self.terminalFired,
                 self.s2cPhase == .finishing
             else { return }
+            self.s2cBackstop = nil
+            let idleMs = self.drainIdleMs()
+            if idleMs < self.drainStallMs {
+                self.scheduleS2CBackstopLocked(
+                    afterMs: max(self.drainStallMs - idleMs, 50))
+                return
+            }
             self.logger(
                 FlowLogMessage(
                     level: .debug,
@@ -688,7 +750,20 @@ final class TcpDirectForwarder: @unchecked Sendable {
             self.onDrainStall()
         }
         s2cBackstop = work
-        queue.asyncAfter(deadline: .now() + drainStallDeadline, execute: work)
+        queue.asyncAfter(
+            deadline: .now() + .milliseconds(Int(min(afterMs, UInt64(Int.max)))),
+            execute: work)
+    }
+
+    private static func millis(from interval: DispatchTimeInterval) -> UInt64 {
+        switch interval {
+        case .seconds(let value): return value <= 0 ? 0 : UInt64(value) * 1_000
+        case .milliseconds(let value): return value <= 0 ? 0 : UInt64(value)
+        case .microseconds(let value): return value <= 0 ? 0 : UInt64(value) / 1_000
+        case .nanoseconds(let value): return value <= 0 ? 0 : UInt64(value) / 1_000_000
+        case .never: return .max
+        @unknown default: return UInt64(defaultLingerCloseMs)
+        }
     }
 
     private func maybeFireTerminalLocked() {

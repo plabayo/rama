@@ -252,7 +252,7 @@ final class CoreEdgeCaseTests: XCTestCase {
         XCTAssertEqual(core.tcpFlowCount, 0)
     }
 
-    func testQueuedTcpStartupDoesNotRunAfterDetachReturns() {
+    func testTcpRegistrationWaitsForFlowQueueStartup() {
         let core = TransparentProxyCore()
         core.attachEngine(makeEngine())
         let generation = core.testEngineGeneration
@@ -272,8 +272,10 @@ final class CoreEdgeCaseTests: XCTestCase {
         }
         XCTAssertEqual(blockerEntered.wait(timeout: .now() + 1), .success)
 
-        XCTAssertTrue(
-            core.registerTcpFlowAndScheduleStartup(
+        let result = TestValue<Bool?>(nil)
+        let registrationReturned = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            let registered = core.registerTcpFlowAndScheduleStartup(
                 ObjectIdentifier(flow),
                 anchor: _TestTcpFlowSessionAnchor(ctx: ctx),
                 appId: nil,
@@ -281,19 +283,26 @@ final class CoreEdgeCaseTests: XCTestCase {
                 on: queue
             ) {
                 started.store(true)
-            })
-        core.detachEngine(reason: 0)
-        XCTAssertFalse(started.load(), "detach returned before the queued start ran")
-        releaseBlocker.signal()
+            }
+            result.set(registered)
+            registrationReturned.signal()
+        }
 
-        let drained = expectation(description: "ordered flow queue drained")
-        queue.async { drained.fulfill() }
-        wait(for: [drained], timeout: 1.0)
-        XCTAssertFalse(started.load(), "old-generation transport must never start")
+        waitFor("TCP flow is registered before its startup submission") {
+            core.tcpFlowCount == 1
+        }
+        XCTAssertEqual(registrationReturned.wait(timeout: .now()), .timedOut)
+        XCTAssertFalse(started.load())
+        releaseBlocker.signal()
+        XCTAssertEqual(registrationReturned.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(result.get(), true)
+        XCTAssertTrue(started.load(), "registration cannot return before startup runs")
+
+        core.detachEngine(reason: 0)
         queue.sync { XCTAssertTrue(ctx.isDone) }
     }
 
-    func testQueuedUdpStartupDoesNotRunAfterDetachReturns() {
+    func testUdpRegistrationWaitsForFlowQueueStartup() {
         let core = TransparentProxyCore()
         core.attachEngine(makeEngine())
         let generation = core.testEngineGeneration
@@ -310,21 +319,33 @@ final class CoreEdgeCaseTests: XCTestCase {
         }
         XCTAssertEqual(blockerEntered.wait(timeout: .now() + 1), .success)
 
-        XCTAssertTrue(
-            core.registerUdpFlowAndScheduleStartup(
+        let result = TestValue<Bool?>(nil)
+        let registrationReturned = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            let registered = core.registerUdpFlowAndScheduleStartup(
                 ObjectIdentifier(flow),
                 anchor: _TestUdpFlowSessionAnchor(ctx: ctx),
                 engineGeneration: generation,
                 on: queue
             ) {
                 started.store(true)
-            })
-        core.detachEngine(reason: 0)
-        XCTAssertFalse(started.load(), "detach returned before the queued start ran")
-        releaseBlocker.signal()
-        queue.sync {}
+            }
+            result.set(registered)
+            registrationReturned.signal()
+        }
 
-        XCTAssertFalse(started.load(), "old-generation UDP flow must never open")
+        waitFor("UDP flow is registered before its startup submission") {
+            core.udpFlowCount == 1
+        }
+        XCTAssertEqual(registrationReturned.wait(timeout: .now()), .timedOut)
+        XCTAssertFalse(started.load())
+        releaseBlocker.signal()
+        XCTAssertEqual(registrationReturned.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(result.get(), true)
+        XCTAssertTrue(started.load(), "registration cannot return before startup runs")
+
+        core.detachEngine(reason: 0)
+        queue.sync {}
         XCTAssertEqual(core.udpFlowCount, 0)
     }
 
@@ -339,6 +360,8 @@ final class CoreEdgeCaseTests: XCTestCase {
         }
         let contexts = (0..<2).map { _ in TcpFlowContext() }
         let flows = (0..<2).map { _ in MockTcpFlow() }
+        let registrationReturned = DispatchSemaphore(value: 0)
+        let results = TestValue([Bool]())
 
         for index in 0..<2 {
             let ctx = contexts[index]
@@ -347,8 +370,8 @@ final class CoreEdgeCaseTests: XCTestCase {
             ctx.core = core
             ctx.flow = flow
             ctx.flowId = ObjectIdentifier(flow)
-            XCTAssertTrue(
-                core.registerTcpFlowAndScheduleStartup(
+            DispatchQueue.global().async {
+                let registered = core.registerTcpFlowAndScheduleStartup(
                     ObjectIdentifier(flow),
                     anchor: _TestTcpFlowSessionAnchor(ctx: ctx),
                     appId: nil,
@@ -357,7 +380,10 @@ final class CoreEdgeCaseTests: XCTestCase {
                 ) {
                     entered.signal()
                     release.wait()
-                })
+                }
+                results.update { $0.append(registered) }
+                registrationReturned.signal()
+            }
         }
 
         XCTAssertEqual(entered.wait(timeout: .now() + 1), .success)
@@ -379,9 +405,72 @@ final class CoreEdgeCaseTests: XCTestCase {
 
         release.signal()
         release.signal()
+        XCTAssertEqual(registrationReturned.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(registrationReturned.wait(timeout: .now() + 1), .success)
         XCTAssertEqual(detachReturned.wait(timeout: .now() + 1), .success)
         for queue in queues { queue.sync {} }
+        XCTAssertEqual(results.get(), [true, true])
         XCTAssertTrue(contexts.allSatisfy(\.isDone))
+    }
+
+    func testQueuedTcpReadyCannotActivateDetachedGeneration() {
+        let core = TransparentProxyCore()
+        core.attachEngine(makeEngine())
+        let capture = NwConnectionCapture()
+        core.nwConnectionFactory = capture.factory
+        let flow = MockTcpFlow()
+        XCTAssertTrue(core.handleTcpFlow(flow, meta: makeMeta()))
+        guard let queue = core.testInspectTcpContext(for: flow)?.flowQueue else {
+            return XCTFail("registered TCP flow queue")
+        }
+        let blockerEntered = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        queue.async {
+            blockerEntered.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerEntered.wait(timeout: .now() + 1), .success)
+
+        let connection = capture.waitForLastConnection()
+        connection.transition(to: .ready)
+        core.detachEngine(reason: 0)
+        XCTAssertFalse(flow.openWasInvoked)
+
+        releaseBlocker.signal()
+        queue.sync {}
+        XCTAssertFalse(
+            flow.openWasInvoked,
+            "old-generation ready callback must not open after detach")
+        XCTAssertEqual(core.tcpFlowCount, 0)
+    }
+
+    func testQueuedUdpOpenCannotActivateDetachedGeneration() {
+        let core = TransparentProxyCore()
+        core.attachEngine(makeEngine())
+        let flow = MockUdpFlow()
+        XCTAssertTrue(core.handleUdpFlow(flow, meta: makeMeta(protocolRaw: 2)))
+        waitFor("UDP open submitted synchronously") { flow.openWasInvoked }
+        guard let queue = core.testInspectUdpFlowQueue(for: flow) else {
+            return XCTFail("registered UDP flow queue")
+        }
+        let blockerEntered = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        queue.async {
+            blockerEntered.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerEntered.wait(timeout: .now() + 1), .success)
+
+        XCTAssertTrue(flow.completeOpen(error: nil))
+        core.detachEngine(reason: 0)
+        XCTAssertEqual(flow.pendingReadCount, 0)
+
+        releaseBlocker.signal()
+        queue.sync {}
+        XCTAssertEqual(
+            flow.pendingReadCount, 0,
+            "old-generation open completion must not start reads after detach")
+        XCTAssertEqual(core.udpFlowCount, 0)
     }
 
     func testDetachRejectsStaleUdpRegistrationAndStartup() {

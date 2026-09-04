@@ -34,10 +34,11 @@ final class TcpWritePumpCore: @unchecked Sendable {
     private var lifecycle: WritePumpLifecycle
     private var retrying: WriteRetry?
 
-    /// Fired on the enqueue caller before an accepted chunk is reported. The
-    /// owner atomically bumps `lastActivityAt` or rejects the chunk if pressure
-    /// teardown already committed. Both data-path modes flush through these
-    /// pumps, so this is the shared write-activity boundary. No-op by default.
+    /// Fired before an accepted chunk is reported and, while draining, again
+    /// when its underlying write completes successfully. The first edge
+    /// linearizes acceptance against pressure teardown; the drain-only edge
+    /// proves a pending close still progresses without adding an ordinary
+    /// streaming hot-path lock. Both data-path modes flush through these pumps.
     private let onActivity: @Sendable () -> Bool
 
     init(
@@ -248,6 +249,11 @@ final class TcpWritePumpCore: @unchecked Sendable {
                     self.terminateLocked(with: error)
                     return
                 }
+                // Only the closing path needs a second activity edge. Keep
+                // ordinary streaming at its existing one lock per accepted
+                // chunk, while a drain with no new enqueues still refreshes
+                // its progress clock before advancing to the next chunk.
+                if self.lifecycle == .draining { _ = self.onActivity() }
                 self.retrying = nil
                 self.flush()
             }

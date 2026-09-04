@@ -260,6 +260,35 @@ final class TcpClientWritePumpTests: XCTestCase {
         gate.signal()
     }
 
+    func testSuccessfulWriteCompletionPublishesDrainProgress() {
+        let flow = MockTcpFlow()
+        flow.captureWriteCompletions = true
+        let queue = makeQueue()
+        let activity = NSLock_Counter()
+        let pump = TcpClientWritePump(
+            flow: flow,
+            queue: queue,
+            logger: { _ in },
+            onTerminalError: { _ in },
+            onDrained: {},
+            onActivity: {
+                activity.increment()
+                return true
+            })
+        pump.markOpened()
+
+        XCTAssertEqual(pump.enqueue(Data([0x01])), .accepted)
+        queue.sync {}
+        XCTAssertEqual(activity.value, 1, "acceptance is the first progress edge")
+        pump.closeWhenDrained { _ in }
+        queue.sync {}
+        XCTAssertTrue(flow.completeNextWrite())
+        queue.sync {}
+        XCTAssertEqual(
+            activity.value, 2,
+            "successful underlying completion refreshes the drain-progress clock")
+    }
+
     /// Sustained transient errors must not pin the pump alive forever.
     /// `flow.write` returning `ENOBUFS` repeatedly is the production
     /// failure mode that wedged the runtime: each retry strongly

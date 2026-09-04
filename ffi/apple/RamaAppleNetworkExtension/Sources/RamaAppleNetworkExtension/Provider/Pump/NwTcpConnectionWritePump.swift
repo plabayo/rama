@@ -42,7 +42,8 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
     private let lingerCloseMs: UInt64
     /// Pending callback installed by
     /// `closeWhenDrained(_:)` — fires exactly once when the FIN
-    /// completes (success or local error), or from `deinit` as
+    /// completes (success or after reporting a local error), or
+    /// from `deinit` as
     /// a fallback if the pump is deallocated before drain has a
     /// chance to run. This guarantees a caller awaiting the FIN
     /// (e.g. `TcpDirectForwarder`) is never stranded.
@@ -272,15 +273,24 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
             content: nil,
             contentContext: .finalMessage,
             isComplete: true,
-            completion: .contentProcessed({ _ in
-                // The FIN has been processed locally (queued
-                // for transmission). Fire the close-callback
-                // for the caller waiting on drain completion.
-                guard let cb else { return }
+            completion: .contentProcessed({ [weak self] error in
+                // Preserve a FIN submission failure as a hard transport
+                // error. Notify the owner before releasing its drain waiter;
+                // otherwise the waiter can complete a clean two-sided drain
+                // and make the errorful teardown lose its one-shot race.
+                let finish: @Sendable () -> Void = { [weak self] in
+                    if let error {
+                        self?.lingerWork?.cancel()
+                        self?.lingerWork = nil
+                        self?.connection.cancelAndDetach()
+                        self?.onTerminal(error)
+                    }
+                    cb?()
+                }
                 if DispatchQueue.getSpecific(key: callbackQueueKey) != nil {
-                    cb()
+                    finish()
                 } else {
-                    callbackQueue.async(execute: cb)
+                    callbackQueue.async(execute: finish)
                 }
             })
         )

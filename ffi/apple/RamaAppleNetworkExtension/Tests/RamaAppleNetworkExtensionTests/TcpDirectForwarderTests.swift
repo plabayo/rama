@@ -42,6 +42,8 @@ final class TcpDirectForwarderTests: XCTestCase {
         var closingCount = 0
         var drainPending = false
         var drainStallCount = 0
+        var readError: Error?
+        let drainIdleMs: TestValue<UInt64>
         /// Counts the forwarder's `onActivity` callback — fired on every
         /// byte moved in either direction. Production routes this to
         /// `ctx.lastActivityAt` for the promoted-idle reaper. The callback
@@ -76,12 +78,15 @@ final class TcpDirectForwarderTests: XCTestCase {
         init(
             _ tag: String, preDrained: Bool = true, autoCompleter: Bool = true,
             drainStallDeadline: DispatchTimeInterval = .milliseconds(Int(defaultLingerCloseMs)),
+            initialDrainIdleMs: UInt64 = .max,
             activityAllowed: Bool = true
         ) {
             let flow = MockTcpFlow()
             let conn = MockNwConnection()
+            let drainIdleClock = TestValue(initialDrainIdleMs)
             self.flow = flow
             self.conn = conn
+            self.drainIdleMs = drainIdleClock
             queue = DispatchQueue(label: "rama.tproxy.test.fwd.\(tag)", qos: .utility)
             // Move connection to .ready so the egress write pump
             // is willing to send. Real production wires this via
@@ -111,6 +116,7 @@ final class TcpDirectForwarderTests: XCTestCase {
             var capturedClosingRef: (() -> Void)? = nil
             var capturedDrainPendingRef: ((Bool) -> Void)? = nil
             var capturedDrainStallRef: (() -> Void)? = nil
+            var capturedReadErrorRef: ((Error) -> Void)? = nil
             let capturedActivityRef = TestValue<(@Sendable () -> Bool)?>(nil)
             self.forwarder = TcpDirectForwarder(
                 flow: flow, connection: conn,
@@ -119,9 +125,11 @@ final class TcpDirectForwarderTests: XCTestCase {
                 queue: queue,
                 logger: { _ in },
                 drainStallDeadline: drainStallDeadline,
+                drainIdleMs: { [drainIdleClock] in drainIdleClock.get() },
                 onClosing: { capturedClosingRef?() },
                 onDrainPendingChanged: { capturedDrainPendingRef?($0) },
                 onDrainStall: { capturedDrainStallRef?() },
+                onReadError: { capturedReadErrorRef?($0) },
                 onActivity: {
                     capturedActivityRef.get()?() ?? false
                 },
@@ -141,6 +149,7 @@ final class TcpDirectForwarderTests: XCTestCase {
             capturedClosingRef = { [weak self] in self?.closingCount += 1 }
             capturedDrainPendingRef = { [weak self] in self?.drainPending = $0 }
             capturedDrainStallRef = { [weak self] in self?.drainStallCount += 1 }
+            capturedReadErrorRef = { [weak self] in self?.readError = $0 }
             capturedActivityRef.set { [weak self] in
                 self?.activityCount.update { $0 += 1 }
                 return activityAllowed
@@ -780,19 +789,38 @@ final class TcpDirectForwarderTests: XCTestCase {
 
     // MARK: - Phased ordering: kernel EOF arrives during read
 
-    /// Kernel error (NSError) closes C→S the same as EOF.
-    /// Treating errors as "direction done" is the contract for
-    /// the direct-forward path.
-    func testKernelReadErrorFinishesC2SDirection() {
+    /// Kernel read errors are fatal and retain their identity. Treating this
+    /// as EOF would eventually present the reset client flow as a clean close.
+    func testKernelReadErrorTerminatesWithOriginalError() {
         let h = Harness("kernel.error")
         h.forwarder.markRustC2SDone()
         h.drain()
 
         let err = NSError(domain: "test.fwd", code: 7)
         h.flow.completeRead(data: nil, error: err)
-        waitFor("c2s finished on error", timeout: 1.0) {
-            h.c2sPhase == .finished
+        waitFor("fatal read error surfaced", timeout: 1.0) {
+            h.queue.sync { h.readError != nil }
         }
+        XCTAssertEqual((h.queue.sync { h.readError } as NSError?)?.domain, "test.fwd")
+        XCTAssertEqual((h.queue.sync { h.readError } as NSError?)?.code, 7)
+        XCTAssertEqual(h.c2sPhase, .finished)
+        XCTAssertEqual(h.s2cPhase, .finished)
+        XCTAssertEqual(h.queue.sync { h.terminalCount }, 0)
+    }
+
+    func testClientCarryoverReadErrorTerminatesWithOriginalError() {
+        let h = Harness("kernel.carryover.error")
+        let error = NSError(domain: "test.cutover", code: 11)
+
+        h.forwarder.acceptClientCarryoverError(error)
+
+        waitFor("cutover read error surfaced", timeout: 1.0) {
+            h.queue.sync { h.readError != nil }
+        }
+        XCTAssertEqual((h.queue.sync { h.readError } as NSError?)?.domain, "test.cutover")
+        XCTAssertEqual((h.queue.sync { h.readError } as NSError?)?.code, 11)
+        XCTAssertEqual(h.c2sPhase, .finished)
+        XCTAssertEqual(h.s2cPhase, .finished)
     }
 
     /// NWConnection receive error closes S→C the same as EOF.
@@ -1135,6 +1163,38 @@ final class TcpDirectForwarderTests: XCTestCase {
             h.queue.sync { h.closingCount }, 1,
             "onClosing fires once when the first direction begins finishing")
         waitFor("drain backstop fires onDrainStall", timeout: 1.0) {
+            h.queue.sync { h.drainStallCount } == 1
+        }
+    }
+
+    func testS2CDrainBackstopDefersWhileTransportMakesProgress() {
+        let h = Harness(
+            "s2c.progress",
+            drainStallDeadline: .milliseconds(40),
+            initialDrainIdleMs: 0)
+        h.flow.captureWriteCompletions = true
+
+        h.forwarder.markRustS2CDone()
+        waitFor("s2c receive issued", timeout: 1.0) {
+            h.conn.pendingReceiveCount >= 1
+        }
+        _ = h.conn.completePendingReceive(
+            data: Data([1, 2, 3]), isComplete: false)
+        waitFor("next s2c receive issued", timeout: 1.0) {
+            h.conn.pendingReceiveCount >= 1
+        }
+        _ = h.conn.completePendingReceive(data: nil, isComplete: true)
+        waitFor("s2c drain pending", timeout: 1.0) {
+            h.s2cPhase == .finishing
+        }
+
+        Thread.sleep(forTimeInterval: 0.16)
+        XCTAssertEqual(
+            h.queue.sync { h.drainStallCount }, 0,
+            "recent transport progress must re-arm the drain deadline")
+
+        h.drainIdleMs.set(.max)
+        waitFor("quiet drain trips backstop", timeout: 1.0) {
             h.queue.sync { h.drainStallCount } == 1
         }
     }
