@@ -3,13 +3,17 @@
 
 import json
 import hashlib
+import os
 from pathlib import Path
 import re
+import shlex
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
+import textwrap
 import time
 import unittest
 
@@ -37,6 +41,273 @@ from modern_udp_evidence import (  # noqa: E402
 
 RUN_UUID = "12345678-1234-4234-8234-123456789abc"
 DIGEST = "a" * 64
+
+
+class BoundedCommandCleanupTests(unittest.TestCase):
+    @staticmethod
+    def shell_function(name):
+        shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()
+        return name + "() {" + shell.split(name + "() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+
+    def helper_source(self):
+        return "".join(self.shell_function(name) for name in (
+            "bounded_pid_identity", "bounded_owned_job_is_active",
+            "bounded_owned_job_has_exited", "bounded_owned_identity_has_exited",
+            "bounded_owned_tree_has_exited", "bounded_collect_owned_tree",
+            "bounded_signal_owned_identity", "run_bounded",
+        ))
+
+    def setUp(self):
+        try:
+            inspected = subprocess.run(
+                ["/bin/ps", "-p", str(os.getpid()), "-o", "lstart="],
+                capture_output=True, text=True, timeout=3,
+            )
+        except OSError:
+            self.skipTest("host sandbox blocks process identity inspection")
+        if inspected.returncode != 0 or not inspected.stdout.strip():
+            self.skipTest("host sandbox blocks process identity inspection")
+
+    def run_tree_fixture(self, *, delayed_writer=False, orphan=False, deny_kill=False, interrupt=None):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pids = root / "pids"
+            leaf_file = root / "leaf"
+            late_write = root / "late-write"
+            finished = root / "finished"
+            failed = root / "cleanup-failed"
+            tree = root / "tree.py"
+            tree.write_text(textwrap.dedent(f"""\
+                import os, pathlib, signal, time
+                os.dup2(3, 1)
+                os.dup2(3, 2)
+                def record():
+                    with open({str(pids)!r}, "a") as output:
+                        output.write(str(os.getpid()) + "\\n")
+                record()
+                if os.fork() == 0:
+                    record()
+                    if os.fork() == 0:
+                        record()
+                        pathlib.Path({str(leaf_file)!r}).write_text(str(os.getpid()))
+                        if {delayed_writer!r}:
+                            time.sleep(3)
+                            pathlib.Path({str(late_write)!r}).write_text("late artifact write")
+                            os._exit(0)
+                        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                        os.kill(os.getpid(), signal.SIGSTOP)
+                        time.sleep(30)
+                    if {orphan!r}:
+                        os._exit(0)
+                    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                    time.sleep(30)
+                if {orphan!r}:
+                    os._exit(0)
+                time.sleep(30)
+            """))
+            program = self.helper_source() + f"\nBOUNDED_CLEANUP_FAILED={shlex.quote(str(failed))}\nexec 3>&1\n"
+            if interrupt is not None:
+                program += (
+                    "trap 'exit 130' INT\ntrap 'exit 143' TERM\n"
+                    "trap 'printf \"signal-exit=%s jobs=%s\\n\" \"$?\" \"$(jobs -p | wc -l | tr -d \" \")\"' EXIT\n"
+                )
+            if deny_kill:
+                program += self.shell_function("bounded_signal_owned_identity").replace(
+                    "bounded_signal_owned_identity()", "real_bounded_signal_owned_identity()", 1
+                )
+                program += textwrap.dedent(f"""\
+                    bounded_signal_owned_identity() {{
+                      if [[ -s {shlex.quote(str(leaf_file))} && "$3" == KILL \
+                        && "$1" == "$(cat {shlex.quote(str(leaf_file))})" ]]; then return 1; fi
+                      real_bounded_signal_owned_identity "$@"
+                    }}
+                    # Model a group containing one privileged descendant: group
+                    # KILL reaches the owned supervisor but cannot kill that leaf.
+                    kill() {{
+                      local member protected
+                      if [[ "$1" == -KILL && "$3" == -* \
+                        && -s {shlex.quote(str(leaf_file))} ]]; then
+                        protected="$(cat {shlex.quote(str(leaf_file))})"
+                        for member in $(pgrep -g "${{3#-}}"); do
+                          [[ "$member" == "$protected" ]] || builtin kill -KILL "$member" 2>/dev/null || true
+                        done
+                        return 0
+                      fi
+                      builtin kill "$@"
+                    }}
+                    sudo() {{ return 1; }}
+                """)
+            program += textwrap.dedent(f"""\
+                run_bounded {10 if interrupt is not None else 1} {shlex.quote(sys.executable)} {shlex.quote(str(tree))} > {shlex.quote(str(root / 'command-output'))} 2>&1
+                result=$?
+                printf 'rc=%s jobs=%s\\n' "$result" "$(jobs -p | wc -l | tr -d ' ')"
+                printf '%s\\n' "$result" > {shlex.quote(str(finished))}
+            """)
+            started = time.monotonic()
+            process = subprocess.Popen(
+                ["/bin/bash", "-c", program], stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True,
+            )
+            pid_values = []
+            survivors = []
+            try:
+                if interrupt is not None:
+                    deadline = time.monotonic() + 5
+                    while not leaf_file.exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertTrue(leaf_file.exists(), "command tree never reached the signal boundary")
+                    os.kill(process.pid, interrupt)
+                if deny_kill:
+                    deadline = time.monotonic() + 10
+                    while not finished.exists() and time.monotonic() < deadline:
+                        time.sleep(0.05)
+                    self.assertTrue(finished.exists(), "cleanup never returned after denied KILL")
+                    self.assertEqual(finished.read_text().strip(), "125")
+                    self.assertTrue(failed.exists(), "unreaped writer did not block sealing")
+                    os.kill(int(leaf_file.read_text()), signal.SIGKILL)
+                output, _ = process.communicate(timeout=10)
+                if interrupt is not None:
+                    self.assertEqual(process.returncode, 128 + interrupt, output)
+                    self.assertEqual(output.splitlines()[-1], f"signal-exit={128 + interrupt} jobs=0")
+                else:
+                    self.assertEqual(process.returncode, 0, output)
+                    expected = 125 if deny_kill else 124
+                    self.assertEqual(output.splitlines()[-1], f"rc={expected} jobs=0")
+                self.assertLess(time.monotonic() - started, 10)
+                self.assertEqual(failed.exists(), deny_kill)
+                self.assertTrue(pids.exists())
+                pid_values = [int(value) for value in pids.read_text().splitlines()]
+                self.assertEqual(len(pid_values), 3)
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    survivors = []
+                    for pid in pid_values:
+                        try:
+                            os.kill(pid, 0)
+                        except ProcessLookupError:
+                            continue
+                        survivors.append(pid)
+                    if not survivors:
+                        break
+                    time.sleep(0.05)
+                self.assertFalse(survivors, f"command descendants survived cleanup: {survivors}")
+                self.assertFalse(late_write.exists())
+            finally:
+                if pids.exists():
+                    for pid in map(int, pids.read_text().splitlines()):
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=5)
+
+    def test_timeout_stops_delayed_artifact_writer(self):
+        self.run_tree_fixture(delayed_writer=True)
+
+    def test_timeout_reaps_stopped_term_resistant_descendants_holding_pipes(self):
+        self.run_tree_fixture()
+
+    def test_successful_wrapper_exit_cannot_orphan_stopped_pipe_holder(self):
+        self.run_tree_fixture(orphan=True)
+
+    def test_unreaped_descendant_returns_failure_and_blocks_sealing(self):
+        self.run_tree_fixture(orphan=True, deny_kill=True)
+
+    def test_interrupt_cleans_up_before_outer_exit_finalization(self):
+        for interrupt in (signal.SIGINT, signal.SIGTERM):
+            with self.subTest(interrupt=interrupt):
+                self.run_tree_fixture(orphan=True, interrupt=interrupt)
+
+    def test_finalizer_never_seals_after_bounded_cleanup_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            parser = root / "status-parser.py"
+            parser.write_text("import pathlib,sys;print(pathlib.Path(sys.argv[1]).read_text().strip())\n")
+            failed = root / "cleanup-failed"
+            failed.touch()
+            program = self.shell_function("finalize") + textwrap.dedent(f"""\
+                TMP_DIR={shlex.quote(str(root))}
+                BOUNDED_CLEANUP_FAILED={shlex.quote(str(failed))}
+                MODERN_EVIDENCE={shlex.quote(str(parser))}
+                EVIDENCE_STATUS={shlex.quote(str(root / 'status'))}
+                FINALIZING=0 MAIN_FINISHED=1 RUN_START_EPOCH_MS=1
+                UDP_PROBE_ATTEMPT_COUNT=8 UDP_PROBE_PASS_COUNT=8
+                UDP_PRESSURE_LOG_CHECKED=1 PRESSURE_PROBE_ATTEMPTED=1 PRESSURE_PROBE_PASSED=1
+                ISSUES=() FAILURES=() OBSERVED_FAILURES=()
+                add_issue() {{ ISSUES+=("$1"); }}
+                stop_active_workloads() {{ :; }}
+                stop_echo_server() {{ :; }}
+                stop_log_capture() {{ :; }}
+                collect_dial9_evidence() {{ :; }}
+                restore_profile() {{ :; }}
+                require_provider_identity() {{ :; }}
+                capture_provider_generation_sample() {{ :; }}
+                stop_provider_generation_monitor() {{ :; }}
+                write_workload_claims() {{ :; }}
+                write_evidence_status() {{ printf '%s\\n' "$3" > "$EVIDENCE_STATUS"; }}
+                write_common_evidence_status() {{ printf '%s %s %s\\n' "$@" > "$TMP_DIR/common-status"; }}
+                run_bounded() {{
+                  for argument in "$@"; do
+                    if [[ "$argument" == seal || "$argument" == verify ]]; then
+                      printf '%s\\n' "$argument" >> "$TMP_DIR/seal-attempts"
+                    fi
+                  done
+                  printf 'crash_count\\t0\\n'
+                }}
+                finalize
+            """)
+            result = subprocess.run(["/bin/bash", "-c", program], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertEqual((root / "common-status").read_text(), "0 0 2\n")
+            self.assertFalse((root / "seal-attempts").exists())
+
+    def test_privileged_signal_fallback_is_scoped_to_the_observed_generation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            attempts = root / "sudo-attempts"
+            program = self.helper_source() + textwrap.dedent(f"""\
+                /bin/sleep 30 &
+                child=$!
+                trap 'builtin kill -KILL "$child" 2>/dev/null; wait "$child" 2>/dev/null' EXIT
+                identity="$(bounded_pid_identity "$child" generation)"
+                kill() {{ return 1; }}
+                sudo() {{
+                  printf '%s\\n' "$*" >> {shlex.quote(str(attempts))}
+                  [[ "$1" == -n && "$2" == /bin/kill && "$3" == -STOP \
+                    && "$4" == -- && "$5" == "$child" ]] || return 90
+                  shift 2
+                  builtin kill "$@"
+                }}
+                bounded_signal_owned_identity "$child" wrong-generation STOP
+                wrong=$?
+                bounded_signal_owned_identity "$child" "$identity" STOP
+                correct=$?
+                state="$(ps -o state= -p "$child" | tr -d ' ')"
+                printf 'wrong=%s correct=%s stopped=%s\\n' "$wrong" "$correct" "${{state:0:1}}"
+            """)
+            result = subprocess.run(["/bin/bash", "-c", program], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.stdout, "wrong=1 correct=0 stopped=T\n", result.stderr)
+            rows = attempts.read_text().splitlines()
+            self.assertEqual(len(rows), 1)
+            self.assertRegex(rows[0], r"^-n /bin/kill -STOP -- [1-9][0-9]*$")
+
+    def test_completed_command_preserves_output_status_and_unrelated_process(self):
+        unrelated = subprocess.Popen(["/bin/sleep", "30"])
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                failed = Path(temporary) / "cleanup-failed"
+                program = self.helper_source() + f"\nBOUNDED_CLEANUP_FAILED={shlex.quote(str(failed))}\n"
+                program += "run_bounded 3 /bin/sh -c 'printf payload; exit 7'\nprintf ':rc=%s jobs=%s\\n' \"$?\" \"$(jobs -p | wc -l | tr -d ' ')\"\n"
+                result = subprocess.run(["/bin/bash", "-c", program], capture_output=True, text=True, timeout=8)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "payload:rc=7 jobs=0\n")
+                self.assertIsNone(unrelated.poll())
+                self.assertFalse(failed.exists())
+        finally:
+            unrelated.terminate()
+            unrelated.wait(timeout=5)
 
 
 def passing_status():

@@ -73,6 +73,7 @@ RESTORE_RECEIPT="$TMP_DIR/restore-receipt.tsv"
 WORKLOAD_CLAIMS="$TMP_DIR/workload-claims.tsv"
 EVIDENCE_STATUS="$TMP_DIR/udp-evidence-status.tsv"
 COMMON_EVIDENCE_STATUS="$TMP_DIR/evidence-status.tsv"
+BOUNDED_CLEANUP_FAILED="$TMP_DIR/.bounded-cleanup-failed"
 DIAL9_BASELINE="$TMP_DIR/dial9-baseline.json"
 DIAL9_SUMMARY="$TMP_DIR/dial9-evidence.json"
 
@@ -199,25 +200,238 @@ add_failure() {
   FAILURES+=("$(sanitize_diagnostic "$1")")
 }
 
-run_bounded() {
-  local seconds="$1" child ticks=0 max_ticks rc=0
-  shift
-  max_ticks=$((seconds * 10))
-  "$@" &
-  child=$!
-  while kill -0 "$child" 2>/dev/null; do
-    if (( ticks >= max_ticks )); then
-      kill -TERM "$child" 2>/dev/null || true
-      sleep 0.2
-      kill -KILL "$child" 2>/dev/null || true
-      wait "$child" 2>/dev/null || true
-      return 124
+# Keep timeout cleanup bound to the exact owned supervisor generation.
+# These helpers mirror the stress harness; every descendant must be gone
+# before run_bounded returns, including orphaned writers holding output pipes.
+bounded_pid_identity() {
+  local pid="$1" snapshot digest
+  if [[ "${2:-command}" == generation ]]; then
+    snapshot="$(ps -ww -o pid= -o lstart= -p "$pid" 2>/dev/null)" || return 1
+  else
+    snapshot="$(ps -ww -o pid= -o lstart= -o command= -p "$pid" 2>/dev/null)" || return 1
+  fi
+  [[ -n "$snapshot" ]] || return 1
+  digest="$(printf '%s' "$snapshot" | shasum -a 256 | awk 'NR == 1 { print $1 }')"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s\n' "$digest"
+}
+
+bounded_owned_job_is_active() {
+  jobs -p | grep -Fqx -- "$1"
+}
+
+bounded_owned_job_has_exited() {
+  local pid="$1" state
+  bounded_owned_job_is_active "$pid" || return 0
+  state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  [[ -z "$state" || "$state" == Z* ]]
+}
+
+bounded_owned_identity_has_exited() {
+  local pid="$1" expected_identity="$2" state observed_identity
+  observed_identity="$(bounded_pid_identity "$pid" generation || true)"
+  if [[ -n "$observed_identity" && "$observed_identity" != "$expected_identity" ]]; then
+    return 0
+  fi
+  state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  [[ "$state" == Z* ]] && return 0
+  # An inspection failure is not proof of exit while the pid is still alive.
+  [[ -z "$state" ]] && ! kill -0 "$pid" 2>/dev/null
+}
+
+bounded_owned_tree_has_exited() {
+  local tree_text="$1" pid identity
+  while IFS=$'\t' read -r pid identity; do
+    [[ "$pid" =~ ^[1-9][0-9]*$ && "$identity" =~ ^[0-9a-f]{64}$ ]] || continue
+    bounded_owned_identity_has_exited "$pid" "$identity" || return 1
+  done <<< "$tree_text"
+}
+
+bounded_collect_owned_tree() {
+  local pid="$1" expected_identity="$2" child child_identity children child_ppid group
+  local failed=0 discovery_rc=0
+  # The caller has stopped this generation. Recheck before following a parent
+  # pid that might otherwise have exited and been reused during discovery.
+  [[ "$(bounded_pid_identity "$pid" generation || true)" == "$expected_identity" ]] || return 1
+  group="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  if [[ "$group" == "$pid" ]]; then
+    # Capture supervisors own a dedicated group. It also contains descendants
+    # whose immediate parents exited before cleanup began.
+    children="$(pgrep -g "$pid" 2>/dev/null)" || discovery_rc=$?
+  else
+    children="$(pgrep -P "$pid" 2>/dev/null)" || discovery_rc=$?
+  fi
+  # pgrep uses 1 for an empty result; errors must not become a complete tree.
+  (( discovery_rc <= 1 )) || failed=1
+  while IFS= read -r child; do
+    [[ "$child" =~ ^[1-9][0-9]*$ ]] || continue
+    [[ "$child" != "$pid" ]] || continue
+    child_identity="$(bounded_pid_identity "$child" generation || true)"
+    [[ "$child_identity" =~ ^[0-9a-f]{64}$ ]] || continue
+    if [[ "$group" == "$pid" ]]; then
+      child_ppid="$(ps -o pgid= -p "$child" 2>/dev/null | tr -d '[:space:]')"
+    else
+      child_ppid="$(ps -o ppid= -p "$child" 2>/dev/null | tr -d '[:space:]')"
     fi
-    sleep 0.1
-    ticks=$((ticks + 1))
+    [[ "$child_ppid" == "$pid" ]] || continue
+    if bounded_signal_owned_identity "$child" "$child_identity" STOP; then
+      bounded_collect_owned_tree "$child" "$child_identity" || failed=1
+    elif ! bounded_owned_identity_has_exited "$child" "$child_identity"; then
+      failed=1
+    fi
+  done <<< "$children"
+  printf '%s\t%s\n' "$pid" "$expected_identity"
+  return "$failed"
+}
+
+bounded_signal_owned_identity() {
+  local pid="$1" expected_identity="$2" signal="$3" observed_identity state attempt target
+  observed_identity="$(bounded_pid_identity "$pid" generation || true)"
+  [[ "$observed_identity" == "$expected_identity" ]] || return 1
+  target="$pid"
+  if [[ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')" == "$pid" ]]; then
+    target="-$pid"
+  fi
+  if ! kill "-$signal" -- "$target" 2>/dev/null; then
+    # Dial9 collection and ownership normalization can have root descendants.
+    # Retry only this still-owned generation with the already-cached privilege;
+    # a partial group delivery is also checked member by member below.
+    observed_identity="$(bounded_pid_identity "$pid" generation || true)"
+    [[ "$observed_identity" == "$expected_identity" ]] || return 1
+    sudo -n /bin/kill "-$signal" -- "$target" 2>/dev/null || return 1
+  fi
+  [[ "$signal" == STOP ]] || return 0
+  # STOP delivery is asynchronous. Confirm it before trusting a child snapshot;
+  # a still-running parent could fork after pgrep has already enumerated it.
+  for ((attempt=0; attempt<10; attempt++)); do
+    observed_identity="$(bounded_pid_identity "$pid" generation || true)"
+    [[ "$observed_identity" == "$expected_identity" ]] || return 1
+    state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+    [[ "$state" == T* || "$state" == Z* ]] && return 0
+    sleep 0.01
   done
-  wait "$child" || rc=$?
-  return "$rc"
+  # Keep authority only over the generation we stopped; never CONT a changed
+  # identity in an attempt to undo a raced STOP.
+  observed_identity="$(bounded_pid_identity "$pid" generation || true)"
+  [[ "$observed_identity" != "$expected_identity" ]] || kill -CONT -- "$target" 2>/dev/null || true
+  return 1
+}
+
+run_bounded() {
+  local timeout_seconds="$1"; shift
+  local pid identity deadline child_rc=0 timed_out=0 tree_text="" tree_pid tree_identity
+  local tree_incomplete=0 interrupted=0 saved_int_trap saved_term_trap result
+  saved_int_trap="$(trap -p INT)"
+  saved_term_trap="$(trap -p TERM)"
+  # Complete ownership cleanup before the outer EXIT finalizer can seal files.
+  # The existing INT/TERM handlers terminate with these same exit codes.
+  trap 'interrupted=130' INT
+  trap 'interrupted=143' TERM
+  # Keep one owned group leader alive until the command AND its group members
+  # exit. A wrapper exiting early cannot orphan a pipe holder outside the tree
+  # observed at timeout. The leader ignores TERM so group KILL remains bound to
+  # its live generation throughout shutdown; the command gets normal signals.
+  /usr/bin/python3 -c '
+import os
+import signal
+import subprocess
+import sys
+import time
+
+os.setsid()
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+leader = os.getpid()
+child = os.fork()
+if child == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    try:
+        os.execvp(sys.argv[1], sys.argv[1:])
+    except OSError as error:
+        print(error, file=sys.stderr)
+        os._exit(127)
+status = None
+while True:
+    if status is None:
+        exited, observed = os.waitpid(child, os.WNOHANG)
+        if exited:
+            status = observed
+    if status is not None:
+        snapshot = subprocess.Popen(
+            ["ps", "-axo", "pid=,pgid=,state="],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        )
+        output, _ = snapshot.communicate()
+        if snapshot.returncode == 0:
+            members = [row.split() for row in output.splitlines()]
+            if not any(
+                len(row) == 3 and row[1] == str(leader)
+                and row[0] not in (str(leader), str(snapshot.pid))
+                and not row[2].startswith("Z")
+                for row in members
+            ):
+                break
+    time.sleep(0.1)
+sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status))
+' "$@" &
+  pid="$!"
+  identity="$(bounded_pid_identity "$pid" generation || true)"
+  deadline=$((SECONDS + timeout_seconds))
+  while (( SECONDS < deadline && interrupted == 0 )) && ! bounded_owned_job_has_exited "$pid"; do
+    sleep 0.1
+  done
+  if ! bounded_owned_job_has_exited "$pid"; then
+    timed_out=1
+    if [[ "$identity" =~ ^[0-9a-f]{64}$ ]] \
+      && bounded_signal_owned_identity "$pid" "$identity" STOP
+    then
+      tree_text="$(bounded_collect_owned_tree "$pid" "$identity")" || tree_incomplete=1
+    elif ! bounded_owned_job_has_exited "$pid"; then
+      tree_incomplete=1
+    fi
+    while IFS=$'\t' read -r tree_pid tree_identity; do
+      [[ "$tree_pid" =~ ^[1-9][0-9]*$ && "$tree_identity" =~ ^[0-9a-f]{64}$ ]] || continue
+      bounded_signal_owned_identity "$tree_pid" "$tree_identity" TERM || true
+    done <<< "$tree_text"
+    while IFS=$'\t' read -r tree_pid tree_identity; do
+      [[ "$tree_pid" =~ ^[1-9][0-9]*$ && "$tree_identity" =~ ^[0-9a-f]{64}$ ]] || continue
+      bounded_signal_owned_identity "$tree_pid" "$tree_identity" CONT || true
+    done <<< "$tree_text"
+    deadline=$((SECONDS + 1))
+    while (( SECONDS < deadline )); do
+      if bounded_owned_job_has_exited "$pid" && bounded_owned_tree_has_exited "$tree_text"; then break; fi
+      sleep 0.1
+    done
+  fi
+  if (( timed_out )); then
+    while IFS=$'\t' read -r tree_pid tree_identity; do
+      [[ "$tree_pid" =~ ^[1-9][0-9]*$ && "$tree_identity" =~ ^[0-9a-f]{64}$ ]] || continue
+      bounded_signal_owned_identity "$tree_pid" "$tree_identity" KILL || true
+    done <<< "$tree_text"
+    deadline=$((SECONDS + 1))
+    while (( SECONDS < deadline )); do
+      if bounded_owned_job_has_exited "$pid" && bounded_owned_tree_has_exited "$tree_text"; then break; fi
+      sleep 0.1
+    done
+  fi
+  # Reap a direct child even when a descendant could not be stopped. A surviving
+  # descendant must still fail capture after the direct job has disappeared.
+  if bounded_owned_job_has_exited "$pid"; then
+    wait "$pid" 2>/dev/null || child_rc=$?
+  else
+    tree_incomplete=1
+  fi
+  if (( tree_incomplete )) || ! bounded_owned_tree_has_exited "$tree_text"; then
+    : > "$BOUNDED_CLEANUP_FAILED"
+    result=125
+  elif (( timed_out )); then
+    result=124
+  else
+    result="$child_rc"
+  fi
+  if [[ -n "$saved_int_trap" ]]; then eval "$saved_int_trap"; else trap - INT; fi
+  if [[ -n "$saved_term_trap" ]]; then eval "$saved_term_trap"; else trap - TERM; fi
+  (( interrupted == 0 )) || exit "$interrupted"
+  return "$result"
 }
 
 capture_provider_generation_sample() {
@@ -879,6 +1093,9 @@ finalize() {
     add_issue "could not re-observe the canonical provider generation after the crash snapshot"
   stop_provider_generation_monitor || true
   require_provider_identity || true
+  if [[ -e "$BOUNDED_CLEANUP_FAILED" ]]; then
+    add_issue "bounded command cleanup could not prove every artifact writer exited"
+  fi
   if (( UDP_PROBE_ATTEMPT_COUNT != 8 )); then
     add_issue "signed UDP E2E attempted $UDP_PROBE_ATTEMPT_COUNT of 8 required probe groups"
   fi
@@ -919,7 +1136,8 @@ finalize() {
     write_evidence_status 0 0 2
   fi
   write_common_evidence_status "$complete" "$passed" "$final_exit"
-  if ! run_bounded 30 /usr/bin/python3 "$SIGNED_EVIDENCE" seal "$TMP_DIR" \
+  if [[ -e "$BOUNDED_CLEANUP_FAILED" ]] \
+    || ! run_bounded 30 /usr/bin/python3 "$SIGNED_EVIDENCE" seal "$TMP_DIR" \
       --actual-exit-code "$final_exit" >/dev/null 2>/dev/null \
     || ! run_bounded 30 /usr/bin/python3 "$SIGNED_EVIDENCE" verify "$TMP_DIR" \
       --actual-exit-code "$final_exit" >/dev/null 2>/dev/null
@@ -933,10 +1151,14 @@ finalize() {
     write_workload_claims
     write_evidence_status 0 0 2
     write_common_evidence_status 0 0 2
-    run_bounded 30 /usr/bin/python3 "$SIGNED_EVIDENCE" seal "$TMP_DIR" \
-      --actual-exit-code 2 >/dev/null 2>/dev/null || true
-    run_bounded 30 /usr/bin/python3 "$SIGNED_EVIDENCE" verify "$TMP_DIR" \
-      --actual-exit-code 2 >/dev/null 2>/dev/null || true
+    if [[ ! -e "$BOUNDED_CLEANUP_FAILED" ]]; then
+      run_bounded 30 /usr/bin/python3 "$SIGNED_EVIDENCE" seal "$TMP_DIR" \
+        --actual-exit-code 2 >/dev/null 2>/dev/null || true
+      if [[ ! -e "$BOUNDED_CLEANUP_FAILED" ]]; then
+        run_bounded 30 /usr/bin/python3 "$SIGNED_EVIDENCE" verify "$TMP_DIR" \
+          --actual-exit-code 2 >/dev/null 2>/dev/null || true
+      fi
+    fi
   fi
   echo "modern UDP E2E artifacts: $TMP_DIR"
   exit "$final_exit"
