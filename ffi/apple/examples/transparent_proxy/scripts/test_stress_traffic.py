@@ -3186,7 +3186,7 @@ class SignedUdpGateWiringTests(unittest.TestCase):
         self.assertIn("test-modern-udp-signed", full_recipe.split())
 
     @staticmethod
-    def status_lines(verdict=(1, 1, 0), attempts=8, passes=8, diagnostics=()):
+    def status_lines(verdict=(1, 1, 0), attempts=9, passes=9, diagnostics=()):
         complete, passed, exit_code = verdict
         rows = [
             ("complete", complete), ("passed", passed), ("exit_code", exit_code),
@@ -3216,6 +3216,12 @@ class SignedUdpGateWiringTests(unittest.TestCase):
             ("http3_flow_count", 6),
             ("http3_duration_ms", 2000),
             ("http3_min_concurrent", 2),
+            ("http3_intercept_passed", 1),
+            ("http3_intercept_source_pid", 459),
+            ("http3_intercept_flow_id", 89),
+            ("http3_intercept_provider_generation", 2),
+            ("http3_intercept_local_endpoint", "192.0.2.1:54000"),
+            ("http3_intercept_remote_endpoint", "1.1.1.1:443"),
             ("echo_socket_count", 128),
             ("echo_datagrams_per_socket", 1),
             ("echo_payload_bytes", 1200),
@@ -3252,7 +3258,7 @@ class SignedUdpGateWiringTests(unittest.TestCase):
             ("dial9_baseline_max_index", 8),
             ("dial9_required_flow_id", 77),
             ("dial9_current_segment_count", 1),
-            ("dial9_required_pair_count", 131),
+            ("dial9_required_pair_count", 132),
             ("dial9_required_close_reason", 1),
             ("dial9_required_close_reason_name", "shutdown"),
             ("dial9_required_close_age_ms", 2),
@@ -3260,9 +3266,9 @@ class SignedUdpGateWiringTests(unittest.TestCase):
             ("dial9_required_bytes_in", 48),
             ("dial9_required_bytes_out", 48),
             ("dial9_requirements_sha256", "e" * 64),
-            ("dial9_requirement_count", 131),
-            ("dial9_matched_requirement_count", 131),
-            ("schema_version", 5),
+            ("dial9_requirement_count", 132),
+            ("dial9_matched_requirement_count", 132),
+            ("schema_version", 6),
             *diagnostics,
             ("schema_complete", 1),
         ]
@@ -3379,6 +3385,9 @@ class SignedUdpGateWiringTests(unittest.TestCase):
             "provider_identity": "none", "provider_identity_stable": "0",
             "http3_source_pid": "none",
             "http3_flow_id": "none", "http3_remote_endpoint": "none",
+            "http3_intercept_passed": "0", "http3_intercept_source_pid": "none",
+            "http3_intercept_flow_id": "none", "http3_intercept_provider_generation": "none",
+            "http3_intercept_local_endpoint": "none", "http3_intercept_remote_endpoint": "none",
             "pressure_probe_attempted": "0", "pressure_probe_passed": "0",
             "pressure_drop_transitions": "0", "pressure_resume_transitions": "0",
             "pressure_drop_reasons": "none", "pressure_recovered_reasons": "none",
@@ -3455,6 +3464,12 @@ class SignedUdpGateWiringTests(unittest.TestCase):
             ("http3_source_pid", "none"),
             ("run_uuid", "not-a-uuid"),
             ("http3_remote_endpoint", "cloudflare.com:443"),
+            ("http3_intercept_passed", "0"),
+            ("http3_intercept_source_pid", "none"),
+            ("http3_intercept_flow_id", "88"),
+            ("http3_intercept_provider_generation", "0"),
+            ("http3_intercept_local_endpoint", "unavailable"),
+            ("http3_intercept_remote_endpoint", "1.1.1.1:53"),
             ("pressure_resume_transitions", "0"),
             ("pressure_recovered_reasons", "flow_bytes"),
             ("ntp_flow_id", "78"),

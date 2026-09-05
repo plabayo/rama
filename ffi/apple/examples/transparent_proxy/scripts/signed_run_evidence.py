@@ -1686,8 +1686,11 @@ def _validate_modern_dial9(
     except (UnicodeError, csv.Error) as error:
         raise EvidenceError("modern Dial9 requirements are malformed") from error
     count = _canonical_uint(udp["dial9_requirement_count"], 100_000)
-    if len(requirements) != count or count != _canonical_uint(
-        udp["dial9_matched_requirement_count"], 100_000
+    echo_count = _canonical_uint(udp["echo_flow_count"], 512)
+    if (
+        len(requirements) != count or count != echo_count + 4
+        or count != _canonical_uint(udp["dial9_matched_requirement_count"], 100_000)
+        or count != _canonical_uint(udp["dial9_required_pair_count"], 100_000)
     ):
         raise EvidenceError("modern Dial9 requirement cardinality mismatch")
     if any(None in row or any(value is None or value == "" for value in row.values()) for row in requirements):
@@ -1719,6 +1722,7 @@ def _validate_modern_dial9(
         "ntp": (udp["ntp_flow_id"], udp["ntp_source_pid"]),
         "pressure": (udp["pressure_flow_id"], udp["pressure_source_pid"]),
         "recovery-ntp": (udp["recovery_ntp_flow_id"], udp["recovery_ntp_source_pid"]),
+        "http3-intercept": (udp["http3_intercept_flow_id"], udp["http3_intercept_source_pid"]),
     }
     by_label = dict(zip(labels, parsed_rows))
     if set(expected_specific) - set(by_label):
@@ -1740,10 +1744,24 @@ def _validate_modern_dial9(
         )) != (pressure_payload, pressure_sent - pressure_payload, 0, 0)
     ):
         raise EvidenceError("modern Dial9 pressure accepted-byte requirements mismatch")
-    echo_labels = {f"echo-{index}" for index in range(_canonical_uint(udp["echo_flow_count"], 512))}
-    if set(labels) != echo_labels | set(expected_specific):
-        raise EvidenceError("modern Dial9 exact workload label set mismatch")
-    echo_rows = [by_label[label] for label in sorted(echo_labels)]
+    echo_labels = [f"echo-{index}" for index in range(echo_count)]
+    if labels != ["ntp", "pressure", "recovery-ntp", *echo_labels, "http3-intercept"]:
+        raise EvidenceError("modern Dial9 exact workload label/order mismatch")
+    http3 = by_label["http3-intercept"]
+    http3_generation = _canonical_uint(udp["http3_intercept_provider_generation"])
+    unblocked_generation = by_label["ntp"]["provider_generation"]
+    # The pinned raw validator binds this distinct generation to the blocked
+    # profile's H3 decision. All earlier roles keep their unblocked generation.
+    if (
+        http3["provider_generation"] != http3_generation
+        or http3_generation == unblocked_generation
+        or any(row["provider_generation"] != unblocked_generation for row in parsed_rows[:-1])
+        or tuple(http3[key] for key in (
+            "min_bytes_in", "max_bytes_in", "min_bytes_out", "max_bytes_out"
+        )) != (1, 16_777_216, 1, 16_777_216)
+    ):
+        raise EvidenceError("modern Dial9 intercepted HTTP/3 generation/byte requirements mismatch")
+    echo_rows = [by_label[label] for label in echo_labels]
     echo_bytes = _canonical_uint(udp["echo_datagrams_per_socket"]) * _canonical_uint(
         udp["echo_payload_bytes"]
     )
@@ -1882,7 +1900,7 @@ def _validate_modern_semantics(envelope: VerifiedEnvelope) -> None:
         "evidence_kind", "run_uuid", "dial9_diagnostic_only",
         "dial9_workload_coverage", "dial9_claim", "quic_shaped_not_valid_quic",
         "echo_socket_count", "echo_exact_echo_count", "http3_request_count",
-        "http3_pass_count", "dial9_requirement_count",
+        "http3_pass_count", "http3_intercept_passed", "dial9_requirement_count",
         "dial9_matched_requirement_count", "producer_sources_sha256",
         "schema_complete",
     )
@@ -1897,6 +1915,7 @@ def _validate_modern_semantics(envelope: VerifiedEnvelope) -> None:
             "dial9_workload_coverage": "1",
             "dial9_claim": "exact-workload",
             "quic_shaped_not_valid_quic": "1",
+            "http3_intercept_passed": "1",
             "schema_complete": "1",
         }.items()
     ):
@@ -1952,6 +1971,7 @@ def _validate_modern_semantics(envelope: VerifiedEnvelope) -> None:
             "echo_exact_echo_count": "echo_exact_echo_count",
             "http3_request_count": "http3_request_count",
             "http3_pass_count": "http3_pass_count",
+            "http3_intercept_passed": "http3_intercept_passed",
             "dial9_requirement_count": "dial9_requirement_count",
             "dial9_matched_requirement_count": "dial9_matched_requirement_count",
             "producer_sources_sha256": "producer_sources_sha256",

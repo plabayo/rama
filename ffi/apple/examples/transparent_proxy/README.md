@@ -283,6 +283,7 @@ drives public protocol endpoints through the active system extension:
 - Cloudflare NTP (`162.159.200.1:123`) accepted by Rama (`true`, UDP forwarding)
 - Google Public DNS (`8.8.8.8:53`) accepted then closed by Rama (`true`, blocked)
 - Cloudflare HTTP/3 declined by Rama (`false`, direct UDP/443 pass-through)
+- One bound Cloudflare HTTP/3 request forwarded by Rama (`true`, UDP interception)
 
 Run it on a macOS 15+ signing host where the development system extension has
 been approved:
@@ -305,7 +306,7 @@ from an infrastructure/cleanup failure and records probe, log-join, profile
 restore, provider-process identity, Dial9 close reason/age/byte counts, Rust
 UDP-ingress pressure, and Swift pre-queue staging counts. The provider PID and
 start identity must remain stable through evidence collection; profile
-restoration is verified separately and may restart the provider. Malformed/redacted
+restoration is verified separately and restarts the engine generation. Malformed/redacted
 pressure lines make the evidence incomplete. The test deliberately stalls one
 E2E UDP service and bursts 512 datagrams. The hold uses the same ten-minute
 expiry as the temporary policy and applies only when the Python bundle, flow
@@ -339,6 +340,26 @@ run UUID, provider generation, and phase. This is not a complete socket-tuple
 proof or evidence of H3 interception. Python probes explicitly bind before
 traffic; every echo socket still requires a concrete local endpoint and an
 exact endpoint-to-flow bijection.
+
+After the blocked-DNS canary, the second profile also intercepts UDP/443. The
+existing Python probe loads an installed HTTP/3-capable libcurl and makes one
+IPv4 request with a fresh handle bound to a nonzero local port. It requires
+HTTP/3 and status 200, limits the transfer to 15 seconds and the response body
+to 1 MiB, and retains normal TLS verification. The raw body, its digest, child
+exit, clock window, and exact local/remote endpoints must agree with one Python
+intercept decision in that profile. The finalizer restores the normal profile
+before collecting Dial9 once, sealing both workload generations. The H3 flow
+must close with reason `shutdown` and positive encrypted UDP byte counts no
+larger than 16 MiB per direction; HTTP body size is not a transport byte count.
+
+The client uses `/opt/homebrew/opt/curl/lib/libcurl.4.dylib` or
+`/usr/local/opt/curl/lib/libcurl.4.dylib` when available. Set
+`RAMA_TPROXY_E2E_HTTP3_LIBCURL` to an absolute path for another installation.
+The harness does not install a library. Its receipt records the resolved main
+library path, SHA-256, and version as toolchain provenance; this does not attest
+the library's dependencies or the capture host. Offline evidence replay neither
+loads that library nor makes network requests. The automated suite exercises
+the client with mocks, so CI does not need libcurl or signing for those tests.
 
 To keep the same 128 controlled UDP flows active for at least 126 seconds,
 use 64 requests per socket with two-second pacing:
@@ -617,8 +638,8 @@ test client. Start the client after the ready file appears. Preserve both
 machines' results to compare counts and payload hashes. Successful replies
 prove the echo workload; transparent-proxy interception additionally requires
 an intercepting UDP/443 policy and matching provider/Dial9 flow identities.
-The signed modern harness currently supplies its own loopback server and
-passes HTTP/3 through on port 443, so these commands do not extend its release
+The signed modern harness currently supplies its own loopback echo server and
+tests H3 pass-through plus one intercepted request. These commands do not extend its release
 seal or replace the required idle, mixed TCP, recovery and performance phases.
 
 ### Automated evidence regressions

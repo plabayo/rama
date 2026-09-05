@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+from urllib.parse import urlsplit
 import uuid
 
 
@@ -368,6 +369,276 @@ def _publish_probe_receipt(path: str, receipt: dict) -> None:
         # link is an atomic no-replace publication within the same directory;
         # the temporary link is removed before the child returns to its parent.
         os.link(output.name, destination)
+
+
+HTTP3_BODY_MAX_BYTES = 1024 * 1024
+HTTP3_RECEIPT_MAX_BYTES = 16 * 1024
+HTTP3_RECEIPT_KEYS = {
+    "schema_version", "kind", "schema_complete", "run_uuid", "source_pid", "url",
+    "library_path", "library_sha256", "libcurl_version", "requested_local_port",
+    "http_version", "response_code", "local_endpoint", "remote_endpoint",
+    "monotonic_clock", "start_epoch_ms", "end_epoch_ms", "start_monotonic_ns",
+    "end_monotonic_ns", "response_body_bytes", "response_body_sha256",
+    "passed", "exit_code", "error",
+}
+
+
+def _read_http3_file(path, maximum, *, allow_empty=False):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as source:
+        before = os.fstat(source.fileno())
+        if (not stat.S_ISREG(before.st_mode)
+                or not (0 if allow_empty else 1) <= before.st_size <= maximum):
+            raise ValueError("HTTP/3 artifact is not a bounded regular file")
+        content = source.read(maximum + 1)
+        after = os.fstat(source.fileno())
+    if (len(content) != before.st_size or before.st_size != after.st_size
+            or before.st_mtime_ns != after.st_mtime_ns or before.st_ctime_ns != after.st_ctime_ns):
+        raise ValueError("HTTP/3 artifact changed during its bounded read")
+    return content
+
+
+def read_http3_body(path):
+    return _read_http3_file(path, HTTP3_BODY_MAX_BYTES, allow_empty=True)
+
+
+def read_http3_receipt(path):
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate HTTP/3 receipt field")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(
+            _read_http3_file(path, HTTP3_RECEIPT_MAX_BYTES).decode("utf-8", errors="strict"),
+            object_pairs_hook=unique_object,
+        )
+    except (UnicodeError, RecursionError) as error:
+        raise ValueError("malformed HTTP/3 receipt") from error
+    if not isinstance(value, dict) or set(value) != HTTP3_RECEIPT_KEYS:
+        raise ValueError("incorrect HTTP/3 receipt field set")
+    return value
+
+
+def _http3_url(url):
+    if (not isinstance(url, str) or not 1 <= len(url) <= 2048
+            or any(not 33 <= ord(character) <= 126 for character in url)):
+        raise ValueError("HTTP/3 URL must be bounded ASCII without whitespace")
+    parsed = urlsplit(url)
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.port not in (None, 443)
+            or parsed.username is not None or parsed.password is not None or parsed.fragment):
+        raise ValueError("HTTP/3 URL must use HTTPS port 443 without credentials or a fragment")
+
+
+def _http3_endpoint(value):
+    if not isinstance(value, str) or re.fullmatch(r"[0-9.]+:[1-9][0-9]{0,4}", value) is None:
+        raise ValueError("HTTP/3 endpoint must be a concrete canonical IPv4 endpoint")
+    host, port = value.rsplit(":", 1)
+    address = ipaddress.IPv4Address(host)
+    if (str(address) != host or address.is_unspecified or address.is_multicast
+            or not 1 <= int(port) <= 65535):
+        raise ValueError("HTTP/3 endpoint address/port is invalid")
+    return int(port)
+
+
+def replay_http3_receipt(value, body: bytes, run_uuid, source_pid, url):
+    """Accept successful bound H3 evidence without loading or consulting libcurl.
+
+    Library identity covers the named main library file, not its dependencies or
+    authentication of the capture host. HTTP body bytes are not UDP trace bytes.
+    Failed receipts remain useful diagnostics but cannot qualify an H3 request.
+    """
+    if not isinstance(value, dict) or set(value) != HTTP3_RECEIPT_KEYS:
+        raise ValueError("incorrect HTTP/3 receipt field set")
+    if not isinstance(run_uuid, str):
+        raise ValueError("HTTP/3 run UUID is not a string")
+    canonical_uuid(run_uuid)
+    _http3_url(url)
+    if (type(source_pid) is not int or not 0 < source_pid < 2**31
+            or value["run_uuid"] != run_uuid or value["source_pid"] != source_pid
+            or value["url"] != url or value["kind"] != "bound_http3_client"
+            or value["monotonic_clock"] != "CLOCK_MONOTONIC"):
+        raise ValueError("HTTP/3 receipt identity mismatch")
+    integers = ("schema_version", "source_pid", "requested_local_port", "http_version",
+                "response_code", "start_epoch_ms", "end_epoch_ms", "start_monotonic_ns",
+                "end_monotonic_ns", "response_body_bytes", "exit_code")
+    if any(type(value[key]) is not int or not 0 <= value[key] < 2**63 for key in integers):
+        raise ValueError("HTTP/3 receipt contains a non-canonical integer")
+    if (value["schema_version"] != 1 or value["schema_complete"] is not True
+            or value["passed"] is not True or value["exit_code"] != 0 or value["error"] is not None):
+        raise ValueError("HTTP/3 receipt does not claim a complete successful request")
+    library = value["library_path"]
+    version = value["libcurl_version"]
+    if (not isinstance(library, str) or not 1 <= len(library) <= 4096
+            or any(ord(character) < 32 or ord(character) == 127 for character in library)
+            or not Path(library).is_absolute() or not Path(library).name
+            or str(Path(library)) != library or ".." in Path(library).parts
+            or not isinstance(version, str) or len(version) > 2048
+            or re.fullmatch(r"libcurl/[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.]+)?(?: [!-~]+)*", version) is None):
+        raise ValueError("HTTP/3 receipt library identity is malformed")
+    for key in ("library_sha256", "response_body_sha256"):
+        if not isinstance(value[key], str) or re.fullmatch(r"[0-9a-f]{64}", value[key]) is None:
+            raise ValueError("HTTP/3 receipt digest is malformed")
+    start, end = value["start_monotonic_ns"], value["end_monotonic_ns"]
+    # The transfer is capped at 15 seconds; the 30-second child window also
+    # accommodates local setup/cleanup and sampling the two distinct clocks.
+    if (not 0 < start <= end or end - start > 30_000_000_000
+            or not 0 < value["start_epoch_ms"] <= value["end_epoch_ms"]
+            or abs((value["end_epoch_ms"] - value["start_epoch_ms"]) * 1_000_000
+                   - (end - start)) > 2_000_000_000):
+        raise ValueError("HTTP/3 receipt clock window is invalid")
+    if (not 1 <= value["requested_local_port"] <= 65535
+            or _http3_endpoint(value["local_endpoint"]) != value["requested_local_port"]
+            or _http3_endpoint(value["remote_endpoint"]) != 443):
+        raise ValueError("HTTP/3 receipt did not use the required endpoint ports")
+    if (type(body) is not bytes or not 0 < len(body) <= HTTP3_BODY_MAX_BYTES
+            or value["response_body_bytes"] != len(body)
+            or value["response_body_sha256"] != hashlib.sha256(body).hexdigest()
+            or value["http_version"] != 30 or value["response_code"] != 200
+            or body.splitlines().count(b"http=http/3") != 1):
+        raise ValueError("HTTP/3 receipt protocol/status/raw body evidence is invalid")
+    return 0
+
+
+def _publish_http3_file(path, content):
+    destination = Path(path)
+    with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".http3-probe-", suffix=".tmp") as output:
+        output.write(content)
+        output.flush()
+        os.fsync(output.fileno())
+        os.link(output.name, destination)
+
+
+def http3_probe(libcurl, url, run_uuid, result_file, body_file):
+    """Make one IPv4 HTTP/3-only request using a fresh, explicitly bound handle."""
+    import ctypes as C  # Offline receipt replay never loads a native library.
+
+    canonical_uuid(run_uuid)
+    _http3_url(url)
+    library_path = Path(libcurl).resolve(strict=True)
+    library_sha256 = hashlib.sha256(_read_http3_file(library_path, 64 * 1024 * 1024)).hexdigest()
+    body = bytearray()
+    receipt = {
+        "schema_version": 1, "kind": "bound_http3_client", "schema_complete": True,
+        "run_uuid": run_uuid, "source_pid": os.getpid(), "url": url,
+        "library_path": str(library_path), "library_sha256": library_sha256,
+        "libcurl_version": None, "requested_local_port": 0, "http_version": 0,
+        "response_code": 0, "local_endpoint": None, "remote_endpoint": None,
+        "monotonic_clock": "CLOCK_MONOTONIC",
+        "start_epoch_ms": time.time_ns() // 1_000_000,
+        "start_monotonic_ns": time.clock_gettime_ns(time.CLOCK_MONOTONIC),
+        "passed": False, "exit_code": PROBE_ERROR_EXIT, "error": None,
+    }
+    library = handle = None
+    initialized = False
+    failure = None
+
+    @C.CFUNCTYPE(C.c_size_t, C.c_void_p, C.c_size_t, C.c_size_t, C.c_void_p)
+    def receive(data, size, count, _):
+        length = size * count
+        if length > HTTP3_BODY_MAX_BYTES - len(body):
+            return 0
+        try:
+            body.extend(C.string_at(data, length))
+            return length
+        except Exception:
+            return 0
+
+    def checked(code):
+        if code != 0:
+            raise RuntimeError(f"libcurl error {code}")
+
+    try:
+        library = C.CDLL(str(library_path))
+        # setopt/getinfo are variadic: declare their fixed prefix and pass every
+        # extra argument with its C type, including on Darwin arm64.
+        for name, arguments, result in (
+            ("curl_global_init", [C.c_long], C.c_int),
+            ("curl_global_cleanup", [], None),
+            ("curl_easy_init", [], C.c_void_p),
+            ("curl_easy_cleanup", [C.c_void_p], None),
+            ("curl_easy_setopt", [C.c_void_p, C.c_int], C.c_int),
+            ("curl_easy_getinfo", [C.c_void_p, C.c_int], C.c_int),
+            ("curl_easy_perform", [C.c_void_p], C.c_int),
+            ("curl_version", [], C.c_char_p),
+        ):
+            function = getattr(library, name)
+            function.argtypes, function.restype = arguments, result
+        receipt["libcurl_version"] = library.curl_version().decode("ascii", errors="strict")
+        checked(library.curl_global_init(C.c_long(3)))
+        initialized = True
+        handle = library.curl_easy_init()
+        if not handle:
+            raise RuntimeError("libcurl returned no handle")
+        # Release the selection socket; libcurl must bind this exact port or
+        # fail. A race for the port cannot silently select a different port.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as selection:
+            selection.bind(("0.0.0.0", 0))
+            port = selection.getsockname()[1]
+        receipt["requested_local_port"] = port
+        # HTTP_VERSION=3ONLY, LOCALPORT, LOCALPORTRANGE=1, IPRESOLVE=V4,
+        # TIMEOUT_MS=15000, CONNECTTIMEOUT_MS=10000; normal TLS defaults.
+        for option, value in ((84, 31), (139, port), (140, 1), (113, 1), (155, 15000), (156, 10000)):
+            checked(library.curl_easy_setopt(handle, option, C.c_long(value)))
+        for option, value in ((10002, url.encode("ascii")), (10004, b""), (10177, b"*")):
+            checked(library.curl_easy_setopt(handle, option, C.c_char_p(value)))
+        checked(library.curl_easy_setopt(handle, 20011, receive))
+        checked(library.curl_easy_perform(handle))
+
+        def integer(info):
+            value = C.c_long()
+            checked(library.curl_easy_getinfo(handle, info, C.byref(value)))
+            return value.value
+
+        def string(info):
+            value = C.c_char_p()
+            checked(library.curl_easy_getinfo(handle, info, C.byref(value)))
+            if value.value is None:
+                raise RuntimeError("libcurl omitted endpoint address")
+            return value.value.decode("ascii", errors="strict")
+
+        receipt.update(
+            http_version=integer(0x200000 + 46), response_code=integer(0x200000 + 2),
+            local_endpoint=f"{string(0x100000 + 41)}:{integer(0x200000 + 42)}",
+            remote_endpoint=f"{string(0x100000 + 32)}:{integer(0x200000 + 40)}",
+        )
+    except Exception as error:
+        failure = error
+    finally:
+        if handle:
+            try:
+                library.curl_easy_cleanup(handle)
+            except Exception as error:
+                failure = failure or error
+        if initialized:
+            try:
+                library.curl_global_cleanup()
+            except Exception as error:
+                failure = failure or error
+    receipt.update(
+        end_epoch_ms=time.time_ns() // 1_000_000,
+        end_monotonic_ns=time.clock_gettime_ns(time.CLOCK_MONOTONIC),
+        response_body_bytes=len(body), response_body_sha256=hashlib.sha256(body).hexdigest(),
+    )
+    if failure is None:
+        receipt.update(passed=True, exit_code=0)
+        try:
+            replay_http3_receipt(receipt, bytes(body), run_uuid, os.getpid(), url)
+        except Exception as error:
+            failure = error
+    if failure is not None:
+        receipt.update(passed=False, exit_code=PROBE_ERROR_EXIT, error=(str(failure) or type(failure).__name__)[:1024])
+    content = (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    if len(content) > HTTP3_RECEIPT_MAX_BYTES:
+        raise ValueError("HTTP/3 receipt exceeds its bound")
+    _publish_http3_file(body_file, body)
+    _publish_http3_file(result_file, content)
+    if failure is not None:
+        raise RuntimeError(f"bound HTTP/3 request failed: {receipt['error']}") from failure
+    print(f"HTTP/3 bound request ok: local={receipt['local_endpoint']} remote={receipt['remote_endpoint']}")
 
 
 def _exchange_probe(protocol, server, query, timeout, expect_no_response, name,
@@ -927,6 +1198,22 @@ def main() -> None:
     verify.add_argument("--exit-code", type=int, required=True)
     verify.add_argument("--print-byte-counts", action="store_true")
 
+    http3 = subparsers.add_parser("http3")
+    http3.add_argument("--libcurl", required=True)
+    http3.add_argument("--url", required=True)
+    http3.add_argument("--run-uuid", required=True)
+    http3.add_argument("--result-file", required=True)
+    http3.add_argument("--body-file", required=True)
+
+    verify_http3 = subparsers.add_parser("verify-http3-receipt")
+    verify_http3.add_argument("path")
+    verify_http3.add_argument("--body-file", required=True)
+    verify_http3.add_argument("--run-uuid", required=True)
+    verify_http3.add_argument("--source-pid", type=int, required=True)
+    verify_http3.add_argument("--url", required=True)
+    verify_http3.add_argument("--exit-code", type=int, required=True)
+    verify_http3.add_argument("--print-endpoints", action="store_true")
+
     pressure = subparsers.add_parser("pressure")
     pressure.add_argument("--server", required=True)
     pressure.add_argument("--count", type=int, default=512)
@@ -971,6 +1258,16 @@ def main() -> None:
             if result != 0:
                 raise ValueError("UDP byte requirements need a successful raw probe")
             print(receipt["sent_bytes"], len(receipt["response_hex"] or "") // 2)
+    elif args.command == "http3":
+        http3_probe(args.libcurl, args.url, args.run_uuid, args.result_file, args.body_file)
+    elif args.command == "verify-http3-receipt":
+        receipt = read_http3_receipt(args.path)
+        body = read_http3_body(args.body_file)
+        result = replay_http3_receipt(receipt, body, args.run_uuid, args.source_pid, args.url)
+        if result != args.exit_code:
+            raise ValueError("HTTP/3 receipt disagrees with the joined child exit")
+        if args.print_endpoints:
+            print(receipt["local_endpoint"], receipt["remote_endpoint"])
     elif args.command == "pressure":
         pressure_burst(args.server, args.count, args.payload_bytes, args.settle)
     elif args.command == "echo-server":

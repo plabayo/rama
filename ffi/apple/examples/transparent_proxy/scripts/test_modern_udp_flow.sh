@@ -36,6 +36,7 @@ PASSTHROUGH_DNS="${RAMA_TPROXY_E2E_PASSTHROUGH_DNS:-1.1.1.1}"
 INTERCEPT_NTP="${RAMA_TPROXY_E2E_INTERCEPT_NTP:-162.159.200.1}"
 BLOCKED_DNS="${RAMA_TPROXY_E2E_BLOCKED_DNS:-8.8.8.8}"
 HTTP3_URL="${RAMA_TPROXY_E2E_HTTP3_URL:-https://cloudflare.com/cdn-cgi/trace}"
+HTTP3_LIBCURL="${RAMA_TPROXY_E2E_HTTP3_LIBCURL:-}"
 ECHO_SOCKET_COUNT="${RAMA_TPROXY_E2E_ECHO_SOCKETS:-128}"
 ECHO_DATAGRAMS_PER_SOCKET="${RAMA_TPROXY_E2E_ECHO_DATAGRAMS_PER_SOCKET:-1}"
 ECHO_INTERVAL_MS="${RAMA_TPROXY_E2E_ECHO_INTERVAL_MS:-0}"
@@ -59,6 +60,8 @@ HTTP3_RESULTS="$TMP_DIR/http3-results.tsv"
 HTTP3_PIDS="$TMP_DIR/http3-pids.tsv"
 HTTP3_ROUND_RESULTS="$TMP_DIR/http3-round-results.tsv"
 HTTP3_TIMING="$TMP_DIR/http3-timing.tsv"
+HTTP3_INTERCEPT_RESULT="$TMP_DIR/http3-intercept-client.json"
+HTTP3_INTERCEPT_BODY="$TMP_DIR/http3-intercept-body.txt"
 ECHO_READY="$TMP_DIR/controlled-echo-ready.json"
 ECHO_CLIENT_RESULT="$TMP_DIR/controlled-echo-client.json"
 ECHO_SERVER_RESULT="$TMP_DIR/controlled-echo-server.json"
@@ -124,6 +127,12 @@ HTTP3_PASS_COUNT=0
 HTTP3_FLOW_COUNT=0
 HTTP3_DURATION_MS=0
 HTTP3_MIN_CONCURRENT=0
+HTTP3_INTERCEPT_PASSED=0
+HTTP3_INTERCEPT_SOURCE_PID=none
+HTTP3_INTERCEPT_FLOW_ID=none
+HTTP3_INTERCEPT_PROVIDER_GENERATION=none
+HTTP3_INTERCEPT_LOCAL_ENDPOINT=none
+HTTP3_INTERCEPT_REMOTE_ENDPOINT=none
 ACTIVE_PROBE_PID=""
 ACTIVE_ECHO_PID=""
 ACTIVE_PRESSURE_PID=""
@@ -188,6 +197,8 @@ RECOVERY_NTP_LOG_START=0
 RECOVERY_NTP_LOG_END=0
 HTTP3_PROVIDER_LOG_LINE=0
 HTTP3_PROVIDER_LOG_END=0
+HTTP3_INTERCEPT_LOG_START=0
+HTTP3_INTERCEPT_LOG_END=0
 BLOCKED_LOG_LINE=0
 BLOCKED_DNS_LOG_START=0
 BLOCKED_DNS_LOG_END=0
@@ -753,7 +764,7 @@ stop_active_workloads() {
   # in evidence and already-reaped HTTP/3 rows are never cleanup inputs.
   for pid in "${!OWNED_COMMAND_ROLES[@]}"; do
     role="${OWNED_COMMAND_ROLES[pid]}"
-    case "$role" in probe|echo|pressure|http3) ;; *) continue ;; esac
+    case "$role" in probe|echo|pressure|http3|http3-intercept) ;; *) continue ;; esac
     rc=0
     join_owned_command "$pid" "$SECONDS" stop 5 || rc=$?
     case "$rc" in
@@ -824,6 +835,7 @@ write_workload_claims() {
       "$ECHO_SOCKET_COUNT" "$ECHO_EXACT_ECHO_COUNT"
     printf 'http3_request_count\t%s\nhttp3_pass_count\t%s\n' \
       "$HTTP3_REQUEST_COUNT" "$HTTP3_PASS_COUNT"
+    printf 'http3_intercept_passed\t%s\n' "$HTTP3_INTERCEPT_PASSED"
     printf 'dial9_requirement_count\t%s\ndial9_matched_requirement_count\t%s\n' \
       "$DIAL9_REQUIREMENT_COUNT" "$DIAL9_MATCHED_REQUIREMENT_COUNT"
     printf 'producer_sources_sha256\t%s\n' "$PRODUCER_SOURCES_SHA256"
@@ -853,7 +865,7 @@ write_provider_log_phases() {
   local provider_log_end
   provider_log_end="$(provider_log_line)"
   {
-    printf 'schema_version\t1\n'
+    printf 'schema_version\t2\n'
     printf 'unblocked_start_line\t%s\nudp_error_start_line\t%s\n' \
       "$UNBLOCKED_LOG_LINE" "$UDP_ERROR_PROVIDER_LOG_LINE"
     printf 'passthrough_start_line\t%s\npassthrough_end_line\t%s\n' \
@@ -871,6 +883,8 @@ write_provider_log_phases() {
     printf 'blocked_profile_start_line\t%s\n' "$BLOCKED_LOG_LINE"
     printf 'blocked_start_line\t%s\nblocked_end_line\t%s\n' \
       "$BLOCKED_DNS_LOG_START" "$BLOCKED_DNS_LOG_END"
+    printf 'http3_intercept_start_line\t%s\nhttp3_intercept_end_line\t%s\n' \
+      "$HTTP3_INTERCEPT_LOG_START" "$HTTP3_INTERCEPT_LOG_END"
     printf 'provider_log_end_line\t%s\nschema_complete\t1\n' "$provider_log_end"
   } > "$PROVIDER_LOG_PHASES"
 }
@@ -908,6 +922,12 @@ write_evidence_status() {
       "$HTTP3_REQUEST_COUNT" "$HTTP3_PASS_COUNT" "$HTTP3_FLOW_COUNT"
     printf 'http3_duration_ms\t%s\nhttp3_min_concurrent\t%s\n' \
       "$HTTP3_DURATION_MS" "$HTTP3_MIN_CONCURRENT"
+    printf 'http3_intercept_passed\t%s\nhttp3_intercept_source_pid\t%s\n' \
+      "$HTTP3_INTERCEPT_PASSED" "$HTTP3_INTERCEPT_SOURCE_PID"
+    printf 'http3_intercept_flow_id\t%s\nhttp3_intercept_provider_generation\t%s\n' \
+      "$HTTP3_INTERCEPT_FLOW_ID" "$HTTP3_INTERCEPT_PROVIDER_GENERATION"
+    printf 'http3_intercept_local_endpoint\t%s\nhttp3_intercept_remote_endpoint\t%s\n' \
+      "$HTTP3_INTERCEPT_LOCAL_ENDPOINT" "$HTTP3_INTERCEPT_REMOTE_ENDPOINT"
     printf 'echo_socket_count\t%s\necho_datagrams_per_socket\t%s\n' \
       "$ECHO_SOCKET_COUNT" "$ECHO_DATAGRAMS_PER_SOCKET"
     printf 'echo_payload_bytes\t%s\necho_expected_count\t%s\n' \
@@ -954,7 +974,7 @@ write_evidence_status() {
     printf 'dial9_requirements_sha256\t%s\n' "$DIAL9_REQUIREMENTS_SHA256"
     printf 'dial9_requirement_count\t%s\ndial9_matched_requirement_count\t%s\n' \
       "$DIAL9_REQUIREMENT_COUNT" "$DIAL9_MATCHED_REQUIREMENT_COUNT"
-    printf 'schema_version\t5\n'
+    printf 'schema_version\t6\n'
     for value in "${ISSUES[@]}"; do printf 'issue\t%s\n' "$value"; done
     for value in "${FAILURES[@]}"; do printf 'failure\t%s\n' "$value"; done
     for value in "${OBSERVED_FAILURES[@]}"; do
@@ -1237,12 +1257,11 @@ finalize() {
   fi
   stop_active_workloads
   stop_echo_server
-  # Dial9 collection is single-shot and must happen while the final E2E
-  # provider generation is still installed. Restoration can create another
-  # generation and is never followed by an evidence retry.
-  collect_dial9_evidence || true
+  # Restoration seals the second E2E generation, including intercepted H3.
+  # Collect once afterwards; exact generation requirements exclude new flows.
   restore_profile || true
   require_provider_identity || true
+  collect_dial9_evidence || true
   capture_provider_generation_sample --append || \
     add_issue "could not capture the canonical provider generation before the run boundary"
   # Capture includes workload cleanup, sealed Dial9 collection, and the exact
@@ -1280,8 +1299,8 @@ finalize() {
   if [[ -e "$BOUNDED_CLEANUP_FAILED" ]]; then
     add_issue "bounded command cleanup could not prove every artifact writer exited"
   fi
-  if (( UDP_PROBE_ATTEMPT_COUNT != 8 )); then
-    add_issue "signed UDP E2E attempted $UDP_PROBE_ATTEMPT_COUNT of 8 required probe groups"
+  if (( UDP_PROBE_ATTEMPT_COUNT != 9 )); then
+    add_issue "signed UDP E2E attempted $UDP_PROBE_ATTEMPT_COUNT of 9 required probe groups"
   fi
   if (( UDP_PRESSURE_LOG_CHECKED != 1 )); then
     add_issue "signed UDP E2E did not validate UDP pressure telemetry"
@@ -1299,8 +1318,8 @@ finalize() {
   elif (( ${#FAILURES[@]} > 0 )); then
     complete=1
     final_exit=1
-  elif (( UDP_PROBE_PASS_COUNT != 8 )); then
-    add_issue "signed UDP E2E passed $UDP_PROBE_PASS_COUNT of 8 required probe groups"
+  elif (( UDP_PROBE_PASS_COUNT != 9 )); then
+    add_issue "signed UDP E2E passed $UDP_PROBE_PASS_COUNT of 9 required probe groups"
   else
     complete=1
     passed=1
@@ -1558,6 +1577,74 @@ run_sustained_http3() {
   else
     add_issue "sustained concurrent UDP/443 probe did not complete every request over HTTP/3"
   fi
+}
+
+run_intercepted_http3() {
+  local rc=0 endpoints
+  HTTP3_INTERCEPT_LOG_START="$(provider_log_line)"
+  UDP_PROBE_ATTEMPT_COUNT=$((UDP_PROBE_ATTEMPT_COUNT + 1))
+  start_owned_command http3-intercept /usr/bin/python3 "$PROBE" http3 \
+    --libcurl "$HTTP3_LIBCURL" --url "$HTTP3_URL" --run-uuid "$RUN_UUID" \
+    --result-file "$HTTP3_INTERCEPT_RESULT" --body-file "$HTTP3_INTERCEPT_BODY" \
+    > "$TMP_DIR/http3-intercept.log" 2>&1 || {
+      add_issue "intercepted HTTP/3 could not start its owned client"
+      return 1
+    }
+  HTTP3_INTERCEPT_SOURCE_PID="$OWNED_COMMAND_SOURCE_PID"
+  ACTIVE_PROBE_PID="$OWNED_COMMAND_PID"
+  join_owned_command "$ACTIVE_PROBE_PID" "$((SECONDS + 25))" || rc=$?
+  (( OWNED_JOIN_REAPED == 0 )) || ACTIVE_PROBE_PID=""
+  close_probe_decision_window "$HTTP3_INTERCEPT_LOG_START" "$HTTP3_INTERCEPT_SOURCE_PID"
+  HTTP3_INTERCEPT_LOG_END="$LAST_PROBE_LOG_END"
+  printf 'source_pid\texit_code\n%s\t%s\n' "$HTTP3_INTERCEPT_SOURCE_PID" "$rc" \
+    > "$TMP_DIR/http3-intercept-result.tsv" || return 1
+  endpoints="$(/usr/bin/python3 "$PROBE" verify-http3-receipt "$HTTP3_INTERCEPT_RESULT" \
+    --body-file "$HTTP3_INTERCEPT_BODY" --run-uuid "$RUN_UUID" \
+    --source-pid "$HTTP3_INTERCEPT_SOURCE_PID" --url "$HTTP3_URL" \
+    --exit-code "$rc" --print-endpoints)" || {
+      add_issue "intercepted HTTP/3 lacks a complete matching raw response receipt"
+      return 1
+    }
+  read -r HTTP3_INTERCEPT_LOCAL_ENDPOINT HTTP3_INTERCEPT_REMOTE_ENDPOINT <<< "$endpoints"
+  HTTP3_INTERCEPT_PASSED=1
+  UDP_PROBE_PASS_COUNT=$((UDP_PROBE_PASS_COUNT + 1))
+}
+
+check_http3_intercept_decision() {
+  local metrics
+  metrics="$(/usr/bin/python3 -B - "$MODERN_EVIDENCE" "$PROBE" "$PROVIDER_LOG" \
+    "$HTTP3_INTERCEPT_RESULT" "$HTTP3_INTERCEPT_BODY" "$RUN_UUID" \
+    "$HTTP3_INTERCEPT_SOURCE_PID" "$HTTP3_URL" "$PROVIDER_PID" \
+    "$BLOCKED_PROVIDER_GENERATION" "$HTTP3_INTERCEPT_LOG_START" \
+    "$HTTP3_INTERCEPT_LOG_END" "$HTTP3_ENDPOINTS" <<'PY'
+import runpy, sys
+modern, probe = runpy.run_path(sys.argv[1]), runpy.run_path(sys.argv[2])
+receipt = probe["read_http3_receipt"](sys.argv[4])
+body = probe["read_http3_body"](sys.argv[5])
+if probe["replay_http3_receipt"](receipt, body, sys.argv[6], int(sys.argv[7]), sys.argv[8]) != 0:
+    raise SystemExit(2)
+with open(sys.argv[3], encoding="utf-8") as stream:
+    decisions = modern["_decision_records"](stream.read().splitlines())
+phases = {"http3_intercept_start_line": int(sys.argv[11]),
+          "http3_intercept_end_line": int(sys.argv[12])}
+row = modern["validate_http3_intercept_decision"](
+    decisions, phases, receipt, sys.argv[6], int(sys.argv[9]), int(sys.argv[10]),
+)
+with open(sys.argv[13], encoding="utf-8") as stream:
+    endpoints = stream.read().splitlines()
+if row["remote"] not in endpoints or sum(other["flow_id"] == row["flow_id"] for other in decisions) != 1:
+    raise SystemExit(2)
+print(row["flow_id"], row["generation"])
+PY
+)" || {
+    add_issue "intercepted HTTP/3 lacked its exact socket tuple and provider generation"
+    return 1
+  }
+  read -r HTTP3_INTERCEPT_FLOW_ID HTTP3_INTERCEPT_PROVIDER_GENERATION <<< "$metrics"
+  # QUIC transport bytes include encrypted headers, handshake and acknowledgements.
+  # Bound both directions independently of the HTTP response-body length.
+  append_dial9_requirement http3-intercept "$HTTP3_INTERCEPT_FLOW_ID" \
+    "$HTTP3_INTERCEPT_SOURCE_PID" "$HTTP3_INTERCEPT_PROVIDER_GENERATION" 1 16777216 1 16777216
 }
 
 close_pressure_probe_window() {
@@ -2008,6 +2095,17 @@ fi
   || fatal_issue "signed provider not found at $BUILT_PROVIDER; build it before running this test"
 command -v nscurl >/dev/null \
   || fatal_issue "nscurl is required for the public HTTP/3 UDP/443 probe"
+if [[ -z "$HTTP3_LIBCURL" ]]; then
+  for candidate in /opt/homebrew/opt/curl/lib/libcurl.4.dylib /usr/local/opt/curl/lib/libcurl.4.dylib; do
+    [[ -f "$candidate" ]] || continue
+    HTTP3_LIBCURL="$candidate"
+    break
+  done
+fi
+[[ "$HTTP3_LIBCURL" == /* && -f "$HTTP3_LIBCURL" ]] \
+  || fatal_issue "intercepted HTTP/3 requires an installed HTTP/3-capable libcurl; set RAMA_TPROXY_E2E_HTTP3_LIBCURL"
+printf '%s\n' "$HTTP3_URL" > "$TMP_DIR/http3-url.txt" \
+  || fatal_issue "could not capture the configured HTTP/3 URL"
 [[ -x "$DIAL9_EVIDENCE_BIN" ]] \
   || fatal_issue "dial9 evidence collector is missing; run just build-tproxy-rs"
 sudo -n true 2>/dev/null \
@@ -2266,7 +2364,7 @@ run_sustained_http3
 CURRENT_PHASE=blocked-install
 BLOCKED_CONTAINER_LINE="$(container_log_line)"
 if ! run_bounded 90 "$INSTALLER" dev "$BUILT_APP" 0 \
-  "--udp-passthrough-ports=443" \
+  "--udp-passthrough-ports=" \
   "--udp-blocked-endpoints=$BLOCKED_DNS:53" \
   "--evidence-run-uuid=$RUN_UUID" \
   "--udp-e2e-diagnostic-endpoints=$DIAGNOSTIC_ENDPOINTS"
@@ -2284,6 +2382,9 @@ run_probe "blocked DNS probe" 10 blocked dns "$BLOCKED_DNS" \
 BLOCKED_DNS_SOURCE_PID="$LAST_PROBE_PID"
 BLOCKED_DNS_LOG_START="$LAST_PROBE_LOG_START"
 BLOCKED_DNS_LOG_END="$LAST_PROBE_LOG_END"
+
+CURRENT_PHASE=intercepted-http3
+run_intercepted_http3 || true
 
 # Let os_log and the Rust tracing bridge flush the per-flow decision/service
 # records before assertions.
@@ -2310,6 +2411,7 @@ check_exact_decision "$BLOCKED_DNS_LOG_START" "$BLOCKED_DNS_LOG_END" blocked \
 
 check_echo_decisions || true
 check_http3_decisions || true
+check_http3_intercept_decision || true
 if [[ "$UNBLOCKED_PROVIDER_GENERATION" =~ ^[1-9][0-9]*$ \
   && "$BLOCKED_PROVIDER_GENERATION" =~ ^[1-9][0-9]*$ \
   && "$UNBLOCKED_PROVIDER_GENERATION" != "$BLOCKED_PROVIDER_GENERATION" ]]
@@ -2322,12 +2424,6 @@ else
 fi
 
 require_provider_identity || true
-
-# Collect before restoring again: at this point the NTP provider generation is
-# sealed, while the blocked provider's active segment cannot introduce a
-# colliding flow ID from a later generation.
-CURRENT_PHASE=dial9-verdict
-collect_dial9_evidence || true
 
 MAIN_FINISHED=1
 CURRENT_PHASE=finalize

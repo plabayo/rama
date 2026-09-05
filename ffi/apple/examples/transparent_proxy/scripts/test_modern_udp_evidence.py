@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Adversarial unit coverage for the signed modern UDP evidence path."""
 
+import contextlib
+import ctypes as C
+import io
 import json
 import hashlib
 import os
@@ -20,6 +23,7 @@ import textwrap
 import time
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -522,7 +526,7 @@ class BoundedCommandCleanupTests(unittest.TestCase):
                 MODERN_EVIDENCE={shlex.quote(str(parser))}
                 EVIDENCE_STATUS={shlex.quote(str(root / 'status'))}
                 FINALIZING=0 MAIN_FINISHED=1 RUN_START_EPOCH_MS=1
-                UDP_PROBE_ATTEMPT_COUNT=8 UDP_PROBE_PASS_COUNT=8
+                UDP_PROBE_ATTEMPT_COUNT=9 UDP_PROBE_PASS_COUNT=9
                 UDP_PRESSURE_LOG_CHECKED=1 PRESSURE_PROBE_ATTEMPTED=1 PRESSURE_PROBE_PASSED=1
                 ISSUES=() FAILURES=() OBSERVED_FAILURES=()
                 add_issue() {{ ISSUES+=("$1"); }}
@@ -692,6 +696,21 @@ class OwnedCommandLifecycleTests(unittest.TestCase):
                 """)
                 self.assertEqual(output, "exited=1\n")
 
+    def test_intercepted_http3_is_stopped_with_early_owned_workloads(self):
+        output, _ = self.run_mock("""\
+            OWNED_COMMAND_ROLES[41]=http3-intercept
+            OWNED_COMMAND_IDENTITIES[51]=logger-identity
+            OWNED_COMMAND_ROLES[51]=logger
+            join_owned_command() {
+              printf 'joined=%s mode=%s\\n' "$1" "$3"
+              unregister_owned_command "$1"
+              return 0
+            }
+            stop_active_workloads
+            printf 'h3=%s logger=%s\\n' "${OWNED_COMMAND_ROLES[41]:-gone}" "${OWNED_COMMAND_ROLES[51]}"
+        """)
+        self.assertEqual(output, "joined=41 mode=stop\nh3=gone logger=logger\n")
+
     def test_bounded_command_rejects_missing_or_mismatched_drain_receipt(self):
         helpers = self.shell_function("run_bounded") + self.shell_function("bounded_drain_receipt_valid")
         for receipt, expected in (("42\t7\n", 7), ("", 125), ("42\t0\n", 125)):
@@ -810,14 +829,14 @@ class OwnedCommandLifecycleTests(unittest.TestCase):
 def passing_status():
     values = {
         "complete": "1", "passed": "1", "exit_code": "0",
-        "udp_probe_attempt_count": "8", "udp_probe_pass_count": "8",
+        "udp_probe_attempt_count": "9", "udp_probe_pass_count": "9",
         "udp_pressure_log_checked": "1", "rust_udp_drop_transitions": "1",
         "rust_udp_resume_transitions": "1", "swift_udp_staging_drop_samples": "0",
         "log_stream_started": "1", "log_stream_alive_end": "1",
         "log_stream_joined": "1", "profile_restored": "1",
         "dial9_baseline_max_index": "7", "callback_generation": "modern",
         "dial9_required_flow_id": "103", "dial9_current_segment_count": "1",
-        "dial9_required_pair_count": "131", "dial9_required_close_reason": "1",
+        "dial9_required_pair_count": "132", "dial9_required_close_reason": "1",
         "dial9_required_close_age_ms": "900", "dial9_required_bytes_in": "0",
         "dial9_required_bytes_out": "0", "provider_pid": "9001",
         "provider_identity": DIGEST, "provider_identity_stable": "1",
@@ -832,6 +851,10 @@ def passing_status():
         "engine_generations_sha256": DIGEST, "http3_request_count": "12",
         "http3_pass_count": "12", "http3_flow_count": "12",
         "http3_duration_ms": "2500", "http3_min_concurrent": "4",
+        "http3_intercept_passed": "1", "http3_intercept_source_pid": "3500",
+        "http3_intercept_flow_id": "2500", "http3_intercept_provider_generation": "8",
+        "http3_intercept_local_endpoint": "192.0.2.1:54000",
+        "http3_intercept_remote_endpoint": "1.1.1.1:443",
         "echo_socket_count": "128", "echo_datagrams_per_socket": "1",
         "echo_payload_bytes": "1200", "echo_expected_count": "128",
         "echo_exact_echo_count": "128", "echo_flow_count": "128",
@@ -848,8 +871,8 @@ def passing_status():
         "recovery_ntp_source_pid": "1006", "recovery_ntp_flow_id": "106",
         "dial9_required_close_reason_name": "shutdown",
         "dial9_close_age_bound_ms": "5000", "dial9_requirements_sha256": DIGEST,
-        "dial9_requirement_count": "131", "dial9_matched_requirement_count": "131",
-        "schema_version": "5", "schema_complete": "1",
+        "dial9_requirement_count": "132", "dial9_matched_requirement_count": "132",
+        "schema_version": "6", "schema_complete": "1",
     }
     keys = ["complete", "passed", "exit_code"]
     keys.extend(key for key in values if key not in {*keys, "schema_complete"})
@@ -908,6 +931,25 @@ def probe_receipt_fixture(label, source_pid, endpoint, *, start_epoch_ms=1100, r
     }
 
 
+def http3_receipt_fixture():
+    body = b"fl=fixture\nhttp=http/3\ntls=TLSv1.3\n"
+    return {
+        "schema_version": 1, "kind": "bound_http3_client", "schema_complete": True,
+        "run_uuid": RUN_UUID, "source_pid": 3500,
+        "url": "https://cloudflare.com/cdn-cgi/trace",
+        "library_path": "/opt/homebrew/Cellar/curl/8.20.0/lib/libcurl.4.dylib",
+        "library_sha256": "30011f4f6bb8db9f151673d9c2327eb7f81b24f3e3a6e201d0a27bfb31773a14",
+        "libcurl_version": "libcurl/8.20.0 OpenSSL/3.6.0 ngtcp2/1.22.1 nghttp3/1.15.0",
+        "requested_local_port": 54000, "http_version": 30, "response_code": 200,
+        "local_endpoint": "192.0.2.1:54000", "remote_endpoint": "1.1.1.1:443",
+        "monotonic_clock": "CLOCK_MONOTONIC",
+        "start_epoch_ms": 8600, "end_epoch_ms": 8700,
+        "start_monotonic_ns": 9_600_000_000, "end_monotonic_ns": 9_700_000_000,
+        "response_body_bytes": len(body), "response_body_sha256": hashlib.sha256(body).hexdigest(),
+        "passed": True, "exit_code": 0, "error": None,
+    }, body
+
+
 def build_strict_bundle(directory):
     provider_pid = 9001
     unblocked_generation = 7
@@ -944,6 +986,10 @@ def build_strict_bundle(directory):
         _decision(RUN_UUID, provider_pid, 8, "blocked", 105, "8.8.8.8:53",
                   "127.0.0.1:41005", "com.apple.python3", 1005)
     )
+    lines.append(
+        _decision(RUN_UUID, provider_pid, 8, "intercept", 2500, "1.1.1.1:443",
+                  "192.0.2.1:54000", "com.apple.python3", 3500)
+    )
     (directory / "provider.log").write_text("\n".join(lines) + "\n")
     probe_results = ["label\tsource_pid\texit_code\n"]
     for label, pid, endpoint, started in (
@@ -959,7 +1005,7 @@ def build_strict_bundle(directory):
     (directory / "udp-probe-results.tsv").write_text("".join(probe_results))
 
     phase_rows = (
-        ("schema_version", 1), ("unblocked_start_line", 0),
+        ("schema_version", 2), ("unblocked_start_line", 0),
         ("udp_error_start_line", 0), ("passthrough_start_line", 0),
         ("passthrough_end_line", 1), ("ntp_start_line", 1), ("ntp_end_line", 2),
         ("control_start_line", 2), ("control_end_line", 3),
@@ -968,7 +1014,8 @@ def build_strict_bundle(directory):
         ("recovery_start_line", 134), ("recovery_end_line", 135),
         ("http3_start_line", 135), ("http3_end_line", 141),
         ("blocked_profile_start_line", 141), ("blocked_start_line", 141),
-        ("blocked_end_line", 142), ("provider_log_end_line", 142),
+        ("blocked_end_line", 142), ("http3_intercept_start_line", 142),
+        ("http3_intercept_end_line", 143), ("provider_log_end_line", 143),
         ("schema_complete", 1),
     )
     (directory / "provider-log-phases.tsv").write_text(
@@ -1032,6 +1079,11 @@ def build_strict_bundle(directory):
         "duration_ms\t2500\nrounds\t3\nconcurrency\t2\nschema_complete\t1\n"
     )
     (directory / "http3-endpoints.txt").write_text("1.1.1.1:443\n")
+    receipt, body = http3_receipt_fixture()
+    (directory / "http3-url.txt").write_text(receipt["url"] + "\n")
+    (directory / "http3-intercept-client.json").write_text(json.dumps(receipt) + "\n")
+    (directory / "http3-intercept-body.txt").write_bytes(body)
+    (directory / "http3-intercept-result.tsv").write_text("source_pid\texit_code\n3500\t0\n")
 
     requirement_rows = [
         "label\tprovider_pid\tprovider_generation\tflow_id\tprotocol\tsource_pid\tclose_reason\tmin_bytes_in\tmax_bytes_in\tmin_bytes_out\tmax_bytes_out\n",
@@ -1043,6 +1095,7 @@ def build_strict_bundle(directory):
         f"echo-{index}\t9001\t7\t{flow_id}\t2\t2002\t1\t1200\t1200\t1200\t1200\n"
         for index, flow_id in enumerate(echo_flows)
     )
+    requirement_rows.append("http3-intercept\t9001\t8\t2500\t2\t3500\t1\t1\t16777216\t1\t16777216\n")
     requirements = "".join(requirement_rows)
     (directory / "dial9-requirements.tsv").write_text(requirements)
 
@@ -1101,8 +1154,9 @@ def build_strict_bundle(directory):
         "echo_exact_echo_count\t128\n"
         "http3_request_count\t6\n"
         "http3_pass_count\t6\n"
-        "dial9_requirement_count\t131\n"
-        "dial9_matched_requirement_count\t131\n"
+        "http3_intercept_passed\t1\n"
+        "dial9_requirement_count\t132\n"
+        "dial9_matched_requirement_count\t132\n"
         f"producer_sources_sha256\t{producer_digest}\n"
         "schema_complete\t1\n"
     )
@@ -1158,6 +1212,171 @@ def reseal_test_manifest(directory):
             content = path.read_bytes()
             rows.append(f"{path.name}\t{len(content)}\t{hashlib.sha256(content).hexdigest()}\n")
     (directory / "evidence-manifest.tsv").write_text("".join(rows))
+
+
+HTTP3_FIXTURE_RECEIPT, HTTP3_FIXTURE_BODY = http3_receipt_fixture()
+
+
+class BoundHttp3ReceiptTests(unittest.TestCase):
+    def replay(self, value, body=HTTP3_FIXTURE_BODY):
+        expected = HTTP3_FIXTURE_RECEIPT
+        return udp_probe.replay_http3_receipt(
+            value, body, expected['run_uuid'], expected['source_pid'], expected['url'])
+
+    def test_offline_receipt_and_rejection_boundaries(self):
+        receipt = dict(HTTP3_FIXTURE_RECEIPT)
+        # Replay must remain offline even when the claimed library is absent.
+        with mock.patch.object(C, 'CDLL', side_effect=AssertionError('native load in replay')):
+            self.assertEqual(self.replay(receipt), 0)
+        integer_fields = ('schema_version', 'source_pid', 'requested_local_port',
+                          'http_version', 'response_code', 'start_epoch_ms', 'end_epoch_ms',
+                          'start_monotonic_ns', 'end_monotonic_ns', 'response_body_bytes', 'exit_code')
+        mutations = [(key, True) for key in integer_fields]
+        mutations += [
+            ('run_uuid', 'bad'), ('source_pid', receipt['source_pid'] + 1),
+            ('url', receipt['url'] + 'x'), ('kind', 'udp_protocol_probe'),
+            ('monotonic_clock', 'mach_absolute_time'), ('schema_complete', 1),
+            ('passed', 1), ('passed', False), ('error', ''), ('exit_code', 20),
+            ('library_path', '/'), ('library_path', 'relative'), ('library_path', '/a/../b'),
+            ('library_path', '/a\nb'), ('library_sha256', 'A' * 64),
+            ('libcurl_version', 'notcurl'), ('libcurl_version', 'libcurl/8.20.0wrong'),
+            ('requested_local_port', 0), ('requested_local_port', 1),
+            ('local_endpoint', '0.0.0.0:54000'), ('local_endpoint', '192.0.2.1:054000'),
+            ('local_endpoint', 'unavailable'), ('local_endpoint', '[::1]:54000'),
+            ('remote_endpoint', '1.1.1.1:53'), ('remote_endpoint', '0.0.0.0:443'),
+            ('http_version', 3), ('response_code', 204),
+            ('response_body_bytes', len(HTTP3_FIXTURE_BODY) + 1), ('response_body_sha256', '0' * 64),
+            ('start_monotonic_ns', 0), ('end_monotonic_ns', receipt['start_monotonic_ns'] - 1),
+            ('end_monotonic_ns', receipt['start_monotonic_ns'] + 30_000_000_001),
+            ('end_epoch_ms', receipt['end_epoch_ms'] + 3000),
+        ]
+        for key, value in mutations:
+            with self.subTest(field=key, value=value), self.assertRaises(ValueError):
+                self.replay(dict(receipt, **{key: value}))
+        for body in (b'', bytearray(HTTP3_FIXTURE_BODY), b'http=http/30\n',
+                     b'http=http/3\nhttp=http/3\n', b'x' * (udp_probe.HTTP3_BODY_MAX_BYTES + 1)):
+            with self.subTest(body_size=len(body)), self.assertRaises(ValueError):
+                self.replay(dict(receipt, response_body_bytes=len(body),
+                                 response_body_sha256=hashlib.sha256(body).hexdigest()), body)
+        for changed in (dict(receipt, extra=1),
+                        {key: value for key, value in receipt.items() if key != 'error'}):
+            with self.subTest(keys=set(changed)), self.assertRaises(ValueError):
+                self.replay(changed)
+        with self.assertRaises(ValueError):
+            self.replay(receipt, HTTP3_FIXTURE_BODY + b'x')
+
+    def test_bounded_client_lifecycle(self):
+        modes = ('success', 'global_init_error', 'handle_error', 'bind_error',
+                 'setopt_error', 'perform_error', 'oversized_body', 'callback_error',
+                 'wrong_protocol', 'cleanup_error')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / 'libcurl.dylib'
+            path.write_bytes(b'mock library: never loaded')
+            for mode in modes:
+                with self.subTest(mode=mode):
+                    options = {}
+                    library = SimpleNamespace()
+                    for name, result in (
+                        ('curl_global_init', 0), ('curl_global_cleanup', None),
+                        ('curl_easy_init', 123), ('curl_easy_cleanup', None),
+                        ('curl_easy_setopt', 0), ('curl_easy_getinfo', 0),
+                        ('curl_easy_perform', 0), ('curl_version', b'libcurl/8.20.0 mock'),
+                    ):
+                        setattr(library, name, mock.Mock(return_value=result))
+                    selection = mock.MagicMock()
+                    selection.__enter__.return_value = selection
+                    selection.getsockname.return_value = ('0.0.0.0', 54000)
+                    if mode == 'global_init_error': library.curl_global_init.return_value = 2
+                    if mode == 'handle_error': library.curl_easy_init.return_value = None
+                    if mode == 'bind_error': selection.bind.side_effect = OSError('mock bind failure')
+                    if mode == 'cleanup_error':
+                        library.curl_easy_cleanup.side_effect = RuntimeError('mock cleanup failure')
+
+                    def setopt(handle, option, value):
+                        options[option] = value
+                        return 48 if mode == 'setopt_error' else 0
+                    library.curl_easy_setopt.side_effect = setopt
+
+                    def perform(handle):
+                        # The selection socket must close before traffic, and the
+                        # transfer must use that one port with no HTTP fallback.
+                        self.assertEqual(selection.__exit__.call_count, 1)
+                        selection.bind.assert_called_once_with(('0.0.0.0', 0))
+                        self.assertEqual({key: options[key].value for key in (84, 139, 140, 113, 155, 156)},
+                                         {84: 31, 139: 54000, 140: 1, 113: 1, 155: 15000, 156: 10000})
+                        self.assertEqual(options[10004].value, b'')
+                        self.assertEqual(options[10177].value, b'*')
+                        self.assertEqual(library.curl_easy_setopt.argtypes, [C.c_void_p, C.c_int])
+                        self.assertEqual(library.curl_easy_getinfo.argtypes, [C.c_void_p, C.c_int])
+                        if mode == 'perform_error': return 28
+                        if mode == 'oversized_body':
+                            self.assertEqual(options[20011](None, 1, udp_probe.HTTP3_BODY_MAX_BYTES + 1, None), 0)
+                            return 23
+                        if mode == 'callback_error':
+                            with mock.patch.object(C, 'string_at', side_effect=ValueError('mock read failure')):
+                                self.assertEqual(options[20011](None, 1, 1, None), 0)
+                            return 23
+                        buffer = C.create_string_buffer(HTTP3_FIXTURE_BODY)
+                        self.assertEqual(options[20011](C.addressof(buffer), 1, len(HTTP3_FIXTURE_BODY), None),
+                                         len(HTTP3_FIXTURE_BODY))
+                        return 0
+                    library.curl_easy_perform.side_effect = perform
+
+                    def getinfo(handle, info, pointer):
+                        pointer._obj.value = {
+                            0x200000 + 46: 2 if mode == 'wrong_protocol' else 30,
+                            0x200000 + 2: 200, 0x200000 + 42: 54000, 0x200000 + 40: 443,
+                            0x100000 + 41: b'192.0.2.1', 0x100000 + 32: b'1.1.1.1',
+                        }[info]
+                        return 0
+                    library.curl_easy_getinfo.side_effect = getinfo
+                    receipt_path, body_path = root / (mode + '.json'), root / (mode + '.body')
+                    with mock.patch.object(C, 'CDLL', return_value=library), \
+                            mock.patch.object(udp_probe.socket, 'socket', return_value=selection), \
+                            contextlib.redirect_stdout(io.StringIO()):
+                        if mode == 'success':
+                            udp_probe.http3_probe(path, HTTP3_FIXTURE_RECEIPT['url'],
+                                                  HTTP3_FIXTURE_RECEIPT['run_uuid'], receipt_path, body_path)
+                        else:
+                            with self.assertRaises(RuntimeError):
+                                udp_probe.http3_probe(path, HTTP3_FIXTURE_RECEIPT['url'],
+                                                      HTTP3_FIXTURE_RECEIPT['run_uuid'], receipt_path, body_path)
+                    receipt = udp_probe.read_http3_receipt(receipt_path)
+                    body = udp_probe.read_http3_body(body_path)
+                    self.assertEqual(set(receipt), udp_probe.HTTP3_RECEIPT_KEYS)
+                    self.assertEqual(receipt['passed'], mode == 'success')
+                    self.assertEqual(receipt['exit_code'], 0 if mode == 'success' else 20)
+                    self.assertEqual(receipt['response_body_bytes'], len(body))
+                    self.assertEqual(receipt['response_body_sha256'], hashlib.sha256(body).hexdigest())
+                    self.assertLessEqual(len(body), udp_probe.HTTP3_BODY_MAX_BYTES)
+                    self.assertEqual(library.curl_easy_cleanup.call_count,
+                                     0 if mode in ('global_init_error', 'handle_error') else 1)
+                    self.assertEqual(library.curl_global_cleanup.call_count, 0 if mode == 'global_init_error' else 1)
+                    if mode in ('global_init_error', 'handle_error', 'bind_error', 'setopt_error'):
+                        library.curl_easy_perform.assert_not_called()
+                    if mode == 'success':
+                        self.assertEqual(udp_probe.replay_http3_receipt(
+                            receipt, body, receipt['run_uuid'], os.getpid(), receipt['url']), 0)
+
+    def test_bounded_files_and_no_replace_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            body = root / 'body'
+            body.write_bytes(HTTP3_FIXTURE_BODY)
+            duplicate = root / 'duplicate.json'
+            duplicate.write_text(json.dumps(HTTP3_FIXTURE_RECEIPT)[:-1] + ',"exit_code":0}')
+            with self.assertRaises(ValueError): udp_probe.read_http3_receipt(duplicate)
+            symlink = root / 'symlink'
+            symlink.symlink_to(body)
+            with self.assertRaises(OSError): udp_probe.read_http3_body(symlink)
+            oversized = root / 'oversized'
+            oversized.write_bytes(b'x' * (udp_probe.HTTP3_BODY_MAX_BYTES + 1))
+            with self.assertRaises(ValueError): udp_probe.read_http3_body(oversized)
+            with self.assertRaises(FileExistsError): udp_probe._publish_http3_file(body, b'overwrite')
+            self.assertEqual(body.read_bytes(), HTTP3_FIXTURE_BODY)
+            self.assertFalse(list(root.glob('.http3-probe-*')))
+
 
 
 class DnsWireValidationTests(unittest.TestCase):
@@ -1554,6 +1773,46 @@ class ModernStatusTests(unittest.TestCase):
 
 
 class StrictBundleTests(unittest.TestCase):
+    def test_intercepted_http3_requires_raw_tuple_phase_result_and_transport_bounds(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            self.assertEqual(verify_bundle(root), 0)
+            cases = (
+                ("provider.log", "local_endpoint=192.0.2.1:54000", "local_endpoint=192.0.2.1:54001"),
+                ("provider.log", "provider_generation=8 rama_decision=intercept", "provider_generation=7 rama_decision=intercept"),
+                ("provider.log", "source_pid=3500", "source_pid=3501"),
+                ("provider.log", "rama_decision=intercept flow_id=2500", "rama_decision=passthrough flow_id=2500"),
+                ("provider-log-phases.tsv", "http3_intercept_end_line\t143", "http3_intercept_end_line\t142"),
+                ("http3-intercept-result.tsv", "3500\t0", "3500\t20"),
+                ("http3-url.txt", "/cdn-cgi/trace", "/another-response"),
+                ("http3-intercept-body.txt", "http=http/3", "http=http/2"),
+                ("http3-intercept-client.json", '"start_epoch_ms": 8600', '"start_epoch_ms": 8500'),
+                ("http3-intercept-client.json", '"start_monotonic_ns": 9600000000', '"start_monotonic_ns": 9500000000'),
+                ("dial9-requirements.tsv", "http3-intercept\t9001\t8", "http3-intercept\t9001\t7"),
+                ("dial9-requirements.tsv", "\t1\t16777216\t1\t16777216", "\t0\t16777216\t1\t16777216"),
+                ("dial9-requirements.tsv", "\t1\t16777216\t1\t16777216", "\t1\t33554432\t1\t16777216"),
+            )
+            for filename, old, new in cases:
+                path = root / filename
+                original = path.read_text()
+                self.assertIn(old, original)
+                with self.subTest(file=filename, mutation=new):
+                    path.write_text(original.replace(old, new))
+                    reseal_test_manifest(root)
+                    with self.assertRaises(BundleVerificationError):
+                        verify_bundle(root)
+                path.write_text(original)
+            for filename in ("http3-intercept-client.json", "http3-intercept-body.txt", "http3-intercept-result.tsv"):
+                path = root / filename
+                original = path.read_bytes()
+                with self.subTest(missing=filename):
+                    path.unlink()
+                    reseal_test_manifest(root)
+                    with self.assertRaises(BundleVerificationError):
+                        verify_bundle(root)
+                path.write_bytes(original)
+
     @staticmethod
     def append_provider_log(root, message):
         provider_log = root / "provider.log"
@@ -2465,6 +2724,40 @@ class QuicShapedEchoTests(unittest.TestCase):
 
 
 class HarnessSourceContractTests(unittest.TestCase):
+    def test_intercepted_http3_shell_requirement_preserves_exact_identity(self):
+        helper = BoundedCommandCleanupTests.shell_function
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            requirement = root / "h3-requirement.tsv"
+            program = helper("check_http3_intercept_decision") + helper("append_dial9_requirement") + textwrap.dedent(f"""\
+                TMP_DIR={shlex.quote(str(root))}
+                MODERN_EVIDENCE={shlex.quote(str(SCRIPT_DIR / 'modern_udp_evidence.py'))}
+                PROBE={shlex.quote(str(SCRIPT_DIR / 'modern_udp_e2e_probe.py'))}
+                PROVIDER_LOG="$TMP_DIR/provider.log"
+                HTTP3_INTERCEPT_RESULT="$TMP_DIR/http3-intercept-client.json"
+                HTTP3_INTERCEPT_BODY="$TMP_DIR/http3-intercept-body.txt"
+                HTTP3_ENDPOINTS="$TMP_DIR/http3-endpoints.txt"
+                HTTP3_URL=https://cloudflare.com/cdn-cgi/trace
+                DIAL9_REQUIREMENTS={shlex.quote(str(requirement))}
+                RUN_UUID={shlex.quote(RUN_UUID)} PROVIDER_PID=9001
+                HTTP3_INTERCEPT_SOURCE_PID=3500 BLOCKED_PROVIDER_GENERATION="$1"
+                HTTP3_INTERCEPT_LOG_START=142 HTTP3_INTERCEPT_LOG_END=143
+                add_issue() {{ printf '%s\\n' "$1" >&2; exit 2; }}
+                check_http3_intercept_decision
+            """)
+            for generation, expected_exit in ((8, 0), (7, 2)):
+                if requirement.exists():
+                    requirement.unlink()
+                result = subprocess.run(["/bin/bash", "-c", program, "fixture", str(generation)],
+                                        capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, expected_exit, result.stdout + result.stderr)
+                if expected_exit == 0:
+                    self.assertEqual(requirement.read_text(),
+                        "http3-intercept\t9001\t8\t2500\t2\t3500\t1\t1\t16777216\t1\t16777216\n")
+                else:
+                    self.assertFalse(requirement.exists())
+
     def test_echo_and_pressure_callers_use_captured_sources_and_nested_dependency(self):
         helper = BoundedCommandCleanupTests.shell_function
         with tempfile.TemporaryDirectory() as temporary:
@@ -2676,7 +2969,7 @@ class HarnessSourceContractTests(unittest.TestCase):
                 : > "$PROVIDER_LOG"
                 FINALIZING=0 MAIN_FINISHED=1 RUN_START_EPOCH_MS=1
                 UDP_ERROR_PROVIDER_LOG_LINE=0 LOG_STREAM_JOINED=0
-                UDP_PROBE_ATTEMPT_COUNT=8 UDP_PROBE_PASS_COUNT=8
+                UDP_PROBE_ATTEMPT_COUNT=9 UDP_PROBE_PASS_COUNT=9
                 UDP_PRESSURE_LOG_CHECKED=1 PRESSURE_PROBE_ATTEMPTED=1 PRESSURE_PROBE_PASSED=1
                 ISSUES=() FAILURES=() OBSERVED_FAILURES=()
                 add_issue() {{ ISSUES+=("$1"); }}
@@ -2711,7 +3004,7 @@ class HarnessSourceContractTests(unittest.TestCase):
             self.assertEqual((root / "common-status").read_text(), "1 0 1 2\n")
             self.assertEqual(int((root / "line-count").read_text()), 2)
             order = (root / "order").read_text().splitlines()
-            self.assertEqual(order[:8], ["workloads", "echo", "dial9", "restore", "generation", "log-stop", "phases", "pressure-verdict"])
+            self.assertEqual(order[:8], ["workloads", "echo", "restore", "dial9", "generation", "log-stop", "phases", "pressure-verdict"])
 
     def test_separate_clock_processes_measure_the_same_elapsed_window(self):
         shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()

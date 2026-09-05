@@ -389,7 +389,7 @@ def make_strict_modern_run(directory: Path):
         "provider_pid": "42",
         "provider_identity": common["provider_generation_identity"],
         "provider_generation_identity": common["provider_generation_identity"],
-        "schema_version": "5",
+        "schema_version": "6",
     })
     script_directory = Path(__file__).resolve().parent
     source_paths = {
@@ -419,6 +419,7 @@ def make_strict_modern_run(directory: Path):
         ("echo_exact_echo_count", udp["echo_exact_echo_count"]),
         ("http3_request_count", udp["http3_request_count"]),
         ("http3_pass_count", udp["http3_pass_count"]),
+        ("http3_intercept_passed", udp["http3_intercept_passed"]),
         ("dial9_requirement_count", udp["dial9_requirement_count"]),
         ("dial9_matched_requirement_count", udp["dial9_matched_requirement_count"]),
         ("producer_sources_sha256", udp["producer_sources_sha256"]),
@@ -520,6 +521,11 @@ def make_strict_modern_run(directory: Path):
             udp["echo_source_pid"], "1",
             echo_bytes, echo_bytes, echo_bytes, echo_bytes,
         ])
+    requirement_rows.append([
+        "http3-intercept", "42", udp["http3_intercept_provider_generation"],
+        udp["http3_intercept_flow_id"], "2", udp["http3_intercept_source_pid"], "1",
+        "1", "16777216", "1", "16777216",
+    ])
     requirements_content = (
         "\t".join(header) + "\n"
         + "".join("\t".join(row) + "\n" for row in requirement_rows)

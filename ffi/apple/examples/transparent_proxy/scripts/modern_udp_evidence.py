@@ -35,6 +35,9 @@ SINGLETON_KEYS = {
     "engine_generations_sha256",
     "http3_request_count", "http3_pass_count", "http3_flow_count",
     "http3_duration_ms", "http3_min_concurrent",
+    "http3_intercept_passed", "http3_intercept_source_pid", "http3_intercept_flow_id",
+    "http3_intercept_provider_generation", "http3_intercept_local_endpoint",
+    "http3_intercept_remote_endpoint",
     "echo_socket_count", "echo_datagrams_per_socket", "echo_payload_bytes",
     "echo_expected_count", "echo_exact_echo_count", "echo_flow_count",
     "echo_payload_set_sha256", "echo_endpoint", "echo_source_pid",
@@ -61,6 +64,8 @@ OPTIONAL_UINT_KEYS = {
     "pressure_source_pid", "pressure_flow_id", "blocked_dns_source_pid",
     "blocked_dns_flow_id",
     "recovery_ntp_source_pid", "recovery_ntp_flow_id", "echo_source_pid",
+    "http3_intercept_source_pid", "http3_intercept_flow_id",
+    "http3_intercept_provider_generation",
 }
 
 
@@ -297,6 +302,7 @@ def parse_signed_udp_status_lines(lines):
         if key not in {
             "dial9_baseline_max_index", "callback_generation",
             "provider_identity", "http3_remote_endpoint", "run_uuid",
+            "http3_intercept_local_endpoint", "http3_intercept_remote_endpoint",
             "evidence_kind", "provider_generation_identity",
             "producer_sources_sha256",
             "engine_generations_sha256",
@@ -337,29 +343,30 @@ def parse_signed_udp_status_lines(lines):
         "schema_complete", "provider_identity_stable",
         "pressure_probe_attempted", "pressure_probe_passed",
         "concurrent_load_timed_out",
+        "http3_intercept_passed",
     )):
         return None
-    if numeric["schema_version"] != 5:
+    if numeric["schema_version"] != 6:
         return None
     attempts = numeric["udp_probe_attempt_count"]
     passes = numeric["udp_probe_pass_count"]
-    if not 0 <= passes <= attempts <= 8:
+    if not 0 <= passes <= attempts <= 9:
         return None
     verdict = (
         numeric["complete"], numeric["passed"], numeric["exit_code"])
     probe_flow_keys = (
         "passthrough_dns_flow_id", "control_dns_flow_id", "ntp_flow_id",
         "pressure_flow_id", "recovery_ntp_flow_id", "blocked_dns_flow_id",
-        "http3_flow_id",
+        "http3_flow_id", "http3_intercept_flow_id",
     )
     probe_pid_keys = (
         "passthrough_dns_source_pid", "control_dns_source_pid", "ntp_source_pid",
         "pressure_source_pid", "blocked_dns_source_pid", "http3_source_pid",
-        "recovery_ntp_source_pid",
+        "recovery_ntp_source_pid", "http3_intercept_source_pid",
     )
     probe_flows = [optional_uints[key] for key in probe_flow_keys]
     prerequisites = (
-        attempts == 8
+        attempts == 9
         and values["evidence_kind"] == "modern_udp"
         and 0 < numeric["run_start_epoch_ms"] <= numeric["run_end_epoch_ms"]
         and values["callback_generation"] == "modern"
@@ -389,6 +396,10 @@ def parse_signed_udp_status_lines(lines):
         and numeric["http3_pass_count"] == numeric["http3_request_count"]
         and numeric["http3_flow_count"] == numeric["http3_request_count"]
         and numeric["http3_duration_ms"] >= 2_000
+        and numeric["http3_intercept_passed"] == 1
+        and optional_uints["http3_intercept_provider_generation"] not in (None, 0)
+        and is_udp_endpoint(values["http3_intercept_local_endpoint"])
+        and is_udp_443_endpoint(values["http3_intercept_remote_endpoint"])
         and 128 <= numeric["echo_socket_count"] <= 512
         and 1 <= numeric["echo_datagrams_per_socket"] <= 64
         and 1_200 <= numeric["echo_payload_bytes"] <= 60_000
@@ -416,7 +427,7 @@ def parse_signed_udp_status_lines(lines):
         and numeric["dial9_current_segment_count"] >= 1
         and re.fullmatch(r"[0-9a-f]{64}", values["dial9_requirements_sha256"])
             is not None
-        and numeric["dial9_requirement_count"] == numeric["echo_flow_count"] + 3
+        and numeric["dial9_requirement_count"] == numeric["echo_flow_count"] + 4
         and numeric["dial9_matched_requirement_count"]
             == numeric["dial9_requirement_count"]
         and numeric["dial9_required_pair_count"]
@@ -441,7 +452,7 @@ def parse_signed_udp_status_lines(lines):
     )
     if verdict == (1, 1, 0):
         valid = (
-            prerequisites and passing_requirements and passes == 8
+            prerequisites and passing_requirements and passes == 9
             and numeric["rust_udp_drop_transitions"] >= 1
             and numeric["pressure_drop_transitions"] >= len(drop_reasons)
             and numeric["pressure_resume_transitions"] >= len(recovered_reasons)
@@ -544,7 +555,7 @@ WORKLOAD_CLAIM_FIELDS = (
     "evidence_kind", "run_uuid", "dial9_diagnostic_only",
     "dial9_workload_coverage", "dial9_claim", "quic_shaped_not_valid_quic",
     "echo_socket_count", "echo_exact_echo_count", "http3_request_count",
-    "http3_pass_count", "dial9_requirement_count",
+    "http3_pass_count", "http3_intercept_passed", "dial9_requirement_count",
     "dial9_matched_requirement_count", "producer_sources_sha256",
     "schema_complete",
 )
@@ -577,6 +588,7 @@ def _validate_producer_sources(root, status):
         "echo_exact_echo_count": status["echo_exact_echo_count"],
         "http3_request_count": status["http3_request_count"],
         "http3_pass_count": status["http3_pass_count"],
+        "http3_intercept_passed": status["http3_intercept_passed"],
         "dial9_requirement_count": status["dial9_requirement_count"],
         "dial9_matched_requirement_count": status["dial9_matched_requirement_count"],
         "producer_sources_sha256": digest,
@@ -744,14 +756,15 @@ PHASE_FIELDS = (
     "pressure_start_line", "pressure_end_line", "echo_start_line",
     "echo_end_line", "recovery_start_line", "recovery_end_line",
     "http3_start_line", "http3_end_line", "blocked_profile_start_line",
-    "blocked_start_line", "blocked_end_line", "provider_log_end_line",
+    "blocked_start_line", "blocked_end_line",
+    "http3_intercept_start_line", "http3_intercept_end_line", "provider_log_end_line",
     "schema_complete",
 )
 
 
 def _provider_phases(root, line_count):
     raw = _exact_key_tsv(root, "provider-log-phases.tsv", PHASE_FIELDS)
-    if raw["schema_version"] != "1" or raw["schema_complete"] != "1":
+    if raw["schema_version"] != "2" or raw["schema_complete"] != "1":
         raise BundleVerificationError("provider-log phase schema is incomplete")
     phases = {
         key: _bundle_uint(value, line_count)
@@ -779,11 +792,15 @@ def _provider_phases(root, line_count):
         phases["recovery_start_line"], phases["recovery_end_line"],
         phases["http3_start_line"], phases["http3_end_line"],
         phases["blocked_profile_start_line"], phases["blocked_start_line"],
-        phases["blocked_end_line"], phases["provider_log_end_line"],
+        phases["blocked_end_line"], phases["http3_intercept_start_line"],
+        phases["http3_intercept_end_line"], phases["provider_log_end_line"],
     )
     if list(later) != sorted(later):
         raise BundleVerificationError("late provider-log phase boundaries are unordered")
-    for prefix in ("passthrough", "ntp", "control", "pressure", "echo", "recovery", "http3", "blocked"):
+    for prefix in (
+        "passthrough", "ntp", "control", "pressure", "echo", "recovery", "http3",
+        "blocked", "http3_intercept",
+    ):
         if phases[f"{prefix}_start_line"] >= phases[f"{prefix}_end_line"]:
             raise BundleVerificationError(f"empty provider-log phase: {prefix}")
     return phases
@@ -1097,6 +1114,76 @@ def _tabular_rows(root, name, header, maximum=2 * 1024 * 1024):
     return rows
 
 
+def validate_http3_intercept_decision(decisions, phases, receipt, run_uuid, provider_pid,
+                                      generation):
+    """Bind the owned H3 socket to exactly one decision in the second profile."""
+    selected = [row for row in decisions if row["source_pid"] == receipt["source_pid"]]
+    if len(selected) != 1:
+        raise BundleVerificationError("intercepted HTTP/3 lacks one exact source-PID decision")
+    row = selected[0]
+    if (
+        row["run_uuid"] != run_uuid or row["provider_pid"] != provider_pid
+        or row["generation"] != generation or row["action"] != "intercept"
+        or row["source_app"] != "com.apple.python3"
+        or row["local"] != receipt["local_endpoint"]
+        or row["remote"] != receipt["remote_endpoint"]
+        or not _in_phase(row, phases, "http3_intercept")
+    ):
+        raise BundleVerificationError("intercepted HTTP/3 tuple/identity/phase mismatch")
+    return row
+
+
+def _validate_http3_intercept_raw(root, status, decisions, phases, generation, reserved_pids):
+    # This helper is materialized from the pinned Git source during release replay.
+    # Reading the receipt never loads the client library or initiates traffic.
+    from modern_udp_e2e_probe import (
+        read_http3_receipt, read_http3_body, replay_http3_receipt, read_probe_receipt,
+    )
+
+    url_text = _read_bundle_text(root, "http3-url.txt", 4097)
+    if not url_text.endswith("\n") or len(url_text.splitlines()) != 1:
+        raise BundleVerificationError("HTTP/3 configured URL is malformed")
+    url = url_text[:-1]
+    source_pid = _bundle_uint(status["http3_intercept_source_pid"], 2**31 - 1)
+    results = _tabular_rows(
+        root, "http3-intercept-result.tsv", ("source_pid", "exit_code"), 4096,
+    )
+    if results != [[str(source_pid), "0"]] or source_pid in reserved_pids:
+        raise BundleVerificationError("intercepted HTTP/3 joined child identity/result mismatch")
+    try:
+        receipt = read_http3_receipt(root / "http3-intercept-client.json")
+        body = read_http3_body(root / "http3-intercept-body.txt")
+        if replay_http3_receipt(receipt, body, status["run_uuid"], source_pid, url) != 0:
+            raise ValueError("client did not pass")
+        blocked = read_probe_receipt(root / "udp-probe-blocked.json")
+        restore = _exact_key_tsv(root, "restore-receipt.tsv", RESTORE_FIELDS)
+        if (
+            not _bundle_uint(status["run_start_epoch_ms"]) <= blocked["end_epoch_ms"]
+                <= receipt["start_epoch_ms"] <= receipt["end_epoch_ms"]
+                <= _bundle_uint(restore["restore_started_epoch_ms"])
+                <= _bundle_uint(status["run_end_epoch_ms"])
+            or receipt["start_monotonic_ns"] < blocked["end_monotonic_ns"]
+        ):
+            raise ValueError("client receipt is outside the blocked profile lifetime")
+    except (OSError, ValueError) as error:
+        raise BundleVerificationError(f"intercepted HTTP/3 raw receipt failed: {error}") from error
+    row = validate_http3_intercept_decision(
+        decisions, phases, receipt, status["run_uuid"],
+        _bundle_uint(status["provider_pid"], 2**31 - 1), generation,
+    )
+    endpoints = _read_bundle_text(root, "http3-endpoints.txt", 64 * 1024).splitlines()
+    if (
+        status["http3_intercept_passed"] != "1"
+        or row["flow_id"] != _bundle_uint(status["http3_intercept_flow_id"])
+        or row["generation"] != _bundle_uint(status["http3_intercept_provider_generation"])
+        or row["local"] != status["http3_intercept_local_endpoint"]
+        or row["remote"] != status["http3_intercept_remote_endpoint"]
+        or row["remote"] not in endpoints
+    ):
+        raise BundleVerificationError("intercepted HTTP/3 status/endpoint mismatch")
+    return row
+
+
 def _validate_http3_raw(root, status, decisions, phases, unblocked_generation, reserved_pids):
     pid_text = _read_bundle_text(root, "http3-pids.tsv", 256 * 1024)
     pid_rows = [line.split("\t") for line in pid_text.splitlines()]
@@ -1294,7 +1381,7 @@ REQUIREMENT_HEADER = (
 
 
 def _validate_requirements(root, status, representative, echo_identities, unblocked_generation,
-                           probe_bytes):
+                           probe_bytes, http3_intercept):
     content = _read_bundle_bytes(root, "dial9-requirements.tsv", 2 * 1024 * 1024)
     try:
         text = content.decode("utf-8", errors="strict")
@@ -1308,7 +1395,7 @@ def _validate_requirements(root, status, representative, echo_identities, unbloc
         raise BundleVerificationError("Dial9 requirements are malformed") from error
     labels = ["ntp", "pressure", "recovery-ntp"] + [
         f"echo-{index}" for index in range(len(echo_identities))
-    ]
+    ] + ["http3-intercept"]
     if len(rows) != len(labels) or [row.get("label") for row in rows] != labels:
         raise BundleVerificationError("Dial9 requirements do not cover the exact modern workload")
     parsed = []
@@ -1318,7 +1405,7 @@ def _validate_requirements(root, status, representative, echo_identities, unbloc
         parsed.append({key: _bundle_uint(row[key]) for key in REQUIREMENT_HEADER[1:]})
     provider_pid = _bundle_uint(status["provider_pid"], 2**31 - 1)
     if any(
-        row["provider_pid"] != provider_pid or row["provider_generation"] != unblocked_generation
+        row["provider_pid"] != provider_pid
         or row["protocol"] != 2 or row["close_reason"] != 1
         or row["flow_id"] == 0 or row["source_pid"] == 0
         or row["min_bytes_in"] > row["max_bytes_in"]
@@ -1326,6 +1413,8 @@ def _validate_requirements(root, status, representative, echo_identities, unbloc
         for row in parsed
     ):
         raise BundleVerificationError("Dial9 requirement identity/range is invalid")
+    if any(row["provider_generation"] != unblocked_generation for row in parsed[:-1]):
+        raise BundleVerificationError("unblocked Dial9 workload used another generation")
     fixed = (
         (representative["ntp"], probe_bytes["ntp"][0], probe_bytes["ntp"][0],
          probe_bytes["ntp"][1], probe_bytes["ntp"][1]),
@@ -1349,7 +1438,7 @@ def _validate_requirements(root, status, representative, echo_identities, unbloc
     echo_bytes = _bundle_uint(status["echo_datagrams_per_socket"]) * _bundle_uint(
         status["echo_payload_bytes"]
     )
-    for row, (generation, flow_id, _local) in zip(parsed[3:], echo_identities):
+    for row, (generation, flow_id, _local) in zip(parsed[3:-1], echo_identities):
         if (
             row["provider_generation"] != generation or row["flow_id"] != flow_id
             or row["source_pid"] != _bundle_uint(status["echo_source_pid"], 2**31 - 1)
@@ -1358,6 +1447,18 @@ def _validate_requirements(root, status, representative, echo_identities, unbloc
             ))
         ):
             raise BundleVerificationError("echo Dial9 requirement mismatch")
+    h3 = parsed[-1]
+    # These are encrypted UDP transport limits. HTTP body length cannot predict
+    # QUIC handshake, acknowledgement, retransmission, or encrypted byte counts.
+    if (
+        h3["provider_generation"] != http3_intercept["generation"]
+        or h3["flow_id"] != http3_intercept["flow_id"]
+        or h3["source_pid"] != http3_intercept["source_pid"]
+        or tuple(h3[key] for key in (
+            "min_bytes_in", "max_bytes_in", "min_bytes_out", "max_bytes_out"
+        )) != (1, 16777216, 1, 16777216)
+    ):
+        raise BundleVerificationError("intercepted HTTP/3 Dial9 requirement mismatch")
     flow_ids = [row["flow_id"] for row in parsed]
     if len(set(flow_ids)) != len(flow_ids):
         raise BundleVerificationError("Dial9 requirements duplicate a flow identity")
@@ -1500,9 +1601,13 @@ def _verify_bundle_semantics(directory):
         root, status, decisions, phases, unblocked_generation,
         representative_pids | {echo_pid},
     )
-    expected_decision_count = 6 + len(echo_identities) + len(http3)
+    http3_intercept = _validate_http3_intercept_raw(
+        root, status, decisions, phases, blocked_generation,
+        representative_pids | {echo_pid} | set(http3_pids),
+    )
+    expected_decision_count = 7 + len(echo_identities) + len(http3)
     flow_ids = [row["flow_id"] for row in decisions]
-    known_pids = representative_pids | {echo_pid} | set(http3_pids)
+    known_pids = representative_pids | {echo_pid, http3_intercept["source_pid"]} | set(http3_pids)
     if (
         len(decisions) != expected_decision_count
         or {row["source_pid"] for row in decisions} != known_pids
@@ -1512,7 +1617,8 @@ def _verify_bundle_semantics(directory):
     _validate_udp_callback_errors(provider_lines, phases)
     _validate_pressure_raw(status, provider_lines, phases, representative)
     _validate_requirements(
-        root, status, representative, echo_identities, unblocked_generation, probe_bytes
+        root, status, representative, echo_identities, unblocked_generation, probe_bytes,
+        http3_intercept,
     )
     _validate_restore(root, status, blocked_generation)
     crash_snapshot_epoch = _validate_crash_snapshot(root, status)
