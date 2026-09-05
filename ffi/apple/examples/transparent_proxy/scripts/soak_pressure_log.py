@@ -718,10 +718,19 @@ def unique_json_object(pairs):
     return value
 
 
-def parse_ndjson_lines(lines):
-    """Decode an ndjson stream and report every malformed record."""
+def parse_ndjson_lines(lines, *, provider_pid=None, subsystem=None):
+    """Decode records, allowing only the bound log stream's optional preamble."""
+    pid = _nonnegative_int(provider_pid)
+    preamble = None
+    if pid is not None and pid > 0 and isinstance(subsystem, str) and subsystem:
+        preamble = (
+            f'Filtering the log data using "processIdentifier == {pid} '
+            f'AND subsystem == "{subsystem}""'
+        )
     records = [(line_number, raw.strip()) for line_number, raw in enumerate(lines, 1)
-               if raw.strip()]
+               if raw.strip() and not (
+                   line_number == 1 and raw.rstrip("\r\n") == preamble
+               )]
     decoded = []
     issues = []
     for line_number, line in records:

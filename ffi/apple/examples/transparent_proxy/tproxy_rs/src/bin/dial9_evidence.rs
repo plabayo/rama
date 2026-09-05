@@ -1628,6 +1628,8 @@ mod tests {
         let source = TempDir::new().unwrap();
         let output = TempDir::new().unwrap();
         write_trace(source.path(), "trace.1.bin", &trace_bytes(77, 2, true));
+        // A provider-wide recorder also sees unrelated ordinary TCP traffic.
+        write_trace(source.path(), "trace.2.bin", &trace_bytes(78, 1, true));
         let requirements_path = write_requirements(output.path(), PROVIDER_GENERATION);
         let (requirements, sha256) = load_requirements(&requirements_path).unwrap();
         let result = collect(
@@ -1651,6 +1653,8 @@ mod tests {
         assert_eq!(result.requirements_sha256.as_deref(), Some(sha256.as_str()));
         assert_eq!(result.requirement_count, 1);
         assert_eq!(result.matched_requirement_count, 1);
+        assert_eq!(result.required_pair_count, 2);
+        assert_eq!(result.required_flows.len(), 1);
         assert_eq!(result.required_flows[0].provider_pid, PROVIDER_PID);
         assert_eq!(
             result.required_flows[0].provider_generation,

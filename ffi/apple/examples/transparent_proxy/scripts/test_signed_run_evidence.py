@@ -2701,6 +2701,31 @@ class CrashAndReleaseSetTests(unittest.TestCase):
                     ), self.assertRaisesRegex(evidence.EvidenceError, "pressure accepted-byte requirements"):
                         evidence._validate_modern_dial9(root, udp, [], HEAD)
 
+    def test_modern_dial9_allows_unrelated_pairs_without_relaxing_required_rows(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "modern"
+            make_strict_modern_run(root)
+            udp, _ = evidence._parse_tsv_bytes((root / "udp-evidence-status.tsv").read_bytes())
+            echo_identities = [
+                (int(generation), int(flow_id), endpoint)
+                for generation, flow_id, endpoint in (
+                    line.split("\t") for line in (root / "echo-identities.tsv").read_text().splitlines()
+                )
+            ]
+            path = root / "dial9-evidence.json"
+            summary = json.loads(path.read_text())
+            # Decoder's real trace regression checks this provider-wide count;
+            # this fixture exercises the separate common-verifier boundary.
+            summary["required_pair_count"] += 1
+            path.write_text(json.dumps(summary))
+            with mock.patch.object(evidence, "_verify_pinned_dial9_replay") as replay:
+                evidence._validate_modern_dial9(root, udp, echo_identities, HEAD)
+                replay.assert_called_once_with(root, HEAD)
+                summary["matched_requirement_count"] -= 1
+                path.write_text(json.dumps(summary))
+                with self.assertRaisesRegex(evidence.EvidenceError, "cardinality mismatch"):
+                    evidence._validate_modern_dial9(root, udp, echo_identities, HEAD)
+
     def test_release_set_rejects_claim_only_fake_soak_envelope(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)

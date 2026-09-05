@@ -3055,7 +3055,10 @@ provider_source_issues = []
 timestamp_issues = []
 try:
     with open(nd, "r", errors="replace") as f:
-        decoded, ndjson_issues = parse_ndjson_lines(f)
+        decoded, ndjson_issues = parse_ndjson_lines(
+            f, provider_pid=meta.get("provider_start_pid"),
+            subsystem=meta.get("provider_bundle"),
+        )
         decoded, provider_source_issues = filter_provider_ndjson_records(
             decoded, meta.get("provider_start_pid"), meta.get("provider_bundle")
         )

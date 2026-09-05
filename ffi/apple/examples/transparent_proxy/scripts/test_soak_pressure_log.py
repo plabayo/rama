@@ -1051,6 +1051,33 @@ printf '%s\n' "$PROVIDER_EXECUTABLE_NAME" "$CRASH_PROCESS"
                 self.assertEqual(decoded, [])
                 self.assertEqual(issues, ["malformed NDJSON record at line 1"])
 
+    def test_native_log_preamble_requires_exact_identity_and_first_position(self):
+        record = '{"processID":10,"subsystem":"org.example.provider"}\n'
+        preamble = ('Filtering the log data using "processIdentifier == 10 '
+                    'AND subsystem == "org.example.provider""\n')
+        for lines in ([record], [preamble, record]):
+            decoded, issues = parse_ndjson_lines(
+                lines, provider_pid="10", subsystem="org.example.provider")
+            self.assertEqual(decoded, [json.loads(record)])
+            self.assertEqual(issues, [])
+        for lines, malformed_line in (
+            ([preamble.replace("== 10", "== 11"), record], 1),
+            ([preamble.replace("example.provider", "foreign.provider"), record], 1),
+            ([preamble.rstrip()[:-1], record], 1),
+            ([preamble, preamble, record], 2),
+            ([record, preamble], 2),
+            (["\n", preamble, record], 2),
+            ([preamble, '{"key":1,"key":2}\n', record], 2),
+        ):
+            with self.subTest(lines=lines):
+                decoded, issues = parse_ndjson_lines(
+                    lines, provider_pid=10, subsystem="org.example.provider")
+                self.assertEqual(decoded, [json.loads(record)])
+                self.assertEqual(issues, [f"malformed NDJSON record at line {malformed_line}"])
+        # Without an independently supplied capture identity, stay JSON-only.
+        _, issues = parse_ndjson_lines([preamble, record])
+        self.assertEqual(issues, ["malformed NDJSON record at line 1"])
+
     def test_oslog_timestamp_requires_a_complete_known_format(self):
         self.assertEqual(
             parse_oslog_timestamp("1970-01-01 00:01:40.000001+0000"),

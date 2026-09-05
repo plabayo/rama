@@ -1802,13 +1802,15 @@ def _validate_modern_dial9(
         raise EvidenceError("modern Dial9 baseline identity mismatch")
     flows = summary.get("required_flows")
     artifacts = summary.get("artifacts")
+    # With --requirements, required_pair_count is the provider-wide legacy
+    # count, including unrelated traffic. Matched rows bind this workload;
+    # pinned decoder replay still verifies the complete raw summary.
     if (
         summary.get("schema_version") != 1
         or summary.get("schema_complete") is not True
         or summary.get("requirements_sha256") != expected_digest
         or summary.get("requirement_count") != count
         or summary.get("matched_requirement_count") != count
-        or summary.get("required_pair_count") != count
         or summary.get("baseline_max_index") != baseline_value
         or not isinstance(flows, list)
         or len(flows) != count
@@ -3153,7 +3155,10 @@ def _proven_soak_sleep_window(
         <= Decimal(run_end_epoch_ms) / 1000
     ):
         raise EvidenceError("soak sleep phase is missing, malformed, or outside the run")
-    records, issues = parse_ndjson_lines(raw["system.ndjson"].splitlines())
+    records, issues = parse_ndjson_lines(
+        raw["system.ndjson"].splitlines(),
+        provider_pid=identity["running_pid"], subsystem=identity["running_bundle_id"],
+    )
     records, source_issues = filter_provider_ndjson_records(
         records, identity["running_pid"], identity["running_bundle_id"]
     )

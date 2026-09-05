@@ -770,7 +770,11 @@ def parse_ndjson_timestamp(value):
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        return None
+        # Python 3.9's ISO parser rejects macOS log's unseparated UTC offset.
+        try:
+            parsed = datetime.strptime(value, "%Y-%m-%d %H:%M:%S.%f%z")
+        except ValueError:
+            return None
     if parsed.tzinfo is None:
         return None
     return int(parsed.timestamp() * 1000)
@@ -784,7 +788,17 @@ def verify_ndjson_window(
 
     provider_rows = 0
     marker_ids = set()
-    for line in path.read_text(encoding="utf-8", errors="strict").splitlines():
+    # macOS log stream emits its normalized predicate before the NDJSON rows.
+    # Accept only this capture's exact optional first line; all data stays strict.
+    predicate = f'processIdentifier == {provider_pid} AND subsystem == "{subsystem}"'
+    if require_attribution:
+        predicate += f' AND composedMessage BEGINSWITH "{STRESS_MARKER_PREFIX}"'
+    preamble = f'Filtering the log data using "{predicate}"'
+    for line_number, line in enumerate(
+        path.read_text(encoding="utf-8", errors="strict").splitlines(), 1
+    ):
+        if line_number == 1 and line == preamble:
+            continue
         try:
             record = signed_run_evidence._json_object(
                 line.encode("utf-8"), "system.ndjson record"

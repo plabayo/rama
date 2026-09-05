@@ -1414,6 +1414,45 @@ class StressTrafficValidationTests(unittest.TestCase):
             self.assertEqual((root / "provider-codesign.txt").read_text(),
                              "Identifier=org.provider\nTeamIdentifier=TEAM\nCDHash=abc123\n")
 
+    def test_native_log_preamble_is_optional_exact_and_first(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for role in ("proxy-candidate", "unpaired-diagnostic"):
+                root = Path(temporary) / role
+                write_self_attested_traffic_run(root, monitored=True, role=role)
+                path = root / "system.ndjson"
+                records = path.read_text()
+                records = records.replace(
+                    "1970-01-01T00:01:40.000000+00:00",
+                    "1970-01-01 02:01:40.000000+0200",
+                )
+                # Captured macOS log output normalizes the command's predicate.
+                predicate = ('processIdentifier == 42 AND subsystem == '
+                             '"org.ramaproxy.example.tproxy.dev.provider"')
+                if role == "proxy-candidate":
+                    predicate += (' AND composedMessage BEGINSWITH '
+                                  '"[rama_tproxy_example::stress_attribution] '
+                                  'rama stress request attributed: run_uuid="')
+                preamble = f'Filtering the log data using "{predicate}"\n'
+                for prefix in ("", preamble):
+                    with self.subTest(role=role, prefix=prefix):
+                        path.write_text(prefix + records)
+                        reseal_self_attested_traffic_run(root)
+                        verify_stress_evidence(root)
+                for content in (
+                    preamble.replace("== 42", "== 43") + records,
+                    preamble.replace("dev.provider", "other.provider") + records,
+                    preamble.rstrip()[:-1] + "\n" + records,
+                    preamble + preamble + records,
+                    records + preamble,
+                    "\n" + preamble + records,
+                    preamble + "{truncated\n" + records,
+                ):
+                    with self.subTest(role=role, content=content[:180]):
+                        path.write_text(content)
+                        reseal_self_attested_traffic_run(root)
+                        with self.assertRaisesRegex(ValueError, "malformed system.ndjson"):
+                            verify_stress_evidence(root)
+
     def test_request_attribution_rejects_missing_duplicate_wrong_uuid_and_emitter(self):
         mutations = {
             "missing": lambda rows: rows[:-1],
