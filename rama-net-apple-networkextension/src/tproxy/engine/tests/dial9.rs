@@ -351,7 +351,9 @@ fn tcp_destruction_panic_on_shutdown_preserves_final_bytes_and_dial9_pair() {
         Some(FINAL_RESPONSE.to_vec())
     );
     assert_eq!(observed_rx.try_recv().unwrap(), None);
-    assert!(observed_rx.try_recv().is_err());
+    observed_rx
+        .try_recv()
+        .expect_err("close must not emit additional output or callbacks");
     assert_eq!(flow_close_count(FLOW_ID), 2);
     assert_eq!(flow_close_reason(FLOW_ID).as_deref(), Some("service_panic"));
     assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowOpened"), 1);
