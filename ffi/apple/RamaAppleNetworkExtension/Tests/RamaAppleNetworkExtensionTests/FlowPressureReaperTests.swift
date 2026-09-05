@@ -3082,12 +3082,13 @@ final class FlowPressureReaperTests: XCTestCase {
             if !victimGateReleased { victimGate.signal() }
         }
         let blocked = Fx(core: core, idleSeconds: 30, flowQueue: blockedQueue)
-        let active = Fx(core: core, idleSeconds: 0)
+        let active = Fx(core: core, idleSeconds: 0, ready: false)
         insert(core, [blocked, active])
         let selectedAtNs = DispatchTime.now().uptimeNanoseconds
         core.testReapIdleUnderPressureIfDue(nowNs: selectedAtNs)
         core.testRunPressureRecheck(nowNs: selectedAtNs + 50_000_000)
         XCTAssertTrue(core.testPressureWaitingForTombstoneAck)
+        XCTAssertEqual(core.testPressureSelectionsTotal, 1)
 
         let startupQueue = DispatchQueue(label: "rama.test.detach.pressure-startup")
         pressureFlowQueues.append(startupQueue)

@@ -18,6 +18,7 @@ final class TcpClientWritePump: @unchecked Sendable {
         onTerminalError: @escaping @Sendable (Error) -> Void,
         onDrained: @escaping @Sendable () -> Void,
         onActivity: @escaping @Sendable () -> Bool = { true },
+        writerMemoryBudget: WriterMemoryBudget = WriterMemoryBudget(),
         writePolicy: TcpWritePumpPolicy =
             TcpWritePumpPolicy(maxPendingBytes: writePumpMaxPendingBytes)
     ) {
@@ -35,6 +36,7 @@ final class TcpClientWritePump: @unchecked Sendable {
                 ))
             },
             onActivity: onActivity,
+            writerMemoryBudget: writerMemoryBudget,
             writePolicy: writePolicy
         )
         self.core = core
@@ -71,7 +73,15 @@ final class TcpClientWritePump: @unchecked Sendable {
         core.enqueue(data)
     }
 
+    @discardableResult
+    func enqueuePrecharged(_ data: Data) -> RamaTcpDeliverStatusBridge {
+        core.enqueuePrecharged(data)
+    }
+
     var maxPendingBytes: Int { core.writePolicy.maxPendingBytes }
+    var aggregateBudget: WriterMemoryBudget { core.aggregateBudget }
+
+    func retireAdmissionForEngineDetach() { core.retireAdmission() }
 
     func closeWhenDrained(
         _ onDrainedClose: @escaping @Sendable (_ wasOpened: Bool) -> Void

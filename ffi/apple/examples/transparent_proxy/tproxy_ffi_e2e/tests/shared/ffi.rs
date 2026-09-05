@@ -152,15 +152,29 @@ impl Drop for EngineHandle {
 }
 
 pub(crate) fn default_engine() -> Arc<EngineHandle> {
+    engine_with_udp_ingress_probe_lease_ms(None)
+}
+
+/// Build the real example engine with an optional probe lease override carried
+/// through its public opaque-JSON configuration. Keeping this in the linked
+/// harness (rather than reaching into engine internals) proves that the same
+/// operational knob available to the Network Extension controls the ABI path.
+pub(crate) fn engine_with_udp_ingress_probe_lease_ms(
+    probe_lease_ms: Option<u64>,
+) -> Arc<EngineHandle> {
     let (cert_pem, key_pem) = get_or_generate_mitm_ca();
-    Arc::new(EngineHandle::new_with_json(&serde_json::json!({
+    let mut config = serde_json::json!({
         "html_badge_enabled": true,
         "html_badge_label": BADGE_LABEL,
         "peek_duration_s": 0.5,
         "exclude_domains": [],
         "ca_cert_pem": cert_pem,
         "ca_key_pem": key_pem,
-    })))
+    });
+    if let Some(probe_lease_ms) = probe_lease_ms {
+        config["udp_ingress_probe_lease_ms"] = probe_lease_ms.into();
+    }
+    Arc::new(EngineHandle::new_with_json(&config))
 }
 
 pub(crate) fn load_mitm_ca_store() -> Arc<rama::tls::boring::core::x509::store::X509Store> {

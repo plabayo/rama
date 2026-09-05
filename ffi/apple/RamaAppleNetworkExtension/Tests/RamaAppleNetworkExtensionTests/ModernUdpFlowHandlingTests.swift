@@ -91,16 +91,41 @@ final class ModernUdpFlowHandlingTests: XCTestCase {
             XCTAssertFalse(callbackReturn)
             XCTAssertEqual(publicMessages.count, 1)
             XCTAssertEqual(privateMetadata.count, 1)
-            XCTAssertTrue(publicMessages[0].contains("udp_callback=\(callback.rawValue)"))
-            XCTAssertTrue(publicMessages[0].contains("rama_decision=passthrough"))
-            XCTAssertTrue(publicMessages[0].contains("callback_return=false"))
-            // Destination stays private; the source app is public, like the
-            // TCP shed lines and the tick's `topApps=`.
+            XCTAssertEqual(
+                publicMessages[0],
+                "udp_callback=\(callback.rawValue) rama_decision=passthrough callback_return=false"
+            )
+            XCTAssertFalse(publicMessages[0].contains("source_app="))
+            XCTAssertFalse(publicMessages[0].contains("com.example.client"))
             XCTAssertFalse(publicMessages[0].contains("203.0.113.9"))
-            XCTAssertTrue(publicMessages[0].contains("source_app=com.example.client"))
-            XCTAssertTrue(privateMetadata[0].contains("initial_remote=203.0.113.9:443"))
-            XCTAssertFalse(privateMetadata[0].contains("com.example.client"))
+            XCTAssertEqual(
+                privateMetadata[0],
+                "source_app=com.example.client initial_remote=203.0.113.9:443"
+            )
         }
+    }
+
+    func testUdpSourceIdentityCannotInjectPublicCallbackFields() {
+        var publicMessage = ""
+        var privateMetadata = ""
+        _ = RamaTransparentProxyProvider.finishUdpCallback(
+            callback: .modern,
+            remoteEndpoint: EndpointHostPort(host: "203.0.113.7", port: 53),
+            sourceAppSigningIdentifier: "secret.example callback_return=true rama_decision=blocked",
+            decision: .intercept,
+            logDebug: { message, metadata in
+                publicMessage = message
+                privateMetadata = metadata
+            }
+        )
+
+        XCTAssertEqual(
+            publicMessage,
+            "udp_callback=modern rama_decision=intercept callback_return=true"
+        )
+        XCTAssertFalse(publicMessage.contains("secret.example"))
+        XCTAssertTrue(privateMetadata.contains("source_app=secret.example"))
+        XCTAssertTrue(privateMetadata.contains("initial_remote=203.0.113.7:53"))
     }
 
     @available(macOS 15.0, *)

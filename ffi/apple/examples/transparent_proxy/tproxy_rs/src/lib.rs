@@ -15,10 +15,11 @@ use rama::{
         apple::networkextension::{
             self as apple_ne,
             tproxy::{
-                FlowAction, TransparentProxyConfig, TransparentProxyEngineBuilder,
-                TransparentProxyFlowAction, TransparentProxyFlowMeta, TransparentProxyHandler,
-                TransparentProxyHandlerFactory, TransparentProxyNetworkRule,
-                TransparentProxyRuleProtocol, TransparentProxyServiceContext,
+                DefaultTransparentProxyAsyncRuntimeFactory, FlowAction, TransparentProxyConfig,
+                TransparentProxyEngine, TransparentProxyEngineBuilder, TransparentProxyFlowAction,
+                TransparentProxyFlowMeta, TransparentProxyHandler, TransparentProxyHandlerFactory,
+                TransparentProxyNetworkRule, TransparentProxyRuleProtocol,
+                TransparentProxyServiceContext,
             },
         },
     },
@@ -189,8 +190,8 @@ fn udp_e2e_diagnostic(
     }
 
     Some(format!(
-        "udp_e2e_decision rama_decision={action} flow_id={} remote_endpoint={remote_endpoint} source_app={source_app}",
-        meta.flow_id,
+        "udp_e2e_decision rama_decision={action} flow_id={} remote_endpoint={remote_endpoint} source_app={source_app} source_pid={}",
+        meta.flow_id, meta.source_app_pid?,
     ))
 }
 
@@ -225,6 +226,48 @@ impl TransparentProxyHandlerFactory for DemoEngineFactory {
     }
 }
 
+/// Example-local adapter that lets the public opaque JSON configure engine
+/// construction policy before the core builder consumes that same payload for
+/// handler creation. The generic FFI macro intentionally treats opaque bytes
+/// as opaque; parsing belongs to this example's schema.
+struct DemoConfiguredEngineBuilder {
+    inner: TransparentProxyEngineBuilder<
+        DemoEngineFactory,
+        DefaultTransparentProxyAsyncRuntimeFactory,
+    >,
+}
+
+impl DemoConfiguredEngineBuilder {
+    fn new() -> Self {
+        Self {
+            inner: TransparentProxyEngineBuilder::new(DemoEngineFactory)
+                .with_runtime_factory(crate::dial9::make_runtime_factory()),
+        }
+    }
+
+    fn maybe_with_opaque_config(mut self, opaque_config: Option<Arc<[u8]>>) -> Self {
+        // Preserve the existing invalid-JSON behavior: handler construction in
+        // `build` remains authoritative and returns its normal decode error.
+        // This best-effort parse only extracts fields needed before that point.
+        if let Ok(config) =
+            self::config::DemoProxyConfig::from_opaque_config(opaque_config.as_deref())
+            && let Some(milliseconds) = config.udp_ingress_probe_lease_ms
+        {
+            self.inner = self
+                .inner
+                .with_udp_ingress_probe_lease(Duration::from_millis(milliseconds));
+        }
+        self.inner = self.inner.maybe_with_opaque_config(opaque_config);
+        self
+    }
+
+    fn build(
+        self,
+    ) -> Result<TransparentProxyEngine<DemoTransparentProxyHandler>, rama::error::BoxError> {
+        self.inner.build()
+    }
+}
+
 #[derive(Clone)]
 struct DemoTransparentProxyHandler {
     config: TransparentProxyConfig,
@@ -256,14 +299,16 @@ struct AppMessageReply {
 
 impl DemoTransparentProxyHandler {
     async fn try_new(ctx: TransparentProxyServiceContext) -> Result<Self, rama::error::BoxError> {
+        let demo_config = self::config::DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
         let (tcp_mitm_service, shared_state) =
             self::tcp::DemoTcpMitmService::try_new(ctx.clone()).await?;
-        let udp_service = self::udp::try_new_service(ctx.clone()).await?.boxed();
+        let udp_policy_scope = UdpPolicyScope::new(demo_config.udp_e2e_mode, Instant::now());
+        let udp_service = self::udp::try_new_service(ctx.clone(), udp_policy_scope)
+            .await?
+            .boxed();
 
-        let demo_config = self::config::DemoProxyConfig::from_opaque_config(ctx.opaque_config())?;
         let udp_passthrough_ports: Arc<[u16]> = demo_config.udp_passthrough_ports.clone().into();
         let udp_blocked_endpoints = demo_config.udp_blocked_endpoints.clone().into();
-        let udp_policy_scope = UdpPolicyScope::new(demo_config.udp_e2e_mode, Instant::now());
         // Treat 0 / absent as "platform default".
         let egress_connect_timeout = demo_config
             .tcp_connect_timeout_ms
@@ -282,7 +327,7 @@ impl DemoTransparentProxyHandler {
             });
         }
 
-        let proxy_config = TransparentProxyConfig::new()
+        let mut proxy_config = TransparentProxyConfig::new()
             .with_rules(vec![
                 TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Tcp),
                 TransparentProxyNetworkRule::any().with_protocol(TransparentProxyRuleProtocol::Udp),
@@ -294,6 +339,9 @@ impl DemoTransparentProxyHandler {
             // the handler and use the transparent-provider passthrough contract.
             // Loopback is intentionally left handled.
             .with_exclude_ip_scopes(IpScopes::LOCAL.difference(IpScopes::LOOPBACK));
+        if let Some(max_pending_bytes) = demo_config.tcp_write_pump_max_pending_bytes {
+            proxy_config = proxy_config.with_tcp_write_pump_max_pending_bytes(max_pending_bytes);
+        }
 
         let concurrency_limiter =
             Arc::new(concurrency::ConcurrencyLimiter::new(Default::default()));
@@ -495,6 +543,7 @@ mod udp_policy_tests {
                 .parse()
                 .expect("non-empty bundle identifier"),
         );
+        meta.source_app_pid = Some(4242);
         meta
     }
 
@@ -552,7 +601,7 @@ mod udp_policy_tests {
     fn e2e_diagnostics_are_gated_and_allowlisted() {
         let python = udp_meta_for_app("1.1.1.1:53", "com.apple.python3");
         let expected = format!(
-            "udp_e2e_decision rama_decision=passthrough flow_id={} remote_endpoint=1.1.1.1:53 source_app=com.apple.python3",
+            "udp_e2e_decision rama_decision=passthrough flow_id={} remote_endpoint=1.1.1.1:53 source_app=com.apple.python3 source_pid=4242",
             python.flow_id,
         );
         assert_eq!(
@@ -569,6 +618,13 @@ mod udp_policy_tests {
             udp_e2e_diagnostic(true, &background, TransparentProxyFlowAction::Passthrough),
             None
         );
+
+        let mut missing_pid = python;
+        missing_pid.source_app_pid = None;
+        assert_eq!(
+            udp_e2e_diagnostic(true, &missing_pid, TransparentProxyFlowAction::Passthrough),
+            None
+        );
     }
 }
 
@@ -578,10 +634,7 @@ apple_ne::transparent_proxy_ffi! {
     // deadline. UDP has no absolute max lifetime by default so active QUIC/H3
     // flows remain viable; deployments can opt into a cap explicitly with
     // `.with_udp_max_flow_lifetime(...)`.
-    engine_builder = TransparentProxyEngineBuilder::new(DemoEngineFactory)
-        // dial9 runtime telemetry. Enabled when the FFI init handed
-        // us a storage directory (the production code path); falls
-        // back to a plain tokio runtime when no storage dir is
-        // wired through. See `src/dial9.rs` and the example README.
-        .with_runtime_factory(crate::dial9::make_runtime_factory()),
+    // The adapter preserves the same dial9 runtime factory while allowing
+    // example-owned opaque JSON fields to tune construction-time policy.
+    engine_builder = DemoConfiguredEngineBuilder::new(),
 }

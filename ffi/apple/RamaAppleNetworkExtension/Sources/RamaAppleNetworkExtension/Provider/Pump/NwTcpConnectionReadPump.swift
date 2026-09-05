@@ -48,11 +48,13 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
     /// (NWConnection-receive) direction. Dropping rejected bytes here is what
     /// the wails-zip / golang-module repro showed as TLS "bad record MAC".
     private var pendingData: Data?
+    private var pendingReservation: WriterMemoryGrant?
+    private let writerMemoryBudget: WriterMemoryBudget
     private var pendingTerminal: EgressReadTerminal?
     private var observedTerminal: EgressReadTerminal?
     /// See [`TcpClientReadPump.onPromoteCarryover`] — same role for
     /// the egress (NWConnection-receive) direction.
-    private var onPromoteCarryover: (@Sendable (Data?) -> Void)?
+    private var onPromoteCarryover: (@Sendable (Data?, WriterMemoryGrant?) -> Void)?
     private var onPromoteError: (@Sendable (Error) -> Void)?
     private var onPromoteComplete: (@Sendable () -> Void)?
 
@@ -64,7 +66,8 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         onTerminalObserved: @escaping @Sendable () -> Void = {},
         onReadError: @escaping @Sendable (Error) -> Void = { _ in },
         onAbnormalStop: (@Sendable (Error) -> Void)? = nil,
-        onActivity: @escaping @Sendable () -> Void = {}
+        onActivity: @escaping @Sendable () -> Void = {},
+        writerMemoryBudget: WriterMemoryBudget = WriterMemoryBudget()
     ) {
         self.connection = connection
         self.session = session
@@ -74,8 +77,10 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         self.onReadError = onReadError
         self.onAbnormalStop = onAbnormalStop
         self.onActivity = onActivity
+        self.writerMemoryBudget = writerMemoryBudget
         queue.setSpecific(key: queueKey, value: 1)
     }
+    deinit { pendingReservation?.release() }
     func start() {
         queue.async { self.scheduleReadLocked() }
     }
@@ -114,6 +119,22 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
     ) {
         runOnQueue {
             self.cancelForPromoteLocked(
+                onCarryover: { payload, reservation in
+                    reservation?.release()
+                    onCarryover(payload)
+                },
+                onError: onError,
+                onComplete: onComplete)
+        }
+    }
+
+    func cancelForPromoteWithReservations(
+        onCarryover: @escaping @Sendable (Data?, WriterMemoryGrant?) -> Void,
+        onError: @escaping @Sendable (Error) -> Void = { _ in },
+        onComplete: @escaping @Sendable () -> Void
+    ) {
+        runOnQueue {
+            self.cancelForPromoteLocked(
                 onCarryover: onCarryover,
                 onError: onError,
                 onComplete: onComplete)
@@ -121,7 +142,7 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
     }
 
     private func cancelForPromoteLocked(
-        onCarryover: @escaping @Sendable (Data?) -> Void,
+        onCarryover: @escaping @Sendable (Data?, WriterMemoryGrant?) -> Void,
         onError: @escaping @Sendable (Error) -> Void,
         onComplete: @escaping @Sendable () -> Void
     ) {
@@ -137,21 +158,23 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                 if case .failure(let error) = terminal {
                     onError(error)
                 }
-                onCarryover(.none)
+                onCarryover(.none, nil)
             }
             onComplete()
             return
         }
         if let pending = pendingData {
             pendingData = nil
-            onCarryover(.some(pending))
+            let reservation = pendingReservation
+            pendingReservation = nil
+            onCarryover(.some(pending), reservation)
         }
         if let terminal = pendingTerminal {
             pendingTerminal = nil
             if case .failure(let error) = terminal {
                 onError(error)
             }
-            onCarryover(.none)
+            onCarryover(.none, nil)
         }
         let hadInFlightRead = (phase == .reading)
         phase = .closed
@@ -172,6 +195,8 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         if let pending = self.pendingData {
             guard let session = self.session else {
                 self.pendingData = nil
+                self.pendingReservation?.release()
+                self.pendingReservation = nil
                 self.phase = .closed
                 self.scheduleEgressReleaseLocked(
                     Self.abnormalStopError(
@@ -182,6 +207,8 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
             switch session.onEgressBytes(pending) {
             case .accepted:
                 self.pendingData = nil
+                self.pendingReservation?.release()
+                self.pendingReservation = nil
                 if let terminal = self.pendingTerminal {
                     self.pendingTerminal = nil
                     self.finishTerminalLocked(terminal)
@@ -195,6 +222,8 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                 // Stop reading AND arm the bounded release so the
                 // NWConnection can't linger if the clean path never cancels.
                 self.pendingData = nil
+                self.pendingReservation?.release()
+                self.pendingReservation = nil
                 let terminal = self.pendingTerminal
                 self.pendingTerminal = nil
                 self.phase = .closed
@@ -217,7 +246,43 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
             if let data, !data.isEmpty {
                 self.onActivity()
             }
-            self.runOnQueue {
+            // Production Network.framework callbacks arrive on the start
+            // queue and remain allocation-free here. The defensive off-queue
+            // path reserves before its async block captures payload bytes.
+            let callbackIsOnQueue = DispatchQueue.getSpecific(key: self.queueKey) != nil
+            let transitReservation: WriterMemoryGrant?
+            if !callbackIsOnQueue, let data, !data.isEmpty {
+                guard let reservation = self.writerMemoryBudget.tryReserveGrant(
+                    bytes: data.count)
+                else {
+                    self.queue.async { [weak self] in
+                        guard let self else { return }
+                        let pressureError = Self.memoryPressureError()
+                        if self.phase == .closed {
+                            // A promote cutover can win the queue before this
+                            // defensive off-queue callback. Complete that exact
+                            // read barrier without retaining the uncharged Data.
+                            let sink = self.onPromoteCarryover
+                            let errorSink = self.onPromoteError
+                            let complete = self.onPromoteComplete
+                            self.onPromoteCarryover = nil
+                            self.onPromoteError = nil
+                            self.onPromoteComplete = nil
+                            errorSink?(pressureError)
+                            sink?(.none, nil)
+                            complete?()
+                            return
+                        }
+                        self.phase = .closed
+                        self.scheduleEgressReleaseLocked(pressureError)
+                    }
+                    return
+                }
+                transitReservation = reservation
+            } else {
+                transitReservation = nil
+            }
+            self.runOnQueue { [transitReservation] in
                 if self.phase == .closed {
                     // Receive in flight while the pump was
                     // cancelled. If a promote-cutover installed
@@ -230,13 +295,19 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                     self.onPromoteError = nil
                     self.onPromoteComplete = nil
                     if let data, !data.isEmpty {
-                        sink?(.some(data))
+                        if let sink {
+                            sink(.some(data), transitReservation)
+                        } else {
+                            transitReservation?.release()
+                        }
+                    } else {
+                        transitReservation?.release()
                     }
                     if let error {
                         errorSink?(error)
-                        sink?(.none)
+                        sink?(.none, nil)
                     } else if isComplete {
-                        sink?(.none)
+                        sink?(.none, nil)
                     }
                     complete?()
                     return
@@ -260,6 +331,7 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                         // NWConnection's read side draining bytes that have
                         // nowhere to go. Arm the bounded release so the
                         // connection can't linger.
+                        transitReservation?.release()
                         self.phase = .closed
                         self.scheduleEgressReleaseLocked(
                             Self.abnormalStopError(
@@ -269,6 +341,7 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                     }
                     switch session.onEgressBytes(data) {
                     case .accepted:
+                        transitReservation?.release()
                         break
                     case .paused:
                         // Rust did NOT take these bytes. Save them for
@@ -279,7 +352,15 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                                 "tcp egress read pump: replay buffer occupied (\(data.count) B); egress channel full"
                             )
                         }
+                        let reservation = transitReservation
+                            ?? self.writerMemoryBudget.tryReserveGrant(bytes: data.count)
+                        guard let reservation else {
+                            self.phase = .closed
+                            self.scheduleEgressReleaseLocked(Self.memoryPressureError())
+                            return
+                        }
                         self.pendingData = data
+                        self.pendingReservation = reservation
                         self.pendingTerminal = terminal
                         self.phase = .paused
                         if case .failure(let error) = terminal {
@@ -296,6 +377,7 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                         // path never reaches the cancel. Symmetric with the
                         // EOF/error path and with `TcpClientReadPump`'s
                         // `.closed` → `terminate(...)`.
+                        transitReservation?.release()
                         self.phase = .closed
                         self.scheduleEgressReleaseLocked(
                             Self.abnormalStopError(
@@ -379,6 +461,8 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
             guard let self else { return }
             self.phase = .closed
             self.pendingData = nil
+            self.pendingReservation?.release()
+            self.pendingReservation = nil
             self.pendingTerminal = nil
             // External cancel pre-empts the EOF backstop: the work
             // item's only job is to ensure cancel reaches the
@@ -387,5 +471,15 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
             self.eofWork?.cancel()
             self.eofWork = nil
         }
+    }
+
+    private static func memoryPressureError() -> Error {
+        NSError(
+            domain: "rama.tproxy.writer-memory",
+            code: 3,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "process Swift payload envelope exhausted retaining TCP egress replay"
+            ])
     }
 }

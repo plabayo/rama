@@ -391,6 +391,201 @@ final class TcpReadPumpReplayTests: XCTestCase {
         XCTAssertEqual(conn.pendingReceiveCount, 1)
     }
 
+    func testClientReadTransitAcrossBlockedRetiringQueuesSharesOneEnvelope() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(maxBytes: 4, maxItems: 1))
+        let firstSink = ScriptedBytesSink([.accepted])
+        let secondSink = ScriptedBytesSink([.accepted])
+        let firstFlow = MockTcpFlow()
+        let secondFlow = MockTcpFlow()
+        let firstQueue = DispatchQueue(label: "rama.tproxy.read-transit.retired.first")
+        let secondQueue = DispatchQueue(label: "rama.tproxy.read-transit.retired.second")
+        let secondTerminated = expectation(description: "second transit denied")
+        let first = TcpClientReadPump(
+            flow: firstFlow, session: firstSink, queue: firstQueue,
+            logger: { _ in }, onTerminal: { _ in },
+            writerMemoryBudget: budget)
+        let second = TcpClientReadPump(
+            flow: secondFlow, session: secondSink, queue: secondQueue,
+            logger: { _ in }, onTerminal: { error in
+                XCTAssertNotNil(error)
+                secondTerminated.fulfill()
+            }, writerMemoryBudget: budget)
+        first.requestRead()
+        second.requestRead()
+        pollUntil("both generations issued reads") {
+            firstFlow.pendingReadCount == 1 && secondFlow.pendingReadCount == 1
+        }
+
+        let firstGate = DispatchSemaphore(value: 0)
+        let secondGate = DispatchSemaphore(value: 0)
+        let gatesEntered = expectation(description: "both flow queues blocked")
+        gatesEntered.expectedFulfillmentCount = 2
+        firstQueue.async { gatesEntered.fulfill(); firstGate.wait() }
+        secondQueue.async { gatesEntered.fulfill(); secondGate.wait() }
+        wait(for: [gatesEntered], timeout: 3)
+
+        firstFlow.completeRead(data: Data(repeating: 1, count: 4), error: nil)
+        pollUntil("first callback transit charged") {
+            budget.snapshot().retainedBytes == 4
+        }
+        secondFlow.completeRead(data: Data(repeating: 2, count: 4), error: nil)
+        Thread.sleep(forTimeInterval: 0.02)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 4)
+        XCTAssertTrue(secondSink.received.isEmpty)
+
+        firstGate.signal()
+        secondGate.signal()
+        wait(for: [secondTerminated], timeout: 3)
+        pollUntil("first transit consumed and released") {
+            firstSink.received.count == 1 && budget.snapshot().retainedBytes == 0
+        }
+        withExtendedLifetime((first, second)) {}
+    }
+
+    func testOffQueueEgressTransitIsChargedUntilQueuedDeliveryConsumesIt() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(maxBytes: 4, maxItems: 1))
+        let sink = ScriptedBytesSink([.accepted])
+        let connection = MockNwConnection()
+        let queue = DispatchQueue(label: "rama.tproxy.egress-transit")
+        let pump = NwTcpConnectionReadPump(
+            connection: connection,
+            session: sink,
+            queue: queue,
+            eofGraceDeadline: .seconds(60),
+            writerMemoryBudget: budget)
+        pump.start()
+        pollUntil("egress receive issued") { connection.pendingReceiveCount == 1 }
+
+        let entered = expectation(description: "egress queue blocked")
+        let gate = DispatchSemaphore(value: 0)
+        queue.async { entered.fulfill(); gate.wait() }
+        wait(for: [entered], timeout: 3)
+        XCTAssertTrue(connection.completePendingReceive(
+            data: Data(repeating: 3, count: 4), isComplete: false))
+        XCTAssertEqual(budget.snapshot().retainedBytes, 4)
+        gate.signal()
+        pollUntil("off-queue transit consumed") {
+            sink.received.count == 1 && budget.snapshot().retainedBytes == 0
+        }
+        withExtendedLifetime(pump) {}
+    }
+
+    func testClientPromotionCompletesWhenTransitAdmissionFails() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(maxBytes: 4, maxItems: 1))
+        XCTAssertTrue(budget.tryReserve(bytes: 4))
+        let sink = ScriptedBytesSink([.accepted])
+        let flow = MockTcpFlow()
+        let queue = DispatchQueue(label: "rama.tproxy.client-promote-pressure")
+        let terminalCount = TestValue(0)
+        let errorCount = TestValue(0)
+        let carryoverCount = TestValue(0)
+        let completeCount = TestValue(0)
+        let pump = TcpClientReadPump(
+            flow: flow,
+            session: sink,
+            queue: queue,
+            logger: { _ in },
+            onTerminal: { _ in terminalCount.update { $0 += 1 } },
+            writerMemoryBudget: budget)
+        pump.requestRead()
+        pollUntil("client read is pending before promotion") {
+            flow.pendingReadCount == 1
+        }
+
+        queue.sync {
+            pump.cancelForPromote(
+                onCarryover: { _ in carryoverCount.update { $0 += 1 } },
+                onError: { _ in errorCount.update { $0 += 1 } },
+                onComplete: { completeCount.update { $0 += 1 } })
+        }
+        XCTAssertEqual(completeCount.get(), 0)
+
+        let blockerEntered = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        queue.async {
+            blockerEntered.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerEntered.wait(timeout: .now() + 3), .success)
+        flow.completeRead(data: Data([0xA1]), error: nil)
+        XCTAssertEqual(completeCount.get(), 0)
+
+        releaseBlocker.signal()
+        pollUntil("client promotion pressure result completes") {
+            completeCount.get() == 1
+        }
+        queue.sync {}
+        XCTAssertEqual(errorCount.get(), 1)
+        XCTAssertEqual(carryoverCount.get(), 0)
+        XCTAssertEqual(terminalCount.get(), 0)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 4)
+        budget.release(bytes: 4)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        withExtendedLifetime(pump) {}
+    }
+
+    func testEgressPromotionCompletesWhenOffQueueTransitAdmissionFails() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(maxBytes: 4, maxItems: 1))
+        XCTAssertTrue(budget.tryReserve(bytes: 4))
+        let sink = ScriptedBytesSink([.accepted])
+        let connection = MockNwConnection()
+        connection.transition(to: .ready)
+        let queue = DispatchQueue(label: "rama.tproxy.egress-promote-pressure")
+        let abnormalStopCount = TestValue(0)
+        let errorCount = TestValue(0)
+        let eofCount = TestValue(0)
+        let completeCount = TestValue(0)
+        let pump = NwTcpConnectionReadPump(
+            connection: connection,
+            session: sink,
+            queue: queue,
+            eofGraceDeadline: .seconds(60),
+            onAbnormalStop: { _ in abnormalStopCount.update { $0 += 1 } },
+            writerMemoryBudget: budget)
+        pump.start()
+        pollUntil("egress receive is pending before promotion") {
+            connection.pendingReceiveCount == 1
+        }
+
+        queue.sync {
+            pump.cancelForPromote(
+                onCarryover: { payload in
+                    if payload == nil { eofCount.update { $0 += 1 } }
+                },
+                onError: { _ in errorCount.update { $0 += 1 } },
+                onComplete: { completeCount.update { $0 += 1 } })
+        }
+        XCTAssertEqual(completeCount.get(), 0)
+
+        let blockerEntered = DispatchSemaphore(value: 0)
+        let releaseBlocker = DispatchSemaphore(value: 0)
+        queue.async {
+            blockerEntered.signal()
+            releaseBlocker.wait()
+        }
+        XCTAssertEqual(blockerEntered.wait(timeout: .now() + 3), .success)
+        XCTAssertTrue(connection.completePendingReceive(
+            data: Data([0xB1]), isComplete: false, error: nil))
+        XCTAssertEqual(completeCount.get(), 0)
+
+        releaseBlocker.signal()
+        pollUntil("egress promotion pressure result completes") {
+            completeCount.get() == 1
+        }
+        queue.sync {}
+        XCTAssertEqual(errorCount.get(), 1)
+        XCTAssertEqual(eofCount.get(), 1)
+        XCTAssertEqual(abnormalStopCount.get(), 0)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 4)
+        budget.release(bytes: 4)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        withExtendedLifetime(pump) {}
+    }
+
     // MARK: - cancelForPromote hands the held replay buffer to carryover
 
     /// When a promote cutover hits a pump that is holding a `.paused` chunk,

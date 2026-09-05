@@ -67,9 +67,11 @@ enum TestFixtures {
     /// keychain or the Secure Enclave.
     static func engineConfigJson(
         excludeDomains: [String] = [],
-        peekDurationSeconds: Double = 0.5
+        peekDurationSeconds: Double = 0.5,
+        udpIngressProbeLeaseMs: UInt64? = nil,
+        tcpWritePumpMaxPendingBytes: Int? = nil
     ) -> Data {
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "html_badge_enabled": false,
             "html_badge_label": "rama-swift-ffi-test",
             "peek_duration_s": peekDurationSeconds,
@@ -77,6 +79,12 @@ enum TestFixtures {
             "ca_cert_pem": caCertPem,
             "ca_key_pem": caKeyPem,
         ]
+        if let udpIngressProbeLeaseMs {
+            payload["udp_ingress_probe_lease_ms"] = udpIngressProbeLeaseMs
+        }
+        if let tcpWritePumpMaxPendingBytes {
+            payload["tcp_write_pump_max_pending_bytes"] = tcpWritePumpMaxPendingBytes
+        }
         return try! JSONSerialization.data(withJSONObject: payload)
     }
 

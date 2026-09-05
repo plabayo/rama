@@ -39,6 +39,8 @@ final class EngineHandleTests: XCTestCase {
         XCTAssertEqual(config.udpChannelCapacity, 32)
         XCTAssertEqual(config.udpIngressPerFlowMaxBytes, 262_144)
         XCTAssertEqual(config.udpIngressGlobalMaxBytes, 16_777_216)
+        XCTAssertEqual(config.writerMemoryMaxBytes, 64 * 1024 * 1024)
+        XCTAssertEqual(config.writerMemoryMaxItems, 65_536)
     }
 
     /// Malformed / wrong-shape engine config must fail the FALLIBLE init

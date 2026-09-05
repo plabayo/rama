@@ -273,6 +273,40 @@ fn udp_ingress_byte_limits_are_immutable_validated_builder_state() {
 }
 
 #[test]
+fn udp_ingress_probe_lease_defaults_overrides_and_rejects_unbounded_values() {
+    let build = |lease: Option<Duration>| {
+        let mut builder =
+            TransparentProxyEngineBuilder::new(TestHandlerFactory(TestHandler::passthrough()))
+                .with_runtime_factory(TestRuntimeFactory);
+        builder = builder.maybe_with_udp_ingress_probe_lease(lease);
+        builder.build()
+    };
+
+    assert!(build(Some(Duration::ZERO)).is_err());
+    assert!(build(Some(MAX_UDP_INGRESS_PROBE_LEASE + Duration::from_millis(1))).is_err());
+
+    let default_engine = build(None).expect("default probe lease must build");
+    assert_eq!(
+        default_engine.udp_ingress_probe_lease(),
+        DEFAULT_UDP_INGRESS_PROBE_LEASE
+    );
+    default_engine.stop(0);
+
+    let custom = Duration::from_millis(500);
+    let custom_engine = build(Some(custom)).expect("bounded probe lease override must build");
+    assert_eq!(custom_engine.udp_ingress_probe_lease(), custom);
+    custom_engine.stop(0);
+
+    let max_engine =
+        build(Some(MAX_UDP_INGRESS_PROBE_LEASE)).expect("maximum bounded probe lease must build");
+    assert_eq!(
+        max_engine.udp_ingress_probe_lease(),
+        MAX_UDP_INGRESS_PROBE_LEASE
+    );
+    max_engine.stop(0);
+}
+
+#[test]
 fn builder_rejects_zero_tcp_flow_buffer_size() {
     // `tokio::io::duplex(0)` deadlocks the per-flow service on its first
     // `write_all` (the writer immediately backs off waiting for the

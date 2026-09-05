@@ -35,6 +35,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         let clientWritePump: TcpClientWritePump
         let egressWritePump: NwTcpConnectionWritePump
         let forwarder: TcpDirectForwarder
+        let writerMemoryBudget: WriterMemoryBudget
         var terminalCount = 0
         /// Counts the forwarder's `onClosing` (first `.finishing`) and
         /// `onDrainStall` (wedged-finish backstop) callbacks. Read via
@@ -81,7 +82,8 @@ final class TcpDirectForwarderTests: XCTestCase {
             initialDrainIdleMs: UInt64 = .max,
             activityAllowed: Bool = true,
             writeChunkLimit: Int = writePumpMaxPendingBytes,
-            onReceiveMaximumLength: (@Sendable (Int) -> Void)? = nil
+            onReceiveMaximumLength: (@Sendable (Int) -> Void)? = nil,
+            writerMemoryBudget: WriterMemoryBudget = WriterMemoryBudget()
         ) {
             let flow = MockTcpFlow()
             let conn = MockNwConnection()
@@ -96,6 +98,7 @@ final class TcpDirectForwarderTests: XCTestCase {
             self.flow = flow
             self.conn = conn
             self.drainIdleMs = drainIdleClock
+            self.writerMemoryBudget = writerMemoryBudget
             queue = DispatchQueue(label: "rama.tproxy.test.fwd.\(tag)", qos: .utility)
             // Move connection to .ready so the egress write pump
             // is willing to send. Real production wires this via
@@ -109,7 +112,8 @@ final class TcpDirectForwarderTests: XCTestCase {
                 flow: flow, queue: queue,
                 logger: { _ in },
                 onTerminalError: { _ in },
-                onDrained: { forwarderRef.get()?.onClientPumpDrained() })
+                onDrained: { forwarderRef.get()?.onClientPumpDrained() },
+                writerMemoryBudget: writerMemoryBudget)
             egressWritePump = NwTcpConnectionWritePump(
                 connection: connection, queue: queue,
                 lingerCloseDeadline: .milliseconds(100),
@@ -117,7 +121,8 @@ final class TcpDirectForwarderTests: XCTestCase {
                 // Mirror production's promoted-mode wiring
                 // (`TcpFlowSession.buildEgressWritePump`): a terminal
                 // egress write error drives the forwarder to terminal.
-                onTerminal: { _ in forwarderRef.get()?.cancel() })
+                onTerminal: { _ in forwarderRef.get()?.cancel() },
+                writerMemoryBudget: writerMemoryBudget)
             // Mark client write pump opened so it accepts enqueues.
             clientWritePump.markOpened()
 
@@ -131,6 +136,7 @@ final class TcpDirectForwarderTests: XCTestCase {
                 flow: flow, connection: connection,
                 clientWritePump: clientWritePump,
                 egressWritePump: egressWritePump,
+                writerMemoryBudget: writerMemoryBudget,
                 queue: queue,
                 logger: { _ in },
                 drainStallDeadline: drainStallDeadline,
@@ -220,6 +226,116 @@ final class TcpDirectForwarderTests: XCTestCase {
             "no connection.receive until S→C direction is `.active`")
         XCTAssertEqual(h.c2sPhase, .buffering)
         XCTAssertEqual(h.s2cPhase, .buffering)
+    }
+
+    func testManyFlowCarryoverBuffersShareOneExactProcessBound() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 32,
+                maxItems: 4,
+                tcpWaiterMaxBytes: 8,
+                udpPressureReserveBytes: 0,
+                udpPressureReserveItems: 0))
+        let harnesses = (0..<12).map {
+            Harness(
+                "aggregate.carryover.\($0)",
+                preDrained: false,
+                autoCompleter: false,
+                writeChunkLimit: 8,
+                writerMemoryBudget: budget)
+        }
+
+        for harness in harnesses {
+            harness.forwarder.acceptClientCarryover(Data(repeating: 0xA5, count: 8))
+            harness.drain()
+            XCTAssertLessThanOrEqual(budget.snapshot().retainedBytes, 32)
+            XCTAssertLessThanOrEqual(budget.snapshot().retainedItems, 4)
+        }
+        XCTAssertEqual(budget.snapshot().retainedBytes, 32)
+        XCTAssertEqual(budget.snapshot().retainedItems, 4)
+        XCTAssertEqual(
+            harnesses.filter { harness in
+                harness.queue.sync { harness.readError != nil }
+            }.count,
+            8,
+            "flows beyond the exact shared bound fail closed instead of retaining uncharged carryover")
+
+        for harness in harnesses { harness.forwarder.cancel() }
+        for harness in harnesses { harness.drain() }
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+    }
+
+    func testBothCarryoverDirectionsTransferChargeWithoutLoss() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 64,
+                maxItems: 16,
+                tcpWaiterMaxBytes: 8,
+                udpPressureReserveBytes: 8,
+                udpPressureReserveItems: 2))
+        let harness = Harness(
+            "aggregate.transfer",
+            preDrained: false,
+            writeChunkLimit: 4,
+            writerMemoryBudget: budget)
+        let c2s = Data([0, 1, 2, 3, 4, 5, 6])
+        let s2c = Data([10, 11, 12, 13, 14])
+
+        harness.forwarder.acceptClientCarryover(c2s)
+        harness.forwarder.acceptEgressCarryover(s2c)
+        harness.drain()
+        XCTAssertEqual(budget.snapshot().retainedBytes, c2s.count + s2c.count)
+        XCTAssertEqual(budget.snapshot().retainedItems, 4)
+
+        harness.forwarder.markRustC2SDone()
+        harness.forwarder.markRustS2CDone()
+        waitFor("both charged carryovers drain", timeout: 2.0) {
+            budget.snapshot().retainedBytes == 0
+        }
+        XCTAssertEqual(
+            Data(harness.conn.sentChunks.compactMap(\.content).joined()), c2s)
+        XCTAssertEqual(Data(harness.flow.writes.joined()), s2c)
+        XCTAssertNil(harness.queue.sync { harness.readError })
+    }
+
+    func testClientReadTransitChargeSurvivesBlockedQueueAndTransfersToWriter() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 4,
+                maxItems: 1,
+                tcpWaiterMaxBytes: 4,
+                udpPressureReserveBytes: 0,
+                udpPressureReserveItems: 0))
+        let harness = Harness(
+            "aggregate.client-transit",
+            autoCompleter: false,
+            writeChunkLimit: 4,
+            writerMemoryBudget: budget)
+        harness.forwarder.markRustC2SDone()
+        waitFor("direct client read issued", timeout: 1.0) {
+            harness.flow.pendingReadCount == 1
+        }
+
+        let entered = DispatchSemaphore(value: 0)
+        let gate = DispatchSemaphore(value: 0)
+        harness.queue.async { entered.signal(); gate.wait() }
+        XCTAssertEqual(entered.wait(timeout: .now() + 1), .success)
+        harness.flow.completeRead(data: Data(repeating: 0xA5, count: 4), error: nil)
+        waitFor("callback transit charged", timeout: 1.0) {
+            budget.snapshot().retainedBytes == 4
+        }
+        XCTAssertFalse(budget.tryReserve(bytes: 1))
+
+        gate.signal()
+        waitFor("transit transferred into egress write", timeout: 1.0) {
+            harness.conn.sentChunks.count == 1
+        }
+        XCTAssertEqual(budget.snapshot().retainedBytes, 4)
+        XCTAssertTrue(harness.conn.completePendingSend(error: nil))
+        waitFor("transport completion retires transferred charge", timeout: 1.0) {
+            budget.snapshot().retainedBytes == 0
+        }
     }
 
     /// `markRustC2SDone` flushes the C→S carryover buffer to the

@@ -22,12 +22,31 @@ protocol TcpWritePumpCoreDelegate: AnyObject {
 /// time as closures so the core is agnostic of whether the underlying
 /// transport is an `NEAppProxyTCPFlow` or an `NWConnection`.
 final class TcpWritePumpCore: @unchecked Sendable {
+    private final class ChargedChunk: @unchecked Sendable {
+        let data: Data
+        private let budget: WriterMemoryBudget
+
+        init(data: Data, budget: WriterMemoryBudget) {
+            self.data = data
+            self.budget = budget
+        }
+
+        // Retained alongside `data` through dispatch, queueing, retries, and
+        // the transport completion. If a transport discards its completion,
+        // ARC still refunds the charge when it drops this single allocation.
+        deinit {
+            budget.release(bytes: data.count)
+        }
+    }
+
     let state = Locked(TcpWriterState())
     let queue: DispatchQueue
     /// Immutable for the pump lifetime. In production this comes from the
     /// engine lease, so a replacement generation cannot change admission or
     /// wake thresholds underneath a retiring write.
     let writePolicy: TcpWritePumpPolicy
+    private let writerMemoryBudget: WriterMemoryBudget
+    var aggregateBudget: WriterMemoryBudget { writerMemoryBudget }
     private let queueKey = DispatchSpecificKey<UInt8>()
     private let inlineWriteCompletionWhenOnQueue: Bool
     private let onDrained: @Sendable () -> Void
@@ -40,7 +59,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
     // executing on `queue`. `ChunkQueue` replaces `[Data]` so the
     // hot-path dequeue and the retry push-back are amortised O(1)
     // instead of O(n) on every drain step.
-    private var pending: ChunkQueue<Data> = ChunkQueue()
+    private var pending: ChunkQueue<ChargedChunk> = ChunkQueue()
     private var writing = false
     private var lifecycle: WritePumpLifecycle
     private var retrying: WriteRetry?
@@ -68,11 +87,13 @@ final class TcpWritePumpCore: @unchecked Sendable {
         inlineWriteCompletionWhenOnQueue: Bool = false,
         onActivity: @escaping @Sendable () -> Bool = { true },
         retryScheduler: TcpWritePumpRetryScheduler? = nil,
+        writerMemoryBudget: WriterMemoryBudget = WriterMemoryBudget(),
         writePolicy: TcpWritePumpPolicy =
             TcpWritePumpPolicy(maxPendingBytes: writePumpMaxPendingBytes)
     ) {
         self.queue = queue
         self.writePolicy = writePolicy
+        self.writerMemoryBudget = writerMemoryBudget
         self.lifecycle = initialLifecycle
         self.onDrained = onDrained
         self.doWrite = doWrite
@@ -86,6 +107,13 @@ final class TcpWritePumpCore: @unchecked Sendable {
             )
         }
         queue.setSpecific(key: queueKey, value: 1)
+    }
+
+    deinit {
+        let retired = closeAdmission()
+        retired.waiter?.cancel()
+        retired.grant?.release()
+        while pending.popFront() != nil {}
     }
 
     func isClosed() -> Bool { state.withLock { $0.closed } }
@@ -112,21 +140,64 @@ final class TcpWritePumpCore: @unchecked Sendable {
         }
     #endif
 
-    /// Atomically marks the core closed and zeroes both admission budgets.
+    /// Atomically stops admission, then returns queue-side payload cleanup.
     /// Returns a queue-side cleanup closure the caller must dispatch on
     /// `queue`.  Separating the atomic part from the queue work lets the
     /// outer class append its own cleanup (e.g. fire `onDrainedClose`)
     /// inside the same async block.
     func prepareCancel() -> @Sendable () -> Void {
-        state.withLock { s in
-            s.closed = true
-            s.pendingBytes = 0
-            s.pendingItems = 0
-        }
+        retireAdmission()
         return { [self] in
-            self.pending.removeAll()
+            self.releaseQueuedPayloadsLocked()
             self.retrying = nil
             self.invalidateRetryDelayLocked()
+        }
+    }
+
+    /// Synchronous, idempotent detach boundary. It closes new admission and
+    /// retires waiter/pregrant capacity without touching queued or in-flight
+    /// payload charges; physical payload cleanup remains queue/completion owned.
+    func retireAdmission() {
+        let retired = closeAdmission()
+        retired.waiter?.cancel()
+        retired.grant?.release()
+    }
+
+    private func closeAdmission() -> (
+        alreadyClosed: Bool,
+        waiter: WriterMemoryWaiter?, grant: WriterMemoryGrant?
+    ) {
+        state.withLock { s in
+            let wasClosed = s.closed
+            s.closed = true
+            let retired = (
+                wasClosed, s.aggregateWaiter, s.aggregateGrant)
+            s.aggregateWaitExpectedBytes = nil
+            s.aggregateWaiter = nil
+            s.aggregateGrant = nil
+            return retired
+        }
+    }
+
+    /// Drop queue-owned payloads and refund them only after their `Data`
+    /// values have left the queue. Dispatch-pending and in-flight chunks are
+    /// deliberately absent: their own closures retire those exact charges.
+    private func releaseQueuedPayloadsLocked() {
+        var bytes = 0
+        var items = 0
+        while let chunk = pending.popFront() {
+            bytes += chunk.data.count
+            items += 1
+        }
+        releasePayloadAccounting(bytes: bytes, items: items)
+    }
+
+    private func releasePayloadAccounting(bytes: Int, items: Int = 1) {
+        guard items > 0 else { return }
+        state.withLock { s in
+            precondition(s.pendingBytes >= bytes && s.pendingItems >= items)
+            s.pendingBytes -= bytes
+            s.pendingItems -= items
         }
     }
 
@@ -151,8 +222,26 @@ final class TcpWritePumpCore: @unchecked Sendable {
     /// Same status contract as documented on `TcpClientWritePump.enqueue`.
     @discardableResult
     func enqueue(_ data: Data) -> RamaTcpDeliverStatusBridge {
+        enqueue(data, aggregateAlreadyReserved: false)
+    }
+
+    /// Accept charge ownership from the direct-forwarder staging buffer. On
+    /// `.accepted` the pump owns and eventually releases `data.count` plus one
+    /// item; on `.paused`/`.closed` ownership remains with the caller.
+    @discardableResult
+    func enqueuePrecharged(_ data: Data) -> RamaTcpDeliverStatusBridge {
+        enqueue(data, aggregateAlreadyReserved: true)
+    }
+
+    private func enqueue(
+        _ data: Data,
+        aggregateAlreadyReserved: Bool
+    ) -> RamaTcpDeliverStatusBridge {
         guard !data.isEmpty else { return .accepted }
 
+        var staleGrant: WriterMemoryGrant?
+        var staleWaiter: WriterMemoryWaiter?
+        var needsAggregateWait = false
         let (decision, hwm): (RamaTcpDeliverStatusBridge, Int?) = state.withLock { s in
             if s.closed { return (.closed, nil) }
             // Every production producer slices to this cap before enqueueing,
@@ -163,6 +252,43 @@ final class TcpWritePumpCore: @unchecked Sendable {
             let itemCapReached = s.pendingItems >= tcpWritePumpMaxPendingItems
             if byteCapReached || itemCapReached {
                 s.pausedSignaled = true
+                return (.paused, nil)
+            }
+
+            if aggregateAlreadyReserved {
+                // Preserve FIFO behind a Rust-side retry already registered
+                // on this pump. The caller continues owning its charge.
+                if s.aggregateWaitExpectedBytes != nil || s.aggregateGrant != nil {
+                    s.pausedSignaled = true
+                    return (.paused, nil)
+                }
+            } else if let grant = s.aggregateGrant {
+                guard s.aggregateWaitExpectedBytes == data.count else {
+                    staleGrant = grant
+                    s.aggregateGrant = nil
+                    s.aggregateWaiter = nil
+                    s.aggregateWaitExpectedBytes = data.count
+                    s.pausedSignaled = true
+                    needsAggregateWait = true
+                    return (.paused, nil)
+                }
+                precondition(grant.consume(), "writer-memory grant consumed twice")
+                s.aggregateGrant = nil
+                s.aggregateWaiter = nil
+                s.aggregateWaitExpectedBytes = nil
+            } else if let expected = s.aggregateWaitExpectedBytes {
+                if expected != data.count {
+                    staleWaiter = s.aggregateWaiter
+                    s.aggregateWaiter = nil
+                    s.aggregateWaitExpectedBytes = data.count
+                    needsAggregateWait = true
+                }
+                s.pausedSignaled = true
+                return (.paused, nil)
+            } else if !writerMemoryBudget.tryReserve(bytes: data.count) {
+                s.aggregateWaitExpectedBytes = data.count
+                s.pausedSignaled = true
+                needsAggregateWait = true
                 return (.paused, nil)
             }
             s.pendingBytes += data.count
@@ -182,6 +308,9 @@ final class TcpWritePumpCore: @unchecked Sendable {
             }
             return (.accepted, newHwm)
         }
+        staleGrant?.release()
+        staleWaiter?.cancel()
+        if needsAggregateWait { registerAggregateWaiter(bytes: data.count) }
         guard decision == .accepted else { return decision }
 
         // Linearize acceptance against pressure teardown before reporting the
@@ -189,42 +318,120 @@ final class TcpWritePumpCore: @unchecked Sendable {
         // roll that reservation back and surface a closed destination.
         guard self.onActivity() else {
             state.withLock { s in
-                if !s.closed {
-                    s.pendingBytes = max(s.pendingBytes - data.count, 0)
-                    s.pendingItems = max(s.pendingItems - 1, 0)
-                }
+                precondition(s.pendingBytes >= data.count && s.pendingItems >= 1)
+                s.pendingBytes -= data.count
+                s.pendingItems -= 1
+            }
+            if !aggregateAlreadyReserved {
+                writerMemoryBudget.release(bytes: data.count)
             }
             return .closed
         }
         if let hwm { logHwm(hwm) }
 
-        queue.async { [weak self] in
+        let chunk = ChargedChunk(data: data, budget: writerMemoryBudget)
+        queue.async { [weak self, chunk] in
             guard let self else { return }
             // Re-check under lock; cancel() can have flipped the flag
             // between the FFI fast-path return and this dispatch.
-            // Do NOT subtract the admission charges here: if cancel() ran first
-            // it already zeroed both counters, and subtracting again would push
-            // them negative.
-            guard !self.state.withLock({ $0.closed }) else { return }
-            self.pending.pushBack(data)
+            guard !self.state.withLock({ $0.closed }) else {
+                self.releasePayloadAccounting(bytes: chunk.data.count)
+                return
+            }
+            self.pending.pushBack(chunk)
             self.flush()
         }
         return .accepted
     }
 
+    /// Publish one pressure waiter after admission has dropped the per-pump
+    /// lock. The coordinator may deliver before this method installs the
+    /// returned token; the grant field is the race-safe hand-off in that case.
+    private func registerAggregateWaiter(bytes: Int) {
+        let waiter = writerMemoryBudget.waitForTcpCapacity(
+            bytes: bytes,
+            onUnavailable: { [weak self] in
+                self?.receiveAggregateUnavailable(expectedBytes: bytes)
+            },
+            onGrant: { [weak self] grant in
+                self?.receiveAggregateGrant(grant, expectedBytes: bytes)
+            })
+        let keep = state.withLock { s -> Bool in
+            guard !s.closed,
+                s.aggregateWaitExpectedBytes == bytes,
+                s.aggregateGrant == nil,
+                s.aggregateWaiter == nil
+            else { return false }
+            s.aggregateWaiter = waiter
+            return true
+        }
+        if !keep { waiter.cancel() }
+    }
+
+    /// A grant is already included in the aggregate totals. Retain it until
+    /// the exact rejected chunk retries; stale and closing callbacks refund it.
+    private func receiveAggregateGrant(
+        _ grant: WriterMemoryGrant,
+        expectedBytes: Int
+    ) {
+        let accepted = state.withLock { s -> Bool in
+            guard !s.closed,
+                s.aggregateWaitExpectedBytes == expectedBytes,
+                s.aggregateGrant == nil
+            else { return false }
+            s.aggregateWaiter = nil
+            s.aggregateGrant = grant
+            s.pausedSignaled = false
+            return true
+        }
+        guard accepted else {
+            grant.release()
+            return
+        }
+        // Drain callbacks also drive the promoted forwarder, whose state is
+        // queue-confined. Normalize this pressure-only wake onto the pump queue
+        // just like transport completions; cancellation or an eager retry may
+        // make it stale before it runs.
+        queue.async { [weak self, weak grant] in
+            guard let self, let grant else { return }
+            let stillWaiting = self.state.withLock { s in
+                !s.closed && s.aggregateGrant === grant
+            }
+            if stillWaiting { self.onDrained() }
+        }
+    }
+
+    /// A replacement generation lowered the process cap so this retiring
+    /// pump's old-size retry can no longer coexist with the guaranteed UDP
+    /// service reserve. Fail this flow explicitly; parking it forever would
+    /// starve both the byte stream and future protocol service.
+    private func receiveAggregateUnavailable(expectedBytes: Int) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            let stillWaiting = self.state.withLock { s in
+                !s.closed && s.aggregateWaitExpectedBytes == expectedBytes
+            }
+            guard stillWaiting else { return }
+            self.terminateLocked(
+                with: NSError(
+                    domain: "rama.tproxy.writer-memory",
+                    code: 4,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "TCP retry exceeds reconfigured process payload share"
+                    ]))
+        }
+    }
+
     /// Queue-side terminal cleanup.  Publishes the closed flag under the
     /// lock so concurrent FFI `enqueue` calls return `.closed` immediately.
     func terminateLocked(with error: Error) {
-        let alreadyClosed: Bool = state.withLock { s in
-            let wasClosed = s.closed
-            s.closed = true
-            s.pendingBytes = 0
-            s.pendingItems = 0
-            return wasClosed
-        }
-        if alreadyClosed { return }
+        let retired = closeAdmission()
+        if retired.alreadyClosed { return }
+        retired.waiter?.cancel()
+        retired.grant?.release()
         lifecycle = .draining
-        pending.removeAll()
+        releaseQueuedPayloadsLocked()
         retrying = nil
         invalidateRetryDelayLocked()
         delegate?.pumpCore(self, didTerminateWith: error)
@@ -240,9 +447,9 @@ final class TcpWritePumpCore: @unchecked Sendable {
         writing = true
         guard let chunk = pending.popFront() else { return }
 
-        doWrite(chunk) { [weak self] error in
+        doWrite(chunk.data) { [weak self, chunk] error in
             guard let self else { return }
-            let finish: @Sendable () -> Void = { [weak self] in
+            let finish: @Sendable () -> Void = { [weak self, chunk] in
                 guard let self else { return }
                 // If `cancel()` ran while this write was in flight and
                 // its queue cleanup (`pending.removeAll`, `retrying = nil`,
@@ -261,6 +468,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
                 // Drop the completion's result on the floor; we're done.
                 if self.isClosed() {
                     self.writing = false
+                    self.releasePayloadAccounting(bytes: chunk.data.count)
                     return
                 }
                 self.writing = false
@@ -271,6 +479,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
                         let deadline: DispatchTime
                         if let existing = self.retrying {
                             if now >= existing.deadline {
+                                self.releasePayloadAccounting(bytes: chunk.data.count)
                                 self.terminateLocked(with: error)
                                 return
                             }
@@ -288,12 +497,14 @@ final class TcpWritePumpCore: @unchecked Sendable {
                         self.scheduleRetryLocked(after: currentDelayMs)
                         return
                     }
+                    self.releasePayloadAccounting(bytes: chunk.data.count)
                     self.terminateLocked(with: error)
                     return
                 }
-                let fireDrain = self.state.withLock { s in
-                    s.pendingBytes = max(0, s.pendingBytes - chunk.count)
-                    s.pendingItems = max(0, s.pendingItems - 1)
+                let shouldWake = self.state.withLock { s -> Bool in
+                    precondition(s.pendingBytes >= chunk.data.count && s.pendingItems >= 1)
+                    s.pendingBytes -= chunk.data.count
+                    s.pendingItems -= 1
                     if s.pausedSignaled
                         && s.pendingBytes < self.writePolicy.maxPendingBytes
                         && s.pendingItems < tcpWritePumpMaxPendingItems
@@ -307,7 +518,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
                 // released it. Both counters therefore cover dispatch-pending,
                 // queued, retrying, and in-flight work while still waking Rust
                 // as soon as real capacity becomes available.
-                if fireDrain { self.onDrained() }
+                if shouldWake { self.onDrained() }
                 // Only the closing path needs a second activity edge. Keep
                 // ordinary streaming at its existing one lock per accepted
                 // chunk, while a drain with no new enqueues still refreshes
@@ -363,7 +574,9 @@ final class TcpWritePumpCore: @unchecked Sendable {
         // chunk is dispatch-pending — closing here would FIN and drop it. Checked
         // in the same lock that publishes `closed`, for one snapshot.
         let proceed: Bool = state.withLock { s in
-            if s.closed || s.pendingBytes != 0 || s.pendingItems != 0 { return false }
+            if s.closed || s.pendingBytes != 0 || s.pendingItems != 0
+                || s.aggregateWaitExpectedBytes != nil || s.aggregateGrant != nil
+            { return false }
             s.closed = true
             return true
         }

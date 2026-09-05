@@ -1,6 +1,10 @@
 //! UDP ABI smoke coverage.
 
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use serial_test::serial;
 
@@ -8,7 +12,7 @@ use crate::shared::{
     bindings,
     clients::{UdpFfiSession, udp_roundtrip, udp_roundtrip_v1},
     env::{AbortOnDrop, setup_env},
-    ffi::EngineHandle,
+    ffi::{EngineHandle, engine_with_udp_ingress_probe_lease_ms},
     servers::spawn_udp_echo,
     types::localhost,
 };
@@ -20,6 +24,8 @@ const GLOBAL_FILL_FLOWS: usize = 64;
 const DATAGRAMS_PER_FILL_FLOW: usize = 4;
 const PER_FLOW_TAIL_BYTES: usize =
     DEFAULT_PER_FLOW_BYTES - DATAGRAMS_PER_FILL_FLOW * MAX_UDP_DATAGRAM;
+const ACK_TEST_PROBE_LEASE: Duration = Duration::from_millis(500);
+const ACK_TEST_NEGATIVE_WINDOW: Duration = Duration::from_millis(50);
 
 fn fill_default_global_budget(
     engine: &Arc<EngineHandle>,
@@ -63,6 +69,40 @@ async fn ffi_contract_udp_v1_callback_abi_remains_compatible() {
 
 #[tokio::test]
 #[serial]
+async fn ffi_contract_udp_v1_pressure_demand_auto_acks_before_long_expiry() {
+    let env = setup_env().await;
+    let engine = engine_with_udp_ingress_probe_lease_ms(Some(
+        ACK_TEST_PROBE_LEASE.as_millis() as u64,
+    ));
+    let remote = localhost(env.ports.udp);
+    let mut fillers = fill_default_global_budget(&engine, remote);
+    let blocked_payload = vec![b'v'; MAX_UDP_DATAGRAM];
+    let mut stalled = UdpFfiSession::new_v1(engine.clone(), remote);
+    stalled.stage_client_datagram_before_activation(&blocked_payload, Some(remote));
+
+    fillers.remove(0).close_from_client_and_assert(1);
+    assert_eq!(
+        stalled.wait_for_read_demand().await,
+        0,
+        "legacy callback ABI cannot expose the internal probe ID"
+    );
+    stalled.activate();
+    let payload = b"v1 pressure auto ack";
+    assert_eq!(stalled.send_client_datagram(payload, Some(remote)), 0);
+    let response = tokio::time::timeout(
+        ACK_TEST_PROBE_LEASE - ACK_TEST_NEGATIVE_WINDOW,
+        stalled.recv_server_datagram(),
+    )
+    .await
+    .expect("V1 auto-ACK must recover pressure before the long lease expires");
+    assert_eq!(response.payload, b"V1 PRESSURE AUTO ACK");
+
+    stalled.close_from_client_and_assert(1);
+    close_udp_sessions(fillers);
+}
+
+#[tokio::test]
+#[serial]
 async fn ffi_contract_udp_ingress_owns_borrowed_payload_and_peer_after_return() {
     let env = setup_env().await;
     let remote = localhost(env.ports.udp);
@@ -101,7 +141,13 @@ async fn ffi_contract_udp_ingress_owns_borrowed_payload_and_peer_after_return() 
 #[serial]
 async fn ffi_contract_udp_v2_global_budget_probe_ack_and_cleanup() {
     let env = setup_env().await;
-    let engine = env.engine.clone();
+    // A 500 ms production-path lease leaves a 10x margin around the 50 ms
+    // negative observations below. The default remains 10 ms; this test uses
+    // the example's public JSON override so correctness does not depend on a
+    // 2/5 ms scheduler race on a loaded CI host.
+    let engine = engine_with_udp_ingress_probe_lease_ms(Some(
+        ACK_TEST_PROBE_LEASE.as_millis() as u64,
+    ));
     let remote = localhost(env.ports.udp);
 
     let (channel_capacity, per_flow_bytes, global_bytes) = unsafe {
@@ -151,14 +197,15 @@ async fn ffi_contract_udp_v2_global_budget_probe_ack_and_cleanup() {
     assert_ne!(probe_id, 0, "global-pressure demand must carry a probe ID");
 
     // A wrong ID must not consume this flow's lease. Then model one completed
-    // Apple read: submit its datagram, ACK that exact ID, and prove the normal
-    // example service returns the exact payload with its real peer.
+    // Apple read in production order: ACK the exact read completion before
+    // submitting its owner datagram, and prove the normal example service
+    // returns the exact payload with its real peer.
     let stale_probe_id = probe_id.checked_add(1).unwrap_or(probe_id - 1);
     stalled.acknowledge_client_read(stale_probe_id);
+    stalled.acknowledge_client_read(probe_id);
     let recovery_payload = b"v2 global pressure recovered";
     let delivered_probe_id = stalled.send_client_datagram(recovery_payload, Some(remote));
     assert_eq!(delivered_probe_id, probe_id);
-    stalled.acknowledge_client_read(delivered_probe_id);
     // An already-ACKed ID is stale too and must remain a harmless no-op.
     stalled.acknowledge_client_read(delivered_probe_id);
 
@@ -197,62 +244,191 @@ async fn ffi_contract_udp_v2_global_budget_probe_ack_and_cleanup() {
     verifiers[0].acknowledge_client_read(initial_probes[1].0);
     assert!(
         verifiers[4]
-            .wait_for_probe_read_demand_before(Duration::from_millis(2))
+            .wait_for_probe_read_demand_before(ACK_TEST_NEGATIVE_WINDOW)
             .await
             .is_none(),
         "wrong-session ACK advanced downstream global capacity"
     );
 
-    // The exact ACK must free one slot and wake the next FIFO waiter before the
-    // original 10 ms lease can expire. Callback-entry timestamps avoid making
-    // this assertion depend on when the test task itself resumes.
+    // An exact ACK records read completion but deliberately keeps its charged
+    // lease until that owner's payload arrives. ACK-only release would let a
+    // client manufacture unbounded uncharged ingress between callback and
+    // delivery, so prove it cannot advance verifier 4 by itself.
     verifiers[0].acknowledge_client_read(initial_probes[0].0);
-    let fifth_probe = tokio::time::timeout(
-        Duration::from_millis(5),
-        verifiers[4].wait_for_probe_read_demand_observed(),
-    )
-    .await
-    .expect("exact ACK did not advance the next waiter before lease expiry");
     assert!(
-        fifth_probe.1.duration_since(initial_probes[0].1) < Duration::from_millis(10),
-        "fifth probe was released by lease expiry instead of the exact ACK"
+        verifiers[4]
+            .wait_for_probe_read_demand_before(ACK_TEST_NEGATIVE_WINDOW)
+            .await
+            .is_none(),
+        "exact ACK released charged credit before the owning payload arrived"
+    );
+
+    // Activate the owner so the real example service consumes the payload and
+    // releases its retained charge. This ACK -> owner payload -> service drain
+    // chain is the production contract that frees a slot for the next FIFO
+    // waiter. Callback-entry time, not waiter wake time, proves the fifth probe
+    // was causally released before the 500 ms expiry backstop.
+    verifiers[0].activate();
+    let owner_payload = b"verifier zero owns this lease";
+    assert_eq!(
+        verifiers[0].send_client_datagram(owner_payload, Some(remote)),
+        initial_probes[0].0
+    );
+    let owner_response = verifiers[0].recv_server_datagram().await;
+    assert_eq!(owner_response.payload, b"VERIFIER ZERO OWNS THIS LEASE");
+    let fifth_probe = verifiers[4].wait_for_probe_read_demand_observed().await;
+    assert!(
+        fifth_probe.1.duration_since(initial_probes[0].1) < ACK_TEST_PROBE_LEASE,
+        "fifth probe was released by lease expiry instead of ACK + owner payload consumption"
     );
 
     // Verifier 0's ID is now stale. It cannot release another slot; a different
-    // flow's still-live exact ACK must be what advances verifier 5.
+    // flow's still-live exact ACK plus owning payload must advance verifier 5.
     verifiers[0].acknowledge_client_read(initial_probes[0].0);
     assert!(
         verifiers[5]
-            .wait_for_probe_read_demand_before(Duration::from_millis(2))
+            .wait_for_probe_read_demand_before(ACK_TEST_NEGATIVE_WINDOW)
             .await
             .is_none(),
         "stale ACK advanced downstream global capacity"
     );
     verifiers[1].acknowledge_client_read(initial_probes[1].0);
-    let sixth_probe = tokio::time::timeout(
-        Duration::from_millis(5),
-        verifiers[5].wait_for_probe_read_demand_observed(),
-    )
-    .await
-    .expect("second exact ACK did not advance the next waiter before lease expiry");
+    verifiers[1].activate();
+    let second_owner_payload = b"verifier one owns this lease";
+    assert_eq!(
+        verifiers[1].send_client_datagram(second_owner_payload, Some(remote)),
+        initial_probes[1].0
+    );
+    let second_owner_response = verifiers[1].recv_server_datagram().await;
+    assert_eq!(
+        second_owner_response.payload,
+        b"VERIFIER ONE OWNS THIS LEASE"
+    );
+    let sixth_probe = verifiers[5].wait_for_probe_read_demand_observed().await;
     assert!(
-        sixth_probe.1.duration_since(initial_probes[0].1) < Duration::from_millis(10),
-        "sixth probe was released by lease expiry instead of the exact ACK"
+        sixth_probe.1.duration_since(initial_probes[1].1) < ACK_TEST_PROBE_LEASE,
+        "sixth probe was released by lease expiry instead of the second exact ACK + payload"
     );
 
     for session in &mut refill {
         session.assert_no_callbacks_queued();
     }
-    verifiers[2].acknowledge_client_read(initial_probes[2].0);
-    verifiers[3].acknowledge_client_read(initial_probes[3].0);
-    verifiers[4].acknowledge_client_read(fifth_probe.0);
-    verifiers[5].acknowledge_client_read(sixth_probe.0);
     close_udp_sessions(verifiers);
     close_udp_sessions(refill);
 
     // The same engine remains usable after both complete pressure cycles.
     let response = udp_roundtrip(engine, remote, b"post pressure canary").await;
     assert_eq!(response, b"POST PRESSURE CANARY");
+}
+
+#[tokio::test]
+#[serial]
+async fn ffi_contract_udp_v2_rejects_owner_payload_before_exact_ack() {
+    let env = setup_env().await;
+    let engine = engine_with_udp_ingress_probe_lease_ms(Some(
+        ACK_TEST_PROBE_LEASE.as_millis() as u64,
+    ));
+    let remote = localhost(env.ports.udp);
+    let mut fillers = fill_default_global_budget(&engine, remote);
+    let blocked_payload = vec![b'p'; MAX_UDP_DATAGRAM];
+    let mut verifiers = (0..5)
+        .map(|_| {
+            let session = UdpFfiSession::new(engine.clone(), remote);
+            session.stage_client_datagram_before_activation(&blocked_payload, Some(remote));
+            session
+        })
+        .collect::<Vec<_>>();
+
+    fillers.remove(0).close_from_client_and_assert(1);
+    let mut initial_probes = Vec::with_capacity(4);
+    for verifier in verifiers.iter_mut().take(4) {
+        initial_probes.push(verifier.wait_for_probe_read_demand().await);
+    }
+    assert!(initial_probes.iter().all(|probe_id| *probe_id != 0));
+
+    verifiers[0].activate();
+    assert_eq!(
+        verifiers[0].send_client_datagram(b"must wait for exact ack", Some(remote)),
+        initial_probes[0]
+    );
+    assert!(
+        tokio::time::timeout(
+            ACK_TEST_NEGATIVE_WINDOW,
+            verifiers[0].recv_server_datagram()
+        )
+        .await
+        .is_err(),
+        "pre-ACK owner payload crossed the real V2 ABI into the service"
+    );
+    assert!(
+        verifiers[4]
+            .wait_for_probe_read_demand_before(ACK_TEST_NEGATIVE_WINDOW)
+            .await
+            .is_none(),
+        "pre-ACK delivery consumed/released the lease and advanced downstream capacity"
+    );
+
+    close_udp_sessions(verifiers);
+    close_udp_sessions(fillers);
+}
+
+/// Real C-ABI scale gate for the documented unbounded-live-flow population.
+/// Every session first joins the engine's FIFO global-pressure coordinator;
+/// after one fill flow is released, the coordinator must autonomously pace all
+/// 8,192 sessions without test-side ACKs or manual kicks. Inactive sessions do
+/// not allocate kernel sockets, keeping this a task/callback/accounting scale
+/// test rather than an FD exhaustion test.
+#[tokio::test]
+#[serial]
+async fn ffi_contract_udp_8192_sessions_admit_coordinate_and_close() {
+    const SESSION_COUNT: usize = 8_192;
+    const MAX_COORDINATOR_ELAPSED: Duration = Duration::from_secs(90);
+    const MAX_CLOSE_ELAPSED: Duration = Duration::from_secs(30);
+
+    let env = setup_env().await;
+    let engine = env.engine.clone();
+    let remote = localhost(env.ports.udp);
+    let mut fillers = fill_default_global_budget(&engine, remote);
+    let blocked_payload = vec![b's'; MAX_UDP_DATAGRAM];
+    let mut sessions = Vec::with_capacity(SESSION_COUNT);
+
+    for _ in 0..SESSION_COUNT {
+        let session = UdpFfiSession::new(engine.clone(), remote);
+        session.stage_client_datagram_before_activation(&blocked_payload, Some(remote));
+        sessions.push(session);
+    }
+
+    let progress_started = Instant::now();
+    fillers.remove(0).close_from_client_and_assert(1);
+    let mut previous_callback_at = None;
+    for (index, session) in sessions.iter_mut().enumerate() {
+        let (probe_id, callback_at) = session.wait_for_probe_read_demand_observed().await;
+        assert_ne!(probe_id, 0, "session {index} received an ordinary demand");
+        if let Some(previous) = previous_callback_at {
+            assert!(
+                callback_at >= previous,
+                "global-pressure callbacks violated FIFO creation order at session {index}"
+            );
+        }
+        previous_callback_at = Some(callback_at);
+    }
+    assert!(
+        progress_started.elapsed() < MAX_COORDINATOR_ELAPSED,
+        "automatic coordinator took {:?} to visit {SESSION_COUNT} sessions",
+        progress_started.elapsed()
+    );
+
+    let close_started = Instant::now();
+    close_udp_sessions(sessions);
+    close_udp_sessions(fillers);
+    assert!(
+        close_started.elapsed() < MAX_CLOSE_ELAPSED,
+        "closing {SESSION_COUNT} real ABI sessions took {:?}",
+        close_started.elapsed()
+    );
+
+    let response = udp_roundtrip(engine, remote, b"post 8192 canary").await;
+    assert_eq!(response, b"POST 8192 CANARY");
 }
 
 #[tokio::test]

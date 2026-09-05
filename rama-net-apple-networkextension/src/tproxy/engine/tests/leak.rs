@@ -4,7 +4,10 @@ use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};
 use rama_core::io::BridgeIo;
 use rama_core::service::service_fn;
 use rama_net::address::HostWithPort;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::time::{Duration, Instant};
 
 /// Open + drop 256 TCP sessions then `engine.stop()`; the whole
@@ -109,6 +112,59 @@ fn engine_stop_with_live_sessions_drains_within_bound() {
     // Drop fires cancel() which is now a no-op (engine already
     // shut). This must not panic or hang.
     drop(keep_alive);
+}
+
+/// Retaining the engine-level close-epilogue guard must stay linear at the
+/// mass-UDP scale expected from QUIC/H3. Every pending task must publish its
+/// terminal callback before stop returns, without approaching the drain cap.
+#[test]
+fn engine_stop_drains_8192_pending_udp_close_epilogues() {
+    const FLOW_COUNT: usize = 8_192;
+
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|flow: crate::UdpFlow| async move {
+                let _hold = flow;
+                std::future::pending::<Result<(), std::convert::Infallible>>().await
+            })
+            .boxed(),
+        }),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_engine(handler);
+    let closed = Arc::new(AtomicUsize::new(0));
+    let mut sessions = Vec::with_capacity(FLOW_COUNT);
+    for _ in 0..FLOW_COUNT {
+        let closed = closed.clone();
+        let SessionFlowAction::Intercept(session) = engine.new_udp_session(
+            TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+            |_| {},
+            || {},
+            move || {
+                closed.fetch_add(1, Ordering::Relaxed);
+            },
+        ) else {
+            panic!("expected intercept session");
+        };
+        sessions.push(session);
+    }
+
+    let stop_started = Instant::now();
+    engine.stop(0);
+    let stop_elapsed = stop_started.elapsed();
+    assert_eq!(closed.load(Ordering::Relaxed), FLOW_COUNT);
+    assert!(
+        stop_elapsed < Duration::from_secs(3),
+        "engine.stop() with {FLOW_COUNT} pending UDP flows took {stop_elapsed:?}"
+    );
+
+    drop(sessions);
+    assert_eq!(closed.load(Ordering::Relaxed), FLOW_COUNT);
 }
 
 /// 4096 create + cancel iterations finish well under quadratic

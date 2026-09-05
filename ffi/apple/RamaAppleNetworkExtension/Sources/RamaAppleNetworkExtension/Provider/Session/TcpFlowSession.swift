@@ -8,6 +8,7 @@ import NetworkExtension
 /// per-flow `ctx` for the registry walks (detach / wake / watchdog).
 protocol TcpFlowSessionAnchor: AnyObject {
     var ctx: TcpFlowContext { get }
+    func retireWriterAdmissionForEngineDetach()
 }
 
 /// Per-TCP-flow state machine.
@@ -24,6 +25,11 @@ protocol TcpFlowSessionAnchor: AnyObject {
 /// the entry and the session deallocates; `deinit` cancels the connection
 /// as a backstop so it can't outlive the session.
 final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sendable {
+    private struct WriterAdmissionRefs {
+        var client: TcpClientWritePump?
+        var egress: NwTcpConnectionWritePump?
+    }
+
     weak var core: TransparentProxyCore?
     let flow: F
     let meta: RamaTransparentProxyFlowMetaBridge
@@ -60,11 +66,21 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     /// created. Value semantics keep this generation's behavior stable while
     /// a replacement engine starts and the old flow retires.
     private var runtimePolicy: TransparentProxyRuntimePolicy?
+    /// Lazy keeps engine-less phase tests ergonomic without allocating a
+    /// throwaway atomic/coordinator for every production flow before its lease
+    /// installs the generation-owned budget.
+    private lazy var writerMemoryBudget =
+        core?.writerMemoryBudgetForPumpComposition() ?? WriterMemoryBudget()
+    /// Stable cross-thread handles used only at the synchronous detach
+    /// boundary. Payload state remains flow-queue-confined; these calls retire
+    /// only waiter/pregrant admission before a replacement generation starts.
+    private let writerAdmissionRefs = Locked(WriterAdmissionRefs())
     private var effectiveRuntimePolicy: TransparentProxyRuntimePolicy {
         runtimePolicy ?? .testDefaultsSnapshot
     }
     #if DEBUG
         var testRuntimePolicy: TransparentProxyRuntimePolicy? { runtimePolicy }
+        var testWriterMemoryBudget: WriterMemoryBudget { writerMemoryBudget }
     #endif
 
     // Configured by `start`; defaults applied here so phase methods
@@ -87,6 +103,12 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         self.ctx.flow = flow
         self.ctx.core = core
         self.ctx.flowId = flowId
+    }
+
+    func retireWriterAdmissionForEngineDetach() {
+        let pumps = writerAdmissionRefs.withLock { ($0.client, $0.egress) }
+        pumps.0?.retireAdmissionForEngineDetach()
+        pumps.1?.retireAdmissionForEngineDetach()
     }
 
     deinit {
@@ -255,9 +277,11 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             onActivity: { [weak ctx] in
                 ctx?.recordActivityUnlessPressureEvicted() ?? false
             },
+            writerMemoryBudget: writerMemoryBudget,
             writePolicy: effectiveRuntimePolicy.tcpWritePump
         )
         ctx.clientWritePump = writer
+        writerAdmissionRefs.withLock { $0.client = writer }
     }
 
     // MARK: - Phase: engine session
@@ -270,6 +294,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
 
     private func installEngineLease(_ lease: TransparentProxyCore.EngineFlowLease) {
         runtimePolicy = lease.runtimePolicy
+        writerMemoryBudget = lease.writerMemoryBudget
         engineGeneration = lease.generation
         ctx.engineGeneration = lease.generation
     }
@@ -802,9 +827,11 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 guard let ctx else { return .max }
                 return ctx.idleMs()
             },
+            writerMemoryBudget: writerMemoryBudget,
             writePolicy: effectiveRuntimePolicy.tcpWritePump
         )
         ctx.egressWritePump = pump
+        writerAdmissionRefs.withLock { $0.egress = pump }
     }
 
     func buildEgressReadPump(
@@ -829,7 +856,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             },
             onActivity: { [weak ctx] in
                 _ = ctx?.recordActivityUnlessPressureEvicted()
-            }
+            },
+            writerMemoryBudget: writerMemoryBudget
         )
         ctx.egressReadPump = pump
         return pump
@@ -916,7 +944,8 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             onTerminal: { error in terminal.dispatch(error) },
             onActivity: { [weak ctx] in
                 _ = ctx?.recordActivityUnlessPressureEvicted()
-            }
+            },
+            writerMemoryBudget: writerMemoryBudget
         )
         ctx.clientReadPump = flowReadPump
     }

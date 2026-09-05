@@ -93,10 +93,17 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// matching engine. Sessions copy this through `EngineFlowLease`, so
     /// retiring callbacks never consult a replacement generation's policy.
     private var runtimePolicyStorage: TransparentProxyRuntimePolicy?
-    /// Generation-owned Apple callback staging budget. Retiring sessions keep
-    /// their old object through `EngineFlowLease`; replacement generations can
-    /// never charge or release one another's bound.
-    private var udpIngressStagingBudgetStorage: UdpIngressGenerationStagingBudget?
+    /// Process/core-lifetime Apple callback staging envelope. Retiring batches,
+    /// current flows, and replacement generations all charge this one object,
+    /// so a stalled retired flow cannot stack another global allowance on each
+    /// attach. Attach reconfigures only its global caps; flow-local caps remain
+    /// immutable in each lease/session snapshot.
+    private let udpIngressStagingBudgetStorage = UdpIngressGenerationStagingBudget(
+        policy: .testDefaults)
+    /// Process/core-lifetime aggregate budget for every Swift writer. It is
+    /// deliberately retained across engine replacement so stalled retirees
+    /// and new-generation flows share one physical memory envelope.
+    private var writerMemoryBudgetStorage: WriterMemoryBudget?
     private var engineGeneration: UInt64 = 0
     /// Queue-confined and intentionally never reset across detach/attach.
     /// Combined with the engine generation, this identifies one admission
@@ -109,6 +116,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         let generation: UInt64
         let runtimePolicy: TransparentProxyRuntimePolicy
         let udpIngressStagingBudget: UdpIngressGenerationStagingBudget
+        let writerMemoryBudget: WriterMemoryBudget
     }
 
     /// Queue-confined policy lookup. Engine-less tests retain their historical
@@ -224,8 +232,14 @@ final class TransparentProxyCore: @unchecked Sendable {
             self.engineStorage = engine
             self.runtimePolicyStorage = runtimePolicy
             let effectivePolicy = runtimePolicy ?? .testDefaultsSnapshot
-            self.udpIngressStagingBudgetStorage = UdpIngressGenerationStagingBudget(
+            self.udpIngressStagingBudgetStorage.reconfigure(
                 policy: effectivePolicy.udpIngressStaging)
+            if let writerMemoryBudgetStorage = self.writerMemoryBudgetStorage {
+                writerMemoryBudgetStorage.reconfigure(policy: effectivePolicy.writerMemory)
+            } else {
+                self.writerMemoryBudgetStorage = WriterMemoryBudget(
+                    policy: effectivePolicy.writerMemory)
+            }
             self.acceptingFlows = true
             self.pressureVictimState.withLock {
                 $0.activeEngineGeneration = self.engineGeneration
@@ -275,7 +289,6 @@ final class TransparentProxyCore: @unchecked Sendable {
             // lifecycle-group wait and relabel an interrupted episode ended.
             self.resetMaintenanceStateLocked()
             self.runtimePolicyStorage = nil
-            self.udpIngressStagingBudgetStorage = nil
             return (engine: engine, tcp: tcp, udp: udp)
         }
         // Registration enters this group while admission and generation are
@@ -293,6 +306,11 @@ final class TransparentProxyCore: @unchecked Sendable {
         // been dispatched, so clearing registry ownership above cannot orphan
         // the egress connection even though Rust callbacks are about to stop.
         for retired in detached.tcp {
+            // A stalled retiring flow queue must not carry a waiter/pregrant
+            // into the replacement generation. This synchronous edge leaves
+            // real queued/in-flight payload charges intact for their physical
+            // queue/completion retirement.
+            retired.session.retireWriterAdmissionForEngineDetach()
             let ctx = retired.session.ctx
             let release = retired.release
             runFlowTeardown(ctx) {
@@ -301,6 +319,11 @@ final class TransparentProxyCore: @unchecked Sendable {
             }
         }
         for retired in detached.udp {
+            // Cancel the shared-budget waiter synchronously. The physical flow
+            // teardown remains asynchronous and may sit behind user work, but
+            // one stalled retired queue cannot retain a cross-generation FIFO
+            // entry or its provisional grant.
+            retired.session.closeIngressStagingForEngineDetach()
             retired.session.terminateForEngineDetach(
                 engineDetachedError(), onResourceReleased: retired.release)
         }
@@ -413,14 +436,24 @@ final class TransparentProxyCore: @unchecked Sendable {
         stateQueue.sync {
             guard acceptingFlows,
                 let engine = engineStorage,
-                let udpIngressStagingBudget = udpIngressStagingBudgetStorage
+                let writerMemoryBudget = writerMemoryBudgetStorage
             else { return nil }
             return EngineFlowLease(
                 engine: engine,
                 generation: engineGeneration,
                 runtimePolicy: runtimePolicyLocked(),
-                udpIngressStagingBudget: udpIngressStagingBudget)
+                udpIngressStagingBudget: udpIngressStagingBudgetStorage,
+                writerMemoryBudget: writerMemoryBudget)
         }
+    }
+
+    /// Stable process-lifetime envelope for the few test/composition paths
+    /// which construct a writer before requesting an engine lease. Production
+    /// `TcpFlowSession.start()` installs the exact object from its lease before
+    /// building either writer; exposing this stable identity here keeps early
+    /// construction from manufacturing a second, unbounded envelope.
+    func writerMemoryBudgetForPumpComposition() -> WriterMemoryBudget? {
+        stateQueue.sync { writerMemoryBudgetStorage }
     }
 
     /// Linearize an asynchronous transport callback with engine detach.
@@ -4030,9 +4063,9 @@ final class TransparentProxyCore: @unchecked Sendable {
         // then can the forwarder issue its own
         // `flow.readData` / `connection.receive` without
         // racing the in-flight kernel-side request.
-        ctx.clientReadPump?.cancelForPromote(
-            onCarryover: { [weak forwarder] data in
-                forwarder?.acceptClientCarryover(data)
+        ctx.clientReadPump?.cancelForPromoteWithReservations(
+            onCarryover: { [weak forwarder] data, reservation in
+                forwarder?.acceptClientCarryover(data, reservation: reservation)
             },
             onError: { [weak forwarder] error in
                 forwarder?.acceptClientCarryoverError(error)
@@ -4040,9 +4073,9 @@ final class TransparentProxyCore: @unchecked Sendable {
             onComplete: { [weak forwarder] in
                 forwarder?.markClientReadDrained()
             })
-        ctx.egressReadPump?.cancelForPromote(
-            onCarryover: { [weak forwarder] data in
-                forwarder?.acceptEgressCarryover(data)
+        ctx.egressReadPump?.cancelForPromoteWithReservations(
+            onCarryover: { [weak forwarder] data, reservation in
+                forwarder?.acceptEgressCarryover(data, reservation: reservation)
             },
             onError: { [weak forwarder] error in
                 forwarder?.acceptEgressCarryoverError(error)
@@ -4077,6 +4110,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             connection: connection,
             clientWritePump: clientWritePump,
             egressWritePump: egressWritePump,
+            writerMemoryBudget: clientWritePump.aggregateBudget,
             queue: flowQueue,
             logger: { [weak self] message in self?.logFlowMessage(message) },
             drainStallDeadline: .milliseconds(Int(ctx.lingerCloseMs)),
@@ -4155,5 +4189,6 @@ final class TransparentProxyCore: @unchecked Sendable {
     final class _TestTcpFlowSessionAnchor: TcpFlowSessionAnchor {
         let ctx: TcpFlowContext
         init(ctx: TcpFlowContext) { self.ctx = ctx }
+        func retireWriterAdmissionForEngineDetach() {}
     }
 #endif

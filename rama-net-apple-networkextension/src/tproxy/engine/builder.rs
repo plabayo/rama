@@ -20,6 +20,7 @@ pub struct TransparentProxyEngineBuilder<F, R = DefaultTransparentProxyAsyncRunt
     udp_channel_capacity: Option<usize>,
     udp_ingress_per_flow_max_bytes: Option<usize>,
     udp_ingress_global_max_bytes: Option<usize>,
+    udp_ingress_probe_lease: Option<Duration>,
     tcp_idle_timeout: Option<Duration>,
     tcp_paused_drain_max_wait: Option<Duration>,
     udp_max_flow_lifetime: Option<Duration>,
@@ -46,6 +47,7 @@ where
             udp_channel_capacity: None,
             udp_ingress_per_flow_max_bytes: None,
             udp_ingress_global_max_bytes: None,
+            udp_ingress_probe_lease: None,
             // Timer defaults. The UDP idle timeout reaps quiet flows, while
             // the absolute UDP max lifetime is intentionally opt-in so active
             // long-lived QUIC / HTTP/3 sessions are not killed by age alone.
@@ -74,6 +76,7 @@ where
             udp_channel_capacity: self.udp_channel_capacity,
             udp_ingress_per_flow_max_bytes: self.udp_ingress_per_flow_max_bytes,
             udp_ingress_global_max_bytes: self.udp_ingress_global_max_bytes,
+            udp_ingress_probe_lease: self.udp_ingress_probe_lease,
             tcp_idle_timeout: self.tcp_idle_timeout,
             tcp_paused_drain_max_wait: self.tcp_paused_drain_max_wait,
             udp_max_flow_lifetime: self.udp_max_flow_lifetime,
@@ -149,6 +152,19 @@ where
         pub fn udp_ingress_global_max_bytes(mut self, max_bytes: Option<usize>) -> Self
         {
             self.udp_ingress_global_max_bytes = max_bytes;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Initial lifetime of one charged global-pressure read probe. A probe
+        /// which is neither acknowledged nor delivered releases its credit at
+        /// this deadline so a broken Apple callback cannot strand capacity.
+        /// `None` uses 10 milliseconds. Zero and values above 60 seconds are
+        /// rejected at build time.
+        pub fn udp_ingress_probe_lease(mut self, lease: Option<Duration>) -> Self
+        {
+            self.udp_ingress_probe_lease = lease;
             self
         }
     }
@@ -293,9 +309,10 @@ where
     rama_utils::macros::generate_set_and_with! {
         /// Backstop on how long `engine.stop()` waits for engine-level
         /// graceful guards to drop before proceeding. Defaults to
-        /// [`DEFAULT_STOP_DRAIN_MAX_WAIT`] (5 seconds). A correct stop
-        /// resolves in sub-millisecond time; this only bites a handler
-        /// hook ([`TransparentProxyHandler::on_system_sleep`] /
+        /// [`DEFAULT_STOP_DRAIN_MAX_WAIT`] (5 seconds). A normal stop
+        /// resolves after per-flow close epilogues and lifecycle hooks
+        /// finish. This bound only bites a flow task or handler hook
+        /// ([`TransparentProxyHandler::on_system_sleep`] /
         /// `on_system_wake`) wedged on un-timed I/O. Tune rather than
         /// disable — there is deliberately no opt-out to an unbounded
         /// wait, since that is the hang this guards against.
@@ -336,6 +353,7 @@ where
             udp_channel_capacity,
             udp_ingress_per_flow_max_bytes,
             udp_ingress_global_max_bytes,
+            udp_ingress_probe_lease,
             tcp_idle_timeout,
             tcp_paused_drain_max_wait,
             udp_max_flow_lifetime,
@@ -394,6 +412,18 @@ where
                 "udp_ingress_global_max_bytes must be >= udp_ingress_per_flow_max_bytes",
             ));
         }
+        let udp_ingress_probe_lease =
+            udp_ingress_probe_lease.unwrap_or(super::DEFAULT_UDP_INGRESS_PROBE_LEASE);
+        if udp_ingress_probe_lease.is_zero() {
+            return Err(BoxError::from_static_str(
+                "udp_ingress_probe_lease must be > 0",
+            ));
+        }
+        if udp_ingress_probe_lease > super::MAX_UDP_INGRESS_PROBE_LEASE {
+            return Err(BoxError::from_static_str(
+                "udp_ingress_probe_lease must be <= 60 seconds",
+            ));
+        }
 
         let rt = runtime_factory
             .create_async_runtime(opaque_config.as_deref())
@@ -415,8 +445,10 @@ where
         // Swift side. Cache the same snapshot here so the Rust→Swift write
         // chunk bound cannot drift from the value Swift applies to its pumps.
         let transparent_proxy_config = handler.transparent_proxy_config();
-        let udp_ingress_budget =
-            Arc::new(super::UdpIngressBudget::new(udp_ingress_global_max_bytes));
+        let udp_ingress_budget = Arc::new(super::UdpIngressBudget::new_with_probe_lease(
+            udp_ingress_global_max_bytes,
+            udp_ingress_probe_lease,
+        ));
         udp_ingress_budget.start_coordinator(&rt, guard);
 
         Ok(TransparentProxyEngine {

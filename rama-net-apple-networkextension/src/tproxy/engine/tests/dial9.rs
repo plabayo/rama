@@ -113,6 +113,37 @@ fn dial9_flow_closed_reasons(trace_dir: &std::path::Path) -> Vec<(u64, u64)> {
     closed
 }
 
+fn dial9_udp_flow_closed_bytes(trace_dir: &std::path::Path, expected_flow_id: u64) -> (u64, u64) {
+    let bytes = std::fs::read(trace_dir.join("trace.0.bin")).expect("sealed dial9 trace");
+    let mut decoder = Decoder::new(&bytes).expect("valid dial9 trace");
+    let mut totals = None;
+    decoder
+        .for_each_event(|event| {
+            if event.name != "TproxyFlowClosed" {
+                return;
+            }
+            let mut flow_id = None;
+            let mut bytes_in = None;
+            let mut bytes_out = None;
+            for (name, value) in event.field_names().zip(event.fields.iter()) {
+                match (name, value) {
+                    ("flow_id", FieldValueRef::Varint(value)) => flow_id = Some(*value),
+                    ("bytes_in", FieldValueRef::Varint(value)) => bytes_in = Some(*value),
+                    ("bytes_out", FieldValueRef::Varint(value)) => bytes_out = Some(*value),
+                    _ => {}
+                }
+            }
+            if flow_id == Some(expected_flow_id) {
+                totals = Some((
+                    bytes_in.expect("TproxyFlowClosed bytes_in field"),
+                    bytes_out.expect("TproxyFlowClosed bytes_out field"),
+                ));
+            }
+        })
+        .expect("decode dial9 events");
+    totals.expect("TproxyFlowClosed row for expected UDP flow")
+}
+
 #[test]
 fn synchronous_app_message_works_with_dial9_runtime() {
     let _slot = recorder_slot();
@@ -233,6 +264,215 @@ fn tcp_engine_stop_before_activate_pairs_dial9_open_and_shutdown_close() {
 }
 
 #[test]
+fn udp_engine_stop_before_activate_pairs_dial9_open_and_shutdown_close() {
+    const FLOW_ID: u64 = 0xE1E1_3006;
+    let _slot = recorder_slot();
+    let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|flow: crate::UdpFlow| async move {
+                let _hold = flow;
+                std::future::pending::<()>().await;
+                Ok(())
+            })
+            .boxed(),
+        }),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_dial9_engine(handler, temp_dir.path());
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+    meta.flow_id = FLOW_ID;
+    let SessionFlowAction::Intercept(session) = engine.new_udp_session(meta, |_| {}, || {}, || {})
+    else {
+        panic!("expected intercept session");
+    };
+
+    engine.stop(0);
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowOpened"), 1);
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowClosed"), 1);
+    assert_eq!(
+        dial9_flow_closed_reasons(temp_dir.path()),
+        vec![(FLOW_ID, 1)]
+    );
+
+    drop(session);
+}
+
+#[test]
+fn engine_stop_waits_for_tcp_close_epilogue_before_sealing_dial9() {
+    const FLOW_ID: u64 = 0xE1E1_3007;
+
+    struct BlockOnDrop {
+        entered: std::sync::mpsc::SyncSender<()>,
+        release: Arc<parking_lot::Mutex<std::sync::mpsc::Receiver<()>>>,
+    }
+
+    impl Drop for BlockOnDrop {
+        fn drop(&mut self) {
+            self.entered.send(()).expect("announce service-future drop");
+            self.release
+                .lock()
+                .recv_timeout(Duration::from_secs(2))
+                .expect("release service-future drop");
+        }
+    }
+
+    let _slot = recorder_slot();
+    let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
+    let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+    let (drop_tx, drop_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let release_rx = Arc::new(parking_lot::Mutex::new(release_rx));
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(move |meta| {
+            let started_tx = started_tx.clone();
+            let drop_tx = drop_tx.clone();
+            let release_rx = release_rx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(
+                    move |_bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| {
+                        let blocker = BlockOnDrop {
+                            entered: drop_tx.clone(),
+                            release: release_rx.clone(),
+                        };
+                        let started_tx = started_tx.clone();
+                        async move {
+                            let _blocker = blocker;
+                            started_tx.send(()).expect("announce service start");
+                            std::future::pending::<()>().await;
+                            Ok::<(), Infallible>(())
+                        }
+                    },
+                )
+                .boxed(),
+            }
+        }),
+        udp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_dial9_engine(handler, temp_dir.path());
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp);
+    meta.flow_id = FLOW_ID;
+    let SessionFlowAction::Intercept(mut session) =
+        engine.new_tcp_session(meta, |_| TcpDeliverStatus::Accepted, || {}, || {})
+    else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+    started_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("service task started");
+
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::sync_channel(1);
+    let stop_thread = std::thread::spawn(move || {
+        engine.stop(0);
+        stopped_tx.send(()).expect("announce engine stop");
+    });
+    drop_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("service future began dropping");
+    assert_eq!(
+        stopped_rx.recv_timeout(Duration::from_millis(25)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout),
+        "engine stop returned before the TCP close epilogue completed",
+    );
+    release_tx.send(()).expect("release service-future drop");
+    stopped_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("engine stop completed after close epilogue");
+    stop_thread.join().expect("join engine stop");
+
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowOpened"), 1);
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowClosed"), 1);
+    assert_eq!(
+        dial9_flow_closed_reasons(temp_dir.path()),
+        vec![(FLOW_ID, 1)]
+    );
+    drop(session);
+}
+
+#[test]
+fn engine_stop_waits_for_udp_close_epilogue_before_sealing_dial9() {
+    const FLOW_ID: u64 = 0xE1E1_3008;
+    let _slot = recorder_slot();
+    let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
+    let (close_entered_tx, close_entered_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let release_rx = Arc::new(parking_lot::Mutex::new(release_rx));
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|flow: crate::UdpFlow| async move {
+                let _hold = flow;
+                std::future::pending::<()>().await;
+                Ok(())
+            })
+            .boxed(),
+        }),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_dial9_engine(handler, temp_dir.path());
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+    meta.flow_id = FLOW_ID;
+    let SessionFlowAction::Intercept(session) = engine.new_udp_session(
+        meta,
+        |_| {},
+        || {},
+        move || {
+            close_entered_tx
+                .send(())
+                .expect("announce UDP close callback");
+            release_rx
+                .lock()
+                .recv_timeout(Duration::from_secs(2))
+                .expect("release UDP close callback");
+        },
+    ) else {
+        panic!("expected intercept session");
+    };
+
+    let (stopped_tx, stopped_rx) = std::sync::mpsc::sync_channel(1);
+    let stop_thread = std::thread::spawn(move || {
+        engine.stop(0);
+        stopped_tx.send(()).expect("announce engine stop");
+    });
+    close_entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("UDP close callback began");
+    assert_eq!(
+        stopped_rx.recv_timeout(Duration::from_millis(25)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout),
+        "engine stop returned before the UDP close epilogue completed",
+    );
+    release_tx.send(()).expect("release UDP close callback");
+    stopped_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("engine stop completed after UDP close epilogue");
+    stop_thread.join().expect("join engine stop");
+
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowOpened"), 1);
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowClosed"), 1);
+    assert_eq!(
+        dial9_flow_closed_reasons(temp_dir.path()),
+        vec![(FLOW_ID, 1)]
+    );
+    drop(session);
+}
+
+#[test]
 fn tcp_egress_read_error_records_direction_correct_dial9_reason() {
     const FLOW_ID: u64 = 0xE1E1_3004;
     let _slot = recorder_slot();
@@ -340,6 +580,68 @@ fn udp_pre_activation_max_lifetime_records_decoded_dial9_reason() {
     assert_eq!(
         dial9_flow_closed_reasons(temp_dir.path()),
         vec![(FLOW_ID, 13)]
+    );
+}
+
+#[test]
+fn udp_echo_records_real_dial9_byte_totals() {
+    const FLOW_ID: u64 = 0xE1E1_3005;
+    const INGRESS_LEN: usize = 64;
+    const EGRESS_LEN: usize = 17;
+    let _slot = recorder_slot();
+    install_close_capture();
+    let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
+    let handler = TestHandler {
+        app_message_handler: Arc::new(|_| None),
+        tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
+        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
+            meta,
+            service: service_fn(|mut flow: crate::UdpFlow| async move {
+                if let Some(mut datagram) = flow.recv().await {
+                    datagram.payload = rama_core::bytes::Bytes::from_static(&[0x17; EGRESS_LEN]);
+                    flow.send(datagram);
+                }
+                Ok::<_, Infallible>(())
+            })
+            .boxed(),
+        }),
+        tcp_egress_options: None,
+        on_sleep: None,
+        on_wake: None,
+    };
+    let engine = build_dial9_engine(handler, temp_dir.path());
+    let (echo_tx, echo_rx) = std::sync::mpsc::sync_channel(1);
+    let (closed_tx, closed_rx) = std::sync::mpsc::sync_channel(1);
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+    meta.flow_id = FLOW_ID;
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        meta,
+        move |datagram| {
+            _ = echo_tx.send(datagram.payload.len());
+        },
+        || {},
+        move || _ = closed_tx.send(()),
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate();
+    session.on_client_datagram(&[0x5a; INGRESS_LEN], None);
+
+    assert_eq!(echo_rx.recv_timeout(Duration::from_secs(1)), Ok(EGRESS_LEN));
+    closed_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("completed UDP service must close");
+    let started = std::time::Instant::now();
+    while !flow_was_closed(FLOW_ID) && started.elapsed() < Duration::from_secs(2) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(flow_was_closed(FLOW_ID));
+
+    session.on_client_close();
+    engine.stop(0);
+    assert_eq!(
+        dial9_udp_flow_closed_bytes(temp_dir.path(), FLOW_ID),
+        (INGRESS_LEN as u64, EGRESS_LEN as u64)
     );
 }
 

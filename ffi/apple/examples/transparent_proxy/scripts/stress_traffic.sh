@@ -28,7 +28,9 @@
 #                         snapshots (`preflight.txt`, `postflight.txt`)
 #                         in the log dir for self-contained diff.
 #   STRESS_NDJSON         path to a captured `log show … --style ndjson`
-#                         file. When set, the summary parses it to
+#                         file for an unmonitored diagnostic histogram.
+#                         Monitored mode owns and seals its log stream.
+#                         When set, the summary parses it to
 #                         produce a close-reason histogram. Collect with:
 #                           sudo log show \
 #                             --predicate 'subsystem == "org.ramaproxy.example.tproxy"' \
@@ -38,6 +40,12 @@
 #                         probe. Default off — without the probe we
 #                         can spend 180s pounding nothing if the
 #                         sysext crashed or is uninstalled.
+#   STRESS_MAX_P95_MS / STRESS_MIN_THROUGHPUT_MILLI_RPS
+#                         absolute latency/throughput gates (10000 / 100).
+#   STRESS_MAX_RSS_GROWTH_BYTES / STRESS_MAX_CPU_PERCENT
+#                         monitored-provider resource gates (64 MiB / 400%).
+#   STRESS_TRAFFIC_ROLE   unpaired-diagnostic (default), direct-baseline, or
+#                         proxy-candidate; stress_compare.py verifies pairs.
 #
 # Evidence scope is explicit: without STRESS_MONITOR_PID this is traffic-only.
 # With a pid it additionally proves that one stable provider process stayed
@@ -56,6 +64,12 @@ POST_BYTES="${STRESS_POST_BYTES-8388608}"      # 8 MiB
 MONITOR_PID="${STRESS_MONITOR_PID:-}"
 NDJSON_PATH="${STRESS_NDJSON:-}"
 SKIP_LIVENESS="${STRESS_SKIP_LIVENESS-0}"
+MAX_P95_MS="${STRESS_MAX_P95_MS-10000}"
+MIN_THROUGHPUT_MILLI_RPS="${STRESS_MIN_THROUGHPUT_MILLI_RPS-100}"
+MAX_RSS_GROWTH_BYTES="${STRESS_MAX_RSS_GROWTH_BYTES-67108864}"
+MAX_CPU_PERCENT="${STRESS_MAX_CPU_PERCENT-400}"
+TRAFFIC_ROLE="${STRESS_TRAFFIC_ROLE-unpaired-diagnostic}"
+LOG_TOOL="${STRESS_LOG_TOOL:-/usr/bin/log}"
 
 # Keep user-controlled values out of Bash arithmetic until they are known to be
 # canonical decimal strings and within workload-sized bounds. In particular,
@@ -90,10 +104,25 @@ require_bounded_uint STRESS_CONCURRENCY "$CONCURRENCY" 512
 require_bounded_uint STRESS_LARGE_BYTES "$LARGE_BYTES" 1073741824
 require_bounded_uint STRESS_POST_BYTES "$POST_BYTES" 1073741824
 require_boolean STRESS_SKIP_LIVENESS "$SKIP_LIVENESS"
+require_bounded_uint STRESS_MAX_P95_MS "$MAX_P95_MS" 600000
+require_bounded_uint STRESS_MIN_THROUGHPUT_MILLI_RPS "$MIN_THROUGHPUT_MILLI_RPS" 1000000
+require_bounded_uint STRESS_MAX_RSS_GROWTH_BYTES "$MAX_RSS_GROWTH_BYTES" 10737418240
+require_bounded_uint STRESS_MAX_CPU_PERCENT "$MAX_CPU_PERCENT" 10000
+case "$TRAFFIC_ROLE" in
+  unpaired-diagnostic|direct-baseline|proxy-candidate) ;;
+  *)
+    printf '[stress] STRESS_TRAFFIC_ROLE must be unpaired-diagnostic, direct-baseline, or proxy-candidate\n' >&2
+    exit 2
+    ;;
+esac
 if [[ -n "$MONITOR_PID" ]]; then
   require_bounded_uint STRESS_MONITOR_PID "$MONITOR_PID" 2147483647
   [[ "$MONITOR_PID" != 0 ]] || {
     printf '[stress] STRESS_MONITOR_PID must be greater than zero\n' >&2
+    exit 2
+  }
+  [[ -x "$LOG_TOOL" ]] || {
+    printf '[stress] STRESS_LOG_TOOL must name an executable log tool\n' >&2
     exit 2
   }
 fi
@@ -110,9 +139,43 @@ HTTP_TARGET="${STRESS_HTTP_TARGET:-http://http-test.ramaproxy.org/method}"
 HTTPS_TARGET="${STRESS_HTTPS_TARGET:-https://http-test.ramaproxy.org/method}"
 POST_TARGET="${STRESS_POST_TARGET:-https://http-test.ramaproxy.org/octet-stream}"
 LARGE_TARGET="${STRESS_LARGE_TARGET:-https://http-test.ramaproxy.org/bytes?size=${LARGE_BYTES}}"
+WORKLOAD_IDENTITY="$(python3 -c '
+import hashlib, json, sys
+print(hashlib.sha256(json.dumps(sys.argv[1:], separators=(",", ":")).encode()).hexdigest())
+' "$DURATION" "$CONCURRENCY" "$LARGE_BYTES" "$POST_BYTES" \
+  "$HTTP_TARGET" "$HTTPS_TARGET" "$LARGE_TARGET" "$POST_TARGET")"
+[[ "$WORKLOAD_IDENTITY" =~ ^[0-9a-f]{64}$ ]] || {
+  printf '[stress] could not derive the workload identity\n' >&2
+  exit 2
+}
 
 LOG_DIR="${STRESS_LOG_DIR:-$(mktemp -d /tmp/rama-stress.XXXXXX)}"
 mkdir -p "$LOG_DIR"
+EVIDENCE_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/stress_evidence.py"
+RUN_UUID=none
+RUN_START_EPOCH=0
+RUN_END_EPOCH=0
+TRAFFIC_START_EPOCH=0
+TRAFFIC_END_EPOCH=0
+ARTIFACT_MANIFEST_SHA256=none
+OBSERVED_P95_MS=0
+OBSERVED_THROUGHPUT_MILLI_RPS=0
+OBSERVED_RSS_GROWTH_BYTES=not_applicable
+OBSERVED_MAX_CPU_PERCENT=not_applicable
+GIT_HEAD=none
+GIT_DIRTY=none
+STRESS_SCRIPT_SHA256=none
+EVIDENCE_HELPER_SHA256=none
+PROVIDER_EXECUTABLE_SHA256=none
+PROVIDER_SIGNING_IDENTIFIER=none
+PROVIDER_SIGNING_TEAM=none
+PROVIDER_SIGNING_CDHASH=none
+NDJSON_INCLUDED=0
+SYSTEM_LOG_STARTED=0
+SYSTEM_LOG_ALIVE_END=0
+SYSTEM_LOG_JOINED=0
+SYSTEM_LOG_CHILD_RC=none
+SYSTEM_LOG_TOOL_SHA256=none
 
 ANALYZE_ONLY=0
 TRAFFIC_FAILED=0
@@ -124,8 +187,15 @@ fi
 EVIDENCE_MODE=traffic-only
 [[ -n "$MONITOR_PID" ]] && EVIDENCE_MODE=provider-monitored-traffic-only
 (( ANALYZE_ONLY )) && EVIDENCE_MODE=artifact-analysis-only
+STATUS_PATH="$LOG_DIR/stress-status.tsv"
+(( ANALYZE_ONLY )) && STATUS_PATH="$LOG_DIR/stress-analysis-status.tsv"
+if (( ! ANALYZE_ONLY )) && [[ -n "$(find "$LOG_DIR" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
+  printf '[stress] STRESS_LOG_DIR must be empty for a new source run\n' >&2
+  exit 2
+fi
 TRAFFIC_PIDS=()
 MONITOR_JOB_PID=""
+SYSTEM_LOG_JOB_PID=""
 MONITOR_STOP_FILE="$LOG_DIR/.monitor.stop"
 CLEANUP_STARTED=0
 rm -f -- "$MONITOR_STOP_FILE"
@@ -135,45 +205,110 @@ rm -f -- "$MONITOR_STOP_FILE"
 # anchored to a completed, successful traffic run rather than an arbitrary
 # directory containing stale or hand-written summaries.
 ANALYSIS_SOURCE_STATUS_OK=0
-if (( ANALYZE_ONLY )) && [[ -r "$LOG_DIR/stress-status.tsv" ]]; then
-  if awk -F '\t' '
-    BEGIN { ok = 1 }
-    NF != 2 { ok = 0; next }
-    $1 == "complete" { complete++; ok = ok && $2 == "1"; next }
-    $1 == "passed" { passed++; ok = ok && $2 == "1"; next }
-    $1 == "exit_code" { exit_code++; ok = ok && $2 == "0"; next }
-    $1 == "evidence_mode" {
-      mode++
-      ok = ok && ($2 == "traffic-only" || $2 == "provider-monitored-traffic-only")
-      next
+if (( ANALYZE_ONLY )); then
+  SOURCE_EVIDENCE="$("$EVIDENCE_HELPER" verify "$LOG_DIR" 2>/dev/null || true)"
+  if [[ "$SOURCE_EVIDENCE" =~ ^[0-9a-f-]+$'\t'[0-9]+$'\t'[0-9]+$'\t'[0-9a-f]{64}$ ]]; then
+    IFS=$'\t' read -r RUN_UUID RUN_START_EPOCH RUN_END_EPOCH \
+      ARTIFACT_MANIFEST_SHA256 <<< "$SOURCE_EVIDENCE"
+    source_status_value() {
+      awk -F '\t' -v key="$1" '$1 == key { print $2 }' \
+        "$LOG_DIR/stress-status.tsv"
     }
-    $1 == "proxy_attributed" { attributed++; ok = ok && $2 == "0"; next }
-    $1 == "schema_complete" { schema++; ok = ok && $2 == "1"; last_schema = NR; next }
-    { ok = 0 }
-    END {
-      exit !(ok && complete == 1 && passed == 1 && exit_code == 1 \
-        && mode == 1 && attributed == 1 && schema == 1 && last_schema == NR)
-    }
-  ' "$LOG_DIR/stress-status.tsv"
-  then
+    MAX_P95_MS="$(source_status_value max_p95_ms)"
+    MIN_THROUGHPUT_MILLI_RPS="$(source_status_value min_throughput_milli_rps)"
+    MAX_RSS_GROWTH_BYTES="$(source_status_value max_rss_growth_bytes)"
+    MAX_CPU_PERCENT="$(source_status_value max_cpu_percent)"
+    OBSERVED_P95_MS="$(source_status_value observed_p95_ms)"
+    OBSERVED_THROUGHPUT_MILLI_RPS="$(source_status_value observed_throughput_milli_rps)"
+    OBSERVED_RSS_GROWTH_BYTES="$(source_status_value observed_rss_growth_bytes)"
+    OBSERVED_MAX_CPU_PERCENT="$(source_status_value observed_max_cpu_percent)"
+    GIT_HEAD="$(source_status_value git_head)"
+    GIT_DIRTY="$(source_status_value git_dirty)"
+    TRAFFIC_ROLE="$(source_status_value traffic_role)"
+    WORKLOAD_IDENTITY="$(source_status_value workload_identity)"
+    STRESS_SCRIPT_SHA256="$(source_status_value stress_script_sha256)"
+    EVIDENCE_HELPER_SHA256="$(source_status_value evidence_helper_sha256)"
+    MONITOR_PID="$(source_status_value provider_pid)"
+    MONITOR_IDENTITY="$(source_status_value provider_identity)"
+    PROVIDER_EXECUTABLE_SHA256="$(source_status_value provider_executable_sha256)"
+    PROVIDER_SIGNING_IDENTIFIER="$(source_status_value provider_signing_identifier)"
+    PROVIDER_SIGNING_TEAM="$(source_status_value provider_signing_team)"
+    PROVIDER_SIGNING_CDHASH="$(source_status_value provider_signing_cdhash)"
+    NDJSON_INCLUDED="$(source_status_value ndjson_included)"
+    SYSTEM_LOG_STARTED="$(source_status_value system_log_started)"
+    SYSTEM_LOG_ALIVE_END="$(source_status_value system_log_alive_end)"
+    SYSTEM_LOG_JOINED="$(source_status_value system_log_joined)"
+    SYSTEM_LOG_CHILD_RC="$(source_status_value system_log_child_rc)"
+    SYSTEM_LOG_TOOL_SHA256="$(source_status_value system_log_tool_sha256)"
+    [[ "$MONITOR_PID" != none ]] || MONITOR_PID=""
+    [[ "$NDJSON_INCLUDED" != 1 ]] || NDJSON_PATH="$LOG_DIR/system.ndjson"
     ANALYSIS_SOURCE_STATUS_OK=1
   fi
+else
+  RUN_UUID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+  RUN_START_EPOCH="$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
 fi
 
 write_stress_status() {
   local complete="$1" passed="$2" exit_code="$3" issue="${4:-}"
-  local tmp="$LOG_DIR/stress-status.tsv.tmp.$$"
+  local tmp="$STATUS_PATH.tmp.$$"
   {
     printf 'complete\t%s\npassed\t%s\nexit_code\t%s\n' \
       "$complete" "$passed" "$exit_code"
     printf 'evidence_mode\t%s\nproxy_attributed\t0\n' "$EVIDENCE_MODE"
+    printf 'evidence_claim\tself-attested-local-integrity-not-authenticity\n'
+    printf 'traffic_role\t%s\nworkload_identity\t%s\n' \
+      "$TRAFFIC_ROLE" "$WORKLOAD_IDENTITY"
+    printf 'run_uuid\t%s\nrun_start_epoch\t%s\nrun_end_epoch\t%s\n' \
+      "$RUN_UUID" "$RUN_START_EPOCH" "$RUN_END_EPOCH"
+    printf 'artifact_manifest_sha256\t%s\n' "$ARTIFACT_MANIFEST_SHA256"
+    printf 'max_p95_ms\t%s\nmin_throughput_milli_rps\t%s\n' \
+      "$MAX_P95_MS" "$MIN_THROUGHPUT_MILLI_RPS"
+    printf 'max_rss_growth_bytes\t%s\nmax_cpu_percent\t%s\n' \
+      "$MAX_RSS_GROWTH_BYTES" "$MAX_CPU_PERCENT"
+    printf 'observed_p95_ms\t%s\nobserved_throughput_milli_rps\t%s\n' \
+      "$OBSERVED_P95_MS" "$OBSERVED_THROUGHPUT_MILLI_RPS"
+    printf 'observed_rss_growth_bytes\t%s\nobserved_max_cpu_percent\t%s\n' \
+      "$OBSERVED_RSS_GROWTH_BYTES" "$OBSERVED_MAX_CPU_PERCENT"
+    printf 'git_head\t%s\ngit_dirty\t%s\n' "$GIT_HEAD" "$GIT_DIRTY"
+    printf 'stress_script_sha256\t%s\nevidence_helper_sha256\t%s\n' \
+      "$STRESS_SCRIPT_SHA256" "$EVIDENCE_HELPER_SHA256"
+    printf 'provider_pid\t%s\nprovider_identity\t%s\n' \
+      "${MONITOR_PID:-none}" "${MONITOR_IDENTITY:-none}"
+    printf 'provider_executable_sha256\t%s\n' "$PROVIDER_EXECUTABLE_SHA256"
+    printf 'provider_signing_identifier\t%s\nprovider_signing_team\t%s\n' \
+      "$PROVIDER_SIGNING_IDENTIFIER" "$PROVIDER_SIGNING_TEAM"
+    printf 'provider_signing_cdhash\t%s\nndjson_included\t%s\n' \
+      "$PROVIDER_SIGNING_CDHASH" "$NDJSON_INCLUDED"
+    printf 'system_log_started\t%s\nsystem_log_alive_end\t%s\n' \
+      "$SYSTEM_LOG_STARTED" "$SYSTEM_LOG_ALIVE_END"
+    printf 'system_log_joined\t%s\nsystem_log_child_rc\t%s\n' \
+      "$SYSTEM_LOG_JOINED" "$SYSTEM_LOG_CHILD_RC"
+    printf 'system_log_tool_sha256\t%s\n' "$SYSTEM_LOG_TOOL_SHA256"
     [[ -z "$issue" ]] || printf 'issue\t%s\n' "$issue"
     printf 'schema_complete\t1\n'
   } > "$tmp"
-  mv "$tmp" "$LOG_DIR/stress-status.tsv"
+  mv "$tmp" "$STATUS_PATH"
 }
 
 write_stress_status 0 0 2 "stress run did not reach its terminal verdict"
+
+if (( ! ANALYZE_ONLY )); then
+  REPO_ROOT="$(git -C "$(dirname "$EVIDENCE_HELPER")" rev-parse --show-toplevel 2>/dev/null || true)"
+  [[ -n "$REPO_ROOT" ]] || {
+    write_stress_status 0 0 2 "could not resolve source repository identity"
+    exit 2
+  }
+  cp "$0" "$LOG_DIR/source-stress_traffic.sh"
+  cp "$EVIDENCE_HELPER" "$LOG_DIR/source-stress_evidence.py"
+  GIT_HEAD="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  git -C "$REPO_ROOT" status --porcelain --untracked-files=normal \
+    > "$LOG_DIR/git-status.txt"
+  printf '%s\n' "$GIT_HEAD" > "$LOG_DIR/git-head.txt"
+  [[ -s "$LOG_DIR/git-status.txt" ]] && GIT_DIRTY=1 || GIT_DIRTY=0
+  STRESS_SCRIPT_SHA256="$(shasum -a 256 "$LOG_DIR/source-stress_traffic.sh" | awk '{print $1}')"
+  EVIDENCE_HELPER_SHA256="$(shasum -a 256 "$LOG_DIR/source-stress_evidence.py" | awk '{print $1}')"
+fi
 
 TRAFFIC_WORKERS=(
   small_https
@@ -250,6 +385,7 @@ cleanup_owned_jobs() {
   set +u
   owned=("${TRAFFIC_PIDS[@]}")
   [[ -z "$MONITOR_JOB_PID" ]] || owned+=("$MONITOR_JOB_PID")
+  [[ -z "$SYSTEM_LOG_JOB_PID" ]] || owned+=("$SYSTEM_LOG_JOB_PID")
   # Freeze each direct worker before walking its descendants. This closes the
   # race where a worker starts another curl between a tree snapshot and TERM,
   # leaving that just-created process orphaned outside our cleanup authority.
@@ -369,7 +505,7 @@ transfer_matches_workload() {
 # code alone is therefore not an honest request outcome.
 do_one_curl() {
   local label="$1" target="$2"; shift 2
-  local metrics code downloaded uploaded http_version curl_rc=0 matched=1
+  local metrics code downloaded uploaded http_version duration_seconds curl_rc=0 matched=1
   local response_file="" output_file=/dev/null
   if [[ "$label" == post_large ]]; then
     response_file="$LOG_DIR/.post-response.${BASHPID:-$$}.$RANDOM"
@@ -378,13 +514,13 @@ do_one_curl() {
   metrics=$(curl --silent --show-error --output "$output_file" \
       --max-time 30 \
       --fail-with-body \
-      --write-out $'%{http_code}\t%{size_download}\t%{size_upload}\t%{http_version}' \
+      --write-out $'%{http_code}\t%{size_download}\t%{size_upload}\t%{http_version}\t%{time_total}' \
       "$@" "$target" 2>>"$LOG_DIR/${label}.log") || curl_rc=$?
-  IFS=$'\t' read -r code downloaded uploaded http_version <<< "$metrics"
+  IFS=$'\t' read -r code downloaded uploaded http_version duration_seconds <<< "$metrics"
   [[ "$code" =~ ^[0-9]{3}$ ]] || code=000
-  printf '%s curl_exit=%s downloaded=%s uploaded=%s http_version=%s\n' \
+  printf '%s curl_exit=%s downloaded=%s uploaded=%s http_version=%s duration_seconds=%s\n' \
     "$code" "$curl_rc" "${downloaded:-?}" "${uploaded:-?}" \
-    "${http_version:-?}" >>"$LOG_DIR/${label}.log"
+    "${http_version:-?}" "${duration_seconds:-?}" >>"$LOG_DIR/${label}.log"
   (( curl_rc == 0 )) \
     && http_status_is_ok "$code" \
     && transfer_matches_workload \
@@ -547,6 +683,26 @@ monitor_pid() {
   [[ "$observed_identity" == "$expected_identity" ]]
 }
 
+stop_system_log_capture() {
+  local child_rc
+  [[ -n "$SYSTEM_LOG_JOB_PID" ]] || return 0
+  if kill -0 "$SYSTEM_LOG_JOB_PID" 2>/dev/null; then
+    SYSTEM_LOG_ALIVE_END=1
+    kill -TERM "$SYSTEM_LOG_JOB_PID" 2>/dev/null || true
+  else
+    say "${RED}system log capture exited before the stress window ended${RESET}"
+  fi
+  wait "$SYSTEM_LOG_JOB_PID" 2>/dev/null
+  child_rc=$?
+  SYSTEM_LOG_CHILD_RC="$child_rc"
+  SYSTEM_LOG_JOINED=1
+  SYSTEM_LOG_JOB_PID=""
+  case "$child_rc" in
+    0|143) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # ── Plan + launch ────────────────────────────────────────────────────
 
 hdr "rama transparent proxy stress test"
@@ -583,15 +739,58 @@ if (( ! ANALYZE_ONLY )); then
       exit 1
     fi
     printf '%s\n' "$MONITOR_IDENTITY" > "$LOG_DIR/monitor.identity.sha256"
+    PROVIDER_EXECUTABLE="$(ps -ww -o comm= -p "$MONITOR_PID" 2>/dev/null | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    if [[ ! -f "$PROVIDER_EXECUTABLE" ]]; then
+      say "${RED}monitor: provider executable path is unavailable${RESET}"
+      exit 1
+    fi
+    PROVIDER_EXECUTABLE_SHA256="$(shasum -a 256 "$PROVIDER_EXECUTABLE" | awk '{print $1}')"
+    codesign -dvvv "$PROVIDER_EXECUTABLE" > "$LOG_DIR/provider-codesign.txt" 2>&1 || {
+      say "${RED}monitor: provider signing identity is unavailable${RESET}"
+      exit 1
+    }
+    PROVIDER_SIGNING_IDENTIFIER="$(sed -n 's/^Identifier=//p' "$LOG_DIR/provider-codesign.txt" | head -1)"
+    PROVIDER_SIGNING_TEAM="$(sed -n 's/^TeamIdentifier=//p' "$LOG_DIR/provider-codesign.txt" | head -1)"
+    PROVIDER_SIGNING_CDHASH="$(sed -n 's/^CDHash=//p' "$LOG_DIR/provider-codesign.txt" | head -1)"
+    if [[ -z "$PROVIDER_SIGNING_IDENTIFIER" || -z "$PROVIDER_SIGNING_TEAM" \
+      || ! "$PROVIDER_SIGNING_CDHASH" =~ ^[0-9a-fA-F]+$ ]]
+    then
+      say "${RED}monitor: provider signing fields are incomplete${RESET}"
+      exit 1
+    fi
+    {
+      printf 'pid\t%s\nidentity\t%s\nexecutable\t%s\n' \
+        "$MONITOR_PID" "$MONITOR_IDENTITY" "$PROVIDER_EXECUTABLE"
+      printf 'executable_sha256\t%s\nsigning_identifier\t%s\n' \
+        "$PROVIDER_EXECUTABLE_SHA256" "$PROVIDER_SIGNING_IDENTIFIER"
+      printf 'signing_team\t%s\nsigning_cdhash\t%s\n' \
+        "$PROVIDER_SIGNING_TEAM" "$PROVIDER_SIGNING_CDHASH"
+    } > "$LOG_DIR/provider-identity.tsv"
     if snapshot_pid "$MONITOR_PID" preflight "$MONITOR_IDENTITY"; then
       say "preflight:   $LOG_DIR/preflight.txt"
     else
       say "${RED}preflight: monitored provider identity changed or disappeared${RESET}"
       exit 1
     fi
+    NDJSON_PATH="$LOG_DIR/system.ndjson"
+    SYSTEM_LOG_TOOL_SHA256="$(shasum -a 256 "$LOG_TOOL" | awk '{print $1}')"
+    printf 'path\t%s\nsha256\t%s\n' "$LOG_TOOL" "$SYSTEM_LOG_TOOL_SHA256" \
+      > "$LOG_DIR/system-log-tool.tsv"
+    "$LOG_TOOL" stream --level debug --style ndjson \
+      --predicate "processIdentifier == $MONITOR_PID AND subsystem BEGINSWITH 'org.ramaproxy.example.tproxy'" \
+      > "$NDJSON_PATH" 2> "$LOG_DIR/system-log-capture.err" &
+    SYSTEM_LOG_JOB_PID="$!"
+    sleep 0.5
+    if kill -0 "$SYSTEM_LOG_JOB_PID" 2>/dev/null; then
+      SYSTEM_LOG_STARTED=1
+    else
+      say "${RED}monitor: provider system log capture did not stay alive${RESET}"
+      exit 2
+    fi
   fi
 
   START_TS=$(date -u +%s)
+  TRAFFIC_START_EPOCH="$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
 
   for worker_name in "${TRAFFIC_WORKERS[@]}"; do
     : > "$LOG_DIR/${worker_name}.log"
@@ -629,6 +828,7 @@ if (( ! ANALYZE_ONLY )); then
   for worker_pid in "${TRAFFIC_PIDS[@]}"; do
     wait "$worker_pid" || TRAFFIC_FAILED=1
   done
+  TRAFFIC_END_EPOCH="$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
   : > "$MONITOR_STOP_FILE"
   if [[ -n "$MONITOR_JOB_PID" ]]; then
     if ! wait "$MONITOR_JOB_PID"; then
@@ -636,6 +836,10 @@ if (( ! ANALYZE_ONLY )); then
       TRAFFIC_FAILED=1
     fi
     MONITOR_JOB_PID=""
+  fi
+  if [[ -n "$SYSTEM_LOG_JOB_PID" ]] && ! stop_system_log_capture; then
+    say "${RED}provider system log capture failed${RESET}"
+    TRAFFIC_FAILED=1
   fi
   verify_worker_progress || TRAFFIC_FAILED=1
 else
@@ -712,6 +916,52 @@ if [[ -n "$MONITOR_PID" && $ANALYZE_ONLY -eq 0 ]]; then
     say "${RED}postflight: monitored provider identity changed or disappeared${RESET}"
     TRAFFIC_FAILED=1
   fi
+  if [[ -s "$LOG_DIR/system.ndjson" ]]; then
+    NDJSON_INCLUDED=1
+    NDJSON_PATH="$LOG_DIR/system.ndjson"
+  else
+    say "${RED}system log capture could not be included in the evidence${RESET}"
+    TRAFFIC_FAILED=1
+  fi
+fi
+
+if (( ! ANALYZE_ONLY )); then
+  RUN_END_EPOCH="$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
+  if (( TRAFFIC_FAILED )); then
+    say "${RED}one or more traffic workers observed request failures${RESET}"
+    write_stress_status 1 0 1
+    exit 1
+  fi
+  METRIC_RESULT="$(
+    "$EVIDENCE_HELPER" metrics "$LOG_DIR" "$TRAFFIC_START_EPOCH" \
+      "$TRAFFIC_END_EPOCH" "$MAX_P95_MS" "$MIN_THROUGHPUT_MILLI_RPS" \
+      "$MAX_RSS_GROWTH_BYTES" "$MAX_CPU_PERCENT" "$EVIDENCE_MODE" \
+      "${MONITOR_PID:-none}"
+  )" || {
+    say "${RED}stress performance evidence is incomplete or malformed${RESET}"
+    write_stress_status 0 0 2 "stress performance evidence could not be measured"
+    exit 2
+  }
+  IFS=$'\t' read -r METRIC_STATUS SUCCESSFUL_REQUESTS OBSERVED_P95_MS \
+    METRIC_MAX_P95 OBSERVED_THROUGHPUT_MILLI_RPS METRIC_MIN_THROUGHPUT \
+    OBSERVED_RSS_GROWTH_BYTES METRIC_MAX_RSS OBSERVED_MAX_CPU_PERCENT \
+    METRIC_MAX_CPU <<< "$METRIC_RESULT"
+  if [[ "$METRIC_MAX_P95" != "$MAX_P95_MS" \
+    || "$METRIC_MIN_THROUGHPUT" != "$MIN_THROUGHPUT_MILLI_RPS" \
+    || "$METRIC_MAX_RSS" != "$MAX_RSS_GROWTH_BYTES" \
+    || "$METRIC_MAX_CPU" != "$MAX_CPU_PERCENT" \
+    || ! "$SUCCESSFUL_REQUESTS" =~ ^[1-9][0-9]*$ \
+    || ( "$METRIC_STATUS" != PASSED && "$METRIC_STATUS" != FAILED ) ]]
+  then
+    say "${RED}stress performance helper returned an invalid result${RESET}"
+    write_stress_status 0 0 2 "stress performance helper returned an invalid result"
+    exit 2
+  fi
+  say "performance: p95=${OBSERVED_P95_MS}ms throughput=${OBSERVED_THROUGHPUT_MILLI_RPS} milli-rps"
+  if [[ "$EVIDENCE_MODE" == provider-monitored-traffic-only ]]; then
+    say "provider:    rss-growth=${OBSERVED_RSS_GROWTH_BYTES}B max-cpu=${OBSERVED_MAX_CPU_PERCENT}%"
+  fi
+  [[ "$METRIC_STATUS" == PASSED ]] || TRAFFIC_FAILED=1
 fi
 
 # Close-reason histogram from a captured system log.
@@ -755,13 +1005,25 @@ fi
 
 hdr "logs at $LOG_DIR"
 say "done"
+if (( ! ANALYZE_ONLY )); then
+  ARTIFACT_MANIFEST_SHA256="$(
+    "$EVIDENCE_HELPER" seal "$LOG_DIR" "$RUN_UUID" \
+      "$RUN_START_EPOCH" "$RUN_END_EPOCH" "$EVIDENCE_MODE" \
+      "${MONITOR_PID:-none}" "$TRAFFIC_ROLE" "$WORKLOAD_IDENTITY"
+  )" || {
+    say "${RED}could not seal the stress worker artifacts${RESET}"
+    ARTIFACT_MANIFEST_SHA256=none
+    write_stress_status 0 0 2 "stress worker artifacts could not be sealed"
+    exit 2
+  }
+fi
 if (( ANALYZE_ONLY && ANALYSIS_FAILED )); then
   say "${RED}artifact analysis is incomplete or invalid${RESET}"
   write_stress_status 0 0 2 "artifact analysis requires a successful source status and complete worker artifacts"
   exit 2
 fi
 if (( ! ANALYZE_ONLY && TRAFFIC_FAILED )); then
-  say "${RED}one or more traffic workers observed request failures${RESET}"
+  say "${RED}one or more explicit stress performance thresholds failed${RESET}"
   write_stress_status 1 0 1
   exit 1
 fi

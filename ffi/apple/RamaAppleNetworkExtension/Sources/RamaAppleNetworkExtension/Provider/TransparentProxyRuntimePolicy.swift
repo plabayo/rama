@@ -80,6 +80,7 @@ struct TransparentProxyRuntimePolicy: Sendable, Equatable {
     let flowPressure: FlowPressurePolicy
     let udpIdleTimeoutMs: UInt64
     let udpIngressStaging: UdpIngressStagingPolicy
+    let writerMemory: WriterMemoryPolicy
     let tcpStartAdmission: TcpStartAdmissionPolicy
     let flowRefusal: FlowRefusalPolicy
 
@@ -99,7 +100,9 @@ struct TransparentProxyRuntimePolicy: Sendable, Equatable {
         flowRefusalPassthrough: Bool,
         udpChannelCapacity: Int = 32,
         udpIngressPerFlowMaxBytes: Int = 256 * 1024,
-        udpIngressGlobalMaxBytes: Int = 16 * 1024 * 1024
+        udpIngressGlobalMaxBytes: Int = 16 * 1024 * 1024,
+        writerMemoryMaxBytes: Int = WriterMemoryPolicy.default.maxBytes,
+        writerMemoryMaxItems: Int = WriterMemoryPolicy.default.maxItems
     ) {
         let pressureSoftCap = normalizedFlowPressureSoftCap(
             softCap: flowPressureSoftCap,
@@ -111,8 +114,16 @@ struct TransparentProxyRuntimePolicy: Sendable, Equatable {
             softCap: tcpStartInFlightSoftCap,
             hardCap: tcpStartInFlightHardCap)
 
+        // Mirror Rust's order-independent effective getter. This also keeps an
+        // older engine from letting one TCP retry consume every aggregate byte
+        // and black-hole UDP/QUIC/H3 behind the TCP waiter gate.
+        let effectiveTcpWritePumpMaxPendingBytes = min(
+            tcpWritePumpMaxPendingBytes,
+            max(
+                writerMemoryMaxBytes - WriterMemoryPolicy.minimumUdpPressureReserveBytes,
+                1))
         self.tcpWritePump = TcpWritePumpPolicy(
-            maxPendingBytes: tcpWritePumpMaxPendingBytes)
+            maxPendingBytes: effectiveTcpWritePumpMaxPendingBytes)
         self.flowPressure = FlowPressurePolicy(
             softCap: pressureSoftCap,
             lowWater: pressureLowWater,
@@ -120,7 +131,7 @@ struct TransparentProxyRuntimePolicy: Sendable, Equatable {
             liveHardCap: liveFlowHardCap)
         self.udpIdleTimeoutMs = udpIdleTimeoutMs
         // A zero hard cap intentionally disables live-flow admission limiting;
-        // it must not collapse the independent generation-wide staging budget
+        // it must not collapse the independent process-wide staging budget
         // to one item. Keep that configuration bounded with the documented
         // conservative population used by the staging layer itself.
         let stagingFlowPopulation = liveFlowHardCap == 0
@@ -133,6 +144,10 @@ struct TransparentProxyRuntimePolicy: Sendable, Equatable {
             maxItemsPerGeneration: generationItemsOverflow ? Int.max : generationItems,
             maxBytesPerFlow: udpIngressPerFlowMaxBytes,
             maxBytesPerGeneration: udpIngressGlobalMaxBytes)
+        self.writerMemory = WriterMemoryPolicy(
+            maxBytes: writerMemoryMaxBytes,
+            maxItems: writerMemoryMaxItems,
+            tcpWaiterMaxBytes: effectiveTcpWritePumpMaxPendingBytes)
         self.tcpStartAdmission = TcpStartAdmissionPolicy(
             hardCap: tcpStartInFlightHardCap,
             softCap: tcpStartSoftCap,
@@ -160,7 +175,9 @@ struct TransparentProxyRuntimePolicy: Sendable, Equatable {
             flowRefusalPassthrough: startup.flowRefusalPassthrough,
             udpChannelCapacity: startup.udpChannelCapacity,
             udpIngressPerFlowMaxBytes: startup.udpIngressPerFlowMaxBytes,
-            udpIngressGlobalMaxBytes: startup.udpIngressGlobalMaxBytes)
+            udpIngressGlobalMaxBytes: startup.udpIngressGlobalMaxBytes,
+            writerMemoryMaxBytes: startup.writerMemoryMaxBytes,
+            writerMemoryMaxItems: startup.writerMemoryMaxItems)
     }
 
     /// Compatibility snapshot for engine-less and narrowly-scoped unit tests.

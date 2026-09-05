@@ -438,14 +438,18 @@ impl PromoteRegistry {
     /// cutover — `requested` is CAS-guarded on the handle.
     ///
     /// Callback contract: the registered C trampoline MUST NOT
-    /// synchronously call `cancel` on this same session. `fire`
-    /// holds `callback_active` across the trampoline call to
-    /// keep the Swift box alive; a re-entrant `cancel` would
-    /// deadlock waiting for that same lock. Production Swift
-    /// satisfies this by hopping to the per-flow dispatch queue
-    /// inside the callback body and returning immediately.
-    /// `confirm_promoted` is safe to call synchronously — it
-    /// only touches `pending_ack`, not `callback_active`.
+    /// synchronously call any method on this same session,
+    /// including `cancel`, callback registration, or
+    /// `confirm_promoted`. `fire` holds `callback_active` across
+    /// the trampoline call to keep the Swift box alive, while the
+    /// foreign-language session wrapper may serialize every
+    /// session entry through its own lock. Concurrent or re-entrant
+    /// entry can therefore invert those two locks and deadlock.
+    /// Production Swift satisfies this by hopping to the per-flow
+    /// dispatch queue inside the callback body and returning
+    /// immediately. This restriction is specific to the raw FFI
+    /// callback; Rust-native callbacks do not enter through the
+    /// Swift session-handle lock.
     pub(super) fn register_raw(&self, cb: PromoteRequestCallback) {
         // Serialises against `fire`'s snapshot+dispatch (which
         // holds the same lock across both). Without this, a swap

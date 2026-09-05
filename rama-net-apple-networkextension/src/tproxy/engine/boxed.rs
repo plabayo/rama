@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::tproxy::{
     SessionFlowAction, TcpDeliverStatus, TransparentProxyConfig, TransparentProxyFlowMeta,
@@ -33,6 +34,9 @@ trait BoxedTransparentProxyEngineInner: Send + Sync + 'static {
     fn udp_channel_capacity(&self) -> usize;
     fn udp_ingress_per_flow_max_bytes(&self) -> usize;
     fn udp_ingress_global_max_bytes(&self) -> usize;
+    fn writer_memory_max_bytes(&self) -> usize;
+    fn writer_memory_max_items(&self) -> usize;
+    fn udp_ingress_probe_lease(&self) -> Duration;
     fn handle_app_message(&self, message: Bytes) -> Option<Bytes>;
     fn notify_system_sleep(&self);
     fn notify_system_wake(&self);
@@ -82,6 +86,18 @@ where
 
     fn udp_ingress_global_max_bytes(&self) -> usize {
         self.udp_ingress_global_max_bytes()
+    }
+
+    fn writer_memory_max_bytes(&self) -> usize {
+        self.writer_memory_max_bytes()
+    }
+
+    fn writer_memory_max_items(&self) -> usize {
+        self.writer_memory_max_items()
+    }
+
+    fn udp_ingress_probe_lease(&self) -> Duration {
+        self.udp_ingress_probe_lease()
     }
 
     fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {
@@ -171,6 +187,18 @@ impl BoxedTransparentProxyEngine {
 
     pub fn udp_ingress_global_max_bytes(&self) -> usize {
         self.0.udp_ingress_global_max_bytes()
+    }
+
+    pub fn writer_memory_max_bytes(&self) -> usize {
+        self.0.writer_memory_max_bytes()
+    }
+
+    pub fn writer_memory_max_items(&self) -> usize {
+        self.0.writer_memory_max_items()
+    }
+
+    pub fn udp_ingress_probe_lease(&self) -> Duration {
+        self.0.udp_ingress_probe_lease()
     }
 
     pub fn handle_app_message(&self, message: Bytes) -> Option<Bytes> {

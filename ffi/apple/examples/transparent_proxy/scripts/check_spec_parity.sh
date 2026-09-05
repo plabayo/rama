@@ -36,7 +36,7 @@ import sys
 
 root = Path(sys.argv[1])
 sys.path.insert(0, str(root / "scripts"))
-from soak_pressure_log import pressure_telemetry_issue
+from soak_pressure_log import PRESSURE_GAUGE_SCHEMA_CURRENT, pressure_telemetry_issue
 
 source = (
     root.parent.parent
@@ -50,10 +50,24 @@ swift_udp_source = (
     root.parent.parent
     / "RamaAppleNetworkExtension/Sources/RamaAppleNetworkExtension/Provider/Session/UdpFlowSession.swift"
 ).read_text()
+swift_provider_source = (
+    root.parent.parent
+    / "RamaAppleNetworkExtension/Sources/RamaAppleNetworkExtension/Provider/RamaTransparentProxyProvider.swift"
+).read_text()
 swift_udp_staging_source = (
     root.parent.parent
     / "RamaAppleNetworkExtension/Sources/RamaAppleNetworkExtension/Provider/UdpIngressStaging.swift"
 ).read_text()
+writer_budget_source = (
+    root.parent.parent
+    / "RamaAppleNetworkExtension/Sources/RamaAppleNetworkExtension/Provider/Pump/WriterMemoryBudget.swift"
+).read_text()
+tproxy_demo_source = (root / "tproxy_rs/src/lib.rs").read_text()
+tproxy_udp_source = (root / "tproxy_rs/src/udp.rs").read_text()
+udp_probe_source = (root / "scripts/modern_udp_e2e_probe.py").read_text()
+
+if PRESSURE_GAUGE_SCHEMA_CURRENT != 2:
+    raise SystemExit("pressure parser current gauge schema version is not 2")
 
 def require_order(anchor, tokens, span=5000):
     start = source.find(anchor)
@@ -219,12 +233,79 @@ for fixture in fixtures:
     if issue is not None:
         raise SystemExit(f"canonical Swift telemetry fixture rejected: {issue}")
 
+writer_fixture = (
+    'writer memory pressure entered protocol="udp" reason="aggregate_bytes" '
+    'retainedBytes=8192 maxBytes=8192 retainedItems=8 maxItems=8'
+)
+if pressure_telemetry_issue(writer_fixture) is not None:
+    raise SystemExit("canonical writer-memory pressure fixture was rejected")
+for token in (
+    "writer memory pressure \\(transition.rawValue)", 'protocol=\\"\\(protocolName)\\"',
+    'reason=\\"\\(reasonName)\\"', "retainedBytes=\\(retainedBytes)",
+    "maxBytes=\\(maxBytes)", "retainedItems=\\(retainedItems)",
+    "maxItems=\\(maxItems)",
+):
+    if token.replace("\\\\", "\\") not in writer_budget_source:
+        raise SystemExit(f"writer-memory telemetry source diverged: {token}")
+
+for missing in ("hardCap=", "retiring=", "retirementOverlap="):
+    incomplete = fixtures[0].replace(
+        next(token for token in fixtures[0].split() if token.startswith(missing)), ""
+    )
+    if pressure_telemetry_issue(incomplete) is None:
+        raise SystemExit(f"current pressure gauge accepted without {missing}")
+
+capacity_start = swift_udp_source.find("case .capacityRefused")
+capacity_block = swift_udp_source[capacity_start:capacity_start + 1000]
+public_end = capacity_block.find("let privateMetadata")
+if capacity_start < 0 or public_end < 0:
+    raise SystemExit("Swift UDP capacity-refusal logging block is missing")
+if "appId" in capacity_block[:public_end] or "app=" in capacity_block[:public_end]:
+    raise SystemExit("Swift UDP capacity-refusal public log contains app identity")
+if 'let privateMetadata = "app=\\(appId)"' not in capacity_block:
+    raise SystemExit("Swift UDP capacity-refusal app identity is not private metadata")
+callback_start = swift_provider_source.find("internal static func finishUdpCallback")
+callback_block = swift_provider_source[callback_start:callback_start + 1800]
+if callback_start < 0:
+    raise SystemExit("Swift UDP callback logging block is missing")
+public_callback = (
+    '"udp_callback=\\(callback.rawValue) rama_decision=\\(decision.rawValue) '
+    'callback_return=\\(callbackReturn)",'
+)
+if public_callback not in callback_block:
+    raise SystemExit("Swift UDP callback public decision fields diverged")
+public_end = callback_block.find(public_callback) + len(public_callback)
+if "source_app=" in callback_block[:public_end] or "sourceAppSigningIdentifier" in callback_block[
+        callback_block.find("logDebug("):public_end
+]:
+    raise SystemExit("Swift UDP callback public log contains source-app identity")
+if '"source_app=\\(sourceAppSigningIdentifier ?? "<missing>") "' not in callback_block:
+    raise SystemExit("Swift UDP callback source-app identity is not private metadata")
+if "source_pid={}" not in tproxy_demo_source or "meta.source_app_pid?" not in tproxy_demo_source:
+    raise SystemExit("modern UDP decision evidence is not bound to a source PID")
+if "with_udp_channel_capacity(8)" in tproxy_demo_source:
+    raise SystemExit("signed UDP pressure mode still changes the engine-wide channel ceiling")
+for required in (
+    "try_new_service(ctx.clone(), udp_policy_scope)",
+    "should_hold_e2e_pressure_flow(",
+    'b"rama-udp-e2e-pressure-v1 "',
+    'Some("com.apple.python3")',
+    "scope.is_e2e_active_at(now)",
+    "Duration::from_secs(2)",
+):
+    if required not in tproxy_demo_source + tproxy_udp_source:
+        raise SystemExit(f"signed UDP pressure hold scope diverged: {required}")
+if 'PRESSURE_MARKER_PREFIX = b"rama-udp-e2e-pressure-v1 "' not in udp_probe_source:
+    raise SystemExit("Python pressure probe marker diverged from Rust service marker")
+if 'f"{address}:123".encode("ascii") + b"\\0"' not in udp_probe_source:
+    raise SystemExit("Python pressure probe does not bind the marker to its exact endpoint")
+
 require_udp_order(
     "fn record_drop",
     (
-        "pressure", "cumulative_drops", "global_retained_bytes",
+        "flow_id", "pressure", "cumulative_drops", "global_retained_bytes",
         "global_max_retained_bytes",
-        '"UDP ingress pressure dropped datagram pressure=\\"{}\\" '
+        '"UDP ingress pressure dropped datagram flow_id={} pressure=\\"{}\\" '
         'cumulative_drops={} global_retained_bytes={} '
         'global_max_retained_bytes={}"',
     ),
@@ -252,9 +333,9 @@ for case_name, public_reason in (
 require_udp_order(
     "fn record_recovery",
     (
-        "pressure", "cumulative_resumptions", "global_retained_bytes",
+        "flow_id", "pressure", "cumulative_resumptions", "global_retained_bytes",
         "global_max_retained_bytes",
-        '"UDP ingress pressure resumed flow pressure=\\"{}\\" '
+        '"UDP ingress pressure resumed flow flow_id={} pressure=\\"{}\\" '
         'cumulative_resumptions={} global_retained_bytes={} '
         'global_max_retained_bytes={}"',
     ),
@@ -264,9 +345,9 @@ for reason in ("channel_count", "flow_bytes", "global_bytes"):
         raise SystemExit(f"Rust UDP telemetry reason missing: {reason}")
 
 udp_fixtures = (
-    'UDP ingress pressure dropped datagram pressure="channel_count" '
+    'UDP ingress pressure dropped datagram flow_id=41 pressure="channel_count" '
     'cumulative_drops=1 global_retained_bytes=1 global_max_retained_bytes=2',
-    'UDP ingress pressure resumed flow pressure="channel_count" '
+    'UDP ingress pressure resumed flow flow_id=41 pressure="channel_count" '
     'cumulative_resumptions=1 global_retained_bytes=0 global_max_retained_bytes=2',
     'UDP Swift ingress staging dropped datagrams reason="flow_items" '
     'cumulative_drop_events=1 cumulative_dropped_items=1 '

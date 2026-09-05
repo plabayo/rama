@@ -820,8 +820,10 @@ impl UdpFfiSession {
     }
 
     /// Wait for a probe callback for at most `timeout`, returning `None` when
-    /// no callback arrived. This is used with a deadline strictly shorter than
-    /// Rust's 10 ms probe lease to distinguish an explicit ACK from expiry.
+    /// no callback arrived. Pressure/ACK tests configure a deliberately long
+    /// production lease and use a comfortably shorter negative window here;
+    /// callback-entry timestamps separately prove positive progress preceded
+    /// expiry even if the waiting task was descheduled.
     pub(crate) async fn wait_for_probe_read_demand_before(
         &mut self,
         timeout: Duration,

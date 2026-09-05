@@ -2,6 +2,7 @@
 """Protocol-aware public UDP probes used by the signed macOS NE E2E."""
 
 import argparse
+import ipaddress
 import secrets
 import socket
 import struct
@@ -11,6 +12,7 @@ import time
 
 PRODUCT_VIOLATION_EXIT = 10
 PROBE_ERROR_EXIT = 20
+PRESSURE_MARKER_PREFIX = b"rama-udp-e2e-pressure-v1 "
 
 
 class ProductViolation(RuntimeError):
@@ -113,6 +115,43 @@ def ntp_query(server: str, timeout: float) -> None:
     print(f"NTP round-trip ok via {peer[0]}:{peer[1]} (stratum={stratum})")
 
 
+def pressure_burst(server: str, count: int, payload_bytes: int, settle: float) -> None:
+    """Burst one intercepted flow, then leave time for its resume callback."""
+    if not 64 <= count <= 100_000:
+        raise ValueError("pressure count must be in 64..100000")
+    if not 64 <= payload_bytes <= 60_000:
+        raise ValueError("pressure payload bytes must be in 64..60000")
+    if not 0 <= settle <= 30:
+        raise ValueError("pressure settle seconds must be in 0..30")
+
+    address = ipaddress.ip_address(server)
+    if address.version != 4:
+        raise ValueError("pressure server must be an IPv4 literal")
+    marker = PRESSURE_MARKER_PREFIX + f"{address}:123".encode("ascii") + b"\0"
+    sequence_offset = len(marker)
+    if sequence_offset + 8 > payload_bytes:
+        raise ValueError("pressure payload is too small for its endpoint marker")
+    packet = bytearray(payload_bytes)
+    packet[:sequence_offset] = marker
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(2.0)
+    sent = 0
+    try:
+        for sequence in range(count):
+            packet[sequence_offset:sequence_offset + 8] = sequence.to_bytes(8, "big")
+            sock.sendto(packet, (server, 123))
+            sent += 1
+    finally:
+        sock.close()
+    if sent != count:
+        raise RuntimeError(f"pressure burst sent {sent} of {count} datagrams")
+    time.sleep(settle)
+    print(
+        f"UDP pressure burst sent {sent} datagrams ({payload_bytes} bytes each) "
+        f"to {server}:123 and settled for {settle:.3f}s"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -127,11 +166,19 @@ def main() -> None:
     ntp.add_argument("--server", required=True)
     ntp.add_argument("--timeout", type=float, default=8.0)
 
+    pressure = subparsers.add_parser("pressure")
+    pressure.add_argument("--server", required=True)
+    pressure.add_argument("--count", type=int, default=512)
+    pressure.add_argument("--payload-bytes", type=int, default=4096)
+    pressure.add_argument("--settle", type=float, default=4.0)
+
     args = parser.parse_args()
     if args.command == "dns":
         dns_query(args.server, args.name, args.timeout, args.expect_no_response)
-    else:
+    elif args.command == "ntp":
         ntp_query(args.server, args.timeout)
+    else:
+        pressure_burst(args.server, args.count, args.payload_bytes, args.settle)
 
 
 if __name__ == "__main__":

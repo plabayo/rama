@@ -26,9 +26,14 @@ func udpIdleTimeoutNanoseconds(_ timeoutMs: UInt64) -> UInt64 {
 /// cycle to break.
 protocol UdpFlowSessionAnchor: AnyObject {
     var ctx: UdpFlowContext { get }
+    /// Thread-safe pressure-state cancellation used by detach before queuing
+    /// teardown onto a flow queue which may remain stalled indefinitely.
+    func closeIngressStagingForEngineDetach()
 }
 
 extension UdpFlowSessionAnchor {
+    func closeIngressStagingForEngineDetach() {}
+
     /// Queue one detach teardown and acknowledge resource release only after
     /// the already-queued `terminate` block has closed the kernel flow and Rust
     /// session. FIFO ordering provides the completion without synchronously
@@ -86,11 +91,15 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     var sessionHandle: RamaUdpSessionHandle?
     private var engineGeneration: UInt64?
     private var runtimePolicy: TransparentProxyRuntimePolicy?
+    /// Production installs the generation budget before first access. The lazy
+    /// fallback exists only for phase-level tests constructed without a lease.
+    private lazy var writerMemoryBudget = WriterMemoryBudget()
     private var effectiveRuntimePolicy: TransparentProxyRuntimePolicy {
         runtimePolicy ?? .testDefaultsSnapshot
     }
     #if DEBUG
         var testRuntimePolicy: TransparentProxyRuntimePolicy? { runtimePolicy }
+        var testWriterMemoryBudget: WriterMemoryBudget { writerMemoryBudget }
     #endif
     /// Queue-confined lifecycle gates. Natural server completion first enters
     /// a draining phase; errors and detach skip directly to teardown.
@@ -227,11 +236,15 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 session.onClientClose()
                 return .passthrough
             case .capacityRefused(let reason, let persist):
-                let line =
+                let publicLine =
                     "udp admission rejected: \(reason); "
                     + effectiveRuntimePolicy.flowRefusal.logDescription
-                    + " app=\(appId)"
-                if persist { core.logLifecycle(line) } else { core.logDebug(line) }
+                let privateMetadata = "app=\(appId)"
+                if persist {
+                    core.logLifecycle(publicLine, privateMetadata: privateMetadata)
+                } else {
+                    core.logDebug(publicLine, privateMetadata: privateMetadata)
+                }
                 session.onClientClose()
                 if effectiveRuntimePolicy.flowRefusal.isPassthrough { return .passthrough }
                 let error = blockedFlowError()
@@ -309,6 +322,10 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             state.closed = true
             state.lastUptimeNs = nil
         }
+    }
+
+    func closeIngressStagingForEngineDetach() {
+        ingressStaging.close()
     }
 
     /// Error, detach, and explicit client close remain immediate. This method
@@ -493,7 +510,8 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             },
             onActivity: { [weak self] in
                 self?.recordIdleActivity()
-            }
+            },
+            writerMemoryBudget: writerMemoryBudget
         )
     }
 
@@ -650,6 +668,8 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             : nil
         let staged = stagingOutcome?.batch
         if let sample = stagingOutcome?.dropSample {
+            // Keep the signed-soak parser's legacy `generation_*` keys stable;
+            // their values now describe the process-global staging envelope.
             core?.logLifecycle(
                 "UDP Swift ingress staging dropped datagrams reason=\"\(sample.reason.rawValue)\" "
                     + "cumulative_drop_events=\(sample.cumulativeDropEvents) "
@@ -717,7 +737,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 // No payload crossed into Rust, but retrying immediately while
                 // the staging budget is full creates a hot Apple read loop.
                 // Keep exactly one logical read outstanding and let the
-                // generation/per-flow capacity coordinator grant its restart.
+                // process-global/per-flow capacity coordinator grant its restart.
                 ctx.readState = .reading
                 self.stagingCapacityWaiting = true
                 self.stagingWaitProbeId = hadPendingDemand ? pendingProbeId : 0
@@ -815,7 +835,10 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
 
     private func installEngineLease(_ lease: TransparentProxyCore.EngineFlowLease) {
         runtimePolicy = lease.runtimePolicy
-        ingressStaging = UdpIngressFlowStaging(generation: lease.udpIngressStagingBudget)
+        writerMemoryBudget = lease.writerMemoryBudget
+        ingressStaging = UdpIngressFlowStaging(
+            generation: lease.udpIngressStagingBudget,
+            policy: lease.runtimePolicy.udpIngressStaging)
         if !idleTimeoutWasExplicitlySet {
             idleTimeoutMsStorage = lease.runtimePolicy.udpIdleTimeoutMs
         }
@@ -929,6 +952,18 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 datagrams: [Data(count: effectiveRuntimePolicy.udpIngressStaging.maxBytesPerFlow)],
                 endpoints: nil
             ).batch
+        }
+
+        func testWaitForIngressStagingCapacity(
+            neededItems: Int,
+            neededBytes: Int,
+            onReady: @escaping @Sendable (UInt64) -> Void
+        ) -> Bool {
+            ingressStaging.waitForCapacity(
+                reason: .generationBytes,
+                neededItems: neededItems,
+                neededBytes: neededBytes,
+                onReady: onReady)
         }
 
         var testStagingCapacityWaiting: Bool { stagingCapacityWaiting }

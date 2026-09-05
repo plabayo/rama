@@ -197,12 +197,15 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         XCTAssertEqual(pump.testDrainBackstopScheduleCount, 1)
         XCTAssertTrue(pump.testAdmissionSnapshot.closed)
         XCTAssertEqual(pump.testAdmissionSnapshot.waiting, 0)
-        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
+        XCTAssertEqual(
+            pump.testAdmissionSnapshot.retainedBytes, 2,
+            "the in-flight payload remains physically retained after forced close")
 
         // A late kernel completion is ignored and cannot restart the pump.
         XCTAssertTrue(flow.completePendingWrite(error: nil))
         queue.sync {}
         XCTAssertTrue(flow.writtenBatches.isEmpty)
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
     }
 
     func testGracefulCloseBeforeOpenCompletesWhenNothingWasAccepted() {
@@ -469,7 +472,12 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         let closed = pump.testAdmissionSnapshot
         XCTAssertTrue(closed.closed)
         XCTAssertEqual(closed.waiting, 0)
-        XCTAssertEqual(closed.retainedBytes, 0)
+        XCTAssertEqual(
+            closed.retainedBytes, 2,
+            "close retires queued work but not the kernel-retained in-flight datagram")
+        XCTAssertTrue(flow.completePendingWrite(error: nil))
+        queue.sync {}
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
     }
 
     func testHighWaterLogCountIsBoundedToConstantBuckets() {

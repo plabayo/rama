@@ -398,6 +398,11 @@ impl TransparentProxyConfig {
 ///   to the native log system of Apple, by Apple.
 /// * Callbacks may be invoked from any Tokio worker thread. The Swift caller
 ///   is responsible for any synchronization the pointee requires.
+/// * A callback must not synchronously call back into the same session. The
+///   engine holds a non-reentrant lifetime gate across dispatch, while foreign
+///   wrappers commonly serialize session entry through their own lock. Re-entry
+///   can therefore deadlock through lock inversion. Queue the work elsewhere
+///   and return from the callback first.
 /// * `BytesView` arguments are borrowed for the duration of the call and must
 ///   be copied before the callback returns if the receiver wants to retain
 ///   the data.
@@ -440,6 +445,10 @@ pub struct TransparentProxyUdpSessionCallbacks {
 
 /// Additive probe-aware UDP callback ABI. V1 remains unchanged for existing
 /// C clients; Swift uses V2 to ACK bounded coordinator scheduling credits.
+/// A non-zero demand callback must only schedule the foreign read and return;
+/// it must never synchronously re-enter the session. Once that read completes,
+/// ACK its exact ID first, then submit all datagrams produced by the completion.
+/// Pre-ACK delivery is rejected and cannot consume the leased credit.
 #[repr(C)]
 pub struct TransparentProxyUdpSessionCallbacksV2 {
     pub context: *mut c_void,
@@ -447,7 +456,8 @@ pub struct TransparentProxyUdpSessionCallbacksV2 {
         Option<unsafe extern "C" fn(*mut c_void, BytesView, crate::ffi::UdpPeerView)>,
     /// `probe_id == 0` is an ordinary service demand. A non-zero ID carries
     /// one leased global-pressure scheduling credit which must be ACKed via
-    /// `rama_transparent_proxy_udp_session_on_client_read_complete`.
+    /// `rama_transparent_proxy_udp_session_on_client_read_complete` after the
+    /// foreign read completes and before its datagrams are submitted.
     pub on_client_read_demand: Option<unsafe extern "C" fn(*mut c_void, u64)>,
     pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
 }
@@ -669,7 +679,7 @@ pub struct TcpEgressConnectOptions {
 ///
 /// This is a Rust→Swift channel: Rust calls `on_promote_request`
 /// when the in-Rust service invokes [`crate::tproxy::PromoteHandle::into_passthrough`].
-/// Swift completes the cutover then ACKs by calling
+/// Swift queue-hops, returns from the callback, completes the cutover, then ACKs by calling
 /// `rama_transparent_proxy_tcp_session_confirm_promoted`.
 ///
 /// `context` lifetime / threading contract: see

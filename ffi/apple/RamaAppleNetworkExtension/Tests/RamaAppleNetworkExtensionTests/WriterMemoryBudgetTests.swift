@@ -1,0 +1,767 @@
+import Foundation
+import NetworkExtension
+import XCTest
+
+@testable import RamaAppleNetworkExtension
+
+final class WriterMemoryBudgetTests: XCTestCase {
+    func testHealthyAdmissionAtomicIsLockFreeAndHasNoPressureSideEffects() {
+        let pressureEvents = Locked(0)
+        let budget = WriterMemoryBudget(
+            onPressureEvent: { _ in pressureEvents.withLock { $0 += 1 } })
+        XCTAssertTrue(
+            budget.testCapacityAtomicIsLockFree,
+            "the packed capacity CAS must be lock-free on the Apple target")
+
+        let iterations = 200_000
+        let started = DispatchTime.now().uptimeNanoseconds
+        for _ in 0..<iterations {
+            XCTAssertTrue(budget.tryReserve(bytes: 1))
+            budget.release(bytes: 1)
+        }
+        let elapsed = DispatchTime.now().uptimeNanoseconds - started
+        let nanosPerReserveRelease = Double(elapsed) / Double(iterations)
+        print(
+            "writer-memory healthy reserve+release mean_ns=\(nanosPerReserveRelease) iterations=\(iterations)")
+        XCTAssertEqual(budget.testWaiterCount, 0)
+        XCTAssertEqual(pressureEvents.withLock { $0 }, 0)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+    }
+
+    func testReportTokenizedTcpAdmissionCostAgainstHistoricalQueueShape() {
+        let batches = 100
+        let samples = batches * tcpWritePumpMaxPendingItems
+        let payload = Data([0xA5])
+        let currentQueue = DispatchQueue(label: "rama.writer-budget.perf.current")
+        let currentGate = DispatchSemaphore(value: 0)
+        currentQueue.async { currentGate.wait() }
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: samples + 1,
+                maxItems: samples + 1,
+                tcpWaiterMaxBytes: 1,
+                udpPressureReserveBytes: 0,
+                udpPressureReserveItems: 0))
+        var cores: [TcpWritePumpCore] = []
+        cores.reserveCapacity(batches)
+        var correctedNanos: UInt64 = 0
+        for _ in 0..<batches {
+            let core = TcpWritePumpCore(
+                queue: currentQueue,
+                initialLifecycle: .pending,
+                onDrained: {},
+                doWrite: { _, _ in XCTFail("pending benchmark core must not write") },
+                logHwm: { _ in },
+                writerMemoryBudget: budget,
+                writePolicy: TcpWritePumpPolicy(maxPendingBytes: tcpWritePumpMaxPendingItems))
+            let start = DispatchTime.now().uptimeNanoseconds
+            for _ in 0..<tcpWritePumpMaxPendingItems {
+                XCTAssertEqual(core.enqueue(payload), .accepted)
+            }
+            correctedNanos += DispatchTime.now().uptimeNanoseconds - start
+            cores.append(core)
+        }
+
+        // Historical shape: the existing per-pump lock/accounting plus one
+        // dispatch capture, without the new aggregate CAS + ARC owner.
+        let legacyQueue = DispatchQueue(label: "rama.writer-budget.perf.legacy")
+        let legacyGate = DispatchSemaphore(value: 0)
+        legacyQueue.async { legacyGate.wait() }
+        let legacyState = Locked((bytes: 0, items: 0))
+        let legacyStart = DispatchTime.now().uptimeNanoseconds
+        for _ in 0..<samples {
+            legacyState.withLock {
+                $0.bytes += payload.count
+                $0.items += 1
+            }
+            legacyQueue.async { _ = payload }
+        }
+        let legacyNanos = DispatchTime.now().uptimeNanoseconds - legacyStart
+        let correctedMean = Double(correctedNanos) / Double(samples)
+        let legacyMean = Double(legacyNanos) / Double(samples)
+        print(
+            "writer-memory enqueue mean_ns corrected=\(correctedMean) historical_shape=\(legacyMean) samples=\(samples)")
+        XCTAssertLessThan(correctedMean, 100_000)
+
+        currentGate.signal()
+        legacyGate.signal()
+        currentQueue.sync {}
+        legacyQueue.sync {}
+        for core in cores {
+            currentQueue.sync(execute: core.prepareCancel())
+        }
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+    }
+
+    func testWriterEnvelopeRemainsBoundedWhenLiveFlowHardCapIsDisabled() {
+        let policy = TransparentProxyRuntimePolicy(
+            tcpWritePumpMaxPendingBytes: 1_024,
+            flowPressureSoftCap: 0,
+            flowPressureLowWater: 0,
+            flowPressureIdleFloorMs: 1_000,
+            liveFlowHardCap: 0,
+            udpIdleTimeoutMs: 0,
+            tcpStartInFlightHardCap: 0,
+            tcpStartInFlightSoftCap: 0,
+            tcpStartLatencyBreakerP95Ms: 0,
+            tcpStartLatencyBreakerCloseP95Ms: 0,
+            tcpPressureConnectTimeoutMs: 0,
+            tcpBreakerConnectTimeoutMs: 0,
+            flowRefusalPassthrough: true,
+            writerMemoryMaxBytes: 8 * 1024 * 1024,
+            writerMemoryMaxItems: 4_096)
+
+        XCTAssertEqual(policy.writerMemory.maxBytes, 8 * 1024 * 1024)
+        XCTAssertEqual(policy.writerMemory.maxItems, 4_096)
+    }
+
+    func testConcurrentReservationsNeverCrossPackedByteOrItemLimits() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(maxBytes: 4_096, maxItems: 128))
+        let successes = Locked(0)
+        let group = DispatchGroup()
+
+        for worker in 0..<16 {
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                _ = worker
+                while budget.tryReserve(bytes: 32) {
+                    successes.withLock { $0 += 1 }
+                }
+                group.leave()
+            }
+        }
+        XCTAssertEqual(group.wait(timeout: .now() + 3), .success)
+
+        let count = successes.withLock { $0 }
+        XCTAssertEqual(count, 128)
+        XCTAssertEqual(
+            budget.snapshot(),
+            WriterMemorySnapshot(
+                retainedBytes: 4_096,
+                retainedItems: 128,
+                tcpWaiterGate: false))
+
+        for _ in 0..<count { budget.release(bytes: 32) }
+        XCTAssertEqual(
+            budget.snapshot(),
+            WriterMemorySnapshot(
+                retainedBytes: 0,
+                retainedItems: 0,
+                tcpWaiterGate: false))
+    }
+
+    func testUdpUsesSpareHeadroomWhileTcpWaitsAndTcpStillProgresses() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 1_024,
+                maxItems: 256,
+                tcpWaiterMaxBytes: 512,
+                udpPressureReserveBytes: 256,
+                udpPressureReserveItems: 255))
+        XCTAssertTrue(budget.tryReserve(bytes: 512, items: 1))
+        XCTAssertTrue(budget.tryReserve(bytes: 384, items: 1))
+
+        let tcpGranted = expectation(description: "TCP head receives pregrant")
+        let grantBox = Locked<WriterMemoryGrant?>(nil)
+        let waiter = budget.waitForTcpCapacity(bytes: 512) { grant in
+            grantBox.withLock { $0 = grant }
+            tcpGranted.fulfill()
+        }
+        XCTAssertTrue(budget.snapshot().tcpWaiterGate)
+
+        let udpAdmission = budget.tryReserveUdp(bytes: 64, items: 1)
+        guard case .pressureUdp? = udpAdmission else {
+            return XCTFail("a TCP waiter must not black-hole fitting UDP/QUIC service")
+        }
+        XCTAssertEqual(budget.snapshot().retainedBytes, 960)
+
+        budget.release(bytes: 384, items: 1)
+        budget.release(bytes: 512, items: 1)
+        wait(for: [tcpGranted], timeout: 3)
+        withExtendedLifetime(waiter) {}
+        XCTAssertEqual(budget.snapshot().retainedBytes, 576)
+        XCTAssertEqual(budget.snapshot().retainedItems, 2)
+
+        let grant = grantBox.withLock { value -> WriterMemoryGrant? in
+            defer { value = nil }
+            return value
+        }
+        XCTAssertTrue(grant?.consume() == true)
+        budget.release(bytes: 512, items: 1)
+        budget.releaseUdp(
+            bytes: 64, items: 1, pressureBytes: 64, pressureItems: 1)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+    }
+
+    func testSaturatedUdpItemReserveDoesNotDoubleCountAgainstTcpGrant() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 128 * 1024,
+                maxItems: 256,
+                tcpWaiterMaxBytes: 64 * 1024,
+                udpPressureReserveBytes: 64 * 1024,
+                udpPressureReserveItems: 255))
+        XCTAssertTrue(budget.tryReserve(bytes: 1, items: 1))
+        let tcpGranted = expectation(description: "TCP item progresses")
+        let grantBox = Locked<WriterMemoryGrant?>(nil)
+        let waiter = budget.waitForTcpCapacity(bytes: 1, items: 1) { grant in
+            grantBox.withLock { $0 = grant }
+            tcpGranted.fulfill()
+        }
+        guard case .pressureUdp? = budget.tryReserveUdp(bytes: 0, items: 255) else {
+            return XCTFail("UDP service reserve should accept its exact item cap")
+        }
+        budget.release(bytes: 1, items: 1)
+        wait(for: [tcpGranted], timeout: 3)
+        withExtendedLifetime(waiter) {}
+        XCTAssertEqual(budget.snapshot().retainedItems, 256)
+
+        let grant = grantBox.withLock { value -> WriterMemoryGrant? in
+            defer { value = nil }
+            return value
+        }
+        XCTAssertTrue(grant?.consume() == true)
+        budget.release(bytes: 1, items: 1)
+        budget.releaseUdp(
+            bytes: 0, items: 255, pressureBytes: 0, pressureItems: 255)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+    }
+
+    func testPressureUdpSubchargeCannotBeConsumedByRacingTcpGrant() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 1_024,
+                maxItems: 8,
+                tcpWaiterMaxBytes: 256,
+                udpPressureReserveBytes: 256,
+                udpPressureReserveItems: 2))
+        XCTAssertTrue(budget.tryReserve(bytes: 768, items: 1))
+        XCTAssertTrue(budget.tryReserve(bytes: 1, items: 1))
+        let tcpGranted = expectation(description: "TCP eventually granted")
+        let grantBox = Locked<WriterMemoryGrant?>(nil)
+        let waiter = budget.waitForTcpCapacity(bytes: 256) { grant in
+            grantBox.withLock { $0 = grant }
+            tcpGranted.fulfill()
+        }
+
+        let subcharged = DispatchSemaphore(value: 0)
+        let allowAggregate = DispatchSemaphore(value: 0)
+        budget.testAfterPressureUdpSubcharge = {
+            subcharged.signal()
+            XCTAssertEqual(allowAggregate.wait(timeout: .now() + 3), .success)
+        }
+        let fillerReleased = DispatchSemaphore(value: 0)
+        budget.testAfterReleaseBeforeCoordinatorKick = {
+            fillerReleased.signal()
+        }
+        let udpResult = Locked<WriterMemoryAdmission?>(nil)
+        let udpDone = expectation(description: "UDP aggregate reservation")
+        DispatchQueue.global(qos: .userInitiated).async {
+            let admission = budget.tryReserveUdp(bytes: 256, items: 1)
+            udpResult.withLock { $0 = admission }
+            udpDone.fulfill()
+        }
+        XCTAssertEqual(subcharged.wait(timeout: .now() + 3), .success)
+
+        // Make the TCP head appear eligible if it incorrectly treats UDP's
+        // unpublished subcharge as already present in aggregate usage.
+        let releaseDone = expectation(description: "release completes after coordinator lock")
+        DispatchQueue.global(qos: .userInitiated).async {
+            budget.release(bytes: 1, items: 1)
+            releaseDone.fulfill()
+        }
+        XCTAssertEqual(fillerReleased.wait(timeout: .now() + 3), .success)
+        allowAggregate.signal()
+        wait(for: [udpDone, releaseDone], timeout: 3)
+        guard case .pressureUdp? = udpResult.withLock({ $0 }) else {
+            return XCTFail("UDP must retain its reserved pressure slot")
+        }
+        XCTAssertEqual(budget.snapshot().retainedBytes, 1_024)
+
+        budget.release(bytes: 768, items: 1)
+        wait(for: [tcpGranted], timeout: 3)
+        withExtendedLifetime(waiter) {}
+        let grant = grantBox.withLock { value -> WriterMemoryGrant? in
+            defer { value = nil }
+            return value
+        }
+        XCTAssertTrue(grant?.consume() == true)
+        budget.release(bytes: 256, items: 1)
+        budget.releaseUdp(
+            bytes: 256, items: 1, pressureBytes: 256, pressureItems: 1)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+    }
+
+    func testLoweredReconfigurationBlocksUntilOldUsageFalls() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 16,
+                maxItems: 8,
+                tcpWaiterMaxBytes: 4,
+                udpPressureReserveBytes: 4,
+                udpPressureReserveItems: 2))
+        XCTAssertTrue(budget.tryReserve(bytes: 12, items: 3))
+        budget.reconfigure(
+            policy: WriterMemoryPolicy(
+                maxBytes: 8,
+                maxItems: 4,
+                tcpWaiterMaxBytes: 4,
+                udpPressureReserveBytes: 2,
+                udpPressureReserveItems: 1))
+
+        XCTAssertFalse(budget.tryReserve(bytes: 1, items: 1))
+        budget.release(bytes: 12, items: 3)
+        XCTAssertTrue(budget.tryReserve(bytes: 8, items: 4))
+        XCTAssertFalse(budget.tryReserve(bytes: 0, items: 1))
+        budget.release(bytes: 8, items: 4)
+    }
+
+    func testDownReconfigurePreservesUdpReserveForHistoricalMaxTcpPump() {
+        let oldTcpMax = 8 * 1024 * 1024
+        let udpReserve = WriterMemoryPolicy.minimumUdpPressureReserveBytes
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 64 * 1024 * 1024,
+                maxItems: 1_024,
+                tcpWaiterMaxBytes: oldTcpMax,
+                udpPressureReserveBytes: 1024 * 1024,
+                udpPressureReserveItems: 16))
+        budget.reconfigure(
+            policy: WriterMemoryPolicy(
+                maxBytes: oldTcpMax,
+                maxItems: 512,
+                tcpWaiterMaxBytes: oldTcpMax - udpReserve,
+                udpPressureReserveBytes: udpReserve,
+                udpPressureReserveItems: 8))
+
+        let oldRetryRejected = expectation(description: "old-size retry rejected")
+        let oldRetry = budget.waitForTcpCapacity(
+            bytes: oldTcpMax,
+            onUnavailable: { oldRetryRejected.fulfill() },
+            onGrant: { grant in
+                grant.release()
+                XCTFail("an old 8 MiB retry cannot consume UDP's new 64 KiB reserve")
+            })
+        wait(for: [oldRetryRejected], timeout: 3)
+        withExtendedLifetime(oldRetry) {}
+        XCTAssertFalse(budget.snapshot().tcpWaiterGate)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+
+        let currentTcpShare = oldTcpMax - udpReserve
+        XCTAssertTrue(budget.tryReserve(bytes: currentTcpShare, items: 1))
+        let waiter = budget.waitForTcpCapacity(bytes: 1) { grant in grant.release() }
+        guard case .pressureUdp? = budget.tryReserveUdp(
+            bytes: udpReserve, items: 1)
+        else {
+            return XCTFail("down-reconfigure must retain nonzero UDP service")
+        }
+        withExtendedLifetime(waiter) {
+            XCTAssertEqual(
+                budget.snapshot().retainedBytes,
+                oldTcpMax)
+        }
+        waiter.cancel()
+        budget.release(bytes: currentTcpShare, items: 1)
+        budget.releaseUdp(
+            bytes: udpReserve,
+            items: 1,
+            pressureBytes: udpReserve,
+            pressureItems: 1)
+    }
+
+    func testAggregatePressureTelemetryIsOrderedSampledAndRecovers() {
+        let entered = expectation(description: "entered")
+        let recovered = expectation(description: "recovered")
+        let events = Locked<[WriterMemoryPressureEvent]>([])
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 4,
+                maxItems: 2,
+                tcpWaiterMaxBytes: 2,
+                udpPressureReserveBytes: 1,
+                udpPressureReserveItems: 1),
+            onPressureEvent: { event in
+                events.withLock { $0.append(event) }
+                if event.transition == .entered { entered.fulfill() }
+                if event.transition == .recovered { recovered.fulfill() }
+            })
+        XCTAssertTrue(budget.tryReserve(bytes: 4, items: 1))
+        for _ in 0..<128 {
+            XCTAssertNil(budget.tryReserveUdp(bytes: 1, items: 1))
+        }
+        budget.release(bytes: 4, items: 1)
+        wait(for: [entered, recovered], timeout: 3)
+
+        let captured = events.withLock { $0 }
+        XCTAssertEqual(captured.map(\.transition), [.entered, .recovered])
+        XCTAssertEqual(captured.first?.protocol, .udp)
+        XCTAssertEqual(captured.first?.reason, .aggregateBytes)
+        XCTAssertEqual(captured.first?.maxBytes, 4)
+        XCTAssertEqual(captured.last?.retainedBytes, 0)
+    }
+
+    func testRecoveryCrossingEnteredEnqueueStaysOrderedAndNextEpisodeVisible() {
+        let fourEvents = expectation(description: "two ordered episodes")
+        fourEvents.expectedFulfillmentCount = 4
+        let events = Locked<[WriterMemoryPressureEvent]>([])
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 4,
+                maxItems: 2,
+                tcpWaiterMaxBytes: 2,
+                udpPressureReserveBytes: 1,
+                udpPressureReserveItems: 1),
+            onPressureEvent: { event in
+                events.withLock { $0.append(event) }
+                fourEvents.fulfill()
+            })
+        XCTAssertTrue(budget.tryReserve(bytes: 4))
+        let entering = DispatchSemaphore(value: 0)
+        let enqueueAllowed = DispatchSemaphore(value: 0)
+        let hookCalls = Locked(0)
+        budget.testBeforePressureEventEnqueue = {
+            let shouldBlock = hookCalls.withLock { value -> Bool in
+                value += 1
+                return value == 1
+            }
+            if shouldBlock {
+                entering.signal()
+                XCTAssertEqual(enqueueAllowed.wait(timeout: .now() + 3), .success)
+            }
+        }
+        let firstDenialDone = expectation(description: "first denial")
+        DispatchQueue.global(qos: .userInitiated).async {
+            XCTAssertFalse(budget.tryReserve(bytes: 1))
+            firstDenialDone.fulfill()
+        }
+        XCTAssertEqual(entering.wait(timeout: .now() + 3), .success)
+        budget.release(bytes: 4)
+        enqueueAllowed.signal()
+        wait(for: [firstDenialDone], timeout: 3)
+
+        XCTAssertTrue(budget.tryReserve(bytes: 4))
+        XCTAssertFalse(budget.tryReserve(bytes: 1))
+        budget.release(bytes: 4)
+        wait(for: [fourEvents], timeout: 3)
+        XCTAssertEqual(
+            events.withLock { $0.map(\.transition) },
+            [.entered, .recovered, .entered, .recovered])
+    }
+
+    func testFifoWaitersReceivePrechargedGrantsWithoutBarging() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 8,
+                maxItems: 2,
+                udpPressureReserveBytes: 0,
+                udpPressureReserveItems: 0))
+        XCTAssertTrue(budget.tryReserve(bytes: 8))
+
+        let delivered = expectation(description: "both grants delivered")
+        delivered.expectedFulfillmentCount = 2
+        let order = Locked<[Int]>([])
+        let grants = Locked<[WriterMemoryGrant]>([])
+        let first = budget.waitForTcpCapacity(bytes: 4) { grant in
+            order.withLock { $0.append(4) }
+            grants.withLock { $0.append(grant) }
+            delivered.fulfill()
+        }
+        let second = budget.waitForTcpCapacity(bytes: 2) { grant in
+            order.withLock { $0.append(2) }
+            grants.withLock { $0.append(grant) }
+            delivered.fulfill()
+        }
+
+        XCTAssertFalse(budget.tryReserve(bytes: 1), "published waiters close the atomic gate")
+        budget.release(bytes: 8)
+        wait(for: [delivered], timeout: 3)
+
+        withExtendedLifetime((first, second)) {
+            XCTAssertEqual(order.withLock { $0 }, [4, 2])
+            XCTAssertEqual(
+                budget.snapshot(),
+                WriterMemorySnapshot(
+                    retainedBytes: 6,
+                    retainedItems: 2,
+                    tcpWaiterGate: false))
+        }
+        let deliveredGrants = grants.withLock { value -> [WriterMemoryGrant] in
+            defer { value.removeAll() }
+            return value
+        }
+        for grant in deliveredGrants {
+            XCTAssertTrue(grant.consume())
+            budget.release(bytes: grant.bytes, items: grant.items)
+            grant.release()
+        }
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+    }
+
+    func testCanceledWaiterAndUnusedGrantRefundExactlyOnce() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(maxBytes: 4, maxItems: 1))
+        XCTAssertTrue(budget.tryReserve(bytes: 4))
+        let never = expectation(description: "canceled waiter")
+        never.isInverted = true
+        let canceled = budget.waitForTcpCapacity(bytes: 4) { _ in never.fulfill() }
+        canceled.cancel()
+        XCTAssertFalse(budget.snapshot().tcpWaiterGate)
+        budget.release(bytes: 4)
+        wait(for: [never], timeout: 0.05)
+
+        let delivered = expectation(description: "unused grant")
+        let grantBox = Locked<WriterMemoryGrant?>(nil)
+        let waiter = budget.waitForTcpCapacity(bytes: 4) { grant in
+            grantBox.withLock { $0 = grant }
+            delivered.fulfill()
+        }
+        wait(for: [delivered], timeout: 3)
+        withExtendedLifetime(waiter) {}
+        let grant = grantBox.withLock { value -> WriterMemoryGrant? in
+            defer { value = nil }
+            return value
+        }
+        XCTAssertEqual(budget.snapshot().retainedBytes, 4)
+        grant?.release()
+        grant?.release()
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+    }
+
+    func testTcpPumpRetriesExactChunkAfterAnotherPumpReleasesCapacity() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(maxBytes: 4, maxItems: 1))
+        let firstQueue = DispatchQueue(label: "rama.writer-budget.tcp.first")
+        let secondQueue = DispatchQueue(label: "rama.writer-budget.tcp.second")
+        let firstWriteStarted = expectation(description: "first write started")
+        let firstCompletion = Locked<((Error?) -> Void)?>(nil)
+        let secondWriteStarted = expectation(description: "second write started")
+        let secondCompletion = Locked<((Error?) -> Void)?>(nil)
+        let retryReady = expectation(description: "aggregate retry ready")
+        let policy = TcpWritePumpPolicy(maxPendingBytes: 4)
+
+        let first = TcpWritePumpCore(
+            queue: firstQueue,
+            onDrained: {},
+            doWrite: { _, completion in
+                firstCompletion.withLock { $0 = completion }
+                firstWriteStarted.fulfill()
+            },
+            logHwm: { _ in },
+            writerMemoryBudget: budget,
+            writePolicy: policy)
+        let second = TcpWritePumpCore(
+            queue: secondQueue,
+            onDrained: { retryReady.fulfill() },
+            doWrite: { _, completion in
+                secondCompletion.withLock { $0 = completion }
+                secondWriteStarted.fulfill()
+            },
+            logHwm: { _ in },
+            writerMemoryBudget: budget,
+            writePolicy: policy)
+
+        XCTAssertEqual(first.enqueue(Data(repeating: 1, count: 4)), .accepted)
+        wait(for: [firstWriteStarted], timeout: 3)
+        XCTAssertEqual(second.enqueue(Data(repeating: 2, count: 4)), .paused)
+        XCTAssertTrue(budget.snapshot().tcpWaiterGate)
+
+        firstCompletion.withLock { completion in
+            completion?(nil)
+            completion = nil
+        }
+        wait(for: [retryReady], timeout: 3)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 4, "grant is precharged")
+        XCTAssertEqual(second.enqueue(Data(repeating: 2, count: 4)), .accepted)
+        wait(for: [secondWriteStarted], timeout: 3)
+        secondCompletion.withLock { completion in
+            completion?(nil)
+            completion = nil
+        }
+        secondQueue.sync {}
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+    }
+
+    func testTcpCancelRefundsAcceptedBytesAndUndeliveredGrant() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(maxBytes: 4, maxItems: 1))
+        let firstQueue = DispatchQueue(label: "rama.writer-budget.cancel.first")
+        let secondQueue = DispatchQueue(label: "rama.writer-budget.cancel.second")
+        let grantReady = expectation(description: "grant ready")
+        let policy = TcpWritePumpPolicy(maxPendingBytes: 4)
+        let first = TcpWritePumpCore(
+            queue: firstQueue,
+            initialLifecycle: .pending,
+            onDrained: {},
+            doWrite: { _, _ in XCTFail("pending pump must not write") },
+            logHwm: { _ in },
+            writerMemoryBudget: budget,
+            writePolicy: policy)
+        let second = TcpWritePumpCore(
+            queue: secondQueue,
+            initialLifecycle: .pending,
+            onDrained: { grantReady.fulfill() },
+            doWrite: { _, _ in XCTFail("pending pump must not write") },
+            logHwm: { _ in },
+            writerMemoryBudget: budget,
+            writePolicy: policy)
+
+        XCTAssertEqual(first.enqueue(Data(repeating: 1, count: 4)), .accepted)
+        XCTAssertEqual(second.enqueue(Data(repeating: 2, count: 4)), .paused)
+        let firstCleanup = first.prepareCancel()
+        firstQueue.async(execute: firstCleanup)
+        wait(for: [grantReady], timeout: 3)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 4)
+        XCTAssertEqual(budget.snapshot().retainedItems, 1)
+
+        let secondCleanup = second.prepareCancel()
+        secondQueue.async(execute: secondCleanup)
+        secondQueue.sync {}
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+    }
+
+    func testTcpBlockedQueueCancelKeepsDispatchPayloadChargedUntilDropped() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(maxBytes: 4, maxItems: 1))
+        let queue = DispatchQueue(label: "rama.writer-budget.tcp.blocked-cancel")
+        let queueEntered = expectation(description: "queue blocker entered")
+        let releaseQueue = DispatchSemaphore(value: 0)
+        queue.async {
+            queueEntered.fulfill()
+            releaseQueue.wait()
+        }
+        wait(for: [queueEntered], timeout: 3)
+        let core = TcpWritePumpCore(
+            queue: queue,
+            initialLifecycle: .pending,
+            onDrained: {},
+            doWrite: { _, _ in XCTFail("blocked cancelled pump must not write") },
+            logHwm: { _ in },
+            writerMemoryBudget: budget,
+            writePolicy: TcpWritePumpPolicy(maxPendingBytes: 4))
+
+        XCTAssertEqual(core.enqueue(Data(repeating: 1, count: 4)), .accepted)
+        let cleanup = core.prepareCancel()
+        queue.async(execute: cleanup)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 4)
+        XCTAssertFalse(
+            budget.tryReserve(bytes: 1),
+            "cancel cannot refund Data still retained by a blocked dispatch")
+
+        releaseQueue.signal()
+        queue.sync {}
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+    }
+
+    func testTcpStuckWriteCancelKeepsPayloadChargedUntilCompletionRetires() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(maxBytes: 4, maxItems: 1))
+        let queue = DispatchQueue(label: "rama.writer-budget.tcp.stuck-cancel")
+        let completion = Locked<((Error?) -> Void)?>(nil)
+        let started = expectation(description: "write started")
+        let core = TcpWritePumpCore(
+            queue: queue,
+            onDrained: {},
+            doWrite: { _, callback in
+                completion.withLock { $0 = callback }
+                started.fulfill()
+            },
+            logHwm: { _ in },
+            writerMemoryBudget: budget,
+            writePolicy: TcpWritePumpPolicy(maxPendingBytes: 4))
+        queue.sync { core.markOpen() }
+        XCTAssertEqual(core.enqueue(Data(repeating: 1, count: 4)), .accepted)
+        wait(for: [started], timeout: 3)
+
+        let cleanup = core.prepareCancel()
+        queue.async(execute: cleanup)
+        queue.sync {}
+        XCTAssertEqual(budget.snapshot().retainedBytes, 4)
+        XCTAssertFalse(budget.tryReserve(bytes: 1))
+
+        completion.withLock { callback in
+            callback?(nil)
+            callback = nil
+        }
+        queue.sync {}
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+    }
+
+    func testUdpAggregateOverloadDropsWithoutMaterializingExtraRetention() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(maxBytes: 4, maxItems: 1))
+        let firstQueue = DispatchQueue(label: "rama.writer-budget.udp.first")
+        let secondQueue = DispatchQueue(label: "rama.writer-budget.udp.second")
+        let first = UdpClientWritePump(
+            flow: MockUdpFlow(), queue: firstQueue, logger: { _ in },
+            onTerminalError: { _ in }, writerMemoryBudget: budget)
+        let second = UdpClientWritePump(
+            flow: MockUdpFlow(), queue: secondQueue, logger: { _ in },
+            onTerminalError: { _ in }, writerMemoryBudget: budget)
+        let endpoint = NWHostEndpoint(hostname: "127.0.0.1", port: "443")
+
+        first.enqueue(Data(repeating: 1, count: 4), sentBy: endpoint)
+        second.enqueue(Data(repeating: 2, count: 4), sentBy: endpoint)
+        XCTAssertEqual(first.testAdmissionSnapshot.acceptedDispatches, 1)
+        XCTAssertEqual(second.testAdmissionSnapshot.acceptedDispatches, 0)
+        XCTAssertEqual(second.testAdmissionSnapshot.droppedFull, 1)
+        XCTAssertEqual(second.testAdmissionSnapshot.droppedAggregate, 1)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 4)
+        XCTAssertEqual(budget.snapshot().retainedItems, 1)
+
+        first.close()
+        firstQueue.sync {}
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        second.enqueue(Data(repeating: 3, count: 4), sentBy: endpoint)
+        XCTAssertEqual(second.testAdmissionSnapshot.acceptedDispatches, 1)
+        second.close()
+        secondQueue.sync {}
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+    }
+
+    func testUdpStuckWriteCloseKeepsBatchChargedUntilCompletionRetires() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(maxBytes: 4, maxItems: 1))
+        let firstQueue = DispatchQueue(label: "rama.writer-budget.udp.stuck.first")
+        let secondQueue = DispatchQueue(label: "rama.writer-budget.udp.stuck.second")
+        let firstFlow = MockUdpFlow()
+        let first = UdpClientWritePump(
+            flow: firstFlow, queue: firstQueue, logger: { _ in },
+            onTerminalError: { _ in }, writerMemoryBudget: budget)
+        let second = UdpClientWritePump(
+            flow: MockUdpFlow(), queue: secondQueue, logger: { _ in },
+            onTerminalError: { _ in }, writerMemoryBudget: budget)
+        let endpoint = NWHostEndpoint(hostname: "127.0.0.1", port: "443")
+        first.markOpened()
+        first.enqueue(Data(repeating: 1, count: 4), sentBy: endpoint)
+        firstQueue.sync {}
+        XCTAssertEqual(firstFlow.writtenBatches.count, 1)
+
+        first.close()
+        firstQueue.sync {}
+        XCTAssertEqual(
+            budget.snapshot().retainedBytes, 4,
+            "close cannot refund a writeDatagrams batch retained by the transport")
+        second.enqueue(Data(repeating: 2, count: 4), sentBy: endpoint)
+        XCTAssertEqual(second.testAdmissionSnapshot.acceptedDispatches, 0)
+        XCTAssertEqual(second.testAdmissionSnapshot.droppedAggregate, 1)
+
+        XCTAssertTrue(firstFlow.completePendingWrite())
+        firstQueue.sync {}
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        second.enqueue(Data(repeating: 3, count: 4), sentBy: endpoint)
+        XCTAssertEqual(second.testAdmissionSnapshot.acceptedDispatches, 1)
+        second.close()
+        secondQueue.sync {}
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+    }
+}

@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import NetworkExtension
 import XCTest
 
@@ -12,6 +13,13 @@ import XCTest
 /// and the real Rust engine. Symmetric to `CoreTcpLifecycleTests`
 /// but without any `NwConnectionCapture` wiring.
 final class CoreUdpLifecycleTests: XCTestCase {
+    private let maxUdpDatagramBytes = Int(UInt16.max)
+    private let udpIngressPerFlowBytes = 256 * 1024
+    private let udpIngressFillFlowCount = 64
+    // Keep expiry well beyond this test's five-second mutation-failure
+    // deadline. Swift ThreadSanitizer can stretch the six real callback/queue
+    // hops beyond 500 ms even though an uninstrumented run takes < 0.5 s.
+    private let pressureProbeLeaseMs: UInt64 = 10_000
 
     override class func setUp() {
         super.setUp()
@@ -24,6 +32,18 @@ final class CoreUdpLifecycleTests: XCTestCase {
                 engineConfigJson: TestFixtures.engineConfigJson())
         else {
             XCTFail("engine init")
+            preconditionFailure()
+        }
+        return engine
+    }
+
+    private func makePressureEngine() -> RamaTransparentProxyEngineHandle {
+        guard
+            let engine = RamaTransparentProxyEngineHandle(
+                engineConfigJson: TestFixtures.engineConfigJson(
+                    udpIngressProbeLeaseMs: pressureProbeLeaseMs))
+        else {
+            XCTFail("pressure engine init")
             preconditionFailure()
         }
         return engine
@@ -71,6 +91,43 @@ final class CoreUdpLifecycleTests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.01)
         }
         XCTAssertTrue(condition(), "timed out waiting for: \(description)")
+    }
+
+    private func newDirectUdpSession(
+        on engine: RamaTransparentProxyEngineHandle,
+        remotePort: UInt16
+    ) -> RamaUdpSessionHandle {
+        let decision = engine.newUdpSession(
+            meta: makeMeta(remoteHost: "127.0.0.1", remotePort: remotePort),
+            onServerDatagram: { _, _ in },
+            onClientReadDemand: { _ in },
+            onServerClosed: {})
+        guard case .intercept(let session) = decision else {
+            XCTFail("demo handler unexpectedly rejected direct UDP pressure session")
+            preconditionFailure()
+        }
+        return session
+    }
+
+    /// Fill the real Rust generation budget exactly while keeping every
+    /// service inactive: four maximum datagrams plus a four-byte tail reaches
+    /// the production 256 KiB per-flow cap, and 64 such flows reach 16 MiB.
+    private func fillRustUdpIngressBudget(
+        on engine: RamaTransparentProxyEngineHandle,
+        remotePort: UInt16
+    ) -> [RamaUdpSessionHandle] {
+        let payload = Data(repeating: 0xA5, count: maxUdpDatagramBytes)
+        let tailBytes = udpIngressPerFlowBytes - 4 * maxUdpDatagramBytes
+        XCTAssertEqual(tailBytes, 4)
+        let tail = Data(repeating: 0x5A, count: tailBytes)
+        return (0..<udpIngressFillFlowCount).map { _ in
+            let session = newDirectUdpSession(on: engine, remotePort: remotePort)
+            for _ in 0..<4 {
+                session.onClientDatagram(payload, peer: nil)
+            }
+            session.onClientDatagram(tail, peer: nil)
+            return session
+        }
     }
 
     // MARK: - Happy path
@@ -239,5 +296,95 @@ final class CoreUdpLifecycleTests: XCTestCase {
         waitFor("all UDP flows removed", timeout: 10.0) {
             fx.core.udpFlowCount == 0
         }
+    }
+
+    /// Linked Swift/Rust V2 pressure contract. The first four real
+    /// `UdpFlowSession`s receive non-zero leased reads. Completing the first
+    /// Apple read runs the production
+    /// `UdpFlowSession.acknowledgeProbe -> RamaUdpSessionHandle.completeClientRead`
+    /// path before forwarding its payload. Rust consumes that owner's charged
+    /// lease and advances the next FIFO waiter. Deleting the ACK or replacing
+    /// its ID with zero makes Rust reject the payload and no successor can be
+    /// scheduled before the configured expiry.
+    func testV2PressureReadAcknowledgesExactLeaseAndAdvancesFifo() {
+        let engine = makePressureEngine()
+        let core = TransparentProxyCore()
+        core.attachEngine(engine)
+        let remotePort: UInt16 = 50_001
+        var fillers = fillRustUdpIngressBudget(on: engine, remotePort: remotePort)
+        defer {
+            fillers.forEach { $0.onClientClose() }
+            core.detachEngine(reason: 0)
+        }
+
+        let flows = (0..<6).map { _ in MockUdpFlow() }
+        for flow in flows {
+            XCTAssertTrue(
+                core.handleUdpFlow(
+                    flow,
+                    meta: makeMeta(remoteHost: "127.0.0.1", remotePort: remotePort)))
+        }
+        for flow in flows {
+            waitFor("pressure flow.open", timeout: 10) { flow.openWasInvoked }
+            XCTAssertTrue(flow.completeOpen(error: nil))
+            waitFor("ordinary UDP read", timeout: 10) { flow.pendingReadCount == 1 }
+
+            // This payload cannot enter a generation whose 16 MiB budget is
+            // exactly full. It registers the real session as a FIFO waiter.
+            XCTAssertTrue(
+                flow.completePendingRead(
+                    datagrams: [Data(repeating: 0xCC, count: maxUdpDatagramBytes)],
+                    endpoints: [
+                        NWHostEndpoint(
+                            hostname: "127.0.0.1", port: String(remotePort))
+                    ],
+                    error: nil))
+            core.testInspectUdpFlowQueue(for: flow)?.sync {}
+            XCTAssertEqual(flow.pendingReadCount, 0)
+        }
+
+        // One released fill flow creates room for exactly four 65,535-byte
+        // provisional credits (with four bytes left over).
+        fillers.removeFirst().onClientClose()
+        for flow in flows.prefix(4) {
+            waitFor("initial nonzero V2 pressure read", timeout: 10) {
+                flow.pendingReadCount == 1
+            }
+            XCTAssertEqual(flow.readInvocationUptimeNanoseconds.count, 2)
+        }
+        Thread.sleep(forTimeInterval: 0.05)
+        XCTAssertEqual(flows[4].pendingReadCount, 0, "fifth flow bypassed FIFO batch")
+        XCTAssertEqual(flows[5].pendingReadCount, 0, "sixth flow bypassed FIFO batch")
+
+        let peer = NWHostEndpoint(hostname: "127.0.0.1", port: String(remotePort))
+        let firstProbeCallback = flows[0].readInvocationUptimeNanoseconds[1]
+        XCTAssertTrue(
+            flows[0].completePendingRead(
+                datagrams: [Data("swift-v2-owner-zero".utf8)],
+                endpoints: [peer], error: nil))
+        core.testInspectUdpFlowQueue(for: flows[0])?.sync {}
+        waitFor("ACK + owner payload advances fifth FIFO flow", timeout: 5) {
+            flows[4].pendingReadCount == 1
+        }
+        let fifthCallback = flows[4].readInvocationUptimeNanoseconds[1]
+        XCTAssertLessThan(
+            fifthCallback - firstProbeCallback,
+            pressureProbeLeaseMs * 1_000_000,
+            "fifth flow advanced only after probe expiry; production ACK was not effective")
+
+        let secondProbeCallback = flows[1].readInvocationUptimeNanoseconds[1]
+        XCTAssertTrue(
+            flows[1].completePendingRead(
+                datagrams: [Data("swift-v2-owner-one".utf8)],
+                endpoints: [peer], error: nil))
+        core.testInspectUdpFlowQueue(for: flows[1])?.sync {}
+        waitFor("second ACK + owner payload advances sixth FIFO flow", timeout: 5) {
+            flows[5].pendingReadCount == 1
+        }
+        let sixthCallback = flows[5].readInvocationUptimeNanoseconds[1]
+        XCTAssertLessThan(
+            sixthCallback - secondProbeCallback,
+            pressureProbeLeaseMs * 1_000_000,
+            "sixth flow advanced only after probe expiry; exact ACK/FIFO chain regressed")
     }
 }

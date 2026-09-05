@@ -90,6 +90,24 @@ final class UdpReadEndpointMismatchTests: XCTestCase {
         XCTAssertTrue(condition(), "timed out waiting for: \(description)")
     }
 
+    /// `completePendingRead` invokes the Apple callback inline, and that
+    /// callback queues all Swift-side forwarding on this flow's serial queue.
+    /// A synchronous snapshot therefore observes the completed forwarding
+    /// turn without assuming that Rust has requested another kernel read.
+    private func writerSnapshot(
+        core: TransparentProxyCore,
+        flow: MockUdpFlow,
+        writer: UdpClientWritePump
+    ) -> (setCount: Int, lastEndpoint: NWEndpoint?) {
+        guard let flowQueue = core.testInspectUdpFlowQueue(for: flow) else {
+            XCTFail("flow queue not registered for flow")
+            return (writer.testSentByEndpointSetCount, writer.testLastSentByEndpoint)
+        }
+        return flowQueue.sync {
+            (writer.testSentByEndpointSetCount, writer.testLastSentByEndpoint)
+        }
+    }
+
     /// 3 datagrams + 1 endpoint: exactly one cache update. The
     /// fabrication bug would update the cache 3 times.
     func testEndpointMismatch3Datagrams1EndpointTouchesCacheOnce() {
@@ -114,18 +132,18 @@ final class UdpReadEndpointMismatchTests: XCTestCase {
         ]
         let firstEndpoint = NWHostEndpoint(hostname: "10.0.0.1", port: "5001")
         flow.completePendingRead(datagrams: datagrams, endpoints: [firstEndpoint], error: nil)
-        waitFor("next read pump issued (proves loop completed)") { flow.pendingReadCount > 0 }
+        let snapshot = writerSnapshot(core: fx.core, flow: flow, writer: writer)
 
         XCTAssertEqual(
-            writer.testSentByEndpointSetCount, 1,
+            snapshot.setCount, 1,
             "exactly one attribution: only datagrams[0] is paired with endpoints[0]"
         )
         XCTAssertEqual(
-            (writer.testLastSentByEndpoint as? NWHostEndpoint)?.hostname, "10.0.0.1",
+            (snapshot.lastEndpoint as? NWHostEndpoint)?.hostname, "10.0.0.1",
             "the one cached endpoint must be endpoints[0], not a fabrication"
         )
         XCTAssertTrue(
-            writer.testLastSentByEndpoint === firstEndpoint,
+            snapshot.lastEndpoint === firstEndpoint,
             "the hot path must cache Apple's original endpoint object instead of reconstructing it"
         )
     }
@@ -155,14 +173,14 @@ final class UdpReadEndpointMismatchTests: XCTestCase {
             NWHostEndpoint(hostname: "10.0.0.3", port: "5003"),
         ]
         flow.completePendingRead(datagrams: datagrams, endpoints: endpoints, error: nil)
-        waitFor("next read pump issued") { flow.pendingReadCount > 0 }
+        let snapshot = writerSnapshot(core: fx.core, flow: flow, writer: writer)
 
         XCTAssertEqual(
-            writer.testSentByEndpointSetCount, 3,
+            snapshot.setCount, 3,
             "every datagram has a paired endpoint, so cache is updated 3 times"
         )
         XCTAssertEqual(
-            (writer.testLastSentByEndpoint as? NWHostEndpoint)?.hostname, "10.0.0.3",
+            (snapshot.lastEndpoint as? NWHostEndpoint)?.hostname, "10.0.0.3",
             "FIFO ordering: the last update must be the last endpoint"
         )
     }
@@ -184,13 +202,13 @@ final class UdpReadEndpointMismatchTests: XCTestCase {
         }
 
         flow.completePendingRead(datagrams: [Data("only".utf8)], endpoints: nil, error: nil)
-        waitFor("next read pump issued") { flow.pendingReadCount > 0 }
+        let snapshot = writerSnapshot(core: fx.core, flow: flow, writer: writer)
 
         XCTAssertEqual(
-            writer.testSentByEndpointSetCount, 0,
+            snapshot.setCount, 0,
             "no endpoint array means no attribution and no cache touch"
         )
-        XCTAssertNil(writer.testLastSentByEndpoint)
+        XCTAssertNil(snapshot.lastEndpoint)
     }
 
     /// 1 datagram + 2 endpoints: surplus endpoints are ignored;
@@ -215,15 +233,97 @@ final class UdpReadEndpointMismatchTests: XCTestCase {
             NWHostEndpoint(hostname: "10.0.0.2", port: "5002"),
         ]
         flow.completePendingRead(datagrams: datagrams, endpoints: endpoints, error: nil)
-        waitFor("next read pump issued") { flow.pendingReadCount > 0 }
+        let snapshot = writerSnapshot(core: fx.core, flow: flow, writer: writer)
 
         XCTAssertEqual(
-            writer.testSentByEndpointSetCount, 1,
+            snapshot.setCount, 1,
             "only datagrams[0] is paired; surplus endpoints contribute nothing"
         )
         XCTAssertEqual(
-            (writer.testLastSentByEndpoint as? NWHostEndpoint)?.hostname, "10.0.0.1"
+            (snapshot.lastEndpoint as? NWHostEndpoint)?.hostname, "10.0.0.1"
         )
+    }
+
+    /// Activation itself must not prefetch. Rust's service supplies read
+    /// credits one at a time, and each forwarded credit must map to exactly
+    /// one Apple read. Capturing the real Rust callbacks before forwarding
+    /// them makes every phase observable without scheduler-delay assertions.
+    func testActivationAndServiceDemandIssueExactlyOneAppleReadPerCredit() {
+        let fx = makeFixture()
+        defer { tearDown(fx) }
+
+        let flow = MockUdpFlow()
+        let session = UdpFlowSession(core: fx.core, flow: flow, meta: makeMeta())
+        session.idleTimeoutMs = 0
+        session.buildClientWritePump()
+        session.installRequestRead()
+
+        let serviceDemands = Locked<[UInt64]>([])
+        let decision = fx.engine.newUdpSession(
+            meta: makeMeta(),
+            onServerDatagram: { _, _ in },
+            onClientReadDemand: { probeId in
+                serviceDemands.withLock { $0.append(probeId) }
+            },
+            onServerClosed: {}
+        )
+        guard case .intercept(let handle) = decision else {
+            return XCTFail("expected UDP interception")
+        }
+        defer { handle.onClientClose() }
+        session.sessionHandle = handle
+        session.ctx.session = handle
+
+        session.openKernelFlow()
+        waitFor("flow.open") { flow.openWasInvoked }
+        XCTAssertEqual(flow.pendingReadCount, 0, "opening must not prefetch")
+        XCTAssertEqual(serviceDemands.withLock { $0.count }, 0)
+
+        XCTAssertTrue(flow.completeOpen(error: nil))
+        waitFor("first real Rust service demand") {
+            serviceDemands.withLock { $0.count } == 1
+        }
+        session.flowQueue.sync {}
+        XCTAssertEqual(
+            flow.pendingReadCount, 0,
+            "activation must not issue an Apple read before its service demand is forwarded")
+
+        guard let firstProbeId = serviceDemands.withLock({ $0.first }) else {
+            return XCTFail("first Rust service demand missing")
+        }
+        session.ctx.requestReadWithProbe?(firstProbeId)
+        session.flowQueue.sync {}
+        XCTAssertEqual(flow.pendingReadCount, 1, "one service demand must issue one Apple read")
+        XCTAssertEqual(
+            serviceDemands.withLock { $0.count }, 1,
+            "a blocked service receive must not create a second demand")
+
+        XCTAssertTrue(
+            flow.completePendingRead(
+                datagrams: [Data("unattributed".utf8)], endpoints: nil, error: nil))
+        waitFor("second real Rust service demand") {
+            serviceDemands.withLock { $0.count } == 2
+        }
+        session.flowQueue.sync {}
+        XCTAssertEqual(
+            flow.pendingReadCount, 0,
+            "the next Apple read must remain gated until the second demand is forwarded")
+
+        guard
+            let secondProbeId = serviceDemands.withLock({
+                $0.count > 1 ? $0[1] : nil
+            })
+        else {
+            return XCTFail("second Rust service demand missing")
+        }
+        session.ctx.requestReadWithProbe?(secondProbeId)
+        session.flowQueue.sync {}
+        XCTAssertEqual(
+            flow.pendingReadCount, 1,
+            "the second service demand must issue exactly one additional Apple read")
+        XCTAssertEqual(
+            serviceDemands.withLock { $0.count }, 2,
+            "the second service receive must remain blocked without another datagram")
     }
 }
 

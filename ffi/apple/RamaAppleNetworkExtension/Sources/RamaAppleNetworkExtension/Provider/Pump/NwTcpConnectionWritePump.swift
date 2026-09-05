@@ -59,6 +59,7 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
         onTerminal: @escaping @Sendable (Error) -> Void = { _ in },
         onActivity: @escaping @Sendable () -> Bool = { true },
         readSideIdleMs: @escaping @Sendable () -> UInt64 = { .max },
+        writerMemoryBudget: WriterMemoryBudget = WriterMemoryBudget(),
         writePolicy: TcpWritePumpPolicy =
             TcpWritePumpPolicy(maxPendingBytes: writePumpMaxPendingBytes)
     ) {
@@ -91,6 +92,7 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
             },
             inlineWriteCompletionWhenOnQueue: true,
             onActivity: onActivity,
+            writerMemoryBudget: writerMemoryBudget,
             writePolicy: writePolicy
         )
         self.core = core
@@ -102,6 +104,15 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
     /// Same status contract as `TcpClientWritePump.enqueue`.
     @discardableResult
     func enqueue(_ data: Data) -> RamaTcpDeliverStatusBridge { core.enqueue(data) }
+
+    @discardableResult
+    func enqueuePrecharged(_ data: Data) -> RamaTcpDeliverStatusBridge {
+        core.enqueuePrecharged(data)
+    }
+
+    var aggregateBudget: WriterMemoryBudget { core.aggregateBudget }
+
+    func retireAdmissionForEngineDetach() { core.retireAdmission() }
 
     /// Drain the queue, then send a FIN to the remote.
     ///

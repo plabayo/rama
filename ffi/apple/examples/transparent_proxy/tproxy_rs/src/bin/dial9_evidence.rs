@@ -66,6 +66,11 @@ struct Collection {
     required_flow_id: Option<u64>,
     required_protocol: Option<u32>,
     required_pair_count: usize,
+    required_close_reason: Option<u64>,
+    required_close_reason_name: Option<&'static str>,
+    required_close_age_ms: Option<u64>,
+    required_bytes_in: Option<u64>,
+    required_bytes_out: Option<u64>,
     schema_complete: bool,
 }
 
@@ -81,28 +86,40 @@ struct EventSummary {
     ordered_pairs: BTreeMap<u64, BTreeSet<u32>>,
     open_occurrences: BTreeMap<(u64, u32), usize>,
     close_occurrences: BTreeMap<u64, usize>,
+    close_evidence: BTreeMap<u64, Vec<CloseEvidence>>,
     open_count: usize,
     close_count: usize,
 }
 
-impl EventSummary {
-    fn absorb_segment(&mut self, segment: Self) {
-        self.open_count += segment.open_count;
-        self.close_count += segment.close_count;
-        for (key, count) in segment.open_occurrences {
-            *self.open_occurrences.entry(key).or_default() += count;
-        }
-        for (flow_id, count) in segment.close_occurrences {
-            *self.close_occurrences.entry(flow_id).or_default() += count;
-        }
-        for (flow_id, protocols) in segment.ordered_pairs {
-            self.ordered_pairs
-                .entry(flow_id)
-                .or_default()
-                .extend(protocols);
-        }
-    }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CloseEvidence {
+    reason: u64,
+    age_ms: u64,
+    bytes_in: u64,
+    bytes_out: u64,
+}
 
+fn close_reason_name(reason: u64) -> Option<&'static str> {
+    Some(match reason {
+        1 => "shutdown",
+        2 => "idle_timeout",
+        3 => "peer_eof_left",
+        4 => "peer_eof_right",
+        5 => "read_error_left",
+        6 => "read_error_right",
+        7 => "write_error_left",
+        8 => "write_error_right",
+        9 => "peek_timeout",
+        10 => "handler_deadline",
+        11 => "paused_timeout",
+        12 => "first_byte_timeout",
+        13 => "max_lifetime",
+        14 => "service_panic",
+        _ => return None,
+    })
+}
+
+impl EventSummary {
     fn collection(
         &self,
         baseline_max_index: Option<u32>,
@@ -132,6 +149,12 @@ impl EventSummary {
                     })
             })
             .count();
+        let required_close = requirement.flow_id.and_then(|flow_id| {
+            (required_pair_count == 1)
+                .then(|| self.close_evidence.get(&flow_id))
+                .flatten()
+                .and_then(|values| (values.len() == 1).then_some(values[0]))
+        });
         let current_indices = artifacts.iter().map(|artifact| artifact.index).collect();
         Collection {
             schema_version: SCHEMA_VERSION,
@@ -149,6 +172,12 @@ impl EventSummary {
             required_flow_id: requirement.flow_id,
             required_protocol: requirement.protocol,
             required_pair_count,
+            required_close_reason: required_close.map(|value| value.reason),
+            required_close_reason_name: required_close
+                .and_then(|value| close_reason_name(value.reason)),
+            required_close_age_ms: required_close.map(|value| value.age_ms),
+            required_bytes_in: required_close.map(|value| value.bytes_in),
+            required_bytes_out: required_close.map(|value| value.bytes_out),
             schema_complete: true,
         }
     }
@@ -373,6 +402,7 @@ fn decode_file(
     }
     let mut decoder = Decoder::new(&bytes)
         .ok_or_else(|| format!("decode dial9 header {}: invalid header", path.display()))?;
+    let mut invalid_event = None;
     decoder
         .for_each_event(|event| match event.name {
             "TproxyFlowOpened" => {
@@ -394,41 +424,79 @@ fn decode_file(
                         .entry((flow_id, protocol))
                         .or_default() += 1;
                     summary.open_count += 1;
+                } else {
+                    invalid_event =
+                        Some("TproxyFlowOpened lacks valid flow_id/protocol fields".to_owned());
                 }
             }
             "TproxyFlowClosed" => {
+                let mut flow_id = None;
+                let mut reason = None;
+                let mut age_ms = None;
+                let mut bytes_in = None;
+                let mut bytes_out = None;
                 for (name, value) in event.field_names().zip(event.fields.iter()) {
-                    if name == "flow_id"
-                        && let FieldValueRef::Varint(flow_id) = value
-                    {
-                        if let Some(protocols) = summary.opens.get(flow_id) {
-                            summary
-                                .ordered_pairs
-                                .entry(*flow_id)
-                                .or_default()
-                                .extend(protocols);
+                    if let FieldValueRef::Varint(value) = value {
+                        match name {
+                            "flow_id" => flow_id = Some(*value),
+                            "reason" => reason = Some(*value),
+                            "age_ms" => age_ms = Some(*value),
+                            "bytes_in" => bytes_in = Some(*value),
+                            "bytes_out" => bytes_out = Some(*value),
+                            _ => {}
                         }
-                        *summary.close_occurrences.entry(*flow_id).or_default() += 1;
-                        summary.close_count += 1;
-                        break;
                     }
+                }
+                let evidence = match (reason, age_ms, bytes_in, bytes_out) {
+                    (Some(reason @ 1..=14), Some(age_ms), Some(bytes_in), Some(bytes_out)) => {
+                        Some(CloseEvidence {
+                            reason,
+                            age_ms,
+                            bytes_in,
+                            bytes_out,
+                        })
+                    }
+                    _ => None,
+                };
+                if let (Some(flow_id), Some(evidence)) = (flow_id, evidence) {
+                    if let Some(protocols) = summary.opens.get(&flow_id) {
+                        summary
+                            .ordered_pairs
+                            .entry(flow_id)
+                            .or_default()
+                            .extend(protocols);
+                    }
+                    *summary.close_occurrences.entry(flow_id).or_default() += 1;
+                    summary
+                        .close_evidence
+                        .entry(flow_id)
+                        .or_default()
+                        .push(evidence);
+                    summary.close_count += 1;
+                } else {
+                    invalid_event = Some(
+                        "TproxyFlowClosed lacks valid flow_id/reason/age_ms/bytes fields"
+                            .to_owned(),
+                    );
                 }
             }
             _ => {}
         })
-        .map_err(|error| format!("decode dial9 events {}: {error}", path.display()))
+        .map_err(|error| format!("decode dial9 events {}: {error}", path.display()))?;
+    if let Some(error) = invalid_event {
+        return Err(format!("decode dial9 events {}: {error}", path.display()));
+    }
+    Ok(())
 }
 
 fn decode_artifacts(directory: &Path, artifacts: &[Artifact]) -> Result<EventSummary, String> {
     let mut summary = EventSummary::default();
     for artifact in artifacts {
-        let mut segment = EventSummary::default();
         decode_file(
             &directory.join(&artifact.name),
             artifact.encoding,
-            &mut segment,
+            &mut summary,
         )?;
-        summary.absorb_segment(segment);
     }
     Ok(summary)
 }
@@ -662,6 +730,17 @@ mod tests {
         bytes_out: u64,
     }
 
+    #[derive(TraceEvent)]
+    #[traceevent(name = "TproxyFlowClosed")]
+    struct IncompleteTproxyFlowClosed {
+        #[traceevent(timestamp)]
+        timestamp_ns: u64,
+        flow_id: u64,
+        reason: u64,
+        age_ms: u64,
+        bytes_in: u64,
+    }
+
     fn trace_bytes(flow_id: u64, protocol: u32, include_close: bool) -> Vec<u8> {
         let mut encoder = Encoder::new();
         encoder
@@ -677,7 +756,7 @@ mod tests {
                 .write(&TproxyFlowClosed {
                     timestamp_ns: 2,
                     flow_id,
-                    reason: 0,
+                    reason: 1,
                     age_ms: 1,
                     bytes_in: 48,
                     bytes_out: 48,
@@ -693,7 +772,7 @@ mod tests {
             .write(&TproxyFlowClosed {
                 timestamp_ns: 1,
                 flow_id,
-                reason: 0,
+                reason: 1,
                 age_ms: 1,
                 bytes_in: 48,
                 bytes_out: 48,
@@ -716,10 +795,55 @@ mod tests {
             .write(&TproxyFlowClosed {
                 timestamp_ns: 1,
                 flow_id,
+                reason: 1,
+                age_ms: 1,
+                bytes_in: 48,
+                bytes_out: 48,
+            })
+            .unwrap();
+        encoder.finish()
+    }
+
+    fn invalid_close_reason_trace_bytes(flow_id: u64) -> Vec<u8> {
+        let mut encoder = Encoder::new();
+        encoder
+            .write(&TproxyFlowOpened {
+                timestamp_ns: 1,
+                flow_id,
+                protocol: 2,
+                pid: 42,
+            })
+            .unwrap();
+        encoder
+            .write(&TproxyFlowClosed {
+                timestamp_ns: 2,
+                flow_id,
                 reason: 0,
                 age_ms: 1,
                 bytes_in: 48,
                 bytes_out: 48,
+            })
+            .unwrap();
+        encoder.finish()
+    }
+
+    fn incomplete_close_trace_bytes(flow_id: u64) -> Vec<u8> {
+        let mut encoder = Encoder::new();
+        encoder
+            .write(&TproxyFlowOpened {
+                timestamp_ns: 1,
+                flow_id,
+                protocol: 2,
+                pid: 42,
+            })
+            .unwrap();
+        encoder
+            .write(&IncompleteTproxyFlowClosed {
+                timestamp_ns: 2,
+                flow_id,
+                reason: 1,
+                age_ms: 1,
+                bytes_in: 48,
             })
             .unwrap();
         encoder.finish()
@@ -764,6 +888,11 @@ mod tests {
         assert_eq!(result.required_pair_count, 1);
         assert_eq!(result.required_flow_id, Some(77));
         assert_eq!(result.required_protocol, Some(2));
+        assert_eq!(result.required_close_reason, Some(1));
+        assert_eq!(result.required_close_reason_name, Some("shutdown"));
+        assert_eq!(result.required_close_age_ms, Some(1));
+        assert_eq!(result.required_bytes_in, Some(48));
+        assert_eq!(result.required_bytes_out, Some(48));
         assert_eq!(result.udp_paired_flow_count, 1);
         assert!(destination.join("trace.9.bin.gz").is_file());
     }
@@ -791,6 +920,64 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("ordered open/close"));
+    }
+
+    #[test]
+    fn close_with_unknown_reason_is_rejected_instead_of_counted() {
+        let source = TempDir::new().unwrap();
+        let output = TempDir::new().unwrap();
+        write_trace(
+            source.path(),
+            "trace.1.bin",
+            &invalid_close_reason_trace_bytes(7),
+        );
+        let error = collect(
+            source.path(),
+            &Snapshot {
+                schema_version: SCHEMA_VERSION,
+                max_index: None,
+                artifacts: vec![],
+                issues: vec![],
+                schema_complete: true,
+            },
+            &output.path().join("dial9-traces"),
+            PairRequirement {
+                flow_id: Some(7),
+                protocol: Some(2),
+            },
+            Duration::ZERO,
+        )
+        .unwrap_err();
+        assert!(error.contains("flow_id/reason/age_ms/bytes"));
+    }
+
+    #[test]
+    fn close_missing_a_required_evidence_field_is_rejected() {
+        let source = TempDir::new().unwrap();
+        let output = TempDir::new().unwrap();
+        write_trace(
+            source.path(),
+            "trace.1.bin",
+            &incomplete_close_trace_bytes(7),
+        );
+        let error = collect(
+            source.path(),
+            &Snapshot {
+                schema_version: SCHEMA_VERSION,
+                max_index: None,
+                artifacts: vec![],
+                issues: vec![],
+                schema_complete: true,
+            },
+            &output.path().join("dial9-traces"),
+            PairRequirement {
+                flow_id: Some(7),
+                protocol: Some(2),
+            },
+            Duration::ZERO,
+        )
+        .unwrap_err();
+        assert!(error.contains("flow_id/reason/age_ms/bytes"));
     }
 
     #[test]
@@ -826,10 +1013,63 @@ mod tests {
     }
 
     #[test]
-    fn open_and_close_in_different_segments_are_not_a_pair() {
+    fn open_and_close_across_ordered_segment_rotation_are_a_pair() {
         let source = TempDir::new().unwrap();
         let output = TempDir::new().unwrap();
         write_trace(source.path(), "trace.1.bin", &trace_bytes(7, 2, false));
+        write_trace(source.path(), "trace.2.bin", &close_trace_bytes(7));
+        let result = collect(
+            source.path(),
+            &Snapshot {
+                schema_version: SCHEMA_VERSION,
+                max_index: None,
+                artifacts: vec![],
+                issues: vec![],
+                schema_complete: true,
+            },
+            &output.path().join("dial9-traces"),
+            PairRequirement {
+                flow_id: Some(7),
+                protocol: Some(2),
+            },
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert_eq!(result.required_pair_count, 1);
+        assert_eq!(result.required_close_reason_name, Some("shutdown"));
+    }
+
+    #[test]
+    fn duplicate_open_across_rotated_segments_is_rejected() {
+        let source = TempDir::new().unwrap();
+        let output = TempDir::new().unwrap();
+        write_trace(source.path(), "trace.1.bin", &trace_bytes(7, 2, false));
+        write_trace(source.path(), "trace.2.bin", &trace_bytes(7, 2, true));
+        let error = collect(
+            source.path(),
+            &Snapshot {
+                schema_version: SCHEMA_VERSION,
+                max_index: None,
+                artifacts: vec![],
+                issues: vec![],
+                schema_complete: true,
+            },
+            &output.path().join("dial9-traces"),
+            PairRequirement {
+                flow_id: Some(7),
+                protocol: Some(2),
+            },
+            Duration::ZERO,
+        )
+        .unwrap_err();
+        assert!(error.contains("ordered open/close"));
+    }
+
+    #[test]
+    fn duplicate_close_across_rotated_segments_is_rejected() {
+        let source = TempDir::new().unwrap();
+        let output = TempDir::new().unwrap();
+        write_trace(source.path(), "trace.1.bin", &trace_bytes(7, 2, true));
         write_trace(source.path(), "trace.2.bin", &close_trace_bytes(7));
         let error = collect(
             source.path(),
@@ -849,6 +1089,14 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("ordered open/close"));
+    }
+
+    #[test]
+    fn close_reason_names_cover_the_sealed_trace_contract() {
+        assert_eq!(close_reason_name(1), Some("shutdown"));
+        assert_eq!(close_reason_name(14), Some("service_panic"));
+        assert_eq!(close_reason_name(0), None);
+        assert_eq!(close_reason_name(15), None);
     }
 
     #[test]

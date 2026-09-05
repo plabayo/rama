@@ -65,6 +65,14 @@ final class PromoteFFIBindingTests: XCTestCase {
         return session
     }
 
+    private func activate(_ session: RamaTcpSessionHandle) {
+        session.activate(
+            onWriteToEgress: { _ in .accepted },
+            onEgressReadDemand: {},
+            onCloseEgress: {}
+        )
+    }
+
     // ── Box lifetime ─────────────────────────────────────────────
 
     /// `registerPromoteCallback` retains the closure (via the
@@ -145,6 +153,148 @@ final class PromoteFFIBindingTests: XCTestCase {
         // so don't duplicate the check here.
     }
 
+    /// A real Rust promote dispatch holds `callback_active` across the Swift
+    /// trampoline. Re-registration must wait for that dispatch to return before
+    /// retiring the old raw context; otherwise the callback can dereference a
+    /// released `TcpPromoteCallbackBox`.
+    func testInflightPromoteSerializesCallbackBoxReplacement() {
+        let engine = makeEngine()
+        defer { engine.stop(reason: 0) }
+
+        let session = newInterceptedTcpSession(on: engine)
+        let callbackEntered = DispatchSemaphore(value: 0)
+        let allowCallbackReturn = DispatchSemaphore(value: 0)
+        let replacementReturned = TestValue(false)
+        let replacementWork = DispatchGroup()
+
+        weak var oldSentinel: PromoteSentinel?
+        do {
+            let sentinel = PromoteSentinel()
+            oldSentinel = sentinel
+            session.registerPromoteCallback { [sentinel] in
+                _ = sentinel
+                callbackEntered.signal()
+                allowCallbackReturn.wait()
+            }
+        }
+        activate(session)
+
+        XCTAssertEqual(
+            callbackEntered.wait(timeout: .now() + 5), .success,
+            "real Rust promote callback did not fire"
+        )
+
+#if DEBUG
+        let replacementAtFFI = DispatchSemaphore(value: 0)
+        let allowReplacementFFI = DispatchSemaphore(value: 0)
+        session.setBeforePromoteRegisterFFIForTest {
+            replacementAtFFI.signal()
+            allowReplacementFFI.wait()
+        }
+        defer { session.setBeforePromoteRegisterFFIForTest(nil) }
+#endif
+
+        replacementWork.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            session.registerPromoteCallback {}
+            replacementReturned.set(true)
+            replacementWork.leave()
+        }
+
+#if DEBUG
+        XCTAssertEqual(
+            replacementAtFFI.wait(timeout: .now() + 2), .success,
+            "replacement did not reach the Rust registration seam"
+        )
+        allowReplacementFFI.signal()
+#endif
+        XCTAssertEqual(
+            replacementWork.wait(timeout: .now() + 0.25), .timedOut,
+            "replacement returned while the old callback context was in flight"
+        )
+        XCTAssertFalse(replacementReturned.get())
+        XCTAssertNotNil(oldSentinel, "in-flight callback context was retired early")
+
+        allowCallbackReturn.signal()
+        XCTAssertEqual(replacementWork.wait(timeout: .now() + 5), .success)
+        XCTAssertTrue(replacementReturned.get())
+        XCTAssertNil(oldSentinel, "old callback box was not retired after replacement")
+
+        session.cancel()
+    }
+
+    /// Drop the final Swift session owner while a real Rust promote callback is
+    /// parked in the C trampoline. `_session_free` must wait for the callback,
+    /// and the Swift context owner must be retired only after that wait returns.
+    /// Running this test under TSan also exercises the Swift-visible context
+    /// publication / temporary-retain / retirement protocol.
+    func testInflightPromoteDefersSessionFreeAndContextRetirement() {
+        let engine = makeEngine()
+        defer { engine.stop(reason: 0) }
+
+        let callbackEntered = DispatchSemaphore(value: 0)
+        let allowCallbackReturn = DispatchSemaphore(value: 0)
+        let freeReturned = TestValue(false)
+        let freeWork = DispatchGroup()
+        let sessionOwner = TestValue<RamaTcpSessionHandle?>(nil)
+        weak var sessionForTestHooks: RamaTcpSessionHandle?
+
+        weak var sentinel: PromoteSentinel?
+        do {
+            let session = newInterceptedTcpSession(on: engine)
+            let marker = PromoteSentinel()
+            sentinel = marker
+            session.registerPromoteCallback { [marker] in
+                _ = marker
+                callbackEntered.signal()
+                allowCallbackReturn.wait()
+            }
+            activate(session)
+            sessionOwner.set(session)
+            sessionForTestHooks = session
+        }
+
+        XCTAssertEqual(
+            callbackEntered.wait(timeout: .now() + 5), .success,
+            "real Rust promote callback did not fire"
+        )
+
+#if DEBUG
+        let freeAtFFI = DispatchSemaphore(value: 0)
+        let allowFreeFFI = DispatchSemaphore(value: 0)
+        sessionForTestHooks?.setBeforeSessionFreeFFIForTest {
+            freeAtFFI.signal()
+            allowFreeFFI.wait()
+        }
+#endif
+
+        freeWork.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            sessionOwner.set(nil)
+            freeReturned.set(true)
+            freeWork.leave()
+        }
+
+#if DEBUG
+        XCTAssertEqual(
+            freeAtFFI.wait(timeout: .now() + 2), .success,
+            "session deinit did not reach the Rust free seam"
+        )
+        allowFreeFFI.signal()
+#endif
+        XCTAssertEqual(
+            freeWork.wait(timeout: .now() + 0.25), .timedOut,
+            "session free returned while its promote callback was in flight"
+        )
+        XCTAssertFalse(freeReturned.get())
+        XCTAssertNotNil(sentinel, "promote context was retired before Rust free returned")
+
+        allowCallbackReturn.signal()
+        XCTAssertEqual(freeWork.wait(timeout: .now() + 5), .success)
+        XCTAssertTrue(freeReturned.get())
+        XCTAssertNil(sentinel, "final promote context owner was not retired after free")
+    }
+
     /// `registerPromoteCallback` on a cancelled session takes the
     /// early-return path before allocating an Unmanaged box. The
     /// captured sentinel must not be retained beyond the call.
@@ -217,6 +367,43 @@ final class PromoteFFIBindingTests: XCTestCase {
         XCTAssertNil(sentinel)
     }
 
+    /// Replacing a callback can destroy arbitrary captured values. Their
+    /// deinits must run after the session lock is released so re-entry cannot
+    /// deadlock on the handle's non-recursive lock.
+    func testReplacementRetiresCapturedValuesOutsideSessionLock() {
+        let engine = makeEngine()
+        defer { engine.stop(reason: 0) }
+
+        let session = newInterceptedTcpSession(on: engine)
+        let capturedValueDeinitialized = DispatchSemaphore(value: 0)
+        weak var sentinel: PromoteReentrantDeinitSentinel?
+        do {
+            let value = PromoteReentrantDeinitSentinel {
+                session.confirmPromoted(.failed, reason: "deinit re-entry")
+                capturedValueDeinitialized.signal()
+            }
+            sentinel = value
+            session.registerPromoteCallback { [value] in _ = value }
+        }
+        XCTAssertNotNil(sentinel)
+
+        let replacementWork = DispatchGroup()
+        replacementWork.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            session.registerPromoteCallback {}
+            replacementWork.leave()
+        }
+        XCTAssertEqual(
+            replacementWork.wait(timeout: .now() + 5), .success,
+            "captured-value deinit re-entered while the session lock was held"
+        )
+        XCTAssertEqual(
+            capturedValueDeinitialized.wait(timeout: .now() + 2), .success
+        )
+        XCTAssertNil(sentinel)
+        session.cancel()
+    }
+
     // ── UTF-8 reason marshalling ─────────────────────────────────
 
     /// `confirmPromoted(.failed, reason:)` marshals the reason as a
@@ -271,6 +458,45 @@ final class PromoteFFIBindingTests: XCTestCase {
         }
         XCTAssertNil(lastSentinel, "session deinit released final promote box")
     }
+
+    /// Exercise the global Swift context gate from many queues. Each session's
+    /// handle lock serializes its own registrations; registrations for distinct
+    /// sessions overlap, forcing the publication and replacement-retirement
+    /// paths through the shared gate before concurrent cancel and final free.
+    func testConcurrentPromoteCallbackRegistrationChurn() {
+        let engine = makeEngine()
+        defer { engine.stop(reason: 0) }
+
+        let sessions = (0..<16).map { _ in newInterceptedTcpSession(on: engine) }
+        let registerWork = DispatchGroup()
+
+        for session in sessions {
+            for _ in 0..<16 {
+                registerWork.enter()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    session.registerPromoteCallback {}
+                    registerWork.leave()
+                }
+            }
+        }
+        XCTAssertEqual(
+            registerWork.wait(timeout: .now() + 15), .success,
+            "concurrent promote callback registration churn timed out"
+        )
+
+        let cancelWork = DispatchGroup()
+        for session in sessions {
+            cancelWork.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                session.cancel()
+                cancelWork.leave()
+            }
+        }
+        XCTAssertEqual(
+            cancelWork.wait(timeout: .now() + 10), .success,
+            "concurrent promote callback cancellation churn timed out"
+        )
+    }
 }
 
 /// Strong-ref sentinel for testing promote-callback box lifetimes.
@@ -278,3 +504,15 @@ final class PromoteFFIBindingTests: XCTestCase {
 /// expected to be the sole strong holder during the relevant
 /// window.
 private final class PromoteSentinel {}
+
+private final class PromoteReentrantDeinitSentinel {
+    private let onDeinit: () -> Void
+
+    init(onDeinit: @escaping () -> Void) {
+        self.onDeinit = onDeinit
+    }
+
+    deinit {
+        onDeinit()
+    }
+}

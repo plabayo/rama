@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import json
 import os
 from pathlib import Path
 import re
@@ -14,15 +15,145 @@ import tempfile
 import textwrap
 import time
 import unittest
+import uuid
 from unittest import mock
 
-from modern_udp_e2e_probe import ProductViolation, dns_query, ntp_query
-from modern_udp_evidence import parse_signed_udp_status_lines
+import stress_compare
+from modern_udp_e2e_probe import (
+    PRESSURE_MARKER_PREFIX,
+    ProductViolation,
+    dns_query,
+    ntp_query,
+    pressure_burst,
+)
+from modern_udp_evidence import (
+    parse_signed_udp_status_lines,
+    pressure_window_observation,
+)
+from stress_evidence import (
+    seal as seal_stress_evidence,
+    sha256_file,
+    verify as verify_stress_evidence,
+    write_metrics as write_stress_metrics,
+)
+from stress_compare import (
+    create_comparison,
+    create_series,
+    verify_comparison,
+    verify_series,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 STRESS_SCRIPT = SCRIPT_DIR / "stress_traffic.sh"
 SOAK_SCRIPT = SCRIPT_DIR / "soak_test.sh"
+
+
+def write_self_attested_traffic_run(
+    log_dir: Path, *, monitored=False, role="direct-baseline",
+    start=100000, end=101000, duration="0.050", workload_identity="b" * 64,
+    ndjson_pid=42,
+) -> tuple[str, bytes]:
+    """Build a syntactically honest fixture; it never claims external authenticity."""
+    workers = (
+        "small_https", "small_http1", "plain_http", "large_get",
+        "post_large", "head_only", "churn_close", "parallel_pool",
+    )
+    log_dir.mkdir()
+    for worker in workers:
+        (log_dir / f"{worker}.summary").write_text(
+            f"{worker} done: iters=1 ok=1 fail=0\n"
+        )
+        (log_dir / f"{worker}.log").write_text(
+            "204 curl_exit=0 downloaded=1 uploaded=0 "
+            f"http_version=1.1 duration_seconds={duration}\n"
+        )
+    (log_dir / "source-stress_traffic.sh").write_bytes(STRESS_SCRIPT.read_bytes())
+    helper = SCRIPT_DIR / "stress_evidence.py"
+    (log_dir / "source-stress_evidence.py").write_bytes(helper.read_bytes())
+    git_head = "a" * 40
+    (log_dir / "git-head.txt").write_text(git_head + "\n")
+    (log_dir / "git-status.txt").write_text("")
+    mode = "provider-monitored-traffic-only" if monitored else "traffic-only"
+    provider_pid = "42" if monitored else "none"
+    provider_identity = "c" * 64 if monitored else "none"
+    executable_hash = "d" * 64 if monitored else "none"
+    signing_identifier = "org.example.provider" if monitored else "none"
+    signing_team = "TEAM123" if monitored else "none"
+    signing_cdhash = "e" * 40 if monitored else "none"
+    if monitored:
+        (log_dir / "monitor.identity.sha256").write_text(provider_identity + "\n")
+        (log_dir / "preflight.txt").write_text(
+            "PID RSS VSZ %CPU STATE\n42 1000 2000 5.0 S\n"
+        )
+        (log_dir / "postflight.txt").write_text(
+            "PID RSS VSZ %CPU STATE\n42 1050 2000 6.0 S\n"
+        )
+        (log_dir / "monitor.42.log").write_text(
+            "monitoring pid=42\n42 1025 2000 20.0 S\n"
+        )
+        (log_dir / "provider-codesign.txt").write_text(
+            "Identifier=org.example.provider\nTeamIdentifier=TEAM123\nCDHash="
+            + signing_cdhash + "\n"
+        )
+        (log_dir / "provider-identity.tsv").write_text(
+            f"pid\t42\nidentity\t{provider_identity}\n"
+            "executable\t/fixture/provider\n"
+            f"executable_sha256\t{executable_hash}\n"
+            f"signing_identifier\t{signing_identifier}\n"
+            f"signing_team\t{signing_team}\nsigning_cdhash\t{signing_cdhash}\n"
+        )
+        timestamp = time.strftime(
+            "%Y-%m-%dT%H:%M:%S", time.gmtime((start + 500) / 1000)
+        ) + ".000000+00:00"
+        (log_dir / "system.ndjson").write_text(
+            json.dumps({"timestamp": timestamp, "processID": ndjson_pid}) + "\n"
+        )
+        (log_dir / "system-log-capture.err").write_text("")
+        (log_dir / "system-log-tool.tsv").write_text(
+            f"path\t/fixture/log\nsha256\t{'f' * 64}\n"
+        )
+    metrics = write_stress_metrics(
+        log_dir, str(start), str(end), "10000", "100", "67108864",
+        "400", mode, provider_pid,
+    )
+    run_uuid = str(uuid.uuid4())
+    manifest_hash = seal_stress_evidence(
+        log_dir, run_uuid, str(start), str(end), mode, provider_pid,
+        role, workload_identity,
+    )
+    status = (
+        "complete\t1\npassed\t1\nexit_code\t0\n"
+        f"evidence_mode\t{mode}\nproxy_attributed\t0\n"
+        "evidence_claim\tself-attested-local-integrity-not-authenticity\n"
+        f"traffic_role\t{role}\n"
+        f"workload_identity\t{workload_identity}\n"
+        f"run_uuid\t{run_uuid}\nrun_start_epoch\t{start}\nrun_end_epoch\t{end}\n"
+        f"artifact_manifest_sha256\t{manifest_hash}\n"
+        "max_p95_ms\t10000\nmin_throughput_milli_rps\t100\n"
+        "max_rss_growth_bytes\t67108864\nmax_cpu_percent\t400\n"
+        f"observed_p95_ms\t{metrics[2]}\n"
+        f"observed_throughput_milli_rps\t{metrics[4]}\n"
+        f"observed_rss_growth_bytes\t{metrics[6]}\n"
+        f"observed_max_cpu_percent\t{metrics[8]}\n"
+        f"git_head\t{git_head}\ngit_dirty\t0\n"
+        f"stress_script_sha256\t{sha256_file(log_dir / 'source-stress_traffic.sh')}\n"
+        f"evidence_helper_sha256\t{sha256_file(log_dir / 'source-stress_evidence.py')}\n"
+        f"provider_pid\t{provider_pid}\nprovider_identity\t{provider_identity}\n"
+        f"provider_executable_sha256\t{executable_hash}\n"
+        f"provider_signing_identifier\t{signing_identifier}\n"
+        f"provider_signing_team\t{signing_team}\n"
+        f"provider_signing_cdhash\t{signing_cdhash}\n"
+        f"ndjson_included\t{1 if monitored else 0}\n"
+        f"system_log_started\t{1 if monitored else 0}\n"
+        f"system_log_alive_end\t{1 if monitored else 0}\n"
+        f"system_log_joined\t{1 if monitored else 0}\n"
+        f"system_log_child_rc\t{'143' if monitored else 'none'}\n"
+        f"system_log_tool_sha256\t{'f' * 64 if monitored else 'none'}\n"
+        "schema_complete\t1\n"
+    ).encode()
+    (log_dir / "stress-status.tsv").write_bytes(status)
+    return run_uuid, status
 
 
 class StressTrafficValidationTests(unittest.TestCase):
@@ -32,16 +163,46 @@ class StressTrafficValidationTests(unittest.TestCase):
         end = shell.index("\n}\n", start) + 3
         return shell[start:end]
 
-    def run_stress(self, log_dir: Path, **overrides: str) -> subprocess.CompletedProcess:
+    def run_stress(
+        self,
+        log_dir: Path,
+        *,
+        timeout_seconds: float = 45,
+        **overrides: str,
+    ) -> subprocess.CompletedProcess:
         env = os.environ.copy()
         env.update(STRESS_LOG_DIR=str(log_dir), **overrides)
-        return subprocess.run(
-            ["bash", str(STRESS_SCRIPT)],
+        arguments = ["bash", str(STRESS_SCRIPT)]
+        process = subprocess.Popen(
+            arguments,
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            timeout=10,
+            start_new_session=True,
+        )
+        try:
+            output, _ = process.communicate(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as error:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                output, _ = process.communicate(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            output, _ = process.communicate()
+            error.output = output
+            raise
+        return subprocess.CompletedProcess(
+            arguments,
+            process.returncode,
+            output,
         )
 
     def test_rejects_ambiguous_overflowing_and_impractical_values_before_io(self):
@@ -105,7 +266,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                     if [[ -n "$body" && "$output" != /dev/null ]]; then
                       cp "$body" "$output"
                     fi
-                    printf '204\t%s\t%s\t%s' "$downloaded" "$uploaded" "$version"
+                    printf '204\t%s\t%s\t%s\t0.050' "$downloaded" "$uploaded" "$version"
                     """
                 )
             )
@@ -134,6 +295,10 @@ class StressTrafficValidationTests(unittest.TestCase):
                 self.assertGreater(ok, 0, summary.read_text())
                 self.assertEqual(failed, 0, summary.read_text())
                 self.assertEqual(iterations, ok + failed, summary.read_text())
+            run_uuid, start, end, manifest_hash = verify_stress_evidence(log_dir)
+            self.assertEqual(str(uuid.UUID(run_uuid)), run_uuid)
+            self.assertGreaterEqual(end, start)
+            self.assertRegex(manifest_hash, r"^[0-9a-f]{64}$")
 
     def test_status_only_curl_cannot_fake_transfer_or_protocol_evidence(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -141,7 +306,9 @@ class StressTrafficValidationTests(unittest.TestCase):
             fake_bin = root / "bin"
             fake_bin.mkdir()
             fake_curl = fake_bin / "curl"
-            fake_curl.write_text("#!/usr/bin/env bash\nprintf '204'\n")
+            fake_curl.write_text(
+                "#!/usr/bin/env bash\nsleep 0.01\nprintf '204'\n"
+            )
             fake_curl.chmod(0o755)
             result = self.run_stress(
                 root / "logs",
@@ -153,6 +320,52 @@ class StressTrafficValidationTests(unittest.TestCase):
                 STRESS_SKIP_LIVENESS="1",
             )
             self.assertEqual(result.returncode, 1, result.stdout)
+
+    def test_timeout_terminates_stress_process_group(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            pid_log = root / "curl-pids"
+            fake_curl = fake_bin / "curl"
+            fake_curl.write_text(
+                "#!/usr/bin/env bash\n"
+                "printf '%s\\n' \"$$\" >> \"$CURL_PID_LOG\"\n"
+                "while :; do sleep 1; done\n"
+            )
+            fake_curl.chmod(0o755)
+            with self.assertRaises(subprocess.TimeoutExpired):
+                self.run_stress(
+                    root / "logs",
+                    timeout_seconds=2,
+                    PATH=f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                    CURL_PID_LOG=str(pid_log),
+                    STRESS_DURATION="60",
+                    STRESS_CONCURRENCY="1",
+                    STRESS_LARGE_BYTES="1024",
+                    STRESS_POST_BYTES="1024",
+                    STRESS_SKIP_LIVENESS="1",
+                )
+            pids = {int(pid) for pid in pid_log.read_text().splitlines()}
+            self.assertGreater(len(pids), 0)
+            deadline = time.monotonic() + 2
+            alive = pids
+            while alive and time.monotonic() < deadline:
+                time.sleep(0.01)
+                alive = {
+                    pid
+                    for pid in alive
+                    if self.process_exists(pid)
+                }
+            self.assertEqual(alive, set())
+
+    @staticmethod
+    def process_exists(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
 
     def test_post_echo_requires_exact_response_bytes_not_only_matching_counts(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -184,7 +397,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                     if [[ -n "$body" && "$output" != /dev/null ]]; then
                       tr '\\000' '\\001' < "$body" > "$output"
                     fi
-                    printf '204\t%s\t%s\t%s' "$downloaded" "$uploaded" "$version"
+                    printf '204\t%s\t%s\t%s\t0.050' "$downloaded" "$uploaded" "$version"
                     """
                 )
             )
@@ -209,7 +422,8 @@ class StressTrafficValidationTests(unittest.TestCase):
             log_dir = Path(temp_dir) / "logs"
             result = self.run_stress(log_dir, STRESS_DURATION="0")
             self.assertEqual(result.returncode, 2, result.stdout)
-            status = (log_dir / "stress-status.tsv").read_text()
+            self.assertFalse((log_dir / "stress-status.tsv").exists())
+            status = (log_dir / "stress-analysis-status.tsv").read_text()
             self.assertIn("evidence_mode\tartifact-analysis-only\n", status)
             self.assertIn("proxy_attributed\t0\n", status)
             self.assertIn("complete\t0\n", status)
@@ -217,31 +431,248 @@ class StressTrafficValidationTests(unittest.TestCase):
             self.assertNotIn("proxy_attributed\t1", status)
 
     def test_analysis_only_requires_a_successful_source_status_and_worker_artifacts(self):
-        workers = (
-            "small_https", "small_http1", "plain_http", "large_get",
-            "post_large", "head_only", "churn_close", "parallel_pool",
-        )
         with tempfile.TemporaryDirectory() as temp_dir:
             log_dir = Path(temp_dir) / "logs"
-            log_dir.mkdir()
-            (log_dir / "stress-status.tsv").write_text(
-                "complete\t1\npassed\t1\nexit_code\t0\n"
-                "evidence_mode\ttraffic-only\nproxy_attributed\t0\n"
-                "schema_complete\t1\n"
-            )
-            for worker in workers:
-                (log_dir / f"{worker}.summary").write_text(
-                    f"{worker} done: iters=1 ok=1 fail=0\n"
-                )
-                (log_dir / f"{worker}.log").write_text(
-                    "204 curl_exit=0 downloaded=1 uploaded=0 http_version=1.1\n"
-                )
+            _, source_status = write_self_attested_traffic_run(log_dir)
             result = self.run_stress(log_dir, STRESS_DURATION="0")
             self.assertEqual(result.returncode, 0, result.stdout)
-            status = (log_dir / "stress-status.tsv").read_text()
+            self.assertEqual((log_dir / "stress-status.tsv").read_bytes(), source_status)
+            status = (log_dir / "stress-analysis-status.tsv").read_text()
             self.assertIn("evidence_mode\tartifact-analysis-only\n", status)
             self.assertIn("complete\t1\n", status)
             self.assertIn("passed\t1\n", status)
+            self.assertIn(
+                "evidence_claim\tself-attested-local-integrity-not-authenticity\n",
+                status,
+            )
+
+    def test_analysis_only_rejects_artifacts_changed_after_sealing(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_dir = Path(temp_dir) / "logs"
+            write_self_attested_traffic_run(log_dir)
+            (log_dir / "small_https.log").write_text("tampered log\n")
+            with self.assertRaisesRegex(ValueError, "changed after sealing"):
+                verify_stress_evidence(log_dir)
+            result = self.run_stress(log_dir, STRESS_DURATION="0")
+            self.assertEqual(result.returncode, 2, result.stdout)
+
+    def test_paired_gate_requires_adjacent_identical_direct_and_monitored_runs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            baseline = root / "baseline"
+            candidate = root / "candidate"
+            comparison = root / "stress-comparison.tsv"
+            write_self_attested_traffic_run(baseline)
+            write_self_attested_traffic_run(
+                candidate, monitored=True, role="proxy-candidate",
+                start=102000, end=103000, duration="0.075",
+            )
+            self.assertEqual(
+                create_comparison(baseline, candidate, comparison), 0
+            )
+            self.assertEqual(verify_comparison(baseline, candidate, comparison), 0)
+            contents = comparison.read_text()
+            sealed_comparator = comparison.with_name(
+                comparison.name + ".source-stress_compare.py"
+            )
+            self.assertEqual(
+                sealed_comparator.read_bytes(),
+                stress_compare.current_source_path().read_bytes(),
+            )
+            self.assertIn(
+                f"comparison_helper_sha256\t{sha256_file(sealed_comparator)}\n",
+                contents,
+            )
+            self.assertIn("observed_p95_ratio_milli\t1500\n", contents)
+            self.assertIn("observed_throughput_ratio_milli\t1000\n", contents)
+            self.assertIn("candidate_rss_growth_bytes\t51200\n", contents)
+            self.assertIn("candidate_max_cpu_percent\t20\n", contents)
+
+    def test_absolute_latency_throughput_rss_and_cpu_thresholds_are_enforced(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            direct = root / "direct"
+            monitored = root / "monitored"
+            write_self_attested_traffic_run(direct)
+            failed_latency = write_stress_metrics(
+                direct, "100000", "101000", "49", "100", "67108864",
+                "400", "traffic-only", "none",
+            )
+            self.assertEqual(failed_latency[0], "FAILED")
+            failed_throughput = write_stress_metrics(
+                direct, "100000", "101000", "10000", "8001", "67108864",
+                "400", "traffic-only", "none",
+            )
+            self.assertEqual(failed_throughput[0], "FAILED")
+            write_self_attested_traffic_run(
+                monitored, monitored=True, role="proxy-candidate",
+                start=102000, end=103000,
+            )
+            failed_resources = write_stress_metrics(
+                monitored, "102000", "103000", "10000", "100", "51199",
+                "19", "provider-monitored-traffic-only", "42",
+            )
+            self.assertEqual(failed_resources[0], "FAILED")
+            self.assertEqual(failed_resources[6], "51200")
+            self.assertEqual(failed_resources[8], "20")
+
+    def test_monitored_bundle_requires_sealed_signing_monitor_and_log_window(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            missing_signing = root / "missing-signing"
+            wrong_log_pid = root / "wrong-log-pid"
+            write_self_attested_traffic_run(
+                missing_signing, monitored=True, role="proxy-candidate"
+            )
+            (missing_signing / "provider-codesign.txt").unlink()
+            with self.assertRaisesRegex(ValueError, "provider-codesign.txt"):
+                verify_stress_evidence(missing_signing)
+            write_self_attested_traffic_run(
+                wrong_log_pid, monitored=True, role="proxy-candidate", ndjson_pid=99
+            )
+            with self.assertRaisesRegex(ValueError, "no provider row"):
+                verify_stress_evidence(wrong_log_pid)
+
+    def test_paired_gate_enforces_ratios_and_rejects_tampered_verdict(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            baseline = root / "baseline"
+            candidate = root / "candidate"
+            comparison = root / "stress-comparison.tsv"
+            write_self_attested_traffic_run(baseline)
+            write_self_attested_traffic_run(
+                candidate, monitored=True, role="proxy-candidate",
+                start=102000, end=103000, duration="0.075",
+            )
+            self.assertEqual(
+                create_comparison(
+                    baseline, candidate, comparison, "1400", "900", "600000"
+                ),
+                1,
+            )
+            self.assertEqual(verify_comparison(baseline, candidate, comparison), 1)
+            comparison.write_text(
+                comparison.read_text().replace(
+                    "observed_p95_ratio_milli\t1500",
+                    "observed_p95_ratio_milli\t1000",
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                verify_comparison(baseline, candidate, comparison)
+
+    def test_paired_gate_rejects_tampered_or_alternate_comparator_source(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            baseline = root / "baseline"
+            candidate = root / "candidate"
+            comparison = root / "stress-comparison.tsv"
+            write_self_attested_traffic_run(baseline)
+            write_self_attested_traffic_run(
+                candidate, monitored=True, role="proxy-candidate",
+                start=102000, end=103000,
+            )
+            self.assertEqual(create_comparison(baseline, candidate, comparison), 0)
+            sealed_source = comparison.with_name(
+                comparison.name + ".source-stress_compare.py"
+            )
+            original = sealed_source.read_bytes()
+            sealed_source.write_bytes(original + b"\n# changed after verdict\n")
+            with self.assertRaisesRegex(ValueError, "changed after comparison"):
+                verify_comparison(baseline, candidate, comparison)
+            sealed_source.write_bytes(original)
+
+            alternate = root / "alternate-stress_compare.py"
+            alternate.write_bytes(original + b"\n# alternate verifier semantics\n")
+            with mock.patch.object(stress_compare, "__file__", str(alternate)):
+                with self.assertRaisesRegex(ValueError, "differs from sealed"):
+                    stress_compare.verify_comparison(
+                        baseline, candidate, comparison
+                    )
+
+    def test_paired_gate_rejects_wrong_role_workload_and_stale_ordering(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            cases = (
+                ({"workload_identity": "f" * 64}, {}, "different workloads"),
+                ({"start": 800000, "end": 801000}, {}, "not adjacent"),
+                ({}, {"role": "unpaired-diagnostic"}, "not an explicit"),
+            )
+            for index, (candidate_kwargs, baseline_kwargs, expected) in enumerate(cases):
+                baseline = root / f"baseline-{index}"
+                candidate = root / f"candidate-{index}"
+                write_self_attested_traffic_run(baseline, **baseline_kwargs)
+                candidate_options = {
+                    "monitored": True, "role": "proxy-candidate",
+                    "start": 102000, "end": 103000,
+                }
+                candidate_options.update(candidate_kwargs)
+                write_self_attested_traffic_run(
+                    candidate, **candidate_options,
+                )
+                with self.subTest(expected=expected), self.assertRaisesRegex(
+                    ValueError, expected
+                ):
+                    create_comparison(
+                        baseline, candidate, root / f"comparison-{index}.tsv"
+                    )
+
+    def test_release_series_requires_three_interleaved_strict_pairs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pairs = []
+            durations = ("0.060", "0.075", "0.050")
+            for index, duration in enumerate(durations, start=1):
+                baseline = root / f"baseline-{index}"
+                candidate = root / f"candidate-{index}"
+                comparison = root / f"comparison-{index}.tsv"
+                baseline_start = 100000 + (index - 1) * 4000
+                write_self_attested_traffic_run(
+                    baseline, start=baseline_start, end=baseline_start + 1000
+                )
+                write_self_attested_traffic_run(
+                    candidate, monitored=True, role="proxy-candidate",
+                    start=baseline_start + 2000, end=baseline_start + 3000,
+                    duration=duration,
+                )
+                self.assertEqual(
+                    create_comparison(baseline, candidate, comparison), 0
+                )
+                pairs.append((baseline, candidate, comparison))
+
+            series = root / "stress-series.tsv"
+            self.assertEqual(create_series(pairs, series), 0)
+            self.assertEqual(verify_series(pairs, series), 0)
+            contents = series.read_text()
+            self.assertIn("pair_count\t3\n", contents)
+            self.assertIn("median_p95_ratio_milli\t1200\n", contents)
+            self.assertIn("worst_p95_ratio_milli\t1500\n", contents)
+            self.assertIn("worst_throughput_ratio_milli\t1000\n", contents)
+            self.assertIn("worst_candidate_rss_growth_bytes\t51200\n", contents)
+            self.assertEqual(
+                series.with_name(
+                    series.name + ".source-stress_compare.py"
+                ).read_bytes(),
+                stress_compare.current_source_path().read_bytes(),
+            )
+
+            with self.assertRaisesRegex(ValueError, "at least three"):
+                create_series(pairs[:2], root / "too-short.tsv")
+            reordered = [pairs[0], pairs[2], pairs[1]]
+            with self.assertRaisesRegex(ValueError, "interleaved and adjacent"):
+                create_series(reordered, root / "reordered.tsv")
+
+            self.assertEqual(
+                create_comparison(*pairs[2], "1600", "667", "600000"), 0
+            )
+            with self.assertRaisesRegex(ValueError, "weakened the p95"):
+                create_series(pairs, root / "weakened.tsv")
+            self.assertEqual(create_comparison(*pairs[2]), 0)
+
+            series.write_text(
+                contents.replace("median_p95_ratio_milli\t1200", "median_p95_ratio_milli\t1")
+            )
+            with self.assertRaisesRegex(ValueError, "does not match"):
+                verify_series(pairs, series)
 
     def test_term_exits_143_and_reaps_owned_descendant_tree(self):
         probe = subprocess.Popen(["sleep", "30"])
@@ -377,7 +808,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                     if [[ -n "$body" && "$output" != /dev/null ]]; then
                       cp "$body" "$output"
                     fi
-                    printf '204\t%s\t%s\t%s' "$downloaded" "$uploaded" "$version"
+                    printf '204\t%s\t%s\t%s\t0.050' "$downloaded" "$uploaded" "$version"
                     """
                 )
             )
@@ -395,7 +826,9 @@ class StressTrafficValidationTests(unittest.TestCase):
                     done
                     [[ "$pid" =~ ^[1-9][0-9]*$ ]] || exit 1
                     kill -0 "$pid" 2>/dev/null || exit 1
-                    if [[ " $* " == *" -ww "* ]]; then
+                    if [[ " $* " == *" comm= "* ]]; then
+                      printf '/bin/sleep\n'
+                    elif [[ " $* " == *" -ww "* ]]; then
                       printf '%s Wed Jan  1 00:00:00 2025 fake-provider\n' "$pid"
                     else
                       printf 'PID RSS VSZ %%CPU STAT\n%s 1 1 0.0 S\n' "$pid"
@@ -404,10 +837,20 @@ class StressTrafficValidationTests(unittest.TestCase):
                 )
             )
             fake_ps.chmod(0o755)
+            fake_log = fake_bin / "log"
+            fake_log.write_text(
+                "#!/usr/bin/env bash\n"
+                "trap 'exit 143' TERM\n"
+                "printf '{}\\n'\n"
+                "while :; do sleep 1; done\n"
+            )
+            fake_log.chmod(0o755)
             provider = subprocess.Popen(["sleep", "30"])
             process = None
             try:
                 log_dir = root / "logs"
+                ndjson = root / "system.ndjson"
+                ndjson.write_text("")
                 env = os.environ.copy()
                 env.update(
                     STRESS_LOG_DIR=str(log_dir),
@@ -418,6 +861,8 @@ class StressTrafficValidationTests(unittest.TestCase):
                     STRESS_POST_BYTES="1024",
                     STRESS_SKIP_LIVENESS="1",
                     STRESS_MONITOR_PID=str(provider.pid),
+                    STRESS_NDJSON=str(ndjson),
+                    STRESS_LOG_TOOL=str(fake_log),
                 )
                 process = subprocess.Popen(
                     ["bash", str(STRESS_SCRIPT)],
@@ -886,17 +1331,46 @@ class SignedUdpGateWiringTests(unittest.TestCase):
             ("complete", complete), ("passed", passed), ("exit_code", exit_code),
             ("udp_probe_attempt_count", attempts), ("udp_probe_pass_count", passes),
             ("udp_pressure_log_checked", 1),
-            ("rust_udp_drop_transitions", 0),
-            ("rust_udp_resume_transitions", 0),
+            ("rust_udp_drop_transitions", 1),
+            ("rust_udp_resume_transitions", 1),
             ("swift_udp_staging_drop_samples", 0),
             ("log_stream_started", 1), ("log_stream_alive_end", 1),
             ("log_stream_joined", 1), ("profile_restored", 1),
             ("callback_generation", "modern"),
+            ("run_uuid", "12345678-1234-4234-8234-123456789abc"),
+            ("provider_pid", 123),
+            ("provider_identity", "a" * 64),
+            ("provider_identity_stable", 1),
+            ("http3_source_pid", 456),
+            ("http3_flow_id", 88),
+            ("http3_remote_endpoint", "1.1.1.1:443"),
+            ("pressure_probe_attempted", 1),
+            ("pressure_probe_passed", 1),
+            ("pressure_drop_transitions", 1),
+            ("pressure_resume_transitions", 1),
+            ("pressure_drop_reasons", "channel_count"),
+            ("pressure_recovered_reasons", "channel_count"),
+            ("passthrough_dns_source_pid", 451),
+            ("passthrough_dns_flow_id", 75),
+            ("control_dns_source_pid", 452),
+            ("control_dns_flow_id", 76),
+            ("ntp_source_pid", 453),
+            ("ntp_flow_id", 77),
+            ("pressure_source_pid", 454),
+            ("pressure_flow_id", 78),
+            ("blocked_dns_source_pid", 455),
+            ("blocked_dns_flow_id", 79),
             ("dial9_baseline_max_index", 8),
             ("dial9_required_flow_id", 77),
             ("dial9_current_segment_count", 1),
             ("dial9_required_pair_count", 1),
-            ("schema_version", 1),
+            ("dial9_required_close_reason", 1),
+            ("dial9_required_close_reason_name", "shutdown"),
+            ("dial9_required_close_age_ms", 2),
+            ("dial9_close_age_bound_ms", 100),
+            ("dial9_required_bytes_in", 48),
+            ("dial9_required_bytes_out", 48),
+            ("schema_version", 3),
             *diagnostics,
             ("schema_complete", 1),
         ]
@@ -909,9 +1383,57 @@ class SignedUdpGateWiringTests(unittest.TestCase):
         self.assertIn("stop_log_capture", shell)
         self.assertIn("restore_profile", shell)
         self.assertIn("check_udp_pressure_logs", shell)
+        self.assertIn("close_pressure_probe_window", shell)
+        self.assertIn("required_flow_id=pressure_flow_id", shell)
         self.assertIn("swift_udp_staging_drop_samples", shell)
         self.assertIn("--flow-id \"$NTP_FLOW_ID\" --protocol 2", shell)
         self.assertIn("modern_udp_evidence.py", shell)
+
+    def test_pressure_window_waits_for_exact_flow_recovery_and_rejects_late_rows(self):
+        decision = (
+            "udp_e2e_decision rama_decision=intercept flow_id=78 "
+            "remote_endpoint=162.159.200.1:123 source_app=com.apple.python3 "
+            "source_pid=454"
+        )
+        drop = (
+            'UDP ingress pressure dropped datagram flow_id=78 '
+            'pressure="channel_count" cumulative_drops=1 '
+            'global_retained_bytes=64 global_max_retained_bytes=64'
+        )
+        recovery = (
+            'UDP ingress pressure resumed flow flow_id=78 '
+            'pressure="channel_count" cumulative_resumptions=1 '
+            'global_retained_bytes=0 global_max_retained_bytes=64'
+        )
+
+        identity = (454, "162.159.200.1:123", "com.apple.python3")
+        decision_only = pressure_window_observation(
+            ["before", decision], 1, *identity
+        )
+        self.assertFalse(decision_only["terminal"])
+        dropped = pressure_window_observation(
+            ["before", decision, drop], 1, *identity
+        )
+        self.assertFalse(dropped["terminal"])
+        self.assertEqual(dropped["summary"]["unrecovered"], ["channel_count"])
+        complete = pressure_window_observation(
+            ["before", decision, drop, recovery], 1, *identity
+        )
+        self.assertTrue(complete["terminal"])
+        self.assertEqual(complete["flow_id"], 78)
+
+        delayed_duplicate = pressure_window_observation(
+            ["before", decision, drop, recovery, decision], 1, *identity
+        )
+        self.assertFalse(delayed_duplicate["terminal"])
+        self.assertEqual(delayed_duplicate["matching_decisions"], 2)
+        foreign_recovery = pressure_window_observation(
+            ["before", decision, drop, recovery.replace("flow_id=78", "flow_id=79")],
+            1,
+            *identity,
+        )
+        self.assertFalse(foreign_recovery["terminal"])
+        self.assertTrue(foreign_recovery["summary"]["issues"])
 
     def test_signed_udp_preflight_failure_still_writes_terminal_incomplete_status(self):
         result = subprocess.run(
@@ -950,8 +1472,29 @@ class SignedUdpGateWiringTests(unittest.TestCase):
             verdict=(0, 0, 2), attempts=0, passes=0,
             diagnostics=(("issue", "preflight failed"),),
         )
-        early[13] = "callback_generation\tunknown\n"
-        early[15] = "dial9_required_flow_id\tnone\n"
+        replacements = {
+            "callback_generation": "unknown", "provider_pid": "none",
+            "run_uuid": "none",
+            "provider_identity": "none", "provider_identity_stable": "0",
+            "http3_source_pid": "none",
+            "http3_flow_id": "none", "http3_remote_endpoint": "none",
+            "pressure_probe_attempted": "0", "pressure_probe_passed": "0",
+            "pressure_drop_transitions": "0", "pressure_resume_transitions": "0",
+            "pressure_drop_reasons": "none", "pressure_recovered_reasons": "none",
+            "passthrough_dns_source_pid": "none", "passthrough_dns_flow_id": "none",
+            "control_dns_source_pid": "none", "control_dns_flow_id": "none",
+            "ntp_source_pid": "none", "ntp_flow_id": "none",
+            "pressure_source_pid": "none", "pressure_flow_id": "none",
+            "blocked_dns_source_pid": "none", "blocked_dns_flow_id": "none",
+            "dial9_required_flow_id": "none", "dial9_required_close_reason": "none",
+            "dial9_required_close_reason_name": "none", "dial9_close_age_bound_ms": "0",
+            "dial9_required_close_age_ms": "none", "dial9_required_bytes_in": "none",
+            "dial9_required_bytes_out": "none",
+        }
+        early = [
+            f"{key}\t{replacements.get(key, value)}\n"
+            for key, value in (row.rstrip("\n").split("\t") for row in early)
+        ]
         self.assertEqual(parse_signed_udp_status_lines(early), 2)
         self.assertIsNone(parse_signed_udp_status_lines(self.status_lines(passes=4)))
         duplicate = self.status_lines()[:-1] + ["complete\t1\n", "schema_complete\t1\n"]
@@ -962,24 +1505,67 @@ class SignedUdpGateWiringTests(unittest.TestCase):
                 malformed = self.status_lines()
                 malformed[3] = f"udp_probe_attempt_count\t{invalid}\n"
                 self.assertIsNone(parse_signed_udp_status_lines(malformed))
-        malformed_baseline = self.status_lines()
-        malformed_baseline[14] = "dial9_baseline_max_index\t01\n"
+        def replace(rows, key, value):
+            return [
+                f"{row_key}\t{value if row_key == key else row_value}\n"
+                for row_key, row_value in (
+                    row.rstrip("\n").split("\t") for row in rows
+                )
+            ]
+
+        malformed_baseline = replace(
+            self.status_lines(), "dial9_baseline_max_index", "01"
+        )
         self.assertIsNone(parse_signed_udp_status_lines(malformed_baseline))
-        duplicate_required_pair = self.status_lines()
-        duplicate_required_pair[17] = "dial9_required_pair_count\t2\n"
+        duplicate_required_pair = replace(
+            self.status_lines(), "dial9_required_pair_count", "2"
+        )
         self.assertIsNone(parse_signed_udp_status_lines(duplicate_required_pair))
-        pressure_loss_pass = self.status_lines()
-        pressure_loss_pass[6] = "rust_udp_drop_transitions\t1\n"
-        self.assertIsNone(parse_signed_udp_status_lines(pressure_loss_pass))
+        sampled_drop_count_is_not_recovery_semantics = replace(
+            self.status_lines(), "rust_udp_drop_transitions", "2"
+        )
+        self.assertEqual(
+            parse_signed_udp_status_lines(sampled_drop_count_is_not_recovery_semantics), 0
+        )
         pressure_loss_failure = self.status_lines(
             verdict=(1, 0, 1),
             diagnostics=(("failure", "UDP ingress pressure loss"),),
         )
-        pressure_loss_failure[8] = "swift_udp_staging_drop_samples\t1\n"
+        pressure_loss_failure = replace(
+            pressure_loss_failure, "swift_udp_staging_drop_samples", "1"
+        )
         self.assertEqual(parse_signed_udp_status_lines(pressure_loss_failure), 1)
-        unsupported_schema = self.status_lines()
-        unsupported_schema[-2] = "schema_version\t2\n"
+        dial9_fault_failure = self.status_lines(
+            verdict=(1, 0, 1),
+            diagnostics=(("failure", "NTP Dial9 service panic"),),
+        )
+        dial9_fault_failure = replace(
+            dial9_fault_failure, "dial9_required_close_reason", "14"
+        )
+        dial9_fault_failure = replace(
+            dial9_fault_failure, "dial9_required_close_reason_name", "service_panic"
+        )
+        self.assertEqual(parse_signed_udp_status_lines(dial9_fault_failure), 1)
+        unsupported_schema = replace(self.status_lines(), "schema_version", "4")
         self.assertIsNone(parse_signed_udp_status_lines(unsupported_schema))
+
+        for key, value in (
+            ("provider_identity_stable", "0"),
+            ("http3_source_pid", "none"),
+            ("run_uuid", "not-a-uuid"),
+            ("http3_remote_endpoint", "cloudflare.com:443"),
+            ("pressure_resume_transitions", "0"),
+            ("pressure_recovered_reasons", "flow_bytes"),
+            ("ntp_flow_id", "78"),
+            ("dial9_required_close_reason", "15"),
+            ("dial9_required_close_reason_name", "idle_timeout"),
+            ("dial9_required_close_age_ms", "101"),
+            ("dial9_required_bytes_out", "47"),
+        ):
+            with self.subTest(key=key):
+                self.assertIsNone(parse_signed_udp_status_lines(
+                    replace(self.status_lines(), key, value)
+                ))
 
     def test_blocked_dns_requires_timeout_or_a_valid_matching_response(self):
         transaction_id = 0x1234
@@ -1063,6 +1649,44 @@ class SignedUdpGateWiringTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "unexpected peer"):
                 ntp_query("162.159.200.1", 0.01)
+
+    def test_pressure_burst_sends_one_bounded_flow_and_waits_for_recovery(self):
+        class FakeSocket:
+            def __init__(self):
+                self.packets = []
+                self.closed = False
+
+            def settimeout(self, timeout):
+                self.timeout = timeout
+
+            def sendto(self, packet, peer):
+                self.packets.append((bytes(packet), peer))
+
+            def close(self):
+                self.closed = True
+
+        fake = FakeSocket()
+        with mock.patch("modern_udp_e2e_probe.socket.socket", return_value=fake), \
+             mock.patch("modern_udp_e2e_probe.time.sleep") as sleep:
+            pressure_burst("162.159.200.1", 512, 4096, 0.25)
+        self.assertTrue(fake.closed)
+        self.assertEqual(len(fake.packets), 512)
+        self.assertEqual({peer for _, peer in fake.packets}, {("162.159.200.1", 123)})
+        marker = PRESSURE_MARKER_PREFIX + b"162.159.200.1:123\0"
+        self.assertEqual(
+            [
+                int.from_bytes(packet[len(marker):len(marker) + 8], "big")
+                for packet, _ in fake.packets
+            ],
+            list(range(512)),
+        )
+        self.assertTrue(all(packet.startswith(marker) for packet, _ in fake.packets))
+        sleep.assert_called_once_with(0.25)
+        for arguments in ((63, 64, 0), (64, 63, 0), (64, 64, -1)):
+            with self.assertRaises(ValueError):
+                pressure_burst("162.159.200.1", *arguments)
+        with self.assertRaisesRegex(ValueError, "IPv4 literal"):
+            pressure_burst("2001:db8::1", 64, 64, 0)
 
 
 if __name__ == "__main__":

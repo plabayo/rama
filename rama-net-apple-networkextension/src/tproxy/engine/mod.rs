@@ -67,7 +67,7 @@ use self::decision_concurrency::{DecisionConcurrencyGate, DecisionPermit};
 mod udp_ingress;
 pub use self::udp_ingress::{
     DEFAULT_UDP_INGRESS_GLOBAL_MAX_BYTES, DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES,
-    MAX_UDP_DATAGRAM_PAYLOAD_SIZE,
+    DEFAULT_UDP_INGRESS_PROBE_LEASE, MAX_UDP_DATAGRAM_PAYLOAD_SIZE, MAX_UDP_INGRESS_PROBE_LEASE,
 };
 use self::udp_ingress::{UdpIngressBudget, UdpIngressFlowControl};
 
@@ -118,15 +118,14 @@ pub const DEFAULT_UDP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// graceful guards to drop. Tuned via
 /// [`TransparentProxyEngineBuilder::with_stop_drain_max_wait`].
 ///
-/// A correct stop completes in sub-millisecond time once the trigger
-/// fires: the only guards held at the engine level are the per-flow
-/// signal-future parent guards (which drop immediately on cancel) and
-/// any [`TransparentProxyHandler::on_system_sleep`] /
-/// [`TransparentProxyHandler::on_system_wake`] hook tasks. Per-flow
-/// data tasks hold per-flow guards, not engine guards, so they are not
-/// awaited here. This bound therefore only bites a handler hook stuck
-/// on un-timed I/O; the right fix for that is to bound the hook, not to
-/// raise this. Kept short so a wedged hook cannot eat the whole Apple
+/// A normal stop completes promptly after every per-flow service task
+/// observes cancellation and emits its structured/Dial9 close epilogue.
+/// Engine-level guards also cover any
+/// [`TransparentProxyHandler::on_system_sleep`] /
+/// [`TransparentProxyHandler::on_system_wake`] hook tasks. This bound
+/// therefore backstops either a flow task or handler hook stuck on
+/// un-timed work; the right fix for that is to bound the work, not to
+/// raise this. Kept short so a wedged task cannot eat the whole Apple
 /// stop grace.
 pub const DEFAULT_STOP_DRAIN_MAX_WAIT: Duration = Duration::from_secs(5);
 
@@ -365,6 +364,21 @@ where
     /// Effective retained client-payload byte cap across this engine generation.
     pub fn udp_ingress_global_max_bytes(&self) -> usize {
         self.udp_ingress_budget.max_retained_bytes()
+    }
+
+    /// Exact process/core-lifetime payload cap shared by Swift payload owners.
+    pub fn writer_memory_max_bytes(&self) -> usize {
+        self.transparent_proxy_config.writer_memory_max_bytes()
+    }
+
+    /// Exact process/core-lifetime retained-item cap shared by Swift payload owners.
+    pub fn writer_memory_max_items(&self) -> usize {
+        self.transparent_proxy_config.writer_memory_max_items()
+    }
+
+    /// Effective initial global-pressure probe lifetime for this generation.
+    pub fn udp_ingress_probe_lease(&self) -> Duration {
+        self.udp_ingress_budget.probe_lease()
     }
 
     /// Fire-and-forget notification that the system is going to
@@ -1291,6 +1305,11 @@ where
     crate::tproxy::dial9::record_flow_opened(flow_id, flow_protocol.as_u32(), flow_source_pid);
 
     let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
+    // Keep the engine drain joined to this task through its close epilogue.
+    // The child shutdown future drops its own parent guard as soon as it
+    // propagates cancellation; without this clone, engine stop may then tear
+    // down the runtime before the task records its structured/Dial9 close.
+    let service_parent_guard = parent_guard.clone();
     let flow_shutdown = Shutdown::new(async move {
         tokio::select! {
             _ = flow_stop_rx => {}
@@ -1375,6 +1394,7 @@ where
     // spawn runs on Swift dispatch threads with 512 KiB stacks — moving it
     // by value through the spawn chain overflows them in debug builds.
     let service_task = Executor::graceful(flow_guard.clone()).spawn_task(Box::pin(async move {
+        let _service_parent_guard = service_parent_guard;
         let _task_guard = TcpFlowTaskGuard::new();
         let bridge = tokio::select! {
             biased;
@@ -1561,6 +1581,36 @@ where
 
 // ── UDP session ──────────────────────────────────────────────────────────────
 
+/// Per-flow UDP byte totals in the absolute client-facing orientation used by
+/// Dial9: `bytes_in` is client→service and `bytes_out` service→client.
+#[cfg(feature = "dial9")]
+#[derive(Debug, Default)]
+struct UdpFlowByteCounters {
+    bytes_in: AtomicU64,
+    bytes_out: AtomicU64,
+}
+
+#[cfg(feature = "dial9")]
+impl UdpFlowByteCounters {
+    #[inline]
+    fn record_in(&self, len: usize) {
+        self.bytes_in.fetch_add(len as u64, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn record_out(&self, len: usize) {
+        self.bytes_out.fetch_add(len as u64, Ordering::Relaxed);
+    }
+
+    #[inline]
+    fn snapshot(&self) -> (u64, u64) {
+        (
+            self.bytes_in.load(Ordering::Relaxed),
+            self.bytes_out.load(Ordering::Relaxed),
+        )
+    }
+}
+
 /// Data held between `new_udp_session` and `activate`.
 struct UdpSessionPendingData {
     /// Delivers the completed [`UdpFlow`] to the waiting service task.
@@ -1589,6 +1639,8 @@ struct UdpSessionPendingData {
 pub struct TransparentProxyUdpSession {
     client_tx: Option<mpsc::Sender<Datagram>>,
     ingress_control: Arc<UdpIngressFlowControl>,
+    #[cfg(feature = "dial9")]
+    byte_counters: Arc<UdpFlowByteCounters>,
 
     flow_stop_tx: Option<oneshot::Sender<()>>,
     pending: Option<UdpSessionPendingData>,
@@ -1643,8 +1695,10 @@ async fn wait_for_udp_idle(timeout: Duration, notify: &tokio::sync::Notify) {
 
 impl TransparentProxyUdpSession {
     /// Acknowledge completion of the Apple `readDatagrams` operation issued
-    /// for `probe_id`. ID zero denotes an ordinary service demand and needs no
-    /// coordinator accounting; stale/non-matching IDs are harmless no-ops.
+    /// for `probe_id`. The exact owner keeps its charged admission credit until
+    /// its next payload consumes it or the bounded delivery grace expires. ID
+    /// zero denotes an ordinary service demand; stale/non-matching IDs are
+    /// harmless no-ops.
     pub fn on_client_read_complete(&self, probe_id: u64) {
         self.ingress_control.acknowledge_probe(probe_id);
     }
@@ -1693,6 +1747,13 @@ impl TransparentProxyUdpSession {
         let Some(payload) = self.ingress_control.try_copy_payload(bytes) else {
             return;
         };
+        #[cfg(feature = "dial9")]
+        {
+            // Count before publishing to the channel: its send/receive edge
+            // then orders this increment before a service that echoes and
+            // immediately completes emits the close record.
+            self.byte_counters.record_in(bytes.len());
+        }
         permit.send(Datagram { payload, peer });
         #[cfg(test)]
         self.ingress_control.record_accepted(bytes.len());
@@ -1883,6 +1944,9 @@ where
     crate::tproxy::dial9::record_flow_opened(flow_id, flow_protocol.as_u32(), flow_source_pid);
 
     let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
+    // Keep the engine drain joined to this task through its close epilogue.
+    // See the matching TCP path above for why the child guard is insufficient.
+    let service_parent_guard = parent_guard.clone();
     let flow_shutdown = Shutdown::new(async move {
         tokio::select! {
             _ = flow_stop_rx => {}
@@ -1911,6 +1975,24 @@ where
     let idle_notify: Option<Arc<tokio::sync::Notify>> =
         udp_idle_timeout.map(|_| Arc::new(tokio::sync::Notify::new()));
 
+    #[cfg(feature = "dial9")]
+    let byte_counters = Arc::new(UdpFlowByteCounters::default());
+    #[cfg(feature = "dial9")]
+    let on_server_datagram_with_idle: DatagramSink = {
+        let egress_byte_counters = byte_counters.clone();
+        let idle_notify_for_egress = idle_notify.clone();
+        let inner: DatagramSink = Arc::new(on_server_datagram);
+        Arc::new(move |d| {
+            // This wrapper sits inside `guarded_datagram_sink`, so suppressed
+            // post-close callbacks do not inflate the delivered byte total.
+            egress_byte_counters.record_out(d.payload.len());
+            if let Some(notify) = idle_notify_for_egress.as_ref() {
+                notify.notify_one();
+            }
+            inner(d);
+        })
+    };
+    #[cfg(not(feature = "dial9"))]
     let on_server_datagram_with_idle: DatagramSink = if let Some(notify) = idle_notify.clone() {
         let inner: DatagramSink = Arc::new(on_server_datagram);
         Arc::new(move |d| {
@@ -1932,6 +2014,7 @@ where
         udp_ingress_budget,
         client_read_demand_sink,
         auto_ack_probe_after_demand,
+        meta.flow_id,
     );
 
     tracing::debug!(protocol = ?meta.protocol, "new udp session (pending egress connection)");
@@ -1950,8 +2033,11 @@ where
     let meta_for_close = meta_arc.clone();
     let flow_guard_for_task = flow_guard.clone();
     let idle_notify_for_task = idle_notify.clone();
+    #[cfg(feature = "dial9")]
+    let byte_counters_for_close = byte_counters.clone();
     // Boxed for the same small-FFI-stack reason as the TCP service task.
     let service_task = Executor::graceful(flow_guard).spawn_task(Box::pin(async move {
+        let _service_parent_guard = service_parent_guard;
         let lifetime_fut = async {
             if let Some(deadline) = udp_lifetime_deadline {
                 tokio::time::sleep_until(deadline).await;
@@ -1983,19 +2069,27 @@ where
         let flow = match flow {
             Ok(flow) => flow,
             Err(close_reason) => {
-                emit_udp_session_close_event(close_reason, &meta_for_close);
                 #[cfg(feature = "dial9")]
                 {
+                    let (bytes_in, bytes_out) = byte_counters_for_close.snapshot();
+                    emit_udp_session_close_event(
+                        close_reason,
+                        &meta_for_close,
+                        bytes_in,
+                        bytes_out,
+                    );
                     let age_ms =
                         u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
                     crate::tproxy::dial9::record_flow_closed(
                         meta_for_close.flow_id,
                         close_reason,
                         age_ms,
-                        0,
-                        0,
+                        bytes_in,
+                        bytes_out,
                     );
                 }
+                #[cfg(not(feature = "dial9"))]
+                emit_udp_session_close_event(close_reason, &meta_for_close);
                 closed_sink();
                 return;
             }
@@ -2085,18 +2179,21 @@ where
                 BridgeCloseReason::MaxLifetime
             }
         };
-        emit_udp_session_close_event(close_reason, &meta_for_close);
         #[cfg(feature = "dial9")]
         {
+            let (bytes_in, bytes_out) = byte_counters_for_close.snapshot();
+            emit_udp_session_close_event(close_reason, &meta_for_close, bytes_in, bytes_out);
             let age_ms = u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
             crate::tproxy::dial9::record_flow_closed(
                 meta_for_close.flow_id,
                 close_reason,
                 age_ms,
-                0,
-                0,
+                bytes_in,
+                bytes_out,
             );
         }
+        #[cfg(not(feature = "dial9"))]
+        emit_udp_session_close_event(close_reason, &meta_for_close);
         closed_sink();
     }));
 
@@ -2111,6 +2208,8 @@ where
     SessionFlowAction::Intercept(TransparentProxyUdpSession {
         client_tx: Some(client_tx),
         ingress_control,
+        #[cfg(feature = "dial9")]
+        byte_counters,
         flow_stop_tx: Some(flow_stop_tx),
         pending: Some(pending),
         service_task: Some(service_task),
@@ -2274,8 +2373,8 @@ impl<H> TransparentProxyEngine<H> {
         // Two-layer bound so teardown always returns:
         //   - INNER `shutdown_with_limit(max_wait)`: the graceful
         //     "wait for engine guards to drop, but not forever" cap. A
-        //     correct stop resolves in sub-ms; this only bites a
-        //     handler hook wedged on un-timed I/O (see
+        //     correct stop resolves after flow close epilogues and lifecycle
+        //     hooks finish; this only bites one wedged on un-timed I/O (see
         //     [`DEFAULT_STOP_DRAIN_MAX_WAIT`]).
         //   - OUTER `recv_timeout(max_wait + slack)`: a hard cap owned
         //     by THIS thread, so `stop` returns even when the runtime
@@ -2318,8 +2417,8 @@ impl<H> TransparentProxyEngine<H> {
                         reason,
                         ?max_wait,
                         "transparent proxy engine stop timed out waiting for guards to \
-                         drop; proceeding (a handler hook likely holds a guard with \
-                         un-timed I/O)"
+                         drop; proceeding (a flow task or handler hook likely holds a \
+                         guard with un-timed I/O)"
                     );
                     false
                 }
@@ -2600,6 +2699,44 @@ impl TcpPerFlowSignals {
     }
 }
 
+#[cfg(feature = "dial9")]
+fn emit_udp_session_close_event(
+    reason: BridgeCloseReason,
+    meta: &TransparentProxyFlowMeta,
+    bytes_in: u64,
+    bytes_out: u64,
+) {
+    let age_ms = u64::try_from(meta.age().as_millis()).unwrap_or(u64::MAX);
+    let local = meta.local_endpoint.as_ref().map(tracing::field::display);
+    let remote = meta.remote_endpoint.as_ref().map(tracing::field::display);
+    let decision = meta.intercept_decision.map(tracing::field::display);
+    let remote_hostname = meta.remote_hostname.as_deref();
+    let local_interface_name = meta.local_interface_name.as_deref();
+
+    tracing::info!(
+        target: "rama_apple_ne::tproxy",
+        flow_id = meta.flow_id,
+        protocol = %meta.protocol,
+        reason = %reason,
+        age_ms,
+        bytes_in,
+        bytes_out,
+        pid = meta.source_app_pid,
+        bundle_id = meta.source_app_bundle_identifier.as_deref(),
+        signing_id = meta.source_app_signing_identifier.as_deref(),
+        local,
+        remote,
+        decision,
+        remote_hostname,
+        local_interface_name,
+        local_interface_type = ?meta.local_interface_type,
+        local_interface_index = meta.local_interface_index,
+        is_bound = meta.is_bound,
+        "transparent proxy udp flow closed",
+    );
+}
+
+#[cfg(not(feature = "dial9"))]
 fn emit_udp_session_close_event(reason: BridgeCloseReason, meta: &TransparentProxyFlowMeta) {
     let age_ms = u64::try_from(meta.age().as_millis()).unwrap_or(u64::MAX);
     let local = meta.local_endpoint.as_ref().map(tracing::field::display);

@@ -843,6 +843,7 @@ mkdir -p "$OUT/holder-markers"
 {
   printf 'repo_head\t%s\nrepo_dirty\t%s\n' "$REPO_HEAD" "$REPO_DIRTY"
   printf 'udp_workload_exercised\t0\n'
+  printf 'pressure_gauge_schema_version\t2\n'
   printf 'soak_script_sha256\t%s\nstress_script_sha256\t%s\npressure_parser_sha256\t%s\n' \
     "$SOAK_SCRIPT_SHA256" "$STRESS_SCRIPT_SHA256" "$PRESSURE_PARSER_SHA256"
 } >> "$OUT/run-meta.tsv"
@@ -1603,6 +1604,7 @@ from soak_pressure_log import (
     soak_evidence_issues,
     summarize_pressure_rows,
     summarize_udp_pressure_rows,
+    summarize_writer_memory_pressure_rows,
     unexpected_probe_failure_count_across_outages,
 )
 
@@ -1635,6 +1637,8 @@ for key in (
         meta_issues.append(f"run metadata {key!r} is missing")
 if meta.get("udp_workload_exercised") not in ("0", "1"):
     meta_issues.append("run metadata 'udp_workload_exercised' is missing or invalid")
+if meta.get("pressure_gauge_schema_version") != "2":
+    meta_issues.append("run metadata pressure-gauge schema is missing or unsupported")
 for key in ("provider_start_pid", "provider_end_pid", "log_stream_pid", "probe_monitor_pid"):
     parsed_pid = parse_artifact_uint(meta.get(key), maximum=2_147_483_647)
     if parsed_pid is None or parsed_pid == 0:
@@ -1769,6 +1773,7 @@ udp_pressure = summarize_udp_pressure_rows(
     mode=meta.get("mode"),
     baseline_end_epoch=baseline_end_epoch,
 )
+writer_pressure = summarize_writer_memory_pressure_rows(pressure_rows)
 
 idle_tail = next(
     ((start, end) for name, start, end in phases if name == "idle-tail"),
@@ -2142,7 +2147,7 @@ capture_issues = (
     + provider_identity_issues + timestamp_issues + probe_issues
     + pool_interval_issues + pool_bracket_issues
     + lifecycle_category_issues + pressure_telemetry_issues + pressure["issues"]
-    + udp_pressure["issues"] + numeric_log_issues
+    + udp_pressure["issues"] + writer_pressure["issues"] + numeric_log_issues
     + mode_configuration_issues + ceiling_proof_issues + sleep_probe_issues
     + sleep_result["issues"] + leak_issues + dial9_issues
 )
@@ -2229,7 +2234,7 @@ run_result = classify_soak_result(
     settlement_tolerance=settlement_tolerance,
     provider_faults=c["fault"],
     unknown_provider_errors=c["unknown_error"],
-    udp_pressure_failures=udp_pressure["failures"],
+    udp_pressure_failures=udp_pressure["failures"] + writer_pressure["failures"],
 )
 evidence_issues = run_result["evidence_issues"]
 evidence_complete = run_result["complete"]
@@ -2275,6 +2280,11 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
     w(f"Swift staging cumulative: {udp_pressure['latest_swift_staging_drop'] or '-'}")
     for reason in udp_pressure["unrecovered"]:
         w(f"  unrecovered: {reason}")
+    w(f"Writer-memory pressure:  {writer_pressure['status']} "
+      f"(entered={len(writer_pressure['entered_reasons'])} "
+      f"recovered={len(writer_pressure['recovered_reasons'])})")
+    for reason in writer_pressure["unrecovered"]:
+        w(f"  unrecovered writer pressure: {reason}")
     w("")
     w("--- leak evidence ---")
     if leak_issues:

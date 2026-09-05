@@ -206,11 +206,13 @@ struct SwiftPromoteBox {
     ack: (RamaPromoteConfirmStatus, Option<String>),
     /// Counter incremented every time the trampoline fires.
     fires: Arc<AtomicUsize>,
+    /// Signals only after the queue-hopped ACK FFI call has returned.
+    ack_returned: std_mpsc::Sender<()>,
 }
 
-// SAFETY: the session pointer + ack are touched only from the
-// engine's tokio thread that invokes the trampoline. The test
-// retains the box for the session's lifetime.
+// SAFETY: the immutable fields are snapshotted by the one-shot trampoline;
+// only those owned snapshots move to the ACK thread. The test retains the box
+// until the callback and queue-hopped ACK have both completed.
 unsafe impl Send for SwiftPromoteBox {}
 unsafe impl Sync for SwiftPromoteBox {}
 
@@ -219,32 +221,39 @@ unsafe extern "C" fn promote_request_trampoline(ctx: *mut c_void) {
     // RamaTransparentProxyTcpPromoteCallbacks.
     let bx = unsafe { &*(ctx as *const SwiftPromoteBox) };
     bx.fires.fetch_add(1, Ordering::SeqCst);
-    let session = bx.session;
+    let session = bx.session as usize;
     let (status, reason) = (bx.ack.0 as u8, bx.ack.1.clone());
-    // The "Swift" cutover work would happen here. For the test
-    // we just ACK directly. Mirrors the simplest valid Swift
-    // implementation.
-    match reason {
-        Some(s) => {
-            let bytes = s.into_bytes();
-            unsafe {
+    let ack_returned = bx.ack_returned.clone();
+    // The production Swift trampoline queue-hops before touching the session.
+    // Mirror that contract: the ACK executes on a separate thread rather than
+    // synchronously re-entering the session from the callback body.
+    drop(std::thread::spawn(move || {
+        let session = session as *mut RamaTransparentProxyTcpSession;
+        match reason {
+            Some(s) => {
+                let bytes = s.into_bytes();
+                unsafe {
+                    rama_transparent_proxy_tcp_session_confirm_promoted(
+                        session,
+                        status,
+                        bytes.as_ptr() as *const _,
+                        bytes.len(),
+                    );
+                }
+            }
+            None => unsafe {
                 rama_transparent_proxy_tcp_session_confirm_promoted(
                     session,
                     status,
-                    bytes.as_ptr() as *const _,
-                    bytes.len(),
+                    std::ptr::null(),
+                    0,
                 );
-            }
+            },
         }
-        None => unsafe {
-            rama_transparent_proxy_tcp_session_confirm_promoted(
-                session,
-                status,
-                std::ptr::null(),
-                0,
-            );
-        },
-    }
+        ack_returned
+            .send(())
+            .expect("round-trip still waits for the queue-hopped ACK");
+    }));
 }
 
 // Stub Rust→"Swift" session callbacks. The test doesn't care
@@ -381,6 +390,7 @@ fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<String>)) -> (ServiceRe
 
     let engine_guard = new_engine();
     let engine = engine_guard.engine;
+    let (ack_returned_tx, ack_returned_rx) = std_mpsc::channel();
 
     let (meta, _host_slice) = make_tcp_meta_pin();
     let session_callbacks = RamaTransparentProxyTcpSessionCallbacks {
@@ -405,6 +415,7 @@ fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<String>)) -> (ServiceRe
         session,
         ack,
         fires: shared.callback_fires.clone(),
+        ack_returned: ack_returned_tx,
     });
     let promote_callbacks = RamaTransparentProxyTcpPromoteCallbacks {
         context: promote_box.as_ctx(),
@@ -451,6 +462,9 @@ fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<String>)) -> (ServiceRe
     let result = result_rx
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("service reported result within 5s");
+    ack_returned_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("queue-hopped ACK returned within 5s");
     let fires = shared.callback_fires.load(Ordering::SeqCst);
 
     // Drop the session BEFORE the promote box: the C trampoline

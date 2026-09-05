@@ -55,9 +55,11 @@ from soak_pressure_log import (
     soak_evidence_issues,
     summarize_pressure_rows,
     summarize_udp_pressure_rows,
+    summarize_writer_memory_pressure_rows,
     udp_pressure_event,
     unexpected_probe_failure_count,
     unexpected_probe_failure_count_across_outages,
+    writer_memory_pressure_event,
 )
 
 
@@ -153,7 +155,8 @@ class SoakPressureLogTests(unittest.TestCase):
     def test_periodic_outcomes_are_authoritative(self):
         message = (
             "tproxy live-flow counts tcp=351 udp=0 total=351 peak=460 "
-            "softCap=450 hardCap=0 retiring=0 pressure[triggers=12 scans=2 skipped=10 "
+            "softCap=450 hardCap=0 retiring=0 retirementOverlap=0 "
+            "pressure[triggers=12 scans=2 skipped=10 "
             "selected=100 evicted=96 spared=2 canceled=1 expired=1 pending=0]"
         )
         self.assertEqual(
@@ -163,7 +166,7 @@ class SoakPressureLogTests(unittest.TestCase):
                 "udp": 0,
                 "registered": 351,
                 "retiring": 0,
-                "retirement_overlap": None,
+                "retirement_overlap": 0,
                 "allocated": 351,
                 "total": 351,
                 "peak": 460,
@@ -186,13 +189,30 @@ class SoakPressureLogTests(unittest.TestCase):
             },
         )
 
-    def test_legacy_gauge_exposes_missing_hard_cap(self):
-        gauge = flow_gauge(
-            "live-flow counts tcp=1 udp=2 total=3 peak=4 softCap=5"
-        )
+    def test_legacy_gauge_requires_explicit_schema_version(self):
+        message = "live-flow counts tcp=1 udp=2 total=3 peak=4 softCap=5"
+        self.assertIsNone(flow_gauge(message))
+        self.assertIn("missing a current-schema field", flow_gauge_issue(message))
+        gauge = flow_gauge(message, schema_version=1)
         self.assertIsNotNone(gauge)
+        self.assertIsNone(flow_gauge_issue(message, schema_version=1))
         self.assertIsNone(gauge["hard_cap"])
         self.assertIsNone(gauge["retiring"])
+
+    def test_current_gauge_fails_closed_when_any_field_is_absent(self):
+        fields = (
+            "tcp=1", "udp=2", "total=3", "peak=4", "softCap=5",
+            "hardCap=6", "retiring=0", "retirementOverlap=0",
+        )
+        valid = "live-flow counts " + " ".join(fields)
+        self.assertIsNotNone(flow_gauge(valid))
+        for missing in fields:
+            with self.subTest(missing=missing):
+                malformed = valid.replace(missing, "", 1)
+                self.assertIsNone(flow_gauge(malformed))
+                self.assertIn(
+                    "missing a current-schema field", flow_gauge_issue(malformed)
+                )
 
     def test_flow_gauge_separates_registered_and_allocated_and_validates_retiring(self):
         message = (
@@ -215,7 +235,7 @@ class SoakPressureLogTests(unittest.TestCase):
         self.assertIsNone(flow_gauge(over_hard))
         self.assertIn("hard-cap", flow_gauge_issue(over_hard))
         self.assertIn(
-            "omitted retiring",
+            "missing a current-schema field",
             flow_gauge_issue(
                 "live-flow counts tcp=4 udp=3 total=7 peak=15 softCap=10 hardCap=20"
             ),
@@ -354,7 +374,8 @@ class SoakPressureLogTests(unittest.TestCase):
 
         valid_gauge = (
             "tproxy live-flow counts tcp=1 udp=2 total=3 peak=3 softCap=10 "
-            "hardCap=20 retiring=0 pressure[triggers=0 scans=0 skipped=0 "
+            "hardCap=20 retiring=0 retirementOverlap=0 "
+            "pressure[triggers=0 scans=0 skipped=0 "
             "selected=0 evicted=0 spared=0 canceled=0 expired=0 pending=0]"
         )
         self.assertIsNone(pressure_telemetry_issue(valid_gauge))
@@ -382,14 +403,68 @@ class SoakPressureLogTests(unittest.TestCase):
         self.assertEqual(summarized["observed_peak"], 450)
         self.assertEqual(summarized["validated_eviction_episodes"], 1)
 
+    def test_writer_memory_pressure_schema_and_stateful_recovery(self):
+        entered = (
+            'writer memory pressure entered protocol="udp" '
+            'reason="aggregate_bytes" retainedBytes=8192 maxBytes=8192 '
+            'retainedItems=4 maxItems=8'
+        )
+        recovered = (
+            'writer memory pressure recovered protocol="aggregate" '
+            'reason="low_water" retainedBytes=4096 maxBytes=8192 '
+            'retainedItems=2 maxItems=8'
+        )
+        event = writer_memory_pressure_event(entered)
+        self.assertEqual(event["schema_version"], 1)
+        self.assertEqual(event["reason"], "aggregate_bytes")
+        self.assertIsNone(pressure_telemetry_issue(entered))
+        self.assertIsNone(lifecycle_category_issue(entered, "lifecycle"))
+        self.assertIsNotNone(lifecycle_category_issue(entered, "tproxy"))
+        result = summarize_writer_memory_pressure_rows(
+            [(100, entered), (101, recovered)]
+        )
+        self.assertEqual(result["status"], "GOOD")
+        self.assertEqual(result["entered_reasons"], ["aggregate_bytes"])
+        self.assertEqual(result["recovered_reasons"], ["aggregate_bytes"])
+        self.assertEqual(result["unrecovered"], [])
+
+    def test_writer_memory_pressure_fails_closed_and_never_counts_rows_as_recovery(self):
+        entered = (
+            'writer memory pressure entered protocol="tcp" '
+            'reason="tcp_waiter_gate" retainedBytes=6 maxBytes=8 '
+            'retainedItems=6 maxItems=8'
+        )
+        for malformed in (
+            'writer memory pressure entered protocol="<private>" '
+            'reason="aggregate_bytes" retainedBytes=8 maxBytes=8 '
+            'retainedItems=8 maxItems=8',
+            entered.replace("retainedItems=6", "retainedItems=9"),
+            entered.replace("maxItems=8", "maxItems=8 source_app=secret"),
+            entered + " " + entered,
+            entered.replace("entered", "recovered"),
+            (
+                'writer memory pressure recovered protocol="aggregate" '
+                'reason="low_water" retainedBytes=7 maxBytes=8 '
+                'retainedItems=1 maxItems=8'
+            ),
+        ):
+            with self.subTest(malformed=malformed):
+                self.assertIsNone(writer_memory_pressure_event(malformed))
+                self.assertIsNotNone(pressure_telemetry_issue(malformed))
+        result = summarize_writer_memory_pressure_rows([(100, entered), (101, entered)])
+        self.assertEqual(result["status"], "INCOMPLETE")
+        self.assertEqual(result["recovered_reasons"], [])
+        self.assertEqual(result["unrecovered"], ["tcp_waiter_gate"])
+
     def test_udp_pressure_schema_and_normal_mode_drop_failure(self):
         drop = (
-            'UDP ingress pressure dropped datagram pressure="flow_bytes" '
+            'UDP ingress pressure dropped datagram flow_id=41 pressure="flow_bytes" '
             "cumulative_drops=1 global_retained_bytes=4096 "
             "global_max_retained_bytes=8192"
         )
         parsed = udp_pressure_event(drop)
         self.assertEqual(parsed["transition"], "drop")
+        self.assertEqual(parsed["flow_id"], 41)
         self.assertEqual(parsed["pressure"], "flow_bytes")
         self.assertIsNone(lifecycle_category_issue(drop, "lifecycle"))
         self.assertIsNotNone(lifecycle_category_issue(drop, "tproxy"))
@@ -402,12 +477,12 @@ class SoakPressureLogTests(unittest.TestCase):
 
     def test_udp_pressure_ceiling_requires_later_recovery(self):
         drop = (
-            'UDP ingress pressure dropped datagram pressure="global_bytes" '
+            'UDP ingress pressure dropped datagram flow_id=42 pressure="global_bytes" '
             "cumulative_drops=2 global_retained_bytes=8192 "
             "global_max_retained_bytes=8192"
         )
         resume = (
-            'UDP ingress pressure resumed flow pressure="global_bytes" '
+            'UDP ingress pressure resumed flow flow_id=42 pressure="global_bytes" '
             "cumulative_resumptions=1 global_retained_bytes=1024 "
             "global_max_retained_bytes=8192"
         )
@@ -416,6 +491,8 @@ class SoakPressureLogTests(unittest.TestCase):
         )
         self.assertEqual(failed["status"], "FAILED")
         self.assertEqual(failed["unrecovered"], ["global_bytes"])
+        self.assertEqual(failed["drop_reasons"], ["global_bytes"])
+        self.assertEqual(failed["recovered_reasons"], [])
         recovered = summarize_udp_pressure_rows(
             [(101, drop), (102, resume)],
             workload_exercised=True,
@@ -423,6 +500,80 @@ class SoakPressureLogTests(unittest.TestCase):
         )
         self.assertEqual(recovered["status"], "GOOD")
         self.assertEqual(recovered["unrecovered"], [])
+        self.assertEqual(recovered["recovered_reasons"], ["global_bytes"])
+
+    def test_udp_pressure_recovery_is_reason_state_not_row_count(self):
+        rows = [
+            (101, 'UDP ingress pressure dropped datagram flow_id=43 pressure="flow_bytes" '
+                  'cumulative_drops=10 global_retained_bytes=8192 '
+                  'global_max_retained_bytes=16384'),
+            (102, 'UDP ingress pressure dropped datagram flow_id=43 pressure="global_bytes" '
+                  'cumulative_drops=11 global_retained_bytes=16384 '
+                  'global_max_retained_bytes=16384'),
+            (103, 'UDP ingress pressure resumed flow flow_id=43 pressure="flow_bytes" '
+                  'cumulative_resumptions=4 global_retained_bytes=4096 '
+                  'global_max_retained_bytes=16384'),
+        ]
+        result = summarize_udp_pressure_rows(
+            rows, workload_exercised=True, mode="find-ceiling"
+        )
+        self.assertEqual(result["drop_transitions"], 2)
+        self.assertEqual(result["resume_transitions"], 1)
+        self.assertEqual(result["drop_reasons"], ["flow_bytes", "global_bytes"])
+        self.assertEqual(result["recovered_reasons"], ["flow_bytes"])
+        self.assertEqual(result["unrecovered"], ["global_bytes"])
+        self.assertEqual(result["status"], "FAILED")
+
+    def test_udp_pressure_ceiling_is_bound_to_one_required_flow(self):
+        drop = (
+            'UDP ingress pressure dropped datagram flow_id=77 '
+            'pressure="channel_count" cumulative_drops=1 '
+            'global_retained_bytes=64 global_max_retained_bytes=64'
+        )
+        resume = (
+            'UDP ingress pressure resumed flow flow_id=77 '
+            'pressure="channel_count" cumulative_resumptions=1 '
+            'global_retained_bytes=0 global_max_retained_bytes=64'
+        )
+        matching = summarize_udp_pressure_rows(
+            [(101, drop), (102, resume)],
+            workload_exercised=True,
+            mode="find-ceiling",
+            required_flow_id=77,
+        )
+        self.assertEqual(matching["status"], "GOOD")
+
+        for rows in (
+            [(101, drop), (102, resume.replace("flow_id=77", "flow_id=78"))],
+            [
+                (101, drop.replace("flow_id=77", "flow_id=78")),
+                (102, resume.replace("flow_id=77", "flow_id=78")),
+            ],
+        ):
+            with self.subTest(rows=rows):
+                foreign = summarize_udp_pressure_rows(
+                    rows,
+                    workload_exercised=True,
+                    mode="find-ceiling",
+                    required_flow_id=77,
+                )
+                self.assertEqual(foreign["status"], "INCOMPLETE")
+                self.assertTrue(
+                    any("different flow" in issue for issue in foreign["issues"])
+                )
+
+        for invalid in (None, True, 0, -1, 2**64):
+            if invalid is None:
+                continue
+            with self.subTest(invalid=invalid):
+                result = summarize_udp_pressure_rows(
+                    [(101, drop)], workload_exercised=True,
+                    mode="find-ceiling", required_flow_id=invalid,
+                )
+                self.assertEqual(result["status"], "INCOMPLETE")
+
+        self.assertIsNone(udp_pressure_event(drop.replace("flow_id=77", "flow_id=0")))
+        self.assertIsNone(udp_pressure_event(drop + " flow_id=77"))
 
     def test_swift_udp_staging_drop_is_distinct_and_always_unhealthy(self):
         drop = (
@@ -487,14 +638,14 @@ class SoakPressureLogTests(unittest.TestCase):
 
     def test_udp_pressure_rejects_malformed_and_counter_rollback(self):
         malformed = (
-            'UDP ingress pressure dropped datagram pressure="global_bytes" '
+            'UDP ingress pressure dropped datagram flow_id=44 pressure="global_bytes" '
             "cumulative_drops=1 global_retained_bytes=8193 "
             "global_max_retained_bytes=8192"
         )
         self.assertIsNone(udp_pressure_event(malformed))
         self.assertIsNotNone(pressure_telemetry_issue(malformed))
         first = (
-            'UDP ingress pressure dropped datagram pressure="channel_count" '
+            'UDP ingress pressure dropped datagram flow_id=44 pressure="channel_count" '
             "cumulative_drops=4 global_retained_bytes=1 "
             "global_max_retained_bytes=8192"
         )
@@ -527,10 +678,10 @@ class SoakPressureLogTests(unittest.TestCase):
             / "rama-net-apple-networkextension/src/tproxy/engine/udp_ingress.rs"
         ).read_text()
         for public_body in (
-            '"UDP ingress pressure dropped datagram pressure=\\"{}\\" '
+            '"UDP ingress pressure dropped datagram flow_id={} pressure=\\"{}\\" '
             'cumulative_drops={} global_retained_bytes={} '
             'global_max_retained_bytes={}"',
-            '"UDP ingress pressure resumed flow pressure=\\"{}\\" '
+            '"UDP ingress pressure resumed flow flow_id={} pressure=\\"{}\\" '
             'cumulative_resumptions={} global_retained_bytes={} '
             'global_max_retained_bytes={}"',
         ):
@@ -618,7 +769,8 @@ class SoakPressureLogTests(unittest.TestCase):
             (
                 95,
                 "tproxy live-flow counts tcp=20 udp=0 total=20 peak=600 "
-                "softCap=450 pressure[triggers=9 scans=1 skipped=0 selected=0 "
+                "softCap=450 hardCap=0 retiring=0 retirementOverlap=0 "
+                "pressure[triggers=9 scans=1 skipped=0 selected=0 "
                 "evicted=9 spared=0 canceled=0 expired=0 pending=0]",
             ),
             (
@@ -636,7 +788,8 @@ class SoakPressureLogTests(unittest.TestCase):
             (
                 160,
                 "tproxy live-flow counts tcp=350 udp=0 total=350 peak=600 "
-                "softCap=450 pressure[triggers=1 scans=1 skipped=0 selected=120 "
+                "softCap=450 hardCap=0 retiring=0 retirementOverlap=0 "
+                "pressure[triggers=1 scans=1 skipped=0 selected=120 "
                 "evicted=120 spared=0 canceled=0 expired=0 pending=0]",
             ),
         ]
@@ -655,13 +808,15 @@ class SoakPressureLogTests(unittest.TestCase):
             (
                 100,
                 "tproxy live-flow counts tcp=20 udp=0 total=20 peak=20 "
-                "softCap=450 pressure[triggers=0 scans=0 skipped=0 selected=0 "
+                "softCap=450 hardCap=0 retiring=0 retirementOverlap=0 "
+                "pressure[triggers=0 scans=0 skipped=0 selected=0 "
                 "evicted=0 spared=0 canceled=0 expired=0 pending=0]",
             ),
             (
                 120,
                 "tproxy live-flow counts tcp=350 udp=0 total=350 peak=350 "
-                "softCap=450 pressure[triggers=1 scans=1 skipped=0 selected=2 "
+                "softCap=450 hardCap=0 retiring=0 retirementOverlap=0 "
+                "pressure[triggers=1 scans=1 skipped=0 selected=2 "
                 "evicted=2 spared=0 canceled=0 expired=0 pending=0]",
             )
         ]
@@ -726,18 +881,21 @@ class SoakPressureLogTests(unittest.TestCase):
             (
                 99,
                 "live-flow counts tcp=20 udp=0 total=20 peak=480 softCap=450 "
+                "hardCap=0 retiring=0 retirementOverlap=0 "
                 "pressure[triggers=0 scans=0 skipped=0 selected=0 evicted=0 "
                 "spared=0 canceled=0 expired=0 pending=0]",
             ),
             (
                 120,
                 "live-flow counts tcp=20 udp=0 total=20 peak=480 softCap=450 "
+                "hardCap=0 retiring=0 retirementOverlap=0 "
                 "pressure[triggers=0 scans=0 skipped=0 selected=0 evicted=0 "
                 "spared=0 canceled=0 expired=0 pending=0]",
             ),
             (
                 180,
                 "live-flow counts tcp=20 udp=0 total=20 peak=480 softCap=450 "
+                "hardCap=0 retiring=0 retirementOverlap=0 "
                 "pressure[triggers=1 scans=1 skipped=0 selected=1 evicted=1 "
                 "spared=0 canceled=0 expired=0 pending=0]",
             ),
@@ -791,7 +949,7 @@ class SoakPressureLogTests(unittest.TestCase):
             return (
                 epoch,
                 f"live-flow counts tcp={total} udp=0 total={total} "
-                f"peak={total} softCap=450",
+                f"peak={total} softCap=450 hardCap=0 retiring=0 retirementOverlap=0",
             )
 
         self.assertIsNone(settled_final_flow_gauge(
@@ -818,7 +976,7 @@ class SoakPressureLogTests(unittest.TestCase):
             return (
                 epoch,
                 f"live-flow counts tcp={total} udp=0 total={total} "
-                f"peak={total} softCap=450 hardCap=0",
+                f"peak={total} softCap=450 hardCap=0 retiring=0 retirementOverlap=0",
             )
 
         self.assertIsNone(
@@ -1009,13 +1167,15 @@ class SoakPressureLogTests(unittest.TestCase):
             (
                 90,
                 "tproxy live-flow counts tcp=480 udp=0 total=480 peak=480 "
-                "softCap=450 pressure[triggers=1 scans=1 skipped=0 selected=10 "
+                "softCap=450 hardCap=0 retiring=0 retirementOverlap=0 "
+                "pressure[triggers=1 scans=1 skipped=0 selected=10 "
                 "evicted=10 spared=0 canceled=0 expired=0 pending=0]",
             ),
             (
                 120,
                 "tproxy live-flow counts tcp=25 udp=0 total=25 peak=480 "
-                "softCap=450 pressure[triggers=0 scans=0 skipped=0 selected=0 "
+                "softCap=450 hardCap=0 retiring=0 retirementOverlap=0 "
+                "pressure[triggers=0 scans=0 skipped=0 selected=0 "
                 "evicted=0 spared=0 canceled=0 expired=0 pending=0]",
             ),
         ]
@@ -1028,7 +1188,8 @@ class SoakPressureLogTests(unittest.TestCase):
             (
                 100.25,
                 "tproxy live-flow counts tcp=25 udp=0 total=25 peak=480 "
-                "softCap=450 pressure[triggers=0 scans=0 skipped=0 selected=0 "
+                "softCap=450 hardCap=0 retiring=0 retirementOverlap=0 "
+                "pressure[triggers=0 scans=0 skipped=0 selected=0 "
                 "evicted=0 spared=0 canceled=0 expired=0 pending=0]",
             )
         ]
@@ -1040,19 +1201,22 @@ class SoakPressureLogTests(unittest.TestCase):
             (
                 99.75,
                 "tproxy live-flow counts tcp=20 udp=0 total=20 peak=100 "
-                "softCap=450 pressure[triggers=0 scans=0 skipped=0 selected=0 "
+                "softCap=450 hardCap=0 retiring=0 retirementOverlap=0 "
+                "pressure[triggers=0 scans=0 skipped=0 selected=0 "
                 "evicted=0 spared=0 canceled=0 expired=0 pending=0]",
             ),
             (
                 100.25,
                 "tproxy live-flow counts tcp=25 udp=0 total=25 peak=480 "
-                "softCap=450 pressure[triggers=0 scans=0 skipped=0 selected=0 "
+                "softCap=450 hardCap=0 retiring=0 retirementOverlap=0 "
+                "pressure[triggers=0 scans=0 skipped=0 selected=0 "
                 "evicted=0 spared=0 canceled=0 expired=0 pending=0]",
             ),
             (
                 100.75,
                 "tproxy live-flow counts tcp=30 udp=0 total=30 peak=500 "
-                "softCap=450 pressure[triggers=0 scans=0 skipped=0 selected=0 "
+                "softCap=450 hardCap=0 retiring=0 retirementOverlap=0 "
+                "pressure[triggers=0 scans=0 skipped=0 selected=0 "
                 "evicted=0 spared=0 canceled=0 expired=0 pending=0]",
             ),
         ]
@@ -1064,7 +1228,8 @@ class SoakPressureLogTests(unittest.TestCase):
             return (
                 epoch,
                 "tproxy live-flow counts tcp=25 udp=0 total=25 peak=25 "
-                "softCap=450 pressure[triggers=1 scans=1 skipped=0 selected=1 "
+                "softCap=450 hardCap=0 retiring=0 retirementOverlap=0 "
+                "pressure[triggers=1 scans=1 skipped=0 selected=1 "
                 f"evicted={evicted} spared=0 canceled=0 expired=0 pending=0]",
             )
 
@@ -2386,7 +2551,8 @@ class SoakPressureLogTests(unittest.TestCase):
         marker = "<<'PYEOF'\n"
         extractor = shell.split(marker, 1)[1].split("\nPYEOF", 1)[0]
         gauge = (
-            "live-flow counts tcp=0 udp=0 total=0 peak=0 softCap=0 hardCap=0 retiring=0 "
+            "live-flow counts tcp=0 udp=0 total=0 peak=0 softCap=0 hardCap=0 "
+            "retiring=0 retirementOverlap=0 "
             "pressure[triggers=0 scans=0 skipped=0 selected=0 evicted=0 "
             "spared=0 canceled=0 expired=0 pending=0]"
         )
@@ -2429,6 +2595,7 @@ class SoakPressureLogTests(unittest.TestCase):
                     "provider_codesign_team\tTEAM123\n"
                     "log_stream_pid\t20\nprobe_monitor_pid\t30\n"
                     "udp_workload_exercised\t0\n"
+                    "pressure_gauge_schema_version\t2\n"
                     f"leaks_command_rc\t{leaks_rc}\n"
                     f"mode\t{mode}\n"
                     f"softcap\t{softcap}\nhardcap\t{hardcap}\n"

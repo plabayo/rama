@@ -39,11 +39,15 @@ final class TcpClientReadPump: @unchecked Sendable {
     /// would punch a hole in the byte stream and the downstream TLS layer
     /// would surface "bad record MAC" once the gap reaches the decryptor.
     private var pendingData: Data?
+    private var pendingReservation: WriterMemoryGrant?
+    private let writerMemoryBudget: WriterMemoryBudget
     /// Set by `cancelForPromote(onCarryover:)` to route in-flight
     /// `readData` results to a `TcpDirectForwarder` instead of dropping them.
     /// The separate error channel keeps a hard kernel-read failure distinct
     /// from clean EOF across the cutover. Fires at most once, then clears.
-    private var onPromoteCarryover: (@Sendable (_ payload: Data?, _ error: Error?) -> Void)?
+    private var onPromoteCarryover: (@Sendable (
+        _ payload: Data?, _ error: Error?, _ reservation: WriterMemoryGrant?
+    ) -> Void)?
     /// A clean EOF already consumed by the ordinary Rust-bound path. Promotion
     /// may still be valid while the server half remains open, so retain this
     /// one-shot terminal edge for the direct forwarder instead of issuing a
@@ -56,7 +60,8 @@ final class TcpClientReadPump: @unchecked Sendable {
         queue: DispatchQueue,
         logger: @escaping @Sendable (FlowLogMessage) -> Void,
         onTerminal: @escaping @Sendable (Error?) -> Void,
-        onActivity: @escaping @Sendable () -> Void = {}
+        onActivity: @escaping @Sendable () -> Void = {},
+        writerMemoryBudget: WriterMemoryBudget = WriterMemoryBudget()
     ) {
         self.flow = flow
         self.session = session
@@ -64,8 +69,11 @@ final class TcpClientReadPump: @unchecked Sendable {
         self.logger = logger
         self.onTerminal = onTerminal
         self.onActivity = onActivity
+        self.writerMemoryBudget = writerMemoryBudget
         queue.setSpecific(key: queueKey, value: 1)
     }
+
+    deinit { pendingReservation?.release() }
 
     /// Normalize callers onto the pump queue without paying another dispatch
     /// when the owning flow state machine is already executing there.
@@ -125,21 +133,43 @@ final class TcpClientReadPump: @unchecked Sendable {
     ) {
         runOnQueue {
             self.cancelForPromoteLocked(
-                onCarryover: onCarryover,
-                onError: onError,
+                onCarryover: { payload, error, reservation in
+                    reservation?.release()
+                    if let error { onError(error) } else { onCarryover(payload) }
+                },
+                onComplete: onComplete)
+        }
+    }
+
+    /// Production cutover variant which transfers an existing replay-buffer
+    /// charge into the direct forwarder instead of release/re-reserve racing.
+    func cancelForPromoteWithReservations(
+        onCarryover: @escaping @Sendable (Data?, WriterMemoryGrant?) -> Void,
+        onError: @escaping @Sendable (Error) -> Void = { _ in },
+        onComplete: @escaping @Sendable () -> Void
+    ) {
+        runOnQueue {
+            self.cancelForPromoteLocked(
+                onCarryover: { payload, error, reservation in
+                    if let error {
+                        reservation?.release()
+                        onError(error)
+                    } else {
+                        onCarryover(payload, reservation)
+                    }
+                },
                 onComplete: onComplete)
         }
     }
 
     private func cancelForPromoteLocked(
-        onCarryover: @escaping @Sendable (Data?) -> Void,
-        onError: @escaping @Sendable (Error) -> Void,
+        onCarryover: @escaping @Sendable (Data?, Error?, WriterMemoryGrant?) -> Void,
         onComplete: @escaping @Sendable () -> Void
     ) {
         guard phase != .closed else {
             if observedNaturalEof {
                 observedNaturalEof = false
-                onCarryover(.none)
+                onCarryover(.none, nil, nil)
             }
             onComplete()
             return
@@ -147,7 +177,9 @@ final class TcpClientReadPump: @unchecked Sendable {
         // Hand over the replay buffer immediately.
         if let pending = pendingData {
             pendingData = nil
-            onCarryover(.some(pending))
+            let reservation = pendingReservation
+            pendingReservation = nil
+            onCarryover(.some(pending), nil, reservation)
         }
         let hadInFlightRead = (phase == .reading)
         phase = .closed
@@ -156,12 +188,8 @@ final class TcpClientReadPump: @unchecked Sendable {
         // transition runs inline when promotion already owns `queue`, so the
         // ACK cannot overtake sink installation and lose a concurrent read.
         if hadInFlightRead {
-            onPromoteCarryover = { payload, error in
-                if let error {
-                    onError(error)
-                } else {
-                    onCarryover(payload)
-                }
+            onPromoteCarryover = { payload, error, reservation in
+                onCarryover(payload, error, reservation)
                 onComplete()
             }
         } else {
@@ -178,18 +206,24 @@ final class TcpClientReadPump: @unchecked Sendable {
         if let pending = self.pendingData {
             guard let session = self.session else {
                 self.pendingData = nil
+                self.pendingReservation?.release()
+                self.pendingReservation = nil
                 self.terminate(with: nil)
                 return
             }
             switch session.onClientBytes(pending) {
             case .accepted:
                 self.pendingData = nil
+                self.pendingReservation?.release()
+                self.pendingReservation = nil
                 // fall through to issue a fresh readData
             case .paused:
                 self.phase = .paused
                 return
             case .closed:
                 self.pendingData = nil
+                self.pendingReservation?.release()
+                self.pendingReservation = nil
                 self.terminate(with: nil)
                 return
             }
@@ -215,7 +249,35 @@ final class TcpClientReadPump: @unchecked Sendable {
             if let data, !data.isEmpty {
                 self.onActivity()
             }
-            self.queue.async { [weak self] in
+            let transitReservation: WriterMemoryGrant?
+            if let data, !data.isEmpty {
+                guard let reservation = self.writerMemoryBudget.tryReserveGrant(
+                    bytes: data.count)
+                else {
+                    // Do not capture the uncharged payload in queue work.
+                    self.queue.async { [weak self] in
+                        guard let self else { return }
+                        let pressureError = Self.memoryPressureError()
+                        if self.phase == .closed {
+                            // Promotion may have installed its in-flight read
+                            // barrier before this callback reached the queue.
+                            // The payload is deliberately not captured, but the
+                            // barrier still needs one terminal result.
+                            let sink = self.onPromoteCarryover
+                            self.onPromoteCarryover = nil
+                            sink?(nil, pressureError, nil)
+                            return
+                        }
+                        self.phase = .open
+                        self.terminate(with: pressureError)
+                    }
+                    return
+                }
+                transitReservation = reservation
+            } else {
+                transitReservation = nil
+            }
+            self.queue.async { [weak self, transitReservation] in
                 guard let self else { return }
                 if self.phase == .closed {
                     // Pump cancelled while a `readData` was in
@@ -229,18 +291,23 @@ final class TcpClientReadPump: @unchecked Sendable {
                     self.onPromoteCarryover = nil
                     if let sink {
                         if let error {
-                            sink(nil, error)
+                            transitReservation?.release()
+                            sink(nil, error, nil)
                         } else if let data, !data.isEmpty {
-                            sink(.some(data), nil)
+                            sink(.some(data), nil, transitReservation)
                         } else {
-                            sink(.none, nil)
+                            transitReservation?.release()
+                            sink(.none, nil, nil)
                         }
+                    } else {
+                        transitReservation?.release()
                     }
                     return
                 }
                 self.phase = .open
 
                 if let error {
+                    transitReservation?.release()
                     self.logger(
                         classifyFlowCallbackError(error, operation: "tcp flow.read")
                     )
@@ -249,6 +316,7 @@ final class TcpClientReadPump: @unchecked Sendable {
                 }
 
                 guard let data, !data.isEmpty else {
+                    transitReservation?.release()
                     self.logger(
                         FlowLogMessage(
                             level: .trace,
@@ -263,11 +331,13 @@ final class TcpClientReadPump: @unchecked Sendable {
                 guard let session = self.session else {
                     // Session was torn down while a read was in flight — drop
                     // the bytes and stop reading.
+                    transitReservation?.release()
                     self.terminate(with: nil)
                     return
                 }
                 switch session.onClientBytes(data) {
                 case .accepted:
+                    transitReservation?.release()
                     self.requestReadLocked()
                 case .paused:
                     // Rust did NOT take these bytes. Save them for replay on
@@ -279,12 +349,14 @@ final class TcpClientReadPump: @unchecked Sendable {
                         ))
                     }
                     self.pendingData = data
+                    self.pendingReservation = transitReservation
                     self.phase = .paused
                 case .closed:
                     // Rust signaled the session is gone (teardown or
                     // bridge-side write failure). No demand callback will
                     // ever follow, so terminate the pump now instead of
                     // waiting for an outer cleanup path.
+                    transitReservation?.release()
                     self.terminate(with: nil)
                 }
             }
@@ -294,6 +366,19 @@ final class TcpClientReadPump: @unchecked Sendable {
     private func terminate(with error: Error?) {
         guard phase != .closed else { return }
         phase = .closed
+        pendingData = nil
+        pendingReservation?.release()
+        pendingReservation = nil
         onTerminal(error)
+    }
+
+    private static func memoryPressureError() -> Error {
+        NSError(
+            domain: "rama.tproxy.writer-memory",
+            code: 2,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "process Swift payload envelope exhausted retaining TCP client replay"
+            ])
     }
 }

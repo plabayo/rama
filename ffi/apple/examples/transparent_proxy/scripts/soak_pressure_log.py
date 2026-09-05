@@ -14,11 +14,16 @@ SELECTION_RE = re.compile(
 NO_HEADROOM_RE = re.compile(
     r"flow pressure: occupancy (\d+), soft cap (\d+), but no flow idle"
 )
-GAUGE_RE = re.compile(
+PRESSURE_GAUGE_SCHEMA_LEGACY = 1
+PRESSURE_GAUGE_SCHEMA_CURRENT = 2
+GAUGE_CURRENT_RE = re.compile(
     r"live-flow counts tcp=(\d+) udp=(\d+) total=(\d+) peak=(\d+) softCap=(\d+)"
-    r"(?: hardCap=(\d+)(?=\s|$))?"
-    r"(?: retiring=(\d+)(?=\s|$))?"
-    r"(?: retirementOverlap=(\d+)(?=\s|$))?"
+    r" hardCap=(\d+)(?=\s|$)"
+    r" retiring=(\d+)(?=\s|$)"
+    r" retirementOverlap=(\d+)(?=\s|$)"
+)
+GAUGE_LEGACY_RE = re.compile(
+    r"live-flow counts tcp=(\d+) udp=(\d+) total=(\d+) peak=(\d+) softCap=(\d+)"
 )
 PRESSURE_COUNTER_RE = re.compile(
     r"pressure\[triggers=(\d+) scans=(\d+) skipped=(\d+) selected=(\d+) "
@@ -39,12 +44,14 @@ SWIFT_UDP_STAGING_DROP_REASONS = (
 )
 UDP_PRESSURE_DROP_RE = re.compile(
     rf"{UDP_PRESSURE_DROP_MARKER} "
+    r"flow_id=(\d+) "
     rf'pressure="({"|".join(UDP_PRESSURE_REASONS)})" '
     r"cumulative_drops=(\d+) global_retained_bytes=(\d+) "
     r"global_max_retained_bytes=(\d+)(?=\s|$)"
 )
 UDP_PRESSURE_RESUME_RE = re.compile(
     rf"{UDP_PRESSURE_RESUME_MARKER} "
+    r"flow_id=(\d+) "
     rf'pressure="({"|".join(UDP_PRESSURE_REASONS)})" '
     r"cumulative_resumptions=(\d+) global_retained_bytes=(\d+) "
     r"global_max_retained_bytes=(\d+)(?=\s|$)"
@@ -56,6 +63,18 @@ SWIFT_UDP_STAGING_DROP_RE = re.compile(
     r"cumulative_dropped_bytes_lower_bound=(\d+) "
     r"generation_retained_items=(\d+) generation_max_retained_items=(\d+) "
     r"generation_retained_bytes=(\d+) generation_max_retained_bytes=(\d+)(?=\s|$)"
+)
+WRITER_MEMORY_PRESSURE_MARKER = "writer memory pressure "
+WRITER_MEMORY_PRESSURE_RE = re.compile(
+    r'writer memory pressure (entered|recovered) '
+    r'protocol="(tcp|udp|aggregate)" '
+    r'reason="(aggregate_bytes|aggregate_items|tcp_waiter_gate|udp_service_bytes|'
+    r'udp_service_items|reconfiguring|low_water)" '
+    r"retainedBytes=(\d+) maxBytes=(\d+) retainedItems=(\d+) maxItems=(\d+)(?=\s|$)"
+)
+WRITER_MEMORY_PRESSURE_REASONS = (
+    "aggregate_bytes", "aggregate_items", "tcp_waiter_gate",
+    "udp_service_bytes", "udp_service_items", "reconfiguring",
 )
 START_EPOCH_US_RE = re.compile(r"\bstartEpochUs=(\d+)\b")
 ENGINE_LIFECYCLE_RE = re.compile(
@@ -133,37 +152,28 @@ def no_headroom_event(message):
     return {"occupancy": occupancy, "soft_cap": soft_cap}
 
 
-def flow_gauge(message):
+def flow_gauge(message, schema_version=PRESSURE_GAUGE_SCHEMA_CURRENT):
     """Return one periodic live-flow gauge, or None."""
-    match = GAUGE_RE.search(message)
+    if schema_version == PRESSURE_GAUGE_SCHEMA_CURRENT:
+        match = GAUGE_CURRENT_RE.search(message)
+    elif schema_version == PRESSURE_GAUGE_SCHEMA_LEGACY:
+        match = GAUGE_LEGACY_RE.search(message)
+    else:
+        return None
     if not match:
         return None
     required = [parse_artifact_uint(value) for value in match.groups()[:5]]
     if any(value is None for value in required):
         return None
     tcp, udp, total, peak, soft_cap = required
-    hard_cap = (
-        parse_artifact_uint(match.group(6))
-        if match.group(6) is not None
-        else None
-    )
-    retiring = (
-        parse_artifact_uint(match.group(7))
-        if match.group(7) is not None
-        else None
-    )
-    retirement_overlap = (
-        parse_artifact_uint(match.group(8))
-        if match.group(8) is not None
-        else None
-    )
-    gauge_text = message[match.start():]
-    if (
-        (" hardCap=" in gauge_text and hard_cap is None)
-        or (" retiring=" in gauge_text and retiring is None)
-        or (" retirementOverlap=" in gauge_text and retirement_overlap is None)
-    ):
-        return None
+    if schema_version == PRESSURE_GAUGE_SCHEMA_CURRENT:
+        hard_cap, retiring, retirement_overlap = (
+            parse_artifact_uint(match.group(index)) for index in (6, 7, 8)
+        )
+        if None in (hard_cap, retiring, retirement_overlap):
+            return None
+    else:
+        hard_cap = retiring = retirement_overlap = None
     registered = tcp + udp
     if registered > MAX_ARTIFACT_UINT or (
         retiring is not None
@@ -193,15 +203,16 @@ def flow_gauge(message):
     }
 
 
-def flow_gauge_issue(message):
+def flow_gauge_issue(message, schema_version=PRESSURE_GAUGE_SCHEMA_CURRENT):
     """Return a capture issue for a present but incomplete/invalid gauge."""
     if "live-flow counts" not in message:
         return None
-    gauge = flow_gauge(message)
+    gauge = flow_gauge(message, schema_version=schema_version)
     if gauge is None:
-        return "flow-gauge sample is malformed or has inconsistent allocation/hard-cap totals"
-    if gauge["retiring"] is None:
-        return "flow-gauge sample omitted retiring allocations"
+        return (
+            "flow-gauge sample is malformed, missing a current-schema field, "
+            "or has inconsistent allocation/hard-cap totals"
+        )
     if gauge["peak"] < gauge["allocated"]:
         return "flow-gauge peak is below its current allocated total"
     return None
@@ -236,6 +247,11 @@ def pressure_telemetry_issue(message):
             udp_pressure_event,
             "Swift-UDP-staging-drop",
         ),
+        (
+            WRITER_MEMORY_PRESSURE_MARKER,
+            writer_memory_pressure_event,
+            "writer-memory-pressure",
+        ),
     )
     for marker, parser, label in signals:
         count = message.count(marker)
@@ -265,6 +281,96 @@ def pressure_telemetry_issue(message):
     if no_headroom is not None and no_headroom["occupancy"] < no_headroom["soft_cap"]:
         return "pressure no-headroom event is below its soft cap"
     return flow_gauge_issue(message)
+
+
+def writer_memory_pressure_event(message):
+    """Parse the exact version-1 aggregate writer-budget transition schema."""
+    if not isinstance(message, str) or message.count(WRITER_MEMORY_PRESSURE_MARKER) != 1:
+        return None
+    match = WRITER_MEMORY_PRESSURE_RE.search(message)
+    if match is None:
+        return None
+    suffix = message[match.end():]
+    if suffix and re.fullmatch(r"\s+spans=\[.*\]", suffix) is None:
+        return None
+    transition, protocol, reason = match.groups()[:3]
+    values = [parse_artifact_uint(value) for value in match.groups()[3:]]
+    if any(value is None for value in values):
+        return None
+    retained_bytes, max_bytes, retained_items, max_items = values
+    if (
+        max_bytes == 0 or max_items == 0 or retained_bytes > max_bytes
+        or retained_items > max_items
+    ):
+        return None
+    if transition == "entered":
+        if protocol not in {"tcp", "udp"} or reason not in WRITER_MEMORY_PRESSURE_REASONS:
+            return None
+    elif protocol != "aggregate" or reason != "low_water":
+        return None
+    if transition == "recovered" and (
+        retained_bytes > (max_bytes * 3) // 4
+        or retained_items > (max_items * 3) // 4
+    ):
+        return None
+    return {
+        "schema_version": 1,
+        "transition": transition,
+        "protocol": protocol,
+        "reason": reason,
+        "retained_bytes": retained_bytes,
+        "max_bytes": max_bytes,
+        "retained_items": retained_items,
+        "max_items": max_items,
+    }
+
+
+def summarize_writer_memory_pressure_rows(rows):
+    """Pair each aggregate pressure episode by state, never by sample counts."""
+    result = {
+        "status": "NOT EXERCISED",
+        "entered_reasons": [],
+        "recovered_reasons": [],
+        "unrecovered": [],
+        "issues": [],
+        "failures": [],
+    }
+    active = None
+    for _, message in rows:
+        has_marker = isinstance(message, str) and WRITER_MEMORY_PRESSURE_MARKER in message
+        event = writer_memory_pressure_event(message)
+        if has_marker and event is None:
+            result["issues"].append("writer-memory pressure telemetry is malformed")
+            continue
+        if event is None:
+            continue
+        if event["transition"] == "entered":
+            if active is not None:
+                result["issues"].append(
+                    "writer-memory pressure entered before the prior episode recovered"
+                )
+            active = event["reason"]
+            result["entered_reasons"].append(event["reason"])
+        elif active is None:
+            result["issues"].append(
+                "writer-memory pressure recovery has no preceding entry"
+            )
+        else:
+            result["recovered_reasons"].append(active)
+            active = None
+    if active is not None:
+        result["unrecovered"].append(active)
+    if result["issues"]:
+        result["status"] = "INCOMPLETE"
+    elif result["unrecovered"]:
+        result["status"] = "FAILED"
+        result["failures"].append(
+            "writer-memory pressure did not recover after: "
+            + ", ".join(result["unrecovered"])
+        )
+    elif result["entered_reasons"]:
+        result["status"] = "GOOD"
+    return result
 
 
 def udp_pressure_event(message):
@@ -346,6 +452,7 @@ def udp_pressure_event(message):
         "cumulative_resumptions" if transition == "drop" else "cumulative_drops"
     )
     for field in (
+        "flow_id",
         "pressure",
         counter_field,
         "global_retained_bytes",
@@ -358,16 +465,18 @@ def udp_pressure_event(message):
     suffix = message[match.end():]
     if suffix and re.fullmatch(r"\s+spans=\[.*\]", suffix) is None:
         return None
-    values = [parse_artifact_uint(value) for value in match.groups()[1:]]
+    flow_id = parse_artifact_uint(match.group(1))
+    values = [parse_artifact_uint(value) for value in match.groups()[2:]]
     if any(value is None for value in values):
         return None
     cumulative, retained, maximum = values
-    if cumulative == 0 or maximum == 0 or retained > maximum:
+    if flow_id in (None, 0) or cumulative == 0 or maximum == 0 or retained > maximum:
         return None
     return {
         "layer": "rust_ingress",
         "transition": transition,
-        "pressure": match.group(1),
+        "flow_id": flow_id,
+        "pressure": match.group(2),
         "cumulative": cumulative,
         "global_retained_bytes": retained,
         "global_max_retained_bytes": maximum,
@@ -375,7 +484,8 @@ def udp_pressure_event(message):
 
 
 def summarize_udp_pressure_rows(
-    rows, *, workload_exercised, mode, baseline_end_epoch=None
+    rows, *, workload_exercised, mode, baseline_end_epoch=None,
+    required_flow_id=None,
 ):
     """Return a fail-closed, transition-based UDP pressure verdict.
 
@@ -390,6 +500,8 @@ def summarize_udp_pressure_rows(
         "events": 0,
         "drop_transitions": 0,
         "resume_transitions": 0,
+        "drop_reasons": [],
+        "recovered_reasons": [],
         "latest_drops": {},
         "latest_resumptions": {},
         "swift_staging_drop_samples": 0,
@@ -404,9 +516,19 @@ def summarize_udp_pressure_rows(
         return result
     if not workload_exercised:
         return result
+    if required_flow_id is not None and (
+        isinstance(required_flow_id, bool)
+        or not isinstance(required_flow_id, int)
+        or required_flow_id <= 0
+        or required_flow_id > MAX_ARTIFACT_UINT
+    ):
+        result["status"] = "INCOMPLETE"
+        result["issues"].append("required UDP pressure flow identity is invalid")
+        return result
 
     latest = {"drop": {}, "resume": {}}
     last_in_run_transition = {}
+    seen_in_run_drop_reasons = set()
     for epoch, message in rows:
         has_marker = isinstance(message, str) and (
             UDP_PRESSURE_DROP_MARKER in message
@@ -420,6 +542,15 @@ def summarize_udp_pressure_rows(
             )
             continue
         if event is None:
+            continue
+        if (
+            required_flow_id is not None
+            and event["layer"] == "rust_ingress"
+            and event["flow_id"] != required_flow_id
+        ):
+            result["issues"].append(
+                "UDP pressure transition belongs to a different flow"
+            )
             continue
         in_run = baseline_end_epoch is None or (
             epoch is not None and epoch > baseline_end_epoch
@@ -459,9 +590,17 @@ def summarize_udp_pressure_rows(
         result["events"] += 1
         result[f"{transition}_transitions"] += 1
         last_in_run_transition[reason] = transition
+        if transition == "drop":
+            seen_in_run_drop_reasons.add(reason)
 
     result["latest_drops"] = dict(sorted(latest["drop"].items()))
     result["latest_resumptions"] = dict(sorted(latest["resume"].items()))
+    result["drop_reasons"] = sorted(seen_in_run_drop_reasons)
+    result["recovered_reasons"] = sorted(
+        reason
+        for reason in seen_in_run_drop_reasons
+        if last_in_run_transition.get(reason) == "resume"
+    )
     result["unrecovered"] = sorted(
         reason
         for reason, transition in last_in_run_transition.items()
@@ -754,6 +893,7 @@ def lifecycle_category_issue(message, category):
         or selection_event(message) is not None
         or no_headroom_event(message) is not None
         or udp_pressure_event(message) is not None
+        or writer_memory_pressure_event(message) is not None
         or provider_allocation_failure(message)
         or any(
             marker in message
@@ -765,6 +905,7 @@ def lifecycle_category_issue(message, category):
                 UDP_PRESSURE_DROP_MARKER,
                 UDP_PRESSURE_RESUME_MARKER,
                 SWIFT_UDP_STAGING_DROP_MARKER,
+                WRITER_MEMORY_PRESSURE_MARKER,
                 "kernel flow allocation exhausted:",
             )
         )

@@ -203,6 +203,22 @@ macro_rules! __transparent_proxy_ffi_emit {
         }
 
         #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_engine_writer_memory_max_bytes(
+            engine: *mut RamaTransparentProxyEngine,
+        ) -> usize {
+            if engine.is_null() { return 0; }
+            unsafe { &*engine }.writer_memory_max_bytes()
+        }
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn rama_transparent_proxy_engine_writer_memory_max_items(
+            engine: *mut RamaTransparentProxyEngine,
+        ) -> usize {
+            if engine.is_null() { return 0; }
+            unsafe { &*engine }.writer_memory_max_items()
+        }
+
+        #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_transparent_proxy_config_free(
             config: *mut RamaTransparentProxyConfig,
         ) {
@@ -527,7 +543,8 @@ macro_rules! __transparent_proxy_ffi_emit {
         /// Calling on a null session is a no-op.
         ///
         /// See [`RamaTransparentProxyTcpPromoteCallbacks`] for the
-        /// `context` lifetime / threading contract.
+        /// `context` lifetime / threading contract. Same-session FFI work must
+        /// be queue-hopped rather than called synchronously in the callback.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_transparent_proxy_tcp_session_register_promote_callbacks(
             session: *mut RamaTransparentProxyTcpSession,
@@ -815,6 +832,9 @@ macro_rules! __transparent_proxy_ffi_emit {
             unsafe { (*session).on_client_datagram(slice, peer) };
         }
 
+        /// Mark a completed V2 UDP read before submitting any datagram from
+        /// that completion. The demand callback must queue the foreign read
+        /// and return rather than synchronously re-entering this session.
         #[unsafe(no_mangle)]
         pub unsafe extern "C" fn rama_transparent_proxy_udp_session_on_client_read_complete(
             session: *mut RamaTransparentProxyUdpSession,

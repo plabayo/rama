@@ -23,6 +23,18 @@ const MIN_TCP_WRITE_PUMP_MAX_PENDING_BYTES: usize = 1;
 /// 16 MiB per flow while still leaving room for bursty protocols.
 const MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES: usize = kib(8192);
 
+/// Core/process-lifetime Swift retained-payload envelope. The packed C11
+/// atomic reserves 40 bits for bytes and 23 bits for retained items; keep Rust
+/// configuration inside that exact wire representation.
+pub const DEFAULT_WRITER_MEMORY_MAX_BYTES: usize = 64 * 1024 * 1024;
+pub const DEFAULT_WRITER_MEMORY_MAX_ITEMS: usize = 65_536;
+pub const WRITER_MEMORY_UDP_SERVICE_RESERVE_BYTES: usize = 64 * 1024;
+pub const MAX_WRITER_MEMORY_MAX_BYTES: usize = ((1_u64 << 40) - 1) as usize;
+pub const MAX_WRITER_MEMORY_MAX_ITEMS: usize = (1_usize << 23) - 1;
+const MIN_WRITER_MEMORY_MAX_BYTES: usize =
+    MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES + WRITER_MEMORY_UDP_SERVICE_RESERVE_BYTES;
+const MIN_WRITER_MEMORY_MAX_ITEMS: usize = 256;
+
 /// Default combined TCP+UDP live-flow soft cap that triggers the Swift-side
 /// idle TCP pressure reaper.
 pub const DEFAULT_FLOW_PRESSURE_SOFT_CAP: u32 = 450;
@@ -698,10 +710,15 @@ pub struct TransparentProxyConfig {
     /// slightly more frequent pause/resume cycles; raising it helps absorb
     /// bursty producers (e.g. h2 window-sized bursts) without pausing.
     ///
-    /// The Swift pump treats this as authoritative — there is no
-    /// "0 means unset" path. The value the engine emits is the value the
-    /// pump uses.
+    /// The Swift pump treats the effective getter as authoritative — there is
+    /// no "0 means unset" path. It stays at least 64 KiB below the aggregate
+    /// payload cap so one TCP waiter cannot black-hole UDP/QUIC/H3 replies.
     tcp_write_pump_max_pending_bytes: usize,
+    /// Exact core/process-lifetime envelope shared by every Swift TCP/UDP
+    /// writer and retained TCP replay/cutover buffer. Engine replacement
+    /// reconfigures the same object, so retiring generations cannot stack caps.
+    writer_memory_max_bytes: usize,
+    writer_memory_max_items: usize,
     /// Combined TCP+UDP live-flow soft cap that triggers Swift's idle TCP
     /// pressure reaper. `0` disables this established-flow pressure reaper.
     /// When both flow caps are enabled, the Apple provider bounds the effective
@@ -747,6 +764,8 @@ impl TransparentProxyConfig {
             // isn't dead code and the documented per-flow cap is what's
             // actually applied at runtime.
             tcp_write_pump_max_pending_bytes: kib(256),
+            writer_memory_max_bytes: DEFAULT_WRITER_MEMORY_MAX_BYTES,
+            writer_memory_max_items: DEFAULT_WRITER_MEMORY_MAX_ITEMS,
             flow_pressure_soft_cap: DEFAULT_FLOW_PRESSURE_SOFT_CAP,
             flow_pressure_low_water: DEFAULT_FLOW_PRESSURE_LOW_WATER,
             flow_pressure_idle_floor_ms: DEFAULT_FLOW_PRESSURE_IDLE_FLOOR_MS,
@@ -783,7 +802,23 @@ impl TransparentProxyConfig {
     /// [`TransparentProxyConfig`] for the full contract.
     #[must_use]
     pub fn tcp_write_pump_max_pending_bytes(&self) -> usize {
-        self.tcp_write_pump_max_pending_bytes
+        self.tcp_write_pump_max_pending_bytes.min(
+            self.writer_memory_max_bytes
+                .saturating_sub(WRITER_MEMORY_UDP_SERVICE_RESERVE_BYTES)
+                .max(MIN_TCP_WRITE_PUMP_MAX_PENDING_BYTES),
+        )
+    }
+
+    /// Core/process-lifetime Swift retained-payload budget.
+    #[must_use]
+    pub fn writer_memory_max_bytes(&self) -> usize {
+        self.writer_memory_max_bytes
+    }
+
+    /// Core/process-lifetime Swift retained-item budget.
+    #[must_use]
+    pub fn writer_memory_max_items(&self) -> usize {
+        self.writer_memory_max_items
     }
 
     /// Combined TCP+UDP live-flow soft cap that triggers Swift's idle TCP
@@ -912,6 +947,32 @@ impl TransparentProxyConfig {
             self.tcp_write_pump_max_pending_bytes = bytes.clamp(
                 MIN_TCP_WRITE_PUMP_MAX_PENDING_BYTES,
                 MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES,
+            );
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the core/process-lifetime payload cap shared by Swift transport
+        /// pumps and direct-forwarder buffers.
+        /// Values are clamped to the packed atomic's representable range. The
+        /// minimum admits every supported per-pump TCP chunk and UDP datagram.
+        pub fn writer_memory_max_bytes(mut self, bytes: usize) -> Self {
+            self.writer_memory_max_bytes = bytes.clamp(
+                MIN_WRITER_MEMORY_MAX_BYTES,
+                MAX_WRITER_MEMORY_MAX_BYTES,
+            );
+            self
+        }
+    }
+
+    generate_set_and_with! {
+        /// Set the core/process-lifetime retained-item cap shared by Swift
+        /// transport pumps and direct-forwarder buffers.
+        pub fn writer_memory_max_items(mut self, items: usize) -> Self {
+            self.writer_memory_max_items = items.clamp(
+                MIN_WRITER_MEMORY_MAX_ITEMS,
+                MAX_WRITER_MEMORY_MAX_ITEMS,
             );
             self
         }
@@ -1055,6 +1116,62 @@ mod transparent_proxy_config_tests {
             huge.tcp_write_pump_max_pending_bytes(),
             MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES,
             "unbounded per-flow buffering must not cross the FFI boundary"
+        );
+    }
+
+    #[test]
+    fn writer_memory_defaults_and_bounds_are_stable() {
+        let defaults = TransparentProxyConfig::new();
+        assert_eq!(
+            defaults.writer_memory_max_bytes(),
+            DEFAULT_WRITER_MEMORY_MAX_BYTES
+        );
+        assert_eq!(
+            defaults.writer_memory_max_items(),
+            DEFAULT_WRITER_MEMORY_MAX_ITEMS
+        );
+
+        let minimum = TransparentProxyConfig::new()
+            .with_writer_memory_max_bytes(0)
+            .with_writer_memory_max_items(0);
+        assert_eq!(
+            minimum.writer_memory_max_bytes(),
+            MIN_WRITER_MEMORY_MAX_BYTES
+        );
+        assert_eq!(
+            minimum.writer_memory_max_items(),
+            MIN_WRITER_MEMORY_MAX_ITEMS
+        );
+
+        let maximum = TransparentProxyConfig::new()
+            .with_writer_memory_max_bytes(usize::MAX)
+            .with_writer_memory_max_items(usize::MAX);
+        assert_eq!(
+            maximum.writer_memory_max_bytes(),
+            MAX_WRITER_MEMORY_MAX_BYTES
+        );
+        assert_eq!(
+            maximum.writer_memory_max_items(),
+            MAX_WRITER_MEMORY_MAX_ITEMS
+        );
+
+        let tcp_then_writer = TransparentProxyConfig::new()
+            .with_tcp_write_pump_max_pending_bytes(MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES)
+            .with_writer_memory_max_bytes(MIN_WRITER_MEMORY_MAX_BYTES);
+        let writer_then_tcp = TransparentProxyConfig::new()
+            .with_writer_memory_max_bytes(MIN_WRITER_MEMORY_MAX_BYTES)
+            .with_tcp_write_pump_max_pending_bytes(MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES);
+        assert_eq!(
+            tcp_then_writer.tcp_write_pump_max_pending_bytes(),
+            MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES
+        );
+        assert_eq!(
+            writer_then_tcp.tcp_write_pump_max_pending_bytes(),
+            MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES
+        );
+        assert_eq!(
+            tcp_then_writer.writer_memory_max_bytes(),
+            MIN_WRITER_MEMORY_MAX_BYTES
         );
     }
 

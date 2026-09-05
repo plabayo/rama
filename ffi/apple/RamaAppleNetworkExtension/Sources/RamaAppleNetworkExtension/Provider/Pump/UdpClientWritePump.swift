@@ -32,24 +32,57 @@ private struct UdpWriterSharedState {
     /// Payload bytes retained by dispatch blocks, the queue, or the one
     /// in-flight kernel write.
     var retainedBytes = 0
+    var retainedItems = 0
+    /// Subset admitted from UDP's bounded service reserve while TCP waiters
+    /// held the aggregate gate. These counts must be refunded to both atomics.
+    var pressureRetainedBytes = 0
+    var pressureRetainedItems = 0
     var fallbackEndpoint: NWEndpoint?
     var fullWasLogged = false
     #if DEBUG
         var acceptedDispatches: UInt64 = 0
         var droppedFull: UInt64 = 0
+        var droppedAggregate: UInt64 = 0
         var fullLogCount: UInt64 = 0
         var borrowedMaterializations: UInt64 = 0
     #endif
 }
 
 final class UdpClientWritePump: @unchecked Sendable {
-    private struct PendingDatagram {
+    private final class PendingDatagram: @unchecked Sendable {
         let data: Data
         let sentBy: NWEndpoint?
         /// Legacy/native Swift enqueue calls may use the flow's latest cached
         /// peer. A borrowed Rust callback with an absent peer must not: nil is
         /// explicit absence in that ABI and is dropped as an orphan.
         let allowsFallback: Bool
+        let pressureAdmission: Bool
+        private let budget: WriterMemoryBudget
+
+        init(
+            data: Data,
+            sentBy: NWEndpoint?,
+            allowsFallback: Bool,
+            pressureAdmission: Bool,
+            budget: WriterMemoryBudget
+        ) {
+            self.data = data
+            self.sentBy = sentBy
+            self.allowsFallback = allowsFallback
+            self.pressureAdmission = pressureAdmission
+            self.budget = budget
+        }
+
+        /// One allocation pairs payload and charge. ARC keeps it alive for
+        /// every dispatch/queue/transport owner and refunds even when a
+        /// transport discards its completion without invoking it.
+        deinit {
+            budget.releaseUdp(
+                bytes: data.count,
+                items: 1,
+                pressureBytes: pressureAdmission ? data.count : 0,
+                pressureItems: pressureAdmission ? 1 : 0)
+        }
     }
 
     /// The callback is queue-confined after construction. The box carries it
@@ -70,6 +103,8 @@ final class UdpClientWritePump: @unchecked Sendable {
     private let onTerminalError: (Error) -> Void
     private let onActivity: () -> Void
     private let queue: DispatchQueue
+    private let writerMemoryBudget: WriterMemoryBudget
+    var aggregateBudget: WriterMemoryBudget { writerMemoryBudget }
     private let queueKey = DispatchSpecificKey<UInt8>()
     /// Admission is synchronized before dispatch so the queue backlog itself
     /// cannot retain more datagrams than the documented lossy bound.
@@ -154,14 +189,24 @@ final class UdpClientWritePump: @unchecked Sendable {
         queue: DispatchQueue,
         logger: @escaping (FlowLogMessage) -> Void,
         onTerminalError: @escaping (Error) -> Void,
-        onActivity: @escaping () -> Void = {}
+        onActivity: @escaping () -> Void = {},
+        writerMemoryBudget: WriterMemoryBudget = WriterMemoryBudget()
     ) {
         self.flow = flow
         self.queue = queue
         self.logger = logger
         self.onTerminalError = onTerminalError
         self.onActivity = onActivity
+        self.writerMemoryBudget = writerMemoryBudget
         queue.setSpecific(key: queueKey, value: 1)
+    }
+
+    deinit {
+        while pending.popFront() != nil {}
+        shared.withLock { state in
+            state.closed = true
+            state.accepting = false
+        }
     }
 
 
@@ -252,7 +297,7 @@ final class UdpClientWritePump: @unchecked Sendable {
         // the transport plumbing.
         enum Admission {
             case accepted
-            case full(log: Bool)
+            case full(log: Bool, aggregate: Bool)
             case closed
         }
         let admission = shared.withLock { state -> Admission in
@@ -269,13 +314,34 @@ final class UdpClientWritePump: @unchecked Sendable {
                     state.droppedFull &+= 1
                     if shouldLog { state.fullLogCount &+= 1 }
                 #endif
-                return .full(log: shouldLog)
+                return .full(log: shouldLog, aggregate: false)
+            }
+
+            guard let budgetAdmission = writerMemoryBudget.tryReserveUdp(bytes: byteCount) else {
+                let shouldLog = !state.fullWasLogged
+                state.fullWasLogged = true
+                #if DEBUG
+                    state.droppedFull &+= 1
+                    state.droppedAggregate &+= 1
+                    if shouldLog { state.fullLogCount &+= 1 }
+                #endif
+                return .full(log: shouldLog, aggregate: true)
             }
 
             let (data, explicitEndpoint) = materialize()
             let endpoint = explicitEndpoint ?? (allowsFallback ? state.fallbackEndpoint : nil)
             state.waiting += 1
             state.retainedBytes += byteCount
+            state.retainedItems += 1
+            let pressureAdmission: Bool
+            switch budgetAdmission {
+            case .regular:
+                pressureAdmission = false
+            case .pressureUdp:
+                pressureAdmission = true
+                state.pressureRetainedBytes += byteCount
+                state.pressureRetainedItems += 1
+            }
             #if DEBUG
                 state.acceptedDispatches &+= 1
                 if borrowed { state.borrowedMaterializations &+= 1 }
@@ -288,7 +354,9 @@ final class UdpClientWritePump: @unchecked Sendable {
                     PendingDatagram(
                         data: data,
                         sentBy: endpoint,
-                        allowsFallback: allowsFallback
+                        allowsFallback: allowsFallback,
+                        pressureAdmission: pressureAdmission,
+                        budget: self.writerMemoryBudget
                     )
                 )
             }
@@ -298,14 +366,20 @@ final class UdpClientWritePump: @unchecked Sendable {
         switch admission {
         case .accepted:
             if !activityRecordedAtEntry { onActivity() }
-        case .full(let shouldLog):
+        case .full(let shouldLog, let aggregate):
             // Receiving a datagram remains activity even when the bounded,
             // lossy writer must drop it. The activity clock is thread-safe.
             if !activityRecordedAtEntry { onActivity() }
             if shouldLog {
-                RamaLog.trace(
-                    "udp client write pump full (count cap \(udpWritePumpMaxPending), datagram byte cap \(udpWritePumpMaxDatagramBytes), retained byte cap \(udpWritePumpMaxRetainedBytes)), dropping subsequent arrivals"
-                )
+                if aggregate {
+                    RamaLog.trace(
+                        "udp client write pump rejected by process writer-memory envelope; dropping subsequent arrivals in this flow episode"
+                    )
+                } else {
+                    RamaLog.trace(
+                        "udp client write pump full (count cap \(udpWritePumpMaxPending), datagram byte cap \(udpWritePumpMaxDatagramBytes), retained byte cap \(udpWritePumpMaxRetainedBytes)), dropping subsequent arrivals"
+                    )
+                }
             }
         case .closed:
             break
@@ -316,7 +390,12 @@ final class UdpClientWritePump: @unchecked Sendable {
         guard phase != .closed,
             !shared.withLock({ $0.closed })
         else {
-            releaseReservation(count: 1, bytes: datagram.data.count)
+            releaseReservation(
+                waiting: 1,
+                items: 1,
+                bytes: datagram.data.count,
+                pressureBytes: datagram.pressureAdmission ? datagram.data.count : 0,
+                pressureItems: datagram.pressureAdmission ? 1 : 0)
             return
         }
         pending.pushBack(datagram)
@@ -439,22 +518,51 @@ final class UdpClientWritePump: @unchecked Sendable {
         drainBackstop = nil
         drainCompletion = nil
         phase = .closed
-        pending.removeAll()
+        var queuedBytes = 0
+        var queuedItems = 0
+        var queuedPressureBytes = 0
+        var queuedPressureItems = 0
+        while let datagram = pending.popFront() {
+            queuedBytes += datagram.data.count
+            queuedItems += 1
+            if datagram.pressureAdmission {
+                queuedPressureBytes += datagram.data.count
+                queuedPressureItems += 1
+            }
+        }
         sentByEndpoint = nil
         shared.withLock { state in
             state.closed = true
             state.accepting = false
-            state.waiting = 0
-            state.retainedBytes = 0
             state.fallbackEndpoint = nil
         }
+        releaseReservation(
+            waiting: queuedItems,
+            items: queuedItems,
+            bytes: queuedBytes,
+            pressureBytes: queuedPressureBytes,
+            pressureItems: queuedPressureItems)
     }
 
-    private func releaseReservation(count: Int = 0, bytes: Int = 0) {
-        guard count > 0 || bytes > 0 else { return }
+    private func releaseReservation(
+        waiting: Int = 0,
+        items: Int,
+        bytes: Int,
+        pressureBytes: Int = 0,
+        pressureItems: Int = 0
+    ) {
+        guard waiting > 0 || items > 0 || bytes > 0 else { return }
         shared.withLock { state in
-            state.waiting = max(0, state.waiting - count)
-            state.retainedBytes = max(0, state.retainedBytes - bytes)
+            precondition(state.waiting >= waiting)
+            precondition(state.retainedItems >= items)
+            precondition(state.retainedBytes >= bytes)
+            precondition(state.pressureRetainedItems >= pressureItems)
+            precondition(state.pressureRetainedBytes >= pressureBytes)
+            state.waiting -= waiting
+            state.retainedItems -= items
+            state.retainedBytes -= bytes
+            state.pressureRetainedItems -= pressureItems
+            state.pressureRetainedBytes -= pressureBytes
         }
     }
 
@@ -475,14 +583,26 @@ final class UdpClientWritePump: @unchecked Sendable {
         // cache; native fallback-eligible entries can still use it.
         var droppedOrphans = 0
         var droppedOrphanBytes = 0
+        var droppedOrphanPressureItems = 0
+        var droppedOrphanPressureBytes = 0
         while let head = pending.first(),
             head.sentBy == nil,
             !head.allowsFallback || sentByEndpoint == nil
         {
-            droppedOrphanBytes += pending.popFront()!.data.count
+            let orphan = pending.popFront()!
+            droppedOrphanBytes += orphan.data.count
             droppedOrphans += 1
+            if orphan.pressureAdmission {
+                droppedOrphanPressureItems += 1
+                droppedOrphanPressureBytes += orphan.data.count
+            }
         }
-        releaseReservation(count: droppedOrphans, bytes: droppedOrphanBytes)
+        releaseReservation(
+            waiting: droppedOrphans,
+            items: droppedOrphans,
+            bytes: droppedOrphanBytes,
+            pressureBytes: droppedOrphanPressureBytes,
+            pressureItems: droppedOrphanPressureItems)
         if droppedOrphans > 0 && !unresolvedEndpointLogged {
             unresolvedEndpointLogged = true
             logger(
@@ -517,9 +637,13 @@ final class UdpClientWritePump: @unchecked Sendable {
 
             var datagrams: [Data] = []
             var endpoints: [NWEndpoint] = []
+            var retainedBatch: [PendingDatagram] = []
             datagrams.reserveCapacity(min(udpWritePumpMaxBatchItems, pending.count))
             endpoints.reserveCapacity(min(udpWritePumpMaxBatchItems, pending.count))
+            retainedBatch.reserveCapacity(min(udpWritePumpMaxBatchItems, pending.count))
             var batchBytes = 0
+            var batchPressureBytes = 0
+            var batchPressureItems = 0
 
             while datagrams.count < udpWritePumpMaxBatchItems,
                 let next = pending.first(),
@@ -533,7 +657,12 @@ final class UdpClientWritePump: @unchecked Sendable {
                 let item = pending.popFront()!
                 datagrams.append(item.data)
                 endpoints.append(endpoint)
+                retainedBatch.append(item)
                 batchBytes += item.data.count
+                if item.pressureAdmission {
+                    batchPressureBytes += item.data.count
+                    batchPressureItems += 1
+                }
             }
 
             // The orphan drain and per-datagram admission ceiling guarantee
@@ -545,11 +674,22 @@ final class UdpClientWritePump: @unchecked Sendable {
             }
             state.waiting = max(0, state.waiting - datagrams.count)
             let retainedBatchBytes = batchBytes
+            let retainedBatchItems = datagrams.count
+            let retainedBatchPressureBytes = batchPressureBytes
+            let retainedBatchPressureItems = batchPressureItems
             // `[weak self]` breaks the flow→completion→pump cycle.
-            flow.writeDatagrams(datagrams, sentBy: endpoints) { [weak self] error in
+            flow.writeDatagrams(datagrams, sentBy: endpoints) {
+                [weak self, retainedBatch] error in
+                _ = retainedBatch
                 guard let self else { return }
-                self.queue.async { [weak self] in
+                self.queue.async { [weak self, retainedBatch] in
+                    _ = retainedBatch
                     guard let self else { return }
+                    self.releaseReservation(
+                        items: retainedBatchItems,
+                        bytes: retainedBatchBytes,
+                        pressureBytes: retainedBatchPressureBytes,
+                        pressureItems: retainedBatchPressureItems)
                     guard self.phase == .writing else { return }
                     if let error {
                         self.logger(
@@ -563,8 +703,6 @@ final class UdpClientWritePump: @unchecked Sendable {
                         self.onTerminalError(error)
                         return
                     }
-
-                    self.releaseReservation(bytes: retainedBatchBytes)
                     self.phase = .idle
                     self.flushLocked()
                     self.finishDrainIfReadyLocked()
@@ -580,8 +718,10 @@ final class UdpClientWritePump: @unchecked Sendable {
             closed: Bool,
             waiting: Int,
             retainedBytes: Int,
+            retainedItems: Int,
             acceptedDispatches: UInt64,
             droppedFull: UInt64,
+            droppedAggregate: UInt64,
             fullLogCount: UInt64,
             borrowedMaterializations: UInt64
         ) {
@@ -590,8 +730,10 @@ final class UdpClientWritePump: @unchecked Sendable {
                     state.closed,
                     state.waiting,
                     state.retainedBytes,
+                    state.retainedItems,
                     state.acceptedDispatches,
                     state.droppedFull,
+                    state.droppedAggregate,
                     state.fullLogCount,
                     state.borrowedMaterializations
                 )

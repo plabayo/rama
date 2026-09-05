@@ -41,6 +41,31 @@ typedef struct RamaTransparentProxyTcpSession RamaTransparentProxyTcpSession;
 /// Concurrency: see the contract block at the top of this header.
 typedef struct RamaTransparentProxyUdpSession RamaTransparentProxyUdpSession;
 
+/// Opaque C11 atomic used by process/core-lifetime Swift payload budgets.
+///
+/// Swift cannot directly import `_Atomic uint64_t`, so this tiny wrapper keeps
+/// the healthy writer admission/release path as a packed lock-free CAS without
+/// adding a package dependency. The packed value's layout is owned by Swift.
+typedef struct RamaWriterBudgetAtomic RamaWriterBudgetAtomic;
+
+RamaWriterBudgetAtomic* _Nullable rama_writer_budget_atomic_new(uint64_t initial_value);
+void rama_writer_budget_atomic_free(RamaWriterBudgetAtomic* _Nullable atomic);
+uint64_t rama_writer_budget_atomic_load(const RamaWriterBudgetAtomic* atomic);
+bool rama_writer_budget_atomic_compare_exchange(
+    RamaWriterBudgetAtomic* atomic,
+    uint64_t* expected,
+    uint64_t desired
+);
+/// Sequentially-consistent variants for publication handshakes which span
+/// multiple atomics. Capacity counters should keep using the cheaper API above.
+uint64_t rama_writer_budget_atomic_load_seq_cst(const RamaWriterBudgetAtomic* atomic);
+bool rama_writer_budget_atomic_compare_exchange_seq_cst(
+    RamaWriterBudgetAtomic* atomic,
+    uint64_t* expected,
+    uint64_t desired
+);
+bool rama_writer_budget_atomic_is_lock_free(const RamaWriterBudgetAtomic* atomic);
+
 /// Borrowed byte view.
 ///
 /// Ownership is retained by the caller. `ptr` may be NULL only if `len == 0`.
@@ -379,8 +404,9 @@ typedef void (*RamaTcpClientReadDemandFn)(void* _Nullable context);
 ///     pointee requires.
 ///   * A callback body MUST NOT synchronously call back into this session
 ///     (`_cancel`, `_free`, `_on_client_close`, `_signal_*_drain`, …): the
-///     engine holds a non-reentrant lock across the dispatch, so re-entry
-///     deadlocks. Dispatch such work to another queue and return.
+///     engine holds a non-reentrant lifetime gate across dispatch, while the
+///     foreign wrapper can hold its own session-entry lock. Re-entry can invert
+///     those locks and deadlock. Dispatch such work to another queue and return.
 ///   * `bytes` passed to `on_server_bytes` is borrowed for the duration of the
 ///     call; the receiver MUST copy any data it needs to retain.
 typedef struct {
@@ -450,7 +476,14 @@ typedef struct {
 } RamaTransparentProxyUdpSessionCallbacks;
 
 /// Additive probe-aware UDP callback ABI. The original callback struct and
-/// constructor remain unchanged for existing clients.
+/// constructor remain unchanged for existing clients. For a non-zero
+/// `probe_id`, the callback MUST only schedule the foreign read and return; it
+/// MUST NOT synchronously re-enter this session. After that read completes,
+/// ACK the exact ID first with
+/// `rama_transparent_proxy_udp_session_on_client_read_complete`, then submit
+/// every datagram from that completion with
+/// `rama_transparent_proxy_udp_session_on_client_datagram`. Delivery before the
+/// exact ACK is rejected and cannot consume the leased capacity.
 typedef struct {
     void* context;
     RamaUdpServerDatagramFn on_server_datagram;
@@ -671,8 +704,10 @@ typedef uint8_t RamaPromoteConfirmStatus;
 /// `on_promote_request` fires when the in-Rust per-flow service
 /// calls `PromoteHandle::into_passthrough`. Swift drains its
 /// pending writers, atomically rewires the data path to bypass
-/// Rust, then ACKs by calling
-/// `rama_transparent_proxy_tcp_session_confirm_promoted`.
+/// Rust, then asynchronously ACKs by calling
+/// `rama_transparent_proxy_tcp_session_confirm_promoted`. The callback MUST
+/// queue-hop that work and return immediately; it must not make the
+/// same-session call synchronously. See the no-re-entry rule above.
 typedef void (*RamaTcpPromoteRequestFn)(void* _Nullable context);
 
 /// Callbacks passed to
@@ -726,6 +761,12 @@ size_t rama_transparent_proxy_engine_udp_ingress_per_flow_max_bytes(
     RamaTransparentProxyEngine* engine
 );
 size_t rama_transparent_proxy_engine_udp_ingress_global_max_bytes(
+    RamaTransparentProxyEngine* engine
+);
+size_t rama_transparent_proxy_engine_writer_memory_max_bytes(
+    RamaTransparentProxyEngine* engine
+);
+size_t rama_transparent_proxy_engine_writer_memory_max_items(
     RamaTransparentProxyEngine* engine
 );
 
@@ -911,7 +952,8 @@ void rama_transparent_proxy_tcp_session_signal_egress_drain(
 ///
 /// After Swift completes the cutover it MUST call
 /// `rama_transparent_proxy_tcp_session_confirm_promoted` to
-/// resolve the pending future.
+/// resolve the pending future. The promote callback must queue-hop that work;
+/// it must not make the same-session call synchronously.
 ///
 /// NULL `session` is allowed and ignored.
 void rama_transparent_proxy_tcp_session_register_promote_callbacks(
@@ -979,9 +1021,13 @@ void rama_transparent_proxy_udp_session_on_client_datagram(
     RamaUdpPeerView peer
 );
 
-/// ACK completion of the Apple read associated with `probe_id`. Zero and
-/// stale IDs are accepted as no-ops; ACKing one ID can never release a newer
-/// provisional coordinator credit.
+/// ACK completion of the Apple read associated with `probe_id`. An exact ACK
+/// marks the read complete while preserving its charged admission credit until
+/// the owning datagram is consumed, the flow closes, or the bounded delivery
+/// grace expires. Zero and stale IDs are harmless no-ops and can never affect a
+/// newer provisional coordinator credit. Call this only after the foreign read
+/// callback completes, before submitting any datagram produced by that read;
+/// never call it synchronously from `on_client_read_demand`.
 void rama_transparent_proxy_udp_session_on_client_read_complete(
     RamaTransparentProxyUdpSession* session,
     uint64_t probe_id

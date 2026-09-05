@@ -300,16 +300,34 @@ afterward, waits for a new sealed segment, and decodes an exact
 Stale or still-active trace segments cannot satisfy the gate. The terminal
 `udp-evidence-status.tsv` artifact distinguishes a complete product failure
 from an infrastructure/cleanup failure and records probe, log-join, profile
-restore, Dial9, Rust UDP-ingress pressure, and Swift pre-queue staging counts.
-Malformed/redacted pressure lines make the evidence incomplete; any observed
-ingress or staging drop makes the signed healthy-path gate fail. On macOS 15+, an exact
+restore, provider-process identity, Dial9 close reason/age/byte counts, Rust
+UDP-ingress pressure, and Swift pre-queue staging counts. The provider PID and
+start identity must remain stable through evidence collection; profile
+restoration is verified separately and may restart the provider. Malformed/redacted
+pressure lines make the evidence incomplete. The test deliberately stalls one
+E2E UDP service and bursts 512 datagrams. The hold uses the same ten-minute
+expiry as the temporary policy and applies only when the Python bundle, flow
+metadata endpoint, actual datagram peer, and versioned payload endpoint marker
+all agree. It leaves the production channel capacity unchanged, so interrupted
+cleanup cannot permanently degrade unrelated UDP. The gate requires a Rust
+ingress drop transition and its recovery for that exact decision `flow_id`
+inside the pressure phase, rejects foreign-flow or outside-phase drops, and
+rejects any Swift pre-queue staging loss. On macOS 15+, an exact
 initial endpoint reaching Rust also proves that the modern typed callback
 delivered the flow; the generic fallback has no public remote endpoint to
 forward. The UDP/443 request uses Apple's
 `nscurl --http3-prior-knowledge` and requires the response to report
 `http=http/3`; the matching provider record must also be a fresh UDP/443 flow
-attributed to `com.apple.nscurl`, so a TCP fallback or an unrelated background
-QUIC flow cannot satisfy it.
+attributed to the launched `nscurl` PID, at one of the URL's resolved endpoints.
+The UUID in the URL is only a cache buster; it is not observable in the UDP
+decision record and is not claimed as a flow-binding token. Instead, the gate
+closes the decision window after a bounded quiescence interval following the
+launched PID's record and
+requires exactly one matching PID/endpoint decision, so a TCP fallback or an
+unrelated background QUIC flow cannot satisfy it. The NTP Dial9 pair must close
+with numeric reason `1` and readable reason `shutdown`, fall inside the actual
+monotonic gate window, and contain at least one complete 48-byte request and
+response.
 
 Exact endpoint and source-application fields remain private during normal
 operation. The example Rust policy owns the E2E mode, probe allowlist, public
@@ -563,9 +581,9 @@ STRESS_MONITOR_PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider) \
   just stress-traffic
 ```
 
-For a more diagnostic run, capture the system log alongside the
-stress run and pass it via `STRESS_NDJSON` so the summary prints a
-close-reason histogram:
+For a provider-monitored run, the script also owns a bounded NDJSON log stream,
+joins it, seals it into the bundle, and verifies that the monitored provider PID
+has a record inside the run window:
 
 ```sh
 # Cache a sudo timestamp first so the script can capture
@@ -573,18 +591,12 @@ close-reason histogram:
 # password prompt (the sysext is root-owned).
 sudo -v
 
-START="$(date -u '+%Y-%m-%d %H:%M:%S')"
 STRESS_MONITOR_PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider) \
   STRESS_DURATION=180 just stress-traffic
 
-# After the run, capture the system log for the same window:
-sudo log show \
-  --predicate 'subsystem BEGINSWITH "org.ramaproxy.example.tproxy" OR subsystem == "com.apple.networkextension" OR subsystem == "com.apple.network"' \
-  --info --debug \
-  --start "$START" --style ndjson > /tmp/system.ndjson
-
-# Re-run the script in analysis-only mode:
-STRESS_NDJSON=/tmp/system.ndjson STRESS_DURATION=0 just stress-traffic
+# Re-run the same artifact directory in analysis-only mode:
+STRESS_LOG_DIR=/tmp/rama-stress.<run> \
+  STRESS_DURATION=0 just stress-traffic
 sudo leaks $(pgrep -f org.ramaproxy.example.tproxy.dev.provider) | head -50
 ```
 
@@ -597,6 +609,79 @@ on exit:
 - pre/post `vmmap`+`heap` snapshot if `STRESS_MONITOR_PID` was set
 - close-reason histogram if `STRESS_NDJSON` points at a captured
   system log
+
+A terminal traffic run enforces configurable absolute p95 latency, throughput,
+provider RSS-growth, and provider CPU limits. It writes `stress-manifest.tsv`
+with the run UUID/window and SHA-256 identities for worker output, metrics,
+harness sources, git state, and (in monitored mode) process, signing,
+pre/post/monitor, and NDJSON artifacts. Analysis-only mode verifies the sealed
+source bundle and writes `stress-analysis-status.tsv`; it never overwrites the
+immutable `stress-status.tsv`. These are self-attested local-integrity records,
+not proof against a party able to fabricate an entire bundle.
+
+The absolute defaults are safety ceilings, not a performance claim. For a
+regression gate, run the identical workload twice, adjacent in time: first with
+the transparent proxy disabled, then with it enabled and monitored. Label the
+runs explicitly and compare their already-sealed bundles:
+
+```sh
+BASE=$(mktemp -d /tmp/rama-stress-direct.XXXXXX)
+CAND=$(mktemp -d /tmp/rama-stress-proxy.XXXXXX)
+
+# With the transparent proxy disabled:
+STRESS_DURATION=120 STRESS_CONCURRENCY=32 \
+  STRESS_TRAFFIC_ROLE=direct-baseline STRESS_LOG_DIR="$BASE" \
+  just stress-traffic
+
+# Enable the proxy; monitored mode owns its NDJSON capture:
+STRESS_DURATION=120 STRESS_CONCURRENCY=32 \
+  STRESS_TRAFFIC_ROLE=proxy-candidate STRESS_LOG_DIR="$CAND" \
+  STRESS_MONITOR_PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider) \
+  just stress-traffic
+
+scripts/stress_compare.py create "$BASE" "$CAND" \
+  "$CAND/stress-comparison.tsv"
+scripts/stress_compare.py verify "$BASE" "$CAND" \
+  "$CAND/stress-comparison.tsv"
+```
+
+The paired gate requires an explicit traffic-only `direct-baseline`, a
+provider-monitored `proxy-candidate`, identical workload and harness identities,
+baseline-before-candidate ordering, and at most a ten-minute gap. Release-gate
+defaults allow candidate p95 up to 1.5× baseline and require at least two-thirds of baseline
+throughput, while the candidate still has to pass the absolute RSS/CPU and
+latency/throughput ceilings. `stress_compare.py create` accepts optional
+`MAX_P95_RATIO_MILLI MIN_THROUGHPUT_RATIO_MILLI MAX_GAP_MS` overrides.
+It also writes an adjacent `stress-comparison.tsv.source-stress_compare.py` and
+seals that exact source's SHA-256 into the verdict. Verification fails if either
+the sealed copy or the currently executing comparator differs, so an old verdict
+cannot silently acquire new comparison semantics.
+The `direct-baseline` role is an operator assertion: the local integrity bundle
+can prove what the harness measured and when, but cannot independently prove
+that the Network Extension was disabled. Release evidence should retain the
+profile-disable/enable audit record alongside both bundles.
+
+A final device/release claim requires at least three interleaved adjacent pairs,
+ordered `direct-1, proxy-1, direct-2, proxy-2, direct-3, proxy-3`, against the
+same stable workload and preferably a stable local endpoint. Create and verify
+each strict pair as above, then seal the aggregate:
+
+```sh
+scripts/stress_compare.py create-series "$CAND3/stress-series.tsv" \
+  "$BASE1" "$CAND1" "$CAND1/stress-comparison.tsv" \
+  "$BASE2" "$CAND2" "$CAND2/stress-comparison.tsv" \
+  "$BASE3" "$CAND3" "$CAND3/stress-comparison.tsv"
+scripts/stress_compare.py verify-series "$CAND3/stress-series.tsv" \
+  "$BASE1" "$CAND1" "$CAND1/stress-comparison.tsv" \
+  "$BASE2" "$CAND2" "$CAND2/stress-comparison.tsv" \
+  "$BASE3" "$CAND3" "$CAND3/stress-comparison.tsv"
+```
+
+The series gate rejects fewer than three pairs, weakened per-pair thresholds,
+workload drift, reordered/overlapping pairs, or gaps over ten minutes. Its sealed
+verdict reports median and worst p95/throughput ratios plus worst candidate
+p95, throughput, RSS growth, and CPU. Preserve the enable/disable audit record
+for every transition; the bundle cannot independently prove that operator step.
 
 Pair with [Bundle everything for offline triage](#bundle-everything-for-offline-triage)
 below to also collect dial9 traces from the same window.

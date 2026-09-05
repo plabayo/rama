@@ -58,6 +58,10 @@ struct RamaTransparentProxyConfigBridge {
     var udpChannelCapacity: Int = 32
     var udpIngressPerFlowMaxBytes: Int = 256 * 1024
     var udpIngressGlobalMaxBytes: Int = 16 * 1024 * 1024
+    /// Exact process/core-lifetime payload and item envelope shared by every Swift
+    /// TCP and UDP writer. This remains enabled when live-flow hardCap is zero.
+    var writerMemoryMaxBytes: Int = WriterMemoryPolicy.default.maxBytes
+    var writerMemoryMaxItems: Int = WriterMemoryPolicy.default.maxItems
     var tcpStartInFlightHardCap: UInt32
     var tcpStartInFlightSoftCap: UInt32
     var tcpStartLatencyBreakerP95Ms: UInt32
@@ -217,6 +221,62 @@ final class TcpPromoteCallbackBox {
     init(onPromoteRequest: @escaping () -> Void) {
         self.onPromoteRequest = onPromoteRequest
     }
+}
+
+/// Swift-visible publication / retirement gate for the raw promote callback
+/// context handed to Rust.
+///
+/// Rust's `callback_active` mutex remains the load-bearing lifetime guarantee:
+/// registration and session teardown cannot complete while a promote callback
+/// is in flight. The linked Rust static library is not TSan-instrumented,
+/// however, so Swift's ThreadSanitizer cannot observe that happens-before edge.
+/// This gate mirrors ARC visibility on the instrumented side; Rust's
+/// `callback_active` remains responsible for raw-pointer publication and swap:
+///
+/// - callback boxes are initialized and retained while holding the gate;
+/// - the C trampoline takes a temporary +1 while holding the gate;
+/// - replaced / final owner +1s are transferred back to ARC while holding the
+///   gate, then released after unlocking.
+///
+/// Never hold this gate across a Rust FFI call or the user callback. That would
+/// invert with Rust's `callback_active` mutex or serialize arbitrary callback
+/// work globally.
+private let tcpPromoteCallbackContextGate = NSLock()
+
+private func makeTcpPromoteCallbackBox(
+    onPromoteRequest: @escaping () -> Void
+) -> Unmanaged<TcpPromoteCallbackBox> {
+    tcpPromoteCallbackContextGate.lock()
+    let box = Unmanaged.passRetained(
+        TcpPromoteCallbackBox(onPromoteRequest: onPromoteRequest))
+    tcpPromoteCallbackContextGate.unlock()
+    return box
+}
+
+private func retainTcpPromoteCallbackBox(
+    from context: UnsafeMutableRawPointer
+) -> TcpPromoteCallbackBox {
+    tcpPromoteCallbackContextGate.lock()
+    let box = Unmanaged<TcpPromoteCallbackBox>
+        .fromOpaque(context)
+        .retain()
+        .takeRetainedValue()
+    tcpPromoteCallbackContextGate.unlock()
+    return box
+}
+
+private func retireTcpPromoteCallbackBox(
+    _ box: Unmanaged<TcpPromoteCallbackBox>?
+) {
+    guard let box else { return }
+
+    tcpPromoteCallbackContextGate.lock()
+    let ownedBox = box.takeRetainedValue()
+    tcpPromoteCallbackContextGate.unlock()
+
+    // Keep destruction (and arbitrary captured-value deinits) outside the
+    // global gate while making the post-unlock release point explicit.
+    withExtendedLifetime(ownedBox) {}
 }
 
 /// Bridge-level mirror of `RamaPromoteConfirmStatus`.
@@ -487,7 +547,7 @@ private let ramaTcpOnEgressReadDemandCallback: @convention(c) (UnsafeMutableRawP
 private let ramaTcpOnPromoteRequestCallback:
     @convention(c) (UnsafeMutableRawPointer?) -> Void = { context in
         guard let context else { return }
-        let box = Unmanaged<TcpPromoteCallbackBox>.fromOpaque(context).takeUnretainedValue()
+        let box = retainTcpPromoteCallbackBox(from: context)
         box.onPromoteRequest()
     }
 
@@ -670,6 +730,10 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
                     rama_transparent_proxy_engine_udp_ingress_per_flow_max_bytes(p)),
                 udpIngressGlobalMaxBytes: clampedFFISizeToInt(
                     rama_transparent_proxy_engine_udp_ingress_global_max_bytes(p)),
+                writerMemoryMaxBytes: clampedFFISizeToInt(
+                    rama_transparent_proxy_engine_writer_memory_max_bytes(p)),
+                writerMemoryMaxItems: clampedFFISizeToInt(
+                    rama_transparent_proxy_engine_writer_memory_max_items(p)),
                 tcpStartInFlightHardCap: out.tcp_start_in_flight_hard_cap,
                 tcpStartInFlightSoftCap: out.tcp_start_in_flight_soft_cap,
                 tcpStartLatencyBreakerP95Ms: out.tcp_start_latency_breaker_p95_ms,
@@ -848,6 +912,12 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
     /// `registerPromoteCallback` is called.
     private var promoteCallbackBox: Unmanaged<TcpPromoteCallbackBox>?
     private var cancelled = false
+#if DEBUG
+    /// Per-session test seams. Compiled out of release builds so production has
+    /// neither storage nor branches, and one test cannot park another session.
+    private var beforePromoteRegisterFFIForTest: (() -> Void)?
+    private var beforeSessionFreeFFIForTest: (() -> Void)?
+#endif
 
     fileprivate init(sessionPtr: OpaquePointer, callbackBox: Unmanaged<TcpSessionCallbackBox>) {
         self.sessionPtr = sessionPtr
@@ -863,6 +933,10 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
         egressCallbackBox = nil
         let promoteBox = promoteCallbackBox
         promoteCallbackBox = nil
+#if DEBUG
+        let beforeFreeFFI = beforeSessionFreeFFIForTest
+        beforeSessionFreeFFIForTest = nil
+#endif
         lock.unlock()
 
         // Free the Rust session before releasing the boxes:
@@ -872,11 +946,14 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
         // The engine guard is the load-bearing piece; this ordering
         // alone is necessary but insufficient.
         if let p {
+#if DEBUG
+            beforeFreeFFI?()
+#endif
             rama_transparent_proxy_tcp_session_free(p)
         }
         callbackBox.release()
         egressBox?.release()
-        promoteBox?.release()
+        retireTcpPromoteCallbackBox(promoteBox)
     }
 
     /// Deliver bytes from the intercepted flow to the Rust session.
@@ -1070,21 +1147,23 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
     /// `into_passthrough` resolves with `EgressUnavailable` and
     /// the layer falls through to the in-Rust data path.
     ///
-    /// CONTRACT: `onPromoteRequest` MUST NOT synchronously call
-    /// `cancel()` on this same session. Rust's `fire()` holds the
-    /// session's `callback_active` lock across the C-trampoline
-    /// call to keep this box alive — a re-entrant `cancel()` would
-    /// deadlock waiting for that same lock. Hop to a dispatch
-    /// queue inside `onPromoteRequest` and return immediately, as
-    /// the production callsite in `TransparentProxyCore` does.
-    /// `confirmPromoted(_:reason:)` is safe to call synchronously.
+    /// CONTRACT: `onPromoteRequest` MUST NOT synchronously call any
+    /// method on this same session, including `cancel()`, another
+    /// `registerPromoteCallback`, or `confirmPromoted`. Rust's
+    /// `fire()` holds the session's `callback_active` lock across
+    /// the C trampoline to keep this box alive, while session
+    /// methods enter through this handle's lock. Concurrent or
+    /// re-entrant entry can therefore invert those two locks and
+    /// deadlock. Hop to a dispatch queue inside `onPromoteRequest`
+    /// and return immediately, as the production callsite does.
     func registerPromoteCallback(_ onPromoteRequest: @escaping () -> Void) {
         lock.lock()
-        defer { lock.unlock() }
-        guard !cancelled, let s = sessionPtr else { return }
+        guard !cancelled, let s = sessionPtr else {
+            lock.unlock()
+            return
+        }
 
-        let box = Unmanaged.passRetained(
-            TcpPromoteCallbackBox(onPromoteRequest: onPromoteRequest))
+        let box = makeTcpPromoteCallbackBox(onPromoteRequest: onPromoteRequest)
         let previous = promoteCallbackBox
         promoteCallbackBox = box
 
@@ -1092,12 +1171,32 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
             context: box.toOpaque(),
             on_promote_request: ramaTcpOnPromoteRequestCallback
         )
+#if DEBUG
+        beforePromoteRegisterFFIForTest?()
+#endif
         rama_transparent_proxy_tcp_session_register_promote_callbacks(s, callbacks)
+        lock.unlock()
 
-        // Drop the previous box only after the new registration
-        // is in place so Rust never sees a stale pointer.
-        previous?.release()
+        // Rust has replaced the raw pointer under `callback_active`, so the old
+        // owner can now retire safely. Do this outside both locks: releasing a
+        // closure can run arbitrary captured-value deinits, including code that
+        // re-enters this session.
+        retireTcpPromoteCallbackBox(previous)
     }
+
+#if DEBUG
+    func setBeforePromoteRegisterFFIForTest(_ hook: (() -> Void)?) {
+        lock.lock()
+        beforePromoteRegisterFFIForTest = hook
+        lock.unlock()
+    }
+
+    func setBeforeSessionFreeFFIForTest(_ hook: (() -> Void)?) {
+        lock.lock()
+        beforeSessionFreeFFIForTest = hook
+        lock.unlock()
+    }
+#endif
 
     /// ACK an in-flight `PromoteHandle::into_passthrough` cutover.
     ///
@@ -1203,8 +1302,9 @@ final class RamaUdpSessionHandle: @unchecked Sendable {
         rama_transparent_proxy_udp_session_activate(s)
     }
 
-    /// Release the exact provisional global-pressure scheduling credit tied
-    /// to one completed Apple read. Zero/stale IDs are harmless no-ops.
+    /// Mark the exact leased Apple read complete. Its admission credit remains
+    /// charged until the owning datagram is consumed, the flow closes, or the
+    /// bounded delivery grace expires. Zero/stale IDs are harmless no-ops.
     func completeClientRead(probeId: UInt64) {
         lock.lock()
         defer { lock.unlock() }

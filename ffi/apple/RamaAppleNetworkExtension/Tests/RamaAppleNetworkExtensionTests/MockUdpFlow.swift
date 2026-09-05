@@ -20,6 +20,7 @@ final class MockUdpFlow: UdpFlowLike, @unchecked Sendable {
 
     private let lock = NSLock()
     private var _pendingReads: [ReadCompletion] = []
+    private var _readInvocationUptimeNanoseconds: [UInt64] = []
     private var _writtenBatches: [WrittenBatch] = []
     private var _pendingOpenCompletion: OpenCompletion?
     private var _openLocalEndpoint: NWHostEndpoint??
@@ -34,6 +35,7 @@ final class MockUdpFlow: UdpFlowLike, @unchecked Sendable {
         completionHandler: @escaping @Sendable ([Data]?, [NWEndpoint]?, Error?) -> Void
     ) {
         lock.lock()
+        _readInvocationUptimeNanoseconds.append(DispatchTime.now().uptimeNanoseconds)
         _pendingReads.append(completionHandler)
         lock.unlock()
     }
@@ -131,6 +133,15 @@ final class MockUdpFlow: UdpFlowLike, @unchecked Sendable {
     var pendingReadCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _pendingReads.count
+    }
+
+    /// Callback-entry witness for linked pressure tests. Recording happens in
+    /// `readDatagrams` itself, after Rust's C callback and the production
+    /// `UdpFlowSession` queue hop, so the assertion is independent of when the
+    /// XCTest thread resumes to observe `pendingReadCount`.
+    var readInvocationUptimeNanoseconds: [UInt64] {
+        lock.lock(); defer { lock.unlock() }
+        return _readInvocationUptimeNanoseconds
     }
 
     var writtenBatches: [WrittenBatch] {

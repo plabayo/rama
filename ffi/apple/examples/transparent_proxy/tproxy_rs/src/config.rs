@@ -19,6 +19,9 @@ pub struct DemoProxyConfig {
     // Egress connect timeout (ms); applied via `egress_tcp_connect_options`.
     // `None`/`0` keeps the platform default.
     pub tcp_connect_timeout_ms: Option<u64>,
+    /// Optional Rust->Swift writer-pump cap exported in the startup config.
+    /// Absent keeps the engine's 256 KiB production default.
+    pub tcp_write_pump_max_pending_bytes: Option<usize>,
     // Egress TCP_NODELAY. The engine already defaults this ON (the relay
     // is the only Nagle decision-maker in the path); this knob exists to
     // opt back into Nagle for experiments.
@@ -33,6 +36,10 @@ pub struct DemoProxyConfig {
     /// Makes the UDP overrides temporary and enables allowlisted public
     /// diagnostics for the signed live E2E. Never persisted by the example app.
     pub udp_e2e_mode: bool,
+    /// Optional global-pressure probe lease override. The engine default is
+    /// 10 ms; larger values are useful for observability and loaded-system
+    /// integration tests without changing the coordinator's semantics.
+    pub udp_ingress_probe_lease_ms: Option<u64>,
     // Optional inline PEM overrides — if both are set they bypass the System Keychain.
     // Intended for environments (e.g. e2e test runners) that lack keychain access.
     // The production app leaves these unset and always uses the System Keychain.
@@ -58,6 +65,7 @@ impl Default for DemoProxyConfig {
             html_badge_label: "proxied by rama".to_owned(),
             peek_duration_s: 8.,
             tcp_connect_timeout_ms: None,
+            tcp_write_pump_max_pending_bytes: None,
             tcp_no_delay: true,
             // Keep in sync with `policy::DomainExclusionList::default()`
             // — that's the engine-internal fallback; this is the
@@ -100,6 +108,7 @@ impl Default for DemoProxyConfig {
             udp_passthrough_ports: Vec::new(),
             udp_blocked_endpoints: Vec::new(),
             udp_e2e_mode: false,
+            udp_ingress_probe_lease_ms: None,
             ca_cert_pem: None,
             ca_key_pem: None,
             xpc_service_name: None,
@@ -130,6 +139,8 @@ mod tests {
                 "udp_passthrough_ports":[443,53001],
                 "udp_blocked_endpoints":["8.8.8.8:53","[2001:4860:4860::8888]:53"],
                 "udp_e2e_mode":true
+                ,"udp_ingress_probe_lease_ms":500
+                ,"tcp_write_pump_max_pending_bytes":16384
             }"#,
         ))
         .expect("valid test config");
@@ -141,5 +152,7 @@ mod tests {
             "[2001:4860:4860::8888]:53"
         );
         assert!(config.udp_e2e_mode);
+        assert_eq!(config.udp_ingress_probe_lease_ms, Some(500));
+        assert_eq!(config.tcp_write_pump_max_pending_bytes, Some(16_384));
     }
 }

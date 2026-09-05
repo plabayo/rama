@@ -28,12 +28,14 @@ final class ExcludedSniPromotionTests: XCTestCase {
     }
 
     private func makeFixture(
-        excludedPattern: String = ExcludedSniPromotionTests.excludedPattern
+        excludedPattern: String = ExcludedSniPromotionTests.excludedPattern,
+        tcpWritePumpMaxPendingBytes: Int? = nil
     ) -> Fixture {
         guard let engine = RamaTransparentProxyEngineHandle(
             engineConfigJson: TestFixtures.engineConfigJson(
                 excludeDomains: [excludedPattern],
-                peekDurationSeconds: 10
+                peekDurationSeconds: 10,
+                tcpWritePumpMaxPendingBytes: tcpWritePumpMaxPendingBytes
             )
         ) else {
             XCTFail("engine init")
@@ -46,11 +48,11 @@ final class ExcludedSniPromotionTests: XCTestCase {
         return Fixture(engine: engine, core: core, capture: capture)
     }
 
-    private func makeMeta() -> RamaTransparentProxyFlowMetaBridge {
+    private func makeMeta(remotePort: UInt16 = 443) -> RamaTransparentProxyFlowMetaBridge {
         RamaTransparentProxyFlowMetaBridge(
             protocolRaw: 1,
             remoteHost: "origin.test",
-            remotePort: 443,
+            remotePort: remotePort,
             localHost: nil,
             localPort: 0,
             sourceAppSigningIdentifier: nil,
@@ -182,6 +184,88 @@ final class ExcludedSniPromotionTests: XCTestCase {
         }
 
         finish(fixture, activeFlows: [active])
+    }
+
+    /// Full linked Rust/Swift drain replay. A plain HTTP response is produced
+    /// by the real example service and crosses the real `RamaTcpSessionHandle`
+    /// callback into the `TcpFlowSession` writer. With a 16 KiB exported pump
+    /// cap and captured kernel write completions, Rust accepts one chunk then
+    /// parks on `.paused`. Completing each Swift write must run the production
+    /// `buildClientWritePump.onDrained -> session.signalServerDrain()` edge so
+    /// Rust retries the rejected chunk and eventually delivers the exact body.
+    func testRealRustServerBytesReplayAfterSwiftWriterDrain() {
+        let writerCap = 16 * 1024
+        let fixture = makeFixture(tcpWritePumpMaxPendingBytes: writerCap)
+        defer { fixture.core.detachEngine(reason: 0) }
+
+        XCTAssertEqual(
+            fixture.engine.config()?.tcpWritePumpMaxPendingBytes,
+            writerCap,
+            "test requires the opaque JSON cap to reach Swift's generation policy")
+
+        let flow = MockTcpFlow()
+        flow.captureWriteCompletions = true
+        XCTAssertTrue(fixture.core.handleTcpFlow(flow, meta: makeMeta(remotePort: 80)))
+        let connection = fixture.capture.waitForLastConnection()
+        connection.transition(to: .ready)
+        waitFor("HTTP flow.open") { flow.openWasInvoked }
+        XCTAssertTrue(flow.completeOpen(error: nil))
+        waitFor("linked HTTP pumps") {
+            flow.pendingReadCount > 0 && connection.pendingReceiveCount > 0
+        }
+
+        let sendCompleter = startSendCompleter([connection])
+        defer { sendCompleter.store(true) }
+        let request = Data("GET /drain HTTP/1.1\r\nHost: origin.test\r\nConnection: keep-alive\r\n\r\n".utf8)
+        flow.completeRead(data: request, error: nil)
+        waitFor("Rust service forwarded HTTP request") {
+            self.sentData(connection).range(of: Data("GET /drain HTTP/1.1".utf8)) != nil
+        }
+
+        let body = Data(repeating: 0xD7, count: writerCap * 6 + 113)
+        var response = Data(
+            "HTTP/1.1 200 OK\r\nContent-Length: \(body.count)\r\nContent-Type: application/octet-stream\r\n\r\n".utf8)
+        response.append(body)
+        waitFor("Rust requested upstream response bytes") {
+            connection.pendingReceiveCount > 0
+        }
+        XCTAssertTrue(
+            connection.completePendingReceive(data: response, isComplete: false),
+            "mock upstream must deliver the response through the real egress handle")
+
+        waitFor("first Rust server chunk reached Swift writer") {
+            flow.pendingWriteCompletionCount == 1
+        }
+        XCTAssertLessThanOrEqual(flow.writes[0].count, writerCap)
+        XCTAssertLessThan(
+            writtenData(flow).count,
+            response.count,
+            "fixture must actually enter paused replay, not accept the response in one callback")
+
+        let replayDeadline = Date(timeIntervalSinceNow: 15)
+        while Date() < replayDeadline {
+            let received = writtenData(flow)
+            if let separator = received.range(of: Data("\r\n\r\n".utf8)),
+                Data(received[separator.upperBound...]) == body
+            {
+                break
+            }
+            if !flow.completeNextWrite() {
+                Thread.sleep(forTimeInterval: 0.002)
+            }
+        }
+
+        let received = writtenData(flow)
+        guard let separator = received.range(of: Data("\r\n\r\n".utf8)) else {
+            return XCTFail("linked Rust response never produced complete HTTP headers")
+        }
+        XCTAssertEqual(
+            Data(received[separator.upperBound...]),
+            body,
+            "paused Rust chunk was not replayed exactly after Swift writer drain")
+        XCTAssertGreaterThan(
+            flow.writes.count, 1,
+            "test did not exercise a real paused -> signalServerDrain -> retry cycle")
     }
 
     func testExactExcludedSniPromotesThroughFfi() {
