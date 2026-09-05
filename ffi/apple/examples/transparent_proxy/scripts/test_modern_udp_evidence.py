@@ -2465,6 +2465,77 @@ class QuicShapedEchoTests(unittest.TestCase):
 
 
 class HarnessSourceContractTests(unittest.TestCase):
+    def test_echo_and_pressure_callers_use_captured_sources_and_nested_dependency(self):
+        helper = BoundedCommandCleanupTests.shell_function
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            live = root / "live"
+            live.mkdir()
+            for name in ("modern_udp_evidence.py", "soak_pressure_log.py"):
+                (root / f"source-{name}").write_bytes((SCRIPT_DIR / name).read_bytes())
+                (live / name).write_text("raise RuntimeError('live source must not be imported')\n")
+            (root / "provider.log").write_text("\n".join((
+                _decision(RUN_UUID, 9001, 7, "intercept", 1000,
+                          "127.0.0.1:443", "127.0.0.1:50000", "com.apple.python3", 2002),
+                _decision(RUN_UUID, 9001, 7, "intercept", 104,
+                          "162.159.200.1:123", "127.0.0.1:41004", "com.apple.python3", 1004),
+                'UDP ingress pressure dropped datagram flow_id=104 pressure="global_bytes" cumulative_drops=1 global_retained_bytes=4096 global_max_retained_bytes=4096',
+                'UDP ingress pressure resumed flow flow_id=104 pressure="global_bytes" cumulative_resumptions=1 global_retained_bytes=0 global_max_retained_bytes=4096',
+            )) + "\n")
+            (root / "echo-client.json").write_text(json.dumps({
+                "local_endpoints": ["127.0.0.1:50000"],
+            }))
+            program = "".join(helper(name) for name in (
+                "decision_records", "decision_marker_count_for_pid", "append_dial9_requirement",
+                "close_pressure_probe_window", "check_echo_decisions", "check_udp_pressure_logs",
+            )) + textwrap.dedent(f"""\
+                TMP_DIR={shlex.quote(str(root))}
+                SCRIPT_DIR={shlex.quote(str(live))}
+                MODERN_EVIDENCE="$TMP_DIR/source-modern_udp_evidence.py"
+                PROVIDER_LOG="$TMP_DIR/provider.log"
+                DIAL9_REQUIREMENTS="$TMP_DIR/requirements.tsv"
+                : > "$DIAL9_REQUIREMENTS"
+                ECHO_CLIENT_RESULT="$TMP_DIR/echo-client.json"
+                RUN_UUID={RUN_UUID} PROVIDER_PID=9001 UNBLOCKED_PROVIDER_GENERATION=7
+                ECHO_SOURCE_PID=2002 ECHO_ENDPOINT=127.0.0.1:443 ECHO_SOCKET_COUNT=1
+                ECHO_DATAGRAMS_PER_SOCKET=1 ECHO_PAYLOAD_BYTES=1200 ECHO_LOG_START=0 ECHO_LOG_END=1
+                PASSTHROUGH_DNS_FLOW_ID=101 CONTROL_DNS_FLOW_ID=102 NTP_FLOW_ID=103
+                PRESSURE_FLOW_ID=none RECOVERY_NTP_FLOW_ID=106 BLOCKED_DNS_FLOW_ID=105
+                UNBLOCKED_LOG_LINE=0 PRESSURE_LOG_LINE=1 PRESSURE_END_LOG_LINE=4 BLOCKED_LOG_LINE=4
+                ISSUES=0 FAILURES=0
+                add_issue() {{ ISSUES=$((ISSUES + 1)); printf '%s\\n' "$1" >&2; }}
+                add_failure() {{ FAILURES=$((FAILURES + 1)); printf '%s\\n' "$1" >&2; }}
+                provider_log_line() {{ wc -l < "$PROVIDER_LOG"; }}
+                sleep() {{ :; }}
+                close_pressure_probe_window 1 1004 162.159.200.1:123 com.apple.python3 || exit 1
+                [[ "$PRESSURE_FLOW_ID" == 104 && "$LAST_PROBE_LOG_END" -eq 4 ]] || exit 1
+                check_echo_decisions || exit 1
+                check_udp_pressure_logs || exit 1
+                printf '%s %s %s %s %s %s %s %s %s\\n' "$ISSUES" "$FAILURES" \\
+                  "$ECHO_FLOW_COUNT" "$UDP_PRESSURE_LOG_CHECKED" "$RUST_UDP_DROP_TRANSITIONS" \\
+                  "$RUST_UDP_RESUME_TRANSITIONS" "$PRESSURE_DROP_REASONS" \\
+                  "$PRESSURE_RECOVERED_REASONS" "$OUTSIDE_PRESSURE_EVENTS"
+                [[ "$ISSUES" == 0 && "$FAILURES" == 0 ]]
+            """)
+            for generation, issues in ((7, 0), (8, 1)):
+                with self.subTest(generation=generation):
+                    result = subprocess.run(
+                        ["/bin/bash", "-c", program.replace(
+                            "UNBLOCKED_PROVIDER_GENERATION=7", f"UNBLOCKED_PROVIDER_GENERATION={generation}"
+                        )], cwd=live, capture_output=True, text=True, timeout=10,
+                        env={**{key: value for key, value in os.environ.items()
+                                if key != "PYTHONDONTWRITEBYTECODE"}, "PYTHONPATH": str(live)},
+                    )
+                    self.assertEqual(result.returncode, issues, result.stdout + result.stderr)
+                    self.assertEqual(result.stdout,
+                                     f"{issues} 0 1 1 1 1 global_bytes global_bytes 0\n", result.stderr)
+                    self.assertEqual(result.stderr, "" if issues == 0 else
+                                     "controlled echo flow used a different unblocked provider generation\n")
+                    self.assertEqual((root / "echo-identities.tsv").read_text(), "7\t1000\t127.0.0.1:50000\n")
+                    self.assertEqual((root / "requirements.tsv").read_text(),
+                                     "echo-0\t9001\t7\t1000\t2\t2002\t1\t1200\t1200\t1200\t1200\n")
+            self.assertEqual(list(root.rglob("__pycache__")), [])
+
     def test_http3_shell_gate_uses_the_same_typed_local_endpoint_rule(self):
         helper = BoundedCommandCleanupTests.shell_function
         with tempfile.TemporaryDirectory() as temporary:

@@ -1569,13 +1569,17 @@ close_pressure_probe_window() {
   # observing it for one bounded quiescence interval before freezing the end.
   for _ in $(seq 1 150); do
     ending_line="$(provider_log_line)"
-    observation="$(/usr/bin/python3 - "$SCRIPT_DIR" "$PROVIDER_LOG" \
+    observation="$(/usr/bin/python3 -B - "$MODERN_EVIDENCE" "$PROVIDER_LOG" \
       "$starting_line" "$source_pid" "$endpoint" "$source_app" \
-      "$RUN_UUID" "$PROVIDER_PID" <<'PY'
-import sys
+      "$RUN_UUID" "$PROVIDER_PID" "$TMP_DIR/source-soak_pressure_log.py" <<'PY'
+import importlib.util, runpy, sys
 
-sys.path.insert(0, sys.argv[1])
-from modern_udp_evidence import pressure_window_observation
+# The modern helper imports this dependency by name inside the observation.
+pressure_spec = importlib.util.spec_from_file_location("soak_pressure_log", sys.argv[9])
+pressure_module = importlib.util.module_from_spec(pressure_spec)
+sys.modules[pressure_spec.name] = pressure_module
+pressure_spec.loader.exec_module(pressure_module)
+pressure_window_observation = runpy.run_path(sys.argv[1])["pressure_window_observation"]
 
 with open(sys.argv[2], encoding="utf-8") as provider_log:
     lines = provider_log.read().splitlines()
@@ -1719,14 +1723,13 @@ append_dial9_requirement() {
 
 check_echo_decisions() {
   local records="$TMP_DIR/echo-decisions.tsv" identities="$TMP_DIR/echo-identities.tsv"
-  local generation flow_id ordinal=0 bytes
+  local generation row_generation flow_id ordinal=0 bytes
   decision_records "$ECHO_LOG_START" "$ECHO_LOG_END" > "$records"
-  /usr/bin/python3 - "$SCRIPT_DIR" "$records" "$identities" "$ECHO_CLIENT_RESULT" \
+  /usr/bin/python3 - "$MODERN_EVIDENCE" "$records" "$identities" "$ECHO_CLIENT_RESULT" \
     "$ECHO_SOURCE_PID" "$RUN_UUID" "$PROVIDER_PID" "$ECHO_ENDPOINT" \
     "$ECHO_SOCKET_COUNT" <<'PY' || {
-import json, sys
-sys.path.insert(0, sys.argv[1])
-from modern_udp_evidence import validate_echo_decision_bijection
+import json, runpy, sys
+validate_echo_decision_bijection = runpy.run_path(sys.argv[1])["validate_echo_decision_bijection"]
 rows = [line.rstrip("\n").split("\t") for line in open(sys.argv[2]) if line.strip()]
 client_endpoints = json.load(open(sys.argv[4])).get("local_endpoints")
 selected = validate_echo_decision_bijection(
@@ -1741,7 +1744,8 @@ PY
     return 1
   }
   bytes=$((ECHO_DATAGRAMS_PER_SOCKET * ECHO_PAYLOAD_BYTES))
-  while IFS=$'\t' read -r generation flow_id _local_endpoint; do
+  while IFS=$'\t' read -r row_generation flow_id _local_endpoint; do
+    generation="$row_generation"
     append_dial9_requirement "echo-$ordinal" "$flow_id" "$ECHO_SOURCE_PID" \
       "$generation" "$bytes" "$bytes" "$bytes" "$bytes" || true
     ordinal=$((ordinal + 1))
@@ -1833,13 +1837,12 @@ check_final_provider_logs() {
 # shellcheck disable=SC2329  # invoked by the EXIT finalizer's log verdict
 check_udp_pressure_logs() {
   local metrics status
-  metrics="$(/usr/bin/python3 - "$SCRIPT_DIR" "$PROVIDER_LOG" \
+  metrics="$(/usr/bin/python3 - "$TMP_DIR/source-soak_pressure_log.py" "$PROVIDER_LOG" \
     "$UNBLOCKED_LOG_LINE" "$PRESSURE_LOG_LINE" "$PRESSURE_END_LOG_LINE" \
     "$BLOCKED_LOG_LINE" "$PRESSURE_FLOW_ID" <<'PY'
-import sys
+import runpy, sys
 
-sys.path.insert(0, sys.argv[1])
-from soak_pressure_log import summarize_udp_pressure_rows
+summarize_udp_pressure_rows = runpy.run_path(sys.argv[1])["summarize_udp_pressure_rows"]
 
 try:
     with open(sys.argv[2], encoding="utf-8") as provider_log:
