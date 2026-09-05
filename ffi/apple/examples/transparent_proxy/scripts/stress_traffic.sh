@@ -627,18 +627,25 @@ owned_tree_has_exited() {
 }
 
 cleanup_owned_jobs() {
-  (( CLEANUP_STARTED == 0 )) || return 0
-  CLEANUP_STARTED=1
-  : > "$MONITOR_STOP_FILE"
-  : > "$GENERATION_STOP_FILE"
+  local scope="${1:-all}"
+  if [[ "$scope" == all ]]; then
+    (( CLEANUP_STARTED == 0 )) || return 0
+    CLEANUP_STARTED=1
+    : > "$MONITOR_STOP_FILE"
+    : > "$GENERATION_STOP_FILE"
+  elif [[ "$scope" != system-log ]]; then
+    return 2
+  fi
   local pid identity deadline active tree_text="" subtree child_rc response_artifact index
   local system_log_cleanup_pid="$SYSTEM_LOG_JOB_PID"
   local owned=() frozen=()
   set +u
-  owned=("${TRAFFIC_PIDS[@]}" "${AUXILIARY_PIDS[@]}")
-  [[ -z "$MONITOR_JOB_PID" ]] || owned+=("$MONITOR_JOB_PID")
-  [[ -z "$ABSENCE_MONITOR_JOB_PID" ]] || owned+=("$ABSENCE_MONITOR_JOB_PID")
-  [[ -z "$GENERATION_MONITOR_JOB_PID" ]] || owned+=("$GENERATION_MONITOR_JOB_PID")
+  if [[ "$scope" == all ]]; then
+    owned=("${TRAFFIC_PIDS[@]}" "${AUXILIARY_PIDS[@]}")
+    [[ -z "$MONITOR_JOB_PID" ]] || owned+=("$MONITOR_JOB_PID")
+    [[ -z "$ABSENCE_MONITOR_JOB_PID" ]] || owned+=("$ABSENCE_MONITOR_JOB_PID")
+    [[ -z "$GENERATION_MONITOR_JOB_PID" ]] || owned+=("$GENERATION_MONITOR_JOB_PID")
+  fi
   [[ -z "$SYSTEM_LOG_JOB_PID" ]] || owned+=("$SYSTEM_LOG_JOB_PID")
   if [[ -n "$system_log_cleanup_pid" ]] \
     && owned_job_is_active "$system_log_cleanup_pid" \
@@ -1428,7 +1435,9 @@ if (( ! ANALYZE_ONLY )); then
     MONITOR_JOB_PID=""
   fi
   if [[ -n "$SYSTEM_LOG_JOB_PID" ]]; then
-    cleanup_owned_jobs
+    # Generation sampling must continue through postflight memory and crash
+    # collection, then exit cooperatively after its final boundary sample.
+    cleanup_owned_jobs system-log
     if [[ "$SYSTEM_LOG_ALIVE_END" != 1 || "$SYSTEM_LOG_JOINED" != 1 \
       || ( "$SYSTEM_LOG_CHILD_RC" != 0 && "$SYSTEM_LOG_CHILD_RC" != 143 ) ]]
     then

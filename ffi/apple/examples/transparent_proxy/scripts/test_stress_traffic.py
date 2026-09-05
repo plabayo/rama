@@ -1645,6 +1645,103 @@ class StressTrafficValidationTests(unittest.TestCase):
                         artifact.read_text(encoding="utf-8", errors="ignore"),
                     )
 
+    def test_system_log_shutdown_preserves_generation_samples_through_forensics(self):
+        shell = STRESS_SCRIPT.read_text()
+        functions = "".join(
+            self.stress_function(shell, name)
+            for name in (
+                "pid_identity", "owned_job_is_active", "collect_owned_tree",
+                "signal_owned_identity", "owned_job_has_exited",
+                "owned_identity_has_exited", "owned_tree_has_exited",
+                "wait_proven_exited", "cleanup_owned_jobs",
+                "monitor_provider_generation",
+            )
+        )
+        start = shell.index(
+            '  if [[ -n "$SYSTEM_LOG_JOB_PID" ]]; then\n',
+            shell.index('  read -r TRAFFIC_END_EPOCH'),
+        )
+        end = shell.index('\n  fi\n', start) + len('\n  fi\n')
+        shutdown = shell[start:end]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            helper = root / "sample-generation"
+            samples = root / "samples"
+            helper.write_text(
+                "#!/usr/bin/env bash\n"
+                f"date +%s >> {shlex.quote(str(samples))}\n"
+            )
+            helper.chmod(0o755)
+            program = functions + textwrap.dedent(f"""
+                set -u
+                LOG_DIR={shlex.quote(str(root))}
+                COMMON_EVIDENCE_HELPER={shlex.quote(str(helper))}
+                TRAFFIC_PIDS=()
+                AUXILIARY_PIDS=()
+                MONITOR_JOB_PID=""
+                ABSENCE_MONITOR_JOB_PID=""
+                MONITOR_STOP_FILE="$LOG_DIR/monitor.stop"
+                GENERATION_STOP_FILE="$LOG_DIR/generation.stop"
+                RESPONSE_TMP_DIR="$LOG_DIR/responses"
+                CLEANUP_STARTED=0
+                CLEANUP_INCOMPLETE=0
+                EVIDENCE_FAILED=0
+                SYSTEM_LOG_ALIVE_END=0
+                SYSTEM_LOG_JOINED=0
+                SYSTEM_LOG_CHILD_RC=none
+                RED="" RESET=""
+                say() {{ printf '%s\\n' "$*"; }}
+                monitor_provider_generation &
+                GENERATION_MONITOR_JOB_PID=$!
+                sleep 30 &
+                SYSTEM_LOG_JOB_PID=$!
+                SYSTEM_LOG_JOB_IDENTITY="$(pid_identity "$SYSTEM_LOG_JOB_PID" generation || true)"
+                [[ "$SYSTEM_LOG_JOB_IDENTITY" =~ ^[0-9a-f]{{64}}$ ]] || exit 77
+                deadline=$((SECONDS + 4))
+                while [[ ! -s {shlex.quote(str(samples))} ]] && (( SECONDS < deadline )); do
+                  sleep 0.05
+                done
+                [[ -s {shlex.quote(str(samples))} ]] || exit 3
+                {shutdown}
+                [[ "$CLEANUP_STARTED" == 0 && "$CLEANUP_INCOMPLETE" == 0 \
+                  && "$EVIDENCE_FAILED" == 0 && "$SYSTEM_LOG_JOINED" == 1 ]] || exit 4
+                [[ ! -e "$GENERATION_STOP_FILE" ]] || exit 5
+                kill -0 "$GENERATION_MONITOR_JOB_PID" 2>/dev/null || exit 6
+                # Postflight/crash collection may outlast the 5-second allowed
+                # sample gap. The same sampler must remain active throughout.
+                sleep 6
+                [[ $(wc -l < {shlex.quote(str(samples))}) -ge 3 ]] || exit 7
+                : > "$GENERATION_STOP_FILE"
+                wait_proven_exited "$GENERATION_MONITOR_JOB_PID" 4 || exit 8
+                GENERATION_MONITOR_JOB_PID=""
+                # Partial logger shutdown must not disable the final cleanup
+                # of jobs started by subsequent forensic collection.
+                sleep 30 & AUXILIARY_PIDS+=("$!")
+                cleanup_owned_jobs
+                [[ "$CLEANUP_STARTED" == 1 && "$CLEANUP_INCOMPLETE" == 0 ]] || exit 9
+                [[ -z "$(jobs -p)" ]] || exit 10
+                echo generation-sampler-preserved
+            """)
+            process = subprocess.Popen(
+                ["bash", "-c", program], stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, start_new_session=True,
+            )
+            try:
+                output, _ = process.communicate(timeout=20)
+            finally:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=5)
+            if process.returncode == 77:
+                self.skipTest("host sandbox blocks process identity inspection")
+            self.assertEqual(process.returncode, 0, output)
+            self.assertEqual(output.splitlines()[-1], "generation-sampler-preserved")
+            epochs = [int(value) for value in samples.read_text().splitlines()]
+            self.assertGreaterEqual(len(epochs), 3)
+            self.assertTrue(all(0 < right - left <= 5 for left, right in zip(epochs, epochs[1:])))
+
     def test_term_resistant_system_logger_is_forcibly_reaped_and_not_accepted(self):
         shell = STRESS_SCRIPT.read_text()
         functions = "".join(

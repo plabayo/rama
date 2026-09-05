@@ -814,9 +814,21 @@ fn copy_once(
                 "current dial9 trace does not satisfy every exact flow requirement".to_owned(),
             );
         }
-        if collection.requirement_count == 0 && collection.required_pair_count == 0 {
+        if collection.requirement_count == 0
+            && requirement.flow_id.is_some()
+            && collection.required_pair_count != 1
+        {
             return Err(
-                "current dial9 trace lacks one exact ordered open/close flow pair".to_owned(),
+                "current dial9 trace must contain exactly one ordered open/close flow pair matching the legacy requirement".to_owned(),
+            );
+        }
+        if collection.requirement_count == 0
+            && requirement.flow_id.is_none()
+            && collection.required_pair_count == 0
+        {
+            return Err(
+                "current dial9 bulk diagnostics require at least one ordered open/close flow pair"
+                    .to_owned(),
             );
         }
         if destination.exists() {
@@ -879,7 +891,7 @@ fn parse_collect_args(
 ) -> Result<(PathBuf, PathBuf, PathBuf, PairRequirement, Duration), String> {
     if args.len() < 3 {
         return Err(
-            "usage: dial9_evidence collect <trace-dir> <baseline.json> <destination> [--wait-seconds N] ([--flow-id N] [--protocol N] | --requirements FILE)"
+            "usage: dial9_evidence collect <trace-dir> <baseline.json> <destination> [--wait-seconds N] [--flow-id N [--protocol N] | --requirements FILE]; omit selection for bulk diagnostics requiring at least one ordered pair"
                 .to_owned(),
         );
     }
@@ -945,8 +957,8 @@ fn parse_collect_args(
     {
         return Err("--requirements cannot be combined with --flow-id/--protocol".to_owned());
     }
-    if requirement.requirements.is_empty() && requirement.flow_id.is_none() {
-        return Err("collect requires --requirements or --flow-id".to_owned());
+    if requirement.flow_id.is_none() && requirement.protocol.is_some() {
+        return Err("collect --protocol requires --flow-id".to_owned());
     }
     Ok((source, baseline, destination, requirement, wait))
 }
@@ -1059,12 +1071,28 @@ mod tests {
     }
 
     fn trace_bytes(flow_id: u64, protocol: u32, include_close: bool) -> Vec<u8> {
+        trace_bytes_for_provider(
+            flow_id,
+            protocol,
+            include_close,
+            PROVIDER_PID,
+            PROVIDER_GENERATION,
+        )
+    }
+
+    fn trace_bytes_for_provider(
+        flow_id: u64,
+        protocol: u32,
+        include_close: bool,
+        provider_pid: u32,
+        provider_generation: u64,
+    ) -> Vec<u8> {
         let mut encoder = Encoder::new();
         encoder
             .write(&TproxyFlowOpened {
                 timestamp_ns: 1,
-                provider_pid: PROVIDER_PID,
-                provider_generation: PROVIDER_GENERATION,
+                provider_pid,
+                provider_generation,
                 flow_id,
                 protocol,
                 pid: SOURCE_PID,
@@ -1074,8 +1102,8 @@ mod tests {
             encoder
                 .write(&TproxyFlowClosed {
                     timestamp_ns: 2,
-                    provider_pid: PROVIDER_PID,
-                    provider_generation: PROVIDER_GENERATION,
+                    provider_pid,
+                    provider_generation,
                     flow_id,
                     protocol,
                     pid: SOURCE_PID,
@@ -1256,6 +1284,90 @@ mod tests {
     }
 
     #[test]
+    fn parsed_bare_collect_accepts_multiple_arbitrary_pairs() {
+        let source = TempDir::new().unwrap();
+        let output = TempDir::new().unwrap();
+        let baseline = snapshot(source.path(), false);
+        write_trace(source.path(), "trace.1.bin", &trace_bytes(77, 2, true));
+        write_trace(source.path(), "trace.2.bin", &trace_bytes(78, 1, true));
+        let (source, _, destination, requirement, wait) = parse_collect_args(&[
+            source.path().display().to_string(),
+            output.path().join("baseline.json").display().to_string(),
+            output.path().join("dial9-traces").display().to_string(),
+            "--wait-seconds".to_owned(),
+            "0".to_owned(),
+        ])
+        .expect("the soak caller's bare bulk invocation must parse");
+        assert!(requirement.flow_id.is_none());
+        assert!(requirement.protocol.is_none());
+        assert!(requirement.requirements.is_empty());
+        let result = collect(&source, &baseline, &destination, &requirement, wait)
+            .expect("bulk diagnostics may include multiple arbitrary pairs");
+        assert_eq!(result.required_pair_count, 2);
+        assert_eq!(result.paired_flow_count, 2);
+        assert_eq!(result.udp_paired_flow_count, 1);
+        assert_eq!(result.required_close_reason, None);
+        assert!(destination.join("trace.1.bin").is_file());
+        assert!(destination.join("trace.2.bin").is_file());
+    }
+
+    #[test]
+    fn parsed_bare_collect_rejects_no_matched_pairs() {
+        let source = TempDir::new().unwrap();
+        let output = TempDir::new().unwrap();
+        let baseline = snapshot(source.path(), false);
+        write_trace(source.path(), "trace.1.bin", &trace_bytes(77, 2, false));
+        let (source, _, destination, requirement, wait) = parse_collect_args(&[
+            source.path().display().to_string(),
+            output.path().join("baseline.json").display().to_string(),
+            output.path().join("dial9-traces").display().to_string(),
+        ])
+        .expect("bare bulk invocation must parse");
+        let error = collect(&source, &baseline, &destination, &requirement, wait)
+            .expect_err("an unpaired open must not satisfy bulk diagnostics");
+        assert!(error.contains("at least one ordered open/close"));
+        assert!(!destination.exists(), "unpaired evidence must not publish");
+    }
+
+    #[test]
+    fn legacy_flow_id_reuse_across_providers_or_generations_is_rejected() {
+        for (provider_pid, provider_generation) in [
+            (PROVIDER_PID + 1, PROVIDER_GENERATION),
+            (PROVIDER_PID, PROVIDER_GENERATION + 1),
+        ] {
+            let source = TempDir::new().unwrap();
+            let output = TempDir::new().unwrap();
+            write_trace(source.path(), "trace.1.bin", &trace_bytes(77, 2, true));
+            write_trace(
+                source.path(),
+                "trace.2.bin",
+                &trace_bytes_for_provider(77, 2, true, provider_pid, provider_generation),
+            );
+            let destination = output.path().join("dial9-traces");
+            let result = collect(
+                source.path(),
+                &Snapshot {
+                    schema_version: SCHEMA_VERSION,
+                    max_index: None,
+                    artifacts: vec![],
+                    issues: vec![],
+                    schema_complete: true,
+                },
+                &destination,
+                &PairRequirement {
+                    flow_id: Some(77),
+                    protocol: Some(2),
+                    ..Default::default()
+                },
+                Duration::ZERO,
+            );
+            let error = result.expect_err("two matching legacy pairs are ambiguous");
+            assert!(error.contains("exactly one ordered open/close"));
+            assert!(!destination.exists(), "ambiguous evidence must not publish");
+        }
+    }
+
+    #[test]
     fn requirements_bind_provider_generation_source_and_exact_bytes() {
         let source = TempDir::new().unwrap();
         let output = TempDir::new().unwrap();
@@ -1350,6 +1462,7 @@ mod tests {
     #[test]
     fn collect_cli_rejects_ambiguous_or_unbounded_legacy_arguments() {
         for tail in [
+            vec!["--protocol", "2"],
             vec!["--flow-id", "01"],
             vec!["--flow-id", "7", "--flow-id", "8"],
             vec!["--flow-id", "7", "--protocol", "3"],
