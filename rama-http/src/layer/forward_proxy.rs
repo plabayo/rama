@@ -1,3 +1,5 @@
+//! Authentication policy for established HTTP forward-proxy connections.
+
 use rama_core::{
     Layer, Service,
     error::BoxError,
@@ -5,10 +7,27 @@ use rama_core::{
     telemetry::tracing,
 };
 use rama_http_headers::{HeaderMapExt, ProxyAuthorization};
-use rama_http_types::{Request, Response, StatusCode, header::PROXY_AUTHORIZATION};
+use rama_http_types::{Request, Response, StatusCode};
 use rama_net::{client::EstablishedProxyRoute, user::ProxyCredential};
+use std::fmt;
 
-use super::HttpProxyError;
+use super::remove_header::remove_proxy_auth_request_headers;
+
+/// An established HTTP forward proxy requires authentication.
+///
+/// Returned when [`HttpForwardProxyLayer::with_isolate_auth_error`] is enabled
+/// and the proxy responds with `407 Proxy Authentication Required`. The proxy's
+/// response headers and body are discarded.
+#[derive(Debug, Clone, Copy)]
+pub struct HttpForwardProxyAuthRequired;
+
+impl fmt::Display for HttpForwardProxyAuthRequired {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("HTTP forward proxy authentication required")
+    }
+}
+
+impl std::error::Error for HttpForwardProxyAuthRequired {}
 
 /// HTTP middleware for requests sent directly to an HTTP forward proxy.
 ///
@@ -23,12 +42,13 @@ use super::HttpProxyError;
 /// [`Self::with_proxy_auth`] with `false` to opt out. A proxy-generated `407`
 /// response is exposed by default for ordinary HTTP clients; intermediary
 /// clients can enable [`Self::with_isolate_auth_error`] to turn it into
-/// [`HttpProxyError::AuthRequired`] before any proxy response headers or body
+/// [`HttpForwardProxyAuthRequired`] before any proxy response headers or body
 /// reach their downstream peer.
 ///
 /// Custom proxy connectors must publish [`EstablishedProxyRoute`] in their
-/// established connection extensions. Missing metadata disables forward-proxy
-/// behavior and never falls back to request-side routes or credentials.
+/// established connection extensions. Missing metadata or a forward route
+/// with a non-HTTP proxy protocol disables forward-proxy behavior and never
+/// falls back to request-side routes or credentials.
 #[derive(Debug, Clone)]
 pub struct HttpForwardProxyLayer {
     proxy_auth: bool,
@@ -65,7 +85,7 @@ impl HttpForwardProxyLayer {
         /// Enable or disable isolation of a forward proxy's `407` response.
         ///
         /// When enabled, the response is dropped and
-        /// [`HttpProxyError::AuthRequired`] is returned. This is intended for
+        /// [`HttpForwardProxyAuthRequired`] is returned. This is intended for
         /// intermediary services which must not expose one proxy hop's challenge
         /// to a different downstream proxy client.
         pub fn isolate_auth_error(mut self, enabled: bool) -> Self {
@@ -139,11 +159,10 @@ where
         // request-provided marker describes intent, not what fallback and pool
         // selection actually established.
         let inner_extensions = self.inner.extensions();
-        let established_route = inner_extensions.get_ref::<EstablishedProxyRoute>();
-        let http_proxy = match established_route {
-            Some(EstablishedProxyRoute::Forward(proxy)) => Some(proxy),
-            _ => None,
-        };
+        let http_proxy = inner_extensions
+            .get_ref::<EstablishedProxyRoute>()
+            .filter(|route| route.is_http_forward())
+            .and_then(EstablishedProxyRoute::proxy_address);
 
         // Refresh the snapshot after caller middleware, including when the
         // connection has no route. Encoders must not revive a stale marker.
@@ -178,7 +197,7 @@ where
             // tunneled origin. Direct and SOCKS-carried requests likewise have
             // no HTTP proxy hop. Neither configured nor caller-provided proxy
             // credentials may cross those boundaries.
-            req.headers_mut().remove(PROXY_AUTHORIZATION);
+            remove_proxy_auth_request_headers(req.headers_mut());
         }
 
         let response = self.inner.serve(req).await.map_err(Into::into)?;
@@ -187,7 +206,7 @@ where
             && response.status() == StatusCode::PROXY_AUTHENTICATION_REQUIRED
         {
             tracing::debug!("isolating authentication challenge returned by HTTP forward proxy");
-            return Err(HttpProxyError::AuthRequired.into());
+            return Err(HttpForwardProxyAuthRequired.into());
         }
 
         Ok(response)
@@ -317,20 +336,28 @@ mod tests {
     #[tokio::test]
     async fn configured_credentials_and_target_follow_only_the_established_route() {
         let proxy = authenticated_proxy();
-        for route in [
-            None,
-            Some(EstablishedProxyRoute::Direct),
-            Some(EstablishedProxyRoute::Tunnel(proxy.clone())),
-            Some(EstablishedProxyRoute::Tunnel(
-                "socks5://upstream:secret@proxy.example:1080"
-                    .parse()
-                    .unwrap(),
-            )),
-            Some(EstablishedProxyRoute::Forward(proxy.clone())),
+        for (route, is_forward) in [
+            (None, false),
+            (Some(EstablishedProxyRoute::Direct), false),
+            (Some(EstablishedProxyRoute::Tunnel(proxy.clone())), false),
+            (
+                Some(EstablishedProxyRoute::Tunnel(
+                    "socks5://upstream:secret@proxy.example:1080"
+                        .parse()
+                        .unwrap(),
+                )),
+                false,
+            ),
+            (
+                Some(EstablishedProxyRoute::Forward(
+                    "socks5://upstream:secret@proxy.example:1080"
+                        .parse()
+                        .unwrap(),
+                )),
+                false,
+            ),
+            (Some(EstablishedProxyRoute::Forward(proxy.clone())), true),
         ] {
-            let is_forward = route
-                .as_ref()
-                .is_some_and(EstablishedProxyRoute::is_http_forward);
             let stale_route = if is_forward {
                 EstablishedProxyRoute::Direct
             } else {
@@ -390,18 +417,30 @@ mod tests {
 
     #[tokio::test]
     async fn proxy_auth_can_be_disabled_without_leaking_manual_auth_to_other_routes() {
-        for route in [
-            None,
-            Some(EstablishedProxyRoute::Direct),
-            Some(EstablishedProxyRoute::Tunnel(authenticated_proxy())),
-            Some(EstablishedProxyRoute::Tunnel(
-                "socks5://proxy.example:1080".parse().unwrap(),
-            )),
-            Some(EstablishedProxyRoute::Forward(authenticated_proxy())),
+        for (route, is_forward) in [
+            (None, false),
+            (Some(EstablishedProxyRoute::Direct), false),
+            (
+                Some(EstablishedProxyRoute::Tunnel(authenticated_proxy())),
+                false,
+            ),
+            (
+                Some(EstablishedProxyRoute::Tunnel(
+                    "socks5://proxy.example:1080".parse().unwrap(),
+                )),
+                false,
+            ),
+            (
+                Some(EstablishedProxyRoute::Forward(
+                    "socks5://proxy.example:1080".parse().unwrap(),
+                )),
+                false,
+            ),
+            (
+                Some(EstablishedProxyRoute::Forward(authenticated_proxy())),
+                true,
+            ),
         ] {
-            let is_forward = route
-                .as_ref()
-                .is_some_and(EstablishedProxyRoute::is_http_forward);
             let response = HttpForwardProxyLayer::new()
                 .with_proxy_auth(false)
                 .into_layer(observe_proxy_authorization(route))
@@ -463,18 +502,30 @@ mod tests {
     #[tokio::test]
     async fn auth_challenge_is_isolated_only_for_an_established_forward_route() {
         for isolate in [false, true] {
-            for route in [
-                None,
-                Some(EstablishedProxyRoute::Direct),
-                Some(EstablishedProxyRoute::Tunnel(authenticated_proxy())),
-                Some(EstablishedProxyRoute::Tunnel(
-                    "socks5://proxy.example:1080".parse().unwrap(),
-                )),
-                Some(EstablishedProxyRoute::Forward(authenticated_proxy())),
+            for (route, is_forward) in [
+                (None, false),
+                (Some(EstablishedProxyRoute::Direct), false),
+                (
+                    Some(EstablishedProxyRoute::Tunnel(authenticated_proxy())),
+                    false,
+                ),
+                (
+                    Some(EstablishedProxyRoute::Tunnel(
+                        "socks5://proxy.example:1080".parse().unwrap(),
+                    )),
+                    false,
+                ),
+                (
+                    Some(EstablishedProxyRoute::Forward(
+                        "socks5://proxy.example:1080".parse().unwrap(),
+                    )),
+                    false,
+                ),
+                (
+                    Some(EstablishedProxyRoute::Forward(authenticated_proxy())),
+                    true,
+                ),
             ] {
-                let is_forward = route
-                    .as_ref()
-                    .is_some_and(EstablishedProxyRoute::is_http_forward);
                 let stale_route = if is_forward {
                     EstablishedProxyRoute::Direct
                 } else {
@@ -489,8 +540,10 @@ mod tests {
                     .await;
                 if isolate && is_forward {
                     assert!(matches!(
-                        result.unwrap_err().downcast_ref::<HttpProxyError>(),
-                        Some(HttpProxyError::AuthRequired),
+                        result
+                            .unwrap_err()
+                            .downcast_ref::<HttpForwardProxyAuthRequired>(),
+                        Some(HttpForwardProxyAuthRequired),
                     ));
                 } else {
                     let response = result.unwrap();

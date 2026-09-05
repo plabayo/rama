@@ -27,6 +27,10 @@ use rama_core::{
     extensions::Egress,
     layer::MapErr,
 };
+use rama_http::{
+    layer::forward_proxy::{HttpForwardProxyLayer, HttpForwardProxyService},
+    proxy::PlaintextHttpProxyMode,
+};
 
 pub mod builder;
 #[doc(inline)]
@@ -57,8 +61,8 @@ pub use proxy_connector::{MaybeProxiedConnection, ProxyConnector, ProxyConnector
 /// with your own service fork and use the full power of Rust at your fingertips ;)
 pub struct EasyHttpWebClient<BodyIn, ConnResponse, L> {
     connector: BoxService<Request<BodyIn>, ConnResponse, OpaqueError>,
-    forward_proxy_layer: rama_http_backend::client::proxy::layer::HttpForwardProxyLayer,
-    plaintext_http_proxy_mode: Option<rama_http_backend::client::proxy::PlaintextHttpProxyMode>,
+    forward_proxy_layer: HttpForwardProxyLayer,
+    plaintext_http_proxy_mode: Option<PlaintextHttpProxyMode>,
     jit_layers: L,
 }
 
@@ -192,19 +196,9 @@ where
 {
     /// Create a new [`EasyHttpWebClient`] using the provided connector.
     ///
-    /// If the connector can establish HTTP-proxy connections, every returned
-    /// connection must expose
-    /// [`EstablishedProxyRoute`](crate::net::client::EstablishedProxyRoute). The
-    /// built-in forward-proxy policy uses that established fact to choose
-    /// request-target form, bind credentials to the actual proxy, and prevent
-    /// proxy credentials from crossing into direct or tunneled origin traffic.
-    /// To support [`PlaintextHttpProxyMode`](
-    /// rama_http_backend::client::proxy::PlaintextHttpProxyMode), a custom
-    /// HTTP-proxy connector must also read that preference from the input
-    /// request and establish a CONNECT tunnel when it is `Tunnel`.
-    /// Missing metadata disables forward-proxy behavior and never falls back
-    /// to request-side routes or credentials. Custom connection wrappers must
-    /// delegate [`ExtensionsRef`] to the established connection they wrap.
+    /// Custom proxy connectors must honor [`PlaintextHttpProxyMode`] and publish
+    /// [`EstablishedProxyRoute`](crate::net::client::EstablishedProxyRoute).
+    /// Connection wrappers must preserve that metadata through [`ExtensionsRef`].
     #[must_use]
     pub fn new<S>(connector: S) -> Self
     where
@@ -212,8 +206,7 @@ where
     {
         Self {
             connector: MapErr::into_opaque_error(connector).boxed(),
-            forward_proxy_layer:
-                rama_http_backend::client::proxy::layer::HttpForwardProxyLayer::new(),
+            forward_proxy_layer: HttpForwardProxyLayer::new(),
             plaintext_http_proxy_mode: None,
             jit_layers: (),
         }
@@ -239,9 +232,7 @@ impl<BodyIn, ConnResponse, L> EasyHttpWebClient<BodyIn, ConnResponse, L> {
 
     /// Set the connector that this [`EasyHttpWebClient`] will use.
     ///
-    /// A proxy-capable connector has the same established-connection contract
-    /// as [`Self::new`]: it must expose
-    /// [`EstablishedProxyRoute`](crate::net::client::EstablishedProxyRoute).
+    /// Custom proxy connectors follow the metadata contract described in [`Self::new`].
     #[must_use]
     pub fn with_connector<S, BodyInNew, ConnResponseNew>(
         self,
@@ -305,7 +296,7 @@ impl<BodyIn, ConnResponse, L> EasyHttpWebClient<BodyIn, ConnResponse, L> {
         /// (absolute-form on HTTP/1).
         ///
         /// If this method is not called, a request-level
-        /// [`PlaintextHttpProxyMode`](rama_http_backend::client::proxy::PlaintextHttpProxyMode)
+        /// [`PlaintextHttpProxyMode`]
         /// is honored and
         /// otherwise forwarding is the connector default. Calling this method
         /// explicitly selects Tunnel (`true`) or Forward (`false`) for the client.
@@ -313,9 +304,9 @@ impl<BodyIn, ConnResponse, L> EasyHttpWebClient<BodyIn, ConnResponse, L> {
         /// request remains plaintext inside the proxy tunnel.
         pub fn tunnel_plaintext_http(mut self, enabled: bool) -> Self {
             self.plaintext_http_proxy_mode = Some(if enabled {
-                rama_http_backend::client::proxy::PlaintextHttpProxyMode::Tunnel
+                PlaintextHttpProxyMode::Tunnel
             } else {
-                rama_http_backend::client::proxy::PlaintextHttpProxyMode::Forward
+                PlaintextHttpProxyMode::Forward
             });
             self
         }
@@ -346,7 +337,7 @@ where
     ConnectionBody:
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     L: Layer<
-            rama_http_backend::client::proxy::layer::HttpForwardProxyService<Connection>,
+            HttpForwardProxyService<Connection>,
             Service: Service<Request<ConnectionBody>, Output = Response, Error = BoxError>,
         > + Send
         + Sync
@@ -493,10 +484,8 @@ mod tests {
     async fn custom_connector_receives_plaintext_http_proxy_mode() {
         let connector = service_fn(|request: Request| async move {
             assert_eq!(
-                request
-                    .extensions()
-                    .get_ref::<rama_http_backend::client::proxy::PlaintextHttpProxyMode>(),
-                Some(&rama_http_backend::client::proxy::PlaintextHttpProxyMode::Tunnel)
+                request.extensions().get_ref::<PlaintextHttpProxyMode>(),
+                Some(&PlaintextHttpProxyMode::Tunnel)
             );
 
             let conn = EmptyHttpConnection::default();

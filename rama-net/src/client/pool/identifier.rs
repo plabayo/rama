@@ -38,6 +38,8 @@ pub struct BasicConnId {
     pub protocol: Option<Protocol>,
     pub authority: HostWithOptPort,
     /// Whether the input selected a route, including an explicitly direct route.
+    /// An explicit direct route and no route both have no [`Self::proxy_address`],
+    /// but differ in whether established route metadata must be present.
     pub proxy_route_requested: bool,
     pub proxy_address: Option<ProxyAddress>,
     pub connector_target: Option<ConnectorTarget>,

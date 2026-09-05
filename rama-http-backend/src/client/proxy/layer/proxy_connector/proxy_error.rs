@@ -1,15 +1,13 @@
 use std::fmt;
 
-use rama_core::error::BoxError;
+use rama_core::error::{BoxError, error_chain_with};
 use rama_http_types::{StatusCode, Version};
 use rama_net::client::{ConnectionError, ConnectionErrorDomain, ConnectionErrorKind};
 
 #[derive(Debug)]
-/// Error returned while establishing an HTTP proxy tunnel or enforcing an
-/// established forward-proxy response policy.
+/// Error returned while establishing an HTTP proxy tunnel.
 pub enum HttpProxyError {
-    /// Proxy authentication required during CONNECT or an isolated ordinary
-    /// forward request.
+    /// Proxy authentication required during CONNECT.
     ///
     /// (Proxy returned HTTP 407)
     AuthRequired,
@@ -95,13 +93,11 @@ impl From<HttpProxyError> for ConnectionError {
 }
 
 fn classify_handshake_error(error: &(dyn std::error::Error + 'static)) -> ConnectionErrorKind {
-    let mut current = Some(error);
     let mut kind = ConnectionErrorKind::Protocol;
     // Unknown handshake failures must not permit implicit DIRECT fallback.
     // Inspect causes before accepting a closed/canceled outer HTTP operation:
     // an H2 protocol error may be wrapped in just such an operation.
-    for _ in 0..32 {
-        let Some(error) = current else { break };
+    for error in error_chain_with(error, 32, handshake_source) {
         if let Some(http) = error.downcast_ref::<rama_http_core::Error>() {
             if http.is_parse() || http.is_user() {
                 return ConnectionErrorKind::Protocol;
@@ -112,11 +108,9 @@ fn classify_handshake_error(error: &(dyn std::error::Error + 'static)) -> Connec
                 kind = ConnectionErrorKind::Unavailable;
             }
         }
-        if let Some(h2) = error.downcast_ref::<rama_http_core::h2::Error>() {
-            if let Some(io) = h2.get_io() {
-                current = Some(io);
-                continue;
-            }
+        if let Some(h2) = error.downcast_ref::<rama_http_core::h2::Error>()
+            && h2.get_io().is_none()
+        {
             return ConnectionErrorKind::Protocol;
         }
         if let Some(io) = error.downcast_ref::<std::io::Error>() {
@@ -127,14 +121,26 @@ fn classify_handshake_error(error: &(dyn std::error::Error + 'static)) -> Connec
             } else {
                 ConnectionErrorKind::Protocol
             };
-            if let Some(source) = io.get_ref() {
-                current = Some(source);
-                continue;
-            }
         }
-        current = error.source();
     }
     kind
+}
+
+fn handshake_source<'a>(
+    error: &'a (dyn std::error::Error + 'static),
+) -> Option<&'a (dyn std::error::Error + 'static)> {
+    // H2 and I/O errors can retain a cause that Error::source does not expose.
+    if let Some(h2) = error.downcast_ref::<rama_http_core::h2::Error>()
+        && let Some(io) = h2.get_io()
+    {
+        return Some(io);
+    }
+    if let Some(io) = error.downcast_ref::<std::io::Error>()
+        && let Some(source) = io.get_ref()
+    {
+        return Some(source);
+    }
+    error.source()
 }
 
 impl From<std::io::Error> for HttpProxyError {
@@ -234,6 +240,84 @@ mod tests {
             let error = ConnectionError::from(HttpProxyError::Transport(source));
             assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
             assert_eq!(error.kind(), expected);
+        }
+    }
+
+    #[test]
+    fn handshake_classification_inspects_hidden_io_causes() {
+        use std::io::{Error, ErrorKind};
+
+        for (outer, inner, expected) in [
+            (
+                ErrorKind::ConnectionRefused,
+                ErrorKind::InvalidData,
+                ConnectionErrorKind::Protocol,
+            ),
+            (
+                ErrorKind::InvalidData,
+                ErrorKind::ConnectionRefused,
+                ConnectionErrorKind::Unavailable,
+            ),
+            (
+                ErrorKind::ConnectionRefused,
+                ErrorKind::TimedOut,
+                ConnectionErrorKind::Timeout,
+            ),
+            (
+                ErrorKind::TimedOut,
+                ErrorKind::ConnectionRefused,
+                ConnectionErrorKind::Unavailable,
+            ),
+        ] {
+            let error = Error::new(outer, Error::from(inner));
+            assert_eq!(classify_handshake_error(&error), expected);
+        }
+
+        let error = Error::new(
+            ErrorKind::ConnectionRefused,
+            rama_http_core::h2::Error::from(rama_http_core::h2::Reason::PROTOCOL_ERROR),
+        );
+        assert_eq!(
+            classify_handshake_error(&error),
+            ConnectionErrorKind::Protocol
+        );
+
+        let error = Error::new(ErrorKind::ConnectionRefused, "unknown cause");
+        assert_eq!(
+            classify_handshake_error(&error),
+            ConnectionErrorKind::Unavailable
+        );
+    }
+
+    #[tokio::test]
+    async fn handshake_classification_inspects_hidden_h2_io_cause() {
+        let (io, peer) = tokio::io::duplex(64);
+        drop(peer);
+        let error = rama_http_core::h2::client::handshake(rama_core::ServiceInput::new(io))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.get_io().unwrap().kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        assert!(std::error::Error::source(&error).is_none());
+
+        let error = ConnectionError::from(HttpProxyError::Transport(error.into()));
+        assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+        assert_eq!(error.kind(), ConnectionErrorKind::Unavailable);
+    }
+
+    #[test]
+    fn handshake_classification_bounds_hidden_causes() {
+        for (depth, expected) in [
+            (32, ConnectionErrorKind::Protocol),
+            (33, ConnectionErrorKind::Unavailable),
+        ] {
+            let mut error = std::io::Error::from(std::io::ErrorKind::InvalidData);
+            for _ in 1..depth {
+                error = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, error);
+            }
+            assert_eq!(classify_handshake_error(&error), expected, "depth {depth}");
         }
     }
 

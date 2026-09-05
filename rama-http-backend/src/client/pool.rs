@@ -112,17 +112,13 @@ fn http_proxy_mode_requirement(input: &ConnectRequest) -> Option<HttpProxyModeRe
         return None;
     }
 
-    let plaintext_http = input
-        .protocol()
-        .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
     Some(
-        if plaintext_http
-            && input
-                .extensions()
-                .get_ref::<PlaintextHttpProxyMode>()
-                .copied()
-                .unwrap_or_default()
-                == PlaintextHttpProxyMode::Forward
+        if input
+            .extensions()
+            .get_ref::<PlaintextHttpProxyMode>()
+            .copied()
+            .unwrap_or_default()
+            .should_forward(input.protocol())
         {
             HttpProxyModeRequirement::Forward
         } else {
@@ -135,13 +131,12 @@ fn connection_version_requirement(input: &ConnectRequest) -> Option<Version> {
     let plaintext_http = input
         .protocol()
         .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
-    let secure_forward_proxy = plaintext_http
-        && input
-            .extensions()
-            .get_ref::<PlaintextHttpProxyMode>()
-            .copied()
-            .unwrap_or_default()
-            == PlaintextHttpProxyMode::Forward
+    let secure_forward_proxy = input
+        .extensions()
+        .get_ref::<PlaintextHttpProxyMode>()
+        .copied()
+        .unwrap_or_default()
+        .should_forward(input.protocol())
         && input
             .extensions()
             .get_ref::<ProxyRoute>()

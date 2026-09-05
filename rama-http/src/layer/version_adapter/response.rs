@@ -142,6 +142,8 @@ pub fn adapt_response_version<Body>(
 ///
 /// For a WebSocket handshake (known from the captured request context) the HTTP/1
 /// `101 Switching Protocols` accept becomes the `200 OK` form (RFC 8441 §5.1).
+/// An HTTP/1 `2xx` WebSocket rejection is an error because forwarding it would
+/// falsely accept the downstream Extended CONNECT handshake.
 /// Otherwise removes the connection-specific headers that are *illegal* in HTTP/2 and
 /// HTTP/3 (RFC 9113 §8.2.2 / RFC 9114 §4.2) so an ordinary response can be
 /// (re)serialized over the binary-framed protocol.
@@ -154,6 +156,15 @@ fn upgrade_response_to_h2_or_h3<Body>(
     response: &mut Response<Body>,
     request_ctx: &ResponseVersionAdaptCtx,
 ) -> Result<(), BoxError> {
+    if request_ctx.is_websocket() && response.status().is_success() {
+        // RFC 6455 requires 101 for HTTP/1 WebSocket acceptance, while any 2xx
+        // accepts Extended CONNECT. Preserve rejection across that transition.
+        return Err(BoxError::from(format!(
+            "cannot translate HTTP/1 WebSocket rejection {} to HTTP/2+: a 2xx response would accept Extended CONNECT",
+            response.status(),
+        )));
+    }
+
     if response.status() == StatusCode::SWITCHING_PROTOCOLS {
         if request_ctx.is_websocket() {
             tracing::trace!("translating h1 websocket 101 response into h2/h3 200 OK");
@@ -336,6 +347,77 @@ mod tests {
     }
 
     #[test]
+    fn test_h1_to_h2_or_h3_websocket_2xx_rejection_errors() {
+        for version in [Version::HTTP_2, Version::HTTP_3] {
+            for status in [
+                StatusCode::OK,
+                StatusCode::NO_CONTENT,
+                StatusCode::from_u16(299).unwrap(),
+            ] {
+                let mut resp = Response::builder()
+                    .version(Version::HTTP_11)
+                    .status(status)
+                    .body(())
+                    .unwrap();
+
+                // HTTP/1 WebSocket acceptance requires 101. Passing a 2xx through
+                // would falsely accept the downstream Extended CONNECT handshake.
+                assert!(
+                    adapt_response_version(&mut resp, &websocket_ctx(version)).is_err(),
+                    "HTTP/1 WebSocket rejection {status} must not become a successful {version:?} CONNECT",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_h1_to_h2_or_h3_ordinary_2xx_responses_are_preserved() {
+        for version in [Version::HTTP_2, Version::HTTP_3] {
+            for status in [
+                StatusCode::OK,
+                StatusCode::NO_CONTENT,
+                StatusCode::from_u16(299).unwrap(),
+            ] {
+                let mut resp = Response::builder()
+                    .version(Version::HTTP_11)
+                    .status(status)
+                    .body(())
+                    .unwrap();
+
+                adapt_response_version(&mut resp, &ctx_with_version(version)).unwrap();
+
+                assert_eq!(resp.version(), version);
+                assert_eq!(resp.status(), status);
+            }
+        }
+    }
+
+    #[test]
+    fn test_h1_to_h2_or_h3_websocket_non_2xx_rejections_are_preserved() {
+        for version in [Version::HTTP_2, Version::HTTP_3] {
+            for status in [
+                StatusCode::FOUND,
+                StatusCode::BAD_REQUEST,
+                StatusCode::PROXY_AUTHENTICATION_REQUIRED,
+            ] {
+                let mut resp = Response::builder()
+                    .version(Version::HTTP_11)
+                    .status(status)
+                    .header("proxy-authenticate", "Basic realm=upstream")
+                    .body("handshake rejected")
+                    .unwrap();
+
+                adapt_response_version(&mut resp, &websocket_ctx(version)).unwrap();
+
+                assert_eq!(resp.version(), version);
+                assert_eq!(resp.status(), status);
+                assert_eq!(resp.headers()["proxy-authenticate"], "Basic realm=upstream");
+                assert_eq!(*resp.body(), "handshake rejected");
+            }
+        }
+    }
+
+    #[test]
     fn test_h1_to_h2_websocket_101_becomes_200() {
         for content_length in ["0", "999"] {
             let mut resp = Response::builder()
@@ -362,7 +444,13 @@ mod tests {
 
     #[test]
     fn test_h2_to_h1_websocket_success_becomes_101() {
-        for status in [StatusCode::OK, StatusCode::CREATED] {
+        for status in [
+            StatusCode::OK,
+            StatusCode::CREATED,
+            StatusCode::NO_CONTENT,
+            StatusCode::RESET_CONTENT,
+            StatusCode::from_u16(299).unwrap(),
+        ] {
             for content_length in ["0", "999"] {
                 let mut resp = Response::builder()
                     .version(Version::HTTP_2)

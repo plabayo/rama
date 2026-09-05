@@ -219,13 +219,12 @@ where
         let app_is_plaintext_http = app_protocol
             .as_ref()
             .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure());
-        let use_forward_proxy = app_is_plaintext_http
-            && input
-                .extensions()
-                .get_ref::<PlaintextHttpProxyMode>()
-                .copied()
-                .unwrap_or_default()
-                == PlaintextHttpProxyMode::Forward;
+        let use_forward_proxy = input
+            .extensions()
+            .get_ref::<PlaintextHttpProxyMode>()
+            .copied()
+            .unwrap_or_default()
+            .should_forward(app_protocol.as_ref());
         let proxy_is_secure = proxy_info
             .protocol
             .as_ref()

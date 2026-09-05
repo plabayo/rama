@@ -23,7 +23,10 @@ use rama::{
         body::util::BodyExt as _,
         convert::curl,
         headers::SourceList,
-        layer::remove_header::{RemoveRequestHeaderLayer, remove_hop_by_hop_request_headers},
+        layer::remove_header::{
+            RemoveRequestHeaderLayer, remove_hop_by_hop_request_headers,
+            remove_proxy_auth_request_headers,
+        },
         protocols::html::*,
         service::web::{
             Router,
@@ -1136,7 +1139,7 @@ async fn request_curl(
     };
     let (mut parts, ()) = request.into_parts();
     remove_hop_by_hop_request_headers(&mut parts.headers);
-    parts.headers.remove("proxy-authorization");
+    remove_proxy_auth_request_headers(&mut parts.headers);
     let compatibility = if cfg!(windows) {
         curl::CurlScriptCompatibility::PowerShell
     } else {
@@ -1210,9 +1213,6 @@ async fn replay_captured(state: &DashboardState, id: u64) -> Result<u16, BoxErro
     // Scrub the original hop metadata before emulation can normalize the
     // `Connection` field while retaining a header it named.
     remove_hop_by_hop_request_headers(request.headers_mut());
-    request
-        .headers_mut()
-        .remove(rama::http::header::PROXY_AUTHORIZATION);
     let tls_config = rama::tls::client::TlsClientConfig::default_http();
     let transport =
         rama::tcp::client::service::TcpConnector::new().with_connector(state.tcp_options.clone());
@@ -4952,6 +4952,29 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn replay_honors_disabled_forward_proxy_auth() {
+        assert_replay_forward_proxy_auth(Some("upstream:secret"), false, None).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replay_uses_configured_forward_proxy_auth() {
+        assert_replay_forward_proxy_auth(
+            Some("upstream:secret"),
+            true,
+            Some("Basic dXBzdHJlYW06c2VjcmV0"),
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replay_without_configured_forward_proxy_auth_does_not_reuse_captured_auth() {
+        assert_replay_forward_proxy_auth(None, true, None).await;
+    }
+
+    async fn assert_replay_forward_proxy_auth(
+        configured_credential: Option<&str>,
+        forward_proxy_auth: bool,
+        expected_authorization: Option<&str>,
+    ) {
         let listener = rama::tcp::server::TcpListener::bind_address(
             rama::net::address::SocketAddress::local_ipv4(0),
             Executor::default(),
@@ -4970,7 +4993,10 @@ mod tests {
                                 request.uri().to_string(),
                                 request
                                     .headers()
-                                    .contains_key(rama::http::header::PROXY_AUTHORIZATION),
+                                    .get_all(rama::http::header::PROXY_AUTHORIZATION)
+                                    .iter()
+                                    .map(|value| value.to_str().unwrap().to_owned())
+                                    .collect::<Vec<_>>(),
                             ))
                             .await
                             .unwrap();
@@ -4981,19 +5007,27 @@ mod tests {
         ));
         let mut proxy: rama::net::address::ProxyAddress =
             format!("http://{proxy_address}").parse().unwrap();
-        proxy.credential = Some(rama::net::user::ProxyCredential::Basic(
-            rama::net::user::Basic::try_from("upstream:secret").unwrap(),
-        ));
+        proxy.credential = configured_credential.map(|credential| {
+            rama::net::user::ProxyCredential::Basic(
+                rama::net::user::Basic::try_from(credential).unwrap(),
+            )
+        });
         let upstream = UpstreamProxyConfig::new(Some(proxy), false, &[])
             .unwrap()
-            .with_forward_proxy_auth(false);
+            .with_forward_proxy_auth(forward_proxy_auth);
         let state = test_state_with_upstream(8, 8, upstream);
         capture_request_for_replay(&state, "http://origin.example/replay").await;
 
         assert_eq!(replay_captured(&state, 1).await.unwrap(), 200);
         assert_eq!(
             observed_rx.recv().await.unwrap(),
-            ("http://origin.example/replay".to_owned(), false)
+            (
+                "http://origin.example/replay".to_owned(),
+                expected_authorization
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            )
         );
         proxy_task.abort();
     }

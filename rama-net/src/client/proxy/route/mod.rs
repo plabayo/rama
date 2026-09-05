@@ -118,8 +118,8 @@ impl EstablishedProxyRoute {
 
     /// Whether application requests are addressed to an HTTP forward proxy.
     #[must_use]
-    pub const fn is_http_forward(&self) -> bool {
-        matches!(self, Self::Forward(_))
+    pub fn is_http_forward(&self) -> bool {
+        matches!(self, Self::Forward(proxy) if proxy.protocol.as_ref().is_none_or(|protocol| protocol.is_http()))
     }
 }
 
@@ -284,6 +284,32 @@ mod tests {
     #[test]
     fn direct_is_the_default_route() {
         assert_eq!(ProxyRoute::default(), ProxyRoute::Direct);
+    }
+
+    #[test]
+    fn established_forward_route_requires_an_http_proxy_protocol() {
+        assert!(!EstablishedProxyRoute::Direct.is_http_forward());
+        for (protocol, forwards) in [
+            (None, true),
+            (Some(crate::Protocol::HTTP), true),
+            (Some(crate::Protocol::HTTPS), true),
+            (Some(crate::Protocol::SOCKS5), false),
+            (Some(crate::Protocol::SOCKS5H), false),
+            (Some(crate::Protocol::WS), false),
+            (Some(crate::Protocol::from_static("custom")), false),
+        ] {
+            let proxy = ProxyAddress {
+                protocol,
+                ..proxy_address("selected")
+            };
+            assert_eq!(
+                EstablishedProxyRoute::Forward(proxy.clone()).is_http_forward(),
+                forwards,
+                "proxy protocol: {:?}",
+                proxy.protocol,
+            );
+            assert!(!EstablishedProxyRoute::Tunnel(proxy).is_http_forward());
+        }
     }
 
     #[test]
