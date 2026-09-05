@@ -4,7 +4,7 @@ use super::common::*;
 use crate::tproxy::engine::*;
 use crate::tproxy::{TransparentProxyFlowMeta, TransparentProxyFlowProtocol};
 use rama_core::bytes::Bytes;
-use std::sync::{Arc, Barrier};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::test(start_paused = true)]
@@ -567,29 +567,41 @@ fn stop_is_bounded_when_all_runtime_workers_are_blocked() {
     let budget = Duration::from_millis(250);
     let engine = build_engine_with_stop_drain_max_wait(TestHandler::passthrough(), budget);
 
-    // Occupy both `TestRuntimeFactory` workers with tasks that block
-    // their thread without ever yielding to the scheduler.
+    // Acknowledge each blocked worker before submitting the next task: a
+    // scheduler may otherwise batch both tasks onto one worker's local queue
+    // and leave the second task behind the first blocked poll.
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let mut release_senders = Vec::new();
     for _ in 0..2 {
         let ready_tx = ready_tx.clone();
+        let finished_tx = finished_tx.clone();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        release_senders.push(release_tx);
         engine.rt.as_ref().unwrap().spawn(async move {
-            ready_tx.send(()).unwrap();
-            loop {
-                std::thread::sleep(Duration::from_secs(60));
+            if ready_tx.send(()).is_err() {
+                return;
             }
+            // Dropping the senders releases every worker, including if setup
+            // or an assertion unwinds. Keep them alive through engine.stop().
+            _ = release_rx.recv();
+            _ = finished_tx.send(());
         });
+        ready_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("blocker running before the next task is submitted");
     }
-    // Only proceed once both blockers actually occupy a worker.
-    ready_rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("first blocker running");
-    ready_rx
-        .recv_timeout(Duration::from_secs(2))
-        .expect("second blocker running");
 
     let started = Instant::now();
     engine.stop(0);
     let elapsed = started.elapsed();
+
+    drop(release_senders);
+    for _ in 0..2 {
+        finished_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("blocked worker released after stop returned");
+    }
 
     assert!(
         elapsed >= budget,
@@ -611,18 +623,20 @@ fn ffi_decision_is_polled_when_all_runtime_workers_are_blocked() {
             .build()
             .unwrap(),
     );
-    let release = Arc::new(Barrier::new(3));
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let mut release_senders = Vec::new();
     for _ in 0..2 {
         let ready_tx = ready_tx.clone();
-        let release = Arc::clone(&release);
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        release_senders.push(release_tx);
         _ = runtime.spawn(async move {
-            ready_tx.send(()).unwrap();
-            release.wait();
+            if ready_tx.send(()).is_err() {
+                return;
+            }
+            _ = release_rx.recv();
         });
+        ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
     }
-    ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
-    ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
 
     let (result_tx, result_rx) = std::sync::mpsc::sync_channel(1);
     let decision_thread = std::thread::spawn(move || {
@@ -635,7 +649,7 @@ fn ffi_decision_is_polled_when_all_runtime_workers_are_blocked() {
     });
     let inline_result = result_rx.recv_timeout(Duration::from_millis(250));
 
-    release.wait();
+    drop(release_senders);
     let eventual_result = decision_thread.join().unwrap();
 
     assert_eq!(
