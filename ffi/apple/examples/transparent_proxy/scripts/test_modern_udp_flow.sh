@@ -424,7 +424,9 @@ run_bounded() {
   local timeout_seconds="$1"; shift
   local pid identity deadline child_rc=0 timed_out=0 tree_text="" tree_pid tree_identity
   local tree_incomplete=0 interrupted=0 saved_int_trap saved_term_trap result receipt
-  receipt="$(mktemp "$BOUNDED_CLEANUP_FAILED.drain.XXXXXX")" || {
+  # Sealing and verification also run through this wrapper. Their transient
+  # drain receipt must live outside the recursively sealed evidence tree.
+  receipt="$(mktemp /tmp/rama-modern-udp-drain.XXXXXX)" || {
     : > "$BOUNDED_CLEANUP_FAILED"
     return 125
   }
@@ -1244,7 +1246,9 @@ finalize() {
   # Capture includes workload cleanup, sealed Dial9 collection, and the exact
   # default-profile restoration. Allow asynchronous bridge records to arrive
   # before freezing the boundary while the owned logger is still alive.
-  sleep 2
+  if (( LOG_STREAM_STARTED == 1 )); then
+    sleep 2
+  fi
   RUN_END_EPOCH_MS="$(/usr/bin/python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
   if [[ ! "$RUN_END_EPOCH_MS" =~ ^[1-9][0-9]*$ \
     || "$RUN_END_EPOCH_MS" -lt "$RUN_START_EPOCH_MS" ]]

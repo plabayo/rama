@@ -2403,6 +2403,19 @@ def _process_snapshot(pid: int) -> ProcessSnapshot:
     return ProcessSnapshot(pid, birth_before // 1000, command, executable)
 
 
+def process_generation_identity(pid: int) -> str:
+    """Use the same kernel birth precision as signed provider capture."""
+    start_us = _process_start_epoch_us(pid)
+    process = _process_snapshot(pid)
+    if (process.start_epoch_ms != start_us // 1000
+            or _process_start_epoch_us(pid) != start_us):
+        raise EvidenceError("provider process birth changed during generation capture")
+    return provider_generation_identity(
+        pid, process.start_epoch_ms, hashlib.sha256(process.command.encode("utf-8")).hexdigest(),
+        start_epoch_us=start_us,
+    )
+
+
 def _process_start_epoch_us(pid: int) -> int:
     """Read the kernel process birth time without ps's one-second truncation."""
     if isinstance(pid, bool) or not 0 < pid <= 2**31 - 1:
@@ -3524,6 +3537,9 @@ def _parser() -> argparse.ArgumentParser:
     executable = subparsers.add_parser("process-executable")
     executable.add_argument("--pid", required=True, type=int)
 
+    process_generation = subparsers.add_parser("process-generation-identity")
+    process_generation.add_argument("--pid", required=True, type=int)
+
     absence = subparsers.add_parser("capture-provider-absence")
     absence_destination = absence.add_mutually_exclusive_group(required=True)
     absence_destination.add_argument("--output", type=Path)
@@ -3566,6 +3582,8 @@ def main(arguments: list[str] | None = None) -> int:
             print(CONTRACT, end="")
         elif args.command == "process-executable":
             print(_process_executable_path(args.pid))
+        elif args.command == "process-generation-identity":
+            print(process_generation_identity(args.pid))
         elif args.command == "capture-provider":
             values = capture_provider(
                 args.built_provider,

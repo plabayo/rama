@@ -368,28 +368,7 @@ diagnostic_status_value() {
 }
 
 process_identity() {
-  local pid="$1" start command
-  start="$(/bin/ps -p "$pid" -o lstart= 2>/dev/null | sed -E 's/^[[:space:]]+//')"
-  command="$(/bin/ps -ww -p "$pid" -o command= 2>/dev/null)"
-  [[ -n "$start" && -n "$command" && "$command" != *$'\n'* \
-    && "$command" != *$'\t'* && "$command" != *$'\r'* ]] || return 1
-  "$PYTHON_BIN" - "$EVIDENCE_HELPER" "$pid" "$start" "$command" <<'PY'
-from datetime import datetime
-import importlib.util
-import hashlib
-import sys
-
-sys.dont_write_bytecode = True
-spec = importlib.util.spec_from_file_location("signed_run_evidence", sys.argv[1])
-module = importlib.util.module_from_spec(spec)
-sys.modules[spec.name] = module
-spec.loader.exec_module(module)
-start_epoch_ms = int(
-    datetime.strptime(sys.argv[3], "%a %b %d %H:%M:%S %Y").astimezone().timestamp()
-) * 1000
-command_sha = hashlib.sha256(sys.argv[4].encode("utf-8")).hexdigest()
-print(module.provider_generation_identity(int(sys.argv[2]), start_epoch_ms, command_sha))
-PY
+  evidence_tool process-generation-identity --pid "$1"
 }
 
 provider_executable_for_pid() {

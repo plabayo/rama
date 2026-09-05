@@ -1458,6 +1458,37 @@ class StatusAndIdentityTests(unittest.TestCase):
                     Path(temporary) / evidence.PROVIDER_IDENTITY_NAME, Path("source"),
                 )
 
+    def test_runtime_generation_cli_preserves_submillisecond_birth_and_soak_wiring(self):
+        start_us = 1_700_000_000_123_456
+        process = evidence.ProcessSnapshot(42, start_us // 1000, "/provider", Path("/provider"))
+        expected = evidence.provider_generation_identity(
+            42, start_us // 1000, hashlib.sha256(b"/provider").hexdigest(),
+            start_epoch_us=start_us,
+        )
+        with mock.patch.object(evidence, "_process_start_epoch_us", return_value=start_us), \
+             mock.patch.object(evidence, "_process_snapshot", return_value=process), \
+             mock.patch("sys.stdout", new_callable=io.StringIO) as output:
+            self.assertEqual(evidence.main(["process-generation-identity", "--pid", "42"]), 0)
+            self.assertEqual(output.getvalue(), expected + "\n")
+        shell = Path(__file__).with_name("soak_test.sh").read_text()
+        body = shell.split("process_identity() {", 1)[1].split("\n}\n", 1)[0]
+        result = subprocess.run(
+            ["bash", "-c", 'evidence_tool() { printf "%s\\n" "$@"; }; '
+             + "process_identity() {" + body + "\n}\nprocess_identity 42"],
+            capture_output=True, text=True, timeout=3,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "process-generation-identity\n--pid\n42\n")
+
+    def test_runtime_generation_rejects_a_birth_change_within_one_millisecond(self):
+        start_us = 1_700_000_000_123_456
+        process = evidence.ProcessSnapshot(42, start_us // 1000, "/provider", Path("/provider"))
+        with mock.patch.object(
+            evidence, "_process_start_epoch_us", side_effect=[start_us, start_us + 1]
+        ), mock.patch.object(evidence, "_process_snapshot", return_value=process):
+            with self.assertRaisesRegex(evidence.EvidenceError, "birth changed"):
+                evidence.process_generation_identity(42)
+
     def test_process_snapshot_uses_kernel_executable_not_argv_or_mapped_images(self):
         with tempfile.TemporaryDirectory() as temporary:
             executable = Path(temporary) / "provider"

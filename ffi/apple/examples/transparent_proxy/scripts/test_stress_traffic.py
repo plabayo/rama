@@ -1829,6 +1829,70 @@ class StressTrafficValidationTests(unittest.TestCase):
                         artifact.read_text(encoding="utf-8", errors="ignore"),
                     )
 
+    def test_terminal_seal_includes_cleanup_and_survives_exit_trap(self):
+        from test_signed_run_evidence import make_run
+
+        shell = STRESS_SCRIPT.read_text()
+        functions = "".join(self.stress_function(shell, name) for name in (
+            "pid_identity", "owned_job_is_active", "collect_owned_tree",
+            "signal_owned_identity", "owned_job_has_exited",
+            "owned_identity_has_exited", "owned_tree_has_exited",
+            "capture_drain_receipt_valid", "cleanup_owned_jobs",
+            "write_terminal_status", "seal_and_verify_common_evidence", "handle_exit",
+        ))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "evidence"
+            make_run(root, "modern_udp", claims=[
+                ("dial9_workload_coverage", "1"),
+                ("dial9_claim", "exact-workload"),
+            ])
+            program = functions + textwrap.dedent(f"""\
+                set -eu
+                LOG_DIR={shlex.quote(str(root))}
+                COMMON_EVIDENCE_HELPER={shlex.quote(str(SCRIPT_DIR / 'signed_run_evidence.py'))}
+                MONITOR_STOP_FILE="$LOG_DIR/.monitor.stop"
+                GENERATION_STOP_FILE="$LOG_DIR/.generation.stop"
+                RESPONSE_TMP_DIR="$LOG_DIR/responses"
+                TRAFFIC_PIDS=() AUXILIARY_PIDS=() AUXILIARY_DRAIN_RECEIPTS=()
+                MONITOR_JOB_PID="" ABSENCE_MONITOR_JOB_PID=""
+                GENERATION_MONITOR_JOB_PID="" SYSTEM_LOG_JOB_PID=""
+                CLEANUP_STARTED=0 CLEANUP_INCOMPLETE=0
+                ANALYZE_ONLY=0 TRAFFIC_ROLE=direct-baseline
+                TERMINAL_STATUS_WRITTEN=0 TERMINAL_EXIT_CODE=2
+                # Keep the strict common fixture; exercise the actual writer's
+                # cleanup/seal/EXIT composition without native traffic.
+                write_stress_status() {{ [[ "$*" == '1 1 0' ]]; }}
+                write_common_evidence() {{ [[ "$*" == '1 1 0' ]]; }}
+                trap handle_exit EXIT
+                write_terminal_status 1 1 0
+                [[ "$CLEANUP_STARTED" == 1 && "$CLEANUP_INCOMPLETE" == 0 ]]
+                [[ -f "$MONITOR_STOP_FILE" && -f "$GENERATION_STOP_FILE" ]]
+                [[ -z "$(jobs -p)" ]]
+                exit "$TERMINAL_EXIT_CODE"
+            """)
+            result = subprocess.run(
+                ["bash", "-c", program], capture_output=True, text=True, timeout=10,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(signed_run_evidence.verify(root, actual_exit_code=0)["passed"], "1")
+
+    def test_terminal_cleanup_failure_cannot_keep_a_passing_status(self):
+        shell = STRESS_SCRIPT.read_text()
+        program = self.stress_function(shell, "write_terminal_status") + textwrap.dedent("""\
+            set -eu
+            ANALYZE_ONLY=0 TRAFFIC_ROLE=direct-baseline CLEANUP_INCOMPLETE=0
+            cleanup_owned_jobs() { CLEANUP_INCOMPLETE=1; }
+            write_stress_status() { [[ "$1 $2 $3" == '0 0 2' ]]; }
+            write_common_evidence() { [[ "$*" == '0 0 2' ]]; }
+            seal_and_verify_common_evidence() { [[ "$1" == 2 ]]; }
+            write_terminal_status 1 1 0
+            [[ "$TERMINAL_EXIT_CODE" == 2 && "$TERMINAL_STATUS_WRITTEN" == 1 ]]
+        """)
+        result = subprocess.run(
+            ["bash", "-c", program], capture_output=True, text=True, timeout=3,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_system_log_shutdown_preserves_generation_samples_through_forensics(self):
         shell = STRESS_SCRIPT.read_text()
         functions = "".join(
@@ -3419,7 +3483,11 @@ class SignedUdpGateWiringTests(unittest.TestCase):
             list(range(512)),
         )
         self.assertTrue(all(packet.startswith(marker) for packet, _ in fake.packets))
-        sleep.assert_called_once_with(0.25)
+        self.assertEqual(
+            sleep.call_args_list,
+            [mock.call(0.02)] * 65 + [mock.call(2.5)]
+            + [mock.call(0.02)] * 445 + [mock.call(0.25)],
+        )
         for arguments in ((63, 64, 0), (64, 63, 0), (64, 64, -1)):
             with self.assertRaises(ValueError):
                 pressure_burst("162.159.200.1", *arguments)

@@ -299,6 +299,46 @@ class BoundedCommandCleanupTests(unittest.TestCase):
         if inspected.returncode != 0 or not inspected.stdout.strip():
             self.skipTest("host sandbox blocks process identity inspection")
 
+    def test_bounded_seal_and_verify_leave_the_complete_manifest_unchanged(self):
+        import signed_run_evidence as evidence
+        from test_signed_run_evidence import make_run
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            root = parent / "evidence"
+            receipts = parent / "receipt-paths"
+            make_run(root, "modern_udp", claims=[
+                ("dial9_workload_coverage", "1"),
+                ("dial9_claim", "exact-workload"),
+            ])
+            program = self.helper_source() + textwrap.dedent(f"""\
+                set -eu
+                TMP_DIR={shlex.quote(str(root))}
+                BOUNDED_CLEANUP_FAILED="$TMP_DIR/.bounded-cleanup-failed"
+                mktemp() {{
+                  local receipt
+                  receipt="$(command mktemp "$@")" || return
+                  printf '%s\\n' "$receipt" >> {shlex.quote(str(receipts))}
+                  printf '%s\\n' "$receipt"
+                }}
+                run_bounded 10 {shlex.quote(sys.executable)} \
+                  {shlex.quote(str(SCRIPT_DIR / 'signed_run_evidence.py'))} \
+                  seal "$TMP_DIR" --actual-exit-code 0
+                run_bounded 10 {shlex.quote(sys.executable)} \
+                  {shlex.quote(str(SCRIPT_DIR / 'signed_run_evidence.py'))} \
+                  verify "$TMP_DIR" --actual-exit-code 0
+                [[ -z "$(jobs -p)" && ! -e "$BOUNDED_CLEANUP_FAILED" ]]
+            """)
+            result = subprocess.run(
+                ["bash", "-c", program], capture_output=True, text=True, timeout=25,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(evidence.verify(root, actual_exit_code=0)["passed"], "1")
+            paths = [Path(path) for path in receipts.read_text().splitlines()]
+            self.assertEqual(len(paths), 2)
+            self.assertTrue(all(root not in path.parents for path in paths))
+            self.assertTrue(all(not path.exists() for path in paths))
+
     def run_tree_fixture(self, *, delayed_writer=False, orphan=False, deny_kill=False, interrupt=None, expire_discovery=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

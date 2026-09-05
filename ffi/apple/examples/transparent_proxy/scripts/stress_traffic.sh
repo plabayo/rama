@@ -385,6 +385,12 @@ write_stress_status() {
 }
 
 write_terminal_status() {
+  # EXIT must not create stop markers or remove response/receipt files after
+  # the common manifest is frozen, including early terminal failure paths.
+  cleanup_owned_jobs
+  if (( CLEANUP_INCOMPLETE != 0 )) && [[ "$3" != 130 && "$3" != 143 ]]; then
+    set -- 0 0 2 "stress command cleanup could not prove every artifact writer exited"
+  fi
   write_stress_status "$@"
   TERMINAL_STATUS_WRITTEN=1
   TERMINAL_EXIT_CODE="$3"
@@ -1665,6 +1671,10 @@ if (( ! ANALYZE_ONLY )); then
       GENERATION_MONITOR_JOB_PID=""
     fi
   fi
+  # Finish the artifact lifecycle before either worker or common manifests.
+  # write_terminal_status repeats this idempotently for earlier exits.
+  cleanup_owned_jobs
+  (( CLEANUP_INCOMPLETE == 0 )) || EVIDENCE_FAILED=1
   if (( EVIDENCE_FAILED )); then
     say "${RED}stress evidence capture or cleanup was incomplete${RESET}"
     write_terminal_status 0 0 2 "stress evidence capture or cleanup was incomplete"
