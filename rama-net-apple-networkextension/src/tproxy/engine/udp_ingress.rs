@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, btree_map::Entry},
+    collections::{BTreeMap, btree_map::Entry},
     future::{Future, poll_fn},
     ops::Bound,
     sync::{
@@ -60,12 +60,183 @@ struct UdpIngressProbeLease {
     flow: Weak<UdpIngressFlowControl>,
 }
 
+/// Sequence-ordered AVL index with the smallest requested size cached below
+/// each node. This finds the oldest fitting waiter in O(log N), independently
+/// of the number of nonfitting predecessors or distinct datagram sizes.
+/// Insertions, removals and rotations also take O(log N); no payload or flow
+/// reference is owned here. The FIFO waiter map remains authoritative.
+#[derive(Default)]
+struct UdpIngressFittingIndex {
+    root: Option<Box<UdpIngressFittingNode>>,
+}
+
+struct UdpIngressFittingNode {
+    sequence: u64,
+    needed_bytes: usize,
+    minimum_bytes: usize,
+    height: u8,
+    left: Option<Box<Self>>,
+    right: Option<Box<Self>>,
+}
+
+impl UdpIngressFittingNode {
+    fn height(node: Option<&Self>) -> u8 {
+        node.map_or(0, |node| node.height)
+    }
+
+    fn minimum(node: Option<&Self>) -> usize {
+        node.map_or(usize::MAX, |node| node.minimum_bytes)
+    }
+
+    fn refresh(&mut self) {
+        self.height =
+            1 + Self::height(self.left.as_deref()).max(Self::height(self.right.as_deref()));
+        self.minimum_bytes = self
+            .needed_bytes
+            .min(Self::minimum(self.left.as_deref()))
+            .min(Self::minimum(self.right.as_deref()));
+    }
+
+    fn rotate_left(mut node: Box<Self>) -> Box<Self> {
+        let Some(mut pivot) = node.right.take() else {
+            return node;
+        };
+        node.right = pivot.left.take();
+        node.refresh();
+        pivot.left = Some(node);
+        pivot.refresh();
+        pivot
+    }
+
+    fn rotate_right(mut node: Box<Self>) -> Box<Self> {
+        let Some(mut pivot) = node.left.take() else {
+            return node;
+        };
+        node.left = pivot.right.take();
+        node.refresh();
+        pivot.right = Some(node);
+        pivot.refresh();
+        pivot
+    }
+
+    fn balance(mut node: Box<Self>) -> Box<Self> {
+        node.refresh();
+        if Self::height(node.left.as_deref()) > Self::height(node.right.as_deref()) + 1 {
+            if let Some(left) = node.left.as_ref()
+                && Self::height(left.right.as_deref()) > Self::height(left.left.as_deref())
+            {
+                node.left = node.left.take().map(Self::rotate_left);
+            }
+            Self::rotate_right(node)
+        } else if Self::height(node.right.as_deref()) > Self::height(node.left.as_deref()) + 1 {
+            if let Some(right) = node.right.as_ref()
+                && Self::height(right.left.as_deref()) > Self::height(right.right.as_deref())
+            {
+                node.right = node.right.take().map(Self::rotate_right);
+            }
+            Self::rotate_left(node)
+        } else {
+            node
+        }
+    }
+
+    fn insert(node: Option<Box<Self>>, sequence: u64, needed_bytes: usize) -> Box<Self> {
+        let Some(mut node) = node else {
+            return Box::new(Self {
+                sequence,
+                needed_bytes,
+                minimum_bytes: needed_bytes,
+                height: 1,
+                left: None,
+                right: None,
+            });
+        };
+        match sequence.cmp(&node.sequence) {
+            std::cmp::Ordering::Less => {
+                node.left = Some(Self::insert(node.left.take(), sequence, needed_bytes));
+            }
+            std::cmp::Ordering::Greater => {
+                node.right = Some(Self::insert(node.right.take(), sequence, needed_bytes));
+            }
+            std::cmp::Ordering::Equal => node.needed_bytes = needed_bytes,
+        }
+        Self::balance(node)
+    }
+
+    fn take_first(mut node: Box<Self>) -> (Option<Box<Self>>, Box<Self>) {
+        let Some(left) = node.left.take() else {
+            return (node.right.take(), node);
+        };
+        let (left, first) = Self::take_first(left);
+        node.left = left;
+        (Some(Self::balance(node)), first)
+    }
+
+    fn remove(node: Option<Box<Self>>, sequence: u64) -> Option<Box<Self>> {
+        let mut node = node?;
+        match sequence.cmp(&node.sequence) {
+            std::cmp::Ordering::Less => node.left = Self::remove(node.left.take(), sequence),
+            std::cmp::Ordering::Greater => node.right = Self::remove(node.right.take(), sequence),
+            std::cmp::Ordering::Equal => {
+                let Some(left) = node.left.take() else {
+                    return node.right.take();
+                };
+                let Some(right) = node.right.take() else {
+                    return Some(left);
+                };
+                let (right, mut successor) = Self::take_first(right);
+                successor.left = Some(left);
+                successor.right = right;
+                node = successor;
+            }
+        }
+        Some(Self::balance(node))
+    }
+}
+
+impl UdpIngressFittingIndex {
+    fn insert(&mut self, sequence: u64, needed_bytes: usize) {
+        self.root = Some(UdpIngressFittingNode::insert(
+            self.root.take(),
+            sequence,
+            needed_bytes,
+        ));
+    }
+
+    fn remove(&mut self, sequence: u64) {
+        self.root = UdpIngressFittingNode::remove(self.root.take(), sequence);
+    }
+
+    fn oldest_fitting(&self, available: usize) -> Option<(u64, usize)> {
+        let mut node = self.root.as_deref()?;
+        if node.minimum_bytes > available {
+            return None;
+        }
+        loop {
+            if let Some(left) = node.left.as_deref()
+                && left.minimum_bytes <= available
+            {
+                node = left;
+            } else if node.needed_bytes <= available {
+                return Some((node.sequence, node.needed_bytes));
+            } else {
+                node = node.right.as_deref()?;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn is_empty(&self) -> bool {
+        self.root.is_none()
+    }
+}
+
 #[derive(Default)]
 struct UdpIngressCoordinatorState {
     waiters: BTreeMap<(u64, usize), Weak<UdpIngressFlowControl>>,
-    /// Derived index of unleased waiters, ordered by size then FIFO sequence.
-    /// During discovery it finds a fitting retry without rescanning the cohort.
-    fitting_waiters: BTreeSet<(usize, u64)>,
+    /// Derived index of unleased waiters. During discovery it finds the oldest
+    /// fitting retry without rescanning the cohort or prioritizing tiny packets.
+    fitting_waiters: UdpIngressFittingIndex,
     /// Only flows paused on their own bytes enter this cold-path queue.
     /// Sequence-first keys preserve FIFO order; the pointer keeps identities
     /// distinct even if the sequence wraps during an engine lifetime.
@@ -546,9 +717,7 @@ impl UdpIngressBudget {
         }
         let needed_bytes = flow.blocked_bytes.load(Ordering::Acquire);
         let removed = coordinator.waiters.remove(&(sequence, needed_bytes));
-        coordinator
-            .fitting_waiters
-            .remove(&(needed_bytes, sequence));
+        coordinator.fitting_waiters.remove(sequence);
         debug_assert_eq!(
             removed.as_ref().map(Weak::as_ptr),
             Some(flow as *const _),
@@ -566,7 +735,7 @@ impl UdpIngressBudget {
         flow: &Arc<UdpIngressFlowControl>,
     ) -> Option<(u64, usize)> {
         let waiter = coordinator.waiters.remove(&key)?;
-        coordinator.fitting_waiters.remove(&(key.1, key.0));
+        coordinator.fitting_waiters.remove(key.0);
         let Ok(new_sequence) =
             self.next_waiter_sequence
                 .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
@@ -598,7 +767,7 @@ impl UdpIngressBudget {
         if flow.global_probe_id.load(Ordering::Acquire) == 0
             && coordinator.waiters.contains_key(&(sequence, needed_bytes))
         {
-            coordinator.fitting_waiters.insert((needed_bytes, sequence));
+            coordinator.fitting_waiters.insert(sequence, needed_bytes);
         }
     }
 
@@ -629,7 +798,7 @@ impl UdpIngressBudget {
             self.release_charge(lease_bytes);
             return None;
         };
-        coordinator.fitting_waiters.remove(&(key.1, key.0));
+        coordinator.fitting_waiters.remove(key.0);
         self.waiter_count.fetch_sub(1, Ordering::SeqCst);
         coordinator.provisional_bytes += lease_bytes;
         let previous = flow.global_probe_id.swap(probe_id, Ordering::AcqRel);
@@ -698,7 +867,7 @@ impl UdpIngressBudget {
                     .fetch_add(1, Ordering::Relaxed);
                 let Some(flow) = candidate.upgrade() else {
                     _ = coordinator.waiters.remove(&key);
-                    coordinator.fitting_waiters.remove(&(key.1, key.0));
+                    coordinator.fitting_waiters.remove(key.0);
                     self.waiter_count.fetch_sub(1, Ordering::SeqCst);
                     continue;
                 };
@@ -743,7 +912,7 @@ impl UdpIngressBudget {
             // A fitting flow can re-park beyond the frozen discovery frontier
             // after every successful delivery. Give it one bounded opportunity
             // between discovery grants, without restarting either FIFO pass.
-            // A size index avoids O(cohort size) work per fitting retry; active
+            // The augmented index avoids O(cohort size) work per retry; active
             // insufficient leases are absent until their capacity is refunded.
             while coordinator.scan_remaining == 0
                 && coordinator.discovery_frontier.is_some()
@@ -754,12 +923,11 @@ impl UdpIngressBudget {
                 let available = self
                     .max_retained_bytes
                     .saturating_sub(self.charged_bytes.load(Ordering::Acquire));
-                let Some(&(needed_bytes, sequence)) = coordinator.fitting_waiters.first() else {
+                let Some((sequence, needed_bytes)) =
+                    coordinator.fitting_waiters.oldest_fitting(available)
+                else {
                     break;
                 };
-                if needed_bytes > available {
-                    break;
-                }
                 let key = (sequence, needed_bytes);
                 inspected += 1;
                 #[cfg(test)]
@@ -767,9 +935,7 @@ impl UdpIngressBudget {
                     .fetch_add(1, Ordering::Relaxed);
                 let flow = coordinator.waiters.get(&key).and_then(Weak::upgrade);
                 let Some(flow) = flow else {
-                    coordinator
-                        .fitting_waiters
-                        .remove(&(needed_bytes, sequence));
+                    coordinator.fitting_waiters.remove(sequence);
                     if coordinator.waiters.remove(&key).is_some() {
                         self.waiter_count.fetch_sub(1, Ordering::SeqCst);
                     }
@@ -847,7 +1013,7 @@ impl UdpIngressBudget {
                     Some((flow.clone(), probe_id))
                 } else {
                     if flow.is_none() && coordinator.waiters.remove(&key).is_some() {
-                        coordinator.fitting_waiters.remove(&(key.1, key.0));
+                        coordinator.fitting_waiters.remove(key.0);
                         self.waiter_count.fetch_sub(1, Ordering::SeqCst);
                     }
                     None
@@ -2265,9 +2431,9 @@ mod tests {
 
         {
             let mut coordinator = global.coordinator.lock();
-            let ((sequence, needed), candidate) =
+            let ((sequence, _needed), candidate) =
                 coordinator.waiters.pop_first().expect("registered waiter");
-            coordinator.fitting_waiters.remove(&(needed, sequence));
+            coordinator.fitting_waiters.remove(sequence);
             let selected = candidate.upgrade().expect("live waiter");
             assert!(Arc::ptr_eq(&selected, &waiter));
             waiter
@@ -3268,6 +3434,326 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn fitting_retries_progress_during_8192_nonfitting_discoveries() {
         assert_fitting_retries_progress_during_discovery(8_192).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn older_medium_fitter_precedes_recurring_tiny_fitter_during_128_discoveries() {
+        assert_older_medium_fitter_progresses_during_discovery(128).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn older_medium_fitter_precedes_recurring_tiny_fitter_during_8192_discoveries() {
+        assert_older_medium_fitter_progresses_during_discovery(8_192).await;
+    }
+
+    async fn assert_older_medium_fitter_progresses_during_discovery(flow_count: usize) {
+        let global = Arc::new(UdpIngressBudget::new(100));
+        let holder = UdpIngressFlowControl::new(100, global.clone(), Arc::new(|_| {}));
+        let retained = holder.try_copy_payload(&[0; 90]).expect("retain occupancy");
+        let observed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mut flows = Vec::with_capacity(flow_count + 2);
+        for index in 0..flow_count {
+            let observed = observed.clone();
+            let flow = UdpIngressFlowControl::new(
+                20,
+                global.clone(),
+                Arc::new(move |probe_id| observed.lock().push((index, probe_id))),
+            );
+            assert!(flow.try_copy_payload(&[0; 20]).is_none());
+            flows.push(flow);
+        }
+        for _ in 0..flow_count.div_ceil(GLOBAL_SCAN_BATCH) + 1 {
+            let now = tokio::time::Instant::now();
+            _ = global.wake_fitting_batch(now);
+            if !observed.lock().is_empty() {
+                break;
+            }
+            tokio::time::advance(GLOBAL_WAKE_RETRY).await;
+        }
+        let (index, probe_id) = observed.lock().remove(0);
+        assert_eq!(index, 0);
+        assert!(global.acknowledge_probe_lease(
+            &flows[index],
+            probe_id,
+            tokio::time::Instant::now()
+        ));
+        assert!(flows[index].try_copy_payload(&[0; 20]).is_none());
+
+        // Both fitting flows arrive after the finite discovery frontier. The
+        // older medium packet fits the ten bytes refunded by the first lease;
+        // a newer one-byte retry must not repeatedly take those opportunities.
+        for (index, size) in [(flow_count, 10), (flow_count + 1, 1)] {
+            let observed = observed.clone();
+            let flow = UdpIngressFlowControl::new(
+                20,
+                global.clone(),
+                Arc::new(move |probe_id| observed.lock().push((index, probe_id))),
+            );
+            assert!(flow.try_copy_payload(&vec![0; size]).is_none());
+            flows.push(flow);
+        }
+        let mut medium_served = false;
+        let mut tiny_grants = 0;
+        for _ in 0..8 {
+            let now = tokio::time::Instant::now();
+            let deadline = global
+                .next_coordinator_deadline(now)
+                .expect("lease or paced retry");
+            tokio::time::advance(deadline.saturating_duration_since(now)).await;
+            let now = tokio::time::Instant::now();
+            let before = global.snapshot().coordinator_waiter_inspections;
+            _ = global.wake_fitting_batch(now);
+            assert!(
+                global.snapshot().coordinator_waiter_inspections - before
+                    <= GLOBAL_SCAN_BATCH as u64
+            );
+            for (index, probe_id) in std::mem::take(&mut *observed.lock()) {
+                assert!(global.acknowledge_probe_lease(&flows[index], probe_id, now));
+                if index == flow_count {
+                    drop(
+                        flows[index]
+                            .try_copy_payload(&[0; 10])
+                            .expect("older medium fits"),
+                    );
+                    medium_served = true;
+                } else if index == flow_count + 1 {
+                    drop(
+                        flows[index]
+                            .try_copy_payload(&[0])
+                            .expect("tiny packet fits"),
+                    );
+                    assert!(flows[index].try_copy_payload(&[0]).is_none());
+                    tiny_grants += 1;
+                    assert!(
+                        tiny_grants <= 1,
+                        "{flow_count} stale hints let recurring tiny traffic starve the older medium fitter"
+                    );
+                } else {
+                    assert!(flows[index].try_copy_payload(&[0; 20]).is_none());
+                }
+                assert!(global.snapshot().charged_bytes <= 100);
+            }
+            if medium_served {
+                break;
+            }
+        }
+        assert!(
+            medium_served,
+            "older fitting traffic must not wait for the cohort to end"
+        );
+        assert_eq!(
+            tiny_grants, 0,
+            "the oldest currently fitting waiter receives the opportunity"
+        );
+        assert!(
+            global.snapshot().coordinator_waiter_inspections
+                <= (flow_count + GLOBAL_SCAN_BATCH) as u64
+        );
+        for flow in flows {
+            flow.close();
+        }
+        holder.close();
+        drop(retained);
+        assert_eq!(global.snapshot().charged_bytes, 0);
+        assert!(global.coordinator.lock().fitting_waiters.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn oldest_fitting_index_survives_mixed_waiter_lifecycles() {
+        const FLOW_COUNT: usize = 128;
+        let global = Arc::new(UdpIngressBudget::new(100));
+        let holder = UdpIngressFlowControl::new(100, global.clone(), Arc::new(|_| {}));
+        let retained = holder.try_copy_payload(&[0; 90]).expect("retain occupancy");
+        let observed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let make_flow = |index, size| {
+            let observed = observed.clone();
+            let flow = UdpIngressFlowControl::new(
+                100,
+                global.clone(),
+                Arc::new(move |probe_id| observed.lock().push((index, probe_id))),
+            );
+            assert!(flow.try_copy_payload(&vec![0; size]).is_none());
+            flow
+        };
+        let mut sizes: Vec<_> = (0..FLOW_COUNT).map(|index| 11 + index * 37 % 90).collect();
+        let mut flows: Vec<_> = sizes
+            .iter()
+            .enumerate()
+            .map(|(index, &size)| make_flow(index, size))
+            .collect();
+
+        // Exercise deletion through the coordinator's real cancellation path
+        // while the indexed node has two children, then register its replacement.
+        let sequence = {
+            let coordinator = global.coordinator.lock();
+            let root = coordinator
+                .fitting_waiters
+                .root
+                .as_ref()
+                .expect("populated index");
+            assert!(root.left.is_some() && root.right.is_some());
+            root.sequence
+        };
+        let index = flows
+            .iter()
+            .position(|flow| flow.global_waiter_sequence.load(Ordering::Acquire) == sequence)
+            .expect("root's live waiter");
+        flows[index].close();
+        flows[index] = make_flow(index, sizes[index]);
+        assert_fitting_index_matches_waiters(&global);
+
+        for turn in 0..512 {
+            let index = (turn * 73 + 19) % FLOW_COUNT;
+            if turn % 4 == 0 {
+                flows[index].close();
+                sizes[index] = 11 + (turn * 43) % 90;
+                flows[index] = make_flow(index, sizes[index]);
+            } else if flows[index].state.load(Ordering::Acquire) == INGRESS_OPEN {
+                // A callback deliberately left unacknowledged below can expire
+                // before the next read arrives and re-registers a fresh waiter.
+                assert!(
+                    flows[index]
+                        .try_copy_payload(&vec![0; sizes[index]])
+                        .is_none()
+                );
+            }
+            let now = tokio::time::Instant::now();
+            let deadline = global
+                .next_coordinator_deadline(now)
+                .unwrap_or(now + GLOBAL_WAKE_RETRY);
+            tokio::time::advance(deadline.saturating_duration_since(now)).await;
+            let now = tokio::time::Instant::now();
+            let before = global.snapshot().coordinator_waiter_inspections;
+            _ = global.wake_fitting_batch(now);
+            assert!(
+                global.snapshot().coordinator_waiter_inspections - before
+                    <= GLOBAL_SCAN_BATCH as u64
+            );
+            for (index, probe_id) in std::mem::take(&mut *observed.lock()) {
+                if index % 3 == 0 {
+                    continue;
+                }
+                assert!(global.acknowledge_probe_lease(&flows[index], probe_id, now));
+                if index % 3 == 2 {
+                    // An empty completion consumes/refunds its exact lease;
+                    // the later nonfit re-registers without an active lease.
+                    drop(
+                        flows[index]
+                            .try_copy_payload(&[])
+                            .expect("empty ACKed delivery"),
+                    );
+                }
+                // Otherwise this insufficient delivery re-parks with a lease,
+                // and expiry must restore its eligibility in the derived index.
+                assert!(
+                    flows[index]
+                        .try_copy_payload(&vec![0; sizes[index]])
+                        .is_none()
+                );
+            }
+            assert_fitting_index_matches_waiters(&global);
+            assert!(global.snapshot().charged_bytes <= 100);
+        }
+
+        let oldest = {
+            let coordinator = global.coordinator.lock();
+            coordinator
+                .waiters
+                .iter()
+                .find_map(|(_, candidate)| {
+                    let flow = candidate.upgrade()?;
+                    (flow.global_probe_id.load(Ordering::Acquire) == 0).then_some(flow)
+                })
+                .expect("an unleased waiter remains after churn")
+        };
+        let oldest_index = flows
+            .iter()
+            .position(|flow| Arc::ptr_eq(flow, &oldest))
+            .expect("oldest flow slot");
+        for flow in &flows {
+            if !Arc::ptr_eq(flow, &oldest) {
+                flow.close();
+            }
+        }
+        drop(retained);
+        for _ in 0..GLOBAL_SCAN_BATCH {
+            tokio::time::advance(GLOBAL_WAKE_RETRY).await;
+            _ = global.wake_fitting_batch(tokio::time::Instant::now());
+            if !observed.lock().is_empty() {
+                break;
+            }
+        }
+        let callbacks = std::mem::take(&mut *observed.lock());
+        assert_eq!(
+            callbacks.len(),
+            1,
+            "only the oldest surviving waiter receives demand"
+        );
+        let (index, probe_id) = callbacks[0];
+        assert_eq!(index, oldest_index);
+        assert!(global.acknowledge_probe_lease(&oldest, probe_id, tokio::time::Instant::now()));
+        drop(
+            oldest
+                .try_copy_payload(&vec![0; sizes[index]])
+                .expect("oldest waiter consumes refunded capacity"),
+        );
+        oldest.close();
+        holder.close();
+        assert_fitting_index_matches_waiters(&global);
+        assert_eq!(global.snapshot().charged_bytes, 0);
+        assert!(global.coordinator.lock().fitting_waiters.is_empty());
+        assert_eq!(
+            global.next_coordinator_deadline(tokio::time::Instant::now()),
+            None
+        );
+    }
+
+    fn assert_fitting_index_matches_waiters(global: &UdpIngressBudget) {
+        fn visit(
+            node: Option<&UdpIngressFittingNode>,
+            entries: &mut Vec<(u64, usize)>,
+        ) -> (u8, usize) {
+            let Some(node) = node else {
+                return (0, usize::MAX);
+            };
+            let (left_height, left_minimum) = visit(node.left.as_deref(), entries);
+            entries.push((node.sequence, node.needed_bytes));
+            let (right_height, right_minimum) = visit(node.right.as_deref(), entries);
+            assert!(
+                left_height.abs_diff(right_height) <= 1,
+                "index updates retain logarithmic depth"
+            );
+            let height = 1 + left_height.max(right_height);
+            let minimum = node.needed_bytes.min(left_minimum).min(right_minimum);
+            assert_eq!(node.height, height);
+            assert_eq!(node.minimum_bytes, minimum);
+            (height, minimum)
+        }
+        let coordinator = global.coordinator.lock();
+        let expected: Vec<_> = coordinator
+            .waiters
+            .iter()
+            .filter_map(|(&key, candidate)| {
+                let flow = candidate.upgrade()?;
+                (flow.global_probe_id.load(Ordering::Acquire) == 0).then_some(key)
+            })
+            .collect();
+        let mut entries = Vec::new();
+        _ = visit(coordinator.fitting_waiters.root.as_deref(), &mut entries);
+        assert_eq!(
+            entries, expected,
+            "derived index agrees with every live unleased waiter"
+        );
+        for available in 0..=100 {
+            assert_eq!(
+                coordinator.fitting_waiters.oldest_fitting(available),
+                expected
+                    .iter()
+                    .copied()
+                    .find(|(_, needed)| *needed <= available),
+                "oldest-fitting lookup agrees with the FIFO oracle at capacity {available}"
+            );
+        }
     }
 
     async fn assert_fitting_retries_progress_during_discovery(flow_count: usize) {
