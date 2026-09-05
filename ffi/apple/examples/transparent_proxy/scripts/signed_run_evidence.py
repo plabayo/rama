@@ -48,6 +48,7 @@ GIT_HEAD_RE = re.compile(r"[0-9a-f]{40,64}")
 KEY_RE = re.compile(r"[a-z][a-z0-9_]*")
 EVIDENCE_KIND_RE = re.compile(r"[a-z][a-z0-9_-]*")
 ABSENCE_NAME = "provider-absence.tsv"
+SOAK_SLEEP_ARTIFACTS = ("run-meta.tsv", "phases.tsv", "system.ndjson", "sleep-probes.tsv")
 ABSENCE_FIXED_ORDER = (
     "schema_version",
     "bundle_id",
@@ -589,6 +590,11 @@ def read_status(
             run_start_epoch_ms=start,
             run_end_epoch_ms=end,
             required_through_epoch_ms=crash_snapshot_epoch,
+            soak_artifacts=(
+                {name: content(name) for name in SOAK_SLEEP_ARTIFACTS if exists(name)}
+                if values["evidence_kind"] == "soak" else None
+            ),
+            run_uuid=values["run_uuid"],
         )
     return values
 
@@ -602,6 +608,7 @@ def _retain_semantic_artifact(name: str) -> bool:
         MANIFEST_NAME,
         "crash-snapshot.tsv",
         GENERATION_SAMPLES_NAME,
+        *SOAK_SLEEP_ARTIFACTS,
     }
 
 
@@ -2618,6 +2625,87 @@ def capture_provider_generation(
         os.close(lock_fd)
 
 
+def _proven_soak_sleep_window(
+    artifacts: dict[str, bytes], identity: dict[str, str], *,
+    run_uuid: str | None, run_start_epoch_ms: int, run_end_epoch_ms: int,
+) -> tuple[Decimal, Decimal]:
+    """Re-derive one bounded sleep from sealed raw provider records and probes."""
+    from soak_pressure_log import (
+        filter_provider_ndjson_records, parse_ndjson_lines, parse_oslog_timestamp,
+        parse_phase_marker_lines, parse_probe_lines, sleep_wake_evidence,
+    )
+
+    if any(name not in artifacts for name in SOAK_SLEEP_ARTIFACTS):
+        raise EvidenceError("provider generation gap lacks raw soak sleep evidence")
+    try:
+        raw = {name: artifacts[name].decode("utf-8") for name in SOAK_SLEEP_ARTIFACTS}
+    except UnicodeError as error:
+        raise EvidenceError("raw soak sleep evidence is not UTF-8") from error
+    meta, _ = _strict_tsv_values(artifacts["run-meta.tsv"], "soak sleep metadata")
+    expected = {
+        "run_uuid": run_uuid,
+        "run_start_epoch_ms": str(run_start_epoch_ms),
+        "run_end_epoch_ms": str(run_end_epoch_ms),
+        "provider_executable": identity["running_executable_path"],
+        "sleep_command_ok": "1", "post_wake_ok": "1",
+    }
+    if run_uuid is None or any(meta.get(key) != value for key, value in expected.items()):
+        raise EvidenceError("soak sleep evidence is not bound to this successful run")
+    _validate_soak_identity_metadata(meta, identity)
+    phases, _, _, _, issues = parse_phase_marker_lines(
+        raw["phases.tsv"].splitlines(),
+        ["idle-baseline", "baseline", "stress", "fanout", "idle-holders",
+         "real-download", "sleep-wake", "idle-tail", "no-spin"],
+    )
+    phase = next((phase for phase in phases if phase[0] == "sleep-wake"), None)
+    if issues or phase is None or not (
+        Decimal(run_start_epoch_ms) / 1000 <= phase[1] < phase[2]
+        <= Decimal(run_end_epoch_ms) / 1000
+    ):
+        raise EvidenceError("soak sleep phase is missing, malformed, or outside the run")
+    records, issues = parse_ndjson_lines(raw["system.ndjson"].splitlines())
+    records, source_issues = filter_provider_ndjson_records(
+        records, identity["running_pid"], identity["running_bundle_id"]
+    )
+    if issues or source_issues:
+        raise EvidenceError("soak sleep lifecycle log has malformed or unattributed records")
+    sleep_epochs, wake_epochs = [], []
+    for record in records:
+        epoch = parse_oslog_timestamp(record.get("timestamp"))
+        if epoch is None:
+            raise EvidenceError("soak sleep lifecycle log has an invalid timestamp")
+        message = record.get("eventMessage")
+        if message not in ("system sleep", "system wake"):
+            continue
+        if record.get("category") != "lifecycle" or not (phase[1] <= epoch < phase[2]):
+            raise EvidenceError("soak sleep lifecycle edge is outside its exact category/phase")
+        (sleep_epochs if message == "system sleep" else wake_epochs).append(epoch)
+    probes, issues = parse_probe_lines(raw["sleep-probes.tsv"].splitlines())
+    if issues:
+        raise EvidenceError("soak sleep recovery probes are malformed")
+    proof = sleep_wake_evidence(
+        meta["sleep_command_ok"], meta["post_wake_ok"],
+        meta.get("sleep_command_start"), meta.get("sleep_command_end"),
+        sleep_epochs, wake_epochs, probes, phase,
+        workload_evidence={
+            "started": meta.get("wake_workload_started"),
+            "established": meta.get("wake_workload_established"),
+            "http_code": meta.get("wake_workload_http_code"),
+            "alive_at_command": meta.get("wake_workload_alive_at_sleep_command"),
+            "established_nonzero_bytes": meta.get("wake_workload_established_nonzero_bytes"),
+            "established_bytes": meta.get("wake_workload_established_bytes"),
+            "joined": meta.get("wake_workload_joined"),
+            "child_rc": meta.get("wake_workload_child_rc"),
+        },
+    )
+    if proof["issues"] or proof["outage_window"] is None:
+        raise EvidenceError("unproven soak sleep interval: " + "; ".join(proof["issues"]))
+    sleep, wake = proof["outage_window"]
+    # Keep raw microsecond precision when bracketing integer-ms samples. No
+    # rounding may turn a post-sleep/pre-wake sample into an outside observation.
+    return sleep * 1000, wake * 1000
+
+
 def verify_provider_generation_samples(
     content: bytes,
     identity: dict[str, str],
@@ -2625,6 +2713,8 @@ def verify_provider_generation_samples(
     run_start_epoch_ms: int,
     run_end_epoch_ms: int,
     required_through_epoch_ms: int | None = None,
+    soak_artifacts: dict[str, bytes] | None = None,
+    run_uuid: str | None = None,
 ) -> list[int]:
     values, rows = _parse_tsv_bytes(content)
     if (
@@ -2673,7 +2763,20 @@ def verify_provider_generation_samples(
     if epochs[0] > run_start_epoch_ms or epochs[-1] < through:
         raise EvidenceError("provider generation samples do not span the required run interval")
     if any(right - left > max_gap_ms for left, right in zip(epochs, epochs[1:])):
-        raise EvidenceError("provider generation sampling gap exceeds its encoded tolerance")
+        if soak_artifacts is None:
+            raise EvidenceError("provider generation sampling gap exceeds its encoded tolerance")
+        sleep, wake = _proven_soak_sleep_window(
+            soak_artifacts, identity, run_uuid=run_uuid,
+            run_start_epoch_ms=run_start_epoch_ms, run_end_epoch_ms=run_end_epoch_ms,
+        )
+        before = [epoch for epoch in epochs if epoch <= sleep]
+        after = [epoch for epoch in epochs if epoch >= wake]
+        if not before or not after or sleep - before[-1] + after[0] - wake > max_gap_ms:
+            raise EvidenceError("soak sleep lacks exact provider samples bracketing its awake edges")
+        for left, right in zip(epochs, epochs[1:]):
+            asleep = max(0, min(right, wake) - max(left, sleep))
+            if right - left - asleep > max_gap_ms:
+                raise EvidenceError("provider generation awake sampling gap exceeds its encoded tolerance")
     return epochs
 
 

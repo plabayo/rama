@@ -32,7 +32,9 @@
 #   3  idle-holders  sustained pool of SILENT (no-data) flows
 #                    (→ idle-eviction reaper, on a short-floor build)
 #   4  real-download steady transfer
-#   5  sleep/wake    the original wake-bug scenario (TTY only)
+#   5  sleep/wake    ~45s actual sleep (TTY only); one raw lifecycle interval
+#                    may excuse sampling suspension, at most 120s. The combined
+#                    awake time around it keeps the normal 5s sampling limit.
 #   6  idle-tail     quiesce so the gauge can settle back toward baseline
 #   then: final mem snapshot, leaks pass, dial9 traces, signal extraction.
 #
@@ -2469,9 +2471,11 @@ else
   SLEEP_COMMAND_END="$(epoch_now)"
   printf 'sleep_command_start\t%s\nsleep_command_end\t%s\n' \
     "$SLEEP_COMMAND_START" "$SLEEP_COMMAND_END" >> "$OUT/run-meta.tsv"
+  # pmset can return before suspension. These probes count as recovery only
+  # when raw provider lifecycle records put them after the actual wake edge.
   sleep 5
   sudo -v 2>/dev/null || true
-  say "awake — probing connectivity..."
+  say "probing connectivity after the sleep request..."
   for i in 1 2 3; do
     WAKE_PROBE_RECORD="$(probe_record)"
     IFS=$'\t' read -r WAKE_PROBE_START WAKE_PROBE_END WAKE_PROBE_RC WCODE \
@@ -3097,8 +3101,8 @@ drain_re = re.compile(r"drain backstop fired")
 body_err_re = re.compile(r"brotli error|gzip error|zstd error|deflate error|send body user stream error|User\(Body\)")
 egress_fail_re = re.compile(r"egress NWConnection failed after flow opened.*rawValue: (\d+)")
 relay_drop_re = re.compile(r"drop MITM relay")
-sleep_event_re = re.compile(r"^system sleep\b", re.I)
-wake_event_re = re.compile(r"^system wake\b", re.I)
+sleep_event_re = re.compile(r"\Asystem sleep\Z")
+wake_event_re = re.compile(r"\Asystem wake\Z")
 life_re = re.compile(r"(startProxy|stopProxy|system sleep|system wake|engine created|engine detached|"
                      r"watchdog:|drain backstop|force-drop|force-tear|flow pressure|not satisfied|"
                      r"Network is down|reset by peer|brotli error|drop MITM relay)", re.I)

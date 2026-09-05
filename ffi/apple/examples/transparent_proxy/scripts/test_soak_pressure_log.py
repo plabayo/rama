@@ -2774,6 +2774,40 @@ class SoakPressureLogTests(unittest.TestCase):
             empty_body["issues"],
         )
 
+    def test_sleep_wake_binds_actual_wake_and_one_bounded_lifecycle_pair(self):
+        workload = {
+            "started": "91", "established": "95", "http_code": "200",
+            "alive_at_command": "1", "established_nonzero_bytes": "1",
+            "established_bytes": "64", "child_rc": "143", "joined": "1",
+        }
+        def proof(sleeps=("110",), wakes=("150",), probe_start="151", probe_end="152"):
+            return sleep_wake_evidence(
+                "1", "1", "100", "101", sleeps, wakes,
+                [(parse_epoch(probe_start), parse_epoch(probe_end), 0, "200")],
+                ("sleep-wake", parse_epoch("90"), parse_epoch("300")),
+                workload_evidence=workload,
+            )
+        # pmset's successful return precedes both genuine lifecycle edges.
+        recovered = proof()
+        self.assertEqual(recovered["issues"], [])
+        self.assertEqual(recovered["outage_window"], (parse_epoch("110"), parse_epoch("150")))
+        self.assertEqual(proof(wakes=("230",), probe_start="231", probe_end="232")["issues"], [])
+        for arguments, reason in (
+            ({"sleeps": ("110", "111")}, "exactly one ordered"),
+            ({"wakes": ("150", "151")}, "exactly one ordered"),
+            ({"wakes": ()}, "exactly one ordered"),
+            ({"sleeps": ("invalid",)}, "exactly one ordered"),
+            ({"wakes": ("105",)}, "exactly one ordered"),
+            ({"wakes": ("300",)}, "exactly one ordered"),
+            ({"wakes": ("230.000001",), "probe_start": "231", "probe_end": "232"}, "120-second bound"),
+            ({"probe_start": "102", "probe_end": "103"}, "after the wake marker"),
+            ({"probe_start": "149", "probe_end": "151"}, "after the wake marker"),
+        ):
+            with self.subTest(arguments=arguments):
+                result = proof(**arguments)
+                self.assertIsNone(result["outage_window"])
+                self.assertTrue(any(reason in issue for issue in result["issues"]), result)
+
     def test_ceiling_proof_is_microsecond_precise_half_open_and_consecutive(self):
         records, issues = parse_ceiling_probe_lines(
             [

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import hashlib
+from datetime import datetime, timezone
 import io
 import json
 import os
@@ -192,6 +193,69 @@ def make_run(
     (nested / "empty.log").write_bytes(b"")
     (nested / "run.log").write_text("terminal output\n", encoding="utf-8")
     return values
+
+
+def make_sleep_soak_run(directory: Path, *, sleep_seconds=45, pre_gap_ms=0, post_gap_ms=0):
+    status = make_run(directory, "soak")
+    identity = evidence.read_provider_identity(directory / evidence.PROVIDER_IDENTITY_NAME)
+    base = 1_700_000_000_000
+    sleep = base + 15_000
+    wake = sleep + sleep_seconds * 1000
+    end = wake + post_gap_ms + 2000
+    status["run_end_epoch_ms"] = str(end)
+    write_tsv(directory / evidence.STATUS_NAME, ((key, status[key]) for key in evidence.STATUS_ORDER))
+    write_empty_crash_snapshot(directory, status)
+    samples, rows = evidence._parse_tsv_bytes((directory / evidence.GENERATION_SAMPLES_NAME).read_bytes())
+    tail = rows[len(evidence.GENERATION_FIXED_ORDER)][1].split("|", 1)[1]
+    epochs = [*range(base + 1000, sleep - pre_gap_ms, 2000), sleep - pre_gap_ms,
+              wake + post_gap_ms, end]
+    samples["sample_count"] = str(len(epochs))
+    write_tsv(directory / evidence.GENERATION_SAMPLES_NAME, [
+        *((key, samples[key]) for key in evidence.GENERATION_FIXED_ORDER),
+        *((f"sample_{index:06d}", f"{epoch}|{tail}") for index, epoch in enumerate(epochs, 1)),
+        ("schema_complete", "1"),
+    ])
+    def epoch_text(ms):
+        return f"{ms // 1000}.{ms % 1000:03d}000"
+    def iso(ms):
+        return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    meta = {
+        "run_uuid": status["run_uuid"], "run_start_epoch_ms": status["run_start_epoch_ms"],
+        "run_end_epoch_ms": str(end), "provider_start_pid": "42",
+        "provider_bundle": evidence.DEV_PROVIDER_BUNDLE_ID,
+        "provider_executable": identity["running_executable_path"],
+        "provider_binary_sha256": identity["running_executable_sha256"],
+        "provider_codesign_identifier": identity["running_bundle_id"],
+        "provider_codesign_cdhash": identity["running_cdhash"],
+        "provider_codesign_team": identity["running_team_id"],
+        "provider_start_identity": identity["provider_generation_identity"],
+        "provider_executable_name": Path(identity["running_executable_path"]).name,
+        "crash_process_name": Path(identity["running_executable_path"]).name,
+        "common_provider_generation_identity": status["provider_generation_identity"],
+        "sleep_command_ok": "1", "post_wake_ok": "1",
+        "sleep_command_start": epoch_text(base + 14000),
+        # A successful pmset invocation may return before actual system sleep.
+        "sleep_command_end": epoch_text(base + 14100),
+        "wake_workload_started": epoch_text(base + 11000),
+        "wake_workload_established": epoch_text(base + 12000),
+        "wake_workload_http_code": "200", "wake_workload_alive_at_sleep_command": "1",
+        "wake_workload_established_nonzero_bytes": "1", "wake_workload_established_bytes": "64",
+        "wake_workload_joined": "1", "wake_workload_child_rc": "143",
+    }
+    write_tsv(directory / "run-meta.tsv", meta.items())
+    (directory / "phases.tsv").write_text(
+        f"sleep-wake\tstart\t{epoch_text(base + 10000)}\t{iso(base + 10000)}\n"
+        f"sleep-wake\tend\t{epoch_text(end)}\t{iso(end)}\n"
+    )
+    (directory / "system.ndjson").write_text("".join(json.dumps({
+        "timestamp": datetime.fromtimestamp(epoch / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f%z"),
+        "processID": 42, "subsystem": evidence.DEV_PROVIDER_BUNDLE_ID,
+        "category": "lifecycle", "eventMessage": message,
+    }) + "\n" for epoch, message in ((sleep, "system sleep"), (wake, "system wake"))))
+    (directory / "sleep-probes.tsv").write_text(
+        f"{epoch_text(wake + 10)}\t{epoch_text(wake + 1000)}\t{iso(wake + 1000)}\t0\t200\n"
+    )
+    return status
 
 
 def make_direct_run(directory: Path, *, start=1000, end=2000):
@@ -1015,6 +1079,192 @@ class StatusAndIdentityTests(unittest.TestCase):
                 make_run(root, "modern_udp")
                 mutate(root)
                 with self.assertRaises(evidence.EvidenceError):
+                    evidence.seal(root)
+
+    def test_soak_generation_proof_composes_with_real_lifecycle_and_awake_cadence(self):
+        for sleep_seconds, pre_gap_ms, post_gap_ms in ((45, 0, 0), (45, 2000, 3000), (120, 0, 0)):
+            with self.subTest(sleep_seconds=sleep_seconds, pre_gap_ms=pre_gap_ms), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "soak"
+                make_sleep_soak_run(root, sleep_seconds=sleep_seconds, pre_gap_ms=pre_gap_ms, post_gap_ms=post_gap_ms)
+                evidence.seal(root)
+                self.assertEqual(evidence.verify(root)["passed"], "1")
+                self.assertIn("max_gap_ms\t5000\n", (root / evidence.GENERATION_SAMPLES_NAME).read_text())
+
+    def test_soak_sleep_cannot_excuse_unproven_or_excessive_generation_gaps(self):
+        def replace_file(root, name, before, after):
+            path = root / name
+            path.write_text(path.read_text().replace(before, after))
+        def replace_last_sample_identity(root, field):
+            path = root / evidence.GENERATION_SAMPLES_NAME
+            _, rows = evidence._parse_tsv_bytes(path.read_bytes())
+            key, sample = rows[-2]
+            fields = sample.split("|")
+            fields[field] = "0" * 64
+            rows[-2] = (key, "|".join(fields))
+            write_tsv(path, rows)
+        mutations = {
+            "missing raw log": (
+                lambda root: (root / "system.ndjson").unlink(), "lacks raw soak sleep"),
+            "claimed summary": (
+                lambda root: (root / "system.ndjson").write_text('{"sleep_seconds":45}\n'),
+                "malformed or unattributed"),
+            "wrong PID": (
+                lambda root: replace_file(root, "system.ndjson", '"processID": 42', '"processID": 43'),
+                "malformed or unattributed"),
+            "wrong subsystem": (
+                lambda root: replace_file(root, "system.ndjson", evidence.DEV_PROVIDER_BUNDLE_ID, "other.provider"),
+                "malformed or unattributed"),
+            "wrong category": (
+                lambda root: replace_file(root, "system.ndjson", '"lifecycle"', '"tproxy"'),
+                "exact category/phase"),
+            "missing wake": (
+                lambda root: replace_file(root, "system.ndjson", '"system wake"', '"ordinary output"'),
+                "exactly one ordered"),
+            "duplicate field": (
+                lambda root: replace_file(root, "system.ndjson", '"processID": 42', '"processID": 42, "processID": 42'),
+                "malformed or unattributed"),
+            "duplicate cycle": (
+                lambda root: (root / "system.ndjson").write_text((root / "system.ndjson").read_text() * 2),
+                "exactly one ordered"),
+            "failed command": (
+                lambda root: replace_file(root, "run-meta.tsv", "sleep_command_ok\t1", "sleep_command_ok\t0"),
+                "this successful run"),
+            "failed recovery": (
+                lambda root: replace_file(root, "sleep-probes.tsv", "\t0\t200", "\t28\t000"),
+                "successful paired probe"),
+            "wrong generation": (
+                lambda root: replace_file(root, "run-meta.tsv", "common_provider_generation_identity\t", "unrelated_generation\t"),
+                "common provider identity"),
+            "wrong executable": (
+                lambda root: replace_file(root, "run-meta.tsv", "provider_executable\t", "unrelated_executable\t"),
+                "this successful run"),
+            "replaced process": (
+                lambda root: replace_file(root, evidence.GENERATION_SAMPLES_NAME, "|42|1700000000000|", "|43|1700000000000|"),
+                "malformed or substituted"),
+            "replaced process start": (
+                lambda root: replace_file(root, evidence.GENERATION_SAMPLES_NAME, "|42|1700000000000|", "|42|1700000000001|"),
+                "malformed or substituted"),
+            "postwake command identity": (
+                lambda root: replace_last_sample_identity(root, 3), "malformed or substituted"),
+            "postwake executable path": (
+                lambda root: replace_last_sample_identity(root, 4), "malformed or substituted"),
+            "invalid timezone": (
+                lambda root: replace_file(root, "system.ndjson", "+0000", "+unknown"),
+                "invalid timestamp"),
+            "out of phase": (
+                lambda root: replace_file(root, "phases.tsv", "sleep-wake\t", "idle-tail\t"),
+                "phase is missing"),
+            "probe before wake": (
+                lambda root: (root / "sleep-probes.tsv").write_text(
+                    "1700000014.200000\t1700000014.400000\t2023-11-14T22:13:34Z\t0\t200\n"),
+                "no probe attempted after the wake marker"),
+        }
+        for name, (mutate, reason) in mutations.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "soak"
+                make_sleep_soak_run(root)
+                mutate(root)
+                with self.assertRaisesRegex(evidence.EvidenceError, reason):
+                    evidence.seal(root)
+        for arguments, reason in (
+            ({"sleep_seconds": 121}, "120-second bound"),
+            ({"pre_gap_ms": 2000, "post_gap_ms": 4000}, "bracketing its awake edges"),
+        ):
+            with self.subTest(arguments=arguments), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "soak"
+                make_sleep_soak_run(root, **arguments)
+                with self.assertRaisesRegex(evidence.EvidenceError, reason):
+                    evidence.seal(root)
+
+    def test_soak_lifecycle_does_not_excuse_an_independent_awake_gap(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "soak"
+            make_sleep_soak_run(root)
+            path = root / evidence.GENERATION_SAMPLES_NAME
+            values, rows = evidence._parse_tsv_bytes(path.read_bytes())
+            # Remove three ordinary awake samples without breaking chronology,
+            # numbering, count, run coverage, or the valid sleep bracket.
+            samples = [value for key, value in rows if key.startswith("sample_0")
+                       and value.split("|", 1)[0] not in {
+                           "1700000003000", "1700000005000", "1700000007000"}]
+            values["sample_count"] = str(len(samples))
+            write_tsv(path, [
+                *((key, values[key]) for key in evidence.GENERATION_FIXED_ORDER),
+                *((f"sample_{index:06d}", value) for index, value in enumerate(samples, 1)),
+                ("schema_complete", "1"),
+            ])
+            with self.assertRaisesRegex(evidence.EvidenceError, "awake sampling gap"):
+                evidence.seal(root)
+
+    def test_soak_sleep_rounding_never_expands_the_exempt_interval(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "soak"
+            make_sleep_soak_run(root, pre_gap_ms=2000, post_gap_ms=3000)
+            path = root / "system.ndjson"
+            # One microsecond less asleep leaves more than five seconds awake;
+            # integer sample timestamps must not round that excess away.
+            path.write_text(path.read_text().replace(
+                "22:13:35.000000+0000", "22:13:35.000001+0000"))
+            with self.assertRaisesRegex(evidence.EvidenceError, "bracketing its awake edges"):
+                evidence.seal(root)
+
+    def test_soak_samples_can_continue_between_the_lifecycle_edges(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "soak"
+            make_sleep_soak_run(root)
+            path = root / evidence.GENERATION_SAMPLES_NAME
+            values, rows = evidence._parse_tsv_bytes(path.read_bytes())
+            samples = [value for key, value in rows if key.startswith("sample_0")]
+            tail = samples[0].split("|", 1)[1]
+            # Callbacks and physical suspension need not coincide with sampler
+            # scheduling. Interior samples do not change the two awake edges.
+            samples.extend(f"{epoch}|{tail}" for epoch in (1700000016000, 1700000059000))
+            samples.sort(key=lambda value: int(value.split("|", 1)[0]))
+            values["sample_count"] = str(len(samples))
+            write_tsv(path, [
+                *((key, values[key]) for key in evidence.GENERATION_FIXED_ORDER),
+                *((f"sample_{index:06d}", value) for index, value in enumerate(samples, 1)),
+                ("schema_complete", "1"),
+            ])
+            evidence.seal(root)
+            self.assertEqual(evidence.verify(root)["passed"], "1")
+
+    def test_soak_bracket_samples_must_be_outside_the_precise_lifecycle_edges(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "soak"
+            make_sleep_soak_run(root)
+            log = root / "system.ndjson"
+            log.write_text(log.read_text().replace(
+                "22:13:35.000000+0000", "22:13:34.999999+0000"
+            ).replace("22:14:20.000000+0000", "22:14:20.000001+0000"))
+            path = root / evidence.GENERATION_SAMPLES_NAME
+            values, rows = evidence._parse_tsv_bytes(path.read_bytes())
+            tail = rows[len(evidence.GENERATION_FIXED_ORDER)][1].split("|", 1)[1]
+            epochs = [1700000001000, 1700000003000, 1700000005000,
+                      1700000007000, 1700000010000, 1700000015000,
+                      1700000060000, 1700000062000]
+            values["sample_count"] = str(len(epochs))
+            write_tsv(path, [
+                *((key, values[key]) for key in evidence.GENERATION_FIXED_ORDER),
+                *((f"sample_{index:06d}", f"{epoch}|{tail}") for index, epoch in enumerate(epochs, 1)),
+                ("schema_complete", "1"),
+            ])
+            # The apparent 15s/60s edge samples are both inside raw sleep.
+            # The genuine outside samples leave ~7s awake in combination.
+            with self.assertRaisesRegex(evidence.EvidenceError, "bracketing its awake edges"):
+                evidence.seal(root)
+
+    def test_modern_and_stress_receive_no_sleep_sampling_exception(self):
+        for kind in ("modern_udp", "stress-candidate"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / kind
+                status = make_sleep_soak_run(root)
+                status["evidence_kind"] = kind
+                claims_path = root / evidence.CLAIMS_NAME
+                claims_path.write_text(claims_path.read_text().replace("evidence_kind\tsoak\n", f"evidence_kind\t{kind}\n"))
+                status["workload_claims_sha256"] = evidence.sha256_file(claims_path)
+                write_tsv(root / evidence.STATUS_NAME, ((key, status[key]) for key in evidence.STATUS_ORDER))
+                with self.assertRaisesRegex(evidence.EvidenceError, "gap exceeds its encoded tolerance"):
                     evidence.seal(root)
 
     def test_provider_generation_cannot_start_after_run_end(self):

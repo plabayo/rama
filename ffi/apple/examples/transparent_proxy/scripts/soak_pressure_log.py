@@ -102,6 +102,9 @@ PRESSURE_COUNTER_KEYS = (
 )
 
 MAX_ARTIFACT_UINT = (1 << 64) - 1
+# The canonical phase asks for ~45 seconds of real system sleep. This bound
+# applies only to one raw provider lifecycle pair, never to the whole phase.
+MAX_PROVEN_SLEEP_SECONDS = 120
 
 
 def parse_artifact_uint(value, maximum=MAX_ARTIFACT_UINT):
@@ -1305,32 +1308,25 @@ def sleep_wake_evidence(
     if str(command_outcome) == "0":
         return {"issues": issues, "outage_window": None}
 
-    sleeps = sorted(
-        epoch for raw in sleep_epochs
-        if (
-            (epoch := parse_epoch(raw)) is not None
-            and command_started <= epoch < phase_end
-        )
-    )
-    wakes = sorted(
-        epoch for raw in wake_epochs
-        if (
-            (epoch := parse_epoch(raw)) is not None
-            and phase_start <= epoch <= command_completed
-        )
-    )
-    ordered_pair = next(
-        ((sleep, wake) for sleep in sleeps for wake in wakes if wake > sleep),
-        None,
-    )
-    if ordered_pair is None:
-        issues.append("sleep-wake phase has no ordered command-local sleep/wake markers")
+    sleeps = [parse_epoch(raw) for raw in sleep_epochs]
+    wakes = [parse_epoch(raw) for raw in wake_epochs]
+    if (
+        len(sleeps) != 1 or len(wakes) != 1
+        or sleeps[0] is None or wakes[0] is None
+        or not (command_started <= sleeps[0] < wakes[0] < phase_end)
+    ):
+        issues.append("sleep-wake phase requires exactly one ordered command-local sleep/wake pair")
         return {"issues": issues, "outage_window": None}
 
-    sleep_epoch, wake_epoch = ordered_pair
+    sleep_epoch, wake_epoch = sleeps[0], wakes[0]
+    if wake_epoch - sleep_epoch > MAX_PROVEN_SLEEP_SECONDS:
+        issues.append("sleep-wake lifecycle interval exceeds the 120-second bound")
+        return {"issues": issues, "outage_window": None}
+    # pmset may return before the system actually sleeps. Its completion is
+    # command evidence; the provider's real wake callback supplies this edge.
     probes_after_wake = [
         probe for probe in recovery_probes
-        if command_completed <= probe[0] <= probe[1] <= phase_end
+        if max(command_completed, wake_epoch) <= probe[0] <= probe[1] <= phase_end
     ]
     if not probes_after_wake:
         issues.append("sleep-wake phase has no probe attempted after the wake marker")
