@@ -5,7 +5,9 @@ import json
 import hashlib
 import os
 from pathlib import Path
+import pty
 import re
+import select
 import shlex
 import signal
 import socket
@@ -41,6 +43,159 @@ from modern_udp_evidence import (  # noqa: E402
 
 RUN_UUID = "12345678-1234-4234-8234-123456789abc"
 DIGEST = "a" * 64
+
+
+def exercise_capture_terminal_context(test, helpers, *, stress=False):
+    """Create an isolated controlling PTY; never open the user's terminal."""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        observation = textwrap.dedent("""\
+            import json, os, pathlib, sys, time
+            root = pathlib.Path(sys.argv[1])
+            with open('/dev/tty', 'rb', buffering=0) as terminal:
+                record = dict(pid=os.getpid(), parent=os.getppid(),
+                              sid=os.getsid(0), pgid=os.getpgrp(),
+                              foreground=os.tcgetpgrp(terminal.fileno()))
+            (root / (sys.argv[2] + '.json')).write_text(json.dumps(record))
+            if sys.argv[2] == 'leaf':
+                if os.fork() == 0:
+                    # Keep the capture pipe open after the command exits.
+                    time.sleep(0.2)
+                    (root / 'drained').write_text('done')
+                    os._exit(0)
+                os._exit(7)
+        """)
+        probe = root / "terminal_probe.py"
+        probe.write_text(observation)
+        command = f"{shlex.quote(sys.executable)} {shlex.quote(str(probe))} {shlex.quote(str(root))}"
+        invocation = (
+            f'run_bounded_capture "$TMP_DIR/output" 5 {command} leaf'
+            if stress else f'run_bounded 5 {command} leaf > "$TMP_DIR/output" 2>&1'
+        )
+        prefix = "" if stress else "bounded_"
+        fixture_helpers = helpers.replace(
+            f"{prefix}pid_identity() {{", "fixture_pid_identity() {", 1
+        ) + textwrap.dedent(f"""\
+            {prefix}pid_identity() {{
+              local identity
+              identity="$(fixture_pid_identity "$@")" || return 1
+              if [[ "${{2:-}}" == generation \\
+                && "$(ps -o ppid= -p "$1" | tr -d '[:space:]')" == "$$" ]]; then
+                printf '%s\\t%s\\n' "$1" "$identity" >> "$TMP_DIR/owned-generations"
+              fi
+              printf '%s\\n' "$identity"
+            }}
+        """)
+        program = fixture_helpers + textwrap.dedent(f"""\
+            TMP_DIR={shlex.quote(str(root))}
+            BOUNDED_CLEANUP_FAILED="$TMP_DIR/failed"
+            AUXILIARY_PIDS=() AUXILIARY_DRAIN_RECEIPTS=()
+            CLEANUP_INCOMPLETE=0 EVIDENCE_FAILED=0
+            {command} caller || exit 90
+            {invocation}
+            result=$?
+            [[ -e "$TMP_DIR/drained" ]] || exit 91
+            printf '%s %s %s %s\\n' "$result" \\
+              "$(jobs -p | wc -l | tr -d ' ')" \\
+              "$CLEANUP_INCOMPLETE" "$EVIDENCE_FAILED" > "$TMP_DIR/result"
+        """)
+        child, terminal = pty.fork()
+        if child == 0:
+            os.execv("/bin/bash", ["/bin/bash", "-c", program])
+        output = bytearray()
+        status = None
+        passed = False
+        try:
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if select.select([terminal], [], [], 0.05)[0]:
+                    try:
+                        data = os.read(terminal, 65536)
+                    except OSError as error:
+                        if error.errno != 5:  # PTY masters may report EIO at EOF.
+                            raise
+                        data = b""
+                    output.extend(data)
+                observed, status_value = os.waitpid(child, os.WNOHANG)
+                if observed:
+                    status = status_value
+                    break
+            detail = output.decode(errors="replace")
+            if (root / "output").exists():
+                detail += (root / "output").read_text()
+            test.assertIsNotNone(status, "isolated terminal fixture timed out: " + detail)
+            test.assertEqual(os.waitstatus_to_exitcode(status), 0, detail)
+            test.assertEqual((root / "result").read_text(), "7 0 0 0\n", detail)
+            caller = json.loads((root / "caller.json").read_text())
+            leaf = json.loads((root / "leaf.json").read_text())
+            test.assertEqual(caller["sid"], child)
+            test.assertEqual(leaf["sid"], caller["sid"])
+            test.assertEqual(leaf["pgid"], leaf["parent"])
+            test.assertNotEqual(leaf["pgid"], caller["pgid"])
+            test.assertEqual(leaf["foreground"], caller["pgid"])
+            registered = dict(
+                row.split("\t") for row in (root / "owned-generations").read_text().splitlines()
+            )
+            test.assertRegex(registered[str(leaf["parent"])], r"^[0-9a-f]{64}$")
+            test.assertFalse((root / "failed").exists())
+            test.assertFalse(list(root.glob("*.drain.*")))
+            passed = True
+        finally:
+            try:
+                if not passed:
+                    # The unreaped PTY shell is our direct child. Stop it so
+                    # no new helper can race registration during fallback.
+                    if status is None:
+                        try:
+                            os.kill(child, signal.SIGSTOP)
+                        except ProcessLookupError:
+                            pass
+                    try:
+                        cleanup = helpers + textwrap.dedent(f"""\
+                            # Synthetic fixture processes never need privilege.
+                            sudo() {{ return 1; }}
+                            tree="" failed=0
+                            while IFS=$'\\t' read -r pid identity; do
+                              [[ "$pid" =~ ^[1-9][0-9]*$ \\
+                                && "$identity" =~ ^[0-9a-f]{{64}}$ ]] || continue
+                              if {prefix}signal_owned_identity "$pid" "$identity" STOP; then
+                                observed="$({prefix}collect_owned_tree "$pid" "$identity" $((SECONDS + 1)))" || failed=1
+                                tree+="$observed"$'\\n'
+                              elif ! {prefix}owned_identity_has_exited "$pid" "$identity"; then
+                                failed=1
+                              fi
+                            done < <(sort -u {shlex.quote(str(root / 'owned-generations'))})
+                            while IFS=$'\\t' read -r pid identity; do
+                              [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+                              {prefix}signal_owned_identity "$pid" "$identity" KILL || true
+                            done <<< "$tree"
+                            deadline=$((SECONDS + 2))
+                            while ! {prefix}owned_tree_has_exited "$tree"; do
+                              (( SECONDS < deadline )) || exit 1
+                              sleep 0.01
+                            done
+                            exit "$failed"
+                        """)
+                        if (root / "owned-generations").exists():
+                            drained = subprocess.run(
+                                ["/bin/bash", "-c", cleanup], capture_output=True,
+                                text=True, timeout=5,
+                            )
+                            test.assertEqual(drained.returncode, 0, drained.stdout + drained.stderr)
+                    finally:
+                        if status is None:
+                            try:
+                                os.killpg(child, signal.SIGKILL)
+                            except (ProcessLookupError, PermissionError):
+                                # The group may already be empty. The unreaped
+                                # direct child remains safe to signal by PID.
+                                try:
+                                    os.kill(child, signal.SIGKILL)
+                                except ProcessLookupError:
+                                    pass
+                            os.waitpid(child, 0)
+            finally:
+                os.close(terminal)
 
 
 def exercise_owned_chain_discovery(test, helpers, prefix, *, expired=False):
@@ -284,6 +439,9 @@ class BoundedCommandCleanupTests(unittest.TestCase):
 
     def test_timeout_stops_delayed_artifact_writer(self):
         self.run_tree_fixture(delayed_writer=True)
+
+    def test_capture_preserves_terminal_session_and_drains_owned_group(self):
+        exercise_capture_terminal_context(self, self.helper_source())
 
     def test_discovery_visits_each_owned_generation_once(self):
         exercise_owned_chain_discovery(self, self.helper_source(), "bounded_")

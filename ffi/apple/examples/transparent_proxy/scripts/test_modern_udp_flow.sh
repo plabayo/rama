@@ -351,7 +351,9 @@ import subprocess
 import sys
 import time
 
-os.setsid()
+# Own a group without detaching from the authenticated controlling terminal.
+# sudo -n must retain the tty credential context checked by preflight.
+os.setpgid(0, 0)
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 leader = os.getpid()
 receipt, ready = sys.argv[1:3]

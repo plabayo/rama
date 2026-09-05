@@ -2092,6 +2092,16 @@ class StressTrafficValidationTests(unittest.TestCase):
             )
             self.assertFalse(survivors, f"bounded capture descendants survived: {survivors}")
 
+    def test_capture_preserves_terminal_session_and_drains_owned_group(self):
+        from test_modern_udp_evidence import exercise_capture_terminal_context
+        shell = STRESS_SCRIPT.read_text()
+        helpers = "".join(self.stress_function(shell, name) for name in (
+            "pid_identity", "owned_job_is_active", "owned_job_has_exited",
+            "owned_identity_has_exited", "owned_tree_has_exited", "collect_owned_tree",
+            "signal_owned_identity", "capture_drain_receipt_valid", "run_bounded_capture",
+        ))
+        exercise_capture_terminal_context(self, helpers, stress=True)
+
     def run_stopped_grandchild_cleanup_fixture(
         self, *, capture=False, deny_kill=False, early_orphan=False, expire_discovery=False
     ):
