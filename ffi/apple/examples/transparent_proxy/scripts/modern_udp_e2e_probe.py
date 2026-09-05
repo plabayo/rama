@@ -50,13 +50,76 @@ def dns_request(transaction_id: int, name: str) -> bytes:
     return query + qname + struct.pack("!HH", 1, 1)  # A, IN
 
 
+def _dns_name(packet, offset, limit, names):
+    """Read one RFC 1035 name without recursion, within its enclosing field.
+
+    Pointers address prior bytes; visited offsets reject cycles. Memoized
+    suffixes avoid repeatedly walking pointer chains across resource records.
+    Only the protocol's 255-octet expanded-name bound limits label count.
+    """
+    path, visited = [], set()
+    following = None
+    while True:
+        if offset in visited:
+            raise RuntimeError("DNS compression pointer loop")
+        visited.add(offset)
+        if following is not None and offset in names:
+            name = names[offset]
+            break
+        if offset >= limit:
+            raise RuntimeError("DNS truncated name")
+        length = packet[offset]
+        if length & 0xC0 == 0xC0:
+            if offset + 2 > limit:
+                raise RuntimeError("DNS truncated compression pointer")
+            target = ((length & 0x3F) << 8) | packet[offset + 1]
+            if not 12 <= target < offset:
+                raise RuntimeError("DNS compression pointer does not refer to a prior name")
+            if following is None:
+                following = offset + 2
+            path.append((offset, None))
+            offset, limit = target, len(packet)
+        elif length & 0xC0:
+            raise RuntimeError("DNS invalid label encoding")
+        elif not length:
+            name = ()
+            names[offset] = name
+            if following is None:
+                following = offset + 1
+            break
+        else:
+            if offset + 1 + length > limit:
+                raise RuntimeError("DNS truncated label")
+            path.append((offset, packet[offset + 1:offset + 1 + length].lower()))
+            offset += 1 + length
+    expanded = 1 + sum(1 + len(label) for label in name)
+    for position, label in reversed(path):
+        if label is not None:
+            expanded += 1 + len(label)
+            if expanded > 255:
+                raise RuntimeError("DNS name exceeds its wire bound")
+            name = (label,) + name
+        names[position] = name
+    return name, following
+
+
 def validate_dns_response(query: bytes, response: bytes, peer, server: str) -> None:
-    """Replay the probe's DNS header, request ID, and exact-peer contract."""
+    """Require a complete matching A/IN answer, directly or through CNAMEs.
+
+    This bounded UDP probe checks all RR envelopes, A/CNAME data and EDNS
+    option framing. Other RDATA remains opaque; this is not a DNS resolver.
+    """
+    if not 12 <= len(query) <= 271 or len(response) > 65_535:
+        raise RuntimeError("DNS packet exceeds the probe's wire bounds")
     if len(response) < 12:
         raise RuntimeError(f"DNS {server}:53 returned a truncated header")
 
-    transaction_id = struct.unpack("!H", query[:2])[0]
-    response_id, flags, question_count, answer_count, _, _ = struct.unpack(
+    transaction_id, *request_header = struct.unpack("!HHHHHH", query[:12])
+    requested_name, request_end = _dns_name(query, 12, len(query), {})
+    if (request_header != [0x0100, 1, 0, 0, 0]
+            or request_end + 4 != len(query) or query[request_end:] != b"\x00\x01\x00\x01"):
+        raise RuntimeError("DNS probe requires one complete A/IN question")
+    response_id, flags, question_count, answer_count, authority_count, additional_count = struct.unpack(
         "!HHHHHH", response[:12]
     )
     if response_id != transaction_id:
@@ -65,6 +128,10 @@ def validate_dns_response(query: bytes, response: bytes, peer, server: str) -> N
         )
     if not flags & 0x8000:
         raise RuntimeError(f"DNS {server}:53 packet was not a response")
+    if flags & 0x7800:
+        raise RuntimeError(f"DNS {server}:53 returned a mismatched opcode")
+    if flags & 0x0200:
+        raise RuntimeError(f"DNS {server}:53 returned a truncated response (TC)")
     if flags & 0x000F:
         raise RuntimeError(f"DNS {server}:53 returned rcode={flags & 0x000F}")
     if question_count != 1 or answer_count < 1:
@@ -75,6 +142,58 @@ def validate_dns_response(query: bytes, response: bytes, peer, server: str) -> N
         raise RuntimeError(
             f"DNS {server}:53 response came from unexpected peer {peer[0]}:{peer[1]}"
         )
+    names = {}
+    question, offset = _dns_name(response, 12, len(response), names)
+    if question != requested_name or response[offset:offset + 4] != b"\x00\x01\x00\x01":
+        raise RuntimeError(f"DNS {server}:53 returned a mismatched or truncated question")
+    offset += 4
+    addresses, aliases = set(), {}
+    seen_opt = False
+    for section, count in enumerate((answer_count, authority_count, additional_count)):
+        for _ in range(count):
+            owner, offset = _dns_name(response, offset, len(response), names)
+            if offset + 10 > len(response):
+                raise RuntimeError("DNS truncated resource record header")
+            kind, record_class, ttl, size = struct.unpack_from("!HHIH", response, offset)
+            offset += 10
+            end = offset + size
+            if end > len(response):
+                raise RuntimeError("DNS truncated resource record data")
+            if kind == 1 and record_class == 1:
+                if size != 4:
+                    raise RuntimeError("DNS A record has an invalid RDLENGTH")
+                if section == 0:
+                    addresses.add(owner)
+            elif kind == 5:
+                target, name_end = _dns_name(response, offset, end, names)
+                if name_end != end:
+                    raise RuntimeError("DNS CNAME record has an invalid RDLENGTH")
+                if section == 0 and record_class == 1:
+                    if owner in aliases and aliases[owner] != target:
+                        raise RuntimeError("DNS answer has conflicting CNAME records")
+                    aliases[owner] = target
+            elif kind == 41:  # RFC 6891 OPT: keep extended errors from looking successful.
+                if section != 2 or owner or seen_opt or ttl >> 16:
+                    raise RuntimeError("DNS invalid OPT record or extended error/version")
+                seen_opt = True
+                option = offset
+                while option < end:
+                    if option + 4 > end:
+                        raise RuntimeError("DNS truncated EDNS option header")
+                    option += 4 + struct.unpack_from("!H", response, option + 2)[0]
+                    if option > end:
+                        raise RuntimeError("DNS truncated EDNS option data")
+            offset = end
+    if offset != len(response):
+        raise RuntimeError("DNS response has trailing bytes outside its records")
+    if addresses.intersection(aliases):
+        raise RuntimeError("DNS answer has both A and CNAME records for one owner")
+    visited = set()
+    while requested_name not in addresses:
+        if requested_name in visited or requested_name not in aliases:
+            raise RuntimeError(f"DNS {server}:53 missing the requested A/IN answer")
+        visited.add(requested_name)
+        requested_name = aliases[requested_name]
 
 
 def validate_ntp_response(packet: bytes, response: bytes, peer, server: str) -> None:
@@ -140,7 +259,7 @@ def read_probe_receipt(path):
 def replay_probe_receipt(value, run_uuid, label, source_pid, endpoint):
     """Derive the result from saved bytes/peer/clock samples, then check the child claim.
 
-    This preserves the existing DNS header and NTP probe contracts. It does not
+    This applies the same DNS wire and NTP probe contracts as the live probes. It does not
     authenticate the capture host or treat a manifest as a signed network trace.
     """
     if not isinstance(value, dict) or set(value) != PROBE_RECEIPT_KEYS or label not in PROBE_LABELS:

@@ -3540,7 +3540,8 @@ class SignedUdpGateWiringTests(unittest.TestCase):
         transaction_id = 0x1234
         valid = struct.pack(
             "!HHHHHH", transaction_id, 0x8180, 1, 1, 0, 0
-        ) + b"\0" * 16
+        ) + b"\x07example\x03com\x00\x00\x01\x00\x01"
+        valid += b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 60, 4) + bytes((93, 184, 216, 34))
 
         class FakeSocket:
             def __init__(self, outcome):
