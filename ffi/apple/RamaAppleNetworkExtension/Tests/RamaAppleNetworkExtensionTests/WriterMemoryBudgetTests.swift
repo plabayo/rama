@@ -19,6 +19,103 @@ final class WriterMemoryBudgetTests: XCTestCase {
         }
     }
 
+    private func observedNoCopyPayload(count: Int, events: TestValue<[String]>) -> Data {
+        let pointer = UnsafeMutableRawPointer.allocate(
+            byteCount: count, alignment: MemoryLayout<UInt8>.alignment)
+        pointer.initializeMemory(as: UInt8.self, repeating: 0xA7, count: count)
+        return Data(
+            bytesNoCopy: pointer,
+            count: count,
+            deallocator: .custom { pointer, _ in
+                pointer.deallocate()
+                events.update { $0.append("payload destroyed") }
+            })
+    }
+
+    func testWriterRootDestroysPhysicalPayloadBeforeBudgetRefund() {
+        let byteCount = 96 // Keep Data out of its inline representation.
+        let budget = WriterMemoryBudget()
+        let events = TestValue<[String]>([])
+        budget.testAfterReleaseBeforeCoordinatorKick = { [weak budget] in
+            XCTAssertEqual(events.get(), ["payload destroyed"])
+            XCTAssertEqual(budget?.snapshot().retainedBytes, 0)
+            XCTAssertEqual(budget?.snapshot().retainedItems, 0)
+            events.update { $0.append("budget refunded") }
+        }
+        defer { budget.testAfterReleaseBeforeCoordinatorKick = nil }
+
+        // End the source Data and bridging temporaries' lifetimes before
+        // checking the root. The final release below happens outside this
+        // pool, so pool drainage cannot conceal an early budget refund.
+        var payload: TcpPayloadSlice? = autoreleasepool {
+            let data = observedNoCopyPayload(count: byteCount, events: events)
+            XCTAssertTrue(budget.tryReserve(bytes: byteCount))
+            return budget.makePregrantedWriterPayload(data)
+        }
+        var clone = payload
+        withExtendedLifetime(clone) {
+            payload = nil
+            XCTAssertEqual(events.get(), [], "a cloned slice must retain the no-copy storage")
+            XCTAssertEqual(budget.snapshot().retainedBytes, byteCount)
+            XCTAssertEqual(budget.snapshot().retainedItems, 1)
+        }
+
+        clone = nil
+        XCTAssertEqual(events.get(), ["payload destroyed", "budget refunded"])
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+    }
+
+    func testTcpTransitRootDestroysPhysicalPayloadBeforeBudgetRefund() {
+        let byteCount = 96
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 256, maxItems: 4, tcpWaiterMaxBytes: 32,
+                udpPressureReserveBytes: 0, udpPressureReserveItems: 0))
+        let events = TestValue<[String]>([])
+        budget.testAfterReleaseBeforeCoordinatorKick = { [weak budget] in
+            XCTAssertEqual(events.get(), ["payload destroyed"])
+            XCTAssertEqual(budget?.testTcpTransitSnapshot.retainedBytes, 0)
+            XCTAssertEqual(budget?.testTcpTransitSnapshot.retainedItems, 0)
+            XCTAssertEqual(budget?.snapshot().retainedBytes, 0)
+            XCTAssertEqual(budget?.snapshot().retainedItems, 0)
+            events.update { $0.append("budget refunded") }
+        }
+        defer { budget.testAfterReleaseBeforeCoordinatorKick = nil }
+
+        var cursor: TcpPayloadCursor? = autoreleasepool {
+            budget.makeTcpTransitCursor(observedNoCopyPayload(count: byteCount, events: events))
+        }
+        XCTAssertNotNil(cursor)
+        var clonedCursor = cursor
+        var slice = cursor?.prefix(maxBytes: 32)
+        cursor = nil
+        withExtendedLifetime(clonedCursor) {
+            slice = nil
+            XCTAssertEqual(events.get(), [], "the cursor clone must retain the complete root")
+            XCTAssertEqual(budget.snapshot().retainedBytes, byteCount)
+            XCTAssertEqual(budget.testTcpTransitSnapshot.retainedBytes, byteCount)
+        }
+
+        slice = clonedCursor?.prefix(maxBytes: 32)
+        withExtendedLifetime(slice) {
+            clonedCursor = nil
+            XCTAssertEqual(slice?.count, 32)
+            XCTAssertEqual(events.get(), [], "a partial view must retain the complete backing allocation")
+            XCTAssertEqual(budget.snapshot().retainedBytes, byteCount)
+            XCTAssertEqual(budget.snapshot().retainedItems, 1)
+            XCTAssertEqual(budget.testTcpTransitSnapshot.retainedBytes, byteCount)
+            XCTAssertEqual(budget.testTcpTransitSnapshot.retainedItems, 1)
+        }
+
+        slice = nil
+        XCTAssertEqual(events.get(), ["payload destroyed", "budget refunded"])
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+        XCTAssertEqual(budget.testTcpTransitSnapshot.retainedBytes, 0)
+        XCTAssertEqual(budget.testTcpTransitSnapshot.retainedItems, 0)
+    }
+
     func testMinimumByteBudgetDeliversTcpWhileMaximumWriterAndUdpProgress() {
         assertMinimumTransportCapacity(maxBytes: 8 * 1024 * 1024 + 128 * 1024)
     }
