@@ -31,6 +31,7 @@ from modern_udp_evidence import (  # noqa: E402
     producer_sources_sha256,
     validate_echo_decision_bijection,
     verify_bundle,
+    _validate_echo_timing,
 )
 
 
@@ -171,6 +172,9 @@ def build_strict_bundle(directory):
         "local_endpoint_set_sha256": hashlib.sha256("\n".join(echo_endpoints).encode()).hexdigest(),
         "payload_set_sha256": echo_digest, "echo_set_sha256": echo_digest,
         "error_count": 0, "passed": True, "schema_complete": True,
+        "interval_ms": 0, "start_epoch_ms": 1500, "end_epoch_ms": 1501,
+        "start_monotonic_ns": 1000000000, "end_monotonic_ns": 1001000000,
+        "packet_timings_ns": [[index, 0, 1000000000, 1001000000] for index in range(128)],
     }
     server = {
         "schema_version": 1, "kind": "controlled_echo_server", "run_uuid": RUN_UUID,
@@ -534,6 +538,59 @@ class StrictBundleTests(unittest.TestCase):
 
 
 class QuicShapedEchoTests(unittest.TestCase):
+    def test_paced_socket_load_records_and_rederives_every_packet_window(self):
+        server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        server.bind(("127.0.0.1", 0))
+        server.settimeout(2)
+        port = server.getsockname()[1]
+
+        def echo():
+            try:
+                for _ in range(12):
+                    payload, peer = server.recvfrom(65535)
+                    server.sendto(payload, peer)
+            finally:
+                server.close()
+
+        thread = threading.Thread(target=echo)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                result = Path(directory) / "result.json"
+                controlled_echo_load(
+                    "127.0.0.1", port, RUN_UUID, 4, 3, 1200, 4, 2, str(result), 40
+                )
+                value = json.loads(result.read_text())
+                status = {
+                    "run_start_epoch_ms": str(value["start_epoch_ms"]),
+                    "run_end_epoch_ms": str(value["end_epoch_ms"]),
+                    "concurrent_load_deadline_seconds": "180",
+                }
+                self.assertTrue(value["passed"])
+                self.assertEqual(value["exact_echo_count"], 12)
+                self.assertEqual(value["independent_socket_count"], 4)
+                _validate_echo_timing(value, status, 4, 3)
+                for index in range(4):
+                    rows = value["packet_timings_ns"][index * 3:index * 3 + 3]
+                    self.assertGreaterEqual(rows[-1][2] - rows[0][2], 80_000_000)
+                for mutation in ("missing", "duplicate", "unpaced", "outside", "clock"):
+                    altered = json.loads(json.dumps(value))
+                    if mutation == "missing":
+                        altered["packet_timings_ns"].pop()
+                    elif mutation == "duplicate":
+                        altered["packet_timings_ns"][1] = altered["packet_timings_ns"][0]
+                    elif mutation == "unpaced":
+                        altered["packet_timings_ns"][1][2] = altered["packet_timings_ns"][0][2]
+                    elif mutation == "outside":
+                        altered["packet_timings_ns"][-1][3] = altered["end_monotonic_ns"] + 1
+                    else:
+                        altered["end_epoch_ms"] += 10_000
+                    with self.subTest(mutation=mutation), self.assertRaises(BundleVerificationError):
+                        _validate_echo_timing(altered, status, 4, 3)
+        finally:
+            thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
+
     def test_load_byte_products_are_bounded_before_socket_work(self):
         with self.assertRaises(ValueError):
             pressure_burst("127.0.0.1", 100_000, 60_000, 0)
@@ -542,6 +599,12 @@ class QuicShapedEchoTests(unittest.TestCase):
                 "127.0.0.1", 9, RUN_UUID, 512, 64, 60_000, 128, 2,
                 "/does/not/matter.json",
             )
+        for interval in (-1, 10_001, True, 0.5):
+            with self.subTest(interval=interval), self.assertRaises(ValueError):
+                controlled_echo_load(
+                    "127.0.0.1", 9, RUN_UUID, 1, 1, 1200, 1, 2,
+                    "/does/not/matter.json", interval,
+                )
 
     def test_echo_provider_mapping_requires_endpoint_flow_bijection(self):
         endpoints = ["127.0.0.1:50001", "127.0.0.1:50002"]

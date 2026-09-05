@@ -350,6 +350,7 @@ def controlled_echo_load(
     concurrency: int,
     timeout: float,
     result_file: str,
+    interval_ms: int = 0,
 ) -> None:
     canonical_uuid(run_uuid)
     address = ipaddress.ip_address(server)
@@ -365,6 +366,8 @@ def controlled_echo_load(
         raise ValueError("echo byte product exceeds the bounded load budget")
     if not 0.1 <= timeout <= 10:
         raise ValueError("echo timeout must be in 0.1..10")
+    if type(interval_ms) is not int or not 0 <= interval_ms <= 10_000:
+        raise ValueError("echo interval must be an integer in 0..10000 milliseconds")
     expected = {
         (socket_index, sequence): quic_shaped_payload(
             run_uuid, socket_index, sequence, payload_bytes
@@ -385,17 +388,30 @@ def controlled_echo_load(
             sock.close()
         raise
 
+    start_epoch_ms = time.time_ns() // 1_000_000
+    start_monotonic_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+
     def one_socket(socket_index: int):
         sock = sockets[socket_index]
         sent = received = exact = 0
         echoed = {}
+        timings = []
         try:
             for sequence in range(datagrams_per_socket):
+                if timings and interval_ms:
+                    deadline = timings[-1][2] + interval_ms * 1_000_000
+                    while True:
+                        remaining = deadline - time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+                        if remaining <= 0:
+                            break
+                        time.sleep(remaining / 1_000_000_000)
                 payload = expected[(socket_index, sequence)]
+                sent_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
                 if sock.sendto(payload, (str(address), port)) != len(payload):
                     raise RuntimeError("controlled echo client sent a partial datagram")
                 sent += 1
                 response, peer = sock.recvfrom(65_535)
+                received_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
                 received += 1
                 if peer[0] != str(address) or peer[1] != port:
                     raise ProductViolation(f"echo response came from unexpected peer {peer}")
@@ -404,15 +420,16 @@ def controlled_echo_load(
                 if parse_quic_shaped_payload(response, run_uuid) != (socket_index, sequence):
                     raise ProductViolation("echo response carried the wrong flow identity")
                 echoed[(socket_index, sequence)] = response
+                timings.append([socket_index, sequence, sent_ns, received_ns])
                 exact += 1
             local = sock.getsockname()
             local_endpoint = (
                 f"[{local[0]}]:{local[1]}" if address.version == 6
                 else f"{local[0]}:{local[1]}"
             )
-            return sent, received, exact, echoed, local_endpoint, None
+            return sent, received, exact, echoed, local_endpoint, None, timings
         except Exception as error:
-            return sent, received, exact, echoed, None, error
+            return sent, received, exact, echoed, None, error, timings
 
     rows = []
     try:
@@ -422,6 +439,8 @@ def controlled_echo_load(
     finally:
         for sock in sockets:
             sock.close()
+    end_monotonic_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+    end_epoch_ms = time.time_ns() // 1_000_000
     echoed = {}
     for row in rows:
         echoed.update(row[3])
@@ -439,6 +458,12 @@ def controlled_echo_load(
         "socket_count": socket_count,
         "datagrams_per_socket": datagrams_per_socket,
         "payload_bytes": payload_bytes,
+        "interval_ms": interval_ms,
+        "start_epoch_ms": start_epoch_ms,
+        "end_epoch_ms": end_epoch_ms,
+        "start_monotonic_ns": start_monotonic_ns,
+        "end_monotonic_ns": end_monotonic_ns,
+        "packet_timings_ns": [timing for row in rows for timing in row[6]],
         "expected_count": expected_count,
         "sent_count": sent_count,
         "received_count": received_count,
@@ -508,6 +533,7 @@ def main() -> None:
     echo_load.add_argument("--payload-bytes", type=int, default=1200)
     echo_load.add_argument("--concurrency", type=int, default=32)
     echo_load.add_argument("--timeout", type=float, default=8.0)
+    echo_load.add_argument("--interval-ms", type=int, default=0)
     echo_load.add_argument("--result-file", required=True)
 
     args = parser.parse_args()
@@ -526,7 +552,7 @@ def main() -> None:
         controlled_echo_load(
             args.server, args.port, args.run_uuid, args.socket_count,
             args.datagrams_per_socket, args.payload_bytes, args.concurrency,
-            args.timeout, args.result_file,
+            args.timeout, args.result_file, args.interval_ms,
         )
 
 

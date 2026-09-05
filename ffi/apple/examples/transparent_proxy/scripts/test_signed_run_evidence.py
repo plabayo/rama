@@ -369,6 +369,16 @@ def make_strict_modern_run(directory: Path):
     }
     client = dict(echo_common, **{
         "kind": "controlled_echo_client",
+        "interval_ms": 0,
+        "start_epoch_ms": int(common["run_start_epoch_ms"]),
+        "end_epoch_ms": int(common["run_start_epoch_ms"]) + 1,
+        "start_monotonic_ns": 1000000000,
+        "end_monotonic_ns": 1001000000,
+        "packet_timings_ns": [
+            [index, sequence, 1000000000, 1000000000]
+            for index in range(int(udp["echo_socket_count"]))
+            for sequence in range(int(udp["echo_datagrams_per_socket"]))
+        ],
         "socket_count": int(udp["echo_socket_count"]),
         "datagrams_per_socket": int(udp["echo_datagrams_per_socket"]),
         "payload_bytes": int(udp["echo_payload_bytes"]),

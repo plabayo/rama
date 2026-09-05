@@ -331,6 +331,21 @@ with numeric reason `1` and readable reason `shutdown`, fall inside the actual
 monotonic gate window, and contain at least one complete 48-byte request and
 response.
 
+To keep the same 128 controlled UDP flows active for at least 126 seconds,
+use 64 requests per socket with two-second pacing:
+
+```sh
+RAMA_TPROXY_E2E_ECHO_SOCKETS=128 \
+RAMA_TPROXY_E2E_ECHO_CONCURRENCY=128 \
+RAMA_TPROXY_E2E_ECHO_DATAGRAMS_PER_SOCKET=64 \
+RAMA_TPROXY_E2E_ECHO_INTERVAL_MS=2000 \
+  just test-modern-udp-signed
+```
+
+The client records each packet's flow/sequence and monotonic send/receive
+timestamps. Verification checks exact timing cardinality, per-flow pacing,
+the bounded workload window, and agreement with the run's wall-clock window.
+
 Exact endpoint and source-application fields remain private during normal
 operation. The example Rust policy owns the E2E mode, probe allowlist, public
 test diagnostics, and ten-minute expiry for temporary UDP overrides. The
@@ -632,12 +647,12 @@ CAND=$(mktemp -d /tmp/rama-stress-proxy.XXXXXX)
 PAIR=$(mktemp -d /tmp/rama-stress-pair.XXXXXX)
 
 # With the transparent proxy disabled:
-STRESS_DURATION=120 STRESS_CONCURRENCY=32 \
+STRESS_DURATION=60 STRESS_CONCURRENCY=16 \
   STRESS_TRAFFIC_ROLE=direct-baseline STRESS_LOG_DIR="$BASE" \
   just stress-traffic
 
 # Enable the proxy; monitored mode owns its NDJSON capture:
-STRESS_DURATION=120 STRESS_CONCURRENCY=32 \
+STRESS_DURATION=60 STRESS_CONCURRENCY=16 \
   STRESS_TRAFFIC_ROLE=proxy-candidate STRESS_LOG_DIR="$CAND" \
   STRESS_MONITOR_PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider) \
   STRESS_BUILT_PROVIDER="$BUILT_PROVIDER" \

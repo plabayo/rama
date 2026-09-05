@@ -880,6 +880,8 @@ ECHO_CLIENT_KEYS = {
     "independent_socket_count", "local_endpoints", "local_endpoint_set_sha256",
     "payload_set_sha256", "echo_set_sha256", "error_count", "passed",
     "schema_complete",
+    "interval_ms", "start_epoch_ms", "end_epoch_ms", "start_monotonic_ns",
+    "end_monotonic_ns", "packet_timings_ns",
 }
 ECHO_SERVER_KEYS = {
     "schema_version", "kind", "run_uuid", "endpoint", "expected_count",
@@ -891,8 +893,43 @@ ECHO_READY_KEYS = {
 }
 
 
+def _validate_echo_timing(client, status, sockets, per_socket):
+    names = ("interval_ms", "start_epoch_ms", "end_epoch_ms",
+             "start_monotonic_ns", "end_monotonic_ns")
+    if any(type(client[name]) is not int or not 0 <= client[name] < 2**63 for name in names):
+        raise BundleVerificationError("controlled echo clock samples are not canonical integers")
+    interval = client["interval_ms"]
+    start, end = client["start_monotonic_ns"], client["end_monotonic_ns"]
+    wall_start, wall_end = client["start_epoch_ms"], client["end_epoch_ms"]
+    if (
+        interval > 10_000 or start <= 0 or end < start
+        or not _bundle_uint(status["run_start_epoch_ms"]) <= wall_start <= wall_end
+            <= _bundle_uint(status["run_end_epoch_ms"])
+        or abs((wall_end - wall_start) * 1_000_000 - (end - start)) > 2_000_000_000
+        or end - start > _bundle_uint(status["concurrent_load_deadline_seconds"]) * 1_000_000_000
+    ):
+        raise BundleVerificationError("controlled echo clock window is inconsistent")
+    timings = client["packet_timings_ns"]
+    if not isinstance(timings, list) or len(timings) != sockets * per_socket:
+        raise BundleVerificationError("controlled echo packet timing cardinality mismatch")
+    previous = {}
+    for ordinal, row in enumerate(timings):
+        if (not isinstance(row, list) or len(row) != 4
+                or any(type(value) is not int or not 0 <= value < 2**63 for value in row)):
+            raise BundleVerificationError("controlled echo packet timing is malformed")
+        socket_index, sequence, sent, received = row
+        if ((socket_index, sequence) != divmod(ordinal, per_socket)
+                or not start <= sent <= received <= end):
+            raise BundleVerificationError("controlled echo packet timing identity/window mismatch")
+        if socket_index in previous:
+            previous_sent, previous_received = previous[socket_index]
+            if sent < previous_sent + interval * 1_000_000 or sent < previous_received:
+                raise BundleVerificationError("controlled echo per-flow pacing is not supported by raw samples")
+        previous[socket_index] = sent, received
+
+
 def _validate_echo_raw(root, status, decisions, phases, unblocked_generation):
-    client = _strict_json(root, "controlled-echo-client.json", ECHO_CLIENT_KEYS)
+    client = _strict_json(root, "controlled-echo-client.json", ECHO_CLIENT_KEYS, 4 * 1024 * 1024)
     server = _strict_json(root, "controlled-echo-server.json", ECHO_SERVER_KEYS)
     ready = _strict_json(root, "controlled-echo-ready.json", ECHO_READY_KEYS)
     sockets = _bundle_uint(status["echo_socket_count"], 512)
@@ -903,6 +940,7 @@ def _validate_echo_raw(root, status, decisions, phases, unblocked_generation):
     digest = status["echo_payload_set_sha256"]
     run_uuid = status["run_uuid"]
     echo_pid = _bundle_uint(status["echo_source_pid"], 2**31 - 1)
+    _validate_echo_timing(client, status, sockets, per_socket)
     if not endpoint.startswith("127.0.0.1:") or not is_udp_endpoint(endpoint):
         raise BundleVerificationError("controlled echo endpoint is not canonical loopback")
     common = {
