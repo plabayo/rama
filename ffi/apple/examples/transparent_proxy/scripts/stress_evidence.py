@@ -4,7 +4,6 @@
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
 import hashlib
-import json
 import os
 from pathlib import Path
 import re
@@ -736,11 +735,11 @@ def verify_ndjson_window(
     marker_ids = set()
     for line in path.read_text(encoding="utf-8", errors="strict").splitlines():
         try:
-            record = json.loads(line)
-        except json.JSONDecodeError as error:
+            record = signed_run_evidence._json_object(
+                line.encode("utf-8"), "system.ndjson record"
+            )
+        except ValueError as error:
             raise ValueError("malformed system.ndjson") from error
-        if not isinstance(record, dict):
-            raise ValueError("malformed system.ndjson row")
         timestamp = parse_ndjson_timestamp(record.get("timestamp"))
         if timestamp is None:
             raise ValueError("system.ndjson row has no valid timestamp")

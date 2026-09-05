@@ -1206,6 +1206,44 @@ class StressTrafficValidationTests(unittest.TestCase):
                     "marker set|duplicate stress request marker|wrong run UUID|wrong provider subsystem|exact run window|malformed stress attribution marker",
                 )
 
+    def test_sealed_ndjson_rejects_duplicate_keys_in_candidate_and_diagnostic_logs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for role in ("proxy-candidate", "unpaired-diagnostic"):
+                root = Path(temporary) / role
+                write_self_attested_traffic_run(root, monitored=True, role=role)
+                if role == "proxy-candidate":
+                    add_common_stress_envelope(root)
+                    reseal = reseal_common_stress_envelope
+                else:
+                    reseal = reseal_self_attested_traffic_run
+                path = root / "system.ndjson"
+                lines = path.read_text().splitlines()
+                record = json.loads(lines[0])
+                record["future_field"] = {"nested": [1, True, None]}
+                encoded = json.dumps(record)
+
+                def verify_line(line):
+                    path.write_text("\n".join([line, *lines[1:]]) + "\n")
+                    reseal(root)
+                    return verify_stress_evidence(root)
+
+                verify_line(encoded)
+                for key, original in record.items():
+                    for duplicate in (original, "foreign", 999, True, None, [], {}):
+                        field = json.dumps(key) + ":" + json.dumps(duplicate)
+                        for line in (
+                            "{" + field + "," + encoded[1:],
+                            encoded[:-1] + "," + field + "}",
+                        ):
+                            with self.subTest(role=role, key=key, duplicate=duplicate, line=line):
+                                with self.assertRaisesRegex(ValueError, "malformed system.ndjson"):
+                                    verify_line(line)
+                for nested in ('{"key":0,"key":1}', '[{"key":0,"key":1}]'):
+                    line = encoded[:-1] + ',"future_nested":' + nested + "}"
+                    with self.subTest(role=role, nested=nested):
+                        with self.assertRaisesRegex(ValueError, "malformed system.ndjson"):
+                            verify_line(line)
+
     def test_pair_and_series_timing_caps_are_not_configurable_above_ten_minutes(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

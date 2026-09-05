@@ -2653,6 +2653,7 @@ from decimal import Decimal
 
 sys.path.insert(0, sys.argv[2])
 from soak_pressure_log import (
+    DuplicateJsonKeyError,
     artifact_identity_issues,
     cap_validation_hard_limited,
     ceiling_configuration_issues,
@@ -2703,6 +2704,7 @@ from soak_pressure_log import (
     summarize_writer_memory_pressure_rows,
     top_cpu_collection_issues,
     unexpected_probe_failure_count_across_outages,
+    unique_json_object,
 )
 
 out = sys.argv[1]
@@ -3384,16 +3386,21 @@ if (
         "crash snapshot metadata does not match the sealed snapshot")
 
 dial9_summary_path = os.path.join(out, "dial9-evidence.json")
+dial9_summary_integrity_issues = []
 try:
     with open(dial9_summary_path) as dial9_input:
-        dial9_summary = json.load(dial9_input)
-except (OSError, ValueError):
+        dial9_summary = json.load(dial9_input, object_pairs_hook=unique_json_object)
+except DuplicateJsonKeyError:
+    dial9_summary = None
+    dial9_summary_integrity_issues.append("dial9 evidence summary contains duplicate JSON keys")
+except (OSError, ValueError, RecursionError):
     dial9_summary = None
 dial9_issues = dial9_evidence_issues(
     meta, dial9_summary, os.path.join(out, "dial9-traces"))
 
 capture_issues = (
     list(ndjson_issues) + provider_source_issues + meta_issues + phase_issues
+    + dial9_summary_integrity_issues
     + provider_identity_issues + timestamp_issues + probe_issues
     + pool_interval_issues + pool_bracket_issues
     + lifecycle_category_issues + pressure_telemetry_issues + pressure["issues"]

@@ -1520,6 +1520,50 @@ class CrashAndReleaseSetTests(unittest.TestCase):
             self.assertTrue((base / "snapshot" / report.name).is_file())
             self.assertTrue((base / "snapshot" / metadata_report.name).is_file())
 
+    def test_crash_snapshot_rejects_ambiguous_ips_without_sealing_zero_crashes(self):
+        for key in ("app_name", "bundleID", "procName", "procPath"):
+            for replacement in ("unrelated", 999, True, None, [], {}):
+                provider_value = json.dumps("/Library/provider" if key == "procPath" else "provider")
+                fields = [json.dumps(key) + ":" + provider_value,
+                          json.dumps(key) + ":" + json.dumps(replacement)]
+                for ordered in (fields, list(reversed(fields))):
+                    ambiguous = "{" + ",".join(ordered) + "}"
+                    for content in (ambiguous, '{"bug_type":"309"}\n' + ambiguous,
+                                    '{"metadata":[' + ambiguous + "]}"):
+                        with self.subTest(key=key, replacement=replacement, content=content), \
+                             tempfile.TemporaryDirectory() as temporary:
+                            base = Path(temporary)
+                            reports = base / "reports"
+                            reports.mkdir()
+                            (reports / "Incident.ips").write_text(content + "\n")
+                            snapshot = base / "snapshot"
+                            with self.assertRaisesRegex(evidence.EvidenceError, "duplicate JSON key"):
+                                evidence.snapshot_crashes(
+                                    1, snapshot, ["provider"],
+                                    run_uuid=str(uuid.uuid4()),
+                                    provider_generation_identity="a" * 64,
+                                    report_dirs=[reports],
+                                )
+                            self.assertFalse((snapshot / "crash-snapshot.tsv").exists())
+
+    def test_crash_snapshot_preserves_unique_unknown_ips_fields_and_nested_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            reports = base / "reports"
+            reports.mkdir()
+            (reports / "Incident.ips").write_text(
+                '{"bug_type":"309","future_field":[1,true,null]}\n'
+                '{"future_nested":{"procPath":"/Library/provider","other":{}}}\n'
+            )
+            result = evidence.snapshot_crashes(
+                1, base / "snapshot", ["provider"],
+                run_uuid=str(uuid.uuid4()),
+                provider_generation_identity="a" * 64,
+                report_dirs=[reports],
+            )
+            self.assertEqual(result["crash_count"], "1")
+            self.assertTrue((base / "snapshot" / "Incident.ips").is_file())
+
     def test_release_set_cross_checks_identity_and_dial9_ownership(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)

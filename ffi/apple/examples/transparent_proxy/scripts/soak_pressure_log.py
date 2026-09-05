@@ -711,6 +711,20 @@ def parse_oslog_timestamp(value):
     return None
 
 
+class DuplicateJsonKeyError(ValueError):
+    """A JSON artifact cannot bind one value to each field."""
+
+
+def unique_json_object(pairs):
+    """Retain unknown fields while rejecting ambiguous repeated JSON keys."""
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise DuplicateJsonKeyError(f"duplicate JSON key: {key}")
+        value[key] = item
+    return value
+
+
 def parse_ndjson_lines(lines):
     """Decode an ndjson stream and report every malformed record."""
     records = [(line_number, raw.strip()) for line_number, raw in enumerate(lines, 1)
@@ -719,8 +733,8 @@ def parse_ndjson_lines(lines):
     issues = []
     for line_number, line in records:
         try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
+            value = json.loads(line, object_pairs_hook=unique_json_object)
+        except (ValueError, RecursionError):
             issues.append(f"malformed NDJSON record at line {line_number}")
             continue
         if not isinstance(value, dict):

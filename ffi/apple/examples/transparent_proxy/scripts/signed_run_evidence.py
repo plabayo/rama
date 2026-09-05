@@ -1136,18 +1136,19 @@ def _validate_modern_domain_semantics(parser_path: Path, root: Path) -> None:
         )
 
 
-def _json_object(content: bytes, label: str) -> dict:
-    def unique_object(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                raise EvidenceError(f"{label} contains duplicate JSON key {key!r}")
-            result[key] = value
-        return result
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise EvidenceError(f"duplicate JSON key {key!r}")
+        result[key] = value
+    return result
 
+
+def _json_object(content: bytes, label: str) -> dict:
     try:
         value = json.loads(
-            content.decode("utf-8", errors="strict"), object_pairs_hook=unique_object
+            content.decode("utf-8", errors="strict"), object_pairs_hook=_unique_json_object
         )
     except (UnicodeError, ValueError, RecursionError) as error:
         raise EvidenceError(f"{label} is malformed JSON") from error
@@ -2898,8 +2899,8 @@ def _crash_report_matches(
     lines = text.splitlines()
     for candidate_text in lines[:4] + [text]:
         try:
-            objects.append(json.loads(candidate_text))
-        except (ValueError, RecursionError):
+            objects.append(json.loads(candidate_text, object_pairs_hook=_unique_json_object))
+        except (json.JSONDecodeError, RecursionError):
             continue
 
     interesting = {

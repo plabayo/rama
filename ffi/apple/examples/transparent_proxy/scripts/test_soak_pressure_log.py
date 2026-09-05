@@ -1033,6 +1033,33 @@ class SoakPressureLogTests(unittest.TestCase):
         self.assertEqual([row["eventMessage"] for row in decoded], ["a"])
         self.assertEqual(issues, ["malformed NDJSON record at line 2"])
 
+    def test_ndjson_rejects_duplicate_keys_without_discarding_unique_unknown_fields(self):
+        record = {
+            "processID": 10,
+            "subsystem": "org.example.provider",
+            "timestamp": "1970-01-01 00:01:40+0000",
+            "eventMessage": "gauge",
+            "future_field": {"nested": [1, True, None]},
+        }
+        encoded = json.dumps(record)
+        decoded, issues = parse_ndjson_lines([encoded + "\n"])
+        self.assertEqual(decoded, [record])
+        self.assertEqual(issues, [])
+        for key, original in record.items():
+            for duplicate in (original, "foreign", 999, True, None, [], {}):
+                field = json.dumps(key) + ":" + json.dumps(duplicate)
+                for line in ("{" + field + "," + encoded[1:], encoded[:-1] + "," + field + "}"):
+                    with self.subTest(key=key, duplicate=duplicate, line=line):
+                        decoded, issues = parse_ndjson_lines([encoded + "\n", line + "\n"])
+                        self.assertEqual(decoded, [record])
+                        self.assertEqual(issues, ["malformed NDJSON record at line 2"])
+        for nested in ('{"key":0,"key":1}', '[{"key":0,"key":1}]'):
+            line = encoded[:-1] + ',"future_nested":' + nested + "}"
+            with self.subTest(nested=nested):
+                decoded, issues = parse_ndjson_lines([line + "\n"])
+                self.assertEqual(decoded, [])
+                self.assertEqual(issues, ["malformed NDJSON record at line 1"])
+
     def test_oslog_timestamp_requires_a_complete_known_format(self):
         self.assertEqual(
             parse_oslog_timestamp("1970-01-01 00:01:40.000001+0000"),
@@ -3614,6 +3641,54 @@ class SoakPressureLogTests(unittest.TestCase):
 
             status, output = run_extractor()
             self.assertEqual(status, 0, output)
+
+            summary_path = out / "dial9-evidence.json"
+            summary = json.loads(summary_path.read_text())
+            summary["future_field"] = {"nested": [1, True, None]}
+            summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+            status, output = run_extractor()
+            self.assertEqual(status, 0, output)
+            encoded_summary = json.dumps(summary)
+            for key, conflicting in (
+                ("schema_complete", False), ("required_pair_count", 0),
+                ("current_segment_count", None), ("artifacts", []),
+            ):
+                field = json.dumps(key) + ":" + json.dumps(conflicting)
+                for text in (
+                    "{" + field + "," + encoded_summary[1:],
+                    encoded_summary[:-1] + "," + field + "}",
+                ):
+                    with self.subTest(duplicate_dial9_key=key, text=text):
+                        summary_path.write_text(text + "\n")
+                        status, output = run_extractor()
+                        self.assertEqual(status, 2, output)
+                        self.assertIn("dial9 evidence summary is missing or malformed", output)
+            summary_path.write_text(encoded_summary.replace(
+                '"state": "sealed"', '"state": "active", "state": "sealed"'
+            ) + "\n")
+            status, output = run_extractor()
+            self.assertEqual(status, 2, output)
+            self.assertIn("dial9 evidence summary is missing or malformed", output)
+            summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+
+            for key, conflicting in (
+                ("processID", 999), ("subsystem", "foreign"),
+                ("timestamp", "1970-01-01 00:00:00+0000"),
+                ("eventMessage", "unexpected provider failure"),
+            ):
+                encoded = json.dumps(rows[0])
+                field = json.dumps(key) + ":" + json.dumps(conflicting)
+                with self.subTest(duplicate_ndjson_key=key):
+                    (out / "system.ndjson").write_text(
+                        "{" + field + "," + encoded[1:] + "\n"
+                        + "".join(json.dumps(row) + "\n" for row in rows[1:])
+                    )
+                    status, output = run_extractor()
+                    self.assertEqual(status, 2, output)
+                    self.assertIn("malformed NDJSON record at line 1", output)
+            (out / "system.ndjson").write_text(
+                "".join(json.dumps(row) + "\n" for row in rows)
+            )
 
             (out / "fanout.txt").write_text(
                 "fanout\t503\t0\t0.250000\tcurl_exit=22\n"
