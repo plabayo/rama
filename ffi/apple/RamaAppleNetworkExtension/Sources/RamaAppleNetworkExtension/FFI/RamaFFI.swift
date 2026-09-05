@@ -919,7 +919,7 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
     /// `registerPromoteCallback` is called.
     private var promoteCallbackBox: Unmanaged<TcpPromoteCallbackBox>?
     private var cancelled = false
-#if DEBUG
+#if DEBUG || RAMA_TESTING
     /// Per-session test seams. Compiled out of release builds so production has
     /// neither storage nor branches, and one test cannot park another session.
     private var beforePromoteRegisterFFIForTest: (() -> Void)?
@@ -940,7 +940,7 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
         egressCallbackBox = nil
         let promoteBox = promoteCallbackBox
         promoteCallbackBox = nil
-#if DEBUG
+#if DEBUG || RAMA_TESTING
         let beforeFreeFFI = beforeSessionFreeFFIForTest
         beforeSessionFreeFFIForTest = nil
 #endif
@@ -953,7 +953,7 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
         // The engine guard is the load-bearing piece; this ordering
         // alone is necessary but insufficient.
         if let p {
-#if DEBUG
+#if DEBUG || RAMA_TESTING
             beforeFreeFFI?()
 #endif
             rama_transparent_proxy_tcp_session_free(p)
@@ -1223,7 +1223,7 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
             context: box.toOpaque(),
             on_promote_request: ramaTcpOnPromoteRequestCallback
         )
-#if DEBUG
+#if DEBUG || RAMA_TESTING
         beforePromoteRegisterFFIForTest?()
 #endif
         rama_transparent_proxy_tcp_session_register_promote_callbacks(s, callbacks)
@@ -1236,7 +1236,7 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
         retireTcpPromoteCallbackBox(previous)
     }
 
-#if DEBUG
+#if DEBUG || RAMA_TESTING
     func setBeforePromoteRegisterFFIForTest(_ hook: (() -> Void)?) {
         lock.lock()
         beforePromoteRegisterFFIForTest = hook
@@ -1296,7 +1296,7 @@ final class RamaUdpSessionHandle: @unchecked Sendable {
     private var sessionPtr: OpaquePointer?
     private let callbackBox: Unmanaged<UdpSessionCallbackBox>
     private var cancelled = false
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         private var testAfterCancelledBeforeRustClose: (@Sendable () -> Void)?
     #endif
 
@@ -1364,7 +1364,7 @@ final class RamaUdpSessionHandle: @unchecked Sendable {
         rama_transparent_proxy_udp_session_on_client_read_complete(s, probeId)
     }
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         func testSetAfterCancelledBeforeRustClose(_ hook: (@Sendable () -> Void)?) {
             lock.lock()
             testAfterCancelledBeforeRustClose = hook
@@ -1379,12 +1379,12 @@ final class RamaUdpSessionHandle: @unchecked Sendable {
             return
         }
         cancelled = true
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             let afterCancelled = testAfterCancelledBeforeRustClose
         #endif
         lock.unlock()
 
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             afterCancelled?()
         #endif
 

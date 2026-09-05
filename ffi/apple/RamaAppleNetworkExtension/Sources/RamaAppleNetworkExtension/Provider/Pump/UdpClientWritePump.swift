@@ -39,7 +39,7 @@ private struct UdpWriterSharedState {
     var pressureRetainedItems = 0
     var fallbackEndpoint: NWEndpoint?
     var fullWasLogged = false
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         var acceptedDispatches: UInt64 = 0
         var droppedFull: UInt64 = 0
         var droppedAggregate: UInt64 = 0
@@ -146,20 +146,20 @@ final class UdpClientWritePump: @unchecked Sendable {
     /// peerless and attributed datagrams must not turn a diagnostic into a
     /// packet-rate log source.
     private var orphanDropLogged = false
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         /// Counts real delayed drain backstops. An empty drain completes before
         /// allocating or scheduling one, so close churn cannot leave canceled
         /// no-op work items retained by the dispatch queue until their deadline.
         private(set) var testDrainBackstopScheduleCount = 0
         /// Test-only instrumentation. Counts every
         /// `setSentByEndpoint` invocation that supplies a non-nil endpoint.
-        /// `UdpFlowSession` invokes it solely as a Debug observation seam for
-        /// strict read-array pairing; Release compiles that call out.
+        /// `UdpFlowSession` invokes it solely as an explicit test observation
+        /// seam for strict read-array pairing; production Release omits it.
         ///
-        /// Gated on `#if DEBUG` so production Release builds carry
+        /// Enabled by DEBUG or RAMA_TESTING so production Release builds carry
         /// neither the field storage (24 bytes / flow) nor the
-        /// per-datagram ARC retain on `NWEndpoint`. Tests run in
-        /// Debug; the gating is invisible to them.
+        /// per-datagram ARC retain on `NWEndpoint`. Debug and explicitly
+        /// instrumented optimized tests can both observe it.
         internal private(set) var testSentByEndpointSetCount: Int = 0
         /// Companion: the last endpoint observed by
         /// `setSentByEndpoint`. Useful when a test needs to
@@ -233,7 +233,7 @@ final class UdpClientWritePump: @unchecked Sendable {
             return true
         }
         guard accepted else { return }
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             testSentByEndpointSetCount += 1
             testLastSentByEndpoint = endpoint
         #endif
@@ -258,7 +258,7 @@ final class UdpClientWritePump: @unchecked Sendable {
         // Stamp server activity at callback entry, before admission-lock
         // contention or borrowed-view copying can lose a deadline tie.
         onActivity()
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             testBeforeBorrowedMaterialize?()
         #endif
         let byteCount = Int(view.len)
@@ -300,7 +300,7 @@ final class UdpClientWritePump: @unchecked Sendable {
             else {
                 let shouldLog = !state.fullWasLogged
                 state.fullWasLogged = true
-                #if DEBUG
+                #if DEBUG || RAMA_TESTING
                     state.droppedFull &+= 1
                     if shouldLog { state.fullLogCount &+= 1 }
                 #endif
@@ -310,7 +310,7 @@ final class UdpClientWritePump: @unchecked Sendable {
             guard let budgetAdmission = writerMemoryBudget.tryReserveUdp(bytes: byteCount) else {
                 let shouldLog = !state.fullWasLogged
                 state.fullWasLogged = true
-                #if DEBUG
+                #if DEBUG || RAMA_TESTING
                     state.droppedFull &+= 1
                     state.droppedAggregate &+= 1
                     if shouldLog { state.fullLogCount &+= 1 }
@@ -332,7 +332,7 @@ final class UdpClientWritePump: @unchecked Sendable {
                 state.pressureRetainedBytes += byteCount
                 state.pressureRetainedItems += 1
             }
-            #if DEBUG
+            #if DEBUG || RAMA_TESTING
                 state.acceptedDispatches &+= 1
                 if borrowed { state.borrowedMaterializations &+= 1 }
             #endif
@@ -417,7 +417,7 @@ final class UdpClientWritePump: @unchecked Sendable {
             }
             if bucket > pendingHwmLogBucket {
                 pendingHwmLogBucket = bucket
-                #if DEBUG
+                #if DEBUG || RAMA_TESTING
                     testPendingHwmLogCount += 1
                 #endif
                 RamaLog.trace(
@@ -471,7 +471,7 @@ final class UdpClientWritePump: @unchecked Sendable {
             self.completeDrainLocked(drained: false)
         }
         drainBackstop = backstop
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             testDrainBackstopScheduleCount += 1
         #endif
         queue.asyncAfter(
@@ -586,7 +586,7 @@ final class UdpClientWritePump: @unchecked Sendable {
             // Keep as a safety net.
             return
         }
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             testBeforeWriteGate?()
         #endif
         // Linearize the nonblocking kernel write invocation with off-queue
@@ -667,7 +667,7 @@ final class UdpClientWritePump: @unchecked Sendable {
         if !started { closeLocked() }
     }
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         var testAdmissionSnapshot: (
             closed: Bool,
             waiting: Int,

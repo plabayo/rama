@@ -204,7 +204,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         attachEngineForLifecycle(engine, runtimePolicy: runtimePolicy)
     }
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
     /// Test-only legacy entry point. Tests that directly tune module defaults
     /// can omit a policy and retain their per-helper snapshot behavior.
     @discardableResult
@@ -758,7 +758,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     private var pressureProtectionRetryToken: UInt64 = 0
     private var pressureProtectionRetryWork: DispatchWorkItem?
     private var pressureProtectionRetryDeadlineNs: UInt64 = 0
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         private var pressureProtectionRetrySchedules = 0
         private var pressureProtectionRetryBodyRuns = 0
         private let beforeTcpHardCapReplacementPublish =
@@ -1330,7 +1330,7 @@ final class TransparentProxyCore: @unchecked Sendable {
     }
     private var pressureEpisode: PressureEpisode?
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         /// Test-only: the suppression most recently armed, in ms. Lets a
         /// test assert the derived bound itself instead of racing the
         /// clock for what remains of it. Only mutated on `stateQueue`.
@@ -1784,7 +1784,7 @@ final class TransparentProxyCore: @unchecked Sendable {
                 Self.pressureRescanMaxSuppressMs)
             pressureRescanSuppressedUntilNs = nowNs &+ suppressMs &* 1_000_000
             reschedulePressureRecheckLocked(nowNs: nowNs)
-            #if DEBUG
+            #if DEBUG || RAMA_TESTING
                 pressureRescanLastArmedMs = suppressMs
             #endif
             if goal == .lowWater, !pressureNoHeadroomLogged {
@@ -1961,7 +1961,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             self.pressureProtectionRetryToken &+= 1
             self.pressureProtectionRetryWork = nil
             self.pressureProtectionRetryDeadlineNs = 0
-            #if DEBUG
+            #if DEBUG || RAMA_TESTING
                 self.pressureProtectionRetryBodyRuns += 1
             #endif
             guard self.pressureProtectionRetryNeededLocked() else { return }
@@ -1972,7 +1972,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         }
         pressureProtectionRetryWork = work
         pressureProtectionRetryDeadlineNs = deadlineNs
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             pressureProtectionRetrySchedules += 1
         #endif
         let delayNs = deadlineNs > nowNs ? deadlineNs - nowNs : 0
@@ -2030,7 +2030,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         for victim in victims {
             let ctx = victim.ctx
             runFlowTeardown(ctx) { [weak self] in
-                #if DEBUG
+                #if DEBUG || RAMA_TESTING
                     self?.pressureEvictionBodyRuns.withLock { $0 += 1 }
                 #endif
                 let nowNs = DispatchTime.now().uptimeNanoseconds
@@ -2650,7 +2650,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         }
     }
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         /// Test hook: run one maintenance tick synchronously. Lets
         /// unit tests exercise the watchdog without waiting 60s for
         /// the production timer. Same `#if DEBUG` gating as the other
@@ -3463,7 +3463,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         // `stateQueue`; start-cap and latency-breaker refusals do not represent
         // live-flow pressure and deliberately do not trigger it.
         if result.wakePressureReaper {
-            #if DEBUG
+            #if DEBUG || RAMA_TESTING
                 beforeTcpHardCapReplacementPublish.withLock { $0 }?()
             #endif
             reapIdleUnderPressure(
@@ -3766,7 +3766,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         stateQueue.sync { self.udpSessions.count }
     }
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         /// Test-only accessor for the writer pump bound to a flow.
         /// Returns `nil` if the flow is not registered (or never
         /// had a writer attached). Used by per-flow unit tests
@@ -4189,7 +4189,7 @@ final class TransparentProxyCore: @unchecked Sendable {
 
 }
 
-#if DEBUG
+#if DEBUG || RAMA_TESTING
     /// Stub anchor used by `testInsertUdpContext` — wraps a bare
     /// `UdpFlowContext` so the production registry's
     /// `UdpFlowSessionAnchor` invariant holds in tests that drive the

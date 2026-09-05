@@ -63,7 +63,7 @@ final class UdpFlowSessionIdleWatchdogTests: XCTestCase {
         fx.session.flowQueue.async { fx.session.armIdleTimer() }
         fx.drainFlowQueue()
         XCTAssertNil(fx.session.idleWork, "zero timeout must leave idleWork nil")
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             XCTAssertEqual(fx.session.idleTimerScheduleCount, 0)
         #endif
     }
@@ -81,7 +81,7 @@ final class UdpFlowSessionIdleWatchdogTests: XCTestCase {
         fx.drainFlowQueue()
         let first = fx.session.idleWork
         XCTAssertNotNil(first)
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             XCTAssertEqual(fx.session.idleTimerScheduleCount, 1)
         #endif
 
@@ -96,7 +96,7 @@ final class UdpFlowSessionIdleWatchdogTests: XCTestCase {
 
         XCTAssertTrue(first === fx.session.idleWork)
         XCTAssertFalse(first?.isCancelled ?? true)
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             XCTAssertEqual(fx.session.idleTimerScheduleCount, 1)
         #endif
 
@@ -183,7 +183,7 @@ final class UdpFlowSessionIdleWatchdogTests: XCTestCase {
 
             XCTAssertNotEqual(fx.session.ctx.readState, .closed)
             XCTAssertFalse(first === fx.session.idleWork)
-            #if DEBUG
+            #if DEBUG || RAMA_TESTING
                 XCTAssertEqual(fx.session.idleTimerScheduleCount, 2)
             #endif
 

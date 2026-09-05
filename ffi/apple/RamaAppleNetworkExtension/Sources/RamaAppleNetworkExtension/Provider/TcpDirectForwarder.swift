@@ -203,7 +203,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
     private var closingSignalled: Bool = false
     private var drainPendingSignalled: Bool = false
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         /// Queue-confined test seam proving fatal teardown releases carryover.
         var testBufferedChunkCount: Int { c2sBuffer.count + s2cBuffer.count }
     #endif

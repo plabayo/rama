@@ -149,6 +149,20 @@ run-tproxy-ffi-e2e-swift: build-tproxy-rs-debug
         -Xlinker -framework -Xlinker NetworkExtension \
         -Xlinker -framework -Xlinker SystemConfiguration
 
+# First compile the ordinary uninstrumented Release products. The optimized
+# test suite then explicitly enables the existing state/scheduling observation
+# seams without defining DEBUG or enabling Swift debug assertions. Production
+# Release app builds omit RAMA_TESTING and keep those seams compiled out.
+[working-directory: '.']
+run-tproxy-ffi-e2e-swift-release: build-tproxy-rs-debug
+    swift build -c release
+    swift test -c release -Xswiftc -DRAMA_TESTING \
+        -Xlinker -L$(pwd)/tproxy_rs/target/debug \
+        -Xlinker -lrama_tproxy_example \
+        -Xlinker -lz \
+        -Xlinker -framework -Xlinker NetworkExtension \
+        -Xlinker -framework -Xlinker SystemConfiguration
+
 # Full Swift unit suite under ThreadSanitizer. Suppressions are deliberately
 # forbidden: any reported Swift-side race must fail this recipe. The linked
 # Rust static library is not instrumented by this Swift TSan invocation.

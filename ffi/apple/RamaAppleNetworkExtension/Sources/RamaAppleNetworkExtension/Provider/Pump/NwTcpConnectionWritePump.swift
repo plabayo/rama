@@ -402,7 +402,7 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
         }
     }
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         var testHasTerminalLinger: Bool {
             if DispatchQueue.getSpecific(key: callbackQueueKey) != nil {
                 return lingerWork != nil

@@ -78,7 +78,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
     private var effectiveRuntimePolicy: TransparentProxyRuntimePolicy {
         runtimePolicy ?? .testDefaultsSnapshot
     }
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         var testRuntimePolicy: TransparentProxyRuntimePolicy? { runtimePolicy }
         var testWriterMemoryBudget: WriterMemoryBudget { writerMemoryBudget }
     #endif

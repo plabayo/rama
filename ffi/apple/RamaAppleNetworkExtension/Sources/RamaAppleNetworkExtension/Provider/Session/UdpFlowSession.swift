@@ -68,7 +68,7 @@ private struct UdpReadDemandGate {
     var firstProbeId: UInt64 = 0
     var secondProbeId: UInt64 = 0
     var runnerQueued = false
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         var runnerSchedules: UInt64 = 0
     #endif
 }
@@ -97,7 +97,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     private var effectiveRuntimePolicy: TransparentProxyRuntimePolicy {
         runtimePolicy ?? .testDefaultsSnapshot
     }
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         var testRuntimePolicy: TransparentProxyRuntimePolicy? { runtimePolicy }
         var testWriterMemoryBudget: WriterMemoryBudget { writerMemoryBudget }
     #endif
@@ -142,7 +142,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     private var stagingCapacityWaiting = false
     private var stagingWaitProbeId: UInt64 = 0
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         /// Test-only count of actual queue schedules, not activity
         /// observations. Pins that a datagram burst creates no timers
         /// without adding field storage or increments in Release.
@@ -457,7 +457,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             self?.handleIdleTimerFire()
         }
         idleWork = work
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             idleTimerScheduleCount &+= 1
         #endif
         flowQueue.asyncAfter(
@@ -542,7 +542,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
             }
             guard !state.runnerQueued else { return }
             state.runnerQueued = true
-            #if DEBUG
+            #if DEBUG || RAMA_TESTING
                 state.runnerSchedules &+= 1
             #endif
             flowQueue.async { [weak self] in self?.runReadDemand() }
@@ -632,7 +632,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
 
     private func acknowledgeProbe(_ probeId: UInt64) {
         guard probeId != 0 else { return }
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             testProbeAcknowledger?(probeId)
         #endif
         sessionHandle?.completeClientRead(probeId: probeId)
@@ -765,12 +765,12 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 return
             }
 
-            #if DEBUG
+            #if DEBUG || RAMA_TESTING
                 let mismatch = staged.forward(
                     to: session,
                     onMatchedEndpoint: { endpoint in
-                        // Debug-only observation seam for strict endpoint
-                        // pairing. Release never mutates the fallback cache.
+                        // Explicit test observation seam for strict endpoint
+                        // pairing. Production Release omits this cache mutation.
                         ctx.writer?.setSentByEndpoint(endpoint)
                     })
             #else
@@ -909,7 +909,7 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         }
     }
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         var testReadDemandSnapshot: (
             closed: Bool, credits: UInt8, firstProbeId: UInt64,
             secondProbeId: UInt64, runnerQueued: Bool, runnerSchedules: UInt64

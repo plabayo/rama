@@ -65,7 +65,7 @@ struct TcpOverloadState {
     /// completion inserts a latency, keeping admission-time breaker checks
     /// O(1) even when a refusal storm repeatedly evaluates the same window.
     private var sortedStartLatencyMsWindow: [UInt64] = []
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         /// Test-only proof that percentile reads do not rebuild the cache.
         private(set) var startLatencyCacheRefreshCount = 0
     #endif
@@ -109,7 +109,7 @@ struct TcpOverloadState {
 
         let insertionIndex = Self.lowerBound(of: latencyMs, in: sortedStartLatencyMsWindow)
         sortedStartLatencyMsWindow.insert(latencyMs, at: insertionIndex)
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             startLatencyCacheRefreshCount += 1
         #endif
     }

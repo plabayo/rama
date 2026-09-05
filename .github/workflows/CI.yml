@@ -288,6 +288,8 @@ jobs:
             .build/arm64-apple-macosx/debug/RamaAppleNetworkExtensionPackageTests.xctest
       - name: Run Swift-side ThreadSanitizer battery
         run: just ./ffi/apple/examples/transparent_proxy/run-tproxy-ffi-e2e-swift-tsan
+      - name: Build Release products and run optimized Swift FFI tests
+        run: just ./ffi/apple/examples/transparent_proxy/run-tproxy-ffi-e2e-swift-release
 
   test-rama-apple-xpc:
     runs-on: macos-latest

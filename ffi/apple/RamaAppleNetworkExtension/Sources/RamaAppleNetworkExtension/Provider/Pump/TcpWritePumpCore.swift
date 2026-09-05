@@ -108,7 +108,7 @@ final class TcpWritePumpCore: @unchecked Sendable {
 
     func isClosed() -> Bool { state.withLock { $0.closed } }
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         /// Test-only snapshot of the queue-only fields that should be
         /// quiescent after `cancel()` cleanup runs. Used to verify the
         /// post-cancel invariant

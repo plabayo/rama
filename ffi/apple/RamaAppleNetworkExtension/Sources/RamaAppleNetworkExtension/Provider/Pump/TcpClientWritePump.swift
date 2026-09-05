@@ -118,7 +118,7 @@ final class TcpClientWritePump: @unchecked Sendable {
         }
     }
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         /// Test-only. Schedules a block on the core queue to snapshot
         /// the post-cancel invariants
         ///   `closed ⇒ pending empty ∧ retrying nil ∧ pendingBytes 0`.

@@ -1283,7 +1283,7 @@ public final class RamaTransparentProxyProvider: NETransparentProxyProvider {
         return policy
     }
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
     /// Compatibility shim for tests that intentionally exercise the legacy
     /// engine-less defaults. Production startup never calls this mutating
     /// helper; it builds `makeRuntimePolicy` and publishes the value with the

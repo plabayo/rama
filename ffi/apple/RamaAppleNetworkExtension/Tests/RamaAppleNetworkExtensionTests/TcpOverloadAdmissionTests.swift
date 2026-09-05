@@ -304,7 +304,7 @@ final class TcpOverloadAdmissionTests: XCTestCase {
         XCTAssertFalse(core.testTcpOverloadBreakerOpen)
     }
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         /// Admission and rejection paths may ask for p95 on every new flow.
         /// Once a completion has refreshed the bounded sorted cache, those
         /// reads must remain O(1) until another completion changes the window.

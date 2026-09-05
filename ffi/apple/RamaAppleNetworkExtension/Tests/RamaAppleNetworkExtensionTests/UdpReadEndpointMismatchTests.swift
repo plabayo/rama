@@ -1,11 +1,11 @@
-// This whole file relies on the `#if DEBUG`-gated read-loop observation seam
+// This file relies on the explicitly test-enabled read-loop observation seam
 // fields on `UdpClientWritePump` (`testSentByEndpointSetCount` /
 // `testLastSentByEndpoint`). Release-mode builds compile out those
 // fields and corresponding `UdpFlowSession` calls entirely (zero fallback
 // mutation or endpoint ARC churn on the production hot path), and
-// they can't compile this file in Release as a result. Tests run
-// in Debug, where the instrumentation is present.
-#if DEBUG
+// ordinary Release products omit this file's required instrumentation. Debug
+// tests and optimized tests built with RAMA_TESTING enable it explicitly.
+#if DEBUG || RAMA_TESTING
 
 import Foundation
 import NetworkExtension

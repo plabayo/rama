@@ -137,7 +137,7 @@ final class UdpSessionLifecycleTests: XCTestCase {
         )
     }
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         /// Rust holds its demand gate across the synchronous V2 callback. Close
         /// must publish cancellation and release the Swift handle lock before it
         /// asks Rust to drain that gate, or a callback-triggered ACK forms the

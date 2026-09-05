@@ -184,7 +184,7 @@ final class PromoteFFIBindingTests: XCTestCase {
             "real Rust promote callback did not fire"
         )
 
-#if DEBUG
+#if DEBUG || RAMA_TESTING
         let replacementAtFFI = DispatchSemaphore(value: 0)
         let allowReplacementFFI = DispatchSemaphore(value: 0)
         session.setBeforePromoteRegisterFFIForTest {
@@ -201,7 +201,7 @@ final class PromoteFFIBindingTests: XCTestCase {
             replacementWork.leave()
         }
 
-#if DEBUG
+#if DEBUG || RAMA_TESTING
         XCTAssertEqual(
             replacementAtFFI.wait(timeout: .now() + 2), .success,
             "replacement did not reach the Rust registration seam"
@@ -259,7 +259,7 @@ final class PromoteFFIBindingTests: XCTestCase {
             "real Rust promote callback did not fire"
         )
 
-#if DEBUG
+#if DEBUG || RAMA_TESTING
         let freeAtFFI = DispatchSemaphore(value: 0)
         let allowFreeFFI = DispatchSemaphore(value: 0)
         sessionForTestHooks?.setBeforeSessionFreeFFIForTest {
@@ -275,7 +275,7 @@ final class PromoteFFIBindingTests: XCTestCase {
             freeWork.leave()
         }
 
-#if DEBUG
+#if DEBUG || RAMA_TESTING
         XCTAssertEqual(
             freeAtFFI.wait(timeout: .now() + 2), .success,
             "session deinit did not reach the Rust free seam"

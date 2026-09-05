@@ -721,7 +721,7 @@ final class WriterMemoryBudget: @unchecked Sendable {
                     ? .udpServiceBytes : .udpServiceItems)
             return nil
         }
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             testAfterPressureUdpSubcharge?()
         #endif
         guard tryReserveAggregateIgnoringGate(bytes: bytes, items: items) else {
@@ -758,7 +758,7 @@ final class WriterMemoryBudget: @unchecked Sendable {
             }
             current = expected
         }
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             testAfterReleaseBeforeCoordinatorKick?()
         #endif
         if wakeCoordinator { kickCoordinator() }
@@ -821,7 +821,7 @@ final class WriterMemoryBudget: @unchecked Sendable {
         Self.unpack(rama_writer_budget_atomic_load(atomic))
     }
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         var testWaiterCount: Int { coordinator.withLock { $0.waiters.count } }
         var testCoordinatorNodeCount: Int { coordinator.withLock { $0.waiters.count } }
         var testCapacityAtomicIsLockFree: Bool {
@@ -1144,7 +1144,7 @@ final class WriterMemoryBudget: @unchecked Sendable {
             maxBytes: limits.retainedBytes,
             retainedItems: usage.retainedItems,
             maxItems: limits.retainedItems)
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             testBeforePressureEventEnqueue?()
         #endif
         coordinatorQueue.async { [onPressureEvent] in onPressureEvent(event) }
