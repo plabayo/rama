@@ -28,6 +28,9 @@ use rama::{
 };
 use serde::{Deserialize, Serialize};
 
+// Sanitizer builds disable this feature so the linked test driver and FFI
+// library share the system allocator intercepted by AddressSanitizer.
+#[cfg(feature = "jemallocator")]
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 

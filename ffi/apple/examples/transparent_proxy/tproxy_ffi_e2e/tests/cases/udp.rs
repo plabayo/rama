@@ -71,9 +71,8 @@ async fn ffi_contract_udp_v1_callback_abi_remains_compatible() {
 #[serial]
 async fn ffi_contract_udp_v1_pressure_demand_auto_acks_before_long_expiry() {
     let env = setup_env().await;
-    let engine = engine_with_udp_ingress_probe_lease_ms(Some(
-        ACK_TEST_PROBE_LEASE.as_millis() as u64,
-    ));
+    let engine =
+        engine_with_udp_ingress_probe_lease_ms(Some(ACK_TEST_PROBE_LEASE.as_millis() as u64));
     let remote = localhost(env.ports.udp);
     let mut fillers = fill_default_global_budget(&engine, remote);
     let blocked_payload = vec![b'v'; MAX_UDP_DATAGRAM];
@@ -145,9 +144,8 @@ async fn ffi_contract_udp_v2_global_budget_probe_ack_and_cleanup() {
     // negative observations below. The default remains 10 ms; this test uses
     // the example's public JSON override so correctness does not depend on a
     // 2/5 ms scheduler race on a loaded CI host.
-    let engine = engine_with_udp_ingress_probe_lease_ms(Some(
-        ACK_TEST_PROBE_LEASE.as_millis() as u64,
-    ));
+    let engine =
+        engine_with_udp_ingress_probe_lease_ms(Some(ACK_TEST_PROBE_LEASE.as_millis() as u64));
     let remote = localhost(env.ports.udp);
 
     let (channel_capacity, per_flow_bytes, global_bytes) = unsafe {
@@ -325,9 +323,8 @@ async fn ffi_contract_udp_v2_global_budget_probe_ack_and_cleanup() {
 #[serial]
 async fn ffi_contract_udp_v2_rejects_owner_payload_before_exact_ack() {
     let env = setup_env().await;
-    let engine = engine_with_udp_ingress_probe_lease_ms(Some(
-        ACK_TEST_PROBE_LEASE.as_millis() as u64,
-    ));
+    let engine =
+        engine_with_udp_ingress_probe_lease_ms(Some(ACK_TEST_PROBE_LEASE.as_millis() as u64));
     let remote = localhost(env.ports.udp);
     let mut fillers = fill_default_global_budget(&engine, remote);
     let blocked_payload = vec![b'p'; MAX_UDP_DATAGRAM];

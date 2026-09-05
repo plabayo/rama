@@ -37,10 +37,7 @@ use rama::{
         },
     },
     layer::{ConsumeErrLayer, MapOutputLayer},
-    net::{
-        address::SocketAddress,
-        proxy::IoForwardService,
-    },
+    net::{address::SocketAddress, proxy::IoForwardService},
     proxy::socks5::{Socks5Acceptor, server::Socks5PeekRouter},
     rt::Executor,
     service::service_fn,

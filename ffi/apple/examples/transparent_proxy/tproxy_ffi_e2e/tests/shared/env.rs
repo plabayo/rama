@@ -8,8 +8,8 @@ use tokio::sync::Mutex;
 use super::{
     ffi::{EngineHandle, default_engine, initialize_ffi, test_storage_dir},
     servers::{
-        spawn_combined_proxy, spawn_http_server, spawn_https_server,
-        spawn_https_server_no_connect, spawn_raw_tcp_echo, spawn_raw_tls_echo, spawn_udp_echo,
+        spawn_combined_proxy, spawn_http_server, spawn_https_server, spawn_https_server_no_connect,
+        spawn_raw_tcp_echo, spawn_raw_tls_echo, spawn_udp_echo,
     },
     types::{HttpObservation, PortBlock, SharedObservations},
 };

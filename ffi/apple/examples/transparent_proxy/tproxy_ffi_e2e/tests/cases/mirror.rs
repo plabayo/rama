@@ -123,10 +123,7 @@ async fn ffi_contract_websocket_h2_fails_when_upstream_omits_connect() {
     let client = build_http_client(Some(load_mitm_ca_store()));
 
     let url = format!("wss://127.0.0.1:{}/ws", ingress_addr.port());
-    let result = client
-        .websocket_h2(url)
-        .handshake(Extensions::new())
-        .await;
+    let result = client.websocket_h2(url).handshake(Extensions::new()).await;
     assert!(
         result.is_err(),
         "WS-over-h2 handshake MUST fail when upstream omits CONNECT \

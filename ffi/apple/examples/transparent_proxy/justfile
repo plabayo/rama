@@ -205,10 +205,12 @@ verify-gate20-evidence modern soak stress:
 # the sanitizer flag, otherwise memory accesses across that boundary are not
 # fully instrumented. Run every FFI case, including the UDP ownership,
 # backpressure, and 8,192-session cases as well as the churn scenarios.
+# Disable the example's default jemalloc feature so allocator symbols agree
+# with the test driver and ASan intercepts heap allocation and deallocation.
 [working-directory: './tproxy_rs']
 build-tproxy-rs-asan:
     RUSTFLAGS="-Z sanitizer=address -D warnings --cfg tokio_unstable" \
-        cargo +nightly build --target aarch64-apple-darwin
+        cargo +nightly build --locked --no-default-features --target aarch64-apple-darwin
 
 [working-directory: './tproxy_ffi_e2e']
 run-tproxy-ffi-e2e-asan:

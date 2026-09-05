@@ -1,6 +1,14 @@
 use std::{env, path::PathBuf};
 
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(rama_asan)");
+    if env::var("CARGO_ENCODED_RUSTFLAGS").is_ok_and(|flags| {
+        flags
+            .split('\u{1f}')
+            .any(|flag| matches!(flag, "sanitizer=address" | "-Zsanitizer=address"))
+    }) {
+        println!("cargo:rustc-cfg=rama_asan");
+    }
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
     let transparent_proxy_dir = manifest_dir
         .parent()
