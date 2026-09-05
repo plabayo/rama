@@ -271,6 +271,7 @@ if (( ! ANALYZE_ONLY )); then
 fi
 TRAFFIC_PIDS=()
 AUXILIARY_PIDS=()
+AUXILIARY_DRAIN_RECEIPTS=()
 MONITOR_JOB_PID=""
 ABSENCE_MONITOR_JOB_PID=""
 GENERATION_MONITOR_JOB_PID=""
@@ -529,7 +530,8 @@ owned_job_has_exited() {
   local pid="$1" state
   owned_job_is_active "$pid" || return 0
   state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
-  [[ -z "$state" || "$state" == Z* ]]
+  # A failed/empty ps result cannot authorize an unbounded wait on a live job.
+  [[ "$state" == Z* ]] || { [[ -z "$state" ]] && ! kill -0 "$pid" 2>/dev/null; }
 }
 
 wait_proven_exited() {
@@ -639,6 +641,15 @@ owned_tree_has_exited() {
   done <<< "$tree_text"
 }
 
+capture_drain_receipt_valid() {
+  local receipt="$1" expected_status="$2" value source_pid
+  [[ -f "$receipt" && ! -L "$receipt" ]] || return 1
+  value="$(cat "$receipt")" || return 1
+  source_pid="${value%%$'\t'*}"
+  [[ "$source_pid" =~ ^[1-9][0-9]*$ \
+    && "$value" == "$source_pid"$'\t'"$expected_status" ]]
+}
+
 cleanup_owned_jobs() {
   local scope="${1:-all}"
   if [[ "$scope" == all ]]; then
@@ -650,6 +661,7 @@ cleanup_owned_jobs() {
     return 2
   fi
   local pid identity deadline active tree_text="" subtree child_rc response_artifact index
+  local auxiliary_receipt root_frozen
   local system_log_cleanup_pid="$SYSTEM_LOG_JOB_PID"
   local owned=() frozen=()
   set +u
@@ -725,8 +737,27 @@ cleanup_owned_jobs() {
       CLEANUP_INCOMPLETE=1
       continue
     fi
+    auxiliary_receipt="${AUXILIARY_DRAIN_RECEIPTS[pid]:-}"
     child_rc=0
     wait "$pid" 2>/dev/null || child_rc=$?
+    for index in "${!AUXILIARY_PIDS[@]}"; do
+      [[ "${AUXILIARY_PIDS[index]}" != "$pid" ]] || unset 'AUXILIARY_PIDS[index]'
+    done
+    unset 'AUXILIARY_DRAIN_RECEIPTS[pid]'
+    if [[ -n "$auxiliary_receipt" ]]; then
+      root_frozen=0
+      for ((index=0; index<${#frozen[@]}; index+=2)); do
+        [[ "${frozen[index]}" != "$pid" ]] || root_frozen=1
+      done
+      # An auxiliary supervisor may have exited just before EXIT cleanup. If
+      # this cleanup did not own its stopped group, require its drain proof.
+      if (( root_frozen == 0 )) \
+        && ! capture_drain_receipt_valid "$auxiliary_receipt" "$child_rc"
+      then
+        CLEANUP_INCOMPLETE=1
+      fi
+      rm -f -- "$auxiliary_receipt"
+    fi
     if [[ -n "$system_log_cleanup_pid" && "$pid" == "$system_log_cleanup_pid" ]]; then
       SYSTEM_LOG_CHILD_RC="$child_rc"
       SYSTEM_LOG_JOINED=1
@@ -1022,8 +1053,14 @@ capture_traffic_clock() {
 run_bounded_capture() {
   local output="$1" timeout_seconds="$2"; shift 2
   local pid identity deadline child_rc=0 timed_out=0 tree_text="" tree_pid tree_identity
-  local tree_incomplete=0
+  local tree_incomplete=0 receipt index
   BOUNDED_CAPTURE_TIMED_OUT=0
+  receipt="$(mktemp "$output.drain.XXXXXX")" || {
+    CLEANUP_INCOMPLETE=1
+    EVIDENCE_FAILED=1
+    BOUNDED_CAPTURE_TIMED_OUT=1
+    return 125
+  }
   # Keep one owned group leader alive until the command AND its group members
   # exit. A wrapper exiting early cannot orphan a pipe holder outside the tree
   # observed at timeout. The leader ignores TERM so group KILL remains bound to
@@ -1042,7 +1079,7 @@ child = os.fork()
 if child == 0:
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
     try:
-        os.execvp(sys.argv[1], sys.argv[1:])
+        os.execvp(sys.argv[2], sys.argv[2:])
     except OSError as error:
         print(error, file=sys.stderr)
         os._exit(127)
@@ -1068,10 +1105,14 @@ while True:
             ):
                 break
     time.sleep(0.1)
-sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status))
-' "$@" >"$output" 2>&1 &
+result = os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status)
+with open(sys.argv[1], "w") as output:
+    output.write(str(child) + "\t" + str(result) + "\n")
+sys.exit(result)
+' "$receipt" "$@" >"$output" 2>&1 &
   pid="$!"
   AUXILIARY_PIDS+=("$pid")
+  AUXILIARY_DRAIN_RECEIPTS[pid]="$receipt"
   identity="$(pid_identity "$pid" generation || true)"
   deadline=$((SECONDS + timeout_seconds))
   while (( SECONDS < deadline )) && ! owned_job_has_exited "$pid"; do
@@ -1117,6 +1158,19 @@ sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(s
   # descendant must still fail capture after the direct job has disappeared.
   if owned_job_has_exited "$pid"; then
     wait "$pid" 2>/dev/null || child_rc=$?
+    # Reaping retires all registry entries before any later artifact read or
+    # cleanup can mistake the cached integer for a still-owned job.
+    for index in "${!AUXILIARY_PIDS[@]}"; do
+      [[ "${AUXILIARY_PIDS[index]}" != "$pid" ]] || unset 'AUXILIARY_PIDS[index]'
+    done
+    unset 'AUXILIARY_DRAIN_RECEIPTS[pid]'
+    if [[ -z "$tree_text" ]]; then
+      # A supervisor crash cannot certify that its former group has drained.
+      # Only the supervisor writes this receipt after observing the command
+      # exit and the absence of every other live process in its group.
+      capture_drain_receipt_valid "$receipt" "$child_rc" || tree_incomplete=1
+    fi
+    rm -f -- "$receipt"
   else
     tree_incomplete=1
   fi

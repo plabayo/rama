@@ -128,7 +128,7 @@ class BoundedCommandCleanupTests(unittest.TestCase):
             "bounded_pid_identity", "bounded_owned_job_is_active",
             "bounded_owned_job_has_exited", "bounded_owned_identity_has_exited",
             "bounded_owned_tree_has_exited", "bounded_collect_owned_tree",
-            "bounded_signal_owned_identity", "run_bounded",
+            "bounded_signal_owned_identity", "bounded_command_supervisor", "bounded_drain_receipt_valid", "run_bounded",
         ))
 
     def setUp(self):
@@ -328,6 +328,9 @@ class BoundedCommandCleanupTests(unittest.TestCase):
                 stop_active_workloads() {{ :; }}
                 stop_echo_server() {{ :; }}
                 stop_log_capture() {{ :; }}
+                stop_remaining_owned_commands() {{ :; }}
+                check_final_provider_logs() {{ :; }}
+                sleep() {{ :; }}
                 collect_dial9_evidence() {{ :; }}
                 restore_profile() {{ :; }}
                 require_provider_identity() {{ :; }}
@@ -396,6 +399,211 @@ class BoundedCommandCleanupTests(unittest.TestCase):
         finally:
             unrelated.terminate()
             unrelated.wait(timeout=5)
+
+    def test_owned_command_handoff_preserves_actual_leaf_pid_and_exit_status(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            program = self.helper_source() + "".join(self.shell_function(name) for name in (
+                "start_owned_command", "unregister_owned_command", "join_owned_command",
+            )) + textwrap.dedent(f"""\
+                TMP_DIR={shlex.quote(str(root))}
+                BOUNDED_CLEANUP_FAILED="$TMP_DIR/failed"
+                OWNED_COMMAND_SEQUENCE=0 ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT=0
+                OWNED_COMMAND_IDENTITIES=() OWNED_COMMAND_SOURCE_PIDS=()
+                OWNED_COMMAND_SOURCE_IDENTITIES=() OWNED_COMMAND_ROLES=() OWNED_COMMAND_FILES=()
+                add_issue() {{ printf '%s\\n' "$1" >&2; }}
+                start_owned_command probe /usr/bin/python3 -c \\
+                  'import os,pathlib,sys;pathlib.Path(sys.argv[1]).write_text(str(os.getpid()));sys.exit(7)' \\
+                  "$TMP_DIR/leaf" || exit 3
+                owner="$OWNED_COMMAND_PID" source="$OWNED_COMMAND_SOURCE_PID"
+                join_owned_command "$owner" "$((SECONDS + 5))"
+                result=$?
+                printf 'rc=%s owner=%s source=%s actual=%s registered=%s\\n' \\
+                  "$result" "$owner" "$source" "$(cat "$TMP_DIR/leaf")" "${{OWNED_COMMAND_ROLES[owner]:-none}}"
+            """)
+            result = subprocess.run(["/bin/bash", "-c", program], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            values = dict(item.split("=") for item in result.stdout.strip().split())
+            self.assertEqual(values["rc"], "7")
+            self.assertEqual(values["source"], values["actual"])
+            self.assertNotEqual(values["owner"], values["source"])
+            self.assertEqual(values["registered"], "none")
+            self.assertFalse((root / "failed").exists())
+            self.assertFalse(list(root.glob(".owned-command-*")))
+
+
+class OwnedCommandLifecycleTests(unittest.TestCase):
+    """Exercise process state, signals, and wait with synthetic operations only."""
+
+    shell_function = staticmethod(BoundedCommandCleanupTests.shell_function)
+    # This existing finalizer fixture is entirely mocked and needs no host ps
+    # capability; keep it active when native lifecycle checks are unavailable.
+    test_finalizer_never_seals_after_bounded_cleanup_failure = (
+        BoundedCommandCleanupTests.test_finalizer_never_seals_after_bounded_cleanup_failure
+    )
+
+    def helpers(self):
+        return "".join(self.shell_function(name) for name in (
+            "bounded_owned_job_has_exited", "bounded_signal_owned_identity",
+            "bounded_owned_identity_has_exited", "bounded_owned_tree_has_exited",
+            "bounded_drain_receipt_valid", "owned_command_source_is_alive", "unregister_owned_command",
+            "join_owned_command", "stop_active_workloads", "stop_log_capture",
+        ))
+
+    def run_mock(self, body):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            program = self.helpers() + textwrap.dedent(f"""\
+                TMP_DIR={shlex.quote(str(root))}
+                BOUNDED_CLEANUP_FAILED="$TMP_DIR/failed"
+                OWNED_COMMAND_IDENTITIES=() OWNED_COMMAND_SOURCE_PIDS=()
+                OWNED_COMMAND_SOURCE_IDENTITIES=() OWNED_COMMAND_ROLES=() OWNED_COMMAND_FILES=()
+                OWNED_COMMAND_IDENTITIES[41]={'a' * 64}
+                OWNED_COMMAND_SOURCE_PIDS[41]=42
+                OWNED_COMMAND_SOURCE_IDENTITIES[41]={'b' * 64}
+                OWNED_COMMAND_ROLES[41]=http3
+                OWNED_COMMAND_FILES[41]="$TMP_DIR/command"
+                ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT=0
+                ISSUES=()
+                add_issue() {{ ISSUES+=("$1"); }}
+                sleep() {{ SECONDS=$((SECONDS + 1)); }}
+                wait() {{ printf '%s\\n' "$1" >> "$TMP_DIR/waits"; return 7; }}
+                bounded_pid_identity() {{ printf '%s\\n' "${{OWNED_COMMAND_IDENTITIES[$1]}}"; }}
+                bounded_owned_job_is_active() {{ return 0; }}
+                ps() {{ printf 'S\\n'; }}
+                kill() {{ printf '%s\\n' "$*" >> "$TMP_DIR/signals"; return 0; }}
+                sudo() {{ return 1; }}
+            """) + textwrap.dedent(body)
+            result = subprocess.run(
+                ["/bin/bash", "-c", program], capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            artifacts = {path.name: path.read_text() for path in root.iterdir()}
+            return result.stdout, artifacts
+
+    def test_inconclusive_ps_never_proves_a_live_owned_job_exited(self):
+        for ps_body in ("return 0", "return 1"):
+            with self.subTest(ps_body=ps_body):
+                output, _ = self.run_mock(f"""\
+                    ps() {{ {ps_body}; }}
+                    bounded_owned_job_has_exited 41
+                    printf 'exited=%s\\n' "$?"
+                """)
+                self.assertEqual(output, "exited=1\n")
+
+    def test_bounded_command_rejects_missing_or_mismatched_drain_receipt(self):
+        helpers = self.shell_function("run_bounded") + self.shell_function("bounded_drain_receipt_valid")
+        for receipt, expected in (("42\t7\n", 7), ("", 125), ("42\t0\n", 125)):
+            with self.subTest(receipt=receipt):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    program = helpers + textwrap.dedent(f"""\
+                        BOUNDED_CLEANUP_FAILED={shlex.quote(str(root / 'failed'))}
+                        bounded_command_supervisor() {{ return 0; }}
+                        bounded_pid_identity() {{ printf '%s\\n' {'a' * 64}; }}
+                        bounded_owned_job_has_exited() {{ return 0; }}
+                        bounded_owned_tree_has_exited() {{ return 0; }}
+                        wait() {{ printf '%s' {shlex.quote(receipt)} > "$receipt"; return 7; }}
+                        run_bounded 3 unused-command
+                        printf 'rc=%s\\n' "$?"
+                    """)
+                    result = subprocess.run(["/bin/bash", "-c", program], capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, f"rc={expected}\n")
+                    self.assertEqual((root / "failed").exists(), expected == 125)
+
+    def test_generation_change_revokes_every_signal(self):
+        output, artifacts = self.run_mock(f"""\
+            bounded_pid_identity() {{ printf '%s\\n' {'c' * 64}; }}
+            for signal in STOP TERM CONT KILL; do
+              bounded_signal_owned_identity 41 {'a' * 64} "$signal"
+              printf '%s=%s\\n' "$signal" "$?"
+            done
+        """)
+        self.assertEqual(output, "STOP=1\nTERM=1\nCONT=1\nKILL=1\n")
+        self.assertNotIn("signals", artifacts)
+
+    def test_denied_termination_is_bounded_and_never_waits_or_unregisters(self):
+        output, artifacts = self.run_mock(f"""\
+            bounded_collect_owned_tree() {{ printf '41\\t%s\\n' {'a' * 64}; }}
+            bounded_signal_owned_identity() {{
+              printf '%s\\n' "$3" >> "$TMP_DIR/signals"
+              [[ "$3" == STOP || "$3" == CONT ]]
+            }}
+            join_owned_command 41 "$SECONDS" stop 1
+            result=$?
+            printf 'rc=%s reaped=%s forced=%s registered=%s\\n' \\
+              "$result" "$OWNED_JOIN_REAPED" "$OWNED_JOIN_FORCED" "${{OWNED_COMMAND_ROLES[41]}}"
+        """)
+        self.assertEqual(output, "rc=125 reaped=0 forced=1 registered=http3\n")
+        self.assertEqual(artifacts["signals"], "STOP\nTERM\nCONT\nKILL\n")
+        self.assertIn("failed", artifacts)
+        self.assertNotIn("waits", artifacts)
+
+    def test_reaped_http3_job_is_unregistered_before_later_cleanup(self):
+        output, artifacts = self.run_mock("""\
+            bounded_owned_job_has_exited() { return 0; }
+            HTTP3_SOURCE_PID=42
+            printf '42\\t7\\n' > "$TMP_DIR/command.complete"
+            join_owned_command 41 "$SECONDS"
+            result=$?
+            stop_active_workloads
+            printf 'rc=%s reaped=%s registered=%s source=%s\\n' \\
+              "$result" "$OWNED_JOIN_REAPED" "${OWNED_COMMAND_ROLES[41]:-none}" "$HTTP3_SOURCE_PID"
+        """)
+        self.assertEqual(output, "rc=7 reaped=1 registered=none source=42\n")
+        self.assertEqual(artifacts["waits"], "41\n")
+        self.assertNotIn("signals", artifacts)
+        self.assertNotIn("failed", artifacts)
+
+    def test_unassisted_supervisor_exit_requires_exact_group_drain_receipt(self):
+        for receipt in (None, "43\t7\n", "42\t0\n"):
+            with self.subTest(receipt=receipt):
+                setup = "" if receipt is None else (
+                    "printf '%s' " + shlex.quote(receipt) + ' > "$TMP_DIR/command.complete"\n'
+                )
+                output, artifacts = self.run_mock(setup + """\
+                    bounded_owned_job_has_exited() { return 0; }
+                    join_owned_command 41 "$SECONDS"
+                    result=$?
+                    printf 'rc=%s reaped=%s registered=%s\\n' \\
+                      "$result" "$OWNED_JOIN_REAPED" "${OWNED_COMMAND_ROLES[41]:-none}"
+                """)
+                self.assertEqual(output, "rc=125 reaped=1 registered=none\n")
+                self.assertEqual(artifacts["waits"], "41\n")
+                self.assertIn("failed", artifacts)
+                self.assertNotIn("signals", artifacts)
+
+    def test_logger_cannot_claim_join_after_failed_cleanup(self):
+        output, artifacts = self.run_mock("""\
+            LOG_PID=41 LOG_STREAM_ALIVE_END=0 LOG_STREAM_JOINED=0
+            owned_command_source_is_alive() { return 0; }
+            bounded_signal_owned_identity() { return 1; }
+            stop_log_capture
+            printf 'alive=%s joined=%s pid=%s issues=%s\\n' \\
+              "$LOG_STREAM_ALIVE_END" "$LOG_STREAM_JOINED" "$LOG_PID" "${#ISSUES[@]}"
+        """)
+        self.assertEqual(output, "alive=1 joined=0 pid=41 issues=1\n")
+        self.assertIn("failed", artifacts)
+        self.assertNotIn("waits", artifacts)
+
+    def test_forced_but_proven_exit_is_not_reported_as_normal_success(self):
+        output, artifacts = self.run_mock(f"""\
+            bounded_collect_owned_tree() {{ printf '41\\t%s\\n' {'a' * 64}; }}
+            bounded_owned_job_has_exited() {{ [[ -e "$TMP_DIR/exited" ]]; }}
+            bounded_owned_tree_has_exited() {{ [[ -e "$TMP_DIR/exited" ]]; }}
+            bounded_signal_owned_identity() {{
+              [[ "$3" != KILL ]] || : > "$TMP_DIR/exited"
+              return 0
+            }}
+            join_owned_command 41 "$SECONDS" stop 1
+            result=$?
+            printf 'rc=%s reaped=%s forced=%s count=%s\\n' \\
+              "$result" "$OWNED_JOIN_REAPED" "$OWNED_JOIN_FORCED" "$ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT"
+        """)
+        self.assertEqual(output, "rc=124 reaped=1 forced=1 count=1\n")
+        self.assertEqual(artifacts["waits"], "41\n")
+        self.assertNotIn("failed", artifacts)
 
 
 def passing_status():
@@ -1133,6 +1341,58 @@ class QuicShapedEchoTests(unittest.TestCase):
 
 
 class HarnessSourceContractTests(unittest.TestCase):
+    def test_finalizer_captures_late_collection_and_restoration_errors(self):
+        helper = BoundedCommandCleanupTests.shell_function
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            parser = root / "parser.py"
+            parser.write_text("import pathlib,sys;print(pathlib.Path(sys.argv[1]).read_text().strip())\n")
+            program = helper("finalize") + helper("check_final_provider_logs") + textwrap.dedent(f"""\
+                TMP_DIR={shlex.quote(str(root))}
+                BOUNDED_CLEANUP_FAILED="$TMP_DIR/failed"
+                PROVIDER_LOG="$TMP_DIR/provider.log"
+                EVIDENCE_STATUS="$TMP_DIR/status"
+                MODERN_EVIDENCE={shlex.quote(str(parser))}
+                : > "$PROVIDER_LOG"
+                FINALIZING=0 MAIN_FINISHED=1 RUN_START_EPOCH_MS=1
+                UDP_ERROR_PROVIDER_LOG_LINE=0 LOG_STREAM_JOINED=0
+                UDP_PROBE_ATTEMPT_COUNT=8 UDP_PROBE_PASS_COUNT=8
+                UDP_PRESSURE_LOG_CHECKED=1 PRESSURE_PROBE_ATTEMPTED=1 PRESSURE_PROBE_PASSED=1
+                ISSUES=() FAILURES=() OBSERVED_FAILURES=()
+                add_issue() {{ ISSUES+=("$1"); }}
+                add_failure() {{ FAILURES+=("$1"); }}
+                event() {{ printf '%s\\n' "$1" >> "$TMP_DIR/order"; }}
+                stop_active_workloads() {{ event workloads; }}
+                stop_echo_server() {{ event echo; }}
+                collect_dial9_evidence() {{
+                  event dial9
+                  printf '%s\\n' 'flow_callback_error operation=udp_flow.read' >> "$PROVIDER_LOG"
+                }}
+                restore_profile() {{ event restore; printf 'late-pressure\\n' >> "$PROVIDER_LOG"; }}
+                require_provider_identity() {{ :; }}
+                capture_provider_generation_sample() {{ event generation; }}
+                sleep() {{ :; }}
+                stop_log_capture() {{ event log-stop; LOG_STREAM_JOINED=1; }}
+                write_provider_log_phases() {{ event phases; wc -l < "$PROVIDER_LOG" > "$TMP_DIR/line-count"; }}
+                check_udp_pressure_logs() {{
+                  event pressure-verdict
+                  if grep -q late-pressure "$PROVIDER_LOG"; then add_failure 'late pressure'; fi
+                }}
+                stop_provider_generation_monitor() {{ :; }}
+                stop_remaining_owned_commands() {{ :; }}
+                write_workload_claims() {{ :; }}
+                write_evidence_status() {{ printf '%s\\n' "$3" > "$EVIDENCE_STATUS"; }}
+                write_common_evidence_status() {{ printf '%s %s %s %s\\n' "$@" "${{#FAILURES[@]}}" > "$TMP_DIR/common-status"; }}
+                run_bounded() {{ printf 'crash_count\\t0\\n'; }}
+                finalize
+            """)
+            result = subprocess.run(["/bin/bash", "-c", program], capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertEqual((root / "common-status").read_text(), "1 0 1 2\n")
+            self.assertEqual(int((root / "line-count").read_text()), 2)
+            order = (root / "order").read_text().splitlines()
+            self.assertEqual(order[:8], ["workloads", "echo", "dial9", "restore", "generation", "log-stop", "phases", "pressure-verdict"])
+
     def test_separate_clock_processes_measure_the_same_elapsed_window(self):
         shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()
         helper = re.search(r"^monotonic_ms_now\(\) \{\n.*?^\}", shell, re.M | re.S)
@@ -1164,11 +1424,11 @@ class HarnessSourceContractTests(unittest.TestCase):
     def test_concurrent_load_has_one_outer_sub_ten_minute_deadline(self):
         shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()
         self.assertIn("CONCURRENT_LOAD_DEADLINE=$((SECONDS +", shell)
-        self.assertIn("wait_for_child_until \"$PRESSURE_SOURCE_PID\"", shell)
-        self.assertIn("wait_for_child_until \"$ECHO_SOURCE_PID\"", shell)
+        self.assertIn("wait_for_child_until \"$ACTIVE_PRESSURE_PID\"", shell)
+        self.assertIn("wait_for_child_until \"$ACTIVE_ECHO_PID\"", shell)
         self.assertIn("CONCURRENT_LOAD_DEADLINE_SECONDS >= 600", shell)
         self.assertGreaterEqual(
-            shell.count("ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT=$(("), 3
+            shell.count("ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT=$(("), 1
         )
 
     def test_runtime_identity_uses_common_generation_samples_through_crash_snapshot(self):

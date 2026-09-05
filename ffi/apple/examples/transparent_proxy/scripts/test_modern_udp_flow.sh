@@ -59,7 +59,6 @@ HTTP3_RESULTS="$TMP_DIR/http3-results.tsv"
 HTTP3_PIDS="$TMP_DIR/http3-pids.tsv"
 HTTP3_ROUND_RESULTS="$TMP_DIR/http3-round-results.tsv"
 HTTP3_TIMING="$TMP_DIR/http3-timing.tsv"
-ACTIVE_HTTP3_PIDS="$TMP_DIR/active-http3-pids.txt"
 ECHO_READY="$TMP_DIR/controlled-echo-ready.json"
 ECHO_CLIENT_RESULT="$TMP_DIR/controlled-echo-client.json"
 ECHO_SERVER_RESULT="$TMP_DIR/controlled-echo-server.json"
@@ -126,6 +125,16 @@ HTTP3_MIN_CONCURRENT=0
 ACTIVE_PROBE_PID=""
 ACTIVE_ECHO_PID=""
 ACTIVE_PRESSURE_PID=""
+# Signal authority belongs to a persistent supervisor, independently of the
+# command PID recorded in flow evidence. Bash 3.2 supports these indexed arrays.
+OWNED_COMMAND_IDENTITIES=()
+OWNED_COMMAND_SOURCE_PIDS=()
+OWNED_COMMAND_SOURCE_IDENTITIES=()
+OWNED_COMMAND_ROLES=()
+OWNED_COMMAND_FILES=()
+OWNED_COMMAND_SEQUENCE=0
+OWNED_COMMAND_PID=""
+OWNED_COMMAND_SOURCE_PID=""
 RUN_UUID="$(/usr/bin/python3 -c 'import uuid; print(uuid.uuid4())')"
 RUN_START_EPOCH_MS="$(/usr/bin/python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
 RUN_END_EPOCH_MS=0
@@ -224,7 +233,8 @@ bounded_owned_job_has_exited() {
   local pid="$1" state
   bounded_owned_job_is_active "$pid" || return 0
   state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
-  [[ -z "$state" || "$state" == Z* ]]
+  # A failed/empty ps result cannot authorize an unbounded wait on a live job.
+  [[ "$state" == Z* ]] || { [[ -z "$state" ]] && ! kill -0 "$pid" 2>/dev/null; }
 }
 
 bounded_owned_identity_has_exited() {
@@ -330,21 +340,11 @@ bounded_signal_owned_identity() {
   return 1
 }
 
-run_bounded() {
-  local timeout_seconds="$1"; shift
-  local pid identity deadline child_rc=0 timed_out=0 tree_text="" tree_pid tree_identity
-  local tree_incomplete=0 interrupted=0 saved_int_trap saved_term_trap result
-  saved_int_trap="$(trap -p INT)"
-  saved_term_trap="$(trap -p TERM)"
-  # Complete ownership cleanup before the outer EXIT finalizer can seal files.
-  # The existing INT/TERM handlers terminate with these same exit codes.
-  trap 'interrupted=130' INT
-  trap 'interrupted=143' TERM
-  # Keep one owned group leader alive until the command AND its group members
-  # exit. A wrapper exiting early cannot orphan a pipe holder outside the tree
-  # observed at timeout. The leader ignores TERM so group KILL remains bound to
-  # its live generation throughout shutdown; the command gets normal signals.
-  /usr/bin/python3 -c '
+# Run only as a background function: exec preserves $! as the owned group
+# leader. The optional handshake holds the leaf before exec until both process
+# generations are registered; evidence always records that leaf PID.
+bounded_command_supervisor() {
+  exec /usr/bin/python3 -c '
 import os
 import signal
 import subprocess
@@ -354,14 +354,31 @@ import time
 os.setsid()
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 leader = os.getpid()
+receipt, ready = sys.argv[1:3]
+command = sys.argv[3:]
+read_gate, write_gate = os.pipe()
 child = os.fork()
 if child == 0:
     signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    os.close(write_gate)
+    if os.read(read_gate, 1) != b"1":
+        os._exit(125)
+    os.close(read_gate)
     try:
-        os.execvp(sys.argv[1], sys.argv[1:])
+        os.execvp(command[0], command)
     except OSError as error:
         print(error, file=sys.stderr)
         os._exit(127)
+os.close(read_gate)
+if ready:
+    with open(ready + ".pid", "x") as output:
+        output.write(str(child) + "\n")
+    while not os.path.exists(ready + ".release"):
+        time.sleep(0.01)
+    os.unlink(ready + ".release")
+    os.unlink(ready + ".pid")
+os.write(write_gate, b"1")
+os.close(write_gate)
 status = None
 while True:
     if status is None:
@@ -384,8 +401,42 @@ while True:
             ):
                 break
     time.sleep(0.1)
-sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status))
-' "$@" &
+result = os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status)
+with open(receipt, "w") as output:
+    output.write(str(child) + "\t" + str(result) + "\n")
+sys.exit(result)
+' "$@"
+}
+
+bounded_drain_receipt_valid() {
+  local receipt="$1" expected_pid="$2" expected_status="$3" value source_pid
+  [[ -f "$receipt" && ! -L "$receipt" ]] || return 1
+  value="$(cat "$receipt")" || return 1
+  source_pid="${value%%$'\t'*}"
+  [[ "$source_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ -z "$expected_pid" || "$source_pid" == "$expected_pid" ]] || return 1
+  [[ "$value" == "$source_pid"$'\t'"$expected_status" ]]
+}
+
+run_bounded() {
+  local timeout_seconds="$1"; shift
+  local pid identity deadline child_rc=0 timed_out=0 tree_text="" tree_pid tree_identity
+  local tree_incomplete=0 interrupted=0 saved_int_trap saved_term_trap result receipt
+  receipt="$(mktemp "$BOUNDED_CLEANUP_FAILED.drain.XXXXXX")" || {
+    : > "$BOUNDED_CLEANUP_FAILED"
+    return 125
+  }
+  saved_int_trap="$(trap -p INT)"
+  saved_term_trap="$(trap -p TERM)"
+  # Complete ownership cleanup before the outer EXIT finalizer can seal files.
+  # The existing INT/TERM handlers terminate with these same exit codes.
+  trap 'interrupted=130' INT
+  trap 'interrupted=143' TERM
+  # Keep one owned group leader alive until the command AND its group members
+  # exit. A wrapper exiting early cannot orphan a pipe holder outside the tree
+  # observed at timeout. The leader ignores TERM so group KILL remains bound to
+  # its live generation throughout shutdown; the command gets normal signals.
+  bounded_command_supervisor "$receipt" "" "$@" &
   pid="$!"
   identity="$(bounded_pid_identity "$pid" generation || true)"
   deadline=$((SECONDS + timeout_seconds))
@@ -432,6 +483,11 @@ sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(s
   # descendant must still fail capture after the direct job has disappeared.
   if bounded_owned_job_has_exited "$pid"; then
     wait "$pid" 2>/dev/null || child_rc=$?
+    # A crashed supervisor is not proof that its former group stopped writing.
+    if [[ -z "$tree_text" ]] && ! bounded_drain_receipt_valid "$receipt" "" "$child_rc"; then
+      tree_incomplete=1
+    fi
+    /bin/rm -f "$receipt"
   else
     tree_incomplete=1
   fi
@@ -449,6 +505,136 @@ sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(s
   return "$result"
 }
 
+start_owned_command() {
+  local role="$1"; shift
+  local pid identity source_pid source_identity deadline prefix interrupted=0
+  local saved_int_trap saved_term_trap
+  saved_int_trap="$(trap -p INT)"
+  saved_term_trap="$(trap -p TERM)"
+  # A signal between spawn and registration must not bypass the EXIT registry.
+  trap 'interrupted=130' INT
+  trap 'interrupted=143' TERM
+  OWNED_COMMAND_SEQUENCE=$((OWNED_COMMAND_SEQUENCE + 1))
+  prefix="$TMP_DIR/.owned-command-$OWNED_COMMAND_SEQUENCE.$$"
+  bounded_command_supervisor "$prefix.complete" "$prefix" "$@" &
+  pid=$!
+  OWNED_COMMAND_PID="$pid"
+  OWNED_COMMAND_SOURCE_PID=""
+  OWNED_COMMAND_ROLES[pid]="$role"
+  OWNED_COMMAND_FILES[pid]="$prefix"
+  identity="$(bounded_pid_identity "$pid" generation || true)"
+  OWNED_COMMAND_IDENTITIES[pid]="$identity"
+  deadline=$((SECONDS + 5))
+  while (( SECONDS < deadline && interrupted == 0 )); do
+    [[ -s "$prefix.pid" ]] && break
+    bounded_owned_job_has_exited "$pid" && break
+    sleep 0.01
+  done
+  read -r source_pid < "$prefix.pid" 2>/dev/null || source_pid=""
+  if [[ "$source_pid" =~ ^[1-9][0-9]*$ ]]; then
+    source_identity="$(bounded_pid_identity "$source_pid" generation || true)"
+  fi
+  if [[ "$identity" =~ ^[0-9a-f]{64}$ && "$source_identity" =~ ^[0-9a-f]{64}$ \
+    && "$(bounded_pid_identity "$pid" generation || true)" == "$identity" \
+    && "$(ps -o ppid= -p "$source_pid" 2>/dev/null | tr -d '[:space:]')" == "$pid" ]]
+  then
+    OWNED_COMMAND_SOURCE_PIDS[pid]="$source_pid"
+    OWNED_COMMAND_SOURCE_IDENTITIES[pid]="$source_identity"
+    OWNED_COMMAND_SOURCE_PID="$source_pid"
+    : > "$prefix.release"
+  else
+    add_issue "could not bind the owned $role command and supervisor generations"
+  fi
+  if [[ -n "$saved_int_trap" ]]; then eval "$saved_int_trap"; else trap - INT; fi
+  if [[ -n "$saved_term_trap" ]]; then eval "$saved_term_trap"; else trap - TERM; fi
+  (( interrupted == 0 )) || exit "$interrupted"
+  [[ -n "$OWNED_COMMAND_SOURCE_PID" ]]
+}
+
+owned_command_source_is_alive() {
+  local source_pid="${OWNED_COMMAND_SOURCE_PIDS[$1]}"
+  local expected="${OWNED_COMMAND_SOURCE_IDENTITIES[$1]}" state
+  [[ "$source_pid" =~ ^[1-9][0-9]*$ && "$expected" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ "$(bounded_pid_identity "$source_pid" generation || true)" == "$expected" ]] || return 1
+  state="$(ps -o state= -p "$source_pid" 2>/dev/null | tr -d '[:space:]')"
+  [[ -n "$state" && "$state" != Z* ]] && kill -0 "$source_pid" 2>/dev/null
+}
+
+unregister_owned_command() {
+  local pid="$1" prefix="${OWNED_COMMAND_FILES[$1]}"
+  # Remove signal authority immediately after wait, before inspecting artifacts
+  # or joining another worker. Retain an unproven job for finalizer cleanup.
+  unset 'OWNED_COMMAND_IDENTITIES[pid]' 'OWNED_COMMAND_SOURCE_PIDS[pid]'
+  unset 'OWNED_COMMAND_SOURCE_IDENTITIES[pid]' 'OWNED_COMMAND_ROLES[pid]'
+  unset 'OWNED_COMMAND_FILES[pid]'
+  [[ -z "$prefix" ]] || /bin/rm -f "$prefix.pid" "$prefix.release"
+}
+
+join_owned_command() {
+  local pid="$1" deadline="$2" mode="${3:-wait}" grace="${4:-1}"
+  local identity="${OWNED_COMMAND_IDENTITIES[$1]}" tree_text="" tree_pid tree_identity
+  local prefix="${OWNED_COMMAND_FILES[$1]}" source_pid="${OWNED_COMMAND_SOURCE_PIDS[$1]}"
+  local incomplete=0 timed_out=0 child_rc=0 signal
+  OWNED_JOIN_REAPED=0
+  OWNED_JOIN_FORCED=0
+  # A stale application variable or a reaped HTTP/3 entry confers no authority.
+  [[ -n "${OWNED_COMMAND_ROLES[pid]}" ]] || return 125
+  if [[ "$mode" == wait ]]; then
+    while (( SECONDS < deadline )) && ! bounded_owned_job_has_exited "$pid"; do sleep 0.1; done
+    bounded_owned_job_has_exited "$pid" || timed_out=1
+  fi
+  if ! bounded_owned_job_has_exited "$pid"; then
+    deadline=$((SECONDS + grace))
+    if [[ "$identity" =~ ^[0-9a-f]{64}$ ]] \
+      && bounded_signal_owned_identity "$pid" "$identity" STOP
+    then
+      tree_text="$(bounded_collect_owned_tree "$pid" "$identity" "$deadline")" || incomplete=1
+    elif ! bounded_owned_job_has_exited "$pid"; then
+      incomplete=1
+    fi
+    for signal in TERM CONT; do
+      while IFS=$'\t' read -r tree_pid tree_identity; do
+        [[ "$tree_pid" =~ ^[1-9][0-9]*$ && "$tree_identity" =~ ^[0-9a-f]{64}$ ]] || continue
+        bounded_signal_owned_identity "$tree_pid" "$tree_identity" "$signal" || true
+      done <<< "$tree_text"
+    done
+    while (( SECONDS < deadline )); do
+      if bounded_owned_job_has_exited "$pid" && bounded_owned_tree_has_exited "$tree_text"; then break; fi
+      sleep 0.1
+    done
+    if ! bounded_owned_job_has_exited "$pid" || ! bounded_owned_tree_has_exited "$tree_text"; then
+      OWNED_JOIN_FORCED=1
+      ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT=$((ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT + 1))
+      while IFS=$'\t' read -r tree_pid tree_identity; do
+        [[ "$tree_pid" =~ ^[1-9][0-9]*$ && "$tree_identity" =~ ^[0-9a-f]{64}$ ]] || continue
+        bounded_signal_owned_identity "$tree_pid" "$tree_identity" KILL || true
+      done <<< "$tree_text"
+      deadline=$((SECONDS + 1))
+      while (( SECONDS < deadline )); do
+        if bounded_owned_job_has_exited "$pid" && bounded_owned_tree_has_exited "$tree_text"; then break; fi
+        sleep 0.1
+      done
+    fi
+  fi
+  if bounded_owned_job_has_exited "$pid"; then
+    wait "$pid" 2>/dev/null || child_rc=$?
+    unregister_owned_command "$pid"
+    OWNED_JOIN_REAPED=1
+    if [[ -z "$tree_text" ]] && ! bounded_drain_receipt_valid "$prefix.complete" "$source_pid" "$child_rc"; then
+      incomplete=1
+    fi
+    /bin/rm -f "$prefix.complete"
+  else
+    incomplete=1
+  fi
+  if (( incomplete )) || ! bounded_owned_tree_has_exited "$tree_text"; then
+    : > "$BOUNDED_CLEANUP_FAILED"
+    return 125
+  fi
+  (( timed_out == 0 && OWNED_JOIN_FORCED == 0 )) || return 124
+  return "$child_rc"
+}
+
 capture_provider_generation_sample() {
   local mode="$1"
   run_bounded 15 /usr/bin/python3 "$SIGNED_EVIDENCE" capture-provider-generation \
@@ -462,28 +648,39 @@ start_provider_generation_monitor() {
     add_issue "could not capture the initial canonical provider generation sample"
     return 1
   }
-  (
-    while [[ ! -e "$PROVIDER_GENERATION_MONITOR_STOP" ]]; do
-      sleep 2
-      [[ -e "$PROVIDER_GENERATION_MONITOR_STOP" ]] && break
-      capture_provider_generation_sample --append || {
-        : > "$PROVIDER_GENERATION_MONITOR_FAILED"
+  start_owned_command monitor /usr/bin/python3 -c '
+import pathlib, subprocess, sys, time
+helper, identity, samples, stop, failed = sys.argv[1:]
+while not pathlib.Path(stop).exists():
+    time.sleep(2)
+    if pathlib.Path(stop).exists():
         break
-      }
-    done
-  ) &
-  PROVIDER_GENERATION_MONITOR_PID=$!
+    try:
+        result = subprocess.run(
+            [sys.executable, helper, "capture-provider-generation", "--identity",
+             identity, "--append", samples],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15,
+        )
+        if result.returncode == 0:
+            continue
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    pathlib.Path(failed).touch()
+    sys.exit(1)
+' "$SIGNED_EVIDENCE" "$TMP_DIR/provider-identity.tsv" "$PROVIDER_GENERATION_SAMPLES" \
+    "$PROVIDER_GENERATION_MONITOR_STOP" "$PROVIDER_GENERATION_MONITOR_FAILED" || return 1
+  PROVIDER_GENERATION_MONITOR_PID="$OWNED_COMMAND_PID"
 }
 
 # shellcheck disable=SC2329  # invoked from the EXIT trap via finalize
 stop_provider_generation_monitor() {
+  local rc=0
   [[ "$PROVIDER_GENERATION_MONITOR_PID" =~ ^[1-9][0-9]*$ ]] || return 0
   : > "$PROVIDER_GENERATION_MONITOR_STOP"
-  wait "$PROVIDER_GENERATION_MONITOR_PID" 2>/dev/null || true
-  PROVIDER_GENERATION_MONITOR_PID=""
-  if [[ -e "$PROVIDER_GENERATION_MONITOR_FAILED" ]]; then
-    /bin/rm -f "$PROVIDER_GENERATION_MONITOR_STOP" "$PROVIDER_GENERATION_MONITOR_FAILED"
-    add_issue "canonical provider generation sampling failed during the signed run"
+  join_owned_command "$PROVIDER_GENERATION_MONITOR_PID" "$((SECONDS + 18))" || rc=$?
+  (( OWNED_JOIN_REAPED == 0 )) || PROVIDER_GENERATION_MONITOR_PID=""
+  if [[ "$rc" != 0 || -e "$PROVIDER_GENERATION_MONITOR_FAILED" ]]; then
+    add_issue "canonical provider generation sampling failed or did not stop cleanly during the signed run"
     return 1
   fi
   /bin/rm -f "$PROVIDER_GENERATION_MONITOR_STOP" "$PROVIDER_GENERATION_MONITOR_FAILED"
@@ -537,63 +734,38 @@ PY
 }
 
 wait_for_child_until() {
-  local child="$1" deadline="$2" state rc=0
-  while kill -0 "$child" 2>/dev/null; do
-    state="$(ps -o stat= -p "$child" 2>/dev/null | tr -d ' ')"
-    [[ "$state" == Z* ]] && break
-    if (( SECONDS >= deadline )); then
-      CONCURRENT_LOAD_TIMED_OUT=1
-      kill -TERM "$child" 2>/dev/null || true
-      sleep 0.5
-      state="$(ps -o stat= -p "$child" 2>/dev/null | tr -d ' ')"
-      if [[ "$state" != Z* ]] && kill -0 "$child" 2>/dev/null; then
-        kill -KILL "$child" 2>/dev/null || true
-        ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT=$((ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT + 1))
-      fi
-      wait "$child" 2>/dev/null || true
-      return 124
-    fi
-    sleep 0.1
-  done
-  wait "$child" || rc=$?
+  local rc=0
+  join_owned_command "$1" "$2" || rc=$?
+  if (( rc == 124 )); then CONCURRENT_LOAD_TIMED_OUT=1; fi
   return "$rc"
 }
 
 # shellcheck disable=SC2329  # invoked from the EXIT trap
 stop_active_workloads() {
-  local pids="" candidate pid alive state
-  for candidate in "$ACTIVE_PROBE_PID" "$ACTIVE_ECHO_PID" "$ACTIVE_PRESSURE_PID"; do
-    [[ "$candidate" =~ ^[1-9][0-9]*$ ]] && pids="$pids $candidate"
+  local pid role rc
+  # The registry contains only still-owned supervisor generations. Source PIDs
+  # in evidence and already-reaped HTTP/3 rows are never cleanup inputs.
+  for pid in "${!OWNED_COMMAND_ROLES[@]}"; do
+    role="${OWNED_COMMAND_ROLES[pid]}"
+    case "$role" in probe|echo|pressure|http3) ;; *) continue ;; esac
+    rc=0
+    join_owned_command "$pid" "$SECONDS" stop 5 || rc=$?
+    case "$rc" in
+      0|130|143) ;;
+      *) add_issue "active $role command did not stop cleanly (exit $rc)" ;;
+    esac
   done
-  if [[ -s "$ACTIVE_HTTP3_PIDS" ]]; then
-    while IFS= read -r candidate; do
-      [[ "$candidate" =~ ^[1-9][0-9]*$ ]] && pids="$pids $candidate"
-    done < "$ACTIVE_HTTP3_PIDS"
-  fi
-  [[ -n "$pids" ]] || return 0
-  for pid in $pids; do kill -TERM "$pid" 2>/dev/null || true; done
-  for _ in $(seq 1 50); do
-    alive=0
-    for pid in $pids; do
-      state="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ')"
-      [[ -n "$state" && "$state" != Z* ]] && alive=1
-    done
-    (( alive == 0 )) && break
-    sleep 0.1
+}
+
+# shellcheck disable=SC2329  # invoked by the EXIT finalizer
+stop_remaining_owned_commands() {
+  local pid rc
+  for pid in "${!OWNED_COMMAND_ROLES[@]}"; do
+    add_issue "owned ${OWNED_COMMAND_ROLES[pid]} command remained after phase cleanup"
+    rc=0
+    join_owned_command "$pid" "$SECONDS" stop 1 || rc=$?
+    (( rc != 125 )) || : > "$BOUNDED_CLEANUP_FAILED"
   done
-  for pid in $pids; do
-    state="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ')"
-    if [[ -n "$state" && "$state" != Z* ]] && kill -0 "$pid" 2>/dev/null; then
-      kill -KILL "$pid" 2>/dev/null || true
-      ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT=$((ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT + 1))
-      add_issue "active probe process required forced termination"
-    fi
-    wait "$pid" 2>/dev/null || true
-  done
-  ACTIVE_PROBE_PID=""
-  ACTIVE_ECHO_PID=""
-  ACTIVE_PRESSURE_PID=""
-  : > "$ACTIVE_HTTP3_PIDS"
 }
 
 capture_common_provider_identity() {
@@ -670,6 +842,7 @@ write_common_evidence_status() {
   } > "$COMMON_EVIDENCE_STATUS"
 }
 
+# shellcheck disable=SC2329  # invoked by the EXIT finalizer's log verdict
 write_provider_log_phases() {
   local provider_log_end
   provider_log_end="$(provider_log_line)"
@@ -875,55 +1048,35 @@ wait_for_connected() {
 
 # shellcheck disable=SC2329  # invoked from the EXIT trap
 stop_log_capture() {
-  local child_rc=missing
-  [[ -n "$LOG_PID" ]] || return 0
-  if kill -0 "$LOG_PID" 2>/dev/null; then
+  local rc=0
+  [[ "$LOG_PID" =~ ^[1-9][0-9]*$ ]] || return 0
+  if owned_command_source_is_alive "$LOG_PID"; then
     LOG_STREAM_ALIVE_END=1
-    kill -TERM "$LOG_PID" 2>/dev/null || true
   else
-    add_issue "provider log stream exited before evidence collection"
+    add_issue "provider log stream exited before the final capture boundary"
   fi
-  for _ in $(seq 1 50); do
-    kill -0 "$LOG_PID" 2>/dev/null || break
-    sleep 0.1
-  done
-  if kill -0 "$LOG_PID" 2>/dev/null; then
-    kill -KILL "$LOG_PID" 2>/dev/null || true
-    add_issue "provider log stream required forced termination"
+  join_owned_command "$LOG_PID" "$SECONDS" stop 5 || rc=$?
+  if (( OWNED_JOIN_REAPED == 1 )) && [[ ! -e "$BOUNDED_CLEANUP_FAILED" ]]; then
+    LOG_STREAM_JOINED=1
+    LOG_PID=""
   fi
-  wait "$LOG_PID" 2>/dev/null
-  child_rc=$?
-  LOG_STREAM_JOINED=1
-  LOG_PID=""
-  case "$child_rc" in
+  case "$rc" in
     0|143) ;;
-    *) add_issue "provider log stream exited with unexpected status $child_rc" ;;
+    *) add_issue "provider log stream did not stop cleanly (exit $rc)" ;;
   esac
 }
 
 # shellcheck disable=SC2329  # invoked from the EXIT trap
 stop_echo_server() {
-  local child_rc=0 state
-  [[ -n "$ECHO_SERVER_PID" ]] || return 0
-  if kill -0 "$ECHO_SERVER_PID" 2>/dev/null; then
-    kill -TERM "$ECHO_SERVER_PID" 2>/dev/null || true
-  fi
-  for _ in $(seq 1 50); do
-    state="$(ps -o stat= -p "$ECHO_SERVER_PID" 2>/dev/null | tr -d ' ')"
-    [[ -z "$state" || "$state" == Z* ]] && break
-    sleep 0.1
-  done
-  state="$(ps -o stat= -p "$ECHO_SERVER_PID" 2>/dev/null | tr -d ' ')"
-  if [[ -n "$state" && "$state" != Z* ]] && kill -0 "$ECHO_SERVER_PID" 2>/dev/null; then
-    kill -KILL "$ECHO_SERVER_PID" 2>/dev/null || true
-    ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT=$((ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT + 1))
-    add_issue "controlled echo server required forced termination"
-  fi
-  wait "$ECHO_SERVER_PID" 2>/dev/null || child_rc=$?
-  ECHO_SERVER_PID=""
-  case "$child_rc" in
+  local rc=0
+  [[ "$ECHO_SERVER_PID" =~ ^[1-9][0-9]*$ ]] || return 0
+  # A normally completed server has already been reaped and unregistered.
+  [[ -n "${OWNED_COMMAND_ROLES[ECHO_SERVER_PID]}" ]] || { ECHO_SERVER_PID=""; return 0; }
+  join_owned_command "$ECHO_SERVER_PID" "$SECONDS" stop 5 || rc=$?
+  (( OWNED_JOIN_REAPED == 0 )) || ECHO_SERVER_PID=""
+  case "$rc" in
     0|130|143) ;;
-    *) add_issue "controlled echo server exited with unexpected status $child_rc" ;;
+    *) add_issue "controlled echo server did not stop cleanly (exit $rc)" ;;
   esac
 }
 
@@ -1078,7 +1231,6 @@ finalize() {
   fi
   stop_active_workloads
   stop_echo_server
-  stop_log_capture
   # Dial9 collection is single-shot and must happen while the final E2E
   # provider generation is still installed. Restoration can create another
   # generation and is never followed by an evidence retry.
@@ -1087,11 +1239,19 @@ finalize() {
   require_provider_identity || true
   capture_provider_generation_sample --append || \
     add_issue "could not capture the canonical provider generation before the run boundary"
+  # Capture includes workload cleanup, sealed Dial9 collection, and the exact
+  # default-profile restoration. Allow asynchronous bridge records to arrive
+  # before freezing the boundary while the owned logger is still alive.
+  sleep 2
   RUN_END_EPOCH_MS="$(/usr/bin/python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
   if [[ ! "$RUN_END_EPOCH_MS" =~ ^[1-9][0-9]*$ \
     || "$RUN_END_EPOCH_MS" -lt "$RUN_START_EPOCH_MS" ]]
   then
     add_issue "could not capture a valid signed UDP wall-clock end"
+  fi
+  stop_log_capture
+  if (( LOG_STREAM_JOINED == 1 )); then
+    check_final_provider_logs || true
   fi
   crash_count="$(run_bounded 30 /usr/bin/python3 "$SIGNED_EVIDENCE" snapshot-crashes \
     --since-epoch-ms "$RUN_START_EPOCH_MS" --output-dir "$TMP_DIR/crashes" \
@@ -1107,6 +1267,7 @@ finalize() {
   capture_provider_generation_sample --append || \
     add_issue "could not re-observe the canonical provider generation after the crash snapshot"
   stop_provider_generation_monitor || true
+  stop_remaining_owned_commands
   require_provider_identity || true
   if [[ -e "$BOUNDED_CLEANUP_FAILED" ]]; then
     add_issue "bounded command cleanup could not prove every artifact writer exited"
@@ -1195,11 +1356,14 @@ run_probe() {
   local rc=0
   UDP_PROBE_ATTEMPT_COUNT=$((UDP_PROBE_ATTEMPT_COUNT + 1))
   LAST_PROBE_LOG_START="$(provider_log_line)"
-  /usr/bin/python3 "$PROBE" "$@" &
-  LAST_PROBE_PID=$!
-  ACTIVE_PROBE_PID="$LAST_PROBE_PID"
-  wait "$LAST_PROBE_PID" || rc=$?
-  ACTIVE_PROBE_PID=""
+  start_owned_command probe /usr/bin/python3 "$PROBE" "$@" || {
+    add_issue "$description could not start its owned probe"
+    return 1
+  }
+  LAST_PROBE_PID="$OWNED_COMMAND_SOURCE_PID"
+  ACTIVE_PROBE_PID="$OWNED_COMMAND_PID"
+  join_owned_command "$ACTIVE_PROBE_PID" "$((SECONDS + 30))" || rc=$?
+  (( OWNED_JOIN_REAPED == 0 )) || ACTIVE_PROBE_PID=""
   close_probe_decision_window "$LAST_PROBE_LOG_START" "$LAST_PROBE_PID"
   case "$rc" in
     0) UDP_PROBE_PASS_COUNT=$((UDP_PROBE_PASS_COUNT + 1)) ;;
@@ -1293,12 +1457,11 @@ close_http3_decision_window() {
 }
 
 run_sustained_http3() {
-  local start_ms end_ms round worker pid rc output marker digest round_pids
+  local start_ms end_ms round worker pid owner rc output marker digest round_pids deadline
   local barrier release_ms pre_release_alive
   local separator='?'
   [[ "$HTTP3_URL" == *\?* ]] && separator='&'
   : > "$HTTP3_PIDS"
-  : > "$ACTIVE_HTTP3_PIDS"
   printf 'round\tworker\tsource_pid\texit_code\thttp3_marker\tsha256\n' > "$HTTP3_RESULTS"
   printf 'round\texpected_workers\tbarrier_release_epoch_ms\tpre_release_alive\n' \
     > "$HTTP3_ROUND_RESULTS"
@@ -1313,19 +1476,25 @@ run_sustained_http3() {
     : > "$round_pids"
     for worker in $(seq 1 "$HTTP3_CONCURRENCY"); do
       output="$TMP_DIR/http3-$round-$worker.log"
-      (
+      # shellcheck disable=SC2016  # worker expands its own positional arguments
+      start_owned_command http3 /bin/bash -c '
+        barrier="$1"; shift
         while [[ ! -e "$barrier" ]]; do sleep 0.01; done
-        exec nscurl --http3-prior-knowledge -m 15 \
-          "${HTTP3_URL}${separator}rama_udp_e2e_run=$RUN_UUID&round=$round&worker=$worker"
-      ) > "$output" 2>&1 &
-      pid=$!
+        exec "$@"
+      ' http3-worker "$barrier" nscurl --http3-prior-knowledge -m 15 \
+        "${HTTP3_URL}${separator}rama_udp_e2e_run=$RUN_UUID&round=$round&worker=$worker" \
+        > "$output" 2>&1 || {
+          add_issue "HTTP/3 round $round worker $worker could not start"
+          return 1
+        }
+      pid="$OWNED_COMMAND_SOURCE_PID"
+      owner="$OWNED_COMMAND_PID"
       printf '%s\t%s\t%s\n' "$round" "$worker" "$pid" >> "$HTTP3_PIDS"
-      printf '%s\t%s\t%s\n' "$round" "$worker" "$pid" >> "$round_pids"
-      printf '%s\n' "$pid" >> "$ACTIVE_HTTP3_PIDS"
+      printf '%s\t%s\t%s\t%s\n' "$round" "$worker" "$pid" "$owner" >> "$round_pids"
     done
     pre_release_alive=0
-    while IFS=$'\t' read -r _round _worker pid; do
-      kill -0 "$pid" 2>/dev/null && pre_release_alive=$((pre_release_alive + 1))
+    while IFS=$'\t' read -r _round _worker pid owner; do
+      owned_command_source_is_alive "$owner" && pre_release_alive=$((pre_release_alive + 1))
     done < "$round_pids"
     (( pre_release_alive < HTTP3_MIN_CONCURRENT )) \
       && HTTP3_MIN_CONCURRENT="$pre_release_alive"
@@ -1336,9 +1505,10 @@ run_sustained_http3() {
     printf '%s\t%s\t%s\t%s\n' "$round" "$HTTP3_CONCURRENCY" \
       "$release_ms" "$pre_release_alive" >> "$HTTP3_ROUND_RESULTS"
     : > "$barrier"
-    while IFS=$'\t' read -r _round _worker pid; do
+    deadline=$((SECONDS + 20))
+    while IFS=$'\t' read -r _round _worker pid owner; do
       rc=0
-      wait "$pid" || rc=$?
+      join_owned_command "$owner" "$deadline" || rc=$?
       output="$TMP_DIR/http3-$_round-$_worker.log"
       marker=0
       grep -Fq 'http=http/3' "$output" && marker=1
@@ -1349,7 +1519,6 @@ run_sustained_http3() {
         HTTP3_PASS_COUNT=$((HTTP3_PASS_COUNT + 1))
       fi
     done < "$round_pids"
-    : > "$ACTIVE_HTTP3_PIDS"
     if (( round < HTTP3_ROUNDS )); then
       sleep "$HTTP3_ROUND_INTERVAL"
     fi
@@ -1613,6 +1782,20 @@ PY
     || add_issue "HTTP/3 flow used a different unblocked provider generation"
 }
 
+# shellcheck disable=SC2329  # invoked after the logger is joined by finalize
+check_final_provider_logs() {
+  write_provider_log_phases
+  # Unexpected callback markers and pressure transitions must be checked again
+  # over the frozen full log, including Dial9 collection and restoration.
+  if tail -n "+$((UDP_ERROR_PROVIDER_LOG_LINE + 1))" "$PROVIDER_LOG" | grep -E \
+    'flow_callback_error operation=udp_flow\.(open|read|write)' >/dev/null
+  then
+    add_failure "provider emitted an unexpected UDP flow error during the live test"
+  fi
+  check_udp_pressure_logs
+}
+
+# shellcheck disable=SC2329  # invoked by the EXIT finalizer's log verdict
 check_udp_pressure_logs() {
   local metrics status
   metrics="$(/usr/bin/python3 - "$SCRIPT_DIR" "$PROVIDER_LOG" \
@@ -1793,14 +1976,15 @@ sudo -n true 2>/dev/null \
   || fatal_issue "cached sudo credentials are required for root-owned dial9 evidence"
 
 CURRENT_PHASE=echo-server-start
-/usr/bin/python3 "$PROBE" echo-server --bind 127.0.0.1 --port 0 \
+start_owned_command echo-server /usr/bin/python3 "$PROBE" echo-server --bind 127.0.0.1 --port 0 \
   --run-uuid "$RUN_UUID" --expected-count "$ECHO_EXPECTED_COUNT" \
   --max-seconds 180 --ready-file "$ECHO_READY" \
-  --result-file "$ECHO_SERVER_RESULT" > "$TMP_DIR/controlled-echo-server.log" 2>&1 &
-ECHO_SERVER_PID=$!
+  --result-file "$ECHO_SERVER_RESULT" > "$TMP_DIR/controlled-echo-server.log" 2>&1 \
+  || fatal_issue "could not start the owned controlled echo server"
+ECHO_SERVER_PID="$OWNED_COMMAND_PID"
 for _ in $(seq 1 100); do
   [[ -s "$ECHO_READY" ]] && break
-  kill -0 "$ECHO_SERVER_PID" 2>/dev/null \
+  owned_command_source_is_alive "$ECHO_SERVER_PID" \
     || fatal_issue "controlled echo server exited before readiness"
   sleep 0.05
 done
@@ -1874,12 +2058,12 @@ PY
 DIAL9_BASELINE_READY=1
 
 CURRENT_PHASE=log-start
-/usr/bin/log stream --level debug --style compact \
+start_owned_command log /usr/bin/log stream --level debug --style compact \
   --predicate 'subsystem BEGINSWITH "org.ramaproxy.example.tproxy"' \
-  > "$PROVIDER_LOG" 2>&1 &
-LOG_PID=$!
+  > "$PROVIDER_LOG" 2>&1 || fatal_issue "could not start the owned provider log stream"
+LOG_PID="$OWNED_COMMAND_PID"
 sleep 0.5
-if kill -0 "$LOG_PID" 2>/dev/null; then
+if owned_command_source_is_alive "$LOG_PID"; then
   LOG_STREAM_STARTED=1
 else
   fatal_issue "provider log stream did not stay alive"
@@ -1892,7 +2076,7 @@ CURRENT_PHASE=unblocked-install
 UNBLOCKED_CONTAINER_LINE="$(container_log_line)"
 PROFILE_NEEDS_RESTORE=1
 PROFILE_RESTORED=0
-if ! "$INSTALLER" dev "$BUILT_APP" 0 \
+if ! run_bounded 90 "$INSTALLER" dev "$BUILT_APP" 0 \
   "--udp-passthrough-ports=443" \
   "--udp-blocked-endpoints=" \
   "--evidence-run-uuid=$RUN_UUID" \
@@ -1937,34 +2121,36 @@ PRESSURE_LOG_START="$PRESSURE_LOG_LINE"
 ECHO_LOG_START="$PRESSURE_LOG_LINE"
 UDP_PROBE_ATTEMPT_COUNT=$((UDP_PROBE_ATTEMPT_COUNT + 1))
 CONCURRENT_LOAD_DEADLINE=$((SECONDS + CONCURRENT_LOAD_DEADLINE_SECONDS))
-/usr/bin/python3 "$PROBE" echo-load \
+start_owned_command echo /usr/bin/python3 "$PROBE" echo-load \
   --server "${ECHO_ENDPOINT%:*}" --port "${ECHO_ENDPOINT##*:}" \
   --run-uuid "$RUN_UUID" --socket-count "$ECHO_SOCKET_COUNT" \
   --datagrams-per-socket "$ECHO_DATAGRAMS_PER_SOCKET" \
   --interval-ms "$ECHO_INTERVAL_MS" \
   --payload-bytes "$ECHO_PAYLOAD_BYTES" --concurrency "$ECHO_CONCURRENCY" \
-  --result-file "$ECHO_CLIENT_RESULT" > "$TMP_DIR/controlled-echo-client.log" 2>&1 &
-ECHO_SOURCE_PID=$!
-ACTIVE_ECHO_PID="$ECHO_SOURCE_PID"
-/usr/bin/python3 "$PROBE" pressure --server "$INTERCEPT_NTP" \
-  --count "$PRESSURE_COUNT" --payload-bytes "$PRESSURE_PAYLOAD_BYTES" --settle 4 &
-PRESSURE_SOURCE_PID=$!
-ACTIVE_PRESSURE_PID="$PRESSURE_SOURCE_PID"
+  --result-file "$ECHO_CLIENT_RESULT" > "$TMP_DIR/controlled-echo-client.log" 2>&1 \
+  || fatal_issue "could not start the owned controlled echo client"
+ECHO_SOURCE_PID="$OWNED_COMMAND_SOURCE_PID"
+ACTIVE_ECHO_PID="$OWNED_COMMAND_PID"
+start_owned_command pressure /usr/bin/python3 "$PROBE" pressure --server "$INTERCEPT_NTP" \
+  --count "$PRESSURE_COUNT" --payload-bytes "$PRESSURE_PAYLOAD_BYTES" --settle 4 \
+  || fatal_issue "could not start the owned UDP pressure client"
+PRESSURE_SOURCE_PID="$OWNED_COMMAND_SOURCE_PID"
+ACTIVE_PRESSURE_PID="$OWNED_COMMAND_PID"
 UDP_PROBE_ATTEMPT_COUNT=$((UDP_PROBE_ATTEMPT_COUNT + 1))
-if wait_for_child_until "$PRESSURE_SOURCE_PID" "$CONCURRENT_LOAD_DEADLINE"
+if wait_for_child_until "$ACTIVE_PRESSURE_PID" "$CONCURRENT_LOAD_DEADLINE"
 then
   PRESSURE_PROBE_PASSED=1
   UDP_PROBE_PASS_COUNT=$((UDP_PROBE_PASS_COUNT + 1))
 else
   add_issue "deliberate UDP pressure burst did not complete"
 fi
-ACTIVE_PRESSURE_PID=""
+(( OWNED_JOIN_REAPED == 0 )) || ACTIVE_PRESSURE_PID=""
 ECHO_CLIENT_RC=0
-wait_for_child_until "$ECHO_SOURCE_PID" "$CONCURRENT_LOAD_DEADLINE" || ECHO_CLIENT_RC=$?
-ACTIVE_ECHO_PID=""
+wait_for_child_until "$ACTIVE_ECHO_PID" "$CONCURRENT_LOAD_DEADLINE" || ECHO_CLIENT_RC=$?
+(( OWNED_JOIN_REAPED == 0 )) || ACTIVE_ECHO_PID=""
 ECHO_SERVER_RC=0
 wait_for_child_until "$ECHO_SERVER_PID" "$CONCURRENT_LOAD_DEADLINE" || ECHO_SERVER_RC=$?
-ECHO_SERVER_PID=""
+(( OWNED_JOIN_REAPED == 0 )) || ECHO_SERVER_PID=""
 ECHO_METRICS="$(/usr/bin/python3 - "$ECHO_CLIENT_RESULT" "$ECHO_SERVER_RESULT" \
   "$RUN_UUID" "$ECHO_ENDPOINT" "$ECHO_EXPECTED_COUNT" \
   "$ECHO_SOCKET_COUNT" "$ECHO_DATAGRAMS_PER_SOCKET" "$ECHO_PAYLOAD_BYTES" <<'PY'
@@ -2041,7 +2227,7 @@ run_sustained_http3
 # used below, so this must create a fresh NE flow and decision.
 CURRENT_PHASE=blocked-install
 BLOCKED_CONTAINER_LINE="$(container_log_line)"
-if ! "$INSTALLER" dev "$BUILT_APP" 0 \
+if ! run_bounded 90 "$INSTALLER" dev "$BUILT_APP" 0 \
   "--udp-passthrough-ports=443" \
   "--udp-blocked-endpoints=$BLOCKED_DNS:53" \
   "--evidence-run-uuid=$RUN_UUID" \
@@ -2064,9 +2250,6 @@ BLOCKED_DNS_LOG_END="$LAST_PROBE_LOG_END"
 # Let os_log and the Rust tracing bridge flush the per-flow decision/service
 # records before assertions.
 sleep 2
-CURRENT_PHASE=log-quiesce
-stop_log_capture
-write_provider_log_phases
 CURRENT_PHASE=log-verdicts
 check_exact_decision "$PASSTHROUGH_DNS_LOG_START" "$PASSTHROUGH_DNS_LOG_END" \
   passthrough "$PASSTHROUGH_DNS:53" com.apple.python3 \
@@ -2100,15 +2283,6 @@ else
   add_issue "signed UDP E2E did not observe two exact provider generations"
 fi
 
-# Open/read/write markers are emitted only for errors the provider classifier
-# considers unexpected. Benign teardown races have no public marker.
-if tail -n "+$((UDP_ERROR_PROVIDER_LOG_LINE + 1))" "$PROVIDER_LOG" | grep -E \
-  'flow_callback_error operation=udp_flow\.(open|read|write)' >/dev/null
-then
-  add_failure "provider emitted an unexpected UDP flow error during the live test"
-fi
-
-check_udp_pressure_logs || true
 require_provider_identity || true
 
 # Collect before restoring again: at this point the NTP provider generation is

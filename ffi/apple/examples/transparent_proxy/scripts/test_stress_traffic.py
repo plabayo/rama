@@ -506,6 +506,93 @@ def reseal_common_stress_envelope(log_dir: Path) -> None:
 
 
 class StressTrafficValidationTests(unittest.TestCase):
+    def test_capture_requires_group_drain_receipt_and_retires_reaped_auxiliary(self):
+        helpers = "".join(self.stress_function(STRESS_SCRIPT.read_text(), name) for name in (
+            "capture_drain_receipt_valid", "run_bounded_capture",
+        ))
+        for receipt, expected in (("42\t7\n", 7), ("", 125), ("42\t0\n", 125)):
+            with self.subTest(receipt=receipt):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    program = helpers + textwrap.dedent(f"""\
+                        AUXILIARY_PIDS=(41) AUXILIARY_DRAIN_RECEIPTS=()
+                        CLEANUP_INCOMPLETE=0 EVIDENCE_FAILED=0
+                        python3() {{ return 0; }}
+                        pid_identity() {{ printf '%s\\n' {'a' * 64}; }}
+                        owned_job_has_exited() {{ return 0; }}
+                        owned_tree_has_exited() {{ return 0; }}
+                        wait() {{
+                          printf '%s' {shlex.quote(receipt)} > "$receipt"
+                          printf 'payload' > "$output"
+                          return 7
+                        }}
+                        cat() {{
+                          [[ "${{#AUXILIARY_PIDS[@]}}" == 1 && "${{AUXILIARY_PIDS[0]}}" == 41 ]] || return 90
+                          command cat "$@"
+                        }}
+                        run_bounded_capture {shlex.quote(str(root / 'output'))} 3 unused-command
+                        result=$?
+                        printf 'rc=%s incomplete=%s failed=%s jobs=%s receipts=%s\\n' \\
+                          "$result" "$CLEANUP_INCOMPLETE" "$EVIDENCE_FAILED" \\
+                          "${{#AUXILIARY_PIDS[@]}}" "${{#AUXILIARY_DRAIN_RECEIPTS[@]}}"
+                    """)
+                    result = subprocess.run(["/bin/bash", "-c", program], capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    failed = int(expected == 125)
+                    self.assertEqual(result.stdout, f"rc={expected} incomplete={failed} failed={failed} jobs=1 receipts=0\n")
+                    self.assertEqual((root / "output").read_text(), "payload")
+                    self.assertFalse(list(root.glob("*.drain.*")))
+
+    def test_exit_cleanup_requires_receipt_for_already_exited_auxiliary(self):
+        helpers = "".join(self.stress_function(STRESS_SCRIPT.read_text(), name) for name in (
+            "capture_drain_receipt_valid", "cleanup_owned_jobs",
+        ))
+        for receipt, expected in (("42\t7\n", 0), ("", 1)):
+            with self.subTest(receipt=receipt):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    program = helpers + textwrap.dedent(f"""\
+                        TMP_DIR={shlex.quote(str(root))}
+                        MONITOR_STOP_FILE="$TMP_DIR/monitor-stop" GENERATION_STOP_FILE="$TMP_DIR/generation-stop"
+                        RESPONSE_TMP_DIR="$TMP_DIR/responses"
+                        SYSTEM_LOG_JOB_PID='' MONITOR_JOB_PID='' ABSENCE_MONITOR_JOB_PID='' GENERATION_MONITOR_JOB_PID=''
+                        CLEANUP_STARTED=0 CLEANUP_INCOMPLETE=0
+                        TRAFFIC_PIDS=() AUXILIARY_PIDS=(41) AUXILIARY_DRAIN_RECEIPTS=()
+                        AUXILIARY_DRAIN_RECEIPTS[41]="$TMP_DIR/receipt"
+                        printf '%s' {shlex.quote(receipt)} > "$TMP_DIR/receipt"
+                        pid_identity() {{ return 1; }}
+                        owned_job_is_active() {{ return 1; }}
+                        owned_job_has_exited() {{ return 0; }}
+                        owned_tree_has_exited() {{ return 0; }}
+                        signal_owned_identity() {{ printf 'unexpected signal\\n' >&2; return 90; }}
+                        wait() {{ [[ "$1" == 41 ]] || return 90; return 7; }}
+                        cleanup_owned_jobs
+                        set +u
+                        printf 'incomplete=%s jobs=%s receipts=%s\\n' \\
+                          "$CLEANUP_INCOMPLETE" "${{#AUXILIARY_PIDS[@]}}" "${{#AUXILIARY_DRAIN_RECEIPTS[@]}}"
+                    """)
+                    result = subprocess.run(["/bin/bash", "-c", program], capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(result.stderr, "")
+                    self.assertEqual(result.stdout, f"incomplete={expected} jobs=0 receipts=0\n")
+                    self.assertFalse((root / "receipt").exists())
+
+    def test_empty_or_failed_ps_cannot_prove_owned_job_exit(self):
+        helper = self.stress_function(STRESS_SCRIPT.read_text(), "owned_job_has_exited")
+        for ps_status in (0, 1):
+            with self.subTest(ps_status=ps_status):
+                result = subprocess.run(
+                    ["/bin/bash", "-c", helper + textwrap.dedent(f"""\
+                        owned_job_is_active() {{ return 0; }}
+                        ps() {{ return {ps_status}; }}
+                        kill() {{ [[ "$1" == -0 && "$2" == 41 ]]; }}
+                        owned_job_has_exited 41
+                        printf 'exited=%s\\n' "$?"
+                    """)], capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "exited=1\n")
+
     @staticmethod
     def stress_function(shell: str, name: str) -> str:
         start = shell.index(f"{name}() {{")
@@ -1745,7 +1832,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                 "pid_identity", "owned_job_is_active", "collect_owned_tree",
                 "signal_owned_identity", "owned_job_has_exited",
                 "owned_identity_has_exited", "owned_tree_has_exited",
-                "wait_proven_exited", "cleanup_owned_jobs",
+                "wait_proven_exited", "capture_drain_receipt_valid", "cleanup_owned_jobs",
                 "monitor_provider_generation",
             )
         )
@@ -1842,7 +1929,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                 "pid_identity", "owned_job_is_active", "collect_owned_tree",
                 "signal_owned_identity", "owned_job_has_exited",
                 "owned_identity_has_exited", "owned_tree_has_exited",
-                "cleanup_owned_jobs",
+                "capture_drain_receipt_valid", "cleanup_owned_jobs",
             )
         )
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -1936,7 +2023,7 @@ class StressTrafficValidationTests(unittest.TestCase):
             for name in (
                 "pid_identity", "owned_job_is_active", "owned_job_has_exited",
                 "owned_identity_has_exited", "owned_tree_has_exited",
-                "collect_owned_tree", "signal_owned_identity", "run_bounded_capture",
+                "collect_owned_tree", "signal_owned_identity", "capture_drain_receipt_valid", "run_bounded_capture",
             )
         )
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2010,7 +2097,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                 "pid_identity", "owned_job_is_active", "owned_job_has_exited",
                 "owned_identity_has_exited", "owned_tree_has_exited",
                 "collect_owned_tree", "signal_owned_identity",
-                "cleanup_owned_jobs", "run_bounded_capture",
+                "capture_drain_receipt_valid", "cleanup_owned_jobs", "run_bounded_capture",
             )
         )
         with tempfile.TemporaryDirectory() as temp_dir:
