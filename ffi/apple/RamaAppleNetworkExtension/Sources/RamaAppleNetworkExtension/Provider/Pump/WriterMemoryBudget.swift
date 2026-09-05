@@ -315,12 +315,14 @@ final class WriterMemoryBudget: @unchecked Sendable {
         let items: Int
         let onGrant: @Sendable (WriterMemoryGrant) -> Void
         let onUnavailable: @Sendable () -> Void
+        var previous: UInt64?
+        var next: UInt64?
     }
 
     private struct CoordinatorState {
         var nextWaiterId: UInt64 = 1
-        var order: [UInt64] = []
-        var head = 0
+        var firstWaiterId: UInt64?
+        var lastWaiterId: UInt64?
         var waiters: [UInt64: WaiterRecord] = [:]
         var scheduled = false
     }
@@ -796,8 +798,14 @@ final class WriterMemoryBudget: @unchecked Sendable {
                 bytes: bytes,
                 items: items,
                 onGrant: onGrant,
-                onUnavailable: onUnavailable)
-            state.order.append(id)
+                onUnavailable: onUnavailable,
+                previous: state.lastWaiterId)
+            if let previous = state.lastWaiterId {
+                state.waiters[previous]?.next = id
+            } else {
+                state.firstWaiterId = id
+            }
+            state.lastWaiterId = id
             let schedule = !state.scheduled
             if schedule { state.scheduled = true }
             return (id, schedule)
@@ -812,6 +820,7 @@ final class WriterMemoryBudget: @unchecked Sendable {
 
     #if DEBUG
         var testWaiterCount: Int { coordinator.withLock { $0.waiters.count } }
+        var testCoordinatorNodeCount: Int { coordinator.withLock { $0.waiters.count } }
         var testCapacityAtomicIsLockFree: Bool {
             rama_writer_budget_atomic_is_lock_free(atomic)
         }
@@ -825,10 +834,8 @@ final class WriterMemoryBudget: @unchecked Sendable {
 
     fileprivate func cancelWaiter(_ id: UInt64) {
         let shouldSchedule = coordinator.withLock { state -> Bool in
-            guard state.waiters.removeValue(forKey: id) != nil else { return false }
+            guard removeWaiterLocked(id, state: &state) != nil else { return false }
             if state.waiters.isEmpty {
-                state.order.removeAll(keepingCapacity: true)
-                state.head = 0
                 clearWaiterGate()
                 maybeRecordPressureRecovery()
                 return false
@@ -838,6 +845,27 @@ final class WriterMemoryBudget: @unchecked Sendable {
             return schedule
         }
         if shouldSchedule { scheduleCoordinatorTurn() }
+    }
+
+    /// ID links keep cancellation O(1), including behind a blocked FIFO head.
+    /// Every queue node is one live dictionary entry: retired flows leave no
+    /// tombstones to retain memory or scan under the coordinator lock later.
+    @discardableResult
+    private func removeWaiterLocked(
+        _ id: UInt64, state: inout CoordinatorState
+    ) -> WaiterRecord? {
+        guard let record = state.waiters.removeValue(forKey: id) else { return nil }
+        if let previous = record.previous {
+            state.waiters[previous]?.next = record.next
+        } else {
+            state.firstWaiterId = record.next
+        }
+        if let next = record.next {
+            state.waiters[next]?.previous = record.previous
+        } else {
+            state.lastWaiterId = record.previous
+        }
+        return record
     }
 
     private func validRequest(bytes: Int, items: Int) -> Bool {
@@ -887,41 +915,29 @@ final class WriterMemoryBudget: @unchecked Sendable {
     private func driveLocked(_ state: inout CoordinatorState) -> DriveResult {
         var result = DriveResult()
         while result.deliveries.count + result.unavailable.count < Self.grantBatch {
-            while state.head < state.order.count,
-                state.waiters[state.order[state.head]] == nil
-            {
-                state.head += 1
+            guard let id = state.firstWaiterId else { break }
+            guard let record = state.waiters[id] else {
+                preconditionFailure("writer-memory FIFO head must be live")
             }
-            guard state.head < state.order.count else { break }
-            let id = state.order[state.head]
-            guard let record = state.waiters[id] else { continue }
             let limits = Self.unpack(rama_writer_budget_atomic_load(limitsAtomic))
             let udpLimits = Self.unpack(
                 rama_writer_budget_atomic_load(pressureUdpLimitsAtomic))
             if record.bytes > limits.retainedBytes - udpLimits.retainedBytes
                 || record.items > limits.retainedItems - udpLimits.retainedItems
             {
-                state.waiters.removeValue(forKey: id)
-                state.head += 1
+                removeWaiterLocked(id, state: &state)
                 result.unavailable.append(record)
                 continue
             }
             guard tryReserveWhileGated(bytes: record.bytes, items: record.items) else { break }
-            state.waiters.removeValue(forKey: id)
-            state.head += 1
+            removeWaiterLocked(id, state: &state)
             result.deliveries.append((
                 record,
                 WriterMemoryGrant(budget: self, bytes: record.bytes, items: record.items)
             ))
         }
 
-        if state.head > 64, state.head * 2 >= state.order.count {
-            state.order.removeFirst(state.head)
-            state.head = 0
-        }
         if state.waiters.isEmpty {
-            state.order.removeAll(keepingCapacity: true)
-            state.head = 0
             clearWaiterGate()
             maybeRecordPressureRecovery()
         } else if result.deliveries.count + result.unavailable.count == Self.grantBatch {

@@ -26,12 +26,15 @@ const INGRESS_PAUSED_FLOW_BYTES: u8 = 2;
 const INGRESS_PAUSED_GLOBAL_BYTES: u8 = 3;
 const INGRESS_CLOSED: u8 = 4;
 const NO_GLOBAL_WAITER: u64 = u64::MAX;
+const NO_RELEASE_WAITER: u64 = u64::MAX;
 
 /// Maximum number of globally blocked flows allowed to issue a new read in
 /// one coordinator turn. Admission still happens through the exact global
 /// byte counter; this only bounds speculative read fanout when capacity is
 /// released.
 const GLOBAL_WAKE_BATCH: usize = 4;
+/// Bound flow-byte recovery callbacks separately from global lease fanout.
+const FLOW_RELEASE_WAKE_BATCH: usize = 4;
 /// Bound cold-path FIFO rotation work independently from callback fanout.
 /// At 8,192 waiters this caps a full no-fit pass at 256 paced turns while
 /// keeping the coordinator mutex hold to a small constant.
@@ -59,6 +62,13 @@ struct UdpIngressProbeLease {
 #[derive(Default)]
 struct UdpIngressCoordinatorState {
     waiters: BTreeMap<(u64, usize), Weak<UdpIngressFlowControl>>,
+    /// Only flows paused on their own bytes enter this cold-path queue.
+    /// Sequence-first keys preserve FIFO order; the pointer keeps identities
+    /// distinct even if the sequence wraps during an engine lifetime.
+    released_flows: BTreeMap<(u64, usize), Weak<UdpIngressFlowControl>>,
+    flow_releases_closed: bool,
+    next_release_sequence: u64,
+    release_wake_not_before: Option<tokio::time::Instant>,
     leases: BTreeMap<u64, UdpIngressProbeLease>,
     provisional_bytes: usize,
     /// A constant-size sample of the oldest nonfitting waiters encountered in
@@ -69,10 +79,14 @@ struct UdpIngressCoordinatorState {
     /// immediately, but cannot cause another coordinator issue turn before
     /// this instant.
     wake_not_before: Option<tokio::time::Instant>,
-    /// Remaining waiters in the current bounded rotation pass. Capacity or
-    /// provisional-credit release and new registration start a fresh pass;
-    /// ordinary coalesced signals do not.
+    /// Remaining waiters in the current bounded rotation pass. Real capacity
+    /// opportunities restart a quiescent pass, but cannot discard an ongoing
+    /// pass or its pending discovery. Continuous fitting releases must still
+    /// let stale large-size hints discover a later small QUIC/control packet.
     scan_remaining: usize,
+    /// Pending passes can include arrivals until their first inspection.
+    /// After that point their finite inspection budget must not be extended.
+    scan_started: bool,
     observed_opportunity_epoch: u64,
 }
 
@@ -90,7 +104,7 @@ impl UdpIngressCoordinatorSignal {
     }
 
     /// Coalesce any number of release/registration edges into one task wake.
-    /// This is the only coordinator operation on normal payload release.
+    /// This is the only coordinator operation on an unpaused payload release.
     fn kick(&self) {
         if !self.pending.swap(true, Ordering::Release) {
             self.waker.wake();
@@ -346,7 +360,104 @@ impl UdpIngressBudget {
 
     fn restart_scan_locked(coordinator: &mut UdpIngressCoordinatorState) {
         coordinator.scan_remaining = coordinator.waiters.len();
+        coordinator.scan_started = false;
         coordinator.discovery_candidates.clear();
+    }
+
+    fn schedule_flow_release(&self, flow: &Arc<UdpIngressFlowControl>) {
+        let mut coordinator = self.coordinator.lock();
+        if coordinator.flow_releases_closed
+            || flow.state.load(Ordering::Acquire) != INGRESS_PAUSED_FLOW_BYTES
+            || flow.release_waiter_sequence.load(Ordering::Relaxed) != NO_RELEASE_WAITER
+        {
+            return;
+        }
+        let sequence = coordinator.next_release_sequence;
+        coordinator.next_release_sequence = if sequence == NO_RELEASE_WAITER - 1 {
+            0
+        } else {
+            sequence + 1
+        };
+        flow.release_waiter_sequence
+            .store(sequence, Ordering::Release);
+        let replaced = coordinator
+            .released_flows
+            .insert((sequence, Arc::as_ptr(flow) as usize), Arc::downgrade(flow));
+        debug_assert!(replaced.is_none(), "UDP release waiter key collision");
+        drop(coordinator);
+        self.coordinator_signal.kick();
+    }
+
+    fn remove_flow_release(&self, flow: &UdpIngressFlowControl) {
+        // Always acquire the cold-path lock: a release may already have
+        // observed PAUSED but not yet published its key when close runs.
+        let mut coordinator = self.coordinator.lock();
+        let sequence = flow
+            .release_waiter_sequence
+            .swap(NO_RELEASE_WAITER, Ordering::AcqRel);
+        if sequence != NO_RELEASE_WAITER {
+            _ = coordinator
+                .released_flows
+                .remove(&(sequence, flow as *const _ as usize));
+        }
+    }
+
+    fn wake_released_flow_batch(&self, now: tokio::time::Instant) -> usize {
+        let selected = {
+            let mut coordinator = self.coordinator.lock();
+            if coordinator.released_flows.is_empty()
+                || coordinator
+                    .release_wake_not_before
+                    .is_some_and(|not_before| now < not_before)
+            {
+                return 0;
+            }
+            let mut selected = Vec::with_capacity(FLOW_RELEASE_WAKE_BATCH);
+            let mut inspected = 0;
+            while inspected < FLOW_RELEASE_WAKE_BATCH {
+                let Some((_, candidate)) = coordinator.released_flows.pop_first() else {
+                    break;
+                };
+                inspected += 1;
+                if let Some(flow) = candidate.upgrade() {
+                    flow.release_waiter_sequence
+                        .store(NO_RELEASE_WAITER, Ordering::Release);
+                    selected.push(flow);
+                }
+            }
+            if inspected != 0 {
+                coordinator.release_wake_not_before = Some(now + GLOBAL_WAKE_RETRY);
+            }
+            selected
+        };
+        // A payload may be dropped while either callback gate is held. Never
+        // call user demand on its destructor's stack or under the queue lock.
+        for flow in &selected {
+            flow.resume_flow_bytes_if_capacity();
+        }
+        selected.len()
+    }
+
+    pub(super) fn close_flow_releases(&self) {
+        let released_flows = {
+            let mut coordinator = self.coordinator.lock();
+            coordinator.flow_releases_closed = true;
+            std::mem::take(&mut coordinator.released_flows)
+        };
+        for candidate in released_flows.into_values() {
+            if let Some(flow) = candidate.upgrade() {
+                flow.release_waiter_sequence
+                    .store(NO_RELEASE_WAITER, Ordering::Release);
+            }
+        }
+    }
+
+    fn restart_quiescent_scan_locked(coordinator: &mut UdpIngressCoordinatorState) {
+        if !coordinator.scan_started
+            || (coordinator.scan_remaining == 0 && coordinator.discovery_candidates.is_empty())
+        {
+            Self::restart_scan_locked(coordinator);
+        }
     }
 
     fn register_waiter(&self, flow: &Arc<UdpIngressFlowControl>) {
@@ -379,12 +490,10 @@ impl UdpIngressBudget {
         // paired with the two SeqCst admission checks above.
         self.waiter_count.fetch_add(1, Ordering::SeqCst);
         // Do not restart an in-progress bounded pass for every newcomer. If no
-        // pass is active, arrange one; otherwise this tail insertion will be
-        // covered by the next real capacity opportunity. This keeps sustained
-        // arrivals from starving the current pass's partial discovery.
-        if coordinator.scan_remaining == 0 {
-            Self::restart_scan_locked(&mut coordinator);
-        }
+        // pass has started, include all current waiters; otherwise this tail
+        // insertion will be covered by the next real capacity opportunity.
+        // This keeps sustained arrivals from starving partial discovery.
+        Self::restart_quiescent_scan_locked(&mut coordinator);
         drop(coordinator);
 
         // Close the classic missed-wakeup store-buffering race without a
@@ -506,7 +615,7 @@ impl UdpIngressBudget {
             let opportunity_epoch = self.opportunity_epoch.load(Ordering::Acquire);
             if coordinator.observed_opportunity_epoch != opportunity_epoch {
                 coordinator.observed_opportunity_epoch = opportunity_epoch;
-                Self::restart_scan_locked(&mut coordinator);
+                Self::restart_quiescent_scan_locked(&mut coordinator);
             }
             if coordinator
                 .wake_not_before
@@ -536,6 +645,7 @@ impl UdpIngressBudget {
                     break;
                 };
                 inspected += 1;
+                coordinator.scan_started = true;
                 coordinator.scan_remaining -= 1;
                 #[cfg(test)]
                 self.coordinator_waiter_inspections
@@ -883,20 +993,24 @@ impl UdpIngressBudget {
         let opportunity_epoch = self.opportunity_epoch.load(Ordering::Acquire);
         if coordinator.observed_opportunity_epoch != opportunity_epoch {
             coordinator.observed_opportunity_epoch = opportunity_epoch;
-            Self::restart_scan_locked(&mut coordinator);
+            Self::restart_quiescent_scan_locked(&mut coordinator);
         }
         let lease_deadline = coordinator
             .leases
             .values()
             .map(|lease| lease.expires_at)
             .min();
-        if coordinator.leases.len() >= GLOBAL_WAKE_BATCH {
-            return lease_deadline;
-        }
+        let release_deadline = (!coordinator.released_flows.is_empty()).then(|| {
+            coordinator
+                .release_wake_not_before
+                .filter(|not_before| *not_before > now)
+                .unwrap_or(now + GLOBAL_WAKE_RETRY)
+        });
         let has_unleased_capacity =
             self.charged_bytes.load(Ordering::Acquire) < self.max_retained_bytes;
-        let waiter_deadline = (has_unleased_capacity
-            && coordinator.scan_remaining != 0
+        let waiter_deadline = (coordinator.leases.len() < GLOBAL_WAKE_BATCH
+            && has_unleased_capacity
+            && (coordinator.scan_remaining != 0 || !coordinator.discovery_candidates.is_empty())
             && !coordinator.waiters.is_empty())
         .then(|| {
             coordinator
@@ -904,11 +1018,10 @@ impl UdpIngressBudget {
                 .filter(|not_before| *not_before > now)
                 .unwrap_or(now + GLOBAL_WAKE_RETRY)
         });
-        match (waiter_deadline, lease_deadline) {
-            (Some(waiter), Some(lease)) => Some(waiter.min(lease)),
-            (Some(waiter), None) => Some(waiter),
-            (None, lease) => lease,
-        }
+        [release_deadline, waiter_deadline, lease_deadline]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     #[cfg(test)]
@@ -1041,6 +1154,7 @@ async fn run_udp_ingress_coordinator<F>(
             break 'coordinator;
         };
         let now = tokio::time::Instant::now();
+        _ = budget.wake_released_flow_batch(now);
         _ = budget.wake_fitting_batch(now);
         deadline = budget.next_coordinator_deadline(now);
     }
@@ -1048,6 +1162,9 @@ async fn run_udp_ingress_coordinator<F>(
     // `AtomicWaker::wake` normally consumes its stored waker. Shutdown can
     // win the select without a coordinator kick, so clear that final task
     // reference explicitly before retained payloads outlive the engine.
+    if let Some(budget) = budget.upgrade() {
+        budget.close_flow_releases();
+    }
     _ = signal.waker.take();
 }
 
@@ -1064,6 +1181,7 @@ pub(super) struct UdpIngressFlowControl {
     state: AtomicU8,
     blocked_bytes: AtomicUsize,
     global_waiter_sequence: AtomicU64,
+    release_waiter_sequence: AtomicU64,
     global_probe_id: AtomicU64,
     demand_gate: parking_lot::Mutex<()>,
     demand: UdpDemandSink,
@@ -1097,6 +1215,7 @@ impl UdpIngressFlowControl {
             state: AtomicU8::new(INGRESS_OPEN),
             blocked_bytes: AtomicUsize::new(0),
             global_waiter_sequence: AtomicU64::new(NO_GLOBAL_WAITER),
+            release_waiter_sequence: AtomicU64::new(NO_RELEASE_WAITER),
             global_probe_id: AtomicU64::new(0),
             demand_gate: parking_lot::Mutex::new(()),
             demand,
@@ -1130,6 +1249,7 @@ impl UdpIngressFlowControl {
         if old_state == INGRESS_PAUSED_GLOBAL_BYTES {
             self.global.remove_waiter(self);
         }
+        self.global.remove_flow_release(self);
         let probe_id = self.global_probe_id.load(Ordering::Acquire);
         if probe_id != 0 {
             _ = self.global.release_probe_lease(self, probe_id);
@@ -1286,7 +1406,7 @@ impl UdpIngressFlowControl {
         }
     }
 
-    fn release_retained_bytes(&self, len: usize) {
+    fn release_retained_bytes(self: &Arc<Self>, len: usize) {
         let previous = self.retained_bytes.fetch_sub(len, Ordering::AcqRel);
         debug_assert!(previous >= len, "UDP flow byte reservation underflow");
         self.global.release(len);
@@ -1295,7 +1415,9 @@ impl UdpIngressFlowControl {
             .try_update(Ordering::Release, Ordering::Relaxed, |current| {
                 current.checked_add(1)
             });
-        self.resume_flow_bytes_if_capacity();
+        if self.state.load(Ordering::Acquire) == INGRESS_PAUSED_FLOW_BYTES {
+            self.global.schedule_flow_release(self);
+        }
     }
 
     fn resume_flow_bytes_if_capacity(&self) {
@@ -1305,7 +1427,7 @@ impl UdpIngressFlowControl {
         let needed = self.blocked_bytes.load(Ordering::Acquire);
         // Cold-path handshake matching the global waiter publication. If this
         // marker precedes a payload release RMW, that release observes the
-        // PAUSED publication and resumes us. If the release precedes this
+        // PAUSED publication and schedules us. If the release precedes this
         // marker, the returned counter observes its newly available capacity.
         let retained = self.retained_bytes.fetch_add(0, Ordering::AcqRel);
         let fits = retained
@@ -1351,7 +1473,12 @@ impl AsRef<[u8]> for RetainedUdpPayload {
 
 impl Drop for RetainedUdpPayload {
     fn drop(&mut self) {
-        self.flow.release_retained_bytes(self.bytes.len());
+        let bytes = std::mem::take(&mut self.bytes);
+        let len = bytes.len();
+        // Refunded capacity may be admitted immediately on another thread.
+        // Destroy the allocation before publishing either budget's refund.
+        drop(bytes);
+        self.flow.release_retained_bytes(len);
     }
 }
 
@@ -2075,6 +2202,107 @@ mod tests {
     }
 
     #[test]
+    fn flow_release_wakes_are_deduplicated_fifo_bounded_and_unlinked_on_close() {
+        const FLOW_COUNT: usize = FLOW_RELEASE_WAKE_BATCH * 3 + 1;
+        let global = Arc::new(UdpIngressBudget::new(FLOW_COUNT * 2));
+        let observed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mut controls = Vec::new();
+        for id in 0..FLOW_COUNT {
+            let observed = observed.clone();
+            let control = UdpIngressFlowControl::new(
+                2,
+                global.clone(),
+                Arc::new(move |_| observed.lock().push(id)),
+            );
+            let first = control.try_copy_payload(&[1]).expect("first retained byte");
+            let second = control
+                .try_copy_payload(&[2])
+                .expect("second retained byte");
+            assert!(control.try_copy_payload(&[3]).is_none());
+            drop(first);
+            drop(second);
+            controls.push(control);
+        }
+        assert!(
+            observed.lock().is_empty(),
+            "release must never dispatch inline"
+        );
+        assert_eq!(global.coordinator.lock().released_flows.len(), FLOW_COUNT);
+
+        // Cancellation unlinks the entry without waiting for a coordinator
+        // turn, and repeated close cannot refund or dispatch it a second time.
+        controls[1].close();
+        controls[1].close();
+        assert_eq!(
+            global.coordinator.lock().released_flows.len(),
+            FLOW_COUNT - 1
+        );
+        let expected: Vec<_> = (0..FLOW_COUNT).filter(|id| *id != 1).collect();
+        let mut now = tokio::time::Instant::now();
+        for completed in (FLOW_RELEASE_WAKE_BATCH..FLOW_COUNT).step_by(FLOW_RELEASE_WAKE_BATCH) {
+            assert_eq!(
+                global.wake_released_flow_batch(now),
+                FLOW_RELEASE_WAKE_BATCH
+            );
+            assert_eq!(*observed.lock(), expected[..completed]);
+            assert_eq!(global.wake_released_flow_batch(now), 0);
+            if completed < expected.len() {
+                assert_eq!(
+                    global.next_coordinator_deadline(now),
+                    Some(now + GLOBAL_WAKE_RETRY)
+                );
+            }
+            now += GLOBAL_WAKE_RETRY;
+        }
+        assert!(global.coordinator.lock().released_flows.is_empty());
+        assert_eq!(global.next_coordinator_deadline(now), None);
+        for control in controls {
+            control.close();
+        }
+        assert_eq!(global.snapshot().retained_bytes, 0);
+    }
+
+    #[tokio::test]
+    async fn shutdown_discards_pending_flow_releases_and_rejects_late_releases() {
+        let global = Arc::new(UdpIngressBudget::new(4));
+        let demands = Arc::new(AtomicUsize::new(0));
+        let demands_for_sink = demands.clone();
+        let control = UdpIngressFlowControl::new(
+            2,
+            global.clone(),
+            Arc::new(move |_| {
+                demands_for_sink.fetch_add(1, Ordering::Relaxed);
+            }),
+        );
+        let first = control.try_copy_payload(&[1]).expect("first retained byte");
+        let last = control.try_copy_payload(&[2]).expect("last retained byte");
+        assert!(control.try_copy_payload(&[3]).is_none());
+        drop(first);
+        assert_eq!(global.coordinator.lock().released_flows.len(), 1);
+        run_udp_ingress_coordinator(
+            Arc::downgrade(&global),
+            global.coordinator_signal.clone(),
+            std::future::ready(()),
+        )
+        .await;
+        assert!(global.coordinator.lock().released_flows.is_empty());
+        assert_eq!(
+            control.release_waiter_sequence.load(Ordering::Acquire),
+            NO_RELEASE_WAITER
+        );
+
+        drop(last);
+        assert!(global.coordinator.lock().released_flows.is_empty());
+        assert_eq!(
+            global.wake_released_flow_batch(tokio::time::Instant::now()),
+            0
+        );
+        assert_eq!(demands.load(Ordering::Relaxed), 0);
+        assert_eq!(global.snapshot().retained_bytes, 0);
+        control.close();
+    }
+
+    #[test]
     fn flow_byte_partial_discovery_is_once_per_release_epoch_and_admits_next_small() {
         let demands = Arc::new(AtomicUsize::new(0));
         let demands_for_sink = demands.clone();
@@ -2113,6 +2341,11 @@ mod tests {
         );
 
         drop(retained_small);
+        assert_eq!(demands.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            global.wake_released_flow_batch(tokio::time::Instant::now()),
+            1
+        );
         assert_eq!(demands.load(Ordering::Relaxed), 2);
         assert_eq!(control.state.load(Ordering::Acquire), INGRESS_OPEN);
         let next_small = control
@@ -2675,6 +2908,72 @@ mod tests {
     }
 
     #[test]
+    fn mixed_size_releases_preserve_bounded_partial_discovery() {
+        const FLOW_COUNT: usize = 64;
+        let global = Arc::new(UdpIngressBudget::new(100));
+        let holder = UdpIngressFlowControl::new(100, global.clone(), Arc::new(|_| {}));
+        let retained = holder.try_copy_payload(&[0; 90]).expect("retain occupancy");
+        let observed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mut flows = Vec::with_capacity(FLOW_COUNT);
+        for index in 0..FLOW_COUNT {
+            let observed = observed.clone();
+            let flow = UdpIngressFlowControl::new(
+                20,
+                global.clone(),
+                Arc::new(move |probe_id| observed.lock().push((index, probe_id))),
+            );
+            let blocked_size = if index % 2 == 0 { 20 } else { 1 };
+            assert!(flow.try_copy_payload(&vec![0; blocked_size]).is_none());
+            flows.push(flow);
+        }
+
+        let mut now = tokio::time::Instant::now();
+        let mut large_hint_probed = vec![false; FLOW_COUNT / 2];
+        // Far more than a full FIFO rotation. Small flows keep releasing real
+        // capacity and immediately need another read. A discarded large
+        // packet is only a size hint: its next packet can be a small QUIC ACK.
+        for _ in 0..FLOW_COUNT * 8 {
+            let before = global.snapshot().coordinator_waiter_inspections;
+            global.wake_fitting_batch(now);
+            assert!(
+                global.snapshot().coordinator_waiter_inspections - before
+                    <= GLOBAL_SCAN_BATCH as u64
+            );
+            let issued = std::mem::take(&mut *observed.lock());
+            for (index, probe_id) in issued {
+                assert!(global.acknowledge_probe_lease(&flows[index], probe_id, now));
+                let payload = flows[index]
+                    .try_copy_payload(&[0])
+                    .expect("the next small datagram fits the acknowledged probe");
+                drop(payload);
+                if index % 2 == 0 {
+                    large_hint_probed[index / 2] = true;
+                    flows[index].close();
+                } else {
+                    assert!(flows[index].try_copy_payload(&[0]).is_none());
+                }
+            }
+            if large_hint_probed.iter().all(|probed| *probed) {
+                break;
+            }
+            now += GLOBAL_WAKE_RETRY;
+        }
+
+        for flow in &flows {
+            flow.close();
+        }
+        holder.close();
+        drop(retained);
+        assert_eq!(global.snapshot().charged_bytes, 0);
+        assert!(
+            large_hint_probed.iter().all(|probed| *probed),
+            "continuous fitting releases must not indefinitely restart the nonfit discovery pass; probed {} of {} large-hint flows",
+            large_hint_probed.iter().filter(|probed| **probed).count(),
+            large_hint_probed.len(),
+        );
+    }
+
+    #[test]
     fn bounded_rotation_reaches_small_waiter_behind_nonfitting_oldest() {
         let global = Arc::new(UdpIngressBudget::new(2));
         let holder = UdpIngressFlowControl::new(2, global.clone(), Arc::new(|_| {}));
@@ -2861,7 +3160,7 @@ mod tests {
     }
 
     #[test]
-    fn deadline_epoch_reset_discards_rotated_discovery_keys() {
+    fn deadline_capacity_release_preserves_in_progress_discovery() {
         const FLOW_COUNT: usize = GLOBAL_SCAN_BATCH * 2;
         let global = Arc::new(UdpIngressBudget::new(100));
         let holder = UdpIngressFlowControl::new(100, global.clone(), Arc::new(|_| {}));
@@ -2890,27 +3189,27 @@ mod tests {
         );
 
         // A real release lands after selection but before deadline
-        // calculation. That deadline-side epoch reset must clear the old
-        // rotated candidate keys as well as restart the pass length.
+        // calculation. Preserve the original finite pass and its oldest
+        // discovery candidate instead of starting over at each release.
         drop(released);
         assert_eq!(
             global.next_coordinator_deadline(now),
             Some(now + GLOBAL_WAKE_RETRY)
         );
-        for _ in 0..FLOW_COUNT.div_ceil(GLOBAL_SCAN_BATCH) {
+        for _ in 0..(FLOW_COUNT - GLOBAL_SCAN_BATCH).div_ceil(GLOBAL_SCAN_BATCH) {
             now += GLOBAL_WAKE_RETRY;
             _ = global.wake_fitting_batch(now);
         }
 
         let observed = observed.lock();
         assert_eq!(observed.len(), 1);
-        assert_eq!(observed[0].0, GLOBAL_SCAN_BATCH);
+        assert_eq!(observed[0].0, 0);
         assert_ne!(observed[0].1, 0);
         drop(observed);
         assert_eq!(
             global.snapshot().coordinator_waiter_inspections,
-            (GLOBAL_SCAN_BATCH + FLOW_COUNT) as u64,
-            "deadline reset must complete with one fresh bounded pass"
+            FLOW_COUNT as u64,
+            "capacity release must not restart an in-progress bounded pass"
         );
 
         for flow in &flows {

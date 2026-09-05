@@ -2425,6 +2425,9 @@ impl<H> TransparentProxyEngine<H> {
         };
 
         tracing::info!(reason, "transparent proxy engine stopping");
+        // Unlink deferred releases even if a wedged runtime never polls its
+        // coordinator's shutdown branch. Late retained payload drops stay inert.
+        self.udp_ingress_budget.close_flow_releases();
         let ShutdownPair { shutdown, trigger } = pair;
         _ = trigger.send(());
 

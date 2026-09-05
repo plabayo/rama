@@ -64,6 +64,129 @@ fn udp_bridge_delivers_server_datagram() {
     assert_eq!(got.lock().as_slice(), b"ping");
 }
 
+#[test]
+fn udp_echo_releases_ingress_payload_without_reentering_callback_gate() {
+    assert_udp_echo_payload_release_does_not_reenter_callback_gate(false, false);
+}
+
+#[test]
+fn udp_panicking_echo_callback_releases_ingress_payload_without_reentering_gate() {
+    assert_udp_echo_payload_release_does_not_reenter_callback_gate(true, false);
+}
+
+#[test]
+fn udp_callback_drops_prior_retained_datagram_without_reentering_gate() {
+    assert_udp_echo_payload_release_does_not_reenter_callback_gate(false, true);
+}
+
+#[test]
+fn udp_panicking_callback_drops_prior_retained_datagram_without_reentering_gate() {
+    assert_udp_echo_payload_release_does_not_reenter_callback_gate(true, true);
+}
+
+fn assert_udp_echo_payload_release_does_not_reenter_callback_gate(
+    callback_panics: bool,
+    drop_prior_payload: bool,
+) {
+    let (callback_entered_tx, callback_entered_rx) = std::sync::mpsc::channel();
+    let (callback_return_tx, callback_return_rx) = std::sync::mpsc::channel();
+    let callback_return_rx = Mutex::new(callback_return_rx);
+    let (echo_finished_tx, echo_finished_rx) = std::sync::mpsc::channel();
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+    let handler = TestHandler {
+        udp_matcher: Arc::new(move |meta| {
+            let echo_finished_tx = echo_finished_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |mut flow: crate::UdpFlow| {
+                    let echo_finished_tx = echo_finished_tx.clone();
+                    async move {
+                        if drop_prior_payload {
+                            let first = flow.recv().await.expect("receive prior payload");
+                            flow.send(first);
+                        }
+                        let datagram = flow.recv().await.expect("receive the full-cap payload");
+                        flow.send(datagram);
+                        _ = echo_finished_tx.send(());
+                        Ok(())
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        ..TestHandler::passthrough()
+    };
+    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(TestRuntimeFactory)
+        .with_udp_ingress_per_flow_max_bytes(MAX_UDP_DATAGRAM_PAYLOAD_SIZE)
+        .without_udp_idle_timeout()
+        .with_stop_drain_max_wait(Duration::from_millis(100))
+        .build()
+        .expect("build engine");
+    let budget = engine.udp_ingress_budget_for_test();
+    let retained_prior = Mutex::new(None);
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        move |datagram| {
+            // This callback obeys the contract: it never calls the session.
+            // Retain its argument until the producer establishes byte pressure.
+            if drop_prior_payload && datagram.payload.len() == MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1 {
+                *retained_prior.lock() = Some(datagram);
+                _ = callback_entered_tx.send(());
+                return;
+            }
+            _ = callback_entered_tx.send(());
+            callback_return_rx
+                .lock()
+                .recv_timeout(Duration::from_secs(2))
+                .expect("release the datagram callback");
+            // The retained allocation belongs to an earlier callback, so
+            // pinning only the current argument cannot prevent this reentry.
+            drop(retained_prior.lock().take());
+            assert!(!callback_panics, "synthetic UDP echo callback panic");
+        },
+        || {},
+        move || _ = closed_tx.send(()),
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate();
+    if drop_prior_payload {
+        session.on_client_datagram(&vec![0; MAX_UDP_DATAGRAM_PAYLOAD_SIZE - 1], None);
+        callback_entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("retain the prior datagram in the server callback");
+        session.on_client_datagram(b"x", None);
+    } else {
+        session.on_client_datagram(&vec![0; MAX_UDP_DATAGRAM_PAYLOAD_SIZE], None);
+    }
+    callback_entered_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("echo must enter the server callback");
+    session.on_client_datagram(b"overflow", None);
+    assert_eq!(budget.snapshot().dropped_flow_bytes_full, 1);
+    callback_return_tx.send(()).expect("release callback");
+
+    let finished = if callback_panics {
+        closed_rx.recv_timeout(Duration::from_secs(1)).is_ok()
+    } else {
+        echo_finished_rx
+            .recv_timeout(Duration::from_secs(1))
+            .is_ok()
+    };
+    if !finished {
+        // A regressed service worker holds callback_active forever. Avoid an
+        // unbounded session Drop and let the engine's bounded stop dispose its
+        // runtime so this assertion reports the defect instead of hanging.
+        std::mem::forget(session);
+        engine.stop(0);
+        panic!("dropping the echoed ingress payload reentered its callback lifetime gate");
+    }
+    session.on_client_close();
+    engine.stop(0);
+    assert_eq!(budget.snapshot().retained_bytes, 0);
+}
+
 fn assert_udp_service_panic_runs_close_epilogue(flow_id: u64, panic_while_polling: bool) {
     install_close_capture();
     let handler = TestHandler {

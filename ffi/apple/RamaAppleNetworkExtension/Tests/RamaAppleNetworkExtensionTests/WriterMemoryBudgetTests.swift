@@ -5,6 +5,74 @@ import XCTest
 @testable import RamaAppleNetworkExtension
 
 final class WriterMemoryBudgetTests: XCTestCase {
+    func testCanceledHeadMiddleAndTailPreserveFifoAcrossGrantBatches() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 100,
+                maxItems: 100,
+                tcpWaiterMaxBytes: 1,
+                udpPressureReserveBytes: 0,
+                udpPressureReserveItems: 0))
+        XCTAssertTrue(budget.tryReserve(bytes: 100))
+        let order = Locked<[Int]>([])
+        let delivered = expectation(description: "surviving FIFO waiters")
+        delivered.expectedFulfillmentCount = 9
+        var waiters: [WriterMemoryWaiter] = []
+        for index in 0..<12 {
+            waiters.append(budget.waitForTcpCapacity(bytes: 1) { grant in
+                order.withLock { $0.append(index) }
+                grant.release()
+                delivered.fulfill()
+            })
+        }
+        for index in [0, 5, 11, 9] { waiters[index].cancel() }
+        waiters.append(budget.waitForTcpCapacity(bytes: 1) { grant in
+            order.withLock { $0.append(12) }
+            grant.release()
+            delivered.fulfill()
+        })
+        budget.release(bytes: 100)
+        wait(for: [delivered], timeout: 3)
+        withExtendedLifetime(waiters) {
+            XCTAssertEqual(order.withLock { $0 }, [1, 2, 3, 4, 6, 7, 8, 10, 12])
+            XCTAssertEqual(budget.testWaiterCount, 0)
+            XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        }
+    }
+
+    func testCanceledTailWaitersKeepCoordinatorStorageBoundedBehindBlockedHead() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 4_096,
+                maxItems: 4_096,
+                tcpWaiterMaxBytes: 1_024,
+                udpPressureReserveBytes: 0,
+                udpPressureReserveItems: 0))
+        XCTAssertTrue(budget.tryReserve(bytes: 4_096))
+        let oldest = budget.waitForTcpCapacity(bytes: 1_024) { _ in
+            XCTFail("the oldest waiter cannot fit while the holder owns the budget")
+        }
+        defer {
+            oldest.cancel()
+            budget.release(bytes: 4_096)
+        }
+
+        // Connection churn can retire arbitrarily many later pumps while the
+        // same oldest retry remains blocked. The live-flow cap bounds the
+        // dictionary, so queue metadata must follow the live population too.
+        for _ in 0..<32_768 {
+            let canceled = budget.waitForTcpCapacity(bytes: 1_024) { _ in
+                XCTFail("a canceled waiter must never receive a grant")
+            }
+            canceled.cancel()
+        }
+        XCTAssertEqual(budget.testWaiterCount, 1)
+        XCTAssertLessThanOrEqual(
+            budget.testCoordinatorNodeCount,
+            64 + 2 * budget.testWaiterCount,
+            "canceled waiter IDs must not accumulate behind a blocked live head")
+    }
+
     func testHealthyAdmissionAtomicIsLockFreeAndHasNoPressureSideEffects() {
         let pressureEvents = Locked(0)
         let budget = WriterMemoryBudget(
