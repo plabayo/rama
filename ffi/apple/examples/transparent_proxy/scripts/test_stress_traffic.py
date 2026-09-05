@@ -589,6 +589,23 @@ class StressTrafficValidationTests(unittest.TestCase):
             self.assertIn("must be 0 or 1", result.stdout)
             self.assertFalse(log_dir.exists(), result.stdout)
 
+    def test_traffic_clock_has_a_shared_origin_across_processes(self):
+        helper = self.stress_function(STRESS_SCRIPT.read_text(), "capture_traffic_clock")
+        result = subprocess.run(
+            ["bash", "-c", helper + "\ncapture_traffic_clock\nsleep 0.1\ncapture_traffic_clock\n"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=5,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        (start_epoch, start_clock), (end_epoch, end_clock) = [
+            tuple(map(int, row.split())) for row in result.stdout.splitlines()
+        ]
+        elapsed_clock = end_clock - start_clock
+        self.assertGreaterEqual(elapsed_clock, 100_000_000)
+        self.assertLess(abs((end_epoch - start_epoch) * 1_000_000 - elapsed_clock), 10_000_000)
+
     def test_every_enabled_worker_reports_progress(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -600,7 +617,9 @@ class StressTrafficValidationTests(unittest.TestCase):
                     """\
                     #!/usr/bin/env bash
                     sleep 0.05
-                    downloaded=1
+                    # Even one successful iteration must have nonzero integer
+                    # byte throughput over the complete one-second run window.
+                    downloaded=1024
                     uploaded=0
                     version=1.1
                     output=/dev/null
@@ -1633,6 +1652,7 @@ class StressTrafficValidationTests(unittest.TestCase):
             for name in (
                 "pid_identity", "owned_job_is_active", "collect_owned_tree",
                 "signal_owned_identity", "owned_job_has_exited",
+                "owned_identity_has_exited", "owned_tree_has_exited",
                 "cleanup_owned_jobs",
             )
         )
@@ -1648,8 +1668,13 @@ class StressTrafficValidationTests(unittest.TestCase):
                 f"""
                 set -u
                 TRAFFIC_PIDS=()
+                AUXILIARY_PIDS=()
                 MONITOR_JOB_PID=""
+                ABSENCE_MONITOR_JOB_PID=""
+                GENERATION_MONITOR_JOB_PID=""
                 MONITOR_STOP_FILE={shlex.quote(str(stop_file))}
+                GENERATION_STOP_FILE={shlex.quote(str(Path(temp_dir) / 'generation.stop'))}
+                RESPONSE_TMP_DIR={shlex.quote(str(Path(temp_dir) / 'responses'))}
                 CLEANUP_STARTED=0
                 CLEANUP_INCOMPLETE=0
                 SYSTEM_LOG_ALIVE_END=0
@@ -1662,7 +1687,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                   sleep 0.01
                 done
                 [[ -e {shlex.quote(str(ready_file))} ]] || exit 9
-                SYSTEM_LOG_JOB_IDENTITY="$(pid_identity "$SYSTEM_LOG_JOB_PID" || true)"
+                SYSTEM_LOG_JOB_IDENTITY="$(pid_identity "$SYSTEM_LOG_JOB_PID" generation || true)"
                 if [[ ! "$SYSTEM_LOG_JOB_IDENTITY" =~ ^[0-9a-f]{{64}}$ ]]; then
                   kill -KILL "$SYSTEM_LOG_JOB_PID" 2>/dev/null || true
                   wait "$SYSTEM_LOG_JOB_PID" 2>/dev/null || true
@@ -1721,6 +1746,7 @@ class StressTrafficValidationTests(unittest.TestCase):
             self.stress_function(shell, name)
             for name in (
                 "pid_identity", "owned_job_is_active", "owned_job_has_exited",
+                "owned_identity_has_exited", "owned_tree_has_exited",
                 "collect_owned_tree", "signal_owned_identity", "run_bounded_capture",
             )
         )
@@ -1731,7 +1757,7 @@ class StressTrafficValidationTests(unittest.TestCase):
             wrapper.write_text(textwrap.dedent(f"""\
                 #!/usr/bin/env bash
                 trap '' TERM
-                printf '%s\n' "$$" >> {shlex.quote(str(pids))}
+                printf '%s\\n' "$$" >> {shlex.quote(str(pids))}
                 bash -c 'trap "" TERM; printf "%s\\n" "$$" >> "$1"; while :; do sleep 1; done' \
                   child {shlex.quote(str(pids))} &
                 wait "$!"
@@ -1785,6 +1811,160 @@ class StressTrafficValidationTests(unittest.TestCase):
             )
             self.assertFalse(survivors, f"bounded capture descendants survived: {survivors}")
 
+    def run_stopped_grandchild_cleanup_fixture(
+        self, *, capture=False, deny_kill=False, early_orphan=False
+    ):
+        shell = STRESS_SCRIPT.read_text()
+        functions = "".join(
+            self.stress_function(shell, name)
+            for name in (
+                "pid_identity", "owned_job_is_active", "owned_job_has_exited",
+                "owned_identity_has_exited", "owned_tree_has_exited",
+                "collect_owned_tree", "signal_owned_identity",
+                "cleanup_owned_jobs", "run_bounded_capture",
+            )
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pids = root / "pids"
+            leaf_file = root / "leaf"
+            ready_file = root / "ready"
+            tree = root / "tree.py"
+            tree.write_text(textwrap.dedent(f"""\
+                import os
+                import pathlib
+                import signal
+                import time
+
+                # Keep the test's output pipe open even when capture redirects
+                # stdout. communicate() must wait for this grandchild to die.
+                os.dup2(3, 1)
+                os.dup2(3, 2)
+                with open({str(pids)!r}, 'a') as output:
+                    output.write(str(os.getpid()) + '\\n')
+                leaf = False
+                if os.fork() == 0:
+                    with open({str(pids)!r}, 'a') as output:
+                        output.write(str(os.getpid()) + '\\n')
+                    if os.fork() == 0:
+                        leaf = True
+                        with open({str(pids)!r}, 'a') as output:
+                            output.write(str(os.getpid()) + '\\n')
+                        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+                        pathlib.Path({str(leaf_file)!r}).write_text(str(os.getpid()))
+                        pathlib.Path({str(ready_file)!r}).touch()
+                        os.kill(os.getpid(), signal.SIGSTOP)
+                if {early_orphan!r} and not leaf:
+                    os._exit(0)
+                time.sleep(30)
+                """))
+            wrapper = root / "exec-tree"
+            wrapper.write_text(
+                "#!/usr/bin/env bash\nsleep 0.2\n"
+                f"exec {shlex.quote(sys.executable)} {shlex.quote(str(tree))}\n"
+            )
+            wrapper.chmod(0o755)
+            program = functions + textwrap.dedent(f"""
+                set -u
+                exec 3>&1
+                TRAFFIC_PIDS=()
+                AUXILIARY_PIDS=()
+                MONITOR_JOB_PID=""
+                ABSENCE_MONITOR_JOB_PID=""
+                GENERATION_MONITOR_JOB_PID=""
+                SYSTEM_LOG_JOB_PID=""
+                SYSTEM_LOG_JOB_IDENTITY=""
+                MONITOR_STOP_FILE={shlex.quote(str(root / 'monitor.stop'))}
+                GENERATION_STOP_FILE={shlex.quote(str(root / 'generation.stop'))}
+                RESPONSE_TMP_DIR={shlex.quote(str(root / 'responses'))}
+                CLEANUP_STARTED=0
+                CLEANUP_INCOMPLETE=0
+                EVIDENCE_FAILED=0
+                SYSTEM_LOG_ALIVE_END=0
+                SYSTEM_LOG_JOINED=0
+                SYSTEM_LOG_CHILD_RC=none
+                """)
+            if capture:
+                program += textwrap.dedent(f"""
+                    run_bounded_capture {shlex.quote(str(root / 'output'))} 2 \
+                      {shlex.quote(str(wrapper))}
+                    rc=$?
+                    printf 'rc=%s incomplete=%s evidence=%s timeout=%s jobs=%s\\n' \
+                      "$rc" "$CLEANUP_INCOMPLETE" "$EVIDENCE_FAILED" \
+                      "$BOUNDED_CAPTURE_TIMED_OUT" "$(jobs -p | wc -l | tr -d ' ')"
+                    """)
+            else:
+                program += textwrap.dedent(f"""
+                    {shlex.quote(sys.executable)} {shlex.quote(str(tree))} &
+                    TRAFFIC_PIDS=("$!")
+                    for _ in $(seq 1 200); do
+                      [[ -e {shlex.quote(str(ready_file))} ]] && break
+                      sleep 0.01
+                    done
+                    [[ -e {shlex.quote(str(ready_file))} ]] || exit 9
+                    leaf_pid="$(cat {shlex.quote(str(leaf_file))})"
+                    """)
+                if deny_kill:
+                    # Model a failed descendant signal (e.g. lost permission).
+                    # The direct job still exits, which cannot prove cleanup.
+                    program += self.stress_function(
+                        shell, "signal_owned_identity"
+                    ).replace("signal_owned_identity()", "real_signal_owned_identity()", 1)
+                    program += textwrap.dedent("""
+                        signal_owned_identity() {
+                          [[ "$1" != "$leaf_pid" || "$3" != KILL ]] || return 1
+                          real_signal_owned_identity "$@"
+                        }
+                        trap 'kill -KILL "$leaf_pid" 2>/dev/null || true' EXIT
+                        """)
+                program += textwrap.dedent("""
+                    cleanup_owned_jobs
+                    printf 'incomplete=%s jobs=%s\\n' "$CLEANUP_INCOMPLETE" \
+                      "$(jobs -p | wc -l | tr -d ' ')"
+                    """)
+            started = time.monotonic()
+            process = subprocess.Popen(
+                ["bash", "-c", program],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+            )
+            try:
+                output, _ = process.communicate(timeout=12)
+            finally:
+                # This session was created solely for this fixture. Also clean
+                # failed implementations so a regression cannot leak pipe owners.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=2)
+            self.assertLess(time.monotonic() - started, 12)
+            self.assertEqual(process.returncode, 0, output)
+            self.assertTrue(
+                ready_file.exists(),
+                output + ((root / "output").read_text() if capture else ""),
+            )
+            self.assertEqual(len(pids.read_text().splitlines()), 3, output)
+            if capture:
+                expected = "rc=124 incomplete=0 evidence=1 timeout=1 jobs=0"
+            else:
+                expected = f"incomplete={int(deny_kill)} jobs=0"
+            self.assertEqual(output.splitlines()[-1], expected, output)
+
+    def test_cleanup_reaps_stopped_orphaned_grandchild_holding_output_pipe(self):
+        self.run_stopped_grandchild_cleanup_fixture()
+
+    def test_capture_keeps_exec_ownership_and_reaps_stopped_orphaned_grandchild(self):
+        self.run_stopped_grandchild_cleanup_fixture(capture=True)
+
+    def test_capture_rejects_early_success_with_orphaned_pipe_holding_grandchild(self):
+        self.run_stopped_grandchild_cleanup_fixture(capture=True, early_orphan=True)
+
+    def test_cleanup_rejects_live_descendant_after_direct_job_has_exited(self):
+        self.run_stopped_grandchild_cleanup_fixture(deny_kill=True)
+
     def test_monitored_provider_death_is_a_run_failure(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -1832,16 +2012,18 @@ class StressTrafficValidationTests(unittest.TestCase):
                       [[ "$previous" == -p ]] && pid="$argument"
                       previous="$argument"
                     done
-                    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || exit 1
+                    # Only the provider is synthetic; cleanup must observe the
+                    # real state, parent, group, and generation of its own jobs.
+                    [[ "$pid" == "$FAKE_PROVIDER_PID" ]] || exec /bin/ps "$@"
                     kill -0 "$pid" 2>/dev/null || exit 1
                     if [[ " $* " == *" comm= "* ]]; then
-                      printf '/bin/sleep\n'
+                      printf '/bin/sleep\\n'
                     elif [[ " $* " == *" -ww "* ]]; then
-                      printf '%s Wed Jan  1 00:00:00 2025 fake-provider\n' "$pid"
+                      printf '%s Wed Jan  1 00:00:00 2025 fake-provider\\n' "$pid"
                     elif [[ " $* " == *" pid=,rss=,vsz=,%cpu=,state= "* ]]; then
-                      printf '%s 1 1 0.0 S\n' "$pid"
+                      printf '%s 1 1 0.0 S\\n' "$pid"
                     else
-                      printf 'PID RSS VSZ %%CPU STAT\n%s 1 1 0.0 S\n' "$pid"
+                      printf 'PID RSS VSZ %%CPU STAT\\n%s 1 1 0.0 S\\n' "$pid"
                     fi
                     """
                 )
@@ -1873,6 +2055,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                     STRESS_POST_BYTES="1024",
                     STRESS_SKIP_LIVENESS="1",
                     STRESS_MONITOR_PID=str(provider.pid),
+                    FAKE_PROVIDER_PID=str(provider.pid),
                     STRESS_NDJSON=str(ndjson),
                     STRESS_LOG_TOOL=str(fake_log),
                 )
@@ -2129,7 +2312,7 @@ class StressTrafficValidationTests(unittest.TestCase):
             """
             sleep 30 & child=$!
             trap 'kill -TERM "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true' EXIT
-            identity="$(pid_identity "$child")" || exit 3
+            identity="$(pid_identity "$child" generation)" || exit 3
             wrong_identity="$(printf '%064d' 0)"
             [[ "$wrong_identity" != "$identity" ]] || wrong_identity="$(printf '%064d' 1)"
             if signal_owned_identity "$child" "$wrong_identity" KILL; then exit 4; fi

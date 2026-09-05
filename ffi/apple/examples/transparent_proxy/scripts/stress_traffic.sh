@@ -505,11 +505,16 @@ fi
 say() { printf '%s[stress]%s %s\n' "$DIM" "$RESET" "$*"; }
 hdr() { printf '%s[stress]%s %s%s%s\n' "$DIM" "$RESET" "$BOLD" "$*" "$RESET"; }
 
-# Fingerprint pid + kernel start time + complete command. A reused pid cannot
-# silently retain cleanup authority merely because the replacement is alive.
+# Provider samples include the complete command. Cleanup instead uses the
+# process generation: exec and zombie command changes do not end ownership.
+# A reused pid must not retain signal authority merely because it is alive.
 pid_identity() {
   local pid="$1" snapshot digest
-  snapshot="$(ps -ww -o pid= -o lstart= -o command= -p "$pid" 2>/dev/null)"
+  if [[ "${2:-command}" == generation ]]; then
+    snapshot="$(ps -ww -o pid= -o lstart= -p "$pid" 2>/dev/null)" || return 1
+  else
+    snapshot="$(ps -ww -o pid= -o lstart= -o command= -p "$pid" 2>/dev/null)" || return 1
+  fi
   [[ -n "$snapshot" ]] || return 1
   digest="$(printf '%s' "$snapshot" | shasum -a 256 | awk 'NR == 1 { print $1 }')"
   [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
@@ -539,32 +544,86 @@ wait_proven_exited() {
 }
 
 collect_owned_tree() {
-  local pid="$1" expected_identity="$2" child child_identity observed_identity
+  local pid="$1" expected_identity="$2" child child_identity children child_ppid group
+  local failed=0 discovery_rc=0
+  # The caller has stopped this generation. Recheck before following a parent
+  # pid that might otherwise have exited and been reused during discovery.
+  [[ "$(pid_identity "$pid" generation || true)" == "$expected_identity" ]] || return 1
+  group="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  if [[ "$group" == "$pid" ]]; then
+    # Capture supervisors own a dedicated group. It also contains descendants
+    # whose immediate parents exited before cleanup began.
+    children="$(pgrep -g "$pid" 2>/dev/null)" || discovery_rc=$?
+  else
+    children="$(pgrep -P "$pid" 2>/dev/null)" || discovery_rc=$?
+  fi
+  # pgrep uses 1 for an empty result; errors must not become a complete tree.
+  (( discovery_rc <= 1 )) || failed=1
   while IFS= read -r child; do
     [[ "$child" =~ ^[1-9][0-9]*$ ]] || continue
-    child_identity="$(pid_identity "$child" || true)"
+    [[ "$child" != "$pid" ]] || continue
+    child_identity="$(pid_identity "$child" generation || true)"
     [[ "$child_identity" =~ ^[0-9a-f]{64}$ ]] || continue
-    if kill -STOP "$child" 2>/dev/null; then
-      observed_identity="$(pid_identity "$child" || true)"
-      if [[ "$observed_identity" == "$child_identity" ]]; then
-        collect_owned_tree "$child" "$child_identity"
-      else
-        # We may have raced process exit/reuse while acquiring authority. Never
-        # retain or signal the replacement; undo our best-effort STOP only when
-        # it is still the same observed process.
-        [[ "$observed_identity" =~ ^[0-9a-f]{64}$ ]] \
-          && kill -CONT "$child" 2>/dev/null || true
-      fi
+    if [[ "$group" == "$pid" ]]; then
+      child_ppid="$(ps -o pgid= -p "$child" 2>/dev/null | tr -d '[:space:]')"
+    else
+      child_ppid="$(ps -o ppid= -p "$child" 2>/dev/null | tr -d '[:space:]')"
     fi
-  done < <(pgrep -P "$pid" 2>/dev/null || true)
+    [[ "$child_ppid" == "$pid" ]] || continue
+    if signal_owned_identity "$child" "$child_identity" STOP; then
+      collect_owned_tree "$child" "$child_identity" || failed=1
+    elif ! owned_identity_has_exited "$child" "$child_identity"; then
+      failed=1
+    fi
+  done <<< "$children"
   printf '%s\t%s\n' "$pid" "$expected_identity"
+  return "$failed"
 }
 
 signal_owned_identity() {
-  local pid="$1" expected_identity="$2" signal="$3" observed_identity
-  observed_identity="$(pid_identity "$pid" || true)"
+  local pid="$1" expected_identity="$2" signal="$3" observed_identity state attempt target
+  observed_identity="$(pid_identity "$pid" generation || true)"
   [[ "$observed_identity" == "$expected_identity" ]] || return 1
-  kill "-$signal" "$pid" 2>/dev/null
+  target="$pid"
+  if [[ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')" == "$pid" ]]; then
+    target="-$pid"
+  fi
+  kill "-$signal" -- "$target" 2>/dev/null || return 1
+  [[ "$signal" == STOP ]] || return 0
+  # STOP delivery is asynchronous. Confirm it before trusting a child snapshot;
+  # a still-running parent could fork after pgrep has already enumerated it.
+  for ((attempt=0; attempt<10; attempt++)); do
+    observed_identity="$(pid_identity "$pid" generation || true)"
+    [[ "$observed_identity" == "$expected_identity" ]] || return 1
+    state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+    [[ "$state" == T* || "$state" == Z* ]] && return 0
+    sleep 0.01
+  done
+  # Keep authority only over the generation we stopped; never CONT a changed
+  # identity in an attempt to undo a raced STOP.
+  observed_identity="$(pid_identity "$pid" generation || true)"
+  [[ "$observed_identity" != "$expected_identity" ]] || kill -CONT -- "$target" 2>/dev/null || true
+  return 1
+}
+
+owned_identity_has_exited() {
+  local pid="$1" expected_identity="$2" state observed_identity
+  observed_identity="$(pid_identity "$pid" generation || true)"
+  if [[ -n "$observed_identity" && "$observed_identity" != "$expected_identity" ]]; then
+    return 0
+  fi
+  state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  [[ "$state" == Z* ]] && return 0
+  # An inspection failure is not proof of exit while the pid is still alive.
+  [[ -z "$state" ]] && ! kill -0 "$pid" 2>/dev/null
+}
+
+owned_tree_has_exited() {
+  local tree_text="$1" pid identity
+  while IFS=$'\t' read -r pid identity; do
+    [[ "$pid" =~ ^[1-9][0-9]*$ && "$identity" =~ ^[0-9a-f]{64}$ ]] || continue
+    owned_identity_has_exited "$pid" "$identity" || return 1
+  done <<< "$tree_text"
 }
 
 cleanup_owned_jobs() {
@@ -572,7 +631,7 @@ cleanup_owned_jobs() {
   CLEANUP_STARTED=1
   : > "$MONITOR_STOP_FILE"
   : > "$GENERATION_STOP_FILE"
-  local pid identity observed_identity deadline active tree_text="" child_rc response_artifact
+  local pid identity deadline active tree_text="" subtree child_rc response_artifact index
   local system_log_cleanup_pid="$SYSTEM_LOG_JOB_PID"
   local owned=() frozen=()
   set +u
@@ -583,7 +642,7 @@ cleanup_owned_jobs() {
   [[ -z "$SYSTEM_LOG_JOB_PID" ]] || owned+=("$SYSTEM_LOG_JOB_PID")
   if [[ -n "$system_log_cleanup_pid" ]] \
     && owned_job_is_active "$system_log_cleanup_pid" \
-    && [[ "$(pid_identity "$system_log_cleanup_pid" || true)" == "$SYSTEM_LOG_JOB_IDENTITY" ]]
+    && [[ "$(pid_identity "$system_log_cleanup_pid" generation || true)" == "$SYSTEM_LOG_JOB_IDENTITY" ]]
   then
     SYSTEM_LOG_ALIVE_END=1
   fi
@@ -591,24 +650,21 @@ cleanup_owned_jobs() {
   # race where a worker starts another curl between a tree snapshot and TERM,
   # leaving that just-created process orphaned outside our cleanup authority.
   for pid in "${owned[@]}"; do
-    identity="$(pid_identity "$pid" || true)"
+    identity="$(pid_identity "$pid" generation || true)"
     if owned_job_is_active "$pid" \
       && [[ "$identity" =~ ^[0-9a-f]{64}$ ]] \
-      && kill -STOP "$pid" 2>/dev/null
+      && signal_owned_identity "$pid" "$identity" STOP
     then
-      observed_identity="$(pid_identity "$pid" || true)"
-      if [[ "$observed_identity" == "$identity" ]]; then
-        frozen+=("$pid" "$identity")
-      else
-        [[ "$observed_identity" =~ ^[0-9a-f]{64}$ ]] \
-          && kill -CONT "$pid" 2>/dev/null || true
-      fi
+      frozen+=("$pid" "$identity")
+    elif ! owned_job_has_exited "$pid"; then
+      CLEANUP_INCOMPLETE=1
     fi
   done
   for ((index=0; index<${#frozen[@]}; index+=2)); do
     pid="${frozen[index]}"
     identity="${frozen[index+1]}"
-    tree_text="${tree_text}$(collect_owned_tree "$pid" "$identity")"$'\n'
+    subtree="$(collect_owned_tree "$pid" "$identity")" || CLEANUP_INCOMPLETE=1
+    tree_text="${tree_text}${subtree}"$'\n'
   done
   while IFS=$'\t' read -r pid identity; do
     [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
@@ -624,9 +680,9 @@ cleanup_owned_jobs() {
   while (( SECONDS < deadline )); do
     active=0
     for pid in "${owned[@]}"; do
-      owned_job_is_active "$pid" && { active=1; break; }
+      owned_job_has_exited "$pid" || { active=1; break; }
     done
-    (( active )) || break
+    if (( ! active )) && owned_tree_has_exited "$tree_text"; then break; fi
     sleep 0.1
   done
   while IFS=$'\t' read -r pid identity; do
@@ -638,11 +694,12 @@ cleanup_owned_jobs() {
   while (( SECONDS < deadline )); do
     active=0
     for pid in "${owned[@]}"; do
-      owned_job_is_active "$pid" && { active=1; break; }
+      owned_job_has_exited "$pid" || { active=1; break; }
     done
-    (( active )) || break
+    if (( ! active )) && owned_tree_has_exited "$tree_text"; then break; fi
     sleep 0.1
   done
+  owned_tree_has_exited "$tree_text" || CLEANUP_INCOMPLETE=1
   for pid in "${owned[@]}"; do
     if ! owned_job_has_exited "$pid"; then
       CLEANUP_INCOMPLETE=1
@@ -936,27 +993,78 @@ verify_worker_progress() {
   (( progress_failed == 0 ))
 }
 
+capture_traffic_clock() {
+  # Python 3.9 on macOS gives monotonic_ns a per-process origin. Explicitly use
+  # the shared kernel clock so separate start/end invocations are comparable.
+  python3 -c 'import time; print(time.time_ns() // 1_000_000, time.clock_gettime_ns(time.CLOCK_MONOTONIC))'
+}
+
 run_bounded_capture() {
   local output="$1" timeout_seconds="$2"; shift 2
-  local pid identity deadline child_rc=0 timed_out=0 tree_text="" tree_active tree_pid tree_identity observed
+  local pid identity deadline child_rc=0 timed_out=0 tree_text="" tree_pid tree_identity
+  local tree_incomplete=0
   BOUNDED_CAPTURE_TIMED_OUT=0
-  "$@" >"$output" 2>&1 &
+  # Keep one owned group leader alive until the command AND its group members
+  # exit. A wrapper exiting early cannot orphan a pipe holder outside the tree
+  # observed at timeout. The leader ignores TERM so group KILL remains bound to
+  # its live generation throughout shutdown; the command gets normal signals.
+  python3 -c '
+import os
+import signal
+import subprocess
+import sys
+import time
+
+os.setsid()
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+leader = os.getpid()
+child = os.fork()
+if child == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    try:
+        os.execvp(sys.argv[1], sys.argv[1:])
+    except OSError as error:
+        print(error, file=sys.stderr)
+        os._exit(127)
+status = None
+while True:
+    if status is None:
+        exited, observed = os.waitpid(child, os.WNOHANG)
+        if exited:
+            status = observed
+    if status is not None:
+        snapshot = subprocess.Popen(
+            ["ps", "-axo", "pid=,pgid=,state="],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        )
+        output, _ = snapshot.communicate()
+        if snapshot.returncode == 0:
+            members = [row.split() for row in output.splitlines()]
+            if not any(
+                len(row) == 3 and row[1] == str(leader)
+                and row[0] not in (str(leader), str(snapshot.pid))
+                and not row[2].startswith("Z")
+                for row in members
+            ):
+                break
+    time.sleep(0.1)
+sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status))
+' "$@" >"$output" 2>&1 &
   pid="$!"
   AUXILIARY_PIDS+=("$pid")
-  identity="$(pid_identity "$pid" || true)"
+  identity="$(pid_identity "$pid" generation || true)"
   deadline=$((SECONDS + timeout_seconds))
   while (( SECONDS < deadline )) && ! owned_job_has_exited "$pid"; do
     sleep 0.1
   done
   if ! owned_job_has_exited "$pid"; then
     timed_out=1
-    if [[ "$identity" =~ ^[0-9a-f]{64}$ ]] && kill -STOP "$pid" 2>/dev/null; then
-      observed="$(pid_identity "$pid" || true)"
-      if [[ "$observed" == "$identity" ]]; then
-        tree_text="$(collect_owned_tree "$pid" "$identity")"
-      elif [[ "$observed" =~ ^[0-9a-f]{64}$ ]]; then
-        kill -CONT "$pid" 2>/dev/null || true
-      fi
+    if [[ "$identity" =~ ^[0-9a-f]{64}$ ]] \
+      && signal_owned_identity "$pid" "$identity" STOP
+    then
+      tree_text="$(collect_owned_tree "$pid" "$identity")" || tree_incomplete=1
+    elif ! owned_job_has_exited "$pid"; then
+      tree_incomplete=1
     fi
     while IFS=$'\t' read -r tree_pid tree_identity; do
       [[ "$tree_pid" =~ ^[1-9][0-9]*$ && "$tree_identity" =~ ^[0-9a-f]{64}$ ]] || continue
@@ -966,11 +1074,9 @@ run_bounded_capture() {
       [[ "$tree_pid" =~ ^[1-9][0-9]*$ && "$tree_identity" =~ ^[0-9a-f]{64}$ ]] || continue
       signal_owned_identity "$tree_pid" "$tree_identity" CONT || true
     done <<< "$tree_text"
-    if [[ -z "$tree_text" ]] && owned_job_is_active "$pid"; then
-      kill -TERM "$pid" 2>/dev/null || true
-    fi
     deadline=$((SECONDS + 1))
-    while (( SECONDS < deadline )) && ! owned_job_has_exited "$pid"; do
+    while (( SECONDS < deadline )); do
+      if owned_job_has_exited "$pid" && owned_tree_has_exited "$tree_text"; then break; fi
       sleep 0.1
     done
   fi
@@ -979,32 +1085,25 @@ run_bounded_capture() {
       [[ "$tree_pid" =~ ^[1-9][0-9]*$ && "$tree_identity" =~ ^[0-9a-f]{64}$ ]] || continue
       signal_owned_identity "$tree_pid" "$tree_identity" KILL || true
     done <<< "$tree_text"
-    if [[ -z "$tree_text" ]] && ! owned_job_has_exited "$pid"; then
-      kill -KILL "$pid" 2>/dev/null || true
-    fi
     deadline=$((SECONDS + 1))
     while (( SECONDS < deadline )); do
-      tree_active=0
-      while IFS=$'\t' read -r tree_pid tree_identity; do
-        [[ "$tree_pid" =~ ^[1-9][0-9]*$ && "$tree_identity" =~ ^[0-9a-f]{64}$ ]] || continue
-        [[ "$(pid_identity "$tree_pid" || true)" == "$tree_identity" ]] && tree_active=1
-      done <<< "$tree_text"
-      (( tree_active )) || break
+      if owned_job_has_exited "$pid" && owned_tree_has_exited "$tree_text"; then break; fi
       sleep 0.1
     done
   fi
-  tree_active=0
-  while IFS=$'\t' read -r tree_pid tree_identity; do
-    [[ "$tree_pid" =~ ^[1-9][0-9]*$ && "$tree_identity" =~ ^[0-9a-f]{64}$ ]] || continue
-    [[ "$(pid_identity "$tree_pid" || true)" == "$tree_identity" ]] && tree_active=1
-  done <<< "$tree_text"
-  if ! owned_job_has_exited "$pid" || (( tree_active )); then
+  # Reap a direct child even when a descendant could not be stopped. A surviving
+  # descendant must still fail capture after the direct job has disappeared.
+  if owned_job_has_exited "$pid"; then
+    wait "$pid" 2>/dev/null || child_rc=$?
+  else
+    tree_incomplete=1
+  fi
+  if (( tree_incomplete )) || ! owned_tree_has_exited "$tree_text"; then
     CLEANUP_INCOMPLETE=1
     EVIDENCE_FAILED=1
     BOUNDED_CAPTURE_TIMED_OUT=1
     return 125
   fi
-  wait "$pid" 2>/dev/null || child_rc=$?
   if (( timed_out )); then
     EVIDENCE_FAILED=1
     BOUNDED_CAPTURE_TIMED_OUT=1
@@ -1257,10 +1356,10 @@ if (( ! ANALYZE_ONLY )); then
       --predicate "processID == $MONITOR_PID AND subsystem == '$EXPECTED_PROVIDER_SUBSYSTEM' AND eventMessage BEGINSWITH '$EXPECTED_STRESS_EVENT_PREFIX'" \
       > "$NDJSON_PATH" 2> "$LOG_DIR/system-log-capture.err" &
     SYSTEM_LOG_JOB_PID="$!"
-    SYSTEM_LOG_JOB_IDENTITY="$(pid_identity "$SYSTEM_LOG_JOB_PID" || true)"
+    SYSTEM_LOG_JOB_IDENTITY="$(pid_identity "$SYSTEM_LOG_JOB_PID" generation || true)"
     sleep 0.5
     if [[ "$SYSTEM_LOG_JOB_IDENTITY" =~ ^[0-9a-f]{64}$ ]] \
-      && [[ "$(pid_identity "$SYSTEM_LOG_JOB_PID" || true)" == "$SYSTEM_LOG_JOB_IDENTITY" ]]
+      && [[ "$(pid_identity "$SYSTEM_LOG_JOB_PID" generation || true)" == "$SYSTEM_LOG_JOB_IDENTITY" ]]
     then
       SYSTEM_LOG_STARTED=1
     else
@@ -1270,8 +1369,8 @@ if (( ! ANALYZE_ONLY )); then
   fi
 
   START_TS=$(date -u +%s)
-  TRAFFIC_START_EPOCH="$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
-  TRAFFIC_START_MONOTONIC_NS="$(python3 -c 'import time; print(time.monotonic_ns())')"
+  read -r TRAFFIC_START_EPOCH TRAFFIC_START_MONOTONIC_NS <<< \
+    "$(capture_traffic_clock)"
 
   for worker_name in "${TRAFFIC_WORKERS[@]}"; do
     : > "$LOG_DIR/${worker_name}.log"
@@ -1308,8 +1407,8 @@ if (( ! ANALYZE_ONLY )); then
   for worker_pid in "${TRAFFIC_PIDS[@]}"; do
     wait "$worker_pid" || TRAFFIC_FAILED=1
   done
-  TRAFFIC_END_EPOCH="$(python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
-  TRAFFIC_END_MONOTONIC_NS="$(python3 -c 'import time; print(time.monotonic_ns())')"
+  read -r TRAFFIC_END_EPOCH TRAFFIC_END_MONOTONIC_NS <<< \
+    "$(capture_traffic_clock)"
   {
     printf 'traffic_start_epoch_ms\t%s\ntraffic_end_epoch_ms\t%s\n' \
       "$TRAFFIC_START_EPOCH" "$TRAFFIC_END_EPOCH"
