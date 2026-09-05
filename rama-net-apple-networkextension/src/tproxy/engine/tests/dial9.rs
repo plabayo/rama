@@ -201,6 +201,237 @@ fn synchronous_app_message_works_with_dial9_runtime() {
 }
 
 #[test]
+fn foreign_thread_admission_records_tcp_udp_pairs_without_moving_policy_polling() {
+    const TCP_FLOW_ID: u64 = 0xE1E1_3020;
+    const UDP_FLOW_ID: u64 = 0xE1E1_3021;
+    const SOURCE_PID: i32 = 1234;
+    let _slot = recorder_slot();
+    let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
+    let policy_threads = Arc::new(Mutex::new(Vec::new()));
+    let tcp_threads = policy_threads.clone();
+    let udp_threads = policy_threads.clone();
+    let handler = TestHandler {
+        tcp_matcher: Arc::new(move |meta| {
+            tcp_threads.lock().push(std::thread::current().id());
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(
+                    |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| async {
+                        drop(bridge);
+                        Ok::<(), Infallible>(())
+                    },
+                )
+                .boxed(),
+            }
+        }),
+        udp_matcher: Arc::new(move |meta| {
+            udp_threads.lock().push(std::thread::current().id());
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(|flow: crate::UdpFlow| async {
+                    drop(flow);
+                    Ok::<(), Infallible>(())
+                })
+                .boxed(),
+            }
+        }),
+        ..TestHandler::passthrough()
+    };
+    let engine = build_dial9_engine(handler, temp_dir.path());
+    let provider_pid = u64::from(engine.provider_pid);
+    let provider_generation = engine.provider_generation;
+
+    let (tcp, udp, caller) = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                // Build and admission deliberately use different OS threads.
+                // Runtime attachment warmed only the construction thread's TLS.
+                assert!(Dial9Handle::try_current_thread().is_none());
+                assert!(!Dial9Handle::current().is_enabled());
+                let caller = std::thread::current().id();
+                let mut tcp_meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp);
+                tcp_meta.flow_id = TCP_FLOW_ID;
+                tcp_meta.source_app_pid = Some(SOURCE_PID);
+                let SessionFlowAction::Intercept(mut tcp) =
+                    engine.new_tcp_session(tcp_meta, |_| TcpDeliverStatus::Accepted, || {}, || {})
+                else {
+                    panic!("expected TCP intercept");
+                };
+                assert!(Dial9Handle::try_current_thread().is_none());
+                tcp.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+
+                let mut udp_meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+                udp_meta.flow_id = UDP_FLOW_ID;
+                udp_meta.source_app_pid = Some(SOURCE_PID);
+                let SessionFlowAction::Intercept(mut udp) =
+                    engine.new_udp_session(udp_meta, |_| {}, || {}, || {})
+                else {
+                    panic!("expected UDP intercept");
+                };
+                assert!(Dial9Handle::try_current_thread().is_none());
+                udp.activate();
+                (tcp, udp, caller)
+            })
+            .join()
+            .unwrap()
+    });
+    engine.stop(0);
+    drop((tcp, udp));
+    assert_eq!(*policy_threads.lock(), [caller, caller]);
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowOpened"), 2);
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowClosed"), 2);
+    for flow_id in [TCP_FLOW_ID, UDP_FLOW_ID] {
+        let mut identities = dial9_provider_identities(temp_dir.path(), flow_id);
+        identities.sort();
+        assert_eq!(
+            identities,
+            ["TproxyFlowClosed", "TproxyFlowOpened"].map(|event| (
+                event.to_owned(),
+                provider_pid,
+                provider_generation,
+                flow_id,
+            )),
+        );
+    }
+    let bytes = std::fs::read(temp_dir.path().join("trace.0.bin")).unwrap();
+    Decoder::new(&bytes)
+        .unwrap()
+        .for_each_event(|event| {
+            if !matches!(event.name, "TproxyFlowOpened" | "TproxyFlowClosed") {
+                return;
+            }
+            let fields = event
+                .field_names()
+                .zip(event.fields.iter())
+                .collect::<Vec<_>>();
+            let flow_id = fields
+                .iter()
+                .find(|(name, _)| *name == "flow_id")
+                .unwrap()
+                .1;
+            let protocol = if matches!(flow_id, FieldValueRef::Varint(TCP_FLOW_ID)) {
+                1
+            } else {
+                2
+            };
+            assert!(fields.iter().any(|(name, value)| *name == "protocol"
+                && matches!(value, FieldValueRef::Varint(value) if *value == protocol)));
+            assert!(fields.iter().any(|(name, value)| *name == "pid"
+                && matches!(value, FieldValueRef::I64(value) if *value == i64::from(SOURCE_PID))));
+        })
+        .unwrap();
+}
+
+#[test]
+fn foreign_thread_decision_deadlines_record_tcp_and_udp_events() {
+    #[derive(Clone)]
+    struct PendingHandler;
+
+    impl TransparentProxyHandler for PendingHandler {
+        fn transparent_proxy_config(&self) -> crate::tproxy::TransparentProxyConfig {
+            crate::tproxy::TransparentProxyConfig::new()
+        }
+
+        fn match_tcp_flow(
+            &self,
+            _: rama_core::rt::Executor,
+            _: TransparentProxyFlowMeta,
+        ) -> impl Future<
+            Output = FlowAction<
+                impl Service<
+                    BridgeIo<crate::TcpFlow, crate::NwTcpStream>,
+                    Output = (),
+                    Error = Infallible,
+                >,
+            >,
+        > + Send
+        + '_ {
+            std::future::pending::<FlowAction<TestTcpService>>()
+        }
+
+        fn match_udp_flow(
+            &self,
+            _: rama_core::rt::Executor,
+            _: TransparentProxyFlowMeta,
+        ) -> impl Future<
+            Output = FlowAction<impl Service<crate::UdpFlow, Output = (), Error = Infallible>>,
+        > + Send
+        + '_ {
+            std::future::pending::<FlowAction<TestUdpService>>()
+        }
+    }
+
+    const TCP_FLOW_ID: u64 = 0xE1E1_3022;
+    const UDP_FLOW_ID: u64 = 0xE1E1_3023;
+    let _slot = recorder_slot();
+    let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
+    let writer = dial9::DiskBuffer::builder()
+        .base_path(temp_dir.path())
+        .max_file_size(rama_utils::octets::mib_u64(1))
+        .max_total_size(rama_utils::octets::mib_u64(4))
+        .build();
+    let recorder = dial9::recorder_or_disabled(writer).build();
+    assert!(recorder.handle().is_enabled());
+    let engine =
+        TransparentProxyEngineBuilder::new(|_| async { Ok::<_, Infallible>(PendingHandler) })
+            .with_runtime_factory(
+                DefaultTransparentProxyAsyncRuntimeFactory::new().with_dial9_recorder(recorder),
+            )
+            .with_decision_deadline(Duration::from_millis(20))
+            .build()
+            .unwrap();
+
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                assert!(Dial9Handle::try_current_thread().is_none());
+                let mut tcp_meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp);
+                tcp_meta.flow_id = TCP_FLOW_ID;
+                assert!(matches!(
+                    engine.new_tcp_session(tcp_meta, |_| TcpDeliverStatus::Accepted, || {}, || {}),
+                    SessionFlowAction::Blocked
+                ));
+                assert!(Dial9Handle::try_current_thread().is_none());
+                let mut udp_meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+                udp_meta.flow_id = UDP_FLOW_ID;
+                assert!(matches!(
+                    engine.new_udp_session(udp_meta, |_| {}, || {}, || {}),
+                    SessionFlowAction::Blocked
+                ));
+                assert!(Dial9Handle::try_current_thread().is_none());
+            })
+            .join()
+            .unwrap();
+    });
+    engine.stop(0);
+
+    let bytes = std::fs::read(temp_dir.path().join("trace.0.bin")).unwrap();
+    let mut deadlines = Vec::new();
+    Decoder::new(&bytes)
+        .unwrap()
+        .for_each_event(|event| {
+            if event.name != "TproxyHandlerDeadline" {
+                return;
+            }
+            let mut flow_id = None;
+            let mut deadline_ms = None;
+            for (name, value) in event.field_names().zip(event.fields.iter()) {
+                match (name, value) {
+                    ("flow_id", FieldValueRef::Varint(value)) => flow_id = Some(*value),
+                    ("deadline_ms", FieldValueRef::Varint(value)) => deadline_ms = Some(*value),
+                    _ => {}
+                }
+            }
+            deadlines.push((flow_id.unwrap(), deadline_ms.unwrap()));
+        })
+        .unwrap();
+    deadlines.sort();
+    assert_eq!(deadlines, [(TCP_FLOW_ID, 20), (UDP_FLOW_ID, 20)]);
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowOpened"), 0);
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowClosed"), 0);
+}
+
+#[test]
 fn udp_destruction_panic_on_shutdown_pairs_dial9_open_and_close() {
     const FLOW_ID: u64 = 0xE1E1_3010;
     let _slot = recorder_slot();

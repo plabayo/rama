@@ -156,12 +156,39 @@ impl OwnedRuntime {
     /// Run a possibly borrowed future to completion.
     ///
     /// This directly drives Tokio and does not create a dial9-tracked task.
+    /// An attached recorder still supplies the ambient handle for protocol
+    /// events on the calling thread. The caller's previous handle is restored
+    /// when the future completes or unwinds.
     /// Prefer [`block_on_task`](Self::block_on_task) for owned work.
     pub fn block_on<F>(&self, future: F) -> F::Output
     where
         F: Future,
     {
-        self.tokio_runtime().block_on(future)
+        match &self.inner {
+            RuntimeInner::Tokio(runtime) => runtime.block_on(future),
+            #[cfg(feature = "dial9")]
+            RuntimeInner::Dial9 { runtime, recorder } => {
+                // Runtime::block_on polls this future on the caller, which may
+                // be a foreign thread that never ran a runtime thread hook.
+                // Keep borrowed polling inline while selecting this recorder
+                // independently of whatever telemetry context the caller has.
+                struct RestoreHandle(Option<::dial9::Dial9Handle>);
+
+                impl Drop for RestoreHandle {
+                    fn drop(&mut self) {
+                        if let Some(previous) = self.0.take() {
+                            ::dial9::core::set_tl_handle(previous);
+                        } else {
+                            ::dial9::core::clear_tl_handle();
+                        }
+                    }
+                }
+
+                let _restore = RestoreHandle(::dial9::Dial9Handle::try_current_thread());
+                ::dial9::core::set_tl_handle(recorder.handle().clone());
+                runtime.block_on(future)
+            }
+        }
     }
 
     /// Run an owned future to completion as a task on this runtime.
@@ -236,6 +263,61 @@ mod tests {
             .or_else(|| panic.downcast_ref::<&str>().copied())
             .unwrap();
         assert!(message.contains("blocking runtime task was cancelled"));
+    }
+
+    #[cfg(feature = "dial9")]
+    #[test]
+    fn borrowed_block_on_scopes_dial9_on_foreign_threads_and_restores_after_unwind() {
+        use ::dial9::{Dial9Handle, Dial9HandleTokioExt as _};
+
+        let _slot = crate::rt::dial9_test_util::recorder_slot();
+        let temp_dir = rama_utils::fs::tempdir().unwrap();
+        let recorder = crate::rt::dial9_test_util::recorder(temp_dir.path());
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        builder.enable_all();
+        let tokio_runtime = recorder
+            .handle()
+            .attach_tokio_runtime(builder, ::dial9::TokioAttachOptions::default())
+            .unwrap();
+        let runtime = OwnedRuntime::from_dial9((recorder, tokio_runtime));
+
+        std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    assert!(Dial9Handle::try_current_thread().is_none());
+                    for has_previous in [false, true] {
+                        if has_previous {
+                            ::dial9::core::set_tl_handle(Dial9Handle::disabled());
+                        }
+                        let caller = std::thread::current().id();
+                        let mut borrowed = Vec::new();
+                        runtime.block_on(async {
+                            assert_eq!(std::thread::current().id(), caller);
+                            assert!(Dial9Handle::current().is_enabled());
+                            borrowed.push(42);
+                            tokio::task::yield_now().await;
+                            assert_eq!(std::thread::current().id(), caller);
+                            assert!(Dial9Handle::current().is_enabled());
+                        });
+                        assert_eq!(borrowed, [42]);
+                        assert_eq!(Dial9Handle::try_current_thread().is_some(), has_previous);
+                        assert!(!Dial9Handle::current().is_enabled());
+
+                        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            runtime.block_on(async {
+                                assert!(Dial9Handle::current().is_enabled());
+                                panic!("synthetic borrowed future panic");
+                            });
+                        }));
+                        assert!(panic.is_err());
+                        assert_eq!(Dial9Handle::try_current_thread().is_some(), has_previous);
+                        assert!(!Dial9Handle::current().is_enabled());
+                    }
+                })
+                .join()
+                .unwrap();
+        });
+        runtime.shutdown_bounded(Duration::from_secs(1));
     }
 
     #[cfg(feature = "dial9")]
