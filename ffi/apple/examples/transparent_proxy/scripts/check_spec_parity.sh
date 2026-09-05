@@ -315,8 +315,8 @@ if "source_app=" in callback_block[:public_end] or "sourceAppSigningIdentifier" 
     raise SystemExit("Swift UDP callback public log contains source-app identity")
 if '"source_app=\\(sourceAppSigningIdentifier ?? "<missing>") "' not in callback_block:
     raise SystemExit("Swift UDP callback source-app identity is not private metadata")
-if "source_pid={}" not in tproxy_demo_source or "meta.source_app_pid?" not in tproxy_demo_source:
-    raise SystemExit("modern UDP decision evidence is not bound to a source PID")
+# Rust's udp_policy_tests verify the exact diagnostic and missing-PID rejection.
+# Source-token matching here would constrain equivalent error-handling syntax.
 if "with_udp_channel_capacity(8)" in tproxy_demo_source:
     raise SystemExit("signed UDP pressure mode still changes the engine-wide channel ceiling")
 for required in (
