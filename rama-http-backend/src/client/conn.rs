@@ -128,6 +128,91 @@ mod target_version_tests {
     }
 }
 
+#[cfg(test)]
+mod proxy_metadata_tests {
+    use rama_core::ServiceInput;
+    use rama_http_types::Body;
+    use rama_net::{
+        address::HostWithPort,
+        client::{ConnectRequest, EstablishedProxyRoute, ProxyRoute},
+        http::HttpRequestVersion,
+    };
+    use std::time::Duration;
+
+    use super::*;
+
+    async fn check_established_proxy_metadata(version: Version, eager: bool) {
+        let http: rama_net::address::ProxyAddress =
+            "http://user:secret@selected.example:8080".parse().unwrap();
+        for expected_route in [
+            None,
+            Some(EstablishedProxyRoute::Direct),
+            Some(EstablishedProxyRoute::Tunnel(
+                "socks5://selected.example:1080".parse().unwrap(),
+            )),
+            Some(EstablishedProxyRoute::Forward(http.clone())),
+            Some(EstablishedProxyRoute::Tunnel(http)),
+        ] {
+            let (io, _peer) = tokio::io::duplex(4096);
+            let io = ServiceInput::new(io);
+            if let Some(route) = expected_route.clone() {
+                io.extensions().insert(route);
+            }
+            let conn = tokio::time::timeout(Duration::from_secs(2), async move {
+                if eager {
+                    http2_eager_handshake::<_, Body>(io, Executor::default())
+                        .await
+                        .unwrap()
+                        .0
+                } else {
+                    let input = ConnectRequest::new(HostWithPort::example_domain_http());
+                    input.extensions.insert(HttpRequestVersion(version));
+                    // Input intent must never fill gaps in established facts.
+                    input.extensions.insert(EstablishedProxyRoute::Forward(
+                        "http://wrong:credential@request.example:8080"
+                            .parse()
+                            .unwrap(),
+                    ));
+                    input.extensions.insert(ProxyRoute::Proxy(
+                        "http://wrong:credential@request.example:8080"
+                            .parse()
+                            .unwrap(),
+                    ));
+                    http_connect::<_, _, Body>(io, input, Executor::default())
+                        .await
+                        .unwrap()
+                        .conn
+                }
+            })
+            .await
+            .expect("HTTP handshake timed out");
+
+            assert_eq!(
+                conn.extensions().get_ref::<EstablishedProxyRoute>(),
+                expected_route.as_ref(),
+                "version: {version:?}, eager: {eager}",
+            );
+            assert_eq!(
+                conn.extensions().get_ref::<ProxyRoute>(),
+                None,
+                "HTTP handshakes must not copy route intent onto the connection",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn http_connections_preserve_established_proxy_metadata_and_absence() {
+        for version in [Version::HTTP_11, Version::HTTP_2] {
+            check_established_proxy_metadata(version, false).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn eager_http2_connection_preserves_established_proxy_metadata_and_absence() {
+        check_established_proxy_metadata(Version::HTTP_2, true).await;
+    }
+}
+
 fn is_expected_http_connection_termination(err: &(dyn StdError + 'static)) -> bool {
     let mut current = Some(err);
     while let Some(err) = current {

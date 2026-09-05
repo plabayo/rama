@@ -11,7 +11,7 @@ use rama_core::{
     bytes::{BufMut, Bytes, BytesMut},
     extensions::{Extensions, ExtensionsRef as _},
 };
-use rama_net::uri::Uri;
+use rama_net::{client::EstablishedProxyRoute, uri::Uri};
 
 use crate::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Version,
@@ -312,8 +312,14 @@ fn encode_request_target_preserving_form(
 /// Encode the HTTP/1 request-target selected by Rama connection metadata.
 ///
 /// Direct requests use origin-form, `CONNECT` uses authority-form, `OPTIONS
-/// *` uses asterisk-form, and insecure requests routed through an HTTP proxy
-/// use absolute-form. Userinfo and fragments are never emitted.
+/// *` uses asterisk-form, and insecure requests on an established HTTP forward
+/// proxy connection use absolute-form. Userinfo and fragments are never
+/// emitted. Route intent is deliberately ignored: the established connection
+/// route is the only authoritative signal after fallback and pool selection.
+/// When an [`Egress`](rama_core::extensions::Egress) connection snapshot is
+/// present, its route (including absence) takes precedence over request-local
+/// metadata. Low-level callers without a connection snapshot must insert
+/// [`EstablishedProxyRoute::Forward`] themselves.
 pub fn encode_request_target(
     method: &Method,
     uri: &Uri,
@@ -328,11 +334,10 @@ pub fn encode_request_target(
     } else if uri.is_asterisk() {
         Err(rama_net::uri::WireError::AsteriskMismatch)
     } else {
-        let via_http_proxy = extensions
-            .get_ref::<rama_net::client::ProxyRoute>()
-            .and_then(rama_net::client::ProxyRoute::proxy_address)
-            .and_then(|proxy| proxy.protocol.as_ref())
-            .is_some_and(|protocol| protocol.is_http());
+        let established_extensions = extensions.egress().map_or(extensions, |egress| &egress.0);
+        let via_http_proxy = established_extensions
+            .get_ref::<EstablishedProxyRoute>()
+            .is_some_and(EstablishedProxyRoute::is_http_forward);
         let is_insecure = !crate::protocol_from_uri_or_extensions(extensions, uri).is_secure();
         if via_http_proxy && is_insecure {
             uri.write_http_absolute_form(output)
@@ -597,6 +602,109 @@ mod tests {
             encode_request(&wrong_asterisk).unwrap_err().kind(),
             HeadErrorKind::InvalidTarget,
         );
+    }
+
+    #[test]
+    fn established_proxy_route_overrides_route_intent() {
+        use rama_net::{address::ProxyAddress, client::ProxyRoute};
+
+        let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
+        for (route, target) in [
+            (
+                Some(EstablishedProxyRoute::Forward(proxy.clone())),
+                "GET http://origin.example/path?q=1 HTTP/1.1\r\n",
+            ),
+            (
+                Some(EstablishedProxyRoute::Tunnel(proxy)),
+                "GET /path?q=1 HTTP/1.1\r\n",
+            ),
+            (
+                Some(EstablishedProxyRoute::Tunnel(
+                    "socks5://proxy.example:1080".parse().unwrap(),
+                )),
+                "GET /path?q=1 HTTP/1.1\r\n",
+            ),
+            (
+                Some(EstablishedProxyRoute::Direct),
+                "GET /path?q=1 HTTP/1.1\r\n",
+            ),
+            (None, "GET /path?q=1 HTTP/1.1\r\n"),
+        ] {
+            let request = Request::builder()
+                .uri("http://origin.example/path?q=1")
+                .body(())
+                .unwrap();
+            request.extensions().insert(ProxyRoute::Proxy(
+                "http://proxy.example:8080".parse::<ProxyAddress>().unwrap(),
+            ));
+            if let Some(route) = route.clone() {
+                request.extensions().insert(route);
+            }
+
+            let encoded = encode_request(&request).unwrap();
+            assert!(
+                encoded.starts_with(target.as_bytes()),
+                "unexpected request target for {route:?}: {encoded:?}"
+            );
+        }
+
+        let request = Request::builder()
+            .uri("http://origin.example/path?q=1")
+            .body(())
+            .unwrap();
+        request.extensions().insert(ProxyRoute::Proxy(
+            "http://proxy.example:8080".parse::<ProxyAddress>().unwrap(),
+        ));
+        let encoded = encode_request(&request).unwrap();
+        assert!(
+            encoded.starts_with(b"GET /path?q=1 HTTP/1.1\r\n"),
+            "route intent without an established route must not select absolute-form: {encoded:?}"
+        );
+    }
+
+    #[test]
+    fn connection_snapshot_overrides_stale_local_route_including_absence() {
+        use rama_core::extensions::Egress;
+        use rama_net::address::ProxyAddress;
+
+        let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
+        for route in [
+            None,
+            Some(EstablishedProxyRoute::Direct),
+            Some(EstablishedProxyRoute::Tunnel(proxy.clone())),
+            Some(EstablishedProxyRoute::Tunnel(
+                "socks5://proxy.example:1080".parse().unwrap(),
+            )),
+            Some(EstablishedProxyRoute::Forward(proxy.clone())),
+        ] {
+            let is_forward = route
+                .as_ref()
+                .is_some_and(EstablishedProxyRoute::is_http_forward);
+            let request = Request::builder()
+                .uri("http://origin.example/path?q=1")
+                .body(())
+                .unwrap();
+            request.extensions().insert(if is_forward {
+                EstablishedProxyRoute::Direct
+            } else {
+                EstablishedProxyRoute::Forward(proxy.clone())
+            });
+            let connection = Extensions::new();
+            if let Some(route) = route {
+                connection.insert(route);
+            }
+            request.extensions().insert(Egress(connection));
+            let encoded = encode_request(&request).unwrap();
+            let target = if is_forward {
+                b"GET http://origin.example/path?q=1 HTTP/1.1\r\n".as_slice()
+            } else {
+                b"GET /path?q=1 HTTP/1.1\r\n".as_slice()
+            };
+            assert!(
+                encoded.starts_with(target),
+                "unexpected request target: {encoded:?}"
+            );
+        }
     }
 
     #[test]

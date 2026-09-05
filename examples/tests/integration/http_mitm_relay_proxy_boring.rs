@@ -10,7 +10,6 @@ use rama::{
     http::{
         Body, BodyExtractExt, Request, StatusCode, Version,
         client::EasyHttpWebClient,
-        client::proxy::layer::SetProxyAuthHttpHeaderLayer,
         headers::ContentType,
         layer::compression::{CompressionLayer, predicate::Always},
         layer::error_handling::ErrorHandlerLayer,
@@ -194,27 +193,24 @@ async fn test_http_mitm_relay_proxy() {
 
     // test transfer chunked encoding over MITM Proxy
     for http_version in [Version::HTTP_10, Version::HTTP_11] {
-        let resp = (
-            SetProxyAuthHttpHeaderLayer::default(),
-            RetryLayer::new(
-                ManagedPolicy::default().with_backoff(
-                    ExponentialBackoff::new(
-                        Duration::from_millis(100),
-                        Duration::from_secs(60),
-                        0.01,
-                        HasherRng::default,
-                    )
-                    .unwrap(),
-                ),
+        let resp = RetryLayer::new(
+            ManagedPolicy::default().with_backoff(
+                ExponentialBackoff::new(
+                    Duration::from_millis(100),
+                    Duration::from_secs(60),
+                    0.01,
+                    HasherRng::default,
+                )
+                .unwrap(),
             ),
         )
-            .into_layer(EasyHttpWebClient::default())
-            .get("http://127.0.0.1:63016/response-stream")
-            .version(http_version)
-            .extension(ProxyRoute::Proxy(proxy_address.clone()))
-            .send()
-            .await
-            .unwrap();
+        .into_layer(EasyHttpWebClient::default())
+        .get("http://127.0.0.1:63016/response-stream")
+        .version(http_version)
+        .extension(ProxyRoute::Proxy(proxy_address.clone()))
+        .send()
+        .await
+        .unwrap();
 
         assert_eq!(StatusCode::OK, resp.status());
 

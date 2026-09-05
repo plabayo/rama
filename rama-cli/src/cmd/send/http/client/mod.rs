@@ -5,10 +5,7 @@ use rama::{
     extensions::Extension,
     http::{
         Body, Request, Response, StreamingBody,
-        client::{
-            EasyHttpWebClient, ProxyConnectorLayer,
-            proxy::layer::{HttpProxyConnectorLayer, SetProxyAuthHttpHeaderLayer},
-        },
+        client::{EasyHttpWebClient, ProxyConnectorLayer, proxy::layer::HttpProxyConnectorLayer},
         layer::{
             auth::AddAuthorizationLayer,
             follow_redirect::{
@@ -198,12 +195,15 @@ where
         system_proxy_layer,
         // Normalize the selected route only after every route source has run.
         ProxyRoutesLayer::new(),
-        // Inner to FollowRedirect: proxy credentials are per-hop and authenticate
-        // to the (same) proxy, so they must be re-applied on every redirect rather
-        // than stripped by FilterCredentials' cross-origin rule like origin creds.
-        SetProxyAuthHttpHeaderLayer::default(),
         AddRequiredRequestHeadersLayer::default(),
-        HijackLayer::new(cfg.curl, curl_writer::CurlWriter { writer }),
+        HijackLayer::new(
+            cfg.curl,
+            curl_writer::CurlWriter {
+                writer,
+                proxy_tunnel: cfg.proxy_tunnel,
+                forward_proxy_auth: !cfg.no_proxy_forward_auth,
+            },
+        ),
         MapErrLayer::into_box_error(),
         layer_fn(move |svc| logger_headers_res::ResponseHeaderLogger {
             inner: svc,
@@ -306,6 +306,8 @@ fn new_inner_client(
         )
         .without_connection_pool()
         .build_client()
+        .with_forward_proxy_auth(!cfg.no_proxy_forward_auth)
+        .with_tunnel_plaintext_http(cfg.proxy_tunnel)
         .with_jit_layer((
             UserAgentEmulateHttpRequestModifierLayer::default(),
             logger_headers_req::RequestHeaderLoggerLayer::default(),
@@ -389,6 +391,17 @@ mod tests {
         TestCli::parse_from(std::iter::once("rama-send-test").chain(args.iter().copied())).send
     }
 
+    async fn read_http_head(stream: &mut tokio::net::TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut buffer = [0; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut buffer).await.unwrap();
+            assert_ne!(read, 0, "HTTP request ended before its headers");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        String::from_utf8(request).unwrap()
+    }
+
     const CUSTOM_PROFILE_USER_AGENT: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/987.0.0.0 Safari/537.36";
     const CUSTOM_PROFILE_FIRST: &str = "rama-file-profile-first-6f87c9e2";
     const CUSTOM_PROFILE_LAST: &str = "rama-file-profile-last-b31d04aa";
@@ -442,6 +455,21 @@ mod tests {
             Some(EmulationProfiles::File(path))
                 if path == std::path::Path::new("/tmp/captured-profiles.json")
         ));
+    }
+
+    #[test]
+    fn forward_proxy_options_are_opt_in() {
+        let defaults = send_cfg(&["http://example.test"]);
+        assert!(!defaults.no_proxy_forward_auth);
+        assert!(!defaults.proxy_tunnel);
+
+        let configured = send_cfg(&[
+            "--no-proxy-forward-auth",
+            "--proxytunnel",
+            "http://example.test",
+        ]);
+        assert!(configured.no_proxy_forward_auth);
+        assert!(configured.proxy_tunnel);
     }
 
     #[tokio::test]
@@ -615,6 +643,27 @@ mod tests {
         })
     }
 
+    async fn new_hermetic(
+        cfg: &SendCommand,
+    ) -> Result<impl Service<Request, Output = Response, Error = OpaqueError>, BoxError> {
+        let explicit_proxy = cfg.proxy.clone().map(|mut proxy| {
+            if let Some(credentials) = cfg.proxy_user.clone() {
+                proxy.credential = Some(ProxyCredential::Basic(credentials));
+            }
+            proxy
+        });
+        new_with_proxy_layers(
+            cfg,
+            false,
+            no_proxy_none(),
+            ProxyAddressLayer::maybe(explicit_proxy),
+            lazy_proxy(None),
+            SystemProxyLayer::from_cached(SystemProxyConfig::default()),
+            None,
+        )
+        .await
+    }
+
     /// Drives the real `rama send` client stack through a cross-origin redirect and checks both
     /// halves of the ordering it depends on: `--user` is dropped on the cross-origin hop (its layer
     /// sits outside `FollowRedirect`, so `FilterCredentials` can strip the header), while `--resolve`
@@ -700,10 +749,9 @@ mod tests {
         );
     }
 
-    /// The counterpart to the check above: proxy credentials are per-hop and authenticate to the
-    /// (same) proxy, so `SetProxyAuthHttpHeaderLayer` sits _inside_ `FollowRedirect` and re-applies
-    /// them on every hop — where origin credentials must not survive. Moving that layer outside
-    /// leaves `Proxy-Authorization` to `FilterCredentials`' blocklist, which strips it cross-origin.
+    /// The counterpart to the check above: proxy credentials are per-hop and
+    /// authenticate to the selected proxy, so Easy-client JIT middleware
+    /// reapplies them after each redirect establishes or reuses a connection.
     #[tokio::test]
     async fn send_client_stack_reapplies_proxy_credentials_on_every_hop() {
         let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
@@ -748,7 +796,7 @@ mod tests {
         ]);
 
         // `--proxy` is set, so this stack never consults `HTTP_PROXY`.
-        let svc = new(&cfg, false, None).await.unwrap();
+        let svc = new_hermetic(&cfg).await.unwrap();
         let res = svc
             .serve(
                 Request::builder()
@@ -768,6 +816,150 @@ mod tests {
             ],
             "expected proxy credentials on both hops and origin credentials on the first only",
         );
+    }
+
+    #[tokio::test]
+    async fn send_client_can_disable_automatic_forward_proxy_auth() {
+        let proxy = spawn_origin(service_fn(|req: Request| async move {
+            assert_eq!(req.uri().to_string(), "http://origin.example/no-auth");
+            assert!(!req.headers().contains_key(PROXY_AUTHORIZATION));
+            Ok::<_, Infallible>(Response::new(Body::from("ok")))
+        }))
+        .await;
+        let (_out_dir, out_path) = output_dir();
+        let cfg = send_cfg(&[
+            "--proxy",
+            &format!("http://{proxy}"),
+            "--proxy-user",
+            "pu:pp",
+            "--no-proxy-forward-auth",
+            "--output",
+            &out_path,
+            "http://origin.example/no-auth",
+        ]);
+
+        let response = new_hermetic(&cfg)
+            .await
+            .unwrap()
+            .serve(
+                Request::builder()
+                    .uri("http://origin.example/no-auth")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn send_client_exposes_forward_proxy_407() {
+        let proxy = spawn_origin(service_fn(|_: Request| async move {
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+                    .header("proxy-authenticate", "Basic realm=upstream-only")
+                    .header("proxy-authentication-info", "nextnonce=upstream-secret")
+                    .body(Body::from("upstream-only-body"))
+                    .unwrap(),
+            )
+        }))
+        .await;
+        let (_out_dir, out_path) = output_dir();
+        let cfg = send_cfg(&[
+            "--proxy",
+            &format!("http://{proxy}"),
+            "--output",
+            &out_path,
+            "http://origin.example/challenge",
+        ]);
+
+        let response = new_hermetic(&cfg)
+            .await
+            .unwrap()
+            .serve(
+                Request::builder()
+                    .uri("http://origin.example/challenge")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PROXY_AUTHENTICATION_REQUIRED);
+        assert_eq!(
+            response.headers()["proxy-authenticate"],
+            "Basic realm=upstream-only"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&out_path).await.unwrap(),
+            "upstream-only-body"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_client_proxytunnel_authenticates_connect_without_leaking_to_origin() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy = listener.local_addr().unwrap();
+        let proxy_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let connect = read_http_head(&mut stream).await;
+            assert!(
+                connect.starts_with("CONNECT origin.example:80 HTTP/1.1\r\n"),
+                "unexpected CONNECT request: {connect:?}"
+            );
+            assert!(
+                connect
+                    .to_ascii_lowercase()
+                    .contains("proxy-authorization: basic chu6cha="),
+                "CONNECT did not contain configured proxy credentials: {connect:?}"
+            );
+            stream
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+
+            let origin = read_http_head(&mut stream).await;
+            assert!(
+                origin.starts_with("GET /inside HTTP/1.1\r\n"),
+                "tunneled request was not origin-form: {origin:?}"
+            );
+            assert!(
+                !origin.to_ascii_lowercase().contains("proxy-authorization:"),
+                "proxy credential crossed into the tunnel: {origin:?}"
+            );
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .await
+                .unwrap();
+        });
+        let (_out_dir, out_path) = output_dir();
+        let cfg = send_cfg(&[
+            "--proxy",
+            &format!("http://{proxy}"),
+            "--proxy-user",
+            "pu:pp",
+            "--proxytunnel",
+            "--output",
+            &out_path,
+            "http://origin.example/inside",
+        ]);
+
+        let response = new_hermetic(&cfg)
+            .await
+            .unwrap()
+            .serve(
+                Request::builder()
+                    .uri("http://origin.example/inside")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        tokio::time::timeout(Duration::from_secs(5), proxy_task)
+            .await
+            .expect("proxy task timed out")
+            .expect("proxy task failed");
     }
 
     #[tokio::test]
@@ -851,6 +1043,123 @@ mod tests {
             command.contains("-x 'http://system.proxy:8080'"),
             "{command}"
         );
+    }
+
+    #[tokio::test]
+    async fn curl_export_matches_forward_auth_and_tunnel_options() {
+        async fn export(args: &[&str]) -> String {
+            let (output, output_path) = output_dir();
+            let mut complete_args = vec!["--curl", "--output", output_path.as_str()];
+            complete_args.extend_from_slice(args);
+            let cfg = send_cfg(&complete_args);
+            let uri = args.last().expect("target URI");
+            let mut request = Request::builder().uri(*uri).body(Body::empty()).unwrap();
+            for header in &cfg.header {
+                request
+                    .headers_mut()
+                    .insert(header.name.clone(), header.value.clone());
+            }
+            new_hermetic(&cfg)
+                .await
+                .unwrap()
+                .serve(request)
+                .await
+                .unwrap();
+            tokio::fs::read_to_string(output.path().join("response.out"))
+                .await
+                .unwrap()
+        }
+
+        let command = export(&[
+            "--proxy",
+            "http://proxy.example:8080",
+            "--proxy-user",
+            "pu:pp",
+            "--no-proxy-forward-auth",
+            "http://origin.example/export",
+        ])
+        .await;
+        assert!(command.contains("http://proxy.example:8080"), "{command}");
+        assert!(!command.contains("pu:pp"), "{command}");
+        assert!(!command.contains("--proxytunnel"), "{command}");
+
+        let command = export(&[
+            "--proxy",
+            "http://proxy.example:8080",
+            "--proxy-user",
+            "pu:pp",
+            "--no-proxy-forward-auth",
+            "--proxytunnel",
+            "http://origin.example/export",
+        ])
+        .await;
+        assert!(command.contains("--proxytunnel"), "{command}");
+        assert!(command.contains("pu:pp"), "{command}");
+
+        let command = export(&[
+            "--proxy",
+            "http://proxy.example:8080",
+            "--proxy-user",
+            "pu:pp",
+            "--no-proxy-forward-auth",
+            "https://origin.example/export",
+        ])
+        .await;
+        assert!(command.contains("pu:pp"), "{command}");
+
+        let command = export(&[
+            "--proxy",
+            "socks5://proxy.example:1080",
+            "--proxy-user",
+            "pu:pp",
+            "--no-proxy-forward-auth",
+            "http://origin.example/export",
+        ])
+        .await;
+        assert!(command.contains("pu:pp"), "{command}");
+
+        let command = export(&[
+            "-H",
+            "Proxy-Authorization: Basic origin-secret",
+            "http://origin.example/export",
+        ])
+        .await;
+        assert!(!command.contains("origin-secret"), "{command}");
+
+        let command = export(&[
+            "--proxy",
+            "http://proxy.example:8080",
+            "--proxytunnel",
+            "-H",
+            "Proxy-Authorization: Basic origin-secret",
+            "http://origin.example/export",
+        ])
+        .await;
+        assert!(command.contains("--proxytunnel"), "{command}");
+        assert!(!command.contains("origin-secret"), "{command}");
+
+        let command = export(&[
+            "--proxy",
+            "http://proxy.example:8080",
+            "--proxy-user",
+            "pu:pp",
+            "-H",
+            "Proxy-Authorization: Basic stale-secret",
+            "http://origin.example/export",
+        ])
+        .await;
+        assert!(command.contains("pu:pp"), "{command}");
+        assert!(!command.contains("stale-secret"), "{command}");
+
+        let command = export(&[
+            "--proxy",
+            "http://proxy.example:8080",
+            "-H",
+            "Proxy-Authorization: Basic manual-secret",
+            "http://origin.example/export",
+        ])
+        .await;
+        assert!(command.contains("manual-secret"), "{command}");
     }
 
     #[tokio::test]

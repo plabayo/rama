@@ -184,6 +184,7 @@ impl fmt::Debug for Stream {
 pub(super) enum ContentLength {
     Omitted,
     Head,
+    Connect,
     Remaining(u64),
 }
 
@@ -434,7 +435,7 @@ impl Stream {
                     return Err(());
                 }
             }
-            ContentLength::Omitted => {}
+            ContentLength::Connect | ContentLength::Omitted => {}
         }
 
         Ok(())
@@ -442,7 +443,10 @@ impl Stream {
 
     pub(super) fn ensure_content_length_zero(&self) -> Result<(), ()> {
         match self.content_length {
-            ContentLength::Remaining(0) | ContentLength::Head | ContentLength::Omitted => Ok(()),
+            ContentLength::Remaining(0)
+            | ContentLength::Head
+            | ContentLength::Connect
+            | ContentLength::Omitted => Ok(()),
             ContentLength::Remaining(_) => Err(()),
         }
     }
@@ -625,13 +629,5 @@ impl store::Next for NextResetExpire {
         } else {
             stream.reset_at = None;
         }
-    }
-}
-
-// ===== impl ContentLength =====
-
-impl ContentLength {
-    pub(super) fn is_head(&self) -> bool {
-        matches!(*self, Self::Head)
     }
 }

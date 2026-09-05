@@ -23,7 +23,10 @@ use rama::{
         body::util::BodyExt as _,
         convert::curl,
         headers::SourceList,
-        layer::remove_header::{RemoveRequestHeaderLayer, remove_hop_by_hop_request_headers},
+        layer::remove_header::{
+            RemoveRequestHeaderLayer, remove_hop_by_hop_request_headers,
+            remove_proxy_auth_request_headers,
+        },
         protocols::html::*,
         service::web::{
             Router,
@@ -1136,7 +1139,7 @@ async fn request_curl(
     };
     let (mut parts, ()) = request.into_parts();
     remove_hop_by_hop_request_headers(&mut parts.headers);
-    parts.headers.remove("proxy-authorization");
+    remove_proxy_auth_request_headers(&mut parts.headers);
     let compatibility = if cfg!(windows) {
         curl::CurlScriptCompatibility::PowerShell
     } else {
@@ -1221,7 +1224,10 @@ async fn replay_captured(state: &DashboardState, id: u64) -> Result<u16, BoxErro
         .with_tls_support_using_boringssl(tls_config)
         .with_default_http_connector(Executor::default())
         .with_default_connection_pool()
-        .build_client();
+        .build_client()
+        .with_forward_proxy_auth(state.upstream.forward_proxy_auth())
+        .with_tunnel_plaintext_http(state.upstream.tunnel_plaintext_http())
+        .with_isolate_forward_proxy_auth_error(true);
     let client = state.upstream.http_service(client);
     let client = RemoveRequestHeaderLayer::hop_by_hop().into_layer(client);
     let client = EmulateTlsProfileLayer::new().into_layer(client);
@@ -3309,21 +3315,68 @@ mod tests {
     use base64::engine::general_purpose::STANDARD as BASE64;
     use rama::ua::profile::UserAgentDatabase;
     use std::time::Duration;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     fn test_state_with_limits(connections: usize, exchanges: usize) -> DashboardState {
+        test_state_with_upstream(
+            connections,
+            exchanges,
+            UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+        )
+    }
+
+    fn test_state_with_upstream(
+        connections: usize,
+        exchanges: usize,
+        upstream: UpstreamProxyConfig,
+    ) -> DashboardState {
         let ua_db = Arc::new(UserAgentDatabase::try_embedded().unwrap());
         DashboardState::new(
             CaptureStore::new(connections, exchanges, 1024, ua_db).unwrap(),
             HarController::default(),
             Vec::new(),
             Arc::new(SocketOptions::default_tcp()),
-            UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+            upstream,
             MitmPolicy::try_new(&[], &[]).unwrap(),
         )
     }
 
     fn test_state() -> DashboardState {
         test_state_with_limits(8, 8)
+    }
+
+    async fn capture_request_for_replay(state: &DashboardState, uri: &str) {
+        let capture = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
+            rama::service::service_fn(async |request: Request| {
+                request.into_body().collect().await.unwrap();
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }),
+        );
+        capture
+            .serve(
+                Request::builder()
+                    .uri(uri)
+                    .header("proxy-authorization", "Basic captured-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+    }
+
+    async fn read_http_head(stream: &mut tokio::net::TcpStream) -> String {
+        let mut request = Vec::new();
+        let mut buffer = [0; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut buffer).await.unwrap();
+            assert_ne!(read, 0, "HTTP request ended before its headers");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        String::from_utf8(request).unwrap()
     }
 
     #[test]
@@ -4895,6 +4948,168 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replay_honors_disabled_forward_proxy_auth() {
+        assert_replay_forward_proxy_auth(Some("upstream:secret"), false, None).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replay_uses_configured_forward_proxy_auth() {
+        assert_replay_forward_proxy_auth(
+            Some("upstream:secret"),
+            true,
+            Some("Basic dXBzdHJlYW06c2VjcmV0"),
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replay_without_configured_forward_proxy_auth_does_not_reuse_captured_auth() {
+        assert_replay_forward_proxy_auth(None, true, None).await;
+    }
+
+    async fn assert_replay_forward_proxy_auth(
+        configured_credential: Option<&str>,
+        forward_proxy_auth: bool,
+        expected_authorization: Option<&str>,
+    ) {
+        let listener = rama::tcp::server::TcpListener::bind_address(
+            rama::net::address::SocketAddress::local_ipv4(0),
+            Executor::default(),
+        )
+        .await
+        .unwrap();
+        let proxy_address = listener.local_addr().unwrap();
+        let (observed_tx, mut observed_rx) = tokio::sync::mpsc::channel(1);
+        let proxy_task = tokio::spawn(listener.serve(
+            rama::http::server::HttpServer::auto(Executor::default()).service(
+                rama::service::service_fn(move |request: Request| {
+                    let observed_tx = observed_tx.clone();
+                    async move {
+                        observed_tx
+                            .send((
+                                request.uri().to_string(),
+                                request
+                                    .headers()
+                                    .get_all(rama::http::header::PROXY_AUTHORIZATION)
+                                    .iter()
+                                    .map(|value| value.to_str().unwrap().to_owned())
+                                    .collect::<Vec<_>>(),
+                            ))
+                            .await
+                            .unwrap();
+                        Ok::<_, Infallible>(Response::new(Body::from("replayed")))
+                    }
+                }),
+            ),
+        ));
+        let mut proxy: rama::net::address::ProxyAddress =
+            format!("http://{proxy_address}").parse().unwrap();
+        proxy.credential = configured_credential.map(|credential| {
+            rama::net::user::ProxyCredential::Basic(
+                rama::net::user::Basic::try_from(credential).unwrap(),
+            )
+        });
+        let upstream = UpstreamProxyConfig::new(Some(proxy), false, &[])
+            .unwrap()
+            .with_forward_proxy_auth(forward_proxy_auth);
+        let state = test_state_with_upstream(8, 8, upstream);
+        capture_request_for_replay(&state, "http://origin.example/replay").await;
+
+        assert_eq!(replay_captured(&state, 1).await.unwrap(), 200);
+        assert_eq!(
+            observed_rx.recv().await.unwrap(),
+            (
+                "http://origin.example/replay".to_owned(),
+                expected_authorization
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            )
+        );
+        proxy_task.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replay_honors_plaintext_proxy_tunnel_without_leaking_auth() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_address = listener.local_addr().unwrap();
+        let proxy_task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let connect = read_http_head(&mut stream).await;
+            assert!(connect.starts_with("CONNECT origin.example:80 HTTP/1.1\r\n"));
+            assert!(
+                connect
+                    .to_ascii_lowercase()
+                    .contains("proxy-authorization: basic dxbzdhjlyw06c2vjcmv0")
+            );
+            stream
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await
+                .unwrap();
+
+            let origin = read_http_head(&mut stream).await;
+            assert!(origin.starts_with("GET /replay HTTP/1.1\r\n"));
+            assert!(!origin.to_ascii_lowercase().contains("proxy-authorization:"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+                .await
+                .unwrap();
+        });
+        let mut proxy: rama::net::address::ProxyAddress =
+            format!("http://{proxy_address}").parse().unwrap();
+        proxy.credential = Some(rama::net::user::ProxyCredential::Basic(
+            rama::net::user::Basic::try_from("upstream:secret").unwrap(),
+        ));
+        let upstream = UpstreamProxyConfig::new(Some(proxy), false, &[])
+            .unwrap()
+            .with_tunnel_plaintext_http(true);
+        let state = test_state_with_upstream(8, 8, upstream);
+        capture_request_for_replay(&state, "http://origin.example/replay").await;
+
+        assert_eq!(replay_captured(&state, 1).await.unwrap(), 200);
+        tokio::time::timeout(Duration::from_secs(5), proxy_task)
+            .await
+            .expect("proxy task timed out")
+            .expect("proxy task failed");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn replay_isolates_forward_proxy_auth_challenge() {
+        let listener = rama::tcp::server::TcpListener::bind_address(
+            rama::net::address::SocketAddress::local_ipv4(0),
+            Executor::default(),
+        )
+        .await
+        .unwrap();
+        let proxy_address = listener.local_addr().unwrap();
+        let proxy_task = tokio::spawn(listener.serve(
+            rama::http::server::HttpServer::auto(Executor::default()).service(
+                rama::service::service_fn(|_: Request| async move {
+                    Ok::<_, Infallible>(
+                        Response::builder()
+                            .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+                            .header("proxy-authenticate", "Basic realm=upstream-secret")
+                            .body(Body::from("upstream-secret-body"))
+                            .unwrap(),
+                    )
+                }),
+            ),
+        ));
+        let upstream = UpstreamProxyConfig::new(
+            Some(format!("http://{proxy_address}").parse().unwrap()),
+            false,
+            &[],
+        )
+        .unwrap();
+        let state = test_state_with_upstream(8, 8, upstream);
+        capture_request_for_replay(&state, "http://origin.example/replay").await;
+
+        let error = replay_captured(&state, 1).await.unwrap_err();
+        assert!(!error.to_string().contains("upstream-secret"), "{error}");
+        proxy_task.abort();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

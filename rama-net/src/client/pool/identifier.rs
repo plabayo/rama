@@ -16,7 +16,9 @@ use super::{ConnID, ReqToConnID};
 ///
 /// Inputs share a pool identity only when their application protocol, logical
 /// authority, selected proxy, physical connector target and physical transport
-/// all match.
+/// all match. The identity also records whether a route was requested: an
+/// explicitly direct route differs from an input without a route decision,
+/// preserving the presence or absence of established route metadata on reuse.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct BasicConnIdentifier;
@@ -35,6 +37,10 @@ impl BasicConnIdentifier {
 pub struct BasicConnId {
     pub protocol: Option<Protocol>,
     pub authority: HostWithOptPort,
+    /// Whether the input selected a route, including an explicitly direct route.
+    /// An explicit direct route and no route both have no [`Self::proxy_address`],
+    /// but differ in whether established route metadata must be present.
+    pub proxy_route_requested: bool,
     pub proxy_address: Option<ProxyAddress>,
     pub connector_target: Option<ConnectorTarget>,
     pub connector_transport_protocol: Option<TransportProtocol>,
@@ -67,15 +73,13 @@ where
         let authority = input
             .authority()
             .ok_or_else(|| BoxError::from_static_str("no authority found in connection input"))?;
+        let proxy_route = input.extensions().get_ref::<ProxyRoute>();
 
         Ok(BasicConnId {
             protocol: input.protocol().cloned(),
             authority,
-            proxy_address: input
-                .extensions()
-                .get_ref::<ProxyRoute>()
-                .and_then(ProxyRoute::proxy_address)
-                .cloned(),
+            proxy_route_requested: proxy_route.is_some(),
+            proxy_address: proxy_route.and_then(ProxyRoute::proxy_address).cloned(),
             connector_target: input.extensions().get_ref().cloned(),
             connector_transport_protocol: input.connector_transport_protocol(),
         })
@@ -95,7 +99,7 @@ mod tests {
     use super::*;
     use crate::{
         address::HostWithPort,
-        client::{ConnectRequest, EstablishedClientConnection, ProxyRoute},
+        client::{ConnectRequest, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute},
     };
 
     #[test]
@@ -189,6 +193,54 @@ mod tests {
                 .proxy_address,
             Some(proxy_address),
         );
+    }
+
+    #[tokio::test]
+    async fn pool_preserves_absent_and_explicit_direct_route_metadata() {
+        for requested_first in [false, true] {
+            let dials = Arc::new(AtomicUsize::new(0));
+            let inner = service_fn({
+                let dials = Arc::clone(&dials);
+                move |input: ConnectRequest| {
+                    dials.fetch_add(1, Ordering::Relaxed);
+                    async move {
+                        let conn = ServiceInput::new(());
+                        if input.extensions.contains::<ProxyRoute>() {
+                            conn.extensions.insert(EstablishedProxyRoute::Direct);
+                        }
+                        Ok::<_, Infallible>(EstablishedClientConnection { input, conn })
+                    }
+                }
+            });
+            let pool = super::super::LruDropPool::try_new(1, 2)
+                .unwrap()
+                .with_drop_connection_if_no_response(false);
+            let connector =
+                super::super::PooledConnector::new(inner, pool, BasicConnIdentifier::new());
+
+            for route_requested in [
+                requested_first,
+                !requested_first,
+                requested_first,
+                !requested_first,
+            ] {
+                let request = ConnectRequest::new(HostWithPort::example_domain_https());
+                if route_requested {
+                    request.extensions.insert(ProxyRoute::Direct);
+                }
+                let established = connector.serve(request).await.unwrap();
+                assert_eq!(
+                    established
+                        .conn
+                        .extensions()
+                        .get_ref::<EstablishedProxyRoute>(),
+                    route_requested.then_some(&EstablishedProxyRoute::Direct),
+                );
+                drop(established.conn);
+            }
+
+            assert_eq!(dials.load(Ordering::Relaxed), 2);
+        }
     }
 
     #[tokio::test]

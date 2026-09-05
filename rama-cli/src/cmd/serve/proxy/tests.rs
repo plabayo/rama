@@ -41,7 +41,7 @@ use rama::{
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::{
-    io::{AsyncReadExt as _, duplex},
+    io::{AsyncReadExt as _, AsyncWriteExt as _, duplex},
     time::timeout,
 };
 
@@ -80,6 +80,8 @@ fn default_is_shared_http_and_socks5_on_loopback_8080() {
         ]))
     );
     assert!(!cli.proxy.lazy_connect);
+    assert!(!cli.proxy.no_upstream_proxy_forward_auth);
+    assert!(!cli.proxy.upstream_proxy_tunnel);
     assert!(cli.proxy.mitm.is_none());
     assert_eq!(cli.proxy.body_limit, 0);
     assert_eq!(cli.proxy.capture_total_limit, DEFAULT_CAPTURE_TOTAL_LIMIT);
@@ -94,6 +96,20 @@ fn default_is_shared_http_and_socks5_on_loopback_8080() {
     assert_eq!(cli.proxy.icap_timeout.get(), DEFAULT_ICAP_TIMEOUT_SECS);
     assert_eq!(cli.proxy.icap_idle_timeout, DEFAULT_ICAP_IDLE_TIMEOUT_SECS);
     assert!(!cli.proxy.icap_insecure);
+}
+
+#[test]
+fn upstream_forward_proxy_options_are_explicit() {
+    let cli = TestCli::parse_from([
+        "test",
+        "--upstream-proxy",
+        "http://pu:pp@proxy.example:8080",
+        "--no-upstream-proxy-forward-auth",
+        "--upstream-proxy-tunnel",
+    ]);
+    assert!(cli.proxy.no_upstream_proxy_forward_auth);
+    assert!(cli.proxy.upstream_proxy_tunnel);
+    assert!(cli.proxy.upstream_proxy.is_some());
 }
 
 #[test]
@@ -1023,6 +1039,17 @@ async fn spawn_plain_origin(
     (address, task)
 }
 
+async fn read_raw_http_head(stream: &mut tokio::net::TcpStream) -> String {
+    let mut bytes = Vec::new();
+    let mut buffer = [0; 1024];
+    while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+        let read = stream.read(&mut buffer).await.unwrap();
+        assert_ne!(read, 0, "HTTP request ended before its headers");
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+    String::from_utf8(bytes).unwrap()
+}
+
 #[derive(Default)]
 struct ProxyTestIcapState {
     active: AtomicUsize,
@@ -1303,6 +1330,238 @@ async fn forward_client_consumes_proxy_auth_without_icap() {
     );
 
     origin_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn forward_client_isolates_upstream_proxy_407() {
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .unwrap();
+    let proxy_address = listener.local_addr().unwrap();
+    let proxy_task = tokio::spawn(
+        listener.serve(HttpServer::auto(Executor::default()).service(service_fn(
+            |request: Request| async move {
+                assert_eq!(
+                    request.uri().to_string(),
+                    "http://origin.example/upstream-challenge"
+                );
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+                        .header("proxy-authenticate", "Basic realm=upstream-secret")
+                        .header("proxy-authentication-info", "nextnonce=upstream-secret")
+                        .body(Body::from("upstream-secret-body"))
+                        .unwrap(),
+                )
+            },
+        ))),
+    );
+    let client = new_proxy_client(ProxyClientConfig {
+        exec: Executor::default(),
+        capture: None,
+        inspection: InspectionState::default(),
+        har: HarController::default(),
+        portal: None,
+        tcp_options: Arc::new(SocketOptions::default_tcp()),
+        connect_timeout: Some(Duration::from_secs(2)),
+        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
+        upstream: UpstreamProxyConfig::new(
+            Some(format!("http://{proxy_address}").parse().unwrap()),
+            false,
+            &[],
+        )
+        .unwrap(),
+        icap: None,
+    });
+
+    let response = client
+        .serve(
+            Request::builder()
+                .uri("http://origin.example/upstream-challenge")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert!(!response.headers().contains_key("proxy-authenticate"));
+    assert!(!response.headers().contains_key("proxy-authentication-info"));
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(
+        !body
+            .windows(b"upstream-secret".len())
+            .any(|w| w == b"upstream-secret")
+    );
+
+    proxy_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn forward_client_can_disable_automatic_upstream_proxy_auth() {
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .unwrap();
+    let proxy_address = listener.local_addr().unwrap();
+    let proxy_task = tokio::spawn(
+        listener.serve(HttpServer::auto(Executor::default()).service(service_fn(
+            |request: Request| async move {
+                assert_eq!(
+                    request.uri().to_string(),
+                    "http://origin.example/no-upstream-auth"
+                );
+                assert!(
+                    !request
+                        .headers()
+                        .contains_key(rama::http::header::PROXY_AUTHORIZATION)
+                );
+                Ok::<_, Infallible>(Response::new(Body::from("ok")))
+            },
+        ))),
+    );
+    let mut proxy: ProxyAddress = format!("http://{proxy_address}").parse().unwrap();
+    proxy.credential = Some(rama::net::user::ProxyCredential::Basic(
+        rama::net::user::Basic::try_from("pu:pp").unwrap(),
+    ));
+    let upstream = UpstreamProxyConfig::new(Some(proxy), false, &[])
+        .unwrap()
+        .with_forward_proxy_auth(false);
+    let client = new_proxy_client(ProxyClientConfig {
+        exec: Executor::default(),
+        capture: None,
+        inspection: InspectionState::default(),
+        har: HarController::default(),
+        portal: None,
+        tcp_options: Arc::new(SocketOptions::default_tcp()),
+        connect_timeout: Some(Duration::from_secs(2)),
+        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
+        upstream,
+        icap: None,
+    });
+
+    let response = client
+        .serve(
+            Request::builder()
+                .uri("http://origin.example/no-upstream-auth")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    proxy_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn forward_client_authenticates_plaintext_upstream_proxy_by_default() {
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .unwrap();
+    let proxy_address = listener.local_addr().unwrap();
+    let proxy_task = tokio::spawn(
+        listener.serve(HttpServer::auto(Executor::default()).service(service_fn(
+            |request: Request| async move {
+                assert_eq!(
+                    request.uri().to_string(),
+                    "http://origin.example/upstream-auth"
+                );
+                assert_eq!(
+                    request.headers()[rama::http::header::PROXY_AUTHORIZATION],
+                    "Basic cHU6cHA="
+                );
+                Ok::<_, Infallible>(Response::new(Body::from("ok")))
+            },
+        ))),
+    );
+    let mut proxy: ProxyAddress = format!("http://{proxy_address}").parse().unwrap();
+    proxy.credential = Some(rama::net::user::ProxyCredential::Basic(
+        rama::net::user::Basic::try_from("pu:pp").unwrap(),
+    ));
+    let client = new_proxy_client(ProxyClientConfig {
+        exec: Executor::default(),
+        capture: None,
+        inspection: InspectionState::default(),
+        har: HarController::default(),
+        portal: None,
+        tcp_options: Arc::new(SocketOptions::default_tcp()),
+        connect_timeout: Some(Duration::from_secs(2)),
+        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
+        upstream: UpstreamProxyConfig::new(Some(proxy), false, &[]).unwrap(),
+        icap: None,
+    });
+
+    let response = client
+        .serve(
+            Request::builder()
+                .uri("http://origin.example/upstream-auth")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    proxy_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn forward_client_can_tunnel_plaintext_without_leaking_proxy_auth() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let socket_address = listener.local_addr().unwrap();
+    let proxy_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let connect = read_raw_http_head(&mut stream).await;
+        assert!(connect.starts_with("CONNECT origin.example:80 HTTP/1.1\r\n"));
+        assert!(
+            connect
+                .to_ascii_lowercase()
+                .contains("proxy-authorization: basic chu6cha=")
+        );
+        stream
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await
+            .unwrap();
+
+        let origin = read_raw_http_head(&mut stream).await;
+        assert!(origin.starts_with("GET /inside HTTP/1.1\r\n"));
+        assert!(!origin.to_ascii_lowercase().contains("proxy-authorization:"));
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            .await
+            .unwrap();
+    });
+    let mut proxy: ProxyAddress = format!("http://{socket_address}").parse().unwrap();
+    proxy.credential = Some(rama::net::user::ProxyCredential::Basic(
+        rama::net::user::Basic::try_from("pu:pp").unwrap(),
+    ));
+    let upstream = UpstreamProxyConfig::new(Some(proxy), false, &[])
+        .unwrap()
+        .with_tunnel_plaintext_http(true);
+    let client = new_proxy_client(ProxyClientConfig {
+        exec: Executor::default(),
+        capture: None,
+        inspection: InspectionState::default(),
+        har: HarController::default(),
+        portal: None,
+        tcp_options: Arc::new(SocketOptions::default_tcp()),
+        connect_timeout: Some(Duration::from_secs(2)),
+        mitm_policy: MitmPolicy::try_new(&[], &[]).unwrap(),
+        upstream,
+        icap: None,
+    });
+
+    let response = client
+        .serve(
+            Request::builder()
+                .uri("http://origin.example/inside")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    timeout(Duration::from_secs(5), proxy_task)
+        .await
+        .expect("proxy task timed out")
+        .expect("proxy task failed");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1658,10 +1917,6 @@ async fn socks5_mitm_websocket_handshake_supports_icap() {
     ));
     let mut websocket = client
         .websocket(format!("wss://{origin}/echo"))
-        .with_header(
-            rama::http::header::PROXY_AUTHORIZATION,
-            "Basic downstream-secret",
-        )
         .handshake(extensions)
         .await
         .unwrap();
@@ -1683,7 +1938,6 @@ async fn socks5_mitm_websocket_handshake_supports_icap() {
     );
     assert!(icap_state.reqmod_calls.load(Ordering::SeqCst) > 0);
     assert!(icap_state.respmod_calls.load(Ordering::SeqCst) > 0);
-    assert!(icap_state.proxy_authorization_seen.load(Ordering::SeqCst) > 0);
 
     drop(websocket);
     drop(client);
@@ -2768,7 +3022,7 @@ async fn https_connect_is_mitm_relayed_end_to_end() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
-    let (icap_address, icap_task, icap_state) = spawn_proxy_test_icap().await;
+    let (icap_address, icap_task, _icap_state) = spawn_proxy_test_icap().await;
     let origin_listener =
         TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
             .await
@@ -2781,10 +3035,6 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
     let origin_http =
         HttpServer::auto(Executor::default()).service(service_fn(|request: Request| async move {
             assert_eq!(request.headers()["x-rama-icap-reqmod"], "yes");
-            assert_eq!(
-                request.headers()["x-rama-icap-saw-proxy-authorization"],
-                "yes"
-            );
             assert!(
                 !request
                     .headers()
@@ -2833,10 +3083,6 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
             client.serve(
                 Request::builder()
                     .uri(format!("https://{origin_address}/icap"))
-                    .header(
-                        rama::http::header::PROXY_AUTHORIZATION,
-                        "Basic downstream-secret",
-                    )
                     .extension(ProxyRoute::Proxy(
                         format!("{scheme}://{proxy_address}").parse().unwrap(),
                     ))
@@ -2865,11 +3111,6 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
             "proxy scheme {scheme}",
         );
     }
-    assert!(
-        icap_state.proxy_authorization_seen.load(Ordering::SeqCst) >= 2,
-        "ICAP did not observe proxy credentials on both MITM routes",
-    );
-
     shutdown_proxy(shutdown_tx, shutdown).await;
     origin_task.abort();
     icap_task.abort();

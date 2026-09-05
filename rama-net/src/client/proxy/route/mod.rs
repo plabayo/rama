@@ -38,7 +38,11 @@ impl ProxyRouteIndex {
     }
 }
 
-/// A single route through which a client connection can be established.
+/// A requested route through which a client connection should be established.
+///
+/// This is connection input, not evidence that a proxy was used. Inspect
+/// [`EstablishedProxyRoute`] on the connection for the actual outcome after
+/// route fallback and connection-pool selection.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Extension)]
 #[extension(tags(net, proxy))]
 pub enum ProxyRoute {
@@ -72,6 +76,50 @@ impl ProxyRoute {
 impl From<ProxyAddress> for ProxyRoute {
     fn from(value: ProxyAddress) -> Self {
         Self::Proxy(value)
+    }
+}
+
+/// The proxy route actually established by a connector.
+///
+/// This is the authoritative connection outcome; [`ProxyRoute`] only describes
+/// the requested route. The connector publishes this extension after success,
+/// preserving the selected proxy address and credentials before dial-address
+/// normalization. HTTP forwarding and CONNECT are distinct outcomes even when
+/// they use the same proxy and origin.
+///
+/// A requested route that connects directly, including direct fallback or an
+/// explicit bypass, publishes [`Self::Direct`]. An ordinary direct connection
+/// for which no route was requested has no `EstablishedProxyRoute` extension.
+/// Custom connectors must follow the same contract. Request metadata must never
+/// be used to infer an established proxy connection.
+#[derive(Debug, Clone, PartialEq, Eq, Extension)]
+#[extension(tags(net, proxy))]
+#[non_exhaustive]
+pub enum EstablishedProxyRoute {
+    /// A route was requested, but the connection was established without a proxy.
+    Direct,
+    /// Application requests are sent directly to an HTTP(S) forward proxy.
+    Forward(ProxyAddress),
+    /// A successful HTTP or SOCKS CONNECT exchange established an opaque tunnel.
+    /// The selected proxy address carries its configured protocol. A tunnel
+    /// does not itself imply encryption of the application traffic.
+    Tunnel(ProxyAddress),
+}
+
+impl EstablishedProxyRoute {
+    /// Return the exact selected proxy address when a proxy was established.
+    #[must_use]
+    pub const fn proxy_address(&self) -> Option<&ProxyAddress> {
+        match self {
+            Self::Direct => None,
+            Self::Forward(proxy) | Self::Tunnel(proxy) => Some(proxy),
+        }
+    }
+
+    /// Whether application requests are addressed to an HTTP forward proxy.
+    #[must_use]
+    pub fn is_http_forward(&self) -> bool {
+        matches!(self, Self::Forward(proxy) if proxy.protocol.as_ref().is_none_or(|protocol| protocol.is_http()))
     }
 }
 
@@ -236,6 +284,47 @@ mod tests {
     #[test]
     fn direct_is_the_default_route() {
         assert_eq!(ProxyRoute::default(), ProxyRoute::Direct);
+    }
+
+    #[test]
+    fn established_forward_route_requires_an_http_proxy_protocol() {
+        assert!(!EstablishedProxyRoute::Direct.is_http_forward());
+        for (protocol, forwards) in [
+            (None, true),
+            (Some(crate::Protocol::HTTP), true),
+            (Some(crate::Protocol::HTTPS), true),
+            (Some(crate::Protocol::SOCKS5), false),
+            (Some(crate::Protocol::SOCKS5H), false),
+            (Some(crate::Protocol::WS), false),
+            (Some(crate::Protocol::from_static("custom")), false),
+        ] {
+            let proxy = ProxyAddress {
+                protocol,
+                ..proxy_address("selected")
+            };
+            assert_eq!(
+                EstablishedProxyRoute::Forward(proxy.clone()).is_http_forward(),
+                forwards,
+                "proxy protocol: {:?}",
+                proxy.protocol,
+            );
+            assert!(!EstablishedProxyRoute::Tunnel(proxy).is_http_forward());
+        }
+    }
+
+    #[test]
+    fn established_route_debug_redacts_proxy_secrets() {
+        let proxy: ProxyAddress = "http://alice:proxy-secret@proxy.example:8080"
+            .parse()
+            .unwrap();
+        for route in [
+            EstablishedProxyRoute::Forward(proxy.clone()),
+            EstablishedProxyRoute::Tunnel(proxy),
+        ] {
+            let debug = format!("{route:?}");
+            assert!(debug.contains("proxy.example"), "{debug}");
+            assert!(!debug.contains("proxy-secret"), "{debug}");
+        }
     }
 
     #[test]

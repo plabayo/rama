@@ -178,7 +178,10 @@ async fn main() -> Result<(), BoxError> {
         .with_default_http_connector(exec)
         // NOTE: up to you define if a pool is acceptable, and especially a global one...
         .with_default_connection_pool()
-        .build_client();
+        .build_client()
+        // This client relays requests for another peer. Keep any upstream
+        // forward-proxy challenge private to that hop.
+        .with_isolate_forward_proxy_auth_error(true);
 
     let optional_dns_overwrite_layer_used_for_e2e_only =
         std::env::var("EXAMPLE_EGRESS_SERVER_ADDR")

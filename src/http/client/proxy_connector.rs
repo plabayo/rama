@@ -11,7 +11,7 @@ use crate::{
         TargetHttpVersionInputExt,
         client::{
             ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
-            ProxyRoute,
+            EstablishedProxyRoute, ProxyRoute,
         },
     },
     proxy::socks5::{Socks5ProxyConnector, Socks5ProxyConnectorLayer},
@@ -94,6 +94,7 @@ where
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
         let route = input.extensions().get_ref::<ProxyRoute>();
+        let route_requested = route.is_some();
 
         match route {
             None | Some(ProxyRoute::Direct) => {
@@ -105,6 +106,10 @@ where
                 }
                 tracing::trace!("no proxy detected in ctx, using inner connector");
                 let EstablishedClientConnection { input, conn } = self.inner.connect(input).await?;
+
+                if route_requested {
+                    conn.extensions().insert(EstablishedProxyRoute::Direct);
+                }
 
                 let conn = MaybeProxiedConnection::direct(conn);
                 Ok(EstablishedClientConnection { input, conn })

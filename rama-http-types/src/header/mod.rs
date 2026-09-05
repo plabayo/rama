@@ -72,6 +72,7 @@ mod value;
 
 pub mod hop_by_hop;
 pub mod proxy_auth;
+pub mod proxy_connect;
 
 pub use self::map::{
     AsHeaderName, Drain, Entry, GetAll, HeaderMap, IntoHeaderName, IntoIter, IntoOrderedIter, Iter,

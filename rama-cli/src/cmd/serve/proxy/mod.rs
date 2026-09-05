@@ -1076,6 +1076,16 @@ pub struct CliCommandProxy {
     #[arg(long, conflicts_with = "system_proxy")]
     upstream_proxy: Option<ProxyAddress>,
 
+    /// Disable automatic configured credentials on plaintext HTTP requests
+    /// forwarded to an HTTP(S) upstream proxy.
+    #[arg(long, default_value_t = false)]
+    no_upstream_proxy_forward_auth: bool,
+
+    /// Use HTTP CONNECT even for plaintext HTTP requests sent through an
+    /// HTTP(S) upstream proxy. This does not encrypt origin traffic.
+    #[arg(long, default_value_t = false)]
+    upstream_proxy_tunnel: bool,
+
     /// Respect the operating system proxy configuration, including PAC and
     /// native bypass rules.
     #[arg(long, default_value_t = false)]
@@ -1320,7 +1330,9 @@ async fn run_with_dashboard_token(
         cfg.upstream_proxy.clone(),
         cfg.system_proxy,
         &cfg.proxy_bypass,
-    )?;
+    )?
+    .with_forward_proxy_auth(!cfg.no_upstream_proxy_forward_auth)
+    .with_tunnel_plaintext_http(cfg.upstream_proxy_tunnel);
     let mitm_policy = MitmPolicy::try_new(&cfg.mitm_allow, &cfg.mitm_deny)?;
     let inspection = InspectionState::default();
     let peek_timeout =
@@ -1975,7 +1987,10 @@ fn new_proxy_client(
         .with_default_http_connector(exec.clone())
         .with_custom_connector(connect_timeout.map_or_else(TimeoutLayer::never, TimeoutLayer::new))
         .with_default_connection_pool()
-        .build_client();
+        .build_client()
+        .with_forward_proxy_auth(upstream.forward_proxy_auth())
+        .with_tunnel_plaintext_http(upstream.tunnel_plaintext_http())
+        .with_isolate_forward_proxy_auth_error(true);
     let client = upstream.http_service(client);
     let base = require_request_service(
         (
