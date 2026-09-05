@@ -1991,6 +1991,136 @@ class CrashAndReleaseSetTests(unittest.TestCase):
             with self.assertRaises(evidence.EvidenceError):
                 evidence._validate_soak_download_artifacts(root)
 
+    @staticmethod
+    def canonical_soak_workload():
+        from test_soak_pressure_log import SoakPressureLogTests
+        meta = SoakPressureLogTests.valid_release_profile_meta()
+        meta.update({
+            "fanout_target": "40", "fanout_hold_seconds": "90",
+            "idle_holders_target": "40", "idle_holders_hold_seconds": "150",
+            "idle_cpu_post_quiescence_seconds": "60", "hardcap": "100",
+        })
+        phases = (
+            "fanout\tstart\t100.000000\t1970-01-01T00:01:40Z\n"
+            "fanout\tend\t200.000000\t1970-01-01T00:03:20Z\n"
+            "idle-holders\tstart\t201.000000\t1970-01-01T00:03:21Z\n"
+            "idle-holders\tend\t361.000000\t1970-01-01T00:06:01Z\n"
+            "idle-tail\tstart\t400.000000\t1970-01-01T00:06:40Z\n"
+            "idle-tail\tend\t535.000000\t1970-01-01T00:08:55Z\n"
+            "no-spin\tstart\t600.000000\t1970-01-01T00:10:00Z\n"
+            "no-spin\tend\t660.000000\t1970-01-01T00:11:00Z\n"
+        )
+        return meta, phases
+
+    @staticmethod
+    def replay_soak_raw_pool(meta, label):
+        from soak_pressure_log import flow_pool_status
+        prefix = "fanout" if label == "fanout" else "idle_holders"
+        target = int(meta[f"{prefix}_target"])
+        hold = int(meta[f"{prefix}_hold_seconds"])
+        start = 100 if label == "fanout" else 201
+        end = 200 if label == "fanout" else 361
+        return flow_pool_status(
+            "1", meta[f"{prefix}_target"], [(start + 3, target)],
+            [(start + 1, 0, 0), (start + 3, target, target), (end - 1, 0, 0)],
+            40, int(meta["hardcap"]), [(start + 2, start + 2 + hold)],
+            (label, start, end),
+            (start + 1, 0, 0, start + 3, target, target, end - 1, 0, 0, target),
+            meta[f"{prefix}_hold_seconds"],
+        )
+
+    def test_canonical_soak_actual_workload_matches_raw_replay(self):
+        from soak_pressure_log import canonical_release_soak_profile_lines, release_soak_profile_issues
+        meta, phases = self.canonical_soak_workload()
+        self.assertEqual(release_soak_profile_issues(canonical_release_soak_profile_lines(), meta), [])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "phases.tsv").write_text(phases)
+            evidence._validate_soak_release_workload(root, meta)
+            for label in ("fanout", "idle-holders"):
+                self.assertEqual(self.replay_soak_raw_pool(meta, label), "1")
+
+    def test_release_set_rejects_soak_workload_substitution_after_common_reseal(self):
+        from soak_pressure_log import canonical_release_soak_profile_lines, release_soak_profile_issues
+        for changes, phase_change, message in (
+            ({"fanout_hold_seconds": "5"}, None, "actual workload 'fanout_hold_seconds'"),
+            ({"idle_holders_hold_seconds": "5"}, None, "actual workload 'idle_holders_hold_seconds'"),
+            ({"fanout_target": "1"}, None, "actual workload 'fanout_target'"),
+            ({"idle_holders_target": "1"}, None, "actual workload 'idle_holders_target'"),
+            ({"idle_cpu_post_quiescence_seconds": "0"}, None, "actual workload 'idle_cpu_post_quiescence_seconds'"),
+            ({"hardcap": "0"}, None, "live hard cap"),
+            ({}, ("200.000000\t1970-01-01T00:03:20Z", "189.999999\t1970-01-01T00:03:09Z"), "phase 'fanout' is shorter"),
+            ({}, ("361.000000\t1970-01-01T00:06:01Z", "350.999999\t1970-01-01T00:05:50Z"), "phase 'idle-holders' is shorter"),
+            ({}, ("535.000000\t1970-01-01T00:08:55Z", "534.999999\t1970-01-01T00:08:54Z"), "phase 'idle-tail' is shorter"),
+            ({}, ("660.000000\t1970-01-01T00:11:00Z", "659.999999\t1970-01-01T00:10:59Z"), "phase 'no-spin' is shorter"),
+        ):
+            with self.subTest(changes=changes, phase_change=phase_change), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary)
+                soak, modern = base / "soak", base / "modern"
+                make_run(soak, "soak")
+                make_run(modern, "modern_udp")
+                meta, phases = self.canonical_soak_workload()
+                meta.update(changes)
+                meta.update({key: "1" for key in (
+                    "stress_ok", "fanout_established_target_sustained",
+                    "idle_holders_established_target_sustained", "real_download_ok",
+                    "post_wake_ok", "sleep_command_ok",
+                )})
+                # The configured canonical profile still passes. Actual raw
+                # holder replay also accepts the shortened/weakened workload;
+                # release verification must bind these two independent checks.
+                self.assertEqual(release_soak_profile_issues(canonical_release_soak_profile_lines(), meta), [])
+                for label in ("fanout", "idle-holders"):
+                    self.assertEqual(self.replay_soak_raw_pool(meta, label), "1")
+                write_tsv(soak / "run-meta.tsv", meta.items())
+                for name in (
+                    "soak-verdict.tsv", "system.ndjson", "probe-timeline.txt",
+                    "provider-timeline.tsv", "idle-cpu-baseline.tsv", "idle-cpu-post.tsv",
+                    "baseline-mem.txt", "final-mem.txt", "leaks.txt", "crashes-before.tsv",
+                    "real-download.metrics", "real-download.curl.log", "real-download.txt",
+                    "stress/stress-manifest.tsv",
+                ):
+                    (soak / name).parent.mkdir(parents=True, exist_ok=True)
+                    (soak / name).write_text("unused by workload configuration validation\n")
+                (soak / "phases.tsv").write_text(
+                    phases.replace(*phase_change) if phase_change else phases
+                )
+                write_tsv(soak / "stress/stress-status.tsv", [
+                    ("run_uuid", str(uuid.uuid4())), ("schema_complete", "1"),
+                ])
+                for artifact, source in evidence.SOAK_PRODUCER_SOURCES:
+                    (soak / artifact).write_bytes(Path(__file__).with_name(source).read_bytes())
+                evidence.seal(soak)
+                evidence.seal(modern)
+                # Common diagnostic inspection remains permitted. This fixture
+                # exercises the release rejection boundary, not a complete
+                # signed-soak positive or unrelated forensic validators.
+                self.assertEqual(evidence.verify(soak)["passed"], "1")
+                with mock.patch.object(evidence, "_source_blob_at_head", side_effect=current_script_source):
+                    with self.assertRaisesRegex(evidence.EvidenceError, message):
+                        evidence.verify_release_set([soak, modern])
+
+    def test_soak_release_workload_rejects_missing_ambiguous_and_weakened_requirements(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            meta, phases = self.canonical_soak_workload()
+            for changed_phases in (
+                phases.replace("idle-tail\tend\t535.000000\t1970-01-01T00:08:55Z\n", ""),
+                phases + "idle-tail\tend\t535.000000\t1970-01-01T00:08:55Z\n",
+                phases.replace("535.000000", "535.0"),
+            ):
+                (root / "phases.tsv").write_text(changed_phases)
+                with self.assertRaisesRegex(evidence.EvidenceError, "phase.*timing boundaries"):
+                    evidence._validate_soak_release_workload(root, meta)
+            (root / "phases.tsv").write_text(phases)
+            for changes in (
+                {"fanout_hold_seconds": "5", "configured_fanout_hold_seconds": "5"},
+                {"configured_idle_tail_seconds": "1"},
+                {"fanout_target": None},
+            ):
+                with self.subTest(changes=changes), self.assertRaises(evidence.EvidenceError):
+                    evidence._validate_soak_release_workload(root, dict(meta, **changes))
+
     def test_soak_stress_replays_raw_child_and_binds_profile_phase_and_generation(self):
         import test_stress_traffic as stress_fixtures
         with tempfile.TemporaryDirectory() as temporary:

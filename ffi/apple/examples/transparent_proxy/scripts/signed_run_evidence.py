@@ -1985,6 +1985,58 @@ def _validate_soak_stress_artifacts(
         )
 
 
+def _validate_soak_release_workload(root: Path, meta: dict[str, str]) -> None:
+    """Bind release configuration to the actual load consumed by raw replay."""
+    for actual_key, configured_key, minimum in (
+        ("fanout_target", "configured_fanout_target", 40),
+        ("fanout_hold_seconds", "configured_fanout_hold_seconds", 90),
+        ("idle_holders_target", "configured_idle_target", 40),
+        ("idle_holders_hold_seconds", "configured_idle_hold_seconds", 150),
+        ("idle_cpu_post_quiescence_seconds", "configured_no_spin_quiescence_seconds", 60),
+    ):
+        try:
+            actual = _canonical_uint(meta.get(actual_key))
+            configured = _canonical_uint(meta.get(configured_key))
+        except EvidenceError as error:
+            raise EvidenceError(f"soak actual workload {actual_key!r} is missing or malformed") from error
+        if actual != configured or actual < minimum:
+            raise EvidenceError(
+                f"soak actual workload {actual_key!r} differs from the configured release load"
+            )
+    if _canonical_uint(meta.get("hardcap")) == 0 \
+        or meta.get("configured_live_hard_cap_enabled") != "1":
+        raise EvidenceError("release soak did not exercise a live hard cap")
+
+    # The pinned extractor proves sustained pool intervals and the CPU sample
+    # window against the actual values above. Also bind elapsed phase time,
+    # especially idle-tail, which otherwise has no workload-specific replay.
+    required_durations = {
+        "fanout": ("configured_fanout_hold_seconds", 90),
+        "idle-holders": ("configured_idle_hold_seconds", 150),
+        "idle-tail": ("configured_idle_tail_seconds", 135),
+        "no-spin": ("configured_no_spin_quiescence_seconds", 60),
+    }
+    boundaries = {phase: {} for phase in required_durations}
+    for line in _read_regular_bytes(root / "phases.tsv").decode("utf-8").splitlines():
+        fields = line.split("\t")
+        if fields[0] not in boundaries:
+            continue
+        phase = fields[0]
+        if len(fields) != 4 or fields[1] not in ("start", "end") \
+            or fields[1] in boundaries[phase] \
+            or re.fullmatch(r"(?:0|[1-9][0-9]*)\.[0-9]{6}", fields[2]) is None:
+            raise EvidenceError(f"soak phase {phase!r} has ambiguous timing boundaries")
+        boundaries[phase][fields[1]] = Decimal(fields[2])
+    for phase, (configured_key, minimum) in required_durations.items():
+        required = _canonical_uint(meta.get(configured_key))
+        if required < minimum:
+            raise EvidenceError(f"soak phase {phase!r} weakens the canonical release duration")
+        if set(boundaries[phase]) != {"start", "end"}:
+            raise EvidenceError(f"soak phase {phase!r} is missing timing boundaries")
+        if boundaries[phase]["end"] - boundaries[phase]["start"] < required:
+            raise EvidenceError(f"soak phase {phase!r} is shorter than the configured release duration")
+
+
 def _validate_soak_semantics(envelope: VerifiedEnvelope) -> None:
     required = (
         "run-meta.tsv", "soak-verdict.tsv", "phases.tsv", "system.ndjson",
@@ -2023,6 +2075,7 @@ def _validate_soak_semantics(envelope: VerifiedEnvelope) -> None:
             "post_wake_ok", "sleep_command_ok",
         )):
             raise EvidenceError("release soak omitted or failed a required workload phase")
+        _validate_soak_release_workload(root, meta)
         expected_meta = {
             "repo_head": status["git_head"],
             "repo_dirty": status["git_dirty"],
