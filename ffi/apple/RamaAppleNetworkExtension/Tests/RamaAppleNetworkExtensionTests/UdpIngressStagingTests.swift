@@ -5,6 +5,250 @@ import XCTest
 @testable import RamaAppleNetworkExtension
 
 final class UdpIngressStagingTests: XCTestCase {
+    func testFittingReparkCannotEraseDiscoveryWhileCapacityWakeIsQueued() {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 4, maxItemsPerGeneration: 16,
+                maxBytesPerFlow: 3, maxBytesPerGeneration: 3))
+        let holder = UdpIngressFlowStaging(generation: generation)
+        var retained = holder.stage(datagrams: [Data(count: 2)], endpoints: nil).batch
+        var released = holder.stage(datagrams: [Data(count: 1)], endpoints: nil).batch
+        let large = UdpIngressFlowStaging(generation: generation)
+        let fitting = UdpIngressFlowStaging(generation: generation)
+        let largeTicket = Locked<UInt64>(0)
+        let fittingPayload = Locked<UdpIngressStagedBatch?>(nil)
+        let acceptedFittingGrants = Locked(0)
+        let receiveFittingGrant: @Sendable (UInt64) -> Void = { [weak fitting] ticket in
+            guard let fitting else { return }
+            let payload = fitting.stage(
+                datagrams: [Data([0xAC])], endpoints: nil, grantTicket: ticket).batch
+            if let payload {
+                fittingPayload.withLock { $0 = payload }
+                acceptedFittingGrants.withLock { $0 += 1 }
+            }
+        }
+        XCTAssertTrue(large.waitForCapacity(
+            reason: .generationBytes, neededItems: 1, neededBytes: 2
+        ) { ticket in largeTicket.withLock { $0 = ticket } })
+        XCTAssertTrue(fitting.waitForCapacity(
+            reason: .generationBytes, neededItems: 1, neededBytes: 1,
+            onReady: receiveFittingGrant))
+
+        func blockCoordinator() -> DispatchSemaphore {
+            let started = DispatchSemaphore(value: 0)
+            let allowed = DispatchSemaphore(value: 0)
+            generation.testBlockCoordinatorQueue(started: started, until: allowed)
+            XCTAssertEqual(started.wait(timeout: .now() + 5), .success)
+            return allowed
+        }
+        var coordinatorGate = blockCoordinator()
+        defer { coordinatorGate.signal() }
+        withExtendedLifetime(released) {}
+        released = nil
+        coordinatorGate.signal()
+        coordinatorGate = blockCoordinator()
+
+        for _ in 0..<32 {
+            if largeTicket.withLock({ $0 != 0 }) { break }
+            var payload = fittingPayload.withLock { value -> UdpIngressStagedBatch? in
+                let payload = value
+                value = nil
+                return payload
+            }
+            guard payload != nil else {
+                XCTFail("neither the fitting flow nor the older discovery received capacity")
+                break
+            }
+            withExtendedLifetime(payload) {}
+            payload = nil
+
+            // Physical release queues a coalesced wake. A flow queue can
+            // process its next callback and re-park before that wake runs.
+            let blocked = fitting.stage(datagrams: [Data([0xAC])], endpoints: nil)
+            XCTAssertNil(blocked.batch)
+            XCTAssertTrue(fitting.waitForCapacity(
+                reason: blocked.blockedReason ?? .generationItems,
+                neededItems: 1, neededBytes: 1,
+                onReady: receiveFittingGrant))
+
+            // Run the real capacity wake and any serial discovery it queues.
+            // Holding the next fitting payload until both turns finish ensures
+            // this is a coordinator fairness failure, not queue starvation.
+            for _ in 0..<2 {
+                coordinatorGate.signal()
+                coordinatorGate = blockCoordinator()
+            }
+            XCTAssertLessThanOrEqual(generation.testReservedBytes, 3)
+        }
+        XCTAssertNotEqual(
+            largeTicket.withLock { $0 }, 0,
+            "a fitting re-park erased the older pending discovery on every release")
+        XCTAssertGreaterThan(acceptedFittingGrants.withLock { $0 }, 0)
+        XCTAssertLessThanOrEqual(
+            generation.testMaxCoordinatorInspectionsPerTurn,
+            udpIngressStagingMaxInspectionsPerTurn)
+        large.close()
+        fitting.close()
+        fittingPayload.withLock { $0 = nil }
+        withExtendedLifetime(retained) {}
+        retained = nil
+        holder.close()
+        XCTAssertEqual(generation.testReservedBytes, 0)
+        XCTAssertEqual(generation.testReservedItems, 0)
+        XCTAssertEqual(generation.testWaiterCount, 0)
+    }
+
+    func testCloseBeforeGrantDeliveryRejectsCallbackAndReleasesProvisionalCapacity() {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 1, maxItemsPerGeneration: 1,
+                maxBytesPerFlow: 1, maxBytesPerGeneration: 1))
+        let holder = UdpIngressFlowStaging(generation: generation)
+        let flow = UdpIngressFlowStaging(generation: generation)
+        var held = holder.stage(datagrams: [Data([0])], endpoints: nil).batch
+        let callbackInvoked = Locked(false)
+        XCTAssertTrue(flow.waitForCapacity(
+            reason: .generationItems, neededItems: 1, neededBytes: 1
+        ) { _ in callbackInvoked.withLock { $0 = true } })
+
+        let grantIssued = DispatchSemaphore(value: 0)
+        let allowDelivery = DispatchSemaphore(value: 0)
+        generation.testAfterCapacityWakeScan = {
+            grantIssued.signal()
+            allowDelivery.wait()
+        }
+        var deliveryBlocked = true
+        defer {
+            generation.testAfterCapacityWakeScan = nil
+            if deliveryBlocked { allowDelivery.signal() }
+        }
+        withExtendedLifetime(held) {}
+        held = nil
+        XCTAssertEqual(grantIssued.wait(timeout: .now() + 30), .success)
+        XCTAssertEqual(generation.testGrantCount, 1)
+        XCTAssertTrue(flow.testWaitSnapshot.waiting)
+        XCTAssertEqual(flow.testWaitSnapshot.activeTicket, 0)
+
+        flow.close()
+        let late = flow.stage(datagrams: [Data([1])], endpoints: nil)
+        XCTAssertEqual(late.blockedReason, .closed)
+        XCTAssertNil(late.batch)
+        XCTAssertFalse(callbackInvoked.withLock { $0 })
+        XCTAssertEqual(generation.testRetainedBytes, 0)
+        // Issuance removed the waiter before the flow learned its ticket.
+        // This payload-free provisional credit can remain until delivery
+        // rejects the closed owner, or close observes an expired lease.
+        XCTAssertLessThanOrEqual(generation.testGrantCount, 1)
+        XCTAssertLessThanOrEqual(generation.testReservedBytes, 1)
+
+        allowDelivery.signal()
+        deliveryBlocked = false
+        let settled = DispatchSemaphore(value: 0)
+        let allowCoordinator = DispatchSemaphore(value: 0)
+        generation.testBlockCoordinatorQueue(started: settled, until: allowCoordinator)
+        defer { allowCoordinator.signal() }
+        XCTAssertEqual(settled.wait(timeout: .now() + 30), .success)
+        XCTAssertFalse(callbackInvoked.withLock { $0 })
+        XCTAssertEqual(generation.testGrantCount, 0)
+        XCTAssertEqual(generation.testWaiterCount, 0)
+        XCTAssertEqual(generation.testReservedItems, 0)
+        XCTAssertEqual(generation.testReservedBytes, 0)
+        holder.close()
+    }
+
+    func testContinuousFittingReleasesPreserveBoundedPartialDiscovery() {
+        assertContinuousFittingReleasesPreserveBoundedPartialDiscovery(flowCount: 64)
+    }
+
+    func testEightThousandOneHundredNinetyTwoMixedWaitersPreserveBoundedPartialDiscovery() {
+        assertContinuousFittingReleasesPreserveBoundedPartialDiscovery(flowCount: 8_192)
+    }
+
+    private func assertContinuousFittingReleasesPreserveBoundedPartialDiscovery(flowCount: Int) {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 32, maxItemsPerGeneration: 32 * flowCount,
+                maxBytesPerFlow: 65_535, maxBytesPerGeneration: 65_535),
+            automaticScheduling: false)
+        let holder = UdpIngressFlowStaging(generation: generation)
+        var retained = holder.stage(datagrams: [Data(count: 65_525)], endpoints: nil).batch
+        var released = holder.stage(datagrams: [Data(count: 10)], endpoints: nil).batch
+        let flows = (0..<flowCount).map { _ in UdpIngressFlowStaging(generation: generation) }
+        let grants = Locked<[(Int, UInt64)]>([])
+        func park(_ index: Int, reason: UdpIngressStagingDropReason) {
+            XCTAssertTrue(flows[index].waitForCapacity(
+                reason: reason, neededItems: 1, neededBytes: index.isMultiple(of: 2) ? 20 : 1
+            ) { ticket in grants.withLock { $0.append((index, ticket)) } })
+        }
+        for index in 0..<flowCount {
+            let outcome = flows[index].stage(
+                datagrams: [Data(count: index.isMultiple(of: 2) ? 20 : 1)], endpoints: nil)
+            XCTAssertNil(outcome.batch)
+            park(index, reason: outcome.blockedReason!)
+        }
+        withExtendedLifetime(released) {}
+        released = nil
+        var discovered = Set<Int>()
+        var fittingFlows = Set<Int>()
+        var fittingDeliveries = 0
+        let discoveryGoal = min(flowCount / 2, 32)
+        for _ in 0..<(flowCount * 8) {
+            let before = generation.testCoordinatorInspections
+            generation.testRunCoordinator(now: DispatchTime.now().uptimeNanoseconds)
+            XCTAssertLessThanOrEqual(
+                generation.testCoordinatorInspections - before,
+                UInt64(udpIngressStagingMaxInspectionsPerTurn))
+            let issued = grants.withLock { values -> [(Int, UInt64)] in
+                let issued = values
+                values.removeAll(keepingCapacity: true)
+                return issued
+            }
+            for (index, _) in issued where !index.isMultiple(of: 2) {
+                fittingFlows.insert(index)
+            }
+            for (index, ticket) in issued {
+                var payload = flows[index].stage(
+                    datagrams: [Data([0xAC])], endpoints: nil, grantTicket: ticket).batch
+                guard payload != nil else {
+                    // Real 10ms leases may expire if the test process is
+                    // descheduled. Re-park the callback exactly as the session
+                    // does, rather than treating a stale ticket as ownership.
+                    park(index, reason: .generationItems)
+                    continue
+                }
+                withExtendedLifetime(payload) {}
+                payload = nil
+                if index.isMultiple(of: 2) {
+                    if discovered.isEmpty {
+                        XCTAssertEqual(
+                            fittingFlows.count, flowCount / 2,
+                            "discovery must preserve the initial complete exact-fit opportunity")
+                    }
+                    discovered.insert(index)
+                    flows[index].close()
+                } else {
+                    fittingDeliveries += 1
+                    let blocked = flows[index].stage(datagrams: [Data([0xAC])], endpoints: nil)
+                    if let reason = blocked.blockedReason {
+                        park(index, reason: reason)
+                    }
+                }
+            }
+            if discovered.count == discoveryGoal { break }
+        }
+        XCTAssertGreaterThan(fittingDeliveries, 0)
+        XCTAssertEqual(
+            discovered.count, discoveryGoal,
+            "continuous fitting releases starved large hints: discovered=\(discovered.count), fitting=\(fittingDeliveries), inspections=\(generation.testCoordinatorInspections), scan_remaining=\(generation.testScanRemaining)")
+        flows.forEach { $0.close() }
+        withExtendedLifetime(retained) {}
+        retained = nil
+        holder.close()
+        XCTAssertEqual(generation.testReservedBytes, 0)
+        XCTAssertEqual(generation.testReservedItems, 0)
+        XCTAssertEqual(generation.testWaiterCount, 0)
+    }
+
     private func makeFlow(
         items: Int = 4,
         flowBytes: Int = 16,
@@ -335,18 +579,36 @@ final class UdpIngressStagingTests: XCTestCase {
         }
         let resumedBatches = Locked<[UdpIngressStagedBatch]>([])
         let resumed = DispatchSemaphore(value: 0)
+        @Sendable func receiveGrant(
+            waiter: UdpIngressFlowStaging, index: Int, ticket: UInt64
+        ) {
+            let outcome = waiter.stage(
+                datagrams: [Data([UInt8(index)])], endpoints: nil,
+                grantTicket: ticket)
+            if let batch = outcome.batch {
+                resumedBatches.withLock { $0.append(batch) }
+                resumed.signal()
+                return
+            }
+            // The deliberate post-issue pause can outlive the production
+            // lease under load. Match the session's stale-ticket recovery;
+            // only accepted payloads satisfy the release-delivery assertion.
+            guard let reason = outcome.blockedReason else {
+                XCTFail("a stale staging grant lost its capacity-pressure reason")
+                return
+            }
+            XCTAssertTrue(waiter.waitForCapacity(
+                reason: reason,
+                neededItems: outcome.neededItems,
+                neededBytes: outcome.neededBytes
+            ) { ticket in receiveGrant(waiter: waiter, index: index, ticket: ticket) })
+        }
         for (index, waiter) in waiters.enumerated() {
             XCTAssertTrue(
                 waiter.waitForCapacity(
                     reason: .generationItems, neededItems: 1, neededBytes: 1
                 ) { ticket in
-                    if let batch = waiter.stage(
-                        datagrams: [Data([UInt8(index)])], endpoints: nil,
-                        grantTicket: ticket
-                    ).batch {
-                        resumedBatches.withLock { $0.append(batch) }
-                    }
-                    resumed.signal()
+                    receiveGrant(waiter: waiter, index: index, ticket: ticket)
                 })
         }
         XCTAssertEqual(generation.testWaiterCount, 3)
@@ -694,6 +956,12 @@ final class UdpIngressStagingTests: XCTestCase {
         }
 
         held.removeAll()
+        // A release may make a previously nonfitting discovery exact. Its
+        // callback still belongs to the serial runner, so drive that runner
+        // explicitly when automatic scheduling is disabled in this test.
+        for _ in 0..<udpIngressStagingMaxGrants {
+            generation.testRunCoordinator(now: DispatchTime.now().uptimeNanoseconds)
+        }
         let initialGrants = granted.withLock { $0 }
         XCTAssertEqual(initialGrants.count, udpIngressStagingMaxGrants)
         XCTAssertTrue(initialGrants.allSatisfy { $0.1 != 0 })
@@ -1281,6 +1549,9 @@ final class UdpIngressStagingTests: XCTestCase {
         withExtendedLifetime(retained) {}
         retained = nil
         holder.close()
+        pollUntil("already-issued discovery did not settle after every flow closed") {
+            generation.testGrantCount == 0
+        }
         XCTAssertEqual(generation.testGrantCount, 0)
         XCTAssertEqual(generation.testWaiterCount, 0)
         XCTAssertEqual(generation.testRetainedBytes, 0)

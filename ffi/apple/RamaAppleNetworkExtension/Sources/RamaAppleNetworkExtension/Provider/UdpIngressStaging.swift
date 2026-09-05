@@ -272,6 +272,14 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         var lastWaiter: UdpIngressStagingWaiter?
         var waiterCount = 0
         var scanRemaining = 0
+        /// One finite exact-fit pass, including its pending partial discovery.
+        /// Releases and fitting grant completions must not restart this pass:
+        /// a busy fitting flow would otherwise hide every stale large hint.
+        var scanActive = false
+        /// Changes during a pass receive one later pass after its discovery.
+        /// This covers newly appended tails and a release which makes an
+        /// already-inspected waiter fit, without extending the current pass.
+        var scanNeedsFollowup = false
         var scanScheduled = false
         /// Constant-size oldest sample across bounded no-fit turns. These
         /// nodes are unlinked from the sample on grant or cancellation.
@@ -380,7 +388,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             globalMaxItems.store(policy.maxItemsPerGeneration)
             globalMaxBytes.store(policy.maxBytesPerGeneration)
             endReconfigurationLocked(hasWaiters: state.waiterCount > 0)
-            state.scanRemaining = state.waiterCount
+            requestScanLocked(&state)
             let now = DispatchTime.now().uptimeNanoseconds
             let deliveries = driveCoordinatorLocked(&state, now: now)
             scheduleLeaseTimerLocked(&state)
@@ -481,7 +489,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
                 creditedItems: creditedItems,
                 creditedBytes: creditedBytes)
             if opportunityChanged {
-                state.scanRemaining = state.waiterCount
+                requestScanLocked(&state)
             }
             let deliveries = driveCoordinatorLocked(&state, now: now)
             scheduleLeaseTimerLocked(&state)
@@ -660,7 +668,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             return []
         }
         return withCoordinatorState { state in
-            state.scanRemaining = state.waiterCount
+            requestScanLocked(&state)
             let now = DispatchTime.now().uptimeNanoseconds
             let deliveries = driveCoordinatorLocked(&state, now: now)
             scheduleLeaseTimerLocked(&state)
@@ -677,7 +685,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             capacityWakeTurns.add(1)
         #endif
         let deliveries = withCoordinatorState { state in
-            state.scanRemaining = state.waiterCount
+            requestScanLocked(&state)
             let now = DispatchTime.now().uptimeNanoseconds
             let deliveries = driveCoordinatorLocked(&state, now: now)
             scheduleLeaseTimerLocked(&state)
@@ -811,7 +819,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         _ state: inout State, now: UInt64, allowDiscovery: Bool = false
     ) -> [(UdpIngressStagingWaiter, UInt64)] {
         if expireGrantsLocked(&state, now: now) {
-            state.scanRemaining = state.waiterCount
+            requestScanLocked(&state)
         }
         var deliveries: [(UdpIngressStagingWaiter, UInt64)] = []
         var inspected = 0
@@ -851,10 +859,20 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             #endif
             deliveries.append((waiter, ticket))
         }
-        if allowDiscovery, deliveries.isEmpty,
-            let discovery = discoverPartialLocked(&state, now: now)
-        {
-            deliveries.append(discovery)
+        if deliveries.isEmpty {
+            // Capacity may have grown since the finite pass inspected these
+            // candidates. Exact fits retain the ordinary synchronous grant
+            // path; only a speculative smaller-packet read needs the runner.
+            while deliveries.count < udpIngressStagingMaxGrants,
+                let exact = grantDiscoveryCandidateLocked(&state, now: now, allowPartial: false)
+            {
+                deliveries.append(exact)
+            }
+            if allowDiscovery, deliveries.isEmpty,
+                let discovery = grantDiscoveryCandidateLocked(&state, now: now, allowPartial: true)
+            {
+                deliveries.append(discovery)
+            }
         }
         #if DEBUG
             state.maxCoordinatorInspectionsPerTurn = max(
@@ -867,11 +885,36 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
                 admissionControl.loadSeqCst() & Self.waiterGateMask != 0)
         }
         if state.scanRemaining == 0 {
-            state.quiescentCapacityItems = capacityItems.load()
-            state.quiescentCapacityBytes = capacityBytes.load()
+            // A completed pass owes its sampled flows discovery even if an
+            // exact fitting grant temporarily consumed the last free byte.
+            // Capacity controls scheduling, not that owed FIFO opportunity.
+            state.scanActive = hasPendingDiscoveryLocked(state)
+                && (state.scanActive || hasDiscoveryOpportunityLocked(state))
+            if !state.scanActive, state.scanNeedsFollowup {
+                requestScanLocked(&state)
+            }
+            if state.scanRemaining == 0 {
+                state.quiescentCapacityItems = capacityItems.load()
+                state.quiescentCapacityBytes = capacityBytes.load()
+            }
         }
         scheduleScanLocked(&state)
         return deliveries
+    }
+
+    /// Begin a fresh capacity opportunity only after the previous bounded
+    /// pass and its owed discovery have finished. The initial release
+    /// still starts with the complete registered population; arrivals during
+    /// an active pass wait for its completion instead of extending its budget.
+    private func requestScanLocked(_ state: inout State) {
+        guard !state.scanActive else {
+            state.scanNeedsFollowup = true
+            return
+        }
+        state.scanRemaining = state.waiterCount
+        state.scanActive = state.waiterCount > 0
+        state.scanNeedsFollowup = false
+        state.discoveryCandidates.removeAll(keepingCapacity: true)
     }
 
     private func rememberDiscoveryCandidateLocked(
@@ -891,8 +934,8 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
     /// when its callback immediately discards another nonfitting datagram.
     /// Only the serial coordinator runner issues these speculative callbacks,
     /// so synchronous completion cannot recurse through the next discovery.
-    private func discoverPartialLocked(
-        _ state: inout State, now: UInt64
+    private func grantDiscoveryCandidateLocked(
+        _ state: inout State, now: UInt64, allowPartial: Bool
     ) -> (UdpIngressStagingWaiter, UInt64)? {
         guard state.scanRemaining == 0,
             state.grants.count < udpIngressStagingMaxGrants
@@ -906,6 +949,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             let availableBytes = max(globalMaxBytes.load() - capacityBytes.load(), 0)
             let bytes = min(waiter.neededBytes, availableBytes)
             guard bytes > 0 else { continue }
+            guard allowPartial || bytes == waiter.neededBytes else { continue }
             guard tryReserveCapacity(items: waiter.neededItems, bytes: bytes) else { continue }
             guard let ticket = nextTicketLocked(&state) else {
                 releaseCapacity(items: waiter.neededItems, bytes: bytes)
@@ -959,6 +1003,19 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         }
     }
 
+    /// An owed discovery survives a temporarily full byte/item envelope.
+    /// Only grant/cancel/owner loss or spending this physical-release epoch
+    /// retires it; the stricter runnable predicate above keeps idle queues
+    /// disarmed until capacity actually returns.
+    private func hasPendingDiscoveryLocked(_ state: State) -> Bool {
+        let epoch = retainedReleaseEpoch.load()
+        return state.discoveryCandidates.contains { waiter in
+            waiter.queued && waiter.neededBytes > 0 && waiter.neededBytes <= globalMaxBytes.load()
+                && waiter.neededItems <= globalMaxItems.load()
+                && waiter.owner.map { $0.lastDiscoveryReleaseEpoch != epoch } == true
+        }
+    }
+
     private func scheduleLeaseTimerLocked(_ state: inout State) {
         guard automaticScheduling else { return }
         let expiry = state.grants.values.lazy.map(\.expiresAt).min()
@@ -1000,20 +1057,21 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             let existingPassWasQuiescent = state.scanRemaining == 0
             let existingWaiterCount = state.waiterCount
             appendLocked(waiter, state: &state)
+            if state.scanActive { state.scanNeedsFollowup = true }
             let deliveries: [(UdpIngressStagingWaiter, UInt64)]
             if capacityChanged {
                 // Expired provisional capacity is a new opportunity for the
                 // entire FIFO.
-                state.scanRemaining = state.waiterCount
+                requestScanLocked(&state)
                 deliveries = driveCoordinatorLocked(&state, now: now)
-            } else if existingPassWasQuiescent {
+            } else if existingPassWasQuiescent, !state.scanActive {
                 let baselineItems = capacityItems.load()
                 let baselineBytes = capacityBytes.load()
                 if existingWaiterCount > 0,
                     (state.quiescentCapacityItems != baselineItems
                         || state.quiescentCapacityBytes != baselineBytes)
                 {
-                    state.scanRemaining = state.waiterCount
+                    requestScanLocked(&state)
                     deliveries = driveCoordinatorLocked(&state, now: now)
                 } else {
                     let tailResult = inspectNewQuiescentTailLocked(
@@ -1021,7 +1079,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
                         baselineItems: baselineItems,
                         baselineBytes: baselineBytes)
                     if tailResult.capacityChanged {
-                        state.scanRemaining = state.waiterCount
+                        requestScanLocked(&state)
                         deliveries = driveCoordinatorLocked(&state, now: now)
                     } else {
                         deliveries = tailResult.deliveries
@@ -1029,14 +1087,20 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
                         state.quiescentCapacityBytes = capacityBytes.load()
                     }
                 }
-            } else if state.scanRemaining < state.waiterCount {
-                // Registration changes eligibility only for the newly linked
-                // tail. Extend an in-progress finite pass instead of resetting
-                // it and repeatedly rescanning an 8k-flow burst.
-                state.scanRemaining += 1
-                deliveries = driveCoordinatorLocked(&state, now: now)
             } else {
+                // Keep the original inspection budget finite even if fitting
+                // flows continuously re-park while their grants are consumed.
                 deliveries = driveCoordinatorLocked(&state, now: now)
+            }
+            if state.scanRemaining == 0 {
+                // The quiescent-tail fast path also completes an exact-fit
+                // opportunity. Preserve its queued discovery against later
+                // fitting arrivals until the serial runner can issue it.
+                // A tail observed while the envelope was already full does
+                // not itself establish a new pass: the next release must
+                // still visit the complete registered population first.
+                state.scanActive = hasPendingDiscoveryLocked(state)
+                    && (state.scanActive || hasDiscoveryOpportunityLocked(state))
             }
             if state.waiterCount == 0 { clearWaiterGateLocked() }
             scheduleScanLocked(&state)
@@ -1067,7 +1131,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
                     bytes: grant.bytes)
                 changed = true
             }
-            if changed { state.scanRemaining = state.waiterCount }
+            if changed { requestScanLocked(&state) }
             let deliveries = driveCoordinatorLocked(
                 &state, now: DispatchTime.now().uptimeNanoseconds)
             scheduleLeaseTimerLocked(&state)
@@ -1117,7 +1181,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             // either precede the gate or roll its reservation back.
             appendLocked(waiter, state: &state)
             releaseRetainedCapacity(items: items, bytes: bytes)
-            state.scanRemaining = state.waiterCount
+            requestScanLocked(&state)
             let deliveries = driveCoordinatorLocked(
                 &state, now: DispatchTime.now().uptimeNanoseconds)
             scheduleLeaseTimerLocked(&state)
