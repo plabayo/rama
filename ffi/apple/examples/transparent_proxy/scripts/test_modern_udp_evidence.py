@@ -696,8 +696,8 @@ def build_strict_bundle(directory):
     )
     lines.extend([
         _decision(RUN_UUID, provider_pid, 7, "intercept", 104, "162.159.200.1:123", "127.0.0.1:41004", "com.apple.python3", 1004),
-        'UDP ingress pressure dropped datagram flow_id=104 pressure="global_bytes" cumulative_drops=1 global_retained_bytes=100 global_max_retained_bytes=1000',
-        'UDP ingress pressure resumed flow flow_id=104 pressure="global_bytes" cumulative_resumptions=1 global_retained_bytes=0 global_max_retained_bytes=1000',
+        'UDP ingress pressure dropped datagram flow_id=104 pressure="global_bytes" cumulative_drops=1 global_retained_bytes=4096 global_max_retained_bytes=4096',
+        'UDP ingress pressure resumed flow flow_id=104 pressure="global_bytes" cumulative_resumptions=1 global_retained_bytes=0 global_max_retained_bytes=4096',
         _decision(RUN_UUID, provider_pid, 7, "intercept", 106, "162.159.200.1:123", "127.0.0.1:41006", "com.apple.python3", 1006),
     ])
     h3_pids = list(range(3000, 3006))
@@ -791,7 +791,7 @@ def build_strict_bundle(directory):
     requirement_rows = [
         "label\tprovider_pid\tprovider_generation\tflow_id\tprotocol\tsource_pid\tclose_reason\tmin_bytes_in\tmax_bytes_in\tmin_bytes_out\tmax_bytes_out\n",
         "ntp\t9001\t7\t103\t2\t1003\t1\t48\t65535\t48\t65535\n",
-        "pressure\t9001\t7\t104\t2\t1004\t1\t2097152\t2097152\t0\t0\n",
+        "pressure\t9001\t7\t104\t2\t1004\t1\t4096\t2093056\t0\t0\n",
         "recovery-ntp\t9001\t7\t106\t2\t1006\t1\t48\t65535\t48\t65535\n",
     ]
     requirement_rows.extend(
@@ -874,12 +874,14 @@ def build_strict_bundle(directory):
         f"crash_names_sha256\t{hashlib.sha256(b'').hexdigest()}\n"
         "schema_complete\t1\n"
     )
-    generation_tail = f"9001|500|{DIGEST}|{'b' * 64}"
+    generation_tail = f"9001|500|500000|{'c' * 40}|{DIGEST}|{'b' * 64}"
     (directory / "provider-generation-samples.tsv").write_text(
         "schema_version\t1\n"
         f"provider_generation_identity\t{DIGEST}\n"
         "running_pid\t9001\n"
         "running_start_epoch_ms\t500\n"
+        "running_start_epoch_us\t500000\n"
+        f"running_dynamic_cdhash\t{'c' * 40}\n"
         f"running_command_sha256\t{DIGEST}\n"
         f"running_executable_path_sha256\t{'b' * 64}\n"
         "cadence_ms\t2000\n"
@@ -976,6 +978,33 @@ class StrictBundleTests(unittest.TestCase):
             phases.read_text(),
         ))
         reseal_test_manifest(root)
+
+    def test_pressure_requirements_allow_accepted_bytes_but_require_a_drop(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            self.assertEqual(verify_bundle(root), 0)
+            requirements = root / "dial9-requirements.tsv"
+            original = requirements.read_text()
+            for bounds in (
+                "2097152\t2097152",  # Old contradictory all-sent equality.
+                "0\t2093056",        # No accepted packet required.
+                "4096\t2097152",     # No rejected packet required.
+                "4097\t2093056",     # Requirements cannot silently narrow.
+            ):
+                with self.subTest(bounds=bounds):
+                    requirements.write_text(original.replace("4096\t2093056", bounds))
+                    status = root / "udp-evidence-status.tsv"
+                    status.write_text(re.sub(
+                        r"(?m)^dial9_requirements_sha256\t[0-9a-f]{64}$",
+                        f"dial9_requirements_sha256\t{hashlib.sha256(requirements.read_bytes()).hexdigest()}",
+                        status.read_text(),
+                    ))
+                    reseal_test_manifest(root)
+                    with self.assertRaisesRegex(
+                        BundleVerificationError, "representative Dial9 requirement mismatch"
+                    ):
+                        verify_bundle(root)
 
     def test_rejects_unexpected_udp_callback_errors_after_workload_decisions(self):
         for operation in ("open", "read", "write"):
@@ -1121,8 +1150,8 @@ class StrictBundleTests(unittest.TestCase):
     def test_rejects_removed_reused_or_gapped_generation_timeline_after_reseal(self):
         mutations = (
             None,
-            (f"900|9001|500|{DIGEST}", f"900|9002|500|{DIGEST}"),
-            (f"6000|9001|500|{DIGEST}", f"9001|9001|500|{DIGEST}"),
+            ("sample_000001\t900|9001|", "sample_000001\t900|9002|"),
+            ("sample_000003\t6000|", "sample_000003\t9001|"),
         )
         for mutation in mutations:
             with self.subTest(mutation=mutation):
@@ -1133,7 +1162,9 @@ class StrictBundleTests(unittest.TestCase):
                     if mutation is None:
                         timeline.unlink()
                     else:
-                        timeline.write_text(timeline.read_text().replace(*mutation))
+                        original = timeline.read_text()
+                        self.assertIn(mutation[0], original)
+                        timeline.write_text(original.replace(*mutation))
                     reseal_test_manifest(root)
                     with self.assertRaises(BundleVerificationError):
                         verify_bundle(root)
@@ -1341,6 +1372,33 @@ class QuicShapedEchoTests(unittest.TestCase):
 
 
 class HarnessSourceContractTests(unittest.TestCase):
+    def test_pressure_producer_records_accepted_not_sent_byte_bounds(self):
+        helper = BoundedCommandCleanupTests.shell_function
+        with tempfile.TemporaryDirectory() as temporary:
+            requirements = Path(temporary) / "requirements.tsv"
+            program = helper("check_exact_decision") + helper("append_dial9_requirement") + textwrap.dedent(f"""\
+                DIAL9_REQUIREMENTS={shlex.quote(str(requirements))}
+                RUN_UUID={shlex.quote(RUN_UUID)} PROVIDER_PID=9001
+                PRESSURE_PAYLOAD_BYTES=4096 PRESSURE_EXPECTED_BYTES=2097152
+                decision_records() {{
+                  printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \\
+                    intercept 104 162.159.200.1:123 127.0.0.1:41004 \\
+                    com.apple.python3 1004 "$RUN_UUID" 9001 7
+                }}
+                decision_marker_count_for_pid() {{ printf '1\\n'; }}
+                is_canonical_udp_endpoint() {{ return 0; }}
+                add_issue() {{ printf '%s\\n' "$1" >&2; exit 1; }}
+                add_failure() {{ printf '%s\\n' "$1" >&2; exit 1; }}
+                check_exact_decision 0 1 intercept 162.159.200.1:123 \\
+                  com.apple.python3 1004 pressure pressure
+            """)
+            result = subprocess.run(
+                ["/bin/bash", "-c", program], capture_output=True, text=True, timeout=5
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(requirements.read_text(),
+                "pressure\t9001\t7\t104\t2\t1004\t1\t4096\t2093056\t0\t0\n")
+
     def test_finalizer_captures_late_collection_and_restoration_errors(self):
         helper = BoundedCommandCleanupTests.shell_function
         with tempfile.TemporaryDirectory() as temporary:

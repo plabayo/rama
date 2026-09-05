@@ -1646,9 +1646,11 @@ check_exact_decision() {
       ;;
     pressure)
       PRESSURE_FLOW_ID="$matching_flow_id"
+      # Dial9 counts accepted ingress. This once-only burst must both deliver
+      # at least one datagram and drop at least one on this exact pressure flow.
       append_dial9_requirement pressure "$matching_flow_id" "$expected_pid" \
-        "$matching_generation" "$PRESSURE_EXPECTED_BYTES" \
-        "$PRESSURE_EXPECTED_BYTES" 0 0
+        "$matching_generation" "$PRESSURE_PAYLOAD_BYTES" \
+        "$((PRESSURE_EXPECTED_BYTES - PRESSURE_PAYLOAD_BYTES))" 0 0
       ;;
     blocked)
       BLOCKED_DNS_FLOW_ID="$matching_flow_id"

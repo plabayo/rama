@@ -585,7 +585,8 @@ CRASH_SNAPSHOT_FIELDS = (
 MODERN_PROVIDER_PROCESS = "org.ramaproxy.example.tproxy.dev.provider"
 GENERATION_FIXED_FIELDS = (
     "schema_version", "provider_generation_identity", "running_pid",
-    "running_start_epoch_ms", "running_command_sha256",
+    "running_start_epoch_ms", "running_start_epoch_us", "running_dynamic_cdhash",
+    "running_command_sha256",
     "running_executable_path_sha256", "cadence_ms", "max_gap_ms",
     "sample_count",
 )
@@ -614,11 +615,14 @@ def _validate_provider_generation_samples(root, status, required_through_epoch_m
     ):
         raise BundleVerificationError("provider generation proof is not bound to terminal identity")
     running_start = _bundle_uint(values["running_start_epoch_ms"])
+    running_start_us = _bundle_uint(values["running_start_epoch_us"])
     cadence = _bundle_uint(values["cadence_ms"], 5_000)
     max_gap = _bundle_uint(values["max_gap_ms"], 10_000)
     count = _bundle_uint(values["sample_count"], 9_999_999)
     if (
         running_start == 0
+        or running_start_us // 1000 != running_start
+        or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", values["running_dynamic_cdhash"]) is None
         or running_start > _bundle_uint(status["run_start_epoch_ms"])
         or not 250 <= cadence <= 5_000
         or not cadence <= max_gap <= min(cadence * 3, 10_000)
@@ -632,6 +636,7 @@ def _validate_provider_generation_samples(root, status, required_through_epoch_m
     samples = rows[len(GENERATION_FIXED_FIELDS):-1]
     tail = "|".join((
         values["running_pid"], values["running_start_epoch_ms"],
+        values["running_start_epoch_us"], values["running_dynamic_cdhash"],
         values["running_command_sha256"], values["running_executable_path_sha256"],
     ))
     epochs = []
@@ -1279,8 +1284,12 @@ def _validate_requirements(root, status, representative, echo_identities, unbloc
         raise BundleVerificationError("Dial9 requirement identity/range is invalid")
     fixed = (
         (representative["ntp"], 48, 65_535, 48, 65_535),
-        (representative["pressure"], _bundle_uint(status["pressure_expected_bytes"]),
-         _bundle_uint(status["pressure_expected_bytes"]), 0, 0),
+        # The pressure burst sends equal-sized datagrams once each. Its exact
+        # flow must accept at least one and reject at least one; rejected bytes
+        # never enter the Rust ingress counter recorded by Dial9 at close.
+        (representative["pressure"], _bundle_uint(status["pressure_payload_bytes"]),
+         _bundle_uint(status["pressure_expected_bytes"])
+         - _bundle_uint(status["pressure_payload_bytes"]), 0, 0),
         (representative["recovery"], 48, 65_535, 48, 65_535),
     )
     for row, (decision, min_in, max_in, min_out, max_out) in zip(parsed[:3], fixed):

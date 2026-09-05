@@ -52,7 +52,7 @@ SOAK_SCRIPT = SCRIPT_DIR / "soak_test.sh"
 
 
 def write_fixture_generation_samples(
-    log_dir: Path, generation: str, start: int, end: int
+    log_dir: Path, generation: str, start: int, end: int, cdhash: str
 ) -> None:
     command = "/fixture/provider"
     command_hash = __import__("hashlib").sha256(command.encode()).hexdigest()
@@ -64,12 +64,14 @@ def write_fixture_generation_samples(
         end + 1,
         *range(start, end + 1, 2000),
     })
-    tail = f"42|{start}|{command_hash}|{path_hash}"
+    tail = f"42|{start}|{start * 1000}|{cdhash}|{command_hash}|{path_hash}"
     fixed = (
         ("schema_version", "1"),
         ("provider_generation_identity", generation),
         ("running_pid", "42"),
         ("running_start_epoch_ms", str(start)),
+        ("running_start_epoch_us", str(start * 1000)),
+        ("running_dynamic_cdhash", cdhash),
         ("running_command_sha256", command_hash),
         ("running_executable_path_sha256", path_hash),
         ("cadence_ms", "2000"),
@@ -244,7 +246,7 @@ def write_self_attested_traffic_run(
         )
         if role == "proxy-candidate":
             write_fixture_generation_samples(
-                log_dir, provider_identity, start, end
+                log_dir, provider_identity, start, end, signing_cdhash
             )
     metrics = write_stress_metrics(
         log_dir, str(start), str(end), "10000", "100", "67108864",
@@ -376,6 +378,8 @@ def add_common_stress_envelope(log_dir: Path) -> None:
             "source_git_dirty": "0",
             "running_pid": "42",
             "running_start_epoch_ms": str(provider_start),
+            "running_start_epoch_us": str(provider_start * 1000),
+            "running_dynamic_cdhash": legacy["provider_signing_cdhash"],
             "running_command": command,
             "running_command_sha256": command_sha,
             "provider_build_identity": provider_build,
@@ -407,6 +411,7 @@ def add_common_stress_envelope(log_dir: Path) -> None:
             provider_generation,
             int(legacy["run_start_epoch"]),
             int(legacy["run_end_epoch"]),
+            legacy["provider_signing_cdhash"],
         )
         for resource_name in ("preflight.txt", "postflight.txt", "monitor.42.log"):
             resource_path = log_dir / resource_name

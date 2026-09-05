@@ -60,6 +60,7 @@ def write_generation_samples(directory: Path, status):
     path_hash = hashlib.sha256(identity["running_executable_path"].encode()).hexdigest()
     tail = "|".join((
         identity["running_pid"], identity["running_start_epoch_ms"],
+        identity["running_start_epoch_us"], identity["running_dynamic_cdhash"],
         identity["running_command_sha256"], path_hash,
     ))
     rows = [
@@ -67,6 +68,8 @@ def write_generation_samples(directory: Path, status):
         ("provider_generation_identity", status["provider_generation_identity"]),
         ("running_pid", identity["running_pid"]),
         ("running_start_epoch_ms", identity["running_start_epoch_ms"]),
+        ("running_start_epoch_us", identity["running_start_epoch_us"]),
+        ("running_dynamic_cdhash", identity["running_dynamic_cdhash"]),
         ("running_command_sha256", identity["running_command_sha256"]),
         ("running_executable_path_sha256", path_hash),
         ("cadence_ms", "2000"),
@@ -108,6 +111,8 @@ def write_identity(
         "source_git_dirty": dirty,
         "running_pid": str(pid),
         "running_start_epoch_ms": str(start),
+        "running_start_epoch_us": str(start * 1000),
+        "running_dynamic_cdhash": cdhash,
         "running_command": command,
         "running_command_sha256": command_hash,
         "provider_build_identity": build,
@@ -492,9 +497,13 @@ def make_strict_modern_run(directory: Path):
         ),
     }
     for label, (flow_id, source_pid) in specific.items():
+        bounds = ["0", "65535", "0", "65535"]
+        if label == "pressure":
+            payload = int(udp["pressure_payload_bytes"])
+            bounds = [str(payload), str(int(udp["pressure_expected_bytes"]) - payload), "0", "0"]
         requirement_rows.append([
             label, "42", "7", flow_id, "2", source_pid, "1",
-            "0", "65535", "0", "65535",
+            *bounds,
         ])
     echo_bytes = str(
         int(udp["echo_datagrams_per_socket"]) * int(udp["echo_payload_bytes"])
@@ -527,7 +536,8 @@ def make_strict_modern_run(directory: Path):
                 )
             },
             "label": row["label"],
-            "bytes_in": int(row["min_bytes_in"]),
+            # Model exactly one dropped pressure packet from the once-only burst.
+            "bytes_in": int(row["max_bytes_in"] if row["label"] == "pressure" else row["min_bytes_in"]),
             "bytes_out": int(row["min_bytes_out"]),
             "close_reason_name": "shutdown",
             "close_age_ms": 0,
@@ -1072,6 +1082,16 @@ class StatusAndIdentityTests(unittest.TestCase):
                     "sample_000002\t1700000001500|", "sample_000002\t1700000010000|"
                 )
             ),
+            "missing precise birth": lambda root: (root / evidence.GENERATION_SAMPLES_NAME).write_text(
+                (root / evidence.GENERATION_SAMPLES_NAME).read_text().replace(
+                    "running_start_epoch_us\t1700000000000000\n", ""
+                )
+            ),
+            "missing dynamic code": lambda root: (root / evidence.GENERATION_SAMPLES_NAME).write_text(
+                (root / evidence.GENERATION_SAMPLES_NAME).read_text().replace(
+                    f"running_dynamic_cdhash\t{CDHASH}\n", ""
+                )
+            ),
         }
         for name, mutate in mutations.items():
             with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
@@ -1145,8 +1165,12 @@ class StatusAndIdentityTests(unittest.TestCase):
                 lambda root: replace_file(root, evidence.GENERATION_SAMPLES_NAME, "|42|1700000000000|", "|42|1700000000001|"),
                 "malformed or substituted"),
             "postwake command identity": (
-                lambda root: replace_last_sample_identity(root, 3), "malformed or substituted"),
+                lambda root: replace_last_sample_identity(root, 5), "malformed or substituted"),
             "postwake executable path": (
+                lambda root: replace_last_sample_identity(root, 6), "malformed or substituted"),
+            "postwake precise birth": (
+                lambda root: replace_last_sample_identity(root, 3), "malformed or substituted"),
+            "postwake dynamic code": (
                 lambda root: replace_last_sample_identity(root, 4), "malformed or substituted"),
             "invalid timezone": (
                 lambda root: replace_file(root, "system.ndjson", "+0000", "+unknown"),
@@ -1423,6 +1447,10 @@ class StatusAndIdentityTests(unittest.TestCase):
             evidence, "_bundle_snapshot", return_value=bundle
         ), mock.patch.object(
             evidence, "_process_snapshot", side_effect=[process_a, process_b]
+        ), mock.patch.object(
+            evidence, "_dynamic_code_snapshot", return_value=evidence.DynamicCodeSnapshot(
+                1_000_000, evidence.DEV_PROVIDER_BUNDLE_ID, evidence.DEV_TEAM_ID, CDHASH
+            )
         ):
             with self.assertRaisesRegex(evidence.EvidenceError, "generation changed"):
                 evidence.capture_provider(
@@ -1442,15 +1470,16 @@ class StatusAndIdentityTests(unittest.TestCase):
                 return len(content)
             proc.proc_pidpath.side_effect = pidpath
             with mock.patch.object(evidence.ctypes, "CDLL", return_value=proc), \
+                mock.patch.object(evidence, "_process_start_epoch_us", return_value=1_000_123), \
                 mock.patch.object(evidence, "_run", side_effect=[
-                    subprocess.CompletedProcess([], 0, "Sat Sep  5 10:20:30 2026\n", ""),
                     subprocess.CompletedProcess([], 0, "/argv/decoy\n", ""),
                 ]) as commands:
                 snapshot = evidence._process_snapshot(42)
             self.assertEqual(snapshot.executable_path, executable.resolve())
             self.assertEqual(snapshot.command, "/argv/decoy")
+            self.assertEqual(snapshot.start_epoch_ms, 1000)
             self.assertEqual([call.args[0][0] for call in commands.call_args_list],
-                             ["/bin/ps", "/bin/ps"])
+                             ["/bin/ps"])
 
     def test_kernel_executable_lookup_rejects_missing_truncated_or_malformed_path(self):
         cases = ((0, b""), (4096, b""), (4, b"abcdx"),
@@ -1503,12 +1532,222 @@ class StatusAndIdentityTests(unittest.TestCase):
             evidence, "_bundle_snapshot", return_value=bundle
         ), mock.patch.object(
             evidence, "_process_snapshot", side_effect=[process, process]
+        ), mock.patch.object(
+            evidence, "_dynamic_code_snapshot", return_value=evidence.DynamicCodeSnapshot(
+                1_000_000, evidence.DEV_PROVIDER_BUNDLE_ID, evidence.DEV_TEAM_ID, CDHASH
+            )
         ):
             with self.assertRaisesRegex(evidence.EvidenceError, "declared executable"):
                 evidence.capture_provider(
                     Path("built"), Path("installed"), 42,
                     Path(temporary) / evidence.PROVIDER_IDENTITY_NAME, Path("source"),
                 )
+
+
+class DynamicCodeIdentityTests(unittest.TestCase):
+    @staticmethod
+    def framework_fixture():
+        cf, security = mock.Mock(), mock.Mock()
+        constants = {
+            "kSecGuestAttributePid": 1, "kSecCodeInfoIdentifier": 2,
+            "kSecCodeInfoTeamIdentifier": 3, "kSecCodeInfoUnique": 4,
+        }
+        cf.CFNumberCreate.return_value = 11
+        cf.CFDictionaryCreate.return_value = 21
+        def copy_guest(host, attributes, flags, output):
+            assert host is None and attributes == 21 and flags == 0
+            output._obj.value = 31
+            return 0
+        def copy_information(guest, flags, output):
+            assert guest.value == 31 and flags == 1 << 1
+            output._obj.value = 41
+            return 0
+        security.SecCodeCopyGuestWithAttributes.side_effect = copy_guest
+        security.SecCodeCopySigningInformation.side_effect = copy_information
+        security.SecCodeCheckValidity.return_value = 0
+        cf.CFDictionaryGetValue.side_effect = lambda _dictionary, key: {2: 51, 3: 52, 4: 53}[key]
+        cf.CFGetTypeID.side_effect = lambda value: 2 if value == 53 else 1
+        cf.CFStringGetTypeID.return_value = 1
+        cf.CFDataGetTypeID.return_value = 2
+        def get_string(value, buffer, _length, encoding):
+            assert encoding == 0x08000100
+            buffer.value = {
+                51: evidence.DEV_PROVIDER_BUNDLE_ID.encode(),
+                52: evidence.DEV_TEAM_ID.encode(),
+            }[value]
+            return True
+        cf.CFStringGetCString.side_effect = get_string
+        cf.CFDataGetLength.return_value = 20
+        # Retain the storage for the borrowed CFData bytes throughout the test.
+        cf.hash_buffer = evidence.ctypes.create_string_buffer(bytes.fromhex(CDHASH))
+        cf.CFDataGetBytePtr.return_value = evidence.ctypes.addressof(cf.hash_buffer)
+        return cf, security, constants
+
+    def read_dynamic(self, cf, security, constants, births=(1_000_123, 1_000_123)):
+        with mock.patch.object(evidence.ctypes, "CDLL", side_effect=[cf, security]), \
+                mock.patch.object(evidence, "_framework_constant", side_effect=lambda _library, name: constants[name]), \
+                mock.patch.object(evidence, "_process_start_epoch_us", side_effect=births):
+            return evidence._dynamic_code_snapshot(42)
+
+    def test_dynamic_guest_is_validated_and_owned_references_are_released(self):
+        cf, security, constants = self.framework_fixture()
+        self.assertEqual(self.read_dynamic(cf, security, constants), evidence.DynamicCodeSnapshot(
+            1_000_123, evidence.DEV_PROVIDER_BUNDLE_ID, evidence.DEV_TEAM_ID, CDHASH
+        ))
+        self.assertEqual(security.SecCodeCheckValidity.call_count, 2)
+        for call in security.SecCodeCheckValidity.call_args_list:
+            self.assertEqual(call.args[0].value, 31)
+            self.assertEqual(call.args[1:], (1 << 4, None))
+        self.assertEqual([call.args[0] for call in cf.CFRelease.call_args_list], [41, 31, 21, 11])
+        self.assertEqual(cf.CFNumberCreate.call_args.args[2]._obj.value, 42)
+
+    def test_dynamic_api_errors_and_malformed_information_fail_closed(self):
+        for failure in (
+            "guest", "validity", "final validity", "information", "missing field",
+            "wrong type", "unreadable string", "hash length", "hash address", "birth changed",
+        ):
+            with self.subTest(failure=failure):
+                cf, security, constants = self.framework_fixture()
+                births = (1_000_123, 1_000_123)
+                if failure == "guest":
+                    security.SecCodeCopyGuestWithAttributes.side_effect = None
+                    security.SecCodeCopyGuestWithAttributes.return_value = -67062
+                elif failure == "validity":
+                    security.SecCodeCheckValidity.return_value = -67050
+                elif failure == "final validity":
+                    security.SecCodeCheckValidity.side_effect = [0, -67050]
+                elif failure == "information":
+                    security.SecCodeCopySigningInformation.side_effect = None
+                    security.SecCodeCopySigningInformation.return_value = -67062
+                elif failure == "missing field":
+                    cf.CFDictionaryGetValue.side_effect = None
+                    cf.CFDictionaryGetValue.return_value = None
+                elif failure == "wrong type":
+                    cf.CFGetTypeID.side_effect = None
+                    cf.CFGetTypeID.return_value = 99
+                elif failure == "unreadable string":
+                    cf.CFStringGetCString.side_effect = None
+                    cf.CFStringGetCString.return_value = False
+                elif failure == "hash length":
+                    cf.CFDataGetLength.return_value = 4096
+                elif failure == "hash address":
+                    cf.CFDataGetBytePtr.return_value = None
+                else:
+                    births = (1_000_123, 1_000_124)
+                with self.assertRaises(evidence.EvidenceError):
+                    self.read_dynamic(cf, security, constants, births)
+                self.assertEqual(cf.CFRelease.call_args_list[-2:], [mock.call(21), mock.call(11)])
+        with mock.patch.object(evidence, "_process_start_epoch_us", return_value=1_000_123), \
+                mock.patch.object(evidence.ctypes, "CDLL", side_effect=OSError("unavailable")):
+            with self.assertRaisesRegex(evidence.EvidenceError, "unavailable or unreadable"):
+                evidence._dynamic_code_snapshot(42)
+
+    def test_kernel_birth_uses_exact_public_structure_and_rejects_partial_or_wrong_pid(self):
+        for failure in (None, "syscall", "length", "pid", "microseconds", "negative", "zero"):
+            with self.subTest(failure=failure):
+                system = mock.Mock()
+                def lookup(mib, count, output, length, new_value, new_length):
+                    self.assertEqual(list(mib), [1, 14, 1, 42])
+                    self.assertEqual((count, len(output), length._obj.value, new_value, new_length),
+                                     (4, 648, 648, None, 0))
+                    evidence.ctypes.c_int64.from_buffer(output, 0).value = 0 if failure == "zero" else 1
+                    evidence.ctypes.c_int32.from_buffer(output, 8).value = (
+                        1_000_000 if failure == "microseconds" else -1 if failure == "negative" else 123
+                    )
+                    evidence.ctypes.c_int32.from_buffer(output, 40).value = 43 if failure == "pid" else 42
+                    if failure == "length":
+                        length._obj.value -= 1
+                    return -1 if failure == "syscall" else 0
+                system.sysctl.side_effect = lookup
+                with mock.patch.object(evidence.ctypes, "CDLL", return_value=system):
+                    if failure is None:
+                        self.assertEqual(evidence._process_start_epoch_us(42), 1_000_123)
+                    else:
+                        with self.assertRaisesRegex(evidence.EvidenceError, "process birth"):
+                            evidence._process_start_epoch_us(42)
+
+    def test_capture_binds_live_signature_and_precise_birth_without_writing_on_failure(self):
+        build = evidence.provider_build_identity(
+            evidence.DEV_PROVIDER_BUNDLE_ID, HEAD, evidence.DEV_TEAM_ID, CDHASH, EXECUTABLE_HASH
+        )
+        bundle = evidence.BundleSnapshot(
+            evidence.DEV_PROVIDER_BUNDLE_ID, HEAD, "0", evidence.DEV_TEAM_ID,
+            CDHASH, EXECUTABLE_HASH, "1", "/bundle", "/bundle/provider", build
+        )
+        process = evidence.ProcessSnapshot(42, 1000, "/bundle/provider", Path("/bundle/provider"))
+        valid = evidence.DynamicCodeSnapshot(
+            1_000_123, evidence.DEV_PROVIDER_BUNDLE_ID, evidence.DEV_TEAM_ID, CDHASH
+        )
+        for failure in (None, "hash", "identifier", "team", "birth", "changed", "unavailable"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                dynamic = valid
+                if failure == "hash":
+                    dynamic = evidence.DynamicCodeSnapshot(valid.start_epoch_us, valid.signing_id, valid.team_id, "d" * 40)
+                elif failure == "identifier":
+                    dynamic = evidence.DynamicCodeSnapshot(valid.start_epoch_us, "other.provider", valid.team_id, valid.cdhash)
+                elif failure == "team":
+                    dynamic = evidence.DynamicCodeSnapshot(valid.start_epoch_us, valid.signing_id, "OTHERTEAM", valid.cdhash)
+                elif failure == "birth":
+                    dynamic = evidence.DynamicCodeSnapshot(2_000_123, valid.signing_id, valid.team_id, valid.cdhash)
+                snapshots = [dynamic, dynamic]
+                if failure == "changed":
+                    snapshots[1] = evidence.DynamicCodeSnapshot(1_000_124, valid.signing_id, valid.team_id, valid.cdhash)
+                output = Path(temporary) / "identity.tsv"
+                with mock.patch.object(evidence, "_git_snapshot", return_value=(HEAD, "0")), \
+                        mock.patch.object(evidence, "_bundle_snapshot", return_value=bundle), \
+                        mock.patch.object(evidence, "_process_snapshot", return_value=process), \
+                        mock.patch.object(evidence, "_dynamic_code_snapshot", side_effect=(
+                            evidence.EvidenceError("unavailable") if failure == "unavailable" else snapshots
+                        )):
+                    if failure is not None:
+                        with self.assertRaises(evidence.EvidenceError):
+                            evidence.capture_provider(Path("built"), Path("installed"), 42, output, Path("source"))
+                        self.assertFalse(output.exists())
+                    else:
+                        values = evidence.capture_provider(Path("built"), Path("installed"), 42, output, Path("source"))
+                        self.assertEqual(values["running_start_epoch_us"], "1000123")
+                        self.assertEqual(values["running_dynamic_cdhash"], CDHASH)
+                        self.assertEqual(evidence.read_provider_identity(output), values)
+                        self.assertNotEqual(values["provider_generation_identity"], evidence.provider_generation_identity(
+                            42, 1000, values["running_command_sha256"], start_epoch_us=1_000_124
+                        ))
+
+    def test_each_sample_rechecks_live_code_and_birth_without_replacing_good_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            executable = root / "provider"
+            executable.write_bytes(b"fixture")
+            write_identity(root, command=str(executable))
+            identity_path = root / evidence.PROVIDER_IDENTITY_NAME
+            identity = evidence.read_provider_identity(identity_path)
+            identity["running_executable_path"] = str(executable)
+            write_tsv(identity_path, identity.items())
+            process = evidence.ProcessSnapshot(42, 1_700_000_000_000, str(executable), executable)
+            valid = evidence.DynamicCodeSnapshot(
+                1_700_000_000_000_000, evidence.DEV_PROVIDER_BUNDLE_ID, evidence.DEV_TEAM_ID, CDHASH
+            )
+            output = root / evidence.GENERATION_SAMPLES_NAME
+            with mock.patch.object(evidence, "_process_snapshot", return_value=process), \
+                    mock.patch.object(evidence, "_dynamic_code_snapshot", return_value=valid) as capture:
+                evidence.capture_provider_generation(identity_path, output)
+                capture.assert_called_once_with(42)
+            original = output.read_bytes()
+            for failure in ("hash", "birth", "unavailable", "process changed"):
+                with self.subTest(failure=failure):
+                    dynamic = evidence.DynamicCodeSnapshot(
+                        valid.start_epoch_us + (1 if failure == "birth" else 0), valid.signing_id,
+                        valid.team_id, "d" * 40 if failure == "hash" else valid.cdhash,
+                    )
+                    after = process if failure != "process changed" else evidence.ProcessSnapshot(
+                        42, process.start_epoch_ms, "other-command", executable
+                    )
+                    with mock.patch.object(evidence, "_process_snapshot", side_effect=[process, after]), \
+                            mock.patch.object(evidence, "_dynamic_code_snapshot", side_effect=(
+                                evidence.EvidenceError("unavailable") if failure == "unavailable" else [dynamic]
+                            )):
+                        with self.assertRaises(evidence.EvidenceError):
+                            evidence.capture_provider_generation(identity_path, output, append=True)
+                    self.assertEqual(output.read_bytes(), original)
 
 
 class CrashAndReleaseSetTests(unittest.TestCase):
@@ -2150,6 +2389,58 @@ class CrashAndReleaseSetTests(unittest.TestCase):
                 evidence.EvidenceError, "decoder rejected sealed traces"
             ):
                 evidence._verify_pinned_dial9_replay(root, HEAD)
+
+    def test_modern_pressure_summary_requires_whole_accepted_datagrams(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "modern"
+            make_strict_modern_run(root)
+            udp, _ = evidence._parse_tsv_bytes((root / "udp-evidence-status.tsv").read_bytes())
+            echo_identities = [
+                (int(generation), int(flow_id), endpoint)
+                for generation, flow_id, endpoint in (
+                    line.split("\t") for line in (root / "echo-identities.tsv").read_text().splitlines()
+                )
+            ]
+            summary_path = root / "dial9-evidence.json"
+            summary = json.loads(summary_path.read_text())
+            pressure = next(flow for flow in summary["required_flows"] if flow["label"] == "pressure")
+            payload, sent = int(udp["pressure_payload_bytes"]), int(udp["pressure_expected_bytes"])
+            with mock.patch.object(evidence, "_verify_pinned_dial9_replay"):
+                for accepted in (payload, 2 * payload, sent - payload):
+                    with self.subTest(accepted=accepted):
+                        pressure["bytes_in"] = accepted
+                        summary_path.write_text(json.dumps(summary))
+                        evidence._validate_modern_dial9(root, udp, echo_identities, HEAD)
+                for rejected in (0, 1, payload - 1, payload + 1, sent, sent + payload):
+                    with self.subTest(rejected=rejected):
+                        pressure["bytes_in"] = rejected
+                        summary_path.write_text(json.dumps(summary))
+                        with self.assertRaisesRegex(
+                            evidence.EvidenceError, "pressure|result mismatch"
+                        ):
+                            evidence._validate_modern_dial9(root, udp, echo_identities, HEAD)
+
+    def test_modern_pressure_summary_rejects_weakened_requirements(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "modern"
+            make_strict_modern_run(root)
+            udp, _ = evidence._parse_tsv_bytes((root / "udp-evidence-status.tsv").read_bytes())
+            requirements = root / "dial9-requirements.tsv"
+            original = requirements.read_text()
+            payload, sent = int(udp["pressure_payload_bytes"]), int(udp["pressure_expected_bytes"])
+            for bounds in ((0, sent - payload), (payload, sent), (sent, sent)):
+                with self.subTest(bounds=bounds):
+                    rows = original.splitlines()
+                    fields = rows[2].split("\t")
+                    self.assertEqual(fields[0], "pressure")
+                    fields[7:9] = map(str, bounds)
+                    rows[2] = "\t".join(fields)
+                    requirements.write_text("\n".join(rows) + "\n")
+                    udp["dial9_requirements_sha256"] = evidence.sha256_file(requirements)
+                    with mock.patch.object(
+                        evidence, "_verify_pinned_dial9_replay"
+                    ), self.assertRaisesRegex(evidence.EvidenceError, "pressure accepted-byte requirements"):
+                        evidence._validate_modern_dial9(root, udp, [], HEAD)
 
     def test_release_set_rejects_claim_only_fake_soak_envelope(self):
         with tempfile.TemporaryDirectory() as temporary:

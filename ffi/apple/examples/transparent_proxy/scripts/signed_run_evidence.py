@@ -103,6 +103,8 @@ PROVIDER_IDENTITY_ORDER = (
     *(f"running_{field}" for field in SNAPSHOT_FIELDS),
     "running_pid",
     "running_start_epoch_ms",
+    "running_start_epoch_us",
+    "running_dynamic_cdhash",
     "running_command",
     "running_command_sha256",
     "provider_build_identity",
@@ -128,6 +130,8 @@ GENERATION_FIXED_ORDER = (
     "provider_generation_identity",
     "running_pid",
     "running_start_epoch_ms",
+    "running_start_epoch_us",
+    "running_dynamic_cdhash",
     "running_command_sha256",
     "running_executable_path_sha256",
     "cadence_ms",
@@ -184,6 +188,14 @@ class ProcessSnapshot:
 
 
 @dataclass(frozen=True)
+class DynamicCodeSnapshot:
+    start_epoch_us: int
+    signing_id: str
+    team_id: str
+    cdhash: str
+
+
+@dataclass(frozen=True)
 class VerifiedEnvelope:
     root: Path
     status: dict[str, str]
@@ -236,12 +248,15 @@ def provider_build_identity(
 
 
 def provider_generation_identity(
-    pid: int, start_epoch_ms: int, command_sha256: str
+    pid: int, start_epoch_ms: int, command_sha256: str,
+    *, start_epoch_us: int | None = None,
 ) -> str:
     """Return the identity of one running process generation."""
     return _identity_hash(
-        "rama-signed-provider-generation-v1",
-        (str(pid), str(start_epoch_ms), command_sha256),
+        "rama-signed-provider-generation-v2",
+        (str(pid), str(start_epoch_ms),
+         str(start_epoch_ms * 1000 if start_epoch_us is None else start_epoch_us),
+         command_sha256),
     )
 
 
@@ -1503,6 +1518,17 @@ def _validate_modern_dial9(
             or by_label[label]["source_pid"] != _canonical_uint(source_pid)
         ):
             raise EvidenceError(f"modern Dial9 {label} identity mismatch")
+    pressure_payload = _canonical_uint(udp["pressure_payload_bytes"], 60_000)
+    pressure_sent = _canonical_uint(udp["pressure_expected_bytes"], 256 * 1024 * 1024)
+    pressure_count = _canonical_uint(udp["pressure_datagram_count"], 100_000)
+    if (
+        pressure_payload < 64 or pressure_count < 64
+        or pressure_sent != pressure_count * pressure_payload
+        or tuple(by_label["pressure"][key] for key in (
+            "min_bytes_in", "max_bytes_in", "min_bytes_out", "max_bytes_out"
+        )) != (pressure_payload, pressure_sent - pressure_payload, 0, 0)
+    ):
+        raise EvidenceError("modern Dial9 pressure accepted-byte requirements mismatch")
     echo_labels = {f"echo-{index}" for index in range(_canonical_uint(udp["echo_flow_count"], 512))}
     if set(labels) != echo_labels | set(expected_specific):
         raise EvidenceError("modern Dial9 exact workload label set mismatch")
@@ -1590,6 +1616,10 @@ def _validate_modern_dial9(
             or not 0 <= flow["close_age_ms"] <= age_bound
         ):
             raise EvidenceError(f"modern Dial9 required flow result mismatch: {label}")
+        # Ingress accepts complete equal-sized datagrams from the once-only
+        # pressure burst. A range match alone must not admit fractional packets.
+        if label == "pressure" and flow["bytes_in"] % pressure_payload != 0:
+            raise EvidenceError("modern Dial9 pressure accepted bytes are not whole datagrams")
     trace_names = []
     trace_indices = []
     for artifact in artifacts:
@@ -2363,17 +2393,191 @@ def _process_executable_path(pid: int) -> Path:
 def _process_snapshot(pid: int) -> ProcessSnapshot:
     if isinstance(pid, bool) or not 0 < pid <= 2**31 - 1:
         raise EvidenceError("invalid provider pid")
-    start_text = _run(["/bin/ps", "-p", str(pid), "-o", "lstart="]).stdout.strip()
+    birth_before = _process_start_epoch_us(pid)
     command = _run(["/bin/ps", "-ww", "-p", str(pid), "-o", "command="]).stdout.rstrip("\n")
-    if not start_text or not command or "\n" in command or any(character in command for character in "\t\r"):
+    if not command or "\n" in command or any(character in command for character in "\t\r"):
         raise EvidenceError("provider process metadata is incomplete")
-    try:
-        start = datetime.strptime(start_text, "%a %b %d %H:%M:%S %Y").astimezone()
-    except ValueError as error:
-        raise EvidenceError("cannot parse provider process start time") from error
-    start_epoch_ms = int(start.timestamp()) * 1000
     executable = _process_executable_path(pid)
-    return ProcessSnapshot(pid, start_epoch_ms, command, executable)
+    if _process_start_epoch_us(pid) != birth_before:
+        raise EvidenceError("provider process birth changed during metadata capture")
+    return ProcessSnapshot(pid, birth_before // 1000, command, executable)
+
+
+def _process_start_epoch_us(pid: int) -> int:
+    """Read the kernel process birth time without ps's one-second truncation."""
+    if isinstance(pid, bool) or not 0 < pid <= 2**31 - 1:
+        raise EvidenceError("invalid provider pid")
+
+    # Public Darwin sys/sysctl.h and sys/proc.h, LP64 kinfo_proc ABI:
+    # kp_proc starts with extern_proc's timeval, two pointers, flags, status,
+    # and PID. Unlike proc_pidinfo(PROC_PIDTBSDINFO), this read is permitted
+    # for the root-owned provider from the ordinary harness user. Read the
+    # complete 648-byte record, require its exact size, and interpret only
+    # this public prefix. An incompatible ABI fails closed.
+    class ProcessPrefix(ctypes.Structure):
+        _fields_ = [
+            ("start_sec", ctypes.c_int64), ("start_usec", ctypes.c_int32),
+            ("vmspace", ctypes.c_void_p), ("sigacts", ctypes.c_void_p),
+            ("flags", ctypes.c_int32), ("status", ctypes.c_uint8),
+            ("pid", ctypes.c_int32),
+        ]
+
+    if ctypes.sizeof(ProcessPrefix) != 48 or ProcessPrefix.pid.offset != 40:
+        raise EvidenceError("unsupported kernel process birth ABI")
+    try:
+        system = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+        lookup = system.sysctl
+        lookup.argtypes = (
+            ctypes.POINTER(ctypes.c_int), ctypes.c_uint,
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t),
+            ctypes.c_void_p, ctypes.c_size_t,
+        )
+        lookup.restype = ctypes.c_int
+        # CTL_KERN, KERN_PROC, KERN_PROC_PID, exact provider PID.
+        mib = (ctypes.c_int * 4)(1, 14, 1, pid)
+        buffer = ctypes.create_string_buffer(648)
+        length = ctypes.c_size_t(len(buffer))
+        result = lookup(mib, 4, buffer, ctypes.byref(length), None, 0)
+        info = ProcessPrefix.from_buffer(buffer)
+    except (OSError, AttributeError) as error:
+        raise EvidenceError("kernel process birth lookup is unavailable") from error
+    if result != 0 or length.value != len(buffer) or info.pid != pid \
+            or info.start_sec <= 0 or not 0 <= info.start_usec < 1_000_000:
+        raise EvidenceError("kernel could not identify the provider process birth")
+    return info.start_sec * 1_000_000 + info.start_usec
+
+
+def _framework_constant(library, name: str):
+    value = ctypes.c_void_p.in_dll(library, name).value
+    if not value:
+        raise EvidenceError(f"dynamic code identity constant is missing: {name}")
+    return value
+
+
+def _dynamic_code_snapshot(pid: int) -> DynamicCodeSnapshot:
+    """Validate a live Security.framework guest, not its pathname alone.
+
+    SecCodeCopyStaticCode's filesystem link is explicitly not guaranteed secure.
+    SecCodeCheckValidity on a dynamic guest checks both its kernel-hosted running
+    identity and its signed filesystem source. The harness has no XPC-provided
+    audit token: bracket the PID-selected guest with the kernel's microsecond
+    birth time, and bind that birth across the entire capture and every sample.
+    """
+    birth_before = _process_start_epoch_us(pid)
+    owned = []
+    cf = None
+    try:
+        cf = ctypes.CDLL(
+            "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+        )
+        security = ctypes.CDLL(
+            "/System/Library/Frameworks/Security.framework/Security"
+        )
+        pointer = ctypes.c_void_p
+        pointer_pointer = ctypes.POINTER(pointer)
+        signatures = (
+            (cf, "CFNumberCreate", pointer, (pointer, ctypes.c_long, pointer)),
+            (cf, "CFDictionaryCreate", pointer,
+             (pointer, pointer_pointer, pointer_pointer, ctypes.c_long, pointer, pointer)),
+            (cf, "CFDictionaryGetValue", pointer, (pointer, pointer)),
+            (cf, "CFGetTypeID", ctypes.c_ulong, (pointer,)),
+            (cf, "CFStringGetTypeID", ctypes.c_ulong, ()),
+            (cf, "CFDataGetTypeID", ctypes.c_ulong, ()),
+            (cf, "CFStringGetCString", ctypes.c_bool,
+             (pointer, pointer, ctypes.c_long, ctypes.c_uint32)),
+            (cf, "CFDataGetLength", ctypes.c_long, (pointer,)),
+            (cf, "CFDataGetBytePtr", pointer, (pointer,)),
+            (cf, "CFRelease", None, (pointer,)),
+            (security, "SecCodeCopyGuestWithAttributes", ctypes.c_int32,
+             (pointer, pointer, ctypes.c_uint32, pointer_pointer)),
+            (security, "SecCodeCheckValidity", ctypes.c_int32,
+             (pointer, ctypes.c_uint32, pointer)),
+            (security, "SecCodeCopySigningInformation", ctypes.c_int32,
+             (pointer, ctypes.c_uint32, pointer_pointer)),
+        )
+        for library, name, result, arguments in signatures:
+            function = getattr(library, name)
+            function.restype = result
+            function.argtypes = arguments
+
+        def keep(value):
+            if not value:
+                raise EvidenceError("dynamic code identity allocation failed")
+            owned.append(value)
+            return value
+
+        def checked(status, operation):
+            if status != 0:
+                raise EvidenceError(f"dynamic code {operation} failed: OSStatus {status}")
+
+        pid_value = ctypes.c_int32(pid)
+        pid_number = keep(cf.CFNumberCreate(None, 3, ctypes.byref(pid_value)))
+        keys = (pointer * 1)(_framework_constant(security, "kSecGuestAttributePid"))
+        values = (pointer * 1)(pid_number)
+        # All keys/values outlive this dictionary, which needs no callbacks.
+        attributes = keep(cf.CFDictionaryCreate(None, keys, values, 1, None, None))
+        guest = pointer()
+        checked(security.SecCodeCopyGuestWithAttributes(
+            None, attributes, 0, ctypes.byref(guest)
+        ), "guest lookup")
+        keep(guest.value)
+        # kSecCSStrictValidate, documented in SecStaticCode.h.
+        checked(security.SecCodeCheckValidity(guest, 1 << 4, None), "validity check")
+        information = pointer()
+        # kSecCSSigningInformation is required for kSecCodeInfoTeamIdentifier.
+        checked(security.SecCodeCopySigningInformation(
+            guest, 1 << 1, ctypes.byref(information)
+        ), "signing information lookup")
+        keep(information.value)
+
+        def field(name, expected_type):
+            value = cf.CFDictionaryGetValue(
+                information, _framework_constant(security, name)
+            )
+            if not value or cf.CFGetTypeID(value) != expected_type():
+                raise EvidenceError(f"dynamic code identity field is invalid: {name}")
+            return value
+
+        def string_field(name):
+            value = field(name, cf.CFStringGetTypeID)
+            buffer = ctypes.create_string_buffer(1024)
+            if not cf.CFStringGetCString(value, buffer, len(buffer), 0x08000100):
+                raise EvidenceError(f"dynamic code identity string is unreadable: {name}")
+            result = buffer.value.decode("utf-8", errors="strict")
+            if not result or any(character in result for character in "\t\r\n"):
+                raise EvidenceError(f"dynamic code identity string is invalid: {name}")
+            return result
+
+        signing_id = string_field("kSecCodeInfoIdentifier")
+        team_id = string_field("kSecCodeInfoTeamIdentifier")
+        data = field("kSecCodeInfoUnique", cf.CFDataGetTypeID)
+        length = cf.CFDataGetLength(data)
+        address = cf.CFDataGetBytePtr(data)
+        if length not in (20, 32) or not address:
+            raise EvidenceError("dynamic code CDHash is invalid")
+        cdhash = ctypes.string_at(address, length).hex()
+        checked(security.SecCodeCheckValidity(guest, 1 << 4, None), "final validity check")
+        birth_after = _process_start_epoch_us(pid)
+        if birth_before != birth_after:
+            raise EvidenceError("provider process birth changed during dynamic code validation")
+        return DynamicCodeSnapshot(birth_before, signing_id, team_id, cdhash)
+    except (OSError, AttributeError, ValueError, UnicodeError) as error:
+        if isinstance(error, EvidenceError):
+            raise
+        raise EvidenceError("dynamic process code identity is unavailable or unreadable") from error
+    finally:
+        for value in reversed(owned):
+            cf.CFRelease(value)
+
+
+def _validate_dynamic_snapshot(
+    dynamic: DynamicCodeSnapshot, process: ProcessSnapshot,
+    signing_id: str, team_id: str, cdhash: str,
+) -> None:
+    if dynamic.start_epoch_us // 1000 != process.start_epoch_ms:
+        raise EvidenceError("dynamic provider birth does not match process metadata")
+    if (dynamic.signing_id, dynamic.team_id, dynamic.cdhash) != (signing_id, team_id, cdhash):
+        raise EvidenceError("running dynamic code identity does not match the signed provider")
 
 
 def _snapshot_rows(prefix: str, snapshot: BundleSnapshot) -> list[tuple[str, str]]:
@@ -2392,15 +2596,19 @@ def capture_provider(
     """Capture and atomically write exact built/installed/running identity."""
     source_before = _git_snapshot(source_root)
     process_before = _process_snapshot(pid)
+    dynamic_before = _dynamic_code_snapshot(pid)
     built = _bundle_snapshot(built_provider, expected_bundle_id, expected_team_id)
     installed = _bundle_snapshot(installed_provider, expected_bundle_id, expected_team_id)
     running = _bundle_snapshot(
         process_before.executable_path, expected_bundle_id, expected_team_id
     )
+    dynamic_after = _dynamic_code_snapshot(pid)
     process_after = _process_snapshot(pid)
     source_after = _git_snapshot(source_root)
     if process_before != process_after:
         raise EvidenceError("provider process generation changed during capture")
+    if dynamic_before != dynamic_after:
+        raise EvidenceError("provider dynamic code generation changed during capture")
     declared_running_executable = Path(running.executable_path)
     if (
         process_before.executable_path != declared_running_executable
@@ -2419,9 +2627,13 @@ def capture_provider(
         raise EvidenceError("built/installed/running provider source head mismatch")
     if len({snapshot.build_identity for snapshot in snapshots}) != 1:
         raise EvidenceError("built/installed/running provider build identity mismatch")
+    _validate_dynamic_snapshot(
+        dynamic_before, process_before, built.bundle_id, built.team_id, built.cdhash
+    )
     command_sha = hashlib.sha256(process_before.command.encode("utf-8")).hexdigest()
     generation_id = provider_generation_identity(
-        pid, process_before.start_epoch_ms, command_sha
+        pid, dynamic_before.start_epoch_us // 1000, command_sha,
+        start_epoch_us=dynamic_before.start_epoch_us,
     )
     rows = [
         ("schema_version", str(SCHEMA_VERSION)),
@@ -2433,7 +2645,9 @@ def capture_provider(
         *_snapshot_rows("installed", installed),
         *_snapshot_rows("running", running),
         ("running_pid", str(pid)),
-        ("running_start_epoch_ms", str(process_before.start_epoch_ms)),
+        ("running_start_epoch_ms", str(dynamic_before.start_epoch_us // 1000)),
+        ("running_start_epoch_us", str(dynamic_before.start_epoch_us)),
+        ("running_dynamic_cdhash", dynamic_before.cdhash),
         ("running_command", process_before.command),
         ("running_command_sha256", command_sha),
         ("provider_build_identity", built.build_identity),
@@ -2494,13 +2708,21 @@ def read_provider_identity_bytes(content: bytes) -> dict[str, str]:
         raise EvidenceError("provider build identities do not match")
     pid = _canonical_uint(values["running_pid"], 2**31 - 1)
     start = _canonical_uint(values["running_start_epoch_ms"])
+    start_us = _canonical_uint(values["running_start_epoch_us"])
     if pid == 0 or start == 0:
         raise EvidenceError("invalid provider generation process metadata")
+    if start_us // 1000 != start:
+        raise EvidenceError("precise provider birth does not match process metadata")
+    if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", values["running_dynamic_cdhash"]) is None \
+            or values["running_dynamic_cdhash"] != values["running_cdhash"]:
+        raise EvidenceError("running dynamic CDHash does not match the signed provider")
     command = values["running_command"]
     command_sha = hashlib.sha256(command.encode("utf-8")).hexdigest()
     if command_sha != values["running_command_sha256"]:
         raise EvidenceError("provider command fingerprint mismatch")
-    generation_id = provider_generation_identity(pid, start, command_sha)
+    generation_id = provider_generation_identity(
+        pid, start, command_sha, start_epoch_us=start_us
+    )
     if generation_id != values["provider_generation_identity"]:
         raise EvidenceError("provider generation identity mismatch")
     return values
@@ -2577,6 +2799,8 @@ def capture_provider_generation(
             "provider_generation_identity": identity["provider_generation_identity"],
             "running_pid": identity["running_pid"],
             "running_start_epoch_ms": identity["running_start_epoch_ms"],
+            "running_start_epoch_us": identity["running_start_epoch_us"],
+            "running_dynamic_cdhash": identity["running_dynamic_cdhash"],
             "running_command_sha256": identity["running_command_sha256"],
             "running_executable_path_sha256": hashlib.sha256(
                 identity["running_executable_path"].encode("utf-8")
@@ -2585,9 +2809,19 @@ def capture_provider_generation(
         if append and any(values.get(key) != value for key, value in expected.items()):
             raise EvidenceError("provider generation sample identity changed")
         process = _process_snapshot(_canonical_uint(identity["running_pid"], 2**31 - 1))
+        dynamic = _dynamic_code_snapshot(process.pid)
+        process_after = _process_snapshot(process.pid)
+        if process != process_after:
+            raise EvidenceError("provider process generation changed during sampling")
+        _validate_dynamic_snapshot(
+            dynamic, process, identity["running_bundle_id"],
+            identity["running_team_id"], identity["running_dynamic_cdhash"],
+        )
         actual = {
             "running_pid": str(process.pid),
-            "running_start_epoch_ms": str(process.start_epoch_ms),
+            "running_start_epoch_ms": str(dynamic.start_epoch_us // 1000),
+            "running_start_epoch_us": str(dynamic.start_epoch_us),
+            "running_dynamic_cdhash": dynamic.cdhash,
             "running_command_sha256": hashlib.sha256(
                 process.command.encode("utf-8")
             ).hexdigest(),
@@ -2603,6 +2837,7 @@ def capture_provider_generation(
         count += 1
         sample = "|".join((
             str(epoch_ms), actual["running_pid"], actual["running_start_epoch_ms"],
+            actual["running_start_epoch_us"], actual["running_dynamic_cdhash"],
             actual["running_command_sha256"], actual["running_executable_path_sha256"],
         ))
         output_rows = [
@@ -2729,6 +2964,8 @@ def verify_provider_generation_samples(
         "provider_generation_identity": identity["provider_generation_identity"],
         "running_pid": identity["running_pid"],
         "running_start_epoch_ms": identity["running_start_epoch_ms"],
+        "running_start_epoch_us": identity["running_start_epoch_us"],
+        "running_dynamic_cdhash": identity["running_dynamic_cdhash"],
         "running_command_sha256": identity["running_command_sha256"],
         "running_executable_path_sha256": hashlib.sha256(
             identity["running_executable_path"].encode("utf-8")
@@ -2747,6 +2984,7 @@ def verify_provider_generation_samples(
     process_start = _canonical_uint(expected["running_start_epoch_ms"])
     expected_tail = "|".join((
         expected["running_pid"], expected["running_start_epoch_ms"],
+        expected["running_start_epoch_us"], expected["running_dynamic_cdhash"],
         expected["running_command_sha256"], expected["running_executable_path_sha256"],
     ))
     for index, (key, value) in enumerate(samples, start=1):

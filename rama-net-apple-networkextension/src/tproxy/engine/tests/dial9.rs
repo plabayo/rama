@@ -812,6 +812,127 @@ fn udp_pre_activation_max_lifetime_records_decoded_dial9_reason() {
 }
 
 #[test]
+fn udp_pressure_close_counts_only_accepted_whole_datagrams_after_recovery() {
+    const FLOW_ID: u64 = 0xE1E1_3012;
+    const PAYLOAD_LEN: usize = 4096;
+    let _slot = recorder_slot();
+    install_close_capture();
+    let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
+    let (received_tx, received_rx) = std::sync::mpsc::channel();
+    let handler = TestHandler {
+        udp_matcher: Arc::new(move |meta| {
+            let received_tx = received_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |mut flow: crate::UdpFlow| {
+                    let received_tx = received_tx.clone();
+                    async move {
+                        while let Some(datagram) = flow.recv().await {
+                            let payload = datagram.payload.to_vec();
+                            drop(datagram);
+                            _ = received_tx.send(payload);
+                        }
+                        Ok::<_, Infallible>(())
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        ..TestHandler::passthrough()
+    };
+    let writer = dial9::DiskBuffer::builder()
+        .base_path(temp_dir.path())
+        .max_file_size(rama_utils::octets::mib_u64(1))
+        .max_total_size(rama_utils::octets::mib_u64(4))
+        .build();
+    let recorder = dial9::recorder_or_disabled(writer).build();
+    assert!(recorder.handle().is_enabled());
+    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(
+            DefaultTransparentProxyAsyncRuntimeFactory::new().with_dial9_recorder(recorder),
+        )
+        .with_udp_channel_capacity(1)
+        .without_udp_idle_timeout()
+        .build()
+        .expect("build dial9 engine with one ingress slot");
+    let budget = engine.udp_ingress_budget_for_test();
+    let provider_pid = u64::from(engine.provider_pid);
+    let provider_generation = engine.provider_generation;
+    let (demand_tx, demand_rx) = std::sync::mpsc::channel();
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+    meta.flow_id = FLOW_ID;
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        meta,
+        |_| panic!("pressure service must not produce egress"),
+        move || _ = demand_tx.send(()),
+        move || _ = closed_tx.send(()),
+    ) else {
+        panic!("expected intercept session");
+    };
+
+    // Before activation no receiver can race the capacity-one queue. This
+    // models a once-only burst: the rejected packet is never submitted again.
+    session.on_client_datagram(&[0x11; PAYLOAD_LEN], None);
+    session.on_client_datagram(&[0x22; PAYLOAD_LEN], None);
+    let pressured = budget.snapshot();
+    assert_eq!(pressured.accepted_datagrams, 1);
+    assert_eq!(pressured.accepted_bytes, PAYLOAD_LEN as u64);
+    assert_eq!(pressured.dropped_count_full, 1);
+    assert_eq!(pressured.resumed_count_full, 0);
+    session.activate();
+    assert_eq!(
+        received_rx.recv_timeout(Duration::from_secs(2)),
+        Ok(vec![0x11; PAYLOAD_LEN])
+    );
+    demand_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("dequeue must recover the count-full flow and request ingress");
+    assert_eq!(budget.snapshot().resumed_count_full, 1);
+
+    // A new packet after the resume is accepted and contributes its complete
+    // payload to the close record; the rejected packet contributes nothing.
+    session.on_client_datagram(&[0x33; PAYLOAD_LEN], None);
+    assert_eq!(
+        received_rx.recv_timeout(Duration::from_secs(2)),
+        Ok(vec![0x33; PAYLOAD_LEN])
+    );
+    engine.stop(0);
+    closed_rx
+        .try_recv()
+        .expect("shutdown must finish the close callback");
+    closed_rx
+        .try_recv()
+        .expect_err("shutdown must not duplicate the close callback");
+    received_rx
+        .try_recv()
+        .expect_err("the pressure-rejected packet must never reach the service");
+    let final_snapshot = budget.snapshot();
+    assert_eq!(final_snapshot.accepted_datagrams, 2);
+    assert_eq!(final_snapshot.accepted_bytes, (2 * PAYLOAD_LEN) as u64);
+    assert_eq!(final_snapshot.dropped_count_full, 1);
+    assert_eq!(final_snapshot.resumed_count_full, 1);
+    assert_eq!(final_snapshot.retained_bytes, 0);
+    assert_eq!(
+        dial9_udp_flow_closed_bytes(temp_dir.path(), FLOW_ID),
+        ((2 * PAYLOAD_LEN) as u64, 0),
+        "three once-only sends with one rejection must record two accepted payloads"
+    );
+    assert_eq!(
+        dial9_flow_closed_reasons(temp_dir.path()),
+        vec![(FLOW_ID, 1)]
+    );
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowOpened"), 1);
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowClosed"), 1);
+    for (_, pid, generation, flow_id) in dial9_provider_identities(temp_dir.path(), FLOW_ID) {
+        assert_eq!(
+            (pid, generation, flow_id),
+            (provider_pid, provider_generation, FLOW_ID)
+        );
+    }
+}
+
+#[test]
 fn udp_echo_records_real_dial9_byte_totals() {
     const FLOW_ID: u64 = 0xE1E1_3005;
     const INGRESS_LEN: usize = 64;
