@@ -839,6 +839,87 @@ final class TcpReadPumpReplayTests: XCTestCase {
         withExtendedLifetime(pump) {}
     }
 
+    func testEgressPromotionPreservesTransitFailureObservedBeforeCutover() {
+        assertEgressPromotionPreservesAbnormalStop(exhaustTransitBudget: true)
+    }
+
+    func testEgressPromotionPreservesClosedConsumerFailureObservedBeforeCutover() {
+        assertEgressPromotionPreservesAbnormalStop(exhaustTransitBudget: false)
+    }
+
+    /// The inverse of the in-flight promotion race above: the read pump has
+    /// already discarded a payload and armed its failure backstop when cutover
+    /// arrives. That stop must be visible to the core and replay its error if a
+    /// defensive caller nevertheless takes the pump's promotion handoff.
+    private func assertEgressPromotionPreservesAbnormalStop(
+        exhaustTransitBudget: Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        let budget = makePhysicalBudget()
+        if exhaustTransitBudget { XCTAssertTrue(budget.tryReserve(bytes: 256)) }
+        defer {
+            if exhaustTransitBudget { budget.release(bytes: 256) }
+        }
+        let sink = ScriptedBytesSink(exhaustTransitBudget ? [.accepted] : [.closed])
+        let connection = MockNwConnection()
+        connection.transition(to: .ready)
+        let queue = DispatchQueue(label: "rama.tproxy.egress-promote-after-abnormal-stop")
+        let ctx = TcpFlowContext()
+        let events = TestValue<[String]>([])
+        let carryoverError = TestValue<NSError?>(nil)
+        let pump = NwTcpConnectionReadPump(
+            connection: connection,
+            session: sink,
+            queue: queue,
+            eofGraceDeadline: .seconds(60),
+            onTerminalObserved: {
+                ctx.terminalSignalled = true
+                events.update { $0.append("observed") }
+            },
+            onReadError: { _ in events.update { $0.append("read-error") } },
+            onAbnormalStop: { _ in events.update { $0.append("backstop") } },
+            writerMemoryBudget: budget)
+        pump.start()
+        pollUntil("egress receive is pending before abnormal stop") {
+            connection.pendingReceiveCount == 1
+        }
+        XCTAssertTrue(connection.completePendingReceive(
+            data: Data([0xC1, 0xC2]), isComplete: false))
+        queue.sync {
+            XCTAssertTrue(pump.isEofBackstopArmed, file: file, line: line)
+            XCTAssertTrue(
+                ctx.terminalSignalled,
+                "the core must reject promotion after a payload was discarded",
+                file: file, line: line)
+            pump.cancelForPromote(
+                onCarryover: { payload in
+                    events.update { $0.append(payload == nil ? "eof" : "data") }
+                },
+                onError: { error in
+                    carryoverError.set(error as NSError)
+                    events.update { $0.append("error") }
+                },
+                onComplete: { events.update { $0.append("complete") } })
+            XCTAssertFalse(pump.isEofBackstopArmed, file: file, line: line)
+            pump.cancelForPromote(
+                onCarryover: { _ in events.update { $0.append("duplicate-eof") } },
+                onError: { _ in events.update { $0.append("duplicate-error") } },
+                onComplete: { events.update { $0.append("complete-again") } })
+        }
+        XCTAssertEqual(
+            events.get(),
+            ["observed", "read-error", "error", "eof", "complete", "complete-again"],
+            file: file, line: line)
+        XCTAssertEqual(
+            carryoverError.get()?.domain,
+            exhaustTransitBudget ? "rama.tproxy.writer-memory" : "rama.tproxy.egress-read",
+            file: file, line: line)
+        XCTAssertEqual(connection.pendingReceiveCount, 0, file: file, line: line)
+        XCTAssertEqual(sink.errorCount, 1, file: file, line: line)
+        withExtendedLifetime((pump, sink)) {}
+    }
+
     // MARK: - cancelForPromote hands the held replay buffer to carryover
 
     /// When a promote cutover hits a pump that is holding a `.paused` chunk,

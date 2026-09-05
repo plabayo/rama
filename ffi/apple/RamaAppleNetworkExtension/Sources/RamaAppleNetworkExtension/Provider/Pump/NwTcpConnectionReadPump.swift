@@ -231,8 +231,7 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                             complete?()
                             return
                         }
-                        self.phase = .closed
-                        self.scheduleEgressReleaseLocked(pressureError)
+                        self.finishTerminalLocked(.failure(pressureError))
                     }
                     return
                 }
@@ -285,11 +284,10 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                         // NWConnection's read side draining bytes that have
                         // nowhere to go. Arm the bounded release so the
                         // connection can't linger.
-                        self.phase = .closed
-                        self.scheduleEgressReleaseLocked(
+                        self.finishTerminalLocked(.failure(
                             Self.abnormalStopError(
                                 terminal: terminal,
-                                reason: "egress consumer session disappeared"))
+                                reason: "egress consumer session disappeared")))
                         return
                     }
                     self.pendingPayload = transitPayload
@@ -312,11 +310,10 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                 pendingPayload = nil
                 let terminal = pendingTerminal
                 pendingTerminal = nil
-                phase = .closed
-                scheduleEgressReleaseLocked(
+                finishTerminalLocked(.failure(
                     Self.abnormalStopError(
                         terminal: terminal,
-                        reason: "egress consumer session disappeared"))
+                        reason: "egress consumer session disappeared")))
                 return false
             }
             let slice = cursor.prefix(maxBytes: writerMemoryBudget.tcpPayloadViewMaxBytes)
@@ -342,11 +339,10 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                 pendingPayload = nil
                 let terminal = pendingTerminal
                 pendingTerminal = nil
-                phase = .closed
-                scheduleEgressReleaseLocked(
+                finishTerminalLocked(.failure(
                     Self.abnormalStopError(
                         terminal: terminal,
-                        reason: "Rust egress consumer closed"))
+                        reason: "Rust egress consumer closed")))
                 return false
             }
         }
@@ -355,6 +351,10 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
 
     private func finishTerminalLocked(_ terminal: EgressReadTerminal) {
         phase = .closed
+        // Every permanent read stop must preserve this edge, including a
+        // payload discarded under memory pressure or a vanished Rust consumer.
+        // Promotion cancels the grace backstop: without a published/replayable
+        // failure it could resume receiving beyond the discarded stream bytes.
         observedTerminal = terminal
         // Publish the transport terminal before entering Rust. A promote
         // request can race the one-shot Rust close callback; the shared
