@@ -583,7 +583,7 @@ fn stop_is_bounded_when_all_runtime_workers_are_blocked() {
                 return;
             }
             // Dropping the senders releases every worker, including if setup
-            // or an assertion unwinds. Keep them alive through engine.stop().
+            // unwinds or the independent stop deadline expires.
             _ = release_rx.recv();
             _ = finished_tx.send(());
         });
@@ -592,11 +592,31 @@ fn stop_is_bounded_when_all_runtime_workers_are_blocked() {
             .expect("blocker running before the next task is submitted");
     }
 
+    let upper_bound = budget + STOP_HARD_CAP_SLACK + Duration::from_secs(3);
     let started = Instant::now();
-    engine.stop(0);
-    let elapsed = started.elapsed();
-
-    drop(release_senders);
+    let (elapsed, stopped_before_release) = std::thread::scope(|scope| {
+        let deadline = started + upper_bound;
+        let (stopped_tx, stopped_rx) = std::sync::mpsc::channel::<()>();
+        // The test's own backstop must not depend on the wedged runtime or
+        // on engine.stop returning. Releasing the blockers lets an unbounded
+        // runtime join return too, so the assertion can report that regression.
+        let release_workers = scope.spawn(move || {
+            let stopped = stopped_rx
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .is_ok();
+            drop(release_senders);
+            stopped
+        });
+        engine.stop(0);
+        let elapsed = started.elapsed();
+        _ = stopped_tx.send(());
+        // Scoped ownership also joins this helper if stop unwinds: dropping
+        // stopped_tx disconnects its receiver and releases the workers.
+        (
+            elapsed,
+            release_workers.join().expect("worker release helper"),
+        )
+    });
     for _ in 0..2 {
         finished_rx
             .recv_timeout(Duration::from_secs(2))
@@ -609,7 +629,7 @@ fn stop_is_bounded_when_all_runtime_workers_are_blocked() {
          workers did not actually wedge the drain"
     );
     assert!(
-        elapsed < budget + STOP_HARD_CAP_SLACK + Duration::from_secs(3),
+        stopped_before_release && elapsed < upper_bound,
         "stop did not return within the wedged-runtime bound ({elapsed:?})"
     );
 }

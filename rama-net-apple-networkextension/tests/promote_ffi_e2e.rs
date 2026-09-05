@@ -8,26 +8,23 @@
 //!      construct a TCP session with session callbacks (the
 //!      Rust→Swift response writers). The custom handler in
 //!      this test returns `Intercept` with a service that
-//!      reads ingress bytes, calls
-//!      `PromoteHandle::into_passthrough`, and records the
-//!      result.
+//!      calls `PromoteHandle::into_passthrough` and records
+//!      the result.
 //!   3. `rama_transparent_proxy_tcp_session_register_promote_callbacks`
 //!      — register the "Swift" promote callback. When it fires
-//!      the test's stand-in handler observes the request and
-//!      calls `confirm_promoted`.
+//!      the test's stand-in handler queues the request to
+//!      the test thread.
 //!   4. `rama_transparent_proxy_tcp_session_activate` — supply
 //!      the egress write callbacks; the Rust engine spawns the
 //!      service task.
 //!   5. `rama_transparent_proxy_tcp_session_on_client_bytes` —
-//!      deliver bytes that wake the service. The service
-//!      decides "I'm done; hand the data path back to Swift"
-//!      and calls `into_passthrough`.
+//!      deliver bytes while the service requests promotion.
 //!   6. The engine fires the registered C trampoline which
-//!      invokes our test's "Swift callback". The callback
-//!      calls `confirm_promoted(.ok)`.
-//!   7. Rust drops the ingress sender; the service drains and
-//!      exits; the engine fires `on_server_closed` /
-//!      `on_close_egress` back to "Swift".
+//!      invokes our test's "Swift callback". The test thread
+//!      receives the queued request and calls `confirm_promoted`.
+//!   7. On a successful ACK Rust drops the ingress sender.
+//!      The service records the result and exits; the engine
+//!      fires `on_server_closed` / `on_close_egress` back to "Swift".
 //!
 //! Every assertion here exercises plumbing that would otherwise
 //! only be tested via mocks. Together with the Swift-side
@@ -91,7 +88,7 @@ struct Shared {
     service_result_tx: std_mpsc::Sender<ServiceResult>,
     /// Counts how many times the registered "Swift" callback
     /// fired. Idempotency-of-fire guarantee on the Rust side.
-    /// `Arc` so the leaked `SwiftPromoteBox` can hold its own
+    /// `Arc` so the session-owned `SwiftPromoteBox` can hold its own
     /// reference while the test thread also observes it.
     callback_fires: Arc<AtomicUsize>,
 }
@@ -196,64 +193,24 @@ transparent_proxy_ffi! {
 
 // ── "Swift-side" C trampolines + context boxes ──────────────────────────────
 
-/// Carries a session pointer + ACK status into the promote
-/// trampoline. Mirrors the Swift-side `TcpPromoteCallbackBox`
-/// pattern: a heap-allocated context, raw pointer passed across
-/// FFI.
+/// Queues a promote request back to the test thread, which owns
+/// the session and makes every Swift→Rust FFI call sequentially.
+/// Mirrors Swift's heap-allocated callback context and queue hop.
 struct SwiftPromoteBox {
-    session: *mut RamaTransparentProxyTcpSession,
-    /// What to ACK with. `(status, optional reason)`.
-    ack: (RamaPromoteConfirmStatus, Option<String>),
     /// Counter incremented every time the trampoline fires.
     fires: Arc<AtomicUsize>,
-    /// Signals only after the queue-hopped ACK FFI call has returned.
-    ack_returned: std_mpsc::Sender<()>,
+    promote_requested: std_mpsc::Sender<()>,
 }
 
-// SAFETY: the immutable fields are snapshotted by the one-shot trampoline;
-// only those owned snapshots move to the ACK thread. The test retains the box
-// until the callback and queue-hopped ACK have both completed.
-unsafe impl Send for SwiftPromoteBox {}
-unsafe impl Sync for SwiftPromoteBox {}
-
 unsafe extern "C" fn promote_request_trampoline(ctx: *mut c_void) {
-    // SAFETY: ctx is the leaked box we passed in via
-    // RamaTransparentProxyTcpPromoteCallbacks.
+    // SAFETY: SessionGuard keeps this box alive through session_free,
+    // which waits for in-flight callbacks and suppresses future dispatch.
     let bx = unsafe { &*(ctx as *const SwiftPromoteBox) };
     bx.fires.fetch_add(1, Ordering::SeqCst);
-    let session = bx.session as usize;
-    let (status, reason) = (bx.ack.0 as u8, bx.ack.1.clone());
-    let ack_returned = bx.ack_returned.clone();
-    // The production Swift trampoline queue-hops before touching the session.
-    // Mirror that contract: the ACK executes on a separate thread rather than
-    // synchronously re-entering the session from the callback body.
-    drop(std::thread::spawn(move || {
-        let session = session as *mut RamaTransparentProxyTcpSession;
-        match reason {
-            Some(s) => {
-                let bytes = s.into_bytes();
-                unsafe {
-                    rama_transparent_proxy_tcp_session_confirm_promoted(
-                        session,
-                        status,
-                        bytes.as_ptr() as *const _,
-                        bytes.len(),
-                    );
-                }
-            }
-            None => unsafe {
-                rama_transparent_proxy_tcp_session_confirm_promoted(
-                    session,
-                    status,
-                    std::ptr::null(),
-                    0,
-                );
-            },
-        }
-        ack_returned
-            .send(())
-            .expect("round-trip still waits for the queue-hopped ACK");
-    }));
+    // Never enter the session or wait for the test thread here: dispatch
+    // holds the engine's callback gate, which session_free also acquires.
+    // A dropped receiver is harmless when the test is already unwinding.
+    _ = bx.promote_requested.send(());
 }
 
 // Stub Rust→"Swift" session callbacks. The test doesn't care
@@ -333,31 +290,20 @@ fn new_engine() -> EngineGuard {
     EngineGuard { engine }
 }
 
-/// RAII wrapper for the "Swift" promote box. Reclaims the Box on
-/// drop so a panicking assertion in `run_round_trip` doesn't leak
-/// the heap allocation under Miri / asan / valgrind.
-struct PromoteBoxGuard {
-    ptr: *mut SwiftPromoteBox,
+/// Owns the session and its stable callback context on the test thread.
+/// Declared after EngineGuard so the engine outlives session cleanup.
+struct SessionGuard {
+    session: *mut RamaTransparentProxyTcpSession,
+    promote_box: Box<SwiftPromoteBox>,
 }
 
-impl PromoteBoxGuard {
-    fn new(bx: SwiftPromoteBox) -> Self {
-        Self {
-            ptr: Box::into_raw(Box::new(bx)),
-        }
-    }
-
-    fn as_ctx(&self) -> *mut c_void {
-        self.ptr as *mut c_void
-    }
-}
-
-impl Drop for PromoteBoxGuard {
+impl Drop for SessionGuard {
     fn drop(&mut self) {
-        // SAFETY: allocated via Box::into_raw in `new`; ownership is
-        // exclusive to this guard until drop. No aliased references
-        // remain — the session has been freed (or will be by EngineGuard).
-        unsafe { drop(Box::from_raw(self.ptr)) };
+        // SAFETY: this guard exclusively owns the FFI allocation, and all
+        // session entries run on this thread. Free calls cancel, which waits
+        // for the callback gate and disables further dispatch. Only after it
+        // returns does Rust drop promote_box, even during assertion unwind.
+        unsafe { rama_transparent_proxy_tcp_session_free(self.session) };
     }
 }
 
@@ -374,9 +320,10 @@ impl Drop for SharedSlotGuard {
 
 /// Run the standard round-trip: create session, register
 /// promote with the given ACK shape, activate, push one byte
-/// (so saw_client_bytes flips), eof. Returns the service's
-/// observed `into_passthrough` result + the callback fire count.
-fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<String>)) -> (ServiceResult, usize) {
+/// (so saw_client_bytes flips), receive the request, ACK.
+/// Returns the service's observed `into_passthrough` result
+/// and the callback fire count.
+fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<&str>)) -> (ServiceResult, usize) {
     let _serial = test_lock();
     let (result_tx, result_rx) = std_mpsc::channel::<ServiceResult>();
     let shared = Arc::new(Shared {
@@ -390,7 +337,7 @@ fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<String>)) -> (ServiceRe
 
     let engine_guard = new_engine();
     let engine = engine_guard.engine;
-    let (ack_returned_tx, ack_returned_rx) = std_mpsc::channel();
+    let (promote_requested_tx, promote_requested_rx) = std_mpsc::channel();
 
     let (meta, _host_slice) = make_tcp_meta_pin();
     let session_callbacks = RamaTransparentProxyTcpSessionCallbacks {
@@ -401,6 +348,15 @@ fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<String>)) -> (ServiceRe
     };
     let session_result =
         unsafe { rama_transparent_proxy_engine_new_tcp_session(engine, &meta, session_callbacks) };
+    // Take ownership before checking the allocation result so every assertion
+    // failure still frees a non-null session. Free accepts null as a no-op.
+    let session_guard = SessionGuard {
+        session: session_result.session,
+        promote_box: Box::new(SwiftPromoteBox {
+            fires: shared.callback_fires.clone(),
+            promote_requested: promote_requested_tx,
+        }),
+    };
     assert_eq!(
         session_result.action,
         RamaTransparentProxyFlowAction::Intercept,
@@ -409,16 +365,10 @@ fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<String>)) -> (ServiceRe
     assert!(!session_result.session.is_null());
     let session = session_result.session;
 
-    // Heap-allocate the "Swift" promote callback box behind an
-    // RAII guard so a panicking assertion below still frees it.
-    let promote_box = PromoteBoxGuard::new(SwiftPromoteBox {
-        session,
-        ack,
-        fires: shared.callback_fires.clone(),
-        ack_returned: ack_returned_tx,
-    });
     let promote_callbacks = RamaTransparentProxyTcpPromoteCallbacks {
-        context: promote_box.as_ctx(),
+        context: std::ptr::from_ref(session_guard.promote_box.as_ref())
+            .cast_mut()
+            .cast(),
         on_promote_request: Some(promote_request_trampoline),
     };
     unsafe {
@@ -434,22 +384,14 @@ fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<String>)) -> (ServiceRe
     };
     unsafe { rama_transparent_proxy_tcp_session_activate(session, egress_callbacks) };
 
-    // Push a byte so the service observes traffic (and thus
-    // `saw_client_bytes` flips true). Without this, the
-    // engine's `on_client_eof` would route via `cancel`,
-    // aborting the service task.
+    // Exercise client-byte delivery before acknowledging the cutover.
     let single = [0u8];
     let bytes_view = BytesView {
         ptr: single.as_ptr(),
         len: single.len(),
     };
     let status = unsafe { rama_transparent_proxy_tcp_session_on_client_bytes(session, bytes_view) };
-    // This races the promote resolution running on the service task: the
-    // service awaits `into_passthrough()` as soon as it starts, so on the
-    // failed-promote acks it can `cancel()` (clearing `client_tx`) before this
-    // byte lands, which legitimately yields `Closed`. The OK ack keeps the
-    // session open, so `Accepted` is the norm. Either is valid here; the
-    // meaningful propagation assertions live in each test below.
+    // Keep delivery-status coverage alongside the ACK propagation assertions.
     assert!(
         matches!(
             status,
@@ -458,19 +400,34 @@ fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<String>)) -> (ServiceRe
         "unexpected client-byte status: {status:?}"
     );
 
-    // Wait for the service's into_passthrough to resolve.
+    // Handle the queued request only after earlier session entries return.
+    // The callback never touches the session, so no ACK worker, concurrent
+    // session access, or detached work can survive a failed assertion.
+    promote_requested_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("promote callback queued its request within 5s");
+    let (reason_ptr, reason_len) = match ack.1 {
+        Some(reason) => (reason.as_ptr().cast(), reason.len()),
+        None => (std::ptr::null(), 0),
+    };
+    // SAFETY: the guard owns the session, and ack keeps the optional reason
+    // bytes valid for the duration of this synchronous FFI call.
+    unsafe {
+        rama_transparent_proxy_tcp_session_confirm_promoted(
+            session,
+            ack.0 as u8,
+            reason_ptr,
+            reason_len,
+        );
+    }
+
+    // Wait for the service's into_passthrough to resolve after ACK returns.
     let result = result_rx
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("service reported result within 5s");
-    ack_returned_rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .expect("queue-hopped ACK returned within 5s");
     let fires = shared.callback_fires.load(Ordering::SeqCst);
 
-    // Drop the session BEFORE the promote box: the C trampoline
-    // could otherwise be invoked against an already-freed context.
-    unsafe { rama_transparent_proxy_tcp_session_free(session) };
-    drop(promote_box);
+    drop(session_guard);
     drop(engine_guard);
     (result, fires)
 }
@@ -478,8 +435,8 @@ fn run_round_trip(ack: (RamaPromoteConfirmStatus, Option<String>)) -> (ServiceRe
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 /// The headline test: service calls `into_passthrough`, the
-/// engine fires our registered C trampoline, the trampoline
-/// calls `confirm_promoted(.ok)`, the service observes Ok, and
+/// engine fires our registered C trampoline, the test thread
+/// ACKs the queued request, the service observes Ok, and
 /// the round-trip completes within the deadline.
 #[test]
 fn promote_round_trip_ok_resolves_service_with_ok() {
@@ -492,10 +449,8 @@ fn promote_round_trip_ok_resolves_service_with_ok() {
 /// — the service observes the error and falls through.
 #[test]
 fn promote_round_trip_failed_with_reason_propagates_to_service() {
-    let (result, fires) = run_round_trip((
-        RamaPromoteConfirmStatus::Failed,
-        Some("egress unhealthy".into()),
-    ));
+    let (result, fires) =
+        run_round_trip((RamaPromoteConfirmStatus::Failed, Some("egress unhealthy")));
     let err = result.expect_err("service should observe Err");
     assert!(
         err.contains("swift cutover failed") && err.contains("egress unhealthy"),
@@ -523,8 +478,7 @@ fn promote_round_trip_failed_without_reason_propagates_to_service() {
 #[test]
 fn promote_round_trip_failed_reason_marshals_utf8_safely() {
     let reason = "cutover \u{1F6A7} niet klaar\n— met nieuwe regel";
-    let (result, fires) =
-        run_round_trip((RamaPromoteConfirmStatus::Failed, Some(reason.to_owned())));
+    let (result, fires) = run_round_trip((RamaPromoteConfirmStatus::Failed, Some(reason)));
     let err = result.expect_err("service should observe Err");
     assert!(
         err.contains("niet klaar") && err.contains("nieuwe regel"),
