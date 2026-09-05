@@ -18,6 +18,7 @@ use sha2::{Digest as _, Sha256};
 
 const SCHEMA_VERSION: u32 = 1;
 const MAX_DECODED_TRACE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_REQUIREMENTS_BYTES: usize = 1024 * 1024;
 const REQUIREMENTS_HEADER: &str = "label\tprovider_pid\tprovider_generation\tflow_id\tprotocol\tsource_pid\tclose_reason\tmin_bytes_in\tmax_bytes_in\tmin_bytes_out\tmax_bytes_out";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -332,12 +333,23 @@ fn parse_canonical_u64(value: &str, field: &str) -> Result<u64, String> {
 }
 
 fn load_requirements(path: &Path) -> Result<(Vec<FlowRequirement>, String), String> {
-    let (size, sha256) = hash_file(path)?;
-    if size == 0 || size > 1024 * 1024 {
+    let file = File::open(path)
+        .map_err(|error| format!("open requirements {}: {error}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take((MAX_REQUIREMENTS_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read requirements {}: {error}", path.display()))?;
+    if bytes.is_empty() || bytes.len() > MAX_REQUIREMENTS_BYTES {
         return Err("dial9 requirements TSV must be 1..=1048576 bytes".to_owned());
     }
-    let contents = fs::read_to_string(path)
-        .map_err(|error| format!("read requirements {}: {error}", path.display()))?;
+    // Bind the digest, byte limit, and parsed requirements to this one read.
+    // Reopening the path could hash one version and qualify against another.
+    let contents = std::str::from_utf8(&bytes)
+        .map_err(|error| format!("requirements {} are not UTF-8: {error}", path.display()))?;
+    let mut sha256 = String::with_capacity(64);
+    for byte in Sha256::digest(&bytes) {
+        write!(&mut sha256, "{byte:02x}").expect("writing to String cannot fail");
+    }
     if contents.contains('\r') || !contents.ends_with('\n') {
         return Err("dial9 requirements TSV must use LF lines and end with LF".to_owned());
     }
@@ -1285,6 +1297,65 @@ mod tests {
         )
         .unwrap();
         path
+    }
+
+    #[test]
+    fn requirements_digest_matches_the_exact_parsed_bytes() {
+        let directory = TempDir::new().unwrap();
+        let path = write_requirements(directory.path(), PROVIDER_GENERATION);
+        let (requirements, sha256) = load_requirements(&path).unwrap();
+        assert_eq!(
+            sha256,
+            "e69c6c670918f74393be0a9f8a083b2952fab3ad7cefe244893229a07070e665"
+        );
+        assert_eq!(requirements.len(), 1);
+        assert_eq!(
+            requirements[0].identity.provider_generation,
+            PROVIDER_GENERATION
+        );
+
+        // A later ordinary load must bind its digest and parsed generation to
+        // the new complete contents, without retaining data from the first.
+        write_requirements(directory.path(), PROVIDER_GENERATION + 1);
+        let (requirements, updated_sha256) = load_requirements(&path).unwrap();
+        assert_eq!(
+            updated_sha256,
+            "34a35a71f46ba6efe0788d9b6a27a25eb40834bac6cdfb61aa952676ec2d2966"
+        );
+        assert_ne!(updated_sha256, sha256);
+        assert_eq!(
+            requirements[0].identity.provider_generation,
+            PROVIDER_GENERATION + 1
+        );
+    }
+
+    #[test]
+    fn requirements_enforce_the_read_byte_limit() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("requirements.tsv");
+        for size in [0, MAX_REQUIREMENTS_BYTES + 1] {
+            fs::write(&path, vec![b'x'; size]).unwrap();
+            assert!(
+                load_requirements(&path)
+                    .unwrap_err()
+                    .contains("1..=1048576 bytes")
+            );
+        }
+
+        // At the exact inclusive limit, schema validation must run rather than
+        // rejecting the file as oversized. This intentionally has no header.
+        let mut at_limit = vec![b'x'; MAX_REQUIREMENTS_BYTES];
+        *at_limit.last_mut().unwrap() = b'\n';
+        fs::write(&path, at_limit).unwrap();
+        assert!(load_requirements(&path).unwrap_err().contains("header"));
+    }
+
+    #[test]
+    fn requirements_reject_invalid_utf8() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("requirements.tsv");
+        fs::write(&path, [0xff, b'\n']).unwrap();
+        assert!(load_requirements(&path).unwrap_err().contains("not UTF-8"));
     }
 
     #[test]
