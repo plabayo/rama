@@ -26,6 +26,7 @@ import plistlib
 import re
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -166,6 +167,226 @@ STRESS_MEMBER_PRODUCER_SOURCES = (
 
 class EvidenceError(ValueError):
     """The evidence is malformed, incomplete, inconsistent, or tampered."""
+
+
+class ReplayCleanupError(EvidenceError):
+    """An owned replay group may still access its workspace."""
+
+
+# As in the live harnesses, retain a group leader after its command exits.
+# A caught TERM handler survives here but is reset by exec in the command;
+# inherited SIG_IGN would incorrectly make ordinary compiler children resist TERM.
+_REPLAY_SUPERVISOR = """\
+import os, signal, subprocess, sys
+signal.signal(signal.SIGTERM, lambda *_: None)
+command = subprocess.Popen(sys.argv[2:])
+result = command.wait()
+os.write(int(sys.argv[1]), (str(result) + "\\n").encode("ascii"))
+os.close(int(sys.argv[1]))
+while True:
+    signal.pause()
+"""
+
+
+def _replay_session_members(
+    leader: int, timeout: float, session: int | None = None,
+) -> tuple[int, set[int]]:
+    """Census one reserved POSIX SID; macOS ps ``sess`` can be redacted to zero."""
+    deadline = time.monotonic() + timeout
+    caller_group = os.getpgrp()
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise EvidenceError("replay process-session census exceeded its deadline")
+        snapshot = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,pgid=,stat="], check=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            timeout=remaining, env={**os.environ, "LC_ALL": "C"},
+        )
+        rows = [line.split() for line in snapshot.stdout.splitlines()]
+        if any(len(row) != 3 or not row[0].isdigit() or not row[1].isdigit() for row in rows):
+            raise EvidenceError("malformed replay process-session census")
+        leaders = [row for row in rows if int(row[0]) == leader]
+        if len(leaders) != 1 or int(leaders[0][1]) != leader:
+            raise EvidenceError("replay process-session census omitted its reserved leader")
+        try:
+            if session is None:
+                if leaders[0][2].startswith("Z") or os.getsid(leader) != leader:
+                    raise EvidenceError("replay census cannot identify the live leader's session")
+                session = leader
+            if session != leader:
+                raise EvidenceError("replay session identity does not match its reserved leader")
+            live = set()
+            for pid, group, state in rows:
+                if time.monotonic() >= deadline:
+                    raise EvidenceError("replay process-session census exceeded its deadline")
+                # The census ps itself has already exited. Its inherited caller
+                # group cannot join the separately created replay session.
+                if int(group) == caller_group:
+                    continue
+                if not state.startswith("Z") and os.getsid(int(pid)) == session:
+                    live.add(int(pid))
+        except ProcessLookupError:
+            # An unclassified process may have forked before exiting. Retry the
+            # entire snapshot within the original budget; omitting its row could
+            # otherwise miss a live successor in a secondary process group.
+            continue
+        return session, live
+
+
+def _drain_replay_group(process: subprocess.Popen, session: int | None = None) -> bool:
+    """Bound TERM/CONT/KILL and prove exit before reaping the reserved leader."""
+    def signal_group(value):
+        try:
+            os.killpg(process.pid, value)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            # A later census must still prove exit; failed signaling is not proof.
+            pass
+
+    if session is None:
+        try:
+            session, _ = _replay_session_members(process.pid, 0.5)
+        except (OSError, subprocess.SubprocessError, ValueError):
+            pass
+    signal_group(signal.SIGTERM)
+    signal_group(signal.SIGCONT)
+    for grace, stopping in ((1.0, False), (2.0, True)):
+        if stopping:
+            signal_group(signal.SIGKILL)
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            try:
+                if session is None:
+                    raise EvidenceError("replay session identity was not captured")
+                _, live = _replay_session_members(
+                    process.pid, max(0.01, min(0.5, deadline - time.monotonic())), session,
+                )
+            except (OSError, subprocess.SubprocessError, ValueError):
+                live = None
+            if live is not None and (not live if stopping else live <= {process.pid}):
+                if stopping:
+                    # The unreaped leader (possibly a zombie) reserved this PID
+                    # through the final census. No group signal follows wait().
+                    try:
+                        process.wait(timeout=max(0.01, deadline - time.monotonic()))
+                    except (OSError, subprocess.TimeoutExpired):
+                        return False
+                    return True
+                break
+            time.sleep(0.05)
+    return False
+
+
+def _run_owned_replay_command(
+    command: list[str], *, timeout: float, env: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    """Bound trusted compiler/validator commands and census their entire session.
+
+    These commands require no sudo or controlling terminal. A retained, unreaped
+    session leader keeps orphaned and stopped group members attributable through
+    cleanup. Secondary groups are observed but never signalled via a possibly
+    reused PGID: if they outlive cleanup, preserve the workspace and fail. This
+    covers ordinary build tools creating groups without claiming containment of
+    deliberately detached daemons, which are outside this local toolchain scope.
+    Temporary output files avoid waiting for inherited pipe descriptors to close.
+    """
+    interrupted = None
+
+    def remember_signal(number, _frame):
+        nonlocal interrupted
+        interrupted = number
+
+    handlers = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
+    reader, writer = os.pipe()
+    process = None
+    session = None
+    try:
+        for number in handlers:
+            signal.signal(number, remember_signal)
+        os.set_blocking(reader, False)
+        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+            try:
+                process = subprocess.Popen(
+                    [sys.executable, "-c", _REPLAY_SUPERVISOR, str(writer), *command],
+                    pass_fds=(writer,), start_new_session=True, env=env,
+                    stdout=stdout, stderr=stderr,
+                )
+                os.close(writer)
+                writer = None
+                deadline = time.monotonic() + timeout
+                session, _ = _replay_session_members(process.pid, min(0.5, timeout))
+                result = None
+                while time.monotonic() < deadline:
+                    if interrupted is not None:
+                        raise SystemExit(128 + interrupted)
+                    if result is None:
+                        try:
+                            receipt = os.read(reader, 128)
+                        except BlockingIOError:
+                            receipt = None
+                        if receipt is not None:
+                            if re.fullmatch(rb"-?(?:0|[1-9][0-9]*)\n", receipt) is None:
+                                raise EvidenceError("replay supervisor did not report its command status")
+                            result = int(receipt)
+                    if result is not None:
+                        try:
+                            _, live = _replay_session_members(
+                                process.pid, max(0.01, min(0.5, deadline - time.monotonic())), session,
+                            )
+                        except EvidenceError:
+                            if time.monotonic() >= deadline:
+                                raise subprocess.TimeoutExpired(command, timeout)
+                            raise
+                        if live == {process.pid}:
+                            break
+                        if process.pid not in live:
+                            raise EvidenceError("replay supervisor exited before proving session drainage")
+                    time.sleep(0.05)
+                else:
+                    raise subprocess.TimeoutExpired(command, timeout)
+            finally:
+                # Never use poll()/communicate()/wait() before the group census:
+                # reaping the leader would release the PID that authorizes signals.
+                if process is not None:
+                    try:
+                        drained = _drain_replay_group(process, session)
+                    except Exception as error:
+                        raise ReplayCleanupError(
+                            f"replay process session {process.pid} drainage failed"
+                        ) from error
+                    if not drained:
+                        raise ReplayCleanupError(
+                            f"could not prove replay process session {process.pid} exited"
+                        )
+            if interrupted is not None:
+                raise SystemExit(128 + interrupted)
+            stdout.seek(0)
+            stderr.seek(0)
+            return subprocess.CompletedProcess(
+                command, result, stdout.read().decode("utf-8"), stderr.read().decode("utf-8")
+            )
+    finally:
+        os.close(reader)
+        if writer is not None:
+            os.close(writer)
+        for number, handler in handlers.items():
+            signal.signal(number, handler)
+
+
+@contextmanager
+def _replay_workspace(prefix: str):
+    directory = Path(tempfile.mkdtemp(prefix=prefix))
+    preserve = False
+    try:
+        yield directory
+    except ReplayCleanupError as error:
+        preserve = True
+        raise ReplayCleanupError(f"{error}; replay workspace preserved at {directory}") from error
+    finally:
+        if not preserve:
+            shutil.rmtree(directory)
 
 
 @dataclass(frozen=True)
@@ -1145,14 +1366,8 @@ def _run_python_validator(
     arguments: list[str], *, timeout: int = 120
 ) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(
+        return _run_owned_replay_command(
             [sys.executable, *arguments],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="strict",
             timeout=timeout,
             env={**os.environ, "LC_ALL": "C", "PYTHONDONTWRITEBYTECODE": "1"},
         )
@@ -1318,13 +1533,18 @@ def _protected_build_source(source: Path):
     """
     paths = [source, *source.rglob("*"), source.parent]
     modes = [(path, stat.S_IMODE(path.stat().st_mode)) for path in paths]
+    restore = True
     try:
         for path, mode in modes:
             path.chmod(mode & ~0o222)
         yield
+    except ReplayCleanupError:
+        restore = False
+        raise
     finally:
-        for path, mode in reversed(modes):
-            path.chmod(mode)
+        if restore:
+            for path, mode in reversed(modes):
+                path.chmod(mode)
 
 
 def _build_pinned_dial9_binary(git_head: str, build_root: Path) -> Path:
@@ -1385,17 +1605,11 @@ def _build_pinned_dial9_binary(git_head: str, build_root: Path) -> Path:
     target.mkdir()
     try:
         with _protected_build_source(source):
-            result = subprocess.run(
+            result = _run_owned_replay_command(
                 [
                     cargo, "build", "--locked", "--offline", "--manifest-path",
                     str(manifest), "--bin", "dial9_evidence",
                 ],
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="strict",
                 timeout=900,
                 env={
                     **os.environ,
@@ -1418,24 +1632,18 @@ def _build_pinned_dial9_binary(git_head: str, build_root: Path) -> Path:
 
 def _verify_pinned_dial9_replay(root: Path, git_head: str) -> None:
     """Decode the sealed trace set afresh and match its derived summary."""
-    with tempfile.TemporaryDirectory(prefix="rama-dial9-replay.") as temporary:
+    with _replay_workspace("rama-dial9-replay.") as temporary:
         work = Path(temporary)
         binary = _build_pinned_dial9_binary(git_head, work)
         destination = work / "decoded-traces"
         try:
-            result = subprocess.run(
+            result = _run_owned_replay_command(
                 [
                     str(binary), "collect", str(root / "dial9-traces"),
                     str(root / "dial9-baseline.json"), str(destination),
                     "--wait-seconds", "0", "--requirements",
                     str(root / "dial9-requirements.tsv"),
                 ],
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="strict",
                 timeout=120,
                 env={**os.environ, "LC_ALL": "C"},
             )
@@ -1693,7 +1901,7 @@ def _validate_modern_semantics(envelope: VerifiedEnvelope) -> None:
         }.items()
     ):
         raise EvidenceError("modern workload claims do not match the exact release contract")
-    with tempfile.TemporaryDirectory(prefix="rama-modern-verify.") as temporary:
+    with _replay_workspace("rama-modern-verify.") as temporary:
         temporary_root = Path(temporary)
         root = temporary_root / "evidence"
         _materialize_verified_envelope(envelope, root)
@@ -2095,7 +2303,7 @@ def _validate_soak_semantics(envelope: VerifiedEnvelope) -> None:
     )
     _required_artifacts(envelope, required, "soak")
     status = envelope.status
-    with tempfile.TemporaryDirectory(prefix="rama-soak-verify.") as temporary:
+    with _replay_workspace("rama-soak-verify.") as temporary:
         temporary_root = Path(temporary)
         root = temporary_root / "evidence"
         scripts = temporary_root / "scripts"
@@ -2182,7 +2390,7 @@ def _validate_stress_series_semantics(envelope: VerifiedEnvelope) -> None:
             head, "ffi/apple/examples/transparent_proxy/scripts/signed_run_evidence.py"
         ),
     }
-    with tempfile.TemporaryDirectory(prefix="rama-stress-series-verify.") as temporary:
+    with _replay_workspace("rama-stress-series-verify.") as temporary:
         temporary_root = Path(temporary)
         root = temporary_root / "evidence"
         scripts = temporary_root / "scripts"

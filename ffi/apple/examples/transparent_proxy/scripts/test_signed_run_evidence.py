@@ -7,6 +7,9 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
+import signal
+import stat
 import subprocess
 import sys
 import tarfile
@@ -570,6 +573,205 @@ def make_strict_modern_run(directory: Path):
     return common
 
 
+class ReplayProcessTests(unittest.TestCase):
+    def setUp(self):
+        try:
+            visible = subprocess.run(
+                ["/bin/ps", "-p", str(os.getpid()), "-o", "pid="],
+                check=True, capture_output=True, text=True, timeout=1,
+            )
+        except PermissionError:
+            self.skipTest("local process visibility is unavailable")
+        self.assertEqual(visible.stdout.strip(), str(os.getpid()))
+        self.supervisors = []
+        self.sessions = {}
+        original = subprocess.Popen
+
+        def track(command, *args, **kwargs):
+            process = original(command, *args, **kwargs)
+            if len(command) > 2 and command[2] == evidence._REPLAY_SUPERVISOR:
+                self.supervisors.append(process)
+                # Popen(start_new_session=True) completed setsid before exec.
+                # Tracking must never throw after spawn but before returning
+                # the Popen handle to the production helper's finally block.
+                self.sessions[process.pid] = process.pid
+            return process
+
+        patcher = mock.patch.object(evidence.subprocess, "Popen", side_effect=track)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.cleanup_supervisors)
+
+    def cleanup_supervisors(self):
+        for process in self.supervisors:
+            if process.returncode is None:
+                self.assertTrue(evidence._drain_replay_group(process, self.sessions[process.pid]))
+
+    def run_command(self, program, *arguments, timeout=3):
+        return evidence._run_owned_replay_command(
+            [sys.executable, "-c", program, *map(str, arguments)],
+            timeout=timeout, env=dict(os.environ),
+        )
+
+    def test_exact_output_and_nonzero_or_signalled_command_status(self):
+        for ending, expected in (("sys.exit(0)", 0), ("sys.exit(7)", 7),
+                                 ("os.kill(os.getpid(), signal.SIGTERM)", -signal.SIGTERM)):
+            with self.subTest(ending=ending):
+                result = self.run_command(
+                    "import os, signal, sys; print('out', flush=True); "
+                    "print('err', file=sys.stderr, flush=True); " + ending
+                )
+                self.assertEqual((result.returncode, result.stdout, result.stderr),
+                                 (expected, "out\n", "err\n"))
+                self.assertIsNotNone(self.supervisors[-1].returncode)
+
+    def test_timeout_drains_stopped_term_resistant_orphan_before_source_restore(self):
+        program = r'''
+import os, signal, sys, time
+from pathlib import Path
+child = os.fork()
+if child == 0:
+    if os.fork():
+        os._exit(0)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    Path(sys.argv[1]).write_text(str(os.getpid()))
+    os.kill(os.getpid(), signal.SIGSTOP)
+    time.sleep(15)
+    Path(sys.argv[2]).write_text("late artifact write")
+    os._exit(0)
+os.waitpid(child, 0)
+if sys.argv[3] == "early-success":
+    sys.exit(0)
+time.sleep(20)
+'''
+        for ending in ("waiting-compiler", "early-success"):
+            with self.subTest(ending=ending), evidence._replay_workspace("rama-replay-test.") as work:
+                source = work / "source"
+                source.mkdir()
+                manifest = source / "Cargo.toml"
+                manifest.write_text("pinned source")
+                target = work / "target"
+                target.mkdir()
+                pid_file, late = target / "pid", target / "late"
+                original_mode = stat.S_IMODE(manifest.stat().st_mode)
+                started = time.monotonic()
+                with evidence._protected_build_source(source):
+                    with self.assertRaises(subprocess.TimeoutExpired):
+                        self.run_command(program, pid_file, late, ending, timeout=1)
+                    self.assertTrue(pid_file.is_file(), "fake compiler never established its orphan")
+                    child = int(pid_file.read_text())
+                    observed = subprocess.run(
+                        ["/bin/ps", "-p", str(child), "-o", "stat="],
+                        capture_output=True, text=True, timeout=1,
+                    )
+                    self.assertIn(observed.returncode, (0, 1))
+                    self.assertTrue(not observed.stdout.strip() or observed.stdout.strip().startswith("Z"))
+                    self.assertEqual(stat.S_IMODE(manifest.stat().st_mode), original_mode & ~0o222)
+                    self.assertFalse(late.exists())
+                self.assertLess(time.monotonic() - started, 6)
+                self.assertEqual(stat.S_IMODE(manifest.stat().st_mode), original_mode)
+            self.assertFalse(work.exists())
+
+    def test_unproved_census_preserves_readonly_workspace(self):
+        work = None
+        try:
+            with self.assertRaisesRegex(evidence.ReplayCleanupError, "workspace preserved at"):
+                with evidence._replay_workspace("rama-replay-preserved-test.") as work:
+                    source = work / "source"
+                    source.mkdir()
+                    (source / "Cargo.toml").write_text("pinned source")
+                    with evidence._protected_build_source(source), mock.patch.object(
+                        evidence, "_replay_session_members", side_effect=evidence.EvidenceError("census denied")
+                    ):
+                        self.run_command("import time; time.sleep(20)")
+            self.assertTrue(work.is_dir())
+            self.assertFalse(work.stat().st_mode & 0o222)
+            self.assertFalse((source / "Cargo.toml").stat().st_mode & 0o222)
+            self.assertEqual((source / "Cargo.toml").read_text(), "pinned source")
+            # Inspection is available again. Prove the group dead before this
+            # fixture releases its reserved leader or preserved workspace.
+            leader = self.supervisors[-1]
+            self.assertEqual(evidence._replay_session_members(leader.pid, 1, self.sessions[leader.pid])[1], set())
+            self.supervisors[-1].wait(timeout=1)
+        finally:
+            if work is not None:
+                self.cleanup_supervisors()
+                for path in (work, *work.rglob("*")):
+                    path.chmod(path.stat().st_mode | stat.S_IWUSR)
+                shutil.rmtree(work)
+
+    def test_secondary_group_blocks_cleanup_and_preserves_workspace(self):
+        program = r'''
+import os, sys, time
+from pathlib import Path
+if os.fork() == 0:
+    os.setpgid(0, 0)
+    Path(sys.argv[1]).write_text(str(os.getpid()))
+    time.sleep(20)
+    os._exit(0)
+sys.exit(0)
+'''
+        work = None
+        try:
+            with self.assertRaisesRegex(evidence.ReplayCleanupError, "workspace preserved at"):
+                with evidence._replay_workspace("rama-replay-secondary-test.") as work:
+                    self.run_command(program, work / "pid", timeout=1)
+            secondary = int((work / "pid").read_text())
+            leader = self.supervisors[-1]
+            self.assertIn(secondary, evidence._replay_session_members(leader.pid, 1, self.sessions[leader.pid])[1])
+            self.assertIsNone(leader.returncode)
+            self.assertTrue(work.is_dir())
+        finally:
+            if work is not None:
+                pid_file = work / "pid"
+                if pid_file.is_file():
+                    secondary = int(pid_file.read_text())
+                    leader = self.supervisors[-1]
+                    if secondary in evidence._replay_session_members(leader.pid, 1, self.sessions[leader.pid])[1]:
+                        os.kill(secondary, signal.SIGKILL)
+                self.cleanup_supervisors()
+                shutil.rmtree(work)
+
+    def test_census_requires_reserved_leader_and_includes_secondary_groups(self):
+        for output in ("", "12 12 S\n", "41 41 S\n", "42 8 S\n", "42 42 Z\n", "malformed\n"):
+            with self.subTest(output=output), mock.patch.object(
+                evidence.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, output, "")
+            ), self.assertRaises(evidence.EvidenceError):
+                evidence._replay_session_members(42, 1)
+        with mock.patch.object(evidence.subprocess, "run", return_value=subprocess.CompletedProcess(
+            [], 0, "42 42 Z\n43 43 T\n44 44 S\n", ""
+        )), mock.patch.object(evidence.os, "getsid", side_effect=lambda pid: 42 if pid == 43 else 44):
+            self.assertEqual(evidence._replay_session_members(42, 1, 42), (42, {43}))
+
+    def test_census_retries_unclassified_exit_without_losing_successor_or_budget(self):
+        snapshots = [subprocess.CompletedProcess([], 0, output, "") for output in (
+            "42 42 Z\n45 99 S\n43 43 S\n", "42 42 Z\n46 99 S\n44 43 S\n",
+        )]
+        with mock.patch.object(evidence.subprocess, "run", side_effect=snapshots) as census, \
+            mock.patch.object(evidence.os, "getpgrp", return_value=99), \
+            mock.patch.object(evidence.os, "getsid", side_effect=[ProcessLookupError(), 42]):
+            self.assertEqual(evidence._replay_session_members(42, 1, 42), (42, {44}))
+        self.assertEqual(census.call_count, 2)
+        with mock.patch.object(evidence.subprocess, "run", return_value=snapshots[0]) as census, \
+            mock.patch.object(evidence.os, "getpgrp", return_value=99), \
+            mock.patch.object(evidence.os, "getsid", side_effect=ProcessLookupError()), \
+            mock.patch.object(evidence.time, "monotonic", side_effect=[0, 0, 0, 0, 0, 1]), \
+            self.assertRaisesRegex(evidence.EvidenceError, "exceeded its deadline"):
+            evidence._replay_session_members(42, 0.5, 42)
+        self.assertEqual(census.call_count, 1)
+
+    def test_parent_signal_drains_command_and_preserves_signal_exit(self):
+        previous = signal.getsignal(signal.SIGTERM)
+        with self.assertRaises(SystemExit) as outcome:
+            self.run_command(
+                "import os, signal, sys, time; os.kill(int(sys.argv[1]), signal.SIGTERM); time.sleep(20)",
+                os.getpid(),
+            )
+        self.assertEqual(outcome.exception.code, 143)
+        self.assertIsNotNone(self.supervisors[-1].returncode)
+        self.assertEqual(signal.getsignal(signal.SIGTERM), previous)
+
+
 class ManifestTests(unittest.TestCase):
     def test_seal_publication_stays_on_pinned_root_after_path_swap(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -616,6 +818,7 @@ class ManifestTests(unittest.TestCase):
                     return subprocess.CompletedProcess(command, 0, archive.getvalue(), b"")
                 cargo_called = True
                 self.assertEqual(command[1:5], ["build", "--locked", "--offline", "--manifest-path"])
+                self.assertEqual(kwargs["timeout"], 900)
                 manifest = Path(command[5])
                 self.assertEqual(manifest.read_bytes(), source_bytes)
                 target = Path(kwargs["env"]["CARGO_TARGET_DIR"])
@@ -643,6 +846,7 @@ class ManifestTests(unittest.TestCase):
             ]
             with mock.patch.object(evidence, "_run", side_effect=git_results), \
                 mock.patch.object(evidence.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(evidence, "_run_owned_replay_command", side_effect=fake_run), \
                 mock.patch.object(evidence.shutil, "which", return_value="/fixture/cargo"):
                 binary = evidence._build_pinned_dial9_binary(HEAD, work)
             self.assertTrue(cargo_called)
