@@ -120,6 +120,7 @@ CRASH_SNAPSHOT_ORDER = (
     "schema_complete",
 )
 CRASH_SCHEMA_VERSION = 2
+MAX_CRASH_REPORT_BYTES = 64 * 1024 * 1024
 GENERATION_SAMPLES_NAME = "provider-generation-samples.tsv"
 GENERATION_FIXED_ORDER = (
     "schema_version",
@@ -257,7 +258,7 @@ def _is_temp_name(name: str) -> bool:
     return any(".tmp." in part for part in PurePosixPath(name).parts)
 
 
-def _read_regular_bytes(path: Path) -> bytes:
+def _read_regular_bytes(path: Path, *, max_bytes: int | None = None) -> bytes:
     """Read one stable regular file without following a final symlink."""
     flags = os.O_RDONLY
     if hasattr(os, "O_NOFOLLOW"):
@@ -273,11 +274,20 @@ def _read_regular_bytes(path: Path) -> bytes:
         before_fd = os.fstat(descriptor)
         if not stat.S_ISREG(before_fd.st_mode):
             raise EvidenceError(f"not a regular file: {path}")
+        if max_bytes is not None and before_fd.st_size > max_bytes:
+            raise EvidenceError(f"artifact exceeds {max_bytes} byte limit: {path}")
         chunks = []
+        total = 0
         while True:
-            chunk = os.read(descriptor, 1024 * 1024)
+            read_size = 1024 * 1024
+            if max_bytes is not None:
+                read_size = min(read_size, max_bytes - total + 1)
+            chunk = os.read(descriptor, read_size)
             if not chunk:
                 break
+            total += len(chunk)
+            if max_bytes is not None and total > max_bytes:
+                raise EvidenceError(f"artifact exceeds {max_bytes} byte limit: {path}")
             chunks.append(chunk)
         after_fd = os.fstat(descriptor)
     finally:
@@ -2847,7 +2857,7 @@ def snapshot_crashes(
                 continue
             if source.stat().st_mtime_ns // 1_000_000 < since_epoch_ms:
                 continue
-            content = _read_regular_bytes(source)
+            content = _read_regular_bytes(source, max_bytes=MAX_CRASH_REPORT_BYTES)
             if not _crash_report_matches(source.name, content, names):
                 continue
             unique_name = source.name
@@ -2890,18 +2900,8 @@ def _crash_report_matches(
     candidates = set()
     try:
         text = content.decode("utf-8", errors="strict")
-    except UnicodeDecodeError:
-        return False
-    # Current .ips files commonly contain a metadata JSON object on the first
-    # line and a report object after it.  Inspect both without depending on one
-    # OS-version-specific layout.
-    objects = []
-    lines = text.splitlines()
-    for candidate_text in lines[:4] + [text]:
-        try:
-            objects.append(json.loads(candidate_text, object_pairs_hook=_unique_json_object))
-        except (json.JSONDecodeError, RecursionError):
-            continue
+    except UnicodeDecodeError as error:
+        raise EvidenceError(f"invalid IPS report encoding: {filename}") from error
 
     interesting = {
         "app_name", "bundleid", "bundleidentifier",
@@ -2919,8 +2919,24 @@ def _crash_report_matches(
             candidates.add(value)
             candidates.add(Path(value).name)
 
-    for parsed in objects:
-        visit(parsed)
+    # Apple IPS streams may contain a metadata object followed by a report
+    # object. Decode every value, regardless of line breaks or pretty printing,
+    # and validate the entire stream before trusting any process identity.
+    decoder = json.JSONDecoder(object_pairs_hook=_unique_json_object)
+    offset = 0
+    parsed_any = False
+    try:
+        while offset < len(text):
+            if text[offset] in " \t\r\n":
+                offset += 1
+                continue
+            parsed, offset = decoder.raw_decode(text, offset)
+            parsed_any = True
+            visit(parsed)
+    except (json.JSONDecodeError, RecursionError) as error:
+        raise EvidenceError(f"invalid IPS report JSON: {filename}") from error
+    if not parsed_any:
+        raise EvidenceError(f"invalid IPS report JSON: {filename}")
     return any(name in candidates for name in process_names)
 
 

@@ -1528,8 +1528,10 @@ class CrashAndReleaseSetTests(unittest.TestCase):
                           json.dumps(key) + ":" + json.dumps(replacement)]
                 for ordered in (fields, list(reversed(fields))):
                     ambiguous = "{" + ",".join(ordered) + "}"
+                    pretty_ambiguous = "{\n  " + ",\n  ".join(ordered) + "\n}"
                     for content in (ambiguous, '{"bug_type":"309"}\n' + ambiguous,
-                                    '{"metadata":[' + ambiguous + "]}"):
+                                    '{"metadata":[' + ambiguous + "]}",
+                                    '{"bug_type":"309"}\n\n' + pretty_ambiguous):
                         with self.subTest(key=key, replacement=replacement, content=content), \
                              tempfile.TemporaryDirectory() as temporary:
                             base = Path(temporary)
@@ -1545,6 +1547,131 @@ class CrashAndReleaseSetTests(unittest.TestCase):
                                     report_dirs=[reports],
                                 )
                             self.assertFalse((snapshot / "crash-snapshot.tsv").exists())
+
+    def test_crash_snapshot_reads_complete_ips_object_streams(self):
+        metadata = {"bug_type": "309", "future_field": [1, True, None]}
+        report = {"metadata": {"format": "IPS"},
+                  "procName": "provider", "procPath": "/Library/SystemExtensions/provider"}
+        compact = json.dumps(report)
+        pretty = json.dumps(report, indent=2)
+        for content in (
+            compact,
+            pretty,
+            json.dumps(metadata) + "\n" + compact,
+            json.dumps(metadata) + "\n" + pretty,
+            json.dumps(metadata, indent=2) + "\n" + pretty,
+            " \t\r\n" + json.dumps(metadata) + "\n\n\n\n\n\t " + pretty + "\r\n ",
+            json.dumps(metadata) * 6 + pretty,
+        ):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary)
+                root = base / "run"
+                status = make_run(root, "modern_udp", crash_snapshot=False)
+                reports = base / "reports"
+                reports.mkdir()
+                (reports / "Incident.ips").write_text(content)
+                result = evidence.snapshot_crashes(
+                    int(status["run_start_epoch_ms"]), root / "crashes", ["provider"],
+                    run_uuid=status["run_uuid"],
+                    provider_generation_identity=status["provider_generation_identity"],
+                    report_dirs=[reports],
+                )
+                self.assertEqual(result["crash_count"], "1")
+                self.assertEqual((root / "crashes" / "Incident.ips").read_bytes(), content.encode())
+                with self.assertRaisesRegex(evidence.EvidenceError, "contradicts captured"):
+                    evidence.seal(root)
+
+    def test_crash_snapshot_rejects_unreadable_ips_stream_without_zero_crash_snapshot(self):
+        for content in (
+            b'{"bug_type":"309"}\n{"procName":"provider"',
+            b'{"procName":"provider"}\ntrailing non-JSON data',
+            b'{"procName":"unrelated"}\n\xff',
+            b" \t\r\n",
+            b'{"metadata":' + b"[" * 2000 + b'"provider"' + b"]" * 2000 + b"}",
+        ):
+            with self.subTest(content=content[:100]), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary)
+                reports = base / "reports"
+                reports.mkdir()
+                (reports / "Incident.ips").write_bytes(content)
+                snapshot = base / "snapshot"
+                with self.assertRaisesRegex(evidence.EvidenceError, "invalid IPS"):
+                    evidence.snapshot_crashes(
+                        1, snapshot, ["provider"], run_uuid=str(uuid.uuid4()),
+                        provider_generation_identity="a" * 64, report_dirs=[reports],
+                    )
+                self.assertFalse((snapshot / "crash-snapshot.tsv").exists())
+
+    def test_crash_snapshot_bounds_report_bytes_before_parsing(self):
+        for size in (256, 257):
+            with self.subTest(size=size), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary)
+                reports = base / "reports"
+                reports.mkdir()
+                # A legacy crash text report must retain its filename identity.
+                content = b"crash text\n".ljust(size, b" ")
+                (reports / "provider-incident.crash").write_bytes(content)
+                snapshot = base / "snapshot"
+                with mock.patch.object(evidence, "MAX_CRASH_REPORT_BYTES", 256):
+                    if size == 256:
+                        result = evidence.snapshot_crashes(
+                            1, snapshot, ["provider"], run_uuid=str(uuid.uuid4()),
+                            provider_generation_identity="a" * 64, report_dirs=[reports],
+                        )
+                        self.assertEqual(result["crash_count"], "1")
+                        self.assertEqual((snapshot / "provider-incident.crash").read_bytes(), content)
+                    else:
+                        with self.assertRaisesRegex(evidence.EvidenceError, "byte limit"):
+                            evidence.snapshot_crashes(
+                                1, snapshot, ["provider"], run_uuid=str(uuid.uuid4()),
+                                provider_generation_identity="a" * 64, report_dirs=[reports],
+                            )
+                        self.assertFalse((snapshot / "crash-snapshot.tsv").exists())
+
+    def test_crash_snapshot_bounds_report_that_grows_during_read(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            reports = base / "reports"
+            reports.mkdir()
+            report = reports / "provider-incident.crash"
+            report.write_bytes(b"crash\n")
+            snapshot = base / "snapshot"
+            original_read = os.read
+            extended = False
+
+            def read_then_extend(descriptor, size):
+                nonlocal extended
+                result = original_read(descriptor, size)
+                if not extended:
+                    extended = True
+                    with report.open("ab") as output:
+                        output.write(b"x" * 32)
+                return result
+
+            with mock.patch.object(evidence, "MAX_CRASH_REPORT_BYTES", 16), \
+                 mock.patch.object(evidence.os, "read", side_effect=read_then_extend):
+                with self.assertRaisesRegex(evidence.EvidenceError, "byte limit"):
+                    evidence.snapshot_crashes(
+                        1, snapshot, ["provider"], run_uuid=str(uuid.uuid4()),
+                        provider_generation_identity="a" * 64, report_dirs=[reports],
+                    )
+            self.assertFalse((snapshot / "crash-snapshot.tsv").exists())
+
+    def test_crash_snapshot_ignores_valid_unrelated_ips_object_stream(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            reports = base / "reports"
+            reports.mkdir()
+            (reports / "Incident.ips").write_text(
+                json.dumps({"bug_type": "309"}, indent=2) + "\n"
+                + json.dumps({"procName": "unrelated", "future_field": []}, indent=2)
+            )
+            result = evidence.snapshot_crashes(
+                1, base / "snapshot", ["provider"], run_uuid=str(uuid.uuid4()),
+                provider_generation_identity="a" * 64, report_dirs=[reports],
+            )
+            self.assertEqual(result["crash_count"], "0")
+            self.assertFalse((base / "snapshot" / "Incident.ips").exists())
 
     def test_crash_snapshot_preserves_unique_unknown_ips_fields_and_nested_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
