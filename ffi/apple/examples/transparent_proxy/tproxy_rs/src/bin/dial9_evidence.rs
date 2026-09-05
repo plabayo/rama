@@ -556,6 +556,35 @@ fn current_artifacts(
     Ok(current)
 }
 
+/// Check schema names before considering their decoded values. A duplicate
+/// with a wrong type is just as ambiguous as two conflicting valid values.
+/// Unknown fields remain available for future trace-schema extensions.
+fn duplicate_required_field<'a>(
+    names: impl Iterator<Item = &'a str>,
+    is_close: bool,
+) -> Option<&'a str> {
+    let mut seen = 0_u16;
+    for name in names {
+        let bit = match name {
+            "provider_pid" => 1,
+            "provider_generation" => 1 << 1,
+            "flow_id" => 1 << 2,
+            "protocol" => 1 << 3,
+            "pid" => 1 << 4,
+            "reason" if is_close => 1 << 5,
+            "age_ms" if is_close => 1 << 6,
+            "bytes_in" if is_close => 1 << 7,
+            "bytes_out" if is_close => 1 << 8,
+            _ => continue,
+        };
+        if seen & bit != 0 {
+            return Some(name);
+        }
+        seen |= bit;
+    }
+    None
+}
+
 fn decode_file(
     path: &Path,
     artifact_index: u32,
@@ -601,6 +630,12 @@ fn decode_file(
     decoder
         .for_each_event(|event| match event.name {
             "TproxyFlowOpened" => {
+                if let Some(name) = duplicate_required_field(event.field_names(), false) {
+                    invalid_event = Some(format!(
+                        "TproxyFlowOpened has duplicate required field {name:?}"
+                    ));
+                    return;
+                }
                 let mut provider_pid = None;
                 let mut provider_generation = None;
                 let mut flow_id = None;
@@ -653,6 +688,12 @@ fn decode_file(
                 }
             }
             "TproxyFlowClosed" => {
+                if let Some(name) = duplicate_required_field(event.field_names(), true) {
+                    invalid_event = Some(format!(
+                        "TproxyFlowClosed has duplicate required field {name:?}"
+                    ));
+                    return;
+                }
                 let mut provider_pid = None;
                 let mut provider_generation = None;
                 let mut flow_id = None;
@@ -1024,7 +1065,12 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dial9_trace_format::{TraceEvent, encoder::Encoder};
+    use dial9_trace_format::{
+        TraceEvent,
+        encoder::Encoder,
+        schema::FieldDef,
+        types::{FieldType, FieldValue},
+    };
     use flate2::{Compression, write::GzEncoder};
     use tempfile::TempDir;
 
@@ -1474,6 +1520,192 @@ mod tests {
         );
         assert_eq!(result.required_flows[0].bytes_in, 48);
         assert_eq!(result.required_flows[0].bytes_out, 48);
+    }
+
+    fn trace_bytes_with_extra_field(
+        event_name: &str,
+        field_name: &str,
+        extra: FieldValue,
+        prepend: bool,
+    ) -> Vec<u8> {
+        let mut fields = vec![
+            ("provider_pid", FieldValue::Varint(u64::from(PROVIDER_PID))),
+            (
+                "provider_generation",
+                FieldValue::Varint(PROVIDER_GENERATION),
+            ),
+            ("flow_id", FieldValue::Varint(77)),
+            ("protocol", FieldValue::Varint(2)),
+            ("pid", FieldValue::I64(SOURCE_PID)),
+        ];
+        if event_name == "TproxyFlowClosed" {
+            fields.extend([
+                ("reason", FieldValue::Varint(1)),
+                ("age_ms", FieldValue::Varint(1)),
+                ("bytes_in", FieldValue::Varint(48)),
+                ("bytes_out", FieldValue::Varint(48)),
+            ]);
+        }
+        fields.insert(if prepend { 0 } else { fields.len() }, (field_name, extra));
+        let mut encoder = Encoder::new();
+        let schema = encoder
+            .register_schema(
+                event_name,
+                fields
+                    .iter()
+                    .map(|(name, value)| {
+                        let kind = match value {
+                            FieldValue::Varint(_) => FieldType::Varint,
+                            FieldValue::I64(_) => FieldType::I64,
+                            FieldValue::String(_) => FieldType::String,
+                            _ => unreachable!("fixture only uses integer and string fields"),
+                        };
+                        FieldDef::new(*name, kind)
+                    })
+                    .collect(),
+            )
+            .unwrap();
+        if event_name == "TproxyFlowClosed" {
+            encoder
+                .write(&TproxyFlowOpened {
+                    timestamp_ns: 1,
+                    provider_pid: PROVIDER_PID,
+                    provider_generation: PROVIDER_GENERATION,
+                    flow_id: 77,
+                    protocol: 2,
+                    pid: SOURCE_PID,
+                })
+                .unwrap();
+        }
+        encoder
+            .write_event(
+                &schema,
+                if event_name == "TproxyFlowOpened" {
+                    1
+                } else {
+                    2
+                },
+                &fields
+                    .into_iter()
+                    .map(|(_, value)| value)
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap();
+        if event_name == "TproxyFlowOpened" {
+            encoder
+                .write(&TproxyFlowClosed {
+                    timestamp_ns: 2,
+                    provider_pid: PROVIDER_PID,
+                    provider_generation: PROVIDER_GENERATION,
+                    flow_id: 77,
+                    protocol: 2,
+                    pid: SOURCE_PID,
+                    reason: 1,
+                    age_ms: 1,
+                    bytes_in: 48,
+                    bytes_out: 48,
+                })
+                .unwrap();
+        }
+        encoder.finish()
+    }
+
+    fn collect_extra_field_fixture(trace: &[u8], destination: &Path) -> Result<Collection, String> {
+        let source = TempDir::new().unwrap();
+        write_trace(source.path(), "trace.1.bin", trace);
+        let requirements_path = write_requirements(source.path(), PROVIDER_GENERATION);
+        let (requirements, sha256) = load_requirements(&requirements_path).unwrap();
+        collect(
+            source.path(),
+            &Snapshot {
+                schema_version: SCHEMA_VERSION,
+                max_index: None,
+                artifacts: vec![],
+                issues: vec![],
+                schema_complete: true,
+            },
+            destination,
+            &PairRequirement {
+                requirements,
+                requirements_sha256: Some(sha256),
+                ..Default::default()
+            },
+            Duration::ZERO,
+        )
+    }
+
+    fn assert_duplicate_required_fields_rejected(wrong_type: bool) {
+        for event_name in ["TproxyFlowOpened", "TproxyFlowClosed"] {
+            let fields = if event_name == "TproxyFlowOpened" {
+                &[
+                    "provider_pid",
+                    "provider_generation",
+                    "flow_id",
+                    "protocol",
+                    "pid",
+                ][..]
+            } else {
+                &[
+                    "provider_pid",
+                    "provider_generation",
+                    "flow_id",
+                    "protocol",
+                    "pid",
+                    "reason",
+                    "age_ms",
+                    "bytes_in",
+                    "bytes_out",
+                ][..]
+            };
+            for field in fields {
+                for prepend in [true, false] {
+                    let extra = if wrong_type {
+                        FieldValue::String("contradictory evidence".to_owned())
+                    } else if *field == "pid" {
+                        FieldValue::I64(SOURCE_PID + 1)
+                    } else {
+                        FieldValue::Varint(96)
+                    };
+                    let trace = trace_bytes_with_extra_field(event_name, field, extra, prepend);
+                    let output = TempDir::new().unwrap();
+                    let destination = output.path().join("dial9-traces");
+                    let error = collect_extra_field_fixture(&trace, &destination)
+                        .expect_err("duplicate required fields must not qualify as evidence");
+                    assert!(
+                        error.contains("duplicate required field"),
+                        "{event_name}.{field} (wrong_type={wrong_type}, prepend={prepend}): {error}"
+                    );
+                    assert!(!destination.exists(), "ambiguous evidence must not publish");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn duplicate_required_fields_with_conflicting_values_are_rejected() {
+        assert_duplicate_required_fields_rejected(false);
+    }
+
+    #[test]
+    fn duplicate_required_fields_with_wrong_types_are_rejected() {
+        assert_duplicate_required_fields_rejected(true);
+    }
+
+    #[test]
+    fn unrecognized_extension_fields_remain_supported() {
+        for event_name in ["TproxyFlowOpened", "TproxyFlowClosed"] {
+            let trace = trace_bytes_with_extra_field(
+                event_name,
+                "future_extension",
+                FieldValue::String("future diagnostic".to_owned()),
+                false,
+            );
+            let output = TempDir::new().unwrap();
+            let destination = output.path().join("dial9-traces");
+            let collection = collect_extra_field_fixture(&trace, &destination).unwrap();
+            assert_eq!(collection.matched_requirement_count, 1);
+            assert!(destination.is_dir());
+        }
     }
 
     #[test]
