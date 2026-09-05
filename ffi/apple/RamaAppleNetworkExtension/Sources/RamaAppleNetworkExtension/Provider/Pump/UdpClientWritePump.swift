@@ -56,20 +56,17 @@ final class UdpClientWritePump: @unchecked Sendable {
         /// fallback. A borrowed Rust callback with an absent/invalid peer must
         /// not: nil is explicit absence in that ABI.
         let allowsFallback: Bool
-        let pressureAdmission: Bool
         private let onPayloadDestroyed: @Sendable () -> Void
 
         init(
             data: Data,
             sentBy: NWEndpoint?,
             allowsFallback: Bool,
-            pressureAdmission: Bool,
             onPayloadDestroyed: @escaping @Sendable () -> Void
         ) {
             self.dataStorage = data
             self.sentBy = sentBy
             self.allowsFallback = allowsFallback
-            self.pressureAdmission = pressureAdmission
             self.onPayloadDestroyed = onPayloadDestroyed
         }
 
@@ -340,7 +337,6 @@ final class UdpClientWritePump: @unchecked Sendable {
                 data: data,
                 sentBy: endpoint,
                 allowsFallback: allowsFallback,
-                pressureAdmission: pressureAdmission,
                 onPayloadDestroyed: { [shared = self.shared,
                                         budget = self.writerMemoryBudget] in
                     shared.withLock { state in
