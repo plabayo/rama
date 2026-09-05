@@ -197,6 +197,10 @@ enum UdpPayloadLifetimeLease {
 
 private final class UdpIngressStagingWaiter: @unchecked Sendable {
     weak var owner: UdpIngressFlowStaging?
+    /// A leaf with no reference back to the flow. The coordinator must never
+    /// upgrade `owner` while locked: releasing that temporary can run the
+    /// flow's synchronous deinit cancellation under the coordinator lock.
+    let pressureIdentity: Locked<Int?>
     let neededItems: Int
     let neededBytes: Int
     /// Mutated only while the owning flow lock is held. A waiter begins here
@@ -207,6 +211,12 @@ private final class UdpIngressStagingWaiter: @unchecked Sendable {
     weak var previous: UdpIngressStagingWaiter?
     var next: UdpIngressStagingWaiter?
     var queued = false
+    var fittingIndexed = false
+    var fittingSequence: UInt64 = 0
+    var fittingLeft: UdpIngressStagingWaiter?
+    var fittingRight: UdpIngressStagingWaiter?
+    var fittingHeight = 1
+    var fittingMinimumBytes = Int.max
 
     init(
         owner: UdpIngressFlowStaging,
@@ -216,10 +226,25 @@ private final class UdpIngressStagingWaiter: @unchecked Sendable {
         onGrant: @escaping @Sendable (UInt64) -> Void
     ) {
         self.owner = owner
+        self.pressureIdentity = owner.pressureIdentity
         self.neededItems = neededItems
         self.neededBytes = neededBytes
         self.generationScoped = generationScoped
         self.onGrant = onGrant
+    }
+
+    var ownerIsOpen: Bool { pressureIdentity.withLock { $0 != nil } }
+
+    func canDiscover(in epoch: Int) -> Bool {
+        pressureIdentity.withLock { $0.map { $0 != epoch } ?? false }
+    }
+
+    func claimDiscovery(in epoch: Int) -> Bool {
+        pressureIdentity.withLock { lastEpoch in
+            guard let previous = lastEpoch, previous != epoch else { return false }
+            lastEpoch = epoch
+            return true
+        }
     }
 }
 
@@ -289,6 +314,18 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         /// Constant-size oldest sample across bounded no-fit turns. These
         /// nodes are unlinked from the sample on grant or cancellation.
         var discoveryCandidates: [UdpIngressStagingWaiter] = []
+        /// A secondary index gives recurring single-datagram reads an exact
+        /// fitting opportunity beside the finite discovery traversal. Its
+        /// AVL tree orders live nodes by registration sequence and caches the
+        /// minimum byte hint per subtree. Finding the oldest fitting waiter,
+        /// insertion, and cancellation are O(log N), without tombstones or a
+        /// population scan. Children own nodes; owners and FIFO back-links stay
+        /// weak, and removal clears both children of the retired node.
+        var fittingRoot: UdpIngressStagingWaiter?
+        var nextFittingSequence: UInt64 = 0
+        /// One fitting grant may follow each successful partial discovery.
+        /// Fitting completions cannot restart or erase the owed cohort walk.
+        var fittingServiceDue = false
         /// Capacity observed when the current FIFO completed its last no-fit
         /// pass. It lets a newly linked tail be inspected without rescanning
         /// older known-nonfitting waiters, while detecting a racing release.
@@ -338,6 +375,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         private let capacityWakeTurns = UdpIngressAtomicCounter()
         private let afterCapacityWakeScanHook = Locked<(@Sendable () -> Void)?>(nil)
         var testAfterItemReservation: (@Sendable () -> Void)?
+        var testAfterCoordinatorIdentityLookup: (@Sendable () -> Void)?
         var testAfterCapacityWakeScan: (@Sendable () -> Void)? {
             get { afterCapacityWakeScanHook.withLock { $0 } }
             set { afterCapacityWakeScanHook.withLock { $0 = newValue } }
@@ -393,6 +431,10 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             globalMaxItems.store(policy.maxItemsPerGeneration)
             globalMaxBytes.store(policy.maxBytesPerGeneration)
             endReconfigurationLocked(hasWaiters: state.waiterCount > 0)
+            // A changed envelope invalidates the old no-fit/discovery view.
+            // This cold lifecycle edge starts one new bounded pass, even if
+            // the former sample no longer fits the configured global caps.
+            state.scanActive = false
             requestScanLocked(&state)
             let now = DispatchTime.now().uptimeNanoseconds
             let deliveries = driveCoordinatorLocked(&state, now: now)
@@ -479,7 +521,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             var creditedBytes = 0
             if ticket != 0,
                 let grant = state.grants[ticket],
-                grant.waiter.owner === owner
+                grant.waiter.pressureIdentity === owner.pressureIdentity
             {
                 state.grants.removeValue(forKey: ticket)
                 creditedItems = grant.waiter.neededItems
@@ -719,11 +761,13 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         state.lastWaiter = waiter
         waiter.queued = true
         state.waiterCount += 1
+        insertFittingIndexLocked(waiter, state: &state)
     }
 
     private func removeLocked(_ waiter: UdpIngressStagingWaiter, state: inout State) {
         guard waiter.queued else { return }
         state.discoveryCandidates.removeAll { $0 === waiter }
+        removeFittingIndexLocked(waiter, state: &state)
         let previous = waiter.previous
         let next = waiter.next
         if let previous { previous.next = next } else { state.firstWaiter = next }
@@ -736,6 +780,179 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         // nodes. Keeping this invariant lets later registrations extend the
         // finite pass without restarting it.
         state.scanRemaining = min(state.scanRemaining, state.waiterCount)
+    }
+
+    private func updateFittingNode(_ node: UdpIngressStagingWaiter) {
+        node.fittingHeight = 1 + max(
+            node.fittingLeft?.fittingHeight ?? 0, node.fittingRight?.fittingHeight ?? 0)
+        node.fittingMinimumBytes = min(
+            node.neededBytes,
+            node.fittingLeft?.fittingMinimumBytes ?? Int.max,
+            node.fittingRight?.fittingMinimumBytes ?? Int.max)
+    }
+
+    private func rotateFittingLeft(_ root: UdpIngressStagingWaiter) -> UdpIngressStagingWaiter {
+        let next = root.fittingRight!
+        root.fittingRight = next.fittingLeft
+        next.fittingLeft = root
+        updateFittingNode(root)
+        updateFittingNode(next)
+        return next
+    }
+
+    private func rotateFittingRight(_ root: UdpIngressStagingWaiter) -> UdpIngressStagingWaiter {
+        let next = root.fittingLeft!
+        root.fittingLeft = next.fittingRight
+        next.fittingRight = root
+        updateFittingNode(root)
+        updateFittingNode(next)
+        return next
+    }
+
+    private func balanceFittingNode(_ root: UdpIngressStagingWaiter) -> UdpIngressStagingWaiter {
+        updateFittingNode(root)
+        let balance = (root.fittingLeft?.fittingHeight ?? 0) - (root.fittingRight?.fittingHeight ?? 0)
+        if balance > 1 {
+            let left = root.fittingLeft!
+            if (left.fittingLeft?.fittingHeight ?? 0) < (left.fittingRight?.fittingHeight ?? 0) {
+                root.fittingLeft = rotateFittingLeft(left)
+            }
+            return rotateFittingRight(root)
+        }
+        if balance < -1 {
+            let right = root.fittingRight!
+            if (right.fittingRight?.fittingHeight ?? 0) < (right.fittingLeft?.fittingHeight ?? 0) {
+                root.fittingRight = rotateFittingRight(right)
+            }
+            return rotateFittingLeft(root)
+        }
+        return root
+    }
+
+    private func insertFittingNode(
+        _ waiter: UdpIngressStagingWaiter, into root: UdpIngressStagingWaiter?
+    ) -> UdpIngressStagingWaiter {
+        guard let root else { return waiter }
+        if waiter.fittingSequence < root.fittingSequence {
+            root.fittingLeft = insertFittingNode(waiter, into: root.fittingLeft)
+        } else {
+            root.fittingRight = insertFittingNode(waiter, into: root.fittingRight)
+        }
+        return balanceFittingNode(root)
+    }
+
+    private func insertFittingIndexLocked(_ waiter: UdpIngressStagingWaiter, state: inout State) {
+        // Production stage() always requests one next datagram. Multi-item
+        // helper reservations retain the ordinary FIFO path; indexing only
+        // single items makes the byte minimum an exact two-dimensional fit.
+        guard waiter.neededItems == 1 else { return }
+        precondition(!waiter.fittingIndexed && waiter.fittingLeft == nil && waiter.fittingRight == nil)
+        precondition(state.nextFittingSequence < UInt64.max, "UDP fitting sequence exhausted")
+        state.nextFittingSequence += 1
+        waiter.fittingSequence = state.nextFittingSequence
+        waiter.fittingIndexed = true
+        updateFittingNode(waiter)
+        state.fittingRoot = insertFittingNode(waiter, into: state.fittingRoot)
+    }
+
+    private func extractFirstFittingNode(
+        _ root: UdpIngressStagingWaiter
+    ) -> (root: UdpIngressStagingWaiter?, first: UdpIngressStagingWaiter) {
+        guard let left = root.fittingLeft else {
+            let next = root.fittingRight
+            root.fittingRight = nil
+            return (next, root)
+        }
+        let extracted = extractFirstFittingNode(left)
+        root.fittingLeft = extracted.root
+        return (balanceFittingNode(root), extracted.first)
+    }
+
+    private func removeFittingNode(
+        sequence: UInt64, from root: UdpIngressStagingWaiter?
+    ) -> UdpIngressStagingWaiter? {
+        guard let root else { preconditionFailure("missing UDP fitting node") }
+        if sequence < root.fittingSequence {
+            root.fittingLeft = removeFittingNode(sequence: sequence, from: root.fittingLeft)
+        } else if sequence > root.fittingSequence {
+            root.fittingRight = removeFittingNode(sequence: sequence, from: root.fittingRight)
+        } else {
+            let left = root.fittingLeft
+            let right = root.fittingRight
+            root.fittingLeft = nil
+            root.fittingRight = nil
+            guard let left else { return right }
+            guard let right else { return left }
+            let extracted = extractFirstFittingNode(right)
+            extracted.first.fittingLeft = left
+            extracted.first.fittingRight = extracted.root
+            return balanceFittingNode(extracted.first)
+        }
+        return balanceFittingNode(root)
+    }
+
+    private func removeFittingIndexLocked(_ waiter: UdpIngressStagingWaiter, state: inout State) {
+        guard waiter.fittingIndexed else { return }
+        state.fittingRoot = removeFittingNode(sequence: waiter.fittingSequence, from: state.fittingRoot)
+        waiter.fittingIndexed = false
+    }
+
+    private func oldestFittingNode(
+        _ root: UdpIngressStagingWaiter?, availableBytes: Int
+    ) -> UdpIngressStagingWaiter? {
+        guard let root, root.fittingMinimumBytes <= availableBytes else { return nil }
+        var node = root
+        while true {
+            if let left = node.fittingLeft, left.fittingMinimumBytes <= availableBytes {
+                node = left
+            } else if node.neededBytes <= availableBytes {
+                return node
+            } else if let right = node.fittingRight {
+                node = right
+            } else {
+                preconditionFailure("UDP fitting subtree minimum mismatch")
+            }
+        }
+    }
+
+    private func hasFittingServiceOpportunityLocked(_ state: State) -> Bool {
+        guard state.discovering, state.fittingServiceDue,
+            let root = state.fittingRoot,
+            capacityItems.load() < globalMaxItems.load()
+        else { return false }
+        return root.fittingMinimumBytes <= max(globalMaxBytes.load() - capacityBytes.load(), 0)
+    }
+
+    private func grantFittingServiceLocked(
+        _ state: inout State, now: UInt64, inspected: inout Int
+    ) -> (UdpIngressStagingWaiter, UInt64)? {
+        guard hasFittingServiceOpportunityLocked(state),
+            state.grants.count < udpIngressStagingMaxGrants,
+            let waiter = oldestFittingNode(
+                state.fittingRoot,
+                availableBytes: max(globalMaxBytes.load() - capacityBytes.load(), 0))
+        else { return nil }
+        // The tree metadata lookup is O(log N). Its resulting waiter shares
+        // the same 32-inspection budget as the FIFO traversal below.
+        inspected += 1
+        #if DEBUG || RAMA_TESTING
+            state.coordinatorInspections &+= 1
+        #endif
+        guard tryReserveCapacity(items: waiter.neededItems, bytes: waiter.neededBytes) else { return nil }
+        guard let ticket = nextTicketLocked(&state) else {
+            releaseCapacity(items: waiter.neededItems, bytes: waiter.neededBytes)
+            return nil
+        }
+        removeLocked(waiter, state: &state)
+        let expiry = now > UInt64.max - udpIngressStagingGrantLeaseNanoseconds
+            ? UInt64.max : now + udpIngressStagingGrantLeaseNanoseconds
+        state.grants[ticket] = UdpIngressStagingGrant(
+            waiter: waiter, ticket: ticket, expiresAt: expiry, bytes: waiter.neededBytes)
+        state.fittingServiceDue = false
+        #if DEBUG || RAMA_TESTING
+            state.peakGrantCount = max(state.peakGrantCount, state.grants.count)
+        #endif
+        return (waiter, ticket)
     }
 
     private func rotateToTailLocked(_ waiter: UdpIngressStagingWaiter, state: inout State) {
@@ -778,7 +995,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             state.maxCoordinatorInspectionsPerTurn = max(
                 state.maxCoordinatorInspectionsPerTurn, 1)
         #endif
-        guard waiter.owner != nil else {
+        guard waiter.ownerIsOpen else {
             removeLocked(waiter, state: &state)
             if state.waiterCount == 0 { clearWaiterGateLocked() }
             return ([], false)
@@ -828,6 +1045,9 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         }
         var deliveries: [(UdpIngressStagingWaiter, UInt64)] = []
         var inspected = 0
+        if let fitting = grantFittingServiceLocked(&state, now: now, inspected: &inspected) {
+            deliveries.append(fitting)
+        }
         while state.grants.count < udpIngressStagingMaxGrants,
             state.scanRemaining > 0,
             !state.discovering
@@ -840,7 +1060,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             #if DEBUG || RAMA_TESTING
                 state.coordinatorInspections &+= 1
             #endif
-            guard waiter.owner != nil else {
+            guard waiter.ownerIsOpen else {
                 removeLocked(waiter, state: &state)
                 continue
             }
@@ -889,6 +1109,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
                 let discovery = grantDiscoveryCandidateLocked(&state, now: now, allowPartial: true)
             {
                 deliveries.append(discovery)
+                state.fittingServiceDue = true
             }
         }
         #if DEBUG || RAMA_TESTING
@@ -932,6 +1153,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         state.discovering = false
         state.scanActive = state.waiterCount > 0
         state.scanNeedsFollowup = false
+        state.fittingServiceDue = false
         state.discoveryCandidates.removeAll(keepingCapacity: true)
     }
 
@@ -939,10 +1161,15 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         _ waiter: UdpIngressStagingWaiter, state: inout State
     ) {
         guard state.discoveryCandidates.count < udpIngressStagingMaxGrants,
-            let owner = waiter.owner,
-            owner.lastDiscoveryReleaseEpoch != retainedReleaseEpoch.load(),
+            waiter.neededBytes > 0,
+            waiter.neededBytes <= globalMaxBytes.load(),
+            waiter.neededItems <= globalMaxItems.load(),
+            waiter.canDiscover(in: retainedReleaseEpoch.load()),
             !state.discoveryCandidates.contains(where: { $0 === waiter })
         else { return }
+        #if DEBUG || RAMA_TESTING
+            testAfterCoordinatorIdentityLookup?()
+        #endif
         state.discoveryCandidates.append(waiter)
     }
 
@@ -960,8 +1187,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         else { return nil }
         let epoch = retainedReleaseEpoch.load()
         for waiter in state.discoveryCandidates {
-            guard waiter.queued, let owner = waiter.owner,
-                owner.lastDiscoveryReleaseEpoch != epoch,
+            guard waiter.queued, waiter.canDiscover(in: epoch),
                 waiter.neededBytes <= globalMaxBytes.load()
             else { continue }
             let availableBytes = max(globalMaxBytes.load() - capacityBytes.load(), 0)
@@ -973,7 +1199,12 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
                 releaseCapacity(items: waiter.neededItems, bytes: bytes)
                 return nil
             }
-            owner.lastDiscoveryReleaseEpoch = epoch
+            // Close can invalidate the leaf while capacity is reserved. Never
+            // overwrite that terminal state with a later discovery epoch.
+            guard waiter.claimDiscovery(in: epoch) else {
+                releaseCapacity(items: waiter.neededItems, bytes: bytes)
+                continue
+            }
             removeLocked(waiter, state: &state)
             let expiry = now > UInt64.max - udpIngressStagingGrantLeaseNanoseconds
                 ? UInt64.max : now + udpIngressStagingGrantLeaseNanoseconds
@@ -1005,7 +1236,8 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             (state.scanRemaining > 0
                 && (!state.discovering
                     || state.discoveryCandidates.count < udpIngressStagingMaxGrants))
-                || hasDiscoveryOpportunityLocked(state),
+                || hasDiscoveryOpportunityLocked(state)
+                || hasFittingServiceOpportunityLocked(state),
             state.waiterCount > 0,
             state.grants.count < udpIngressStagingMaxGrants,
             !state.scanScheduled
@@ -1020,7 +1252,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         return state.discoveryCandidates.contains { waiter in
             waiter.queued && waiter.neededBytes > 0 && waiter.neededBytes <= globalMaxBytes.load()
                 && waiter.neededItems <= max(globalMaxItems.load() - capacityItems.load(), 0)
-                && waiter.owner.map { $0.lastDiscoveryReleaseEpoch != epoch } == true
+                && waiter.canDiscover(in: epoch)
         }
     }
 
@@ -1033,7 +1265,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         return state.discoveryCandidates.contains { waiter in
             waiter.queued && waiter.neededBytes > 0 && waiter.neededBytes <= globalMaxBytes.load()
                 && waiter.neededItems <= globalMaxItems.load()
-                && waiter.owner.map { $0.lastDiscoveryReleaseEpoch != epoch } == true
+                && waiter.canDiscover(in: epoch)
         }
     }
 
@@ -1140,11 +1372,9 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             }
             if ticket != 0,
                 let grant = state.grants[ticket],
-                // Swift clears a waiter's weak owner as owner deinitialization
-                // begins. The exact nonzero ticket remains an unforgeable
-                // internal capability held only by that flow state, so permit
-                // orphan cleanup while retaining the live-owner identity check.
-                grant.waiter.owner == nil || grant.waiter.owner === owner
+                // The leaf keeps identity stable even after Swift has cleared
+                // the weak flow reference at the beginning of deinit.
+                grant.waiter.pressureIdentity === owner.pressureIdentity
             {
                 state.grants.removeValue(forKey: ticket)
                 releaseCapacity(
@@ -1273,13 +1503,14 @@ final class UdpIngressFlowStaging: @unchecked Sendable {
     /// shared global envelope but never change an existing flow's local caps.
     private let policy: UdpIngressStagingPolicy
     private let state = Locked(State())
-    /// Coordinator access must not acquire the flow lock: the admission path
-    /// already holds that lock before entering the generation coordinator.
-    private let discoveryReleaseEpoch = UdpIngressAtomicCounter()
-    fileprivate var lastDiscoveryReleaseEpoch: Int {
-        get { discoveryReleaseEpoch.load() }
-        set { discoveryReleaseEpoch.store(newValue) }
-    }
+    /// Shared pressure-only identity and last discovery epoch. `nil` marks
+    /// closure. Waiters retain this leaf without retaining the flow; healthy
+    /// datagram admission/release never touches it. Its lock is released
+    /// before close acquires either the flow or generation lock.
+    fileprivate let pressureIdentity = Locked<Int?>(0)
+    #if DEBUG || RAMA_TESTING
+        var testBeforeCloseCancellation: (@Sendable () -> Void)?
+    #endif
 
     init(
         generation: UdpIngressGenerationStagingBudget,
@@ -1420,6 +1651,7 @@ final class UdpIngressFlowStaging: @unchecked Sendable {
     }
 
     func close() {
+        pressureIdentity.withLock { $0 = nil }
         let pending = state.withLock { state -> (UdpIngressStagingWaiter?, UInt64) in
             state.closed = true
             let pending = (state.waiter, state.activeGrantTicket)
@@ -1427,6 +1659,9 @@ final class UdpIngressFlowStaging: @unchecked Sendable {
             state.activeGrantTicket = 0
             return pending
         }
+        #if DEBUG || RAMA_TESTING
+            testBeforeCloseCancellation?()
+        #endif
         generation.cancel(waiter: pending.0, owner: self, ticket: pending.1)
     }
 
