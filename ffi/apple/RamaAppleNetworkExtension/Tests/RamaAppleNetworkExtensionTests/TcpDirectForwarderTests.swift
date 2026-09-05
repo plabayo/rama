@@ -1348,6 +1348,8 @@ final class TcpDirectForwarderTests: XCTestCase {
             waitFor("next bounded cursor view reached the wire", timeout: 2.0) {
                 h.conn.sentChunks.count > previous
             }
+            // waitFor records a failure but returns after its deadline.
+            guard h.conn.sentChunks.count > previous else { return }
         }
         XCTAssertTrue(h.conn.completePendingSend(error: nil))
         h.drain()
@@ -1394,6 +1396,8 @@ final class TcpDirectForwarderTests: XCTestCase {
             waitFor("next bounded cursor view reached the kernel flow", timeout: 2.0) {
                 h.flow.writes.count > previous
             }
+            // A stalled replay must not start another failed wait forever.
+            guard h.flow.writes.count > previous else { return }
         }
         XCTAssertTrue(h.flow.completeNextWrite())
         h.drain()
