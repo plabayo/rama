@@ -253,27 +253,79 @@ fn udp_service_poll_panic_runs_close_epilogue() {
 
 #[test]
 fn udp_idle_close_drops_service_before_callbacks_and_byte_snapshot() {
-    assert_udp_terminal_drop_precedes_close(false);
+    assert_udp_terminal_drop_precedes_close(UdpTestTermination::Idle, UdpTestDropPanic::None);
 }
 
 #[test]
 fn udp_max_lifetime_close_drops_service_before_callbacks_and_byte_snapshot() {
-    assert_udp_terminal_drop_precedes_close(true);
+    assert_udp_terminal_drop_precedes_close(
+        UdpTestTermination::MaxLifetime,
+        UdpTestDropPanic::None,
+    );
 }
 
-fn assert_udp_terminal_drop_precedes_close(max_lifetime: bool) {
+#[test]
+fn udp_idle_close_contains_service_destruction_panic() {
+    assert_udp_terminal_drop_precedes_close(UdpTestTermination::Idle, UdpTestDropPanic::Service);
+}
+
+#[test]
+fn udp_max_lifetime_close_contains_service_destruction_panic() {
+    assert_udp_terminal_drop_precedes_close(
+        UdpTestTermination::MaxLifetime,
+        UdpTestDropPanic::Service,
+    );
+}
+
+#[test]
+fn udp_engine_shutdown_contains_service_destruction_panic() {
+    assert_udp_terminal_drop_precedes_close(
+        UdpTestTermination::Shutdown,
+        UdpTestDropPanic::Service,
+    );
+}
+
+#[test]
+fn udp_idle_close_contains_final_datagram_callback_panic() {
+    assert_udp_terminal_drop_precedes_close(UdpTestTermination::Idle, UdpTestDropPanic::Callback);
+}
+
+#[derive(Clone, Copy)]
+enum UdpTestTermination {
+    Idle,
+    MaxLifetime,
+    Shutdown,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum UdpTestDropPanic {
+    None,
+    Service,
+    Callback,
+}
+
+fn assert_udp_terminal_drop_precedes_close(
+    termination: UdpTestTermination,
+    drop_panic: UdpTestDropPanic,
+) {
     const FINAL_PAYLOAD: &[u8] = b"service-final";
     const QUEUED_PAYLOAD: &[u8] = b"pending-ingress";
+    install_close_capture();
 
     struct FinalDatagramOnDrop {
         flow: crate::UdpFlow,
         datagram: Option<crate::Datagram>,
+        panic_after_send: bool,
     }
 
     impl Drop for FinalDatagramOnDrop {
         fn drop(&mut self) {
             self.flow
                 .send(self.datagram.take().expect("owned final datagram"));
+            assert!(
+                !self.panic_after_send,
+                "synthetic UDP service destruction panic"
+            );
         }
     }
 
@@ -300,6 +352,7 @@ fn assert_udp_terminal_drop_precedes_close(max_lifetime: bool) {
                         let final_datagram = FinalDatagramOnDrop {
                             flow,
                             datagram: Some(datagram),
+                            panic_after_send: drop_panic == UdpTestDropPanic::Service,
                         };
                         _ = ready_tx.send(());
                         std::future::pending::<()>().await;
@@ -314,12 +367,12 @@ fn assert_udp_terminal_drop_precedes_close(max_lifetime: bool) {
     };
     let builder = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
         .with_runtime_factory(TestRuntimeFactory);
-    let engine = if max_lifetime {
-        builder
+    let engine = match termination {
+        UdpTestTermination::MaxLifetime => builder
             .with_udp_max_flow_lifetime(Duration::from_millis(300))
-            .without_udp_idle_timeout()
-    } else {
-        builder.with_udp_idle_timeout(Duration::from_millis(200))
+            .without_udp_idle_timeout(),
+        UdpTestTermination::Idle => builder.with_udp_idle_timeout(Duration::from_millis(200)),
+        UdpTestTermination::Shutdown => builder.without_udp_idle_timeout(),
     }
     .build()
     .expect("build engine");
@@ -331,10 +384,16 @@ fn assert_udp_terminal_drop_precedes_close(max_lifetime: bool) {
     let counters = Arc::new(Mutex::new(None::<Arc<UdpFlowByteCounters>>));
     #[cfg(feature = "dial9")]
     let close_counters = counters.clone();
+    let meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+    let flow_id = meta.flow_id;
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
-        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        meta,
         move |datagram| {
             _ = datagram_events_tx.send(Observed::Datagram(datagram.payload.to_vec()));
+            assert!(
+                drop_panic != UdpTestDropPanic::Callback,
+                "synthetic UDP final datagram callback panic",
+            );
         },
         || {},
         move || {
@@ -368,6 +427,12 @@ fn assert_udp_terminal_drop_precedes_close(max_lifetime: bool) {
         .recv_timeout(Duration::from_secs(2))
         .expect("service owns the retained final datagram");
     session.on_client_datagram(QUEUED_PAYLOAD, None);
+    let engine = if matches!(termination, UdpTestTermination::Shutdown) {
+        engine.stop(0);
+        None
+    } else {
+        Some(engine)
+    };
 
     // Inspect callback order and ownership at the close edge itself. Waiting
     // for eventual task cleanup would miss a close emitted before destruction.
@@ -381,7 +446,9 @@ fn assert_udp_terminal_drop_precedes_close(max_lifetime: bool) {
     session.on_client_datagram(b"late ingress", None);
     let accepted_after_close = budget.snapshot().accepted_datagrams;
     session.on_client_close();
-    engine.stop(0);
+    if let Some(engine) = engine {
+        engine.stop(0);
+    }
 
     assert!(
         matches!(&first, Observed::Datagram(payload) if payload == FINAL_PAYLOAD),
@@ -410,6 +477,16 @@ fn assert_udp_terminal_drop_precedes_close(max_lifetime: bool) {
     assert_eq!(totals, None);
     assert_eq!(accepted_at_close, 2);
     assert_eq!(accepted_after_close, accepted_at_close);
+    let expected_reason = if drop_panic != UdpTestDropPanic::None {
+        "service_panic"
+    } else {
+        match termination {
+            UdpTestTermination::Idle => "idle_timeout",
+            UdpTestTermination::MaxLifetime => "max_lifetime",
+            UdpTestTermination::Shutdown => "shutdown",
+        }
+    };
+    assert_eq!(flow_close_reason(flow_id).as_deref(), Some(expected_reason));
     assert!(
         events_rx.try_recv().is_err(),
         "no callback may follow close"

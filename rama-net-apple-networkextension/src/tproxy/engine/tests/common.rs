@@ -165,6 +165,10 @@ impl TransparentProxyAsyncRuntimeFactory for TestRuntimeFactory {
         self,
         _cfg: Option<&[u8]>,
     ) -> Result<TransparentProxyAsyncRuntime, Self::Error> {
+        // All engine fixtures must finish installing capture before a worker
+        // can register a close-event callsite, including tests that do not
+        // assert on telemetry themselves.
+        install_close_capture();
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_time()
@@ -325,12 +329,15 @@ impl tracing::Subscriber for CloseCaptureSubscriber {
 }
 
 /// Install the close-capture subscriber exactly once for the test process.
+///
+/// Runtime fixtures call this before starting workers: a first callsite
+/// registration racing a late global-subscriber install can cache disabled
+/// interest. Waiting only in tests that assert on events is too late when
+/// other tests already have running engines in the same libtest process.
 pub(super) fn install_close_capture() {
     INSTALL_CAPTURE.call_once(|| {
-        // Ignore the error: if some other harness already set a global default we
-        // simply can't capture, and the caller's `flow_was_closed` will stay false
-        // (surfaced as a normal assertion failure rather than a panic here).
-        _ = tracing::subscriber::set_global_default(CloseCaptureSubscriber);
+        tracing::subscriber::set_global_default(CloseCaptureSubscriber)
+            .expect("close-capture subscriber must own the test process global default");
     });
 }
 

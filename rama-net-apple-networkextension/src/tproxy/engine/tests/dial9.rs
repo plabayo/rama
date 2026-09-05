@@ -27,6 +27,7 @@ fn build_dial9_engine(
     handler: TestHandler,
     trace_dir: &std::path::Path,
 ) -> TransparentProxyEngine<TestHandler> {
+    install_close_capture();
     let writer = dial9::DiskBuffer::builder()
         .base_path(trace_dir)
         .max_file_size(rama_utils::octets::mib_u64(1))
@@ -51,6 +52,7 @@ fn build_dial9_engine_with_udp_max_flow_lifetime(
     trace_dir: &std::path::Path,
     lifetime: Duration,
 ) -> TransparentProxyEngine<TestHandler> {
+    install_close_capture();
     let writer = dial9::DiskBuffer::builder()
         .base_path(trace_dir)
         .max_file_size(rama_utils::octets::mib_u64(1))
@@ -196,6 +198,76 @@ fn synchronous_app_message_works_with_dial9_runtime() {
     assert_eq!(reply.as_ref(), &[42]);
 
     engine.stop(0);
+}
+
+#[test]
+fn udp_destruction_panic_on_shutdown_pairs_dial9_open_and_close() {
+    const FLOW_ID: u64 = 0xE1E1_3010;
+    let _slot = recorder_slot();
+    install_close_capture();
+    let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
+
+    struct PanicOnDrop {
+        _flow: crate::UdpFlow,
+    }
+
+    impl Drop for PanicOnDrop {
+        fn drop(&mut self) {
+            panic!("synthetic UDP destruction panic under dial9");
+        }
+    }
+
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let handler = TestHandler {
+        udp_matcher: Arc::new(move |meta| {
+            let ready_tx = ready_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |flow: crate::UdpFlow| {
+                    let ready_tx = ready_tx.clone();
+                    async move {
+                        let guard = PanicOnDrop { _flow: flow };
+                        _ = ready_tx.send(());
+                        std::future::pending::<()>().await;
+                        drop(guard);
+                        Ok::<(), Infallible>(())
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        ..TestHandler::passthrough()
+    };
+    let engine = build_dial9_engine(handler, temp_dir.path());
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+    meta.flow_id = FLOW_ID;
+    let SessionFlowAction::Intercept(mut session) =
+        engine.new_udp_session(meta, |_| {}, || {}, move || _ = closed_tx.send(()))
+    else {
+        panic!("expected intercept session");
+    };
+    session.activate();
+    ready_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("service must own its panic-on-drop guard before shutdown");
+    engine.stop(0);
+
+    closed_rx
+        .try_recv()
+        .expect("shutdown must finish the close callback");
+    assert!(
+        closed_rx.try_recv().is_err(),
+        "close callback must fire once"
+    );
+    assert_eq!(flow_close_reason(FLOW_ID).as_deref(), Some("service_panic"));
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowOpened"), 1);
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowClosed"), 1);
+    assert_eq!(
+        dial9_flow_closed_reasons(temp_dir.path()),
+        vec![(FLOW_ID, 14)]
+    );
+    session.on_client_close();
 }
 
 #[test]

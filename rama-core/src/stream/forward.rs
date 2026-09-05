@@ -72,8 +72,9 @@ pub enum BridgeCloseReason {
     /// A configured absolute flow-lifetime cap elapsed. Unlike
     /// [`IdleTimeout`](Self::IdleTimeout), activity does not reset this cap.
     MaxLifetime,
-    /// The user-provided service panicked while constructing or polling its
-    /// per-flow future. The engine contained the panic and ran its close path.
+    /// The user-provided service panicked while constructing, polling, or
+    /// dropping its per-flow future. The engine contained the panic and ran
+    /// its close path.
     ServicePanic,
 }
 

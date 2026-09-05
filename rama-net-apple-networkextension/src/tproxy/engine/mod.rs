@@ -2170,7 +2170,10 @@ where
         // it must precede the close callback and be included in the byte total.
         // Dropping the receiver also closes ingress demand and frees queued
         // payload owners before foreign code observes the terminal edge.
-        let close_reason = {
+        // Catch the whole scoped execution as well: cancellation drops the
+        // pending service future while this async block is being polled. Its
+        // destructor (including a final datagram callback) may panic too.
+        let close_reason = std::panic::AssertUnwindSafe(async {
             // A user service can panic either while constructing its future or
             // while that future is polled. Keep both inside the task so the common
             // close epilogue and Swift `on_server_closed` notification still run.
@@ -2234,7 +2237,18 @@ where
                     BridgeCloseReason::MaxLifetime
                 }
             }
-        };
+        })
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|panic| {
+            tracing::error!(
+                target: "rama_apple_ne::tproxy",
+                flow_id = meta_for_close.flow_id,
+                panic_message = %panic_payload_message(panic.as_ref()),
+                "transparent proxy udp service destruction panicked; closing flow",
+            );
+            BridgeCloseReason::ServicePanic
+        });
         #[cfg(feature = "dial9")]
         {
             let (bytes_in, bytes_out) = byte_counters_for_close.snapshot();
