@@ -764,4 +764,137 @@ final class WriterMemoryBudgetTests: XCTestCase {
         XCTAssertEqual(budget.snapshot().retainedBytes, 0)
         XCTAssertEqual(budget.snapshot().retainedItems, 0)
     }
+
+    func testReconfigureKeepsExistingNoCopyTransitRootChargedUntilArcRelease() {
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 256, maxItems: 16, tcpWaiterMaxBytes: 64,
+                udpPressureReserveBytes: 0, udpPressureReserveItems: 0))
+        let pointer = UnsafeMutableRawPointer.allocate(byteCount: 96, alignment: 1)
+        pointer.initializeMemory(as: UInt8.self, repeating: 0x21, count: 96)
+        let released = TestValue(false)
+        autoreleasepool {
+            var data = Data(
+                bytesNoCopy: pointer,
+                count: 96,
+                deallocator: .custom { pointer, _ in
+                    released.set(true)
+                    pointer.deallocate()
+                })
+            var cursor = budget.makeTcpTransitCursor(data)
+            XCTAssertNotNil(cursor)
+            data = Data()
+            XCTAssertEqual(budget.snapshot().retainedBytes, 96)
+            XCTAssertEqual(budget.testTcpTransitSnapshot.retainedBytes, 96)
+
+            budget.reconfigure(
+                policy: WriterMemoryPolicy(
+                    maxBytes: 256, maxItems: 16, tcpWaiterMaxBytes: 64,
+                    udpPressureReserveBytes: 128, udpPressureReserveItems: 2))
+            XCTAssertEqual(
+                budget.snapshot().retainedBytes, 96,
+                "lower limits cannot refund a live physical root")
+            XCTAssertNil(
+                budget.makeTcpTransitCursor(Data([0x99])),
+                "new transit roots stay blocked while old usage exceeds the lowered subcap")
+
+            pointer.storeBytes(of: UInt8(0xE7), as: UInt8.self)
+            XCTAssertEqual(cursor?.prefix(maxBytes: 64).copiedData.first, 0xE7)
+            XCTAssertFalse(released.get())
+            cursor = nil
+        }
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.testTcpTransitSnapshot.retainedBytes, 0)
+        XCTAssertTrue(released.get())
+    }
+
+    func testTcpTransitSubcapPreservesLargeWaiterAndUdpReserveWithNoCopyRoot() {
+        let kib = 1024
+        let policy = WriterMemoryPolicy(
+            maxBytes: 512 * kib,
+            maxItems: 16,
+            tcpWaiterMaxBytes: 128 * kib,
+            udpPressureReserveBytes: 32 * kib,
+            udpPressureReserveItems: 3)
+        XCTAssertEqual(policy.tcpPayloadViewMaxBytes, 64 * kib)
+        XCTAssertEqual(policy.tcpTransitMaxBytes, 352 * kib)
+        XCTAssertEqual(policy.tcpTransitMaxItems, 12)
+
+        let budget = WriterMemoryBudget(policy: policy)
+        let pointer = UnsafeMutableRawPointer.allocate(
+            byteCount: policy.tcpTransitMaxBytes,
+            alignment: MemoryLayout<UInt8>.alignment)
+        pointer.initializeMemory(
+            as: UInt8.self, repeating: 0x41, count: policy.tcpTransitMaxBytes)
+        let released = TestValue(false)
+        autoreleasepool {
+            var data = Data(
+                bytesNoCopy: pointer,
+                count: policy.tcpTransitMaxBytes,
+                deallocator: .custom { pointer, _ in
+                    released.set(true)
+                    pointer.deallocate()
+                })
+            var transit = budget.makeTcpTransitCursor(data)
+            XCTAssertNotNil(transit)
+            data = Data()
+            XCTAssertNil(
+                budget.makeTcpTransitCursor(Data([0x01])),
+                "the physical transit byte subcap is saturated")
+
+            pointer.storeBytes(of: UInt8(0xA7), as: UInt8.self)
+            XCTAssertEqual(
+                transit?.prefix(maxBytes: policy.tcpPayloadViewMaxBytes).copiedData.first,
+                0xA7,
+                "the saturated transit cursor must retain the original backing allocation")
+            XCTAssertFalse(released.get())
+
+            XCTAssertTrue(
+                budget.tryReserve(bytes: policy.tcpWaiterMaxBytes),
+                "one full >64 KiB TCP waiter remains outside the transit subcap")
+
+            let waiterGranted = expectation(description: "full TCP waiter granted")
+            let granted = TestValue<WriterMemoryGrant?>(nil)
+            var waiter: WriterMemoryWaiter? = budget.waitForTcpCapacity(
+                bytes: policy.tcpWaiterMaxBytes,
+                onGrant: { grant in
+                    granted.set(grant)
+                    waiterGranted.fulfill()
+                })
+            XCTAssertNotNil(waiter)
+            guard let udpAdmission = budget.tryReserveUdp(
+                bytes: policy.udpPressureReserveBytes)
+            else {
+                XCTFail("UDP reserve must remain usable while the full TCP waiter is queued")
+                return
+            }
+            guard case .pressureUdp = udpAdmission else {
+                XCTFail("UDP must use its pressure reserve behind the TCP waiter gate")
+                return
+            }
+
+            budget.release(bytes: policy.tcpWaiterMaxBytes)
+            wait(for: [waiterGranted], timeout: 2)
+            XCTAssertEqual(
+                budget.snapshot().retainedBytes,
+                policy.tcpTransitMaxBytes
+                    + policy.tcpWaiterMaxBytes
+                    + policy.udpPressureReserveBytes)
+
+            granted.update { grant in
+                grant?.release()
+                grant = nil
+            }
+            waiter = nil
+            budget.releaseUdp(
+                bytes: policy.udpPressureReserveBytes,
+                items: 1,
+                pressureBytes: policy.udpPressureReserveBytes,
+                pressureItems: 1)
+            transit = nil
+        }
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.testTcpTransitSnapshot.retainedBytes, 0)
+        XCTAssertTrue(released.get())
+    }
 }

@@ -27,6 +27,24 @@ struct WriterMemoryPolicy: Sendable, Equatable {
     let udpPressureReserveBytes: Int
     let udpPressureReserveItems: Int
 
+    /// Maximum zero-copy TCP read/promotion view handed across the Rust FFI or
+    /// into one direct-forwarded write. This is independent of the larger FIFO
+    /// waiter cap used for Rust→Swift writer callbacks.
+    var tcpPayloadViewMaxBytes: Int { min(64 * 1024, tcpWaiterMaxBytes) }
+
+    /// Read-side roots may survive in Rust, a promotion cursor, and a writer
+    /// simultaneously. Cap that physical transit population below the global
+    /// envelope so it can never consume the UDP reserve or the capacity needed
+    /// to grant one maximum-sized FIFO TCP waiter. The separate 64 KiB cap
+    /// limits individual views only; a waiter can represent a larger callback.
+    var tcpTransitMaxBytes: Int {
+        max(0, maxBytes - udpPressureReserveBytes - tcpWaiterMaxBytes)
+    }
+
+    var tcpTransitMaxItems: Int {
+        max(0, maxItems - udpPressureReserveItems - 1)
+    }
+
     init(
         maxBytes: Int,
         maxItems: Int,
@@ -142,6 +160,124 @@ final class WriterMemoryGrant: @unchecked Sendable {
     deinit { release() }
 }
 
+/// The aggregate charge for one physical TCP backing allocation.
+///
+/// This is deliberately ARC-owned: slices, replay cursors, Rust FFI owners,
+/// and write completions retain the same root, and the budget is refunded only
+/// when the last of those owners releases it. No logical prefix/slice is
+/// allowed to refund part of a still-live backing allocation.
+final class PhysicalPayloadCharge: @unchecked Sendable {
+    let bytes: Int
+    let items: Int
+    private let budget: WriterMemoryBudget
+    private let isTcpTransit: Bool
+
+    fileprivate init(
+        budget: WriterMemoryBudget,
+        bytes: Int,
+        items: Int,
+        isTcpTransit: Bool
+    ) {
+        self.budget = budget
+        self.bytes = bytes
+        self.items = items
+        self.isTcpTransit = isTcpTransit
+    }
+
+    deinit {
+        if isTcpTransit {
+            budget.releaseTcpTransit(bytes: bytes, items: items)
+        } else {
+            budget.release(bytes: bytes, items: items)
+        }
+    }
+}
+
+/// Stable immutable storage for one physically charged TCP callback payload.
+/// `NSData.bytes` remains valid for this object's lifetime and is the pointer
+/// shared with Rust and zero-copy `Data` views.
+final class TcpRetainedBuffer: @unchecked Sendable {
+    fileprivate let storage: NSData
+    private let charge: PhysicalPayloadCharge
+
+    var count: Int { storage.length }
+
+    fileprivate init(data: Data, charge: PhysicalPayloadCharge) {
+        storage = data as NSData
+        self.charge = charge
+    }
+
+    fileprivate var bytes: UnsafePointer<UInt8> {
+        storage.bytes.assumingMemoryBound(to: UInt8.self)
+    }
+}
+
+/// A logical view which retains the complete physical backing charge. Read and
+/// direct-forwarding cursors emit these at `tcpPayloadViewMaxBytes`; a regular
+/// writer callback may use one larger view up to `tcpWaiterMaxBytes`.
+struct TcpPayloadSlice: @unchecked Sendable {
+    let root: TcpRetainedBuffer
+    fileprivate let offset: Int
+    let count: Int
+
+    fileprivate init(root: TcpRetainedBuffer, offset: Int, count: Int) {
+        precondition(offset >= 0 && count > 0 && offset <= root.count - count)
+        self.root = root
+        self.offset = offset
+        self.count = count
+    }
+
+    var bytes: UnsafePointer<UInt8> { root.bytes.advanced(by: offset) }
+
+    /// A no-copy transport view. The caller must retain this slice until the
+    /// transport completion; `TcpWritePumpCore.ChargedChunk` does exactly that.
+    var data: Data {
+        Data(
+            bytesNoCopy: UnsafeMutableRawPointer(mutating: bytes),
+            count: count,
+            deallocator: .none)
+    }
+
+    /// Compatibility copy for test/legacy sinks which only understand `Data`
+    /// and may retain it after the synchronous sink call returns.
+    var copiedData: Data { Data(bytes: bytes, count: count) }
+}
+
+/// Remaining logical range of one retained TCP root. Advancing the cursor does
+/// not alter physical accounting; every emitted slice shares `root`.
+struct TcpPayloadCursor: @unchecked Sendable {
+    fileprivate let root: TcpRetainedBuffer
+    fileprivate var offset: Int
+
+    fileprivate init(root: TcpRetainedBuffer, offset: Int = 0) {
+        precondition(offset >= 0 && offset <= root.count)
+        self.root = root
+        self.offset = offset
+    }
+
+    var isEmpty: Bool { offset == root.count }
+    var remainingBytes: Int { root.count - offset }
+
+    func prefix(maxBytes: Int) -> TcpPayloadSlice {
+        precondition(maxBytes > 0 && !isEmpty)
+        return TcpPayloadSlice(
+            root: root,
+            offset: offset,
+            count: min(maxBytes, remainingBytes))
+    }
+
+    mutating func advance(by count: Int) {
+        precondition(count > 0 && count <= remainingBytes)
+        offset += count
+    }
+
+    /// Compatibility copy used only by the legacy promotion test surface.
+    var copiedRemainder: Data {
+        guard !isEmpty else { return Data() }
+        return Data(bytes: root.bytes.advanced(by: offset), count: remainingBytes)
+    }
+}
+
 /// Cancellation handle for one queued TCP reservation. Queue records do not
 /// retain this token, so dropping it automatically removes an obsolete waiter.
 final class WriterMemoryWaiter: @unchecked Sendable {
@@ -200,12 +336,20 @@ final class WriterMemoryBudget: @unchecked Sendable {
     /// This pressure-only sub-budget prevents either protocol from starving
     /// the other without putting a lock on healthy UDP admission.
     private let pressureUdpAtomic: OpaquePointer
+    /// Physical read-side TCP roots which can be retained concurrently by
+    /// Rust, promotion, and a transport writer.
+    private let tcpTransitAtomic: OpaquePointer
     /// Packed byte/item caps. Its gate bit is a cold reconfiguration fence:
     /// publishing it before the aggregate gate prevents an admission from
     /// returning under stale, lowered limits.
     private let limitsAtomic: OpaquePointer
     /// Current UDP service reserve, packed as bytes/items without a gate.
     private let pressureUdpLimitsAtomic: OpaquePointer
+    /// Current physical TCP transit and bounded-view limits. Items are packed
+    /// with bytes in `tcpTransitLimitsAtomic`; the view byte cap is stored in a
+    /// separate lock-free word because it is not an accounting dimension.
+    private let tcpTransitLimitsAtomic: OpaquePointer
+    private let tcpPayloadViewMaxBytesAtomic: OpaquePointer
     /// Monotonic seqlock epoch closes the extremely narrow ABA window where a
     /// stalled admission could miss both set/clear transitions of the gates.
     private let configurationEpochAtomic: OpaquePointer
@@ -231,12 +375,40 @@ final class WriterMemoryBudget: @unchecked Sendable {
             rama_writer_budget_atomic_free(atomic)
             preconditionFailure("failed to allocate writer-memory UDP pressure atomic")
         }
+        guard let tcpTransitAtomic = rama_writer_budget_atomic_new(0) else {
+            rama_writer_budget_atomic_free(pressureUdpAtomic)
+            rama_writer_budget_atomic_free(atomic)
+            preconditionFailure("failed to allocate writer-memory TCP transit atomic")
+        }
         guard let limitsAtomic = rama_writer_budget_atomic_new(
             Self.pack(bytes: policy.maxBytes, items: policy.maxItems, waiterGate: false)
         ) else {
+            rama_writer_budget_atomic_free(tcpTransitAtomic)
             rama_writer_budget_atomic_free(pressureUdpAtomic)
             rama_writer_budget_atomic_free(atomic)
             preconditionFailure("failed to allocate writer-memory limits atomic")
+        }
+        guard let tcpTransitLimitsAtomic = rama_writer_budget_atomic_new(
+            Self.pack(
+                bytes: policy.tcpTransitMaxBytes,
+                items: policy.tcpTransitMaxItems,
+                waiterGate: false)
+        ) else {
+            rama_writer_budget_atomic_free(limitsAtomic)
+            rama_writer_budget_atomic_free(tcpTransitAtomic)
+            rama_writer_budget_atomic_free(pressureUdpAtomic)
+            rama_writer_budget_atomic_free(atomic)
+            preconditionFailure("failed to allocate writer-memory TCP transit limits atomic")
+        }
+        guard let tcpPayloadViewMaxBytesAtomic = rama_writer_budget_atomic_new(
+            UInt64(policy.tcpPayloadViewMaxBytes)
+        ) else {
+            rama_writer_budget_atomic_free(tcpTransitLimitsAtomic)
+            rama_writer_budget_atomic_free(limitsAtomic)
+            rama_writer_budget_atomic_free(tcpTransitAtomic)
+            rama_writer_budget_atomic_free(pressureUdpAtomic)
+            rama_writer_budget_atomic_free(atomic)
+            preconditionFailure("failed to allocate writer-memory TCP view limit atomic")
         }
         guard let pressureUdpLimitsAtomic = rama_writer_budget_atomic_new(
             Self.pack(
@@ -244,7 +416,10 @@ final class WriterMemoryBudget: @unchecked Sendable {
                 items: policy.udpPressureReserveItems,
                 waiterGate: false)
         ) else {
+            rama_writer_budget_atomic_free(tcpPayloadViewMaxBytesAtomic)
+            rama_writer_budget_atomic_free(tcpTransitLimitsAtomic)
             rama_writer_budget_atomic_free(limitsAtomic)
+            rama_writer_budget_atomic_free(tcpTransitAtomic)
             rama_writer_budget_atomic_free(pressureUdpAtomic)
             rama_writer_budget_atomic_free(atomic)
             preconditionFailure("failed to allocate writer-memory UDP limits atomic")
@@ -252,6 +427,9 @@ final class WriterMemoryBudget: @unchecked Sendable {
         guard let configurationEpochAtomic = rama_writer_budget_atomic_new(0) else {
             rama_writer_budget_atomic_free(pressureUdpLimitsAtomic)
             rama_writer_budget_atomic_free(limitsAtomic)
+            rama_writer_budget_atomic_free(tcpPayloadViewMaxBytesAtomic)
+            rama_writer_budget_atomic_free(tcpTransitLimitsAtomic)
+            rama_writer_budget_atomic_free(tcpTransitAtomic)
             rama_writer_budget_atomic_free(pressureUdpAtomic)
             rama_writer_budget_atomic_free(atomic)
             preconditionFailure("failed to allocate writer-memory epoch atomic")
@@ -260,14 +438,20 @@ final class WriterMemoryBudget: @unchecked Sendable {
             rama_writer_budget_atomic_free(configurationEpochAtomic)
             rama_writer_budget_atomic_free(pressureUdpLimitsAtomic)
             rama_writer_budget_atomic_free(limitsAtomic)
+            rama_writer_budget_atomic_free(tcpPayloadViewMaxBytesAtomic)
+            rama_writer_budget_atomic_free(tcpTransitLimitsAtomic)
+            rama_writer_budget_atomic_free(tcpTransitAtomic)
             rama_writer_budget_atomic_free(pressureUdpAtomic)
             rama_writer_budget_atomic_free(atomic)
             preconditionFailure("failed to allocate writer-memory pressure atomic")
         }
         self.atomic = atomic
         self.pressureUdpAtomic = pressureUdpAtomic
+        self.tcpTransitAtomic = tcpTransitAtomic
         self.limitsAtomic = limitsAtomic
         self.pressureUdpLimitsAtomic = pressureUdpLimitsAtomic
+        self.tcpTransitLimitsAtomic = tcpTransitLimitsAtomic
+        self.tcpPayloadViewMaxBytesAtomic = tcpPayloadViewMaxBytesAtomic
         self.configurationEpochAtomic = configurationEpochAtomic
         self.pressureEpisodeAtomic = pressureEpisodeAtomic
         self.onPressureEvent = onPressureEvent
@@ -277,7 +461,10 @@ final class WriterMemoryBudget: @unchecked Sendable {
         rama_writer_budget_atomic_free(pressureEpisodeAtomic)
         rama_writer_budget_atomic_free(configurationEpochAtomic)
         rama_writer_budget_atomic_free(pressureUdpLimitsAtomic)
+        rama_writer_budget_atomic_free(tcpPayloadViewMaxBytesAtomic)
+        rama_writer_budget_atomic_free(tcpTransitLimitsAtomic)
         rama_writer_budget_atomic_free(limitsAtomic)
+        rama_writer_budget_atomic_free(tcpTransitAtomic)
         rama_writer_budget_atomic_free(pressureUdpAtomic)
         rama_writer_budget_atomic_free(atomic)
     }
@@ -305,6 +492,15 @@ final class WriterMemoryBudget: @unchecked Sendable {
                     bytes: reserveBytes,
                     items: reserveItems,
                     waiterGate: false))
+            storeRaw(
+                tcpTransitLimitsAtomic,
+                value: Self.pack(
+                    bytes: policy.tcpTransitMaxBytes,
+                    items: policy.tcpTransitMaxItems,
+                    waiterGate: false))
+            storeRaw(
+                tcpPayloadViewMaxBytesAtomic,
+                value: UInt64(policy.tcpPayloadViewMaxBytes))
             storeRaw(
                 limitsAtomic,
                 value: Self.pack(
@@ -372,6 +568,54 @@ final class WriterMemoryBudget: @unchecked Sendable {
     func tryReserveGrant(bytes: Int, items: Int = 1) -> WriterMemoryGrant? {
         guard tryReserve(bytes: bytes, items: items) else { return nil }
         return WriterMemoryGrant(budget: self, bytes: bytes, items: items)
+    }
+
+    var tcpPayloadViewMaxBytes: Int {
+        Int(rama_writer_budget_atomic_load(tcpPayloadViewMaxBytesAtomic))
+    }
+
+    /// Bind an aggregate reservation already consumed from a FIFO grant to a
+    /// writer root. This contains no fallible work after the charge transfer.
+    func makePregrantedWriterPayload(_ data: Data) -> TcpPayloadSlice {
+        precondition(!data.isEmpty)
+        let charge = PhysicalPayloadCharge(
+            budget: self, bytes: data.count, items: 1, isTcpTransit: false)
+        let root = TcpRetainedBuffer(data: data, charge: charge)
+        return TcpPayloadSlice(root: root, offset: 0, count: root.count)
+    }
+
+    /// Charge one complete callback backing allocation against both the global
+    /// writer envelope and the TCP-transit subcap. Logical slices never alter
+    /// this charge.
+    func makeTcpTransitCursor(_ data: Data) -> TcpPayloadCursor? {
+        guard !data.isEmpty else { return nil }
+        let bytes = data.count
+        let items = 1
+        let epoch = rama_writer_budget_atomic_load_seq_cst(configurationEpochAtomic)
+        guard epoch & 1 == 0, tryReserve(bytes: bytes, items: items) else { return nil }
+        let limits = Self.unpack(rama_writer_budget_atomic_load(tcpTransitLimitsAtomic))
+        guard tryReserveRaw(
+            tcpTransitAtomic,
+            bytes: bytes,
+            items: items,
+            maxBytes: limits.retainedBytes,
+            maxItems: limits.retainedItems)
+        else {
+            release(bytes: bytes, items: items)
+            return nil
+        }
+        guard rama_writer_budget_atomic_load_seq_cst(configurationEpochAtomic) == epoch else {
+            releaseTcpTransit(bytes: bytes, items: items)
+            return nil
+        }
+        let charge = PhysicalPayloadCharge(
+            budget: self, bytes: bytes, items: items, isTcpTransit: true)
+        return TcpPayloadCursor(root: TcpRetainedBuffer(data: data, charge: charge))
+    }
+
+    fileprivate func releaseTcpTransit(bytes: Int, items: Int) {
+        releaseRaw(tcpTransitAtomic, bytes: bytes, items: items)
+        release(bytes: bytes, items: items)
     }
 
     /// UDP admission remains one CAS while healthy. During TCP pressure it
@@ -574,6 +818,9 @@ final class WriterMemoryBudget: @unchecked Sendable {
         var testAfterPressureUdpSubcharge: (() -> Void)?
         var testAfterReleaseBeforeCoordinatorKick: (() -> Void)?
         var testBeforePressureEventEnqueue: (() -> Void)?
+        var testTcpTransitSnapshot: WriterMemorySnapshot {
+            Self.unpack(rama_writer_budget_atomic_load(tcpTransitAtomic))
+        }
     #endif
 
     fileprivate func cancelWaiter(_ id: UInt64) {

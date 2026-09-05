@@ -429,11 +429,16 @@ where
             .create_async_runtime(opaque_config.as_deref())
             .context("TransparentProxyEngineBuilder: create async runtime")?;
 
+        let provider_pid = std::process::id();
+        let provider_generation = super::next_provider_generation();
+
         let pair = super::build_shutdown_pair(&rt);
         let guard = pair.shutdown.guard();
         let ctx = TransparentProxyServiceContext {
             executor: Executor::graceful(guard.clone()),
             opaque_config,
+            provider_pid,
+            provider_generation,
         };
         // Handler construction may borrow from the factory, so use the
         // runtime's direct, untracked entry point rather than spawning an
@@ -453,6 +458,8 @@ where
 
         Ok(TransparentProxyEngine {
             rt: Some(rt),
+            provider_pid,
+            provider_generation,
             handler,
             transparent_proxy_config,
             tcp_flow_buffer_size: tcp_flow_buffer_size

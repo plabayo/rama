@@ -74,8 +74,8 @@ final class TcpClientWritePump: @unchecked Sendable {
     }
 
     @discardableResult
-    func enqueuePrecharged(_ data: Data) -> RamaTcpDeliverStatusBridge {
-        core.enqueuePrecharged(data)
+    func enqueuePrecharged(_ payload: TcpPayloadSlice) -> RamaTcpDeliverStatusBridge {
+        core.enqueuePrecharged(payload)
     }
 
     var maxPendingBytes: Int { core.writePolicy.maxPendingBytes }

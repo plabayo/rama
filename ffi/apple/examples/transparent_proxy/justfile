@@ -29,7 +29,7 @@ install-tproxy-app-dev:
 install-tproxy-app-dist:
     ./scripts/notarize_tproxy_app_with_developer_id_signing.sh
     INSTALLED_APP=/Applications/RamaTransparentProxyExampleContainer.app; \
-    INSTALLED_SYSEXT="$INSTALLED_APP/Contents/Library/SystemExtensions/org.ramaproxy.example.tproxy.provider.systemextension"; \
+    INSTALLED_SYSEXT="$INSTALLED_APP/Contents/Library/SystemExtensions/org.ramaproxy.example.tproxy.dist.provider.systemextension"; \
     ./scripts/install_tproxy_app_bundle.sh dist "{{tproxy_built_app_dist}}" 0; \
     echo "Installed Developer ID system extension bundle at $INSTALLED_SYSEXT"
 
@@ -43,7 +43,7 @@ install-tproxy-app-dev-reset-profile:
 install-tproxy-app-dist-reset-profile:
     ./scripts/notarize_tproxy_app_with_developer_id_signing.sh
     INSTALLED_APP=/Applications/RamaTransparentProxyExampleContainer.app; \
-    INSTALLED_SYSEXT="$INSTALLED_APP/Contents/Library/SystemExtensions/org.ramaproxy.example.tproxy.provider.systemextension"; \
+    INSTALLED_SYSEXT="$INSTALLED_APP/Contents/Library/SystemExtensions/org.ramaproxy.example.tproxy.dist.provider.systemextension"; \
     ./scripts/install_tproxy_app_bundle.sh dist "{{tproxy_built_app_dist}}" 1; \
     echo "Installed Developer ID system extension bundle at $INSTALLED_SYSEXT"
 
@@ -168,8 +168,10 @@ check-spec-parity:
     ./scripts/check_spec_parity.sh
 
 test-soak-log-parser:
+    python3 ./scripts/test_modern_udp_evidence.py
     python3 ./scripts/test_soak_pressure_log.py
     python3 ./scripts/test_stress_traffic.py
+    python3 ./scripts/test_signed_run_evidence.py
 
 qa: qa-rust check-spec-parity test-soak-log-parser build-tproxy-dev
 
@@ -186,6 +188,14 @@ test-modern-udp-signed: build-tproxy-rs build-tproxy-app-dev
 # The explicit full gate is signed/on-device: unlike ordinary `qa`, it must prove
 # the modern UDP callback paths and HTTP/3 pass-through against the live sysext.
 test-full: qa test-e2e test-modern-udp-signed
+
+# Verify the three independently sealed Gate 20 run directories as one exact
+# source/provider generation. The shared helper owns all cross-artifact
+# semantics, including the sole modern exact-workload Dial9 proof.
+verify-gate20-evidence modern soak stress:
+    python3 ./scripts/signed_run_evidence.py verify-release-set \
+        --require-kind modern_udp --require-kind soak --require-kind stress-series \
+        "{{modern}}" "{{soak}}" "{{stress}}"
 
 # Run the Rust FFI e2e suite under AddressSanitizer to surface memory errors,
 # including use-after-free. ASan does not detect data races.

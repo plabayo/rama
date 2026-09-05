@@ -50,6 +50,8 @@ extension ContainerController {
             case .connected, .connecting, .reasserting:
                 if self.requestedUdpPassthroughPorts != nil
                     || self.requestedUdpBlockedEndpoints != nil
+                    || self.requestedEvidenceRunUuid != nil
+                    || self.requestedUdpE2EDiagnosticEndpoints != nil
                 {
                     self.restartProxyForLaunchOverrides(manager: manager)
                     return
@@ -465,8 +467,8 @@ extension ContainerController {
             ? (requestedUdpBlockedEndpoints ?? demoSettings.udpBlockedEndpoints)
             : demoSettings.udpBlockedEndpoints
         let udpE2EMode: Bool? = applyingLaunchUdpOverrides
-            && (!(requestedUdpPassthroughPorts ?? []).isEmpty
-                || !(requestedUdpBlockedEndpoints ?? []).isEmpty)
+            && requestedEvidenceRunUuid != nil
+            && requestedUdpE2EDiagnosticEndpoints != nil
             ? true : nil
         let payload = ProxyEngineConfigPayload(
             htmlBadgeEnabled: demoSettings.htmlBadgeEnabled,
@@ -476,6 +478,9 @@ extension ContainerController {
             udpPassthroughPorts: udpPassthroughPorts,
             udpBlockedEndpoints: udpBlockedEndpoints,
             udpE2EMode: udpE2EMode,
+            evidenceRunUuid: udpE2EMode == true ? requestedEvidenceRunUuid : nil,
+            udpE2EDiagnosticEndpoints: udpE2EMode == true
+                ? requestedUdpE2EDiagnosticEndpoints : nil,
             xpcServiceName: xpcServiceName,
             // Forward our bundle ID so the sysext can lock the XPC listener to
             // this container only (same Apple Developer team + this identifier).

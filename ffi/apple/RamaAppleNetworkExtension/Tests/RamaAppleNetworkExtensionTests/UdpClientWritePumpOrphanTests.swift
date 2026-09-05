@@ -6,10 +6,10 @@ import XCTest
 
 /// Pins the head-of-line-block fix on `UdpClientWritePump.flushLocked`.
 ///
-/// **The bug.** `enqueue` captures `sentBy ?? sentByEndpoint` at the
-/// moment of enqueueing. `flushLocked` reads the FIFO head and tries
-/// `head.1 ?? sentByEndpoint` to resolve a peer. If both are nil it
-/// previously returned WITHOUT popping — meaning a later attributed
+/// **The bug.** A native enqueue can capture `sentBy ?? sentByEndpoint` at
+/// admission, while borrowed Rust replies deliberately bypass the fallback.
+/// If the eligible endpoint resolution is nil, the pump previously returned
+/// WITHOUT popping — meaning a later attributed
 /// datagram appended to the back of the queue was held behind an
 /// orphan head forever (an attributed enqueue does not retroactively
 /// fix the head's missing peer). Real flows could wedge on a single
@@ -141,6 +141,29 @@ final class UdpClientWritePumpOrphanTests: XCTestCase {
         )
     }
 
+    /// Native work admitted before activation may still be waiting when its
+    /// explicit fallback arrives. Unlike a borrowed missing peer, it remains
+    /// fallback-eligible and is rescued when the pump opens.
+    func testQueuedNativeNilIsRescuedByFallbackUpdateBeforeActivation() {
+        let flow = MockUdpFlow()
+        let pump = makePump(flow: flow)
+
+        pump.enqueue(Data("queued-native".utf8), sentBy: nil)
+        sync()
+        XCTAssertTrue(flow.writtenBatches.isEmpty)
+
+        pump.setSentByEndpoint(attributedEndpoint())
+        pump.markOpened()
+        sync()
+
+        XCTAssertEqual(
+            flow.writtenBatches.first?.datagrams,
+            [Data("queued-native".utf8)])
+        XCTAssertEqual(
+            (flow.writtenBatches.first?.sentBy.first as? NWHostEndpoint)?.hostname,
+            "127.0.0.1")
+    }
+
     /// A valid write between orphan drops must not re-arm the diagnostic.
     /// Otherwise an alternating peerless/attributed stream emits and allocates
     /// one log record every other datagram on the packet path.
@@ -170,5 +193,9 @@ final class UdpClientWritePumpOrphanTests: XCTestCase {
             $0.text.contains("udp write pump dropped")
         }
         XCTAssertEqual(orphanLogs.count, 1)
+        XCTAssertEqual(
+            orphanLogs.first?.text,
+            "udp write pump dropped 1 orphan datagram(s): no usable sentBy endpoint (borrowed peer absent or invalid, or native fallback unavailable). Further orphan-drop diagnostics are suppressed for this pump.")
+        XCTAssertFalse(orphanLogs.first?.text.contains("no cached endpoint") == true)
     }
 }

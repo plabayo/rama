@@ -44,6 +44,10 @@ struct ProxyEngineConfigPayload: Encodable {
     /// diagnostics solely for the signed live E2E. It is sent in start options
     /// and never saved in the NE profile.
     let udpE2EMode: Bool?
+    /// Canonical launch-only identity attached to signed-E2E diagnostics.
+    let evidenceRunUuid: String?
+    /// Exact launch-only endpoint allowlist for signed-E2E diagnostics.
+    let udpE2EDiagnosticEndpoints: [String]?
     let xpcServiceName: String
     /// Bundle ID of the container app, forwarded to the sysext so it can pin
     /// the XPC listener via `PeerSecurityRequirement::TeamIdentity(Some(...))`
@@ -58,6 +62,8 @@ struct ProxyEngineConfigPayload: Encodable {
         case udpPassthroughPorts = "udp_passthrough_ports"
         case udpBlockedEndpoints = "udp_blocked_endpoints"
         case udpE2EMode = "udp_e2e_mode"
+        case evidenceRunUuid = "evidence_run_uuid"
+        case udpE2EDiagnosticEndpoints = "udp_e2e_diagnostic_endpoints"
         case xpcServiceName = "xpc_service_name"
         case containerSigningIdentifier = "container_signing_identifier"
     }

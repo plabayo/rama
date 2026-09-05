@@ -144,6 +144,44 @@ fn dial9_udp_flow_closed_bytes(trace_dir: &std::path::Path, expected_flow_id: u6
     totals.expect("TproxyFlowClosed row for expected UDP flow")
 }
 
+fn dial9_provider_identities(
+    trace_dir: &std::path::Path,
+    expected_flow_id: u64,
+) -> Vec<(String, u64, u64, u64)> {
+    let bytes = std::fs::read(trace_dir.join("trace.0.bin")).expect("sealed dial9 trace");
+    let mut decoder = Decoder::new(&bytes).expect("valid dial9 trace");
+    let mut identities = Vec::new();
+    decoder
+        .for_each_event(|event| {
+            if !matches!(event.name, "TproxyFlowOpened" | "TproxyFlowClosed") {
+                return;
+            }
+            let mut provider_pid = None;
+            let mut provider_generation = None;
+            let mut flow_id = None;
+            for (name, value) in event.field_names().zip(event.fields.iter()) {
+                if let FieldValueRef::Varint(value) = value {
+                    match name {
+                        "provider_pid" => provider_pid = Some(*value),
+                        "provider_generation" => provider_generation = Some(*value),
+                        "flow_id" => flow_id = Some(*value),
+                        _ => {}
+                    }
+                }
+            }
+            if flow_id == Some(expected_flow_id) {
+                identities.push((
+                    event.name.to_owned(),
+                    provider_pid.expect("provider_pid field"),
+                    provider_generation.expect("provider_generation field"),
+                    flow_id.expect("flow_id field"),
+                ));
+            }
+        })
+        .expect("decode dial9 identities");
+    identities
+}
+
 #[test]
 fn synchronous_app_message_works_with_dial9_runtime() {
     let _slot = recorder_slot();
@@ -610,6 +648,8 @@ fn udp_echo_records_real_dial9_byte_totals() {
         on_wake: None,
     };
     let engine = build_dial9_engine(handler, temp_dir.path());
+    let provider_pid = u64::from(engine.provider_pid);
+    let provider_generation = engine.provider_generation;
     let (echo_tx, echo_rx) = std::sync::mpsc::sync_channel(1);
     let (closed_tx, closed_rx) = std::sync::mpsc::sync_channel(1);
     let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
@@ -642,6 +682,24 @@ fn udp_echo_records_real_dial9_byte_totals() {
     assert_eq!(
         dial9_udp_flow_closed_bytes(temp_dir.path(), FLOW_ID),
         (INGRESS_LEN as u64, EGRESS_LEN as u64)
+    );
+    assert_eq!(
+        dial9_provider_identities(temp_dir.path(), FLOW_ID),
+        vec![
+            (
+                "TproxyFlowClosed".to_owned(),
+                provider_pid,
+                provider_generation,
+                FLOW_ID,
+            ),
+            (
+                "TproxyFlowOpened".to_owned(),
+                provider_pid,
+                provider_generation,
+                FLOW_ID,
+            ),
+        ],
+        "open and close must carry the same provider process/generation identity",
     );
 }
 

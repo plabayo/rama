@@ -17,6 +17,53 @@ if [ "$dev" != "$dist" ]; then
     fail=1
 fi
 
+# Both application variants and both targets must embed the exact source
+# identity passed by their build wrapper.  Missing one side would make a
+# built/installed/running evidence comparison ambiguous.
+for spec in tproxy_app/Project.yml tproxy_app/Project.dist.yml; do
+    if [ "$(grep -c 'RAMA_TPROXY_GIT_HEAD:' "$spec")" -ne 2 ] \
+        || [ "$(grep -c 'RAMA_TPROXY_GIT_DIRTY:' "$spec")" -ne 2 ]; then
+        echo "$spec must define source identity settings for both targets" >&2
+        fail=1
+    fi
+done
+for plist in tproxy_app/Container/Info.plist tproxy_app/Extension/Info.plist; do
+    if ! grep -q '<key>RamaGitHead</key>' "$plist" \
+        || ! grep -q '<key>RamaGitDirty</key>' "$plist"; then
+        echo "$plist does not embed the source identity" >&2
+        fail=1
+    fi
+done
+for build_script in \
+    scripts/build_tproxy_app_with_signing.sh \
+    scripts/build_tproxy_app_with_developer_id_signing.sh
+do
+    if ! grep -q 'RAMA_TPROXY_GIT_HEAD=' "$build_script" \
+        || ! grep -q 'RAMA_TPROXY_GIT_DIRTY=' "$build_script"; then
+        echo "$build_script does not pass the source identity to Xcode" >&2
+        fail=1
+    fi
+    if ! grep -Fq "git -C \"\$SOURCE_ROOT\" archive" "$build_script" \
+        || ! grep -Fq 'find "$ISOLATED_SOURCE_ROOT" -type f -exec chmod a-w' "$build_script" \
+        || ! grep -Fq "RUST_TARGET_DIR=\"\$BUILD_ROOT/tproxy_rs/target\"" "$build_script" \
+        || ! grep -Fq 'cargo build --locked --target aarch64-apple-darwin' "$build_script" \
+        || ! grep -Fq 'cargo build --locked --target x86_64-apple-darwin' "$build_script" \
+        || ! grep -Fq '/usr/bin/lipo -create' "$build_script"; then
+        echo "$build_script must build and lipo both Rust architectures in its pinned source tree" >&2
+        fail=1
+    fi
+    if grep -Eq 'cp .*librama_tproxy_example\.a' "$build_script"; then
+        echo "$build_script must not copy a mutable prebuilt Rust archive" >&2
+        fail=1
+    fi
+done
+
+if [ "$(grep -c 'org.ramaproxy.example.tproxy.dist.provider.systemextension' justfile)" -ne 2 ] \
+    || grep -q 'org.ramaproxy.example.tproxy.provider.systemextension' justfile; then
+    echo "dist install recipes must use the exact Project.dist provider bundle directory" >&2
+    fail=1
+fi
+
 # CA keychain service names must match between the Rust sysext and the Swift
 # container, else `Clear CA` wipes nothing and leaves orphaned key material.
 rs=$(grep -oE 'rama-tproxy-demo-ca-[a-z-]+' tproxy_rs/src/tls/mod.rs | sort -u)

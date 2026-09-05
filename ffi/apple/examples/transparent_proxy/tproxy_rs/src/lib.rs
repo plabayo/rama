@@ -176,6 +176,10 @@ fn udp_flow_action_for_flow(
 /// testable; the reusable Swift provider only forwards normalized metadata.
 fn udp_e2e_diagnostic(
     enabled: bool,
+    run_uuid: Option<&str>,
+    diagnostic_endpoints: &[HostWithPort],
+    provider_pid: u32,
+    provider_generation: u64,
     meta: &TransparentProxyFlowMeta,
     action: TransparentProxyFlowAction,
 ) -> Option<String> {
@@ -184,13 +188,21 @@ fn udp_e2e_diagnostic(
     }
 
     let remote_endpoint = meta.remote_endpoint.as_ref()?;
+    if !diagnostic_endpoints.contains(remote_endpoint) {
+        return None;
+    }
+    let run_uuid = run_uuid?;
     let source_app = meta.source_app_bundle_identifier.as_deref()?;
     if !UDP_E2E_PROBE_BUNDLE_IDENTIFIERS.contains(&source_app) {
         return None;
     }
+    let local_endpoint = meta.local_endpoint.as_ref()?.clone().canonicalize();
+    if local_endpoint.port == 0 {
+        return None;
+    }
 
     Some(format!(
-        "udp_e2e_decision rama_decision={action} flow_id={} remote_endpoint={remote_endpoint} source_app={source_app} source_pid={}",
+        "udp_e2e_decision run_uuid={run_uuid} provider_pid={provider_pid} provider_generation={provider_generation} rama_decision={action} flow_id={} remote_endpoint={remote_endpoint} local_endpoint={local_endpoint} source_app={source_app} source_pid={}",
         meta.flow_id, meta.source_app_pid?,
     ))
 }
@@ -277,6 +289,10 @@ struct DemoTransparentProxyHandler {
     udp_passthrough_ports: Arc<[u16]>,
     udp_blocked_endpoints: Arc<[HostWithPort]>,
     udp_policy_scope: UdpPolicyScope,
+    evidence_run_uuid: Option<Arc<str>>,
+    udp_e2e_diagnostic_endpoints: Arc<[HostWithPort]>,
+    provider_pid: u32,
+    provider_generation: u64,
     egress_connect_timeout: Option<std::time::Duration>,
     egress_tcp_no_delay: bool,
 }
@@ -309,6 +325,10 @@ impl DemoTransparentProxyHandler {
 
         let udp_passthrough_ports: Arc<[u16]> = demo_config.udp_passthrough_ports.clone().into();
         let udp_blocked_endpoints = demo_config.udp_blocked_endpoints.clone().into();
+        let evidence_run_uuid = demo_config.evidence_run_uuid.map(Arc::<str>::from);
+        let udp_e2e_diagnostic_endpoints = demo_config.udp_e2e_diagnostic_endpoints.into();
+        let provider_pid = ctx.provider_pid();
+        let provider_generation = ctx.provider_generation();
         // Treat 0 / absent as "platform default".
         let egress_connect_timeout = demo_config
             .tcp_connect_timeout_ms
@@ -354,6 +374,10 @@ impl DemoTransparentProxyHandler {
             udp_passthrough_ports,
             udp_blocked_endpoints,
             udp_policy_scope,
+            evidence_run_uuid,
+            udp_e2e_diagnostic_endpoints,
+            provider_pid,
+            provider_generation,
             egress_connect_timeout,
             egress_tcp_no_delay,
         })
@@ -508,9 +532,15 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
                 &self.udp_blocked_endpoints,
             );
         let action = udp_flow_action_for_flow(&meta, udp_passthrough_ports, udp_blocked_endpoints);
-        if let Some(message) =
-            udp_e2e_diagnostic(self.udp_policy_scope.is_e2e_active_at(now), &meta, action)
-        {
+        if let Some(message) = udp_e2e_diagnostic(
+            self.udp_policy_scope.is_e2e_active_at(now),
+            self.evidence_run_uuid.as_deref(),
+            &self.udp_e2e_diagnostic_endpoints,
+            self.provider_pid,
+            self.provider_generation,
+            &meta,
+            action,
+        ) {
             tracing::debug!("{message}");
         }
         let udp_service = self.udp_service.clone();
@@ -538,6 +568,7 @@ mod udp_policy_tests {
 
     fn udp_meta_for_app(endpoint: &str, bundle_identifier: &str) -> TransparentProxyFlowMeta {
         let mut meta = udp_meta(endpoint);
+        meta.local_endpoint = Some("127.0.0.1:50001".parse().expect("valid local endpoint"));
         meta.source_app_bundle_identifier = Some(
             bundle_identifier
                 .parse()
@@ -600,29 +631,93 @@ mod udp_policy_tests {
     #[test]
     fn e2e_diagnostics_are_gated_and_allowlisted() {
         let python = udp_meta_for_app("1.1.1.1:53", "com.apple.python3");
+        let endpoints = ["1.1.1.1:53".parse().expect("valid endpoint")];
+        let run_uuid = "12345678-1234-4234-8234-123456789abc";
         let expected = format!(
-            "udp_e2e_decision rama_decision=passthrough flow_id={} remote_endpoint=1.1.1.1:53 source_app=com.apple.python3 source_pid=4242",
+            "udp_e2e_decision run_uuid={run_uuid} provider_pid=99 provider_generation=7 rama_decision=passthrough flow_id={} remote_endpoint=1.1.1.1:53 local_endpoint=127.0.0.1:50001 source_app=com.apple.python3 source_pid=4242",
             python.flow_id,
         );
         assert_eq!(
-            udp_e2e_diagnostic(true, &python, TransparentProxyFlowAction::Passthrough).as_deref(),
+            udp_e2e_diagnostic(
+                true,
+                Some(run_uuid),
+                &endpoints,
+                99,
+                7,
+                &python,
+                TransparentProxyFlowAction::Passthrough,
+            )
+            .as_deref(),
             Some(expected.as_str())
         );
         assert_eq!(
-            udp_e2e_diagnostic(false, &python, TransparentProxyFlowAction::Passthrough),
+            udp_e2e_diagnostic(
+                false,
+                Some(run_uuid),
+                &endpoints,
+                99,
+                7,
+                &python,
+                TransparentProxyFlowAction::Passthrough,
+            ),
             None
         );
 
         let background = udp_meta_for_app("1.1.1.1:53", "com.example.background");
         assert_eq!(
-            udp_e2e_diagnostic(true, &background, TransparentProxyFlowAction::Passthrough),
+            udp_e2e_diagnostic(
+                true,
+                Some(run_uuid),
+                &endpoints,
+                99,
+                7,
+                &background,
+                TransparentProxyFlowAction::Passthrough,
+            ),
             None
         );
 
         let mut missing_pid = python;
         missing_pid.source_app_pid = None;
         assert_eq!(
-            udp_e2e_diagnostic(true, &missing_pid, TransparentProxyFlowAction::Passthrough),
+            udp_e2e_diagnostic(
+                true,
+                Some(run_uuid),
+                &endpoints,
+                99,
+                7,
+                &missing_pid,
+                TransparentProxyFlowAction::Passthrough,
+            ),
+            None
+        );
+
+        let mut missing_local = udp_meta_for_app("1.1.1.1:53", "com.apple.python3");
+        missing_local.local_endpoint = None;
+        assert_eq!(
+            udp_e2e_diagnostic(
+                true,
+                Some(run_uuid),
+                &endpoints,
+                99,
+                7,
+                &missing_local,
+                TransparentProxyFlowAction::Passthrough,
+            ),
+            None
+        );
+
+        let unscoped = udp_meta_for_app("8.8.8.8:53", "com.apple.python3");
+        assert_eq!(
+            udp_e2e_diagnostic(
+                true,
+                Some(run_uuid),
+                &endpoints,
+                99,
+                7,
+                &unscoped,
+                TransparentProxyFlowAction::Passthrough,
+            ),
             None
         );
     }

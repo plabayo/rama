@@ -1,0 +1,690 @@
+#!/usr/bin/env python3
+"""Adversarial unit coverage for the signed modern UDP evidence path."""
+
+import json
+import hashlib
+from pathlib import Path
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import unittest
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPT_DIR))
+
+from modern_udp_e2e_probe import (  # noqa: E402
+    ProductViolation,
+    controlled_echo_load,
+    parse_quic_shaped_payload,
+    pressure_burst,
+    quic_shaped_payload,
+)
+from modern_udp_evidence import (  # noqa: E402
+    BundleVerificationError,
+    parse_signed_udp_status_lines,
+    pressure_window_observation,
+    producer_sources_sha256,
+    validate_echo_decision_bijection,
+    verify_bundle,
+)
+
+
+RUN_UUID = "12345678-1234-4234-8234-123456789abc"
+DIGEST = "a" * 64
+
+
+def passing_status():
+    values = {
+        "complete": "1", "passed": "1", "exit_code": "0",
+        "udp_probe_attempt_count": "8", "udp_probe_pass_count": "8",
+        "udp_pressure_log_checked": "1", "rust_udp_drop_transitions": "1",
+        "rust_udp_resume_transitions": "1", "swift_udp_staging_drop_samples": "0",
+        "log_stream_started": "1", "log_stream_alive_end": "1",
+        "log_stream_joined": "1", "profile_restored": "1",
+        "dial9_baseline_max_index": "7", "callback_generation": "modern",
+        "dial9_required_flow_id": "103", "dial9_current_segment_count": "1",
+        "dial9_required_pair_count": "131", "dial9_required_close_reason": "1",
+        "dial9_required_close_age_ms": "900", "dial9_required_bytes_in": "0",
+        "dial9_required_bytes_out": "0", "provider_pid": "9001",
+        "provider_identity": DIGEST, "provider_identity_stable": "1",
+        "http3_source_pid": "2001", "http3_flow_id": "109",
+        "http3_remote_endpoint": "1.1.1.1:443", "pressure_probe_attempted": "1",
+        "pressure_probe_passed": "1", "pressure_drop_transitions": "1",
+        "pressure_resume_transitions": "1", "pressure_drop_reasons": "global_bytes",
+        "pressure_recovered_reasons": "global_bytes", "run_uuid": RUN_UUID,
+        "run_start_epoch_ms": "1000", "run_end_epoch_ms": "5000",
+        "evidence_kind": "modern_udp", "provider_generation_identity": DIGEST,
+        "producer_sources_sha256": DIGEST,
+        "engine_generations_sha256": DIGEST, "http3_request_count": "12",
+        "http3_pass_count": "12", "http3_flow_count": "12",
+        "http3_duration_ms": "2500", "http3_min_concurrent": "4",
+        "echo_socket_count": "128", "echo_datagrams_per_socket": "1",
+        "echo_payload_bytes": "1200", "echo_expected_count": "128",
+        "echo_exact_echo_count": "128", "echo_flow_count": "128",
+        "echo_payload_set_sha256": DIGEST, "echo_endpoint": "127.0.0.1:44444",
+        "echo_source_pid": "2002", "pressure_datagram_count": "512",
+        "pressure_payload_bytes": "4096", "pressure_expected_bytes": "2097152",
+        "concurrent_load_deadline_seconds": "180", "concurrent_load_timed_out": "0",
+        "active_workload_forced_termination_count": "0",
+        "passthrough_dns_source_pid": "1001", "passthrough_dns_flow_id": "101",
+        "control_dns_source_pid": "1002", "control_dns_flow_id": "102",
+        "ntp_source_pid": "1003", "ntp_flow_id": "103",
+        "pressure_source_pid": "1004", "pressure_flow_id": "104",
+        "blocked_dns_source_pid": "1005", "blocked_dns_flow_id": "105",
+        "recovery_ntp_source_pid": "1006", "recovery_ntp_flow_id": "106",
+        "dial9_required_close_reason_name": "shutdown",
+        "dial9_close_age_bound_ms": "5000", "dial9_requirements_sha256": DIGEST,
+        "dial9_requirement_count": "131", "dial9_matched_requirement_count": "131",
+        "schema_version": "5", "schema_complete": "1",
+    }
+    keys = ["complete", "passed", "exit_code"]
+    keys.extend(key for key in values if key not in {*keys, "schema_complete"})
+    keys.append("schema_complete")
+    return [f"{key}\t{values[key]}\n" for key in keys]
+
+
+def replace(lines, key, value):
+    return [f"{key}\t{value}\n" if line.startswith(key + "\t") else line for line in lines]
+
+
+def _write_status(directory, overrides):
+    lines = passing_status()
+    for key, value in overrides.items():
+        lines = replace(lines, key, str(value))
+    (directory / "udp-evidence-status.tsv").write_text("".join(lines))
+
+
+def _decision(run_uuid, provider_pid, generation, action, flow_id, remote, local, app, pid):
+    return (
+        f"udp_e2e_decision run_uuid={run_uuid} provider_pid={provider_pid} "
+        f"provider_generation={generation} rama_decision={action} flow_id={flow_id} "
+        f"remote_endpoint={remote} local_endpoint={local} source_app={app} source_pid={pid}"
+    )
+
+
+def build_strict_bundle(directory):
+    provider_pid = 9001
+    unblocked_generation = 7
+    blocked_generation = 8
+    echo_pid = 2002
+    echo_endpoint = "127.0.0.1:44444"
+    echo_digest = DIGEST
+    echo_endpoints = [f"127.0.0.1:{50000 + index}" for index in range(128)]
+    echo_flows = [1000 + index for index in range(128)]
+    lines = [
+        _decision(RUN_UUID, provider_pid, 7, "passthrough", 101, "1.1.1.1:53", "127.0.0.1:41001", "com.apple.python3", 1001),
+        _decision(RUN_UUID, provider_pid, 7, "intercept", 103, "162.159.200.1:123", "127.0.0.1:41003", "com.apple.python3", 1003),
+        _decision(RUN_UUID, provider_pid, 7, "passthrough", 102, "8.8.8.8:53", "127.0.0.1:41002", "com.apple.python3", 1002),
+    ]
+    lines.extend(
+        _decision(RUN_UUID, provider_pid, 7, "intercept", flow_id, echo_endpoint,
+                  endpoint, "com.apple.python3", echo_pid)
+        for flow_id, endpoint in zip(echo_flows, echo_endpoints)
+    )
+    lines.extend([
+        _decision(RUN_UUID, provider_pid, 7, "intercept", 104, "162.159.200.1:123", "127.0.0.1:41004", "com.apple.python3", 1004),
+        'UDP ingress pressure dropped datagram flow_id=104 pressure="global_bytes" cumulative_drops=1 global_retained_bytes=100 global_max_retained_bytes=1000',
+        'UDP ingress pressure resumed flow flow_id=104 pressure="global_bytes" cumulative_resumptions=1 global_retained_bytes=0 global_max_retained_bytes=1000',
+        _decision(RUN_UUID, provider_pid, 7, "intercept", 106, "162.159.200.1:123", "127.0.0.1:41006", "com.apple.python3", 1006),
+    ])
+    h3_pids = list(range(3000, 3006))
+    h3_flows = list(range(2000, 2006))
+    lines.extend(
+        _decision(RUN_UUID, provider_pid, 7, "passthrough", flow_id, "1.1.1.1:443",
+                  f"127.0.0.1:{52000 + index}", "com.apple.nscurl", pid)
+        for index, (flow_id, pid) in enumerate(zip(h3_flows, h3_pids))
+    )
+    lines.append(
+        _decision(RUN_UUID, provider_pid, 8, "blocked", 105, "8.8.8.8:53",
+                  "127.0.0.1:41005", "com.apple.python3", 1005)
+    )
+    (directory / "provider.log").write_text("\n".join(lines) + "\n")
+
+    phase_rows = (
+        ("schema_version", 1), ("unblocked_start_line", 0),
+        ("udp_error_start_line", 0), ("passthrough_start_line", 0),
+        ("passthrough_end_line", 1), ("ntp_start_line", 1), ("ntp_end_line", 2),
+        ("control_start_line", 2), ("control_end_line", 3),
+        ("pressure_start_line", 3), ("pressure_end_line", 134),
+        ("echo_start_line", 3), ("echo_end_line", 134),
+        ("recovery_start_line", 134), ("recovery_end_line", 135),
+        ("http3_start_line", 135), ("http3_end_line", 141),
+        ("blocked_profile_start_line", 141), ("blocked_start_line", 141),
+        ("blocked_end_line", 142), ("provider_log_end_line", 142),
+        ("schema_complete", 1),
+    )
+    (directory / "provider-log-phases.tsv").write_text(
+        "".join(f"{key}\t{value}\n" for key, value in phase_rows)
+    )
+
+    client = {
+        "schema_version": 1, "kind": "controlled_echo_client", "run_uuid": RUN_UUID,
+        "endpoint": echo_endpoint, "socket_count": 128, "datagrams_per_socket": 1,
+        "payload_bytes": 1200, "expected_count": 128, "sent_count": 128,
+        "received_count": 128, "exact_echo_count": 128, "unique_echo_count": 128,
+        "independent_socket_count": 128, "local_endpoints": echo_endpoints,
+        "local_endpoint_set_sha256": hashlib.sha256("\n".join(echo_endpoints).encode()).hexdigest(),
+        "payload_set_sha256": echo_digest, "echo_set_sha256": echo_digest,
+        "error_count": 0, "passed": True, "schema_complete": True,
+    }
+    server = {
+        "schema_version": 1, "kind": "controlled_echo_server", "run_uuid": RUN_UUID,
+        "endpoint": echo_endpoint, "expected_count": 128, "received_count": 128,
+        "echo_count": 128, "duplicate_count": 0, "malformed_count": 0,
+        "payload_set_sha256": echo_digest, "passed": True, "schema_complete": True,
+    }
+    ready = {
+        "schema_version": 1, "run_uuid": RUN_UUID, "endpoint": echo_endpoint,
+        "server_pid": 4000, "schema_complete": True,
+    }
+    for name, value in (
+        ("controlled-echo-client.json", client), ("controlled-echo-server.json", server),
+        ("controlled-echo-ready.json", ready),
+    ):
+        (directory / name).write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
+    (directory / "controlled-echo-client.log").write_text(
+        f"QUIC-shaped UDP controlled echo ok: sockets=128 datagrams=128 bytes=1200 sha256={echo_digest}\n"
+    )
+    (directory / "controlled-echo-server.log").write_bytes(b"")
+    (directory / "echo-identities.tsv").write_text("".join(
+        f"7\t{flow_id}\t{endpoint}\n" for flow_id, endpoint in zip(echo_flows, echo_endpoints)
+    ))
+
+    pid_rows = []
+    result_rows = ["round\tworker\tsource_pid\texit_code\thttp3_marker\tsha256\n"]
+    for index, pid in enumerate(h3_pids):
+        round_number, worker = index // 2 + 1, index % 2 + 1
+        pid_rows.append(f"{round_number}\t{worker}\t{pid}\n")
+        output = f"http=http/3\nround={round_number} worker={worker}\n".encode()
+        (directory / f"http3-{round_number}-{worker}.log").write_bytes(output)
+        result_rows.append(
+            f"{round_number}\t{worker}\t{pid}\t0\t1\t{hashlib.sha256(output).hexdigest()}\n"
+        )
+    (directory / "http3-pids.tsv").write_text("".join(pid_rows))
+    (directory / "http3-results.tsv").write_text("".join(result_rows))
+    (directory / "http3-round-results.tsv").write_text(
+        "round\texpected_workers\tbarrier_release_epoch_ms\tpre_release_alive\n"
+        "1\t2\t2000\t2\n2\t2\t3000\t2\n3\t2\t4000\t2\n"
+    )
+    (directory / "http3-timing.tsv").write_text(
+        "schema_version\t1\nstart_monotonic_ms\t100\nend_monotonic_ms\t2600\n"
+        "duration_ms\t2500\nrounds\t3\nconcurrency\t2\nschema_complete\t1\n"
+    )
+    (directory / "http3-endpoints.txt").write_text("1.1.1.1:443\n")
+
+    requirement_rows = [
+        "label\tprovider_pid\tprovider_generation\tflow_id\tprotocol\tsource_pid\tclose_reason\tmin_bytes_in\tmax_bytes_in\tmin_bytes_out\tmax_bytes_out\n",
+        "ntp\t9001\t7\t103\t2\t1003\t1\t48\t65535\t48\t65535\n",
+        "pressure\t9001\t7\t104\t2\t1004\t1\t2097152\t2097152\t0\t0\n",
+        "recovery-ntp\t9001\t7\t106\t2\t1006\t1\t48\t65535\t48\t65535\n",
+    ]
+    requirement_rows.extend(
+        f"echo-{index}\t9001\t7\t{flow_id}\t2\t2002\t1\t1200\t1200\t1200\t1200\n"
+        for index, flow_id in enumerate(echo_flows)
+    )
+    requirements = "".join(requirement_rows)
+    (directory / "dial9-requirements.tsv").write_text(requirements)
+
+    restore_messages = [
+        "container app launched", "temporary test UDP pass-through ports=",
+        "temporary test UDP blocked endpoints=",
+        "udp_e2e_restore_profile=persisted-default evidence_identity=absent",
+        "status=connected",
+        "udp_e2e_restart=begin launch-time UDP policy overrides requested",
+        "status transition connected -> disconnecting",
+        "status transition disconnecting -> disconnected",
+        "proxy stopped after UDP policy update", "calling startVPNTunnel",
+        "transparent proxy start requested",
+        "status transition disconnected -> connecting",
+        "status transition connecting -> connected",
+    ]
+    restore_slice = "".join(
+        f"[1970-01-01T00:00:04Z] INFO: {message}\n" for message in restore_messages
+    )
+    (directory / "restore-container.log").write_text(restore_slice)
+    (directory / "restore.log").write_text(
+        "restore_invocation schema=1 mode=dev reset_profile=0 "
+        "udp_passthrough_ports=empty udp_blocked_endpoints=empty evidence_identity=absent\n"
+    )
+    restore_rows = (
+        ("schema_version", 1), ("run_uuid", RUN_UUID), ("provider_pid", provider_pid),
+        ("replaced_provider_generation", blocked_generation),
+        ("restore_started_epoch_ms", 4000), ("restore_completed_epoch_ms", 4500),
+        ("container_start_line", 100), ("container_end_line", 113),
+        ("slice_line_count", 13),
+        ("slice_sha256", hashlib.sha256(restore_slice.encode()).hexdigest()),
+        ("profile", "persisted-default"), ("evidence_identity", "absent"),
+        ("fresh_connected", 1), ("schema_complete", 1),
+    )
+    (directory / "restore-receipt.tsv").write_text(
+        "".join(f"{key}\t{value}\n" for key, value in restore_rows)
+    )
+    for name in (
+        "source-test_modern_udp_flow.sh",
+        "source-modern_udp_e2e_probe.py",
+        "source-install_tproxy_app_bundle.sh",
+        "source-modern_udp_evidence.py",
+        "source-soak_pressure_log.py",
+        "source-signed_run_evidence.py",
+    ):
+        (directory / name).write_text(f"fixture bytes for {name}\n")
+    producer_digest = producer_sources_sha256(directory)
+    (directory / "workload-claims.tsv").write_text(
+        "evidence_kind\tmodern_udp\n"
+        f"run_uuid\t{RUN_UUID}\n"
+        "dial9_diagnostic_only\t0\n"
+        "dial9_workload_coverage\t1\n"
+        "dial9_claim\texact-workload\n"
+        "quic_shaped_not_valid_quic\t1\n"
+        "echo_socket_count\t128\n"
+        "echo_exact_echo_count\t128\n"
+        "http3_request_count\t6\n"
+        "http3_pass_count\t6\n"
+        "dial9_requirement_count\t131\n"
+        "dial9_matched_requirement_count\t131\n"
+        f"producer_sources_sha256\t{producer_digest}\n"
+        "schema_complete\t1\n"
+    )
+    crashes = directory / "crashes"
+    crashes.mkdir()
+    (crashes / "crash-snapshot.tsv").write_text(
+        "schema_version\t2\n"
+        f"run_uuid\t{RUN_UUID}\n"
+        f"provider_generation_identity\t{DIGEST}\n"
+        "since_epoch_ms\t1000\n"
+        "snapshot_epoch_ms\t6000\n"
+        "process_names\torg.ramaproxy.example.tproxy.dev.provider\n"
+        "crash_count\t0\n"
+        f"crash_names_sha256\t{hashlib.sha256(b'').hexdigest()}\n"
+        "schema_complete\t1\n"
+    )
+    generation_tail = f"9001|500|{DIGEST}|{'b' * 64}"
+    (directory / "provider-generation-samples.tsv").write_text(
+        "schema_version\t1\n"
+        f"provider_generation_identity\t{DIGEST}\n"
+        "running_pid\t9001\n"
+        "running_start_epoch_ms\t500\n"
+        f"running_command_sha256\t{DIGEST}\n"
+        f"running_executable_path_sha256\t{'b' * 64}\n"
+        "cadence_ms\t2000\n"
+        "max_gap_ms\t5000\n"
+        "sample_count\t3\n"
+        f"sample_000001\t900|{generation_tail}\n"
+        f"sample_000002\t3000|{generation_tail}\n"
+        f"sample_000003\t6000|{generation_tail}\n"
+        "schema_complete\t1\n"
+    )
+    engine_digest = hashlib.sha256(b"9001:7:8").hexdigest()
+    _write_status(directory, {
+        "http3_source_pid": 3000, "http3_flow_id": 2000,
+        "http3_request_count": 6, "http3_pass_count": 6, "http3_flow_count": 6,
+        "http3_min_concurrent": 2, "echo_source_pid": echo_pid,
+        "engine_generations_sha256": engine_digest,
+        "producer_sources_sha256": producer_digest,
+        "dial9_requirements_sha256": hashlib.sha256(requirements.encode()).hexdigest(),
+    })
+
+
+def reseal_test_manifest(directory):
+    rows = []
+    for path in sorted(directory.iterdir(), key=lambda value: value.name):
+        if path.name != "evidence-manifest.tsv" and path.is_file():
+            content = path.read_bytes()
+            rows.append(f"{path.name}\t{len(content)}\t{hashlib.sha256(content).hexdigest()}\n")
+    (directory / "evidence-manifest.tsv").write_text("".join(rows))
+
+
+class ModernStatusTests(unittest.TestCase):
+    def test_accepts_exact_hardened_status(self):
+        self.assertEqual(parse_signed_udp_status_lines(passing_status()), 0)
+
+    def test_rejects_weakened_cardinality_and_generation_evidence(self):
+        for key, value in (
+            ("echo_flow_count", "63"),
+            ("echo_exact_echo_count", "63"),
+            ("http3_flow_count", "11"),
+            ("http3_duration_ms", "1999"),
+            ("dial9_matched_requirement_count", "66"),
+            ("engine_generations_sha256", "none"),
+            ("concurrent_load_timed_out", "1"),
+            ("active_workload_forced_termination_count", "1"),
+            ("provider_identity", "b" * 64),
+        ):
+            with self.subTest(key=key):
+                self.assertIsNone(parse_signed_udp_status_lines(replace(passing_status(), key, value)))
+
+        self.assertIsNone(
+            parse_signed_udp_status_lines(replace(passing_status(), "echo_socket_count", "127"))
+        )
+
+    def test_pressure_window_is_bound_to_run_provider_and_flow(self):
+        decision = (
+            f"udp_e2e_decision run_uuid={RUN_UUID} provider_pid=9001 "
+            "provider_generation=7 rama_decision=intercept flow_id=77 "
+            "remote_endpoint=127.0.0.1:123 local_endpoint=127.0.0.1:50001 "
+            "source_app=com.apple.python3 source_pid=42"
+        )
+        result = pressure_window_observation(
+            [decision], 0, 42, "127.0.0.1:123", "com.apple.python3",
+            RUN_UUID, 9001,
+        )
+        self.assertEqual(result["flow_id"], 77)
+        wrong = pressure_window_observation(
+            [decision], 0, 42, "127.0.0.1:123", "com.apple.python3",
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", 9001,
+        )
+        self.assertIsNone(wrong["flow_id"])
+
+        malformed = pressure_window_observation(
+            [decision, "udp_e2e_decision source_pid=42"], 0, 42,
+            "127.0.0.1:123", "com.apple.python3", RUN_UUID, 9001,
+        )
+        self.assertFalse(malformed["terminal"])
+
+        wrong_provider = pressure_window_observation(
+            [decision], 0, 42, "127.0.0.1:123", "com.apple.python3",
+            RUN_UUID, 9002,
+        )
+        self.assertIsNone(wrong_provider["flow_id"])
+
+
+class StrictBundleTests(unittest.TestCase):
+    def test_replays_complete_raw_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            self.assertEqual(verify_bundle(root), 0)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT_DIR / "modern_udp_evidence.py"),
+                 "verify-bundle", str(root)],
+                check=False, capture_output=True, text=True,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "0\n")
+            self.assertEqual(result.stderr, "")
+
+    def test_rejects_scalar_only_fabricated_modern_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _write_status(root, {})
+            with self.assertRaises(BundleVerificationError):
+                verify_bundle(root)
+
+    def test_rejects_missing_raw_artifact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            (root / "provider.log").unlink()
+            with self.assertRaises(BundleVerificationError):
+                verify_bundle(root)
+
+    def test_rejects_missing_resealed_crash_snapshot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            (root / "crashes/crash-snapshot.tsv").unlink()
+            reseal_test_manifest(root)
+            with self.assertRaises(BundleVerificationError):
+                verify_bundle(root)
+
+    def test_rejects_resealed_crash_snapshot_for_another_generation_or_window(self):
+        for old, new in ((DIGEST, "b" * 64), ("snapshot_epoch_ms\t6000", "snapshot_epoch_ms\t4999")):
+            with self.subTest(mutation=new):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    build_strict_bundle(root)
+                    snapshot = root / "crashes/crash-snapshot.tsv"
+                    snapshot.write_text(snapshot.read_text().replace(old, new))
+                    reseal_test_manifest(root)
+                    with self.assertRaises(BundleVerificationError):
+                        verify_bundle(root)
+
+    def test_rejects_missing_or_altered_resealed_producer_source(self):
+        for remove in (True, False):
+            with self.subTest(remove=remove):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    build_strict_bundle(root)
+                    producer = root / "source-modern_udp_e2e_probe.py"
+                    if remove:
+                        producer.unlink()
+                    else:
+                        producer.write_bytes(producer.read_bytes() + b"# altered\n")
+                    reseal_test_manifest(root)
+                    with self.assertRaises(BundleVerificationError):
+                        verify_bundle(root)
+
+    def test_rejects_legacy_callback_mutation_after_reseal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            status = root / "udp-evidence-status.tsv"
+            status.write_text(status.read_text().replace(
+                "callback_generation\tmodern", "callback_generation\tlegacy"
+            ))
+            reseal_test_manifest(root)
+            with self.assertRaises(BundleVerificationError):
+                verify_bundle(root)
+
+    def test_rejects_removed_reused_or_gapped_generation_timeline_after_reseal(self):
+        mutations = (
+            None,
+            (f"900|9001|500|{DIGEST}", f"900|9002|500|{DIGEST}"),
+            (f"6000|9001|500|{DIGEST}", f"9001|9001|500|{DIGEST}"),
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                with tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    build_strict_bundle(root)
+                    timeline = root / "provider-generation-samples.tsv"
+                    if mutation is None:
+                        timeline.unlink()
+                    else:
+                        timeline.write_text(timeline.read_text().replace(*mutation))
+                    reseal_test_manifest(root)
+                    with self.assertRaises(BundleVerificationError):
+                        verify_bundle(root)
+
+    def test_rejects_tampered_and_resealed_http3_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            reseal_test_manifest(root)
+            output = root / "http3-1-1.log"
+            output.write_bytes(output.read_bytes().replace(b"http=http/3", b"http=http/2"))
+            reseal_test_manifest(root)
+            with self.assertRaises(BundleVerificationError):
+                verify_bundle(root)
+
+    def test_rejects_tampered_and_resealed_pressure_flow(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            log = root / "provider.log"
+            log.write_text(log.read_text().replace(
+                "dropped datagram flow_id=104", "dropped datagram flow_id=999"
+            ))
+            reseal_test_manifest(root)
+            with self.assertRaises(BundleVerificationError):
+                verify_bundle(root)
+
+    def test_rejects_restore_slice_with_evidence_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            restore = root / "restore-container.log"
+            restore.write_text(restore.read_text().replace(
+                "container app launched", f"container app launched {RUN_UUID}"
+            ))
+            receipt = root / "restore-receipt.tsv"
+            receipt.write_text(re.sub(
+                r"(?m)^slice_sha256\t[0-9a-f]{64}$",
+                f"slice_sha256\t{hashlib.sha256(restore.read_bytes()).hexdigest()}",
+                receipt.read_text(),
+            ))
+            reseal_test_manifest(root)
+            with self.assertRaises(BundleVerificationError):
+                verify_bundle(root)
+
+
+class QuicShapedEchoTests(unittest.TestCase):
+    def test_load_byte_products_are_bounded_before_socket_work(self):
+        with self.assertRaises(ValueError):
+            pressure_burst("127.0.0.1", 100_000, 60_000, 0)
+        with self.assertRaises(ValueError):
+            controlled_echo_load(
+                "127.0.0.1", 9, RUN_UUID, 512, 64, 60_000, 128, 2,
+                "/does/not/matter.json",
+            )
+
+    def test_echo_provider_mapping_requires_endpoint_flow_bijection(self):
+        endpoints = ["127.0.0.1:50001", "127.0.0.1:50002"]
+        base = [
+            "intercept", "101", "127.0.0.1:44444", endpoints[0],
+            "com.apple.python3", "42", RUN_UUID, "9001", "7",
+        ]
+        second = base.copy()
+        second[1], second[3] = "102", endpoints[1]
+        self.assertEqual(
+            len(validate_echo_decision_bijection(
+                [base, second], endpoints, 2, 42, RUN_UUID, 9001,
+                "127.0.0.1:44444",
+            )),
+            2,
+        )
+        duplicate_local = second.copy()
+        duplicate_local[3] = endpoints[0]
+        bypass = second.copy()
+        bypass[3] = "127.0.0.1:59999"
+        for rows in ([base, duplicate_local], [base, bypass]):
+            with self.assertRaises(ValueError):
+                validate_echo_decision_bijection(
+                    rows, endpoints, 2, 42, RUN_UUID, 9001,
+                    "127.0.0.1:44444",
+                )
+
+    def test_echo_load_rejects_effectively_unbounded_serial_work(self):
+        with self.assertRaises(ValueError):
+            controlled_echo_load(
+                "127.0.0.1", 9, RUN_UUID, 17, 1, 1200, 1, 2,
+                "/does/not/matter.json",
+            )
+
+    def test_payload_is_explicitly_shaped_and_tamper_evident(self):
+        payload = quic_shaped_payload(RUN_UUID, 7, 3, 1200)
+        self.assertEqual(parse_quic_shaped_payload(payload, RUN_UUID), (7, 3))
+        self.assertIn(b"not-valid-quic", payload)
+        tampered = bytearray(payload)
+        tampered[-1] ^= 1
+        with self.assertRaises(ValueError):
+            parse_quic_shaped_payload(bytes(tampered), RUN_UUID)
+
+    def test_independent_socket_load_records_exact_echo_cardinality(self):
+        server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        server.bind(("127.0.0.1", 0))
+        server.settimeout(2)
+        port = server.getsockname()[1]
+
+        def echo():
+            for _ in range(8):
+                payload, peer = server.recvfrom(65535)
+                server.sendto(payload, peer)
+            server.close()
+
+        thread = threading.Thread(target=echo)
+        thread.start()
+        with tempfile.TemporaryDirectory() as directory:
+            result = Path(directory) / "result.json"
+            controlled_echo_load(
+                "127.0.0.1", port, RUN_UUID, 8, 1, 1200, 4, 2, str(result)
+            )
+            value = json.loads(result.read_text())
+            self.assertTrue(value["passed"])
+            self.assertEqual(value["exact_echo_count"], 8)
+            self.assertEqual(value["independent_socket_count"], 8)
+            self.assertEqual(value["payload_set_sha256"], value["echo_set_sha256"])
+        thread.join(timeout=2)
+        self.assertFalse(thread.is_alive())
+
+    def test_mutated_echo_is_a_product_violation(self):
+        server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        server.bind(("127.0.0.1", 0))
+        server.settimeout(2)
+        port = server.getsockname()[1]
+
+        def mutate():
+            payload, peer = server.recvfrom(65535)
+            server.sendto(payload[:-1] + bytes((payload[-1] ^ 1,)), peer)
+            server.close()
+
+        thread = threading.Thread(target=mutate)
+        thread.start()
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ProductViolation):
+                controlled_echo_load(
+                    "127.0.0.1", port, RUN_UUID, 1, 1, 1200, 1, 2,
+                    str(Path(directory) / "result.json"),
+                )
+        thread.join(timeout=2)
+
+
+class HarnessSourceContractTests(unittest.TestCase):
+    def test_restore_is_only_narrowly_exempted_for_paired_empty_overrides(self):
+        swift = (SCRIPT_DIR.parent / "tproxy_app/Container/main.swift").read_text()
+        shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()
+        self.assertIn("lazy var isPersistedDefaultRestart", swift)
+        self.assertIn("requestedUdpPassthroughPorts == []", swift)
+        self.assertIn("requestedUdpBlockedEndpoints == []", swift)
+        self.assertIn('"--udp-passthrough-ports="', shell)
+        self.assertIn('"--udp-blocked-endpoints="', shell)
+
+    def test_concurrent_load_has_one_outer_sub_ten_minute_deadline(self):
+        shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()
+        self.assertIn("CONCURRENT_LOAD_DEADLINE=$((SECONDS +", shell)
+        self.assertIn("wait_for_child_until \"$PRESSURE_SOURCE_PID\"", shell)
+        self.assertIn("wait_for_child_until \"$ECHO_SOURCE_PID\"", shell)
+        self.assertIn("CONCURRENT_LOAD_DEADLINE_SECONDS >= 600", shell)
+        self.assertGreaterEqual(
+            shell.count("ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT=$(("), 3
+        )
+
+    def test_runtime_identity_uses_common_generation_samples_through_crash_snapshot(self):
+        shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()
+        self.assertIn("capture-provider-generation", shell)
+        self.assertIn("PROVIDER_IDENTITY=\"$PROVIDER_GENERATION_IDENTITY\"", shell)
+        finalizer = shell[shell.index("finalize() {"):shell.index("trap finalize EXIT")]
+        before = finalizer.index('capture_provider_generation_sample --append')
+        boundary = finalizer.index('RUN_END_EPOCH_MS="', before)
+        crash = finalizer.index("snapshot-crashes", boundary)
+        after = finalizer.index(
+            'capture_provider_generation_sample --append', crash
+        )
+        stop = finalizer.index("stop_provider_generation_monitor", after)
+        self.assertLess(before, boundary)
+        self.assertLess(boundary, crash)
+        self.assertLess(crash, after)
+        self.assertLess(after, stop)
+
+    def test_release_evidence_is_modern_only_and_sources_are_snapshotted(self):
+        shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()
+        parser = (SCRIPT_DIR / "modern_udp_evidence.py").read_text()
+        for name in (
+            "source-test_modern_udp_flow.sh",
+            "source-modern_udp_e2e_probe.py",
+            "source-install_tproxy_app_bundle.sh",
+            "source-modern_udp_evidence.py",
+            "source-soak_pressure_log.py",
+            "source-signed_run_evidence.py",
+        ):
+            self.assertIn(name, shell)
+            self.assertIn(name, parser)
+        self.assertIn('values["callback_generation"] == "modern"', parser)
+
+
+if __name__ == "__main__":
+    unittest.main()

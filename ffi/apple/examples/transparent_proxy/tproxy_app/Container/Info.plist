@@ -16,6 +16,10 @@
   <string>APPL</string>
   <key>LSMinimumSystemVersion</key>
   <string>$(MACOSX_DEPLOYMENT_TARGET)</string>
+  <key>RamaGitHead</key>
+  <string>$(RAMA_TPROXY_GIT_HEAD)</string>
+  <key>RamaGitDirty</key>
+  <string>$(RAMA_TPROXY_GIT_DIRTY)</string>
   <!-- Must match Extension/Info.plist's NEMachServiceName (see comment
        there). Embeds $(CURRENT_PROJECT_VERSION) to dodge Apple
        FB21271237 — without the version suffix the launchd MachServices

@@ -19,6 +19,7 @@ import uuid
 from unittest import mock
 
 import stress_compare
+import signed_run_evidence
 from modern_udp_e2e_probe import (
     PRESSURE_MARKER_PREFIX,
     ProductViolation,
@@ -34,6 +35,7 @@ from stress_evidence import (
     seal as seal_stress_evidence,
     sha256_file,
     verify as verify_stress_evidence,
+    write_workload as write_stress_workload,
     write_metrics as write_stress_metrics,
 )
 from stress_compare import (
@@ -49,10 +51,45 @@ STRESS_SCRIPT = SCRIPT_DIR / "stress_traffic.sh"
 SOAK_SCRIPT = SCRIPT_DIR / "soak_test.sh"
 
 
+def write_fixture_generation_samples(
+    log_dir: Path, generation: str, start: int, end: int
+) -> None:
+    command = "/fixture/provider"
+    command_hash = __import__("hashlib").sha256(command.encode()).hexdigest()
+    path_hash = __import__("hashlib").sha256(command.encode()).hexdigest()
+    epochs = sorted({
+        start,
+        start + (end - start) // 2,
+        end,
+        end + 1,
+        *range(start, end + 1, 2000),
+    })
+    tail = f"42|{start}|{command_hash}|{path_hash}"
+    fixed = (
+        ("schema_version", "1"),
+        ("provider_generation_identity", generation),
+        ("running_pid", "42"),
+        ("running_start_epoch_ms", str(start)),
+        ("running_command_sha256", command_hash),
+        ("running_executable_path_sha256", path_hash),
+        ("cadence_ms", "2000"),
+        ("max_gap_ms", "5000"),
+        ("sample_count", str(len(epochs))),
+    )
+    rows = [*fixed, *(
+        (f"sample_{index:06d}", f"{epoch_ms}|{tail}")
+        for index, epoch_ms in enumerate(epochs, start=1)
+    ), ("schema_complete", "1")]
+    (log_dir / signed_run_evidence.GENERATION_SAMPLES_NAME).write_text(
+        "".join(f"{key}\t{value}\n" for key, value in rows)
+    )
+
+
 def write_self_attested_traffic_run(
     log_dir: Path, *, monitored=False, role="direct-baseline",
-    start=100000, end=101000, duration="0.050", workload_identity="b" * 64,
-    ndjson_pid=42,
+    start=100000, end=160000, duration="0.050", workload_identity="b" * 64,
+    ndjson_pid=42, workload_duration=60, workload_concurrency=16,
+    large_bytes=16777216, post_bytes=8388608,
 ) -> tuple[str, bytes]:
     """Build a syntactically honest fixture; it never claims external authenticity."""
     workers = (
@@ -60,14 +97,52 @@ def write_self_attested_traffic_run(
         "post_large", "head_only", "churn_close", "parallel_pool",
     )
     log_dir.mkdir()
+    run_uuid = str(uuid.uuid4())
+    worker_counts = {
+        worker: (
+            workload_concurrency
+            if worker == "parallel_pool"
+            else max(1, workload_duration // 10)
+        )
+        for worker in workers
+    }
+    request_ids = {
+        worker: [
+            f"{run_uuid.replace('-', '')}{index:02x}{ordinal:030x}"
+            for ordinal in range(1, worker_counts[worker] + 1)
+        ]
+        for index, worker in enumerate(workers, start=1)
+    }
+    workload_identity = write_stress_workload(
+        log_dir, str(workload_duration), str(workload_concurrency),
+        str(large_bytes), str(post_bytes),
+        "http://http-test.ramaproxy.org/method",
+        "https://http-test.ramaproxy.org/method",
+        f"https://http-test.ramaproxy.org/bytes?size={large_bytes}",
+        "https://http-test.ramaproxy.org/octet-stream"
+        + ("" if workload_identity == "b" * 64 else f"?variant={workload_identity}"),
+    )
     for worker in workers:
         (log_dir / f"{worker}.summary").write_text(
-            f"{worker} done: iters=1 ok=1 fail=0\n"
+            f"{worker} done: iters={worker_counts[worker]} "
+            f"ok={worker_counts[worker]} fail=0\n"
         )
-        (log_dir / f"{worker}.log").write_text(
-            "204 curl_exit=0 downloaded=1 uploaded=0 "
-            f"http_version=1.1 duration_seconds={duration}\n"
-        )
+        downloaded, uploaded = 1024, 0
+        if worker == "large_get":
+            downloaded = large_bytes
+        elif worker == "post_large":
+            downloaded = uploaded = post_bytes
+        elif worker == "head_only":
+            downloaded = 0
+        http_version = "1.1" if worker in {
+            "small_http1", "plain_http", "churn_close"
+        } else "2"
+        (log_dir / f"{worker}.log").write_text("".join(
+            f"request_id={request_id} status=200 curl_exit=0 "
+            f"downloaded={downloaded} uploaded={uploaded} "
+            f"http_version={http_version} duration_seconds={duration}\n"
+            for request_id in request_ids[worker]
+        ))
     (log_dir / "source-stress_traffic.sh").write_bytes(STRESS_SCRIPT.read_bytes())
     helper = SCRIPT_DIR / "stress_evidence.py"
     (log_dir / "source-stress_evidence.py").write_bytes(helper.read_bytes())
@@ -78,22 +153,55 @@ def write_self_attested_traffic_run(
     provider_pid = "42" if monitored else "none"
     provider_identity = "c" * 64 if monitored else "none"
     executable_hash = "d" * 64 if monitored else "none"
-    signing_identifier = "org.example.provider" if monitored else "none"
+    signing_identifier = (
+        "org.ramaproxy.example.tproxy.dev.provider" if monitored else "none"
+    )
     signing_team = "TEAM123" if monitored else "none"
     signing_cdhash = "e" * 40 if monitored else "none"
+    log_tool_hash = sha256_file(Path("/usr/bin/log")) if monitored else "none"
+    (log_dir / "stress-window.tsv").write_text(
+        f"traffic_start_epoch_ms\t{start}\n"
+        f"traffic_end_epoch_ms\t{end}\n"
+        f"traffic_start_monotonic_ns\t{start * 1_000_000}\n"
+        f"traffic_end_monotonic_ns\t{start * 1_000_000 + workload_duration * 1_000_000_000}\n"
+        "schema_complete\t1\n"
+    )
+    if role in {"direct-baseline", "proxy-candidate"}:
+        crash_generation = provider_identity if role == "proxy-candidate" else "absent"
+        crashes = log_dir / "crashes"
+        crashes.mkdir()
+        (crashes / "crash-snapshot.tsv").write_text(
+            "schema_version\t2\n"
+            f"run_uuid\t{run_uuid}\n"
+            f"provider_generation_identity\t{crash_generation}\n"
+            f"since_epoch_ms\t{start}\n"
+            f"snapshot_epoch_ms\t{end + 1}\n"
+            "process_names\tRamaTransparentProxyExampleExtension,org.ramaproxy.example.tproxy.dev.provider,provider\n"
+            "crash_count\t0\n"
+            f"crash_names_sha256\t{__import__('hashlib').sha256(b'').hexdigest()}\n"
+            "schema_complete\t1\n"
+        )
     if monitored:
         (log_dir / "monitor.identity.sha256").write_text(provider_identity + "\n")
         (log_dir / "preflight.txt").write_text(
-            "PID RSS VSZ %CPU STATE\n42 1000 2000 5.0 S\n"
+            f"resource_sample\t{start}\t{provider_identity}\t42\t1000\t2000\t5.0\tS\n"
         )
         (log_dir / "postflight.txt").write_text(
-            "PID RSS VSZ %CPU STATE\n42 1050 2000 6.0 S\n"
+            f"resource_sample\t{end}\t{provider_identity}\t42\t1050\t2000\t6.0\tS\n"
         )
         (log_dir / "monitor.42.log").write_text(
-            "monitoring pid=42\n42 1025 2000 20.0 S\n"
+            "".join(
+                f"resource_sample\t{start + offset}\t{provider_identity}\t"
+                "42\t1025\t2000\t20.0\tS\n"
+                for offset in sorted({
+                    100,
+                    max(200, workload_duration * 1000 - 100),
+                    *range(100, workload_duration * 1000, 5_000),
+                })
+            )
         )
         (log_dir / "provider-codesign.txt").write_text(
-            "Identifier=org.example.provider\nTeamIdentifier=TEAM123\nCDHash="
+            f"Identifier={signing_identifier}\nTeamIdentifier=TEAM123\nCDHash="
             + signing_cdhash + "\n"
         )
         (log_dir / "provider-identity.tsv").write_text(
@@ -106,25 +214,50 @@ def write_self_attested_traffic_run(
         timestamp = time.strftime(
             "%Y-%m-%dT%H:%M:%S", time.gmtime((start + 500) / 1000)
         ) + ".000000+00:00"
+        records = [
+            {
+                "timestamp": timestamp,
+                "processID": ndjson_pid,
+                "subsystem": signing_identifier,
+                "eventMessage": (
+                    "[rama_tproxy_example::stress_attribution] "
+                    f"rama stress request attributed: run_uuid={run_uuid} "
+                    f"request_id={request_id}"
+                ),
+            }
+            for worker in (workers if role == "proxy-candidate" else ())
+            for request_id in request_ids[worker]
+        ]
+        if not records:
+            records.append({
+                "timestamp": timestamp,
+                "processID": ndjson_pid,
+                "subsystem": signing_identifier,
+                "eventMessage": "provider diagnostic",
+            })
         (log_dir / "system.ndjson").write_text(
-            json.dumps({"timestamp": timestamp, "processID": ndjson_pid}) + "\n"
+            "".join(json.dumps(record) + "\n" for record in records)
         )
         (log_dir / "system-log-capture.err").write_text("")
         (log_dir / "system-log-tool.tsv").write_text(
-            f"path\t/fixture/log\nsha256\t{'f' * 64}\n"
+            f"path\t/usr/bin/log\nsha256\t{log_tool_hash}\n"
         )
+        if role == "proxy-candidate":
+            write_fixture_generation_samples(
+                log_dir, provider_identity, start, end
+            )
     metrics = write_stress_metrics(
         log_dir, str(start), str(end), "10000", "100", "67108864",
-        "400", mode, provider_pid,
+        "400", mode, provider_pid, provider_identity if monitored else None,
     )
-    run_uuid = str(uuid.uuid4())
     manifest_hash = seal_stress_evidence(
         log_dir, run_uuid, str(start), str(end), mode, provider_pid,
         role, workload_identity,
     )
     status = (
         "complete\t1\npassed\t1\nexit_code\t0\n"
-        f"evidence_mode\t{mode}\nproxy_attributed\t0\n"
+        f"evidence_mode\t{mode}\n"
+        f"proxy_attributed\t{1 if role == 'proxy-candidate' else 0}\n"
         "evidence_claim\tself-attested-local-integrity-not-authenticity\n"
         f"traffic_role\t{role}\n"
         f"workload_identity\t{workload_identity}\n"
@@ -149,11 +282,227 @@ def write_self_attested_traffic_run(
         f"system_log_alive_end\t{1 if monitored else 0}\n"
         f"system_log_joined\t{1 if monitored else 0}\n"
         f"system_log_child_rc\t{'143' if monitored else 'none'}\n"
-        f"system_log_tool_sha256\t{'f' * 64 if monitored else 'none'}\n"
+        f"system_log_tool_sha256\t{log_tool_hash}\n"
+        f"attributed_request_count\t{sum(worker_counts.values()) if role == 'proxy-candidate' else 0}\n"
         "schema_complete\t1\n"
     ).encode()
     (log_dir / "stress-status.tsv").write_bytes(status)
     return run_uuid, status
+
+
+def reseal_self_attested_traffic_run(log_dir: Path) -> None:
+    status_path = log_dir / "stress-status.tsv"
+    values = dict(
+        line.split("\t", 1) for line in status_path.read_text().splitlines()
+    )
+    manifest_hash = seal_stress_evidence(
+        log_dir,
+        values["run_uuid"],
+        values["run_start_epoch"],
+        values["run_end_epoch"],
+        values["evidence_mode"],
+        values["provider_pid"],
+        values["traffic_role"],
+        values["workload_identity"],
+    )
+    rows = status_path.read_text().splitlines()
+    rows = [
+        f"artifact_manifest_sha256\t{manifest_hash}"
+        if row.startswith("artifact_manifest_sha256\t")
+        else row
+        for row in rows
+    ]
+    status_path.write_text("\n".join(rows) + "\n")
+
+
+def add_common_stress_envelope(log_dir: Path) -> None:
+    legacy_path = log_dir / "stress-status.tsv"
+    legacy = dict(line.split("\t", 1) for line in legacy_path.read_text().splitlines())
+    role = legacy["traffic_role"]
+    evidence_kind = {
+        "direct-baseline": "stress-direct",
+        "proxy-candidate": "stress-candidate",
+        "unpaired-diagnostic": "stress-diagnostic",
+    }[role]
+    common_source = SCRIPT_DIR / "signed_run_evidence.py"
+    (log_dir / "source-signed_run_evidence.py").write_bytes(common_source.read_bytes())
+    provider_build = provider_generation = "absent"
+    if role == "direct-baseline":
+        absence_samples = [int(legacy["run_start_epoch"]) - 1]
+        absence_samples.extend(range(
+            int(legacy["run_start_epoch"]),
+            int(legacy["run_end_epoch"]) + 1,
+            1000,
+        ))
+        absence_samples.append(int(legacy["run_end_epoch"]) + 1)
+        (log_dir / "provider-absence.tsv").write_text(
+            "schema_version\t1\n"
+            f"bundle_id\t{signed_run_evidence.DEV_PROVIDER_BUNDLE_ID}\n"
+            "cadence_ms\t1000\n"
+            "max_gap_ms\t2500\n"
+            f"sample_count\t{len(absence_samples)}\n"
+            + "".join(
+                f"sample_{index:06d}\t{epoch_ms}|0|none\n"
+                for index, epoch_ms in enumerate(absence_samples, start=1)
+            )
+            +
+            "schema_complete\t1\n"
+        )
+    elif role == "proxy-candidate":
+        command = "/fixture/provider"
+        command_sha = __import__("hashlib").sha256(command.encode()).hexdigest()
+        provider_build = signed_run_evidence.provider_build_identity(
+            signed_run_evidence.DEV_PROVIDER_BUNDLE_ID,
+            legacy["git_head"],
+            signed_run_evidence.DEV_TEAM_ID,
+            legacy["provider_signing_cdhash"],
+            legacy["provider_executable_sha256"],
+        )
+        provider_start = int(legacy["run_start_epoch"])
+        provider_generation = signed_run_evidence.provider_generation_identity(
+            42, provider_start, command_sha
+        )
+        crash_snapshot = log_dir / "crashes" / "crash-snapshot.tsv"
+        crash_snapshot.write_text(re.sub(
+            r"provider_generation_identity\t[0-9a-f]{64}",
+            f"provider_generation_identity\t{provider_generation}",
+            crash_snapshot.read_text(),
+        ))
+        values = {
+            "schema_version": "1",
+            "expected_bundle_id": signed_run_evidence.DEV_PROVIDER_BUNDLE_ID,
+            "expected_team_id": signed_run_evidence.DEV_TEAM_ID,
+            "source_git_head": legacy["git_head"],
+            "source_git_dirty": "0",
+            "running_pid": "42",
+            "running_start_epoch_ms": str(provider_start),
+            "running_command": command,
+            "running_command_sha256": command_sha,
+            "provider_build_identity": provider_build,
+            "provider_generation_identity": provider_generation,
+            "schema_complete": "1",
+        }
+        for prefix in ("built", "installed", "running"):
+            values.update({
+                f"{prefix}_bundle_id": signed_run_evidence.DEV_PROVIDER_BUNDLE_ID,
+                f"{prefix}_git_head": legacy["git_head"],
+                f"{prefix}_git_dirty": "0",
+                f"{prefix}_team_id": signed_run_evidence.DEV_TEAM_ID,
+                f"{prefix}_cdhash": legacy["provider_signing_cdhash"],
+                f"{prefix}_executable_sha256": legacy["provider_executable_sha256"],
+                f"{prefix}_bundle_version": "1",
+                f"{prefix}_bundle_path": "/fixture/provider.systemextension",
+                f"{prefix}_executable_path": "/fixture/provider",
+                f"{prefix}_build_identity": provider_build,
+            })
+        (log_dir / "provider-identity.tsv").write_text(
+            "".join(
+                f"{key}\t{values[key]}\n"
+                for key in signed_run_evidence.PROVIDER_IDENTITY_ORDER
+            )
+        )
+        (log_dir / "monitor.identity.sha256").write_text(provider_generation + "\n")
+        write_fixture_generation_samples(
+            log_dir,
+            provider_generation,
+            int(legacy["run_start_epoch"]),
+            int(legacy["run_end_epoch"]),
+        )
+        for resource_name in ("preflight.txt", "postflight.txt", "monitor.42.log"):
+            resource_path = log_dir / resource_name
+            resource_path.write_text(
+                resource_path.read_text().replace("c" * 64, provider_generation)
+            )
+        (log_dir / "provider-codesign.txt").write_text(
+            f"Identifier={signed_run_evidence.DEV_PROVIDER_BUNDLE_ID}\n"
+            f"TeamIdentifier={signed_run_evidence.DEV_TEAM_ID}\n"
+            f"CDHash={legacy['provider_signing_cdhash']}\n"
+        )
+        replacements = {
+            "provider_identity": provider_generation,
+            "provider_signing_identifier": signed_run_evidence.DEV_PROVIDER_BUNDLE_ID,
+            "provider_signing_team": signed_run_evidence.DEV_TEAM_ID,
+        }
+        text = legacy_path.read_text()
+        for key, value in replacements.items():
+            text = re.sub(rf"(?m)^{key}\t.*$", f"{key}\t{value}", text)
+        legacy_path.write_text(text)
+        reseal_self_attested_traffic_run(log_dir)
+        legacy = dict(line.split("\t", 1) for line in legacy_path.read_text().splitlines())
+
+    claim_values = {
+        key: legacy[key]
+        for key in (
+            "evidence_mode", "proxy_attributed", "evidence_claim", "traffic_role",
+            "workload_identity", "artifact_manifest_sha256", "max_p95_ms",
+            "min_throughput_milli_rps", "max_rss_growth_bytes", "max_cpu_percent",
+            "observed_p95_ms", "observed_throughput_milli_rps",
+            "observed_rss_growth_bytes", "observed_max_cpu_percent", "git_head",
+            "git_dirty", "stress_script_sha256", "evidence_helper_sha256",
+            "provider_pid", "provider_identity", "provider_executable_sha256",
+            "provider_signing_identifier", "provider_signing_team",
+            "provider_signing_cdhash", "ndjson_included", "system_log_started",
+            "system_log_alive_end", "system_log_joined", "system_log_child_rc",
+            "system_log_tool_sha256", "attributed_request_count",
+        )
+    }
+    claim_values.update({
+        "evidence_kind": evidence_kind,
+        "run_uuid": legacy["run_uuid"],
+        "traffic_start_epoch_ms": legacy["run_start_epoch"],
+        "traffic_end_epoch_ms": legacy["run_end_epoch"],
+        "signed_evidence_helper_sha256": sha256_file(
+            log_dir / "source-signed_run_evidence.py"
+        ),
+        "provider_absent": "1" if role == "direct-baseline" else "0",
+        "schema_complete": "1",
+    })
+    claims = log_dir / signed_run_evidence.CLAIMS_NAME
+    claim_order = ["evidence_kind"] + sorted(
+        set(claim_values) - {"evidence_kind", "schema_complete"}
+    ) + ["schema_complete"]
+    claims.write_text("".join(f"{key}\t{claim_values[key]}\n" for key in claim_order))
+    status_values = {
+        "complete": "1", "passed": "1", "exit_code": "0",
+        "evidence_kind": evidence_kind, "run_uuid": legacy["run_uuid"],
+        "run_start_epoch_ms": legacy["run_start_epoch"],
+        "run_end_epoch_ms": legacy["run_end_epoch"],
+        "git_head": legacy["git_head"], "git_dirty": legacy["git_dirty"],
+        "provider_build_identity": provider_build,
+        "provider_generation_identity": provider_generation,
+        "workload_claims_sha256": sha256_file(claims), "schema_complete": "1",
+    }
+    (log_dir / signed_run_evidence.STATUS_NAME).write_text(
+        "".join(
+            f"{key}\t{status_values[key]}\n"
+            for key in signed_run_evidence.STATUS_ORDER
+        )
+    )
+    signed_run_evidence.seal(log_dir, actual_exit_code=0)
+
+
+def reseal_common_stress_envelope(log_dir: Path) -> None:
+    """Reseal both envelopes so semantic mutation tests bypass hash-only checks."""
+    reseal_self_attested_traffic_run(log_dir)
+    legacy = dict(
+        line.split("\t", 1)
+        for line in (log_dir / "stress-status.tsv").read_text().splitlines()
+    )
+    claims_path = log_dir / signed_run_evidence.CLAIMS_NAME
+    claims = claims_path.read_text()
+    claims = re.sub(
+        r"artifact_manifest_sha256\t[0-9a-f]{64}",
+        f"artifact_manifest_sha256\t{legacy['artifact_manifest_sha256']}",
+        claims,
+    )
+    claims_path.write_text(claims)
+    status_path = log_dir / signed_run_evidence.STATUS_NAME
+    status_path.write_text(re.sub(
+        r"workload_claims_sha256\t[0-9a-f]{64}",
+        f"workload_claims_sha256\t{sha256_file(claims_path)}",
+        status_path.read_text(),
+    ))
+    signed_run_evidence.seal(log_dir, actual_exit_code=0)
 
 
 class StressTrafficValidationTests(unittest.TestCase):
@@ -172,6 +521,13 @@ class StressTrafficValidationTests(unittest.TestCase):
     ) -> subprocess.CompletedProcess:
         env = os.environ.copy()
         env.update(STRESS_LOG_DIR=str(log_dir), **overrides)
+        if "STRESS_CURL_TOOL" not in env and "PATH" in overrides:
+            injected_curl = Path(overrides["PATH"].split(os.pathsep, 1)[0]) / "curl"
+            if injected_curl.is_file():
+                env.update(
+                    STRESS_CURL_TOOL=str(injected_curl),
+                    STRESS_ALLOW_TEST_TOOLS="1",
+                )
         arguments = ["bash", str(STRESS_SCRIPT)]
         process = subprocess.Popen(
             arguments,
@@ -252,6 +608,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                     previous=""
                     for argument in "$@"; do
                       [[ "$argument" == --http2 ]] && version=2
+                      [[ "$argument" == --head ]] && downloaded=0
                       if [[ "$argument" == *'size=1024'* ]]; then
                         downloaded=1024
                       fi
@@ -266,7 +623,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                     if [[ -n "$body" && "$output" != /dev/null ]]; then
                       cp "$body" "$output"
                     fi
-                    printf '204\t%s\t%s\t%s\t0.050' "$downloaded" "$uploaded" "$version"
+                    printf '200\t%s\t%s\t%s\t0.050' "$downloaded" "$uploaded" "$version"
                     """
                 )
             )
@@ -385,6 +742,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                     uploaded=0
                     for argument in "$@"; do
                       [[ "$argument" == --http2 ]] && version=2
+                      [[ "$argument" == --head ]] && downloaded=0
                       [[ "$argument" == *'size=1024'* ]] && downloaded=1024
                       [[ "$previous" == --output ]] && output="$argument"
                       if [[ "$previous" == --data-binary ]]; then
@@ -397,7 +755,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                     if [[ -n "$body" && "$output" != /dev/null ]]; then
                       tr '\\000' '\\001' < "$body" > "$output"
                     fi
-                    printf '204\t%s\t%s\t%s\t0.050' "$downloaded" "$uploaded" "$version"
+                    printf '200\t%s\t%s\t%s\t0.050' "$downloaded" "$uploaded" "$version"
                     """
                 )
             )
@@ -465,8 +823,10 @@ class StressTrafficValidationTests(unittest.TestCase):
             write_self_attested_traffic_run(baseline)
             write_self_attested_traffic_run(
                 candidate, monitored=True, role="proxy-candidate",
-                start=102000, end=103000, duration="0.075",
+                start=161000, end=221000, duration="0.075",
             )
+            add_common_stress_envelope(baseline)
+            add_common_stress_envelope(candidate)
             self.assertEqual(
                 create_comparison(baseline, candidate, comparison), 0
             )
@@ -485,8 +845,57 @@ class StressTrafficValidationTests(unittest.TestCase):
             )
             self.assertIn("observed_p95_ratio_milli\t1500\n", contents)
             self.assertIn("observed_throughput_ratio_milli\t1000\n", contents)
+            for worker in stress_compare.WORKERS:
+                self.assertIn(
+                    f"observed_{worker}_p95_ratio_milli\t1500\n", contents
+                )
+                self.assertIn(
+                    f"observed_{worker}_request_throughput_ratio_milli\t1000\n",
+                    contents,
+                )
+                self.assertIn(
+                    f"observed_{worker}_byte_throughput_ratio_milli\t1000\n",
+                    contents,
+                )
             self.assertIn("candidate_rss_growth_bytes\t51200\n", contents)
             self.assertIn("candidate_max_cpu_percent\t20\n", contents)
+
+    def test_common_envelopes_bind_direct_absence_and_candidate_provider_identity(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            baseline = root / "baseline"
+            candidate = root / "candidate"
+            comparison = root / "comparison.tsv"
+            write_self_attested_traffic_run(baseline)
+            write_self_attested_traffic_run(
+                candidate, monitored=True, role="proxy-candidate",
+                start=161000, end=221000,
+            )
+            add_common_stress_envelope(baseline)
+            add_common_stress_envelope(candidate)
+            self.assertEqual(create_comparison(baseline, candidate, comparison), 0)
+            self.assertEqual(verify_comparison(baseline, candidate, comparison), 0)
+            self.assertEqual(
+                signed_run_evidence.verify(baseline)["provider_build_identity"],
+                "absent",
+            )
+            self.assertRegex(
+                signed_run_evidence.verify(candidate)["provider_build_identity"],
+                r"^[0-9a-f]{64}$",
+            )
+
+    def test_pair_rejects_legacy_runs_without_common_signed_envelopes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            baseline = root / "baseline"
+            candidate = root / "candidate"
+            write_self_attested_traffic_run(baseline)
+            write_self_attested_traffic_run(
+                candidate, monitored=True, role="proxy-candidate",
+                start=161000, end=221000,
+            )
+            with self.assertRaisesRegex(ValueError, "common signed envelopes"):
+                create_comparison(baseline, candidate, root / "comparison.tsv")
 
     def test_absolute_latency_throughput_rss_and_cpu_thresholds_are_enforced(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -495,26 +904,165 @@ class StressTrafficValidationTests(unittest.TestCase):
             monitored = root / "monitored"
             write_self_attested_traffic_run(direct)
             failed_latency = write_stress_metrics(
-                direct, "100000", "101000", "49", "100", "67108864",
+                direct, "100000", "160000", "49", "100", "67108864",
                 "400", "traffic-only", "none",
             )
             self.assertEqual(failed_latency[0], "FAILED")
             failed_throughput = write_stress_metrics(
-                direct, "100000", "101000", "10000", "8001", "67108864",
+                direct, "100000", "160000", "10000", "8001", "67108864",
                 "400", "traffic-only", "none",
             )
             self.assertEqual(failed_throughput[0], "FAILED")
             write_self_attested_traffic_run(
                 monitored, monitored=True, role="proxy-candidate",
-                start=102000, end=103000,
+                start=161000, end=221000,
             )
             failed_resources = write_stress_metrics(
-                monitored, "102000", "103000", "10000", "100", "51199",
-                "19", "provider-monitored-traffic-only", "42",
+                monitored, "161000", "221000", "10000", "100", "51199",
+                "19", "provider-monitored-traffic-only", "42", "c" * 64,
             )
             self.assertEqual(failed_resources[0], "FAILED")
             self.assertEqual(failed_resources[6], "51200")
             self.assertEqual(failed_resources[8], "20")
+
+    def test_verifier_rederives_metrics_and_exact_class_contracts_from_raw_transfers(self):
+        mutations = {
+            "wrong HTTP version": ("small_https.log", "http_version=2", "http_version=1.1"),
+            "wrong download bytes": ("large_get.log", "downloaded=16777216", "downloaded=16777215"),
+            "wrong upload bytes": ("post_large.log", "uploaded=8388608", "uploaded=8388607"),
+            "duplicate request ID": ("small_http1.log", None, None),
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for name, (artifact_name, old, new) in mutations.items():
+                run = root / name.replace(" ", "-")
+                write_self_attested_traffic_run(run)
+                add_common_stress_envelope(run)
+                artifact = run / artifact_name
+                contents = artifact.read_text()
+                if name == "duplicate request ID":
+                    other_id = re.search(
+                        r"request_id=([0-9a-f]{64})", (run / "small_https.log").read_text()
+                    ).group(1)
+                    contents = re.sub(r"request_id=[0-9a-f]{64}", f"request_id={other_id}", contents)
+                else:
+                    contents = contents.replace(old, new)
+                artifact.write_text(contents)
+                # Resealing the raw artifact and retaining the old metrics must
+                # not let a fabricated metrics TSV stand in for raw evidence.
+                reseal_common_stress_envelope(run)
+                with self.subTest(mutation=name), self.assertRaisesRegex(
+                    ValueError,
+                    "wrong HTTP version|exact byte contract|globally unique",
+                ):
+                    verify_stress_evidence(run)
+
+            forged = root / "forged-metrics"
+            write_self_attested_traffic_run(forged)
+            add_common_stress_envelope(forged)
+            metrics = forged / "stress-metrics.tsv"
+            metrics.write_text(metrics.read_text().replace(
+                "class_small_https_p95_ms\t50",
+                "class_small_https_p95_ms\t1",
+            ))
+            reseal_common_stress_envelope(forged)
+            with self.assertRaisesRegex(ValueError, "does not match sealed raw transfers"):
+                verify_stress_evidence(forged)
+
+    def test_sealed_workload_and_monotonic_window_cannot_be_reinterpreted(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            workload_run = root / "workload"
+            write_self_attested_traffic_run(workload_run)
+            workload = workload_run / "stress-workload.tsv"
+            workload.write_text(workload.read_text().replace(
+                "large_bytes\t16777216", "large_bytes\t16777215"
+            ))
+            status = workload_run / "stress-status.tsv"
+            status.write_text(status.read_text().replace(
+                re.search(r"workload_identity\t([0-9a-f]{64})", status.read_text()).group(1),
+                sha256_file(workload),
+            ))
+            reseal_self_attested_traffic_run(workload_run)
+            with self.assertRaisesRegex(ValueError, "exact byte contract"):
+                verify_stress_evidence(workload_run)
+
+            timing_run = root / "timing"
+            write_self_attested_traffic_run(timing_run)
+            window = timing_run / "stress-window.tsv"
+            window.write_text(window.read_text().replace(
+                "traffic_end_monotonic_ns\t160000000000",
+                "traffic_end_monotonic_ns\t100000000000",
+            ))
+            reseal_self_attested_traffic_run(timing_run)
+            with self.assertRaisesRegex(ValueError, "monotonic|timing window"):
+                verify_stress_evidence(timing_run)
+
+            compressed_epoch = root / "compressed-epoch"
+            write_self_attested_traffic_run(compressed_epoch)
+            window = compressed_epoch / "stress-window.tsv"
+            window.write_text(window.read_text().replace(
+                "traffic_end_epoch_ms\t160000", "traffic_end_epoch_ms\t101000"
+            ))
+            reseal_self_attested_traffic_run(compressed_epoch)
+            with self.assertRaisesRegex(ValueError, "timing window"):
+                verify_stress_evidence(compressed_epoch)
+
+    def test_resource_samples_bind_generation_window_order_and_cadence(self):
+        mutations = {
+            "wrong generation": lambda text: text.replace("c" * 64, "f" * 64, 1),
+            "out of window": lambda text: re.sub(
+                r"resource_sample\t100100", "resource_sample\t99999", text, count=1
+            ),
+            "clock rollback": lambda text: text.replace(
+                "resource_sample\t105100", "resource_sample\t100050", 1
+            ),
+            "excessive gap": lambda text: text.replace(
+                "resource_sample\t105100", "resource_sample\t108000", 1
+            ),
+            "one sample": lambda text: text.splitlines()[0] + "\n",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for name, mutation in mutations.items():
+                run = root / name.replace(" ", "-")
+                write_self_attested_traffic_run(
+                    run, monitored=True, role="proxy-candidate"
+                )
+                monitor = run / "monitor.42.log"
+                monitor.write_text(mutation(monitor.read_text()))
+                reseal_self_attested_traffic_run(run)
+                with self.subTest(name=name), self.assertRaisesRegex(
+                    ValueError,
+                    "generation changed|span the traffic window|unordered|cadence|lacks pre/monitor/post",
+                ):
+                    verify_stress_evidence(run)
+
+            missing_post = root / "missing-post"
+            write_self_attested_traffic_run(
+                missing_post, monitored=True, role="proxy-candidate"
+            )
+            (missing_post / "postflight.txt").write_text("diagnostic only\n")
+            reseal_self_attested_traffic_run(missing_post)
+            with self.assertRaisesRegex(ValueError, "no provider resource sample"):
+                verify_stress_evidence(missing_post)
+
+    def test_same_contract_worker_records_cannot_be_swapped_and_resealed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run = Path(temp_dir) / "swapped"
+            write_self_attested_traffic_run(run)
+            add_common_stress_envelope(run)
+            first = run / "small_https.log"
+            second = run / "parallel_pool.log"
+            first_rows = first.read_text().splitlines()
+            second_rows = second.read_text().splitlines()
+            first_rows[0], second_rows[0] = second_rows[0], first_rows[0]
+            first.write_text("\n".join(first_rows) + "\n")
+            second.write_text("\n".join(second_rows) + "\n")
+            # The aggregate bytes/durations and global marker set are unchanged.
+            reseal_common_stress_envelope(run)
+            with self.assertRaisesRegex(ValueError, "canonical class/ordinal set"):
+                verify_stress_evidence(run)
 
     def test_monitored_bundle_requires_sealed_signing_monitor_and_log_window(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -530,8 +1078,142 @@ class StressTrafficValidationTests(unittest.TestCase):
             write_self_attested_traffic_run(
                 wrong_log_pid, monitored=True, role="proxy-candidate", ndjson_pid=99
             )
-            with self.assertRaisesRegex(ValueError, "no provider row"):
+            with self.assertRaisesRegex(ValueError, "wrong provider pid"):
                 verify_stress_evidence(wrong_log_pid)
+
+    def test_request_attribution_rejects_missing_duplicate_wrong_uuid_and_emitter(self):
+        mutations = {
+            "missing": lambda rows: rows[:-1],
+            "duplicate": lambda rows: rows + [rows[-1]],
+            "wrong UUID": lambda rows: [
+                {**row, "eventMessage": row["eventMessage"].replace(
+                    re.search(r"run_uuid=([^ ]+)", row["eventMessage"]).group(1),
+                    "12345678-1234-4234-8234-123456789abc",
+                )}
+                for row in rows
+            ],
+            "wrong request ID": lambda rows: [
+                {**row, "eventMessage": re.sub(
+                    r"request_id=[0-9a-f]{64}$",
+                    f"request_id={'0' * 64}",
+                    row["eventMessage"],
+                )}
+                if index == 0 else row
+                for index, row in enumerate(rows)
+            ],
+            "wrong provider subsystem": lambda rows: [
+                {**row, "subsystem": "org.example.wrong-emitter"} for row in rows
+            ],
+            "outside run window": lambda rows: [
+                {**row, "timestamp": "1970-01-01T00:00:00.000000+00:00"}
+                for row in rows
+            ],
+            "non-marker row": lambda rows: [
+                {**row, "eventMessage": "provider diagnostic"} for row in rows
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for name, mutate in mutations.items():
+                candidate = root / name.replace(" ", "-")
+                write_self_attested_traffic_run(
+                    candidate, monitored=True, role="proxy-candidate"
+                )
+                add_common_stress_envelope(candidate)
+                ndjson = candidate / "system.ndjson"
+                rows = [json.loads(line) for line in ndjson.read_text().splitlines()]
+                ndjson.write_text(
+                    "".join(json.dumps(row) + "\n" for row in mutate(rows))
+                )
+                reseal_common_stress_envelope(candidate)
+                with self.subTest(mutation=name), self.assertRaises(ValueError) as error:
+                    verify_stress_evidence(candidate)
+                self.assertRegex(
+                    str(error.exception),
+                    "marker set|duplicate stress request marker|wrong run UUID|wrong provider subsystem|exact run window|malformed stress attribution marker",
+                )
+
+    def test_pair_and_series_timing_caps_are_not_configurable_above_ten_minutes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            baseline = root / "baseline"
+            candidate = root / "candidate"
+            write_self_attested_traffic_run(baseline)
+            write_self_attested_traffic_run(
+                candidate, monitored=True, role="proxy-candidate",
+                start=161000, end=221000,
+            )
+            with self.assertRaisesRegex(ValueError, "integer overflow"):
+                create_comparison(
+                    baseline, candidate, root / "comparison.tsv",
+                    "1500", "667", "600001",
+                )
+
+    def test_pair_rejects_dirty_mismatched_heads_and_reused_run_uuid(self):
+        mutations = (
+            ("git_dirty\t0", "git_dirty\t1", "same clean git head"),
+            (f"git_head\t{'a' * 40}", f"git_head\t{'b' * 40}", "same clean git head"),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for index, (old, new, expected) in enumerate(mutations):
+                baseline = root / f"baseline-{index}"
+                candidate = root / f"candidate-{index}"
+                write_self_attested_traffic_run(baseline)
+                write_self_attested_traffic_run(
+                    candidate, monitored=True, role="proxy-candidate",
+                    start=161000, end=221000,
+                )
+                candidate_status = candidate / "stress-status.tsv"
+                candidate_status.write_text(
+                    candidate_status.read_text().replace(old, new)
+                )
+                if old.startswith("git_dirty"):
+                    (candidate / "git-status.txt").write_text(" M fixture\n")
+                else:
+                    (candidate / "git-head.txt").write_text("b" * 40 + "\n")
+                reseal_self_attested_traffic_run(candidate)
+                with self.subTest(expected=expected), self.assertRaisesRegex(
+                    ValueError, expected
+                ):
+                    create_comparison(
+                        baseline, candidate, root / f"comparison-{index}.tsv"
+                    )
+
+            baseline = root / "baseline-uuid"
+            candidate = root / "candidate-uuid"
+            baseline_uuid, _ = write_self_attested_traffic_run(baseline)
+            write_self_attested_traffic_run(
+                candidate, monitored=True, role="proxy-candidate",
+                start=161000, end=221000,
+            )
+            status_path = candidate / "stress-status.tsv"
+            candidate_uuid = dict(
+                row.split("\t", 1) for row in status_path.read_text().splitlines()
+            )["run_uuid"]
+            status_path.write_text(
+                status_path.read_text().replace(candidate_uuid, baseline_uuid)
+            )
+            ndjson = candidate / "system.ndjson"
+            ndjson.write_text(
+                ndjson.read_text()
+                .replace(candidate_uuid, baseline_uuid)
+                .replace(
+                    candidate_uuid.replace("-", ""), baseline_uuid.replace("-", "")
+                )
+            )
+            for worker in stress_compare.WORKERS:
+                worker_log = candidate / f"{worker}.log"
+                worker_log.write_text(worker_log.read_text().replace(
+                    candidate_uuid.replace("-", ""), baseline_uuid.replace("-", "")
+                ))
+            crash_snapshot = candidate / "crashes" / "crash-snapshot.tsv"
+            crash_snapshot.write_text(
+                crash_snapshot.read_text().replace(candidate_uuid, baseline_uuid)
+            )
+            reseal_self_attested_traffic_run(candidate)
+            with self.assertRaisesRegex(ValueError, "reused a run UUID"):
+                create_comparison(baseline, candidate, root / "same-uuid.tsv")
 
     def test_paired_gate_enforces_ratios_and_rejects_tampered_verdict(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -542,8 +1224,10 @@ class StressTrafficValidationTests(unittest.TestCase):
             write_self_attested_traffic_run(baseline)
             write_self_attested_traffic_run(
                 candidate, monitored=True, role="proxy-candidate",
-                start=102000, end=103000, duration="0.075",
+                start=161000, end=221000, duration="0.075",
             )
+            add_common_stress_envelope(baseline)
+            add_common_stress_envelope(candidate)
             self.assertEqual(
                 create_comparison(
                     baseline, candidate, comparison, "1400", "900", "600000"
@@ -569,8 +1253,10 @@ class StressTrafficValidationTests(unittest.TestCase):
             write_self_attested_traffic_run(baseline)
             write_self_attested_traffic_run(
                 candidate, monitored=True, role="proxy-candidate",
-                start=102000, end=103000,
+                start=161000, end=221000,
             )
+            add_common_stress_envelope(baseline)
+            add_common_stress_envelope(candidate)
             self.assertEqual(create_comparison(baseline, candidate, comparison), 0)
             sealed_source = comparison.with_name(
                 comparison.name + ".source-stress_compare.py"
@@ -594,7 +1280,7 @@ class StressTrafficValidationTests(unittest.TestCase):
             root = Path(temp_dir)
             cases = (
                 ({"workload_identity": "f" * 64}, {}, "different workloads"),
-                ({"start": 800000, "end": 801000}, {}, "not adjacent"),
+                ({"start": 800000, "end": 860000}, {}, "not adjacent"),
                 ({}, {"role": "unpaired-diagnostic"}, "not an explicit"),
             )
             for index, (candidate_kwargs, baseline_kwargs, expected) in enumerate(cases):
@@ -603,7 +1289,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                 write_self_attested_traffic_run(baseline, **baseline_kwargs)
                 candidate_options = {
                     "monitored": True, "role": "proxy-candidate",
-                    "start": 102000, "end": 103000,
+                    "start": 161000, "end": 221000,
                 }
                 candidate_options.update(candidate_kwargs)
                 write_self_attested_traffic_run(
@@ -616,6 +1302,77 @@ class StressTrafficValidationTests(unittest.TestCase):
                         baseline, candidate, root / f"comparison-{index}.tsv"
                     )
 
+    def test_release_pair_rejects_weakened_workload_and_relaxed_resource_policy(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            weak_baseline = root / "weak-baseline"
+            weak_candidate = root / "weak-candidate"
+            weak = dict(
+                workload_duration=1,
+                workload_concurrency=1,
+                large_bytes=1024,
+                post_bytes=1024,
+            )
+            write_self_attested_traffic_run(
+                weak_baseline, start=100000, end=101000, **weak
+            )
+            write_self_attested_traffic_run(
+                weak_candidate, monitored=True, role="proxy-candidate",
+                start=102000, end=103000, **weak,
+            )
+            add_common_stress_envelope(weak_baseline)
+            add_common_stress_envelope(weak_candidate)
+            with self.assertRaisesRegex(ValueError, "canonical load profile"):
+                create_comparison(
+                    weak_baseline, weak_candidate, root / "weak-comparison.tsv"
+                )
+
+            relaxed_baseline = root / "relaxed-baseline"
+            relaxed_candidate = root / "relaxed-candidate"
+            write_self_attested_traffic_run(relaxed_baseline)
+            write_self_attested_traffic_run(
+                relaxed_candidate, monitored=True, role="proxy-candidate",
+                start=161000, end=221000,
+            )
+            for run, generation in (
+                (relaxed_baseline, None),
+                (relaxed_candidate, "c" * 64),
+            ):
+                status_path = run / "stress-status.tsv"
+                status = dict(
+                    row.split("\t", 1) for row in status_path.read_text().splitlines()
+                )
+                metrics = write_stress_metrics(
+                    run,
+                    status["run_start_epoch"],
+                    status["run_end_epoch"],
+                    "10000",
+                    "100",
+                    "10737418240",
+                    "10000",
+                    status["evidence_mode"],
+                    status["provider_pid"],
+                    generation,
+                )
+                replacements = {
+                    "max_rss_growth_bytes": "10737418240",
+                    "max_cpu_percent": "10000",
+                    "observed_rss_growth_bytes": metrics[6],
+                    "observed_max_cpu_percent": metrics[8],
+                }
+                text = status_path.read_text()
+                for key, value in replacements.items():
+                    text = re.sub(rf"(?m)^{key}\t.*$", f"{key}\t{value}", text)
+                status_path.write_text(text)
+                reseal_self_attested_traffic_run(run)
+                add_common_stress_envelope(run)
+            with self.assertRaisesRegex(ValueError, "hard threshold policy"):
+                create_comparison(
+                    relaxed_baseline,
+                    relaxed_candidate,
+                    root / "relaxed-comparison.tsv",
+                )
+
     def test_release_series_requires_three_interleaved_strict_pairs(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -625,54 +1382,107 @@ class StressTrafficValidationTests(unittest.TestCase):
                 baseline = root / f"baseline-{index}"
                 candidate = root / f"candidate-{index}"
                 comparison = root / f"comparison-{index}.tsv"
-                baseline_start = 100000 + (index - 1) * 4000
+                baseline_start = 100000 + (index - 1) * 122000
                 write_self_attested_traffic_run(
-                    baseline, start=baseline_start, end=baseline_start + 1000
+                    baseline, start=baseline_start, end=baseline_start + 60000
                 )
                 write_self_attested_traffic_run(
                     candidate, monitored=True, role="proxy-candidate",
-                    start=baseline_start + 2000, end=baseline_start + 3000,
+                    start=baseline_start + 61000, end=baseline_start + 121000,
                     duration=duration,
                 )
+                add_common_stress_envelope(baseline)
+                add_common_stress_envelope(candidate)
                 self.assertEqual(
                     create_comparison(baseline, candidate, comparison), 0
                 )
                 pairs.append((baseline, candidate, comparison))
 
-            series = root / "stress-series.tsv"
+            with self.assertRaisesRegex(ValueError, "integer overflow"):
+                stress_compare.series_rows(pairs, "600001")
+            series = root / "stress-series"
             self.assertEqual(create_series(pairs, series), 0)
             self.assertEqual(verify_series(pairs, series), 0)
-            contents = series.read_text()
+            self.assertEqual(verify_series(series), 0)
+            self.assertEqual(
+                signed_run_evidence.verify(series)["evidence_kind"],
+                "stress-series",
+            )
+            self.assertTrue(
+                (series / "members" / "pair-003" / "candidate"
+                 / signed_run_evidence.MANIFEST_NAME).is_file()
+            )
+            series_artifact = series / stress_compare.SERIES_ARTIFACT_NAME
+            contents = series_artifact.read_text()
             self.assertIn("pair_count\t3\n", contents)
             self.assertIn("median_p95_ratio_milli\t1200\n", contents)
             self.assertIn("worst_p95_ratio_milli\t1500\n", contents)
             self.assertIn("worst_throughput_ratio_milli\t1000\n", contents)
+            for worker in stress_compare.WORKERS:
+                self.assertIn(f"worst_{worker}_p95_ratio_milli\t1500\n", contents)
+                self.assertIn(
+                    f"worst_{worker}_request_throughput_ratio_milli\t1000\n",
+                    contents,
+                )
+                self.assertIn(
+                    f"worst_{worker}_byte_throughput_ratio_milli\t1000\n",
+                    contents,
+                )
             self.assertIn("worst_candidate_rss_growth_bytes\t51200\n", contents)
             self.assertEqual(
-                series.with_name(
-                    series.name + ".source-stress_compare.py"
-                ).read_bytes(),
+                stress_compare.comparison_source_path(series_artifact).read_bytes(),
                 stress_compare.current_source_path().read_bytes(),
             )
 
-            with self.assertRaisesRegex(ValueError, "at least three"):
-                create_series(pairs[:2], root / "too-short.tsv")
+            with self.assertRaisesRegex(ValueError, "exactly three"):
+                create_series(pairs[:2], root / "too-short")
             reordered = [pairs[0], pairs[2], pairs[1]]
             with self.assertRaisesRegex(ValueError, "interleaved and adjacent"):
-                create_series(reordered, root / "reordered.tsv")
+                create_series(reordered, root / "reordered")
 
             self.assertEqual(
                 create_comparison(*pairs[2], "1600", "667", "600000"), 0
             )
             with self.assertRaisesRegex(ValueError, "weakened the p95"):
-                create_series(pairs, root / "weakened.tsv")
+                create_series(pairs, root / "weakened")
             self.assertEqual(create_comparison(*pairs[2]), 0)
 
-            series.write_text(
-                contents.replace("median_p95_ratio_milli\t1200", "median_p95_ratio_milli\t1")
+            series_artifact.write_text(
+                contents.replace(
+                    "worst_small_https_p95_ratio_milli\t1500",
+                    "worst_small_https_p95_ratio_milli\t1",
+                )
             )
+            claims = series / signed_run_evidence.CLAIMS_NAME
+            claim_text = claims.read_text()
+            claim_text = re.sub(
+                r"series_artifact_sha256\t[0-9a-f]{64}",
+                f"series_artifact_sha256\t{sha256_file(series_artifact)}",
+                claim_text,
+            )
+            claims.write_text(claim_text)
+            common_status = series / signed_run_evidence.STATUS_NAME
+            common_status.write_text(re.sub(
+                r"workload_claims_sha256\t[0-9a-f]{64}",
+                f"workload_claims_sha256\t{sha256_file(claims)}",
+                common_status.read_text(),
+            ))
+            signed_run_evidence.seal(series, actual_exit_code=0)
             with self.assertRaisesRegex(ValueError, "does not match"):
                 verify_series(pairs, series)
+            cli = subprocess.run(
+                [
+                    sys.executable,
+                    str(stress_compare.current_source_path()),
+                    "verify-series",
+                    str(series),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self.assertEqual(cli.returncode, 2, cli.stdout)
+            self.assertIn("does not match", cli.stdout)
 
     def test_term_exits_143_and_reaps_owned_descendant_tree(self):
         probe = subprocess.Popen(["sleep", "30"])
@@ -730,6 +1540,8 @@ class StressTrafficValidationTests(unittest.TestCase):
             env = os.environ.copy()
             env.update(
                 PATH=f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                STRESS_CURL_TOOL=str(fake_curl),
+                STRESS_ALLOW_TEST_TOOLS="1",
                 STRESS_LOG_DIR=str(log_dir),
                 STRESS_DURATION="30",
                 STRESS_CONCURRENCY="1",
@@ -776,7 +1588,202 @@ class StressTrafficValidationTests(unittest.TestCase):
                     self.fail(f"pid {pid} survived bounded cleanup: {detail}")
             status = (log_dir / "stress-status.tsv").read_text()
             self.assertIn("complete\t0\n", status)
+            self.assertIn("exit_code\t143\n", status)
             self.assertIn("stress run interrupted by signal", status)
+
+    def test_early_exit_is_finalized_as_incomplete_with_the_actual_exit_code(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake_curl = fake_bin / "curl"
+            private_error = "private-user-target.invalid/secret-token"
+            fake_curl.write_text(
+                "#!/usr/bin/env bash\n"
+                f"printf '%s\\n' {shlex.quote(private_error)} >&2\n"
+                "exit 7\n"
+            )
+            fake_curl.chmod(0o755)
+            log_dir = root / "logs"
+            result = self.run_stress(
+                log_dir,
+                PATH=f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                STRESS_DURATION="1",
+                STRESS_CONCURRENCY="1",
+                STRESS_POST_BYTES="1",
+            )
+            self.assertEqual(result.returncode, 2, result.stdout)
+            status = (log_dir / "stress-status.tsv").read_text()
+            self.assertIn("complete\t0\n", status)
+            self.assertIn("passed\t0\n", status)
+            self.assertIn("exit_code\t2\n", status)
+            self.assertIn("exited before its terminal verdict", status)
+            self.assertNotIn(private_error, result.stdout)
+            for artifact in log_dir.rglob("*"):
+                if artifact.is_file():
+                    self.assertNotIn(
+                        private_error,
+                        artifact.read_text(encoding="utf-8", errors="ignore"),
+                    )
+
+    def test_term_resistant_system_logger_is_forcibly_reaped_and_not_accepted(self):
+        shell = STRESS_SCRIPT.read_text()
+        functions = "".join(
+            self.stress_function(shell, name)
+            for name in (
+                "pid_identity", "owned_job_is_active", "collect_owned_tree",
+                "signal_owned_identity", "owned_job_has_exited",
+                "cleanup_owned_jobs",
+            )
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stop_file = Path(temp_dir) / "monitor.stop"
+            ready_file = Path(temp_dir) / "logger.ready"
+            logger = (
+                "import pathlib,signal,time; "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                f"pathlib.Path({str(ready_file)!r}).touch(); time.sleep(30)"
+            )
+            program = functions + textwrap.dedent(
+                f"""
+                set -u
+                TRAFFIC_PIDS=()
+                MONITOR_JOB_PID=""
+                MONITOR_STOP_FILE={shlex.quote(str(stop_file))}
+                CLEANUP_STARTED=0
+                CLEANUP_INCOMPLETE=0
+                SYSTEM_LOG_ALIVE_END=0
+                SYSTEM_LOG_JOINED=0
+                SYSTEM_LOG_CHILD_RC=none
+                python3 -c {shlex.quote(logger)} &
+                SYSTEM_LOG_JOB_PID=$!
+                for _ in $(seq 1 200); do
+                  [[ -e {shlex.quote(str(ready_file))} ]] && break
+                  sleep 0.01
+                done
+                [[ -e {shlex.quote(str(ready_file))} ]] || exit 9
+                SYSTEM_LOG_JOB_IDENTITY="$(pid_identity "$SYSTEM_LOG_JOB_PID" || true)"
+                if [[ ! "$SYSTEM_LOG_JOB_IDENTITY" =~ ^[0-9a-f]{{64}}$ ]]; then
+                  kill -KILL "$SYSTEM_LOG_JOB_PID" 2>/dev/null || true
+                  wait "$SYSTEM_LOG_JOB_PID" 2>/dev/null || true
+                  exit 77
+                fi
+                cleanup_owned_jobs
+                printf 'alive=%s joined=%s rc=%s jobs=%s\n' \
+                  "$SYSTEM_LOG_ALIVE_END" "$SYSTEM_LOG_JOINED" \
+                  "$SYSTEM_LOG_CHILD_RC" "$(jobs -p | wc -l | tr -d ' ')"
+                """
+            )
+            result = subprocess.run(
+                ["bash", "-c", program],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=12,
+            )
+            if result.returncode == 77 or (
+                result.returncode != 0 and "Operation not permitted" in result.stdout
+            ):
+                self.skipTest("host sandbox blocks process identity inspection")
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(result.stdout.splitlines()[-1], "alive=1 joined=1 rc=137 jobs=0")
+
+    def test_bounded_capture_reaps_a_term_resistant_descendant_tree(self):
+        probe = subprocess.Popen(["sleep", "5"])
+        try:
+            try:
+                pgrep = subprocess.run(
+                    ["pgrep", "-P", str(os.getpid())],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                )
+                snapshot = subprocess.run(
+                    ["ps", "-ww", "-o", "pid=", "-o", "lstart=", "-o", "command=", "-p", str(probe.pid)],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                )
+            except OSError:
+                self.skipTest("host sandbox blocks process-tree inspection")
+        finally:
+            probe.terminate()
+            probe.wait(timeout=5)
+        if (
+            pgrep.returncode != 0
+            or str(probe.pid) not in pgrep.stdout.splitlines()
+            or snapshot.returncode != 0
+            or not snapshot.stdout.strip()
+        ):
+            self.skipTest("host sandbox blocks process-tree inspection")
+        shell = STRESS_SCRIPT.read_text()
+        functions = "".join(
+            self.stress_function(shell, name)
+            for name in (
+                "pid_identity", "owned_job_is_active", "owned_job_has_exited",
+                "collect_owned_tree", "signal_owned_identity", "run_bounded_capture",
+            )
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            pids = root / "pids"
+            wrapper = root / "hanging-attach"
+            wrapper.write_text(textwrap.dedent(f"""\
+                #!/usr/bin/env bash
+                trap '' TERM
+                printf '%s\n' "$$" >> {shlex.quote(str(pids))}
+                bash -c 'trap "" TERM; printf "%s\\n" "$$" >> "$1"; while :; do sleep 1; done' \
+                  child {shlex.quote(str(pids))} &
+                wait "$!"
+                """))
+            wrapper.chmod(0o755)
+            program = functions + textwrap.dedent(f"""
+                set +e
+                AUXILIARY_PIDS=()
+                CLEANUP_INCOMPLETE=0
+                EVIDENCE_FAILED=0
+                BOUNDED_CAPTURE_TIMED_OUT=0
+                run_bounded_capture {shlex.quote(str(root / 'output'))} 1 \
+                  {shlex.quote(str(wrapper))}
+                rc=$?
+                printf 'rc=%s incomplete=%s evidence=%s timeout=%s jobs=%s\n' \
+                  "$rc" "$CLEANUP_INCOMPLETE" "$EVIDENCE_FAILED" \
+                  "$BOUNDED_CAPTURE_TIMED_OUT" "$(jobs -p | wc -l | tr -d ' ')"
+            """)
+            result = subprocess.run(
+                ["bash", "-c", program],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=12,
+            )
+            pid_values = [
+                int(value) for value in pids.read_text().splitlines()
+            ] if pids.exists() else []
+            survivors = []
+            for pid in pid_values:
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    try:
+                        os.kill(pid, 0)
+                    except ProcessLookupError:
+                        break
+                    time.sleep(0.05)
+                else:
+                    survivors.append(pid)
+            if result.returncode != 0 and "Operation not permitted" in result.stdout:
+                for pid in survivors:
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                self.skipTest("host sandbox blocks process-tree inspection")
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(
+                result.stdout.splitlines()[-1],
+                "rc=124 incomplete=0 evidence=1 timeout=1 jobs=0",
+            )
+            self.assertFalse(survivors, f"bounded capture descendants survived: {survivors}")
 
     def test_monitored_provider_death_is_a_run_failure(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -796,6 +1803,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                     previous=""
                     for argument in "$@"; do
                       [[ "$argument" == --http2 ]] && version=2
+                      [[ "$argument" == --head ]] && downloaded=0
                       [[ "$argument" == *'size=1024'* ]] && downloaded=1024
                       [[ "$previous" == --output ]] && output="$argument"
                       if [[ "$previous" == --data-binary ]]; then
@@ -808,7 +1816,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                     if [[ -n "$body" && "$output" != /dev/null ]]; then
                       cp "$body" "$output"
                     fi
-                    printf '204\t%s\t%s\t%s\t0.050' "$downloaded" "$uploaded" "$version"
+                    printf '200\t%s\t%s\t%s\t0.050' "$downloaded" "$uploaded" "$version"
                     """
                 )
             )
@@ -830,6 +1838,8 @@ class StressTrafficValidationTests(unittest.TestCase):
                       printf '/bin/sleep\n'
                     elif [[ " $* " == *" -ww "* ]]; then
                       printf '%s Wed Jan  1 00:00:00 2025 fake-provider\n' "$pid"
+                    elif [[ " $* " == *" pid=,rss=,vsz=,%cpu=,state= "* ]]; then
+                      printf '%s 1 1 0.0 S\n' "$pid"
                     else
                       printf 'PID RSS VSZ %%CPU STAT\n%s 1 1 0.0 S\n' "$pid"
                     fi
@@ -855,6 +1865,8 @@ class StressTrafficValidationTests(unittest.TestCase):
                 env.update(
                     STRESS_LOG_DIR=str(log_dir),
                     PATH=f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+                    STRESS_CURL_TOOL=str(fake_curl),
+                    STRESS_ALLOW_TEST_TOOLS="1",
                     STRESS_DURATION="3",
                     STRESS_CONCURRENCY="1",
                     STRESS_LARGE_BYTES="1024",
@@ -902,13 +1914,199 @@ class StressTrafficValidationTests(unittest.TestCase):
             self.assertIn("evidence_mode\tprovider-monitored-traffic-only", status)
             self.assertIn("passed\t0", status)
 
-    def test_monitor_uses_the_documented_five_second_heavy_sampling_cadence(self):
+    def test_monitor_uses_the_documented_five_second_bounded_resource_cadence(self):
         shell = STRESS_SCRIPT.read_text()
         start = shell.index("monitor_pid() {")
         end = shell.index("# ── Plan + launch", start)
         monitor = shell[start:end]
         self.assertIn("sleep 5", monitor)
         self.assertNotIn("sleep 1\n", monitor)
+        self.assertIn("capture_resource_sample", monitor)
+        self.assertNotIn("vmmap", monitor)
+        self.assertNotIn("leaks", monitor)
+
+    def test_candidate_marker_and_log_capture_are_exact_and_privacy_bounded(self):
+        shell = STRESS_SCRIPT.read_text()
+        curl = self.stress_function(shell, "do_one_curl")
+        self.assertIn('[[ "$TRAFFIC_ROLE" == proxy-candidate ]]', curl)
+        self.assertIn(
+            'curl_args+=(--header "X-Rama-Tproxy-Stress-Run: $RUN_UUID:$request_id")',
+            curl,
+        )
+        self.assertIn('2>/dev/null', curl)
+        self.assertIn('metrics=$(run_hermetic_curl', curl)
+        self.assertIn('--url "$target"', curl)
+        self.assertNotIn('2>>"$LOG_DIR/${label}.log"', curl)
+        self.assertIn(
+            "processID == $MONITOR_PID AND subsystem == "
+            "'$EXPECTED_PROVIDER_SUBSYSTEM' AND eventMessage BEGINSWITH "
+            "'$EXPECTED_STRESS_EVENT_PREFIX'",
+            shell,
+        )
+        self.assertIn('[[ "$LOG_TOOL" == /usr/bin/log && "$CURL_TOOL" == /usr/bin/curl ]]', shell)
+        self.assertIn("capture-provider-generation", shell)
+        self.assertIn('provider-generation-samples.tsv', shell)
+
+    def test_hermetic_curl_disables_config_and_clears_network_override_environment(self):
+        shell = STRESS_SCRIPT.read_text()
+        start = shell.index("run_hermetic_curl() (")
+        end = shell.index("\n)\n", start) + 3
+        function = shell[start:end]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fake_curl = root / "curl"
+            fake_curl.write_text(textwrap.dedent("""\
+                #!/usr/bin/env bash
+                index=0
+                for argument in "$@"; do
+                  printf 'arg_%s=<%s>\n' "$index" "$argument"
+                  index=$((index + 1))
+                done
+                printf 'env=<%s%s%s%s%s%s%s%s%s%s>\n' \
+                  "${HTTP_PROXY:-}" "${HTTPS_PROXY:-}" "${ALL_PROXY:-}" \
+                  "${http_proxy:-}" "${https_proxy:-}" "${all_proxy:-}" \
+                  "${CURL_HOME:-}" "${CURL_CA_BUNDLE:-}" \
+                  "${SSL_CERT_FILE:-}" "${SSL_CERT_DIR:-}"
+                """))
+            fake_curl.chmod(0o755)
+            curl_home = root / "home"
+            curl_home.mkdir()
+            (curl_home / ".curlrc").write_text(
+                "--request DELETE\n--proxy http://127.0.0.1:1\n"
+            )
+            environment = os.environ.copy()
+            environment.update({
+                "HTTP_PROXY": "http://127.0.0.1:1",
+                "HTTPS_PROXY": "http://127.0.0.1:1",
+                "ALL_PROXY": "http://127.0.0.1:1",
+                "http_proxy": "http://127.0.0.1:1",
+                "https_proxy": "http://127.0.0.1:1",
+                "all_proxy": "http://127.0.0.1:1",
+                "CURL_HOME": str(curl_home),
+                "CURL_CA_BUNDLE": "/private/tmp/untrusted-ca",
+                "SSL_CERT_FILE": "/private/tmp/untrusted-cert",
+                "SSL_CERT_DIR": "/private/tmp/untrusted-dir",
+            })
+            result = subprocess.run(
+                ["bash", "-c", function + "\nCURL_TOOL=$1; run_hermetic_curl --url https://example.invalid/", "bash", str(fake_curl)],
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(result.stdout.splitlines()[:5], [
+                "arg_0=<--disable>", "arg_1=<--noproxy>", "arg_2=<*>",
+                "arg_3=<--proxy>", "arg_4=<>",
+            ])
+            self.assertEqual(result.stdout.splitlines()[-1], "env=<>")
+
+    def test_target_option_injection_is_rejected_before_curl_execution(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fake_curl = root / "curl"
+            called = root / "called"
+            fake_curl.write_text(
+                "#!/usr/bin/env bash\n"
+                f"touch {shlex.quote(str(called))}\n"
+                "exit 99\n"
+            )
+            fake_curl.chmod(0o755)
+            result = self.run_stress(
+                root / "logs",
+                STRESS_CURL_TOOL=str(fake_curl),
+                STRESS_ALLOW_TEST_TOOLS="1",
+                STRESS_DURATION="1",
+                STRESS_CONCURRENCY="1",
+                STRESS_HTTP_TARGET="--config=/private/tmp/secret",
+            )
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertFalse(called.exists())
+
+    def test_release_roles_reject_injected_curl_or_log_tools(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            fake_tool = root / "tool"
+            fake_tool.write_text("#!/usr/bin/env bash\nexit 0\n")
+            fake_tool.chmod(0o755)
+            direct = self.run_stress(
+                root / "direct",
+                STRESS_TRAFFIC_ROLE="direct-baseline",
+                STRESS_CURL_TOOL=str(fake_tool),
+                STRESS_ALLOW_TEST_TOOLS="1",
+            )
+            self.assertEqual(direct.returncode, 2, direct.stdout)
+            self.assertIn("requires SIP-protected /usr/bin/curl", direct.stdout)
+            candidate = self.run_stress(
+                root / "candidate",
+                STRESS_TRAFFIC_ROLE="proxy-candidate",
+                STRESS_MONITOR_PID="1",
+                STRESS_BUILT_PROVIDER="/fixture/built.systemextension",
+                STRESS_INSTALLED_PROVIDER="/fixture/installed.systemextension",
+                STRESS_LOG_TOOL=str(fake_tool),
+                STRESS_ALLOW_TEST_TOOLS="1",
+            )
+            self.assertEqual(candidate.returncode, 2, candidate.stdout)
+            self.assertIn("requires SIP-protected /usr/bin/log", candidate.stdout)
+
+    def test_release_producer_rejects_weakened_workload_or_resource_policy(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for index, override in enumerate((
+                {"STRESS_DURATION": "1"},
+                {"STRESS_CONCURRENCY": "1"},
+                {"STRESS_LARGE_BYTES": "1024"},
+                {"STRESS_POST_BYTES": "1024"},
+                {"STRESS_MAX_RSS_GROWTH_BYTES": "10737418240"},
+                {"STRESS_MAX_CPU_PERCENT": "10000"},
+            )):
+                result = self.run_stress(
+                    root / str(index),
+                    STRESS_TRAFFIC_ROLE="direct-baseline",
+                    **override,
+                )
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn("canonical workload", result.stdout)
+
+    def test_common_envelope_rejects_mutated_crash_or_generation_proof_before_reseal(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            for artifact_name in (
+                "crashes/crash-snapshot.tsv",
+                signed_run_evidence.GENERATION_SAMPLES_NAME,
+            ):
+                run = root / artifact_name.replace("/", "-")
+                write_self_attested_traffic_run(
+                    run, monitored=True, role="proxy-candidate"
+                )
+                add_common_stress_envelope(run)
+                artifact = run / artifact_name
+                artifact.write_text(artifact.read_text().replace(
+                    dict(
+                        row.split("\t", 1)
+                        for row in (run / "evidence-status.tsv").read_text().splitlines()
+                    )["provider_generation_identity"],
+                    "f" * 64,
+                    1,
+                ))
+                with self.subTest(artifact=artifact_name), self.assertRaisesRegex(
+                    signed_run_evidence.EvidenceError,
+                    "crash snapshot|generation samples",
+                ):
+                    signed_run_evidence.seal(run, actual_exit_code=0)
+
+    def test_proxy_candidate_sealed_evidence_requires_usr_bin_log(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run = Path(temp_dir) / "candidate"
+            write_self_attested_traffic_run(
+                run, monitored=True, role="proxy-candidate"
+            )
+            tool = run / "system-log-tool.tsv"
+            tool.write_text(tool.read_text().replace("/usr/bin/log", "/fixture/log"))
+            reseal_self_attested_traffic_run(run)
+            with self.assertRaisesRegex(ValueError, "system log tool identity"):
+                verify_stress_evidence(run)
 
     def test_identity_mismatch_does_not_retain_signal_authority(self):
         shell = STRESS_SCRIPT.read_text()
@@ -1325,7 +2523,7 @@ class SignedUdpGateWiringTests(unittest.TestCase):
         self.assertIn("does not instrument the linked Rust static library", readme)
 
     @staticmethod
-    def status_lines(verdict=(1, 1, 0), attempts=5, passes=5, diagnostics=()):
+    def status_lines(verdict=(1, 1, 0), attempts=8, passes=8, diagnostics=()):
         complete, passed, exit_code = verdict
         rows = [
             ("complete", complete), ("passed", passed), ("exit_code", exit_code),
@@ -1338,12 +2536,38 @@ class SignedUdpGateWiringTests(unittest.TestCase):
             ("log_stream_joined", 1), ("profile_restored", 1),
             ("callback_generation", "modern"),
             ("run_uuid", "12345678-1234-4234-8234-123456789abc"),
+            ("run_start_epoch_ms", 1000),
+            ("run_end_epoch_ms", 2000),
+            ("evidence_kind", "modern_udp"),
+            ("provider_generation_identity", "b" * 64),
+            ("producer_sources_sha256", "f" * 64),
+            ("engine_generations_sha256", "c" * 64),
             ("provider_pid", 123),
-            ("provider_identity", "a" * 64),
+            ("provider_identity", "b" * 64),
             ("provider_identity_stable", 1),
             ("http3_source_pid", 456),
             ("http3_flow_id", 88),
             ("http3_remote_endpoint", "1.1.1.1:443"),
+            ("http3_request_count", 6),
+            ("http3_pass_count", 6),
+            ("http3_flow_count", 6),
+            ("http3_duration_ms", 2000),
+            ("http3_min_concurrent", 2),
+            ("echo_socket_count", 128),
+            ("echo_datagrams_per_socket", 1),
+            ("echo_payload_bytes", 1200),
+            ("echo_expected_count", 128),
+            ("echo_exact_echo_count", 128),
+            ("echo_flow_count", 128),
+            ("echo_payload_set_sha256", "d" * 64),
+            ("echo_endpoint", "127.0.0.1:32000"),
+            ("echo_source_pid", 458),
+            ("pressure_datagram_count", 512),
+            ("pressure_payload_bytes", 4096),
+            ("pressure_expected_bytes", 2097152),
+            ("concurrent_load_deadline_seconds", 180),
+            ("concurrent_load_timed_out", 0),
+            ("active_workload_forced_termination_count", 0),
             ("pressure_probe_attempted", 1),
             ("pressure_probe_passed", 1),
             ("pressure_drop_transitions", 1),
@@ -1358,19 +2582,24 @@ class SignedUdpGateWiringTests(unittest.TestCase):
             ("ntp_flow_id", 77),
             ("pressure_source_pid", 454),
             ("pressure_flow_id", 78),
+            ("recovery_ntp_source_pid", 457),
+            ("recovery_ntp_flow_id", 80),
             ("blocked_dns_source_pid", 455),
             ("blocked_dns_flow_id", 79),
             ("dial9_baseline_max_index", 8),
             ("dial9_required_flow_id", 77),
             ("dial9_current_segment_count", 1),
-            ("dial9_required_pair_count", 1),
+            ("dial9_required_pair_count", 131),
             ("dial9_required_close_reason", 1),
             ("dial9_required_close_reason_name", "shutdown"),
             ("dial9_required_close_age_ms", 2),
             ("dial9_close_age_bound_ms", 100),
             ("dial9_required_bytes_in", 48),
             ("dial9_required_bytes_out", 48),
-            ("schema_version", 3),
+            ("dial9_requirements_sha256", "e" * 64),
+            ("dial9_requirement_count", 131),
+            ("dial9_matched_requirement_count", 131),
+            ("schema_version", 5),
             *diagnostics,
             ("schema_complete", 1),
         ]
@@ -1386,14 +2615,19 @@ class SignedUdpGateWiringTests(unittest.TestCase):
         self.assertIn("close_pressure_probe_window", shell)
         self.assertIn("required_flow_id=pressure_flow_id", shell)
         self.assertIn("swift_udp_staging_drop_samples", shell)
-        self.assertIn("--flow-id \"$NTP_FLOW_ID\" --protocol 2", shell)
+        self.assertIn('--requirements "$DIAL9_REQUIREMENTS"', shell)
+        self.assertIn("run_uuid=([0-9a-f]", shell)
+        self.assertIn("provider_generation=([0-9]+)", shell)
         self.assertIn("modern_udp_evidence.py", shell)
 
     def test_pressure_window_waits_for_exact_flow_recovery_and_rejects_late_rows(self):
+        run_uuid = "12345678-1234-4234-8234-123456789abc"
+        provider_pid = 123
         decision = (
-            "udp_e2e_decision rama_decision=intercept flow_id=78 "
-            "remote_endpoint=162.159.200.1:123 source_app=com.apple.python3 "
-            "source_pid=454"
+            f"udp_e2e_decision run_uuid={run_uuid} provider_pid={provider_pid} "
+            "provider_generation=7 rama_decision=intercept flow_id=78 "
+            "remote_endpoint=162.159.200.1:123 local_endpoint=127.0.0.1:45454 "
+            "source_app=com.apple.python3 source_pid=454"
         )
         drop = (
             'UDP ingress pressure dropped datagram flow_id=78 '
@@ -1408,22 +2642,24 @@ class SignedUdpGateWiringTests(unittest.TestCase):
 
         identity = (454, "162.159.200.1:123", "com.apple.python3")
         decision_only = pressure_window_observation(
-            ["before", decision], 1, *identity
+            ["before", decision], 1, *identity, run_uuid, provider_pid
         )
         self.assertFalse(decision_only["terminal"])
         dropped = pressure_window_observation(
-            ["before", decision, drop], 1, *identity
+            ["before", decision, drop], 1, *identity, run_uuid, provider_pid
         )
         self.assertFalse(dropped["terminal"])
         self.assertEqual(dropped["summary"]["unrecovered"], ["channel_count"])
         complete = pressure_window_observation(
-            ["before", decision, drop, recovery], 1, *identity
+            ["before", decision, drop, recovery], 1, *identity,
+            run_uuid, provider_pid,
         )
         self.assertTrue(complete["terminal"])
         self.assertEqual(complete["flow_id"], 78)
 
         delayed_duplicate = pressure_window_observation(
-            ["before", decision, drop, recovery, decision], 1, *identity
+            ["before", decision, drop, recovery, decision], 1, *identity,
+            run_uuid, provider_pid,
         )
         self.assertFalse(delayed_duplicate["terminal"])
         self.assertEqual(delayed_duplicate["matching_decisions"], 2)
@@ -1431,6 +2667,8 @@ class SignedUdpGateWiringTests(unittest.TestCase):
             ["before", decision, drop, recovery.replace("flow_id=78", "flow_id=79")],
             1,
             *identity,
+            run_uuid,
+            provider_pid,
         )
         self.assertFalse(foreign_recovery["terminal"])
         self.assertTrue(foreign_recovery["summary"]["issues"])
@@ -1546,7 +2784,7 @@ class SignedUdpGateWiringTests(unittest.TestCase):
             dial9_fault_failure, "dial9_required_close_reason_name", "service_panic"
         )
         self.assertEqual(parse_signed_udp_status_lines(dial9_fault_failure), 1)
-        unsupported_schema = replace(self.status_lines(), "schema_version", "4")
+        unsupported_schema = replace(self.status_lines(), "schema_version", "3")
         self.assertIsNone(parse_signed_udp_status_lines(unsupported_schema))
 
         for key, value in (
@@ -1560,7 +2798,7 @@ class SignedUdpGateWiringTests(unittest.TestCase):
             ("dial9_required_close_reason", "15"),
             ("dial9_required_close_reason_name", "idle_timeout"),
             ("dial9_required_close_age_ms", "101"),
-            ("dial9_required_bytes_out", "47"),
+            ("dial9_matched_requirement_count", "66"),
         ):
             with self.subTest(key=key):
                 self.assertIsNone(parse_signed_udp_status_lines(
@@ -1661,6 +2899,7 @@ class SignedUdpGateWiringTests(unittest.TestCase):
 
             def sendto(self, packet, peer):
                 self.packets.append((bytes(packet), peer))
+                return len(packet)
 
             def close(self):
                 self.closed = True

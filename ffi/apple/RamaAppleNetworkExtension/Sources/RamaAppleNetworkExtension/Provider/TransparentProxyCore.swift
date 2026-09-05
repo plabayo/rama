@@ -3752,9 +3752,9 @@ final class TransparentProxyCore: @unchecked Sendable {
         /// Test-only accessor for the writer pump bound to a flow.
         /// Returns `nil` if the flow is not registered (or never
         /// had a writer attached). Used by per-flow unit tests
-        /// that need to inspect cache state mutated by the read
-        /// loop. Gated on `#if DEBUG` so production builds carry
-        /// no test-only surface on `TransparentProxyCore`.
+        /// that need to inspect the Debug-only endpoint-pairing
+        /// observation seam. Gated on `#if DEBUG` so Release builds carry no
+        /// test-only surface or read-loop fallback-cache mutation.
         func testInspectUdpWriter(for flow: AnyObject) -> UdpClientWritePump? {
             stateQueue.sync { self.udpSessions[ObjectIdentifier(flow)]?.ctx.writer }
         }
@@ -4064,8 +4064,8 @@ final class TransparentProxyCore: @unchecked Sendable {
         // `flow.readData` / `connection.receive` without
         // racing the in-flight kernel-side request.
         ctx.clientReadPump?.cancelForPromoteWithReservations(
-            onCarryover: { [weak forwarder] data, reservation in
-                forwarder?.acceptClientCarryover(data, reservation: reservation)
+            onCarryover: { [weak forwarder] payload in
+                forwarder?.acceptClientCarryoverCursor(payload)
             },
             onError: { [weak forwarder] error in
                 forwarder?.acceptClientCarryoverError(error)
@@ -4074,8 +4074,8 @@ final class TransparentProxyCore: @unchecked Sendable {
                 forwarder?.markClientReadDrained()
             })
         ctx.egressReadPump?.cancelForPromoteWithReservations(
-            onCarryover: { [weak forwarder] data, reservation in
-                forwarder?.acceptEgressCarryover(data, reservation: reservation)
+            onCarryover: { [weak forwarder] payload in
+                forwarder?.acceptEgressCarryoverCursor(payload)
             },
             onError: { [weak forwarder] error in
                 forwarder?.acceptEgressCarryoverError(error)

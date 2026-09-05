@@ -11,24 +11,34 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from decimal import Decimal
 
 from soak_pressure_log import (
     artifact_identity_issues,
     cap_validation_hard_limited,
+    canonical_release_soak_profile_lines,
     ceiling_configuration_issues,
     ceiling_probe_evidence_issues,
     ceiling_outage_window,
     classify_soak_result,
+    cpu_sample_diagnostic_issues,
+    crash_snapshot_evidence,
+    dial9_diagnostic_collection_issues,
     dial9_evidence_issues,
+    dial9_diagnostic_claim_issues,
     engine_lifecycle_event,
     filter_provider_ndjson_records,
     flow_pool_evidence_issues,
     flow_pool_status as _flow_pool_status,
+    final_provider_observation_issues,
     flow_gauge,
     flow_gauge_issue,
     is_no_headroom,
+    idle_cpu_evidence,
+    idle_cpu_comparison_evidence,
     leak_evidence,
     lifecycle_category_issue,
+    memory_diagnostic_issues,
     no_headroom_event,
     parse_artifact_epoch,
     parse_artifact_uint,
@@ -42,17 +52,23 @@ from soak_pressure_log import (
     parse_provider_identity_lines,
     parse_probe_lines,
     phase_for_epoch,
+    post_boundary_forensic_issues,
+    producer_source_issues,
     pressure_counters,
     pressure_episode,
     pressure_telemetry_issue,
     pressure_reaper_status,
     provider_allocation_failure,
     probe_succeeded,
+    release_soak_profile_issues,
     selected_count,
     selection_event,
     sleep_wake_evidence,
     settled_final_flow_gauge,
     soak_evidence_issues,
+    soak_workload_claim_issues,
+    top_cpu_collection_issues,
+    top_cpu_sample_rows,
     summarize_pressure_rows,
     summarize_udp_pressure_rows,
     summarize_writer_memory_pressure_rows,
@@ -1087,6 +1103,604 @@ class SoakPressureLogTests(unittest.TestCase):
         self.assertIn("provider identity changed at line 2", issues)
         self.assertIn("malformed provider identity sample at line 3", issues)
 
+    def test_idle_cpu_requires_ten_exact_pid_one_second_samples(self):
+        identity = "a" * 64
+
+        def rows(cpus, *, pid=42, row_identity=identity):
+            return [
+                f"{index}\t{100 + index:.6f}\t{pid}\t{row_identity}\t{cpu}\n"
+                for index, cpu in enumerate(cpus, 1)
+            ]
+
+        cool = idle_cpu_evidence(
+            rows(["0.0", "1.0", "2.0", "3.0", "4.0"] * 2),
+            expected_pid="42",
+            expected_identity=identity,
+        )
+        self.assertEqual(cool["issues"], [])
+        self.assertEqual(cool["failures"], [])
+        self.assertEqual(cool["sample_count"], 10)
+        self.assertEqual(cool["maximum_percent"], Decimal("4.0"))
+        self.assertEqual(cool["mean_percent"], Decimal("2.0"))
+
+        missing = idle_cpu_evidence(
+            rows(["0.0"] * 9), expected_pid=42, expected_identity=identity
+        )
+        self.assertIn(
+            "idle CPU evidence has 9 sample(s); expected exactly 10",
+            missing["issues"],
+        )
+
+        malformed_rows = rows(["0.0"] * 10)
+        malformed_rows[4] = f"5\t105.000000\t42\t{identity}\tnan\n"
+        malformed = idle_cpu_evidence(
+            malformed_rows, expected_pid=42, expected_identity=identity
+        )
+        self.assertIn("malformed idle CPU sample at line 5", malformed["issues"])
+
+        changed_pid_rows = rows(["0.0"] * 10)
+        changed_pid_rows[6] = f"7\t107.000000\t43\t{identity}\t0.0\n"
+        changed_pid = idle_cpu_evidence(
+            changed_pid_rows, expected_pid=42, expected_identity=identity
+        )
+        self.assertIn("idle CPU provider PID changed at line 7", changed_pid["issues"])
+
+        changed_identity = idle_cpu_evidence(
+            rows(["0.0"] * 10, row_identity="b" * 64),
+            expected_pid=42,
+            expected_identity=identity,
+        )
+        self.assertIn(
+            "idle CPU provider identity changed at line 1",
+            changed_identity["issues"],
+        )
+
+    def test_idle_cpu_hot_streak_requires_five_consecutive_full_core_samples(self):
+        identity = "c" * 64
+
+        def evaluate(cpus):
+            return idle_cpu_evidence(
+                [
+                    f"{index}\t{200 + index:.6f}\t77\t{identity}\t{cpu}\n"
+                    for index, cpu in enumerate(cpus, 1)
+                ],
+                expected_pid=77,
+                expected_identity=identity,
+            )
+
+        bursty = evaluate([90, 90, 90, 90, 0, 90, 90, 90, 90, 0])
+        self.assertEqual(bursty["failures"], [])
+        self.assertEqual(bursty["maximum_hot_streak"], 4)
+        hot = evaluate([0, 89.9, 90.0, 91, 100, 99, 90, 0, 0, 0])
+        self.assertEqual(hot["maximum_hot_streak"], 5)
+        self.assertEqual(len(hot["failures"]), 1)
+        result = classify_soak_result(
+            self.complete_meta(),
+            [],
+            probe_failures=0,
+            body_errors=0,
+            reaper_status="good",
+            no_spin_failures=hot["failures"],
+        )
+        self.assertTrue(result["complete"])
+        self.assertEqual(result["exit_code"], 1)
+
+    def test_idle_cpu_comparison_rejects_false_green_patterns_and_outside_window(self):
+        identity = "d" * 64
+
+        def rows(cpus, start):
+            return [
+                f"{index}\t{start + index:.6f}\t88\t{identity}\t{cpu}\n"
+                for index, cpu in enumerate(cpus, 1)
+            ]
+
+        def compare(
+            post, *, baseline=None, post_start="200", post_end="211",
+            minimum_quiescence=0,
+        ):
+            return idle_cpu_comparison_evidence(
+                rows(["1.0"] * 10 if baseline is None else baseline, 100),
+                rows(post, 200),
+                expected_pid=88,
+                expected_identity=identity,
+                baseline_start_epoch="100",
+                baseline_end_epoch="111",
+                post_start_epoch=post_start,
+                post_end_epoch=post_end,
+                run_start_epoch_ms="100000",
+                run_end_epoch_ms="211000",
+                minimum_post_quiescence_seconds=minimum_quiescence,
+            )
+
+        cool = compare(["9.0"] * 10)
+        self.assertEqual(cool["issues"], [])
+        self.assertEqual(cool["failures"], [])
+        self.assertEqual(cool["post_mean_limit_percent"], Decimal("10.0"))
+
+        for hot in (["89.9"] * 10, ["90.0"] * 8 + ["0"] * 2):
+            with self.subTest(hot=hot):
+                result = compare(hot)
+                self.assertEqual(result["issues"], [])
+                self.assertTrue(result["failures"])
+                self.assertGreaterEqual(result["post_warm_sample_count"], 5)
+
+        regression = compare(["11.0"] * 10)
+        self.assertTrue(any("baseline-derived" in f for f in regression["failures"]))
+
+        hot_baseline = compare(["1.0"] * 10, baseline=["80.0"] * 10)
+        self.assertTrue(any(
+            "baseline mean" in failure for failure in hot_baseline["failures"]
+        ))
+        self.assertTrue(any(
+            "idle CPU baseline evidence has 10 sample(s) at or above 80.0%"
+            in failure
+            for failure in hot_baseline["failures"]
+        ))
+
+        spinning_baseline = compare(
+            ["1.0"] * 10,
+            baseline=["0", "90", "90", "90", "90", "90", "0", "0", "0", "0"],
+        )
+        self.assertTrue(any(
+            "idle CPU baseline provider CPU stayed at or above 90.0%"
+            in failure
+            for failure in spinning_baseline["failures"]
+        ))
+
+        outside = compare(["1.0"] * 10, post_start="202", post_end="211")
+        self.assertIn(
+            "idle CPU post-load sample at line 1 is before its phase",
+            outside["issues"],
+        )
+        too_early = compare(["1.0"] * 10, minimum_quiescence=2)
+        self.assertIn(
+            "idle CPU post-load sampling began before the declared quiescence completed",
+            too_early["issues"],
+        )
+
+    def test_cpu_sample_diagnostic_forced_or_unreaped_is_incomplete(self):
+        self.assertEqual(
+            cpu_sample_diagnostic_issues({
+                "cpu_sample_command_rc": "0",
+                "cpu_sample_joined": "1",
+                "cpu_sample_forced": "0",
+                "cpu_sample_privilege": "sudo",
+                "cpu_sample_ownership_normalized": "1",
+            }),
+            [],
+        )
+        issues = cpu_sample_diagnostic_issues({
+            "cpu_sample_command_rc": "137",
+            "cpu_sample_joined": "0",
+            "cpu_sample_forced": "1",
+            "cpu_sample_privilege": "unavailable",
+            "cpu_sample_ownership_normalized": "0",
+        })
+        self.assertIn("CPU sample diagnostic child was not reaped", issues)
+        self.assertIn("CPU sample diagnostic exceeded its bounded deadline", issues)
+        self.assertIn(
+            "CPU sample diagnostic command failed or has no valid outcome", issues
+        )
+        self.assertIn(
+            "CPU sample diagnostic did not use cached sudo privilege", issues
+        )
+
+    @staticmethod
+    def valid_memory_diagnostic_meta():
+        return {
+            "provider_start_pid": "42",
+            "provider_start_identity": "e" * 64,
+            "run_start_epoch_ms": "100000",
+            "run_end_epoch_ms": "200000",
+            "baseline_mem_child_rc": "0",
+            "baseline_mem_joined": "1",
+            "baseline_mem_forced": "0",
+            "baseline_mem_privilege": "sudo",
+            "baseline_mem_sudo_rc": "0",
+            "baseline_mem_ps_rc": "0",
+            "baseline_mem_vmmap_rc": "0",
+            "baseline_mem_start_epoch_ms": "110000",
+            "baseline_mem_end_epoch_ms": "120000",
+            "baseline_mem_provider_pid": "42",
+            "baseline_mem_identity_before": "e" * 64,
+            "baseline_mem_identity_after": "e" * 64,
+            "final_mem_child_rc": "0",
+            "final_mem_joined": "1",
+            "final_mem_forced": "0",
+            "final_mem_privilege": "sudo",
+            "final_mem_sudo_rc": "0",
+            "final_mem_ps_rc": "0",
+            "final_mem_vmmap_rc": "0",
+            "final_mem_heap_rc": "0",
+            "final_mem_heap_filter_rc": "0",
+        }
+
+    @staticmethod
+    def write_memory_diagnostic_artifacts(directory, *, artifact_pid=42):
+        baseline = Path(directory) / "baseline-mem.txt"
+        final = Path(directory) / "final-mem.txt"
+        baseline.write_text(
+            f"=== baseline provider pid={artifact_pid} @ now ===\n"
+            "  PID    RSS      VSZ  %CPU STAT\n"
+            f"  {artifact_pid}  12000  900000   0.0 S\n"
+            "\n--- vmmap --summary ---\n"
+            f"Process: Provider [{artifact_pid}]\n"
+            "Physical footprint: 12.0M\n"
+        )
+        final.write_text(
+            f"=== final snapshot provider pid={artifact_pid} @ now ===\n"
+            "  PID    RSS      VSZ  %CPU STAT\n"
+            f"  {artifact_pid}  12500  900000   0.0 S\n"
+            "\n--- vmmap --summary ---\n"
+            f"Process: Provider [{artifact_pid}]\n"
+            "Physical footprint: 12.5M\n"
+            "\n--- heap totals ---\n"
+            f"Process {artifact_pid}: 12500 zones\n"
+            "All zones: 12500 nodes malloced\n"
+        )
+        return baseline, final
+
+    def test_memory_diagnostic_rejects_failing_sudo(self):
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            baseline, final = self.write_memory_diagnostic_artifacts(artifact_dir)
+            meta = self.valid_memory_diagnostic_meta()
+            meta.update({
+                "baseline_mem_child_rc": "1",
+                "baseline_mem_privilege": "unavailable",
+                "baseline_mem_sudo_rc": "1",
+                "baseline_mem_vmmap_rc": "1",
+            })
+            issues = memory_diagnostic_issues(
+                meta, baseline_artifact=baseline, final_artifact=final)
+        self.assertIn(
+            "baseline memory diagnostic did not prove cached sudo privilege",
+            issues,
+        )
+        self.assertIn(
+            "baseline memory diagnostic sudo command failed or has no valid outcome",
+            issues,
+        )
+        self.assertIn(
+            "baseline memory diagnostic vmmap command failed or has no valid outcome",
+            issues,
+        )
+
+    def test_memory_diagnostic_rejects_forced_final_snapshot(self):
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            baseline, final = self.write_memory_diagnostic_artifacts(artifact_dir)
+            meta = self.valid_memory_diagnostic_meta()
+            meta.update({
+                "final_mem_child_rc": "143",
+                "final_mem_forced": "1",
+            })
+            issues = memory_diagnostic_issues(
+                meta, baseline_artifact=baseline, final_artifact=final)
+        self.assertIn(
+            "final memory diagnostic exceeded its bounded deadline", issues
+        )
+        self.assertIn(
+            "final memory diagnostic child failed or has no valid outcome", issues
+        )
+
+    def test_memory_diagnostic_rejects_missing_or_empty_artifacts(self):
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            baseline = Path(artifact_dir) / "baseline-mem.txt"
+            final = Path(artifact_dir) / "final-mem.txt"
+            baseline.touch()
+            issues = memory_diagnostic_issues(
+                self.valid_memory_diagnostic_meta(),
+                baseline_artifact=baseline,
+                final_artifact=final,
+            )
+        self.assertIn(
+            "baseline memory diagnostic artifact is missing or empty", issues
+        )
+        self.assertIn(
+            "final memory diagnostic artifact is missing or empty", issues
+        )
+
+    def test_memory_diagnostic_rejects_other_process_artifacts(self):
+        with tempfile.TemporaryDirectory() as artifact_dir:
+            baseline, final = self.write_memory_diagnostic_artifacts(
+                artifact_dir, artifact_pid=99)
+            issues = memory_diagnostic_issues(
+                self.valid_memory_diagnostic_meta(),
+                baseline_artifact=baseline,
+                final_artifact=final,
+            )
+        for message in (
+            "baseline memory diagnostic header has the wrong PID",
+            "baseline memory diagnostic ps row has the wrong PID",
+            "baseline memory diagnostic vmmap output has the wrong PID",
+            "final memory diagnostic header has the wrong PID",
+            "final memory diagnostic ps row has the wrong PID",
+            "final memory diagnostic vmmap output has the wrong PID",
+            "final memory diagnostic heap output has the wrong PID",
+        ):
+            self.assertIn(message, issues)
+
+    def test_top_cpu_parser_discards_decayed_row_and_keeps_ten_intervals(self):
+        identity = "e" * 64
+        raw = []
+        for index in range(11):
+            raw.extend([
+                "-\tPID  %CPU\n",
+                f"{100 + index:.6f}\t42  {99 if index == 0 else index}.0\n",
+            ])
+        rows, issues = top_cpu_sample_rows(
+            raw, expected_pid=42, expected_identity=identity)
+        self.assertEqual(issues, [])
+        self.assertEqual(len(rows), 10)
+        self.assertEqual(rows[0], f"1\t101.000000\t42\t{identity}\t1.0\n")
+        self.assertNotIn("99.0", "".join(rows))
+
+        changed = list(raw)
+        changed[-1] = "110.000000\t43  10.0\n"
+        rows, issues = top_cpu_sample_rows(
+            changed, expected_pid=42, expected_identity=identity)
+        self.assertEqual(rows, [])
+        self.assertTrue(any("exact PID" in issue for issue in issues))
+
+    def test_top_cpu_collection_requires_bounded_sudo_and_stable_identity(self):
+        identity = "f" * 64
+        meta = {"provider_start_identity": identity}
+        for label in ("baseline", "post"):
+            meta.update({
+                f"idle_cpu_{label}_top_command_rc": "0",
+                f"idle_cpu_{label}_top_joined": "1",
+                f"idle_cpu_{label}_top_forced": "0",
+                f"idle_cpu_{label}_top_privilege": "sudo",
+                f"idle_cpu_{label}_identity_before": identity,
+                f"idle_cpu_{label}_identity_after": identity,
+            })
+        self.assertEqual(top_cpu_collection_issues(meta), [])
+        bad = dict(meta, idle_cpu_post_top_joined="0",
+                   idle_cpu_post_top_forced="1",
+                   idle_cpu_post_identity_after="a" * 64)
+        issues = top_cpu_collection_issues(bad)
+        self.assertIn("post top CPU collector was not reaped", issues)
+        self.assertIn("post top CPU collector exceeded its bounded deadline", issues)
+        self.assertIn("post top CPU provider identity changed", issues)
+
+    def test_dial9_diagnostic_collection_is_bounded_even_without_coverage(self):
+        self.assertEqual(
+            dial9_diagnostic_collection_issues({
+                "dial9_collection_attempted": "0",
+            }),
+            [],
+        )
+        self.assertEqual(
+            dial9_diagnostic_collection_issues({
+                "dial9_collection_attempted": "1",
+                "dial9_collect_child_rc": "0",
+                "dial9_collect_joined": "1",
+                "dial9_collect_forced": "0",
+            }),
+            [],
+        )
+        issues = dial9_diagnostic_collection_issues({
+            "dial9_collection_attempted": "1",
+            "dial9_collect_child_rc": "137",
+            "dial9_collect_joined": "0",
+            "dial9_collect_forced": "1",
+        })
+        self.assertIn("Dial9 diagnostic collection child was not reaped", issues)
+        self.assertIn(
+            "Dial9 diagnostic collection exceeded its bounded deadline", issues
+        )
+
+    def test_arbitrary_dial9_artifacts_never_become_soak_coverage(self):
+        self.assertEqual(
+            dial9_diagnostic_claim_issues({
+                "dial9_diagnostic_only": "1",
+                "dial9_coverage_claimed": "0",
+            }),
+            [],
+        )
+        self.assertIn(
+            "soak evidence must not claim Dial9 workload coverage",
+            dial9_diagnostic_claim_issues({
+                "dial9_diagnostic_only": "1",
+                "dial9_coverage_claimed": "1",
+            }),
+        )
+        self.assertIn(
+            "Dial9 evidence is not marked diagnostic-only",
+            dial9_diagnostic_claim_issues({
+                "dial9_coverage_claimed": "0",
+            }),
+        )
+
+    def test_soak_workload_claims_are_exact_and_tcp_only(self):
+        run_uuid = "11111111-2222-3333-8444-555555555555"
+        claims = [
+            "evidence_kind\tsoak\n",
+            f"run_uuid\t{run_uuid}\n",
+            "dial9_claim\tunattributed-diagnostic\n",
+            "dial9_diagnostic_only\t1\n",
+            "dial9_workload_coverage\t0\n",
+            "tcp_workload_exercised\t1\n",
+            "udp_workload_exercised\t0\n",
+            "schema_complete\t1\n",
+        ]
+        self.assertEqual(
+            soak_workload_claim_issues(claims, expected_run_uuid=run_uuid), [])
+        self.assertTrue(soak_workload_claim_issues(claims[:-1]))
+        self.assertTrue(
+            soak_workload_claim_issues(
+                claims[:-1] + ["udp_workload_exercised\t1\n"]
+            )
+        )
+        self.assertTrue(soak_workload_claim_issues(list(reversed(claims))))
+
+    def test_crash_snapshots_distinguish_new_crashes_from_unavailable_evidence(self):
+        product_name = "org.ramaproxy.example.tproxy.dev.provider"
+        run_uuid = "11111111-2222-3333-8444-555555555555"
+        generation = "4" * 64
+        def snapshot(epoch, count, digest):
+            return [
+                "schema_version\t2\n",
+                f"run_uuid\t{run_uuid}\n",
+                f"provider_generation_identity\t{generation}\n",
+                "since_epoch_ms\t100000\n",
+                f"snapshot_epoch_ms\t{epoch}\n",
+                f"process_names\t{product_name}\n",
+                f"crash_count\t{count}\n",
+                f"crash_names_sha256\t{digest}\n",
+                "schema_complete\t1\n",
+            ]
+
+        clean = crash_snapshot_evidence(
+            snapshot(100001, 0, "a" * 64),
+            snapshot(110000, 0, "a" * 64),
+            run_start_epoch_ms="100000",
+            run_end_epoch_ms="109000",
+            expected_process_names=product_name,
+            expected_run_uuid=run_uuid,
+            expected_provider_generation_identity=generation,
+        )
+        self.assertEqual(clean["issues"], [])
+        self.assertEqual(clean["failures"], [])
+        display_name = list(snapshot(100001, 0, "a" * 64))
+        display_name[5] = "process_names\tRamaTransparentProxyExampleExtension\n"
+        wrong_filter = crash_snapshot_evidence(
+            display_name,
+            snapshot(110000, 0, "a" * 64),
+            run_start_epoch_ms="100000",
+            run_end_epoch_ms="109000",
+            expected_process_names=product_name,
+            expected_run_uuid=run_uuid,
+            expected_provider_generation_identity=generation,
+        )
+        self.assertIn(
+            "crash snapshots do not target the exact provider process",
+            wrong_filter["issues"],
+        )
+
+        wrong_generation = list(snapshot(110000, 0, "a" * 64))
+        wrong_generation[2] = f"provider_generation_identity\t{'9' * 64}\n"
+        substituted = crash_snapshot_evidence(
+            snapshot(100001, 0, "a" * 64),
+            wrong_generation,
+            run_start_epoch_ms="100000",
+            run_end_epoch_ms="109000",
+            expected_process_names=product_name,
+            expected_run_uuid=run_uuid,
+            expected_provider_generation_identity=generation,
+        )
+        self.assertIn(
+            "crash snapshots do not match the exact provider generation",
+            substituted["issues"],
+        )
+
+        crashed = crash_snapshot_evidence(
+            snapshot(100001, 0, "a" * 64),
+            snapshot(110000, 1, "b" * 64),
+            run_start_epoch_ms="100000",
+            run_end_epoch_ms="110000",
+            expected_process_names=product_name,
+            expected_run_uuid=run_uuid,
+            expected_provider_generation_identity=generation,
+        )
+        self.assertEqual(crashed["issues"], [])
+        self.assertEqual(
+            crashed["failures"],
+            ["1 provider crash report(s) were created during the soak"],
+        )
+
+        unavailable = crash_snapshot_evidence(
+            [], [], run_start_epoch_ms="100000", run_end_epoch_ms="110000",
+            expected_process_names=product_name,
+            expected_run_uuid=run_uuid,
+            expected_provider_generation_identity=generation,
+        )
+        self.assertTrue(unavailable["issues"])
+        self.assertEqual(unavailable["failures"], [])
+
+        gap = crash_snapshot_evidence(
+            snapshot(100001, 0, "a" * 64),
+            snapshot(110000, 0, "a" * 64),
+            run_start_epoch_ms="100000",
+            run_end_epoch_ms="110001",
+            expected_process_names=product_name,
+            expected_run_uuid=run_uuid,
+            expected_provider_generation_identity=generation,
+        )
+        self.assertIn(
+            "post-workload crash snapshot does not cover the exact run end",
+            gap["issues"],
+        )
+
+    def test_final_provider_observation_spans_crash_scan_generation(self):
+        identity = "a" * 64
+        meta = {
+            "provider_start_pid": "42",
+            "provider_start_identity": identity,
+            "run_end_epoch_ms": "200000",
+            "final_provider_observation_epoch_ms": "200000",
+            "final_provider_observation_pid": "42",
+            "final_provider_observation_identity": identity,
+            "final_provider_observation_ok": "1",
+            "crash_snapshot_epoch_ms": "205000",
+            "post_snapshot_provider_observation_epoch_ms": "206000",
+            "post_snapshot_provider_observation_pid": "42",
+            "post_snapshot_provider_observation_identity": identity,
+            "post_snapshot_provider_observation_ok": "1",
+        }
+        self.assertEqual(final_provider_observation_issues(meta), [])
+
+        changed = dict(
+            meta,
+            post_snapshot_provider_observation_identity="b" * 64,
+        )
+        self.assertIn(
+            "provider generation changed during the post-workload crash scan",
+            final_provider_observation_issues(changed),
+        )
+
+        mismatched_end = dict(meta, run_end_epoch_ms="200001")
+        self.assertIn(
+            "final provider observation does not define the exact run end",
+            final_provider_observation_issues(mismatched_end),
+        )
+
+    def test_post_boundary_forensics_require_order_and_exact_generation(self):
+        identity = "a" * 64
+        meta = {
+            "provider_start_pid": "42",
+            "provider_start_identity": identity,
+            "run_end_epoch_ms": "200000",
+            "final_mem_start_epoch_ms": "200100",
+            "final_mem_end_epoch_ms": "200200",
+            "final_mem_provider_pid": "42",
+            "final_mem_identity_before": identity,
+            "final_mem_identity_after": identity,
+            "leaks_start_epoch_ms": "200200",
+            "leaks_end_epoch_ms": "200300",
+            "leaks_provider_pid": "42",
+            "leaks_identity_before": identity,
+            "leaks_identity_after": identity,
+        }
+        self.assertEqual(post_boundary_forensic_issues(meta), [])
+
+        before_end = dict(meta, final_mem_start_epoch_ms="199999")
+        self.assertIn(
+            "final memory snapshot does not follow the declared run boundary",
+            post_boundary_forensic_issues(before_end),
+        )
+
+        overlapping = dict(meta, leaks_start_epoch_ms="200199")
+        self.assertIn(
+            "leaks snapshot does not follow the declared run boundary",
+            post_boundary_forensic_issues(overlapping),
+        )
+
+        changed = dict(meta, leaks_identity_after="b" * 64)
+        self.assertIn(
+            "leaks snapshot is not bound to the exact run generation",
+            post_boundary_forensic_issues(changed),
+        )
+
     def test_artifact_identity_requires_git_script_binary_and_signing_tuple(self):
         meta = {
             "repo_head": "1" * 40,
@@ -1094,8 +1708,13 @@ class SoakPressureLogTests(unittest.TestCase):
             "soak_script_sha256": "2" * 64,
             "stress_script_sha256": "3" * 64,
             "pressure_parser_sha256": "6" * 64,
+            "signed_evidence_helper_sha256": "7" * 64,
             "provider_binary_sha256": "4" * 64,
             "provider_executable": "/Applications/Proxy.app/Contents/MacOS/Proxy",
+            "provider_executable_name": "Proxy",
+            "crash_process_name": "Proxy",
+            "provider_start_identity": "8" * 64,
+            "common_provider_generation_identity": "8" * 64,
             "provider_bundle": "org.example.provider",
             "provider_codesign_identifier": "org.example.provider",
             "provider_codesign_cdhash": "5" * 40,
@@ -1112,6 +1731,86 @@ class SoakPressureLogTests(unittest.TestCase):
         self.assertIn(
             "provider binary SHA-256 identity is missing or invalid", issues
         )
+
+    @staticmethod
+    def valid_release_profile_meta():
+        profile = "".join(canonical_release_soak_profile_lines()).encode()
+        return {
+            "release_profile_sha256": hashlib.sha256(profile).hexdigest(),
+            "release_profile_eligible": "1",
+            "mode": "cap-validate",
+            "configured_skip_stress": "0",
+            "configured_skip_fanout": "0",
+            "configured_skip_idle": "0",
+            "configured_skip_sleep": "0",
+            "configured_allow_unsafe_load": "0",
+            "configured_live_hard_cap_enabled": "1",
+            "configured_stress_seconds": "180",
+            "configured_stress_concurrency": "24",
+            "configured_fanout_target": "40",
+            "configured_fanout_hold_seconds": "90",
+            "configured_idle_target": "40",
+            "configured_idle_hold_seconds": "150",
+            "configured_idle_tail_seconds": "135",
+            "configured_max_safe_flows": "300",
+            "configured_file_descriptor_limit": "16384",
+            "configured_no_spin_quiescence_seconds": "60",
+        }
+
+    def test_release_profile_rejects_weakened_or_skipped_release_claims(self):
+        lines = canonical_release_soak_profile_lines()
+        meta = self.valid_release_profile_meta()
+        self.assertEqual(release_soak_profile_issues(lines, meta), [])
+
+        weakened = dict(
+            meta, configured_stress_seconds="179", release_profile_eligible="1")
+        self.assertIn(
+            "release soak eligibility contradicts the captured configuration",
+            release_soak_profile_issues(lines, weakened),
+        )
+        skipped = dict(
+            meta, configured_skip_sleep="1", release_profile_eligible="1")
+        self.assertIn(
+            "release soak eligibility contradicts the captured configuration",
+            release_soak_profile_issues(lines, skipped),
+        )
+        diagnostic = dict(
+            meta, configured_skip_sleep="1", release_profile_eligible="0")
+        self.assertEqual(release_soak_profile_issues(lines, diagnostic), [])
+
+    def test_release_profile_mutation_is_rejected_even_with_updated_hash(self):
+        mutated = canonical_release_soak_profile_lines()
+        mutated[7] = "minimum_stress_seconds\t1\n"
+        meta = self.valid_release_profile_meta()
+        meta["release_profile_sha256"] = hashlib.sha256(
+            "".join(mutated).encode()).hexdigest()
+        self.assertIn(
+            "release soak profile is missing, mutated, or non-canonical",
+            release_soak_profile_issues(mutated, meta),
+        )
+
+    def test_sealed_producer_sources_are_hash_bound(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            paths = {}
+            meta = {}
+            for source_key, hash_key in (
+                ("soak_test", "soak_script_sha256"),
+                ("stress_traffic", "stress_script_sha256"),
+                ("soak_pressure_log", "pressure_parser_sha256"),
+                ("signed_run_evidence", "signed_evidence_helper_sha256"),
+            ):
+                path = root / source_key
+                content = (source_key + "\n").encode()
+                path.write_bytes(content)
+                paths[source_key] = path
+                meta[hash_key] = hashlib.sha256(content).hexdigest()
+            self.assertEqual(producer_source_issues(meta, paths), [])
+            paths["signed_run_evidence"].write_text("tampered\n")
+            self.assertIn(
+                "sealed signed evidence helper source hash does not match metadata",
+                producer_source_issues(meta, paths),
+            )
 
     def test_phase_markers_must_be_monotonic_and_nonoverlapping(self):
         phases, incomplete, _, _, issues = parse_phase_marker_lines(
@@ -2230,13 +2929,13 @@ class SoakPressureLogTests(unittest.TestCase):
     def test_leaks_output_requires_one_parseable_summary(self):
         self.assertEqual(
             parse_leaks_output("Process 42: 0 leaks for 0 total leaked bytes."),
-            {"leaks": 0, "bytes": 0},
+            {"process_pid": 42, "leaks": 0, "bytes": 0},
         )
         self.assertEqual(
             parse_leaks_output(
                 "Process 42: 1,234 leaks for 56,789 total leaked bytes."
             ),
-            {"leaks": 1234, "bytes": 56789},
+            {"process_pid": 42, "leaks": 1234, "bytes": 56789},
         )
         self.assertIsNone(parse_leaks_output("leaks could not examine process"))
         self.assertIsNone(
@@ -2247,11 +2946,19 @@ class SoakPressureLogTests(unittest.TestCase):
 
         self.assertEqual(
             leak_evidence(0, "Process 42: 0 leaks for 0 total leaked bytes."),
-            {"issues": [], "leaks": 0, "bytes": 0},
+            {"issues": [], "process_pid": 42, "leaks": 0, "bytes": 0},
         )
         self.assertEqual(
             leak_evidence(1, "Process 42: 2 leaks for 64 total leaked bytes."),
-            {"issues": [], "leaks": 2, "bytes": 64},
+            {"issues": [], "process_pid": 42, "leaks": 2, "bytes": 64},
+        )
+        self.assertIn(
+            "leaks output is not attributed to the exact provider PID",
+            leak_evidence(
+                0,
+                "Process 99: 0 leaks for 0 total leaked bytes.",
+                expected_pid="42",
+            )["issues"],
         )
         self.assertTrue(
             leak_evidence(0, "Process 42: 2 leaks for 64 total leaked bytes.")[
@@ -2382,9 +3089,9 @@ class SoakPressureLogTests(unittest.TestCase):
                 STRESS_SKIP_LIVENESS="1",
                 STRESS_LOG_DIR=log_dir,
                 STRESS_HTTP_TARGET="http://127.0.0.1:1",
-                STRESS_HTTPS_TARGET="http://127.0.0.1:1",
-                STRESS_LARGE_TARGET="http://127.0.0.1:1",
-                STRESS_POST_TARGET="http://127.0.0.1:1",
+                STRESS_HTTPS_TARGET="https://127.0.0.1:1",
+                STRESS_LARGE_TARGET="https://127.0.0.1:1/refused-large",
+                STRESS_POST_TARGET="https://127.0.0.1:1/refused-post",
             )
             result = subprocess.run(
                 ["bash", str(script)],
@@ -2441,19 +3148,48 @@ class SoakPressureLogTests(unittest.TestCase):
         thread.start()
         script = Path(__file__).with_name("stress_traffic.sh")
         try:
-            with tempfile.TemporaryDirectory() as log_dir:
+            with tempfile.TemporaryDirectory() as log_dir, tempfile.TemporaryDirectory() as tool_dir:
                 env = os.environ.copy()
-                target = f"http://127.0.0.1:{port}/truncated"
+                http_target = f"http://127.0.0.1:{port}/truncated"
+                https_target = f"https://127.0.0.1:{port}/truncated"
+                curl_wrapper = Path(tool_dir) / "test-curl"
+                curl_wrapper.write_text(
+                    "#!/usr/bin/env bash\n"
+                    "[[ \"$1\" == --disable && \"$2\" == --noproxy "
+                    "&& \"$3\" == '*' && \"$4\" == --proxy && -z \"$5\" ]] || exit 91\n"
+                    "[[ -z \"${HTTP_PROXY:-}${HTTPS_PROXY:-}${ALL_PROXY:-}"
+                    "${http_proxy:-}${https_proxy:-}${all_proxy:-}\" ]] || exit 92\n"
+                    "args=()\n"
+                    "for arg in \"$@\"; do\n"
+                    "  if [[ \"$arg\" == https://127.0.0.1:* ]]; then\n"
+                    "    arg=\"http://${arg#https://}\"\n"
+                    "  fi\n"
+                    "  args+=(\"$arg\")\n"
+                    "done\n"
+                    "exec /usr/bin/curl \"${args[@]}\"\n"
+                )
+                curl_wrapper.chmod(0o755)
+                curl_home = Path(tool_dir) / "home"
+                curl_home.mkdir()
+                (curl_home / ".curlrc").write_text(
+                    "--proxy http://127.0.0.1:1\n--request DELETE\n"
+                )
                 env.update(
                     STRESS_DURATION="1",
                     STRESS_CONCURRENCY="1",
                     STRESS_POST_BYTES="1",
                     STRESS_SKIP_LIVENESS="1",
                     STRESS_LOG_DIR=log_dir,
-                    STRESS_HTTP_TARGET=target,
-                    STRESS_HTTPS_TARGET=target,
-                    STRESS_LARGE_TARGET=target,
-                    STRESS_POST_TARGET=target,
+                    STRESS_HTTP_TARGET=http_target,
+                    STRESS_HTTPS_TARGET=https_target,
+                    STRESS_LARGE_TARGET=https_target,
+                    STRESS_POST_TARGET=https_target,
+                    STRESS_CURL_TOOL=str(curl_wrapper),
+                    STRESS_ALLOW_TEST_TOOLS="1",
+                    CURL_HOME=str(curl_home),
+                    HTTP_PROXY="http://127.0.0.1:1",
+                    HTTPS_PROXY="http://127.0.0.1:1",
+                    ALL_PROXY="http://127.0.0.1:1",
                 )
                 result = subprocess.run(
                     ["bash", str(script)],
@@ -2558,6 +3294,29 @@ class SoakPressureLogTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as artifact_dir:
             out = Path(artifact_dir)
+            source_contents = {
+                "soak_test": b"fixture soak source\n",
+                "stress_traffic": b"fixture stress source\n",
+                "soak_pressure_log": b"fixture parser source\n",
+                "signed_run_evidence": b"fixture signed helper source\n",
+            }
+            source_files = {
+                "soak_test": "source-soak_test.sh",
+                "stress_traffic": "source-stress_traffic.sh",
+                "soak_pressure_log": "source-soak_pressure_log.py",
+                "signed_run_evidence": "source-signed_run_evidence.py",
+            }
+            source_hashes = {
+                key: hashlib.sha256(content).hexdigest()
+                for key, content in source_contents.items()
+            }
+            for key, filename in source_files.items():
+                (out / filename).write_bytes(source_contents[key])
+            profile_lines = canonical_release_soak_profile_lines()
+            (out / "release-soak-profile.tsv").write_text("".join(profile_lines))
+            release_profile_hash = hashlib.sha256(
+                "".join(profile_lines).encode()).hexdigest()
+
             def write_meta(
                 leaks_rc,
                 provider_end_pid="10",
@@ -2571,9 +3330,28 @@ class SoakPressureLogTests(unittest.TestCase):
             ):
                 (out / "run-meta.tsv").write_text(
                     f"repo_head\t{'1' * 40}\nrepo_dirty\t0\n"
-                    f"soak_script_sha256\t{'2' * 64}\n"
-                    f"stress_script_sha256\t{'3' * 64}\n"
-                    f"pressure_parser_sha256\t{'4' * 64}\n"
+                    f"soak_script_sha256\t{source_hashes['soak_test']}\n"
+                    f"stress_script_sha256\t{source_hashes['stress_traffic']}\n"
+                    f"pressure_parser_sha256\t{source_hashes['soak_pressure_log']}\n"
+                    f"signed_evidence_helper_sha256\t{source_hashes['signed_run_evidence']}\n"
+                    f"release_profile_sha256\t{release_profile_hash}\n"
+                    "release_profile_eligible\t0\n"
+                    "configured_stress_seconds\t180\n"
+                    "configured_stress_concurrency\t24\n"
+                    "configured_fanout_target\t40\n"
+                    "configured_fanout_hold_seconds\t90\n"
+                    "configured_idle_target\t40\n"
+                    "configured_idle_hold_seconds\t150\n"
+                    "configured_idle_tail_seconds\t135\n"
+                    "configured_max_safe_flows\t300\n"
+                    "configured_file_descriptor_limit\t16384\n"
+                    "configured_skip_stress\t0\n"
+                    "configured_skip_fanout\t0\n"
+                    "configured_skip_idle\t0\n"
+                    "configured_skip_sleep\t0\n"
+                    "configured_allow_unsafe_load\t0\n"
+                    "configured_live_hard_cap_enabled\t0\n"
+                    "configured_no_spin_quiescence_seconds\t60\n"
                     "log_stream_started\t1\n"
                     "log_stream_alive_end\t1\n"
                     "log_stream_child_rc\t143\nlog_stream_joined\t1\n"
@@ -2585,18 +3363,104 @@ class SoakPressureLogTests(unittest.TestCase):
                     "holder_cleanup_ok\t1\n"
                     "provider_start_pid\t10\nprovider_start_time\tstart\n"
                     f"provider_start_identity\t{'4' * 64}\n"
+                    f"common_provider_generation_identity\t{'4' * 64}\n"
                     f"provider_end_pid\t{provider_end_pid}\nprovider_end_time\tstart\n"
                     f"provider_end_identity\t{'4' * 64}\n"
                     "provider_bundle\torg.example.provider\n"
                     "provider_executable\t/Applications/Provider\n"
+                    "provider_executable_name\tProvider\n"
+                    "crash_process_name\tProvider\n"
                     f"provider_binary_sha256\t{'5' * 64}\n"
                     "provider_codesign_identifier\torg.example.provider\n"
                     "provider_codesign_cdhash\tabcdef\n"
                     "provider_codesign_team\tTEAM123\n"
+                    "common_provider_captured\t1\n"
                     "log_stream_pid\t20\nprobe_monitor_pid\t30\n"
+                    "provider_generation_monitor_pid\t40\n"
+                    "provider_generation_initial_captured\t1\n"
+                    "provider_generation_monitor_alive_end\t1\n"
+                    "provider_generation_monitor_child_rc\t143\n"
+                    "provider_generation_monitor_joined\t1\n"
+                    "provider_generation_monitor_forced\t0\n"
+                    "provider_generation_sample_after_crash_ok\t1\n"
                     "udp_workload_exercised\t0\n"
+                    "dial9_claim\tunattributed-diagnostic\n"
+                    "dial9_diagnostic_only\t1\n"
+                    "dial9_coverage_claimed\t0\n"
                     "pressure_gauge_schema_version\t2\n"
+                    "run_uuid\t11111111-2222-3333-8444-555555555555\n"
+                    "run_start_epoch_ms\t80000\n"
+                    "run_end_epoch_ms\t173000\n"
+                    "final_provider_observation_epoch_ms\t173000\n"
+                    "final_provider_observation_pid\t10\n"
+                    f"final_provider_observation_identity\t{'4' * 64}\n"
+                    "final_provider_observation_ok\t1\n"
+                    "crash_snapshot_epoch_ms\t173500\n"
+                    "post_snapshot_provider_observation_epoch_ms\t174000\n"
+                    "post_snapshot_provider_observation_pid\t10\n"
+                    f"post_snapshot_provider_observation_identity\t{'4' * 64}\n"
+                    "post_snapshot_provider_observation_ok\t1\n"
+                    "cpu_sample_command_rc\t0\n"
+                    "cpu_sample_joined\t1\n"
+                    "cpu_sample_forced\t0\n"
+                    "cpu_sample_privilege\tsudo\n"
+                    "cpu_sample_ownership_normalized\t1\n"
+                    "baseline_mem_child_rc\t0\n"
+                    "baseline_mem_joined\t1\n"
+                    "baseline_mem_forced\t0\n"
+                    "baseline_mem_privilege\tsudo\n"
+                    "baseline_mem_sudo_rc\t0\n"
+                    "baseline_mem_ps_rc\t0\n"
+                    "baseline_mem_vmmap_rc\t0\n"
+                    "baseline_mem_start_epoch_ms\t92000\n"
+                    "baseline_mem_end_epoch_ms\t93000\n"
+                    "baseline_mem_provider_pid\t10\n"
+                    f"baseline_mem_identity_before\t{'4' * 64}\n"
+                    f"baseline_mem_identity_after\t{'4' * 64}\n"
+                    "final_mem_child_rc\t0\n"
+                    "final_mem_joined\t1\n"
+                    "final_mem_forced\t0\n"
+                    "final_mem_privilege\tsudo\n"
+                    "final_mem_sudo_rc\t0\n"
+                    "final_mem_ps_rc\t0\n"
+                    "final_mem_vmmap_rc\t0\n"
+                    "final_mem_heap_rc\t0\n"
+                    "final_mem_heap_filter_rc\t0\n"
+                    "final_mem_start_epoch_ms\t173100\n"
+                    "final_mem_end_epoch_ms\t173200\n"
+                    "final_mem_provider_pid\t10\n"
+                    f"final_mem_identity_before\t{'4' * 64}\n"
+                    f"final_mem_identity_after\t{'4' * 64}\n"
+                    "idle_cpu_required_samples\t10\n"
+                    "idle_cpu_interval_seconds\t1\n"
+                    "idle_cpu_hot_percent\t90.0\n"
+                    "idle_cpu_hot_streak\t5\n"
+                    "idle_cpu_warm_percent\t80.0\n"
+                    "idle_cpu_max_warm_samples\t4\n"
+                    "idle_cpu_regression_allowance_percent\t5.0\n"
+                    "idle_cpu_absolute_mean_ceiling_percent\t10.0\n"
+                    "idle_cpu_baseline_probe_monitor_active\t1\n"
+                    "idle_cpu_post_probe_monitor_active\t1\n"
+                    "idle_cpu_post_quiescence_seconds\t60\n"
+                    "idle_cpu_baseline_top_command_rc\t0\n"
+                    "idle_cpu_baseline_top_joined\t1\n"
+                    "idle_cpu_baseline_top_forced\t0\n"
+                    "idle_cpu_baseline_top_privilege\tsudo\n"
+                    f"idle_cpu_baseline_identity_before\t{'4' * 64}\n"
+                    f"idle_cpu_baseline_identity_after\t{'4' * 64}\n"
+                    "idle_cpu_post_top_command_rc\t0\n"
+                    "idle_cpu_post_top_joined\t1\n"
+                    "idle_cpu_post_top_forced\t0\n"
+                    "idle_cpu_post_top_privilege\tsudo\n"
+                    f"idle_cpu_post_identity_before\t{'4' * 64}\n"
+                    f"idle_cpu_post_identity_after\t{'4' * 64}\n"
                     f"leaks_command_rc\t{leaks_rc}\n"
+                    "leaks_joined\t1\nleaks_forced\t0\nleaks_privilege\tsudo\n"
+                    "leaks_start_epoch_ms\t173200\n"
+                    "leaks_end_epoch_ms\t173300\n"
+                    "leaks_provider_pid\t10\n"
+                    f"leaks_identity_before\t{'4' * 64}\n"
+                    f"leaks_identity_after\t{'4' * 64}\n"
                     f"mode\t{mode}\n"
                     f"softcap\t{softcap}\nhardcap\t{hardcap}\n"
                     f"baseline_registered\t{baseline_registered}\n"
@@ -2606,17 +3470,23 @@ class SoakPressureLogTests(unittest.TestCase):
                     "dial9_collection_ok\t1\n"
                     "dial9_current_segment_count\t1\n"
                     "dial9_required_pair_count\t1\n"
+                    "dial9_collection_attempted\t0\n"
                     "ceiling_found\t1\nceiling_recovered\t1\n"
                     f"ceiling_outage_start\t{outage_start}\n"
                     f"ceiling_outage_end\t{outage_end}\n"
                 )
 
             write_meta(0)
+            self.write_memory_diagnostic_artifacts(out, artifact_pid=10)
             (out / "phases.tsv").write_text(
+                "idle-baseline\tstart\t80.000000\t1970-01-01T00:01:20Z\n"
+                "idle-baseline\tend\t91.000000\t1970-01-01T00:01:31Z\n"
                 "baseline\tstart\t100.000000\t1970-01-01T00:01:40Z\n"
                 "baseline\tend\t101.000000\t1970-01-01T00:01:41Z\n"
                 "ceiling\tstart\t101.000000\t1970-01-01T00:01:41Z\n"
                 "ceiling\tend\t102.000000\t1970-01-01T00:01:42Z\n"
+                "no-spin\tstart\t102.000000\t1970-01-01T00:01:42Z\n"
+                "no-spin\tend\t173.000000\t1970-01-01T00:02:53Z\n"
             )
             rows = [
                 {
@@ -2655,6 +3525,11 @@ class SoakPressureLogTests(unittest.TestCase):
             (out / "probe-timeline.txt").write_text(
                 "100.200000\t100.300000\t1970-01-01T00:01:40Z\t0\t200\n"
                 "101.200000\t101.300000\t1970-01-01T00:01:41Z\t0\t200\n"
+                "110.000000\t110.100000\t1970-01-01T00:01:50Z\t0\t200\n"
+                "125.000000\t125.100000\t1970-01-01T00:02:05Z\t0\t200\n"
+                "140.000000\t140.100000\t1970-01-01T00:02:20Z\t0\t200\n"
+                "155.000000\t155.100000\t1970-01-01T00:02:35Z\t0\t200\n"
+                "170.000000\t170.100000\t1970-01-01T00:02:50Z\t0\t200\n"
             )
             (out / "ceiling-probes.tsv").write_text(
                 "101.100000\t101.110000\t28\t000\t1\t101.050000\n"
@@ -2663,6 +3538,43 @@ class SoakPressureLogTests(unittest.TestCase):
             )
             (out / "leaks.txt").write_text(
                 "Process 10: 0 leaks for 0 total leaked bytes.\n"
+            )
+            (out / "idle-cpu-baseline.tsv").write_text("".join(
+                f"{index}\t{80 + index:.6f}\t10\t{'4' * 64}\t1.0\n"
+                for index in range(1, 11)
+            ))
+            (out / "idle-cpu-post.tsv").write_text("".join(
+                f"{index}\t{162 + index:.6f}\t10\t{'4' * 64}\t1.0\n"
+                for index in range(1, 11)
+            ))
+            (out / "workload-claims.tsv").write_text(
+                "evidence_kind\tsoak\n"
+                "run_uuid\t11111111-2222-3333-8444-555555555555\n"
+                "dial9_claim\tunattributed-diagnostic\n"
+                "dial9_diagnostic_only\t1\n"
+                "dial9_workload_coverage\t0\n"
+                "tcp_workload_exercised\t1\n"
+                "udp_workload_exercised\t0\n"
+                "schema_complete\t1\n"
+            )
+            (out / "provider-generation-samples.tsv").write_text(
+                "fixture provider generation proof\n"
+            )
+            crash_snapshot = (
+                "schema_version\t2\n"
+                "run_uuid\t11111111-2222-3333-8444-555555555555\n"
+                f"provider_generation_identity\t{'4' * 64}\n"
+                "since_epoch_ms\t80000\n"
+                "snapshot_epoch_ms\t{}\n"
+                "process_names\tProvider\n"
+                "crash_count\t0\n"
+                f"crash_names_sha256\t{'a' * 64}\n"
+                "schema_complete\t1\n"
+            )
+            (out / "crashes-before.tsv").write_text(crash_snapshot.format(80001))
+            (out / "crashes").mkdir()
+            (out / "crashes" / "crash-snapshot.tsv").write_text(
+                crash_snapshot.format(173500)
             )
             trace_content = b"fixture-current-dial9-trace"
             (out / "dial9-traces").mkdir()
@@ -2697,7 +3609,7 @@ class SoakPressureLogTests(unittest.TestCase):
                     timeout=10,
                 )
                 self.assertEqual(result.returncode, 0, result.stdout)
-                status = (out / "evidence-status.tsv").read_text().splitlines(True)
+                status = (out / "soak-verdict.tsv").read_text().splitlines(True)
                 return parse_evidence_status_lines(status), result.stdout
 
             status, output = run_extractor()
@@ -2868,6 +3780,333 @@ class SoakPressureLogTests(unittest.TestCase):
                     self.assertEqual(status, 2, output)
                     self.assertIn(expected, output)
                     artifact_path.write_text("")
+
+    def test_soak_exit_trap_seals_and_verifies_before_tar(self):
+        shell = Path(__file__).with_name("soak_test.sh").read_text()
+        finalizer = shell.split("finalize_and_exit() {", 1)[1].split(
+            "\n}\n\n# shellcheck disable=SC2329  # invoked through trap", 1
+        )[0]
+        ordering = [
+            finalizer.index("cleanup"),
+            finalizer.index("capture_crashes_after"),
+            finalizer.index('evidence_tool seal "$OUT"'),
+            finalizer.index('evidence_tool verify "$OUT"'),
+            finalizer.index("package_sealed_evidence"),
+        ]
+        self.assertEqual(ordering, sorted(ordering))
+        package = shell.split("package_sealed_evidence() {", 1)[1].split(
+            "\n}\n\n# shellcheck disable=SC2329  # reached through the EXIT finalizer",
+            1,
+        )[0]
+        self.assertLess(package.index('/usr/bin/tar -czf "$temporary"'),
+                        package.index('mv "$temporary" "$tarball"'))
+        self.assertIn('[[ ! -e "$OUT.tgz" ]]', shell)
+        self.assertIn(
+            "sealed evidence packaging failed; no canonical tarball was published",
+            finalizer,
+        )
+        failure = finalizer.index(
+            "sealed evidence packaging failed; no canonical tarball was published")
+        self.assertLess(failure, finalizer.index('write_common_status "$final_exit"', failure))
+        self.assertLess(
+            finalizer.index('write_common_status "$final_exit"', failure),
+            finalizer.index(
+                'evidence_tool seal "$OUT" --actual-exit-code "$final_exit"',
+                failure,
+            ),
+        )
+        self.assertIn("trap handle_exit EXIT", shell)
+        self.assertIn('finalize_and_exit "$exit_code"', shell)
+        self.assertNotIn('tar -czf "$TARBALL"', shell)
+
+    def test_sealed_evidence_packaging_publishes_only_complete_archive(self):
+        shell = Path(__file__).with_name("soak_test.sh").read_text()
+        body = shell.split("package_sealed_evidence() {", 1)[1].split(
+            "\n}\n\n# shellcheck disable=SC2329  # reached through the EXIT finalizer",
+            1,
+        )[0]
+        function = "package_sealed_evidence() {" + body + "\n}\n"
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "evidence"
+            out.mkdir()
+            (out / "evidence-manifest.tsv").write_text("sealed\n")
+            success = subprocess.run(
+                [
+                    "bash", "-c",
+                    "set -e\nOUT=$1\n" + function
+                    + "package_sealed_evidence\n"
+                    + "test -f \"$OUT.tgz\"\n"
+                    + "test -z \"$(find \"$(dirname \"$OUT\")\" -name "
+                      "\"$(basename \"$OUT\").tgz.tmp.*\" -print -quit)\"\n",
+                    "packaging-test", str(out),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self.assertEqual(success.returncode, 0, success.stdout)
+
+            (out.with_suffix(".tgz")).unlink()
+            collision = subprocess.run(
+                [
+                    "bash", "-c",
+                    "set -e\nOUT=$1\n" + function
+                    + "touch \"$OUT.tgz.tmp.$$\"\n"
+                    + "if package_sealed_evidence; then exit 9; fi\n"
+                    + "test ! -e \"$OUT.tgz\"\n",
+                    "packaging-test", str(out),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self.assertEqual(collision.returncode, 0, collision.stdout)
+
+    def test_provider_selection_rejects_multiple_exact_executables(self):
+        shell = Path(__file__).with_name("soak_test.sh").read_text()
+        body = shell.split("select_unique_provider_process() {", 1)[1].split(
+            "\n}\n\ncapture_idle_cpu_series()", 1)[0]
+        selector = "select_unique_provider_process() {" + body + "\n}\n"
+        common = (
+            "PROVIDER_BUNDLE=org.example.provider\n"
+            "pgrep() { printf '11\\n12\\n'; }\n"
+        )
+        duplicate = subprocess.run(
+            [
+                "bash", "-c", common
+                + "provider_executable_for_pid() { printf '/Library/SystemExtensions/%s/org.example.provider.systemextension/Contents/MacOS/Provider\\n' \"$1\"; }\n"
+                + selector
+                + "if select_unique_provider_process '/org.example.provider.systemextension/Contents/MacOS/Provider'; then exit 9; fi\n",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self.assertEqual(duplicate.returncode, 0, duplicate.stdout)
+
+        unique = subprocess.run(
+            [
+                "bash", "-c", common
+                + "provider_executable_for_pid() { if test \"$1\" = 11; then printf '/wrong/Provider\\n'; else printf '/Library/SystemExtensions/uuid/org.example.provider.systemextension/Contents/MacOS/Provider\\n'; fi; }\n"
+                + selector
+                + "test \"$(select_unique_provider_process '/org.example.provider.systemextension/Contents/MacOS/Provider')\" = $'12\\t/Library/SystemExtensions/uuid/org.example.provider.systemextension/Contents/MacOS/Provider'\n",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self.assertEqual(unique.returncode, 0, unique.stdout)
+        provider_start = shell.split("# ── Liveness", 1)[1].split(
+            "# ── Start live log capture", 1)[0]
+        self.assertNotIn('PID="$(pgrep', provider_start)
+
+    def test_unreaped_writer_leaves_truthful_unsealed_directory(self):
+        shell = Path(__file__).with_name("soak_test.sh").read_text()
+
+        def extract(name, following):
+            return name + "() {" + shell.split(name + "() {", 1)[1].split(
+                following, 1)[0] + "\n}\n"
+
+        write_status = extract(
+            "write_incomplete_status", "\n}\n\n# Reject ambiguous")
+        cleanup = extract(
+            "cleanup", "\n}\n\n# Bash 3.2 on macOS has no timed `wait`")
+        finalizer = extract(
+            "finalize_and_exit",
+            "\n}\n\n# shellcheck disable=SC2329  # invoked through trap",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory) / "evidence"
+            out.mkdir()
+            (out / "soak-verdict.tsv").write_text(
+                "complete\t1\npassed\t1\nexit_code\t0\nschema_complete\t1\n")
+            harness = (
+                "OUT=$1\nACTIVE_CHILD_PID=999\nACTIVE_CHILD_PRIVILEGE=direct\n"
+                "PROBE_MON_PID=\nGENERATION_MON_PID=\nWAKE_DL_PID=\n"
+                "CPU_SAMPLE_PID=\nCPU_SERIES_PID=\n"
+                "SUDO_KEEPALIVE_PID=\nLOG_STREAM_PID=\nLOG_STREAM_STARTED=0\n"
+                "CLEANUP_STARTED=0\nFINAL_CLEANUP_OK=1\n"
+                "HOLDER_CLEANUP_LAST_UNREAPED=0\nARTIFACTS_INITIALIZED=1\n"
+                "FINALIZATION_STARTED=0\n"
+                "bounded_stop_and_join() { BOUNDED_CHILD_REAPED=0; }\n"
+                "kill_holders() { HOLDER_CLEANUP_LAST_UNREAPED=0; }\n"
+                "warn() { :; }\n"
+                + write_status + cleanup + finalizer
+                + "finalize_and_exit 0\n"
+            )
+            result = subprocess.run(
+                ["bash", "-c", harness, "cleanup-test", str(out)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout)
+            verdict = (out / "soak-verdict.tsv").read_text()
+            self.assertIn("complete\t0\npassed\t0\nexit_code\t2\n", verdict)
+            self.assertIn("cleanup could not reap every artifact writer", verdict)
+            self.assertFalse((out / "evidence-manifest.tsv").exists())
+            self.assertFalse(out.with_suffix(".tgz").exists())
+
+    def test_soak_shell_bounds_privileged_diagnostics_and_freezes_run_end(self):
+        shell = Path(__file__).with_name("soak_test.sh").read_text()
+        for source_name in (
+            "source-soak_test.sh", "source-stress_traffic.sh",
+            "source-soak_pressure_log.py", "source-signed_run_evidence.py",
+        ):
+            self.assertIn(source_name, shell)
+        self.assertIn("signed_evidence_helper_sha256\\t%s", shell)
+        self.assertIn('CRASH_PROCESS="$PROVIDER_EXECUTABLE_NAME"', shell)
+        self.assertNotIn(
+            'CRASH_PROCESS="RamaTransparentProxyExampleExtension"', shell
+        )
+        for line in canonical_release_soak_profile_lines():
+            key, value = line.rstrip("\n").split("\t")
+            self.assertIn(f"printf '{key}\\t{value}\\n'", shell)
+        self.assertIn(
+            'sudo -n /usr/bin/sample "$PID" 5 -file "$OUT/idle-cpu.sample.txt"',
+            shell,
+        )
+        self.assertNotIn('ps -o pid= -o %cpu=', shell)
+        self.assertIn(
+            'sudo -n /usr/bin/top -l 11 -s 1 -pid "$PID" -stats pid,cpu -n 1',
+            shell,
+        )
+        no_spin = shell.split("phase_mark no-spin start", 1)[1].split(
+            "phase_mark no-spin end", 1)[0]
+        self.assertLess(
+            no_spin.index('sleep "$CEILING_NO_SPIN_QUIESCE_SECONDS"'),
+            no_spin.index('capture_idle_cpu_series "$OUT/idle-cpu-post.tsv" post'),
+        )
+        self.assertIn('bounded_wait_and_join "$CPU_SAMPLE_PID" 8 sudo', shell)
+        self.assertIn('cpu_sample_privilege\\t%s', shell)
+        baseline_memory = shell.split(
+            "printf '=== baseline provider pid=%s @ %s ===", 1
+        )[1].split(
+            "phase_mark baseline end", 1
+        )[0]
+        self.assertIn(
+            'bounded_wait_and_join "$ACTIVE_CHILD_PID" 30 sudo', baseline_memory
+        )
+        self.assertIn('baseline_mem_forced\\t%s', baseline_memory)
+        self.assertIn('baseline_mem_privilege\\t%s', baseline_memory)
+        self.assertIn('baseline_mem_ps_rc\\t%s', baseline_memory)
+        self.assertIn('baseline_mem_vmmap_rc\\t%s', baseline_memory)
+        self.assertNotIn('vmmap --summary "$PID" 2>/dev/null ||', baseline_memory)
+        self.assertIn(
+            'if [[ "$BASELINE_MEM_JOINED" != 1 ]]', baseline_memory
+        )
+        final_memory = shell.split(
+            'FINAL_MEM_STATUS="$OUT/final-mem-command-status.tsv"', 1
+        )[1].split("# ── leaks pass", 1)[0]
+        self.assertIn(
+            'bounded_wait_and_join "$ACTIVE_CHILD_PID" 30 sudo', final_memory
+        )
+        self.assertIn('final_mem_forced\\t%s', final_memory)
+        self.assertIn('final_mem_privilege\\t%s', final_memory)
+        for command in ("ps", "vmmap", "heap", "heap_filter"):
+            self.assertIn(f'final_mem_{command}_rc\\t%s', final_memory)
+        self.assertNotIn(
+            'vmmap --summary "$SNAP_PID" 2>/dev/null ||', final_memory
+        )
+        post_forensics = shell.split(
+            "capture_post_boundary_forensics() {", 1
+        )[1].split("\n}\nprintf 'holder_cleanup_ok", 1)[0]
+        self.assertNotIn('pgrep -f "$PROVIDER_BUNDLE"', post_forensics)
+        self.assertIn('SNAP_PID="$PID"', post_forensics)
+        for key in (
+            "final_mem_start_epoch_ms", "final_mem_end_epoch_ms",
+            "final_mem_provider_pid", "final_mem_identity_before",
+            "final_mem_identity_after", "leaks_start_epoch_ms",
+            "leaks_end_epoch_ms", "leaks_provider_pid",
+            "leaks_identity_before", "leaks_identity_after",
+        ):
+            self.assertIn(f"{key}\\t%s", post_forensics)
+        dial9 = shell.split('sudo -n "$DIAL9_EVIDENCE_BIN" collect', 1)[1].split(
+            "# ── Stop log capture", 1)[0]
+        self.assertIn('bounded_wait_and_join "$ACTIVE_CHILD_PID" 145 sudo', dial9)
+        self.assertIn('dial9_collect_forced\\t%s', dial9)
+        self.assertLess(
+            shell.index('bounded_wait_and_join "$ACTIVE_CHILD_PID" 145 sudo'),
+            shell.index("phase_mark no-spin start"),
+        )
+        self.assertLess(
+            shell.index("freeze_run_end_provider_observation", shell.index("phase_mark no-spin end")),
+            shell.index("# ── Stop log capture"),
+        )
+        freeze_call = shell.index(
+            "freeze_run_end_provider_observation", shell.index("phase_mark no-spin end")
+        )
+        monitor_join = shell.index(
+            'if [[ "$PROBE_MONITOR_JOINED" != 1 || "$LOG_STREAM_JOINED" != 1 ]]'
+        )
+        forensic_call = shell.index("\ncapture_post_boundary_forensics\n", monitor_join)
+        crash_call = shell.index("\ncapture_crashes_after\n", forensic_call)
+        self.assertLess(freeze_call, monitor_join)
+        self.assertLess(monitor_join, forensic_call)
+        self.assertLess(forensic_call, crash_call)
+        generation_output = shell.index(
+            '--output "$OUT/provider-generation-samples.tsv"'
+        )
+        run_start = shell.index(
+            'RUN_START_EPOCH_MS="$(epoch_ms_now)"', generation_output
+        )
+        generation_start = shell.index(
+            "\nstart_provider_generation_monitor\n", run_start
+        )
+        crash_before = shell.index(
+            'evidence_tool snapshot-crashes --since-epoch-ms "$RUN_START_EPOCH_MS"',
+            generation_start,
+        )
+        self.assertLess(generation_output, run_start)
+        self.assertLess(run_start, generation_start)
+        self.assertLess(generation_start, crash_before)
+        generation_stop = shell.index(
+            'bounded_stop_and_join "$GENERATION_MON_PID" 5 direct', crash_call
+        )
+        self.assertLess(crash_call, generation_stop)
+        crash = shell.split("capture_crashes_after() {", 1)[1].split(
+            "\n}\n\n# ── Pretty output", 1)[0]
+        self.assertIn(
+            '--append "$OUT/provider-generation-samples.tsv"', crash
+        )
+        self.assertIn('--run-uuid "$RUN_UUID"', crash)
+        self.assertIn(
+            '--provider-generation-identity "$COMMON_PROVIDER_GENERATION_IDENTITY"',
+            crash,
+        )
+        self.assertLess(
+            crash.index('evidence_tool snapshot-crashes'),
+            crash.index('--append "$OUT/provider-generation-samples.tsv"'),
+        )
+        generation_monitor = shell.split(
+            "start_provider_generation_monitor() {", 1
+        )[1].split("\n}\n\n# Count live", 1)[0]
+        self.assertIn('--cadence-ms 2000 --max-gap-ms 5000', generation_monitor)
+        self.assertIn('sleep 2', generation_monitor)
+        stress = shell.split('bash "$STRESS_SH"', 1)[1].split(
+            "if [[ \"$SKIP_FANOUT\"", 1)[0]
+        self.assertIn(
+            'bounded_wait_and_join "$ACTIVE_CHILD_PID" "$((STRESS_SECONDS + 120))" direct',
+            stress,
+        )
+        self.assertNotIn('wait "$ACTIVE_CHILD_PID"', stress)
+        self.assertIn('post_snapshot_provider_observation_identity\\t%s', crash)
+        freeze = shell.split("freeze_run_end_provider_observation() {", 1)[1].split(
+            "\n}\n\ncapture_crashes_after()", 1)[0]
+        self.assertIn('RUN_END_EPOCH_MS="$observation_epoch"', freeze)
+        self.assertLess(
+            freeze.index('observation_epoch="$(epoch_ms_now)"'),
+            freeze.index('process_identity "$observed_pid"'),
+        )
+        self.assertLess(
+            crash.index("freeze_run_end_provider_observation"),
+            crash.index("evidence_tool snapshot-crashes"),
+        )
+        status = shell.split("write_common_status() {", 1)[1].split(
+            "\n}\n\n# shellcheck disable=SC2329  # reached through EXIT/INT/TERM handlers",
+            1,
+        )[0]
+        self.assertNotIn("epoch_ms_now", status)
 
 
 if __name__ == "__main__":

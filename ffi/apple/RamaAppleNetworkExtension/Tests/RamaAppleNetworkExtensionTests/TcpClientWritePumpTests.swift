@@ -83,7 +83,11 @@ final class MockTcpFlow: TcpFlowLike, @unchecked Sendable {
     func write(_ data: Data, withCompletionHandler: @escaping @Sendable (Error?) -> Void) {
         lock.lock()
         let idx = _writeCount
-        _writes.append(data)
+        let recorded = data.withUnsafeBytes { bytes in
+            guard !bytes.isEmpty else { return Data() }
+            return Data(bytes: bytes.baseAddress!, count: bytes.count)
+        }
+        _writes.append(recorded)
         _writeCount += 1
         let capture = _captureWriteCompletions
         lock.unlock()
@@ -246,6 +250,30 @@ private final class NSLock_Counter {
 }
 
 final class TcpClientWritePumpTests: XCTestCase {
+    private func makeNoCopyData(
+        _ bytes: [UInt8]
+    ) -> (data: Data, pointer: UnsafeMutableRawPointer, released: TestValue<Bool>) {
+        // Avoid Foundation's inline representation: these tests need an
+        // externally mutable backing allocation to catch an accidental copy.
+        let byteCount = max(96, bytes.count)
+        let pointer = UnsafeMutableRawPointer.allocate(
+            byteCount: byteCount,
+            alignment: MemoryLayout<UInt8>.alignment)
+        pointer.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
+        bytes.withUnsafeBytes { source in
+            pointer.copyMemory(from: source.baseAddress!, byteCount: bytes.count)
+        }
+        let released = TestValue(false)
+        let data = Data(
+            bytesNoCopy: pointer,
+            count: byteCount,
+            deallocator: .custom { pointer, _ in
+                released.set(true)
+                pointer.deallocate()
+            })
+        return (data, pointer, released)
+    }
+
     private func makeQueue() -> DispatchQueue {
         DispatchQueue(label: "rama.tproxy.test.writer", qos: .utility)
     }
@@ -1048,5 +1076,138 @@ final class TcpClientWritePumpTests: XCTestCase {
         queue.async(execute: cleanup)
         releaseQueue.signal()
         queue.sync {}
+    }
+
+    func testWriteRetryRetainsNoCopyRootAndObservesSameBacking() {
+        let queue = makeQueue()
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 256, maxItems: 8, tcpWaiterMaxBytes: 128,
+                udpPressureReserveBytes: 0, udpPressureReserveItems: 0))
+        let writes = TestValue<[UInt8]>([])
+        let completions = TestValue<[@Sendable (Error?) -> Void]>([])
+        let retries = TestValue<[@Sendable () -> Void]>([])
+        let core = TcpWritePumpCore(
+            queue: queue,
+            onDrained: {},
+            doWrite: { data, completion in
+                writes.update { $0.append(data.first!) }
+                completions.update { $0.append(completion) }
+            },
+            logHwm: { _ in },
+            retryScheduler: { _, work in retries.update { $0.append(work) } },
+            writerMemoryBudget: budget,
+            writePolicy: TcpWritePumpPolicy(maxPendingBytes: 128))
+
+        var source = makeNoCopyData([0x11, 0x22, 0x33, 0x44])
+        var data: Data? = source.data
+        XCTAssertEqual(core.enqueue(data!), .accepted)
+        data = nil
+        source.data = Data()
+        queue.sync {}
+        XCTAssertEqual(budget.snapshot().retainedBytes, 96)
+        XCTAssertFalse(source.released.get())
+
+        var first = completions.update { $0.removeFirst() }
+        first(transientENOBUFS())
+        first = { _ in }
+        queue.sync {}
+        XCTAssertEqual(retries.get().count, 1)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 96)
+
+        source.pointer.storeBytes(of: UInt8(0xA5), as: UInt8.self)
+        var retry = retries.update { $0.removeFirst() }
+        retry()
+        retry = {}
+        queue.sync {}
+        XCTAssertEqual(writes.get(), [0x11, 0xA5], "retry must view the same backing allocation")
+
+        var second = completions.update { $0.removeFirst() }
+        second(nil)
+        second = { _ in }
+        queue.sync {}
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        withExtendedLifetime(core) {}
+    }
+
+    func testWriteCancelKeepsNoCopyRootUntilInflightCompletion() {
+        let queue = makeQueue()
+        let budget = WriterMemoryBudget()
+        let completion = TestValue<(@Sendable (Error?) -> Void)?>(nil)
+        let inFlight = TestValue<Data?>(nil)
+        let core = TcpWritePumpCore(
+            queue: queue,
+            onDrained: {},
+            doWrite: { data, callback in
+                inFlight.set(data)
+                completion.set(callback)
+            },
+            logHwm: { _ in },
+            writerMemoryBudget: budget)
+
+        var source = makeNoCopyData([0x41, 0x42])
+        var data: Data? = source.data
+        XCTAssertEqual(core.enqueue(data!), .accepted)
+        data = nil
+        source.data = Data()
+        queue.sync {}
+        let cleanup = core.prepareCancel()
+        queue.sync(execute: cleanup)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 96)
+        XCTAssertFalse(source.released.get(), "cancel cannot refund an in-flight transport owner")
+        source.pointer.storeBytes(of: UInt8(0xA4), as: UInt8.self)
+        XCTAssertEqual(inFlight.get()?.first, 0xA4)
+        inFlight.set(nil)
+
+        var callback = completion.update { value -> (@Sendable (Error?) -> Void)? in
+            let result = value
+            value = nil
+            return result
+        }
+        callback?(nil)
+        callback = nil
+        queue.sync {}
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        withExtendedLifetime(core) {}
+    }
+
+    func testWriterDetachKeepsNoCopyRootUntilInflightCompletion() {
+        let queue = makeQueue()
+        let budget = WriterMemoryBudget()
+        let completion = TestValue<(@Sendable (Error?) -> Void)?>(nil)
+        let inFlight = TestValue<Data?>(nil)
+        let core = TcpWritePumpCore(
+            queue: queue,
+            onDrained: {},
+            doWrite: { data, callback in
+                inFlight.set(data)
+                completion.set(callback)
+            },
+            logHwm: { _ in },
+            writerMemoryBudget: budget)
+
+        var source = makeNoCopyData([0x51, 0x52, 0x53])
+        var data: Data? = source.data
+        XCTAssertEqual(core.enqueue(data!), .accepted)
+        data = nil
+        source.data = Data()
+        queue.sync {}
+        core.retireAdmission()
+        XCTAssertEqual(budget.snapshot().retainedBytes, 96)
+        XCTAssertFalse(source.released.get(), "detach retires admission, not physical in-flight data")
+        source.pointer.storeBytes(of: UInt8(0xA6), as: UInt8.self)
+        XCTAssertEqual(inFlight.get()?.first, 0xA6)
+        inFlight.set(nil)
+
+        var callback = completion.update { value -> (@Sendable (Error?) -> Void)? in
+            let result = value
+            value = nil
+            return result
+        }
+        callback?(nil)
+        callback = nil
+        queue.sync {}
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        withExtendedLifetime(core) {}
     }
 }

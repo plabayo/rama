@@ -9,6 +9,12 @@ import NetworkExtension
 /// demo handler). `@Sendable`-free: the pump confines calls to its queue.
 protocol TcpClientBytesSink: AnyObject {
     func onClientBytes(_ data: Data) -> RamaTcpDeliverStatusBridge
+    func onClientPayload(_ payload: TcpPayloadSlice) -> RamaTcpDeliverStatusBridge
+}
+extension TcpClientBytesSink {
+    func onClientPayload(_ payload: TcpPayloadSlice) -> RamaTcpDeliverStatusBridge {
+        onClientBytes(payload.copiedData)
+    }
 }
 extension RamaTcpSessionHandle: TcpClientBytesSink {}
 
@@ -38,15 +44,14 @@ final class TcpClientReadPump: @unchecked Sendable {
     /// not take ownership on a `.paused` return, so dropping `data` here
     /// would punch a hole in the byte stream and the downstream TLS layer
     /// would surface "bad record MAC" once the gap reaches the decryptor.
-    private var pendingData: Data?
-    private var pendingReservation: WriterMemoryGrant?
+    private var pendingPayload: TcpPayloadCursor?
     private let writerMemoryBudget: WriterMemoryBudget
     /// Set by `cancelForPromote(onCarryover:)` to route in-flight
     /// `readData` results to a `TcpDirectForwarder` instead of dropping them.
     /// The separate error channel keeps a hard kernel-read failure distinct
     /// from clean EOF across the cutover. Fires at most once, then clears.
     private var onPromoteCarryover: (@Sendable (
-        _ payload: Data?, _ error: Error?, _ reservation: WriterMemoryGrant?
+        _ payload: TcpPayloadCursor?, _ error: Error?
     ) -> Void)?
     /// A clean EOF already consumed by the ordinary Rust-bound path. Promotion
     /// may still be valid while the server half remains open, so retain this
@@ -72,8 +77,6 @@ final class TcpClientReadPump: @unchecked Sendable {
         self.writerMemoryBudget = writerMemoryBudget
         queue.setSpecific(key: queueKey, value: 1)
     }
-
-    deinit { pendingReservation?.release() }
 
     /// Normalize callers onto the pump queue without paying another dispatch
     /// when the owning flow state machine is already executing there.
@@ -133,9 +136,12 @@ final class TcpClientReadPump: @unchecked Sendable {
     ) {
         runOnQueue {
             self.cancelForPromoteLocked(
-                onCarryover: { payload, error, reservation in
-                    reservation?.release()
-                    if let error { onError(error) } else { onCarryover(payload) }
+                onCarryover: { payload, error in
+                    if let error {
+                        onError(error)
+                    } else {
+                        onCarryover(payload?.copiedRemainder)
+                    }
                 },
                 onComplete: onComplete)
         }
@@ -144,18 +150,17 @@ final class TcpClientReadPump: @unchecked Sendable {
     /// Production cutover variant which transfers an existing replay-buffer
     /// charge into the direct forwarder instead of release/re-reserve racing.
     func cancelForPromoteWithReservations(
-        onCarryover: @escaping @Sendable (Data?, WriterMemoryGrant?) -> Void,
+        onCarryover: @escaping @Sendable (TcpPayloadCursor?) -> Void,
         onError: @escaping @Sendable (Error) -> Void = { _ in },
         onComplete: @escaping @Sendable () -> Void
     ) {
         runOnQueue {
             self.cancelForPromoteLocked(
-                onCarryover: { payload, error, reservation in
+                onCarryover: { payload, error in
                     if let error {
-                        reservation?.release()
                         onError(error)
                     } else {
-                        onCarryover(payload, reservation)
+                        onCarryover(payload)
                     }
                 },
                 onComplete: onComplete)
@@ -163,23 +168,21 @@ final class TcpClientReadPump: @unchecked Sendable {
     }
 
     private func cancelForPromoteLocked(
-        onCarryover: @escaping @Sendable (Data?, Error?, WriterMemoryGrant?) -> Void,
+        onCarryover: @escaping @Sendable (TcpPayloadCursor?, Error?) -> Void,
         onComplete: @escaping @Sendable () -> Void
     ) {
         guard phase != .closed else {
             if observedNaturalEof {
                 observedNaturalEof = false
-                onCarryover(.none, nil, nil)
+                onCarryover(.none, nil)
             }
             onComplete()
             return
         }
         // Hand over the replay buffer immediately.
-        if let pending = pendingData {
-            pendingData = nil
-            let reservation = pendingReservation
-            pendingReservation = nil
-            onCarryover(.some(pending), nil, reservation)
+        if let pending = pendingPayload {
+            pendingPayload = nil
+            onCarryover(.some(pending), nil)
         }
         let hadInFlightRead = (phase == .reading)
         phase = .closed
@@ -188,8 +191,8 @@ final class TcpClientReadPump: @unchecked Sendable {
         // transition runs inline when promotion already owns `queue`, so the
         // ACK cannot overtake sink installation and lose a concurrent read.
         if hadInFlightRead {
-            onPromoteCarryover = { payload, error, reservation in
-                onCarryover(payload, error, reservation)
+            onPromoteCarryover = { payload, error in
+                onCarryover(payload, error)
                 onComplete()
             }
         } else {
@@ -203,31 +206,7 @@ final class TcpClientReadPump: @unchecked Sendable {
         // Replay any chunk Rust rejected with `.paused` last time before we
         // ask the kernel for new bytes. If this still gets `.paused` we hold
         // the chunk and wait for the next `resume()`.
-        if let pending = self.pendingData {
-            guard let session = self.session else {
-                self.pendingData = nil
-                self.pendingReservation?.release()
-                self.pendingReservation = nil
-                self.terminate(with: nil)
-                return
-            }
-            switch session.onClientBytes(pending) {
-            case .accepted:
-                self.pendingData = nil
-                self.pendingReservation?.release()
-                self.pendingReservation = nil
-                // fall through to issue a fresh readData
-            case .paused:
-                self.phase = .paused
-                return
-            case .closed:
-                self.pendingData = nil
-                self.pendingReservation?.release()
-                self.pendingReservation = nil
-                self.terminate(with: nil)
-                return
-            }
-        }
+        if pendingPayload != nil, !deliverPendingPayloadLocked() { return }
 
         phase = .reading
         // `[weak self]` breaks the otherwise-fatal retain cycle:
@@ -249,10 +228,9 @@ final class TcpClientReadPump: @unchecked Sendable {
             if let data, !data.isEmpty {
                 self.onActivity()
             }
-            let transitReservation: WriterMemoryGrant?
+            let transitPayload: TcpPayloadCursor?
             if let data, !data.isEmpty {
-                guard let reservation = self.writerMemoryBudget.tryReserveGrant(
-                    bytes: data.count)
+                guard let payload = self.writerMemoryBudget.makeTcpTransitCursor(data)
                 else {
                     // Do not capture the uncharged payload in queue work.
                     self.queue.async { [weak self] in
@@ -265,7 +243,7 @@ final class TcpClientReadPump: @unchecked Sendable {
                             // barrier still needs one terminal result.
                             let sink = self.onPromoteCarryover
                             self.onPromoteCarryover = nil
-                            sink?(nil, pressureError, nil)
+                            sink?(nil, pressureError)
                             return
                         }
                         self.phase = .open
@@ -273,11 +251,11 @@ final class TcpClientReadPump: @unchecked Sendable {
                     }
                     return
                 }
-                transitReservation = reservation
+                transitPayload = payload
             } else {
-                transitReservation = nil
+                transitPayload = nil
             }
-            self.queue.async { [weak self, transitReservation] in
+            self.queue.async { [weak self, transitPayload] in
                 guard let self else { return }
                 if self.phase == .closed {
                     // Pump cancelled while a `readData` was in
@@ -291,23 +269,18 @@ final class TcpClientReadPump: @unchecked Sendable {
                     self.onPromoteCarryover = nil
                     if let sink {
                         if let error {
-                            transitReservation?.release()
-                            sink(nil, error, nil)
-                        } else if let data, !data.isEmpty {
-                            sink(.some(data), nil, transitReservation)
+                            sink(nil, error)
+                        } else if let transitPayload {
+                            sink(.some(transitPayload), nil)
                         } else {
-                            transitReservation?.release()
-                            sink(.none, nil, nil)
+                            sink(.none, nil)
                         }
-                    } else {
-                        transitReservation?.release()
                     }
                     return
                 }
                 self.phase = .open
 
                 if let error {
-                    transitReservation?.release()
                     self.logger(
                         classifyFlowCallbackError(error, operation: "tcp flow.read")
                     )
@@ -315,8 +288,7 @@ final class TcpClientReadPump: @unchecked Sendable {
                     return
                 }
 
-                guard let data, !data.isEmpty else {
-                    transitReservation?.release()
+                guard let transitPayload else {
                     self.logger(
                         FlowLogMessage(
                             level: .trace,
@@ -331,44 +303,53 @@ final class TcpClientReadPump: @unchecked Sendable {
                 guard let session = self.session else {
                     // Session was torn down while a read was in flight — drop
                     // the bytes and stop reading.
-                    transitReservation?.release()
                     self.terminate(with: nil)
                     return
                 }
-                switch session.onClientBytes(data) {
-                case .accepted:
-                    transitReservation?.release()
+                _ = session
+                self.pendingPayload = transitPayload
+                if self.deliverPendingPayloadLocked() {
                     self.requestReadLocked()
-                case .paused:
-                    // Rust did NOT take these bytes. Save them for replay on
-                    // the next `resume()` and stop reading.
-                    if self.pendingData == nil {
-                        self.logger(FlowLogMessage(
-                            level: .trace,
-                            text: "tcp client read pump: replay buffer occupied (\(data.count) B); ingress channel full"
-                        ))
-                    }
-                    self.pendingData = data
-                    self.pendingReservation = transitReservation
-                    self.phase = .paused
-                case .closed:
-                    // Rust signaled the session is gone (teardown or
-                    // bridge-side write failure). No demand callback will
-                    // ever follow, so terminate the pump now instead of
-                    // waiting for an outer cleanup path.
-                    transitReservation?.release()
-                    self.terminate(with: nil)
                 }
             }
         }
     }
 
+    /// Deliver bounded views from one physical callback root. Accepted views
+    /// may remain owned by Rust while the cursor advances; a paused view leaves
+    /// the cursor unchanged for exact replay.
+    private func deliverPendingPayloadLocked() -> Bool {
+        while var cursor = pendingPayload {
+            guard let session else {
+                pendingPayload = nil
+                terminate(with: nil)
+                return false
+            }
+            let slice = cursor.prefix(maxBytes: writerMemoryBudget.tcpPayloadViewMaxBytes)
+            switch session.onClientPayload(slice) {
+            case .accepted:
+                cursor.advance(by: slice.count)
+                pendingPayload = cursor.isEmpty ? nil : cursor
+            case .paused:
+                logger(FlowLogMessage(
+                    level: .trace,
+                    text: "tcp client read pump: replay cursor occupied (\(cursor.remainingBytes) B); ingress channel full"
+                ))
+                phase = .paused
+                return false
+            case .closed:
+                pendingPayload = nil
+                terminate(with: nil)
+                return false
+            }
+        }
+        return true
+    }
+
     private func terminate(with error: Error?) {
         guard phase != .closed else { return }
         phase = .closed
-        pendingData = nil
-        pendingReservation?.release()
-        pendingReservation = nil
+        pendingPayload = nil
         onTerminal(error)
     }
 

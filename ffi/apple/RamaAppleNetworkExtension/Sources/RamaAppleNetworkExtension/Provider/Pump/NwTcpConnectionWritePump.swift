@@ -106,8 +106,8 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
     func enqueue(_ data: Data) -> RamaTcpDeliverStatusBridge { core.enqueue(data) }
 
     @discardableResult
-    func enqueuePrecharged(_ data: Data) -> RamaTcpDeliverStatusBridge {
-        core.enqueuePrecharged(data)
+    func enqueuePrecharged(_ payload: TcpPayloadSlice) -> RamaTcpDeliverStatusBridge {
+        core.enqueuePrecharged(payload)
     }
 
     var aggregateBudget: WriterMemoryBudget { core.aggregateBudget }

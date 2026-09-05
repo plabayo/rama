@@ -52,7 +52,7 @@ final class UdpIngressProcessLifetimeTests: XCTestCase {
         let retiredFlow = UdpIngressFlowStaging(
             generation: retiredLease.udpIngressStagingBudget,
             policy: retiredLease.runtimePolicy.udpIngressStaging)
-        let retained = retiredFlow.stage(
+        var retained = retiredFlow.stage(
             datagrams: [Data(count: 6)], endpoints: nil
         ).batch
         XCTAssertNotNil(retained)
@@ -80,13 +80,13 @@ final class UdpIngressProcessLifetimeTests: XCTestCase {
         XCTAssertEqual(retiredLease.udpIngressStagingBudget.testRetainedBytes, 6)
         XCTAssertEqual(retiredLease.udpIngressStagingBudget.testGlobalMaxBytes, 4)
 
-        retained?.release()
-        let exactLowCap = lowSnapshotFlow.stage(
+        retained = nil
+        var exactLowCap = lowSnapshotFlow.stage(
             datagrams: [Data(count: 4)], endpoints: nil
         ).batch
         XCTAssertNotNil(exactLowCap)
         XCTAssertEqual(retiredLease.udpIngressStagingBudget.testRetainedBytes, 4)
-        exactLowCap?.release()
+        exactLowCap = nil
 
         core.attachEngine(makeEngine(), runtimePolicy: high)
         guard let raisedLease = core.engineLeaseForNewFlow() else {
@@ -98,11 +98,11 @@ final class UdpIngressProcessLifetimeTests: XCTestCase {
 
         // The old high-cap flow keeps its local snapshot; the flow created
         // under the low generation does not inherit the later raise.
-        let oldSnapshotBatch = retiredFlow.stage(
+        var oldSnapshotBatch = retiredFlow.stage(
             datagrams: [Data(count: 8)], endpoints: nil
         ).batch
         XCTAssertNotNil(oldSnapshotBatch)
-        oldSnapshotBatch?.release()
+        oldSnapshotBatch = nil
         let lowStillLocal = lowSnapshotFlow.stage(
             datagrams: [Data(count: 5)], endpoints: nil)
         XCTAssertEqual(lowStillLocal.blockedReason, .oversizedBytes)
@@ -149,7 +149,7 @@ final class UdpIngressProcessLifetimeTests: XCTestCase {
                 sourceAppPid: 43))
         XCTAssertEqual(holder.startWithDecision(), .intercept)
         XCTAssertEqual(waiter.startWithDecision(), .intercept)
-        let retained = holder.testFillIngressStaging()
+        var retained = holder.testFillIngressStaging()
         XCTAssertNotNil(retained)
         let lateGrants = Locked(0)
         XCTAssertTrue(
@@ -180,9 +180,9 @@ final class UdpIngressProcessLifetimeTests: XCTestCase {
         XCTAssertEqual(lateGrants.withLock { $0 }, 0)
         XCTAssertEqual(
             lease.udpIngressStagingBudget.testRetainedBytes, 1,
-            "stalled retired payload remains charged until its RAII release")
+            "stalled retired payload remains charged until its final ARC owner drops")
 
-        retained?.release()
+        retained = nil
         XCTAssertEqual(lease.udpIngressStagingBudget.testRetainedBytes, 0)
         XCTAssertEqual(lease.udpIngressStagingBudget.testReservedBytes, 0)
     }

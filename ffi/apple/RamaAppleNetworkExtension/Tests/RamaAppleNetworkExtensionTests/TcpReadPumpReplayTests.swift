@@ -9,6 +9,108 @@ import XCTest
 /// with a SCRIPTED sink.
 final class TcpReadPumpReplayTests: XCTestCase {
 
+    private final class NoCopyLifetimeProbe: @unchecked Sendable {
+        private let lock = NSLock()
+        private var _released = false
+
+        var released: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return _released
+        }
+
+        func markReleased() {
+            lock.lock(); _released = true; lock.unlock()
+        }
+    }
+
+    private final class OwnedSliceSink: TcpClientBytesSink, @unchecked Sendable {
+        private let lock = NSLock()
+        private var statuses: [RamaTcpDeliverStatusBridge]
+        private var retained: TcpPayloadSlice?
+        private weak var observedRoot: TcpRetainedBuffer?
+        private var _received: [Data] = []
+        private let retainAccepted: Bool
+        private let beforeRead: (() -> Void)?
+
+        init(
+            _ statuses: [RamaTcpDeliverStatusBridge],
+            retainAccepted: Bool = false,
+            beforeRead: (() -> Void)? = nil
+        ) {
+            self.statuses = statuses
+            self.retainAccepted = retainAccepted
+            self.beforeRead = beforeRead
+        }
+
+        func onClientBytes(_ data: Data) -> RamaTcpDeliverStatusBridge {
+            XCTFail("physical read path must use TcpPayloadSlice")
+            return .closed
+        }
+
+        func onClientPayload(_ payload: TcpPayloadSlice) -> RamaTcpDeliverStatusBridge {
+            lock.lock()
+            defer { lock.unlock() }
+            observedRoot = payload.root
+            beforeRead?()
+            _received.append(payload.copiedData)
+            let status = statuses.isEmpty ? .accepted : statuses.removeFirst()
+            if status == .accepted, retainAccepted { retained = payload }
+            return status
+        }
+
+        var received: [Data] {
+            lock.lock(); defer { lock.unlock() }
+            return _received
+        }
+
+        var observedRootIsAlive: Bool {
+            lock.lock(); defer { lock.unlock() }
+            return observedRoot != nil
+        }
+
+        func takeRetained() -> TcpPayloadSlice? {
+            lock.lock(); defer { lock.unlock() }
+            let value = retained
+            retained = nil
+            return value
+        }
+    }
+
+    private func makeNoCopyData(
+        _ bytes: [UInt8]
+    ) -> (data: Data, pointer: UnsafeMutableRawPointer, probe: NoCopyLifetimeProbe) {
+        // Foundation may inline very small Data values even when initialized
+        // with bytesNoCopy. Stay above that threshold so pointer mutation
+        // distinguishes a retained backing allocation from an accidental copy.
+        let byteCount = max(96, bytes.count)
+        let pointer = UnsafeMutableRawPointer.allocate(
+            byteCount: byteCount,
+            alignment: MemoryLayout<UInt8>.alignment)
+        pointer.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
+        bytes.withUnsafeBytes { source in
+            pointer.copyMemory(from: source.baseAddress!, byteCount: bytes.count)
+        }
+        let probe = NoCopyLifetimeProbe()
+        let data = Data(
+            bytesNoCopy: pointer,
+            count: byteCount,
+            deallocator: .custom { pointer, _ in
+                probe.markReleased()
+                pointer.deallocate()
+            })
+        return (data, pointer, probe)
+    }
+
+    private func makePhysicalBudget() -> WriterMemoryBudget {
+        WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 256,
+                maxItems: 16,
+                tcpWaiterMaxBytes: 128,
+                udpPressureReserveBytes: 0,
+                udpPressureReserveItems: 0))
+    }
+
     /// Sink whose `onClientBytes` / `onEgressBytes` return a scripted
     /// status sequence (one per call; defaults to `.accepted` once
     /// exhausted) and records every chunk it was handed, in order.
@@ -61,6 +163,153 @@ final class TcpReadPumpReplayTests: XCTestCase {
 
     private func makeQueue() -> DispatchQueue {
         DispatchQueue(label: "rama.tproxy.test.replay", qos: .utility)
+    }
+
+    func testAcceptedOwnedSliceKeepsNoCopyRootAndChargeUntilConsumerDrops() {
+        let sink = OwnedSliceSink([.accepted], retainAccepted: true)
+        let flow = MockTcpFlow()
+        let queue = makeQueue()
+        let budget = makePhysicalBudget()
+        let pump = TcpClientReadPump(
+            flow: flow, session: sink, queue: queue, logger: { _ in },
+            onTerminal: { _ in }, writerMemoryBudget: budget)
+        pump.requestRead()
+        pollUntil("accepted lifetime read pending") { flow.pendingReadCount == 1 }
+
+        let source = autoreleasepool {
+            var value = makeNoCopyData([0x11, 0x22, 0x33, 0x44])
+            flow.completeReadSynchronously(data: value.data, error: nil)
+            value.data = Data()
+            return (pointer: value.pointer, probe: value.probe)
+        }
+        pollUntil("accepted slice retained") { sink.received.count == 1 }
+        XCTAssertEqual(budget.snapshot().retainedBytes, 96)
+        XCTAssertFalse(source.probe.released)
+        XCTAssertTrue(sink.observedRootIsAlive)
+
+        source.pointer.storeBytes(of: UInt8(0xA5), as: UInt8.self)
+        var retained = sink.takeRetained()
+        XCTAssertEqual(retained?.copiedData.first, 0xA5, "accepted view must share the root")
+        retained = nil
+        pollUntil("accepted root released") { budget.snapshot().retainedBytes == 0 }
+        XCTAssertFalse(sink.observedRootIsAlive)
+        withExtendedLifetime(pump) {}
+    }
+
+    func testClientReadSplitsOnePhysicalRootIntoBoundedFfiViews() {
+        let sink = OwnedSliceSink([.accepted, .accepted, .accepted])
+        let flow = MockTcpFlow()
+        let queue = makeQueue()
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 256, maxItems: 16, tcpWaiterMaxBytes: 32,
+                udpPressureReserveBytes: 0, udpPressureReserveItems: 0))
+        let pump = TcpClientReadPump(
+            flow: flow, session: sink, queue: queue, logger: { _ in },
+            onTerminal: { _ in }, writerMemoryBudget: budget)
+        pump.requestRead()
+        pollUntil("bounded view read pending") { flow.pendingReadCount == 1 }
+        flow.completeRead(data: Data(repeating: 0x6A, count: 80), error: nil)
+        pollUntil("all bounded views delivered") { sink.received.count == 3 }
+        XCTAssertEqual(sink.received.map(\.count), [32, 32, 16])
+        XCTAssertEqual(Data(sink.received.joined()), Data(repeating: 0x6A, count: 80))
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        withExtendedLifetime(pump) {}
+    }
+
+    func testPausedOwnedSliceRetainsNoCopyRootUntilReplayAccepts() {
+        let sink = OwnedSliceSink([.paused, .accepted])
+        let flow = MockTcpFlow()
+        let queue = makeQueue()
+        let budget = makePhysicalBudget()
+        let pump = TcpClientReadPump(
+            flow: flow, session: sink, queue: queue, logger: { _ in },
+            onTerminal: { _ in }, writerMemoryBudget: budget)
+        pump.requestRead()
+        pollUntil("paused lifetime read pending") { flow.pendingReadCount == 1 }
+
+        let source = autoreleasepool {
+            var value = makeNoCopyData([0x01, 0x02, 0x03])
+            flow.completeReadSynchronously(data: value.data, error: nil)
+            value.data = Data()
+            return (pointer: value.pointer, probe: value.probe)
+        }
+        pollUntil("paused root retained") { sink.received.count == 1 }
+        XCTAssertEqual(budget.snapshot().retainedBytes, 96)
+        XCTAssertFalse(source.probe.released)
+        XCTAssertTrue(sink.observedRootIsAlive)
+
+        source.pointer.storeBytes(of: UInt8(0xFE), as: UInt8.self)
+        pump.resume()
+        pollUntil("paused root replayed") { sink.received.count == 2 }
+        XCTAssertEqual(sink.received[1].first, 0xFE)
+        pollUntil("replayed root released") { budget.snapshot().retainedBytes == 0 }
+        XCTAssertFalse(sink.observedRootIsAlive)
+        withExtendedLifetime(pump) {}
+    }
+
+    func testClosedOwnedSliceDropsNoCopyRootAndCharge() {
+        var source = makeNoCopyData([0x71, 0x72])
+        let sink = OwnedSliceSink(
+            [.closed],
+            beforeRead: {
+                source.pointer.storeBytes(of: UInt8(0xE2), as: UInt8.self)
+            })
+        let flow = MockTcpFlow()
+        let queue = makeQueue()
+        let budget = makePhysicalBudget()
+        let terminal = TestValue(0)
+        let pump = TcpClientReadPump(
+            flow: flow, session: sink, queue: queue, logger: { _ in },
+            onTerminal: { _ in terminal.update { $0 += 1 } },
+            writerMemoryBudget: budget)
+        pump.requestRead()
+        pollUntil("closed lifetime read pending") { flow.pendingReadCount == 1 }
+
+        flow.completeReadSynchronously(data: source.data, error: nil)
+        source.data = Data()
+        pollUntil("closed root retired") { terminal.get() == 1 }
+        XCTAssertEqual(sink.received.first?.first, 0xE2)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertFalse(sink.observedRootIsAlive)
+        withExtendedLifetime(pump) {}
+    }
+
+    func testPromotionTransfersPausedNoCopyCursorWithoutRefundOrCopy() {
+        let sink = OwnedSliceSink([.paused])
+        let flow = MockTcpFlow()
+        let queue = makeQueue()
+        let budget = makePhysicalBudget()
+        let pump = TcpClientReadPump(
+            flow: flow, session: sink, queue: queue, logger: { _ in },
+            onTerminal: { _ in }, writerMemoryBudget: budget)
+        pump.requestRead()
+        pollUntil("promotion lifetime read pending") { flow.pendingReadCount == 1 }
+
+        let source = autoreleasepool {
+            var value = makeNoCopyData([0x31, 0x32, 0x33])
+            flow.completeReadSynchronously(data: value.data, error: nil)
+            value.data = Data()
+            return (pointer: value.pointer, probe: value.probe)
+        }
+        pollUntil("promotion source paused") { sink.received.count == 1 }
+
+        let cursor = TestValue<TcpPayloadCursor?>(nil)
+        let complete = expectation(description: "physical promotion barrier")
+        pump.cancelForPromoteWithReservations(
+            onCarryover: { cursor.set($0) },
+            onComplete: { complete.fulfill() })
+        wait(for: [complete], timeout: 2)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 96)
+        XCTAssertFalse(source.probe.released)
+        XCTAssertTrue(sink.observedRootIsAlive)
+
+        source.pointer.storeBytes(of: UInt8(0xE1), as: UInt8.self)
+        XCTAssertEqual(cursor.get()?.prefix(maxBytes: 64).copiedData.first, 0xE1)
+        cursor.set(nil)
+        pollUntil("promoted cursor root released") { budget.snapshot().retainedBytes == 0 }
+        XCTAssertFalse(sink.observedRootIsAlive)
+        withExtendedLifetime(pump) {}
     }
 
     // MARK: - Client read pump (ingress) replay
@@ -393,7 +642,9 @@ final class TcpReadPumpReplayTests: XCTestCase {
 
     func testClientReadTransitAcrossBlockedRetiringQueuesSharesOneEnvelope() {
         let budget = WriterMemoryBudget(
-            policy: WriterMemoryPolicy(maxBytes: 4, maxItems: 1))
+            policy: WriterMemoryPolicy(
+                maxBytes: 8, maxItems: 2, tcpWaiterMaxBytes: 4,
+                udpPressureReserveBytes: 0, udpPressureReserveItems: 0))
         let firstSink = ScriptedBytesSink([.accepted])
         let secondSink = ScriptedBytesSink([.accepted])
         let firstFlow = MockTcpFlow()
@@ -445,7 +696,9 @@ final class TcpReadPumpReplayTests: XCTestCase {
 
     func testOffQueueEgressTransitIsChargedUntilQueuedDeliveryConsumesIt() {
         let budget = WriterMemoryBudget(
-            policy: WriterMemoryPolicy(maxBytes: 4, maxItems: 1))
+            policy: WriterMemoryPolicy(
+                maxBytes: 8, maxItems: 2, tcpWaiterMaxBytes: 4,
+                udpPressureReserveBytes: 0, udpPressureReserveItems: 0))
         let sink = ScriptedBytesSink([.accepted])
         let connection = MockNwConnection()
         let queue = DispatchQueue(label: "rama.tproxy.egress-transit")

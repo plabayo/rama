@@ -18,6 +18,7 @@ use sha2::{Digest as _, Sha256};
 
 const SCHEMA_VERSION: u32 = 1;
 const MAX_DECODED_TRACE_BYTES: u64 = 128 * 1024 * 1024;
+const REQUIREMENTS_HEADER: &str = "label\tprovider_pid\tprovider_generation\tflow_id\tprotocol\tsource_pid\tclose_reason\tmin_bytes_in\tmax_bytes_in\tmin_bytes_out\tmax_bytes_out";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct Artifact {
@@ -71,22 +72,65 @@ struct Collection {
     required_close_age_ms: Option<u64>,
     required_bytes_in: Option<u64>,
     required_bytes_out: Option<u64>,
+    requirements_sha256: Option<String>,
+    requirement_count: usize,
+    matched_requirement_count: usize,
+    required_flows: Vec<RequiredFlowEvidence>,
     schema_complete: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct PairRequirement {
     flow_id: Option<u64>,
     protocol: Option<u32>,
+    requirements: Vec<FlowRequirement>,
+    requirements_sha256: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct FlowRequirement {
+    label: String,
+    identity: FlowIdentity,
+    close_reason: u64,
+    min_bytes_in: u64,
+    max_bytes_in: u64,
+    min_bytes_out: u64,
+    max_bytes_out: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct FlowIdentity {
+    provider_pid: u32,
+    provider_generation: u64,
+    flow_id: u64,
+    protocol: u32,
+    source_pid: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct RequiredFlowEvidence {
+    label: String,
+    provider_pid: u32,
+    provider_generation: u64,
+    flow_id: u64,
+    protocol: u32,
+    source_pid: i64,
+    close_reason: u64,
+    close_reason_name: &'static str,
+    close_age_ms: u64,
+    bytes_in: u64,
+    bytes_out: u64,
 }
 
 #[derive(Debug, Default)]
 struct EventSummary {
-    opens: BTreeMap<u64, BTreeSet<u32>>,
-    ordered_pairs: BTreeMap<u64, BTreeSet<u32>>,
-    open_occurrences: BTreeMap<(u64, u32), usize>,
-    close_occurrences: BTreeMap<u64, usize>,
-    close_evidence: BTreeMap<u64, Vec<CloseEvidence>>,
+    opens: BTreeSet<FlowIdentity>,
+    ordered_pairs: BTreeSet<FlowIdentity>,
+    open_timestamps: BTreeMap<FlowIdentity, Vec<(u64, u32)>>,
+    close_timestamps: BTreeMap<FlowIdentity, Vec<(u64, u32)>>,
+    open_occurrences: BTreeMap<FlowIdentity, usize>,
+    close_occurrences: BTreeMap<FlowIdentity, usize>,
+    close_evidence: BTreeMap<FlowIdentity, Vec<CloseEvidence>>,
     open_count: usize,
     close_count: usize,
 }
@@ -124,37 +168,77 @@ impl EventSummary {
         &self,
         baseline_max_index: Option<u32>,
         artifacts: Vec<Artifact>,
-        requirement: PairRequirement,
+        requirement: &PairRequirement,
     ) -> Collection {
         let pairs = self
             .ordered_pairs
             .iter()
-            .filter(|(flow_id, protocols)| {
-                protocols.len() == 1
-                    && self.close_occurrences.get(flow_id) == Some(&1)
-                    && protocols.iter().any(|protocol| {
-                        self.open_occurrences.get(&(**flow_id, *protocol)) == Some(&1)
-                    })
+            .filter(|identity| {
+                self.close_occurrences.get(identity) == Some(&1)
+                    && self.open_occurrences.get(identity) == Some(&1)
             })
             .collect::<Vec<_>>();
         let required_pair_count = pairs
             .iter()
-            .filter(|(flow_id, protocols)| {
+            .filter(|identity| {
                 requirement
                     .flow_id
-                    .is_none_or(|required| **flow_id == required)
-                    && requirement.protocol.is_none_or(|required| {
-                        protocols.contains(&required)
-                            && self.open_occurrences.get(&(**flow_id, required)) == Some(&1)
-                    })
+                    .is_none_or(|required| identity.flow_id == required)
+                    && requirement
+                        .protocol
+                        .is_none_or(|required| identity.protocol == required)
             })
             .count();
-        let required_close = requirement.flow_id.and_then(|flow_id| {
-            (required_pair_count == 1)
-                .then(|| self.close_evidence.get(&flow_id))
-                .flatten()
+        let legacy_identity = (required_pair_count == 1)
+            .then(|| {
+                pairs.iter().find(|identity| {
+                    requirement
+                        .flow_id
+                        .is_none_or(|value| identity.flow_id == value)
+                        && requirement
+                            .protocol
+                            .is_none_or(|value| identity.protocol == value)
+                })
+            })
+            .flatten()
+            .copied();
+        let required_close = legacy_identity.and_then(|identity| {
+            self.close_evidence
+                .get(identity)
                 .and_then(|values| (values.len() == 1).then_some(values[0]))
         });
+        let required_flows = requirement
+            .requirements
+            .iter()
+            .filter_map(|required| {
+                if self.open_occurrences.get(&required.identity) != Some(&1)
+                    || self.close_occurrences.get(&required.identity) != Some(&1)
+                    || !self.ordered_pairs.contains(&required.identity)
+                {
+                    return None;
+                }
+                let close = *self.close_evidence.get(&required.identity)?.first()?;
+                if close.reason != required.close_reason
+                    || !(required.min_bytes_in..=required.max_bytes_in).contains(&close.bytes_in)
+                    || !(required.min_bytes_out..=required.max_bytes_out).contains(&close.bytes_out)
+                {
+                    return None;
+                }
+                Some(RequiredFlowEvidence {
+                    label: required.label.clone(),
+                    provider_pid: required.identity.provider_pid,
+                    provider_generation: required.identity.provider_generation,
+                    flow_id: required.identity.flow_id,
+                    protocol: required.identity.protocol,
+                    source_pid: required.identity.source_pid,
+                    close_reason: close.reason,
+                    close_reason_name: close_reason_name(close.reason)?,
+                    close_age_ms: close.age_ms,
+                    bytes_in: close.bytes_in,
+                    bytes_out: close.bytes_out,
+                })
+            })
+            .collect::<Vec<_>>();
         let current_indices = artifacts.iter().map(|artifact| artifact.index).collect();
         Collection {
             schema_version: SCHEMA_VERSION,
@@ -167,7 +251,7 @@ impl EventSummary {
             paired_flow_count: pairs.len(),
             udp_paired_flow_count: pairs
                 .iter()
-                .filter(|(_, protocols)| protocols.contains(&2))
+                .filter(|identity| identity.protocol == 2)
                 .count(),
             required_flow_id: requirement.flow_id,
             required_protocol: requirement.protocol,
@@ -178,6 +262,10 @@ impl EventSummary {
             required_close_age_ms: required_close.map(|value| value.age_ms),
             required_bytes_in: required_close.map(|value| value.bytes_in),
             required_bytes_out: required_close.map(|value| value.bytes_out),
+            requirements_sha256: requirement.requirements_sha256.clone(),
+            requirement_count: requirement.requirements.len(),
+            matched_requirement_count: required_flows.len(),
+            required_flows,
             schema_complete: true,
         }
     }
@@ -229,6 +317,109 @@ fn hash_file(path: &Path) -> Result<(u64, String), String> {
         write!(&mut sha256, "{byte:02x}").expect("writing to String cannot fail");
     }
     Ok((size, sha256))
+}
+
+fn parse_canonical_u64(value: &str, field: &str) -> Result<u64, String> {
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(format!("{field} is not a canonical unsigned integer"));
+    }
+    value
+        .parse::<u64>()
+        .map_err(|_| format!("{field} exceeds its integer range"))
+}
+
+fn load_requirements(path: &Path) -> Result<(Vec<FlowRequirement>, String), String> {
+    let (size, sha256) = hash_file(path)?;
+    if size == 0 || size > 1024 * 1024 {
+        return Err("dial9 requirements TSV must be 1..=1048576 bytes".to_owned());
+    }
+    let contents = fs::read_to_string(path)
+        .map_err(|error| format!("read requirements {}: {error}", path.display()))?;
+    if contents.contains('\r') || !contents.ends_with('\n') {
+        return Err("dial9 requirements TSV must use LF lines and end with LF".to_owned());
+    }
+    let mut lines = contents.lines();
+    if lines.next() != Some(REQUIREMENTS_HEADER) {
+        return Err("dial9 requirements TSV header is incomplete or unsupported".to_owned());
+    }
+    let mut requirements = Vec::new();
+    let mut labels = BTreeSet::new();
+    let mut identities = BTreeSet::new();
+    let mut flow_ids = BTreeSet::new();
+    for (offset, line) in lines.enumerate() {
+        let line_number = offset + 2;
+        let fields = line.split('\t').collect::<Vec<_>>();
+        if fields.len() != 11 || fields.iter().any(|field| field.is_empty()) {
+            return Err(format!("malformed dial9 requirement on line {line_number}"));
+        }
+        let label = fields[0];
+        if label.len() > 80
+            || !label.bytes().enumerate().all(|(index, byte)| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || (index > 0 && matches!(byte, b'_' | b'-' | b'.'))
+            })
+        {
+            return Err(format!(
+                "invalid dial9 requirement label on line {line_number}"
+            ));
+        }
+        let provider_pid = u32::try_from(parse_canonical_u64(fields[1], "provider_pid")?)
+            .map_err(|_| "provider_pid exceeds u32".to_owned())?;
+        let provider_generation = parse_canonical_u64(fields[2], "provider_generation")?;
+        let flow_id = parse_canonical_u64(fields[3], "flow_id")?;
+        let protocol = u32::try_from(parse_canonical_u64(fields[4], "protocol")?)
+            .map_err(|_| "protocol exceeds u32".to_owned())?;
+        let source_pid = i64::try_from(parse_canonical_u64(fields[5], "source_pid")?)
+            .map_err(|_| "source_pid exceeds i64".to_owned())?;
+        let close_reason = parse_canonical_u64(fields[6], "close_reason")?;
+        let min_bytes_in = parse_canonical_u64(fields[7], "min_bytes_in")?;
+        let max_bytes_in = parse_canonical_u64(fields[8], "max_bytes_in")?;
+        let min_bytes_out = parse_canonical_u64(fields[9], "min_bytes_out")?;
+        let max_bytes_out = parse_canonical_u64(fields[10], "max_bytes_out")?;
+        if provider_pid == 0
+            || provider_generation == 0
+            || flow_id == 0
+            || !matches!(protocol, 1 | 2)
+            || source_pid <= 0
+            || close_reason_name(close_reason).is_none()
+            || min_bytes_in > max_bytes_in
+            || min_bytes_out > max_bytes_out
+        {
+            return Err(format!(
+                "invalid dial9 requirement bounds on line {line_number}"
+            ));
+        }
+        let identity = FlowIdentity {
+            provider_pid,
+            provider_generation,
+            flow_id,
+            protocol,
+            source_pid,
+        };
+        if !labels.insert(label.to_owned())
+            || !identities.insert(identity)
+            || !flow_ids.insert(flow_id)
+        {
+            return Err(format!("duplicate dial9 requirement on line {line_number}"));
+        }
+        requirements.push(FlowRequirement {
+            label: label.to_owned(),
+            identity,
+            close_reason,
+            min_bytes_in,
+            max_bytes_in,
+            min_bytes_out,
+            max_bytes_out,
+        });
+    }
+    if requirements.is_empty() || requirements.len() > 1024 {
+        return Err("dial9 requirements TSV must contain 1..=1024 rows".to_owned());
+    }
+    Ok((requirements, sha256))
 }
 
 fn snapshot(directory: &Path, allow_missing: bool) -> Snapshot {
@@ -367,6 +558,7 @@ fn current_artifacts(
 
 fn decode_file(
     path: &Path,
+    artifact_index: u32,
     encoding: ArtifactEncoding,
     summary: &mut EventSummary,
 ) -> Result<(), String> {
@@ -406,45 +598,85 @@ fn decode_file(
     decoder
         .for_each_event(|event| match event.name {
             "TproxyFlowOpened" => {
+                let mut provider_pid = None;
+                let mut provider_generation = None;
                 let mut flow_id = None;
                 let mut protocol = None;
+                let mut source_pid = None;
                 for (name, value) in event.field_names().zip(event.fields.iter()) {
-                    if let FieldValueRef::Varint(value) = value {
-                        match name {
-                            "flow_id" => flow_id = Some(*value),
-                            "protocol" => protocol = u32::try_from(*value).ok(),
-                            _ => {}
+                    match (name, value) {
+                        ("provider_pid", FieldValueRef::Varint(value)) => {
+                            provider_pid = u32::try_from(*value).ok();
                         }
+                        ("provider_generation", FieldValueRef::Varint(value)) => {
+                            provider_generation = Some(*value);
+                        }
+                        ("flow_id", FieldValueRef::Varint(value)) => flow_id = Some(*value),
+                        ("protocol", FieldValueRef::Varint(value)) => {
+                            protocol = u32::try_from(*value).ok();
+                        }
+                        ("pid", FieldValueRef::I64(value)) => source_pid = Some(*value),
+                        _ => {}
                     }
                 }
-                if let (Some(flow_id), Some(protocol)) = (flow_id, protocol) {
-                    summary.opens.entry(flow_id).or_default().insert(protocol);
-                    *summary
-                        .open_occurrences
-                        .entry((flow_id, protocol))
-                        .or_default() += 1;
+                if let (
+                    Some(provider_pid @ 1..),
+                    Some(provider_generation @ 1..),
+                    Some(flow_id @ 1..),
+                    Some(protocol @ 1..=2),
+                    Some(source_pid @ 0..),
+                ) = (provider_pid, provider_generation, flow_id, protocol, source_pid)
+                {
+                    let identity = FlowIdentity {
+                        provider_pid,
+                        provider_generation,
+                        flow_id,
+                        protocol,
+                        source_pid,
+                    };
+                    summary.opens.insert(identity);
+                    summary
+                        .open_timestamps
+                        .entry(identity)
+                        .or_default()
+                        .push((event.timestamp_ns, artifact_index));
+                    *summary.open_occurrences.entry(identity).or_default() += 1;
                     summary.open_count += 1;
                 } else {
-                    invalid_event =
-                        Some("TproxyFlowOpened lacks valid flow_id/protocol fields".to_owned());
+                    invalid_event = Some(
+                        "TproxyFlowOpened lacks valid provider/generation/flow/protocol/source fields"
+                            .to_owned(),
+                    );
                 }
             }
             "TproxyFlowClosed" => {
+                let mut provider_pid = None;
+                let mut provider_generation = None;
                 let mut flow_id = None;
+                let mut protocol = None;
+                let mut source_pid = None;
                 let mut reason = None;
                 let mut age_ms = None;
                 let mut bytes_in = None;
                 let mut bytes_out = None;
                 for (name, value) in event.field_names().zip(event.fields.iter()) {
-                    if let FieldValueRef::Varint(value) = value {
-                        match name {
-                            "flow_id" => flow_id = Some(*value),
-                            "reason" => reason = Some(*value),
-                            "age_ms" => age_ms = Some(*value),
-                            "bytes_in" => bytes_in = Some(*value),
-                            "bytes_out" => bytes_out = Some(*value),
-                            _ => {}
+                    match (name, value) {
+                        ("provider_pid", FieldValueRef::Varint(value)) => {
+                            provider_pid = u32::try_from(*value).ok();
                         }
+                        ("provider_generation", FieldValueRef::Varint(value)) => {
+                            provider_generation = Some(*value);
+                        }
+                        ("flow_id", FieldValueRef::Varint(value)) => flow_id = Some(*value),
+                        ("protocol", FieldValueRef::Varint(value)) => {
+                            protocol = u32::try_from(*value).ok();
+                        }
+                        ("pid", FieldValueRef::I64(value)) => source_pid = Some(*value),
+                        ("reason", FieldValueRef::Varint(value)) => reason = Some(*value),
+                        ("age_ms", FieldValueRef::Varint(value)) => age_ms = Some(*value),
+                        ("bytes_in", FieldValueRef::Varint(value)) => bytes_in = Some(*value),
+                        ("bytes_out", FieldValueRef::Varint(value)) => bytes_out = Some(*value),
+                        _ => {}
                     }
                 }
                 let evidence = match (reason, age_ms, bytes_in, bytes_out) {
@@ -458,25 +690,43 @@ fn decode_file(
                     }
                     _ => None,
                 };
-                if let (Some(flow_id), Some(evidence)) = (flow_id, evidence) {
-                    if let Some(protocols) = summary.opens.get(&flow_id) {
-                        summary
-                            .ordered_pairs
-                            .entry(flow_id)
-                            .or_default()
-                            .extend(protocols);
-                    }
-                    *summary.close_occurrences.entry(flow_id).or_default() += 1;
+                if let (
+                    Some(provider_pid @ 1..),
+                    Some(provider_generation @ 1..),
+                    Some(flow_id @ 1..),
+                    Some(protocol @ 1..=2),
+                    Some(source_pid @ 0..),
+                    Some(evidence),
+                ) = (
+                    provider_pid,
+                    provider_generation,
+                    flow_id,
+                    protocol,
+                    source_pid,
+                    evidence,
+                ) {
+                    let identity = FlowIdentity {
+                        provider_pid,
+                        provider_generation,
+                        flow_id,
+                        protocol,
+                        source_pid,
+                    };
+                    *summary.close_occurrences.entry(identity).or_default() += 1;
+                    summary
+                        .close_timestamps
+                        .entry(identity)
+                        .or_default()
+                        .push((event.timestamp_ns, artifact_index));
                     summary
                         .close_evidence
-                        .entry(flow_id)
+                        .entry(identity)
                         .or_default()
                         .push(evidence);
                     summary.close_count += 1;
                 } else {
                     invalid_event = Some(
-                        "TproxyFlowClosed lacks valid flow_id/reason/age_ms/bytes fields"
-                            .to_owned(),
+                        "TproxyFlowClosed lacks valid provider/generation/flow/protocol/source/reason/age_ms/bytes fields".to_owned(),
                     );
                 }
             }
@@ -494,10 +744,28 @@ fn decode_artifacts(directory: &Path, artifacts: &[Artifact]) -> Result<EventSum
     for artifact in artifacts {
         decode_file(
             &directory.join(&artifact.name),
+            artifact.index,
             artifact.encoding,
             &mut summary,
         )?;
     }
+    // Dial9's per-thread buffers can serialize the close event before the open
+    // event. Use event timestamps, not serialized record order, while still
+    // binding the pair to the full immutable identity.
+    summary.ordered_pairs = summary
+        .opens
+        .iter()
+        .filter(|identity| {
+            let Some(opened) = summary.open_timestamps.get(identity) else {
+                return false;
+            };
+            let Some(closed) = summary.close_timestamps.get(identity) else {
+                return false;
+            };
+            opened.iter().min() < closed.iter().max()
+        })
+        .copied()
+        .collect();
     Ok(summary)
 }
 
@@ -505,7 +773,7 @@ fn copy_once(
     source: &Path,
     destination: &Path,
     baseline: &Snapshot,
-    requirement: PairRequirement,
+    requirement: &PairRequirement,
 ) -> Result<Collection, String> {
     let before_snapshot = snapshot(source, false);
     let before = current_artifacts(&before_snapshot, baseline.max_index)?;
@@ -539,7 +807,14 @@ fn copy_once(
         }
         let events = decode_artifacts(&temp_destination, &copied)?;
         let collection = events.collection(baseline.max_index, copied, requirement);
-        if collection.required_pair_count == 0 {
+        if collection.requirement_count > 0
+            && collection.matched_requirement_count != collection.requirement_count
+        {
+            return Err(
+                "current dial9 trace does not satisfy every exact flow requirement".to_owned(),
+            );
+        }
+        if collection.requirement_count == 0 && collection.required_pair_count == 0 {
             return Err(
                 "current dial9 trace lacks one exact ordered open/close flow pair".to_owned(),
             );
@@ -573,7 +848,7 @@ fn collect(
     source: &Path,
     baseline: &Snapshot,
     destination: &Path,
-    requirement: PairRequirement,
+    requirement: &PairRequirement,
     wait: Duration,
 ) -> Result<Collection, String> {
     let deadline = Instant::now() + wait;
@@ -604,7 +879,7 @@ fn parse_collect_args(
 ) -> Result<(PathBuf, PathBuf, PathBuf, PairRequirement, Duration), String> {
     if args.len() < 3 {
         return Err(
-            "usage: dial9_evidence collect <trace-dir> <baseline.json> <destination> [--wait-seconds N] [--flow-id N] [--protocol N]"
+            "usage: dial9_evidence collect <trace-dir> <baseline.json> <destination> [--wait-seconds N] ([--flow-id N] [--protocol N] | --requirements FILE)"
                 .to_owned(),
         );
     }
@@ -613,6 +888,7 @@ fn parse_collect_args(
     let destination = PathBuf::from(&args[2]);
     let mut requirement = PairRequirement::default();
     let mut wait = Duration::from_secs(0);
+    let mut wait_seen = false;
     let mut index = 3;
     while index < args.len() {
         let option = &args[index];
@@ -621,29 +897,56 @@ fn parse_collect_args(
             .ok_or_else(|| format!("missing value for {option}"))?;
         match option.as_str() {
             "--wait-seconds" => {
-                wait = Duration::from_secs(
-                    value
-                        .parse::<u64>()
-                        .map_err(|_| format!("invalid wait duration {value:?}"))?,
-                );
+                if wait_seen {
+                    return Err("duplicate --wait-seconds option".to_owned());
+                }
+                wait_seen = true;
+                let seconds = parse_canonical_u64(value, "wait_seconds")?;
+                if seconds > 600 {
+                    return Err("wait_seconds exceeds the 600 second bound".to_owned());
+                }
+                wait = Duration::from_secs(seconds);
             }
             "--flow-id" => {
-                requirement.flow_id = Some(
-                    value
-                        .parse::<u64>()
-                        .map_err(|_| format!("invalid flow id {value:?}"))?,
-                );
+                if requirement.flow_id.is_some() {
+                    return Err("duplicate --flow-id option".to_owned());
+                }
+                let flow_id = parse_canonical_u64(value, "flow_id")?;
+                if flow_id == 0 {
+                    return Err("flow_id must be positive".to_owned());
+                }
+                requirement.flow_id = Some(flow_id);
             }
             "--protocol" => {
-                requirement.protocol = Some(
-                    value
-                        .parse::<u32>()
-                        .map_err(|_| format!("invalid protocol {value:?}"))?,
-                );
+                if requirement.protocol.is_some() {
+                    return Err("duplicate --protocol option".to_owned());
+                }
+                let protocol = u32::try_from(parse_canonical_u64(value, "protocol")?)
+                    .map_err(|_| "protocol exceeds u32".to_owned())?;
+                if !matches!(protocol, 1 | 2) {
+                    return Err("protocol must be 1 (TCP) or 2 (UDP)".to_owned());
+                }
+                requirement.protocol = Some(protocol);
+            }
+            "--requirements" => {
+                if !requirement.requirements.is_empty() {
+                    return Err("duplicate --requirements option".to_owned());
+                }
+                let (requirements, sha256) = load_requirements(Path::new(value))?;
+                requirement.requirements = requirements;
+                requirement.requirements_sha256 = Some(sha256);
             }
             _ => return Err(format!("unknown collect option {option:?}")),
         }
         index += 2;
+    }
+    if !requirement.requirements.is_empty()
+        && (requirement.flow_id.is_some() || requirement.protocol.is_some())
+    {
+        return Err("--requirements cannot be combined with --flow-id/--protocol".to_owned());
+    }
+    if requirement.requirements.is_empty() && requirement.flow_id.is_none() {
+        return Err("collect requires --requirements or --flow-id".to_owned());
     }
     Ok((source, baseline, destination, requirement, wait))
 }
@@ -686,7 +989,7 @@ fn run() -> Result<(), String> {
             {
                 return Err("baseline dial9 snapshot is incomplete or invalid".to_owned());
             }
-            let collection = collect(&source, &baseline, &destination, requirement, wait)?;
+            let collection = collect(&source, &baseline, &destination, &requirement, wait)?;
             write_json(&collection)
         }
         command => Err(format!("unknown command {command:?}")),
@@ -710,10 +1013,16 @@ mod tests {
     use flate2::{Compression, write::GzEncoder};
     use tempfile::TempDir;
 
+    const PROVIDER_PID: u32 = 9001;
+    const PROVIDER_GENERATION: u64 = 17;
+    const SOURCE_PID: i64 = 42;
+
     #[derive(TraceEvent)]
     struct TproxyFlowOpened {
         #[traceevent(timestamp)]
         timestamp_ns: u64,
+        provider_pid: u32,
+        provider_generation: u64,
         flow_id: u64,
         protocol: u32,
         pid: i64,
@@ -723,7 +1032,11 @@ mod tests {
     struct TproxyFlowClosed {
         #[traceevent(timestamp)]
         timestamp_ns: u64,
+        provider_pid: u32,
+        provider_generation: u64,
         flow_id: u64,
+        protocol: u32,
+        pid: i64,
         reason: u64,
         age_ms: u64,
         bytes_in: u64,
@@ -735,7 +1048,11 @@ mod tests {
     struct IncompleteTproxyFlowClosed {
         #[traceevent(timestamp)]
         timestamp_ns: u64,
+        provider_pid: u32,
+        provider_generation: u64,
         flow_id: u64,
+        protocol: u32,
+        pid: i64,
         reason: u64,
         age_ms: u64,
         bytes_in: u64,
@@ -746,16 +1063,22 @@ mod tests {
         encoder
             .write(&TproxyFlowOpened {
                 timestamp_ns: 1,
+                provider_pid: PROVIDER_PID,
+                provider_generation: PROVIDER_GENERATION,
                 flow_id,
                 protocol,
-                pid: 42,
+                pid: SOURCE_PID,
             })
             .unwrap();
         if include_close {
             encoder
                 .write(&TproxyFlowClosed {
                     timestamp_ns: 2,
+                    provider_pid: PROVIDER_PID,
+                    provider_generation: PROVIDER_GENERATION,
                     flow_id,
+                    protocol,
+                    pid: SOURCE_PID,
                     reason: 1,
                     age_ms: 1,
                     bytes_in: 48,
@@ -771,7 +1094,11 @@ mod tests {
         encoder
             .write(&TproxyFlowClosed {
                 timestamp_ns: 1,
+                provider_pid: PROVIDER_PID,
+                provider_generation: PROVIDER_GENERATION,
                 flow_id,
+                protocol,
+                pid: SOURCE_PID,
                 reason: 1,
                 age_ms: 1,
                 bytes_in: 48,
@@ -781,9 +1108,11 @@ mod tests {
         encoder
             .write(&TproxyFlowOpened {
                 timestamp_ns: 2,
+                provider_pid: PROVIDER_PID,
+                provider_generation: PROVIDER_GENERATION,
                 flow_id,
                 protocol,
-                pid: 42,
+                pid: SOURCE_PID,
             })
             .unwrap();
         encoder.finish()
@@ -794,7 +1123,11 @@ mod tests {
         encoder
             .write(&TproxyFlowClosed {
                 timestamp_ns: 1,
+                provider_pid: PROVIDER_PID,
+                provider_generation: PROVIDER_GENERATION,
                 flow_id,
+                protocol: 2,
+                pid: SOURCE_PID,
                 reason: 1,
                 age_ms: 1,
                 bytes_in: 48,
@@ -809,15 +1142,21 @@ mod tests {
         encoder
             .write(&TproxyFlowOpened {
                 timestamp_ns: 1,
+                provider_pid: PROVIDER_PID,
+                provider_generation: PROVIDER_GENERATION,
                 flow_id,
                 protocol: 2,
-                pid: 42,
+                pid: SOURCE_PID,
             })
             .unwrap();
         encoder
             .write(&TproxyFlowClosed {
                 timestamp_ns: 2,
+                provider_pid: PROVIDER_PID,
+                provider_generation: PROVIDER_GENERATION,
                 flow_id,
+                protocol: 2,
+                pid: SOURCE_PID,
                 reason: 0,
                 age_ms: 1,
                 bytes_in: 48,
@@ -832,15 +1171,21 @@ mod tests {
         encoder
             .write(&TproxyFlowOpened {
                 timestamp_ns: 1,
+                provider_pid: PROVIDER_PID,
+                provider_generation: PROVIDER_GENERATION,
                 flow_id,
                 protocol: 2,
-                pid: 42,
+                pid: SOURCE_PID,
             })
             .unwrap();
         encoder
             .write(&IncompleteTproxyFlowClosed {
                 timestamp_ns: 2,
+                provider_pid: PROVIDER_PID,
+                provider_generation: PROVIDER_GENERATION,
                 flow_id,
+                protocol: 2,
+                pid: SOURCE_PID,
                 reason: 1,
                 age_ms: 1,
                 bytes_in: 48,
@@ -851,6 +1196,18 @@ mod tests {
 
     fn write_trace(directory: &Path, name: &str, bytes: &[u8]) {
         fs::write(directory.join(name), bytes).unwrap();
+    }
+
+    fn write_requirements(directory: &Path, generation: u64) -> PathBuf {
+        let path = directory.join("requirements.tsv");
+        fs::write(
+            &path,
+            format!(
+                "{REQUIREMENTS_HEADER}\necho-0\t{PROVIDER_PID}\t{generation}\t77\t2\t{SOURCE_PID}\t1\t48\t48\t48\t48\n"
+            ),
+        )
+        .unwrap();
+        path
     }
 
     #[test]
@@ -878,9 +1235,10 @@ mod tests {
             source.path(),
             &baseline,
             &destination,
-            PairRequirement {
+            &PairRequirement {
                 flow_id: Some(77),
                 protocol: Some(2),
+                ..Default::default()
             },
             Duration::ZERO,
         )
@@ -898,6 +1256,121 @@ mod tests {
     }
 
     #[test]
+    fn requirements_bind_provider_generation_source_and_exact_bytes() {
+        let source = TempDir::new().unwrap();
+        let output = TempDir::new().unwrap();
+        write_trace(source.path(), "trace.1.bin", &trace_bytes(77, 2, true));
+        let requirements_path = write_requirements(output.path(), PROVIDER_GENERATION);
+        let (requirements, sha256) = load_requirements(&requirements_path).unwrap();
+        let result = collect(
+            source.path(),
+            &Snapshot {
+                schema_version: SCHEMA_VERSION,
+                max_index: None,
+                artifacts: vec![],
+                issues: vec![],
+                schema_complete: true,
+            },
+            &output.path().join("dial9-traces"),
+            &PairRequirement {
+                requirements,
+                requirements_sha256: Some(sha256.clone()),
+                ..Default::default()
+            },
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert_eq!(result.requirements_sha256.as_deref(), Some(sha256.as_str()));
+        assert_eq!(result.requirement_count, 1);
+        assert_eq!(result.matched_requirement_count, 1);
+        assert_eq!(result.required_flows[0].provider_pid, PROVIDER_PID);
+        assert_eq!(
+            result.required_flows[0].provider_generation,
+            PROVIDER_GENERATION
+        );
+        assert_eq!(result.required_flows[0].bytes_in, 48);
+        assert_eq!(result.required_flows[0].bytes_out, 48);
+    }
+
+    #[test]
+    fn wrong_generation_and_duplicate_requirements_are_rejected() {
+        let source = TempDir::new().unwrap();
+        let output = TempDir::new().unwrap();
+        write_trace(source.path(), "trace.1.bin", &trace_bytes(77, 2, true));
+        let requirements_path = write_requirements(output.path(), PROVIDER_GENERATION + 1);
+        let (requirements, sha256) = load_requirements(&requirements_path).unwrap();
+        let error = collect(
+            source.path(),
+            &Snapshot {
+                schema_version: SCHEMA_VERSION,
+                max_index: None,
+                artifacts: vec![],
+                issues: vec![],
+                schema_complete: true,
+            },
+            &output.path().join("dial9-traces"),
+            &PairRequirement {
+                requirements,
+                requirements_sha256: Some(sha256),
+                ..Default::default()
+            },
+            Duration::ZERO,
+        )
+        .unwrap_err();
+        assert!(error.contains("every exact flow requirement"));
+
+        let duplicate = output.path().join("duplicate.tsv");
+        let row = format!(
+            "echo-0\t{PROVIDER_PID}\t{PROVIDER_GENERATION}\t77\t2\t{SOURCE_PID}\t1\t48\t48\t48\t48\n"
+        );
+        fs::write(&duplicate, format!("{REQUIREMENTS_HEADER}\n{row}{row}")).unwrap();
+        assert!(
+            load_requirements(&duplicate)
+                .unwrap_err()
+                .contains("duplicate")
+        );
+
+        let reused_flow_id = output.path().join("reused-flow-id.tsv");
+        let second = format!(
+            "echo-1\t{PROVIDER_PID}\t{PROVIDER_GENERATION}\t77\t2\t{}\t1\t48\t48\t48\t48\n",
+            SOURCE_PID + 1
+        );
+        fs::write(
+            &reused_flow_id,
+            format!("{REQUIREMENTS_HEADER}\n{row}{second}"),
+        )
+        .unwrap();
+        assert!(
+            load_requirements(&reused_flow_id)
+                .unwrap_err()
+                .contains("duplicate")
+        );
+    }
+
+    #[test]
+    fn collect_cli_rejects_ambiguous_or_unbounded_legacy_arguments() {
+        for tail in [
+            vec!["--flow-id", "01"],
+            vec!["--flow-id", "7", "--flow-id", "8"],
+            vec!["--flow-id", "7", "--protocol", "3"],
+            vec!["--flow-id", "7", "--wait-seconds", "601"],
+            vec![
+                "--flow-id",
+                "7",
+                "--wait-seconds",
+                "1",
+                "--wait-seconds",
+                "2",
+            ],
+        ] {
+            let mut args = vec!["source", "baseline", "destination"];
+            args.extend(tail);
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert!(parse_collect_args(&args).is_err(), "accepted {args:?}");
+        }
+    }
+
+    #[test]
     fn current_open_without_close_is_rejected() {
         let source = TempDir::new().unwrap();
         let output = TempDir::new().unwrap();
@@ -912,9 +1385,10 @@ mod tests {
                 schema_complete: true,
             },
             &output.path().join("dial9-traces"),
-            PairRequirement {
+            &PairRequirement {
                 flow_id: Some(7),
                 protocol: Some(2),
+                ..Default::default()
             },
             Duration::ZERO,
         )
@@ -941,14 +1415,15 @@ mod tests {
                 schema_complete: true,
             },
             &output.path().join("dial9-traces"),
-            PairRequirement {
+            &PairRequirement {
                 flow_id: Some(7),
                 protocol: Some(2),
+                ..Default::default()
             },
             Duration::ZERO,
         )
         .unwrap_err();
-        assert!(error.contains("flow_id/reason/age_ms/bytes"));
+        assert!(error.contains("lacks valid"));
     }
 
     #[test]
@@ -970,14 +1445,15 @@ mod tests {
                 schema_complete: true,
             },
             &output.path().join("dial9-traces"),
-            PairRequirement {
+            &PairRequirement {
                 flow_id: Some(7),
                 protocol: Some(2),
+                ..Default::default()
             },
             Duration::ZERO,
         )
         .unwrap_err();
-        assert!(error.contains("flow_id/reason/age_ms/bytes"));
+        assert!(error.contains("lacks valid"));
     }
 
     #[test]
@@ -995,9 +1471,10 @@ mod tests {
                 schema_complete: true,
             },
             &output.path().join("dial9-traces"),
-            PairRequirement {
+            &PairRequirement {
                 flow_id: Some(7),
                 protocol: Some(2),
+                ..Default::default()
             },
             Duration::ZERO,
         )
@@ -1028,9 +1505,10 @@ mod tests {
                 schema_complete: true,
             },
             &output.path().join("dial9-traces"),
-            PairRequirement {
+            &PairRequirement {
                 flow_id: Some(7),
                 protocol: Some(2),
+                ..Default::default()
             },
             Duration::ZERO,
         )
@@ -1055,9 +1533,10 @@ mod tests {
                 schema_complete: true,
             },
             &output.path().join("dial9-traces"),
-            PairRequirement {
+            &PairRequirement {
                 flow_id: Some(7),
                 protocol: Some(2),
+                ..Default::default()
             },
             Duration::ZERO,
         )
@@ -1081,9 +1560,10 @@ mod tests {
                 schema_complete: true,
             },
             &output.path().join("dial9-traces"),
-            PairRequirement {
+            &PairRequirement {
                 flow_id: Some(7),
                 protocol: Some(2),
+                ..Default::default()
             },
             Duration::ZERO,
         )
@@ -1133,9 +1613,10 @@ mod tests {
                 schema_complete: true,
             },
             &output.path().join("dial9-traces"),
-            PairRequirement {
+            &PairRequirement {
                 flow_id: Some(11),
                 protocol: Some(2),
+                ..Default::default()
             },
             Duration::ZERO,
         )

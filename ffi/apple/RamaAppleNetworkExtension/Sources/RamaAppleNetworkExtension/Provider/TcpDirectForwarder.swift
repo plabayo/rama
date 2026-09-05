@@ -141,39 +141,13 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// (the `.paused` replay buffer and any in-flight `readData`
     /// result). Flushed in FIFO order on the `.active`
     /// transition.
-    /// One source callback remains one queue entry even when it exceeds the
-    /// configured write cap. `consumed` advances only after a bounded prefix is
-    /// accepted, so a paused pump retains exactly one unsent remainder without
-    /// fanning the payload out into an array of copied chunks.
-    private struct BufferedPayload {
-        let data: Data
-        var consumed = 0
-        var reservedItems: Int
-
-        var isEmpty: Bool { consumed >= data.count }
-        var remainingBytes: Int { data.count - consumed }
-
-        func prefix(maxBytes: Int) -> Data {
-            let remaining = data.count - consumed
-            precondition(remaining > 0)
-            if consumed == 0, remaining <= maxBytes { return data }
-            let length = min(remaining, maxBytes)
-            let start = data.index(data.startIndex, offsetBy: consumed)
-            let end = data.index(start, offsetBy: length)
-            return data[start..<end]
-        }
-
-        mutating func advance(by count: Int) {
-            consumed += count
-            reservedItems -= 1
-            precondition(reservedItems >= 0)
-        }
-    }
-
-    private var c2sBuffer = ChunkQueue<BufferedPayload>()
+    /// One source callback remains one cursor even when it exceeds a writer
+    /// chunk. Every bounded slice shares the cursor's complete physical root,
+    /// so advancing never refunds live backing bytes.
+    private var c2sBuffer = ChunkQueue<TcpPayloadCursor>()
     /// Same for S→C — bytes captured by
     /// `NwTcpConnectionReadPump.cancelForPromote`.
-    private var s2cBuffer = ChunkQueue<BufferedPayload>()
+    private var s2cBuffer = ChunkQueue<TcpPayloadCursor>()
     /// `true` if a carryover handler signalled EOF for this
     /// direction during the buffering phase (e.g. an in-flight
     /// `readData` returned `(nil, nil)`). On the `.active`
@@ -281,10 +255,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
     }
 
     deinit {
-        let retired = Self.retireBuffered(&c2sBuffer, and: &s2cBuffer)
-        if retired.bytes > 0 || retired.items > 0 {
-            writerMemoryBudget.release(bytes: retired.bytes, items: retired.items)
-        }
+        Self.retireBuffered(&c2sBuffer, and: &s2cBuffer)
     }
 
     /// Network.framework receive callbacks already arrive on the queue passed
@@ -315,24 +286,26 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// its own `readData` yet, so no out-of-order interleaving
     /// is possible.
     func acceptClientCarryover(
-        _ payload: Data?,
-        reservation: WriterMemoryGrant? = nil
+        _ payload: Data?
     ) {
-        let buffered: BufferedPayload?
+        let buffered: TcpPayloadCursor?
         if let payload, !payload.isEmpty {
-            buffered = makeBufferedPayload(payload, reservation: reservation)
+            buffered = writerMemoryBudget.makeTcpTransitCursor(payload)
             guard buffered != nil else {
-                reservation?.release()
                 queue.async { self.failReadLocked(Self.memoryPressureError()) }
                 return
             }
         } else {
-            reservation?.release()
             buffered = nil
         }
+        acceptClientCarryoverCursor(buffered)
+    }
+
+    /// Production promotion handoff. The read pump and forwarder share the
+    /// same physical root/charge; no release-and-reserve gap or second copy.
+    func acceptClientCarryoverCursor(_ buffered: TcpPayloadCursor?) {
         queue.async {
             guard !self.cancelled else {
-                if let buffered { self.releaseBuffered(buffered) }
                 return
             }
             switch self.c2sPhase {
@@ -365,7 +338,6 @@ final class TcpDirectForwarder: @unchecked Sendable {
                     // buffer drains.
                 }
             case .finishing, .finished:
-                if let buffered { self.releaseBuffered(buffered) }
                 break
             }
         }
@@ -375,24 +347,24 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// receives in flight at cutover time. See
     /// `acceptClientCarryover` for the late-arrival semantics.
     func acceptEgressCarryover(
-        _ payload: Data?,
-        reservation: WriterMemoryGrant? = nil
+        _ payload: Data?
     ) {
-        let buffered: BufferedPayload?
+        let buffered: TcpPayloadCursor?
         if let payload, !payload.isEmpty {
-            buffered = makeBufferedPayload(payload, reservation: reservation)
+            buffered = writerMemoryBudget.makeTcpTransitCursor(payload)
             guard buffered != nil else {
-                reservation?.release()
                 queue.async { self.failReadLocked(Self.memoryPressureError()) }
                 return
             }
         } else {
-            reservation?.release()
             buffered = nil
         }
+        acceptEgressCarryoverCursor(buffered)
+    }
+
+    func acceptEgressCarryoverCursor(_ buffered: TcpPayloadCursor?) {
         queue.async {
             guard !self.cancelled else {
-                if let buffered { self.releaseBuffered(buffered) }
                 return
             }
             switch self.s2cPhase {
@@ -414,7 +386,6 @@ final class TcpDirectForwarder: @unchecked Sendable {
                     }
                 }
             case .finishing, .finished:
-                if let buffered { self.releaseBuffered(buffered) }
                 break
             }
         }
@@ -515,37 +486,13 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// Append `data` to `c2sBuffer` and flush. Single entry point
     /// for every C→S write in the `.active` phase so the paused/
     /// buffered-replay logic lives in exactly one place.
-    private func writeC2SLocked(
-        _ data: Data,
-        reservation: WriterMemoryGrant? = nil
-    ) {
-        guard let payload = makeBufferedPayload(data, reservation: reservation) else {
-            reservation?.release()
-            failReadLocked(Self.memoryPressureError())
-            return
-        }
-        writeC2SLocked(payload)
-    }
-
-    private func writeC2SLocked(_ payload: BufferedPayload) {
+    private func writeC2SLocked(_ payload: TcpPayloadCursor) {
         c2sBuffer.pushBack(payload)
         flushC2SBufferLocked()
     }
 
     /// S→C counterpart.
-    private func writeS2CLocked(
-        _ data: Data,
-        reservation: WriterMemoryGrant? = nil
-    ) {
-        guard let payload = makeBufferedPayload(data, reservation: reservation) else {
-            reservation?.release()
-            failReadLocked(Self.memoryPressureError())
-            return
-        }
-        writeS2CLocked(payload)
-    }
-
-    private func writeS2CLocked(_ payload: BufferedPayload) {
+    private func writeS2CLocked(_ payload: TcpPayloadCursor) {
         s2cBuffer.pushBack(payload)
         flushS2CBufferLocked()
     }
@@ -558,7 +505,8 @@ final class TcpDirectForwarder: @unchecked Sendable {
     private func flushC2SBufferLocked() {
         guard !cancelled, c2sPhase == .active else { return }
         while var payload = c2sBuffer.first() {
-            let chunk = payload.prefix(maxBytes: writeChunkLimit)
+            let chunk = payload.prefix(
+                maxBytes: min(writeChunkLimit, writerMemoryBudget.tcpPayloadViewMaxBytes))
             let status = egressWritePump.enqueuePrecharged(chunk)
             switch status {
             case .accepted:
@@ -599,7 +547,8 @@ final class TcpDirectForwarder: @unchecked Sendable {
     private func flushS2CBufferLocked() {
         guard !cancelled, s2cPhase == .active else { return }
         while var payload = s2cBuffer.first() {
-            let chunk = payload.prefix(maxBytes: writeChunkLimit)
+            let chunk = payload.prefix(
+                maxBytes: min(writeChunkLimit, writerMemoryBudget.tcpPayloadViewMaxBytes))
             let status = clientWritePump.enqueuePrecharged(chunk)
             switch status {
             case .accepted:
@@ -658,10 +607,9 @@ final class TcpDirectForwarder: @unchecked Sendable {
         flow.readData { [weak self] data, error in
             guard let self else { return }
             if let data, !data.isEmpty, !self.onActivity() { return }
-            let transitReservation: WriterMemoryGrant?
+            let transitPayload: TcpPayloadCursor?
             if let data, !data.isEmpty {
-                guard let reservation = self.writerMemoryBudget.tryReserveGrant(
-                    bytes: data.count)
+                guard let payload = self.writerMemoryBudget.makeTcpTransitCursor(data)
                 else {
                     self.queue.async { [weak self] in
                         guard let self else { return }
@@ -670,27 +618,24 @@ final class TcpDirectForwarder: @unchecked Sendable {
                     }
                     return
                 }
-                transitReservation = reservation
+                transitPayload = payload
             } else {
-                transitReservation = nil
+                transitPayload = nil
             }
-            self.queue.async { [weak self, transitReservation] in
+            self.queue.async { [weak self, transitPayload] in
                 guard let self else { return }
                 self.inFlightRead = false
                 guard !self.cancelled, self.c2sPhase == .active else {
-                    transitReservation?.release()
                     return
                 }
                 if let error {
-                    transitReservation?.release()
                     self.logger(
                         classifyFlowCallbackError(
                             error, operation: "direct flow.read"))
                     self.failClientReadLocked(error)
                     return
                 }
-                guard let data, !data.isEmpty else {
-                    transitReservation?.release()
+                guard let transitPayload else {
                     // Kernel half-closed C→S.
                     self.finishC2SLocked()
                     return
@@ -698,7 +643,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
                 // Route through the unified write path so a
                 // `.paused` response buffers the rejected chunk
                 // instead of dropping it.
-                self.writeC2SLocked(data, reservation: transitReservation)
+                self.writeC2SLocked(transitPayload)
             }
         }
     }
@@ -709,16 +654,16 @@ final class TcpDirectForwarder: @unchecked Sendable {
         inFlightReceive = true
         connection.receive(
             minimumIncompleteLength: 1,
-            maximumLength: min(65_536, writeChunkLimit)
+            maximumLength: min(
+                writerMemoryBudget.tcpPayloadViewMaxBytes,
+                writeChunkLimit)
         ) {
             [weak self] data, _, isComplete, error in
             guard let self else { return }
             if let data, !data.isEmpty, !self.onActivity() { return }
-            let callbackIsOnQueue = DispatchQueue.getSpecific(key: self.queueKey) != nil
-            let transitReservation: WriterMemoryGrant?
-            if !callbackIsOnQueue, let data, !data.isEmpty {
-                guard let reservation = self.writerMemoryBudget.tryReserveGrant(
-                    bytes: data.count)
+            let transitPayload: TcpPayloadCursor?
+            if let data, !data.isEmpty {
+                guard let payload = self.writerMemoryBudget.makeTcpTransitCursor(data)
                 else {
                     self.queue.async { [weak self] in
                         guard let self else { return }
@@ -727,14 +672,13 @@ final class TcpDirectForwarder: @unchecked Sendable {
                     }
                     return
                 }
-                transitReservation = reservation
+                transitPayload = payload
             } else {
-                transitReservation = nil
+                transitPayload = nil
             }
-            self.runOnQueue { [self, transitReservation] in
+            self.runOnQueue { [self, transitPayload] in
                 self.inFlightReceive = false
                 guard !self.cancelled, self.s2cPhase == .active else {
-                    transitReservation?.release()
                     return
                 }
 
@@ -748,10 +692,8 @@ final class TcpDirectForwarder: @unchecked Sendable {
                     if let error { self.s2cTerminalError = error }
                     self.noteS2CTerminalLocked()
                 }
-                if let data, !data.isEmpty {
-                    self.writeS2CLocked(data, reservation: transitReservation)
-                } else {
-                    transitReservation?.release()
+                if let transitPayload {
+                    self.writeS2CLocked(transitPayload)
                 }
                 if terminalObserved {
                     // Let the flush function finish once the final buffer
@@ -1018,74 +960,20 @@ final class TcpDirectForwarder: @unchecked Sendable {
         }
     }
 
-    private func makeBufferedPayload(
-        _ data: Data,
-        reservation: WriterMemoryGrant? = nil
-    ) -> BufferedPayload? {
-        guard !data.isEmpty else { return nil }
-        let itemCount = data.count / writeChunkLimit
-            + (data.count % writeChunkLimit == 0 ? 0 : 1)
-        if let reservation {
-            guard reservation.belongs(to: writerMemoryBudget),
-                reservation.bytes == data.count,
-                reservation.items <= itemCount
-            else { return nil }
-            let extraItems = itemCount - reservation.items
-            if extraItems > 0,
-                !writerMemoryBudget.tryReserve(bytes: 0, items: extraItems)
-            { return nil }
-            guard reservation.consume() else {
-                if extraItems > 0 {
-                    writerMemoryBudget.release(bytes: 0, items: extraItems)
-                }
-                return nil
-            }
-        } else if !writerMemoryBudget.tryReserve(bytes: data.count, items: itemCount) {
-            return nil
-        }
-        return BufferedPayload(data: data, reservedItems: itemCount)
-    }
-
-    private func releaseBuffered(_ payload: BufferedPayload) {
-        writerMemoryBudget.release(
-            bytes: payload.remainingBytes,
-            items: payload.reservedItems)
-    }
-
-    private func releaseBufferLocked(_ buffer: inout ChunkQueue<BufferedPayload>) {
-        var bytes = 0
-        var items = 0
-        while let payload = buffer.popFront() {
-            bytes += payload.remainingBytes
-            items += payload.reservedItems
-        }
-        if bytes > 0 || items > 0 {
-            writerMemoryBudget.release(bytes: bytes, items: items)
-        }
+    private func releaseBufferLocked(_ buffer: inout ChunkQueue<TcpPayloadCursor>) {
+        while buffer.popFront() != nil {}
     }
 
     private func releaseAllBufferedLocked() {
-        let retired = Self.retireBuffered(&c2sBuffer, and: &s2cBuffer)
-        if retired.bytes > 0 || retired.items > 0 {
-            writerMemoryBudget.release(bytes: retired.bytes, items: retired.items)
-        }
+        Self.retireBuffered(&c2sBuffer, and: &s2cBuffer)
     }
 
     private static func retireBuffered(
-        _ first: inout ChunkQueue<BufferedPayload>,
-        and second: inout ChunkQueue<BufferedPayload>
-    ) -> (bytes: Int, items: Int) {
-        var bytes = 0
-        var items = 0
-        while let payload = first.popFront() {
-            bytes += payload.remainingBytes
-            items += payload.reservedItems
-        }
-        while let payload = second.popFront() {
-            bytes += payload.remainingBytes
-            items += payload.reservedItems
-        }
-        return (bytes, items)
+        _ first: inout ChunkQueue<TcpPayloadCursor>,
+        and second: inout ChunkQueue<TcpPayloadCursor>
+    ) {
+        while first.popFront() != nil {}
+        while second.popFront() != nil {}
     }
 
     private static func memoryPressureError() -> Error {

@@ -23,20 +23,10 @@ protocol TcpWritePumpCoreDelegate: AnyObject {
 /// transport is an `NEAppProxyTCPFlow` or an `NWConnection`.
 final class TcpWritePumpCore: @unchecked Sendable {
     private final class ChargedChunk: @unchecked Sendable {
-        let data: Data
-        private let budget: WriterMemoryBudget
+        let payload: TcpPayloadSlice
+        var data: Data { payload.data }
 
-        init(data: Data, budget: WriterMemoryBudget) {
-            self.data = data
-            self.budget = budget
-        }
-
-        // Retained alongside `data` through dispatch, queueing, retries, and
-        // the transport completion. If a transport discards its completion,
-        // ARC still refunds the charge when it drops this single allocation.
-        deinit {
-            budget.release(bytes: data.count)
-        }
+        init(payload: TcpPayloadSlice) { self.payload = payload }
     }
 
     let state = Locked(TcpWriterState())
@@ -222,22 +212,23 @@ final class TcpWritePumpCore: @unchecked Sendable {
     /// Same status contract as documented on `TcpClientWritePump.enqueue`.
     @discardableResult
     func enqueue(_ data: Data) -> RamaTcpDeliverStatusBridge {
-        enqueue(data, aggregateAlreadyReserved: false)
+        enqueue(data, prechargedPayload: nil)
     }
 
-    /// Accept charge ownership from the direct-forwarder staging buffer. On
-    /// `.accepted` the pump owns and eventually releases `data.count` plus one
-    /// item; on `.paused`/`.closed` ownership remains with the caller.
+    /// Retain a physical-root slice from the direct forwarder. On `.accepted`
+    /// the pump keeps a root reference through transport completion; on
+    /// `.paused`/`.closed` the caller's cursor remains the owner.
     @discardableResult
-    func enqueuePrecharged(_ data: Data) -> RamaTcpDeliverStatusBridge {
-        enqueue(data, aggregateAlreadyReserved: true)
+    func enqueuePrecharged(_ payload: TcpPayloadSlice) -> RamaTcpDeliverStatusBridge {
+        enqueue(payload.data, prechargedPayload: payload)
     }
 
     private func enqueue(
         _ data: Data,
-        aggregateAlreadyReserved: Bool
+        prechargedPayload: TcpPayloadSlice? = nil
     ) -> RamaTcpDeliverStatusBridge {
         guard !data.isEmpty else { return .accepted }
+        let aggregateAlreadyReserved = prechargedPayload != nil
 
         var staleGrant: WriterMemoryGrant?
         var staleWaiter: WriterMemoryWaiter?
@@ -313,6 +304,12 @@ final class TcpWritePumpCore: @unchecked Sendable {
         if needsAggregateWait { registerAggregateWaiter(bytes: data.count) }
         guard decision == .accepted else { return decision }
 
+        // From here the aggregate reservation is owned by an ARC root. A
+        // precharged promotion slice already has that root; a normal Rust
+        // callback binds the just-reserved/pregranted charge now.
+        let payload = prechargedPayload
+            ?? writerMemoryBudget.makePregrantedWriterPayload(data)
+
         // Linearize acceptance against pressure teardown before reporting the
         // chunk accepted. If teardown won after the byte-budget reservation,
         // roll that reservation back and surface a closed destination.
@@ -322,14 +319,11 @@ final class TcpWritePumpCore: @unchecked Sendable {
                 s.pendingBytes -= data.count
                 s.pendingItems -= 1
             }
-            if !aggregateAlreadyReserved {
-                writerMemoryBudget.release(bytes: data.count)
-            }
             return .closed
         }
         if let hwm { logHwm(hwm) }
 
-        let chunk = ChargedChunk(data: data, budget: writerMemoryBudget)
+        let chunk = ChargedChunk(payload: payload)
         queue.async { [weak self, chunk] in
             guard let self else { return }
             // Re-check under lock; cancel() can have flipped the flag

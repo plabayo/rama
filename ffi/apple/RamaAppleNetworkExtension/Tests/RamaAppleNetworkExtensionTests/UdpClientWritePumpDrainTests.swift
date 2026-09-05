@@ -12,6 +12,24 @@ import XCTest
 /// so these branches were entirely uncovered.
 final class UdpClientWritePumpDrainTests: XCTestCase {
 
+    private final class CompletionDiscardingUdpFlow: UdpFlowWritable,
+        @unchecked Sendable
+    {
+        private let writes = Locked(0)
+
+        func writeDatagrams(
+            _ datagrams: [Data],
+            sentBy remoteEndpoints: [NWEndpoint],
+            completionHandler: @escaping @Sendable (Error?) -> Void
+        ) {
+            XCTAssertEqual(datagrams.count, remoteEndpoints.count)
+            writes.withLock { $0 += 1 }
+            // Deliberately retain neither payload arrays nor completion.
+        }
+
+        var writeCount: Int { writes.withLock { $0 } }
+    }
+
     private func makeQueue() -> DispatchQueue {
         DispatchQueue(label: "rama.tproxy.udp.write.drain.test", qos: .utility)
     }
@@ -116,13 +134,13 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
 
         XCTAssertTrue(flow.completePendingWrite(error: nil))
         queue.sync {}
-        var batch = try XCTUnwrap(flow.writtenBatches.first)
-        XCTAssertEqual(batch.datagrams.map(tagOf), [1, 2])
+        var batch = flow.writtenBatches.first
+        XCTAssertEqual(try XCTUnwrap(batch).datagrams.map(tagOf), [1, 2])
         XCTAssertEqual(
-            batch.datagrams.reduce(0) { $0 + $1.count },
+            try XCTUnwrap(batch).datagrams.reduce(0) { $0 + $1.count },
             udpWritePumpMaxBatchBytes)
         XCTAssertEqual(
-            batch.sentBy.map(String.init(describing:)),
+            try XCTUnwrap(batch).sentBy.map(String.init(describing:)),
             [ep(5_001), ep(5_002)].map(String.init(describing:)))
         // The in-flight batch remains charged; only its waiting count moved.
         XCTAssertEqual(pump.testAdmissionSnapshot.waiting, 1)
@@ -130,14 +148,27 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
 
         XCTAssertTrue(flow.completePendingWrite(error: nil))
         queue.sync {}
-        batch = try XCTUnwrap(flow.writtenBatches.first)
-        XCTAssertEqual(batch.datagrams.map(tagOf), [3])
-        XCTAssertEqual(batch.sentBy.map(String.init(describing:)), [String(describing: ep(5_003))])
+        XCTAssertEqual(
+            pump.testAdmissionSnapshot.retainedBytes,
+            3 * itemBytes,
+            "an inspection alias of the completed write keeps its payload charged")
+        batch = nil
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, itemBytes)
+        batch = flow.writtenBatches.first
+        XCTAssertEqual(try XCTUnwrap(batch).datagrams.map(tagOf), [3])
+        XCTAssertEqual(
+            try XCTUnwrap(batch).sentBy.map(String.init(describing:)),
+            [String(describing: ep(5_003))])
         XCTAssertEqual(pump.testAdmissionSnapshot.waiting, 0)
         XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, itemBytes)
 
         XCTAssertTrue(flow.completePendingWrite(error: nil))
         queue.sync {}
+        XCTAssertEqual(
+            pump.testAdmissionSnapshot.retainedBytes,
+            itemBytes,
+            "the final inspection alias still owns the completed payload")
+        batch = nil
         XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
     }
 
@@ -666,8 +697,12 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
     func testBorrowedAbsentPeerRemainsOrphanDespiteCachedFallback() {
         let flow = MockUdpFlow()
         let queue = makeQueue()
+        let logs = Locked<[FlowLogMessage]>([])
         let pump = UdpClientWritePump(
-            flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+            flow: flow,
+            queue: queue,
+            logger: { message in logs.withLock { $0.append(message) } },
+            onTerminalError: { _ in })
         pump.markOpened()
         pump.setSentByEndpoint(ep())
         queue.sync {}
@@ -688,11 +723,88 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         XCTAssertTrue(flow.writtenBatches.isEmpty)
         XCTAssertEqual(pump.testAdmissionSnapshot.borrowedMaterializations, 1)
         XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
+        XCTAssertEqual(pump.aggregateBudget.snapshot().retainedBytes, 0)
+        let orphanLogs = logs.withLock {
+            $0.filter { $0.text.contains("udp write pump dropped") }
+        }
+        XCTAssertEqual(orphanLogs.count, 1)
+        XCTAssertTrue(orphanLogs.first?.text.contains("no usable sentBy endpoint") == true)
+        XCTAssertFalse(orphanLogs.first?.text.contains("no cached endpoint") == true)
 
         // Native nil retains the documented cached-fallback behavior.
         pump.enqueue(Data("native".utf8), sentBy: nil)
         queue.sync {}
         XCTAssertEqual(flow.writtenBatches.first?.datagrams, [Data("native".utf8)])
+    }
+
+    func testPendingDatagramDestroysPayloadBeforeWriterBudgetRefund() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(maxBytes: 8_192, maxItems: 8))
+        let retainedBytesSeenByDeallocator = Locked<[Int]>([])
+        let pump = UdpClientWritePump(
+            flow: flow,
+            queue: queue,
+            logger: { _ in },
+            onTerminalError: { _ in },
+            writerMemoryBudget: budget)
+        pump.markOpened()
+        queue.sync {}
+
+        func enqueueNoCopyOrphan() {
+            let count = 4_096
+            let bytes = UnsafeMutableRawPointer.allocate(
+                byteCount: count, alignment: MemoryLayout<UInt8>.alignment)
+            bytes.initializeMemory(as: UInt8.self, repeating: 0x5A, count: count)
+            let data = Data(
+                bytesNoCopy: bytes,
+                count: count,
+                deallocator: .custom { pointer, _ in
+                    retainedBytesSeenByDeallocator.withLock {
+                        $0.append(budget.snapshot().retainedBytes)
+                    }
+                    pointer.deallocate()
+                })
+            pump.enqueue(data, sentBy: nil)
+        }
+
+        // Enqueue from the serial pump queue so the native call's input alias
+        // is destroyed before the queued `PendingDatagram` can be accepted.
+        // Any later owner is therefore necessarily inside the lease.
+        queue.sync { enqueueNoCopyOrphan() }
+        queue.sync {}
+
+        XCTAssertTrue(flow.writtenBatches.isEmpty)
+        XCTAssertEqual(retainedBytesSeenByDeallocator.withLock { $0 }, [4_096])
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+    }
+
+    func testSynchronousCompletionDiscardReturnsAndRefundsOutsideSharedLock() {
+        let flow = CompletionDiscardingUdpFlow()
+        let queue = makeQueue()
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(maxBytes: 8_192, maxItems: 8))
+        let pump = UdpClientWritePump(
+            flow: flow,
+            queue: queue,
+            logger: { _ in },
+            onTerminalError: { _ in },
+            writerMemoryBudget: budget)
+        pump.markOpened()
+        queue.sync {}
+
+        let queueReturned = expectation(description: "write call returned without lock reentry")
+        pump.enqueue(Data(count: 4_096), sentBy: ep())
+        queue.async { queueReturned.fulfill() }
+        wait(for: [queueReturned], timeout: 2)
+
+        XCTAssertEqual(flow.writeCount, 1)
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedItems, 0)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
     }
 
     func testInlineEndpointUpdatesAreCapturedInOrder() {

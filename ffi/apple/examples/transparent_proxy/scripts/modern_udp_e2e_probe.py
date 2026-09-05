@@ -2,17 +2,28 @@
 """Protocol-aware public UDP probes used by the signed macOS NE E2E."""
 
 import argparse
+import concurrent.futures
+import hashlib
 import ipaddress
+import json
+import os
 import secrets
+import signal
 import socket
 import struct
 import sys
+import threading
 import time
+import uuid
 
 
 PRODUCT_VIOLATION_EXIT = 10
 PROBE_ERROR_EXIT = 20
 PRESSURE_MARKER_PREFIX = b"rama-udp-e2e-pressure-v1 "
+QUIC_SHAPED_MARKER = b"rama-quic-shaped-not-valid-quic-v1\0"
+QUIC_SHAPED_VERSION = 0xFACEB00C
+CONTROLLED_ECHO_SCHEMA_VERSION = 1
+MAX_LOAD_BYTES = 256 * 1024 * 1024
 
 
 class ProductViolation(RuntimeError):
@@ -121,6 +132,8 @@ def pressure_burst(server: str, count: int, payload_bytes: int, settle: float) -
         raise ValueError("pressure count must be in 64..100000")
     if not 64 <= payload_bytes <= 60_000:
         raise ValueError("pressure payload bytes must be in 64..60000")
+    if count * payload_bytes > MAX_LOAD_BYTES:
+        raise ValueError("pressure byte product exceeds the bounded load budget")
     if not 0 <= settle <= 30:
         raise ValueError("pressure settle seconds must be in 0..30")
 
@@ -139,7 +152,8 @@ def pressure_burst(server: str, count: int, payload_bytes: int, settle: float) -
     try:
         for sequence in range(count):
             packet[sequence_offset:sequence_offset + 8] = sequence.to_bytes(8, "big")
-            sock.sendto(packet, (server, 123))
+            if sock.sendto(packet, (server, 123)) != len(packet):
+                raise RuntimeError("pressure burst sent a partial datagram")
             sent += 1
     finally:
         sock.close()
@@ -149,6 +163,310 @@ def pressure_burst(server: str, count: int, payload_bytes: int, settle: float) -
     print(
         f"UDP pressure burst sent {sent} datagrams ({payload_bytes} bytes each) "
         f"to {server}:123 and settled for {settle:.3f}s"
+    )
+
+
+def canonical_uuid(value: str) -> str:
+    parsed = uuid.UUID(value)
+    if str(parsed) != value:
+        raise ValueError("run UUID must use canonical lowercase text")
+    return value
+
+
+def quic_shaped_payload(
+    run_uuid: str, socket_index: int, sequence: int, payload_bytes: int
+) -> bytes:
+    """Build a QUIC-shaped test datagram that is deliberately not valid QUIC."""
+    canonical_uuid(run_uuid)
+    if not 0 <= socket_index <= 0xFFFF_FFFF or not 0 <= sequence <= 0xFFFF_FFFF:
+        raise ValueError("QUIC-shaped payload identity exceeds u32")
+    # Long-header and fixed bits plus a deliberately unimplemented version and
+    # cleartext evidence marker make this visually QUIC-shaped without claiming
+    # to be a valid QUIC packet or interoperable protocol message.
+    dcid = struct.pack("!II", socket_index, sequence)
+    scid = secrets.token_bytes(8)
+    prefix = (
+        struct.pack("!BI", 0xC0, QUIC_SHAPED_VERSION)
+        + bytes((len(dcid),)) + dcid
+        + bytes((len(scid),)) + scid
+        + QUIC_SHAPED_MARKER
+        + run_uuid.encode("ascii") + b"\0"
+        + struct.pack("!II", socket_index, sequence)
+    )
+    if not len(prefix) <= payload_bytes <= 60_000:
+        raise ValueError(
+            f"payload bytes must be in {len(prefix)}..60000 for the evidence identity"
+        )
+    return prefix + hashlib.shake_256(prefix).digest(payload_bytes - len(prefix))
+
+
+def parse_quic_shaped_payload(payload: bytes, run_uuid: str) -> tuple[int, int]:
+    canonical_uuid(run_uuid)
+    fixed = 1 + 4 + 1 + 8 + 1 + 8
+    if len(payload) < fixed + len(QUIC_SHAPED_MARKER) + 36 + 1 + 8:
+        raise ValueError("truncated QUIC-shaped datagram")
+    first, version = struct.unpack("!BI", payload[:5])
+    if first != 0xC0 or version != QUIC_SHAPED_VERSION:
+        raise ValueError("invalid QUIC-shaped header")
+    if payload[5] != 8 or payload[14] != 8:
+        raise ValueError("invalid QUIC-shaped connection-id lengths")
+    offset = fixed
+    if payload[offset:offset + len(QUIC_SHAPED_MARKER)] != QUIC_SHAPED_MARKER:
+        raise ValueError("missing non-QUIC evidence marker")
+    offset += len(QUIC_SHAPED_MARKER)
+    if payload[offset:offset + 36] != run_uuid.encode("ascii") or payload[offset + 36] != 0:
+        raise ValueError("QUIC-shaped payload run UUID mismatch")
+    offset += 37
+    socket_index, sequence = struct.unpack("!II", payload[offset:offset + 8])
+    dcid_socket, dcid_sequence = struct.unpack("!II", payload[6:14])
+    if (socket_index, sequence) != (dcid_socket, dcid_sequence):
+        raise ValueError("QUIC-shaped payload identity mismatch")
+    expected = quic_shaped_payload_without_random_scid_check(payload, offset + 8)
+    if payload != expected:
+        raise ValueError("QUIC-shaped payload padding mismatch")
+    return socket_index, sequence
+
+
+def quic_shaped_payload_without_random_scid_check(payload: bytes, prefix_len: int) -> bytes:
+    """Recompute deterministic padding while retaining the transmitted SCID."""
+    prefix = payload[:prefix_len]
+    return prefix + hashlib.shake_256(prefix).digest(len(payload) - prefix_len)
+
+
+def write_json_result(path: str, result: dict) -> None:
+    temporary = f"{path}.tmp.{os.getpid()}"
+    with open(temporary, "w", encoding="utf-8") as output:
+        json.dump(result, output, sort_keys=True, separators=(",", ":"))
+        output.write("\n")
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, path)
+
+
+def payload_set_sha256(payloads: dict[tuple[int, int], bytes]) -> str:
+    digest = hashlib.sha256()
+    for identity, payload in sorted(payloads.items()):
+        digest.update(struct.pack("!IIQ", identity[0], identity[1], len(payload)))
+        digest.update(payload)
+    return digest.hexdigest()
+
+
+def controlled_echo_server(
+    bind: str,
+    port: int,
+    run_uuid: str,
+    expected_count: int,
+    max_seconds: float,
+    ready_file: str,
+    result_file: str,
+) -> None:
+    canonical_uuid(run_uuid)
+    if not 1 <= expected_count <= 65_536:
+        raise ValueError("expected echo count must be in 1..65536")
+    if not 1 <= max_seconds <= 600:
+        raise ValueError("echo server max seconds must be in 1..600")
+    address = ipaddress.ip_address(bind)
+    family = socket.AF_INET if address.version == 4 else socket.AF_INET6
+    sock = socket.socket(family, socket.SOCK_DGRAM)
+    sock.settimeout(0.25)
+    sock.bind((str(address), port))
+    endpoint = sock.getsockname()
+    endpoint_text = (
+        f"[{endpoint[0]}]:{endpoint[1]}" if address.version == 6
+        else f"{endpoint[0]}:{endpoint[1]}"
+    )
+    stop = threading.Event()
+
+    def request_stop(_signum, _frame):
+        stop.set()
+
+    signal.signal(signal.SIGTERM, request_stop)
+    signal.signal(signal.SIGINT, request_stop)
+    received = {}
+    duplicate_count = 0
+    malformed_count = 0
+    echo_count = 0
+    started = time.monotonic()
+    write_json_result(ready_file, {
+        "schema_version": CONTROLLED_ECHO_SCHEMA_VERSION,
+        "run_uuid": run_uuid,
+        "endpoint": endpoint_text,
+        "server_pid": os.getpid(),
+        "schema_complete": True,
+    })
+    try:
+        while (
+            not stop.is_set()
+            and len(received) < expected_count
+            and time.monotonic() - started < max_seconds
+        ):
+            try:
+                payload, peer = sock.recvfrom(65_535)
+            except socket.timeout:
+                continue
+            try:
+                identity = parse_quic_shaped_payload(payload, run_uuid)
+            except ValueError:
+                malformed_count += 1
+                continue
+            if identity in received:
+                duplicate_count += 1
+                continue
+            received[identity] = payload
+            if sock.sendto(payload, peer) != len(payload):
+                raise RuntimeError("controlled echo server sent a partial datagram")
+            echo_count += 1
+    finally:
+        sock.close()
+        result = {
+            "schema_version": CONTROLLED_ECHO_SCHEMA_VERSION,
+            "kind": "controlled_echo_server",
+            "run_uuid": run_uuid,
+            "endpoint": endpoint_text,
+            "expected_count": expected_count,
+            "received_count": len(received),
+            "echo_count": echo_count,
+            "duplicate_count": duplicate_count,
+            "malformed_count": malformed_count,
+            "payload_set_sha256": payload_set_sha256(received),
+            "passed": len(received) == expected_count
+                and echo_count == expected_count
+                and duplicate_count == 0
+                and malformed_count == 0,
+            "schema_complete": True,
+        }
+        write_json_result(result_file, result)
+    if not result["passed"]:
+        raise RuntimeError("controlled echo server did not receive one exact payload per identity")
+
+
+def controlled_echo_load(
+    server: str,
+    port: int,
+    run_uuid: str,
+    socket_count: int,
+    datagrams_per_socket: int,
+    payload_bytes: int,
+    concurrency: int,
+    timeout: float,
+    result_file: str,
+) -> None:
+    canonical_uuid(run_uuid)
+    address = ipaddress.ip_address(server)
+    if not 1 <= socket_count <= 512:
+        raise ValueError("socket count must be in 1..512")
+    if not 1 <= datagrams_per_socket <= 64:
+        raise ValueError("datagrams per socket must be in 1..64")
+    if not 1 <= concurrency <= min(socket_count, 128):
+        raise ValueError("concurrency must be in 1..min(socket_count, 128)")
+    if socket_count > concurrency * 16:
+        raise ValueError("socket count must be at most 16 times concurrency")
+    if socket_count * datagrams_per_socket * payload_bytes > MAX_LOAD_BYTES:
+        raise ValueError("echo byte product exceeds the bounded load budget")
+    if not 0.1 <= timeout <= 10:
+        raise ValueError("echo timeout must be in 0.1..10")
+    expected = {
+        (socket_index, sequence): quic_shaped_payload(
+            run_uuid, socket_index, sequence, payload_bytes
+        )
+        for socket_index in range(socket_count)
+        for sequence in range(datagrams_per_socket)
+    }
+
+    family = socket.AF_INET if address.version == 4 else socket.AF_INET6
+    sockets = []
+    try:
+        for _ in range(socket_count):
+            sock = socket.socket(family, socket.SOCK_DGRAM)
+            sock.settimeout(timeout)
+            sockets.append(sock)
+    except Exception:
+        for sock in sockets:
+            sock.close()
+        raise
+
+    def one_socket(socket_index: int):
+        sock = sockets[socket_index]
+        sent = received = exact = 0
+        echoed = {}
+        try:
+            for sequence in range(datagrams_per_socket):
+                payload = expected[(socket_index, sequence)]
+                if sock.sendto(payload, (str(address), port)) != len(payload):
+                    raise RuntimeError("controlled echo client sent a partial datagram")
+                sent += 1
+                response, peer = sock.recvfrom(65_535)
+                received += 1
+                if peer[0] != str(address) or peer[1] != port:
+                    raise ProductViolation(f"echo response came from unexpected peer {peer}")
+                if response != payload:
+                    raise ProductViolation("echo response did not exactly match its request")
+                if parse_quic_shaped_payload(response, run_uuid) != (socket_index, sequence):
+                    raise ProductViolation("echo response carried the wrong flow identity")
+                echoed[(socket_index, sequence)] = response
+                exact += 1
+            local = sock.getsockname()
+            local_endpoint = (
+                f"[{local[0]}]:{local[1]}" if address.version == 6
+                else f"{local[0]}:{local[1]}"
+            )
+            return sent, received, exact, echoed, local_endpoint, None
+        except Exception as error:
+            return sent, received, exact, echoed, None, error
+
+    rows = []
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = [executor.submit(one_socket, index) for index in range(socket_count)]
+            rows = [future.result() for future in futures]
+    finally:
+        for sock in sockets:
+            sock.close()
+    echoed = {}
+    for row in rows:
+        echoed.update(row[3])
+    local_endpoints = [row[4] for row in rows if row[4] is not None]
+    errors = [row[5] for row in rows if row[5] is not None]
+    expected_count = socket_count * datagrams_per_socket
+    sent_count = sum(row[0] for row in rows)
+    received_count = sum(row[1] for row in rows)
+    exact_echo_count = sum(row[2] for row in rows)
+    result = {
+        "schema_version": CONTROLLED_ECHO_SCHEMA_VERSION,
+        "kind": "controlled_echo_client",
+        "run_uuid": run_uuid,
+        "endpoint": f"[{address}]:{port}" if address.version == 6 else f"{address}:{port}",
+        "socket_count": socket_count,
+        "datagrams_per_socket": datagrams_per_socket,
+        "payload_bytes": payload_bytes,
+        "expected_count": expected_count,
+        "sent_count": sent_count,
+        "received_count": received_count,
+        "exact_echo_count": exact_echo_count,
+        "unique_echo_count": len(echoed),
+        "independent_socket_count": len(set(local_endpoints)),
+        "local_endpoints": sorted(local_endpoints),
+        "local_endpoint_set_sha256": hashlib.sha256(
+            "\n".join(sorted(local_endpoints)).encode("utf-8")
+        ).hexdigest(),
+        "payload_set_sha256": payload_set_sha256(expected),
+        "echo_set_sha256": payload_set_sha256(echoed),
+        "error_count": len(errors),
+        "passed": not errors
+            and sent_count == received_count == exact_echo_count == expected_count
+            and len(echoed) == expected_count
+            and len(local_endpoints) == len(set(local_endpoints)) == socket_count
+            and payload_set_sha256(expected) == payload_set_sha256(echoed),
+        "schema_complete": True,
+    }
+    write_json_result(result_file, result)
+    if not result["passed"]:
+        if any(isinstance(error, ProductViolation) for error in errors):
+            raise ProductViolation("controlled echo returned invalid payload evidence")
+        raise RuntimeError("controlled echo load did not complete exact cardinality")
+    print(
+        f"QUIC-shaped UDP controlled echo ok: sockets={socket_count} "
+        f"datagrams={expected_count} bytes={payload_bytes} sha256={result['echo_set_sha256']}"
     )
 
 
@@ -172,13 +490,44 @@ def main() -> None:
     pressure.add_argument("--payload-bytes", type=int, default=4096)
     pressure.add_argument("--settle", type=float, default=4.0)
 
+    echo_server = subparsers.add_parser("echo-server")
+    echo_server.add_argument("--bind", default="127.0.0.1")
+    echo_server.add_argument("--port", type=int, default=0)
+    echo_server.add_argument("--run-uuid", required=True)
+    echo_server.add_argument("--expected-count", type=int, required=True)
+    echo_server.add_argument("--max-seconds", type=float, default=180.0)
+    echo_server.add_argument("--ready-file", required=True)
+    echo_server.add_argument("--result-file", required=True)
+
+    echo_load = subparsers.add_parser("echo-load")
+    echo_load.add_argument("--server", required=True)
+    echo_load.add_argument("--port", required=True, type=int)
+    echo_load.add_argument("--run-uuid", required=True)
+    echo_load.add_argument("--socket-count", type=int, default=128)
+    echo_load.add_argument("--datagrams-per-socket", type=int, default=1)
+    echo_load.add_argument("--payload-bytes", type=int, default=1200)
+    echo_load.add_argument("--concurrency", type=int, default=32)
+    echo_load.add_argument("--timeout", type=float, default=8.0)
+    echo_load.add_argument("--result-file", required=True)
+
     args = parser.parse_args()
     if args.command == "dns":
         dns_query(args.server, args.name, args.timeout, args.expect_no_response)
     elif args.command == "ntp":
         ntp_query(args.server, args.timeout)
-    else:
+    elif args.command == "pressure":
         pressure_burst(args.server, args.count, args.payload_bytes, args.settle)
+    elif args.command == "echo-server":
+        controlled_echo_server(
+            args.bind, args.port, args.run_uuid, args.expected_count,
+            args.max_seconds, args.ready_file, args.result_file,
+        )
+    else:
+        controlled_echo_load(
+            args.server, args.port, args.run_uuid, args.socket_count,
+            args.datagrams_per_socket, args.payload_bytes, args.concurrency,
+            args.timeout, args.result_file,
+        )
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
-use std::convert::Infallible;
-use std::{net::SocketAddr, time::Duration};
+use std::{cell::RefCell, convert::Infallible, io, net::SocketAddr, time::Duration};
+
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rama::{
     Service,
@@ -15,12 +17,56 @@ use rama::{
     service::service_fn,
     telemetry::tracing,
     udp::{UdpSocket, bind_udp_with_address},
-    utils::octets::kib,
 };
 
 use super::UdpPolicyScope;
 
 const E2E_PRESSURE_MARKER: &[u8] = b"rama-udp-e2e-pressure-v1 ";
+const UDP_RECV_SCRATCH_LEN: usize = 65_536;
+
+thread_local! {
+    /// One receive allocation per runtime worker that actually receives UDP.
+    ///
+    /// The `RefCell` is borrowed only around `try_recv_from` and the exact-size
+    /// `Bytes` copy. In particular, its borrow never crosses an `.await`, so a
+    /// Tokio task remains free to move between workers while it is suspended.
+    static UDP_RECV_SCRATCH: RefCell<Option<UdpRecvScratch>> = const { RefCell::new(None) };
+}
+
+struct UdpRecvScratch {
+    bytes: Box<[u8]>,
+}
+
+impl UdpRecvScratch {
+    fn new() -> Self {
+        #[cfg(test)]
+        {
+            let active = UDP_RECV_SCRATCH_ACTIVE.fetch_add(1, Ordering::Relaxed) + 1;
+            UDP_RECV_SCRATCH_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+            UDP_RECV_SCRATCH_PEAK.fetch_max(active, Ordering::Relaxed);
+        }
+
+        Self {
+            bytes: vec![0; UDP_RECV_SCRATCH_LEN].into_boxed_slice(),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for UdpRecvScratch {
+    fn drop(&mut self) {
+        UDP_RECV_SCRATCH_ACTIVE.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+static UDP_RECV_SCRATCH_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static UDP_RECV_SCRATCH_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static UDP_RECV_SCRATCH_PEAK: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static UDP_RECV_WOULD_BLOCKS: AtomicUsize = AtomicUsize::new(0);
 
 pub(super) async fn try_new_service(
     _: TransparentProxyServiceContext,
@@ -87,14 +133,10 @@ async fn service(mut ingress: UdpFlow, udp_policy_scope: UdpPolicyScope) -> Resu
     // traffic and an expired E2E scope never take this path.
     let mut pressure_probe_pending = true;
 
-    // Egress state per address family — socket + recv buffer
-    // allocated together, lazily, on first use of that family. A
-    // single-family flow (the overwhelming common case) thus only
-    // pays for one 64 KiB buffer, not two. The recv buffers being
-    // bound to the same `Option` as the socket means a torn-down
-    // socket also frees its buffer.
-    let mut egress_v4: Option<(UdpSocket, Vec<u8>)> = None;
-    let mut egress_v6: Option<(UdpSocket, Vec<u8>)> = None;
+    // Egress state per address family. Receive scratch is shared by all flows
+    // polled on the same Tokio worker rather than retained by every socket.
+    let mut egress_v4: Option<UdpSocket> = None;
+    let mut egress_v6: Option<UdpSocket> = None;
     let mut up_packets: u64 = 0;
     let mut down_packets: u64 = 0;
     let mut up_bytes: u64 = 0;
@@ -140,7 +182,7 @@ async fn service(mut ingress: UdpFlow, udp_policy_scope: UdpPolicyScope) -> Resu
                     break;
                 }
             }
-            res = recv_from_mut_pair(egress_v4.as_mut()), if egress_v4.is_some() => {
+            res = recv_from_slot(egress_v4.as_ref()), if egress_v4.is_some() => {
                 match res {
                     Ok((n, peer, payload)) => {
                         down_packets += 1;
@@ -149,16 +191,15 @@ async fn service(mut ingress: UdpFlow, udp_policy_scope: UdpPolicyScope) -> Resu
                     }
                     Err(err) => {
                         tracing::warn!(%err, family = "v4", "tproxy udp egress recv_from failed; tearing socket down");
-                        // Drop the slot so the next loop iteration
-                        // stops polling it — otherwise the broken
-                        // socket re-errors on every iteration and
-                        // spams the log. Dropping also releases the
-                        // 64 KiB recv buffer.
+                        // Drop the slot so the next loop iteration stops
+                        // polling it. Otherwise a broken socket can re-error
+                        // every iteration and amplify the log without making
+                        // progress.
                         egress_v4 = None;
                     }
                 }
             }
-            res = recv_from_mut_pair(egress_v6.as_mut()), if egress_v6.is_some() => {
+            res = recv_from_slot(egress_v6.as_ref()), if egress_v6.is_some() => {
                 match res {
                     Ok((n, peer, payload)) => {
                         down_packets += 1;
@@ -219,42 +260,58 @@ fn should_hold_e2e_pressure_flow(
 
 /// Lazily bind a per-family egress socket on first use. Returns
 /// `None` and logs on bind failure (the caller treats this as a
-/// flow-terminal condition). Allocates the per-family receive
-/// buffer alongside the socket so an idle family pays nothing.
+/// flow-terminal condition).
 async fn ensure_bound<'s>(
-    slot: &'s mut Option<(UdpSocket, Vec<u8>)>,
+    slot: &'s mut Option<UdpSocket>,
     bind_addr: &str,
 ) -> Option<&'s UdpSocket> {
     if slot.is_none() {
         match bind_udp_with_address(bind_addr).await {
-            Ok(s) => *slot = Some((s, vec![0u8; kib(64)])),
+            Ok(socket) => *slot = Some(socket),
             Err(err) => {
                 tracing::error!(%err, bind_addr, "tproxy udp failed to bind egress socket");
                 return None;
             }
         }
     }
-    slot.as_ref().map(|(s, _buf)| s)
+    slot.as_ref()
 }
 
-/// Wrapper used inside `tokio::select!` arms — receives one
-/// datagram on the slot's socket into the slot's buffer, returning
-/// the byte count, peer, and a freshly-cloned `Bytes` payload.
-/// `None` shorts to `pending()` so the arm `if` guard is the only
-/// gate that matters.
+/// Wrapper used inside `tokio::select!` arms. `None` shorts to `pending()` so
+/// the arm's `if` guard is the only gate that matters.
 ///
-/// Errors propagate so the caller can tear down the slot — without
-/// that, a hard error (interface down, etc.) would re-error on
-/// every `select!` cycle and spam the log without making progress.
-async fn recv_from_mut_pair(
-    slot: Option<&mut (UdpSocket, Vec<u8>)>,
+/// Readiness can be a false positive, so `WouldBlock` returns to `readable()`
+/// instead of spinning. All other errors propagate so the caller tears the
+/// socket down and cannot repeatedly poll/log a permanently broken socket.
+async fn recv_from_slot(
+    slot: Option<&UdpSocket>,
 ) -> std::io::Result<(usize, SocketAddr, rama::bytes::Bytes)> {
-    match slot {
-        Some((socket, buf)) => {
-            let (n, peer) = socket.recv_from(buf).await?;
-            Ok((n, peer, rama::bytes::Bytes::copy_from_slice(&buf[..n])))
+    let Some(socket) = slot else {
+        return std::future::pending().await;
+    };
+
+    loop {
+        socket.readable().await?;
+
+        let result = UDP_RECV_SCRATCH.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let scratch = slot.get_or_insert_with(UdpRecvScratch::new);
+            socket.try_recv_from(&mut scratch.bytes).map(|(n, peer)| {
+                (
+                    n,
+                    peer,
+                    rama::bytes::Bytes::copy_from_slice(&scratch.bytes[..n]),
+                )
+            })
+        });
+
+        match result {
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                #[cfg(test)]
+                UDP_RECV_WOULD_BLOCKS.fetch_add(1, Ordering::Relaxed);
+            }
+            result => return result,
         }
-        None => std::future::pending().await,
     }
 }
 
@@ -262,6 +319,177 @@ async fn recv_from_mut_pair(
 mod tests {
     use super::*;
     use rama::net::apple::networkextension::tproxy::TransparentProxyFlowProtocol;
+
+    const TEST_WORKERS: usize = 2;
+    const CONCURRENT_FLOWS: usize = 64;
+
+    fn datagram_payload(len: usize, salt: usize) -> Vec<u8> {
+        (0..len)
+            .map(|index| ((index.wrapping_mul(31).wrapping_add(salt)) % 251) as u8)
+            .collect()
+    }
+
+    fn is_message_too_long(err: &io::Error) -> bool {
+        // EMSGSIZE is 40 on Apple/BSD, 90 on Linux, and 10040 in Winsock.
+        matches!(err.raw_os_error(), Some(40 | 90 | 10_040))
+    }
+
+    async fn check_datagram_size(len: usize, ipv6: bool) -> bool {
+        let bind_addr = if ipv6 { "[::1]:0" } else { "127.0.0.1:0" };
+        let receiver = match UdpSocket::bind(bind_addr).await {
+            Ok(receiver) => receiver,
+            Err(err) if ipv6 => {
+                eprintln!("skipping unavailable IPv6 loopback: {err}");
+                return false;
+            }
+            Err(err) => panic!("IPv4 loopback must be available: {err}"),
+        };
+        let sender = UdpSocket::bind(bind_addr).await.unwrap();
+        let receiver_addr = receiver.local_addr().unwrap();
+        let sender_addr = sender.local_addr().unwrap();
+        let expected = datagram_payload(len, 17);
+
+        match sender.send_to(&expected, receiver_addr).await {
+            Ok(n) => assert_eq!(n, len),
+            Err(err) if len >= 65_507 && is_message_too_long(&err) => {
+                // macOS's configured UDP maximum and the loopback MTU can be
+                // lower than the protocol's payload ceiling. Still attempt
+                // both upper boundaries and skip only when the kernel rejects
+                // the send; the other boundary sizes remain mandatory.
+                eprintln!("skipping unsupported {len}-byte UDP datagram: {err}");
+                return false;
+            }
+            Err(err) => panic!("failed to send {len}-byte UDP datagram: {err}"),
+        }
+
+        let received = tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_secs(3), recv_from_slot(Some(&receiver)))
+                .await
+                .expect("UDP receive timed out")
+                .expect("UDP receive failed")
+        })
+        .await
+        .expect("UDP receive task panicked");
+
+        assert_eq!(received.0, len);
+        assert_eq!(received.1, sender_addr);
+        assert_eq!(received.2.as_ref(), expected);
+        true
+    }
+
+    async fn check_readiness_false_positive() {
+        let receiver = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let receiver_addr = receiver.local_addr().unwrap();
+
+        sender.send_to(b"stale", receiver_addr).await.unwrap();
+        receiver.readable().await.unwrap();
+        let mut drained = [0; 5];
+        assert_eq!(receiver.try_recv_from(&mut drained).unwrap().0, 5);
+        assert_eq!(&drained, b"stale");
+
+        // A successful `try_recv_from` deliberately leaves Tokio's readiness
+        // bit set because another datagram may already be queued. With the
+        // queue now empty, the receive helper must observe `WouldBlock`, clear
+        // that stale readiness, and await the next edge without spinning.
+        let would_blocks_before = UDP_RECV_WOULD_BLOCKS.load(Ordering::Relaxed);
+        let receive = tokio::spawn(async move {
+            tokio::time::timeout(Duration::from_secs(3), recv_from_slot(Some(&receiver)))
+                .await
+                .expect("receive did not recover from stale readiness")
+                .expect("receive failed after stale readiness")
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while UDP_RECV_WOULD_BLOCKS.load(Ordering::Relaxed) == would_blocks_before {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("test failed to induce a readiness false positive");
+
+        sender.send_to(b"fresh", receiver_addr).await.unwrap();
+        let (n, _, payload) = receive.await.unwrap();
+        assert_eq!(n, 5);
+        assert_eq!(payload.as_ref(), b"fresh");
+    }
+
+    async fn check_concurrent_flows() {
+        let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let sender_addr = sender.local_addr().unwrap();
+        let mut receives = Vec::with_capacity(CONCURRENT_FLOWS);
+        let mut destinations = Vec::with_capacity(CONCURRENT_FLOWS);
+
+        for flow in 0..CONCURRENT_FLOWS {
+            let receiver = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            destinations.push((
+                receiver.local_addr().unwrap(),
+                datagram_payload(1_200, flow),
+            ));
+            receives.push(tokio::spawn(async move {
+                tokio::time::timeout(Duration::from_secs(3), recv_from_slot(Some(&receiver)))
+                    .await
+                    .expect("concurrent UDP receive timed out")
+                    .expect("concurrent UDP receive failed")
+            }));
+        }
+
+        tokio::task::yield_now().await;
+        for (destination, payload) in &destinations {
+            assert_eq!(
+                sender.send_to(payload, destination).await.unwrap(),
+                payload.len()
+            );
+        }
+
+        for (receive, (_, expected)) in receives.into_iter().zip(destinations) {
+            let (n, peer, payload) = receive.await.unwrap();
+            assert_eq!(n, expected.len());
+            assert_eq!(peer, sender_addr);
+            assert_eq!(payload.as_ref(), expected);
+        }
+    }
+
+    #[test]
+    fn worker_scratch_preserves_udp_datagrams_and_is_not_per_flow() {
+        assert_eq!(
+            UDP_RECV_SCRATCH_ACTIVE.load(Ordering::Relaxed),
+            0,
+            "no other test may retain this test-only receive scratch"
+        );
+        let allocations_before = UDP_RECV_SCRATCH_ALLOCATIONS.load(Ordering::Relaxed);
+        UDP_RECV_SCRATCH_PEAK.store(0, Ordering::Relaxed);
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(TEST_WORKERS)
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            for len in [0, 1, 1_200, 1_350, 1_472, 8_192] {
+                assert!(check_datagram_size(len, false).await);
+            }
+            let _platform_supports_max_ipv4 = check_datagram_size(65_507, false).await;
+            let _platform_supports_max_ipv6 = check_datagram_size(65_527, true).await;
+            check_readiness_false_positive().await;
+            check_concurrent_flows().await;
+        });
+        drop(runtime);
+
+        let allocations = UDP_RECV_SCRATCH_ALLOCATIONS.load(Ordering::Relaxed) - allocations_before;
+        let peak = UDP_RECV_SCRATCH_PEAK.load(Ordering::Relaxed);
+        assert!(allocations > 0);
+        assert!(
+            allocations <= TEST_WORKERS,
+            "{allocations} scratch allocations exceeded {TEST_WORKERS} runtime workers"
+        );
+        assert!(
+            peak <= TEST_WORKERS,
+            "peak scratch count {peak} exceeded {TEST_WORKERS} runtime workers"
+        );
+        assert!(allocations < CONCURRENT_FLOWS);
+        assert_eq!(UDP_RECV_SCRATCH_ACTIVE.load(Ordering::Relaxed), 0);
+    }
 
     fn meta(endpoint: &str, bundle_identifier: &str) -> TransparentProxyFlowMeta {
         let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);

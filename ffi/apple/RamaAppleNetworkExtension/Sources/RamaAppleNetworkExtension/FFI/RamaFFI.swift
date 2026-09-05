@@ -553,11 +553,18 @@ private let ramaTcpOnPromoteRequestCallback:
 
 // ── Owned-ingress release thunk ───────────────────────────────────────────────
 
-/// Releases the `NSData` retained on the zero-copy owned-ingress path
-/// (`RamaBytesOwnedView.owner`). Rust calls this exactly once — from an
-/// arbitrary thread — when it drops the `Bytes` it built from the
-/// transferred buffer, balancing the `Unmanaged.passRetained` taken in
-/// `RamaTcpSessionHandle.deliverOwned`.
+/// Releases the physical TCP root retained on the zero-copy owned-ingress path
+/// (`RamaBytesOwnedView.owner`). The root owns both stable `NSData` storage and
+/// its aggregate/transit charge. Rust calls this exactly once — from an
+/// arbitrary thread — when the last `Bytes` clone drops.
+private let ramaReleaseRetainedTcpBuffer: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
+    context in
+    guard let context else { return }
+    Unmanaged<TcpRetainedBuffer>.fromOpaque(context).release()
+}
+
+/// Compatibility owner for callers which invoke the public `Data` API without
+/// a writer-budget root (primarily direct FFI tests).
 private let ramaReleaseRetainedNSData: @convention(c) (UnsafeMutableRawPointer?) -> Void = {
     context in
     guard let context else { return }
@@ -964,7 +971,19 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
     ///   * `.closed` — terminate the read pump; no demand will follow.
     @discardableResult
     func onClientBytes(_ data: Data) -> RamaTcpDeliverStatusBridge {
-        deliverOwned(data) { session, view in
+        deliverOwnedData(data) { session, view in
+            tcpDeliverStatus(
+                rama_transparent_proxy_tcp_session_on_client_bytes_owned(session, view)
+            )
+        }
+    }
+
+    /// Production read-pump entry point. The FFI owner is the retained
+    /// physical root, not a temporary slice `NSData`, so accepted Rust `Bytes`
+    /// keep the exact aggregate charge alive without changing the C ABI.
+    @discardableResult
+    func onClientPayload(_ payload: TcpPayloadSlice) -> RamaTcpDeliverStatusBridge {
+        deliverOwned(payload) { session, view in
             tcpDeliverStatus(
                 rama_transparent_proxy_tcp_session_on_client_bytes_owned(session, view)
             )
@@ -980,7 +999,7 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
     /// `.paused` / `.closed` it leaves ownership with us, so we balance the
     /// retain here — the caller's `Data` value is untouched and can be
     /// replayed on `.paused`.
-    private func deliverOwned(
+    private func deliverOwnedData(
         _ data: Data,
         _ deliver: (OpaquePointer, RamaBytesOwnedView) -> RamaTcpDeliverStatusBridge
     ) -> RamaTcpDeliverStatusBridge {
@@ -1004,6 +1023,31 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
         let status = deliver(s, view)
         if status != .accepted {
             // Rust did not take ownership; drop the retain we passed.
+            owner.release()
+        }
+        return status
+    }
+
+    private func deliverOwned(
+        _ payload: TcpPayloadSlice,
+        _ deliver: (OpaquePointer, RamaBytesOwnedView) -> RamaTcpDeliverStatusBridge
+    ) -> RamaTcpDeliverStatusBridge {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !cancelled, let s = sessionPtr else { return .closed }
+
+        // Each accepted logical view transfers one +1 for the shared root.
+        // A cursor and any sibling Rust/write views may retain further +1s;
+        // the physical charge is released only after the final one disappears.
+        let owner = Unmanaged.passRetained(payload.root)
+        let view = RamaBytesOwnedView(
+            ptr: payload.bytes,
+            len: payload.count,
+            owner: owner.toOpaque(),
+            release: ramaReleaseRetainedTcpBuffer
+        )
+        let status = deliver(s, view)
+        if status != .accepted {
             owner.release()
         }
         return status
@@ -1081,7 +1125,15 @@ final class RamaTcpSessionHandle: @unchecked Sendable {
     /// Same status contract as [`onClientBytes`] — see there.
     @discardableResult
     func onEgressBytes(_ data: Data) -> RamaTcpDeliverStatusBridge {
-        deliverOwned(data) { session, view in
+        deliverOwnedData(data) { session, view in
+            tcpDeliverStatus(
+                rama_transparent_proxy_tcp_session_on_egress_bytes_owned(session, view)
+            )
+        }
+    }
+    @discardableResult
+    func onEgressPayload(_ payload: TcpPayloadSlice) -> RamaTcpDeliverStatusBridge {
+        deliverOwned(payload) { session, view in
             tcpDeliverStatus(
                 rama_transparent_proxy_tcp_session_on_egress_bytes_owned(session, view)
             )

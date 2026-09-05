@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+SOURCE_ROOT="$(cd "$ROOT_DIR/../../../.." && pwd)"
 APP_DIR="$ROOT_DIR/tproxy_app"
 SPEC_PATH="$APP_DIR/Project.yml"
 DERIVED_DATA_PATH="${RAMA_TPROXY_DERIVED_DATA_PATH:-$ROOT_DIR/.xcode-derived/tproxy-app-dev}"
@@ -15,6 +16,66 @@ CONTAINER_PROFILE_SPECIFIER="${RAMA_TPROXY_CONTAINER_PROFILE_SPECIFIER:-}"
 EXT_PROFILE_SPECIFIER="${RAMA_TPROXY_EXTENSION_PROFILE_SPECIFIER:-}"
 BUILD_VERSION="${RAMA_TPROXY_CURRENT_PROJECT_VERSION:-$(date +%Y%m%d%H%M%S)}"
 SKIP_CODESIGNING="${RAMA_TPROXY_SKIP_CODESIGNING:-0}"
+
+# Embed the exact source state in both bundles.  A non-git source archive is
+# still buildable for normal development, but signed evidence rejects the
+# explicit `unavailable` values.
+GIT_HEAD="$(git -C "$SOURCE_ROOT" rev-parse HEAD 2>/dev/null || true)"
+if [[ ! "$GIT_HEAD" =~ ^[0-9a-f]{40,64}$ ]]; then
+  GIT_HEAD="unavailable"
+fi
+if GIT_STATUS="$(git -C "$SOURCE_ROOT" status --porcelain=v1 --untracked-files=normal 2>/dev/null)"; then
+  if [[ -n "$GIT_STATUS" ]]; then
+    GIT_DIRTY=1
+  else
+    GIT_DIRTY=0
+  fi
+else
+  GIT_DIRTY="unavailable"
+fi
+
+# A clean signed build is compiled from a read-only git archive pinned to the
+# recorded full head.  This closes the window where the checkout or a detached
+# worktree could change and change back while cargo/xcodebuild is reading it.
+# Build outputs are ignored/untracked paths whose parent directories remain
+# writable. Dirty/non-git trees
+# retain the historical in-place development behavior and are explicitly
+# ineligible for the shared signed evidence envelope.
+ISOLATED_SOURCE_ROOT=""
+cleanup_isolated_source() {
+  local status=$?
+  trap - EXIT INT TERM
+  if [[ -n "$ISOLATED_SOURCE_ROOT" ]]; then
+    chmod -R u+w "$ISOLATED_SOURCE_ROOT" >/dev/null 2>&1 || true
+    rm -rf "$ISOLATED_SOURCE_ROOT"
+  fi
+  exit "$status"
+}
+trap cleanup_isolated_source EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [[ "$GIT_DIRTY" == 0 ]]; then
+  ISOLATED_SOURCE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/rama-tproxy-source.XXXXXX")"
+  git -C "$SOURCE_ROOT" archive "$GIT_HEAD" | tar -x -C "$ISOLATED_SOURCE_ROOT"
+  find "$ISOLATED_SOURCE_ROOT" -type f -exec chmod a-w {} +
+  ISOLATED_ROOT="$ISOLATED_SOURCE_ROOT/ffi/apple/examples/transparent_proxy"
+  APP_DIR="$ISOLATED_ROOT/tproxy_app"
+  SPEC_PATH="$APP_DIR/Project.yml"
+fi
+
+BUILD_ROOT="$(cd "$APP_DIR/.." && pwd)"
+RUST_TARGET_DIR="$BUILD_ROOT/tproxy_rs/target"
+(
+  cd "$BUILD_ROOT/tproxy_rs"
+  CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build --locked --target aarch64-apple-darwin
+  CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build --locked --target x86_64-apple-darwin
+  mkdir -p "$RUST_TARGET_DIR/universal"
+  /usr/bin/lipo -create \
+    -output "$RUST_TARGET_DIR/universal/librama_tproxy_example.a" \
+    "$RUST_TARGET_DIR/aarch64-apple-darwin/debug/librama_tproxy_example.a" \
+    "$RUST_TARGET_DIR/x86_64-apple-darwin/debug/librama_tproxy_example.a"
+)
 
 cd "$APP_DIR"
 mkdir -p "$DERIVED_DATA_PATH"
@@ -30,6 +91,8 @@ cmd=(
   -configuration Debug
   -derivedDataPath "$DERIVED_DATA_PATH"
   RAMA_TPROXY_CURRENT_PROJECT_VERSION="$BUILD_VERSION"
+  RAMA_TPROXY_GIT_HEAD="$GIT_HEAD"
+  RAMA_TPROXY_GIT_DIRTY="$GIT_DIRTY"
 )
 
 if [[ "$SKIP_CODESIGNING" == "1" ]]; then
@@ -64,4 +127,13 @@ if [[ "$ISOLATE_CACHE" == "1" ]]; then
     "${cmd[@]}"
 else
   "${cmd[@]}"
+fi
+
+if [[ "$GIT_DIRTY" == 0 ]]; then
+  POST_GIT_HEAD="$(git -C "$SOURCE_ROOT" rev-parse HEAD 2>/dev/null || true)"
+  POST_GIT_STATUS="$(git -C "$SOURCE_ROOT" status --porcelain=v1 --untracked-files=normal 2>/dev/null || true)"
+  if [[ "$POST_GIT_HEAD" != "$GIT_HEAD" || -n "$POST_GIT_STATUS" ]]; then
+    echo "Source repository head/clean state changed during the isolated build" >&2
+    exit 1
+  fi
 fi

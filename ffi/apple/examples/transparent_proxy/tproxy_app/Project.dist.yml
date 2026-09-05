@@ -43,6 +43,8 @@ targets:
           - "--timestamp"
           - "--options=runtime"
         APP_GROUP_ID: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dist"
+        RAMA_TPROXY_GIT_HEAD: unavailable
+        RAMA_TPROXY_GIT_DIRTY: unavailable
 
   RamaTransparentProxyExampleExtension:
     type: system-extension
@@ -74,6 +76,8 @@ targets:
         APP_GROUP_ID: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dist"
         CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
         GENERATE_PROVISIONING_PROFILE: NO
+        RAMA_TPROXY_GIT_HEAD: unavailable
+        RAMA_TPROXY_GIT_DIRTY: unavailable
         ENABLE_HARDENED_RUNTIME: YES
         OTHER_CODE_SIGN_FLAGS:
           - "--timestamp"

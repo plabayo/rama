@@ -92,8 +92,15 @@ final class MockNwConnection: NwConnectionLike, @unchecked Sendable {
         completion: NWConnection.SendCompletion
     ) {
         lock.lock()
+        let recordedContent = content?.withUnsafeBytes { bytes in
+            guard !bytes.isEmpty else { return Data() }
+            return Data(bytes: bytes.baseAddress!, count: bytes.count)
+        }
         _sentChunks.append(
-            SentChunk(content: content, isComplete: isComplete, contentContext: contentContext)
+            SentChunk(
+                content: recordedContent,
+                isComplete: isComplete,
+                contentContext: contentContext)
         )
         // Capture the inner callback so a test can simulate either an
         // immediate success or an NWConnection-level send error. The

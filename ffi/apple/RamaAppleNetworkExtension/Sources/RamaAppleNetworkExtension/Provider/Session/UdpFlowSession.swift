@@ -683,7 +683,6 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         }
         acknowledgeProbe(probeId)
         flowQueue.async { [weak self] in
-            defer { staged?.release() }
             guard let self else { return }
             let ctx = self.ctx
             guard ctx.readState != .closed else { return }
@@ -766,11 +765,23 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                 return
             }
 
-            self.forwardDatagrams(
-                datagrams: staged.datagrams,
-                endpoints: staged.endpoints,
-                session: session,
-                sourceCounts: (staged.sourceDatagramCount, staged.sourceEndpointCount))
+            #if DEBUG
+                let mismatch = staged.forward(
+                    to: session,
+                    onMatchedEndpoint: { endpoint in
+                        // Debug-only observation seam for strict endpoint
+                        // pairing. Release never mutates the fallback cache.
+                        ctx.writer?.setSentByEndpoint(endpoint)
+                    })
+            #else
+                let mismatch = staged.forward(to: session)
+            #endif
+            if let mismatch, !ctx.endpointMismatchLogged {
+                ctx.endpointMismatchLogged = true
+                self.core?.logDebug(
+                    "udp flow.readDatagrams returned mismatched array lengths (datagrams=\(mismatch.datagrams), endpoints=\(mismatch.endpoints)); surplus datagrams will be forwarded with peer = nil. First-occurrence-only log per flow."
+                )
+            }
             if hadPendingDemand { self.enqueueReadDemand(probeId: pendingProbeId) }
         }
     }
@@ -790,40 +801,6 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
                     probeId: probeId,
                     stagingGrantTicket: grantTicket)
             }
-        }
-    }
-
-    /// Forward each datagram tagged with its per-datagram peer.
-    /// Apple's `readDatagrams` returns parallel arrays; we honour
-    /// the pairing so a multi-peer flow proxies each datagram to
-    /// its intended peer. Surplus datagrams get `peer = nil`
-    /// rather than a fabricated attribution to `eps.first`.
-    func forwardDatagrams(
-        datagrams: [Data],
-        endpoints: [NWEndpoint]?,
-        session: RamaUdpSessionHandle,
-        sourceCounts: (Int, Int?)? = nil
-    ) {
-        let counts = sourceCounts ?? (datagrams.count, endpoints?.count)
-        let mismatch = counts.1 != nil && counts.1 != counts.0
-        if mismatch && !ctx.endpointMismatchLogged {
-            ctx.endpointMismatchLogged = true
-            core?.logDebug(
-                "udp flow.readDatagrams returned mismatched array lengths (datagrams=\(counts.0), endpoints=\(counts.1 ?? 0)); surplus datagrams will be forwarded with peer = nil. First-occurrence-only log per flow."
-            )
-        }
-        for (index, datagram) in datagrams.enumerated() {
-            let endpoint = endpoints.flatMap { eps in
-                index < eps.count ? eps[index] : nil
-            }
-            let peer = endpoint.flatMap(ramaUdpPeer(from:))
-            if peer != nil {
-                // Preserve Apple's original endpoint object. Reconstructing it
-                // from the Rama peer adds parsing/allocation on every packet
-                // and can discard endpoint representation details.
-                ctx.writer?.setSentByEndpoint(endpoint)
-            }
-            session.onClientDatagram(datagram, peer: peer)
         }
     }
 

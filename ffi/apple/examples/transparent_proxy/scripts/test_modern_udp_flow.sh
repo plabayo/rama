@@ -7,11 +7,21 @@ set -o pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILT_APP="${1:-$ROOT_DIR/.xcode-derived/tproxy-app-dev/Build/Products/Debug/RamaTransparentProxyExampleContainer.app}"
-PROBE="$SCRIPT_DIR/modern_udp_e2e_probe.py"
-INSTALLER="$SCRIPT_DIR/install_tproxy_app_bundle.sh"
+PROBE_SOURCE="$SCRIPT_DIR/modern_udp_e2e_probe.py"
+INSTALLER_SOURCE="$SCRIPT_DIR/install_tproxy_app_bundle.sh"
+SIGNED_EVIDENCE_SOURCE="$SCRIPT_DIR/signed_run_evidence.py"
+MODERN_EVIDENCE_SOURCE="$SCRIPT_DIR/modern_udp_evidence.py"
+SOAK_PRESSURE_SOURCE="$SCRIPT_DIR/soak_pressure_log.py"
+PROBE="$PROBE_SOURCE"
+INSTALLER="$INSTALLER_SOURCE"
+SIGNED_EVIDENCE="$SIGNED_EVIDENCE_SOURCE"
+MODERN_EVIDENCE="$MODERN_EVIDENCE_SOURCE"
+INSTALLED_APP="/Applications/RamaTransparentProxyExampleContainer.app"
 CONTAINER_LOG="$HOME/Library/Logs/RamaTransparentProxyExampleContainer.log"
 DIAL9_DIR="/var/root/Library/Application Support/rama/tproxy/dial9-traces"
 PROVIDER_BUNDLE="org.ramaproxy.example.tproxy.dev.provider"
+BUILT_PROVIDER="$BUILT_APP/Contents/Library/SystemExtensions/$PROVIDER_BUNDLE.systemextension"
+INSTALLED_PROVIDER="$INSTALLED_APP/Contents/Library/SystemExtensions/$PROVIDER_BUNDLE.systemextension"
 
 # Maintained public protocol endpoints. Override these when a runner's network
 # filters a particular anycast service; IP literals keep provider-log assertions
@@ -20,18 +30,48 @@ PASSTHROUGH_DNS="${RAMA_TPROXY_E2E_PASSTHROUGH_DNS:-1.1.1.1}"
 INTERCEPT_NTP="${RAMA_TPROXY_E2E_INTERCEPT_NTP:-162.159.200.1}"
 BLOCKED_DNS="${RAMA_TPROXY_E2E_BLOCKED_DNS:-8.8.8.8}"
 HTTP3_URL="${RAMA_TPROXY_E2E_HTTP3_URL:-https://cloudflare.com/cdn-cgi/trace}"
+ECHO_SOCKET_COUNT="${RAMA_TPROXY_E2E_ECHO_SOCKETS:-128}"
+ECHO_DATAGRAMS_PER_SOCKET="${RAMA_TPROXY_E2E_ECHO_DATAGRAMS_PER_SOCKET:-1}"
+ECHO_PAYLOAD_BYTES="${RAMA_TPROXY_E2E_ECHO_PAYLOAD_BYTES:-1200}"
+ECHO_CONCURRENCY="${RAMA_TPROXY_E2E_ECHO_CONCURRENCY:-32}"
+HTTP3_CONCURRENCY="${RAMA_TPROXY_E2E_HTTP3_CONCURRENCY:-4}"
+HTTP3_ROUNDS="${RAMA_TPROXY_E2E_HTTP3_ROUNDS:-3}"
+HTTP3_ROUND_INTERVAL="${RAMA_TPROXY_E2E_HTTP3_ROUND_INTERVAL:-1}"
+PRESSURE_COUNT="${RAMA_TPROXY_E2E_PRESSURE_COUNT:-512}"
+PRESSURE_PAYLOAD_BYTES="${RAMA_TPROXY_E2E_PRESSURE_PAYLOAD_BYTES:-4096}"
+PRESSURE_EXPECTED_BYTES=0
+CONCURRENT_LOAD_DEADLINE_SECONDS="${RAMA_TPROXY_E2E_CONCURRENT_LOAD_DEADLINE_SECONDS:-180}"
+MAX_LOAD_BYTES=268435456
 
 TMP_DIR="$(mktemp -d /tmp/rama-modern-udp-e2e.XXXXXX)" || {
   echo "could not create modern UDP E2E artifact directory" >&2
   exit 2
 }
 PROVIDER_LOG="$TMP_DIR/provider.log"
-HTTP3_RESULT="$TMP_DIR/http3-result.log"
+HTTP3_RESULTS="$TMP_DIR/http3-results.tsv"
+HTTP3_PIDS="$TMP_DIR/http3-pids.tsv"
+HTTP3_ROUND_RESULTS="$TMP_DIR/http3-round-results.tsv"
+HTTP3_TIMING="$TMP_DIR/http3-timing.tsv"
+ACTIVE_HTTP3_PIDS="$TMP_DIR/active-http3-pids.txt"
+ECHO_READY="$TMP_DIR/controlled-echo-ready.json"
+ECHO_CLIENT_RESULT="$TMP_DIR/controlled-echo-client.json"
+ECHO_SERVER_RESULT="$TMP_DIR/controlled-echo-server.json"
+DIAL9_REQUIREMENTS="$TMP_DIR/dial9-requirements.tsv"
+PROVIDER_LOG_PHASES="$TMP_DIR/provider-log-phases.tsv"
+PROVIDER_GENERATION_SAMPLES="$TMP_DIR/provider-generation-samples.tsv"
+PROVIDER_GENERATION_MONITOR_STOP="$TMP_DIR/.provider-generation-monitor-stop.tmp.$$"
+PROVIDER_GENERATION_MONITOR_FAILED="$TMP_DIR/.provider-generation-monitor-failed.tmp.$$"
+RESTORE_CONTAINER_LOG="$TMP_DIR/restore-container.log"
+RESTORE_RECEIPT="$TMP_DIR/restore-receipt.tsv"
+WORKLOAD_CLAIMS="$TMP_DIR/workload-claims.tsv"
 EVIDENCE_STATUS="$TMP_DIR/udp-evidence-status.tsv"
+COMMON_EVIDENCE_STATUS="$TMP_DIR/evidence-status.tsv"
 DIAL9_BASELINE="$TMP_DIR/dial9-baseline.json"
 DIAL9_SUMMARY="$TMP_DIR/dial9-evidence.json"
 
 LOG_PID=""
+PROVIDER_GENERATION_MONITOR_PID=""
+ECHO_SERVER_PID=""
 PROFILE_NEEDS_RESTORE=0
 PROFILE_RESTORED=1
 LOG_STREAM_STARTED=0
@@ -53,14 +93,34 @@ DIAL9_REQUIRED_CLOSE_AGE_MS=none
 DIAL9_CLOSE_AGE_BOUND_MS=0
 DIAL9_REQUIRED_BYTES_IN=none
 DIAL9_REQUIRED_BYTES_OUT=none
+DIAL9_REQUIREMENTS_SHA256=none
+DIAL9_REQUIREMENT_COUNT=0
+DIAL9_MATCHED_REQUIREMENT_COUNT=0
+DIAL9_COLLECTION_ATTEMPTED=0
 NTP_FLOW_ID=""
 PROVIDER_PID=""
 PROVIDER_IDENTITY=""
+PROVIDER_PROCESS_IDENTITY=""
 PROVIDER_IDENTITY_STABLE=0
+PROVIDER_BUILD_IDENTITY=unavailable
+PROVIDER_GENERATION_IDENTITY=unavailable
+PRODUCER_SOURCES_SHA256=none
+SOURCE_GIT_HEAD=unavailable
+SOURCE_GIT_DIRTY=unavailable
 HTTP3_SOURCE_PID=none
 HTTP3_FLOW_ID=none
 HTTP3_REMOTE_ENDPOINT=none
-RUN_UUID=none
+HTTP3_REQUEST_COUNT=0
+HTTP3_PASS_COUNT=0
+HTTP3_FLOW_COUNT=0
+HTTP3_DURATION_MS=0
+HTTP3_MIN_CONCURRENT=0
+ACTIVE_PROBE_PID=""
+ACTIVE_ECHO_PID=""
+ACTIVE_PRESSURE_PID=""
+RUN_UUID="$(/usr/bin/python3 -c 'import uuid; print(uuid.uuid4())')"
+RUN_START_EPOCH_MS="$(/usr/bin/python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
+RUN_END_EPOCH_MS=0
 PASSTHROUGH_DNS_SOURCE_PID=none
 PASSTHROUGH_DNS_FLOW_ID=none
 CONTROL_DNS_SOURCE_PID=none
@@ -70,6 +130,8 @@ BLOCKED_DNS_SOURCE_PID=none
 BLOCKED_DNS_FLOW_ID=none
 PRESSURE_SOURCE_PID=none
 PRESSURE_FLOW_ID=none
+RECOVERY_NTP_SOURCE_PID=none
+RECOVERY_NTP_FLOW_ID=none
 PRESSURE_PROBE_ATTEMPTED=0
 PRESSURE_PROBE_PASSED=0
 PRESSURE_DROP_TRANSITIONS=0
@@ -79,7 +141,37 @@ PRESSURE_RECOVERED_REASONS=none
 MAIN_FINISHED=0
 FINALIZING=0
 CALLBACK_GENERATION=unknown
+UNBLOCKED_PROVIDER_GENERATION=none
+BLOCKED_PROVIDER_GENERATION=none
+ENGINE_GENERATIONS_SHA256=none
+CONCURRENT_LOAD_TIMED_OUT=0
+ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT=0
+ECHO_ENDPOINT=none
+ECHO_SOURCE_PID=none
+ECHO_FLOW_COUNT=0
+ECHO_EXPECTED_COUNT=0
+ECHO_EXACT_ECHO_COUNT=0
+ECHO_PAYLOAD_SET_SHA256=none
 CURRENT_PHASE=preflight
+UNBLOCKED_LOG_LINE=0
+UDP_ERROR_PROVIDER_LOG_LINE=0
+PASSTHROUGH_DNS_LOG_START=0
+PASSTHROUGH_DNS_LOG_END=0
+NTP_LOG_START=0
+NTP_LOG_END=0
+CONTROL_DNS_LOG_START=0
+CONTROL_DNS_LOG_END=0
+PRESSURE_LOG_START=0
+PRESSURE_END_LOG_LINE=0
+ECHO_LOG_START=0
+ECHO_LOG_END=0
+RECOVERY_NTP_LOG_START=0
+RECOVERY_NTP_LOG_END=0
+HTTP3_PROVIDER_LOG_LINE=0
+HTTP3_PROVIDER_LOG_END=0
+BLOCKED_LOG_LINE=0
+BLOCKED_DNS_LOG_START=0
+BLOCKED_DNS_LOG_END=0
 ISSUES=()
 FAILURES=()
 OBSERVED_FAILURES=()
@@ -100,6 +192,274 @@ add_failure() {
   FAILURES+=("$(sanitize_diagnostic "$1")")
 }
 
+run_bounded() {
+  local seconds="$1" child ticks=0 max_ticks rc=0
+  shift
+  max_ticks=$((seconds * 10))
+  "$@" &
+  child=$!
+  while kill -0 "$child" 2>/dev/null; do
+    if (( ticks >= max_ticks )); then
+      kill -TERM "$child" 2>/dev/null || true
+      sleep 0.2
+      kill -KILL "$child" 2>/dev/null || true
+      wait "$child" 2>/dev/null || true
+      return 124
+    fi
+    sleep 0.1
+    ticks=$((ticks + 1))
+  done
+  wait "$child" || rc=$?
+  return "$rc"
+}
+
+capture_provider_generation_sample() {
+  local mode="$1"
+  run_bounded 15 /usr/bin/python3 "$SIGNED_EVIDENCE" capture-provider-generation \
+    --identity "$TMP_DIR/provider-identity.tsv" "$mode" "$PROVIDER_GENERATION_SAMPLES" \
+    >/dev/null 2>/dev/null
+}
+
+start_provider_generation_monitor() {
+  /bin/rm -f "$PROVIDER_GENERATION_MONITOR_STOP" "$PROVIDER_GENERATION_MONITOR_FAILED"
+  capture_provider_generation_sample --output || {
+    add_issue "could not capture the initial canonical provider generation sample"
+    return 1
+  }
+  (
+    while [[ ! -e "$PROVIDER_GENERATION_MONITOR_STOP" ]]; do
+      sleep 2
+      [[ -e "$PROVIDER_GENERATION_MONITOR_STOP" ]] && break
+      capture_provider_generation_sample --append || {
+        : > "$PROVIDER_GENERATION_MONITOR_FAILED"
+        break
+      }
+    done
+  ) &
+  PROVIDER_GENERATION_MONITOR_PID=$!
+}
+
+# shellcheck disable=SC2329  # invoked from the EXIT trap via finalize
+stop_provider_generation_monitor() {
+  [[ "$PROVIDER_GENERATION_MONITOR_PID" =~ ^[1-9][0-9]*$ ]] || return 0
+  : > "$PROVIDER_GENERATION_MONITOR_STOP"
+  wait "$PROVIDER_GENERATION_MONITOR_PID" 2>/dev/null || true
+  PROVIDER_GENERATION_MONITOR_PID=""
+  if [[ -e "$PROVIDER_GENERATION_MONITOR_FAILED" ]]; then
+    /bin/rm -f "$PROVIDER_GENERATION_MONITOR_STOP" "$PROVIDER_GENERATION_MONITOR_FAILED"
+    add_issue "canonical provider generation sampling failed during the signed run"
+    return 1
+  fi
+  /bin/rm -f "$PROVIDER_GENERATION_MONITOR_STOP" "$PROVIDER_GENERATION_MONITOR_FAILED"
+}
+
+capture_producer_sources() {
+  local source target
+  while IFS=$'\t' read -r source target; do
+    if [[ ! -f "$source" || -L "$source" ]] \
+      || ! /bin/cp -p "$source" "$TMP_DIR/$target"
+    then
+      add_issue "could not snapshot exact modern producer source $target"
+      return 1
+    fi
+  done <<EOF
+${BASH_SOURCE[0]}	source-test_modern_udp_flow.sh
+$PROBE_SOURCE	source-modern_udp_e2e_probe.py
+$INSTALLER_SOURCE	source-install_tproxy_app_bundle.sh
+$MODERN_EVIDENCE_SOURCE	source-modern_udp_evidence.py
+$SOAK_PRESSURE_SOURCE	source-soak_pressure_log.py
+$SIGNED_EVIDENCE_SOURCE	source-signed_run_evidence.py
+EOF
+  PRODUCER_SOURCES_SHA256="$(/usr/bin/python3 - "$TMP_DIR" <<'PY'
+import hashlib, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+names = sorted((
+    "source-test_modern_udp_flow.sh",
+    "source-modern_udp_e2e_probe.py",
+    "source-install_tproxy_app_bundle.sh",
+    "source-modern_udp_evidence.py",
+    "source-soak_pressure_log.py",
+    "source-signed_run_evidence.py",
+))
+digest = hashlib.sha256()
+for name in names:
+    content = (root / name).read_bytes()
+    digest.update(name.encode("utf-8") + b"\0")
+    digest.update(len(content).to_bytes(8, "big"))
+    digest.update(content)
+print(digest.hexdigest())
+PY
+)" || PRODUCER_SOURCES_SHA256=none
+  [[ "$PRODUCER_SOURCES_SHA256" =~ ^[0-9a-f]{64}$ ]] || {
+    add_issue "could not fingerprint exact modern producer sources"
+    return 1
+  }
+  PROBE="$TMP_DIR/source-modern_udp_e2e_probe.py"
+  INSTALLER="$TMP_DIR/source-install_tproxy_app_bundle.sh"
+  SIGNED_EVIDENCE="$TMP_DIR/source-signed_run_evidence.py"
+  MODERN_EVIDENCE="$TMP_DIR/source-modern_udp_evidence.py"
+}
+
+wait_for_child_until() {
+  local child="$1" deadline="$2" state rc=0
+  while kill -0 "$child" 2>/dev/null; do
+    state="$(ps -o stat= -p "$child" 2>/dev/null | tr -d ' ')"
+    [[ "$state" == Z* ]] && break
+    if (( SECONDS >= deadline )); then
+      CONCURRENT_LOAD_TIMED_OUT=1
+      kill -TERM "$child" 2>/dev/null || true
+      sleep 0.5
+      state="$(ps -o stat= -p "$child" 2>/dev/null | tr -d ' ')"
+      if [[ "$state" != Z* ]] && kill -0 "$child" 2>/dev/null; then
+        kill -KILL "$child" 2>/dev/null || true
+        ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT=$((ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT + 1))
+      fi
+      wait "$child" 2>/dev/null || true
+      return 124
+    fi
+    sleep 0.1
+  done
+  wait "$child" || rc=$?
+  return "$rc"
+}
+
+# shellcheck disable=SC2329  # invoked from the EXIT trap
+stop_active_workloads() {
+  local pids="" candidate pid alive state
+  for candidate in "$ACTIVE_PROBE_PID" "$ACTIVE_ECHO_PID" "$ACTIVE_PRESSURE_PID"; do
+    [[ "$candidate" =~ ^[1-9][0-9]*$ ]] && pids="$pids $candidate"
+  done
+  if [[ -s "$ACTIVE_HTTP3_PIDS" ]]; then
+    while IFS= read -r candidate; do
+      [[ "$candidate" =~ ^[1-9][0-9]*$ ]] && pids="$pids $candidate"
+    done < "$ACTIVE_HTTP3_PIDS"
+  fi
+  [[ -n "$pids" ]] || return 0
+  for pid in $pids; do kill -TERM "$pid" 2>/dev/null || true; done
+  for _ in $(seq 1 50); do
+    alive=0
+    for pid in $pids; do
+      state="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ')"
+      [[ -n "$state" && "$state" != Z* ]] && alive=1
+    done
+    (( alive == 0 )) && break
+    sleep 0.1
+  done
+  for pid in $pids; do
+    state="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d ' ')"
+    if [[ -n "$state" && "$state" != Z* ]] && kill -0 "$pid" 2>/dev/null; then
+      kill -KILL "$pid" 2>/dev/null || true
+      ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT=$((ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT + 1))
+      add_issue "active probe process required forced termination"
+    fi
+    wait "$pid" 2>/dev/null || true
+  done
+  ACTIVE_PROBE_PID=""
+  ACTIVE_ECHO_PID=""
+  ACTIVE_PRESSURE_PID=""
+  : > "$ACTIVE_HTTP3_PIDS"
+}
+
+capture_common_provider_identity() {
+  local fields
+  if ! run_bounded 30 /usr/bin/python3 "$SIGNED_EVIDENCE" capture-provider \
+    --built-provider "$BUILT_PROVIDER" --installed-provider "$INSTALLED_PROVIDER" \
+    --pid "$PROVIDER_PID" --output "$TMP_DIR/provider-identity.tsv" \
+    --source-root "$(cd "$ROOT_DIR/../../../.." && pwd)" \
+    > "$TMP_DIR/provider-identity.out" 2> "$TMP_DIR/provider-identity.err"
+  then
+    add_issue "shared signed evidence could not capture exact provider identity"
+    return 1
+  fi
+  fields="$(/usr/bin/python3 - "$TMP_DIR/provider-identity.tsv" <<'PY'
+import sys
+values = {}
+for line in open(sys.argv[1], encoding="utf-8"):
+    key, value = line.rstrip("\n").split("\t", 1)
+    if key in values:
+        raise SystemExit(2)
+    values[key] = value
+required = ("source_git_head", "source_git_dirty", "provider_build_identity", "provider_generation_identity")
+if any(key not in values for key in required):
+    raise SystemExit(2)
+print(*(values[key] for key in required))
+PY
+)" || {
+    add_issue "shared provider identity artifact is malformed"
+    return 1
+  }
+  read -r SOURCE_GIT_HEAD SOURCE_GIT_DIRTY PROVIDER_BUILD_IDENTITY \
+    PROVIDER_GENERATION_IDENTITY <<< "$fields"
+  PROVIDER_IDENTITY="$PROVIDER_GENERATION_IDENTITY"
+}
+
+# shellcheck disable=SC2329  # invoked from the EXIT trap
+write_workload_claims() {
+  local dial9_coverage=0 dial9_claim=incomplete
+  if (( DIAL9_REQUIREMENT_COUNT > 0 \
+    && DIAL9_MATCHED_REQUIREMENT_COUNT == DIAL9_REQUIREMENT_COUNT )); then
+    dial9_coverage=1
+    dial9_claim=exact-workload
+  fi
+  {
+    printf 'evidence_kind\tmodern_udp\nrun_uuid\t%s\n' "$RUN_UUID"
+    printf 'dial9_diagnostic_only\t0\ndial9_workload_coverage\t%s\n' "$dial9_coverage"
+    printf 'dial9_claim\t%s\n' "$dial9_claim"
+    printf 'quic_shaped_not_valid_quic\t1\n'
+    printf 'echo_socket_count\t%s\necho_exact_echo_count\t%s\n' \
+      "$ECHO_SOCKET_COUNT" "$ECHO_EXACT_ECHO_COUNT"
+    printf 'http3_request_count\t%s\nhttp3_pass_count\t%s\n' \
+      "$HTTP3_REQUEST_COUNT" "$HTTP3_PASS_COUNT"
+    printf 'dial9_requirement_count\t%s\ndial9_matched_requirement_count\t%s\n' \
+      "$DIAL9_REQUIREMENT_COUNT" "$DIAL9_MATCHED_REQUIREMENT_COUNT"
+    printf 'producer_sources_sha256\t%s\n' "$PRODUCER_SOURCES_SHA256"
+    printf 'schema_complete\t1\n'
+  } > "$WORKLOAD_CLAIMS"
+}
+
+# shellcheck disable=SC2329  # invoked from the EXIT trap
+write_common_evidence_status() {
+  local complete="$1" passed="$2" exit_code="$3" claims_sha
+  claims_sha="$(shasum -a 256 "$WORKLOAD_CLAIMS" | awk 'NR == 1 { print $1 }')"
+  {
+    printf 'complete\t%s\npassed\t%s\nexit_code\t%s\n' \
+      "$complete" "$passed" "$exit_code"
+    printf 'evidence_kind\tmodern_udp\nrun_uuid\t%s\n' "$RUN_UUID"
+    printf 'run_start_epoch_ms\t%s\nrun_end_epoch_ms\t%s\n' \
+      "$RUN_START_EPOCH_MS" "$RUN_END_EPOCH_MS"
+    printf 'git_head\t%s\ngit_dirty\t%s\n' "$SOURCE_GIT_HEAD" "$SOURCE_GIT_DIRTY"
+    printf 'provider_build_identity\t%s\nprovider_generation_identity\t%s\n' \
+      "$PROVIDER_BUILD_IDENTITY" "$PROVIDER_GENERATION_IDENTITY"
+    printf 'workload_claims_sha256\t%s\nschema_complete\t1\n' "$claims_sha"
+  } > "$COMMON_EVIDENCE_STATUS"
+}
+
+write_provider_log_phases() {
+  local provider_log_end
+  provider_log_end="$(provider_log_line)"
+  {
+    printf 'schema_version\t1\n'
+    printf 'unblocked_start_line\t%s\nudp_error_start_line\t%s\n' \
+      "$UNBLOCKED_LOG_LINE" "$UDP_ERROR_PROVIDER_LOG_LINE"
+    printf 'passthrough_start_line\t%s\npassthrough_end_line\t%s\n' \
+      "$PASSTHROUGH_DNS_LOG_START" "$PASSTHROUGH_DNS_LOG_END"
+    printf 'ntp_start_line\t%s\nntp_end_line\t%s\n' "$NTP_LOG_START" "$NTP_LOG_END"
+    printf 'control_start_line\t%s\ncontrol_end_line\t%s\n' \
+      "$CONTROL_DNS_LOG_START" "$CONTROL_DNS_LOG_END"
+    printf 'pressure_start_line\t%s\npressure_end_line\t%s\n' \
+      "$PRESSURE_LOG_START" "$PRESSURE_END_LOG_LINE"
+    printf 'echo_start_line\t%s\necho_end_line\t%s\n' "$ECHO_LOG_START" "$ECHO_LOG_END"
+    printf 'recovery_start_line\t%s\nrecovery_end_line\t%s\n' \
+      "$RECOVERY_NTP_LOG_START" "$RECOVERY_NTP_LOG_END"
+    printf 'http3_start_line\t%s\nhttp3_end_line\t%s\n' \
+      "$HTTP3_PROVIDER_LOG_LINE" "$HTTP3_PROVIDER_LOG_END"
+    printf 'blocked_profile_start_line\t%s\n' "$BLOCKED_LOG_LINE"
+    printf 'blocked_start_line\t%s\nblocked_end_line\t%s\n' \
+      "$BLOCKED_DNS_LOG_START" "$BLOCKED_DNS_LOG_END"
+    printf 'provider_log_end_line\t%s\nschema_complete\t1\n' "$provider_log_end"
+  } > "$PROVIDER_LOG_PHASES"
+}
+
 write_evidence_status() {
   local complete="$1" passed="$2" exit_code="$3"
   local tmp="$EVIDENCE_STATUS.tmp.$$" value
@@ -118,11 +478,37 @@ write_evidence_status() {
     printf 'profile_restored\t%s\n' "$PROFILE_RESTORED"
     printf 'callback_generation\t%s\n' "$CALLBACK_GENERATION"
     printf 'run_uuid\t%s\n' "$RUN_UUID"
+    printf 'run_start_epoch_ms\t%s\nrun_end_epoch_ms\t%s\n' \
+      "$RUN_START_EPOCH_MS" "$RUN_END_EPOCH_MS"
+    printf 'evidence_kind\tmodern_udp\n'
+    printf 'provider_generation_identity\t%s\n' "$PROVIDER_GENERATION_IDENTITY"
+    printf 'producer_sources_sha256\t%s\n' "$PRODUCER_SOURCES_SHA256"
+    printf 'engine_generations_sha256\t%s\n' "$ENGINE_GENERATIONS_SHA256"
     printf 'provider_pid\t%s\nprovider_identity\t%s\nprovider_identity_stable\t%s\n' \
       "${PROVIDER_PID:-none}" "${PROVIDER_IDENTITY:-none}" "$PROVIDER_IDENTITY_STABLE"
     printf 'http3_source_pid\t%s\n' "$HTTP3_SOURCE_PID"
     printf 'http3_flow_id\t%s\nhttp3_remote_endpoint\t%s\n' \
       "$HTTP3_FLOW_ID" "$HTTP3_REMOTE_ENDPOINT"
+    printf 'http3_request_count\t%s\nhttp3_pass_count\t%s\nhttp3_flow_count\t%s\n' \
+      "$HTTP3_REQUEST_COUNT" "$HTTP3_PASS_COUNT" "$HTTP3_FLOW_COUNT"
+    printf 'http3_duration_ms\t%s\nhttp3_min_concurrent\t%s\n' \
+      "$HTTP3_DURATION_MS" "$HTTP3_MIN_CONCURRENT"
+    printf 'echo_socket_count\t%s\necho_datagrams_per_socket\t%s\n' \
+      "$ECHO_SOCKET_COUNT" "$ECHO_DATAGRAMS_PER_SOCKET"
+    printf 'echo_payload_bytes\t%s\necho_expected_count\t%s\n' \
+      "$ECHO_PAYLOAD_BYTES" "$ECHO_EXPECTED_COUNT"
+    printf 'echo_exact_echo_count\t%s\necho_flow_count\t%s\n' \
+      "$ECHO_EXACT_ECHO_COUNT" "$ECHO_FLOW_COUNT"
+    printf 'echo_payload_set_sha256\t%s\necho_endpoint\t%s\n' \
+      "$ECHO_PAYLOAD_SET_SHA256" "$ECHO_ENDPOINT"
+    printf 'echo_source_pid\t%s\n' "$ECHO_SOURCE_PID"
+    printf 'pressure_datagram_count\t%s\npressure_payload_bytes\t%s\n' \
+      "$PRESSURE_COUNT" "$PRESSURE_PAYLOAD_BYTES"
+    printf 'pressure_expected_bytes\t%s\n' "$PRESSURE_EXPECTED_BYTES"
+    printf 'concurrent_load_deadline_seconds\t%s\nconcurrent_load_timed_out\t%s\n' \
+      "$CONCURRENT_LOAD_DEADLINE_SECONDS" "$CONCURRENT_LOAD_TIMED_OUT"
+    printf 'active_workload_forced_termination_count\t%s\n' \
+      "$ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT"
     printf 'pressure_probe_attempted\t%s\npressure_probe_passed\t%s\n' \
       "$PRESSURE_PROBE_ATTEMPTED" "$PRESSURE_PROBE_PASSED"
     printf 'pressure_drop_transitions\t%s\npressure_resume_transitions\t%s\n' \
@@ -136,6 +522,8 @@ write_evidence_status() {
     printf 'ntp_source_pid\t%s\nntp_flow_id\t%s\n' "$NTP_SOURCE_PID" "${NTP_FLOW_ID:-none}"
     printf 'pressure_source_pid\t%s\npressure_flow_id\t%s\n' \
       "$PRESSURE_SOURCE_PID" "$PRESSURE_FLOW_ID"
+    printf 'recovery_ntp_source_pid\t%s\nrecovery_ntp_flow_id\t%s\n' \
+      "$RECOVERY_NTP_SOURCE_PID" "$RECOVERY_NTP_FLOW_ID"
     printf 'blocked_dns_source_pid\t%s\nblocked_dns_flow_id\t%s\n' \
       "$BLOCKED_DNS_SOURCE_PID" "$BLOCKED_DNS_FLOW_ID"
     printf 'dial9_baseline_max_index\t%s\n' "$DIAL9_BASELINE_MAX_INDEX"
@@ -148,7 +536,10 @@ write_evidence_status() {
     printf 'dial9_close_age_bound_ms\t%s\n' "$DIAL9_CLOSE_AGE_BOUND_MS"
     printf 'dial9_required_bytes_in\t%s\ndial9_required_bytes_out\t%s\n' \
       "$DIAL9_REQUIRED_BYTES_IN" "$DIAL9_REQUIRED_BYTES_OUT"
-    printf 'schema_version\t3\n'
+    printf 'dial9_requirements_sha256\t%s\n' "$DIAL9_REQUIREMENTS_SHA256"
+    printf 'dial9_requirement_count\t%s\ndial9_matched_requirement_count\t%s\n' \
+      "$DIAL9_REQUIREMENT_COUNT" "$DIAL9_MATCHED_REQUIREMENT_COUNT"
+    printf 'schema_version\t5\n'
     for value in "${ISSUES[@]}"; do printf 'issue\t%s\n' "$value"; done
     for value in "${FAILURES[@]}"; do printf 'failure\t%s\n' "$value"; done
     for value in "${OBSERVED_FAILURES[@]}"; do
@@ -195,8 +586,8 @@ capture_provider_identity() {
     return 1
   fi
   PROVIDER_PID="$candidates"
-  PROVIDER_IDENTITY="$(provider_process_identity "$PROVIDER_PID" || true)"
-  if [[ ! "$PROVIDER_IDENTITY" =~ ^[0-9a-f]{64}$ ]]; then
+  PROVIDER_PROCESS_IDENTITY="$(provider_process_identity "$PROVIDER_PID" || true)"
+  if [[ ! "$PROVIDER_PROCESS_IDENTITY" =~ ^[0-9a-f]{64}$ ]]; then
     add_issue "signed UDP E2E could not fingerprint the provider process"
     return 1
   fi
@@ -206,7 +597,7 @@ capture_provider_identity() {
 require_provider_identity() {
   local observed
   observed="$(provider_process_identity "$PROVIDER_PID" || true)"
-  if [[ "$observed" != "$PROVIDER_IDENTITY" ]]; then
+  if [[ "$observed" != "$PROVIDER_PROCESS_IDENTITY" ]]; then
     PROVIDER_IDENTITY_STABLE=0
     add_issue "provider process identity changed during signed UDP evidence collection"
     return 1
@@ -275,15 +666,46 @@ stop_log_capture() {
 }
 
 # shellcheck disable=SC2329  # invoked from the EXIT trap
+stop_echo_server() {
+  local child_rc=0 state
+  [[ -n "$ECHO_SERVER_PID" ]] || return 0
+  if kill -0 "$ECHO_SERVER_PID" 2>/dev/null; then
+    kill -TERM "$ECHO_SERVER_PID" 2>/dev/null || true
+  fi
+  for _ in $(seq 1 50); do
+    state="$(ps -o stat= -p "$ECHO_SERVER_PID" 2>/dev/null | tr -d ' ')"
+    [[ -z "$state" || "$state" == Z* ]] && break
+    sleep 0.1
+  done
+  state="$(ps -o stat= -p "$ECHO_SERVER_PID" 2>/dev/null | tr -d ' ')"
+  if [[ -n "$state" && "$state" != Z* ]] && kill -0 "$ECHO_SERVER_PID" 2>/dev/null; then
+    kill -KILL "$ECHO_SERVER_PID" 2>/dev/null || true
+    ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT=$((ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT + 1))
+    add_issue "controlled echo server required forced termination"
+  fi
+  wait "$ECHO_SERVER_PID" 2>/dev/null || child_rc=$?
+  ECHO_SERVER_PID=""
+  case "$child_rc" in
+    0|130|143) ;;
+    *) add_issue "controlled echo server exited with unexpected status $child_rc" ;;
+  esac
+}
+
+# shellcheck disable=SC2329  # invoked from the EXIT trap
 restore_profile() {
-  local starting_line
+  local starting_line ending_line line_count slice_sha256
+  local restore_started_epoch_ms restore_completed_epoch_ms
   (( PROFILE_NEEDS_RESTORE == 1 )) || return 0
   PROFILE_RESTORED=0
   starting_line="$(container_log_line)"
-  if ! "$INSTALLER" dev "$BUILT_APP" 0 \
+  restore_started_epoch_ms="$(/usr/bin/python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
+  printf '%s\n' \
+    'restore_invocation schema=1 mode=dev reset_profile=0 udp_passthrough_ports=empty udp_blocked_endpoints=empty evidence_identity=absent' \
+    > "$TMP_DIR/restore.log"
+  if ! run_bounded 90 "$INSTALLER" dev "$BUILT_APP" 0 \
     "--udp-passthrough-ports=" \
     "--udp-blocked-endpoints=" \
-    > "$TMP_DIR/restore.log" 2>&1
+    >> "$TMP_DIR/restore.log" 2>&1
   then
     add_issue "automatic UDP policy restoration failed"
     return 1
@@ -292,6 +714,32 @@ restore_profile() {
     add_issue "default UDP profile did not reconnect after restoration"
     return 1
   fi
+  ending_line="$(container_log_line)"
+  line_count=$((ending_line - starting_line))
+  if (( line_count < 4 || line_count > 256 )); then
+    add_issue "default UDP profile restoration log slice is outside its bounded cardinality"
+    return 1
+  fi
+  sed -n "$((starting_line + 1)),${ending_line}p" "$CONTAINER_LOG" \
+    > "$RESTORE_CONTAINER_LOG"
+  slice_sha256="$(shasum -a 256 "$RESTORE_CONTAINER_LOG" | awk 'NR == 1 { print $1 }')"
+  restore_completed_epoch_ms="$(/usr/bin/python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
+  if [[ ! "$slice_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+    add_issue "default UDP profile restoration log slice could not be fingerprinted"
+    return 1
+  fi
+  {
+    printf 'schema_version\t1\nrun_uuid\t%s\n' "$RUN_UUID"
+    printf 'provider_pid\t%s\nreplaced_provider_generation\t%s\n' \
+      "$PROVIDER_PID" "$BLOCKED_PROVIDER_GENERATION"
+    printf 'restore_started_epoch_ms\t%s\nrestore_completed_epoch_ms\t%s\n' \
+      "$restore_started_epoch_ms" "$restore_completed_epoch_ms"
+    printf 'container_start_line\t%s\ncontainer_end_line\t%s\n' \
+      "$starting_line" "$ending_line"
+    printf 'slice_line_count\t%s\nslice_sha256\t%s\n' "$line_count" "$slice_sha256"
+    printf 'profile\tpersisted-default\nevidence_identity\tabsent\n'
+    printf 'fresh_connected\t1\nschema_complete\t1\n'
+  } > "$RESTORE_RECEIPT"
   PROFILE_NEEDS_RESTORE=0
   PROFILE_RESTORED=1
 }
@@ -299,10 +747,11 @@ restore_profile() {
 # shellcheck disable=SC2329  # invoked from the EXIT trap
 collect_dial9_evidence() {
   local metrics gate_end_monotonic_ms
-  (( DIAL9_REQUIRED_PAIR_COUNT == 0 )) || return 0
+  (( DIAL9_COLLECTION_ATTEMPTED == 0 )) || return 0
+  DIAL9_COLLECTION_ATTEMPTED=1
   (( DIAL9_BASELINE_READY == 1 )) || return 0
-  if [[ ! "$NTP_FLOW_ID" =~ ^[0-9]+$ ]]; then
-    add_issue "fresh NTP decision did not yield one exact flow_id for dial9 correlation"
+  if [[ ! -s "$DIAL9_REQUIREMENTS" ]]; then
+    add_issue "exact intercepted-flow Dial9 requirements are unavailable"
     return 1
   fi
   gate_end_monotonic_ms="$(/usr/bin/python3 -c 'import time; print(time.monotonic_ns() // 1_000_000)')"
@@ -313,53 +762,58 @@ collect_dial9_evidence() {
   }
   # The unprivileged shell intentionally owns the artifact redirections.
   # shellcheck disable=SC2024
-  if ! sudo -n "$DIAL9_EVIDENCE_BIN" collect \
+  if ! run_bounded 30 sudo -n "$DIAL9_EVIDENCE_BIN" collect \
     "$DIAL9_DIR" "$DIAL9_BASELINE" "$TMP_DIR/dial9-traces" \
-    --wait-seconds 15 --flow-id "$NTP_FLOW_ID" --protocol 2 \
+    --wait-seconds 15 --requirements "$DIAL9_REQUIREMENTS" \
     > "$DIAL9_SUMMARY" 2> "$TMP_DIR/dial9-collect.err"
   then
     add_issue "current-run dial9 UDP flow evidence is unavailable"
     return 1
   fi
-  sudo -n chown -R "$(id -u):$(id -g)" \
+  run_bounded 30 sudo -n chown -R "$(id -u):$(id -g)" \
     "$TMP_DIR/dial9-traces" "$DIAL9_SUMMARY" 2>/dev/null || {
       add_issue "could not transfer dial9 evidence artifact ownership"
       return 1
     }
-  metrics="$(/usr/bin/python3 - "$DIAL9_SUMMARY" "$NTP_FLOW_ID" \
+  metrics="$(/usr/bin/python3 - "$DIAL9_SUMMARY" "$DIAL9_REQUIREMENTS" \
     "$DIAL9_CLOSE_AGE_BOUND_MS" <<'PY'
-import json, sys
+import csv, hashlib, io, json, sys
 try:
     value = json.load(open(sys.argv[1]))
-    fields = (
-        value["current_segment_count"], value["required_pair_count"],
-        value["required_close_reason"], value["required_close_age_ms"],
-        value["required_bytes_in"], value["required_bytes_out"],
-    )
     if value.get("schema_version") != 1 or value.get("schema_complete") is not True:
         raise ValueError("incomplete schema")
-    if not all(isinstance(field, int) and field >= 1 for field in fields[:2]):
-        raise ValueError("missing current pair")
-    if value.get("required_flow_id") != int(sys.argv[2]):
-        raise ValueError("required flow identity mismatch")
-    if value.get("required_protocol") != 2:
-        raise ValueError("required protocol mismatch")
-    reason, age_ms, bytes_in, bytes_out = fields[2:]
-    reason_name = value.get("required_close_reason_name")
-    names = {
-        1: "shutdown", 2: "idle_timeout", 3: "peer_eof_left",
-        4: "peer_eof_right", 5: "read_error_left", 6: "read_error_right",
-        7: "write_error_left", 8: "write_error_right", 9: "peek_timeout",
-        10: "handler_deadline", 11: "paused_timeout", 12: "first_byte_timeout",
-        13: "max_lifetime", 14: "service_panic",
-    }
-    if names.get(reason) != reason_name:
-        raise ValueError("unknown or mismatched close reason")
-    if not isinstance(age_ms, int) or not 0 <= age_ms <= int(sys.argv[3]):
+    requirements = open(sys.argv[2], "rb").read()
+    digest = hashlib.sha256(requirements).hexdigest()
+    requirement_rows = list(csv.DictReader(
+        io.StringIO(requirements.decode("utf-8")), delimiter="\t"
+    ))
+    count = len(requirement_rows)
+    flows = value.get("required_flows")
+    if value.get("requirements_sha256") != digest:
+        raise ValueError("requirements identity mismatch")
+    if value.get("requirement_count") != count or value.get("matched_requirement_count") != count:
+        raise ValueError("not every exact intercepted flow was matched")
+    if not isinstance(flows, list) or len(flows) != count:
+        raise ValueError("required flow evidence cardinality mismatch")
+    expected = {row["label"]: row for row in requirement_rows}
+    observed = {flow.get("label"): flow for flow in flows}
+    if len(expected) != count or len(observed) != count or expected.keys() != observed.keys():
+        raise ValueError("required flow labels mismatch")
+    for label, row in expected.items():
+        flow = observed[label]
+        for key in ("provider_pid", "provider_generation", "flow_id", "protocol", "source_pid", "close_reason"):
+            if flow.get(key) != int(row[key]):
+                raise ValueError(f"required flow identity mismatch: {label}")
+        if not int(row["min_bytes_in"]) <= flow.get("bytes_in", -1) <= int(row["max_bytes_in"]):
+            raise ValueError(f"required flow ingress mismatch: {label}")
+        if not int(row["min_bytes_out"]) <= flow.get("bytes_out", -1) <= int(row["max_bytes_out"]):
+            raise ValueError(f"required flow egress mismatch: {label}")
+    if any(flow.get("close_reason") != 1 or flow.get("close_reason_name") != "shutdown" for flow in flows):
+        raise ValueError("required flow had non-shutdown close")
+    ages = [flow.get("close_age_ms") for flow in flows]
+    if not all(isinstance(age, int) and 0 <= age <= int(sys.argv[3]) for age in ages):
         raise ValueError("invalid close age")
-    if not all(isinstance(field, int) and field >= 0 for field in (bytes_in, bytes_out)):
-        raise ValueError("invalid NTP byte counters")
-    print(fields[0], fields[1], reason, reason_name, age_ms, bytes_in, bytes_out)
+    print(value["current_segment_count"], count, count, digest, max(ages, default=0))
 except Exception:
     raise SystemExit(2)
 PY
@@ -367,34 +821,59 @@ PY
     add_issue "dial9 evidence summary is malformed or incomplete"
     return 1
   }
-  read -r DIAL9_CURRENT_SEGMENT_COUNT DIAL9_REQUIRED_PAIR_COUNT \
-    DIAL9_REQUIRED_CLOSE_REASON DIAL9_REQUIRED_CLOSE_REASON_NAME \
-    DIAL9_REQUIRED_CLOSE_AGE_MS \
-    DIAL9_REQUIRED_BYTES_IN DIAL9_REQUIRED_BYTES_OUT <<< "$metrics"
-  if [[ "$DIAL9_REQUIRED_CLOSE_REASON" != 1 \
-    || "$DIAL9_REQUIRED_CLOSE_REASON_NAME" != shutdown ]]
-  then
-    add_failure "NTP Dial9 pair closed with non-benign reason=$DIAL9_REQUIRED_CLOSE_REASON ($DIAL9_REQUIRED_CLOSE_REASON_NAME)"
-  fi
-  if (( DIAL9_REQUIRED_BYTES_IN < 48 || DIAL9_REQUIRED_BYTES_OUT < 48 )); then
-    add_failure "NTP Dial9 pair did not record a complete request and response"
-  fi
+  read -r DIAL9_CURRENT_SEGMENT_COUNT DIAL9_REQUIREMENT_COUNT \
+    DIAL9_MATCHED_REQUIREMENT_COUNT DIAL9_REQUIREMENTS_SHA256 \
+    DIAL9_REQUIRED_CLOSE_AGE_MS <<< "$metrics"
+  DIAL9_REQUIRED_PAIR_COUNT="$DIAL9_MATCHED_REQUIREMENT_COUNT"
+  DIAL9_REQUIRED_CLOSE_REASON=1
+  DIAL9_REQUIRED_CLOSE_REASON_NAME=shutdown
+  DIAL9_REQUIRED_BYTES_IN=0
+  DIAL9_REQUIRED_BYTES_OUT=0
 }
 
 # shellcheck disable=SC2329  # invoked by trap
 finalize() {
-  local raw_exit="$?" final_exit=2 complete=0 passed=0 value parsed_status
+  local raw_exit="$?" final_exit=2 complete=0 passed=0 value parsed_status crash_count
   (( FINALIZING == 0 )) || return
   FINALIZING=1
   trap - EXIT INT TERM
   if (( MAIN_FINISHED == 0 && raw_exit != 0 && ${#ISSUES[@]} == 0 )); then
     add_issue "unhandled command failure in phase $CURRENT_PHASE (exit $raw_exit)"
   fi
+  stop_active_workloads
+  stop_echo_server
   stop_log_capture
-  restore_profile || true
+  # Dial9 collection is single-shot and must happen while the final E2E
+  # provider generation is still installed. Restoration can create another
+  # generation and is never followed by an evidence retry.
   collect_dial9_evidence || true
-  if (( UDP_PROBE_ATTEMPT_COUNT != 5 )); then
-    add_issue "signed UDP E2E attempted $UDP_PROBE_ATTEMPT_COUNT of 5 required probes"
+  restore_profile || true
+  require_provider_identity || true
+  capture_provider_generation_sample --append || \
+    add_issue "could not capture the canonical provider generation before the run boundary"
+  RUN_END_EPOCH_MS="$(/usr/bin/python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
+  if [[ ! "$RUN_END_EPOCH_MS" =~ ^[1-9][0-9]*$ \
+    || "$RUN_END_EPOCH_MS" -lt "$RUN_START_EPOCH_MS" ]]
+  then
+    add_issue "could not capture a valid signed UDP wall-clock end"
+  fi
+  crash_count="$(run_bounded 30 /usr/bin/python3 "$SIGNED_EVIDENCE" snapshot-crashes \
+    --since-epoch-ms "$RUN_START_EPOCH_MS" --output-dir "$TMP_DIR/crashes" \
+    --run-uuid "$RUN_UUID" \
+    --provider-generation-identity "$PROVIDER_GENERATION_IDENTITY" \
+    --process "$PROVIDER_BUNDLE" 2>/dev/null \
+    | awk -F '\t' '$1 == "crash_count" { print $2 }')"
+  if [[ ! "$crash_count" =~ ^[0-9]+$ ]]; then
+    add_issue "shared signed evidence could not snapshot provider crashes"
+  elif (( crash_count > 0 )); then
+    add_failure "provider crash reports were created during the signed UDP run"
+  fi
+  capture_provider_generation_sample --append || \
+    add_issue "could not re-observe the canonical provider generation after the crash snapshot"
+  stop_provider_generation_monitor || true
+  require_provider_identity || true
+  if (( UDP_PROBE_ATTEMPT_COUNT != 8 )); then
+    add_issue "signed UDP E2E attempted $UDP_PROBE_ATTEMPT_COUNT of 8 required probe groups"
   fi
   if (( UDP_PRESSURE_LOG_CHECKED != 1 )); then
     add_issue "signed UDP E2E did not validate UDP pressure telemetry"
@@ -402,35 +881,63 @@ finalize() {
   if (( PRESSURE_PROBE_ATTEMPTED != 1 || PRESSURE_PROBE_PASSED != 1 )); then
     add_issue "signed UDP E2E did not complete the deliberate pressure probe"
   fi
-  if (( ${#ISSUES[@]} > 0 )); then
+  if (( raw_exit == 130 || raw_exit == 143 )); then
+    final_exit="$raw_exit"
+    for value in "${FAILURES[@]}"; do OBSERVED_FAILURES+=("$value"); done
+    FAILURES=()
+  elif (( ${#ISSUES[@]} > 0 )); then
     for value in "${FAILURES[@]}"; do OBSERVED_FAILURES+=("$value"); done
     FAILURES=()
   elif (( ${#FAILURES[@]} > 0 )); then
     complete=1
     final_exit=1
-  elif (( UDP_PROBE_PASS_COUNT != 5 )); then
-    add_issue "signed UDP E2E passed $UDP_PROBE_PASS_COUNT of 5 required probes"
+  elif (( UDP_PROBE_PASS_COUNT != 8 )); then
+    add_issue "signed UDP E2E passed $UDP_PROBE_PASS_COUNT of 8 required probe groups"
   else
     complete=1
     passed=1
     final_exit=0
   fi
+  write_workload_claims
   write_evidence_status "$complete" "$passed" "$final_exit"
-  parsed_status=$(/usr/bin/python3 "$SCRIPT_DIR/modern_udp_evidence.py" \
+  parsed_status=$(/usr/bin/python3 "$MODERN_EVIDENCE" \
     "$EVIDENCE_STATUS" 2>/dev/null) || parsed_status=invalid
   if [[ "$parsed_status" != "$final_exit" ]]; then
     add_issue "terminal UDP evidence status failed strict self-validation"
     for value in "${FAILURES[@]}"; do OBSERVED_FAILURES+=("$value"); done
     FAILURES=()
+    complete=0
+    passed=0
     final_exit=2
     write_evidence_status 0 0 2
+  fi
+  write_common_evidence_status "$complete" "$passed" "$final_exit"
+  if ! run_bounded 30 /usr/bin/python3 "$SIGNED_EVIDENCE" seal "$TMP_DIR" \
+      --actual-exit-code "$final_exit" >/dev/null 2>/dev/null \
+    || ! run_bounded 30 /usr/bin/python3 "$SIGNED_EVIDENCE" verify "$TMP_DIR" \
+      --actual-exit-code "$final_exit" >/dev/null 2>/dev/null
+  then
+    add_issue "shared signed evidence seal or verification failed"
+    for value in "${FAILURES[@]}"; do OBSERVED_FAILURES+=("$value"); done
+    FAILURES=()
+    complete=0
+    passed=0
+    final_exit=2
+    write_workload_claims
+    write_evidence_status 0 0 2
+    write_common_evidence_status 0 0 2
+    run_bounded 30 /usr/bin/python3 "$SIGNED_EVIDENCE" seal "$TMP_DIR" \
+      --actual-exit-code 2 >/dev/null 2>/dev/null || true
+    run_bounded 30 /usr/bin/python3 "$SIGNED_EVIDENCE" verify "$TMP_DIR" \
+      --actual-exit-code 2 >/dev/null 2>/dev/null || true
   fi
   echo "modern UDP E2E artifacts: $TMP_DIR"
   exit "$final_exit"
 }
 
 trap finalize EXIT
-trap 'add_issue "signed UDP E2E interrupted by signal"; exit 2' INT TERM
+trap 'add_issue "signed UDP E2E interrupted by SIGINT"; exit 130' INT
+trap 'add_issue "signed UDP E2E interrupted by SIGTERM"; exit 143' TERM
 
 fatal_issue() {
   add_issue "$1"
@@ -446,7 +953,9 @@ run_probe() {
   LAST_PROBE_LOG_START="$(provider_log_line)"
   /usr/bin/python3 "$PROBE" "$@" &
   LAST_PROBE_PID=$!
+  ACTIVE_PROBE_PID="$LAST_PROBE_PID"
   wait "$LAST_PROBE_PID" || rc=$?
+  ACTIVE_PROBE_PID=""
   close_probe_decision_window "$LAST_PROBE_LOG_START" "$LAST_PROBE_PID"
   case "$rc" in
     0) UDP_PROBE_PASS_COUNT=$((UDP_PROBE_PASS_COUNT + 1)) ;;
@@ -464,11 +973,23 @@ run_probe() {
 decision_records() {
   local starting_line="$1" ending_line="$2"
   sed -n "$((starting_line + 1)),${ending_line}p" "$PROVIDER_LOG" 2>/dev/null | sed -nE \
-    's/.*udp_e2e_decision rama_decision=([^ ]+) flow_id=([0-9]+) remote_endpoint=([^ ]+) source_app=([^ ]+) source_pid=([0-9]+).*/\1\t\2\t\3\t\4\t\5/p'
+    's/.*udp_e2e_decision run_uuid=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) provider_pid=([0-9]+) provider_generation=([0-9]+) rama_decision=([^ ]+) flow_id=([0-9]+) remote_endpoint=([^ ]+) local_endpoint=([^ ]+) source_app=([^ ]+) source_pid=([0-9]+)$/\4\t\5\t\6\t\7\t\8\t\9\t\1\t\2\t\3/p'
+}
+
+decision_marker_count_for_pid() {
+  local starting_line="$1" ending_line="$2" source_pid="$3"
+  sed -n "$((starting_line + 1)),${ending_line}p" "$PROVIDER_LOG" 2>/dev/null \
+    | /usr/bin/python3 -c 'import re, sys; pid = re.escape(sys.argv[1]); pattern = re.compile(r"udp_e2e_decision .*source_pid=" + pid + r"(?:[^0-9]|$)"); print(sum(pattern.search(line) is not None for line in sys.stdin))' \
+      "$source_pid"
+}
+
+is_canonical_udp_endpoint() {
+  /usr/bin/python3 -c 'import ipaddress, sys; value=sys.argv[1]; host, port=(value[1:].split("]:", 1) if value.startswith("[") else value.rsplit(":", 1)); raise SystemExit(0 if str(ipaddress.ip_address(host)) == host and 1 <= int(port) <= 65535 else 1)' "$1" 2>/dev/null
 }
 
 close_probe_decision_window() {
-  local starting_line="$1" source_pid="$2" ending_line snapshot="" previous=""
+  local starting_line="$1" source_pid="$2" expected="${3:-1}"
+  local ending_line snapshot="" previous="" count
   local stable_ticks=0
   # Require a decision-prefix quiescence interval after the first delivery.
   # This catches delayed duplicate rows without widening the PID window across
@@ -476,8 +997,9 @@ close_probe_decision_window() {
   for _ in $(seq 1 100); do
     ending_line="$(provider_log_line)"
     snapshot="$(decision_records "$starting_line" "$ending_line" \
-      | awk -F '\t' -v pid="$source_pid" '$5 == pid')"
-    if [[ -n "$snapshot" ]]; then
+      | awk -F '\t' -v pid="$source_pid" '$6 == pid')"
+    count="$(printf '%s\n' "$snapshot" | awk 'NF { count += 1 } END { print count + 0 }')"
+    if (( count >= expected )); then
       if [[ "$snapshot" == "$previous" ]]; then
         stable_ticks=$((stable_ticks + 1))
       else
@@ -496,6 +1018,115 @@ close_probe_decision_window() {
   LAST_PROBE_LOG_END="$(provider_log_line)"
 }
 
+close_http3_decision_window() {
+  local starting_line="$1" expected="$2" ending_line snapshot previous="" count
+  local stable_ticks=0
+  for _ in $(seq 1 150); do
+    ending_line="$(provider_log_line)"
+    snapshot="$(awk -F '\t' \
+      'NR == FNR { pids[$3] = 1; next } ($6 in pids) { print }' \
+      "$HTTP3_PIDS" <(decision_records "$starting_line" "$ending_line"))"
+    count="$(printf '%s\n' "$snapshot" | awk 'NF { count += 1 } END { print count + 0 }')"
+    if (( count >= expected )); then
+      if [[ "$snapshot" == "$previous" ]]; then
+        stable_ticks=$((stable_ticks + 1))
+      else
+        stable_ticks=0
+      fi
+      if (( stable_ticks >= 10 )); then
+        HTTP3_PROVIDER_LOG_END="$ending_line"
+        return 0
+      fi
+    else
+      stable_ticks=0
+    fi
+    previous="$snapshot"
+    sleep 0.1
+  done
+  HTTP3_PROVIDER_LOG_END="$(provider_log_line)"
+  add_issue "sustained HTTP/3 decisions did not reach exact cardinality"
+  return 1
+}
+
+run_sustained_http3() {
+  local start_ms end_ms round worker pid rc output marker digest round_pids
+  local barrier release_ms pre_release_alive
+  local separator='?'
+  [[ "$HTTP3_URL" == *\?* ]] && separator='&'
+  : > "$HTTP3_PIDS"
+  : > "$ACTIVE_HTTP3_PIDS"
+  printf 'round\tworker\tsource_pid\texit_code\thttp3_marker\tsha256\n' > "$HTTP3_RESULTS"
+  printf 'round\texpected_workers\tbarrier_release_epoch_ms\tpre_release_alive\n' \
+    > "$HTTP3_ROUND_RESULTS"
+  HTTP3_REQUEST_COUNT=$((HTTP3_ROUNDS * HTTP3_CONCURRENCY))
+  HTTP3_MIN_CONCURRENT="$HTTP3_CONCURRENCY"
+  HTTP3_PROVIDER_LOG_LINE="$(provider_log_line)"
+  UDP_PROBE_ATTEMPT_COUNT=$((UDP_PROBE_ATTEMPT_COUNT + 1))
+  start_ms="$(/usr/bin/python3 -c 'import time; print(time.monotonic_ns() // 1_000_000)')"
+  for round in $(seq 1 "$HTTP3_ROUNDS"); do
+    round_pids="$TMP_DIR/http3-round-$round.pids"
+    barrier="$TMP_DIR/http3-round-$round.release"
+    : > "$round_pids"
+    for worker in $(seq 1 "$HTTP3_CONCURRENCY"); do
+      output="$TMP_DIR/http3-$round-$worker.log"
+      (
+        while [[ ! -e "$barrier" ]]; do sleep 0.01; done
+        exec nscurl --http3-prior-knowledge -m 15 \
+          "${HTTP3_URL}${separator}rama_udp_e2e_run=$RUN_UUID&round=$round&worker=$worker"
+      ) > "$output" 2>&1 &
+      pid=$!
+      printf '%s\t%s\t%s\n' "$round" "$worker" "$pid" >> "$HTTP3_PIDS"
+      printf '%s\t%s\t%s\n' "$round" "$worker" "$pid" >> "$round_pids"
+      printf '%s\n' "$pid" >> "$ACTIVE_HTTP3_PIDS"
+    done
+    pre_release_alive=0
+    while IFS=$'\t' read -r _round _worker pid; do
+      kill -0 "$pid" 2>/dev/null && pre_release_alive=$((pre_release_alive + 1))
+    done < "$round_pids"
+    (( pre_release_alive < HTTP3_MIN_CONCURRENT )) \
+      && HTTP3_MIN_CONCURRENT="$pre_release_alive"
+    if (( pre_release_alive != HTTP3_CONCURRENCY )); then
+      add_issue "HTTP/3 barrier did not hold every concurrent worker in round $round"
+    fi
+    release_ms="$(/usr/bin/python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
+    printf '%s\t%s\t%s\t%s\n' "$round" "$HTTP3_CONCURRENCY" \
+      "$release_ms" "$pre_release_alive" >> "$HTTP3_ROUND_RESULTS"
+    : > "$barrier"
+    while IFS=$'\t' read -r _round _worker pid; do
+      rc=0
+      wait "$pid" || rc=$?
+      output="$TMP_DIR/http3-$_round-$_worker.log"
+      marker=0
+      grep -Fq 'http=http/3' "$output" && marker=1
+      digest="$(shasum -a 256 "$output" | awk 'NR == 1 { print $1 }')"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$_round" "$_worker" "$pid" "$rc" "$marker" "$digest" >> "$HTTP3_RESULTS"
+      if (( rc == 0 && marker == 1 )); then
+        HTTP3_PASS_COUNT=$((HTTP3_PASS_COUNT + 1))
+      fi
+    done < "$round_pids"
+    : > "$ACTIVE_HTTP3_PIDS"
+    if (( round < HTTP3_ROUNDS )); then
+      sleep "$HTTP3_ROUND_INTERVAL"
+    fi
+  done
+  end_ms="$(/usr/bin/python3 -c 'import time; print(time.monotonic_ns() // 1_000_000)')"
+  HTTP3_DURATION_MS=$((end_ms - start_ms))
+  {
+    printf 'schema_version\t1\nstart_monotonic_ms\t%s\nend_monotonic_ms\t%s\n' \
+      "$start_ms" "$end_ms"
+    printf 'duration_ms\t%s\nrounds\t%s\nconcurrency\t%s\n' \
+      "$HTTP3_DURATION_MS" "$HTTP3_ROUNDS" "$HTTP3_CONCURRENCY"
+    printf 'schema_complete\t1\n'
+  } > "$HTTP3_TIMING"
+  close_http3_decision_window "$HTTP3_PROVIDER_LOG_LINE" "$HTTP3_REQUEST_COUNT" || true
+  if (( HTTP3_PASS_COUNT == HTTP3_REQUEST_COUNT && HTTP3_DURATION_MS > 0 )); then
+    UDP_PROBE_PASS_COUNT=$((UDP_PROBE_PASS_COUNT + 1))
+  else
+    add_issue "sustained concurrent UDP/443 probe did not complete every request over HTTP/3"
+  fi
+}
+
 close_pressure_probe_window() {
   local starting_line="$1" source_pid="$2" endpoint="$3" source_app="$4"
   local ending_line observation terminal flow_id fingerprint previous=""
@@ -506,7 +1137,8 @@ close_pressure_probe_window() {
   for _ in $(seq 1 150); do
     ending_line="$(provider_log_line)"
     observation="$(/usr/bin/python3 - "$SCRIPT_DIR" "$PROVIDER_LOG" \
-      "$starting_line" "$source_pid" "$endpoint" "$source_app" <<'PY'
+      "$starting_line" "$source_pid" "$endpoint" "$source_app" \
+      "$RUN_UUID" "$PROVIDER_PID" <<'PY'
 import sys
 
 sys.path.insert(0, sys.argv[1])
@@ -515,7 +1147,8 @@ from modern_udp_evidence import pressure_window_observation
 with open(sys.argv[2], encoding="utf-8") as provider_log:
     lines = provider_log.read().splitlines()
 result = pressure_window_observation(
-    lines, int(sys.argv[3]), int(sys.argv[4]), sys.argv[5], sys.argv[6]
+    lines, int(sys.argv[3]), int(sys.argv[4]), sys.argv[5], sys.argv[6],
+    sys.argv[7], int(sys.argv[8]),
 )
 print(
     1 if result["terminal"] else 0,
@@ -552,19 +1185,32 @@ PY
 check_exact_decision() {
   local starting_line="$1" ending_line="$2" expected="$3" endpoint="$4"
   local source_app="$5" expected_pid="$6" description="$7" target="$8"
-  local action flow_id remote source source_pid found=0 unexpected=0 matching_flow_id=""
-  while IFS=$'\t' read -r action flow_id remote source source_pid; do
+  local action flow_id remote local_endpoint source source_pid run_uuid provider_pid provider_generation
+  local found=0 unexpected=0 matching_flow_id="" matching_generation="" raw_count
+  while IFS=$'\t' read -r action flow_id remote local_endpoint source source_pid run_uuid provider_pid provider_generation; do
     [[ "$source_pid" == "$expected_pid" ]] || continue
-    if [[ "$remote" != "$endpoint" || "$source" != "$source_app" ]]; then
+    if ! is_canonical_udp_endpoint "$local_endpoint"; then
+      unexpected=$((unexpected + 1))
+      continue
+    fi
+    if [[ "$remote" != "$endpoint" || "$source" != "$source_app" \
+      || "$run_uuid" != "$RUN_UUID" || "$provider_pid" != "$PROVIDER_PID" ]]
+    then
       unexpected=$((unexpected + 1))
       continue
     fi
     found=$((found + 1))
     matching_flow_id="$flow_id"
+    matching_generation="$provider_generation"
     if [[ "$action" != "$expected" ]]; then
       add_failure "$description recorded rama_decision=$action instead of $expected"
     fi
   done < <(decision_records "$starting_line" "$ending_line")
+  raw_count="$(decision_marker_count_for_pid \
+    "$starting_line" "$ending_line" "$expected_pid")"
+  if [[ ! "$raw_count" =~ ^[0-9]+$ || "$raw_count" -ne $((found + unexpected)) ]]; then
+    add_issue "$description contained a malformed or ambiguous diagnostic record"
+  fi
   if (( unexpected > 0 )); then
     add_issue "$description source PID had an unexpected app or endpoint decision"
   fi
@@ -579,12 +1225,148 @@ check_exact_decision() {
   case "$target" in
     passthrough) PASSTHROUGH_DNS_FLOW_ID="$matching_flow_id" ;;
     control) CONTROL_DNS_FLOW_ID="$matching_flow_id" ;;
-    ntp) NTP_FLOW_ID="$matching_flow_id" ;;
-    pressure) PRESSURE_FLOW_ID="$matching_flow_id" ;;
-    blocked) BLOCKED_DNS_FLOW_ID="$matching_flow_id" ;;
+    ntp)
+      NTP_FLOW_ID="$matching_flow_id"
+      UNBLOCKED_PROVIDER_GENERATION="$matching_generation"
+      append_dial9_requirement ntp "$matching_flow_id" "$expected_pid" \
+        "$matching_generation" 48 65535 48 65535
+      ;;
+    pressure)
+      PRESSURE_FLOW_ID="$matching_flow_id"
+      append_dial9_requirement pressure "$matching_flow_id" "$expected_pid" \
+        "$matching_generation" "$PRESSURE_EXPECTED_BYTES" \
+        "$PRESSURE_EXPECTED_BYTES" 0 0
+      ;;
+    blocked)
+      BLOCKED_DNS_FLOW_ID="$matching_flow_id"
+      BLOCKED_PROVIDER_GENERATION="$matching_generation"
+      ;;
+    recovery)
+      RECOVERY_NTP_FLOW_ID="$matching_flow_id"
+      append_dial9_requirement recovery-ntp "$matching_flow_id" "$expected_pid" \
+        "$matching_generation" 48 65535 48 65535
+      ;;
     http3) HTTP3_FLOW_ID="$matching_flow_id"; HTTP3_REMOTE_ENDPOINT="$endpoint" ;;
     *) add_issue "internal decision target is invalid: $target"; return 1 ;;
   esac
+}
+
+append_dial9_requirement() {
+  local label="$1" flow_id="$2" source_pid="$3" generation="$4"
+  local min_in="$5" max_in="$6" min_out="$7" max_out="$8"
+  if [[ ! "$label" =~ ^[a-z0-9][a-z0-9_.-]*$ \
+    || ! "$flow_id" =~ ^[1-9][0-9]*$ || ! "$source_pid" =~ ^[1-9][0-9]*$ \
+    || ! "$generation" =~ ^[1-9][0-9]*$ ]]
+  then
+    add_issue "could not create a canonical Dial9 flow requirement for $label"
+    return 1
+  fi
+  printf '%s\t%s\t%s\t%s\t2\t%s\t1\t%s\t%s\t%s\t%s\n' \
+    "$label" "$PROVIDER_PID" "$generation" "$flow_id" "$source_pid" \
+    "$min_in" "$max_in" "$min_out" "$max_out" >> "$DIAL9_REQUIREMENTS"
+}
+
+check_echo_decisions() {
+  local records="$TMP_DIR/echo-decisions.tsv" identities="$TMP_DIR/echo-identities.tsv"
+  local generation flow_id ordinal=0 bytes
+  decision_records "$ECHO_LOG_START" "$ECHO_LOG_END" > "$records"
+  /usr/bin/python3 - "$SCRIPT_DIR" "$records" "$identities" "$ECHO_CLIENT_RESULT" \
+    "$ECHO_SOURCE_PID" "$RUN_UUID" "$PROVIDER_PID" "$ECHO_ENDPOINT" \
+    "$ECHO_SOCKET_COUNT" <<'PY' || {
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from modern_udp_evidence import validate_echo_decision_bijection
+rows = [line.rstrip("\n").split("\t") for line in open(sys.argv[2]) if line.strip()]
+client_endpoints = json.load(open(sys.argv[4])).get("local_endpoints")
+selected = validate_echo_decision_bijection(
+    rows, client_endpoints, int(sys.argv[9]), int(sys.argv[5]), sys.argv[6],
+    int(sys.argv[7]), sys.argv[8],
+)
+with open(sys.argv[3], "w", encoding="utf-8", newline="\n") as output:
+    for generation, flow_id, local_endpoint in selected:
+        output.write(f"{generation}\t{flow_id}\t{local_endpoint}\n")
+PY
+    add_issue "controlled echo load did not have one exact intercepted flow per socket"
+    return 1
+  }
+  bytes=$((ECHO_DATAGRAMS_PER_SOCKET * ECHO_PAYLOAD_BYTES))
+  while IFS=$'\t' read -r generation flow_id _local_endpoint; do
+    append_dial9_requirement "echo-$ordinal" "$flow_id" "$ECHO_SOURCE_PID" \
+      "$generation" "$bytes" "$bytes" "$bytes" "$bytes" || true
+    ordinal=$((ordinal + 1))
+  done < "$identities"
+  ECHO_FLOW_COUNT="$ordinal"
+  if [[ "$(decision_marker_count_for_pid \
+    "$ECHO_LOG_START" "$ECHO_LOG_END" "$ECHO_SOURCE_PID")" != "$ECHO_FLOW_COUNT" ]]; then
+    add_issue "controlled echo load contained malformed or ambiguous diagnostics"
+  fi
+  for flow_id in "$PASSTHROUGH_DNS_FLOW_ID" "$CONTROL_DNS_FLOW_ID" "$NTP_FLOW_ID" \
+    "$PRESSURE_FLOW_ID" "$RECOVERY_NTP_FLOW_ID" "$BLOCKED_DNS_FLOW_ID"; do
+    if awk -F '\t' -v expected="$flow_id" \
+      '$2 == expected { found = 1 } END { exit !found }' "$identities"; then
+      add_issue "controlled echo flow identity collided with another probe flow"
+    fi
+  done
+  [[ "$UNBLOCKED_PROVIDER_GENERATION" == none \
+    || "$UNBLOCKED_PROVIDER_GENERATION" == "$generation" ]] \
+    || add_issue "controlled echo flow used a different unblocked provider generation"
+}
+
+check_http3_decisions() {
+  local records="$TMP_DIR/http3-decisions.tsv" metrics pid raw_count raw_total=0
+  decision_records "$HTTP3_PROVIDER_LOG_LINE" "$HTTP3_PROVIDER_LOG_END" > "$records"
+  metrics="$(/usr/bin/python3 - "$records" "$HTTP3_PIDS" "$HTTP3_ENDPOINTS" \
+    "$RUN_UUID" "$PROVIDER_PID" "$HTTP3_REQUEST_COUNT" "$TMP_DIR/echo-identities.tsv" \
+    "$PASSTHROUGH_DNS_FLOW_ID,$CONTROL_DNS_FLOW_ID,$NTP_FLOW_ID,$PRESSURE_FLOW_ID,$RECOVERY_NTP_FLOW_ID,$BLOCKED_DNS_FLOW_ID" <<'PY'
+import ipaddress, sys
+rows = [line.rstrip("\n").split("\t") for line in open(sys.argv[1]) if line.strip()]
+pids = {line.rstrip("\n").split("\t")[2] for line in open(sys.argv[2]) if line.strip()}
+endpoints = {line.strip() for line in open(sys.argv[3]) if line.strip()}
+run_uuid, provider_pid, expected = sys.argv[4], sys.argv[5], int(sys.argv[6])
+echo_flows = {line.rstrip("\n").split("\t")[1] for line in open(sys.argv[7]) if line.strip()}
+representative_flows = set(sys.argv[8].split(","))
+def valid_endpoint(value):
+    try:
+        host, port = (value[1:].split("]:", 1) if value.startswith("[") else value.rsplit(":", 1))
+        return str(ipaddress.ip_address(host)) == host and 1 <= int(port) <= 65535
+    except (TypeError, ValueError):
+        return False
+if any(not flow.isdigit() or int(flow) <= 0 for flow in echo_flows | representative_flows):
+    raise SystemExit(2)
+selected = [row for row in rows if len(row) == 9 and row[5] in pids]
+if len(pids) != expected or len(selected) != expected:
+    raise SystemExit(2)
+if {row[5] for row in selected} != pids or len({row[1] for row in selected}) != expected:
+    raise SystemExit(2)
+if any(row[0] != "passthrough" or row[2] not in endpoints or not valid_endpoint(row[3])
+       or row[4] != "com.apple.nscurl" or row[6] != run_uuid
+       or row[7] != provider_pid for row in selected):
+    raise SystemExit(2)
+if {row[1] for row in selected} & (echo_flows | representative_flows):
+    raise SystemExit(2)
+generations = {row[8] for row in selected}
+if len(generations) != 1:
+    raise SystemExit(2)
+first = sorted(selected, key=lambda row: int(row[1]))[0]
+print(len(selected), first[5], first[1], first[2], first[8])
+PY
+)" || {
+    add_issue "sustained HTTP/3 traffic lacked exact PID/endpoint/flow diagnostics"
+    return 1
+  }
+  read -r HTTP3_FLOW_COUNT HTTP3_SOURCE_PID HTTP3_FLOW_ID \
+    HTTP3_REMOTE_ENDPOINT HTTP3_PROVIDER_GENERATION <<< "$metrics"
+  while IFS=$'\t' read -r _round _worker pid; do
+    raw_count="$(decision_marker_count_for_pid \
+      "$HTTP3_PROVIDER_LOG_LINE" "$HTTP3_PROVIDER_LOG_END" "$pid")"
+    [[ "$raw_count" =~ ^[0-9]+$ ]] || raw_count=0
+    raw_total=$((raw_total + raw_count))
+  done < "$HTTP3_PIDS"
+  if (( raw_total != HTTP3_REQUEST_COUNT )); then
+    add_issue "sustained HTTP/3 traffic contained malformed or ambiguous diagnostics"
+  fi
+  [[ "$HTTP3_PROVIDER_GENERATION" == "$UNBLOCKED_PROVIDER_GENERATION" ]] \
+    || add_issue "HTTP/3 flow used a different unblocked provider generation"
 }
 
 check_udp_pressure_logs() {
@@ -691,6 +1473,9 @@ PY
   esac
 }
 
+capture_producer_sources \
+  || fatal_issue "could not capture exact modern evidence producer sources"
+
 case "$(uname -m)" in
   arm64) DIAL9_EVIDENCE_BIN="$ROOT_DIR/tproxy_rs/target/aarch64-apple-darwin/debug/dial9_evidence" ;;
   x86_64) DIAL9_EVIDENCE_BIN="$ROOT_DIR/tproxy_rs/target/x86_64-apple-darwin/debug/dial9_evidence" ;;
@@ -699,9 +1484,45 @@ esac
 
 [[ "$(uname -s)" == Darwin ]] \
   || fatal_issue "modern UDP Network Extension E2E requires macOS"
-RUN_UUID="$(/usr/bin/uuidgen | tr '[:upper:]' '[:lower:]')"
 [[ "$RUN_UUID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]] \
   || fatal_issue "could not create a canonical signed UDP run UUID"
+[[ "$RUN_START_EPOCH_MS" =~ ^[1-9][0-9]*$ ]] \
+  || fatal_issue "could not capture the signed UDP wall-clock start"
+if [[ ! "$ECHO_SOCKET_COUNT" =~ ^[1-9][0-9]*$ ]] \
+  || (( ECHO_SOCKET_COUNT < 128 || ECHO_SOCKET_COUNT > 512 )) \
+  || [[ ! "$ECHO_DATAGRAMS_PER_SOCKET" =~ ^[1-9][0-9]*$ ]] \
+  || (( ECHO_DATAGRAMS_PER_SOCKET > 64 )) \
+  || [[ ! "$ECHO_PAYLOAD_BYTES" =~ ^[1-9][0-9]*$ ]] \
+  || (( ECHO_PAYLOAD_BYTES < 128 || ECHO_PAYLOAD_BYTES > 60000 )) \
+  || [[ ! "$ECHO_CONCURRENCY" =~ ^[1-9][0-9]*$ ]] \
+  || (( ECHO_CONCURRENCY > ECHO_SOCKET_COUNT || ECHO_CONCURRENCY > 128 \
+    || ECHO_SOCKET_COUNT > ECHO_CONCURRENCY * 16 \
+    || ECHO_SOCKET_COUNT * ECHO_DATAGRAMS_PER_SOCKET * ECHO_PAYLOAD_BYTES > MAX_LOAD_BYTES ))
+then
+  fatal_issue "controlled echo load configuration is outside its bounded range"
+fi
+if [[ ! "$HTTP3_CONCURRENCY" =~ ^[1-9][0-9]*$ ]] \
+  || (( HTTP3_CONCURRENCY > 16 )) \
+  || [[ ! "$HTTP3_ROUNDS" =~ ^[1-9][0-9]*$ ]] \
+  || (( HTTP3_ROUNDS < 2 || HTTP3_ROUNDS > 16 )) \
+  || [[ ! "$HTTP3_ROUND_INTERVAL" =~ ^[0-9]+([.][0-9]+)?$ ]] \
+  || ! awk -v value="$HTTP3_ROUND_INTERVAL" 'BEGIN { exit !(value >= 0 && value <= 10) }'
+then
+  fatal_issue "sustained HTTP/3 configuration is outside its bounded range"
+fi
+if [[ ! "$PRESSURE_COUNT" =~ ^[1-9][0-9]*$ ]] \
+  || (( PRESSURE_COUNT < 64 || PRESSURE_COUNT > 100000 )) \
+  || [[ ! "$PRESSURE_PAYLOAD_BYTES" =~ ^[1-9][0-9]*$ ]] \
+  || (( PRESSURE_PAYLOAD_BYTES < 64 || PRESSURE_PAYLOAD_BYTES > 60000 \
+    || PRESSURE_COUNT * PRESSURE_PAYLOAD_BYTES > MAX_LOAD_BYTES )) \
+  || [[ ! "$CONCURRENT_LOAD_DEADLINE_SECONDS" =~ ^[1-9][0-9]*$ ]] \
+  || (( CONCURRENT_LOAD_DEADLINE_SECONDS < 30 \
+    || CONCURRENT_LOAD_DEADLINE_SECONDS >= 600 ))
+then
+  fatal_issue "UDP pressure configuration is outside its bounded range"
+fi
+ECHO_EXPECTED_COUNT=$((ECHO_SOCKET_COUNT * ECHO_DATAGRAMS_PER_SOCKET))
+PRESSURE_EXPECTED_BYTES=$((PRESSURE_COUNT * PRESSURE_PAYLOAD_BYTES))
 GATE_START_MONOTONIC_MS="$(/usr/bin/python3 -c 'import time; print(time.monotonic_ns() // 1_000_000)')"
 [[ "$GATE_START_MONOTONIC_MS" =~ ^[1-9][0-9]*$ ]] \
   || fatal_issue "could not capture the signed UDP monotonic gate start"
@@ -712,15 +1533,45 @@ if (( MACOS_MAJOR < 15 )); then
     fatal_issue "modern UDP Network Extension E2E requires macOS 15 or newer"
   fi
   CALLBACK_GENERATION=legacy
+  add_issue "legacy UDP callbacks are diagnostic-only and cannot satisfy modern release evidence"
 fi
 [[ -d "$BUILT_APP" ]] \
   || fatal_issue "signed app not found at $BUILT_APP; build it before running this test"
+[[ -d "$BUILT_PROVIDER" ]] \
+  || fatal_issue "signed provider not found at $BUILT_PROVIDER; build it before running this test"
 command -v nscurl >/dev/null \
   || fatal_issue "nscurl is required for the public HTTP/3 UDP/443 probe"
 [[ -x "$DIAL9_EVIDENCE_BIN" ]] \
   || fatal_issue "dial9 evidence collector is missing; run just build-tproxy-rs"
 sudo -n true 2>/dev/null \
   || fatal_issue "cached sudo credentials are required for root-owned dial9 evidence"
+
+CURRENT_PHASE=echo-server-start
+/usr/bin/python3 "$PROBE" echo-server --bind 127.0.0.1 --port 0 \
+  --run-uuid "$RUN_UUID" --expected-count "$ECHO_EXPECTED_COUNT" \
+  --max-seconds 180 --ready-file "$ECHO_READY" \
+  --result-file "$ECHO_SERVER_RESULT" > "$TMP_DIR/controlled-echo-server.log" 2>&1 &
+ECHO_SERVER_PID=$!
+for _ in $(seq 1 100); do
+  [[ -s "$ECHO_READY" ]] && break
+  kill -0 "$ECHO_SERVER_PID" 2>/dev/null \
+    || fatal_issue "controlled echo server exited before readiness"
+  sleep 0.05
+done
+ECHO_ENDPOINT="$(/usr/bin/python3 - "$ECHO_READY" "$RUN_UUID" <<'PY'
+import ipaddress, json, sys
+value = json.load(open(sys.argv[1]))
+if value.get("schema_version") != 1 or value.get("schema_complete") is not True:
+    raise SystemExit(2)
+if value.get("run_uuid") != sys.argv[2] or not isinstance(value.get("server_pid"), int):
+    raise SystemExit(2)
+endpoint = value.get("endpoint", "")
+host, port = endpoint.rsplit(":", 1)
+if host != "127.0.0.1" or not 1 <= int(port) <= 65535:
+    raise SystemExit(2)
+print(endpoint)
+PY
+)" || fatal_issue "controlled echo readiness artifact is malformed"
 
 HTTP3_ENDPOINTS="$TMP_DIR/http3-endpoints.txt"
 if ! /usr/bin/python3 - "$HTTP3_URL" > "$HTTP3_ENDPOINTS" <<'PY'
@@ -747,6 +1598,18 @@ PY
 then
   fatal_issue "could not resolve the exact HTTP/3 probe endpoints"
 fi
+DIAGNOSTIC_ENDPOINTS="$(/usr/bin/python3 - "$HTTP3_ENDPOINTS" \
+  "$PASSTHROUGH_DNS:53" "$INTERCEPT_NTP:123" "$BLOCKED_DNS:53" "$ECHO_ENDPOINT" <<'PY'
+import sys
+values = list(sys.argv[2:]) + [line.strip() for line in open(sys.argv[1]) if line.strip()]
+if len(set(values)) != len(values) or not 1 <= len(values) <= 512:
+    raise SystemExit(2)
+print(",".join(values))
+PY
+)" || fatal_issue "UDP diagnostic endpoints are duplicated or malformed"
+printf '%s\n' \
+  'label	provider_pid	provider_generation	flow_id	protocol	source_pid	close_reason	min_bytes_in	max_bytes_in	min_bytes_out	max_bytes_out' \
+  > "$DIAL9_REQUIREMENTS"
 
 CURRENT_PHASE=dial9-baseline
 # The unprivileged shell intentionally owns the artifact redirections.
@@ -785,7 +1648,9 @@ PROFILE_NEEDS_RESTORE=1
 PROFILE_RESTORED=0
 if ! "$INSTALLER" dev "$BUILT_APP" 0 \
   "--udp-passthrough-ports=443" \
-  "--udp-blocked-endpoints="
+  "--udp-blocked-endpoints=" \
+  "--evidence-run-uuid=$RUN_UUID" \
+  "--udp-e2e-diagnostic-endpoints=$DIAGNOSTIC_ENDPOINTS"
 then
   fatal_issue "could not install the unblocked UDP E2E profile"
 fi
@@ -793,6 +1658,13 @@ wait_for_connected "$UNBLOCKED_CONTAINER_LINE" \
   || fatal_issue "unblocked UDP E2E profile did not connect"
 capture_provider_identity \
   || fatal_issue "unblocked UDP E2E provider identity is unavailable"
+capture_common_provider_identity \
+  || fatal_issue "unblocked UDP E2E common provider identity is unavailable"
+start_provider_generation_monitor \
+  || fatal_issue "canonical provider generation monitoring could not start"
+RUN_START_EPOCH_MS="$(/usr/bin/python3 -c 'import time; print(time.time_ns() // 1_000_000)')"
+[[ "$RUN_START_EPOCH_MS" =~ ^[1-9][0-9]*$ ]] \
+  || fatal_issue "could not freeze the signed UDP workload start"
 
 # Ignore teardown/startup errors from the provider instance being replaced.
 sleep 1
@@ -816,36 +1688,107 @@ CONTROL_DNS_LOG_END="$LAST_PROBE_LOG_END"
 PRESSURE_LOG_LINE="$(provider_log_line)"
 PRESSURE_PROBE_ATTEMPTED=1
 PRESSURE_LOG_START="$PRESSURE_LOG_LINE"
+ECHO_LOG_START="$PRESSURE_LOG_LINE"
+UDP_PROBE_ATTEMPT_COUNT=$((UDP_PROBE_ATTEMPT_COUNT + 1))
+CONCURRENT_LOAD_DEADLINE=$((SECONDS + CONCURRENT_LOAD_DEADLINE_SECONDS))
+/usr/bin/python3 "$PROBE" echo-load \
+  --server "${ECHO_ENDPOINT%:*}" --port "${ECHO_ENDPOINT##*:}" \
+  --run-uuid "$RUN_UUID" --socket-count "$ECHO_SOCKET_COUNT" \
+  --datagrams-per-socket "$ECHO_DATAGRAMS_PER_SOCKET" \
+  --payload-bytes "$ECHO_PAYLOAD_BYTES" --concurrency "$ECHO_CONCURRENCY" \
+  --result-file "$ECHO_CLIENT_RESULT" > "$TMP_DIR/controlled-echo-client.log" 2>&1 &
+ECHO_SOURCE_PID=$!
+ACTIVE_ECHO_PID="$ECHO_SOURCE_PID"
 /usr/bin/python3 "$PROBE" pressure --server "$INTERCEPT_NTP" \
-  --count 512 --payload-bytes 4096 --settle 4 &
+  --count "$PRESSURE_COUNT" --payload-bytes "$PRESSURE_PAYLOAD_BYTES" --settle 4 &
 PRESSURE_SOURCE_PID=$!
-if wait "$PRESSURE_SOURCE_PID"
+ACTIVE_PRESSURE_PID="$PRESSURE_SOURCE_PID"
+UDP_PROBE_ATTEMPT_COUNT=$((UDP_PROBE_ATTEMPT_COUNT + 1))
+if wait_for_child_until "$PRESSURE_SOURCE_PID" "$CONCURRENT_LOAD_DEADLINE"
 then
   PRESSURE_PROBE_PASSED=1
+  UDP_PROBE_PASS_COUNT=$((UDP_PROBE_PASS_COUNT + 1))
 else
   add_issue "deliberate UDP pressure burst did not complete"
+fi
+ACTIVE_PRESSURE_PID=""
+ECHO_CLIENT_RC=0
+wait_for_child_until "$ECHO_SOURCE_PID" "$CONCURRENT_LOAD_DEADLINE" || ECHO_CLIENT_RC=$?
+ACTIVE_ECHO_PID=""
+ECHO_SERVER_RC=0
+wait_for_child_until "$ECHO_SERVER_PID" "$CONCURRENT_LOAD_DEADLINE" || ECHO_SERVER_RC=$?
+ECHO_SERVER_PID=""
+ECHO_METRICS="$(/usr/bin/python3 - "$ECHO_CLIENT_RESULT" "$ECHO_SERVER_RESULT" \
+  "$RUN_UUID" "$ECHO_ENDPOINT" "$ECHO_EXPECTED_COUNT" \
+  "$ECHO_SOCKET_COUNT" "$ECHO_DATAGRAMS_PER_SOCKET" "$ECHO_PAYLOAD_BYTES" <<'PY'
+import hashlib, ipaddress, json, re, sys
+client, server = (json.load(open(path)) for path in sys.argv[1:3])
+run_uuid, endpoint, expected = sys.argv[3], sys.argv[4], int(sys.argv[5])
+socket_count, per_socket, payload_bytes = map(int, sys.argv[6:9])
+for value, kind in ((client, "controlled_echo_client"), (server, "controlled_echo_server")):
+    if value.get("schema_version") != 1 or value.get("schema_complete") is not True:
+        raise SystemExit(2)
+    if value.get("kind") != kind or value.get("run_uuid") != run_uuid:
+        raise SystemExit(2)
+    if value.get("endpoint") != endpoint or value.get("passed") is not True:
+        raise SystemExit(2)
+if client.get("expected_count") != expected or server.get("expected_count") != expected:
+    raise SystemExit(2)
+if any(client.get(key) != expected for key in (
+    "sent_count", "received_count", "exact_echo_count", "unique_echo_count",
+)) or server.get("received_count") != expected or server.get("echo_count") != expected:
+    raise SystemExit(2)
+if (client.get("socket_count") != socket_count
+        or client.get("independent_socket_count") != socket_count
+        or client.get("datagrams_per_socket") != per_socket
+        or client.get("payload_bytes") != payload_bytes):
+    raise SystemExit(2)
+if (server.get("duplicate_count") != 0 or server.get("malformed_count") != 0
+        or client.get("error_count") != 0):
+    raise SystemExit(2)
+if re.fullmatch(r"[0-9a-f]{64}", client.get("local_endpoint_set_sha256", "")) is None:
+    raise SystemExit(2)
+local_endpoints = client.get("local_endpoints")
+if not isinstance(local_endpoints, list) or len(set(local_endpoints)) != socket_count:
+    raise SystemExit(2)
+for endpoint_value in local_endpoints:
+    host, port = (endpoint_value[1:].split("]:", 1)
+                  if endpoint_value.startswith("[") else endpoint_value.rsplit(":", 1))
+    if str(ipaddress.ip_address(host)) != host or not 1 <= int(port) <= 65535:
+        raise SystemExit(2)
+local_digest = hashlib.sha256("\n".join(sorted(local_endpoints)).encode()).hexdigest()
+if local_digest != client["local_endpoint_set_sha256"]:
+    raise SystemExit(2)
+digest = client.get("payload_set_sha256")
+if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+    raise SystemExit(2)
+if client.get("echo_set_sha256") != digest or server.get("payload_set_sha256") != digest:
+    raise SystemExit(2)
+print(expected, digest)
+PY
+)" || ECHO_METRICS=""
+if (( ECHO_CLIENT_RC == 0 && ECHO_SERVER_RC == 0 )) \
+  && [[ "$ECHO_METRICS" =~ ^[0-9]+\ [0-9a-f]{64}$ ]]
+then
+  read -r ECHO_EXACT_ECHO_COUNT ECHO_PAYLOAD_SET_SHA256 <<< "$ECHO_METRICS"
+  UDP_PROBE_PASS_COUNT=$((UDP_PROBE_PASS_COUNT + 1))
+else
+  add_issue "controlled QUIC-shaped UDP echo load lacked exact payload/cardinality evidence"
 fi
 close_pressure_probe_window "$PRESSURE_LOG_START" "$PRESSURE_SOURCE_PID" \
   "$INTERCEPT_NTP:123" com.apple.python3 || true
 PRESSURE_END_LOG_LINE="$LAST_PROBE_LOG_END"
+close_probe_decision_window "$ECHO_LOG_START" "$ECHO_SOURCE_PID" "$ECHO_SOCKET_COUNT"
+ECHO_LOG_END="$LAST_PROBE_LOG_END"
 
-HTTP3_SEPARATOR='?'
-[[ "$HTTP3_URL" == *\?* ]] && HTTP3_SEPARATOR='&'
-HTTP3_PROVIDER_LOG_LINE="$(provider_log_line)"
-UDP_PROBE_ATTEMPT_COUNT=$((UDP_PROBE_ATTEMPT_COUNT + 1))
-HTTP3_RC=0
-nscurl --http3-prior-knowledge -m 15 \
-  "${HTTP3_URL}${HTTP3_SEPARATOR}rama_udp_e2e_cache_buster=$RUN_UUID" \
-  > "$HTTP3_RESULT" 2>&1 &
-HTTP3_SOURCE_PID=$!
-wait "$HTTP3_SOURCE_PID" || HTTP3_RC=$?
-close_probe_decision_window "$HTTP3_PROVIDER_LOG_LINE" "$HTTP3_SOURCE_PID"
-HTTP3_PROVIDER_LOG_END="$LAST_PROBE_LOG_END"
-if (( HTTP3_RC == 0 )) && grep -Fq 'http=http/3' "$HTTP3_RESULT"; then
-  UDP_PROBE_PASS_COUNT=$((UDP_PROBE_PASS_COUNT + 1))
-else
-  add_issue "public UDP/443 probe did not complete over HTTP/3"
-fi
+CURRENT_PHASE=pressure-recovery-canary
+run_probe "post-pressure NTP recovery canary" none ntp --server "$INTERCEPT_NTP"
+RECOVERY_NTP_SOURCE_PID="$LAST_PROBE_PID"
+RECOVERY_NTP_LOG_START="$LAST_PROBE_LOG_START"
+RECOVERY_NTP_LOG_END="$LAST_PROBE_LOG_END"
+
+CURRENT_PHASE=sustained-http3
+run_sustained_http3
 
 # Reinstall with one exact public DNS endpoint blocked. A new client socket is
 # used below, so this must create a fresh NE flow and decision.
@@ -853,7 +1796,9 @@ CURRENT_PHASE=blocked-install
 BLOCKED_CONTAINER_LINE="$(container_log_line)"
 if ! "$INSTALLER" dev "$BUILT_APP" 0 \
   "--udp-passthrough-ports=443" \
-  "--udp-blocked-endpoints=$BLOCKED_DNS:53"
+  "--udp-blocked-endpoints=$BLOCKED_DNS:53" \
+  "--evidence-run-uuid=$RUN_UUID" \
+  "--udp-e2e-diagnostic-endpoints=$DIAGNOSTIC_ENDPOINTS"
 then
   fatal_issue "could not install the blocked UDP E2E profile"
 fi
@@ -874,6 +1819,7 @@ BLOCKED_DNS_LOG_END="$LAST_PROBE_LOG_END"
 sleep 2
 CURRENT_PHASE=log-quiesce
 stop_log_capture
+write_provider_log_phases
 CURRENT_PHASE=log-verdicts
 check_exact_decision "$PASSTHROUGH_DNS_LOG_START" "$PASSTHROUGH_DNS_LOG_END" \
   passthrough "$PASSTHROUGH_DNS:53" com.apple.python3 \
@@ -887,25 +1833,25 @@ check_exact_decision "$CONTROL_DNS_LOG_START" "$CONTROL_DNS_LOG_END" passthrough
 check_exact_decision "$PRESSURE_LOG_START" "$PRESSURE_END_LOG_LINE" intercept \
   "$INTERCEPT_NTP:123" com.apple.python3 "$PRESSURE_SOURCE_PID" \
   "Rust intercept decision for the deliberate pressure flow" pressure
+check_exact_decision "$RECOVERY_NTP_LOG_START" "$RECOVERY_NTP_LOG_END" intercept \
+  "$INTERCEPT_NTP:123" com.apple.python3 "$RECOVERY_NTP_SOURCE_PID" \
+  "Rust post-pressure NTP recovery decision" recovery
 check_exact_decision "$BLOCKED_DNS_LOG_START" "$BLOCKED_DNS_LOG_END" blocked \
   "$BLOCKED_DNS:53" com.apple.python3 "$BLOCKED_DNS_SOURCE_PID" \
   "Rust blocked decision for an exact public DNS endpoint" blocked
 
-HTTP3_FOUND=0
-while IFS=$'\t' read -r action flow_id remote source source_pid; do
-  [[ "$source_pid" == "$HTTP3_SOURCE_PID" ]] || continue
-  if [[ "$source" != com.apple.nscurl ]] || ! grep -Fqx -- "$remote" "$HTTP3_ENDPOINTS"; then
-    add_issue "HTTP/3 source PID produced an unexpected app or remote endpoint record"
-    continue
-  fi
-  HTTP3_FOUND=$((HTTP3_FOUND + 1))
-  HTTP3_FLOW_ID="$flow_id"
-  HTTP3_REMOTE_ENDPOINT="$remote"
-  [[ "$action" == passthrough ]] \
-    || add_failure "exact HTTP/3 flow recorded rama_decision=$action instead of passthrough"
-done < <(decision_records "$HTTP3_PROVIDER_LOG_LINE" "$HTTP3_PROVIDER_LOG_END")
-(( HTTP3_FOUND == 1 )) \
-  || add_issue "HTTP/3 request did not have one exact PID/endpoint decision record"
+check_echo_decisions || true
+check_http3_decisions || true
+if [[ "$UNBLOCKED_PROVIDER_GENERATION" =~ ^[1-9][0-9]*$ \
+  && "$BLOCKED_PROVIDER_GENERATION" =~ ^[1-9][0-9]*$ \
+  && "$UNBLOCKED_PROVIDER_GENERATION" != "$BLOCKED_PROVIDER_GENERATION" ]]
+then
+  ENGINE_GENERATIONS_SHA256="$(printf '%s' \
+    "$PROVIDER_PID:$UNBLOCKED_PROVIDER_GENERATION:$BLOCKED_PROVIDER_GENERATION" \
+    | shasum -a 256 | awk 'NR == 1 { print $1 }')"
+else
+  add_issue "signed UDP E2E did not observe two exact provider generations"
+fi
 
 # Open/read/write markers are emitted only for errors the provider classifier
 # considers unexpected. Benign teardown races have no public marker.

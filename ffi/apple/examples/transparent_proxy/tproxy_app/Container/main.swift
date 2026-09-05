@@ -96,6 +96,47 @@ final class ContainerController: NSObject, NSApplicationDelegate, @unchecked Sen
         let value = String(argument.dropFirst(prefix.count))
         return Self.parseUdpBlockedEndpoints(value)
     }()
+    /// Canonical signed-evidence run identity. Launch-only and non-secret.
+    lazy var requestedEvidenceRunUuid: String? = {
+        let prefix = "--evidence-run-uuid="
+        let arguments = ProcessInfo.processInfo.arguments.filter { $0.hasPrefix(prefix) }
+        guard arguments.count == 1, let argument = arguments.first else {
+            return nil
+        }
+        let value = String(argument.dropFirst(prefix.count))
+        guard value.count == 36, UUID(uuidString: value)?.uuidString.lowercased() == value
+        else { return nil }
+        return value
+    }()
+    /// Exact endpoints eligible for Rust's signed-E2E diagnostic.
+    lazy var requestedUdpE2EDiagnosticEndpoints: [String]? = {
+        let prefix = "--udp-e2e-diagnostic-endpoints="
+        let arguments = ProcessInfo.processInfo.arguments.filter { $0.hasPrefix(prefix) }
+        guard arguments.count == 1, let argument = arguments.first else {
+            return nil
+        }
+        let value = String(argument.dropFirst(prefix.count))
+        guard let endpoints = Self.parseUdpBlockedEndpoints(value),
+            !endpoints.isEmpty, endpoints.count <= 512,
+            Set(endpoints).count == endpoints.count
+        else { return nil }
+        return endpoints
+    }()
+    /// The signed harness uses one narrowly-scoped launch to restart the
+    /// persisted profile with no temporary UDP policy or evidence identity.
+    lazy var isPersistedDefaultRestart: Bool = {
+        let arguments = ProcessInfo.processInfo.arguments
+        let passthrough = arguments.filter { $0.hasPrefix("--udp-passthrough-ports=") }
+        let blocked = arguments.filter { $0.hasPrefix("--udp-blocked-endpoints=") }
+        let hasAnyEvidenceArgument = arguments.contains(where: {
+            $0.hasPrefix("--evidence-run-uuid=")
+                || $0.hasPrefix("--udp-e2e-diagnostic-endpoints=")
+        })
+        return passthrough.count == 1 && blocked.count == 1
+            && requestedUdpPassthroughPorts == []
+            && requestedUdpBlockedEndpoints == []
+            && !hasAnyEvidenceArgument
+    }()
 
     /// Distinguishes a malformed supplied argument from an absent argument.
     /// Invalid test policy must fail closed instead of silently running the E2E
@@ -111,6 +152,32 @@ final class ContainerController: NSObject, NSApplicationDelegate, @unchecked Sen
             requestedUdpBlockedEndpoints == nil
         {
             return "--udp-blocked-endpoints"
+        }
+        if arguments.contains(where: { $0.hasPrefix("--evidence-run-uuid=") }),
+            requestedEvidenceRunUuid == nil
+        {
+            return "--evidence-run-uuid"
+        }
+        if arguments.contains(where: { $0.hasPrefix("--udp-e2e-diagnostic-endpoints=") }),
+            requestedUdpE2EDiagnosticEndpoints == nil
+        {
+            return "--udp-e2e-diagnostic-endpoints"
+        }
+        let hasAnyEvidenceArgument = requestedEvidenceRunUuid != nil
+            || requestedUdpE2EDiagnosticEndpoints != nil
+        let hasCompleteEvidenceIdentity = requestedEvidenceRunUuid != nil
+            && requestedUdpE2EDiagnosticEndpoints != nil
+        let hasUdpOverrideArgument = arguments.contains(where: {
+            $0.hasPrefix("--udp-passthrough-ports=")
+                || $0.hasPrefix("--udp-blocked-endpoints=")
+        })
+        if hasUdpOverrideArgument && isPersistedDefaultRestart {
+            return nil
+        }
+        if (hasAnyEvidenceArgument || hasUdpOverrideArgument)
+            && !hasCompleteEvidenceIdentity
+        {
+            return "incomplete UDP E2E evidence identity"
         }
         return nil
     }()
@@ -145,7 +212,8 @@ final class ContainerController: NSObject, NSApplicationDelegate, @unchecked Sen
             let colon = endpoint.index(after: closingBracket)
             guard colon < endpoint.endIndex, endpoint[colon] == ":" else { return false }
             let portStart = endpoint.index(after: colon)
-            return UInt16(endpoint[portStart...]) != nil
+            guard let port = UInt16(endpoint[portStart...]) else { return false }
+            return port > 0
         }
 
         guard let colon = endpoint.lastIndex(of: ":"), colon > endpoint.startIndex else {
@@ -153,7 +221,8 @@ final class ContainerController: NSObject, NSApplicationDelegate, @unchecked Sen
         }
         let host = endpoint[..<colon]
         let portStart = endpoint.index(after: colon)
-        return !host.contains(":") && UInt16(endpoint[portStart...]) != nil
+        guard let port = UInt16(endpoint[portStart...]) else { return false }
+        return !host.contains(":") && port > 0
     }
     /// True after demoSettings has been initialised from NE preferences at least once.
     /// Prevents subsequent loadOrCreateAndConfigureManager calls from overwriting in-memory
@@ -182,6 +251,14 @@ final class ContainerController: NSObject, NSApplicationDelegate, @unchecked Sen
         if let requestedUdpBlockedEndpoints {
             log(
                 "temporary test UDP blocked endpoints=\(requestedUdpBlockedEndpoints.joined(separator: ","))"
+            )
+        }
+        if isPersistedDefaultRestart {
+            log("udp_e2e_restore_profile=persisted-default evidence_identity=absent")
+        }
+        if let requestedEvidenceRunUuid, let requestedUdpE2EDiagnosticEndpoints {
+            log(
+                "temporary UDP E2E evidence run=\(requestedEvidenceRunUuid) endpoints=\(requestedUdpE2EDiagnosticEndpoints.count)"
             )
         }
         if cleanSecretsOnLaunch {

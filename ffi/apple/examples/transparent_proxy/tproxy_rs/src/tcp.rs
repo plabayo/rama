@@ -248,6 +248,7 @@ impl DemoTcpMitmService {
                 crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
             ),
             DemoTraceTrafficLayer,
+            crate::http::headers::StressRequestAttributionLayer,
             SetRequestHeaderLayer::if_not_present_typed(
                 crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
             ),

@@ -1,7 +1,8 @@
-// This whole file relies on the `#if DEBUG`-gated instrumentation
+// This whole file relies on the `#if DEBUG`-gated read-loop observation seam
 // fields on `UdpClientWritePump` (`testSentByEndpointSetCount` /
 // `testLastSentByEndpoint`). Release-mode builds compile out those
-// fields entirely (zero ARC churn on the production hot path), and
+// fields and corresponding `UdpFlowSession` calls entirely (zero fallback
+// mutation or endpoint ARC churn on the production hot path), and
 // they can't compile this file in Release as a result. Tests run
 // in Debug, where the instrumentation is present.
 #if DEBUG
@@ -23,7 +24,7 @@ import XCTest
 /// tagged with the first peer and routed to it). The current code
 /// strictly pairs by index; surplus datagrams get `peer = nil`.
 ///
-/// Assertion strategy: the read loop calls
+/// Assertion strategy: the Debug-only read seam calls
 /// `writer.setSentByEndpoint(...)` exactly once per matched
 /// (datagram, endpoint) pair; the writer pump exposes a
 /// test-only invocation counter (`testSentByEndpointSetCount`)
@@ -140,7 +141,7 @@ final class UdpReadEndpointMismatchTests: XCTestCase {
         )
         XCTAssertEqual(
             (snapshot.lastEndpoint as? NWHostEndpoint)?.hostname, "10.0.0.1",
-            "the one cached endpoint must be endpoints[0], not a fabrication"
+            "the one Debug observation endpoint must be endpoints[0], not a fabrication"
         )
         XCTAssertTrue(
             snapshot.lastEndpoint === firstEndpoint,

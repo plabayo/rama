@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import uuid
 
 
 SELECTION_RE = re.compile(
@@ -1544,25 +1545,27 @@ def parse_leaks_output(text):
         return None
     number = r"(?:0|[1-9]\d*|[1-9]\d{0,2}(?:,\d{3})+)"
     matches = re.findall(
-        rf"\b({number})\s+leaks?\s+for\s+"
+        rf"\bProcess\s+(\d+):\s+({number})\s+leaks?\s+for\s+"
         rf"({number})\s+total leaked bytes\b",
         text,
         re.IGNORECASE,
     )
     if len(matches) != 1:
         return None
-    leaks_text, leaked_bytes_text = matches[0]
+    process_text, leaks_text, leaked_bytes_text = matches[0]
+    process_pid = parse_artifact_uint(process_text, maximum=2_147_483_647)
     leaks = parse_artifact_uint(leaks_text.replace(",", ""))
     leaked_bytes = parse_artifact_uint(leaked_bytes_text.replace(",", ""))
-    if leaks is None or leaked_bytes is None:
+    if process_pid in (None, 0) or leaks is None or leaked_bytes is None:
         return None
     return {
+        "process_pid": process_pid,
         "leaks": leaks,
         "bytes": leaked_bytes,
     }
 
 
-def leak_evidence(command_rc, text):
+def leak_evidence(command_rc, text, *, expected_pid=None):
     """Return fail-closed leaks-tool evidence and the parsed leak count."""
     issues = []
     command_rc = _nonnegative_int(command_rc)
@@ -1571,8 +1574,14 @@ def leak_evidence(command_rc, text):
         issues.append("leaks output is missing or unparseable")
         leaks = leaked_bytes = 0
     else:
+        process_pid = parsed["process_pid"]
         leaks = parsed["leaks"]
         leaked_bytes = parsed["bytes"]
+        if expected_pid is not None:
+            parsed_expected_pid = parse_artifact_uint(
+                str(expected_pid), maximum=2_147_483_647)
+            if parsed_expected_pid in (None, 0) or process_pid != parsed_expected_pid:
+                issues.append("leaks output is not attributed to the exact provider PID")
     if command_rc is None or command_rc < 0:
         issues.append("leaks command outcome is missing or invalid")
     elif command_rc > 1:
@@ -1588,8 +1597,828 @@ def leak_evidence(command_rc, text):
             issues.append("leaks command outcome contradicts its parsed summary")
     return {
         "issues": issues,
+        "process_pid": parsed["process_pid"] if parsed is not None else None,
         "leaks": leaks,
         "bytes": leaked_bytes,
+    }
+
+
+def idle_cpu_evidence(
+    lines,
+    *,
+    expected_pid,
+    expected_identity,
+    required_samples=10,
+    hot_threshold_percent=Decimal("90.0"),
+    hot_streak_samples=5,
+    allowed_start_epoch=None,
+    allowed_end_epoch=None,
+    run_start_epoch_ms=None,
+    run_end_epoch_ms=None,
+    label="idle CPU",
+):
+    """Validate the fixed-cadence, exact-provider no-spin observations.
+
+    Rows are ``index<TAB>epoch<TAB>pid<TAB>identity<TAB>cpu-percent``.  A
+    sustained full-core spin is a product failure.  Missing, malformed,
+    mis-spaced, or differently attributed observations are incomplete
+    evidence instead: none of those conditions may be interpreted as a cool
+    provider.
+    """
+    issues = []
+    failures = []
+    samples = []
+    expected_pid = parse_artifact_uint(str(expected_pid), maximum=2_147_483_647)
+    required_samples = _nonnegative_int(required_samples)
+    hot_streak_samples = _nonnegative_int(hot_streak_samples)
+    try:
+        hot_threshold_percent = Decimal(str(hot_threshold_percent))
+    except (ValueError, ArithmeticError):
+        hot_threshold_percent = None
+    if expected_pid in (None, 0):
+        issues.append("idle CPU expected provider PID is missing or invalid")
+    if re.fullmatch(r"[0-9a-f]{64}", str(expected_identity)) is None:
+        issues.append("idle CPU expected provider identity is missing or invalid")
+    if required_samples in (None, 0):
+        issues.append("idle CPU required sample count is invalid")
+    if hot_streak_samples in (None, 0):
+        issues.append("idle CPU hot-streak length is invalid")
+    if (
+        hot_threshold_percent is None
+        or not hot_threshold_percent.is_finite()
+        or hot_threshold_percent < 0
+        or hot_threshold_percent > Decimal("10000.0")
+    ):
+        issues.append("idle CPU hot threshold is invalid")
+
+    def optional_epoch(value, description):
+        if value is None:
+            return None
+        parsed = parse_artifact_epoch(str(value))
+        if parsed is None:
+            issues.append(f"{label} {description} is missing or invalid")
+        return parsed
+
+    allowed_start = optional_epoch(allowed_start_epoch, "phase start")
+    allowed_end = optional_epoch(allowed_end_epoch, "phase end")
+    run_start_ms = (
+        parse_artifact_uint(str(run_start_epoch_ms))
+        if run_start_epoch_ms is not None
+        else None
+    )
+    run_end_ms = (
+        parse_artifact_uint(str(run_end_epoch_ms))
+        if run_end_epoch_ms is not None
+        else None
+    )
+    if run_start_epoch_ms is not None and run_start_ms is None:
+        issues.append(f"{label} run start is missing or invalid")
+    if run_end_epoch_ms is not None and run_end_ms is None:
+        issues.append(f"{label} run end is missing or invalid")
+    run_start = Decimal(run_start_ms) / 1000 if run_start_ms is not None else None
+    run_end = Decimal(run_end_ms) / 1000 if run_end_ms is not None else None
+    if allowed_start is not None and allowed_end is not None and allowed_start > allowed_end:
+        issues.append(f"{label} phase window is reversed")
+    if run_start is not None and run_end is not None and run_start > run_end:
+        issues.append(f"{label} run window is reversed")
+
+    previous_epoch = None
+    for line_number, raw in enumerate(lines, 1):
+        if not raw.strip():
+            continue
+        fields = raw.rstrip("\n").split("\t")
+        if len(fields) != 5:
+            issues.append(f"malformed {label} sample at line {line_number}")
+            continue
+        index = parse_artifact_uint(fields[0], maximum=10_000)
+        epoch = parse_artifact_epoch(fields[1])
+        pid = parse_artifact_uint(fields[2], maximum=2_147_483_647)
+        identity = fields[3]
+        cpu_text = fields[4]
+        try:
+            cpu = Decimal(cpu_text)
+        except (ValueError, ArithmeticError):
+            cpu = None
+        if (
+            index is None
+            or epoch is None
+            or pid in (None, 0)
+            or re.fullmatch(r"[0-9a-f]{64}", identity) is None
+            or re.fullmatch(r"(?:0|[1-9]\d*)(?:\.\d+)?", cpu_text) is None
+            or cpu is None
+            or not cpu.is_finite()
+            or cpu > Decimal("10000.0")
+        ):
+            issues.append(f"malformed {label} sample at line {line_number}")
+            continue
+        expected_index = len(samples) + 1
+        if index != expected_index:
+            issues.append(
+                f"{label} sample index {index} at line {line_number} "
+                f"does not follow {expected_index}"
+            )
+        if expected_pid is not None and pid != expected_pid:
+            issues.append(f"{label} provider PID changed at line {line_number}")
+        if identity != expected_identity:
+            issues.append(f"{label} provider identity changed at line {line_number}")
+        if previous_epoch is not None:
+            spacing = epoch - previous_epoch
+            if spacing < Decimal("0.75") or spacing > Decimal("2.50"):
+                issues.append(
+                    f"{label} sample cadence is not one second at line {line_number}"
+                )
+        if allowed_start is not None and epoch < allowed_start:
+            issues.append(f"{label} sample at line {line_number} is before its phase")
+        if allowed_end is not None and epoch > allowed_end:
+            issues.append(f"{label} sample at line {line_number} is after its phase")
+        if run_start is not None and epoch < run_start:
+            issues.append(f"{label} sample at line {line_number} is before the run")
+        if run_end is not None and epoch > run_end:
+            issues.append(f"{label} sample at line {line_number} is after the run")
+        previous_epoch = epoch
+        samples.append((index, epoch, pid, identity, cpu))
+
+    if required_samples is not None and len(samples) != required_samples:
+        issues.append(
+            f"{label} evidence has {len(samples)} sample(s); "
+            f"expected exactly {required_samples}"
+        )
+
+    maximum = max((sample[4] for sample in samples), default=None)
+    mean = (
+        sum((sample[4] for sample in samples), Decimal(0)) / len(samples)
+        if samples
+        else None
+    )
+    current_streak = maximum_streak = 0
+    if hot_threshold_percent is not None:
+        for *_, cpu in samples:
+            if cpu >= hot_threshold_percent:
+                current_streak += 1
+                maximum_streak = max(maximum_streak, current_streak)
+            else:
+                current_streak = 0
+    if (
+        not issues
+        and hot_streak_samples is not None
+        and maximum_streak >= hot_streak_samples
+    ):
+        failures.append(
+            f"{label} provider CPU stayed at or above "
+            f"{hot_threshold_percent}% for {maximum_streak} consecutive sample(s)"
+        )
+    return {
+        "issues": issues,
+        "failures": failures,
+        "sample_count": len(samples),
+        "maximum_percent": maximum,
+        "mean_percent": mean,
+        "maximum_hot_streak": maximum_streak,
+        "warm_sample_count": sum(
+            1 for *_, cpu in samples if cpu >= Decimal("80.0")
+        ),
+        "first_epoch": samples[0][1] if samples else None,
+        "last_epoch": samples[-1][1] if samples else None,
+        "cpu_percents": [sample[4] for sample in samples],
+    }
+
+
+def top_cpu_sample_rows(lines, *, expected_pid, expected_identity):
+    """Extract ten instantaneous samples after discarding ``top``'s first row.
+
+    The shell prefixes exact-PID data rows with their observation epoch while
+    retaining column headers as ``-`` timestamp rows. With ``-l 11 -s 1``, the
+    first value is the lifetime/decayed sample documented by macOS ``top``;
+    only the following ten interval samples are release evidence.
+    """
+    issues = []
+    samples = []
+    expected_pid_value = parse_artifact_uint(
+        str(expected_pid), maximum=2_147_483_647)
+    if expected_pid_value in (None, 0):
+        issues.append("top CPU expected provider PID is missing or invalid")
+    if re.fullmatch(r"[0-9a-f]{64}", str(expected_identity)) is None:
+        issues.append("top CPU expected provider identity is missing or invalid")
+
+    awaiting_row = False
+    for line_number, raw in enumerate(lines, 1):
+        fields = raw.rstrip("\n").split("\t", 1)
+        if len(fields) != 2:
+            issues.append(f"malformed timestamped top output at line {line_number}")
+            continue
+        epoch_text, payload = fields
+        columns = payload.split()
+        if columns == ["PID", "%CPU"]:
+            awaiting_row = True
+            continue
+        if not awaiting_row or not payload.strip():
+            continue
+        match = re.fullmatch(r"\s*(\d+)\s+(\d+(?:\.\d+)?)%?\s*", payload)
+        if match is None:
+            issues.append(f"malformed top CPU row at line {line_number}")
+            awaiting_row = False
+            continue
+        epoch = parse_artifact_epoch(epoch_text)
+        pid = parse_artifact_uint(match.group(1), maximum=2_147_483_647)
+        cpu_text = match.group(2)
+        if epoch is None or pid in (None, 0) or pid != expected_pid_value:
+            issues.append(f"top CPU row is not attributed to the exact PID at line {line_number}")
+        samples.append((epoch_text, match.group(1), cpu_text))
+        awaiting_row = False
+
+    if len(samples) != 11:
+        issues.append(
+            f"top CPU output has {len(samples)} process sample(s); expected exactly 11"
+        )
+    if issues:
+        return [], issues
+    rows = [
+        f"{index}\t{epoch}\t{pid}\t{expected_identity}\t{cpu}\n"
+        for index, (epoch, pid, cpu) in enumerate(samples[1:], 1)
+    ]
+    return rows, []
+
+
+def idle_cpu_comparison_evidence(
+    baseline_lines,
+    post_lines,
+    *,
+    expected_pid,
+    expected_identity,
+    baseline_start_epoch,
+    baseline_end_epoch,
+    post_start_epoch,
+    post_end_epoch,
+    run_start_epoch_ms,
+    run_end_epoch_ms,
+    regression_allowance_percent=Decimal("5.0"),
+    absolute_mean_ceiling_percent=Decimal("10.0"),
+    warm_threshold_percent=Decimal("80.0"),
+    maximum_warm_samples=4,
+    minimum_post_quiescence_seconds=0,
+):
+    """Compare exact pre-load and post-load no-spin samples.
+
+    Both series are bound to declared phase and run windows. The post-load
+    provider must remain close to its device-local idle baseline and must not
+    spend half of the fixed sample window near a full core.
+    """
+    baseline = idle_cpu_evidence(
+        baseline_lines,
+        expected_pid=expected_pid,
+        expected_identity=expected_identity,
+        allowed_start_epoch=baseline_start_epoch,
+        allowed_end_epoch=baseline_end_epoch,
+        run_start_epoch_ms=run_start_epoch_ms,
+        run_end_epoch_ms=run_end_epoch_ms,
+        label="idle CPU baseline",
+    )
+    post = idle_cpu_evidence(
+        post_lines,
+        expected_pid=expected_pid,
+        expected_identity=expected_identity,
+        allowed_start_epoch=post_start_epoch,
+        allowed_end_epoch=post_end_epoch,
+        run_start_epoch_ms=run_start_epoch_ms,
+        run_end_epoch_ms=run_end_epoch_ms,
+        label="idle CPU post-load",
+    )
+    issues = list(baseline["issues"]) + list(post["issues"])
+    failures = list(baseline["failures"]) + list(post["failures"])
+    if baseline_start_epoch is None or baseline_end_epoch is None:
+        issues.append("idle CPU baseline phase window is unavailable")
+    if post_start_epoch is None or post_end_epoch is None:
+        issues.append("idle CPU post-load phase window is unavailable")
+    if run_start_epoch_ms is None or run_end_epoch_ms is None:
+        issues.append("idle CPU run window is unavailable")
+    try:
+        regression_allowance = Decimal(str(regression_allowance_percent))
+        absolute_ceiling = Decimal(str(absolute_mean_ceiling_percent))
+        warm_threshold = Decimal(str(warm_threshold_percent))
+    except (ValueError, ArithmeticError):
+        regression_allowance = absolute_ceiling = warm_threshold = None
+    maximum_warm_samples = _nonnegative_int(maximum_warm_samples)
+    minimum_post_quiescence = _nonnegative_int(minimum_post_quiescence_seconds)
+    if (
+        regression_allowance is None
+        or absolute_ceiling is None
+        or warm_threshold is None
+        or not all(
+            value.is_finite() and value >= 0
+            for value in (regression_allowance, absolute_ceiling, warm_threshold)
+        )
+        or maximum_warm_samples is None
+        or minimum_post_quiescence is None
+    ):
+        issues.append("idle CPU comparison policy is invalid")
+
+    post_limit = None
+    baseline_warm_count = None
+    post_warm_count = None
+    if not issues:
+        baseline_warm_count = sum(
+            1 for cpu in baseline["cpu_percents"] if cpu >= warm_threshold
+        )
+        post_warm_count = sum(
+            1 for cpu in post["cpu_percents"] if cpu >= warm_threshold
+        )
+        for series_label, series, warm_count in (
+            ("baseline", baseline, baseline_warm_count),
+            ("post-load", post, post_warm_count),
+        ):
+            if series["mean_percent"] > absolute_ceiling:
+                failures.append(
+                    f"idle CPU {series_label} mean {series['mean_percent']}% "
+                    f"exceeds the absolute {absolute_ceiling}% ceiling"
+                )
+            if warm_count > maximum_warm_samples:
+                failures.append(
+                    f"idle CPU {series_label} evidence has "
+                    f"{warm_count} sample(s) at or above {warm_threshold}%; "
+                    f"at most {maximum_warm_samples} are allowed"
+                )
+        post_limit = max(
+            baseline["mean_percent"] + regression_allowance,
+            absolute_ceiling,
+        )
+        if post["mean_percent"] > post_limit:
+            failures.append(
+                "idle CPU post-load mean "
+                f"{post['mean_percent']}% exceeds the baseline-derived "
+                f"{post_limit}% limit"
+            )
+        post_start = parse_artifact_epoch(str(post_start_epoch))
+        if (
+            post_start is not None
+            and post["first_epoch"]
+            < post_start + Decimal(minimum_post_quiescence)
+        ):
+            issues.append(
+                "idle CPU post-load sampling began before the declared "
+                "quiescence completed"
+            )
+    return {
+        "issues": issues,
+        "failures": failures,
+        "baseline": baseline,
+        "post": post,
+        "post_mean_limit_percent": post_limit,
+        "baseline_warm_sample_count": baseline_warm_count,
+        "post_warm_sample_count": post_warm_count,
+        "regression_allowance_percent": regression_allowance,
+        "absolute_mean_ceiling_percent": absolute_ceiling,
+        "warm_threshold_percent": warm_threshold,
+        "maximum_warm_samples": maximum_warm_samples,
+        "minimum_post_quiescence_seconds": minimum_post_quiescence,
+    }
+
+
+def cpu_sample_diagnostic_issues(meta):
+    """Validate completion of the bounded five-second ``sample`` diagnostic."""
+    issues = []
+    if not isinstance(meta, dict):
+        return ["CPU sample diagnostic metadata is missing"]
+    child_rc = _nonnegative_int(meta.get("cpu_sample_command_rc"))
+    if meta.get("cpu_sample_joined") != "1":
+        issues.append("CPU sample diagnostic child was not reaped")
+    if meta.get("cpu_sample_forced") != "0":
+        issues.append("CPU sample diagnostic exceeded its bounded deadline")
+    if meta.get("cpu_sample_privilege") != "sudo":
+        issues.append("CPU sample diagnostic did not use cached sudo privilege")
+    if meta.get("cpu_sample_ownership_normalized") != "1":
+        issues.append("CPU sample diagnostic ownership was not normalized")
+    if child_rc != 0:
+        issues.append("CPU sample diagnostic command failed or has no valid outcome")
+    return issues
+
+
+def memory_diagnostic_issues(meta, *, baseline_artifact, final_artifact):
+    """Validate bounded baseline/final attach commands and their artifacts."""
+    if not isinstance(meta, dict):
+        return ["memory diagnostic metadata is missing"]
+    issues = []
+    specifications = (
+        ("baseline", ("sudo", "ps", "vmmap"), baseline_artifact),
+        ("final", ("sudo", "ps", "vmmap", "heap", "heap_filter"), final_artifact),
+    )
+    expected_pid = parse_artifact_uint(
+        meta.get("provider_start_pid"), maximum=2_147_483_647)
+    expected_identity = meta.get("provider_start_identity")
+    run_start = parse_artifact_uint(meta.get("run_start_epoch_ms"))
+    run_end = parse_artifact_uint(meta.get("run_end_epoch_ms"))
+    for label, commands, artifact in specifications:
+        prefix = f"{label}_mem_"
+        if _nonnegative_int(meta.get(prefix + "child_rc")) != 0:
+            issues.append(
+                f"{label} memory diagnostic child failed or has no valid outcome"
+            )
+        if meta.get(prefix + "joined") != "1":
+            issues.append(f"{label} memory diagnostic child was not reaped")
+        if meta.get(prefix + "forced") != "0":
+            issues.append(
+                f"{label} memory diagnostic exceeded its bounded deadline"
+            )
+        if meta.get(prefix + "privilege") != "sudo":
+            issues.append(
+                f"{label} memory diagnostic did not prove cached sudo privilege"
+            )
+        for command in commands:
+            if _nonnegative_int(meta.get(prefix + command + "_rc")) != 0:
+                issues.append(
+                    f"{label} memory diagnostic {command} command failed "
+                    "or has no valid outcome"
+                )
+        try:
+            artifact_ok = os.path.isfile(artifact) and os.path.getsize(artifact) > 0
+        except (OSError, TypeError, ValueError):
+            artifact_ok = False
+        if not artifact_ok:
+            issues.append(f"{label} memory diagnostic artifact is missing or empty")
+            continue
+        try:
+            with open(artifact, errors="replace") as source:
+                artifact_text = source.read()
+        except OSError:
+            issues.append(f"{label} memory diagnostic artifact cannot be read")
+            continue
+        if expected_pid in (None, 0):
+            issues.append(f"{label} memory diagnostic expected PID is invalid")
+            continue
+        header_label = "baseline" if label == "baseline" else "final snapshot"
+        header = re.match(
+            rf"\A=== {re.escape(header_label)} provider pid=(\d+) @ [^\n]+ ===\n",
+            artifact_text,
+        )
+        if header is None or parse_artifact_uint(header.group(1)) != expected_pid:
+            issues.append(f"{label} memory diagnostic header has the wrong PID")
+        vmmap_marker = "\n--- vmmap --summary ---\n"
+        heap_marker = "\n--- heap totals ---\n"
+        before_vmmap, marker, after_vmmap = artifact_text.partition(vmmap_marker)
+        if not marker:
+            issues.append(f"{label} memory diagnostic vmmap section is missing")
+            continue
+        ps_pids = re.findall(
+            r"(?m)^\s*(\d+)\s+\d+\s+\d+\s+\d+(?:\.\d+)?\s+\S+\s*$",
+            before_vmmap,
+        )
+        if ps_pids != [str(expected_pid)]:
+            issues.append(f"{label} memory diagnostic ps row has the wrong PID")
+        vmmap_text = after_vmmap
+        heap_text = None
+        if label == "final":
+            vmmap_text, marker, heap_text = after_vmmap.partition(heap_marker)
+            if not marker:
+                issues.append("final memory diagnostic heap section is missing")
+        vmmap_pids = re.findall(r"(?m)^Process:\s+.*\[(\d+)\]\s*$", vmmap_text)
+        if vmmap_pids != [str(expected_pid)]:
+            issues.append(f"{label} memory diagnostic vmmap output has the wrong PID")
+        if heap_text is not None:
+            heap_pids = re.findall(r"(?m)^Process\s+(\d+):", heap_text)
+            if heap_pids != [str(expected_pid)]:
+                issues.append("final memory diagnostic heap output has the wrong PID")
+
+    baseline_start = parse_artifact_uint(meta.get("baseline_mem_start_epoch_ms"))
+    baseline_end = parse_artifact_uint(meta.get("baseline_mem_end_epoch_ms"))
+    baseline_pid = parse_artifact_uint(
+        meta.get("baseline_mem_provider_pid"), maximum=2_147_483_647)
+    if (
+        baseline_start is None
+        or baseline_end is None
+        or baseline_end < baseline_start
+        or run_start is None
+        or baseline_start < run_start
+        or run_end is None
+        or baseline_end > run_end
+    ):
+        issues.append("baseline memory diagnostic interval is outside the run")
+    if (
+        expected_pid in (None, 0)
+        or baseline_pid != expected_pid
+        or meta.get("baseline_mem_identity_before") != expected_identity
+        or meta.get("baseline_mem_identity_after") != expected_identity
+    ):
+        issues.append(
+            "baseline memory diagnostic is not bound to the exact run generation"
+        )
+    return issues
+
+
+def top_cpu_collection_issues(meta):
+    """Validate both bounded privileged instantaneous CPU collectors."""
+    if not isinstance(meta, dict):
+        return ["top CPU collection metadata is missing"]
+    issues = []
+    expected_identity = meta.get("provider_start_identity")
+    for label in ("baseline", "post"):
+        prefix = f"idle_cpu_{label}_top_"
+        if _nonnegative_int(meta.get(prefix + "command_rc")) != 0:
+            issues.append(f"{label} top CPU command failed or has no valid outcome")
+        if meta.get(prefix + "joined") != "1":
+            issues.append(f"{label} top CPU collector was not reaped")
+        if meta.get(prefix + "forced") != "0":
+            issues.append(f"{label} top CPU collector exceeded its bounded deadline")
+        if meta.get(prefix + "privilege") != "sudo":
+            issues.append(f"{label} top CPU collector did not use cached sudo")
+        if (
+            meta.get(f"idle_cpu_{label}_identity_before") != expected_identity
+            or meta.get(f"idle_cpu_{label}_identity_after") != expected_identity
+        ):
+            issues.append(f"{label} top CPU provider identity changed")
+    return issues
+
+
+def dial9_diagnostic_claim_issues(meta):
+    """Ensure arbitrary Dial9 traces cannot be promoted to soak coverage."""
+    if not isinstance(meta, dict):
+        return ["Dial9 diagnostic claim metadata is missing"]
+    issues = []
+    if meta.get("dial9_diagnostic_only") != "1":
+        issues.append("Dial9 evidence is not marked diagnostic-only")
+    if meta.get("dial9_coverage_claimed") != "0":
+        issues.append("soak evidence must not claim Dial9 workload coverage")
+    return issues
+
+
+def dial9_diagnostic_collection_issues(meta):
+    """Reject a started Dial9 diagnostic that escaped its bounded join."""
+    if not isinstance(meta, dict):
+        return ["Dial9 diagnostic collection metadata is missing"]
+    if meta.get("dial9_collection_attempted") != "1":
+        return []
+    issues = []
+    if meta.get("dial9_collect_joined") != "1":
+        issues.append("Dial9 diagnostic collection child was not reaped")
+    if meta.get("dial9_collect_forced") != "0":
+        issues.append("Dial9 diagnostic collection exceeded its bounded deadline")
+    if _nonnegative_int(meta.get("dial9_collect_child_rc")) is None:
+        issues.append("Dial9 diagnostic collection outcome is missing or invalid")
+    return issues
+
+
+def soak_workload_claim_issues(lines, *, expected_run_uuid=None):
+    """Require the exact release-set claims emitted by the TCP-only soak."""
+    actual = []
+    for line_number, raw in enumerate(lines, 1):
+        if not raw.strip():
+            continue
+        fields = raw.rstrip("\n").split("\t")
+        if len(fields) != 2 or not fields[0] or not fields[1]:
+            return [f"malformed soak workload claim at line {line_number}"]
+        actual.append(tuple(fields))
+    run_uuid = actual[1][1] if len(actual) > 1 and actual[1][0] == "run_uuid" else ""
+    try:
+        canonical_run_uuid = str(uuid.UUID(run_uuid)) == run_uuid
+    except (ValueError, AttributeError):
+        canonical_run_uuid = False
+    expected = [
+        ("evidence_kind", "soak"),
+        ("run_uuid", run_uuid),
+        ("dial9_claim", "unattributed-diagnostic"),
+        ("dial9_diagnostic_only", "1"),
+        ("dial9_workload_coverage", "0"),
+        ("tcp_workload_exercised", "1"),
+        ("udp_workload_exercised", "0"),
+        ("schema_complete", "1"),
+    ]
+    if (
+        actual != expected
+        or not canonical_run_uuid
+        or (expected_run_uuid is not None and run_uuid != expected_run_uuid)
+    ):
+        return ["soak workload claims do not match the exact TCP-only contract"]
+    return []
+
+
+def final_provider_observation_issues(meta):
+    """Bind run end to one generation across the crash-snapshot scan."""
+    if not isinstance(meta, dict):
+        return ["final provider observation metadata is missing"]
+    issues = []
+    start_pid = parse_artifact_uint(
+        meta.get("provider_start_pid"), maximum=2_147_483_647)
+    final_pid = parse_artifact_uint(
+        meta.get("final_provider_observation_pid"), maximum=2_147_483_647)
+    post_pid = parse_artifact_uint(
+        meta.get("post_snapshot_provider_observation_pid"),
+        maximum=2_147_483_647,
+    )
+    run_end = parse_artifact_uint(meta.get("run_end_epoch_ms"))
+    final_epoch = parse_artifact_uint(
+        meta.get("final_provider_observation_epoch_ms"))
+    snapshot_epoch = parse_artifact_uint(meta.get("crash_snapshot_epoch_ms"))
+    post_epoch = parse_artifact_uint(
+        meta.get("post_snapshot_provider_observation_epoch_ms"))
+    start_identity = meta.get("provider_start_identity")
+    final_identity = meta.get("final_provider_observation_identity")
+    post_identity = meta.get("post_snapshot_provider_observation_identity")
+
+    if meta.get("final_provider_observation_ok") != "1":
+        issues.append("final exact-provider observation is unavailable")
+    if (
+        start_pid in (None, 0)
+        or final_pid != start_pid
+        or final_identity != start_identity
+    ):
+        issues.append("final provider observation does not match the run generation")
+    if final_epoch is None or run_end is None or final_epoch != run_end:
+        issues.append("final provider observation does not define the exact run end")
+    if snapshot_epoch is None or run_end is None or snapshot_epoch < run_end:
+        issues.append("crash snapshot does not cover the declared run end")
+    if meta.get("post_snapshot_provider_observation_ok") != "1":
+        issues.append("post-snapshot exact-provider observation is unavailable")
+    if (
+        start_pid in (None, 0)
+        or post_pid != start_pid
+        or post_identity != start_identity
+        or post_identity != final_identity
+    ):
+        issues.append(
+            "provider generation changed during the post-workload crash scan"
+        )
+    if (
+        post_epoch is None
+        or snapshot_epoch is None
+        or post_epoch < snapshot_epoch
+    ):
+        issues.append("post-snapshot provider observation does not follow the scan")
+    return issues
+
+
+def post_boundary_forensic_issues(meta):
+    """Bind final memory/leak snapshots to the declared provider run boundary."""
+    if not isinstance(meta, dict):
+        return ["post-boundary forensic metadata is missing"]
+    issues = []
+    run_end = parse_artifact_uint(meta.get("run_end_epoch_ms"))
+    expected_pid = parse_artifact_uint(
+        meta.get("provider_start_pid"), maximum=2_147_483_647)
+    expected_identity = meta.get("provider_start_identity")
+    previous_end = run_end
+    for prefix, label in (("final_mem", "final memory"), ("leaks", "leaks")):
+        start = parse_artifact_uint(meta.get(prefix + "_start_epoch_ms"))
+        end = parse_artifact_uint(meta.get(prefix + "_end_epoch_ms"))
+        pid = parse_artifact_uint(
+            meta.get(prefix + "_provider_pid"), maximum=2_147_483_647)
+        identity_before = meta.get(prefix + "_identity_before")
+        identity_after = meta.get(prefix + "_identity_after")
+        if start is None or end is None or end < start:
+            issues.append(f"{label} snapshot timestamps are missing or reversed")
+        if previous_end is None or start is None or start < previous_end:
+            issues.append(
+                f"{label} snapshot does not follow the declared run boundary"
+            )
+        if (
+            expected_pid in (None, 0)
+            or pid != expected_pid
+            or identity_before != expected_identity
+            or identity_after != expected_identity
+        ):
+            issues.append(
+                f"{label} snapshot is not bound to the exact run generation"
+            )
+        previous_end = end
+    return issues
+
+
+def crash_snapshot_evidence(
+    before_lines,
+    after_lines,
+    *,
+    run_start_epoch_ms,
+    run_end_epoch_ms=None,
+    expected_process_names="RamaTransparentProxyExampleExtension",
+    expected_run_uuid=None,
+    expected_provider_generation_identity=None,
+):
+    """Validate common crash snapshots bracketing the soak workload."""
+
+    def parse_snapshot(lines, label):
+        values = {}
+        issues = []
+        observed_order = []
+        for line_number, raw in enumerate(lines, 1):
+            if not raw.strip():
+                continue
+            fields = raw.rstrip("\n").split("\t")
+            if len(fields) != 2 or not fields[0] or not fields[1]:
+                issues.append(
+                    f"malformed {label} crash snapshot at line {line_number}"
+                )
+                continue
+            if fields[0] in values:
+                issues.append(
+                    f"duplicate {label} crash snapshot key {fields[0]!r}"
+                )
+                continue
+            values[fields[0]] = fields[1]
+            observed_order.append(fields[0])
+        expected_order = [
+            "schema_version",
+            "run_uuid",
+            "provider_generation_identity",
+            "since_epoch_ms",
+            "snapshot_epoch_ms",
+            "process_names",
+            "crash_count",
+            "crash_names_sha256",
+            "schema_complete",
+        ]
+        schema_invalid = observed_order != expected_order
+        if schema_invalid:
+            issues.append(
+                f"{label} crash snapshot is unavailable or schema-incomplete"
+            )
+        since = parse_artifact_uint(values.get("since_epoch_ms"))
+        snapshot = parse_artifact_uint(values.get("snapshot_epoch_ms"))
+        count = parse_artifact_uint(values.get("crash_count"))
+        names_hash = values.get("crash_names_sha256", "")
+        if (
+            schema_invalid
+            or values.get("schema_version") != "2"
+            or values.get("schema_complete") != "1"
+            or since is None
+            or snapshot is None
+            or count is None
+            or not values.get("process_names")
+            or re.fullmatch(r"[0-9a-f]{64}", names_hash) is None
+        ):
+            if not schema_invalid:
+                issues.append(f"{label} crash snapshot contains invalid values")
+            return None, issues
+        return {
+            "since": since,
+            "snapshot": snapshot,
+            "count": count,
+            "names_hash": names_hash,
+            "process_names": values["process_names"],
+            "run_uuid": values["run_uuid"],
+            "provider_generation_identity": values[
+                "provider_generation_identity"
+            ],
+        }, issues
+
+    issues = []
+    failures = []
+    before, before_issues = parse_snapshot(before_lines, "pre-workload")
+    after, after_issues = parse_snapshot(after_lines, "post-workload")
+    issues.extend(before_issues)
+    issues.extend(after_issues)
+    expected_start = parse_artifact_uint(str(run_start_epoch_ms))
+    expected_end = (
+        parse_artifact_uint(str(run_end_epoch_ms))
+        if run_end_epoch_ms is not None
+        else None
+    )
+    if expected_start is None:
+        issues.append("crash snapshot run-start timestamp is missing or invalid")
+    if run_end_epoch_ms is not None and expected_end is None:
+        issues.append("crash snapshot run-end timestamp is missing or invalid")
+    if before is not None and after is not None and expected_start is not None:
+        if before["since"] != expected_start or after["since"] != expected_start:
+            issues.append("crash snapshots do not use the exact soak start boundary")
+        if before["snapshot"] > after["snapshot"]:
+            issues.append("crash snapshots are not ordered before/after the workload")
+        if expected_end is not None and after["snapshot"] < expected_end:
+            issues.append(
+                "post-workload crash snapshot does not cover the exact run end"
+            )
+        if before["process_names"] != after["process_names"]:
+            issues.append("crash snapshot process filters changed during the run")
+        if (
+            before["process_names"] != expected_process_names
+            or after["process_names"] != expected_process_names
+        ):
+            issues.append("crash snapshots do not target the exact provider process")
+        if (
+            expected_run_uuid is None
+            or before["run_uuid"] != expected_run_uuid
+            or after["run_uuid"] != expected_run_uuid
+        ):
+            issues.append("crash snapshots do not match the exact run UUID")
+        if (
+            expected_provider_generation_identity is None
+            or before["provider_generation_identity"]
+                != expected_provider_generation_identity
+            or after["provider_generation_identity"]
+                != expected_provider_generation_identity
+        ):
+            issues.append(
+                "crash snapshots do not match the exact provider generation"
+            )
+        if after["count"] < before["count"]:
+            issues.append("post-workload crash snapshot lost a pre-workload report")
+        if after["count"] > 0:
+            failures.append(
+                f"{after['count']} provider crash report(s) were created during the soak"
+            )
+    return {
+        "issues": issues,
+        "failures": failures,
+        "before_count": before["count"] if before is not None else None,
+        "after_count": after["count"] if after is not None else None,
+        "after_snapshot_epoch_ms": (
+            after["snapshot"] if after is not None else None
+        ),
     }
 
 
@@ -1642,10 +2471,24 @@ def artifact_identity_issues(meta):
         issues.append("repository commit identity is missing or invalid")
     if meta.get("repo_dirty") not in ("0", "1"):
         issues.append("repository dirty-state identity is missing or invalid")
+    if (
+        meta.get("common_provider_generation_identity")
+        != meta.get("provider_start_identity")
+    ):
+        issues.append(
+            "soak runtime identity does not match the common provider generation"
+        )
+    for key, label in (
+        ("provider_start_identity", "soak runtime provider generation"),
+        ("common_provider_generation_identity", "common provider generation"),
+    ):
+        if re.fullmatch(r"[0-9a-f]{64}", meta.get(key, "")) is None:
+            issues.append(f"{label} identity is missing or invalid")
     for key, label in (
         ("soak_script_sha256", "soak script"),
         ("stress_script_sha256", "stress script"),
         ("pressure_parser_sha256", "pressure parser"),
+        ("signed_evidence_helper_sha256", "signed evidence helper"),
         ("provider_binary_sha256", "provider binary"),
     ):
         if re.fullmatch(r"[0-9a-f]{64}", meta.get(key, "")) is None:
@@ -1653,6 +2496,17 @@ def artifact_identity_issues(meta):
     executable = meta.get("provider_executable", "")
     if not isinstance(executable, str) or not executable.startswith("/") or "\t" in executable:
         issues.append("provider executable identity is missing or invalid")
+    executable_name = meta.get("provider_executable_name", "")
+    crash_process_name = meta.get("crash_process_name", "")
+    if (
+        not isinstance(executable_name, str)
+        or re.fullmatch(r"[A-Za-z0-9._-]+", executable_name) is None
+        or os.path.basename(executable) != executable_name
+        or crash_process_name != executable_name
+    ):
+        issues.append(
+            "crash process filter does not match the exact provider executable"
+        )
     bundle = meta.get("provider_bundle")
     signing_identifier = meta.get("provider_codesign_identifier")
     if not isinstance(bundle, str) or not bundle:
@@ -1666,6 +2520,123 @@ def artifact_identity_issues(meta):
         value = meta.get(key, "")
         if not isinstance(value, str) or not value or value == "unavailable" or "\t" in value:
             issues.append(f"{label} is missing or unavailable")
+    return issues
+
+
+RELEASE_SOAK_PROFILE_ROWS = (
+    ("schema_version", "1"),
+    ("profile_name", "release-soak-v1"),
+    ("required_mode", "cap-validate"),
+    ("required_skip_stress", "0"),
+    ("required_skip_fanout", "0"),
+    ("required_skip_idle", "0"),
+    ("required_skip_sleep", "0"),
+    ("minimum_stress_seconds", "180"),
+    ("minimum_stress_concurrency", "24"),
+    ("minimum_fanout_target", "40"),
+    ("minimum_fanout_hold_seconds", "90"),
+    ("minimum_idle_target", "40"),
+    ("minimum_idle_hold_seconds", "150"),
+    ("minimum_idle_tail_seconds", "135"),
+    ("minimum_max_safe_flows", "300"),
+    ("minimum_file_descriptor_limit", "16384"),
+    ("required_live_hard_cap_enabled", "1"),
+    ("minimum_no_spin_quiescence_seconds", "60"),
+    ("schema_complete", "1"),
+)
+
+
+def canonical_release_soak_profile_lines():
+    """Return the exact hash-bound release soak profile document."""
+    return [f"{key}\t{value}\n" for key, value in RELEASE_SOAK_PROFILE_ROWS]
+
+
+def release_soak_profile_issues(lines, meta):
+    """Validate the canonical profile and truthful release eligibility bit."""
+    actual_lines = list(lines)
+    expected_lines = canonical_release_soak_profile_lines()
+    issues = []
+    if actual_lines != expected_lines:
+        issues.append("release soak profile is missing, mutated, or non-canonical")
+    actual_bytes = "".join(actual_lines).encode("utf-8")
+    actual_hash = hashlib.sha256(actual_bytes).hexdigest()
+    if meta.get("release_profile_sha256") != actual_hash:
+        issues.append("release soak profile hash does not match run metadata")
+
+    exact_requirements = {
+        "mode": "cap-validate",
+        "configured_skip_stress": "0",
+        "configured_skip_fanout": "0",
+        "configured_skip_idle": "0",
+        "configured_skip_sleep": "0",
+        "configured_allow_unsafe_load": "0",
+        "configured_live_hard_cap_enabled": "1",
+    }
+    minimum_requirements = {
+        "configured_stress_seconds": 180,
+        "configured_stress_concurrency": 24,
+        "configured_fanout_target": 40,
+        "configured_fanout_hold_seconds": 90,
+        "configured_idle_target": 40,
+        "configured_idle_hold_seconds": 150,
+        "configured_idle_tail_seconds": 135,
+        "configured_max_safe_flows": 300,
+        "configured_file_descriptor_limit": 16384,
+        "configured_no_spin_quiescence_seconds": 60,
+    }
+    valid = True
+    valid_modes = {
+        "stress-only", "cap-validate", "cap-hard-limited",
+        "cap-too-high", "find-ceiling",
+    }
+    if meta.get("mode") not in valid_modes:
+        issues.append("release soak configured mode is missing or invalid")
+    for key in (
+        "configured_skip_stress", "configured_skip_fanout",
+        "configured_skip_idle", "configured_skip_sleep",
+        "configured_allow_unsafe_load", "configured_live_hard_cap_enabled",
+    ):
+        if meta.get(key) not in ("0", "1"):
+            issues.append(f"release soak configuration {key!r} is invalid")
+    for key, expected in exact_requirements.items():
+        if meta.get(key) != expected:
+            valid = False
+    for key, minimum in minimum_requirements.items():
+        value = parse_artifact_uint(meta.get(key))
+        if value is None:
+            issues.append(f"release soak configuration {key!r} is invalid")
+            valid = False
+        elif value < minimum:
+            valid = False
+    expected_eligibility = "1" if valid else "0"
+    if meta.get("release_profile_eligible") != expected_eligibility:
+        issues.append("release soak eligibility contradicts the captured configuration")
+    return issues
+
+
+def producer_source_issues(meta, source_paths):
+    """Require exact sealed copies of every program that produced soak evidence."""
+    if not isinstance(meta, dict) or not isinstance(source_paths, dict):
+        return ["soak producer source metadata is missing"]
+    issues = []
+    specifications = (
+        ("soak_script_sha256", "soak_test", "soak script"),
+        ("stress_script_sha256", "stress_traffic", "stress script"),
+        ("pressure_parser_sha256", "soak_pressure_log", "pressure parser"),
+        ("signed_evidence_helper_sha256", "signed_run_evidence", "signed evidence helper"),
+    )
+    for hash_key, source_key, label in specifications:
+        expected = meta.get(hash_key, "")
+        path = source_paths.get(source_key)
+        try:
+            with open(path, "rb") as source:
+                content = source.read()
+        except (OSError, TypeError):
+            content = b""
+        if not content:
+            issues.append(f"sealed {label} source is missing or empty")
+        elif hashlib.sha256(content).hexdigest() != expected:
+            issues.append(f"sealed {label} source hash does not match metadata")
     return issues
 
 
@@ -2044,6 +3015,8 @@ def classify_soak_result(
     provider_faults=0,
     unknown_provider_errors=0,
     udp_pressure_failures=(),
+    no_spin_failures=(),
+    crash_failures=(),
 ):
     """Return orthogonal evidence completeness and product verdict state."""
     issues = list(evidence_issues)
@@ -2146,6 +3119,8 @@ def classify_soak_result(
             f"{unknown_provider_errors} unclassified provider Error log(s) were observed"
         )
     failures.extend(udp_pressure_failures)
+    failures.extend(no_spin_failures)
+    failures.extend(crash_failures)
 
     if mode in valid_modes - {"find-ceiling"}:
         if baseline_total is None:

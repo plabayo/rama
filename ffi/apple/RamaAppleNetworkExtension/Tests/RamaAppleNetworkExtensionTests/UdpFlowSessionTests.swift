@@ -338,7 +338,7 @@ final class UdpFlowSessionTests: XCTestCase {
         fx.session.testProbeAcknowledger = { id in
             acknowledged.withLock { $0.append(id) }
         }
-        let retained = fx.session.testFillIngressStaging()
+        var retained = fx.session.testFillIngressStaging()
         XCTAssertNotNil(retained)
         fx.session.ctx.requestReadWithProbe?(61)
         fx.session.ctx.requestReadWithProbe?(62)
@@ -351,7 +351,7 @@ final class UdpFlowSessionTests: XCTestCase {
             fx.flow.pendingReadCount, 0,
             "a hot source must stop reading while Swift staging remains full")
 
-        retained?.release()
+        retained = nil
         fx.session.flowQueue.sync {}
         XCTAssertEqual(fx.flow.pendingReadCount, 1)
         XCTAssertEqual(fx.session.ctx.readState, .reading)
@@ -368,7 +368,7 @@ final class UdpFlowSessionTests: XCTestCase {
         fx.session.testProbeAcknowledger = { id in
             acknowledged.withLock { $0.append(id) }
         }
-        let retained = fx.session.testFillIngressStaging()
+        var retained = fx.session.testFillIngressStaging()
         XCTAssertNotNil(retained)
         fx.session.ctx.requestReadWithProbe?(81)
         fx.session.ctx.requestReadWithProbe?(82)
@@ -392,7 +392,7 @@ final class UdpFlowSessionTests: XCTestCase {
         // the queue drains, close must cancel the grant, ACK the parked probe,
         // and make the stale resume incapable of starting an Apple read.
         fx.session.ctx.terminate?(nil)
-        retained?.release()
+        retained = nil
         releaseBlocker.signal()
         fx.session.flowQueue.sync {}
 

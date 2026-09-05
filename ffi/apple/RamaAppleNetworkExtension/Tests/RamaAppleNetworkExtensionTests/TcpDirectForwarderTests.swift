@@ -251,14 +251,14 @@ final class TcpDirectForwarderTests: XCTestCase {
             XCTAssertLessThanOrEqual(budget.snapshot().retainedBytes, 32)
             XCTAssertLessThanOrEqual(budget.snapshot().retainedItems, 4)
         }
-        XCTAssertEqual(budget.snapshot().retainedBytes, 32)
-        XCTAssertEqual(budget.snapshot().retainedItems, 4)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 24)
+        XCTAssertEqual(budget.snapshot().retainedItems, 3)
         XCTAssertEqual(
             harnesses.filter { harness in
                 harness.queue.sync { harness.readError != nil }
             }.count,
-            8,
-            "flows beyond the exact shared bound fail closed instead of retaining uncharged carryover")
+            9,
+            "TCP transit preserves one writer chunk outside its exact shared bound")
 
         for harness in harnesses { harness.forwarder.cancel() }
         for harness in harnesses { harness.drain() }
@@ -286,7 +286,9 @@ final class TcpDirectForwarderTests: XCTestCase {
         harness.forwarder.acceptEgressCarryover(s2c)
         harness.drain()
         XCTAssertEqual(budget.snapshot().retainedBytes, c2s.count + s2c.count)
-        XCTAssertEqual(budget.snapshot().retainedItems, 4)
+        XCTAssertEqual(
+            budget.snapshot().retainedItems, 2,
+            "one item is charged per physical root, not per logical writer slice")
 
         harness.forwarder.markRustC2SDone()
         harness.forwarder.markRustS2CDone()
@@ -302,8 +304,8 @@ final class TcpDirectForwarderTests: XCTestCase {
     func testClientReadTransitChargeSurvivesBlockedQueueAndTransfersToWriter() {
         let budget = WriterMemoryBudget(
             policy: WriterMemoryPolicy(
-                maxBytes: 4,
-                maxItems: 1,
+                maxBytes: 8,
+                maxItems: 2,
                 tcpWaiterMaxBytes: 4,
                 udpPressureReserveBytes: 0,
                 udpPressureReserveItems: 0))
@@ -325,7 +327,9 @@ final class TcpDirectForwarderTests: XCTestCase {
         waitFor("callback transit charged", timeout: 1.0) {
             budget.snapshot().retainedBytes == 4
         }
-        XCTAssertFalse(budget.tryReserve(bytes: 1))
+        XCTAssertNil(
+            budget.makeTcpTransitCursor(Data([1])),
+            "the transit subcap must preserve one writer chunk")
 
         gate.signal()
         waitFor("transit transferred into egress write", timeout: 1.0) {
@@ -1306,16 +1310,16 @@ final class TcpDirectForwarderTests: XCTestCase {
     /// of one site suffices for the design.
     func testActiveC2SBufferedReplayUnderBackpressure() {
         let h = Harness("backpressure.c2s.carryover", autoCompleter: false)
-        // Sized to exceed `writePumpMaxPendingBytes` (256 KiB default),
-        // forcing one source payload to retain a post-prefix remainder.
+        let viewLimit = min(64 * 1024, writePumpMaxPendingBytes)
+        // Sized to exceed the write-pump cap and several bounded physical-root
+        // views, forcing one source cursor to retain a post-prefix remainder.
         let big = Data(repeating: 0xAB, count: 300 * 1024)
         let small = Data([0xCD, 0xEF])
 
         // Pre-cutover: both chunks land in `c2sBuffer`.
         h.forwarder.acceptClientCarryover(big)
         h.forwarder.acceptClientCarryover(small)
-        // Transition: the cap-sized prefix is accepted and its 44 KiB
-        // remainder pauses behind the occupied pump budget. `small` remains
+        // Transition: bounded views fill the pump budget. `small` remains
         // ordered behind that same source callback.
         h.forwarder.markRustC2SDone()
         // The pump's flush of the first prefix happens on an async block
@@ -1324,7 +1328,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         // a second `drain` to let the drain-edge → forwarder
         // re-enqueue path settle.
         waitFor("first bounded prefix reached the wire", timeout: 1.0) {
-            h.conn.sentChunks.first?.content?.count == writePumpMaxPendingBytes
+            h.conn.sentChunks.first?.content?.count == viewLimit
         }
         h.drain()
 
@@ -1337,23 +1341,19 @@ final class TcpDirectForwarderTests: XCTestCase {
             "second chunk MUST be buffered, not dropped (pre-fix bug)"
         )
 
-        // Complete each accepted prefix. The first drain edge admits the
-        // retained 44 KiB remainder; only after that preserves FIFO may the
-        // separately queued `small` source reach the wire.
-        _ = h.conn.completePendingSend(error: nil)
-        waitFor("source remainder replayed after drain", timeout: 2.0) {
-            h.conn.sentChunks.compactMap(\.content).reduce(0) { $0 + $1.count }
-                >= big.count
+        let expectedWrites = (big.count + viewLimit - 1) / viewLimit + 1
+        while h.conn.sentChunks.count < expectedWrites {
+            let previous = h.conn.sentChunks.count
+            XCTAssertTrue(h.conn.completePendingSend(error: nil))
+            waitFor("next bounded cursor view reached the wire", timeout: 2.0) {
+                h.conn.sentChunks.count > previous
+            }
         }
-        _ = h.conn.completePendingSend(error: nil)
-        waitFor("buffered chunk replayed after drain", timeout: 2.0) {
-            h.conn.sentChunks.contains(where: { $0.content == small })
-        }
-        _ = h.conn.completePendingSend(error: nil)
+        XCTAssertTrue(h.conn.completePendingSend(error: nil))
         h.drain()
 
         let chunks = h.conn.sentChunks.compactMap(\.content)
-        XCTAssertTrue(chunks.allSatisfy { $0.count <= writePumpMaxPendingBytes })
+        XCTAssertTrue(chunks.allSatisfy { $0.count <= viewLimit })
         XCTAssertEqual(Data(chunks.joined()), big + small)
     }
 
@@ -1368,6 +1368,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         // Hold the client (S→C) writes in flight so `pendingBytes` stays high
         // and the second chunk pauses.
         h.flow.captureWriteCompletions = true
+        let viewLimit = min(64 * 1024, writePumpMaxPendingBytes)
         let big = Data(repeating: 0xAB, count: 300 * 1024)
         let small = Data([0xCD, 0xEF])
 
@@ -1379,27 +1380,25 @@ final class TcpDirectForwarderTests: XCTestCase {
         h.forwarder.markRustS2CDone()
 
         waitFor("first bounded prefix reached the kernel flow", timeout: 1.0) {
-            h.flow.writes.first?.count == writePumpMaxPendingBytes
+            h.flow.writes.first?.count == viewLimit
         }
         h.drain()
         XCTAssertEqual(h.flow.pendingWriteCompletionCount, 1, "exactly the first chunk in flight")
         XCTAssertFalse(
             h.flow.writes.contains(small), "second chunk MUST be buffered, not dropped")
 
-        // Complete the prefix → drain edge → retained remainder, then complete
-        // that remainder before the separately queued `small` source.
-        _ = h.flow.completeNextWrite()
-        waitFor("source remainder replayed after drain", timeout: 2.0) {
-            h.flow.writes.reduce(0) { $0 + $1.count } >= big.count
+        let expectedWrites = (big.count + viewLimit - 1) / viewLimit + 1
+        while h.flow.writes.count < expectedWrites {
+            let previous = h.flow.writes.count
+            XCTAssertTrue(h.flow.completeNextWrite())
+            waitFor("next bounded cursor view reached the kernel flow", timeout: 2.0) {
+                h.flow.writes.count > previous
+            }
         }
-        _ = h.flow.completeNextWrite()
-        waitFor("buffered chunk replayed after drain", timeout: 2.0) {
-            h.flow.writes.contains(small)
-        }
-        _ = h.flow.completeNextWrite()
+        XCTAssertTrue(h.flow.completeNextWrite())
         h.drain()
 
-        XCTAssertTrue(h.flow.writes.allSatisfy { $0.count <= writePumpMaxPendingBytes })
+        XCTAssertTrue(h.flow.writes.allSatisfy { $0.count <= viewLimit })
         XCTAssertEqual(Data(h.flow.writes.joined()), big + small)
     }
 

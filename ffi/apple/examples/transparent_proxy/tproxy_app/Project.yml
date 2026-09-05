@@ -37,6 +37,8 @@ targets:
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
         NE_ENTITLEMENT_SUFFIX: ""
         APP_GROUP_ID: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dev"
+        RAMA_TPROXY_GIT_HEAD: unavailable
+        RAMA_TPROXY_GIT_DIRTY: unavailable
 
   RamaTransparentProxyExampleExtension:
     type: system-extension
@@ -66,6 +68,8 @@ targets:
         CODE_SIGN_ALLOW_ENTITLEMENTS_MODIFICATION: YES
         NE_ENTITLEMENT_SUFFIX: ""
         APP_GROUP_ID: "$(AppIdentifierPrefix)org.ramaproxy.example.tproxy.dev"
+        RAMA_TPROXY_GIT_HEAD: unavailable
+        RAMA_TPROXY_GIT_DIRTY: unavailable
         ENABLE_DEBUG_DYLIB: NO
         OTHER_LDFLAGS:
           - "$(SRCROOT)/../tproxy_rs/target/universal/librama_tproxy_example.a"

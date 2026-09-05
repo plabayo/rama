@@ -54,7 +54,16 @@
 #   holder-markers/       per-worker header/connected establishment proof
 #   final-mem.txt        ps/vmmap/heap AFTER the idle tail
 #   leaks.txt            `leaks` pass on the live sysext
-#   dial9-traces/        per-flow egress dial traces
+#   idle-cpu-baseline.tsv ten pre-load exact-generation one-second samples
+#   idle-cpu-post.tsv     ten post-load samples inside the declared idle phase
+#   idle-cpu-summary.tsv paired mean/max/limit/hot-streak verdict inputs
+#   idle-cpu.sample.txt  bounded five-second stack-sampling diagnostic
+#   crashes/             common post-run provider crash snapshot
+#   dial9-traces/        diagnostic-only per-flow egress dial traces
+#   workload-claims.tsv  exact TCP-only release-set claims
+#   provider-identity.tsv built/installed/running signed-provider identity
+#   evidence-status.tsv  truthful common run envelope
+#   evidence-manifest.tsv recursively sealed artifact identities
 #
 # Usage (run from anywhere):
 #   bash scripts/soak_test.sh
@@ -87,6 +96,8 @@
 #   FIND_CEILING    1 = ceiling-finder (DANGEROUS; softCap=0/hardCap=0 only). Default 0.
 #   CEIL_STEP / CEIL_SETTLE   ceiling-finder ramp step / settle. Default 40 / 8.
 #   ASSUME_YES      1 = skip the ceiling-finder confirmation. Default 0.
+#   BUILT_PROVIDER / INSTALLED_PROVIDER override the signed provider bundles
+#                   passed to the common identity helper.
 
 set -uo pipefail
 
@@ -99,6 +110,10 @@ HTTPS_PROBE="https://http-test.ramaproxy.org/method"
 DL_HOST="${DL_HOST:-http-test.ramaproxy.org}"
 DL_MAX_BYTES=$(( 32 * 1024 * 1024 ))   # http-test /bytes server cap (MAX_BYTES)
 DIAL9_DIR="/var/root/Library/Application Support/rama/tproxy/dial9-traces"
+EVIDENCE_HELPER="$EXAMPLE_DIR/scripts/signed_run_evidence.py"
+BUILT_PROVIDER="${BUILT_PROVIDER:-$EXAMPLE_DIR/.xcode-derived/tproxy-app-dev/Build/Products/Debug/RamaTransparentProxyExampleContainer.app/Contents/Library/SystemExtensions/$PROVIDER_BUNDLE.systemextension}"
+INSTALLED_PROVIDER="${INSTALLED_PROVIDER:-/Applications/RamaTransparentProxyExampleContainer.app/Contents/Library/SystemExtensions/$PROVIDER_BUNDLE.systemextension}"
+CRASH_PROCESS=""
 case "$(uname -m)" in
   arm64) DIAL9_EVIDENCE_BIN="$EXAMPLE_DIR/tproxy_rs/target/aarch64-apple-darwin/debug/dial9_evidence" ;;
   x86_64) DIAL9_EVIDENCE_BIN="$EXAMPLE_DIR/tproxy_rs/target/x86_64-apple-darwin/debug/dial9_evidence" ;;
@@ -125,9 +140,109 @@ FIND_CEILING="${FIND_CEILING-0}"
 CEIL_STEP="${CEIL_STEP-40}"
 CEIL_SETTLE="${CEIL_SETTLE-8}"
 ASSUME_YES="${ASSUME_YES-0}"
+IDLE_CPU_SAMPLE_COUNT=10
+IDLE_CPU_SAMPLE_INTERVAL=1
+IDLE_CPU_HOT_PERCENT=90.0
+IDLE_CPU_HOT_STREAK=5
+IDLE_CPU_WARM_PERCENT=80.0
+IDLE_CPU_MAX_WARM_SAMPLES=4
+IDLE_CPU_REGRESSION_ALLOWANCE_PERCENT=5.0
+IDLE_CPU_ABSOLUTE_MEAN_CEILING_PERCENT=10.0
+CEILING_NO_SPIN_QUIESCE_SECONDS=60
 
 LOGBUF=""; command -v stdbuf >/dev/null 2>&1 && LOGBUF="stdbuf -oL"
 PYTHON_BIN="$(command -v python3 || true)"
+RUN_UUID=unavailable
+RUN_START_EPOCH_MS=unavailable
+RUN_END_EPOCH_MS=unavailable
+ARTIFACTS_INITIALIZED=0
+CRASH_AFTER_CAPTURED=0
+RUN_END_FROZEN=0
+FINALIZATION_STARTED=0
+
+evidence_tool() {
+  "$PYTHON_BIN" "$EVIDENCE_HELPER" "$@"
+}
+
+epoch_ms_now() {
+  "$PYTHON_BIN" -c 'import time; print(time.time_ns() // 1_000_000)'
+}
+
+freeze_run_end_provider_observation() {
+  local observed_pid="${PID:-}" observed_identity=missing observation_ok=0
+  local observation_epoch
+  (( ARTIFACTS_INITIALIZED == 1 && RUN_END_FROZEN == 0 )) || return 0
+  observation_epoch="$(epoch_ms_now)"
+  if [[ "$observed_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$observed_pid" 2>/dev/null; then
+    observed_identity="$(process_identity "$observed_pid" || true)"
+    if [[ "$observed_identity" == "${PROVIDER_START_IDENTITY:-unavailable}" ]]; then
+      observation_ok=1
+    fi
+  fi
+  RUN_END_EPOCH_MS="$observation_epoch"
+  {
+    printf 'final_provider_observation_epoch_ms\t%s\n' "$observation_epoch"
+    printf 'final_provider_observation_pid\t%s\n' "${observed_pid:-missing}"
+    printf 'final_provider_observation_identity\t%s\n' "$observed_identity"
+    printf 'final_provider_observation_ok\t%s\n' "$observation_ok"
+    printf 'run_end_epoch_ms\t%s\n' "$RUN_END_EPOCH_MS"
+  } >> "$OUT/run-meta.tsv"
+  RUN_END_FROZEN=1
+}
+
+capture_crashes_after() {
+  local observed_pid="${PID:-}" snapshot_epoch post_identity=missing post_ok=0
+  local post_epoch generation_sample_ok=0
+  (( ARTIFACTS_INITIALIZED == 1 && CRASH_AFTER_CAPTURED == 0 )) || return 0
+  freeze_run_end_provider_observation
+  CRASH_AFTER_OK=0
+  if evidence_tool snapshot-crashes --since-epoch-ms "$RUN_START_EPOCH_MS" \
+    --output-dir "$OUT/crashes" --process "$CRASH_PROCESS" \
+    --run-uuid "$RUN_UUID" \
+    --provider-generation-identity "$COMMON_PROVIDER_GENERATION_IDENTITY" \
+    > "$OUT/crashes.stdout" 2> "$OUT/crashes.stderr"
+  then
+    CRASH_AFTER_OK=1
+  else
+    warn "post-workload crash snapshot is unavailable; evidence will be incomplete"
+  fi
+  snapshot_epoch="$(awk -F '\t' '$1 == "snapshot_epoch_ms" { count++; value=$2 } END { if (count == 1) print value }' \
+    "$OUT/crashes/crash-snapshot.tsv" 2>/dev/null || true)"
+  # The attributed provider-generation proof stays live through the crash
+  # scan. Add a synchronous post-snapshot sample before stopping its monitor
+  # so the sealed series cannot end before the crash coverage boundary.
+  if [[ "$snapshot_epoch" =~ ^[1-9][0-9]*$ ]] \
+    && evidence_tool capture-provider-generation \
+      --identity "$OUT/provider-identity.tsv" \
+      --append "$OUT/provider-generation-samples.tsv" \
+      --cadence-ms 2000 --max-gap-ms 5000 \
+      >> "$OUT/provider-generation.stdout" \
+      2>> "$OUT/provider-generation.stderr"
+  then
+    generation_sample_ok=1
+  else
+    warn "provider-generation proof could not be extended through the crash snapshot"
+  fi
+  if [[ "$observed_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$observed_pid" 2>/dev/null; then
+    post_identity="$(process_identity "$observed_pid" || true)"
+    if [[ "$post_identity" == "${PROVIDER_START_IDENTITY:-unavailable}" ]]; then
+      post_ok=1
+    fi
+  fi
+  post_epoch="$(epoch_ms_now)"
+  {
+    printf 'crash_snapshot_epoch_ms\t%s\n' "${snapshot_epoch:-missing}"
+    printf 'post_snapshot_provider_observation_epoch_ms\t%s\n' "$post_epoch"
+    printf 'post_snapshot_provider_observation_pid\t%s\n' \
+      "${observed_pid:-missing}"
+    printf 'post_snapshot_provider_observation_identity\t%s\n' "$post_identity"
+    printf 'post_snapshot_provider_observation_ok\t%s\n' "$post_ok"
+    printf 'crash_after_captured\t%s\n' "$CRASH_AFTER_OK"
+    printf 'provider_generation_sample_after_crash_ok\t%s\n' \
+      "$generation_sample_ok"
+  } >> "$OUT/run-meta.tsv"
+  CRASH_AFTER_CAPTURED=1
+}
 
 # ── Pretty output ─────────────────────────────────────────────────────
 if [[ -t 1 ]] && tput colors >/dev/null 2>&1; then
@@ -141,12 +256,12 @@ warn() { printf '%s[soak]%s %s%s%s\n' "$DIM" "$RESET" "$YEL" "$*" "$RESET" >&2; 
 die()  { printf '%s[soak]%s %s%s%s\n' "$DIM" "$RESET" "$RED" "$*" "$RESET" >&2; exit 2; }
 
 write_incomplete_status() {
-  local reason="$1" tmp="$OUT/.evidence-status.$$"
+  local reason="$1" exit_code="${2:-2}" tmp="$OUT/.soak-verdict.$$"
   {
-    printf 'complete\t0\npassed\t0\nexit_code\t2\n'
+    printf 'complete\t0\npassed\t0\nexit_code\t%s\n' "$exit_code"
     printf 'issue\t%s\n' "$reason"
     printf 'schema_complete\t1\n'
-  } > "$tmp" && mv -f "$tmp" "$OUT/evidence-status.tsv"
+  } > "$tmp" && mv -f "$tmp" "$OUT/soak-verdict.tsv"
 }
 
 # Reject ambiguous or oversized environment values before they enter Bash
@@ -239,13 +354,180 @@ sha256_path() {
   printf '%s\n' "${digest:-unavailable}"
 }
 
+diagnostic_status_value() {
+  local path="$1" key="$2"
+  awk -F '\t' -v key="$key" '
+    $1 == key { count++; if (NF == 2) value=$2 }
+    END {
+      if (count == 1 && value != "") print value
+      else exit 1
+    }
+  ' "$path" 2>/dev/null
+}
+
 process_identity() {
-  local pid="$1" snapshot digest
-  snapshot="$(ps -ww -o pid= -o lstart= -o command= -p "$pid" 2>/dev/null)"
-  [[ -n "$snapshot" ]] || return 1
-  digest="$(printf '%s' "$snapshot" | shasum -a 256 | awk 'NR == 1 { print $1 }')"
-  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
-  printf '%s\n' "$digest"
+  local pid="$1" start command
+  start="$(/bin/ps -p "$pid" -o lstart= 2>/dev/null | sed -E 's/^[[:space:]]+//')"
+  command="$(/bin/ps -ww -p "$pid" -o command= 2>/dev/null)"
+  [[ -n "$start" && -n "$command" && "$command" != *$'\n'* \
+    && "$command" != *$'\t'* && "$command" != *$'\r'* ]] || return 1
+  "$PYTHON_BIN" - "$EVIDENCE_HELPER" "$pid" "$start" "$command" <<'PY'
+from datetime import datetime
+import importlib.util
+import hashlib
+import sys
+
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location("signed_run_evidence", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+start_epoch_ms = int(
+    datetime.strptime(sys.argv[3], "%a %b %d %H:%M:%S %Y").astimezone().timestamp()
+) * 1000
+command_sha = hashlib.sha256(sys.argv[4].encode("utf-8")).hexdigest()
+print(module.provider_generation_identity(int(sys.argv[2]), start_epoch_ms, command_sha))
+PY
+}
+
+provider_executable_for_pid() {
+  local pid="$1" executable
+  executable="$(
+    sudo -n lsof -a -p "$pid" -d txt -Fn 2>/dev/null \
+      | sed -n 's/^n//p'
+  )"
+  if [[ "$executable" == *$'\n'* || "$executable" != /* ]]; then
+    return 1
+  fi
+  printf '%s\n' "$executable"
+}
+
+select_unique_provider_process() {
+  local expected_suffix="$1" candidate executable
+  local matches=0 selected_pid="" selected_executable=""
+  while IFS= read -r candidate; do
+    [[ "$candidate" =~ ^[1-9][0-9]*$ ]] || continue
+    executable="$(provider_executable_for_pid "$candidate" || true)"
+    [[ "$executable" == *"$expected_suffix" ]] || continue
+    matches=$((matches + 1))
+    selected_pid="$candidate"
+    selected_executable="$executable"
+  done < <(pgrep -f "$PROVIDER_BUNDLE" 2>/dev/null | sort -u || true)
+  (( matches == 1 )) || return 1
+  printf '%s\t%s\n' "$selected_pid" "$selected_executable"
+}
+
+capture_idle_cpu_series() {
+  local sample_file="$1" label="$2" raw_file="$1.top.raw" error_file="$1.top.err"
+  local identity_before identity_after timestamp line extractor_tmp
+  local command_rc=missing joined=0 forced=0 privilege=unavailable
+  identity_before="$(process_identity "$PID" || true)"
+  : > "$raw_file"
+  : > "$error_file"
+  if [[ "$identity_before" == "$PROVIDER_START_IDENTITY" ]] \
+    && sudo -n true 2>/dev/null
+  then
+    privilege=sudo
+ (
+      # The first top value is lifetime/decayed CPU and is discarded by the
+      # parser; the following ten are one-second interval values.
+      # shellcheck disable=SC2024
+      sudo -n /usr/bin/top -l 11 -s 1 -pid "$PID" -stats pid,cpu -n 1 \
+        2> "$error_file" \
+        | while IFS= read -r line; do
+            timestamp=-
+            if [[ "$line" =~ ^[[:space:]]*${PID}[[:space:]] ]]; then
+              timestamp="$(epoch_now)"
+            fi
+            printf '%s\t%s\n' "$timestamp" "$line"
+          done
+    ) > "$raw_file" &
+    CPU_SERIES_PID=$!
+    bounded_wait_and_join "$CPU_SERIES_PID" 15 sudo
+    command_rc="$BOUNDED_CHILD_RC"
+    joined="$BOUNDED_CHILD_REAPED"
+    forced="$BOUNDED_CHILD_FORCED"
+    (( BOUNDED_CHILD_REAPED )) && CPU_SERIES_PID=""
+  fi
+  identity_after="$(process_identity "$PID" || true)"
+  extractor_tmp="$sample_file.tmp.$$"
+  if "$PYTHON_BIN" - "$raw_file" "$EXAMPLE_DIR/scripts" "$PID" \
+    "$identity_before" "$identity_after" <<'PY' > "$extractor_tmp"
+import sys
+sys.path.insert(0, sys.argv[2])
+from soak_pressure_log import top_cpu_sample_rows
+
+identity = sys.argv[4] if sys.argv[4] == sys.argv[5] else "missing"
+with open(sys.argv[1], errors="replace") as source:
+    rows, issues = top_cpu_sample_rows(
+        source, expected_pid=sys.argv[3], expected_identity=identity)
+if issues:
+    print("; ".join(issues), file=sys.stderr)
+    raise SystemExit(2)
+sys.stdout.writelines(rows)
+PY
+  then
+    mv -f "$extractor_tmp" "$sample_file"
+  else
+    rm -f -- "$extractor_tmp"
+    : > "$sample_file"
+  fi
+  {
+    printf 'idle_cpu_%s_top_command_rc\t%s\n' "$label" "$command_rc"
+    printf 'idle_cpu_%s_top_joined\t%s\n' "$label" "$joined"
+    printf 'idle_cpu_%s_top_forced\t%s\n' "$label" "$forced"
+    printf 'idle_cpu_%s_top_privilege\t%s\n' "$label" "$privilege"
+    printf 'idle_cpu_%s_identity_before\t%s\n' "$label" "$identity_before"
+    printf 'idle_cpu_%s_identity_after\t%s\n' "$label" "$identity_after"
+  } >> "$OUT/run-meta.tsv"
+  if [[ "$joined" != 1 ]]; then
+    die "$label CPU sampler could not be reaped; refusing mutable evidence finalization"
+  fi
+}
+
+capture_idle_cpu_diagnostic() {
+  CPU_SAMPLE_COMMAND_RC=missing
+  CPU_SAMPLE_JOINED=0
+  CPU_SAMPLE_FORCED=0
+  CPU_SAMPLE_PRIVILEGE=unavailable
+  CPU_SAMPLE_OWNERSHIP_NORMALIZED=0
+  if [[ -x /usr/bin/sample \
+    && "$(process_identity "$PID" || true)" == "$PROVIDER_START_IDENTITY" ]] \
+    && sudo -n true 2>/dev/null
+  then
+    CPU_SAMPLE_PRIVILEGE=sudo
+    # The invoking user intentionally owns the stdout/stderr redirections;
+    # sample's root-owned -file output is normalized immediately after join.
+    # shellcheck disable=SC2024
+    sudo -n /usr/bin/sample "$PID" 5 -file "$OUT/idle-cpu.sample.txt" \
+      > "$OUT/idle-cpu.sample.stdout" 2> "$OUT/idle-cpu.sample.stderr" &
+    CPU_SAMPLE_PID=$!
+    bounded_wait_and_join "$CPU_SAMPLE_PID" 8 sudo
+    CPU_SAMPLE_COMMAND_RC="$BOUNDED_CHILD_RC"
+    CPU_SAMPLE_JOINED="$BOUNDED_CHILD_REAPED"
+    CPU_SAMPLE_FORCED="$BOUNDED_CHILD_FORCED"
+    (( BOUNDED_CHILD_REAPED )) && CPU_SAMPLE_PID=""
+    if [[ -f "$OUT/idle-cpu.sample.txt" ]] \
+      && sudo -n chown "$(id -u):$(id -g)" "$OUT/idle-cpu.sample.txt" 2>/dev/null
+    then
+      CPU_SAMPLE_OWNERSHIP_NORMALIZED=1
+    fi
+  else
+    : > "$OUT/idle-cpu.sample.txt"
+    printf '/usr/bin/sample is unavailable or the exact provider generation is gone\n' \
+      > "$OUT/idle-cpu.sample.stderr"
+  fi
+  {
+    printf 'cpu_sample_command_rc\t%s\n' "$CPU_SAMPLE_COMMAND_RC"
+    printf 'cpu_sample_joined\t%s\n' "$CPU_SAMPLE_JOINED"
+    printf 'cpu_sample_forced\t%s\n' "$CPU_SAMPLE_FORCED"
+    printf 'cpu_sample_privilege\t%s\n' "$CPU_SAMPLE_PRIVILEGE"
+    printf 'cpu_sample_ownership_normalized\t%s\n' \
+      "$CPU_SAMPLE_OWNERSHIP_NORMALIZED"
+  } >> "$OUT/run-meta.tsv"
+  if [[ "$CPU_SAMPLE_JOINED" != 1 ]]; then
+    die "stack sample child could not be reaped; refusing mutable evidence finalization"
+  fi
 }
 
 # ── Teardown ──────────────────────────────────────────────────────────
@@ -253,6 +535,7 @@ LOG_STREAM_STARTED=0
 LOG_STREAM_PID=""
 SUDO_KEEPALIVE_PID=""
 PROBE_MON_PID=""
+GENERATION_MON_PID=""
 HOLDER_PIDFILE=""
 FLOW_POOL_ATTAINED=0
 FLOW_POOL_MAX_LIVE=0
@@ -262,7 +545,11 @@ FLOW_POOL_LABEL=""
 HOLDER_CLEANUP_OK=1
 CURRENT_PHASE_START=""
 WAKE_DL_PID=""
+CPU_SAMPLE_PID=""
+CPU_SERIES_PID=""
 CLEANUP_STARTED=0
+FINAL_CLEANUP_OK=1
+HOLDER_CLEANUP_LAST_UNREAPED=0
 ACTIVE_CHILD_PID=""
 ACTIVE_CHILD_PRIVILEGE=root-only
 kill_holders() {
@@ -272,6 +559,7 @@ kill_holders() {
   [[ -n "$HOLDER_PIDFILE" && -f "$HOLDER_PIDFILE" ]] || return 0
   local holder_pids=() _p _marker deadline force_deadline active
   local forced=0 reaped=0 unreaped=0
+  HOLDER_CLEANUP_LAST_UNREAPED=0
   while IFS=$'\t' read -r _p _marker; do
     [[ "$_p" =~ ^[1-9][0-9]*$ ]] && holder_pids+=("$_p")
   done < "$HOLDER_PIDFILE"
@@ -311,7 +599,10 @@ kill_holders() {
     wait "$_p" 2>/dev/null || true
     reaped=$((reaped + 1))
   done
-  : > "$HOLDER_PIDFILE"
+  if (( unreaped == 0 )); then
+    : > "$HOLDER_PIDFILE"
+  fi
+  HOLDER_CLEANUP_LAST_UNREAPED="$unreaped"
   (( unreaped == 0 )) || HOLDER_CLEANUP_OK=0
   printf '%s\ttotal=%s\treaped=%s\tforced=%s\tunreaped=%s\n' \
     "${FLOW_POOL_LABEL:-unknown}" "${#holder_pids[@]}" "$reaped" \
@@ -323,26 +614,71 @@ cleanup() {
   CLEANUP_STARTED=1
   if [[ -n "$ACTIVE_CHILD_PID" ]]; then
     bounded_stop_and_join "$ACTIVE_CHILD_PID" 5 "$ACTIVE_CHILD_PRIVILEGE"
-    ACTIVE_CHILD_PID=""
-    ACTIVE_CHILD_PRIVILEGE=root-only
+    if (( BOUNDED_CHILD_REAPED )); then
+      ACTIVE_CHILD_PID=""
+      ACTIVE_CHILD_PRIVILEGE=root-only
+    else
+      FINAL_CLEANUP_OK=0
+    fi
   fi
   if [[ -n "$PROBE_MON_PID" ]]; then
     bounded_stop_and_join "$PROBE_MON_PID" 5 direct
-    PROBE_MON_PID=""
+    if (( BOUNDED_CHILD_REAPED )); then
+      PROBE_MON_PID=""
+    else
+      FINAL_CLEANUP_OK=0
+    fi
+  fi
+  if [[ -n "$GENERATION_MON_PID" ]]; then
+    bounded_stop_and_join "$GENERATION_MON_PID" 5 direct
+    if (( BOUNDED_CHILD_REAPED )); then
+      GENERATION_MON_PID=""
+    else
+      FINAL_CLEANUP_OK=0
+    fi
   fi
   if [[ -n "$WAKE_DL_PID" ]]; then
     bounded_stop_and_join "$WAKE_DL_PID" 5 direct
-    WAKE_DL_PID=""
+    if (( BOUNDED_CHILD_REAPED )); then
+      WAKE_DL_PID=""
+    else
+      FINAL_CLEANUP_OK=0
+    fi
+  fi
+  if [[ -n "$CPU_SAMPLE_PID" ]]; then
+    bounded_stop_and_join "$CPU_SAMPLE_PID" 2 sudo
+    if (( BOUNDED_CHILD_REAPED )); then
+      CPU_SAMPLE_PID=""
+    else
+      FINAL_CLEANUP_OK=0
+    fi
+  fi
+  if [[ -n "$CPU_SERIES_PID" ]]; then
+    bounded_stop_and_join "$CPU_SERIES_PID" 2 sudo
+    if (( BOUNDED_CHILD_REAPED )); then
+      CPU_SERIES_PID=""
+    else
+      FINAL_CLEANUP_OK=0
+    fi
   fi
   kill_holders
+  (( HOLDER_CLEANUP_LAST_UNREAPED == 0 )) || FINAL_CLEANUP_OK=0
   if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
     bounded_stop_and_join "$SUDO_KEEPALIVE_PID" 5 direct
-    SUDO_KEEPALIVE_PID=""
+    if (( BOUNDED_CHILD_REAPED )); then
+      SUDO_KEEPALIVE_PID=""
+    else
+      FINAL_CLEANUP_OK=0
+    fi
   fi
   if (( LOG_STREAM_STARTED )) && [[ -n "$LOG_STREAM_PID" ]]; then
     bounded_stop_and_join "$LOG_STREAM_PID" 5 sudo
-    LOG_STREAM_PID=""
-    LOG_STREAM_STARTED=0
+    if (( BOUNDED_CHILD_REAPED )); then
+      LOG_STREAM_PID=""
+      LOG_STREAM_STARTED=0
+    else
+      FINAL_CLEANUP_OK=0
+    fi
   fi
 }
 
@@ -364,7 +700,9 @@ signal_child() {
     done < <(pgrep -P "$pid" 2>/dev/null || true)
   fi
   if [[ "$privilege" == sudo ]]; then
-    sudo -n kill "-$signal" "$pid" 2>/dev/null || true
+    sudo -n kill "-$signal" "$pid" 2>/dev/null \
+      || kill "-$signal" "$pid" 2>/dev/null \
+      || true
   else
     kill "-$signal" "$pid" 2>/dev/null || true
   fi
@@ -417,9 +755,266 @@ bounded_stop_and_join() {
   fi
 }
 
+# Join a normally self-terminating diagnostic under a hard deadline. Unlike
+# bounded_stop_and_join, this waits first and signals only if the command
+# exceeds its budget.
+bounded_wait_and_join() {
+  local pid="$1" timeout="$2" privilege="$3"
+  local deadline force_deadline child_rc
+  BOUNDED_CHILD_RC=missing
+  BOUNDED_CHILD_OK=0
+  BOUNDED_CHILD_REAPED=0
+  BOUNDED_CHILD_FORCED=0
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
+  deadline=$(( SECONDS + timeout ))
+  while child_job_is_active "$pid" && (( SECONDS < deadline )); do
+    sleep 0.1
+  done
+  if child_job_is_active "$pid"; then
+    BOUNDED_CHILD_FORCED=1
+    signal_child "$pid" TERM "$privilege"
+    force_deadline=$(( SECONDS + 2 ))
+    while child_job_is_active "$pid" && (( SECONDS < force_deadline )); do
+      sleep 0.1
+    done
+  fi
+  if child_job_is_active "$pid"; then
+    signal_child "$pid" KILL "$privilege"
+    force_deadline=$(( SECONDS + 2 ))
+    while child_job_is_active "$pid" && (( SECONDS < force_deadline )); do
+      sleep 0.1
+    done
+  fi
+  child_job_is_active "$pid" && return 0
+  if wait "$pid" 2>/dev/null; then
+    child_rc=0
+  else
+    child_rc=$?
+  fi
+  BOUNDED_CHILD_RC="$child_rc"
+  BOUNDED_CHILD_REAPED=1
+  if (( ! BOUNDED_CHILD_FORCED )) && [[ "$child_rc" == 0 ]]; then
+    # shellcheck disable=SC2034  # consumed by cleanup/evidence callers
+    BOUNDED_CHILD_OK=1
+  fi
+}
+
+soak_verdict_exit_code() {
+  "$PYTHON_BIN" - "$OUT/soak-verdict.tsv" "$EXAMPLE_DIR/scripts" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[2])
+from soak_pressure_log import parse_evidence_status_lines
+
+try:
+    with open(sys.argv[1]) as source:
+        result = parse_evidence_status_lines(source)
+except OSError:
+    result = None
+if result is None:
+    raise SystemExit(2)
+print(result)
+PY
+}
+
+# shellcheck disable=SC2329  # reached through the EXIT finalizer
+provider_identity_value() {
+  local key="$1"
+  awk -F '\t' -v key="$key" '$1 == key { count++; value=$2 } END { if (count == 1) print value }' \
+    "$OUT/provider-identity.tsv" 2>/dev/null
+}
+
+# Package only an already sealed directory. The sibling temporary file is
+# completed first and renamed only after tar exits successfully, so a partial
+# archive can never masquerade as the canonical artifact.
+# shellcheck disable=SC2329  # reached through the EXIT finalizer
+package_sealed_evidence() {
+  local tarball="$OUT.tgz" temporary="$OUT.tgz.tmp.$$"
+  [[ ! -e "$tarball" && ! -e "$temporary" ]] || return 1
+  if /usr/bin/tar -czf "$temporary" -C "$(dirname "$OUT")" "$(basename "$OUT")" \
+    2>/dev/null \
+    && [[ ! -e "$tarball" ]] \
+    && mv "$temporary" "$tarball"
+  then
+    return 0
+  fi
+  [[ ! -e "$temporary" ]] || rm -f -- "$temporary"
+  return 1
+}
+
+# shellcheck disable=SC2329  # reached through the EXIT finalizer
+write_common_status() {
+  local exit_code="$1" complete=0 passed=0
+  local provider_build=unavailable provider_generation=unavailable
+  local claims_sha=unavailable tmp="$OUT/.soak-status.$$"
+  case "$exit_code" in
+    0) complete=1; passed=1 ;;
+    1) complete=1; passed=0 ;;
+    2|130|143) complete=0; passed=0 ;;
+    *) return 1 ;;
+  esac
+  if [[ -f "$OUT/provider-identity.tsv" ]]; then
+    provider_build="$(provider_identity_value provider_build_identity)"
+    provider_generation="$(provider_identity_value provider_generation_identity)"
+    [[ "$provider_build" =~ ^[0-9a-f]{64}$ ]] || provider_build=unavailable
+    [[ "$provider_generation" =~ ^[0-9a-f]{64}$ ]] || provider_generation=unavailable
+  fi
+  if [[ -f "$OUT/workload-claims.tsv" ]]; then
+    claims_sha="$(sha256_path "$OUT/workload-claims.tsv")"
+    [[ "$claims_sha" =~ ^[0-9a-f]{64}$ ]] || claims_sha=unavailable
+  fi
+  {
+    printf 'complete\t%s\n' "$complete"
+    printf 'passed\t%s\n' "$passed"
+    printf 'exit_code\t%s\n' "$exit_code"
+    printf 'evidence_kind\tsoak\n'
+    printf 'run_uuid\t%s\n' "$RUN_UUID"
+    printf 'run_start_epoch_ms\t%s\n' "$RUN_START_EPOCH_MS"
+    printf 'run_end_epoch_ms\t%s\n' "$RUN_END_EPOCH_MS"
+    printf 'git_head\t%s\n' "${REPO_HEAD:-unavailable}"
+    printf 'git_dirty\t%s\n' "${REPO_DIRTY:-unavailable}"
+    printf 'provider_build_identity\t%s\n' "$provider_build"
+    printf 'provider_generation_identity\t%s\n' "$provider_generation"
+    printf 'workload_claims_sha256\t%s\n' "$claims_sha"
+    printf 'schema_complete\t1\n'
+  } > "$tmp" && mv -f "$tmp" "$OUT/evidence-status.tsv"
+}
+
+# shellcheck disable=SC2329  # reached through EXIT/INT/TERM handlers
+finalize_and_exit() {
+  local requested_exit="$1" final_exit="$1" declared_exit=""
+  local tarball seal_ok=0 verify_ok=0 package_ok=0 failure_exit=2
+  local final_head final_dirty
+  trap - EXIT
+  trap '' INT TERM
+  if (( FINALIZATION_STARTED )); then
+    exit 2
+  fi
+  FINALIZATION_STARTED=1
+  cleanup
+  if (( ! FINAL_CLEANUP_OK )); then
+    failure_exit=2
+    [[ "$requested_exit" == 130 || "$requested_exit" == 143 ]] \
+      && failure_exit="$requested_exit"
+    write_incomplete_status \
+      "cleanup could not reap every artifact writer; evidence remains unsealed" \
+      "$failure_exit"
+    warn "cleanup could not reap every artifact writer; refusing to seal or package mutable evidence"
+    exit "$failure_exit"
+  fi
+  if (( ARTIFACTS_INITIALIZED == 0 )); then
+    exit "$requested_exit"
+  fi
+  capture_crashes_after
+
+  case "$requested_exit" in
+    0|1)
+      declared_exit="$(soak_verdict_exit_code 2>/dev/null || true)"
+      if [[ "$declared_exit" != "$requested_exit" ]]; then
+        final_exit=2
+        write_incomplete_status \
+          "terminal soak verdict was missing, malformed, or contradicted the shell exit" 2
+      fi
+      ;;
+    2)
+      declared_exit="$(soak_verdict_exit_code 2>/dev/null || true)"
+      if [[ "$declared_exit" != 2 ]]; then
+        write_incomplete_status "soak exited before a complete terminal verdict" 2
+      fi
+      ;;
+    130|143)
+      write_incomplete_status "soak was interrupted before sealed finalization" \
+        "$requested_exit"
+      ;;
+    *)
+      final_exit=2
+      write_incomplete_status "soak exited with an unsupported harness status" 2
+      ;;
+  esac
+
+  if [[ "$final_exit" == 0 || "$final_exit" == 1 ]]; then
+    final_head="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
+    final_dirty=0
+    [[ -z "$(git -C "$REPO" status --porcelain --untracked-files=normal 2>/dev/null)" ]] \
+      || final_dirty=1
+    if [[ "$final_head" != "$REPO_HEAD" || "$final_dirty" != "$REPO_DIRTY" \
+      || "$final_dirty" != 0 ]]
+    then
+      final_exit=2
+      write_incomplete_status \
+        "repository identity changed or became dirty during the soak" 2
+    fi
+  fi
+
+  write_common_status "$final_exit" || final_exit=2
+  if evidence_tool seal "$OUT" --actual-exit-code "$final_exit"; then
+    seal_ok=1
+    if evidence_tool verify "$OUT" --actual-exit-code "$final_exit"; then
+      verify_ok=1
+    fi
+  fi
+  if (( ! seal_ok || ! verify_ok )); then
+    failure_exit=2
+    [[ "$final_exit" == 130 || "$final_exit" == 143 ]] && failure_exit="$final_exit"
+    final_exit="$failure_exit"
+    write_incomplete_status "common evidence seal or verification failed" "$final_exit"
+    write_common_status "$final_exit"
+    if evidence_tool seal "$OUT" --actual-exit-code "$final_exit" \
+      && evidence_tool verify "$OUT" --actual-exit-code "$final_exit"
+    then
+      seal_ok=1
+      verify_ok=1
+    else
+      seal_ok=0
+      verify_ok=0
+    fi
+  fi
+
+  if (( seal_ok && verify_ok )); then
+    tarball="$OUT.tgz"
+    if package_sealed_evidence; then
+      package_ok=1
+    else
+      failure_exit=2
+      [[ "$final_exit" == 130 || "$final_exit" == 143 ]] && failure_exit="$final_exit"
+      final_exit="$failure_exit"
+      seal_ok=0
+      verify_ok=0
+      write_incomplete_status \
+        "sealed evidence packaging failed; no canonical tarball was published" "$final_exit"
+      write_common_status "$final_exit"
+      if evidence_tool seal "$OUT" --actual-exit-code "$final_exit" \
+        && evidence_tool verify "$OUT" --actual-exit-code "$final_exit"
+      then
+        seal_ok=1
+        verify_ok=1
+      fi
+    fi
+  fi
+
+  hdr "done"
+  say "dir:       $OUT"
+  if (( seal_ok && verify_ok )); then
+    say "sealed:    $OUT/evidence-manifest.tsv"
+    if (( package_ok )); then
+      say "tarball:   $tarball"
+    else
+      warn "sealed incomplete evidence retained without a canonical tarball"
+    fi
+  else
+    warn "could not produce a verified sealed evidence directory"
+  fi
+  [[ -f "$OUT/extract-summary.txt" ]] && cat "$OUT/extract-summary.txt"
+  exit "$final_exit"
+}
+
 # shellcheck disable=SC2329  # invoked through trap
 handle_signal() {
   local exit_code="$1"
+  if declare -F finalize_and_exit >/dev/null 2>&1; then
+    finalize_and_exit "$exit_code"
+  fi
+  # Function-level regression harness fallback; the complete script always
+  # resolves finalize_and_exit above.
   trap - EXIT INT TERM
   cleanup
   exit "$exit_code"
@@ -428,6 +1023,9 @@ handle_signal() {
 # shellcheck disable=SC2329  # invoked through trap
 handle_exit() {
   local exit_code=$?
+  if declare -F finalize_and_exit >/dev/null 2>&1; then
+    finalize_and_exit "$exit_code"
+  fi
   trap - EXIT INT TERM
   cleanup
   exit "$exit_code"
@@ -610,6 +1208,24 @@ start_probe_monitor() {
   PROBE_MON_PID=$!
 }
 
+# Common evidence owns the canonical provider-generation sample encoding and
+# validation. Keep a dedicated two-second sampler because the network liveness
+# probe can legitimately spend longer than the five-second attribution gap in
+# curl. The common helper serializes concurrent appends with an external lock.
+start_provider_generation_monitor() {
+  (
+    while evidence_tool capture-provider-generation \
+      --identity "$OUT/provider-identity.tsv" \
+      --append "$OUT/provider-generation-samples.tsv" \
+      --cadence-ms 2000 --max-gap-ms 5000
+    do
+      sleep 2
+    done
+  ) >> "$OUT/provider-generation.stdout" \
+    2>> "$OUT/provider-generation.stderr" &
+  GENERATION_MON_PID=$!
+}
+
 # Count live and explicitly established workers, rewriting to survivors only.
 recount_holders() {
   local live=0 established=0 tmp="$OUT/.pids.tmp" p marker; : > "$tmp"
@@ -787,6 +1403,9 @@ run_flow_pool() {
   fi
   printf '\r%-70s\r' ' '
   kill_holders
+  if (( HOLDER_CLEANUP_LAST_UNREAPED != 0 )); then
+    die "$label holder writer could not be reaped; refusing mutable evidence finalization"
+  fi
   post_boundary="$(epoch_now)"
   post_gauge="$(wait_for_fresh_gauge "$post_boundary" 70)"
   if [[ -n "$post_gauge" ]]; then
@@ -812,8 +1431,16 @@ run_flow_pool() {
 hdr "rama transparent proxy soak — comprehensive single session"
 [[ -x "$(command -v curl)" ]] || die "curl not found"
 [[ -f "$STRESS_SH" ]] || die "stress script not found at $STRESS_SH (is REPO correct?)"
-[[ -x "$DIAL9_EVIDENCE_BIN" ]] \
-  || die "dial9 evidence collector not found; build the tproxy Rust crate first"
+[[ -n "$PYTHON_BIN" ]] || die "python3 is required for signed soak evidence"
+[[ -f "$EVIDENCE_HELPER" ]] || die "signed evidence helper not found at $EVIDENCE_HELPER"
+PROVIDER_EXECUTABLE_NAME="$(
+  plutil -extract CFBundleExecutable raw -o - "$INSTALLED_PROVIDER/Contents/Info.plist" \
+    2>/dev/null || true
+)"
+[[ "$PROVIDER_EXECUTABLE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] \
+  || die "could not resolve the installed provider executable name"
+CRASH_PROCESS="$PROVIDER_EXECUTABLE_NAME"
+RUN_UUID="$("$PYTHON_BIN" -c 'import uuid; print(uuid.uuid4())')"
 REPO_HEAD="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
 [[ "$REPO_HEAD" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
   || die "could not resolve the repository commit identity"
@@ -823,14 +1450,19 @@ REPO_DIRTY=0
 SOAK_SCRIPT_SHA256="$(sha256_path "$0")"
 STRESS_SCRIPT_SHA256="$(sha256_path "$STRESS_SH")"
 PRESSURE_PARSER_SHA256="$(sha256_path "$EXAMPLE_DIR/scripts/soak_pressure_log.py")"
+SIGNED_EVIDENCE_HELPER_SHA256="$(sha256_path "$EVIDENCE_HELPER")"
 [[ "$SOAK_SCRIPT_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "could not hash soak_test.sh"
 [[ "$STRESS_SCRIPT_SHA256" =~ ^[0-9a-f]{64}$ ]] || die "could not hash stress_traffic.sh"
 [[ "$PRESSURE_PARSER_SHA256" =~ ^[0-9a-f]{64}$ ]] \
   || die "could not hash soak_pressure_log.py"
+[[ "$SIGNED_EVIDENCE_HELPER_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+  || die "could not hash signed_run_evidence.py"
 mkdir -p "$OUT" || die "cannot create OUT=$OUT"
 if [[ -n "$(find "$OUT" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
   die "OUT=$OUT is not empty; use a fresh artifact directory"
 fi
+[[ ! -e "$OUT.tgz" ]] \
+  || die "refusing to start with an existing sibling tarball $OUT.tgz"
 : > "$OUT/phases.tsv"; : > "$OUT/run-meta.tsv"
 : > "$OUT/probe-timeline.txt"; : > "$OUT/holders.log"
 : > "$OUT/ceiling-probes.tsv"
@@ -840,16 +1472,58 @@ fi
 : > "$OUT/sleep-probes.tsv"
 : > "$OUT/provider-timeline.tsv"
 mkdir -p "$OUT/holder-markers"
+if cp "$0" "$OUT/source-soak_test.sh" \
+  && cp "$STRESS_SH" "$OUT/source-stress_traffic.sh" \
+  && cp "$EXAMPLE_DIR/scripts/soak_pressure_log.py" \
+    "$OUT/source-soak_pressure_log.py" \
+  && cp "$EVIDENCE_HELPER" "$OUT/source-signed_run_evidence.py"
+then
+  :
+else
+  die "could not capture exact soak evidence producer sources"
+fi
+{
+  printf 'schema_version\t1\n'
+  printf 'profile_name\trelease-soak-v1\n'
+  printf 'required_mode\tcap-validate\n'
+  printf 'required_skip_stress\t0\n'
+  printf 'required_skip_fanout\t0\n'
+  printf 'required_skip_idle\t0\n'
+  printf 'required_skip_sleep\t0\n'
+  printf 'minimum_stress_seconds\t180\n'
+  printf 'minimum_stress_concurrency\t24\n'
+  printf 'minimum_fanout_target\t40\n'
+  printf 'minimum_fanout_hold_seconds\t90\n'
+  printf 'minimum_idle_target\t40\n'
+  printf 'minimum_idle_hold_seconds\t150\n'
+  printf 'minimum_idle_tail_seconds\t135\n'
+  printf 'minimum_max_safe_flows\t300\n'
+  printf 'minimum_file_descriptor_limit\t16384\n'
+  printf 'required_live_hard_cap_enabled\t1\n'
+  printf 'minimum_no_spin_quiescence_seconds\t60\n'
+  printf 'schema_complete\t1\n'
+} > "$OUT/release-soak-profile.tsv"
+RELEASE_PROFILE_SHA256="$(sha256_path "$OUT/release-soak-profile.tsv")"
+[[ "$RELEASE_PROFILE_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+  || die "could not hash the canonical release soak profile"
+ARTIFACTS_INITIALIZED=1
 {
   printf 'repo_head\t%s\nrepo_dirty\t%s\n' "$REPO_HEAD" "$REPO_DIRTY"
   printf 'udp_workload_exercised\t0\n'
+  printf 'dial9_claim\tunattributed-diagnostic\n'
+  printf 'dial9_diagnostic_only\t1\ndial9_coverage_claimed\t0\n'
   printf 'pressure_gauge_schema_version\t2\n'
   printf 'soak_script_sha256\t%s\nstress_script_sha256\t%s\npressure_parser_sha256\t%s\n' \
     "$SOAK_SCRIPT_SHA256" "$STRESS_SCRIPT_SHA256" "$PRESSURE_PARSER_SHA256"
+  printf 'signed_evidence_helper_sha256\t%s\nrelease_profile_sha256\t%s\n' \
+    "$SIGNED_EVIDENCE_HELPER_SHA256" "$RELEASE_PROFILE_SHA256"
+  printf 'provider_executable_name\t%s\ncrash_process_name\t%s\n' \
+    "$PROVIDER_EXECUTABLE_NAME" "$CRASH_PROCESS"
 } >> "$OUT/run-meta.tsv"
 write_incomplete_status "soak did not reach evidence extraction"
 HOLDER_PIDFILE="$OUT/holders.pids"; : > "$HOLDER_PIDFILE"
 ulimit -n 16384 2>/dev/null || true
+FILE_DESCRIPTOR_LIMIT="$(ulimit -n)"
 
 say "artifacts:   $OUT"
 say "stress:      ${STRESS_SECONDS}s @ concurrency $CONCURRENCY"
@@ -877,6 +1551,16 @@ hdr "liveness check"
 PROBE_CODE="$(probe_once)"
 [[ "$PROBE_CODE" =~ ^2 ]] || die "probe got '$PROBE_CODE' against $HTTPS_PROBE — endpoint unavailable, sysext down, or no network. Enable the proxy (or DO_INSTALL=1) and retry."
 say "${GREEN}network preflight ok ($PROBE_CODE); provider correlation starts below${RESET}"
+{
+  printf 'evidence_kind\tsoak\n'
+  printf 'run_uuid\t%s\n' "$RUN_UUID"
+  printf 'dial9_claim\tunattributed-diagnostic\n'
+  printf 'dial9_diagnostic_only\t1\n'
+  printf 'dial9_workload_coverage\t0\n'
+  printf 'tcp_workload_exercised\t1\n'
+  printf 'udp_workload_exercised\t0\n'
+  printf 'schema_complete\t1\n'
+} > "$OUT/workload-claims.tsv"
 # Sanity-check the download host actually serves through the proxy (Cloudflare
 # 403s under MITM; the rama host does not).
 DL_CHECK_RC=0
@@ -892,22 +1576,19 @@ else
 fi
 printf 'download_host_preflight_ok\t%s\n' "$DOWNLOAD_HOST_PREFLIGHT_OK" >> "$OUT/run-meta.tsv"
 
-PID="$(pgrep -f "$PROVIDER_BUNDLE" | head -1 || true)"
-[[ -n "$PID" ]] || die "could not find the sysext process ($PROVIDER_BUNDLE). Is it enabled?"
+PROVIDER_EXECUTABLE_SUFFIX="/$PROVIDER_BUNDLE.systemextension/Contents/MacOS/$PROVIDER_EXECUTABLE_NAME"
+PROVIDER_SELECTION="$(
+  select_unique_provider_process "$PROVIDER_EXECUTABLE_SUFFIX" || true
+)"
+IFS=$'\t' read -r PID PROVIDER_EXECUTABLE PROVIDER_SELECTION_EXTRA <<< "$PROVIDER_SELECTION"
+[[ "$PID" =~ ^[1-9][0-9]*$ && -n "$PROVIDER_EXECUTABLE" \
+  && -z "$PROVIDER_SELECTION_EXTRA" ]] \
+  || die "expected exactly one running provider with executable suffix $PROVIDER_EXECUTABLE_SUFFIX"
 PROVIDER_START_TIME="$(ps -o lstart= -p "$PID" 2>/dev/null | sed -E 's/^[[:space:]]+//')"
 [[ -n "$PROVIDER_START_TIME" ]] || die "could not read sysext process identity for pid $PID"
 PROVIDER_START_IDENTITY="$(process_identity "$PID" || true)"
 [[ "$PROVIDER_START_IDENTITY" =~ ^[0-9a-f]{64}$ ]] \
   || die "could not fingerprint sysext process identity for pid $PID"
-PROVIDER_EXECUTABLE="$(
-  sudo -n lsof -a -p "$PID" -d txt -Fn 2>/dev/null \
-    | sed -n 's/^n//p' | head -1
-)"
-if [[ ! "$PROVIDER_EXECUTABLE" == /* ]]; then
-  PROVIDER_EXECUTABLE="$(ps -ww -o comm= -p "$PID" 2>/dev/null | sed -E 's/^[[:space:]]+//')"
-fi
-[[ "$PROVIDER_EXECUTABLE" == /* ]] \
-  || die "could not resolve the running sysext executable path"
 PROVIDER_BINARY_SHA256="$(sha256_path "$PROVIDER_EXECUTABLE")"
 [[ "$PROVIDER_BINARY_SHA256" =~ ^[0-9a-f]{64}$ ]] \
   || die "could not hash the running sysext executable"
@@ -935,6 +1616,74 @@ say "sysext pid:  $PID"
     "$PROVIDER_CODESIGN_IDENTIFIER" "$PROVIDER_CODESIGN_CDHASH" \
     "$PROVIDER_CODESIGN_TEAM"
 } >> "$OUT/run-meta.tsv"
+
+COMMON_PROVIDER_CAPTURED=0
+COMMON_PROVIDER_GENERATION_IDENTITY=missing
+if evidence_tool capture-provider \
+  --built-provider "$BUILT_PROVIDER" --installed-provider "$INSTALLED_PROVIDER" --pid "$PID" \
+  --output "$OUT/provider-identity.tsv" --source-root "$REPO" \
+  > "$OUT/provider-identity.stdout" 2> "$OUT/provider-identity.stderr"
+then
+  COMMON_PROVIDER_GENERATION_IDENTITY="$(
+    provider_identity_value provider_generation_identity
+  )"
+  if [[ "$COMMON_PROVIDER_GENERATION_IDENTITY" == "$PROVIDER_START_IDENTITY" ]]; then
+    COMMON_PROVIDER_CAPTURED=1
+  else
+    warn "common provider generation identity does not match the soak runtime identity"
+  fi
+else
+  warn "common built/installed/running provider identity capture failed; evidence will be incomplete"
+fi
+{
+  printf 'common_provider_captured\t%s\n' "$COMMON_PROVIDER_CAPTURED"
+  printf 'common_provider_generation_identity\t%s\n' \
+    "$COMMON_PROVIDER_GENERATION_IDENTITY"
+} >> "$OUT/run-meta.tsv"
+
+# Start the attributed generation series before freezing the run start. This
+# gives the verifier a real sample at-or-before the declared interval, while
+# all actual soak workloads remain strictly after the boundary.
+PROVIDER_GENERATION_INITIAL_CAPTURED=0
+if [[ "$COMMON_PROVIDER_CAPTURED" == 1 ]] \
+  && evidence_tool capture-provider-generation \
+    --identity "$OUT/provider-identity.tsv" \
+    --output "$OUT/provider-generation-samples.tsv" \
+    --cadence-ms 2000 --max-gap-ms 5000 \
+    > "$OUT/provider-generation.stdout" \
+    2> "$OUT/provider-generation.stderr"
+then
+  PROVIDER_GENERATION_INITIAL_CAPTURED=1
+else
+  warn "initial attributed provider-generation sample is unavailable"
+fi
+RUN_START_EPOCH_MS="$(epoch_ms_now)"
+start_provider_generation_monitor
+printf 'provider_generation_initial_captured\t%s\n' \
+  "$PROVIDER_GENERATION_INITIAL_CAPTURED" >> "$OUT/run-meta.tsv"
+printf 'provider_generation_monitor_pid\t%s\n' "$GENERATION_MON_PID" \
+  >> "$OUT/run-meta.tsv"
+
+CRASH_BEFORE_CAPTURED=0
+CRASH_BEFORE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/rama-soak-crashes-before.XXXXXX")"
+if evidence_tool snapshot-crashes --since-epoch-ms "$RUN_START_EPOCH_MS" \
+  --output-dir "$CRASH_BEFORE_TMP" --process "$CRASH_PROCESS" \
+  --run-uuid "$RUN_UUID" \
+  --provider-generation-identity "$COMMON_PROVIDER_GENERATION_IDENTITY" \
+  > "$OUT/crashes-before.stdout" 2> "$OUT/crashes-before.stderr" \
+  && cp "$CRASH_BEFORE_TMP/crash-snapshot.tsv" "$OUT/crashes-before.tsv"
+then
+  CRASH_BEFORE_CAPTURED=1
+else
+  warn "pre-workload crash snapshot is unavailable; evidence will be incomplete"
+fi
+case "$CRASH_BEFORE_TMP" in
+  "${TMPDIR:-/tmp}"/rama-soak-crashes-before.*) rm -rf -- "$CRASH_BEFORE_TMP" ;;
+  *) warn "refusing to remove unexpected crash snapshot temporary path" ;;
+esac
+printf 'run_uuid\t%s\nrun_start_epoch_ms\t%s\ncrash_before_captured\t%s\n' \
+  "$RUN_UUID" "$RUN_START_EPOCH_MS" "$CRASH_BEFORE_CAPTURED" \
+  >> "$OUT/run-meta.tsv"
 
 # ── Start live log capture (debug — the gauge is debug) ────────────────
 hdr "starting log capture"
@@ -964,7 +1713,8 @@ DIAL9_BASELINE_READY=0
 DIAL9_BASELINE_MAX_INDEX=none
 # The unprivileged shell intentionally owns the artifact redirections.
 # shellcheck disable=SC2024
-if sudo -n "$DIAL9_EVIDENCE_BIN" snapshot "$DIAL9_DIR" \
+if [[ -x "$DIAL9_EVIDENCE_BIN" ]] \
+  && sudo -n "$DIAL9_EVIDENCE_BIN" snapshot "$DIAL9_DIR" \
   > "$OUT/dial9-baseline.json" 2> "$OUT/dial9-baseline.err"
 then
   DIAL9_BASELINE_READY=1
@@ -980,13 +1730,37 @@ PY
     DIAL9_BASELINE_READY=0
   fi
 else
-  warn "could not capture pre-workload dial9 trace identity"
+  warn "Dial9 diagnostic collector is unavailable; continuing without diagnostic traces"
 fi
 printf 'dial9_baseline_ready\t%s\ndial9_baseline_max_index\t%s\n' \
   "$DIAL9_BASELINE_READY" "$DIAL9_BASELINE_MAX_INDEX" >> "$OUT/run-meta.tsv"
 start_probe_monitor
 printf 'probe_monitor_pid\t%s\n' "$PROBE_MON_PID" >> "$OUT/run-meta.tsv"
 say "probe monitor → $OUT/probe-timeline.txt (freeze detector)"
+
+# Establish a device-local provider baseline before any soak load. The same
+# low-frequency liveness monitor remains active for both baseline and post-load
+# samples, so its probe activity is explicit and symmetric.
+phase_mark idle-baseline start
+hdr "pre-load idle CPU baseline"
+capture_idle_cpu_series "$OUT/idle-cpu-baseline.tsv" baseline
+phase_mark idle-baseline end
+{
+  printf 'idle_cpu_baseline_probe_monitor_active\t1\n'
+  printf 'idle_cpu_post_probe_monitor_active\t1\n'
+  printf 'idle_cpu_required_samples\t%s\n' "$IDLE_CPU_SAMPLE_COUNT"
+  printf 'idle_cpu_interval_seconds\t%s\n' "$IDLE_CPU_SAMPLE_INTERVAL"
+  printf 'idle_cpu_hot_percent\t%s\n' "$IDLE_CPU_HOT_PERCENT"
+  printf 'idle_cpu_hot_streak\t%s\n' "$IDLE_CPU_HOT_STREAK"
+  printf 'idle_cpu_warm_percent\t%s\n' "$IDLE_CPU_WARM_PERCENT"
+  printf 'idle_cpu_max_warm_samples\t%s\n' "$IDLE_CPU_MAX_WARM_SAMPLES"
+  printf 'idle_cpu_regression_allowance_percent\t%s\n' \
+    "$IDLE_CPU_REGRESSION_ALLOWANCE_PERCENT"
+  printf 'idle_cpu_absolute_mean_ceiling_percent\t%s\n' \
+    "$IDLE_CPU_ABSOLUTE_MEAN_CEILING_PERCENT"
+  printf 'idle_cpu_post_quiescence_seconds\t%s\n' \
+    "$CEILING_NO_SPIN_QUIESCE_SECONDS"
+} >> "$OUT/run-meta.tsv"
 
 # ── Phase 0: baseline + softCap detection ─────────────────────────────
 phase_mark baseline start
@@ -1095,14 +1869,111 @@ else
 fi
 say "resolved targets: fanout=$FANOUT_TARGET idle=$IDLE_TARGET (MAX_SAFE_FLOWS=$MAX_SAFE_FLOWS)"
 [[ "$MODE" == "cap-too-high" ]] && warn "softCap=$SOFTCAP > MAX_SAFE_FLOWS=$MAX_SAFE_FLOWS: this run validates leak/freeze/wake only, NOT cap eviction. Use a low-cap build to exercise the reaper."
-
+RELEASE_PROFILE_ELIGIBLE=1
+if [[ "$MODE" != cap-validate || "$SKIP_STRESS" != 0 \
+  || "$SKIP_FANOUT" != 0 || "$SKIP_IDLE" != 0 || "$SKIP_SLEEP" != 0 \
+  || "$ALLOW_UNSAFE_LOAD" != 0 || ! "$FILE_DESCRIPTOR_LIMIT" =~ ^[0-9]+$ ]] \
+  || (( STRESS_SECONDS < 180 || CONCURRENCY < 24 \
+    || FANOUT_TARGET < 40 || FANOUT_HOLD < 90 \
+    || IDLE_TARGET < 40 || IDLE_HOLD < 150 || IDLE_TAIL < 135 \
+    || MAX_SAFE_FLOWS < 300 || HARDCAP == 0 \
+    || CEILING_NO_SPIN_QUIESCE_SECONDS < 60 \
+    || FILE_DESCRIPTOR_LIMIT < 16384 ))
+then
+  RELEASE_PROFILE_ELIGIBLE=0
+fi
 {
-  printf '=== baseline @ %s ===\n' "$(date -u +%FT%TZ)"
+  printf 'release_profile_eligible\t%s\n' "$RELEASE_PROFILE_ELIGIBLE"
+  printf 'configured_stress_seconds\t%s\n' "$STRESS_SECONDS"
+  printf 'configured_stress_concurrency\t%s\n' "$CONCURRENCY"
+  printf 'configured_fanout_target\t%s\n' "$FANOUT_TARGET"
+  printf 'configured_fanout_hold_seconds\t%s\n' "$FANOUT_HOLD"
+  printf 'configured_idle_target\t%s\n' "$IDLE_TARGET"
+  printf 'configured_idle_hold_seconds\t%s\n' "$IDLE_HOLD"
+  printf 'configured_idle_tail_seconds\t%s\n' "$IDLE_TAIL"
+  printf 'configured_max_safe_flows\t%s\n' "$MAX_SAFE_FLOWS"
+  printf 'configured_file_descriptor_limit\t%s\n' "$FILE_DESCRIPTOR_LIMIT"
+  printf 'configured_skip_stress\t%s\n' "$SKIP_STRESS"
+  printf 'configured_skip_fanout\t%s\n' "$SKIP_FANOUT"
+  printf 'configured_skip_idle\t%s\n' "$SKIP_IDLE"
+  printf 'configured_skip_sleep\t%s\n' "$SKIP_SLEEP"
+  printf 'configured_allow_unsafe_load\t%s\n' "$ALLOW_UNSAFE_LOAD"
+  printf 'configured_live_hard_cap_enabled\t%s\n' "$(( HARDCAP > 0 ? 1 : 0 ))"
+  printf 'configured_no_spin_quiescence_seconds\t%s\n' \
+    "$CEILING_NO_SPIN_QUIESCE_SECONDS"
+} >> "$OUT/run-meta.tsv"
+
+BASELINE_MEM_START_EPOCH_MS="$(epoch_ms_now)"
+BASELINE_MEM_PROVIDER_PID="$PID"
+BASELINE_MEM_IDENTITY_BEFORE="$(process_identity "$PID" || true)"
+BASELINE_MEM_STATUS="$OUT/baseline-mem-command-status.tsv"
+(
+  set +e
+  privilege=unavailable
+  sudo -n true >/dev/null 2>&1
+  sudo_rc=$?
+  [[ "$sudo_rc" == 0 ]] && privilege=sudo
+  printf '=== baseline provider pid=%s @ %s ===\n' \
+    "$PID" "$(date -u +%FT%TZ)"
   printf 'softCap=%s baseline_total=%s mode=%s fanout=%s idle=%s\n\n' "$SOFTCAP" "$BASELINE_TOTAL" "$MODE" "$FANOUT_TARGET" "$IDLE_TARGET"
-  ps -o pid,rss,vsz,%cpu,state -p "$PID" 2>/dev/null || echo "pid gone"
+  ps -o pid,rss,vsz,%cpu,state -p "$PID" 2>/dev/null
+  ps_rc=$?
+  [[ "$ps_rc" == 0 ]] || printf 'ps failed (rc=%s)\n' "$ps_rc"
   printf '\n--- vmmap --summary ---\n'
-  sudo -n vmmap --summary "$PID" 2>/dev/null || echo "vmmap unavailable"
-} > "$OUT/baseline-mem.txt" 2>&1
+  sudo -n vmmap --summary "$PID" 2>/dev/null
+  vmmap_rc=$?
+  [[ "$vmmap_rc" == 0 ]] || printf 'vmmap failed (rc=%s)\n' "$vmmap_rc"
+  status_write_rc=0
+  {
+    printf 'privilege\t%s\n' "$privilege"
+    printf 'sudo_rc\t%s\n' "$sudo_rc"
+    printf 'ps_rc\t%s\n' "$ps_rc"
+    printf 'vmmap_rc\t%s\n' "$vmmap_rc"
+  } > "$BASELINE_MEM_STATUS" || status_write_rc=$?
+  [[ "$sudo_rc" == 0 && "$ps_rc" == 0 && "$vmmap_rc" == 0 \
+    && "$status_write_rc" == 0 ]]
+) > "$OUT/baseline-mem.txt" 2>&1 &
+ACTIVE_CHILD_PID=$!
+ACTIVE_CHILD_PRIVILEGE=sudo
+bounded_wait_and_join "$ACTIVE_CHILD_PID" 30 sudo
+BASELINE_MEM_CHILD_RC="$BOUNDED_CHILD_RC"
+BASELINE_MEM_JOINED="$BOUNDED_CHILD_REAPED"
+BASELINE_MEM_FORCED="$BOUNDED_CHILD_FORCED"
+BASELINE_MEM_PRIVILEGE=missing
+BASELINE_MEM_SUDO_RC=missing
+BASELINE_MEM_PS_RC=missing
+BASELINE_MEM_VMMAP_RC=missing
+if (( BOUNDED_CHILD_REAPED )); then
+  ACTIVE_CHILD_PID=""
+  ACTIVE_CHILD_PRIVILEGE=root-only
+  BASELINE_MEM_PRIVILEGE="$(diagnostic_status_value "$BASELINE_MEM_STATUS" privilege || true)"
+  BASELINE_MEM_SUDO_RC="$(diagnostic_status_value "$BASELINE_MEM_STATUS" sudo_rc || true)"
+  BASELINE_MEM_PS_RC="$(diagnostic_status_value "$BASELINE_MEM_STATUS" ps_rc || true)"
+  BASELINE_MEM_VMMAP_RC="$(diagnostic_status_value "$BASELINE_MEM_STATUS" vmmap_rc || true)"
+fi
+BASELINE_MEM_PRIVILEGE="${BASELINE_MEM_PRIVILEGE:-missing}"
+BASELINE_MEM_SUDO_RC="${BASELINE_MEM_SUDO_RC:-missing}"
+BASELINE_MEM_PS_RC="${BASELINE_MEM_PS_RC:-missing}"
+BASELINE_MEM_VMMAP_RC="${BASELINE_MEM_VMMAP_RC:-missing}"
+BASELINE_MEM_IDENTITY_AFTER="$(process_identity "$PID" || true)"
+BASELINE_MEM_END_EPOCH_MS="$(epoch_ms_now)"
+{
+  printf 'baseline_mem_child_rc\t%s\n' "$BASELINE_MEM_CHILD_RC"
+  printf 'baseline_mem_joined\t%s\n' "$BASELINE_MEM_JOINED"
+  printf 'baseline_mem_forced\t%s\n' "$BASELINE_MEM_FORCED"
+  printf 'baseline_mem_privilege\t%s\n' "$BASELINE_MEM_PRIVILEGE"
+  printf 'baseline_mem_sudo_rc\t%s\n' "$BASELINE_MEM_SUDO_RC"
+  printf 'baseline_mem_ps_rc\t%s\n' "$BASELINE_MEM_PS_RC"
+  printf 'baseline_mem_vmmap_rc\t%s\n' "$BASELINE_MEM_VMMAP_RC"
+  printf 'baseline_mem_start_epoch_ms\t%s\n' "$BASELINE_MEM_START_EPOCH_MS"
+  printf 'baseline_mem_end_epoch_ms\t%s\n' "$BASELINE_MEM_END_EPOCH_MS"
+  printf 'baseline_mem_provider_pid\t%s\n' "$BASELINE_MEM_PROVIDER_PID"
+  printf 'baseline_mem_identity_before\t%s\n' "$BASELINE_MEM_IDENTITY_BEFORE"
+  printf 'baseline_mem_identity_after\t%s\n' "$BASELINE_MEM_IDENTITY_AFTER"
+} >> "$OUT/run-meta.tsv"
+if [[ "$BASELINE_MEM_JOINED" != 1 ]]; then
+  die "baseline memory diagnostic writer could not be reaped; refusing mutable evidence finalization"
+fi
 phase_mark baseline end
 
 # ═════════════ CEILING-FINDER (opt-in, both caps disabled) ════════════
@@ -1165,6 +2036,9 @@ if [[ "$MODE" == "find-ceiling" ]]; then
   (( CEILING_FOUND )) || warn "ceiling was not found before the configured ramp limit"
   say "killing load to recover the machine..."
   kill_holders
+  if (( HOLDER_CLEANUP_LAST_UNREAPED != 0 )); then
+    die "ceiling holder writer could not be reaped; refusing mutable evidence finalization"
+  fi
   CEILING_RECOVERED=0
   for i in $(seq 1 20); do
     g="$(read_gauge)"; recovery_gauge_epoch="${g%% *}"; recovery_occ="${g##* }"
@@ -1203,22 +2077,43 @@ if [[ "$SKIP_STRESS" != 1 ]]; then
     STRESS_MONITOR_PID="$PID" STRESS_LOG_DIR="$OUT/stress" STRESS_SKIP_LIVENESS=1 \
       bash "$STRESS_SH" > "$OUT/stress-run.txt" 2>&1 &
   ACTIVE_CHILD_PID=$!
-  if wait "$ACTIVE_CHILD_PID"; then
+  ACTIVE_CHILD_PRIVILEGE=direct
+  # Allow the configured run plus generous script cleanup/reporting grace,
+  # while retaining a hard upper bound for a wedged worker/tool.
+  bounded_wait_and_join "$ACTIVE_CHILD_PID" "$((STRESS_SECONDS + 120))" direct
+  STRESS_CHILD_RC="$BOUNDED_CHILD_RC"
+  STRESS_JOINED="$BOUNDED_CHILD_REAPED"
+  STRESS_FORCED="$BOUNDED_CHILD_FORCED"
+  if (( BOUNDED_CHILD_REAPED )); then
+    ACTIVE_CHILD_PID=""
+    ACTIVE_CHILD_PRIVILEGE=root-only
+  fi
+  if [[ "$STRESS_CHILD_RC" == 0 && "$STRESS_JOINED" == 1 \
+    && "$STRESS_FORCED" == 0 ]]; then
     STRESS_OK=1
   else
     STRESS_OK=0
     warn "stress run returned nonzero"
   fi
-  ACTIVE_CHILD_PID=""
   cat "$OUT/stress-run.txt"
   STRESS_ATTRIBUTION=provider-monitored-traffic-only
   phase_mark stress end
 else
   STRESS_OK=skipped
   STRESS_ATTRIBUTION=skipped
+  STRESS_CHILD_RC=skipped
+  STRESS_JOINED=skipped
+  STRESS_FORCED=skipped
 fi
-printf 'stress_ok\t%s\nstress_attribution\t%s\n' \
-  "$STRESS_OK" "$STRESS_ATTRIBUTION" >> "$OUT/run-meta.tsv"
+{
+  printf 'stress_ok\t%s\nstress_attribution\t%s\n' \
+    "$STRESS_OK" "$STRESS_ATTRIBUTION"
+  printf 'stress_child_rc\t%s\nstress_joined\t%s\nstress_forced\t%s\n' \
+    "$STRESS_CHILD_RC" "$STRESS_JOINED" "$STRESS_FORCED"
+} >> "$OUT/run-meta.tsv"
+if [[ "$STRESS_JOINED" == 0 ]]; then
+  die "stress child could not be reaped; refusing mutable evidence finalization"
+fi
 
 if [[ "$SKIP_FANOUT" != 1 ]]; then
   phase_mark fanout start
@@ -1417,19 +2312,23 @@ fi
 
 phase_mark idle-tail start
 hdr "phase 6 — idle ${IDLE_TAIL}s (quiesce; keep the machine idle for a clean leak read)"
-for ((t=IDLE_TAIL; t>0; t-=5)); do printf '\r[soak] idle %3ds remaining' "$t"; sleep 5; done
+for ((t=IDLE_TAIL; t>0; t-=5)); do
+  printf '\r[soak] idle %3ds remaining' "$t"
+  if (( t < 5 )); then sleep "$t"; else sleep 5; fi
+done
 printf '\r%-40s\r' ' '
 phase_mark idle-tail end
 
 fi  # end cap-validate vs ceiling-finder
 
-# ── Final memory snapshot (re-resolve pid; detect a restart) ──────────
+# Run post-boundary forensic attaches only after the declared workload interval
+# is frozen and its continuous monitors have been joined.
+capture_post_boundary_forensics() {
+# ── Final memory snapshot (exact original pid; detect a restart) ──────
 hdr "final memory snapshot"
 PID2=""
 if kill -0 "$PID" 2>/dev/null; then
   PID2="$PID"
-else
-  PID2="$(pgrep -f "$PROVIDER_BUNDLE" | head -1 || true)"
 fi
 PROVIDER_END_TIME=""
 [[ -n "$PID2" ]] && PROVIDER_END_TIME="$(ps -o lstart= -p "$PID2" 2>/dev/null | sed -E 's/^[[:space:]]+//')"
@@ -1447,32 +2346,147 @@ fi
 printf 'provider_end_pid\t%s\nprovider_end_time\t%s\nprovider_end_identity\t%s\nprovider_continuous\t%s\n' \
   "${PID2:-gone}" "${PROVIDER_END_TIME:-gone}" \
   "${PROVIDER_END_IDENTITY:-gone}" "$PROVIDER_CONTINUOUS" >> "$OUT/run-meta.tsv"
-SNAP_PID="${PID2:-$PID}"
-{
-  printf '=== final snapshot @ %s ===\n' "$(date -u +%FT%TZ)"
+hdr "idle CPU stack diagnostic"
+say "capturing a bounded privileged five-second stack sample for the exact provider PID"
+capture_idle_cpu_diagnostic
+SNAP_PID="$PID"
+FINAL_MEM_START_EPOCH_MS="$(epoch_ms_now)"
+FINAL_MEM_PROVIDER_PID="$SNAP_PID"
+FINAL_MEM_IDENTITY_BEFORE="$(process_identity "$SNAP_PID" || true)"
+FINAL_MEM_STATUS="$OUT/final-mem-command-status.tsv"
+(
+  set +e
+  privilege=unavailable
+  sudo -n true >/dev/null 2>&1
+  sudo_rc=$?
+  [[ "$sudo_rc" == 0 ]] && privilege=sudo
+  printf '=== final snapshot provider pid=%s @ %s ===\n' \
+    "$SNAP_PID" "$(date -u +%FT%TZ)"
   printf 'start pid=%s  final pid=%s  restarted=%s\n\n' \
     "$PID" "${PID2:-gone}" "$([[ "${PID2:-}" != "$PID" ]] && echo YES || echo no)"
-  ps -o pid,rss,vsz,%cpu,state -p "$SNAP_PID" 2>/dev/null || echo "pid $SNAP_PID gone"
+  ps -o pid,rss,vsz,%cpu,state -p "$SNAP_PID" 2>/dev/null
+  ps_rc=$?
+  [[ "$ps_rc" == 0 ]] || printf 'ps failed for pid %s (rc=%s)\n' "$SNAP_PID" "$ps_rc"
   printf '\n--- vmmap --summary ---\n'
-  sudo -n vmmap --summary "$SNAP_PID" 2>/dev/null || echo "vmmap unavailable"
+  sudo -n vmmap --summary "$SNAP_PID" 2>/dev/null
+  vmmap_rc=$?
+  [[ "$vmmap_rc" == 0 ]] || printf 'vmmap failed (rc=%s)\n' "$vmmap_rc"
   printf '\n--- heap totals ---\n'
-  sudo -n heap "$SNAP_PID" 2>/dev/null | grep -E 'All zones:|Total|Process [0-9]+:' || echo "heap unavailable"
-} > "$OUT/final-mem.txt" 2>&1
+  sudo -n heap "$SNAP_PID" 2>/dev/null \
+    | grep -E 'All zones:|Total|Process [0-9]+:'
+  heap_status=("${PIPESTATUS[@]}")
+  heap_rc="${heap_status[0]:-missing}"
+  heap_filter_rc="${heap_status[1]:-missing}"
+  if [[ "$heap_rc" != 0 || "$heap_filter_rc" != 0 ]]; then
+    printf 'heap summary failed (heap_rc=%s filter_rc=%s)\n' \
+      "$heap_rc" "$heap_filter_rc"
+  fi
+  status_write_rc=0
+  {
+    printf 'privilege\t%s\n' "$privilege"
+    printf 'sudo_rc\t%s\n' "$sudo_rc"
+    printf 'ps_rc\t%s\n' "$ps_rc"
+    printf 'vmmap_rc\t%s\n' "$vmmap_rc"
+    printf 'heap_rc\t%s\n' "$heap_rc"
+    printf 'heap_filter_rc\t%s\n' "$heap_filter_rc"
+  } > "$FINAL_MEM_STATUS" || status_write_rc=$?
+  [[ "$sudo_rc" == 0 && "$ps_rc" == 0 && "$vmmap_rc" == 0 \
+    && "$heap_rc" == 0 && "$heap_filter_rc" == 0 \
+    && "$status_write_rc" == 0 ]]
+) > "$OUT/final-mem.txt" 2>&1 &
+ACTIVE_CHILD_PID=$!
+ACTIVE_CHILD_PRIVILEGE=sudo
+bounded_wait_and_join "$ACTIVE_CHILD_PID" 30 sudo
+FINAL_MEM_CHILD_RC="$BOUNDED_CHILD_RC"
+FINAL_MEM_JOINED="$BOUNDED_CHILD_REAPED"
+FINAL_MEM_FORCED="$BOUNDED_CHILD_FORCED"
+FINAL_MEM_PRIVILEGE=missing
+FINAL_MEM_SUDO_RC=missing
+FINAL_MEM_PS_RC=missing
+FINAL_MEM_VMMAP_RC=missing
+FINAL_MEM_HEAP_RC=missing
+FINAL_MEM_HEAP_FILTER_RC=missing
+if (( BOUNDED_CHILD_REAPED )); then
+  ACTIVE_CHILD_PID=""
+  ACTIVE_CHILD_PRIVILEGE=root-only
+  FINAL_MEM_PRIVILEGE="$(diagnostic_status_value "$FINAL_MEM_STATUS" privilege || true)"
+  FINAL_MEM_SUDO_RC="$(diagnostic_status_value "$FINAL_MEM_STATUS" sudo_rc || true)"
+  FINAL_MEM_PS_RC="$(diagnostic_status_value "$FINAL_MEM_STATUS" ps_rc || true)"
+  FINAL_MEM_VMMAP_RC="$(diagnostic_status_value "$FINAL_MEM_STATUS" vmmap_rc || true)"
+  FINAL_MEM_HEAP_RC="$(diagnostic_status_value "$FINAL_MEM_STATUS" heap_rc || true)"
+  FINAL_MEM_HEAP_FILTER_RC="$(diagnostic_status_value "$FINAL_MEM_STATUS" heap_filter_rc || true)"
+fi
+FINAL_MEM_PRIVILEGE="${FINAL_MEM_PRIVILEGE:-missing}"
+FINAL_MEM_SUDO_RC="${FINAL_MEM_SUDO_RC:-missing}"
+FINAL_MEM_PS_RC="${FINAL_MEM_PS_RC:-missing}"
+FINAL_MEM_VMMAP_RC="${FINAL_MEM_VMMAP_RC:-missing}"
+FINAL_MEM_HEAP_RC="${FINAL_MEM_HEAP_RC:-missing}"
+FINAL_MEM_HEAP_FILTER_RC="${FINAL_MEM_HEAP_FILTER_RC:-missing}"
+FINAL_MEM_IDENTITY_AFTER="$(process_identity "$SNAP_PID" || true)"
+FINAL_MEM_END_EPOCH_MS="$(epoch_ms_now)"
+{
+  printf 'final_mem_child_rc\t%s\n' "$FINAL_MEM_CHILD_RC"
+  printf 'final_mem_joined\t%s\n' "$FINAL_MEM_JOINED"
+  printf 'final_mem_forced\t%s\n' "$FINAL_MEM_FORCED"
+  printf 'final_mem_privilege\t%s\n' "$FINAL_MEM_PRIVILEGE"
+  printf 'final_mem_sudo_rc\t%s\n' "$FINAL_MEM_SUDO_RC"
+  printf 'final_mem_ps_rc\t%s\n' "$FINAL_MEM_PS_RC"
+  printf 'final_mem_vmmap_rc\t%s\n' "$FINAL_MEM_VMMAP_RC"
+  printf 'final_mem_heap_rc\t%s\n' "$FINAL_MEM_HEAP_RC"
+  printf 'final_mem_heap_filter_rc\t%s\n' "$FINAL_MEM_HEAP_FILTER_RC"
+  printf 'final_mem_start_epoch_ms\t%s\n' "$FINAL_MEM_START_EPOCH_MS"
+  printf 'final_mem_end_epoch_ms\t%s\n' "$FINAL_MEM_END_EPOCH_MS"
+  printf 'final_mem_provider_pid\t%s\n' "$FINAL_MEM_PROVIDER_PID"
+  printf 'final_mem_identity_before\t%s\n' "$FINAL_MEM_IDENTITY_BEFORE"
+  printf 'final_mem_identity_after\t%s\n' "$FINAL_MEM_IDENTITY_AFTER"
+} >> "$OUT/run-meta.tsv"
+if [[ "$FINAL_MEM_JOINED" != 1 ]]; then
+  die "memory diagnostic writer could not be reaped; refusing mutable evidence finalization"
+fi
 say "→ $OUT/final-mem.txt"
 
 # ── leaks pass ────────────────────────────────────────────────────────
 hdr "leaks pass"
 LEAKS_COMMAND_RC=0
-# The privileged command writes through the invoking shell into user-owned OUT.
-# shellcheck disable=SC2024
-if sudo leaks "$SNAP_PID" > "$OUT/leaks.txt" 2>&1; then
-  :
-else
-  LEAKS_COMMAND_RC=$?
+LEAKS_START_EPOCH_MS="$(epoch_ms_now)"
+LEAKS_PROVIDER_PID="$SNAP_PID"
+LEAKS_IDENTITY_BEFORE="$(process_identity "$SNAP_PID" || true)"
+LEAKS_PRIVILEGE=unavailable
+if sudo -n true >/dev/null 2>&1; then
+  LEAKS_PRIVILEGE=sudo
 fi
-printf 'leaks_command_rc\t%s\n' "$LEAKS_COMMAND_RC" >> "$OUT/run-meta.tsv"
+# The privileged command writes through the invoking shell into user-owned OUT
+# and is joined under a hard deadline because `leaks` attaches to the process.
+# shellcheck disable=SC2024
+sudo -n leaks "$SNAP_PID" > "$OUT/leaks.txt" 2>&1 &
+ACTIVE_CHILD_PID=$!
+ACTIVE_CHILD_PRIVILEGE=sudo
+bounded_wait_and_join "$ACTIVE_CHILD_PID" 60 sudo
+LEAKS_COMMAND_RC="$BOUNDED_CHILD_RC"
+LEAKS_JOINED="$BOUNDED_CHILD_REAPED"
+LEAKS_FORCED="$BOUNDED_CHILD_FORCED"
+if (( BOUNDED_CHILD_REAPED )); then
+  ACTIVE_CHILD_PID=""
+  ACTIVE_CHILD_PRIVILEGE=root-only
+fi
+LEAKS_IDENTITY_AFTER="$(process_identity "$SNAP_PID" || true)"
+LEAKS_END_EPOCH_MS="$(epoch_ms_now)"
+{
+  printf 'leaks_command_rc\t%s\n' "$LEAKS_COMMAND_RC"
+  printf 'leaks_joined\t%s\nleaks_forced\t%s\nleaks_privilege\t%s\n' \
+    "$LEAKS_JOINED" "$LEAKS_FORCED" "$LEAKS_PRIVILEGE"
+  printf 'leaks_start_epoch_ms\t%s\n' "$LEAKS_START_EPOCH_MS"
+  printf 'leaks_end_epoch_ms\t%s\n' "$LEAKS_END_EPOCH_MS"
+  printf 'leaks_provider_pid\t%s\n' "$LEAKS_PROVIDER_PID"
+  printf 'leaks_identity_before\t%s\n' "$LEAKS_IDENTITY_BEFORE"
+  printf 'leaks_identity_after\t%s\n' "$LEAKS_IDENTITY_AFTER"
+} >> "$OUT/run-meta.tsv"
+if [[ "$LEAKS_JOINED" != 1 ]]; then
+  die "leaks artifact writer could not be reaped; refusing mutable evidence finalization"
+fi
 LEAK_LINE="$(grep -E 'leaks for|total leaked|Process .* leaks' "$OUT/leaks.txt" 2>/dev/null | head -1)"
 say "${LEAK_LINE:-(leaks output unavailable or unparseable; see leaks.txt)}"
+}
 printf 'holder_cleanup_ok\t%s\n' "$HOLDER_CLEANUP_OK" >> "$OUT/run-meta.tsv"
 
 # ── dial9 traces ──────────────────────────────────────────────────────
@@ -1482,7 +2496,12 @@ hdr "collecting current-run dial9 traces"
 DIAL9_COLLECTION_OK=0
 DIAL9_CURRENT_SEGMENT_COUNT=0
 DIAL9_REQUIRED_PAIR_COUNT=0
-if (( DIAL9_BASELINE_READY == 1 )); then
+DIAL9_COLLECTION_ATTEMPTED=0
+DIAL9_COLLECT_RC=missing
+DIAL9_COLLECT_JOINED=0
+DIAL9_COLLECT_FORCED=0
+if (( DIAL9_BASELINE_READY == 1 )) && [[ -x "$DIAL9_EVIDENCE_BIN" ]]; then
+  DIAL9_COLLECTION_ATTEMPTED=1
   DIAL9_COLLECT_RC=0
   # The unprivileged shell intentionally owns the artifact redirections.
   # shellcheck disable=SC2024
@@ -1492,10 +2511,15 @@ if (( DIAL9_BASELINE_READY == 1 )); then
     > "$OUT/dial9-evidence.json" 2> "$OUT/dial9-collect.err" &
   ACTIVE_CHILD_PID=$!
   ACTIVE_CHILD_PRIVILEGE=sudo
-  wait "$ACTIVE_CHILD_PID" || DIAL9_COLLECT_RC=$?
-  ACTIVE_CHILD_PID=""
-  ACTIVE_CHILD_PRIVILEGE=root-only
-  if (( DIAL9_COLLECT_RC == 0 )) \
+  bounded_wait_and_join "$ACTIVE_CHILD_PID" 145 sudo
+  DIAL9_COLLECT_RC="$BOUNDED_CHILD_RC"
+  DIAL9_COLLECT_JOINED="$BOUNDED_CHILD_REAPED"
+  DIAL9_COLLECT_FORCED="$BOUNDED_CHILD_FORCED"
+  if (( BOUNDED_CHILD_REAPED )); then
+    ACTIVE_CHILD_PID=""
+    ACTIVE_CHILD_PRIVILEGE=root-only
+  fi
+  if [[ "$DIAL9_COLLECT_RC" == 0 ]] \
     && sudo -n chown -R "$(id -u):$(id -g)" "$OUT/dial9-traces" 2>/dev/null
   then
     DIAL9_METRICS=$(
@@ -1516,9 +2540,33 @@ PY
     warn "could not collect a sealed current-run dial9 flow pair"
   fi
 fi
-printf 'dial9_collection_ok\t%s\ndial9_current_segment_count\t%s\ndial9_required_pair_count\t%s\n' \
-  "$DIAL9_COLLECTION_OK" "$DIAL9_CURRENT_SEGMENT_COUNT" \
-  "$DIAL9_REQUIRED_PAIR_COUNT" >> "$OUT/run-meta.tsv"
+{
+  printf 'dial9_collection_attempted\t%s\ndial9_collect_child_rc\t%s\n' \
+    "$DIAL9_COLLECTION_ATTEMPTED" "$DIAL9_COLLECT_RC"
+  printf 'dial9_collect_joined\t%s\ndial9_collect_forced\t%s\n' \
+    "$DIAL9_COLLECT_JOINED" "$DIAL9_COLLECT_FORCED"
+  printf 'dial9_collection_ok\t%s\ndial9_current_segment_count\t%s\ndial9_required_pair_count\t%s\n' \
+    "$DIAL9_COLLECTION_OK" "$DIAL9_CURRENT_SEGMENT_COUNT" \
+    "$DIAL9_REQUIRED_PAIR_COUNT"
+} >> "$OUT/run-meta.tsv"
+if [[ "$DIAL9_COLLECTION_ATTEMPTED" == 1 && "$DIAL9_COLLECT_JOINED" != 1 ]]; then
+  die "Dial9 diagnostic child could not be reaped; refusing mutable evidence finalization"
+fi
+
+# Dial9 collection is intentionally before the final no-spin window: a
+# provider that remains hot while the diagnostic waits cannot quiesce just
+# before an earlier sample and escape the release verdict.
+phase_mark no-spin start
+hdr "final idle CPU no-spin evidence"
+say "quiescing ${CEILING_NO_SPIN_QUIESCE_SECONDS}s before instantaneous CPU sampling"
+sleep "$CEILING_NO_SPIN_QUIESCE_SECONDS"
+capture_idle_cpu_series "$OUT/idle-cpu-post.tsv" post
+phase_mark no-spin end
+
+# Freeze the evidence interval while the exact-PID log and liveness monitors
+# are still alive. They are joined below; the crash snapshot then covers at
+# least this boundary and a second provider observation detects scan-time churn.
+freeze_run_end_provider_observation
 
 # ── Stop log capture ──────────────────────────────────────────────────
 hdr "stopping log capture"
@@ -1555,8 +2603,44 @@ if [[ -n "$LOG_STREAM_PID" ]]; then
 fi
 printf 'log_stream_child_rc\t%s\nlog_stream_joined\t%s\n' \
   "$LOG_STREAM_CHILD_RC" "$LOG_STREAM_JOINED" >> "$OUT/run-meta.tsv"
+if [[ "$PROBE_MONITOR_JOINED" != 1 || "$LOG_STREAM_JOINED" != 1 ]]; then
+  die "log/probe artifact writer could not be reaped; refusing mutable evidence finalization"
+fi
+capture_post_boundary_forensics
 NDJSON_LINES="$(wc -l < "$OUT/system.ndjson" 2>/dev/null | tr -d ' ' || echo 0)"
 say "captured $NDJSON_LINES ndjson lines"
+capture_crashes_after
+
+# The generation sampler is the final long-lived artifact writer. Stop and
+# join it only after the crash snapshot and the explicit post-snapshot sample
+# have extended its proof through the complete forensic boundary.
+GENERATION_MONITOR_ALIVE=0
+[[ -n "$GENERATION_MON_PID" ]] \
+  && child_job_is_active "$GENERATION_MON_PID" \
+  && GENERATION_MONITOR_ALIVE=1
+GENERATION_MONITOR_CHILD_RC=missing
+GENERATION_MONITOR_JOINED=0
+GENERATION_MONITOR_FORCED=0
+if [[ -n "$GENERATION_MON_PID" ]]; then
+  bounded_stop_and_join "$GENERATION_MON_PID" 5 direct
+  GENERATION_MONITOR_CHILD_RC="$BOUNDED_CHILD_RC"
+  GENERATION_MONITOR_JOINED="$BOUNDED_CHILD_REAPED"
+  GENERATION_MONITOR_FORCED="$BOUNDED_CHILD_FORCED"
+  (( BOUNDED_CHILD_REAPED )) && GENERATION_MON_PID=""
+fi
+{
+  printf 'provider_generation_monitor_alive_end\t%s\n' \
+    "$GENERATION_MONITOR_ALIVE"
+  printf 'provider_generation_monitor_child_rc\t%s\n' \
+    "$GENERATION_MONITOR_CHILD_RC"
+  printf 'provider_generation_monitor_joined\t%s\n' \
+    "$GENERATION_MONITOR_JOINED"
+  printf 'provider_generation_monitor_forced\t%s\n' \
+    "$GENERATION_MONITOR_FORCED"
+} >> "$OUT/run-meta.tsv"
+if [[ "$GENERATION_MONITOR_JOINED" != 1 ]]; then
+  die "provider-generation artifact writer could not be reaped; refusing mutable evidence finalization"
+fi
 
 # ── Extract the signals that matter from the ndjson ───────────────────
 hdr "extracting signals"
@@ -1574,14 +2658,21 @@ from soak_pressure_log import (
     ceiling_outage_window,
     ceiling_probe_evidence_issues,
     classify_soak_result,
+    cpu_sample_diagnostic_issues,
+    crash_snapshot_evidence,
+    dial9_diagnostic_collection_issues,
+    dial9_diagnostic_claim_issues,
     dial9_evidence_issues,
     engine_lifecycle_event,
     filter_provider_ndjson_records,
     flow_pool_evidence_issues,
     flow_pool_status,
     flow_gauge,
+    final_provider_observation_issues,
+    idle_cpu_comparison_evidence,
     leak_evidence,
     lifecycle_category_issue,
+    memory_diagnostic_issues,
     no_headroom_event,
     parse_artifact_epoch,
     parse_artifact_uint,
@@ -1593,18 +2684,23 @@ from soak_pressure_log import (
     parse_provider_identity_lines,
     parse_probe_lines,
     phase_for_epoch,
+    post_boundary_forensic_issues,
+    producer_source_issues,
     pressure_episode,
     pressure_telemetry_issue,
     pressure_reaper_status,
     provider_allocation_failure,
     probe_succeeded,
+    release_soak_profile_issues,
     selection_event,
     sleep_wake_evidence,
     settled_final_flow_gauge,
     soak_evidence_issues,
+    soak_workload_claim_issues,
     summarize_pressure_rows,
     summarize_udp_pressure_rows,
     summarize_writer_memory_pressure_rows,
+    top_cpu_collection_issues,
     unexpected_probe_failure_count_across_outages,
 )
 
@@ -1632,14 +2728,55 @@ for key in (
     "provider_start_pid", "provider_start_time", "provider_end_pid",
     "provider_end_time", "provider_start_identity", "provider_end_identity",
     "provider_bundle", "log_stream_pid", "probe_monitor_pid",
+    "provider_generation_monitor_pid",
 ):
     if not meta.get(key):
         meta_issues.append(f"run metadata {key!r} is missing")
-if meta.get("udp_workload_exercised") not in ("0", "1"):
-    meta_issues.append("run metadata 'udp_workload_exercised' is missing or invalid")
+for key in (
+    "run_start_epoch_ms", "run_end_epoch_ms",
+    "final_provider_observation_epoch_ms", "crash_snapshot_epoch_ms",
+    "post_snapshot_provider_observation_epoch_ms",
+):
+    value = parse_artifact_uint(meta.get(key))
+    if value is None or value == 0:
+        meta_issues.append(f"run metadata {key!r} is missing or invalid")
+meta_issues.extend(final_provider_observation_issues(meta))
+meta_issues.extend(post_boundary_forensic_issues(meta))
+for key, expected in (
+    ("idle_cpu_required_samples", "10"),
+    ("idle_cpu_interval_seconds", "1"),
+    ("idle_cpu_hot_percent", "90.0"),
+    ("idle_cpu_hot_streak", "5"),
+    ("idle_cpu_warm_percent", "80.0"),
+    ("idle_cpu_max_warm_samples", "4"),
+    ("idle_cpu_regression_allowance_percent", "5.0"),
+    ("idle_cpu_absolute_mean_ceiling_percent", "10.0"),
+    ("idle_cpu_baseline_probe_monitor_active", "1"),
+    ("idle_cpu_post_probe_monitor_active", "1"),
+):
+    if meta.get(key) != expected:
+        meta_issues.append(f"run metadata {key!r} does not match the no-spin policy")
+idle_cpu_post_quiescence = parse_artifact_uint(
+    meta.get("idle_cpu_post_quiescence_seconds"), maximum=86400)
+if idle_cpu_post_quiescence is None:
+    meta_issues.append("post-load CPU quiescence duration is missing or invalid")
+if meta.get("mode") != "find-ceiling" and meta.get("stress_ok") != "skipped":
+    if parse_artifact_uint(meta.get("stress_child_rc"), maximum=255) is None:
+        meta_issues.append("stress child outcome is missing or invalid")
+    if meta.get("stress_joined") != "1":
+        meta_issues.append("stress child was not reaped")
+    if meta.get("stress_forced") != "0":
+        meta_issues.append("stress child exceeded its bounded deadline")
+if meta.get("udp_workload_exercised") != "0":
+    meta_issues.append("soak run metadata must explicitly set udp_workload_exercised=0")
 if meta.get("pressure_gauge_schema_version") != "2":
     meta_issues.append("run metadata pressure-gauge schema is missing or unsupported")
-for key in ("provider_start_pid", "provider_end_pid", "log_stream_pid", "probe_monitor_pid"):
+if meta.get("common_provider_captured") != "1":
+    meta_issues.append("common built/installed/running provider identity is unavailable")
+for key in (
+    "provider_start_pid", "provider_end_pid", "log_stream_pid",
+    "probe_monitor_pid", "provider_generation_monitor_pid",
+):
     parsed_pid = parse_artifact_uint(meta.get(key), maximum=2_147_483_647)
     if parsed_pid is None or parsed_pid == 0:
         meta_issues.append(f"run metadata {key!r} is not a positive integer")
@@ -1650,6 +2787,23 @@ if (
 ):
     meta_issues.append("provider start/end process identity does not match")
 meta_issues.extend(artifact_identity_issues(meta))
+for key, expected in (
+    ("provider_generation_initial_captured", "1"),
+    ("provider_generation_monitor_alive_end", "1"),
+    ("provider_generation_monitor_joined", "1"),
+    ("provider_generation_monitor_forced", "0"),
+    ("provider_generation_sample_after_crash_ok", "1"),
+):
+    if meta.get(key) != expected:
+        meta_issues.append(
+            f"run metadata {key!r} does not prove continuous provider attribution"
+        )
+generation_samples_path = os.path.join(out, "provider-generation-samples.tsv")
+if (
+    not os.path.isfile(generation_samples_path)
+    or os.path.getsize(generation_samples_path) == 0
+):
+    meta_issues.append("provider generation sample artifact is missing or empty")
 
 provider_identity_issues = []
 provider_identity_path = os.path.join(out, "provider-timeline.tsv")
@@ -1662,11 +2816,11 @@ else:
 
 pf = os.path.join(out, "phases.tsv")
 expected_phase_order = (
-    ["baseline", "ceiling"]
+    ["idle-baseline", "baseline", "ceiling", "no-spin"]
     if meta.get("mode") == "find-ceiling"
     else [
-        "baseline", "stress", "fanout", "idle-holders", "real-download",
-        "sleep-wake", "idle-tail",
+        "idle-baseline", "baseline", "stress", "fanout", "idle-holders", "real-download",
+        "sleep-wake", "idle-tail", "no-spin",
     ]
 )
 if os.path.exists(pf):
@@ -2129,9 +3283,104 @@ try:
         leaks_text = leak_input.read()
 except FileNotFoundError:
     leaks_text = None
-leak_result = leak_evidence(meta.get("leaks_command_rc"), leaks_text)
+leak_result = leak_evidence(
+    meta.get("leaks_command_rc"), leaks_text,
+    expected_pid=meta.get("leaks_provider_pid"),
+)
 leak_issues = leak_result["issues"]
+if meta.get("leaks_joined") != "1":
+    leak_issues.append("leaks collector was not reaped")
+if meta.get("leaks_forced") != "0":
+    leak_issues.append("leaks collector exceeded its bounded deadline")
+if meta.get("leaks_privilege") != "sudo":
+    leak_issues.append("leaks collector did not use cached sudo")
 leak_count = leak_result["leaks"]
+
+def read_lines(path):
+    try:
+        with open(path) as source:
+            return list(source)
+    except OSError:
+        return []
+
+release_profile_issues = release_soak_profile_issues(
+    read_lines(os.path.join(out, "release-soak-profile.tsv")), meta)
+source_copy_issues = producer_source_issues(meta, {
+    "soak_test": os.path.join(out, "source-soak_test.sh"),
+    "stress_traffic": os.path.join(out, "source-stress_traffic.sh"),
+    "soak_pressure_log": os.path.join(out, "source-soak_pressure_log.py"),
+    "signed_run_evidence": os.path.join(out, "source-signed_run_evidence.py"),
+})
+
+post_phase_name = "no-spin"
+def phase_bounds(name):
+    return next(
+        ((start, end) for phase_name, start, end in phases if phase_name == name),
+        (None, None),
+    )
+
+baseline_cpu_start, baseline_cpu_end = phase_bounds("idle-baseline")
+post_cpu_start, post_cpu_end = phase_bounds(post_phase_name)
+idle_cpu = idle_cpu_comparison_evidence(
+    read_lines(os.path.join(out, "idle-cpu-baseline.tsv")),
+    read_lines(os.path.join(out, "idle-cpu-post.tsv")),
+    expected_pid=meta.get("provider_start_pid"),
+    expected_identity=meta.get("provider_start_identity"),
+    baseline_start_epoch=baseline_cpu_start,
+    baseline_end_epoch=baseline_cpu_end,
+    post_start_epoch=post_cpu_start,
+    post_end_epoch=post_cpu_end,
+    run_start_epoch_ms=meta.get("run_start_epoch_ms"),
+    run_end_epoch_ms=meta.get("run_end_epoch_ms"),
+    minimum_post_quiescence_seconds=(
+        idle_cpu_post_quiescence
+        if idle_cpu_post_quiescence is not None
+        else 0
+    ),
+)
+cpu_diagnostic_issues = cpu_sample_diagnostic_issues(meta)
+cpu_diagnostic_issues.extend(top_cpu_collection_issues(meta))
+cpu_diagnostic_issues.extend(memory_diagnostic_issues(
+    meta,
+    baseline_artifact=os.path.join(out, "baseline-mem.txt"),
+    final_artifact=os.path.join(out, "final-mem.txt"),
+))
+
+workload_claims_path = os.path.join(out, "workload-claims.tsv")
+try:
+    with open(workload_claims_path) as workload_claims_input:
+        workload_claim_issues = soak_workload_claim_issues(
+            workload_claims_input, expected_run_uuid=meta.get("run_uuid"))
+except OSError:
+    workload_claim_issues = ["soak workload claims artifact is missing"]
+workload_claim_issues.extend(dial9_diagnostic_claim_issues(meta))
+workload_claim_issues.extend(dial9_diagnostic_collection_issues(meta))
+
+def read_crash_snapshot(path_parts):
+    path = os.path.join(out, *path_parts)
+    try:
+        with open(path) as snapshot_input:
+            return list(snapshot_input)
+    except OSError:
+        return []
+
+crash_evidence = crash_snapshot_evidence(
+    read_crash_snapshot(("crashes-before.tsv",)),
+    read_crash_snapshot(("crashes", "crash-snapshot.tsv")),
+    run_start_epoch_ms=meta.get("run_start_epoch_ms"),
+    run_end_epoch_ms=meta.get("run_end_epoch_ms"),
+    expected_process_names=meta.get("crash_process_name"),
+    expected_run_uuid=meta.get("run_uuid"),
+    expected_provider_generation_identity=meta.get(
+        "common_provider_generation_identity"),
+)
+if (
+    crash_evidence["after_snapshot_epoch_ms"] is not None
+    and meta.get("crash_snapshot_epoch_ms")
+    != str(crash_evidence["after_snapshot_epoch_ms"])
+):
+    crash_evidence["issues"].append(
+        "crash snapshot metadata does not match the sealed snapshot")
 
 dial9_summary_path = os.path.join(out, "dial9-evidence.json")
 try:
@@ -2149,7 +3398,9 @@ capture_issues = (
     + lifecycle_category_issues + pressure_telemetry_issues + pressure["issues"]
     + udp_pressure["issues"] + writer_pressure["issues"] + numeric_log_issues
     + mode_configuration_issues + ceiling_proof_issues + sleep_probe_issues
-    + sleep_result["issues"] + leak_issues + dial9_issues
+    + sleep_result["issues"] + leak_issues + idle_cpu["issues"]
+    + cpu_diagnostic_issues + workload_claim_issues + crash_evidence["issues"]
+    + release_profile_issues + source_copy_issues
 )
 for label, status, raw_status in (
     ("fanout", fanout_status, meta.get("fanout_established_target_sustained")),
@@ -2172,9 +3423,9 @@ if softcap_seen and meta.get("softcap") not in {str(value) for value in softcap_
 if hardcap_seen and meta.get("hardcap") not in {str(value) for value in hardcap_seen}:
     capture_issues.append("baseline hard cap does not match captured gauges")
 if meta.get("mode") == "find-ceiling":
-    required_phases = {"baseline", "ceiling"}
+    required_phases = {"baseline", "ceiling", "no-spin"}
 else:
-    required_phases = {"baseline", "real-download", "idle-tail"}
+    required_phases = {"baseline", "real-download", "idle-tail", "no-spin"}
     for outcome, phase in (
         ("stress_ok", "stress"),
         ("fanout_established_target_sustained", "fanout"),
@@ -2235,11 +3486,57 @@ run_result = classify_soak_result(
     provider_faults=c["fault"],
     unknown_provider_errors=c["unknown_error"],
     udp_pressure_failures=udp_pressure["failures"] + writer_pressure["failures"],
+    no_spin_failures=idle_cpu["failures"],
+    crash_failures=crash_evidence["failures"],
 )
 evidence_issues = run_result["evidence_issues"]
 evidence_complete = run_result["complete"]
 run_passed = run_result["passed"]
 run_failures = run_result["failures"]
+
+def decimal_text(value):
+    if value is None:
+        return "unavailable"
+    return format(value.quantize(Decimal("0.001")), "f")
+
+idle_cpu_summary_path = os.path.join(out, "idle-cpu-summary.tsv")
+idle_cpu_summary_tmp = idle_cpu_summary_path + f".tmp.{os.getpid()}"
+with open(idle_cpu_summary_tmp, "w") as cpu_summary:
+    cpu_summary.write("schema_version\t1\n")
+    cpu_summary.write(
+        f"baseline_sample_count\t{idle_cpu['baseline']['sample_count']}\n")
+    cpu_summary.write(f"post_sample_count\t{idle_cpu['post']['sample_count']}\n")
+    cpu_summary.write("sample_interval_seconds\t1\n")
+    cpu_summary.write("hot_threshold_percent\t90.0\n")
+    cpu_summary.write("hot_streak_samples\t5\n")
+    cpu_summary.write("warm_threshold_percent\t80.0\n")
+    cpu_summary.write("maximum_warm_samples\t4\n")
+    cpu_summary.write(
+        f"baseline_mean_percent\t{decimal_text(idle_cpu['baseline']['mean_percent'])}\n")
+    cpu_summary.write(
+        f"baseline_maximum_percent\t{decimal_text(idle_cpu['baseline']['maximum_percent'])}\n")
+    cpu_summary.write(
+        f"baseline_maximum_hot_streak\t{idle_cpu['baseline']['maximum_hot_streak']}\n")
+    cpu_summary.write(
+        f"baseline_warm_sample_count\t{idle_cpu['baseline_warm_sample_count'] if idle_cpu['baseline_warm_sample_count'] is not None else 'unavailable'}\n")
+    cpu_summary.write(
+        f"post_mean_percent\t{decimal_text(idle_cpu['post']['mean_percent'])}\n")
+    cpu_summary.write(
+        f"post_maximum_percent\t{decimal_text(idle_cpu['post']['maximum_percent'])}\n")
+    cpu_summary.write(
+        f"post_maximum_hot_streak\t{idle_cpu['post']['maximum_hot_streak']}\n")
+    cpu_summary.write(
+        f"post_warm_sample_count\t{idle_cpu['post_warm_sample_count'] if idle_cpu['post_warm_sample_count'] is not None else 'unavailable'}\n")
+    cpu_summary.write("regression_allowance_percent\t5.0\n")
+    cpu_summary.write("absolute_mean_ceiling_percent\t10.0\n")
+    cpu_summary.write(
+        f"minimum_post_quiescence_seconds\t{idle_cpu['minimum_post_quiescence_seconds']}\n")
+    cpu_summary.write(
+        f"post_mean_limit_percent\t{decimal_text(idle_cpu['post_mean_limit_percent'])}\n")
+    cpu_summary.write("schema_complete\t1\n")
+    cpu_summary.flush()
+    os.fsync(cpu_summary.fileno())
+os.replace(idle_cpu_summary_tmp, idle_cpu_summary_path)
 
 with open(os.path.join(out, "extract-summary.txt"), "w") as s:
     def w(line=""):
@@ -2285,6 +3582,22 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
       f"recovered={len(writer_pressure['recovered_reasons'])})")
     for reason in writer_pressure["unrecovered"]:
         w(f"  unrecovered writer pressure: {reason}")
+    w(f"idle CPU baseline:        samples={idle_cpu['baseline']['sample_count']} "
+      f"mean={idle_cpu['baseline']['mean_percent'] if idle_cpu['baseline']['mean_percent'] is not None else 'n/a'}% "
+      f"max={idle_cpu['baseline']['maximum_percent'] if idle_cpu['baseline']['maximum_percent'] is not None else 'n/a'}% "
+      f"warm={idle_cpu['baseline_warm_sample_count'] if idle_cpu['baseline_warm_sample_count'] is not None else 'n/a'}/4 "
+      f"hot-streak={idle_cpu['baseline']['maximum_hot_streak']}/5")
+    w(f"idle CPU post-load:       samples={idle_cpu['post']['sample_count']} "
+      f"mean={idle_cpu['post']['mean_percent'] if idle_cpu['post']['mean_percent'] is not None else 'n/a'}% "
+      f"limit={idle_cpu['post_mean_limit_percent'] if idle_cpu['post_mean_limit_percent'] is not None else 'n/a'}% "
+      f"max={idle_cpu['post']['maximum_percent'] if idle_cpu['post']['maximum_percent'] is not None else 'n/a'}% "
+      f"warm={idle_cpu['post_warm_sample_count'] if idle_cpu['post_warm_sample_count'] is not None else 'n/a'}/4 "
+      f"hot-streak={idle_cpu['post']['maximum_hot_streak']}/5")
+    w("Dial9 evidence:           diagnostic-only; never counted as workload coverage")
+    for issue in dial9_issues:
+        w(f"  diagnostic: {issue}")
+    w(f"provider crash reports:   before={crash_evidence['before_count']} "
+      f"after={crash_evidence['after_count']}")
     w("")
     w("--- leak evidence ---")
     if leak_issues:
@@ -2382,7 +3695,7 @@ with open(os.path.join(out, "extract-summary.txt"), "w") as s:
     w("")
     w("see flow-counts.txt, timeline.txt, probe-timeline.txt, holders.log, leaks.txt")
 
-status_path = os.path.join(out, "evidence-status.tsv")
+status_path = os.path.join(out, "soak-verdict.tsv")
 status_tmp = status_path + f".tmp.{os.getpid()}"
 with open(status_tmp, "w") as status:
     status.write(f"complete\t{1 if evidence_complete else 0}\n")
@@ -2411,58 +3724,21 @@ else
   write_incomplete_status "python3 unavailable"
 fi
 
-# ── Bundle ────────────────────────────────────────────────────────────
-hdr "done"
-TARBALL="$OUT.tgz"
-if tar -czf "$TARBALL" -C "$(dirname "$OUT")" "$(basename "$OUT")" 2>/dev/null; then
-  say "tarball:   $TARBALL"
-else
-  warn "could not create tarball"
-fi
-say "dir:       $OUT"
-echo
-[[ -f "$OUT/extract-summary.txt" ]] && cat "$OUT/extract-summary.txt"
-echo
-hdr "hand me: $OUT  (or the tarball)"
-STATUS_LAST="$(awk 'NF { line=$0 } END { print line }' "$OUT/evidence-status.tsv" 2>/dev/null)"
-STATUS_ORDER="$(awk -F '\t' 'NF { print $1; seen++; if (seen == 3) exit }' "$OUT/evidence-status.tsv" 2>/dev/null | paste -sd ' ' -)"
-STATUS_KEYS="$(awk -F '\t' '$1 == "complete" || $1 == "passed" || $1 == "exit_code" || $1 == "schema_complete" { count[$1]++ } END { print count["complete"]+0, count["passed"]+0, count["exit_code"]+0, count["schema_complete"]+0 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
-STATUS_DIAGNOSTICS="$(awk -F '\t' '$1 == "issue" { issues++ } $1 == "failure" { failures++ } END { print issues+0, failures+0 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
-STATUS_BAD_LINES="$(awk -F '\t' 'NF && (NF != 2 || ($1 != "complete" && $1 != "passed" && $1 != "exit_code" && $1 != "issue" && $1 != "failure" && $1 != "schema_complete")) { bad++ } END { print bad+0 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
-EVIDENCE_COMPLETE="$(awk -F '\t' '$1 == "complete" { print $2 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
-RUN_PASSED="$(awk -F '\t' '$1 == "passed" { print $2 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
-DECLARED_EXIT="$(awk -F '\t' '$1 == "exit_code" { print $2 }' "$OUT/evidence-status.tsv" 2>/dev/null)"
-read -r STATUS_ISSUES STATUS_FAILURES <<< "$STATUS_DIAGNOSTICS"
-if [[ "$STATUS_LAST" != $'schema_complete\t1' \
-  || "$STATUS_ORDER" != "complete passed exit_code" \
-  || "$STATUS_KEYS" != "1 1 1 1" || "$STATUS_BAD_LINES" != 0 ]]; then
-  warn "evidence status is truncated or schema-incomplete"
-  exit 2
-fi
-case "$EVIDENCE_COMPLETE:$RUN_PASSED:$DECLARED_EXIT" in
-  1:1:0)
-    (( STATUS_ISSUES == 0 && STATUS_FAILURES == 0 )) || {
-      warn "successful evidence verdict contains issue/failure diagnostics"
-      exit 2
-    }
-    exit 0
-    ;;
-  1:0:1)
-    (( STATUS_ISSUES == 0 && STATUS_FAILURES > 0 )) || {
-      warn "failed evidence verdict lacks a consistent failure diagnostic"
-      exit 2
-    }
-    warn "soak evidence is complete, but one or more validation checks failed; see evidence-status.tsv"
+# The EXIT trap owns cleanup, crash finalization, the common status envelope,
+# sealing, verification, tar creation, and the actual shell exit.
+DECLARED_EXIT="$(soak_verdict_exit_code 2>/dev/null || true)"
+case "$DECLARED_EXIT" in
+  0) exit 0 ;;
+  1)
+    warn "soak evidence is complete, but one or more product checks failed; see soak-verdict.tsv"
     exit 1
     ;;
-  0:0:2)
-    (( STATUS_ISSUES > 0 )) \
-      || warn "incomplete evidence verdict lacks an issue diagnostic"
-    warn "soak completed, but evidence is incomplete; see evidence-status.tsv"
+  2)
+    warn "soak evidence is incomplete; see soak-verdict.tsv"
     exit 2
     ;;
   *)
-    warn "evidence status contains an inconsistent verdict tuple"
+    warn "soak verdict is missing, truncated, or internally inconsistent"
     exit 2
     ;;
 esac

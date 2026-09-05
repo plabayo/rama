@@ -8,6 +8,22 @@ use std::{
     time::Duration,
 };
 
+/// Process-local identity assigned to each immutable engine instance. Together
+/// with the provider PID this survives flow-id reuse concerns in copied Dial9
+/// traces and lets evidence distinguish adjacent provider configurations.
+static NEXT_PROVIDER_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_provider_generation() -> u64 {
+    let Ok(generation) =
+        NEXT_PROVIDER_GENERATION.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+            generation.checked_add(1)
+        })
+    else {
+        std::process::abort();
+    };
+    generation
+}
+
 use rama_core::{
     bytes::Bytes,
     extensions::ExtensionsRef,
@@ -269,6 +285,8 @@ pub struct TransparentProxyEngine<H> {
     /// being `None`). Access via [`Self::rt`], which documents why the
     /// unwrap is unreachable for engine entry points.
     rt: Option<TransparentProxyAsyncRuntime>,
+    provider_pid: u32,
+    provider_generation: u64,
     handler: H,
     /// Startup snapshot exported to Swift and used to derive matching bridge
     /// limits for the lifetime of this engine.
@@ -495,6 +513,8 @@ where
         let protocol = meta.protocol;
         let exec = Executor::graceful(guard.clone());
         let handler = self.handler.clone();
+        let provider_pid = self.provider_pid;
+        let provider_generation = self.provider_generation;
 
         match try_block_on_async_task(
             rt,
@@ -502,6 +522,8 @@ where
                 guard,
                 exec,
                 meta,
+                provider_pid,
+                provider_generation,
                 tcp_write_chunk_limit,
                 tcp_channel_capacity,
                 tcp_idle_timeout,
@@ -614,6 +636,8 @@ where
         let protocol = meta.protocol;
         let exec = Executor::graceful(guard.clone());
         let handler = self.handler.clone();
+        let provider_pid = self.provider_pid;
+        let provider_generation = self.provider_generation;
 
         match try_block_on_async_task(
             rt,
@@ -621,6 +645,8 @@ where
                 guard,
                 exec,
                 meta,
+                provider_pid,
+                provider_generation,
                 udp_channel_capacity,
                 udp_ingress_per_flow_max_bytes,
                 udp_ingress_budget,
@@ -1250,6 +1276,8 @@ async fn new_tcp_session_flow_action<OnBytes, OnDemand, OnClosed, H>(
     parent_guard: ShutdownGuard,
     exec: Executor,
     meta: TransparentProxyFlowMeta,
+    _provider_pid: u32,
+    _provider_generation: u64,
     tcp_write_chunk_limit: usize,
     tcp_channel_capacity: usize,
     tcp_idle_timeout: Option<Duration>,
@@ -1302,7 +1330,13 @@ where
     meta.intercept_decision = Some(crate::tproxy::types::TransparentProxyFlowAction::Intercept);
 
     #[cfg(feature = "dial9")]
-    crate::tproxy::dial9::record_flow_opened(flow_id, flow_protocol.as_u32(), flow_source_pid);
+    crate::tproxy::dial9::record_flow_opened(
+        _provider_pid,
+        _provider_generation,
+        flow_id,
+        flow_protocol.as_u32(),
+        flow_source_pid,
+    );
 
     let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
     // Keep the engine drain joined to this task through its close epilogue.
@@ -1424,7 +1458,11 @@ where
             );
             #[cfg(feature = "dial9")]
             crate::tproxy::dial9::record_flow_closed(
+                _provider_pid,
+                _provider_generation,
                 meta_for_close.flow_id,
+                meta_for_close.protocol.as_u32(),
+                meta_for_close.source_app_pid,
                 BridgeCloseReason::Shutdown,
                 age_ms,
                 0,
@@ -1525,7 +1563,11 @@ where
         {
             let age_ms = u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
             crate::tproxy::dial9::record_flow_closed(
+                _provider_pid,
+                _provider_generation,
                 meta_for_close.flow_id,
+                meta_for_close.protocol.as_u32(),
+                meta_for_close.source_app_pid,
                 dial9_reason,
                 age_ms,
                 ingress_received,
@@ -1884,6 +1926,8 @@ async fn new_udp_session_flow_action<OnDatagram, OnClosed, OnDemand, H>(
     parent_guard: ShutdownGuard,
     exec: Executor,
     meta: TransparentProxyFlowMeta,
+    _provider_pid: u32,
+    _provider_generation: u64,
     udp_channel_capacity: usize,
     udp_ingress_per_flow_max_bytes: usize,
     udp_ingress_budget: Arc<UdpIngressBudget>,
@@ -1941,7 +1985,13 @@ where
     meta.intercept_decision = Some(crate::tproxy::types::TransparentProxyFlowAction::Intercept);
 
     #[cfg(feature = "dial9")]
-    crate::tproxy::dial9::record_flow_opened(flow_id, flow_protocol.as_u32(), flow_source_pid);
+    crate::tproxy::dial9::record_flow_opened(
+        _provider_pid,
+        _provider_generation,
+        flow_id,
+        flow_protocol.as_u32(),
+        flow_source_pid,
+    );
 
     let (flow_stop_tx, flow_stop_rx) = oneshot::channel::<()>();
     // Keep the engine drain joined to this task through its close epilogue.
@@ -2081,7 +2131,11 @@ where
                     let age_ms =
                         u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
                     crate::tproxy::dial9::record_flow_closed(
+                        _provider_pid,
+                        _provider_generation,
                         meta_for_close.flow_id,
+                        meta_for_close.protocol.as_u32(),
+                        meta_for_close.source_app_pid,
                         close_reason,
                         age_ms,
                         bytes_in,
@@ -2185,7 +2239,11 @@ where
             emit_udp_session_close_event(close_reason, &meta_for_close, bytes_in, bytes_out);
             let age_ms = u64::try_from(meta_for_close.age().as_millis()).unwrap_or(u64::MAX);
             crate::tproxy::dial9::record_flow_closed(
+                _provider_pid,
+                _provider_generation,
                 meta_for_close.flow_id,
+                meta_for_close.protocol.as_u32(),
+                meta_for_close.source_app_pid,
                 close_reason,
                 age_ms,
                 bytes_in,

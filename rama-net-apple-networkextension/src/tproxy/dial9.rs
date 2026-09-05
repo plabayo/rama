@@ -22,6 +22,10 @@ use rama_net::proxy::BridgeCloseReason;
 pub struct TproxyFlowOpened {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
+    /// PID of the Network Extension provider process.
+    pub provider_pid: u32,
+    /// Process-local immutable engine-generation identity.
+    pub provider_generation: u64,
     /// Per-process monotonic flow id.
     pub flow_id: u64,
     /// `1` for TCP, `2` for UDP. See `TransparentProxyFlowProtocol`.
@@ -35,7 +39,13 @@ pub struct TproxyFlowOpened {
 pub struct TproxyFlowClosed {
     #[traceevent(timestamp)]
     pub timestamp_ns: u64,
+    pub provider_pid: u32,
+    pub provider_generation: u64,
     pub flow_id: u64,
+    /// `1` for TCP, `2` for UDP. See `TransparentProxyFlowProtocol`.
+    pub protocol: u32,
+    /// Source-app PID, when the system reported one.
+    pub pid: i64,
     /// Structured close reason. For TCP this is the first normalized terminal
     /// reason observed across both bridge directions; flow-wide shutdown,
     /// idle-timeout, and service-panic outcomes override it.
@@ -60,11 +70,19 @@ pub struct TproxyHandlerDeadline {
 }
 
 #[inline]
-pub(crate) fn record_flow_opened(flow_id: u64, protocol: u32, pid: Option<i32>) {
+pub(crate) fn record_flow_opened(
+    provider_pid: u32,
+    provider_generation: u64,
+    flow_id: u64,
+    protocol: u32,
+    pid: Option<i32>,
+) {
     let handle = Dial9Handle::current();
     if handle.is_enabled() {
         handle.record_event(TproxyFlowOpened {
             timestamp_ns: clock_monotonic_ns(),
+            provider_pid,
+            provider_generation,
             flow_id,
             protocol,
             pid: pid.map(i64::from).unwrap_or(0),
@@ -74,7 +92,11 @@ pub(crate) fn record_flow_opened(flow_id: u64, protocol: u32, pid: Option<i32>) 
 
 #[inline]
 pub(crate) fn record_flow_closed(
+    provider_pid: u32,
+    provider_generation: u64,
     flow_id: u64,
+    protocol: u32,
+    pid: Option<i32>,
     reason: BridgeCloseReason,
     age_ms: u64,
     bytes_in: u64,
@@ -84,7 +106,11 @@ pub(crate) fn record_flow_closed(
     if handle.is_enabled() {
         handle.record_event(TproxyFlowClosed {
             timestamp_ns: clock_monotonic_ns(),
+            provider_pid,
+            provider_generation,
             flow_id,
+            protocol,
+            pid: pid.map(i64::from).unwrap_or(0),
             reason,
             age_ms,
             bytes_in,

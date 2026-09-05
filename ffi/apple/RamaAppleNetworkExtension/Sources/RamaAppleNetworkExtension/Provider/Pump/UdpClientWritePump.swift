@@ -50,38 +50,41 @@ private struct UdpWriterSharedState {
 
 final class UdpClientWritePump: @unchecked Sendable {
     private final class PendingDatagram: @unchecked Sendable {
-        let data: Data
+        private var dataStorage: Data?
         let sentBy: NWEndpoint?
-        /// Legacy/native Swift enqueue calls may use the flow's latest cached
-        /// peer. A borrowed Rust callback with an absent peer must not: nil is
-        /// explicit absence in that ABI and is dropped as an orphan.
+        /// Native Swift enqueue calls may use an explicitly populated
+        /// fallback. A borrowed Rust callback with an absent/invalid peer must
+        /// not: nil is explicit absence in that ABI.
         let allowsFallback: Bool
         let pressureAdmission: Bool
-        private let budget: WriterMemoryBudget
+        private let onPayloadDestroyed: @Sendable () -> Void
 
         init(
             data: Data,
             sentBy: NWEndpoint?,
             allowsFallback: Bool,
             pressureAdmission: Bool,
-            budget: WriterMemoryBudget
+            onPayloadDestroyed: @escaping @Sendable () -> Void
         ) {
-            self.data = data
+            self.dataStorage = data
             self.sentBy = sentBy
             self.allowsFallback = allowsFallback
             self.pressureAdmission = pressureAdmission
-            self.budget = budget
+            self.onPayloadDestroyed = onPayloadDestroyed
         }
 
-        /// One allocation pairs payload and charge. ARC keeps it alive for
-        /// every dispatch/queue/transport owner and refunds even when a
-        /// transport discards its completion without invoking it.
+        /// The refund callback runs only after this owner's payload reference
+        /// is cleared. Queue and write-completion closures retain this object,
+        /// so the accounting lifetime follows the last pump-managed owner.
         deinit {
-            budget.releaseUdp(
-                bytes: data.count,
-                items: 1,
-                pressureBytes: pressureAdmission ? data.count : 0,
-                pressureItems: pressureAdmission ? 1 : 0)
+            UdpPayloadLifetimeLease.destroy(&dataStorage, then: onPayloadDestroyed)
+        }
+
+        var data: Data {
+            guard let dataStorage else {
+                preconditionFailure("UDP pending payload accessed after lifetime ended")
+            }
+            return dataStorage
         }
     }
 
@@ -134,37 +137,24 @@ final class UdpClientWritePump: @unchecked Sendable {
     private var pendingHwmLogBucket: Int = 0
     private var drainCompletion: DrainCompletionBox?
     private var drainBackstop: DispatchWorkItem?
-    /// Most-recently-seen source endpoint from `readDatagrams`.
-    /// Used only as a *fallback* `sentBy` endpoint for callers that
-    /// `enqueue` without an explicit peer (e.g. early bootstrap
-    /// before any client read has surfaced an endpoint, or tests).
-    /// Healthy multi-peer flows carry per-datagram peers through
-    /// the engine and each `enqueue` supplies its own `sentBy`, so
-    /// this field is rarely consulted in production.
+    /// Explicitly populated fallback for native Swift/test `enqueue` calls
+    /// without a peer. Rust-backed replies always carry a per-datagram peer
+    /// and never consult this cache; Release client ingress does not update it.
     private var sentByEndpoint: NWEndpoint?
-    /// Lifetime-sticky flag that fires a debug log exactly once when
-    /// `flushLocked` cannot make progress because neither the
-    /// per-datagram `sentBy` nor the cached `sentByEndpoint` is
-    /// known. Without this the pump silently stalls until either
-    /// a future datagram arrives with a peer or the idle watchdog (or an
-    /// explicitly configured Rust max lifetime) closes the flow — invisible in
-    /// `log show`. It never resets: alternating peerless and attributed
-    /// datagrams must not turn a diagnostic into a packet-rate log source.
-    private var unresolvedEndpointLogged = false
+    /// Lifetime-sticky flag that emits one diagnostic when `flushLocked`
+    /// drops work without a usable endpoint. It never resets: alternating
+    /// peerless and attributed datagrams must not turn a diagnostic into a
+    /// packet-rate log source.
+    private var orphanDropLogged = false
     #if DEBUG
         /// Counts real delayed drain backstops. An empty drain completes before
         /// allocating or scheduling one, so close churn cannot leave canceled
         /// no-op work items retained by the dispatch queue until their deadline.
         private(set) var testDrainBackstopScheduleCount = 0
         /// Test-only instrumentation. Counts every
-        /// `setSentByEndpoint` invocation that supplies a non-nil
-        /// endpoint; the read-loop in
-        /// `TransparentProxyCore.handleUdpFlow` is its only caller
-        /// in production. Used by `UdpReadEndpointMismatchTests` to
-        /// assert "the read loop attributed exactly N datagrams" —
-        /// a stale fabrication path would touch this counter once
-        /// per datagram even on mismatched endpoint arrays, the
-        /// strict-paired path touches it only for matched indices.
+        /// `setSentByEndpoint` invocation that supplies a non-nil endpoint.
+        /// `UdpFlowSession` invokes it solely as a Debug observation seam for
+        /// strict read-array pairing; Release compiles that call out.
         ///
         /// Gated on `#if DEBUG` so production Release builds carry
         /// neither the field storage (24 bytes / flow) nor the
@@ -254,9 +244,9 @@ final class UdpClientWritePump: @unchecked Sendable {
     /// Enqueue a reply datagram. `sentBy` is the peer the reply came
     /// from — surfaced from `Datagram.peer` on the Rust side and
     /// threaded through here so the kernel-bound write tags the
-    /// correct source. `nil` falls back to the latest known peer
-    /// captured via `setSentByEndpoint` (used by tests and very
-    /// early bootstrap before the first per-peer read).
+    /// correct source. `nil` may use the explicitly populated native/test
+    /// fallback captured via `setSentByEndpoint`. Rust callbacks use
+    /// `enqueueBorrowed` and never opt into that cache.
     func enqueue(_ data: Data, sentBy: NWEndpoint? = nil) {
         enqueue(byteCount: data.count, allowsFallback: true) { (data, sentBy) }
     }
@@ -346,19 +336,37 @@ final class UdpClientWritePump: @unchecked Sendable {
                 state.acceptedDispatches &+= 1
                 if borrowed { state.borrowedMaterializations &+= 1 }
             #endif
+            let datagram = PendingDatagram(
+                data: data,
+                sentBy: endpoint,
+                allowsFallback: allowsFallback,
+                pressureAdmission: pressureAdmission,
+                onPayloadDestroyed: { [shared = self.shared,
+                                        budget = self.writerMemoryBudget] in
+                    shared.withLock { state in
+                        precondition(state.retainedItems >= 1)
+                        precondition(state.retainedBytes >= byteCount)
+                        state.retainedItems -= 1
+                        state.retainedBytes -= byteCount
+                        if pressureAdmission {
+                            precondition(state.pressureRetainedItems >= 1)
+                            precondition(state.pressureRetainedBytes >= byteCount)
+                            state.pressureRetainedItems -= 1
+                            state.pressureRetainedBytes -= byteCount
+                        }
+                    }
+                    budget.releaseUdp(
+                        bytes: byteCount,
+                        items: 1,
+                        pressureBytes: pressureAdmission ? byteCount : 0,
+                        pressureItems: pressureAdmission ? 1 : 0)
+                })
             // Submit while holding the admission lock. Two concurrent callers
             // therefore reach the serial queue in the same order in which
-            // their capacity slots were reserved.
+            // their capacity slots were reserved. Constructing the lifetime
+            // owner first means this block captures no raw `Data` alias.
             queue.async {
-                self.acceptLocked(
-                    PendingDatagram(
-                        data: data,
-                        sentBy: endpoint,
-                        allowsFallback: allowsFallback,
-                        pressureAdmission: pressureAdmission,
-                        budget: self.writerMemoryBudget
-                    )
-                )
+                self.acceptLocked(datagram)
             }
             return .accepted
         }
@@ -390,12 +398,7 @@ final class UdpClientWritePump: @unchecked Sendable {
         guard phase != .closed,
             !shared.withLock({ $0.closed })
         else {
-            releaseReservation(
-                waiting: 1,
-                items: 1,
-                bytes: datagram.data.count,
-                pressureBytes: datagram.pressureAdmission ? datagram.data.count : 0,
-                pressureItems: datagram.pressureAdmission ? 1 : 0)
+            releaseWaiting(1)
             return
         }
         pending.pushBack(datagram)
@@ -518,17 +521,9 @@ final class UdpClientWritePump: @unchecked Sendable {
         drainBackstop = nil
         drainCompletion = nil
         phase = .closed
-        var queuedBytes = 0
         var queuedItems = 0
-        var queuedPressureBytes = 0
-        var queuedPressureItems = 0
-        while let datagram = pending.popFront() {
-            queuedBytes += datagram.data.count
+        while pending.popFront() != nil {
             queuedItems += 1
-            if datagram.pressureAdmission {
-                queuedPressureBytes += datagram.data.count
-                queuedPressureItems += 1
-            }
         }
         sentByEndpoint = nil
         shared.withLock { state in
@@ -536,80 +531,46 @@ final class UdpClientWritePump: @unchecked Sendable {
             state.accepting = false
             state.fallbackEndpoint = nil
         }
-        releaseReservation(
-            waiting: queuedItems,
-            items: queuedItems,
-            bytes: queuedBytes,
-            pressureBytes: queuedPressureBytes,
-            pressureItems: queuedPressureItems)
+        releaseWaiting(queuedItems)
     }
 
-    private func releaseReservation(
-        waiting: Int = 0,
-        items: Int,
-        bytes: Int,
-        pressureBytes: Int = 0,
-        pressureItems: Int = 0
-    ) {
-        guard waiting > 0 || items > 0 || bytes > 0 else { return }
+    private func releaseWaiting(_ count: Int) {
+        guard count > 0 else { return }
         shared.withLock { state in
-            precondition(state.waiting >= waiting)
-            precondition(state.retainedItems >= items)
-            precondition(state.retainedBytes >= bytes)
-            precondition(state.pressureRetainedItems >= pressureItems)
-            precondition(state.pressureRetainedBytes >= pressureBytes)
-            state.waiting -= waiting
-            state.retainedItems -= items
-            state.retainedBytes -= bytes
-            state.pressureRetainedItems -= pressureItems
-            state.pressureRetainedBytes -= pressureBytes
+            precondition(state.waiting >= count)
+            state.waiting -= count
         }
     }
 
     private func flushLocked() {
         guard phase == .idle, !pending.isEmpty else { return }
 
-        // Drain any leading orphan entries — a queued reply with
-        // no captured `sentBy` and no usable `sentByEndpoint`
-        // fallback has no kernel-acceptable peer. Holding it would
-        // head-of-line block every later (attributed) reply in the
-        // FIFO until either a future `setSentByEndpoint` populates
-        // the cache or the idle watchdog / explicit max-flow-lifetime closes
-        // the flow. UDP is lossy by design; dropping the orphan
-        // is the correct trade-off.
+        // Drain leading orphan entries immediately. A queued reply with no
+        // eligible `sentBy` has no kernel-acceptable peer, and retaining it
+        // would head-of-line block every later attributed reply. UDP is lossy
+        // by design; future fallback updates apply only to native work that is
+        // still queued before activation, not to an orphan already flushed.
         //
         // `sentByEndpoint` is queue-confined, so endpoint resolution remains
         // stable throughout this loop. Borrowed explicit absence bypasses the
         // cache; native fallback-eligible entries can still use it.
         var droppedOrphans = 0
-        var droppedOrphanBytes = 0
-        var droppedOrphanPressureItems = 0
-        var droppedOrphanPressureBytes = 0
         while let head = pending.first(),
             head.sentBy == nil,
             !head.allowsFallback || sentByEndpoint == nil
         {
             let orphan = pending.popFront()!
-            droppedOrphanBytes += orphan.data.count
+            _ = orphan
             droppedOrphans += 1
-            if orphan.pressureAdmission {
-                droppedOrphanPressureItems += 1
-                droppedOrphanPressureBytes += orphan.data.count
-            }
         }
-        releaseReservation(
-            waiting: droppedOrphans,
-            items: droppedOrphans,
-            bytes: droppedOrphanBytes,
-            pressureBytes: droppedOrphanPressureBytes,
-            pressureItems: droppedOrphanPressureItems)
-        if droppedOrphans > 0 && !unresolvedEndpointLogged {
-            unresolvedEndpointLogged = true
+        releaseWaiting(droppedOrphans)
+        if droppedOrphans > 0 && !orphanDropLogged {
+            orphanDropLogged = true
             logger(
                 FlowLogMessage(
                     level: .debug,
                     text:
-                        "udp write pump dropped \(droppedOrphans) orphan datagram(s): no per-datagram peer and no cached endpoint. Subsequent drops in this episode will not be logged."
+                        "udp write pump dropped \(droppedOrphans) orphan datagram(s): no usable sentBy endpoint (borrowed peer absent or invalid, or native fallback unavailable). Further orphan-drop diagnostics are suppressed for this pump."
                 )
             )
         }
@@ -631,6 +592,7 @@ final class UdpClientWritePump: @unchecked Sendable {
         // Linearize the nonblocking kernel write invocation with off-queue
         // `close()`. If close wins this lock, no write can begin after close
         // returns. If this block wins, the write began before close returned.
+        var postLockBatchOwner: [PendingDatagram] = []
         let started = shared.withLock { state -> Bool in
             guard !state.closed else { return false }
             phase = .writing
@@ -642,8 +604,6 @@ final class UdpClientWritePump: @unchecked Sendable {
             endpoints.reserveCapacity(min(udpWritePumpMaxBatchItems, pending.count))
             retainedBatch.reserveCapacity(min(udpWritePumpMaxBatchItems, pending.count))
             var batchBytes = 0
-            var batchPressureBytes = 0
-            var batchPressureItems = 0
 
             while datagrams.count < udpWritePumpMaxBatchItems,
                 let next = pending.first(),
@@ -659,10 +619,6 @@ final class UdpClientWritePump: @unchecked Sendable {
                 endpoints.append(endpoint)
                 retainedBatch.append(item)
                 batchBytes += item.data.count
-                if item.pressureAdmission {
-                    batchPressureBytes += item.data.count
-                    batchPressureItems += 1
-                }
             }
 
             // The orphan drain and per-datagram admission ceiling guarantee
@@ -672,11 +628,12 @@ final class UdpClientWritePump: @unchecked Sendable {
                 phase = .idle
                 return false
             }
-            state.waiting = max(0, state.waiting - datagrams.count)
-            let retainedBatchBytes = batchBytes
-            let retainedBatchItems = datagrams.count
-            let retainedBatchPressureBytes = batchPressureBytes
-            let retainedBatchPressureItems = batchPressureItems
+            precondition(state.waiting >= datagrams.count)
+            state.waiting -= datagrams.count
+            // Some test doubles or defensive transports may synchronously
+            // discard the completion. Keep one owner outside `shared` so the
+            // batch cannot last-drop and re-enter this nonrecursive lock.
+            postLockBatchOwner = retainedBatch
             // `[weak self]` breaks the flow→completion→pump cycle.
             flow.writeDatagrams(datagrams, sentBy: endpoints) {
                 [weak self, retainedBatch] error in
@@ -685,11 +642,6 @@ final class UdpClientWritePump: @unchecked Sendable {
                 self.queue.async { [weak self, retainedBatch] in
                     _ = retainedBatch
                     guard let self else { return }
-                    self.releaseReservation(
-                        items: retainedBatchItems,
-                        bytes: retainedBatchBytes,
-                        pressureBytes: retainedBatchPressureBytes,
-                        pressureItems: retainedBatchPressureItems)
                     guard self.phase == .writing else { return }
                     if let error {
                         self.logger(
@@ -710,6 +662,8 @@ final class UdpClientWritePump: @unchecked Sendable {
             }
             return true
         }
+        withExtendedLifetime(postLockBatchOwner) {}
+        postLockBatchOwner.removeAll()
         if !started { closeLocked() }
     }
 

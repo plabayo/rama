@@ -182,6 +182,19 @@ private final class UdpIngressAtomicCounter: @unchecked Sendable {
     }
 }
 
+/// Shared destruction primitive for UDP payload owners. Clearing the optional
+/// executes its payload's ARC releases before `refund` can advertise capacity.
+/// The owner keeps the payload private, so callers cannot separate a raw
+/// payload alias from the lifetime that carries its charge.
+enum UdpPayloadLifetimeLease {
+    static func destroy<Payload>(
+        _ payload: inout Payload?, then refund: () -> Void
+    ) {
+        payload = nil
+        refund()
+    }
+}
+
 private final class UdpIngressStagingWaiter: @unchecked Sendable {
     weak var owner: UdpIngressFlowStaging?
     let neededItems: Int
@@ -1402,14 +1415,17 @@ struct UdpIngressStageOutcome {
 }
 
 final class UdpIngressStagedBatch: @unchecked Sendable {
-    let datagrams: [Data]
-    let endpoints: [NWEndpoint]?
+    private struct Payload {
+        let datagrams: [Data]
+        let endpoints: [NWEndpoint]?
+    }
+
+    private var payload: Payload?
     let itemCount: Int
     let byteCount: Int
     let sourceDatagramCount: Int
     let sourceEndpointCount: Int?
     private let owner: UdpIngressFlowStaging
-    private let released = Locked(false)
 
     fileprivate init(
         datagrams: [Data],
@@ -1420,8 +1436,7 @@ final class UdpIngressStagedBatch: @unchecked Sendable {
         sourceEndpointCount: Int?,
         owner: UdpIngressFlowStaging
     ) {
-        self.datagrams = datagrams
-        self.endpoints = endpoints
+        self.payload = Payload(datagrams: datagrams, endpoints: endpoints)
         self.itemCount = itemCount
         self.byteCount = byteCount
         self.sourceDatagramCount = sourceDatagramCount
@@ -1429,14 +1444,53 @@ final class UdpIngressStagedBatch: @unchecked Sendable {
         self.owner = owner
     }
 
-    func release() {
-        let shouldRelease = released.withLock { released in
-            guard !released else { return false }
-            released = true
-            return true
+    deinit {
+        UdpPayloadLifetimeLease.destroy(&payload) { [owner] in
+            owner.release(items: itemCount, bytes: byteCount)
         }
-        if shouldRelease { owner.release(items: itemCount, bytes: byteCount) }
     }
 
-    deinit { release() }
+    /// Synchronously forwards the private payload while this batch is the
+    /// receiver. No generic `[Data]` accessor is exposed, and the batch is
+    /// explicitly kept alive until every temporary forwarding alias has left
+    /// this nonescaping scope.
+    func forward(
+        to session: RamaUdpSessionHandle,
+        onMatchedEndpoint: ((NWEndpoint) -> Void)? = nil
+    ) -> (datagrams: Int, endpoints: Int)? {
+        withExtendedLifetime(self) {
+            guard let payload else {
+                preconditionFailure("UDP staged payload accessed after lifetime ended")
+            }
+            let mismatch: (Int, Int)?
+            if let endpointCount = sourceEndpointCount,
+                endpointCount != sourceDatagramCount
+            {
+                mismatch = (sourceDatagramCount, endpointCount)
+            } else {
+                mismatch = nil
+            }
+            for (index, datagram) in payload.datagrams.enumerated() {
+                let endpoint = payload.endpoints.flatMap { endpoints in
+                    index < endpoints.count ? endpoints[index] : nil
+                }
+                let peer = endpoint.flatMap(ramaUdpPeer(from:))
+                #if DEBUG
+                    if peer != nil, let endpoint {
+                        onMatchedEndpoint?(endpoint)
+                    }
+                #endif
+                session.onClientDatagram(datagram, peer: peer)
+            }
+            return mismatch
+        }
+    }
+
+    #if DEBUG
+        func testPayloadEquals(_ datagrams: [Data], endpointCount: Int?) -> Bool {
+            guard let payload else { return false }
+            return payload.datagrams == datagrams
+                && payload.endpoints?.count == endpointCount
+        }
+    #endif
 }
