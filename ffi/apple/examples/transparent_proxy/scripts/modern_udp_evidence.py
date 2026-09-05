@@ -121,6 +121,9 @@ UDP_E2E_DECISION_RE = re.compile(
     r"remote_endpoint=([^ ]+) local_endpoint=([^ ]+) source_app=([^ ]+) "
     r"source_pid=([0-9]+)$"
 )
+UDP_CALLBACK_ERROR_RE = re.compile(
+    r"\bflow_callback_error operation=udp_flow\.(open|read|write)(?=\s|$)"
+)
 
 
 def validate_echo_decision_bijection(
@@ -809,6 +812,17 @@ def _decision_records(lines):
     return records
 
 
+def _validate_udp_callback_errors(lines, phases):
+    # Match the live gate's public unexpected-error marker. The provider emits
+    # no such marker for pressure, peer disconnects, or normal closed-flow
+    # callbacks. Keep the startup exclusion, but replay through the complete
+    # sealed log: asynchronous errors can arrive after workload decisions and
+    # the shell's scan while Dial9 collection/finalization is still running.
+    for line in lines[phases["udp_error_start_line"]:phases["provider_log_end_line"]]:
+        if UDP_CALLBACK_ERROR_RE.search(line) is not None:
+            raise BundleVerificationError("provider log contains an unexpected UDP flow callback error")
+
+
 def _in_phase(record, phases, prefix):
     return (
         phases[f"{prefix}_start_line"] < record["line"]
@@ -1439,6 +1453,7 @@ def _verify_bundle_semantics(directory):
         or len(set(flow_ids)) != len(flow_ids)
     ):
         raise BundleVerificationError("provider decision set has omitted/extra/colliding flows")
+    _validate_udp_callback_errors(provider_lines, phases)
     _validate_pressure_raw(status, provider_lines, phases, representative)
     _validate_requirements(
         root, status, representative, echo_identities, unblocked_generation

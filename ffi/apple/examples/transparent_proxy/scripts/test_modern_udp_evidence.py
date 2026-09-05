@@ -669,6 +669,82 @@ class ModernStatusTests(unittest.TestCase):
 
 
 class StrictBundleTests(unittest.TestCase):
+    @staticmethod
+    def append_provider_log(root, message):
+        provider_log = root / "provider.log"
+        provider_log.write_text(provider_log.read_text() + message + "\n")
+        phases = root / "provider-log-phases.tsv"
+        phases.write_text(re.sub(
+            r"(?m)^provider_log_end_line\t[0-9]+$",
+            f"provider_log_end_line\t{len(provider_log.read_text().splitlines())}",
+            phases.read_text(),
+        ))
+        reseal_test_manifest(root)
+
+    def test_rejects_unexpected_udp_callback_errors_after_workload_decisions(self):
+        for operation in ("open", "read", "write"):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                build_strict_bundle(root)
+                self.assertEqual(verify_bundle(root), 0)
+                self.append_provider_log(
+                    root,
+                    "1970-01-01 00:00:04.500 E provider[9001:1] "
+                    "[org.ramaproxy.example.tproxy.dev.provider:udp] "
+                    f"flow_callback_error operation=udp_flow.{operation} "
+                    "classification=unexpected_provider_runtime",
+                )
+                # All workload decisions and phase ends are unchanged. This
+                # models a callback arriving during Dial9/finalization after
+                # the live shell's earlier error scan, then entering the seal.
+                with self.assertRaisesRegex(
+                    BundleVerificationError, "unexpected UDP flow callback error"
+                ):
+                    verify_bundle(root)
+
+    def test_callback_error_replay_preserves_pre_run_and_benign_outcomes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            provider_log = root / "provider.log"
+            provider_log.write_text(
+                "flow_callback_error operation=udp_flow.write "
+                "classification=unexpected_provider_runtime\n"
+                + provider_log.read_text()
+            )
+            phases = root / "provider-log-phases.tsv"
+            phases.write_text(re.sub(
+                r"(?m)^([a-z0-9_]+_line)\t([0-9]+)$",
+                lambda match: f"{match[1]}\t{int(match[2]) + 1}",
+                phases.read_text(),
+            ))
+            for message in (
+                "udp flow.write ended during normal flow shutdown already in progress: domain=NEAppProxyErrorDomain code=2",
+                "udp flow.read ended after peer reset the flow: domain=NEAppProxyErrorDomain code=3",
+                "udp flow.write failed because the network path was unavailable: domain=NEAppProxyErrorDomain code=5",
+                "flow_callback_error operation=tcp_flow.write classification=unexpected_provider_runtime",
+            ):
+                self.append_provider_log(root, message)
+            self.assertEqual(verify_bundle(root), 0)
+
+    def test_late_callback_error_cannot_hide_beyond_declared_log_end(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            provider_log = root / "provider.log"
+            provider_log.write_text(
+                provider_log.read_text()
+                + "flow_callback_error operation=udp_flow.write "
+                "classification=unexpected_provider_runtime\n"
+            )
+            # Resealing the bytes while keeping the earlier end boundary
+            # cannot exclude the late callback from semantic replay.
+            reseal_test_manifest(root)
+            with self.assertRaisesRegex(
+                BundleVerificationError, "provider-log terminal boundary is stale"
+            ):
+                verify_bundle(root)
+
     def test_replays_complete_raw_bundle(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
