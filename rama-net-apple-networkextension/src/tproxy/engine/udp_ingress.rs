@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, btree_map::Entry},
+    collections::{BTreeMap, BTreeSet, btree_map::Entry},
     future::{Future, poll_fn},
     ops::Bound,
     sync::{
@@ -63,6 +63,9 @@ struct UdpIngressProbeLease {
 #[derive(Default)]
 struct UdpIngressCoordinatorState {
     waiters: BTreeMap<(u64, usize), Weak<UdpIngressFlowControl>>,
+    /// Derived index of unleased waiters, ordered by size then FIFO sequence.
+    /// During discovery it finds a fitting retry without rescanning the cohort.
+    fitting_waiters: BTreeSet<(usize, u64)>,
     /// Only flows paused on their own bytes enter this cold-path queue.
     /// Sequence-first keys preserve FIFO order; the pointer keeps identities
     /// distinct even if the sequence wraps during an engine lifetime.
@@ -82,6 +85,9 @@ struct UdpIngressCoordinatorState {
     /// each completed small-packet probe.
     discovery_frontier: Option<u64>,
     discovery_cursor: Option<(u64, usize)>,
+    /// Alternate useful fitting traffic with discovery when either can spend
+    /// the last free byte. Neither lane may monopolize successive grants.
+    discovery_prefers_fitting: bool,
     /// Global probe issue pacing. ACK/close signals may free lease slots
     /// immediately, but cannot cause another coordinator issue turn before
     /// this instant.
@@ -375,6 +381,7 @@ impl UdpIngressBudget {
         coordinator.discovery_candidates.clear();
         coordinator.discovery_frontier = None;
         coordinator.discovery_cursor = None;
+        coordinator.discovery_prefers_fitting = false;
     }
 
     fn schedule_flow_release(&self, flow: &Arc<UdpIngressFlowControl>) {
@@ -503,6 +510,7 @@ impl UdpIngressBudget {
             .waiters
             .insert((sequence, needed_bytes), Arc::downgrade(flow));
         debug_assert!(replaced.is_none(), "UDP global waiter key collision");
+        Self::index_unleased_waiter_locked(&mut coordinator, flow);
         // This SeqCst increment is the waiter-publication linearization point
         // paired with the two SeqCst admission checks above.
         self.waiter_count.fetch_add(1, Ordering::SeqCst);
@@ -538,6 +546,9 @@ impl UdpIngressBudget {
         }
         let needed_bytes = flow.blocked_bytes.load(Ordering::Acquire);
         let removed = coordinator.waiters.remove(&(sequence, needed_bytes));
+        coordinator
+            .fitting_waiters
+            .remove(&(needed_bytes, sequence));
         debug_assert_eq!(
             removed.as_ref().map(Weak::as_ptr),
             Some(flow as *const _),
@@ -555,6 +566,7 @@ impl UdpIngressBudget {
         flow: &Arc<UdpIngressFlowControl>,
     ) -> Option<(u64, usize)> {
         let waiter = coordinator.waiters.remove(&key)?;
+        coordinator.fitting_waiters.remove(&(key.1, key.0));
         let Ok(new_sequence) =
             self.next_waiter_sequence
                 .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
@@ -564,6 +576,7 @@ impl UdpIngressBudget {
             // Sequence exhaustion is unreachable in practice. Retain the
             // waiter and quiesce instead of dropping its only registration.
             coordinator.waiters.insert(key, waiter);
+            Self::index_unleased_waiter_locked(coordinator, flow);
             coordinator.scan_remaining = 0;
             return None;
         };
@@ -572,7 +585,21 @@ impl UdpIngressBudget {
             .store(new_sequence, Ordering::Release);
         let replaced = coordinator.waiters.insert(new_key, waiter);
         debug_assert!(replaced.is_none(), "UDP rotated waiter key collision");
+        Self::index_unleased_waiter_locked(coordinator, flow);
         Some(new_key)
+    }
+
+    fn index_unleased_waiter_locked(
+        coordinator: &mut UdpIngressCoordinatorState,
+        flow: &UdpIngressFlowControl,
+    ) {
+        let sequence = flow.global_waiter_sequence.load(Ordering::Acquire);
+        let needed_bytes = flow.blocked_bytes.load(Ordering::Acquire);
+        if flow.global_probe_id.load(Ordering::Acquire) == 0
+            && coordinator.waiters.contains_key(&(sequence, needed_bytes))
+        {
+            coordinator.fitting_waiters.insert((needed_bytes, sequence));
+        }
     }
 
     fn issue_probe_lease_locked(
@@ -602,6 +629,7 @@ impl UdpIngressBudget {
             self.release_charge(lease_bytes);
             return None;
         };
+        coordinator.fitting_waiters.remove(&(key.1, key.0));
         self.waiter_count.fetch_sub(1, Ordering::SeqCst);
         coordinator.provisional_bytes += lease_bytes;
         let previous = flow.global_probe_id.swap(probe_id, Ordering::AcqRel);
@@ -670,6 +698,7 @@ impl UdpIngressBudget {
                     .fetch_add(1, Ordering::Relaxed);
                 let Some(flow) = candidate.upgrade() else {
                     _ = coordinator.waiters.remove(&key);
+                    coordinator.fitting_waiters.remove(&(key.1, key.0));
                     self.waiter_count.fetch_sub(1, Ordering::SeqCst);
                     continue;
                 };
@@ -709,6 +738,50 @@ impl UdpIngressBudget {
             {
                 coordinator.discovery_frontier =
                     coordinator.waiters.last_key_value().map(|(key, _)| key.0);
+            }
+
+            // A fitting flow can re-park beyond the frozen discovery frontier
+            // after every successful delivery. Give it one bounded opportunity
+            // between discovery grants, without restarting either FIFO pass.
+            // A size index avoids O(cohort size) work per fitting retry; active
+            // insufficient leases are absent until their capacity is refunded.
+            while coordinator.scan_remaining == 0
+                && coordinator.discovery_frontier.is_some()
+                && coordinator.discovery_prefers_fitting
+                && selected.len() < available_probe_slots
+                && inspected < GLOBAL_SCAN_BATCH
+            {
+                let available = self
+                    .max_retained_bytes
+                    .saturating_sub(self.charged_bytes.load(Ordering::Acquire));
+                let Some(&(needed_bytes, sequence)) = coordinator.fitting_waiters.first() else {
+                    break;
+                };
+                if needed_bytes > available {
+                    break;
+                }
+                let key = (sequence, needed_bytes);
+                inspected += 1;
+                #[cfg(test)]
+                self.coordinator_waiter_inspections
+                    .fetch_add(1, Ordering::Relaxed);
+                let flow = coordinator.waiters.get(&key).and_then(Weak::upgrade);
+                let Some(flow) = flow else {
+                    coordinator
+                        .fitting_waiters
+                        .remove(&(needed_bytes, sequence));
+                    if coordinator.waiters.remove(&key).is_some() {
+                        self.waiter_count.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    continue;
+                };
+                if let Some(probe_id) =
+                    self.issue_probe_lease_locked(&mut coordinator, key, &flow, needed_bytes, now)
+                {
+                    selected.push((flow, probe_id));
+                    coordinator.discovery_prefers_fitting = false;
+                }
+                break;
             }
 
             while coordinator.scan_remaining == 0
@@ -774,6 +847,7 @@ impl UdpIngressBudget {
                     Some((flow.clone(), probe_id))
                 } else {
                     if flow.is_none() && coordinator.waiters.remove(&key).is_some() {
+                        coordinator.fitting_waiters.remove(&(key.1, key.0));
                         self.waiter_count.fetch_sub(1, Ordering::SeqCst);
                     }
                     None
@@ -788,18 +862,18 @@ impl UdpIngressBudget {
                 );
                 if let Some(issued) = issued {
                     selected.push(issued);
+                    coordinator.discovery_prefers_fitting = true;
                     // At most one discovery per paced turn. Keep the cursor
                     // and the remaining constant-size sample for later real
                     // capacity opportunities, without another population scan.
                     break;
                 }
             }
-            if coordinator.waiters.is_empty() {
-                Self::restart_scan_locked(&mut coordinator);
-            } else if coordinator.scan_remaining == 0
-                && coordinator.discovery_frontier.is_none()
-                && coordinator.discovery_candidates.is_empty()
-                && coordinator.scan_needs_followup
+            if coordinator.waiters.is_empty()
+                || (coordinator.scan_remaining == 0
+                    && coordinator.discovery_frontier.is_none()
+                    && coordinator.discovery_candidates.is_empty()
+                    && coordinator.scan_needs_followup)
             {
                 Self::restart_scan_locked(&mut coordinator);
             }
@@ -846,6 +920,7 @@ impl UdpIngressBudget {
                     Ordering::AcqRel,
                     Ordering::Acquire,
                 );
+                Self::index_unleased_waiter_locked(coordinator, &flow);
             }
         }
         if released_any && self.waiter_count.load(Ordering::Acquire) != 0 {
@@ -890,6 +965,7 @@ impl UdpIngressBudget {
                     Ordering::AcqRel,
                     Ordering::Acquire,
                 );
+                Self::index_unleased_waiter_locked(&mut coordinator, flow);
                 lease.bytes
             } else {
                 let Some(lease) = coordinator.leases.get_mut(&probe_id) else {
@@ -954,6 +1030,7 @@ impl UdpIngressBudget {
                     Ordering::AcqRel,
                     Ordering::Acquire,
                 );
+                Self::index_unleased_waiter_locked(&mut coordinator, flow);
                 // Release and wake only after dropping the coordinator lock.
                 // The caller then takes the ordinary no-barge admission path.
                 (ProbeLeaseConsumption::NoLease, lease.bytes)
@@ -1042,6 +1119,7 @@ impl UdpIngressBudget {
                             Ordering::AcqRel,
                             Ordering::Acquire,
                         );
+                        Self::index_unleased_waiter_locked(&mut coordinator, flow);
                         true
                     }
                 }
@@ -2187,8 +2265,9 @@ mod tests {
 
         {
             let mut coordinator = global.coordinator.lock();
-            let ((_sequence, _needed), candidate) =
+            let ((sequence, needed), candidate) =
                 coordinator.waiters.pop_first().expect("registered waiter");
+            coordinator.fitting_waiters.remove(&(needed, sequence));
             let selected = candidate.upgrade().expect("live waiter");
             assert!(Arc::ptr_eq(&selected, &waiter));
             waiter
@@ -3179,6 +3258,98 @@ mod tests {
         for flow_count in [128, 256, 8_192] {
             assert_partial_discovery_total_work_is_linear(flow_count, false);
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fitting_retries_progress_during_256_nonfitting_discoveries() {
+        assert_fitting_retries_progress_during_discovery(256).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fitting_retries_progress_during_8192_nonfitting_discoveries() {
+        assert_fitting_retries_progress_during_discovery(8_192).await;
+    }
+
+    async fn assert_fitting_retries_progress_during_discovery(flow_count: usize) {
+        let global = Arc::new(UdpIngressBudget::new(100));
+        let holder = UdpIngressFlowControl::new(100, global.clone(), Arc::new(|_| {}));
+        let retained = holder.try_copy_payload(&[0; 90]).expect("retain occupancy");
+        let observed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mut flows = Vec::with_capacity(flow_count + 1);
+        for index in 0..=flow_count {
+            let observed = observed.clone();
+            let flow = UdpIngressFlowControl::new(
+                20,
+                global.clone(),
+                Arc::new(move |probe_id| observed.lock().push((index, probe_id))),
+            );
+            let size = if index == flow_count { 10 } else { 20 };
+            assert!(flow.try_copy_payload(&vec![0; size]).is_none());
+            flows.push(flow);
+        }
+
+        let mut discovered = 0;
+        let mut fitting_grants = 0;
+        let mut discovery_since_fitting = 0;
+        for _ in 0..flow_count * 4 {
+            let now = tokio::time::Instant::now();
+            let before = global.snapshot().coordinator_waiter_inspections;
+            _ = global.wake_fitting_batch(now);
+            assert!(
+                global.snapshot().coordinator_waiter_inspections - before
+                    <= GLOBAL_SCAN_BATCH as u64
+            );
+            for (index, probe_id) in std::mem::take(&mut *observed.lock()) {
+                assert!(global.acknowledge_probe_lease(&flows[index], probe_id, now));
+                if index == flow_count {
+                    let payload = flows[index]
+                        .try_copy_payload(&[0; 10])
+                        .expect("the fitting retry consumes its reserved capacity");
+                    drop(payload);
+                    assert!(flows[index].try_copy_payload(&[0; 10]).is_none());
+                    fitting_grants += 1;
+                    discovery_since_fitting = 0;
+                } else {
+                    assert_eq!(index, discovered, "discovery retains FIFO opportunity");
+                    assert!(flows[index].try_copy_payload(&[0; 20]).is_none());
+                    discovered += 1;
+                    discovery_since_fitting += 1;
+                    assert!(
+                        discovery_since_fitting <= 1,
+                        "{flow_count} nonfitting flows deferred a fitting retry behind multiple discovery leases"
+                    );
+                }
+                assert!(global.snapshot().charged_bytes <= 100);
+            }
+            if discovered == flow_count {
+                break;
+            }
+            let deadline = global
+                .next_coordinator_deadline(now)
+                .expect("unfinished fitting and discovery work remains scheduled");
+            tokio::time::advance(deadline.saturating_duration_since(now)).await;
+        }
+        assert_eq!(discovered, flow_count);
+        assert_eq!(fitting_grants, flow_count);
+        let inspections = global.snapshot().coordinator_waiter_inspections;
+        assert!(
+            inspections <= (flow_count * 3 + 1) as u64,
+            "{flow_count} flows required {inspections} inspections; fitting progress must not restart the discovery cohort"
+        );
+        eprintln!(
+            "{flow_count} nonfitting discoveries with {fitting_grants} fitting grants: {inspections} inspections"
+        );
+        for flow in flows {
+            flow.close();
+        }
+        holder.close();
+        drop(retained);
+        assert_eq!(global.snapshot().charged_bytes, 0);
+        assert!(global.coordinator.lock().fitting_waiters.is_empty());
+        assert_eq!(
+            global.next_coordinator_deadline(tokio::time::Instant::now()),
+            None
+        );
     }
 
     fn assert_partial_discovery_total_work_is_linear(flow_count: usize, small_next_packet: bool) {
