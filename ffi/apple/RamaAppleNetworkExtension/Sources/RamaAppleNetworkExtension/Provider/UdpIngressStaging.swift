@@ -272,8 +272,13 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         var lastWaiter: UdpIngressStagingWaiter?
         var waiterCount = 0
         var scanRemaining = 0
-        /// One finite exact-fit pass, including its pending partial discovery.
-        /// Releases and fitting grant completions must not restart this pass:
+        /// After the complete fitting pass, traverse the same finite FIFO
+        /// population for discovery. Filling the four-node sample pauses this
+        /// traversal until its callbacks run; it does not restart a whole
+        /// population scan after each sample drains.
+        var discovering = false
+        /// One finite fitting pass followed by its discovery traversal.
+        /// Releases and fitting grant completions must not restart this cycle:
         /// a busy fitting flow would otherwise hide every stale large hint.
         var scanActive = false
         /// Changes during a pass receive one later pass after its discovery.
@@ -297,7 +302,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         var dropEvents: UInt64 = 0
         var droppedItems: UInt64 = 0
         var droppedBytesLowerBound: UInt64 = 0
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             var coordinatorInspections: UInt64 = 0
             var maxCoordinatorInspectionsPerTurn = 0
             var peakGrantCount = 0
@@ -326,7 +331,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
     /// detect every cap change, while ordinary capacity atomics stay cheaper.
     private let admissionControl = UdpIngressAtomicCounter()
     private let capacityWakeScheduled = UdpIngressAtomicCounter()
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         private let lastInspectedItems = UdpIngressAtomicCounter()
         private let coordinatorLockAcquisitions = UdpIngressAtomicCounter()
         private let reservationRollbacks = UdpIngressAtomicCounter()
@@ -360,7 +365,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
     deinit { leaseTimer.cancel() }
 
     private func withCoordinatorState<R>(_ body: (inout State) -> R) -> R {
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             coordinatorLockAcquisitions.add(1)
         #endif
         return state.withLock(body)
@@ -547,7 +552,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
                 bytes += size
                 count += 1
             }
-            #if DEBUG
+            #if DEBUG || RAMA_TESTING
                 lastInspectedItems.store(count)
             #endif
 
@@ -555,7 +560,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             guard capacityItems.tryReserve(
                 additionalItems, limit: maxGlobalItems)
             else { continue }
-            #if DEBUG
+            #if DEBUG || RAMA_TESTING
                 if additionalItems > 0 { testAfterItemReservation?() }
             #endif
             let additionalBytes = max(bytes - creditedBytes, 0)
@@ -565,7 +570,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
                 if additionalItems > 0 {
                     capacityItems.subtract(additionalItems)
                     releasedTransientCapacity = true
-                    #if DEBUG
+                    #if DEBUG || RAMA_TESTING
                         reservationRollbacks.add(1)
                     #endif
                 }
@@ -588,7 +593,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
                 if additionalItems > 0 { capacityItems.subtract(additionalItems) }
                 let released = additionalItems > 0 || additionalBytes > 0
                 releasedTransientCapacity = releasedTransientCapacity || released
-                #if DEBUG
+                #if DEBUG || RAMA_TESTING
                     if released { reservationRollbacks.add(1) }
                 #endif
                 return gatedReservation(
@@ -681,7 +686,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         // either schedules the next turn or precedes this turn's capacity
         // snapshot; it cannot disappear between the gate read and the scan.
         capacityWakeScheduled.store(0)
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             capacityWakeTurns.add(1)
         #endif
         let deliveries = withCoordinatorState { state in
@@ -691,7 +696,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             scheduleLeaseTimerLocked(&state)
             return deliveries
         }
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             // Test seam after the capacity snapshot/scan but outside every
             // lock. A release here must publish exactly one follow-up wake.
             testAfterCapacityWakeScan?()
@@ -768,7 +773,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             return ([], capacityItems.load() != baselineItems
                 || capacityBytes.load() != baselineBytes)
         }
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             state.coordinatorInspections &+= 1
             state.maxCoordinatorInspectionsPerTurn = max(
                 state.maxCoordinatorInspectionsPerTurn, 1)
@@ -808,7 +813,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             ? UInt64.max : now + udpIngressStagingGrantLeaseNanoseconds
         state.grants[ticket] = UdpIngressStagingGrant(
             waiter: waiter, ticket: ticket, expiresAt: expiry, bytes: waiter.neededBytes)
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             state.peakGrantCount = max(state.peakGrantCount, state.grants.count)
         #endif
         if state.waiterCount == 0 { clearWaiterGateLocked() }
@@ -825,12 +830,14 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         var inspected = 0
         while state.grants.count < udpIngressStagingMaxGrants,
             state.scanRemaining > 0,
+            !state.discovering
+                || state.discoveryCandidates.count < udpIngressStagingMaxGrants,
             inspected < udpIngressStagingMaxInspectionsPerTurn,
             let waiter = state.firstWaiter
         {
             state.scanRemaining -= 1
             inspected += 1
-            #if DEBUG
+            #if DEBUG || RAMA_TESTING
                 state.coordinatorInspections &+= 1
             #endif
             guard waiter.owner != nil else {
@@ -854,10 +861,20 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
                 ? UInt64.max : now + udpIngressStagingGrantLeaseNanoseconds
             state.grants[ticket] = UdpIngressStagingGrant(
                 waiter: waiter, ticket: ticket, expiresAt: expiry, bytes: waiter.neededBytes)
-            #if DEBUG
+            #if DEBUG || RAMA_TESTING
                 state.peakGrantCount = max(state.peakGrantCount, state.grants.count)
             #endif
             deliveries.append((waiter, ticket))
+        }
+        if state.scanActive, !state.discovering, state.scanRemaining == 0,
+            hasPendingDiscoveryLocked(state)
+        {
+            // Every initially fitting waiter has now had its FIFO opportunity.
+            // Keep a finite discovery traversal across callback completions,
+            // re-parks, and physical releases; those changes request one later
+            // fitting pass instead of restarting this population walk.
+            state.discovering = true
+            state.scanRemaining = state.waiterCount
         }
         if deliveries.isEmpty {
             // Capacity may have grown since the finite pass inspected these
@@ -874,7 +891,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
                 deliveries.append(discovery)
             }
         }
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             state.maxCoordinatorInspectionsPerTurn = max(
                 state.maxCoordinatorInspectionsPerTurn, inspected)
         #endif
@@ -912,6 +929,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             return
         }
         state.scanRemaining = state.waiterCount
+        state.discovering = false
         state.scanActive = state.waiterCount > 0
         state.scanNeedsFollowup = false
         state.discoveryCandidates.removeAll(keepingCapacity: true)
@@ -937,7 +955,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
     private func grantDiscoveryCandidateLocked(
         _ state: inout State, now: UInt64, allowPartial: Bool
     ) -> (UdpIngressStagingWaiter, UInt64)? {
-        guard state.scanRemaining == 0,
+        guard state.discovering || state.scanRemaining == 0,
             state.grants.count < udpIngressStagingMaxGrants
         else { return nil }
         let epoch = retainedReleaseEpoch.load()
@@ -961,7 +979,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
                 ? UInt64.max : now + udpIngressStagingGrantLeaseNanoseconds
             state.grants[ticket] = UdpIngressStagingGrant(
                 waiter: waiter, ticket: ticket, expiresAt: expiry, bytes: bytes)
-            #if DEBUG
+            #if DEBUG || RAMA_TESTING
                 state.peakGrantCount = max(state.peakGrantCount, state.grants.count)
             #endif
             return (waiter, ticket)
@@ -984,7 +1002,10 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
 
     private func scheduleScanLocked(_ state: inout State) {
         guard automaticScheduling,
-            state.scanRemaining > 0 || hasDiscoveryOpportunityLocked(state),
+            (state.scanRemaining > 0
+                && (!state.discovering
+                    || state.discoveryCandidates.count < udpIngressStagingMaxGrants))
+                || hasDiscoveryOpportunityLocked(state),
             state.waiterCount > 0,
             state.grants.count < udpIngressStagingMaxGrants,
             !state.scanScheduled
@@ -1021,7 +1042,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         let expiry = state.grants.values.lazy.map(\.expiresAt).min()
         guard expiry != state.scheduledLeaseExpiry else { return }
         state.scheduledLeaseExpiry = expiry
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             state.leaseTimerReprograms &+= 1
         #endif
         guard let expiry else {
@@ -1189,7 +1210,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         }
     }
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         var testRetainedBytes: Int { retainedBytes.load() }
         var testRetainedItems: Int { retainedItems.load() }
         var testReservedBytes: Int { capacityBytes.load() }
@@ -1517,7 +1538,7 @@ final class UdpIngressFlowStaging: @unchecked Sendable {
         generation.deliver(generationDeliveries)
     }
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         var testSnapshot: (closed: Bool, items: Int, bytes: Int) {
             state.withLock { ($0.closed, $0.retainedItems, $0.retainedBytes) }
         }
@@ -1627,7 +1648,7 @@ final class UdpIngressStagedBatch: @unchecked Sendable {
                     index < endpoints.count ? endpoints[index] : nil
                 }
                 let peer = endpoint.flatMap(ramaUdpPeer(from:))
-                #if DEBUG
+                #if DEBUG || RAMA_TESTING
                     if peer != nil, let endpoint {
                         onMatchedEndpoint?(endpoint)
                     }
@@ -1638,7 +1659,7 @@ final class UdpIngressStagedBatch: @unchecked Sendable {
         }
     }
 
-    #if DEBUG
+    #if DEBUG || RAMA_TESTING
         func testPayloadEquals(_ datagrams: [Data], endpointCount: Int?) -> Bool {
             guard let payload else { return false }
             return payload.datagrams == datagrams

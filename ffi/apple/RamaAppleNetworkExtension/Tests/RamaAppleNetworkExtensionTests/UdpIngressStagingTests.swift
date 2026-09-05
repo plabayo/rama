@@ -5,6 +5,129 @@ import XCTest
 @testable import RamaAppleNetworkExtension
 
 final class UdpIngressStagingTests: XCTestCase {
+    func testNonfittingDiscoveryReparksUseLinearTotalInspections() {
+        for flowCount in [128, 256] {
+            assertDiscoveryUsesLinearTotalInspections(flowCount: flowCount)
+        }
+    }
+
+    func testEightThousandOneHundredNinetyTwoNonfittingDiscoveryReparksStayLinear() {
+        assertDiscoveryUsesLinearTotalInspections(flowCount: 8_192)
+    }
+
+    func testSuccessfulDiscoveriesUseLinearTotalInspectionsAcrossPhysicalReleases() {
+        for flowCount in [128, 256, 8_192] {
+            assertDiscoveryUsesLinearTotalInspections(
+                flowCount: flowCount, nextDatagramFits: true)
+        }
+    }
+
+    func testDiscoveryTraversalKeepsUntouchedTailAfterVisitedCancellationAndArrivals() {
+        assertDiscoveryUsesLinearTotalInspections(flowCount: 128, withWaiterChurn: true)
+    }
+
+    private func assertDiscoveryUsesLinearTotalInspections(
+        flowCount: Int, nextDatagramFits: Bool = false, withWaiterChurn: Bool = false
+    ) {
+        let generation = UdpIngressGenerationStagingBudget(
+            policy: UdpIngressStagingPolicy(
+                maxItemsPerFlow: 2, maxItemsPerGeneration: flowCount + 2,
+                maxBytesPerFlow: 2, maxBytesPerGeneration: 2),
+            automaticScheduling: false)
+        let holder = UdpIngressFlowStaging(generation: generation)
+        var held = holder.stage(datagrams: [Data([0])], endpoints: nil).batch
+        var released = holder.stage(datagrams: [Data([0])], endpoints: nil).batch
+        var flows = (0..<flowCount).map { _ in UdpIngressFlowStaging(generation: generation) }
+        let grants = Locked<[(Int, UInt64)]>([])
+        func park(_ index: Int, neededBytes: Int = 2) {
+            XCTAssertTrue(flows[index].waitForCapacity(
+                reason: .generationBytes, neededItems: 1, neededBytes: neededBytes
+            ) { ticket in grants.withLock { $0.append((index, ticket)) } })
+        }
+        for index in flows.indices { park(index) }
+        let beforeRelease = generation.testCoordinatorInspections
+        withExtendedLifetime(released) {}
+        released = nil
+        var discovered = Set<Int>()
+        var cancelled = Set<Int>()
+        for _ in 0..<(flowCount * 8) {
+            generation.testRunCoordinator(now: DispatchTime.now().uptimeNanoseconds)
+            let issued = grants.withLock { values -> [(Int, UInt64)] in
+                let issued = values
+                values.removeAll(keepingCapacity: true)
+                return issued
+            }
+            for (index, ticket) in issued {
+                if nextDatagramFits {
+                    // Successful reads establish fresh physical-release
+                    // epochs. They must not restart the cohort's traversal.
+                    var received = flows[index].stage(
+                        datagrams: [Data([1])], endpoints: nil, grantTicket: ticket).batch
+                    guard received != nil else {
+                        // A scheduler pause may exceed the real 10ms grant
+                        // lease. Match the session's next exact-sized waiter
+                        // instead of treating an expired ticket as capacity.
+                        park(index, neededBytes: 1)
+                        continue
+                    }
+                    XCTAssertTrue(discovered.insert(index).inserted)
+                    withExtendedLifetime(received) {}
+                    received = nil
+                    flows[index].close()
+                    continue
+                }
+                XCTAssertTrue(discovered.insert(index).inserted,
+                    "a nonfitting owner must receive only one speculative read per physical release")
+                // Match the session's callback/refund/repark path. The next
+                // kernel datagram is still too large, so no retained payload
+                // is created or released to establish another discovery epoch.
+                let rejected = flows[index].stage(
+                    datagrams: [Data([1, 2])], endpoints: nil, grantTicket: ticket)
+                XCTAssertNil(rejected.batch)
+                park(index)
+                if withWaiterChurn, cancelled.isEmpty {
+                    // Refunding the first partial grant has already rotated
+                    // and sampled this neighbor. Its cancellation must not
+                    // truncate the still-unvisited original FIFO tail.
+                    flows[1].close()
+                    cancelled.insert(1)
+                    for _ in 0..<32 {
+                        let newcomer = flows.count
+                        flows.append(UdpIngressFlowStaging(generation: generation))
+                        park(newcomer)
+                    }
+                }
+            }
+            if discovered.count == flows.count - cancelled.count,
+                generation.testScanRemaining == 0
+            { break }
+        }
+        let inspections = generation.testCoordinatorInspections - beforeRelease
+        print("UDP discovery traversal: flows=\(flows.count) nextFits=\(nextDatagramFits) churn=\(withWaiterChurn) inspections=\(inspections)")
+        XCTAssertEqual(discovered.count, flows.count - cancelled.count)
+        XCTAssertTrue(discovered.contains(flowCount - 1), "the original cohort's tail must advance")
+        XCTAssertLessThanOrEqual(inspections, UInt64(flows.count * 8),
+            "discovery callbacks repeated complete population scans: flows=\(flows.count), inspections=\(inspections)")
+        XCTAssertLessThanOrEqual(
+            generation.testMaxCoordinatorInspectionsPerTurn,
+            udpIngressStagingMaxInspectionsPerTurn)
+        XCTAssertEqual(generation.testRetainedBytes, 1)
+        XCTAssertEqual(generation.testReservedBytes, 1)
+        XCTAssertEqual(generation.testGrantCount, 0)
+        let quiescent = generation.testCoordinatorInspections
+        for _ in 0..<16 {
+            generation.testRunCoordinator(now: DispatchTime.now().uptimeNanoseconds)
+        }
+        XCTAssertEqual(generation.testCoordinatorInspections, quiescent)
+        XCTAssertTrue(grants.withLock { $0.isEmpty })
+        flows.forEach { $0.close() }
+        withExtendedLifetime(held) {}
+        held = nil
+        holder.close()
+        XCTAssertEqual(generation.testReservedBytes, 0)
+        XCTAssertEqual(generation.testReservedItems, 0)
+    }
+
     func testFittingReparkCannotEraseDiscoveryWhileCapacityWakeIsQueued() {
         let generation = UdpIngressGenerationStagingBudget(
             policy: UdpIngressStagingPolicy(
@@ -305,7 +428,7 @@ final class UdpIngressStagingTests: XCTestCase {
             datagrams: [Data([1]), Data([2]), Data([3]), Data([4])],
             endpoints: endpoints)
 
-        #if DEBUG
+        #if DEBUG || RAMA_TESTING
             XCTAssertTrue(
                 outcome?.batch?.testPayloadEquals(
                     [Data([1]), Data([2]), Data([3])], endpointCount: 2
