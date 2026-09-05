@@ -227,6 +227,9 @@ private struct UdpIngressStagingGrant {
     let waiter: UdpIngressStagingWaiter
     let ticket: UInt64
     let expiresAt: UInt64
+    /// A discovery read reserves available headroom, not the size of the
+    /// datagram which was already discarded. Payload admission remains exact.
+    let bytes: Int
 }
 
 private struct UdpIngressStagingReservation {
@@ -270,6 +273,9 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         var waiterCount = 0
         var scanRemaining = 0
         var scanScheduled = false
+        /// Constant-size oldest sample across bounded no-fit turns. These
+        /// nodes are unlinked from the sample on grant or cancellation.
+        var discoveryCandidates: [UdpIngressStagingWaiter] = []
         /// Capacity observed when the current FIFO completed its last no-fit
         /// pass. It lets a newly linked tail be inspected without rescanning
         /// older known-nonfitting waiters, while detecting a racing release.
@@ -301,6 +307,9 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
     private let capacityBytes = UdpIngressAtomicCounter()
     private let retainedItems = UdpIngressAtomicCounter()
     private let retainedBytes = UdpIngressAtomicCounter()
+    /// Only physical retained-batch release advances discovery eligibility.
+    /// Refunding a speculative grant cannot manufacture another read loop.
+    private let retainedReleaseEpoch = UdpIngressAtomicCounter(1)
     private let globalMaxItems: UdpIngressAtomicCounter
     private let globalMaxBytes: UdpIngressAtomicCounter
     /// Bits 0/1 are the waiter and reconfiguration gates; upper bits are a
@@ -461,7 +470,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             {
                 state.grants.removeValue(forKey: ticket)
                 creditedItems = grant.waiter.neededItems
-                creditedBytes = grant.waiter.neededBytes
+                creditedBytes = grant.bytes
                 opportunityChanged = true
             }
 
@@ -634,6 +643,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         retainedItems.subtract(items)
         retainedBytes.subtract(bytes)
         releaseCapacity(items: items, bytes: bytes)
+        retainedReleaseEpoch.add(1)
     }
 
     /// A release that races waiter publication either sees the atomic gate and
@@ -700,6 +710,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
 
     private func removeLocked(_ waiter: UdpIngressStagingWaiter, state: inout State) {
         guard waiter.queued else { return }
+        state.discoveryCandidates.removeAll { $0 === waiter }
         let previous = waiter.previous
         let next = waiter.next
         if let previous { previous.next = next } else { state.firstWaiter = next }
@@ -762,6 +773,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         guard tryReserveCapacity(
             items: waiter.neededItems, bytes: waiter.neededBytes)
         else {
+            rememberDiscoveryCandidateLocked(waiter, state: &state)
             return ([], capacityItems.load() != baselineItems
                 || capacityBytes.load() != baselineBytes)
         }
@@ -787,7 +799,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         let expiry = now > UInt64.max - udpIngressStagingGrantLeaseNanoseconds
             ? UInt64.max : now + udpIngressStagingGrantLeaseNanoseconds
         state.grants[ticket] = UdpIngressStagingGrant(
-            waiter: waiter, ticket: ticket, expiresAt: expiry)
+            waiter: waiter, ticket: ticket, expiresAt: expiry, bytes: waiter.neededBytes)
         #if DEBUG
             state.peakGrantCount = max(state.peakGrantCount, state.grants.count)
         #endif
@@ -796,7 +808,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
     }
 
     private func driveCoordinatorLocked(
-        _ state: inout State, now: UInt64
+        _ state: inout State, now: UInt64, allowDiscovery: Bool = false
     ) -> [(UdpIngressStagingWaiter, UInt64)] {
         if expireGrantsLocked(&state, now: now) {
             state.scanRemaining = state.waiterCount
@@ -820,6 +832,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             guard tryReserveCapacity(
                 items: waiter.neededItems, bytes: waiter.neededBytes)
             else {
+                rememberDiscoveryCandidateLocked(waiter, state: &state)
                 rotateToTailLocked(waiter, state: &state)
                 continue
             }
@@ -832,11 +845,16 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             let expiry = now > UInt64.max - udpIngressStagingGrantLeaseNanoseconds
                 ? UInt64.max : now + udpIngressStagingGrantLeaseNanoseconds
             state.grants[ticket] = UdpIngressStagingGrant(
-                waiter: waiter, ticket: ticket, expiresAt: expiry)
+                waiter: waiter, ticket: ticket, expiresAt: expiry, bytes: waiter.neededBytes)
             #if DEBUG
                 state.peakGrantCount = max(state.peakGrantCount, state.grants.count)
             #endif
             deliveries.append((waiter, ticket))
+        }
+        if allowDiscovery, deliveries.isEmpty,
+            let discovery = discoverPartialLocked(&state, now: now)
+        {
+            deliveries.append(discovery)
         }
         #if DEBUG
             state.maxCoordinatorInspectionsPerTurn = max(
@@ -856,6 +874,57 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         return deliveries
     }
 
+    private func rememberDiscoveryCandidateLocked(
+        _ waiter: UdpIngressStagingWaiter, state: inout State
+    ) {
+        guard state.discoveryCandidates.count < udpIngressStagingMaxGrants,
+            let owner = waiter.owner,
+            owner.lastDiscoveryReleaseEpoch != retainedReleaseEpoch.load(),
+            !state.discoveryCandidates.contains(where: { $0 === waiter })
+        else { return }
+        state.discoveryCandidates.append(waiter)
+    }
+
+    /// Once all exact fits had a FIFO opportunity, one oldest sampled flow
+    /// may discover a smaller next datagram. There is no timer for discovery:
+    /// each flow gets at most one attempt per physical release epoch, even
+    /// when its callback immediately discards another nonfitting datagram.
+    /// Only the serial coordinator runner issues these speculative callbacks,
+    /// so synchronous completion cannot recurse through the next discovery.
+    private func discoverPartialLocked(
+        _ state: inout State, now: UInt64
+    ) -> (UdpIngressStagingWaiter, UInt64)? {
+        guard state.scanRemaining == 0,
+            state.grants.count < udpIngressStagingMaxGrants
+        else { return nil }
+        let epoch = retainedReleaseEpoch.load()
+        for waiter in state.discoveryCandidates {
+            guard waiter.queued, let owner = waiter.owner,
+                owner.lastDiscoveryReleaseEpoch != epoch,
+                waiter.neededBytes <= globalMaxBytes.load()
+            else { continue }
+            let availableBytes = max(globalMaxBytes.load() - capacityBytes.load(), 0)
+            let bytes = min(waiter.neededBytes, availableBytes)
+            guard bytes > 0 else { continue }
+            guard tryReserveCapacity(items: waiter.neededItems, bytes: bytes) else { continue }
+            guard let ticket = nextTicketLocked(&state) else {
+                releaseCapacity(items: waiter.neededItems, bytes: bytes)
+                return nil
+            }
+            owner.lastDiscoveryReleaseEpoch = epoch
+            removeLocked(waiter, state: &state)
+            let expiry = now > UInt64.max - udpIngressStagingGrantLeaseNanoseconds
+                ? UInt64.max : now + udpIngressStagingGrantLeaseNanoseconds
+            state.grants[ticket] = UdpIngressStagingGrant(
+                waiter: waiter, ticket: ticket, expiresAt: expiry, bytes: bytes)
+            #if DEBUG
+                state.peakGrantCount = max(state.peakGrantCount, state.grants.count)
+            #endif
+            return (waiter, ticket)
+        }
+        return nil
+    }
+
     private func expireGrantsLocked(_ state: inout State, now: UInt64) -> Bool {
         let expired = state.grants.compactMap { ticket, grant in
             grant.expiresAt <= now ? ticket : nil
@@ -864,20 +933,30 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             guard let grant = state.grants.removeValue(forKey: ticket) else { continue }
             releaseCapacity(
                 items: grant.waiter.neededItems,
-                bytes: grant.waiter.neededBytes)
+                bytes: grant.bytes)
         }
         return !expired.isEmpty
     }
 
     private func scheduleScanLocked(_ state: inout State) {
         guard automaticScheduling,
-            state.scanRemaining > 0,
+            state.scanRemaining > 0 || hasDiscoveryOpportunityLocked(state),
             state.waiterCount > 0,
             state.grants.count < udpIngressStagingMaxGrants,
             !state.scanScheduled
         else { return }
         state.scanScheduled = true
         coordinatorQueue.async { [weak self] in self?.runCoordinatorTurn() }
+    }
+
+    private func hasDiscoveryOpportunityLocked(_ state: State) -> Bool {
+        guard globalMaxBytes.load() > capacityBytes.load() else { return false }
+        let epoch = retainedReleaseEpoch.load()
+        return state.discoveryCandidates.contains { waiter in
+            waiter.queued && waiter.neededBytes > 0 && waiter.neededBytes <= globalMaxBytes.load()
+                && waiter.neededItems <= max(globalMaxItems.load() - capacityItems.load(), 0)
+                && waiter.owner.map { $0.lastDiscoveryReleaseEpoch != epoch } == true
+        }
     }
 
     private func scheduleLeaseTimerLocked(_ state: inout State) {
@@ -899,7 +978,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         let deliveries = withCoordinatorState { state in
             state.scanScheduled = false
             let now = DispatchTime.now().uptimeNanoseconds
-            let deliveries = driveCoordinatorLocked(&state, now: now)
+            let deliveries = driveCoordinatorLocked(&state, now: now, allowDiscovery: true)
             scheduleLeaseTimerLocked(&state)
             return deliveries
         }
@@ -959,6 +1038,8 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
             } else {
                 deliveries = driveCoordinatorLocked(&state, now: now)
             }
+            if state.waiterCount == 0 { clearWaiterGateLocked() }
+            scheduleScanLocked(&state)
             scheduleLeaseTimerLocked(&state)
             return deliveries
         }
@@ -983,7 +1064,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
                 state.grants.removeValue(forKey: ticket)
                 releaseCapacity(
                     items: grant.waiter.neededItems,
-                    bytes: grant.waiter.neededBytes)
+                    bytes: grant.bytes)
                 changed = true
             }
             if changed { state.scanRemaining = state.waiterCount }
@@ -1076,7 +1157,7 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
         func testRunCoordinator(now: UInt64) {
             let deliveries = withCoordinatorState { state in
                 state.scanScheduled = false
-                let deliveries = driveCoordinatorLocked(&state, now: now)
+                let deliveries = driveCoordinatorLocked(&state, now: now, allowDiscovery: true)
                 scheduleLeaseTimerLocked(&state)
                 return deliveries
             }
@@ -1107,6 +1188,13 @@ final class UdpIngressFlowStaging: @unchecked Sendable {
     /// shared global envelope but never change an existing flow's local caps.
     private let policy: UdpIngressStagingPolicy
     private let state = Locked(State())
+    /// Coordinator access must not acquire the flow lock: the admission path
+    /// already holds that lock before entering the generation coordinator.
+    private let discoveryReleaseEpoch = UdpIngressAtomicCounter()
+    fileprivate var lastDiscoveryReleaseEpoch: Int {
+        get { discoveryReleaseEpoch.load() }
+        set { discoveryReleaseEpoch.store(newValue) }
+    }
 
     init(
         generation: UdpIngressGenerationStagingBudget,
