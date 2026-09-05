@@ -51,6 +51,9 @@ typedef struct RamaWriterBudgetAtomic RamaWriterBudgetAtomic;
 RamaWriterBudgetAtomic* _Nullable rama_writer_budget_atomic_new(uint64_t initial_value);
 void rama_writer_budget_atomic_free(RamaWriterBudgetAtomic* _Nullable atomic);
 uint64_t rama_writer_budget_atomic_load(const RamaWriterBudgetAtomic* atomic);
+/// Strong compare-and-exchange: false means the value differed from `expected`,
+/// which is then updated to the observed value. Never fails spuriously; Swift
+/// also uses this for one-shot, exclusively owned telemetry state transitions.
 bool rama_writer_budget_atomic_compare_exchange(
     RamaWriterBudgetAtomic* atomic,
     uint64_t* expected,
@@ -58,6 +61,7 @@ bool rama_writer_budget_atomic_compare_exchange(
 );
 /// Sequentially-consistent variants for publication handshakes which span
 /// multiple atomics. Capacity counters should keep using the cheaper API above.
+/// Compare-and-exchange has the same strong semantics as the API above.
 uint64_t rama_writer_budget_atomic_load_seq_cst(const RamaWriterBudgetAtomic* atomic);
 bool rama_writer_budget_atomic_compare_exchange_seq_cst(
     RamaWriterBudgetAtomic* atomic,

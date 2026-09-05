@@ -31,7 +31,7 @@ bool rama_writer_budget_atomic_compare_exchange(
     uint64_t* expected,
     uint64_t desired
 ) {
-    return atomic_compare_exchange_weak_explicit(
+    return atomic_compare_exchange_strong_explicit(
         &atomic->value,
         expected,
         desired,
@@ -49,7 +49,7 @@ bool rama_writer_budget_atomic_compare_exchange_seq_cst(
     uint64_t* expected,
     uint64_t desired
 ) {
-    return atomic_compare_exchange_weak_explicit(
+    return atomic_compare_exchange_strong_explicit(
         &atomic->value,
         expected,
         desired,

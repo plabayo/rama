@@ -693,6 +693,41 @@ final class WriterMemoryBudgetTests: XCTestCase {
         XCTAssertEqual(captured.last?.retainedBytes, 0)
     }
 
+    func testRepeatedPressureEpisodesPublishOneOrderedPairPerEpisode() {
+        let episodeCount = 128
+        let delivered = expectation(description: "all pressure episodes completed")
+        delivered.expectedFulfillmentCount = episodeCount * 2
+        let events = Locked<[WriterMemoryPressureEvent]>([])
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 4,
+                maxItems: 2,
+                tcpWaiterMaxBytes: 2,
+                udpPressureReserveBytes: 1,
+                udpPressureReserveItems: 1),
+            onPressureEvent: { event in
+                events.withLock { $0.append(event) }
+                delivered.fulfill()
+            })
+        for _ in 0..<episodeCount {
+            XCTAssertTrue(budget.tryReserve(bytes: 4, items: 1))
+            XCTAssertNil(budget.tryReserveUdp(bytes: 1, items: 1))
+            XCTAssertNil(budget.tryReserveUdp(bytes: 1, items: 1))
+            budget.release(bytes: 4, items: 1)
+        }
+        wait(for: [delivered], timeout: 3)
+        let captured = events.withLock { $0 }
+        XCTAssertEqual(captured.count, episodeCount * 2)
+        for (index, event) in captured.enumerated() {
+            XCTAssertEqual(event.transition, index.isMultiple(of: 2) ? .entered : .recovered)
+            XCTAssertEqual(event.retainedBytes, index.isMultiple(of: 2) ? 4 : 0)
+        }
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+        XCTAssertTrue(budget.tryReserve(bytes: 4, items: 1))
+        budget.release(bytes: 4, items: 1)
+    }
+
     func testRecoveryCrossingEnteredEnqueueStaysOrderedAndNextEpisodeVisible() {
         let fourEvents = expectation(description: "two ordered episodes")
         fourEvents.expectedFulfillmentCount = 4
