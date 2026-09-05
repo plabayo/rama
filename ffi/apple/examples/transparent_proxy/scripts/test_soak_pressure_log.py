@@ -3900,6 +3900,20 @@ class SoakPressureLogTests(unittest.TestCase):
             "# ── Start live log capture", 1)[0]
         self.assertNotIn('PID="$(pgrep', provider_start)
 
+    def test_provider_executable_lookup_uses_shared_kernel_probe_without_sudo(self):
+        shell = Path(__file__).with_name("soak_test.sh").read_text()
+        body = shell.split("provider_executable_for_pid() {", 1)[1].split("\n}\n", 1)[0]
+        result = subprocess.run(
+            ["bash", "-c", "evidence_tool() { test \"$*\" = 'process-executable --pid 42' || exit 9; "
+             "printf '/kernel/provider\\n'; }\n"
+             "sudo() { exit 8; }\n"
+             "provider_executable_for_pid() {" + body + "\n}\n"
+             "provider_executable_for_pid 42"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(result.stdout, "/kernel/provider\n")
+
     def test_unreaped_writer_leaves_truthful_unsealed_directory(self):
         shell = Path(__file__).with_name("soak_test.sh").read_text()
 

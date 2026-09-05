@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import ctypes
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 import fcntl
 import hashlib
 import ipaddress
@@ -1852,6 +1854,118 @@ def _validate_soak_identity_metadata(
         raise EvidenceError("soak metadata is not bound to common provider identity")
 
 
+def _validate_soak_download_artifacts(root: Path) -> None:
+    """Re-derive the steady download result from curl's sealed raw fields."""
+    try:
+        raw = _read_regular_bytes(root / "real-download.metrics").decode("utf-8")
+        code, size, speed, duration = raw.split("\t")
+        if (
+            re.fullmatch(r"2[0-9]{2}", code) is None
+            or _canonical_uint(size) != 32 * 1024 * 1024
+            or any(re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.[0-9]+)?", value) is None
+                   for value in (speed, duration))
+            or Decimal(speed) <= 0 or Decimal(duration) <= 0
+        ):
+            raise ValueError("unsuccessful steady download")
+    except (UnicodeError, ValueError, InvalidOperation) as error:
+        raise EvidenceError("soak raw download did not prove the exact successful 32 MiB transfer") from error
+    stderr = _read_regular_bytes(root / "real-download.curl.log")
+    expected = stderr + (
+        f"real-download: code={code} curl_exit=0 size={size} expected=33554432 "
+        f"avg={speed}B/s time={duration}s\n"
+    ).encode("utf-8")
+    if stderr or _read_regular_bytes(root / "real-download.txt") != expected:
+        raise EvidenceError("soak download outcome contradicts its raw curl fields")
+
+
+def _validate_soak_stress_artifacts(
+    root: Path, scripts: Path, status: dict[str, str], meta: dict[str, str]
+) -> None:
+    """Replay the nested stress run and bind its actual workload to this soak."""
+    if meta.get("stress_child_rc") != "0":
+        raise EvidenceError("release soak stress child did not exit successfully")
+    child, _ = _strict_tsv_values(
+        _read_regular_bytes(root / "stress/stress-status.tsv"), "soak nested stress status"
+    )
+    identity = read_provider_identity(root / PROVIDER_IDENTITY_NAME)
+    if (
+        tuple(child.get(key) for key in ("complete", "passed", "exit_code")) != ("1", "1", "0")
+        or child.get("traffic_role") != "unpaired-diagnostic"
+        or child.get("evidence_mode") != "provider-monitored-traffic-only"
+        or child.get("run_uuid") == status["run_uuid"]
+        or any(child.get(key) != status[key] for key in ("git_head", "git_dirty"))
+        or any(child.get(child_key) != identity[identity_key] for child_key, identity_key in (
+            ("provider_pid", "running_pid"),
+            ("provider_executable_sha256", "running_executable_sha256"),
+            ("provider_signing_identifier", "running_bundle_id"),
+            ("provider_signing_team", "running_team_id"),
+            ("provider_signing_cdhash", "running_cdhash"),
+        ))
+    ):
+        raise EvidenceError("soak nested stress run does not match its source/provider generation")
+    # The diagnostic child's legacy ps fingerprint differs from the common
+    # identity hash. Exact PID/binary/signing plus the parent's continuous
+    # generation samples spanning this complete interval bind the same process.
+    child_start = _canonical_uint(child.get("run_start_epoch"))
+    child_end = _canonical_uint(child.get("run_end_epoch"))
+    if not _canonical_uint(status["run_start_epoch_ms"]) <= child_start < child_end \
+        <= _canonical_uint(status["run_end_epoch_ms"]):
+        raise EvidenceError("soak nested stress interval escapes the parent run")
+    phase_rows = _read_regular_bytes(root / "phases.tsv").decode("utf-8").splitlines()
+    boundaries = {}
+    for line in phase_rows:
+        fields = line.split("\t")
+        if fields[0] != "stress":
+            continue
+        if len(fields) != 4 or fields[1] not in ("start", "end") or fields[1] in boundaries \
+            or re.fullmatch(r"(?:0|[1-9][0-9]*)\.[0-9]{6}", fields[2]) is None:
+            raise EvidenceError("soak stress phase has ambiguous timing boundaries")
+        boundaries[fields[1]] = int(Decimal(fields[2]) * 1000)
+    if set(boundaries) != {"start", "end"} or not \
+        boundaries["start"] <= child_start < child_end <= boundaries["end"]:
+        raise EvidenceError("soak nested stress run is outside its declared workload phase")
+    workload, _ = _strict_tsv_values(
+        _read_regular_bytes(root / "stress/stress-workload.tsv"), "soak nested stress workload"
+    )
+    if any(workload.get(key) != meta.get(meta_key) for key, meta_key in (
+        ("duration_seconds", "configured_stress_seconds"),
+        ("concurrency", "configured_stress_concurrency"),
+    )):
+        raise EvidenceError("soak nested stress workload differs from the configured release load")
+    if any(workload.get(key) != value for key, value in {
+        "large_bytes": "16777216", "post_bytes": "8388608",
+        **{key: hashlib.sha256(value.encode()).hexdigest() for key, value in {
+            "http_target_sha256": "http://http-test.ramaproxy.org/method",
+            "https_target_sha256": "https://http-test.ramaproxy.org/method",
+            "large_target_sha256": "https://http-test.ramaproxy.org/bytes?size=16777216",
+            "post_target_sha256": "https://http-test.ramaproxy.org/octet-stream",
+        }.items()},
+    }.items()) or any(child.get(key) != value for key, value in {
+        "max_p95_ms": "10000", "min_throughput_milli_rps": "100",
+        "max_rss_growth_bytes": "67108864", "max_cpu_percent": "400",
+    }.items()):
+        raise EvidenceError("soak nested stress weakened the canonical transfers or thresholds")
+    log_tool, _ = _strict_tsv_values(
+        _read_regular_bytes(root / "stress/system-log-tool.tsv"), "soak stress log tool"
+    )
+    if log_tool.get("path") != "/usr/bin/log":
+        raise EvidenceError("soak nested stress did not use the system log tool")
+    sources = _validate_pinned_producer_sources(
+        root / "stress", status["git_head"], STRESS_MEMBER_PRODUCER_SOURCES,
+        "soak nested stress",
+    )
+    for artifact_name, source_name in STRESS_MEMBER_PRODUCER_SOURCES:
+        _write_atomic(scripts / source_name, sources[artifact_name])
+    result = _run_python_validator(
+        [str(scripts / "stress_evidence.py"), "verify", str(root / "stress")], timeout=180
+    )
+    if result.returncode != 0:
+        raise EvidenceError(
+            "pinned soak stress validator rejected its raw workload: "
+            + (result.stderr or result.stdout).strip()
+        )
+
+
 def _validate_soak_semantics(envelope: VerifiedEnvelope) -> None:
     required = (
         "run-meta.tsv", "soak-verdict.tsv", "phases.tsv", "system.ndjson",
@@ -1859,6 +1973,8 @@ def _validate_soak_semantics(envelope: VerifiedEnvelope) -> None:
         "idle-cpu-post.tsv", "baseline-mem.txt", "final-mem.txt", "leaks.txt",
         "crashes-before.tsv",
         "crashes/crash-snapshot.tsv", "workload-claims.tsv",
+        "real-download.metrics", "real-download.curl.log", "real-download.txt",
+        "stress/stress-manifest.tsv", "stress/stress-status.tsv",
         *(artifact for artifact, _ in SOAK_PRODUCER_SOURCES),
     )
     _required_artifacts(envelope, required, "soak")
@@ -1880,6 +1996,14 @@ def _validate_soak_semantics(envelope: VerifiedEnvelope) -> None:
         meta, _ = _strict_tsv_values(
             _read_regular_bytes(root / "run-meta.tsv"), "soak run metadata"
         )
+        if meta.get("release_profile_eligible") != "1":
+            raise EvidenceError("soak run is not eligible for the canonical release profile")
+        if any(meta.get(key) != "1" for key in (
+            "stress_ok", "fanout_established_target_sustained",
+            "idle_holders_established_target_sustained", "real_download_ok",
+            "post_wake_ok", "sleep_command_ok",
+        )):
+            raise EvidenceError("release soak omitted or failed a required workload phase")
         expected_meta = {
             "repo_head": status["git_head"],
             "repo_dirty": status["git_dirty"],
@@ -1897,6 +2021,8 @@ def _validate_soak_semantics(envelope: VerifiedEnvelope) -> None:
         _validate_soak_identity_metadata(meta, identity)
         _validate_soak_post_boundary_forensics(status, meta)
         _validate_soak_memory_artifacts(envelope, root, meta)
+        _validate_soak_download_artifacts(root)
+        _validate_soak_stress_artifacts(root, scripts, status, meta)
         sealed_verdict = _read_regular_bytes(root / "soak-verdict.tsv")
         validator = _extract_soak_validator(shell_source)
         result = _run_python_validator(
@@ -2125,6 +2251,36 @@ def _bundle_snapshot(
     )
 
 
+def _process_executable_path(pid: int) -> Path:
+    """Read the main executable from Darwin's process table, never argv/lsof.
+
+    lsof's `txt` rows also include dyld and other mapped images. proc_pidpath
+    identifies the process's executable without selecting one of those mappings
+    or trusting an editable command line, and does not require a sudo helper.
+    """
+    if isinstance(pid, bool) or not 0 < pid <= 2**31 - 1:
+        raise EvidenceError("invalid provider pid")
+    try:
+        proc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+        pidpath = proc.proc_pidpath
+        pidpath.argtypes = (ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32)
+        pidpath.restype = ctypes.c_int
+        # PROC_PIDPATHINFO_MAXSIZE is 4 * MAXPATHLEN on Darwin.
+        buffer = ctypes.create_string_buffer(4096)
+        length = pidpath(pid, buffer, len(buffer))
+    except (OSError, AttributeError) as error:
+        raise EvidenceError("kernel process executable lookup is unavailable") from error
+    if not 0 < length < len(buffer) or buffer.raw[length] != 0:
+        raise EvidenceError("kernel could not identify the running provider executable")
+    try:
+        text = buffer.raw[:length].decode("utf-8", errors="strict")
+        if not text.startswith("/") or any(character in text for character in "\0\t\r\n"):
+            raise ValueError("invalid kernel executable pathname")
+        return Path(text).resolve(strict=True)
+    except (OSError, ValueError) as error:
+        raise EvidenceError("kernel provider executable pathname is invalid") from error
+
+
 def _process_snapshot(pid: int) -> ProcessSnapshot:
     if isinstance(pid, bool) or not 0 < pid <= 2**31 - 1:
         raise EvidenceError("invalid provider pid")
@@ -2137,11 +2293,7 @@ def _process_snapshot(pid: int) -> ProcessSnapshot:
     except ValueError as error:
         raise EvidenceError("cannot parse provider process start time") from error
     start_epoch_ms = int(start.timestamp()) * 1000
-    lsof = _run(["/usr/sbin/lsof", "-a", "-p", str(pid), "-d", "txt", "-Fn"]).stdout
-    executable_paths = [line[1:] for line in lsof.splitlines() if line.startswith("n/")]
-    if len(executable_paths) != 1:
-        raise EvidenceError("could not identify exactly one running provider executable")
-    executable = Path(executable_paths[0]).resolve(strict=True)
+    executable = _process_executable_path(pid)
     return ProcessSnapshot(pid, start_epoch_ms, command, executable)
 
 
@@ -2476,7 +2628,7 @@ def _provider_absence_sample() -> tuple[int, list[tuple[int, str]]]:
             raise EvidenceError("cannot parse process command during provider absence capture") from error
         if not arguments or pattern.fullmatch(arguments[0]) is None:
             continue
-        # `ps` is only a candidate finder.  lsof-backed process capture binds
+        # `ps` is only a candidate finder. Kernel-backed process capture binds
         # the PID to the actual executable and rejects PID reuse/disappearance.
         process = _process_snapshot(pid)
         actual_path = str(process.executable_path)
@@ -2950,6 +3102,9 @@ def _parser() -> argparse.ArgumentParser:
     capture.add_argument("--output", required=True, type=Path)
     capture.add_argument("--source-root", required=True, type=Path)
 
+    executable = subparsers.add_parser("process-executable")
+    executable.add_argument("--pid", required=True, type=int)
+
     absence = subparsers.add_parser("capture-provider-absence")
     absence_destination = absence.add_mutually_exclusive_group(required=True)
     absence_destination.add_argument("--output", type=Path)
@@ -2990,6 +3145,8 @@ def main(arguments: list[str] | None = None) -> int:
     try:
         if args.command == "help":
             print(CONTRACT, end="")
+        elif args.command == "process-executable":
+            print(_process_executable_path(args.pid))
         elif args.command == "capture-provider":
             values = capture_provider(
                 args.built_provider,

@@ -391,15 +391,7 @@ PY
 }
 
 provider_executable_for_pid() {
-  local pid="$1" executable
-  executable="$(
-    sudo -n lsof -a -p "$pid" -d txt -Fn 2>/dev/null \
-      | sed -n 's/^n//p'
-  )"
-  if [[ "$executable" == *$'\n'* || "$executable" != /* ]]; then
-    return 1
-  fi
-  printf '%s\n' "$executable"
+  evidence_tool process-executable --pid "$1"
 }
 
 select_unique_provider_process() {
@@ -2075,6 +2067,15 @@ if [[ "$SKIP_STRESS" != 1 ]]; then
   hdr "phase 1 — stress traffic (${STRESS_SECONDS}s @ $CONCURRENCY)"
   STRESS_DURATION="$STRESS_SECONDS" STRESS_CONCURRENCY="$CONCURRENCY" \
     STRESS_MONITOR_PID="$PID" STRESS_LOG_DIR="$OUT/stress" STRESS_SKIP_LIVENESS=1 \
+    STRESS_TRAFFIC_ROLE=unpaired-diagnostic STRESS_ALLOW_TEST_TOOLS=0 \
+    STRESS_CURL_TOOL=/usr/bin/curl STRESS_LOG_TOOL=/usr/bin/log \
+    STRESS_LARGE_BYTES=16777216 STRESS_POST_BYTES=8388608 \
+    STRESS_HTTP_TARGET=http://http-test.ramaproxy.org/method \
+    STRESS_HTTPS_TARGET=https://http-test.ramaproxy.org/method \
+    STRESS_LARGE_TARGET='https://http-test.ramaproxy.org/bytes?size=16777216' \
+    STRESS_POST_TARGET=https://http-test.ramaproxy.org/octet-stream \
+    STRESS_MAX_P95_MS=10000 STRESS_MIN_THROUGHPUT_MILLI_RPS=100 \
+    STRESS_MAX_RSS_GROWTH_BYTES=67108864 STRESS_MAX_CPU_PERCENT=400 \
       bash "$STRESS_SH" > "$OUT/stress-run.txt" 2>&1 &
   ACTIVE_CHILD_PID=$!
   ACTIVE_CHILD_PRIVILEGE=direct

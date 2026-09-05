@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import plistlib
 import subprocess
+import sys
 import tarfile
 import tempfile
 import textwrap
@@ -1179,6 +1180,61 @@ class StatusAndIdentityTests(unittest.TestCase):
                     Path(temporary) / evidence.PROVIDER_IDENTITY_NAME, Path("source"),
                 )
 
+    def test_process_snapshot_uses_kernel_executable_not_argv_or_mapped_images(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            executable = Path(temporary) / "provider"
+            executable.write_bytes(b"executable")
+            proc = mock.Mock()
+            def pidpath(pid, buffer, size):
+                self.assertEqual(pid, 42)
+                content = os.fsencode(executable)
+                buffer.value = content
+                return len(content)
+            proc.proc_pidpath.side_effect = pidpath
+            with mock.patch.object(evidence.ctypes, "CDLL", return_value=proc), \
+                mock.patch.object(evidence, "_run", side_effect=[
+                    subprocess.CompletedProcess([], 0, "Sat Sep  5 10:20:30 2026\n", ""),
+                    subprocess.CompletedProcess([], 0, "/argv/decoy\n", ""),
+                ]) as commands:
+                snapshot = evidence._process_snapshot(42)
+            self.assertEqual(snapshot.executable_path, executable.resolve())
+            self.assertEqual(snapshot.command, "/argv/decoy")
+            self.assertEqual([call.args[0][0] for call in commands.call_args_list],
+                             ["/bin/ps", "/bin/ps"])
+
+    def test_kernel_executable_lookup_rejects_missing_truncated_or_malformed_path(self):
+        cases = ((0, b""), (4096, b""), (4, b"abcdx"),
+                 (7, b"decoy/x"), (5, b"/a\0bc"), (4, b"/a\nb"))
+        for length, content in cases:
+            with self.subTest(length=length, content=content):
+                proc = mock.Mock()
+                def pidpath(_pid, buffer, _size):
+                    buffer.raw = content + bytes(len(buffer) - len(content))
+                    return length
+                proc.proc_pidpath.side_effect = pidpath
+                with mock.patch.object(evidence.ctypes, "CDLL", return_value=proc):
+                    with self.assertRaises(evidence.EvidenceError):
+                        evidence._process_executable_path(42)
+        with mock.patch.object(evidence.ctypes, "CDLL", side_effect=OSError("unavailable")):
+            with self.assertRaisesRegex(evidence.EvidenceError, "unavailable"):
+                evidence._process_executable_path(42)
+
+    @unittest.skipUnless(sys.platform == "darwin", "Darwin kernel process API")
+    def test_kernel_executable_lookup_handles_live_process_with_multiple_txt_mappings(self):
+        executable = evidence._process_executable_path(os.getpid())
+        self.assertTrue(executable.is_file())
+        mappings = subprocess.run(
+            ["/usr/sbin/lsof", "-a", "-p", str(os.getpid()), "-d", "txt", "-Fn"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        if mappings.returncode != 0:
+            self.skipTest("host cannot inspect its own mapped images")
+        paths = [Path(line[1:]).resolve() for line in mappings.stdout.splitlines()
+                 if line.startswith("n/")]
+        self.assertIn(executable, paths)
+        self.assertIn(Path("/usr/lib/dyld"), paths)
+        self.assertGreaterEqual(len(paths), 2)
+
     def test_capture_rejects_sibling_executable_decoy(self):
         declared = Path("/bundle/Contents/MacOS/provider")
         decoy = Path("/bundle/Contents/MacOS/provider-helper")
@@ -1603,6 +1659,117 @@ class CrashAndReleaseSetTests(unittest.TestCase):
             evidence.seal(modern)
             with self.assertRaisesRegex(evidence.EvidenceError, "soak evidence is missing"):
                 evidence.verify_release_set([soak, modern])
+
+    def test_release_set_rejects_ineligible_or_skipped_soak_after_common_reseal(self):
+        for mutation, message in (
+            ({"release_profile_eligible": "0"}, "not eligible"),
+            ({"stress_ok": "skipped"}, "required workload"),
+            ({"post_wake_ok": "skipped", "sleep_command_ok": "skipped"}, "required workload"),
+        ):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                soak, modern = root / "soak", root / "modern"
+                make_run(soak, "soak")
+                make_run(modern, "modern_udp")
+                meta = {"release_profile_eligible": "1", **{
+                    key: "1" for key in (
+                        "stress_ok", "fanout_established_target_sustained",
+                        "idle_holders_established_target_sustained", "real_download_ok",
+                        "post_wake_ok", "sleep_command_ok",
+                    )
+                }}
+                meta.update(mutation)
+                write_tsv(soak / "run-meta.tsv", meta.items())
+                for name in (
+                    "soak-verdict.tsv", "phases.tsv", "system.ndjson",
+                    "probe-timeline.txt", "provider-timeline.tsv", "idle-cpu-baseline.tsv",
+                    "idle-cpu-post.tsv", "baseline-mem.txt", "final-mem.txt", "leaks.txt",
+                    "crashes-before.tsv", "real-download.metrics", "real-download.curl.log",
+                    "real-download.txt", "stress/stress-manifest.tsv", "stress/stress-status.tsv",
+                ):
+                    (soak / name).parent.mkdir(parents=True, exist_ok=True)
+                    (soak / name).write_text("unused\n")
+                for artifact, source in evidence.SOAK_PRODUCER_SOURCES:
+                    (soak / artifact).write_bytes(Path(__file__).with_name(source).read_bytes())
+                evidence.seal(soak)
+                evidence.seal(modern)
+                # Ordinary envelope inspection remains available for diagnostics.
+                self.assertEqual(evidence.verify(soak)["passed"], "1")
+                with mock.patch.object(evidence, "_source_blob_at_head", side_effect=current_script_source):
+                    with self.assertRaisesRegex(evidence.EvidenceError, message):
+                        evidence.verify_release_set([soak, modern])
+
+    def test_soak_download_rederives_exact_raw_transfer_after_reseal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            metrics = "200\t33554432\t12345\t2.500000"
+            report = ("real-download: code=200 curl_exit=0 size=33554432 "
+                      "expected=33554432 avg=12345B/s time=2.500000s\n")
+            (root / "real-download.metrics").write_text(metrics)
+            (root / "real-download.txt").write_text(report)
+            (root / "real-download.curl.log").write_text("")
+            evidence._validate_soak_download_artifacts(root)
+            for filename, changed in (
+                ("real-download.metrics", metrics.replace("33554432", "1")),
+                ("real-download.metrics", metrics.replace("12345", "0")),
+                ("real-download.metrics", metrics.replace("2.500000", "NaN")),
+                ("real-download.txt", report.replace("curl_exit=0", "curl_exit=18")),
+                ("real-download.curl.log", "curl: (18) partial transfer\n"),
+            ):
+                with self.subTest(filename=filename, changed=changed):
+                    path = root / filename
+                    original = path.read_text()
+                    path.write_text(changed)
+                    with self.assertRaises(evidence.EvidenceError):
+                        evidence._validate_soak_download_artifacts(root)
+                    path.write_text(original)
+            (root / "real-download.metrics").unlink()
+            with self.assertRaises(evidence.EvidenceError):
+                evidence._validate_soak_download_artifacts(root)
+
+    def test_soak_stress_replays_raw_child_and_binds_profile_phase_and_generation(self):
+        import test_stress_traffic as stress_fixtures
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            child = root / "stress"
+            scripts = root / "scripts"
+            scripts.mkdir()
+            stress_fixtures.write_self_attested_traffic_run(
+                child, monitored=True, role="unpaired-diagnostic", start=100000, end=280000,
+                workload_duration=180, workload_concurrency=24,
+            )
+            for name in ("stress-status.tsv", "provider-identity.tsv", "provider-codesign.txt"):
+                path = child / name
+                path.write_text(path.read_text().replace("TEAM123", evidence.DEV_TEAM_ID))
+            stress_fixtures.reseal_self_attested_traffic_run(child)
+            (child / "source-signed_run_evidence.py").write_bytes(
+                Path(__file__).with_name("signed_run_evidence.py").read_bytes()
+            )
+            write_identity(root, executable_hash="d" * 64, cdhash="e" * 40,
+                           pid=42, start=90000)
+            parent = dict(git_head=HEAD, git_dirty="0", run_uuid=str(uuid.uuid4()),
+                          run_start_epoch_ms="99000", run_end_epoch_ms="281000")
+            meta = {"stress_child_rc": "0", "configured_stress_seconds": "180",
+                    "configured_stress_concurrency": "24"}
+            phases = ("stress\tstart\t99.000000\t1970-01-01T00:01:39Z\n"
+                      "stress\tend\t281.000000\t1970-01-01T00:04:41Z\n")
+            (root / "phases.tsv").write_text(phases)
+            with mock.patch.object(evidence, "_source_blob_at_head", side_effect=current_script_source):
+                evidence._validate_soak_stress_artifacts(root, scripts, parent, meta)
+                for changed_meta, changed_parent, message in (
+                    (dict(meta, stress_child_rc="1"), parent, "exit successfully"),
+                    (dict(meta, configured_stress_seconds="181"), parent, "configured release load"),
+                    (meta, dict(parent, git_head="f" * 40), "generation"),
+                ):
+                    with self.subTest(message=message), self.assertRaisesRegex(evidence.EvidenceError, message):
+                        evidence._validate_soak_stress_artifacts(root, scripts, changed_parent, changed_meta)
+                (root / "phases.tsv").write_text(phases.replace("99.000000", "101.000000"))
+                with self.assertRaisesRegex(evidence.EvidenceError, "declared workload phase"):
+                    evidence._validate_soak_stress_artifacts(root, scripts, parent, meta)
+                (root / "phases.tsv").write_text(phases)
+                (child / "large_get.log").unlink()
+                with self.assertRaisesRegex(evidence.EvidenceError, "raw workload"):
+                    evidence._validate_soak_stress_artifacts(root, scripts, parent, meta)
 
     def test_soak_memory_artifacts_cannot_be_removed_failed_and_resealed(self):
         with tempfile.TemporaryDirectory() as temporary:

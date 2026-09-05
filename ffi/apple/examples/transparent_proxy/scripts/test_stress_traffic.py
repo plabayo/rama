@@ -1100,6 +1100,60 @@ class StressTrafficValidationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "wrong provider pid"):
                 verify_stress_evidence(wrong_log_pid)
 
+    def test_diagnostic_monitored_log_requires_correlation_without_attribution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "diagnostic"
+            write_self_attested_traffic_run(root, monitored=True, role="unpaired-diagnostic")
+            verify_stress_evidence(root)
+            path = root / "system.ndjson"
+            record = json.loads(path.read_text())
+            for mutation, message in (
+                ({"processID": 999}, "wrong provider pid"),
+                ({"subsystem": "another.provider"}, "wrong provider subsystem"),
+                ({"eventMessage": "[rama_tproxy_example::stress_attribution] "
+                  "rama stress request attributed: run_uuid=broken"}, "attribution marker"),
+            ):
+                with self.subTest(mutation=mutation):
+                    path.write_text(json.dumps(dict(record, **mutation)) + "\n")
+                    reseal_self_attested_traffic_run(root)
+                    with self.assertRaisesRegex(ValueError, message):
+                        verify_stress_evidence(root)
+
+    def test_diagnostic_capture_preserves_provider_logs_and_normalizes_codesign(self):
+        shell = STRESS_SCRIPT.read_text()
+        predicate = shell.split('    LOG_PREDICATE="processID', 1)[1].split(
+            '    "$LOG_TOOL" stream', 1
+        )[0]
+        predicate = 'LOG_PREDICATE="processID' + predicate
+        for role, marker_only in (("unpaired-diagnostic", False), ("proxy-candidate", True)):
+            result = subprocess.run(
+                ["bash", "-c", "MONITOR_PID=42; EXPECTED_PROVIDER_SUBSYSTEM=org.provider; "
+                 "EXPECTED_STRESS_EVENT_PREFIX=attribution; TRAFFIC_ROLE=" + role + "\n"
+                 + predicate + 'printf "%s\\n" "$LOG_PREDICATE"'],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(result.stdout.strip(),
+                             "processID == 42 AND subsystem == 'org.provider'"
+                             + (" AND eventMessage BEGINSWITH 'attribution'" if marker_only else ""))
+        legacy = shell.split('      MONITOR_IDENTITY="$MONITOR_RUNTIME_IDENTITY"', 1)[1].split(
+            '\n    fi\n    printf', 1
+        )[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "provider").write_bytes(b"fixture executable")
+            result = subprocess.run(
+                ["bash", "-c", 'LOG_DIR="$1"; MONITOR_PID=42; MONITOR_IDENTITY=fixture\n'
+                 'ps() { printf "%s/provider\\n" "$LOG_DIR"; }\n'
+                 'codesign() { printf "Executable=/fixture/provider\\nIdentifier=org.provider\\n'
+                 'Format=app bundle\\nTeamIdentifier=TEAM\\nCDHash=abc123\\n" >&2; }\n'
+                 + legacy, "fixture", str(root)],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertEqual((root / "provider-codesign.txt").read_text(),
+                             "Identifier=org.provider\nTeamIdentifier=TEAM\nCDHash=abc123\n")
+
     def test_request_attribution_rejects_missing_duplicate_wrong_uuid_and_emitter(self):
         mutations = {
             "missing": lambda rows: rows[:-1],
@@ -2218,9 +2272,8 @@ class StressTrafficValidationTests(unittest.TestCase):
         self.assertIn('--url "$target"', curl)
         self.assertNotIn('2>>"$LOG_DIR/${label}.log"', curl)
         self.assertIn(
-            "processID == $MONITOR_PID AND subsystem == "
-            "'$EXPECTED_PROVIDER_SUBSYSTEM' AND eventMessage BEGINSWITH "
-            "'$EXPECTED_STRESS_EVENT_PREFIX'",
+            'LOG_PREDICATE="$LOG_PREDICATE AND eventMessage BEGINSWITH '
+            '\'$EXPECTED_STRESS_EVENT_PREFIX\'"',
             shell,
         )
         self.assertIn('[[ "$LOG_TOOL" == /usr/bin/log && "$CURL_TOOL" == /usr/bin/curl ]]', shell)

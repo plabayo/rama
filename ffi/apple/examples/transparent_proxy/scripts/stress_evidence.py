@@ -730,6 +730,7 @@ def parse_ndjson_timestamp(value):
 
 def verify_ndjson_window(
     path, provider_pid, subsystem, run_uuid, start, end, traffic_start, traffic_end,
+    *, require_attribution=True,
 ):
     provider_rows = 0
     marker_ids = set()
@@ -758,6 +759,11 @@ def verify_ndjson_window(
             raise ValueError("stress marker came from the wrong provider subsystem")
         if not start <= timestamp <= end:
             raise ValueError("provider log row is outside the exact run window")
+        if not require_attribution:
+            if marker is not None or STRESS_MARKER_PREFIX in message:
+                raise ValueError("diagnostic provider log contains an attribution marker")
+            provider_rows += 1
+            continue
         if marker is None:
             raise ValueError("malformed stress attribution marker")
         if marker.group(1) != run_uuid:
@@ -920,6 +926,7 @@ def verify(directory):
             end,
             traffic_start,
             traffic_end,
+            require_attribution=status["traffic_role"] == "proxy-candidate",
         )
         successful_ids = {
             transfer[0]

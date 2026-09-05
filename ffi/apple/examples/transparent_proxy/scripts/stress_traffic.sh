@@ -1339,6 +1339,13 @@ if (( ! ANALYZE_ONLY )); then
       PROVIDER_SIGNING_IDENTIFIER="$(sed -n 's/^Identifier=//p' "$LOG_DIR/provider-codesign.txt" | head -1)"
       PROVIDER_SIGNING_TEAM="$(sed -n 's/^TeamIdentifier=//p' "$LOG_DIR/provider-codesign.txt" | head -1)"
       PROVIDER_SIGNING_CDHASH="$(sed -n 's/^CDHash=//p' "$LOG_DIR/provider-codesign.txt" | head -1)"
+      # The verifier consumes the same exact three-field proof in both modes.
+      # codesign's verbose prose also includes paths and platform detail.
+      {
+        printf 'Identifier=%s\nTeamIdentifier=%s\nCDHash=%s\n' \
+          "$PROVIDER_SIGNING_IDENTIFIER" "$PROVIDER_SIGNING_TEAM" \
+          "$PROVIDER_SIGNING_CDHASH"
+      } > "$LOG_DIR/provider-codesign.txt"
       {
         printf 'pid\t%s\nidentity\t%s\nexecutable\t%s\n' \
           "$MONITOR_PID" "$MONITOR_IDENTITY" "$PROVIDER_EXECUTABLE"
@@ -1359,8 +1366,12 @@ if (( ! ANALYZE_ONLY )); then
     SYSTEM_LOG_TOOL_SHA256="$(shasum -a 256 "$LOG_TOOL" | awk '{print $1}')"
     printf 'path\t%s\nsha256\t%s\n' "$LOG_TOOL" "$SYSTEM_LOG_TOOL_SHA256" \
       > "$LOG_DIR/system-log-tool.tsv"
+    LOG_PREDICATE="processID == $MONITOR_PID AND subsystem == '$EXPECTED_PROVIDER_SUBSYSTEM'"
+    if [[ "$TRAFFIC_ROLE" == proxy-candidate ]]; then
+      LOG_PREDICATE="$LOG_PREDICATE AND eventMessage BEGINSWITH '$EXPECTED_STRESS_EVENT_PREFIX'"
+    fi
     "$LOG_TOOL" stream --level debug --style ndjson \
-      --predicate "processID == $MONITOR_PID AND subsystem == '$EXPECTED_PROVIDER_SUBSYSTEM' AND eventMessage BEGINSWITH '$EXPECTED_STRESS_EVENT_PREFIX'" \
+      --predicate "$LOG_PREDICATE" \
       > "$NDJSON_PATH" 2> "$LOG_DIR/system-log-capture.err" &
     SYSTEM_LOG_JOB_PID="$!"
     SYSTEM_LOG_JOB_IDENTITY="$(pid_identity "$SYSTEM_LOG_JOB_PID" generation || true)"
