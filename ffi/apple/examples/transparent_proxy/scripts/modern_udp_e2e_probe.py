@@ -778,6 +778,11 @@ def controlled_echo_load(
             sock = socket.socket(family, socket.SOCK_DGRAM)
             sock.settimeout(timeout)
             sockets.append(sock)
+            # Select the routed local address before recording flow identity.
+            # An unconnected sendto socket can retain 0.0.0.0/:: in getsockname.
+            sock.connect((str(address), port))
+            if ipaddress.ip_address(sock.getsockname()[0]).is_unspecified:
+                raise RuntimeError("controlled echo socket has no concrete local address")
     except Exception:
         for sock in sockets:
             sock.close()
@@ -802,7 +807,7 @@ def controlled_echo_load(
                         time.sleep(remaining / 1_000_000_000)
                 payload = expected[(socket_index, sequence)]
                 sent_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
-                if sock.sendto(payload, (str(address), port)) != len(payload):
+                if sock.send(payload) != len(payload):
                     raise RuntimeError("controlled echo client sent a partial datagram")
                 sent += 1
                 response, peer = sock.recvfrom(65_535)

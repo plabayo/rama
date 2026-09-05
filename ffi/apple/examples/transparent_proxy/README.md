@@ -571,6 +571,40 @@ provider ids.)
 
 ## Stress + resource-usage testing
 
+### Controlled remote UDP workload
+
+The existing probe can exercise a controlled echo server on UDP/443. Use the
+same checkout and a fresh lowercase UUID on both machines. On your test server,
+choose its listening address and retain the ready/result files:
+
+```sh
+python3 scripts/modern_udp_e2e_probe.py echo-server \
+  --bind "$ECHO_BIND_ADDRESS" --port 443 --run-uuid "$RUN_UUID" \
+  --expected-count 8192 --max-seconds 600 \
+  --ready-file echo-ready.json --result-file echo-server.json
+```
+
+On the client, use the server's reachable IP address. This profile holds 128
+independent sockets for at least 126 seconds of successful traffic, with 64
+1200-byte requests per socket spaced by at least two seconds:
+
+```sh
+python3 scripts/modern_udp_e2e_probe.py echo-load \
+  --server "$ECHO_SERVER_ADDRESS" --port 443 --run-uuid "$RUN_UUID" \
+  --socket-count 128 --concurrency 128 --datagrams-per-socket 64 \
+  --payload-bytes 1200 --interval-ms 2000 --timeout 8 \
+  --result-file echo-client.json
+```
+
+The server needs permission to bind UDP/443 and a firewall rule allowing the
+test client. Start the client after the ready file appears. Preserve both
+machines' results to compare counts and payload hashes. Successful replies
+prove the echo workload; transparent-proxy interception additionally requires
+an intercepting UDP/443 policy and matching provider/Dial9 flow identities.
+The signed modern harness currently supplies its own loopback server and
+passes HTTP/3 through on port 443, so these commands do not extend its release
+seal or replace the required idle, mixed TCP, recovery and performance phases.
+
 ### Automated evidence regressions
 
 Run `just test-evidence` for the modern UDP, soak, stress, and signed-run

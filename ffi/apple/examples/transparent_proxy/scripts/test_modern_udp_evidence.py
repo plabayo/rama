@@ -2282,10 +2282,12 @@ class QuicShapedEchoTests(unittest.TestCase):
         server.bind(("127.0.0.1", 0))
         server.settimeout(2)
         port = server.getsockname()[1]
+        observed_endpoints = set()
 
         def echo():
             for _ in range(8):
                 payload, peer = server.recvfrom(65535)
+                observed_endpoints.add(f"{peer[0]}:{peer[1]}")
                 server.sendto(payload, peer)
             server.close()
 
@@ -2300,6 +2302,7 @@ class QuicShapedEchoTests(unittest.TestCase):
             self.assertTrue(value["passed"])
             self.assertEqual(value["exact_echo_count"], 8)
             self.assertEqual(value["independent_socket_count"], 8)
+            self.assertEqual(set(value["local_endpoints"]), observed_endpoints)
             self.assertEqual(value["payload_set_sha256"], value["echo_set_sha256"])
         thread.join(timeout=2)
         self.assertFalse(thread.is_alive())
