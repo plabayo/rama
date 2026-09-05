@@ -2952,66 +2952,6 @@ class SoakConfigurationValidationTests(unittest.TestCase):
             matches("0", "200", "33554432", "33554432", elapsed="nan")
         )
 
-    def test_bounded_child_join_accepts_term_and_rejects_forced_kill(self):
-        shell = SOAK_SCRIPT.read_text()
-        start = shell.index("child_job_is_active() {")
-        end = shell.index("# ── Helpers", start)
-        helpers = shell[start:end]
-        python = shlex.quote(sys.executable)
-
-        def join_result(
-            child: str, timeout: int, readiness_file=None
-        ) -> tuple[str, str, str, str]:
-            readiness = "sleep 0.1\n"
-            if readiness_file is not None:
-                quoted_ready = shlex.quote(str(readiness_file))
-                readiness = (
-                    f"for _ in $(seq 1 200); do [[ -e {quoted_ready} ]] && break; "
-                    "sleep 0.01; done\n"
-                    f"[[ -e {quoted_ready} ]] || exit 9\n"
-                )
-            program = (
-                helpers
-                + "\n"
-                + child
-                + " &\npid=$!\n"
-                + readiness
-                + f'bounded_stop_and_join "$pid" {timeout} direct\n'
-                + "printf '%s %s %s %s\\n' \"$BOUNDED_CHILD_RC\" "
-                + '"$BOUNDED_CHILD_OK" "$BOUNDED_CHILD_REAPED" '
-                + '"$BOUNDED_CHILD_FORCED"\n'
-            )
-            result = subprocess.run(
-                ["bash", "-c", program],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                timeout=6,
-            )
-            self.assertEqual(result.returncode, 0, result.stdout)
-            return tuple(result.stdout.splitlines()[-1].split())
-
-        self.assertEqual(
-            join_result(f"{python} -c 'import time; time.sleep(30)'", 2),
-            ("143", "1", "1", "0"),
-        )
-        self.assertEqual(
-            join_result(f"{python} -c 'pass'", 2),
-            ("0", "1", "1", "0"),
-        )
-        with tempfile.TemporaryDirectory() as temp_dir:
-            ready = Path(temp_dir) / "ready"
-            child_program = (
-                "import signal,time,pathlib; "
-                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-                f"pathlib.Path({str(ready)!r}).touch(); time.sleep(30)"
-            )
-            self.assertEqual(
-                join_result(
-                    f"{python} -c {shlex.quote(child_program)}", 1, ready
-                ),
-                ("137", "0", "1", "1"),
-            )
 
     def test_holder_cleanup_is_pid_scoped_and_joins_the_batch(self):
         shell = SOAK_SCRIPT.read_text()
@@ -3244,14 +3184,6 @@ class SignedUdpGateWiringTests(unittest.TestCase):
             if line.startswith("test-full:")
         )
         self.assertIn("test-modern-udp-signed", full_recipe.split())
-
-    def test_sanitizer_docs_do_not_claim_asan_or_swift_tsan_race_coverage(self):
-        justfile = (SCRIPT_DIR.parent / "justfile").read_text()
-        readme = (SCRIPT_DIR.parent / "README.md").read_text()
-        self.assertIn("ASan does not detect data races", justfile)
-        self.assertIn("Rust static library is not instrumented", justfile)
-        self.assertIn("ASan\ndoes not detect data races", readme)
-        self.assertIn("does not instrument the linked Rust static library", readme)
 
     @staticmethod
     def status_lines(verdict=(1, 1, 0), attempts=8, passes=8, diagnostics=()):

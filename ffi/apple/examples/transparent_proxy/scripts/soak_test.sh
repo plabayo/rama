@@ -104,7 +104,8 @@
 set -uo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────
-REPO="${REPO:-/Users/glendc/code/github.com/plabayo/rama}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${REPO:-$(cd -- "$SCRIPT_DIR/../../../../.." && pwd)}"
 EXAMPLE_DIR="$REPO/ffi/apple/examples/transparent_proxy"
 STRESS_SH="$EXAMPLE_DIR/scripts/stress_traffic.sh"
 PROVIDER_BUNDLE="org.ramaproxy.example.tproxy.dev.provider"
@@ -689,7 +690,7 @@ owned_job_exit() {
   local soak_job_exit_rc="$1" soak_guard_rc=0
   trap - EXIT
   trap '' TERM
-  "${PYTHON_BIN:-python3}" -c '
+  "$PYTHON_BIN" -c '
 import os, signal, subprocess, sys, time
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
 leader = os.getppid()
@@ -1243,20 +1244,15 @@ ceiling_transport_candidate() {
 probe_ok() { [[ "$(probe_once)" =~ ^2 ]]; }
 
 epoch_now() {
-  if [[ -n "$PYTHON_BIN" ]]; then
-    "$PYTHON_BIN" -c 'import time; print(f"{time.time():.6f}")'
-  else
-    printf '%s.000000\n' "$(date +%s)"
-  fi
+  "$PYTHON_BIN" -c 'import time; print(f"{time.time():.6f}")'
 }
 
 # Render the exact whole second represented by an epoch captured above. Keeping
 # the epoch and its display timestamp on one clock read prevents a second-boundary
 # rollover from making an otherwise valid phase/probe row self-contradictory.
 iso_for_epoch() {
-  local epoch="$1" whole_seconds="${1%%.*}"
-  if [[ -n "$PYTHON_BIN" ]]; then
-    "$PYTHON_BIN" - "$epoch" <<'PY'
+  local epoch="$1"
+  "$PYTHON_BIN" - "$epoch" <<'PY'
 from datetime import datetime, timezone
 from decimal import Decimal
 import sys
@@ -1264,11 +1260,6 @@ import sys
 seconds = int(Decimal(sys.argv[1]))
 print(datetime.fromtimestamp(seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
 PY
-  elif date -u -r "$whole_seconds" +%Y-%m-%dT%H:%M:%SZ >/dev/null 2>&1; then
-    date -u -r "$whole_seconds" +%Y-%m-%dT%H:%M:%SZ
-  else
-    date -u -d "@$whole_seconds" +%Y-%m-%dT%H:%M:%SZ
-  fi
 }
 
 gauge_is_fresh() {
@@ -1299,9 +1290,8 @@ phase_mark() {
 # is the registry population used by the pressure soft cap; `allocated` also
 # includes retiring kernel resources and is the live hard-cap population.
 read_gauge() {
-  if [[ -n "$PYTHON_BIN" ]]; then
-    "$PYTHON_BIN" - "$OUT/system.ndjson" "$PID" "$PROVIDER_BUNDLE" \
-      "$EXAMPLE_DIR/scripts" <<'PY'
+  "$PYTHON_BIN" - "$OUT/system.ndjson" "$PID" "$PROVIDER_BUNDLE" \
+    "$EXAMPLE_DIR/scripts" <<'PY'
 import json, sys
 sys.path.insert(0, sys.argv[4])
 from soak_pressure_log import flow_gauge, parse_oslog_timestamp
@@ -1331,7 +1321,6 @@ except FileNotFoundError:
 if latest:
     print(latest)
 PY
-  fi
 }
 wait_for_fresh_gauge() {
   local not_before="$1" timeout="$2" deadline g gauge_epoch observed_now
@@ -1601,19 +1590,29 @@ run_flow_pool() {
   fi
 }
 
+prepare_installed_provider() {
+  if [[ "$DO_INSTALL" == 1 ]]; then
+    hdr "building + installing the dev proxy"
+    ( cd "$EXAMPLE_DIR" && just install-tproxy-dev ) || die "install failed"
+    warn "enable the system extension + toggle the proxy ON in the app, then press Enter"
+    if [[ -t 0 ]]; then read -r _; else sleep 10; fi
+  fi
+
+  PROVIDER_EXECUTABLE_NAME="$(
+    plutil -extract CFBundleExecutable raw -o - "$INSTALLED_PROVIDER/Contents/Info.plist" \
+      2>/dev/null || true
+  )"
+  [[ "$PROVIDER_EXECUTABLE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] \
+    || die "could not resolve the installed provider executable name"
+  CRASH_PROCESS="$PROVIDER_EXECUTABLE_NAME"
+}
+
 # ── Preconditions ─────────────────────────────────────────────────────
 hdr "rama transparent proxy soak — comprehensive single session"
 [[ -x /usr/bin/curl ]] || die "system curl not found"
 [[ -f "$STRESS_SH" ]] || die "stress script not found at $STRESS_SH (is REPO correct?)"
 [[ -n "$PYTHON_BIN" ]] || die "python3 is required for signed soak evidence"
 [[ -f "$EVIDENCE_HELPER" ]] || die "signed evidence helper not found at $EVIDENCE_HELPER"
-PROVIDER_EXECUTABLE_NAME="$(
-  plutil -extract CFBundleExecutable raw -o - "$INSTALLED_PROVIDER/Contents/Info.plist" \
-    2>/dev/null || true
-)"
-[[ "$PROVIDER_EXECUTABLE_NAME" =~ ^[A-Za-z0-9._-]+$ ]] \
-  || die "could not resolve the installed provider executable name"
-CRASH_PROCESS="$PROVIDER_EXECUTABLE_NAME"
 RUN_UUID="$("$PYTHON_BIN" -c 'import uuid; print(uuid.uuid4())')"
 REPO_HEAD="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
 [[ "$REPO_HEAD" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
@@ -1715,13 +1714,8 @@ owned_job sudo_keepalive_job &
 SUDO_KEEPALIVE_PID=$!
 remember_owned_child "$SUDO_KEEPALIVE_PID"
 
-# ── Optional install ──────────────────────────────────────────────────
-if [[ "$DO_INSTALL" == 1 ]]; then
-  hdr "building + installing the dev proxy"
-  ( cd "$EXAMPLE_DIR" && just install-tproxy-dev ) || die "install failed"
-  warn "enable the system extension + toggle the proxy ON in the app, then press Enter"
-  if [[ -t 0 ]]; then read -r _; else sleep 10; fi
-fi
+# Resolve the installed executable only after an optional installation.
+prepare_installed_provider
 
 # ── Liveness ──────────────────────────────────────────────────────────
 hdr "liveness check"
@@ -1896,17 +1890,13 @@ if [[ -x "$DIAL9_EVIDENCE_BIN" ]] \
   > "$OUT/dial9-baseline.json" 2> "$OUT/dial9-baseline.err"
 then
   DIAL9_BASELINE_READY=1
-  if [[ -n "$PYTHON_BIN" ]]; then
-    DIAL9_BASELINE_MAX_INDEX=$(
-      "$PYTHON_BIN" - "$OUT/dial9-baseline.json" <<'PY'
+  DIAL9_BASELINE_MAX_INDEX=$(
+    "$PYTHON_BIN" - "$OUT/dial9-baseline.json" <<'PY'
 import json, sys
 value = json.load(open(sys.argv[1])).get("max_index")
 print("none" if value is None else value)
 PY
-    ) || DIAL9_BASELINE_READY=0
-  else
-    DIAL9_BASELINE_READY=0
-  fi
+  ) || DIAL9_BASELINE_READY=0
 else
   warn "Dial9 diagnostic collector is unavailable; continuing without diagnostic traces"
 fi
@@ -2858,9 +2848,7 @@ fi
 
 # ── Extract the signals that matter from the ndjson ───────────────────
 hdr "extracting signals"
-PYX="$(command -v python3 || true)"
-if [[ -n "$PYX" ]]; then
-  if "$PYX" - "$OUT" "$EXAMPLE_DIR/scripts" <<'PYEOF'
+if "$PYTHON_BIN" - "$OUT" "$EXAMPLE_DIR/scripts" <<'PYEOF'
 import json, os, re, sys
 from decimal import Decimal
 
@@ -3942,18 +3930,11 @@ with open(status_tmp, "w") as status:
     os.fsync(status.fileno())
 os.replace(status_tmp, status_path)
 PYEOF
-  then
-    :
-  else
-    warn "evidence extractor failed — preserving artifacts with an incomplete verdict"
-    write_incomplete_status "evidence extractor failed"
-  fi
+then
+  :
 else
-  warn "python3 not found — falling back to grep"
-  grep -oE 'live-flow counts[^"]*' "$OUT/system.ndjson" > "$OUT/flow-counts.txt" 2>/dev/null || true
-  grep -iE 'flow pressure|drain backstop|force-tear|brotli error|drop MITM relay|system sleep|system wake' \
-    "$OUT/system.ndjson" > "$OUT/timeline.txt" 2>/dev/null || true
-  write_incomplete_status "python3 unavailable"
+  warn "evidence extractor failed — preserving artifacts with an incomplete verdict"
+  write_incomplete_status "evidence extractor failed"
 fi
 
 # The EXIT trap owns cleanup, crash finalization, the common status envelope,

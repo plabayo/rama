@@ -571,6 +571,46 @@ provider ids.)
 
 ## Stress + resource-usage testing
 
+### Automated evidence regressions
+
+Run `just test-evidence` for the modern UDP, soak, stress, and signed-run
+evidence suites. `just qa` and the macOS CI Apple QA job run the same suites;
+`just test-soak-log-parser` remains an alias. They cover raw-data validation,
+failed or incomplete runs, build-wrapper composition, and local socket,
+subprocess, and terminal cleanup. Read any reported skips: restricted process
+visibility or loopback access can prevent those local fixtures from running.
+
+These suites do not install a provider or certify live signed traffic. The
+signed modern UDP gate, on-device soak, and paired performance runs below
+require separate execution. Developer ID signing and notarization also remain
+separate from CI's unsigned build checks.
+
+### On-device soak
+
+From this example directory, with the signed development provider installed
+and enabled:
+
+```sh
+./scripts/soak_test.sh
+# Build and install first on a development machine:
+DO_INSTALL=1 ./scripts/soak_test.sh
+```
+
+The script discovers its checkout from its own location; `REPO` can override
+that path. It requires macOS, Python 3, the system curl, network access, and
+interactive sudo authentication. Installation also requires development
+signing and system-extension approval. Keep the terminal available for the
+sleep/wake phase and wake the machine when prompted.
+
+Defaults exercise 180 seconds of traffic at concurrency 24, active and idle
+TCP holders, downloads, recovery, and idle CPU sampling. The default holder
+limit is 300 flows. Evidence is written beneath `~/rama-tproxy-soak/`; `OUT`
+can select a fresh empty directory. The script header documents other
+controls. Skipping phases is useful for diagnosis but cannot satisfy the
+canonical release profile. Exit codes are 0 for a complete passing run, 1
+for a complete run with failed checks, and 2 for incomplete evidence.
+This TCP soak does not replace the mass UDP/443 and long-lived UDP gates.
+
 ### One-click traffic stress
 
 Run live traffic against public HTTP/HTTPS endpoints while the

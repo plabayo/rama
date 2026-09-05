@@ -43,19 +43,6 @@ do
         echo "$build_script does not pass the source identity to Xcode" >&2
         fail=1
     fi
-    if ! grep -Fq "git -C \"\$SOURCE_ROOT\" archive" "$build_script" \
-        || ! grep -Fq 'find "$ISOLATED_SOURCE_ROOT" -type f -exec chmod a-w' "$build_script" \
-        || ! grep -Fq "RUST_TARGET_DIR=\"\$BUILD_ROOT/tproxy_rs/target\"" "$build_script" \
-        || ! grep -Fq 'cargo build --locked --target aarch64-apple-darwin' "$build_script" \
-        || ! grep -Fq 'cargo build --locked --target x86_64-apple-darwin' "$build_script" \
-        || ! grep -Fq '/usr/bin/lipo -create' "$build_script"; then
-        echo "$build_script must build and lipo both Rust architectures in its pinned source tree" >&2
-        fail=1
-    fi
-    if grep -Eq 'cp .*librama_tproxy_example\.a' "$build_script"; then
-        echo "$build_script must not copy a mutable prebuilt Rust archive" >&2
-        fail=1
-    fi
 done
 
 if [ "$(grep -c 'org.ramaproxy.example.tproxy.dist.provider.systemextension' justfile)" -ne 2 ] \

@@ -122,12 +122,6 @@ def parse_artifact_uint(value, maximum=MAX_ARTIFACT_UINT):
     return int(value)
 
 
-def selected_count(message):
-    """Return the selected-victim count from one selection line."""
-    event = selection_event(message)
-    return event["selected"] if event else None
-
-
 def selection_event(message):
     """Return event-local occupancy, cap, and selected-victim count."""
     match = SELECTION_RE.search(message)
@@ -138,11 +132,6 @@ def selection_event(message):
         return None
     occupancy, soft_cap, selected = values
     return {"occupancy": occupancy, "soft_cap": soft_cap, "selected": selected}
-
-
-def is_no_headroom(message):
-    """Whether this is the current once-per-episode no-headroom line."""
-    return no_headroom_event(message) is not None
 
 
 def no_headroom_event(message):

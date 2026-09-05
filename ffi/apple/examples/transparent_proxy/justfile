@@ -181,13 +181,16 @@ qa-rust: sort clippy rust-doc rust-test rust-test-ignored
 check-spec-parity:
     ./scripts/check_spec_parity.sh
 
-test-soak-log-parser:
+test-evidence:
     python3 ./scripts/test_modern_udp_evidence.py
     python3 ./scripts/test_soak_pressure_log.py
     python3 ./scripts/test_stress_traffic.py
     python3 ./scripts/test_signed_run_evidence.py
 
-qa: qa-rust check-spec-parity test-soak-log-parser build-tproxy-dev
+# Compatibility alias for existing developer commands.
+test-soak-log-parser: test-evidence
+
+qa: qa-rust check-spec-parity test-evidence build-tproxy-dev
 
 test-e2e: build-tproxy-rs-debug clippy-tproxy-ffi-e2e cleanup-tproxy-ffi-e2e run-tproxy-ffi-e2e run-tproxy-ffi-e2e-swift
 

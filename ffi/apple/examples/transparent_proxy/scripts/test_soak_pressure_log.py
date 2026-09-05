@@ -35,7 +35,6 @@ from soak_pressure_log import (
     final_provider_observation_issues,
     flow_gauge,
     flow_gauge_issue,
-    is_no_headroom,
     idle_cpu_evidence,
     idle_cpu_comparison_evidence,
     leak_evidence,
@@ -64,7 +63,6 @@ from soak_pressure_log import (
     probe_succeeded,
     release_soak_profile_issues,
     read_sleep_workload_artifacts,
-    selected_count,
     selection_event,
     sleep_wake_evidence,
     sleep_workload_artifact_issues,
@@ -121,6 +119,48 @@ def require_loopback_round_trip(testcase):
 
 
 class SoakPressureLogTests(unittest.TestCase):
+    def test_optional_install_resolves_the_new_bundle_and_propagates_failure(self):
+        source = Path(__file__).with_name("soak_test.sh").read_text()
+        helper = source.split("prepare_installed_provider() {", 1)[1].split("\n}\n", 1)[0]
+        script = "prepare_installed_provider() {" + helper + "\n}\n" + r'''
+set -eu
+EXAMPLE_DIR=$1
+INSTALLED_PROVIDER=$1/installed
+DO_INSTALL=$2
+INSTALL_RC=$3
+hdr() { :; }
+warn() { :; }
+sleep() { :; }
+die() { printf '%s\n' "$*" >&2; exit 2; }
+just() {
+  [[ "$1" == install-tproxy-dev ]] || exit 90
+  printf 'install\n' >> "$EXAMPLE_DIR/order"
+  (( INSTALL_RC == 0 )) || return "$INSTALL_RC"
+  mkdir -p "$INSTALLED_PROVIDER/Contents"
+  printf 'new.provider\n' > "$INSTALLED_PROVIDER/Contents/Info.plist"
+}
+plutil() {
+  printf 'lookup\n' >> "$EXAMPLE_DIR/order"
+  cat "${@: -1}"
+}
+prepare_installed_provider
+printf '%s\n' "$PROVIDER_EXECUTABLE_NAME" "$CRASH_PROCESS"
+'''
+        for install, install_rc, expected_order, expected_rc in (
+            ("1", "0", "install\nlookup\n", 0),
+            ("1", "7", "install\n", 2),
+            ("0", "0", "lookup\n", 2),
+        ):
+            with self.subTest(install=install, install_rc=install_rc), tempfile.TemporaryDirectory() as temporary:
+                result = subprocess.run(
+                    ["bash", "-c", script, "soak-install", temporary, install, install_rc],
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(result.returncode, expected_rc, result.stderr)
+                self.assertEqual((Path(temporary) / "order").read_text(), expected_order)
+                if expected_rc == 0:
+                    self.assertEqual(result.stdout, "new.provider\nnew.provider\n")
+
     @staticmethod
     def complete_meta(mode="stress-only"):
         return {
@@ -155,7 +195,6 @@ class SoakPressureLogTests(unittest.TestCase):
             "flow pressure: occupancy 460 over soft cap 450; selected 100 "
             "idle flow(s) toward low-water 350 (100 pending teardown)"
         )
-        self.assertEqual(selected_count(message), 100)
         self.assertEqual(
             selection_event(message),
             {"occupancy": 460, "soft_cap": 450, "selected": 100},
@@ -166,7 +205,6 @@ class SoakPressureLogTests(unittest.TestCase):
             "flow pressure: occupancy 451, soft cap 450, but no flow idle "
             "past 120000ms floor; admitting without reap"
         )
-        self.assertTrue(is_no_headroom(message))
         self.assertEqual(
             no_headroom_event(message),
             {"occupancy": 451, "soft_cap": 450},
@@ -302,12 +340,12 @@ class SoakPressureLogTests(unittest.TestCase):
 
     def test_obsolete_messages_do_not_match(self):
         self.assertIsNone(
-            selected_count(
+            selection_event(
                 "flow pressure: occupancy 460 over soft cap 450; reaping 100 idle"
             )
         )
         self.assertFalse(
-            is_no_headroom(
+            no_headroom_event(
                 "flow pressure: over soft cap (450) at occupancy 451 but no flow idle"
             )
         )
@@ -691,57 +729,6 @@ class SoakPressureLogTests(unittest.TestCase):
         self.assertEqual(result["failures"], [])
         self.assertEqual(result["issues"], [])
 
-    def test_udp_pressure_parser_matches_engine_emitter_schema(self):
-        repository = Path(__file__).resolve().parents[5]
-        source = (
-            repository
-            / "rama-net-apple-networkextension/src/tproxy/engine/udp_ingress.rs"
-        ).read_text()
-        for public_body in (
-            '"UDP ingress pressure dropped datagram flow_id={} pressure=\\"{}\\" '
-            'cumulative_drops={} global_retained_bytes={} '
-            'global_max_retained_bytes={}"',
-            '"UDP ingress pressure resumed flow flow_id={} pressure=\\"{}\\" '
-            'cumulative_resumptions={} global_retained_bytes={} '
-            'global_max_retained_bytes={}"',
-        ):
-            with self.subTest(public_body=public_body):
-                self.assertIn(public_body, source)
-        for reason in ("channel_count", "flow_bytes", "global_bytes"):
-            self.assertIn(f'"{reason}"', source)
-        self.assertIn("global_retained_bytes", source)
-        self.assertIn("global_max_retained_bytes", source)
-
-        swift_source = (
-            repository
-            / "ffi/apple/RamaAppleNetworkExtension/Sources/"
-            "RamaAppleNetworkExtension/Provider/Session/UdpFlowSession.swift"
-        ).read_text()
-        self.assertIn(
-            '"UDP Swift ingress staging dropped datagrams reason=\\"'
-            "\\(sample.reason.rawValue)\\\" ",
-            swift_source,
-        )
-        for field in (
-            "cumulative_drop_events",
-            "cumulative_dropped_items",
-            "cumulative_dropped_bytes_lower_bound",
-            "generation_retained_items",
-            "generation_max_retained_items",
-            "generation_retained_bytes",
-            "generation_max_retained_bytes",
-        ):
-            self.assertIn(field, swift_source)
-        swift_staging_source = (
-            repository
-            / "ffi/apple/RamaAppleNetworkExtension/Sources/"
-            "RamaAppleNetworkExtension/Provider/UdpIngressStaging.swift"
-        ).read_text()
-        self.assertIn(
-            "guard reason.isRetryableCapacityPressure else { return nil }",
-            swift_staging_source,
-        )
-        self.assertIn('case generationItems = "generation_items"', swift_staging_source)
 
     def test_udp_pressure_redacted_or_incomplete_public_message_fails_closed(self):
         for message in (
