@@ -265,6 +265,202 @@ fn udp_max_lifetime_close_drops_service_before_callbacks_and_byte_snapshot() {
 }
 
 #[test]
+fn udp_terminal_close_joins_admitted_copy_count_and_publish() {
+    const PAYLOAD: &[u8] = b"admitted-before-terminal-close";
+    let (service_ready_tx, service_ready_rx) = std::sync::mpsc::channel();
+    let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+    let finish_rx = Arc::new(Mutex::new(Some(finish_rx)));
+    let handler = TestHandler {
+        udp_matcher: Arc::new(move |meta| {
+            let service_ready_tx = service_ready_tx.clone();
+            let finish_rx = finish_rx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |flow: crate::UdpFlow| {
+                    let finish_rx = finish_rx.lock().take().expect("one service invocation");
+                    let service_ready_tx = service_ready_tx.clone();
+                    async move {
+                        _ = service_ready_tx.send(());
+                        _ = finish_rx.await;
+                        drop(flow);
+                        Ok::<(), Infallible>(())
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        ..TestHandler::passthrough()
+    };
+    let engine = build_engine(handler);
+    let budget = engine.udp_ingress_budget_for_test();
+    let close_budget = budget.clone();
+    #[cfg(feature = "dial9")]
+    let counters = Arc::new(Mutex::new(None::<Arc<UdpFlowByteCounters>>));
+    #[cfg(feature = "dial9")]
+    let close_counters = counters.clone();
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        |_| {},
+        || {},
+        move || {
+            #[cfg(feature = "dial9")]
+            let totals = Some(
+                close_counters
+                    .lock()
+                    .as_ref()
+                    .expect("installed counters")
+                    .snapshot(),
+            );
+            #[cfg(not(feature = "dial9"))]
+            let totals = None::<(u64, u64)>;
+            _ = closed_tx.send((close_budget.snapshot(), totals));
+        },
+    ) else {
+        panic!("expected intercepted flow");
+    };
+    #[cfg(feature = "dial9")]
+    {
+        *counters.lock() = Some(session.byte_counters.clone());
+    }
+    let control = session.ingress_control.clone();
+    session.activate();
+    service_ready_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("service ready");
+    let (admitted_tx, admitted_rx) = std::sync::mpsc::channel();
+    let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+    let resume_rx = Mutex::new(resume_rx);
+    session.before_ingress_copy = Some(Arc::new(move || {
+        admitted_tx.send(()).expect("announce admitted submission");
+        resume_rx
+            .lock()
+            .recv_timeout(Duration::from_secs(2))
+            .expect("resume ordinary copy");
+    }));
+    let submitter = std::thread::spawn(move || {
+        session.on_client_datagram(PAYLOAD, None);
+        session.before_ingress_copy = None;
+        session
+    });
+    admitted_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("submission reserved its slot");
+    finish_tx.send(()).expect("finish service");
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !control.submission_close_started.load(Ordering::Acquire) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "receiver started terminal close"
+        );
+        std::thread::yield_now();
+    }
+    let closed_before_publish = closed_rx.try_recv();
+    // Always release and join the ordinary producer before checking the
+    // assertion, including when a broken close implementation returned early.
+    resume_tx.send(()).expect("release admitted copy");
+    let mut session = submitter.join().expect("ordinary submission completed");
+    assert!(matches!(
+        closed_before_publish,
+        Err(std::sync::mpsc::TryRecvError::Empty)
+    ));
+    let (snapshot, totals) = closed_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("joined close");
+    assert_eq!(snapshot.accepted_datagrams, 1);
+    assert_eq!(snapshot.accepted_bytes, PAYLOAD.len() as u64);
+    assert_eq!(snapshot.retained_bytes, 0);
+    assert_eq!(snapshot.charged_bytes, 0);
+    #[cfg(feature = "dial9")]
+    assert_eq!(totals, Some((PAYLOAD.len() as u64, 0)));
+    #[cfg(not(feature = "dial9"))]
+    assert_eq!(totals, None);
+    session.on_client_datagram(b"after-close", None);
+    assert_eq!(budget.snapshot().accepted_datagrams, 1);
+    session.on_client_close();
+    engine.stop(0);
+}
+
+#[test]
+fn udp_preactivation_shutdown_owns_and_drains_queued_ingress_before_close() {
+    assert_udp_preactivation_terminal_drains_ingress(false);
+}
+
+#[test]
+fn udp_preactivation_lifetime_owns_and_drains_queued_ingress_before_close() {
+    assert_udp_preactivation_terminal_drains_ingress(true);
+}
+
+fn assert_udp_preactivation_terminal_drains_ingress(lifetime: bool) {
+    const PAYLOAD: &[u8] = b"queued-before-activation";
+    let service_calls = Arc::new(AtomicUsize::new(0));
+    let calls = service_calls.clone();
+    let handler = TestHandler {
+        udp_matcher: Arc::new(move |meta| {
+            let calls = calls.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |_flow: crate::UdpFlow| {
+                    calls.fetch_add(1, Ordering::Relaxed);
+                    async { Ok::<(), Infallible>(()) }
+                })
+                .boxed(),
+            }
+        }),
+        ..TestHandler::passthrough()
+    };
+    let builder = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(TestRuntimeFactory);
+    let engine = if lifetime {
+        builder.with_udp_max_flow_lifetime(Duration::from_millis(300))
+    } else {
+        builder
+    }
+    .build()
+    .expect("build engine");
+    let budget = engine.udp_ingress_budget_for_test();
+    let close_budget = budget.clone();
+    let demand_count = Arc::new(AtomicUsize::new(0));
+    let demands = demand_count.clone();
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        |_| panic!("no preactivation egress callback"),
+        move || {
+            demands.fetch_add(1, Ordering::Relaxed);
+        },
+        move || {
+            _ = closed_tx.send(close_budget.snapshot());
+        },
+    ) else {
+        panic!("expected intercepted flow");
+    };
+    session.on_client_datagram(PAYLOAD, None);
+    assert_eq!(budget.snapshot().retained_bytes, PAYLOAD.len());
+    let engine = if lifetime {
+        Some(engine)
+    } else {
+        engine.stop(0);
+        None
+    };
+    let snapshot = closed_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("preactivation close");
+    assert_eq!(snapshot.accepted_bytes, PAYLOAD.len() as u64);
+    assert_eq!(snapshot.retained_bytes, 0);
+    assert_eq!(snapshot.charged_bytes, 0);
+    assert_eq!(service_calls.load(Ordering::Relaxed), 0);
+    assert_eq!(demand_count.load(Ordering::Relaxed), 0);
+    session.activate();
+    session.on_client_datagram(b"late", None);
+    assert_eq!(budget.snapshot().accepted_datagrams, 1);
+    session.on_client_close();
+    if let Some(engine) = engine {
+        engine.stop(0);
+    }
+}
+
+#[test]
 fn udp_idle_close_contains_service_destruction_panic() {
     assert_udp_terminal_drop_precedes_close(UdpTestTermination::Idle, UdpTestDropPanic::Service);
 }

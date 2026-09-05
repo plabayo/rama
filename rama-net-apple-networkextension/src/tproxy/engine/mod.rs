@@ -1665,27 +1665,9 @@ impl UdpFlowByteCounters {
 
 /// Data held between `new_udp_session` and `activate`.
 struct UdpSessionPendingData {
-    /// Delivers the completed [`UdpFlow`] to the waiting service task.
-    /// UDP egress is the service's responsibility — it can pool
-    /// sockets, apply platform-specific binding, or talk to a remote
-    /// transport entirely; the engine just gets datagrams in and out
-    /// of the intercepted client flow.
-    flow_tx: oneshot::Sender<UdpFlow>,
-    /// Ingress datagrams (client→service); handed to `UdpFlow` at activate.
-    /// Each [`Datagram`] carries the peer the originating app addressed
-    /// the datagram to.
-    client_rx: mpsc::Receiver<Datagram>,
-    /// service→client: datagram back to the intercepted client flow. The
-    /// datagram's peer is the `sentBy` endpoint Swift uses when calling
-    /// `NEAppProxyUDPFlow.writeDatagrams(_:sentBy:)`.
-    on_server_datagram: DatagramSink,
-    /// Shared ingress pressure/demand state captured into `UdpFlow` at
-    /// activation and retained by every charged payload clone.
-    ingress_control: Arc<UdpIngressFlowControl>,
-    /// Per-flow metadata. Shared as `Arc` because the service task
-    /// also needs it (close-event emission); a single refcount-bumped
-    /// clone is cheaper than copying the whole struct.
-    meta: Arc<TransparentProxyFlowMeta>,
+    /// The service task owns the receiver even before activation, so an early
+    /// terminal edge can drain queued payloads before recording close.
+    activate_tx: oneshot::Sender<()>,
 }
 
 pub struct TransparentProxyUdpSession {
@@ -1693,6 +1675,10 @@ pub struct TransparentProxyUdpSession {
     ingress_control: Arc<UdpIngressFlowControl>,
     #[cfg(feature = "dial9")]
     byte_counters: Arc<UdpFlowByteCounters>,
+    /// Deterministically suspend a test submission after admission, before
+    /// copying. Production never invokes a callback under the submission gate.
+    #[cfg(test)]
+    before_ingress_copy: Option<Arc<dyn Fn() + Send + Sync>>,
 
     flow_stop_tx: Option<oneshot::Sender<()>>,
     pending: Option<UdpSessionPendingData>,
@@ -1774,7 +1760,10 @@ impl TransparentProxyUdpSession {
         // (DTLS heartbeats, NAT-binding probes, keep-alives) rely on
         // them. Forward them through the bridge unchanged — the
         // service decides whether to filter, not the framework.
-        let Some(tx) = self.client_tx.as_mut() else {
+        let Some(tx) = self.client_tx.as_ref() else {
+            return;
+        };
+        let Some(submission) = self.ingress_control.begin_submission() else {
             return;
         };
         if self.ingress_control.drop_while_paused() {
@@ -1787,17 +1776,30 @@ impl TransparentProxyUdpSession {
         let permit = match tx.try_reserve() {
             Ok(permit) => permit,
             Err(TrySendError::Full(())) => {
+                drop(submission);
                 self.ingress_control
                     .reject_count_full(|| tx.try_reserve().is_ok());
                 return;
             }
             Err(TrySendError::Closed(())) => {
+                drop(submission);
                 self.ingress_control.close();
                 return;
             }
         };
-        let Some(payload) = self.ingress_control.try_copy_payload(bytes) else {
-            return;
+        #[cfg(test)]
+        if let Some(before_copy) = self.before_ingress_copy.as_ref() {
+            before_copy();
+        }
+        let payload = match self.ingress_control.try_copy_payload_without_demand(bytes) {
+            Ok(payload) => payload,
+            Err(reason) => {
+                drop(permit);
+                drop(submission);
+                self.ingress_control
+                    .reject_byte_pressure(reason, bytes.len());
+                return;
+            }
         };
         #[cfg(feature = "dial9")]
         {
@@ -1809,6 +1811,7 @@ impl TransparentProxyUdpSession {
         permit.send(Datagram { payload, peer });
         #[cfg(test)]
         self.ingress_control.record_accepted(bytes.len());
+        drop(submission);
     }
 
     pub fn on_client_close(&mut self) {
@@ -1837,8 +1840,8 @@ impl TransparentProxyUdpSession {
         // owns egress entirely; whatever sockets / state it holds
         // are torn down inside the service future as it unwinds.
         self.client_tx = None;
-        // Drop pending — drops bridge_tx so a service still parked on
-        // `bridge_rx.await` returns Err and the synthetic close fires.
+        // Drop pending so the task waiting for activation runs its close
+        // epilogue and drains the receiver it already owns.
         self.pending = None;
         // Detach the service task without aborting. Aborting here
         // would skip the close epilogue: the future would be dropped
@@ -1862,7 +1865,7 @@ impl TransparentProxyUdpSession {
 
     /// Activate the session.
     ///
-    /// Hands the prepared [`UdpFlow`] to the waiting service task.
+    /// Releases the waiting service task to use its prepared [`UdpFlow`].
     /// The engine does not open an egress socket — the service does,
     /// using whatever transport / socket-pooling strategy fits the
     /// handler. The flow's extensions carry the per-flow
@@ -1876,48 +1879,13 @@ impl TransparentProxyUdpSession {
             return;
         };
 
-        let UdpSessionPendingData {
-            flow_tx,
-            client_rx,
-            on_server_datagram,
-            ingress_control,
-            meta,
-        } = pending;
-
-        // ingress flow (client ↔ service)
-        let demand_control = ingress_control.clone();
-        let received_control = ingress_control.clone();
-        let ingress_flow = UdpFlow::new_with_io_demand(
-            client_rx,
-            on_server_datagram,
-            Some(Arc::new(move || demand_control.request_read())),
-            Some(Arc::new(move || {
-                received_control.on_channel_capacity_released()
-            })),
-            Some(Arc::new(move || ingress_control.close())),
-        );
-        let remote_endpoint = meta.remote_endpoint.clone();
-        let protocol = meta.protocol;
-        ingress_flow.extensions().insert_arc(meta);
-        if let Some(remote) = remote_endpoint {
-            ingress_flow.extensions().insert(ConnectorTarget(remote));
-        }
-
-        tracing::debug!(protocol = ?protocol, "udp session activated");
-
-        if flow_tx.send(ingress_flow).is_err() {
-            // The service task receives via `bridge_rx` exactly once.
-            // If we get here it means the task ended before activate
-            // ran — `parent_guard` cancelled (engine shutting down)
-            // or the task panicked. Either way the BridgeIo we just
-            // built is dropped, which closes the client-ingress
-            // channel from the receiver side. Log so a future
-            // "everything returns Closed" mystery has a breadcrumb.
+        if pending.activate_tx.send(()).is_err() {
             tracing::debug!(
                 target: "rama_apple_ne::tproxy",
-                protocol = ?protocol,
-                "udp activate: flow_tx.send dropped — service task ended before activate; per-flow ingress channel will report Closed",
+                "udp activate: service task ended before activation",
             );
+        } else {
+            tracing::debug!("udp session activated");
         }
     }
 }
@@ -2016,7 +1984,7 @@ where
     let flow_guard = flow_shutdown.guard();
 
     let (client_tx, client_rx) = mpsc::channel::<Datagram>(udp_channel_capacity);
-    let (flow_tx, flow_rx) = oneshot::channel::<UdpFlow>();
+    let (activate_tx, activate_rx) = oneshot::channel::<()>();
 
     // One mutex covers every Swift-bound callback for this session
     // (datagram, closed, demand). `on_client_close` flips it to false
@@ -2080,17 +2048,37 @@ where
     tracing::debug!(protocol = ?meta.protocol, "new udp session (pending egress connection)");
 
     // Build the meta as an Arc once and share it: the service task
-    // needs it for the close-event emission paths, and `activate`
-    // consumes it for the ingress flow's extension. Cloning the Arc
+    // needs it for the close-event emission paths and the ingress flow's
+    // extension. Cloning the Arc
     // is one refcount bump; cloning the owned value would copy the
     // whole struct.
     let meta_arc = std::sync::Arc::new(meta);
 
-    // Service task waits for BridgeIo; calls closed_sink when done.
+    // Own the receiver in the service task from creation. Activation only
+    // releases the service to poll it; early shutdown/lifetime expiry can
+    // therefore close admission and drain preactivation payloads itself.
+    let demand_control = ingress_control.clone();
+    let received_control = ingress_control.clone();
+    let closed_control = ingress_control.clone();
+    let flow = UdpFlow::new_with_io_demand(
+        client_rx,
+        datagram_sink,
+        Some(Arc::new(move || demand_control.request_read())),
+        Some(Arc::new(move || {
+            received_control.on_channel_capacity_released()
+        })),
+        Some(Arc::new(move || closed_control.close())),
+    );
+    flow.extensions().insert_arc(meta_arc.clone());
+    if let Some(remote) = meta_arc.remote_endpoint.clone() {
+        flow.extensions().insert(ConnectorTarget(remote));
+    }
+
+    // Service task waits for activation; calls closed_sink when done.
     //
     // Spawn through the rama `Executor` so dial9 wake-event tracking
     // is applied when the feature is on (see TCP path for context).
-    let meta_for_close = meta_arc.clone();
+    let meta_for_close = meta_arc;
     let flow_guard_for_task = flow_guard.clone();
     let idle_notify_for_task = idle_notify.clone();
     #[cfg(feature = "dial9")]
@@ -2110,7 +2098,7 @@ where
         // Activation is part of the same lifetime race. `biased` makes an
         // already-expired deadline win over an activation that becomes ready
         // in the same poll; cooperative shutdown still has highest priority.
-        let flow = tokio::select! {
+        let activation = tokio::select! {
             biased;
             () = flow_guard_for_task.cancelled() => Err(BridgeCloseReason::Shutdown),
             () = &mut lifetime_fut => {
@@ -2124,11 +2112,24 @@ where
                 );
                 Err(BridgeCloseReason::MaxLifetime)
             }
-            flow = flow_rx => flow.map_err(|_closed| BridgeCloseReason::Shutdown),
+            activation = activate_rx => activation.map_err(|_closed| BridgeCloseReason::Shutdown),
         };
-        let flow = match flow {
-            Ok(flow) => flow,
+        match activation {
+            Ok(()) => {}
             Err(close_reason) => {
+                let close_reason = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    drop((flow, service));
+                    close_reason
+                }))
+                .unwrap_or_else(|panic| {
+                    tracing::error!(
+                        target: "rama_apple_ne::tproxy",
+                        flow_id = meta_for_close.flow_id,
+                        panic_message = %panic_payload_message(panic.as_ref()),
+                        "transparent proxy udp preactivation destruction panicked; closing flow",
+                    );
+                    BridgeCloseReason::ServicePanic
+                });
                 #[cfg(feature = "dial9")]
                 {
                     let (bytes_in, bytes_out) = byte_counters_for_close.snapshot();
@@ -2155,7 +2156,7 @@ where
                 closed_sink();
                 return;
             }
-        };
+        }
         // Drive `service.serve(flow)` to completion, but observe up to
         // three additional terminators:
         //
@@ -2283,19 +2284,15 @@ where
         closed_sink();
     }));
 
-    let pending = UdpSessionPendingData {
-        flow_tx,
-        client_rx,
-        on_server_datagram: datagram_sink,
-        ingress_control: ingress_control.clone(),
-        meta: meta_arc,
-    };
+    let pending = UdpSessionPendingData { activate_tx };
 
     SessionFlowAction::Intercept(TransparentProxyUdpSession {
         client_tx: Some(client_tx),
         ingress_control,
         #[cfg(feature = "dial9")]
         byte_counters,
+        #[cfg(test)]
+        before_ingress_copy: None,
         flow_stop_tx: Some(flow_stop_tx),
         pending: Some(pending),
         service_task: Some(service_task),

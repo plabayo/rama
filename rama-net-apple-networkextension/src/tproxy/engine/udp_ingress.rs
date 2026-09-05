@@ -332,6 +332,12 @@ enum UdpIngressDropReason {
     GlobalBytes,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum UdpIngressBytePressure {
+    Flow,
+    Global,
+}
+
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) struct UdpIngressSnapshot {
@@ -1495,6 +1501,11 @@ pub(super) struct UdpIngressFlowControl {
     global_waiter_sequence: AtomicU64,
     release_waiter_sequence: AtomicU64,
     global_probe_id: AtomicU64,
+    /// Joins admitted copy/count/publish transactions before terminal receiver
+    /// destruction. Foreign demand callbacks must run after this gate drops.
+    submission_gate: parking_lot::Mutex<()>,
+    #[cfg(test)]
+    pub(super) submission_close_started: AtomicBool,
     demand_gate: parking_lot::Mutex<()>,
     demand: UdpDemandSink,
     auto_ack_probe_after_demand: bool,
@@ -1529,6 +1540,9 @@ impl UdpIngressFlowControl {
             global_waiter_sequence: AtomicU64::new(NO_GLOBAL_WAITER),
             release_waiter_sequence: AtomicU64::new(NO_RELEASE_WAITER),
             global_probe_id: AtomicU64::new(0),
+            submission_gate: parking_lot::Mutex::new(()),
+            #[cfg(test)]
+            submission_close_started: AtomicBool::new(false),
             demand_gate: parking_lot::Mutex::new(()),
             demand,
             auto_ack_probe_after_demand,
@@ -1551,13 +1565,23 @@ impl UdpIngressFlowControl {
     }
 
     pub(super) fn close(self: &Arc<Self>) {
+        #[cfg(test)]
+        self.submission_close_started.store(true, Ordering::Release);
         let old_state = {
-            // Serialize the terminal transition with demand dispatch. Once
-            // this method returns, no demand callback can still begin or be
-            // in flight through this control.
-            let _gate = self.demand_gate.lock();
+            // An OPEN check or reserved channel permit alone cannot join a
+            // concurrent receiver drop: outstanding permits can still publish
+            // after Tokio drains the receiver. Close admission and wait for
+            // every admitted copy/count/publish transaction first.
+            let _submission = self.submission_gate.lock();
             self.state.swap(INGRESS_CLOSED, Ordering::AcqRel)
         };
+        // Join demand only after releasing submission. A foreign ingress call
+        // can hold its session-entry lock while waiting for submission; an
+        // in-flight demand callback may need that same foreign lock to ACK.
+        // Holding both Rust gates here would invert those locks. CLOSED now
+        // rejects every new submission/demand, and this separate join waits
+        // for a demand that observed OPEN before the terminal transition.
+        drop(self.demand_gate.lock());
         if old_state == INGRESS_PAUSED_GLOBAL_BYTES {
             self.global.remove_waiter(self);
         }
@@ -1566,6 +1590,11 @@ impl UdpIngressFlowControl {
         if probe_id != 0 {
             _ = self.global.release_probe_lease(self, probe_id);
         }
+    }
+
+    pub(super) fn begin_submission(&self) -> Option<parking_lot::MutexGuard<'_, ()>> {
+        let submission = self.submission_gate.lock();
+        (self.state.load(Ordering::Acquire) != INGRESS_CLOSED).then_some(submission)
     }
 
     pub(super) fn drop_while_paused(&self) -> bool {
@@ -1603,10 +1632,16 @@ impl UdpIngressFlowControl {
         }
     }
 
-    pub(super) fn try_copy_payload(self: &Arc<Self>, bytes: &[u8]) -> Option<Bytes> {
+    /// Reserve and copy without invoking demand callbacks. The caller holds
+    /// its submission guard through counter publication and channel send, and
+    /// applies any returned pressure only after releasing that guard.
+    pub(super) fn try_copy_payload_without_demand(
+        self: &Arc<Self>,
+        bytes: &[u8],
+    ) -> Result<Bytes, UdpIngressBytePressure> {
         let len = bytes.len();
         if len == 0 && self.global_probe_id.load(Ordering::Acquire) == 0 {
-            return Some(Bytes::new());
+            return Ok(Bytes::new());
         }
         let Ok(_) =
             self.retained_bytes
@@ -1616,12 +1651,7 @@ impl UdpIngressFlowControl {
                         .filter(|next| *next <= self.max_retained_bytes)
                 })
         else {
-            self.global
-                .record_drop(self.flow_id, UdpIngressDropReason::FlowBytes);
-            if self.pause(INGRESS_PAUSED_FLOW_BYTES, len) {
-                self.resume_flow_bytes_if_capacity();
-            }
-            return None;
+            return Err(UdpIngressBytePressure::Flow);
         };
 
         let probe_id = self.global_probe_id.load(Ordering::Acquire);
@@ -1637,22 +1667,55 @@ impl UdpIngressFlowControl {
         if !global_reserved {
             let flow_previous = self.retained_bytes.fetch_sub(len, Ordering::AcqRel);
             debug_assert!(flow_previous >= len, "UDP flow byte reservation underflow");
-            self.global
-                .record_drop(self.flow_id, UdpIngressDropReason::GlobalBytes);
-            if self.pause(INGRESS_PAUSED_GLOBAL_BYTES, len) {
-                self.global.register_waiter(self);
-            }
-            return None;
+            return Err(UdpIngressBytePressure::Global);
         }
 
         if len == 0 {
-            return Some(Bytes::new());
+            return Ok(Bytes::new());
         }
 
-        Some(Bytes::from_owner(RetainedUdpPayload {
+        Ok(Bytes::from_owner(RetainedUdpPayload {
             bytes: Box::<[u8]>::from(bytes),
             flow: self.clone(),
         }))
+    }
+
+    pub(super) fn reject_byte_pressure(
+        self: &Arc<Self>,
+        reason: UdpIngressBytePressure,
+        len: usize,
+    ) {
+        match reason {
+            UdpIngressBytePressure::Flow => {
+                self.global
+                    .record_drop(self.flow_id, UdpIngressDropReason::FlowBytes);
+                if self.pause(INGRESS_PAUSED_FLOW_BYTES, len) {
+                    self.resume_flow_bytes_if_capacity();
+                }
+            }
+            UdpIngressBytePressure::Global => {
+                self.global
+                    .record_drop(self.flow_id, UdpIngressDropReason::GlobalBytes);
+                if self.pause(INGRESS_PAUSED_GLOBAL_BYTES, len) {
+                    self.global.register_waiter(self);
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn try_copy_payload(self: &Arc<Self>, bytes: &[u8]) -> Option<Bytes> {
+        let result = {
+            let _submission = self.begin_submission()?;
+            self.try_copy_payload_without_demand(bytes)
+        };
+        match result {
+            Ok(payload) => Some(payload),
+            Err(reason) => {
+                self.reject_byte_pressure(reason, bytes.len());
+                None
+            }
+        }
     }
 
     #[cfg(test)]
@@ -1798,6 +1861,147 @@ impl Drop for RetainedUdpPayload {
 mod tests {
     use super::*;
     use std::sync::Barrier;
+
+    #[test]
+    fn terminal_close_releases_submission_before_joining_demand() {
+        let foreign_session = Arc::new(parking_lot::Mutex::new(()));
+        let callback_session = foreign_session.clone();
+        let (demand_started_tx, demand_started_rx) = std::sync::mpsc::channel();
+        let (continue_tx, continue_rx) = std::sync::mpsc::channel();
+        let (callback_result_tx, callback_result_rx) = std::sync::mpsc::channel();
+        let flow = UdpIngressFlowControl::new(
+            100,
+            Arc::new(UdpIngressBudget::new(100)),
+            Arc::new(move |_| {
+                demand_started_tx.send(()).expect("demand entered");
+                // Model an ACK waiting for the session-entry lock held by
+                // ingress. Every mock lock wait is bounded even on failure.
+                let session = callback_session.try_lock_for(Duration::from_secs(3));
+                callback_result_tx
+                    .send(session.is_some())
+                    .expect("record ACK lock availability");
+            }),
+        );
+        let ingress_flow = flow.clone();
+        let (ingress_started_tx, ingress_started_rx) = std::sync::mpsc::channel();
+        let ingress = std::thread::spawn(move || {
+            let _session = foreign_session.lock();
+            ingress_started_tx
+                .send(())
+                .expect("ingress owns session lock");
+            let resumed = continue_rx.recv_timeout(Duration::from_secs(3)).is_ok();
+            let submission = ingress_flow
+                .submission_gate
+                .try_lock_for(Duration::from_secs(1));
+            (
+                resumed,
+                submission.is_some(),
+                ingress_flow.state.load(Ordering::Acquire) == INGRESS_CLOSED,
+            )
+        });
+        ingress_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("ingress entry active");
+        let demand_flow = flow.clone();
+        let demand = std::thread::spawn(move || demand_flow.request_read());
+        demand_started_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("demand active");
+        let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+        let closers: Vec<_> = (0..2)
+            .map(|_| {
+                let closing_flow = flow.clone();
+                let closed_tx = closed_tx.clone();
+                std::thread::spawn(move || {
+                    closing_flow.close();
+                    _ = closed_tx.send(());
+                })
+            })
+            .collect();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while flow.state.load(Ordering::Acquire) != INGRESS_CLOSED
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        let closed_before_demand_join = flow.state.load(Ordering::Acquire) == INGRESS_CLOSED;
+        let returned_before_demand_join = closed_rx.try_recv().is_ok();
+        continue_tx
+            .send(())
+            .expect("let ingress observe closed admission");
+        let ingress_result = ingress.join().expect("ingress returned");
+        let ack_completed = callback_result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("callback completed");
+        demand.join().expect("demand returned");
+        for closer in closers {
+            closer.join().expect("close returned");
+        }
+        assert!(
+            closed_before_demand_join,
+            "close must seal submission before joining demand"
+        );
+        assert!(
+            !returned_before_demand_join,
+            "each close must still join the active demand"
+        );
+        assert_eq!(
+            ingress_result,
+            (true, true, true),
+            "ingress must acquire submission and observe CLOSED"
+        );
+        assert!(
+            ack_completed,
+            "ACK must finish once closed ingress releases the foreign lock"
+        );
+        assert!(flow.begin_submission().is_none());
+    }
+
+    #[test]
+    fn byte_pressure_demand_runs_after_submission_guard_is_released() {
+        for global_pressure in [false, true] {
+            let global = Arc::new(UdpIngressBudget::new(100));
+            let owner = UdpIngressFlowControl::new(100, global.clone(), Arc::new(|_| {}));
+            let held = owner
+                .try_copy_payload(&[0; 90])
+                .expect("retained occupancy");
+            let flow_slot = Arc::new(std::sync::OnceLock::<Weak<UdpIngressFlowControl>>::new());
+            let callback_flow = flow_slot.clone();
+            let callbacks = Arc::new(AtomicUsize::new(0));
+            let callback_count = callbacks.clone();
+            let flow = UdpIngressFlowControl::new(
+                if global_pressure { 100 } else { 10 },
+                global.clone(),
+                Arc::new(move |_| {
+                    let flow = callback_flow
+                        .get()
+                        .expect("installed flow")
+                        .upgrade()
+                        .expect("live flow");
+                    assert!(
+                        flow.submission_gate.try_lock().is_some(),
+                        "demand held submission gate"
+                    );
+                    callback_count.fetch_add(1, Ordering::Relaxed);
+                }),
+            );
+            flow_slot
+                .set(Arc::downgrade(&flow))
+                .expect("install flow once");
+            assert!(flow.try_copy_payload(&[0; 20]).is_none());
+            if global_pressure {
+                // The partial discovery lease calls demand from the paced
+                // coordinator after failed ingress admission has returned.
+                global.wake_fitting_batch(tokio::time::Instant::now());
+            }
+            assert_eq!(callbacks.load(Ordering::Relaxed), 1);
+            flow.close();
+            assert!(flow.begin_submission().is_none());
+            assert!(flow.try_copy_payload(&[0]).is_none());
+            drop(held);
+            assert_eq!(global.snapshot().charged_bytes, 0);
+        }
+    }
 
     #[test]
     fn concurrent_global_reservations_never_cross_the_cap() {
