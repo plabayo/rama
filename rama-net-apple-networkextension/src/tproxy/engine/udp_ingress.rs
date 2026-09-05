@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     future::{Future, poll_fn},
+    ops::Bound,
     sync::{
         Arc, Weak,
         atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
@@ -71,10 +72,16 @@ struct UdpIngressCoordinatorState {
     release_wake_not_before: Option<tokio::time::Instant>,
     leases: BTreeMap<u64, UdpIngressProbeLease>,
     provisional_bytes: usize,
-    /// A constant-size sample of the oldest nonfitting waiters encountered in
-    /// the current complete scan pass. If the whole pass finds no exact fit,
-    /// the oldest live sample receives one partial discovery lease.
+    /// A constant-size cache of the oldest nonfitting waiters encountered in
+    /// the exact-fit pass. It starts discovery without revisiting tree nodes
+    /// already inspected in that turn; the cursor then covers the remainder.
     discovery_candidates: Vec<((u64, usize), Weak<UdpIngressFlowControl>)>,
+    /// After the initial finite exact-fit pass, continue discovery through
+    /// this frozen FIFO frontier. A cursor uses the existing tree rather than
+    /// retaining an unbounded candidate list or rescanning the population for
+    /// each completed small-packet probe.
+    discovery_frontier: Option<u64>,
+    discovery_cursor: Option<(u64, usize)>,
     /// Global probe issue pacing. ACK/close signals may free lease slots
     /// immediately, but cannot cause another coordinator issue turn before
     /// this instant.
@@ -87,6 +94,9 @@ struct UdpIngressCoordinatorState {
     /// Pending passes can include arrivals until their first inspection.
     /// After that point their finite inspection budget must not be extended.
     scan_started: bool,
+    /// Arrivals and releases during either phase receive one later pass;
+    /// they cannot reset or extend unfinished discovery.
+    scan_needs_followup: bool,
     observed_opportunity_epoch: u64,
 }
 
@@ -361,7 +371,10 @@ impl UdpIngressBudget {
     fn restart_scan_locked(coordinator: &mut UdpIngressCoordinatorState) {
         coordinator.scan_remaining = coordinator.waiters.len();
         coordinator.scan_started = false;
+        coordinator.scan_needs_followup = false;
         coordinator.discovery_candidates.clear();
+        coordinator.discovery_frontier = None;
+        coordinator.discovery_cursor = None;
     }
 
     fn schedule_flow_release(&self, flow: &Arc<UdpIngressFlowControl>) {
@@ -454,9 +467,13 @@ impl UdpIngressBudget {
 
     fn restart_quiescent_scan_locked(coordinator: &mut UdpIngressCoordinatorState) {
         if !coordinator.scan_started
-            || (coordinator.scan_remaining == 0 && coordinator.discovery_candidates.is_empty())
+            || (coordinator.scan_remaining == 0
+                && coordinator.discovery_candidates.is_empty()
+                && coordinator.discovery_frontier.is_none())
         {
             Self::restart_scan_locked(coordinator);
+        } else {
+            coordinator.scan_needs_followup = true;
         }
     }
 
@@ -605,9 +622,10 @@ impl UdpIngressBudget {
     }
 
     /// Give at most [`GLOBAL_WAKE_BATCH`] flows one charged retry lease.
-    /// Exact fits retain FIFO throughput. After one complete bounded pass finds
-    /// no exact fit, the oldest sampled nonfit receives the available headroom
-    /// as a discovery lease so a later smaller datagram can be observed.
+    /// After every flow in a finite FIFO pass has an exact-fit opportunity,
+    /// discover later smaller datagrams through that cohort in bounded turns.
+    /// Real releases cannot restart either phase before its remaining flows
+    /// receive their opportunity.
     fn wake_fitting_batch(&self, now: tokio::time::Instant) -> usize {
         let selected = {
             let mut coordinator = self.coordinator.lock();
@@ -685,59 +703,107 @@ impl UdpIngressBudget {
                 }
             }
 
-            if coordinator.scan_remaining == 0 && selected.len() < available_probe_slots {
-                let candidates = std::mem::take(&mut coordinator.discovery_candidates);
-                let had_discovery_candidates = !candidates.is_empty();
-                let mut discovery_issued = false;
-                for (key, candidate) in candidates {
-                    let Some(flow) = candidate.upgrade() else {
-                        continue;
-                    };
-                    if !coordinator.waiters.contains_key(&key)
-                        || flow.global_probe_id.load(Ordering::Acquire) != 0
-                    {
-                        continue;
-                    }
-                    let available = self
-                        .max_retained_bytes
-                        .saturating_sub(self.charged_bytes.load(Ordering::Acquire));
-                    let lease_bytes = key.1.min(available);
-                    if lease_bytes == 0 {
-                        break;
-                    }
-                    if let Some(probe_id) = self.issue_probe_lease_locked(
-                        &mut coordinator,
-                        key,
-                        &flow,
-                        lease_bytes,
-                        now,
-                    ) {
-                        selected.push((flow, probe_id));
-                        discovery_issued = true;
-                    }
-                    // One discovery consumes all currently available credit;
-                    // later candidates wait for the next genuine opportunity.
+            if coordinator.scan_remaining == 0
+                && coordinator.discovery_frontier.is_none()
+                && !coordinator.discovery_candidates.is_empty()
+            {
+                coordinator.discovery_frontier =
+                    coordinator.waiters.last_key_value().map(|(key, _)| key.0);
+            }
+
+            while coordinator.scan_remaining == 0
+                && selected.len() < available_probe_slots
+                && let Some(frontier) = coordinator.discovery_frontier
+            {
+                let available = self
+                    .max_retained_bytes
+                    .saturating_sub(self.charged_bytes.load(Ordering::Acquire));
+                if available == 0 {
+                    // Exact fitting traffic can temporarily consume every
+                    // byte. Neither its release nor its re-registration may
+                    // erase this completed pass's owed FIFO discovery.
                     break;
                 }
-                if !discovery_issued
-                    && !coordinator.waiters.is_empty()
-                    && self.charged_bytes.load(Ordering::Acquire) < self.max_retained_bytes
-                    && (had_discovery_candidates || coordinator.leases.is_empty())
-                {
-                    // The constant-size discovery sample can become stale
-                    // while a multi-turn pass is in progress. Start another
-                    // finite pass so its remaining live waiters replenish the
-                    // sample. The turn cooldown below preserves 1ms pacing;
-                    // dead-only registries are pruned in bounded batches and
-                    // then quiesce once the map becomes empty. If the sample
-                    // was empty because every waiter already owns an active
-                    // insufficient lease, keep the pass complete instead:
-                    // its earliest lease deadline is the next real capacity
-                    // opportunity, avoiding a full scan every millisecond.
-                    Self::restart_scan_locked(&mut coordinator);
+                let sampled = !coordinator.discovery_candidates.is_empty();
+                let candidate = if sampled {
+                    coordinator.discovery_candidates.first().cloned()
+                } else {
+                    if inspected == GLOBAL_SCAN_BATCH {
+                        break;
+                    }
+                    match coordinator.discovery_cursor {
+                        Some(cursor) if cursor.0 > frontier => None,
+                        cursor => coordinator
+                            .waiters
+                            .range((
+                                cursor.map_or(Bound::Unbounded, Bound::Excluded),
+                                Bound::Included((frontier, usize::MAX)),
+                            ))
+                            .next()
+                            .map(|(&key, candidate)| (key, candidate.clone())),
+                    }
+                };
+                let Some((key, candidate)) = candidate else {
+                    coordinator.discovery_frontier = None;
+                    coordinator.discovery_cursor = None;
+                    break;
+                };
+                if !sampled {
+                    inspected += 1;
+                    #[cfg(test)]
+                    self.coordinator_waiter_inspections
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                let flow = candidate.upgrade();
+                let eligible = flow.as_ref().filter(|flow| {
+                    coordinator.waiters.contains_key(&key)
+                        && flow.global_probe_id.load(Ordering::Acquire) == 0
+                });
+                let issued = if let Some(flow) = eligible {
+                    let Some(probe_id) = self.issue_probe_lease_locked(
+                        &mut coordinator,
+                        key,
+                        flow,
+                        key.1.min(available),
+                        now,
+                    ) else {
+                        // An admission which began before waiter publication
+                        // raced the headroom snapshot. Preserve this cursor.
+                        break;
+                    };
+                    Some((flow.clone(), probe_id))
+                } else {
+                    if flow.is_none() && coordinator.waiters.remove(&key).is_some() {
+                        self.waiter_count.fetch_sub(1, Ordering::SeqCst);
+                    }
+                    None
+                };
+                if sampled {
+                    coordinator.discovery_candidates.remove(0);
+                }
+                coordinator.discovery_cursor = Some(
+                    coordinator
+                        .discovery_cursor
+                        .map_or(key, |cursor| cursor.max(key)),
+                );
+                if let Some(issued) = issued {
+                    selected.push(issued);
+                    // At most one discovery per paced turn. Keep the cursor
+                    // and the remaining constant-size sample for later real
+                    // capacity opportunities, without another population scan.
+                    break;
                 }
             }
-            if inspected != 0 {
+            if coordinator.waiters.is_empty() {
+                Self::restart_scan_locked(&mut coordinator);
+            } else if coordinator.scan_remaining == 0
+                && coordinator.discovery_frontier.is_none()
+                && coordinator.discovery_candidates.is_empty()
+                && coordinator.scan_needs_followup
+            {
+                Self::restart_scan_locked(&mut coordinator);
+            }
+            if inspected != 0 || !selected.is_empty() {
                 coordinator.wake_not_before = Some(now + GLOBAL_WAKE_RETRY);
             }
             selected
@@ -1010,7 +1076,9 @@ impl UdpIngressBudget {
             self.charged_bytes.load(Ordering::Acquire) < self.max_retained_bytes;
         let waiter_deadline = (coordinator.leases.len() < GLOBAL_WAKE_BATCH
             && has_unleased_capacity
-            && (coordinator.scan_remaining != 0 || !coordinator.discovery_candidates.is_empty())
+            && (coordinator.scan_remaining != 0
+                || !coordinator.discovery_candidates.is_empty()
+                || coordinator.discovery_frontier.is_some())
             && !coordinator.waiters.is_empty())
         .then(|| {
             coordinator
@@ -2974,6 +3042,215 @@ mod tests {
     }
 
     #[test]
+    fn exact_capacity_fitting_retries_do_not_starve_partial_discovery() {
+        let global = Arc::new(UdpIngressBudget::new(100));
+        let holder = UdpIngressFlowControl::new(100, global.clone(), Arc::new(|_| {}));
+        let retained = holder.try_copy_payload(&[0; 90]).expect("retain occupancy");
+        let observed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let large = {
+            let observed = observed.clone();
+            UdpIngressFlowControl::new(
+                20,
+                global.clone(),
+                Arc::new(move |probe_id| observed.lock().push((0, probe_id))),
+            )
+        };
+        let fitting = {
+            let observed = observed.clone();
+            UdpIngressFlowControl::new(
+                10,
+                global.clone(),
+                Arc::new(move |probe_id| observed.lock().push((1, probe_id))),
+            )
+        };
+        assert!(large.try_copy_payload(&[0; 20]).is_none());
+        assert!(fitting.try_copy_payload(&[0; 10]).is_none());
+
+        let mut now = tokio::time::Instant::now();
+        let mut discovered_large_hint = false;
+        for _ in 0..16 {
+            let before = global.snapshot().coordinator_waiter_inspections;
+            _ = global.wake_fitting_batch(now);
+            assert!(
+                global.snapshot().coordinator_waiter_inspections - before
+                    <= GLOBAL_SCAN_BATCH as u64
+            );
+            for (index, probe_id) in std::mem::take(&mut *observed.lock()) {
+                if index == 0 {
+                    assert!(global.acknowledge_probe_lease(&large, probe_id, now));
+                    let payload = large
+                        .try_copy_payload(&[0])
+                        .expect("the next small packet consumes the discovery lease");
+                    drop(payload);
+                    discovered_large_hint = true;
+                } else {
+                    assert!(global.acknowledge_probe_lease(&fitting, probe_id, now));
+                    let payload = fitting
+                        .try_copy_payload(&[0; 10])
+                        .expect("the fitting flow consumes all free capacity");
+                    assert_eq!(
+                        global.next_coordinator_deadline(now),
+                        None,
+                        "owed discovery must not schedule turns while all capacity is retained"
+                    );
+                    drop(payload);
+                    assert!(fitting.try_copy_payload(&[0; 10]).is_none());
+                }
+            }
+            if discovered_large_hint {
+                break;
+            }
+            now += GLOBAL_WAKE_RETRY;
+        }
+
+        large.close();
+        fitting.close();
+        holder.close();
+        drop(retained);
+        assert_eq!(global.snapshot().charged_bytes, 0);
+        assert!(
+            discovered_large_hint,
+            "a fitting flow repeatedly consuming the last free byte must not erase owed discovery"
+        );
+    }
+
+    #[test]
+    fn exhausted_capacity_discovery_survives_fitter_expiry_and_oldest_cancellation() {
+        let global = Arc::new(UdpIngressBudget::new(100));
+        let holder = UdpIngressFlowControl::new(100, global.clone(), Arc::new(|_| {}));
+        let retained = holder.try_copy_payload(&[0; 90]).expect("retain occupancy");
+        let observed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mut flows = Vec::new();
+        for (index, size) in [20, 20, 10].into_iter().enumerate() {
+            let observed = observed.clone();
+            let flow = UdpIngressFlowControl::new(
+                size,
+                global.clone(),
+                Arc::new(move |probe_id| observed.lock().push((index, probe_id))),
+            );
+            assert!(flow.try_copy_payload(&vec![0; size]).is_none());
+            flows.push(flow);
+        }
+
+        let now = tokio::time::Instant::now();
+        assert_eq!(global.wake_fitting_batch(now), 1);
+        assert_eq!(
+            observed.lock()[0].0,
+            2,
+            "the exact fit gets the first grant"
+        );
+        flows[0].close();
+        assert_eq!(
+            global.next_coordinator_deadline(now),
+            Some(now + DEFAULT_UDP_INGRESS_PROBE_LEASE),
+            "full capacity must wait for the existing lease, not a scan timer"
+        );
+
+        let expired_at = now + DEFAULT_UDP_INGRESS_PROBE_LEASE;
+        assert_eq!(global.wake_fitting_batch(expired_at), 1);
+        let (index, probe_id) = observed.lock()[1];
+        assert_eq!(
+            index, 1,
+            "cancellation must preserve the next owed discovery"
+        );
+        assert!(global.acknowledge_probe_lease(&flows[index], probe_id, expired_at));
+        let payload = flows[index]
+            .try_copy_payload(&[0])
+            .expect("smaller packet consumes the credit released by expiry");
+        drop(payload);
+        assert_eq!(global.wake_fitting_batch(expired_at), 0);
+        for flow in flows {
+            flow.close();
+        }
+        holder.close();
+        drop(retained);
+        assert_eq!(global.snapshot().charged_bytes, 0);
+    }
+
+    #[test]
+    fn partial_discovery_total_work_is_linear_across_released_small_packets() {
+        for flow_count in [128, 256, 8_192] {
+            assert_partial_discovery_total_work_is_linear(flow_count, true);
+        }
+    }
+
+    #[test]
+    fn partial_discovery_total_work_is_linear_across_nonfitting_reparks() {
+        for flow_count in [128, 256, 8_192] {
+            assert_partial_discovery_total_work_is_linear(flow_count, false);
+        }
+    }
+
+    fn assert_partial_discovery_total_work_is_linear(flow_count: usize, small_next_packet: bool) {
+        let global = Arc::new(UdpIngressBudget::new(100));
+        let holder = UdpIngressFlowControl::new(100, global.clone(), Arc::new(|_| {}));
+        let retained = holder.try_copy_payload(&[0; 90]).expect("retain occupancy");
+        let observed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mut flows = Vec::with_capacity(flow_count);
+        for index in 0..flow_count {
+            let observed = observed.clone();
+            let flow = UdpIngressFlowControl::new(
+                20,
+                global.clone(),
+                Arc::new(move |probe_id| observed.lock().push((index, probe_id))),
+            );
+            assert!(flow.try_copy_payload(&[0; 20]).is_none());
+            flows.push(flow);
+        }
+
+        let mut now = tokio::time::Instant::now();
+        let mut served = 0;
+        for _ in 0..flow_count * flow_count {
+            let before = global.snapshot().coordinator_waiter_inspections;
+            _ = global.wake_fitting_batch(now);
+            assert!(
+                global.snapshot().coordinator_waiter_inspections - before
+                    <= GLOBAL_SCAN_BATCH as u64
+            );
+            for (index, probe_id) in std::mem::take(&mut *observed.lock()) {
+                assert_eq!(
+                    index, served,
+                    "partial discovery preserves FIFO opportunity"
+                );
+                assert!(global.acknowledge_probe_lease(&flows[index], probe_id, now));
+                if small_next_packet {
+                    let payload = flows[index]
+                        .try_copy_payload(&[0])
+                        .expect("the next small packet fits the partial lease");
+                    flows[index].close();
+                    drop(payload);
+                } else {
+                    assert!(flows[index].try_copy_payload(&[0; 20]).is_none());
+                }
+                served += 1;
+            }
+            if served == flow_count {
+                break;
+            }
+            now += if small_next_packet {
+                GLOBAL_WAKE_RETRY
+            } else {
+                GLOBAL_ACKED_PROBE_DELIVERY_GRACE
+            };
+        }
+        let inspections = global.snapshot().coordinator_waiter_inspections;
+        for flow in flows {
+            flow.close();
+        }
+        holder.close();
+        drop(retained);
+        assert_eq!(global.snapshot().charged_bytes, 0);
+        assert_eq!(served, flow_count);
+        eprintln!(
+            "{flow_count} flows, small_next_packet={small_next_packet}: {inspections} inspections"
+        );
+        assert!(
+            inspections <= (flow_count * 2) as u64,
+            "{flow_count} flows required {inspections} waiter inspections; one exact-fit pass plus one discovery traversal must suffice"
+        );
+    }
+
+    #[test]
     fn bounded_rotation_reaches_small_waiter_behind_nonfitting_oldest() {
         let global = Arc::new(UdpIngressBudget::new(2));
         let holder = UdpIngressFlowControl::new(2, global.clone(), Arc::new(|_| {}));
@@ -3077,7 +3354,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn vanished_discovery_sample_starts_one_paced_fresh_pass() {
+    async fn vanished_discovery_sample_continues_with_bounded_fifo_cursor() {
         const FLOW_COUNT: usize = GLOBAL_SCAN_BATCH * 3;
         let global = Arc::new(UdpIngressBudget::new(100));
         let holder = UdpIngressFlowControl::new(100, global.clone(), Arc::new(|_| {}));
@@ -3120,8 +3397,7 @@ mod tests {
             FLOW_COUNT - GLOBAL_WAKE_BATCH
         );
 
-        let remaining_turns = (FLOW_COUNT - GLOBAL_SCAN_BATCH).div_ceil(GLOBAL_SCAN_BATCH)
-            + (FLOW_COUNT - GLOBAL_WAKE_BATCH).div_ceil(GLOBAL_SCAN_BATCH);
+        let remaining_turns = (FLOW_COUNT - GLOBAL_SCAN_BATCH).div_ceil(GLOBAL_SCAN_BATCH) + 1;
         for _ in 0..remaining_turns {
             let before = global.snapshot().coordinator_waiter_inspections;
             tokio::time::advance(GLOBAL_WAKE_RETRY).await;
@@ -3139,10 +3415,9 @@ mod tests {
             assert_eq!(observed[0].0, GLOBAL_WAKE_BATCH);
             assert_ne!(observed[0].1, 0);
         }
-        assert_eq!(
-            global.snapshot().coordinator_waiter_inspections,
-            (FLOW_COUNT + FLOW_COUNT - GLOBAL_WAKE_BATCH) as u64,
-            "one original pass plus one fresh finite pass must suffice"
+        assert!(
+            global.snapshot().coordinator_waiter_inspections <= (FLOW_COUNT + 1) as u64,
+            "the completed pass must continue at the next live FIFO node without rescanning"
         );
         assert_eq!(global.snapshot().provisional_probe_count, 1);
 
