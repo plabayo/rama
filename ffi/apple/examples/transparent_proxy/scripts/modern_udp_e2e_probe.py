@@ -397,6 +397,8 @@ def _exchange_probe(protocol, server, query, timeout, expect_no_response, name,
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             sock.settimeout(timeout)
+            # NE needs a local port at its pre-open flow decision callback.
+            sock.bind(("0.0.0.0", 0))
             written = sock.sendto(query, (server, 53 if protocol == "dns" else 123))
             if receipt is not None:
                 receipt["sent_bytes"] = written
@@ -521,6 +523,7 @@ def pressure_burst(server: str, count: int, payload_bytes: int, settle: float) -
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
+        sock.bind(("0.0.0.0", 0))
         for sequence in range(count):
             if sequence:
                 # The scoped service keeps receiving and retaining payloads
@@ -776,8 +779,9 @@ def controlled_echo_load(
     try:
         for _ in range(socket_count):
             sock = socket.socket(family, socket.SOCK_DGRAM)
-            sock.settimeout(timeout)
             sockets.append(sock)
+            sock.bind(("0.0.0.0" if address.version == 4 else "::", 0))
+            sock.settimeout(timeout)
             # Select the routed local address before recording flow identity.
             # An unconnected sendto socket can retain 0.0.0.0/:: in getsockname.
             sock.connect((str(address), port))

@@ -1294,21 +1294,30 @@ class DnsWireValidationTests(unittest.TestCase):
 
 class ProtocolProbeReceiptTests(unittest.TestCase):
     def capture(self, root, label, *, outcome="response", mutate=None, close_error=False,
-                partial_send=False, early_timeout=False):
+                partial_send=False, early_timeout=False, bind_error=False):
         """Mock only our socket and clock; never contact a protocol endpoint."""
         protocol = "ntp" if label in ("ntp", "recovery") else "dns"
         server, port = ("162.159.200.1", 123) if protocol == "ntp" else ("8.8.8.8", 53)
         now = [10_000_000_000]
         sent = []
         received = []
+        binds = []
+        closes = []
         timeout = 4 if label == "blocked" else 8
         path = root / f"udp-probe-{label}.json"
 
         class MockSocket:
+            def bind(self, endpoint):
+                binds.append(endpoint)
+                if bind_error:
+                    raise OSError("ordinary mocked bind error")
+
             def settimeout(self, seconds):
                 self.timeout = seconds
 
             def sendto(self, packet, endpoint):
+                if binds != [("0.0.0.0", 0)]:
+                    raise AssertionError("probe sent before ephemeral bind")
                 sent.append((bytes(packet), endpoint))
                 now[0] += 1_000_000
                 return len(packet) - int(partial_send)
@@ -1330,6 +1339,7 @@ class ProtocolProbeReceiptTests(unittest.TestCase):
                 return mutate(*pair) if mutate else pair
 
             def close(self):
+                closes.append(True)
                 if close_error:
                     raise OSError("ordinary mocked close error")
 
@@ -1347,9 +1357,12 @@ class ProtocolProbeReceiptTests(unittest.TestCase):
                     udp_probe.ntp_query(server, timeout, **keywords)
             except Exception as caught:
                 error = caught
-        self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0][1], (server, port))
-        self.assertEqual(received, [] if partial_send else [65_535])
+        self.assertEqual(binds, [("0.0.0.0", 0)])
+        self.assertEqual(closes, [True])
+        self.assertEqual(len(sent), 0 if bind_error else 1)
+        if sent:
+            self.assertEqual(sent[0][1], (server, port))
+        self.assertEqual(received, [] if partial_send or bind_error else [65_535])
         self.assertFalse(list(root.glob(".udp-probe-*.tmp")))
         return path, error
 
@@ -1370,6 +1383,16 @@ class ProtocolProbeReceiptTests(unittest.TestCase):
                     self.assertEqual(len(bytes.fromhex(value["request_hex"])), value["sent_bytes"])
                     self.assertEqual(value["response_hex"] is None, label == "blocked")
                     self.assertEqual(path.stat().st_nlink, 1)
+
+    def test_bind_failure_closes_without_traffic_and_publishes_failure(self):
+        for label in udp_probe.PROBE_LABELS:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                path, error = self.capture(Path(temporary), label, bind_error=True)
+                self.assertIsInstance(error, OSError)
+                value = udp_probe.read_probe_receipt(path)
+                self.assertEqual(value["sent_bytes"], 0)
+                self.assertEqual(value["receive_outcome"], "not_started")
+                self.assertEqual(self.replay(value), udp_probe.PROBE_ERROR_EXIT)
 
     def test_malformed_packets_and_wrong_peers_preserve_raw_failed_outcomes(self):
         mutations = (
@@ -2030,11 +2053,20 @@ class PressureProbePacingTests(unittest.TestCase):
             self.partial = set()
             self.timeout = None
             self.closes = 0
+            self.binds = []
+            self.bind_error = None
+
+        def bind(self, endpoint):
+            self.binds.append(endpoint)
+            if self.bind_error is not None:
+                raise self.bind_error
 
         def settimeout(self, seconds):
             self.timeout = seconds
 
         def sendto(self, packet, peer):
+            if self.binds != [("0.0.0.0", 0)]:
+                raise AssertionError("pressure probe sent before ephemeral bind")
             sequence = len(self.attempts)
             started = self.clock.now
             self.clock.now += self.delays.get(sequence, 0.0)
@@ -2075,6 +2107,7 @@ class PressureProbePacingTests(unittest.TestCase):
         self.assertEqual(len(self.socket.attempts), 512)
         self.assert_once_only_sequences()
         self.factory.assert_called_once_with(socket.AF_INET, socket.SOCK_DGRAM)
+        self.assertEqual(self.socket.binds, [("0.0.0.0", 0)])
         self.assertEqual(self.socket.closes, 1)
         self.output.assert_called_once()
         self.assertLess(self.socket.attempts[65][3] - 100, 2.0)
@@ -2085,6 +2118,16 @@ class PressureProbePacingTests(unittest.TestCase):
         self.assertEqual(self.clock.sleeps[-1][1], 4.0)
         self.assertAlmostEqual(self.clock.now - 100, 16.7)
         self.assertTrue(all(row[4] == 5.0 for row in self.socket.attempts))
+
+    def test_bind_failure_closes_without_sending_or_pacing(self):
+        self.socket.bind_error = OSError("ordinary mocked bind error")
+        with self.assertRaisesRegex(OSError, "bind error"):
+            self.run_probe()
+        self.assertEqual(self.socket.binds, [("0.0.0.0", 0)])
+        self.assertEqual(self.socket.attempts, [])
+        self.assertEqual(self.socket.closes, 1)
+        self.assertEqual(self.clock.sleeps, [])
+        self.output.assert_not_called()
 
     def test_scheduler_and_send_delays_do_not_compress_later_intervals(self):
         self.clock.oversleep[40] = 0.7
@@ -2283,6 +2326,13 @@ class QuicShapedEchoTests(unittest.TestCase):
         server.settimeout(2)
         port = server.getsockname()[1]
         observed_endpoints = set()
+        socket_factory = socket.socket
+        clients = []
+
+        def client_socket(*args):
+            client = mock.Mock(wraps=socket_factory(*args))
+            clients.append(client)
+            return client
 
         def echo():
             for _ in range(8):
@@ -2295,17 +2345,55 @@ class QuicShapedEchoTests(unittest.TestCase):
         thread.start()
         with tempfile.TemporaryDirectory() as directory:
             result = Path(directory) / "result.json"
-            controlled_echo_load(
-                "127.0.0.1", port, RUN_UUID, 8, 1, 1200, 4, 2, str(result)
-            )
+            with mock.patch.object(udp_probe.socket, "socket", side_effect=client_socket):
+                controlled_echo_load(
+                    "127.0.0.1", port, RUN_UUID, 8, 1, 1200, 4, 2, str(result)
+                )
             value = json.loads(result.read_text())
             self.assertTrue(value["passed"])
             self.assertEqual(value["exact_echo_count"], 8)
             self.assertEqual(value["independent_socket_count"], 8)
             self.assertEqual(set(value["local_endpoints"]), observed_endpoints)
             self.assertEqual(value["payload_set_sha256"], value["echo_set_sha256"])
+            self.assertEqual(len(clients), 8)
+            for client in clients:
+                client.bind.assert_called_once_with(("0.0.0.0", 0))
+                calls = [call[0] for call in client.method_calls]
+                self.assertLess(calls.index("bind"), calls.index("connect"))
+                self.assertLess(calls.index("connect"), calls.index("send"))
+                client.close.assert_called_once()
         thread.join(timeout=2)
         self.assertFalse(thread.is_alive())
+
+    def test_echo_setup_failures_close_every_created_socket_before_traffic(self):
+        for server, family, wildcard in (
+            ("127.0.0.1", socket.AF_INET, "0.0.0.0"),
+            ("::1", socket.AF_INET6, "::"),
+        ):
+            for failing_step in ("bind", "settimeout", "connect"):
+                with self.subTest(server=server, failing_step=failing_step):
+                    first, second = mock.Mock(), mock.Mock()
+                    first.getsockname.return_value = (server, 50001)
+                    getattr(second, failing_step).side_effect = OSError("ordinary setup failure")
+                    with mock.patch.object(udp_probe.socket, "socket", side_effect=[first, second]) as factory:
+                        with self.assertRaisesRegex(OSError, "ordinary setup failure"):
+                            controlled_echo_load(
+                                server, 44444, RUN_UUID, 3, 1, 1200, 3, 2,
+                                "/does/not/matter.json",
+                            )
+                    self.assertEqual(factory.call_args_list, [
+                        mock.call(family, socket.SOCK_DGRAM),
+                        mock.call(family, socket.SOCK_DGRAM),
+                    ])
+                    for client in (first, second):
+                        client.bind.assert_called_once_with((wildcard, 0))
+                        client.send.assert_not_called()
+                        client.recvfrom.assert_not_called()
+                        client.close.assert_called_once()
+                    self.assertEqual(first.method_calls[:3], [
+                        mock.call.bind((wildcard, 0)), mock.call.settimeout(2),
+                        mock.call.connect((server, 44444)),
+                    ])
 
     def test_mutated_echo_is_a_product_violation(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
