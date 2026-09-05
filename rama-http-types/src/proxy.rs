@@ -4,25 +4,6 @@ use rama_core::{
     matcher::Matcher,
 };
 
-/// How an established HTTP-proxy connection carries application HTTP.
-///
-/// This complements [`rama_net::client::ProxyRoute`], which identifies the
-/// selected route and proxy address. `Forward` means application requests are
-/// sent directly to the proxy (using absolute-form request targets on HTTP/1).
-/// `Tunnel` means a successful CONNECT handshake has made the proxy connection
-/// opaque to subsequent application HTTP.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
-#[extension(tags(http, proxy))]
-pub enum HttpProxyConnectionMode {
-    /// Application HTTP is not exchanged with an HTTP proxy. This also covers
-    /// HTTP carried through a non-HTTP transport proxy such as SOCKS.
-    Direct,
-    /// Application HTTP is exchanged directly with the forward proxy.
-    Forward,
-    /// Application HTTP is exchanged inside a successful CONNECT tunnel.
-    Tunnel,
-}
-
 /// Requested handling of plaintext HTTP and WebSocket traffic through an
 /// HTTP(S) proxy.
 ///

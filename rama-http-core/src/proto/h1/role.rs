@@ -1502,7 +1502,7 @@ fn extend(dst: &mut Vec<u8>, data: &[u8]) {
 /// - forward HTTP proxy + insecure scheme -> absolute-form (`http://host/path`)
 /// - otherwise -> origin-form (`/path?query`)
 ///
-/// The `HttpProxyConnectionMode` extension is the one extra connection signal
+/// The `EstablishedProxyRoute` extension is the one extra connection signal
 /// H1 needs that h2's `Pseudo::request` does not (h2 has no absolute-form). The
 /// form writers normalise an empty path to `/` and strip the userinfo/fragment
 /// that must not reach the wire.
@@ -1538,10 +1538,9 @@ mod tests {
 
     #[test]
     fn encode_request_target_forms() {
-        use rama_http_types::proxy::HttpProxyConnectionMode;
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
-        use rama_net::client::ProxyRoute;
+        use rama_net::client::{EstablishedProxyRoute, ProxyRoute};
         use rama_net::uri::Uri;
 
         fn target(method: &Method, uri: &str, ext: &Extensions) -> String {
@@ -1552,12 +1551,11 @@ mod tests {
 
         fn http_proxy_ext() -> Extensions {
             let ext = Extensions::new();
-            ext.insert(ProxyRoute::Proxy(ProxyAddress {
+            ext.insert(EstablishedProxyRoute::Forward(ProxyAddress {
                 address: HostWithPort::example_domain_http(),
                 credential: None,
                 protocol: Some(Protocol::HTTP),
             }));
-            ext.insert(HttpProxyConnectionMode::Forward);
             ext
         }
 
@@ -1623,7 +1621,7 @@ mod tests {
     fn encode_request_target_uses_full_protocol_resolution() {
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
-        use rama_net::client::ProxyRoute;
+        use rama_net::client::EstablishedProxyRoute;
         use rama_net::uri::Uri;
 
         // A scheme-less request whose protocol is HTTPS *only* via an inserted `Protocol`
@@ -1632,15 +1630,28 @@ mod tests {
         // resolver that `encode_request_target` uses catches it. (The real `SecureTransport`
         // arm — and the feature wiring it needs — is guarded by the `tls` test below.)
         let ext = Extensions::new();
-        ext.insert(ProxyRoute::Proxy(ProxyAddress {
+        ext.insert(EstablishedProxyRoute::Forward(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
         }));
         ext.insert(Protocol::HTTPS);
 
+        // Check the fallible encoder too: the wrapper's defensive fallback
+        // would otherwise hide a NoScheme error behind the same relative URI.
+        let uri = Uri::parse("/p?q=1").unwrap();
+        let mut checked = BytesMut::new();
+        rama_http_types::proto::h1::head::encode_request_target(
+            &Method::GET,
+            &uri,
+            &ext,
+            &mut checked,
+        )
+        .expect("secure protocol metadata must produce a valid origin-form target");
+        assert_eq!(&checked[..], b"/p?q=1");
+
         let mut dst = Vec::new();
-        encode_request_target(&Method::GET, &Uri::parse("/p?q=1").unwrap(), &ext, &mut dst);
+        encode_request_target(&Method::GET, &uri, &ext, &mut dst);
         assert_eq!(String::from_utf8(dst).unwrap(), "/p?q=1");
     }
 
@@ -1654,20 +1665,31 @@ mod tests {
     fn encode_request_target_honors_real_secure_transport() {
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
-        use rama_net::client::ProxyRoute;
+        use rama_net::client::EstablishedProxyRoute;
         use rama_net::uri::Uri;
         use rama_tls::SecureTransport;
 
         let ext = Extensions::new();
-        ext.insert(ProxyRoute::Proxy(ProxyAddress {
+        ext.insert(EstablishedProxyRoute::Forward(ProxyAddress {
             address: HostWithPort::example_domain_http(),
             credential: None,
             protocol: Some(Protocol::HTTP),
         }));
         ext.insert(SecureTransport::default());
 
+        let uri = Uri::parse("/p?q=1").unwrap();
+        let mut checked = BytesMut::new();
+        rama_http_types::proto::h1::head::encode_request_target(
+            &Method::GET,
+            &uri,
+            &ext,
+            &mut checked,
+        )
+        .expect("TLS metadata must produce a valid origin-form target");
+        assert_eq!(&checked[..], b"/p?q=1");
+
         let mut dst = Vec::new();
-        encode_request_target(&Method::GET, &Uri::parse("/p?q=1").unwrap(), &ext, &mut dst);
+        encode_request_target(&Method::GET, &uri, &ext, &mut dst);
         assert_eq!(String::from_utf8(dst).unwrap(), "/p?q=1");
     }
 

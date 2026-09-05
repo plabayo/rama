@@ -1917,10 +1917,9 @@ mod conn {
 
     #[test]
     fn uri_absolute_form() {
-        use rama::http::HttpProxyConnectionMode;
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
-        use rama_net::client::ProxyRoute;
+        use rama_net::client::EstablishedProxyRoute;
 
         let (server, addr) = setup_std_test_server();
         let rt = support::runtime();
@@ -1961,15 +1960,14 @@ mod conn {
             .uri("http://rama.local/a")
             .body(Empty::<Bytes>::new())
             .unwrap();
-        // A low-level h1 client has no connector to publish the established mode,
-        // so its caller must supply that fact explicitly. `ProxyRoute` identifies
-        // the selected route but is not enough to prove forward-proxy semantics.
-        req.extensions().insert(ProxyRoute::Proxy(ProxyAddress {
-            address: HostWithPort::example_domain_http(),
-            credential: None,
-            protocol: Some(Protocol::HTTP),
-        }));
-        req.extensions().insert(HttpProxyConnectionMode::Forward);
+        // A low-level h1 client has no connector to publish the established
+        // route, so its caller must supply that connection fact explicitly.
+        req.extensions()
+            .insert(EstablishedProxyRoute::Forward(ProxyAddress {
+                address: HostWithPort::example_domain_http(),
+                credential: None,
+                protocol: Some(Protocol::HTTP),
+            }));
 
         let res = client.send_request(req).and_then(move |res| {
             assert_eq!(res.status(), rama::http::StatusCode::OK);

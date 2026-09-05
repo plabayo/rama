@@ -1,23 +1,20 @@
 use rama_core::{
     Layer, Service,
     error::BoxError,
-    extensions::{Extensions, ExtensionsRef},
+    extensions::{Egress, Extensions, ExtensionsRef},
     telemetry::tracing,
 };
 use rama_http_headers::{HeaderMapExt, ProxyAuthorization};
-use rama_http_types::{
-    Request, Response, StatusCode, header::PROXY_AUTHORIZATION, proxy::HttpProxyConnectionMode,
-};
-use rama_net::{client::ProxyRoute, user::ProxyCredential};
+use rama_http_types::{Request, Response, StatusCode, header::PROXY_AUTHORIZATION};
+use rama_net::{client::EstablishedProxyRoute, user::ProxyCredential};
 
 use super::HttpProxyError;
 
 /// HTTP middleware for requests sent directly to an HTTP forward proxy.
 ///
-/// The layer resolves [`HttpProxyConnectionMode`] and the selected
-/// [`ProxyRoute`] from the wrapped connection. A request's
-/// [`rama_core::extensions::Egress`] connection snapshot is a fallback for
-/// wrappers that do not expose the connection extensions directly. This lets
+/// The layer resolves [`EstablishedProxyRoute`] from the wrapped connection.
+/// The wrapped connection's extensions, including an absent route, take
+/// precedence over all request metadata. This lets
 /// the layer distinguish a real forward-proxy connection from direct, SOCKS,
 /// and HTTP CONNECT-tunneled connections after route fallback and pool lookup
 /// have completed.
@@ -29,11 +26,9 @@ use super::HttpProxyError;
 /// [`HttpProxyError::AuthRequired`] before any proxy response headers or body
 /// reach their downstream peer.
 ///
-/// Custom proxy connectors must publish both [`HttpProxyConnectionMode`] and
-/// the selected [`ProxyRoute`] in their established connection extensions. A
-/// missing marker is treated as [`HttpProxyConnectionMode::Direct`] so
-/// credentials fail closed; a missing established route never falls back to
-/// mutable request-side credentials.
+/// Custom proxy connectors must publish [`EstablishedProxyRoute`] in their
+/// established connection extensions. Missing metadata disables forward-proxy
+/// behavior and never falls back to request-side routes or credentials.
 #[derive(Debug, Clone)]
 pub struct HttpForwardProxyLayer {
     proxy_auth: bool,
@@ -141,35 +136,19 @@ where
 
     async fn serve(&self, mut req: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
         // Only the physical connection is authoritative here. A route or a
-        // request-provided mode describes intent, not what fallback and pool
+        // request-provided marker describes intent, not what fallback and pool
         // selection actually established.
         let inner_extensions = self.inner.extensions();
-        let established_extensions = if inner_extensions
-            .get_ref::<HttpProxyConnectionMode>()
-            .is_some()
-        {
-            Some(inner_extensions)
-        } else {
-            req.extensions().egress().map(|egress| &egress.0)
+        let established_route = inner_extensions.get_ref::<EstablishedProxyRoute>();
+        let http_proxy = match established_route {
+            Some(EstablishedProxyRoute::Forward(proxy)) => Some(proxy),
+            _ => None,
         };
-        let proxy_mode = established_extensions
-            .and_then(|extensions| extensions.get_ref::<HttpProxyConnectionMode>())
-            .copied()
-            .unwrap_or(HttpProxyConnectionMode::Direct);
-        let http_proxy = established_extensions
-            .and_then(|extensions| extensions.get_ref::<ProxyRoute>())
-            .and_then(ProxyRoute::proxy_address)
-            .filter(|proxy| {
-                proxy
-                    .protocol
-                    .as_ref()
-                    .is_none_or(|protocol| protocol.is_http())
-            });
 
-        // Shadow any caller-provided or stale request-side marker with the
-        // established fact. Missing provenance is Direct by design.
-        req.extensions().insert(proxy_mode);
-        let is_forward_proxy = proxy_mode == HttpProxyConnectionMode::Forward;
+        // Refresh the snapshot after caller middleware, including when the
+        // connection has no route. Encoders must not revive a stale marker.
+        req.extensions().insert(Egress(inner_extensions.clone()));
+        let is_forward_proxy = http_proxy.is_some();
 
         if is_forward_proxy {
             if self.proxy_auth {
@@ -219,7 +198,7 @@ where
 mod tests {
     use core::convert::Infallible;
 
-    use rama_core::extensions::{Egress, Extensions};
+    use rama_core::bytes::BytesMut;
     use rama_http_types::{Body, HeaderValue, header::PROXY_AUTHORIZATION};
     use rama_net::{
         address::ProxyAddress,
@@ -229,44 +208,42 @@ mod tests {
 
     use super::*;
 
-    fn request_with(
-        mode: Option<HttpProxyConnectionMode>,
-        credential: Option<ProxyCredential>,
-    ) -> Request {
+    fn proxy_with(credential: Option<ProxyCredential>) -> ProxyAddress {
         let mut proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
         proxy.credential = credential;
-        let route = ProxyRoute::Proxy(proxy);
+        proxy
+    }
+
+    fn authenticated_proxy() -> ProxyAddress {
+        proxy_with(Some(ProxyCredential::Basic(
+            Basic::try_from("upstream:secret").unwrap(),
+        )))
+    }
+
+    fn request_with_stale_route(route: Option<EstablishedProxyRoute>) -> Request {
         let request = Request::builder()
             .uri("http://origin.example/resource")
             .header(PROXY_AUTHORIZATION, "Basic downstream-secret")
             .body(Body::empty())
             .unwrap();
-        request.extensions().insert(route.clone());
-        if let Some(mode) = mode {
-            let egress = Extensions::default();
-            egress.insert(mode);
-            egress.insert(if mode == HttpProxyConnectionMode::Direct {
-                ProxyRoute::Direct
-            } else {
-                route
-            });
-            request.extensions().insert(Egress(egress));
+        request
+            .extensions()
+            .insert(ProxyRoute::Proxy(proxy_with(Some(ProxyCredential::Basic(
+                Basic::try_from("wrong:request-secret").unwrap(),
+            )))));
+        if let Some(route) = route {
+            request.extensions().insert(route.clone());
+            let stale_egress = Extensions::new();
+            stale_egress.insert(route);
+            request.extensions().insert(Egress(stale_egress));
         }
         request
     }
 
-    fn authenticated_request(mode: HttpProxyConnectionMode) -> Request {
-        request_with(
-            Some(mode),
-            Some(ProxyCredential::Basic(
-                Basic::try_from("upstream:secret").unwrap(),
-            )),
-        )
-    }
-
-    #[derive(Debug, Clone, Default)]
+    #[derive(Debug, Clone)]
     struct ObserveProxyAuthorization {
         extensions: Extensions,
+        status: StatusCode,
     }
 
     impl ExtensionsRef for ObserveProxyAuthorization {
@@ -280,18 +257,57 @@ mod tests {
         type Error = Infallible;
 
         async fn serve(&self, request: Request) -> Result<Self::Output, Self::Error> {
-            let mut response = Response::new(Body::empty());
+            // Both presence and absence come from the wrapped connection,
+            // even if caller middleware supplied its own connection snapshot.
+            assert_eq!(
+                request
+                    .extensions()
+                    .egress()
+                    .unwrap()
+                    .0
+                    .get_ref::<EstablishedProxyRoute>(),
+                self.extensions.get_ref::<EstablishedProxyRoute>(),
+            );
+            let mut response = Response::builder()
+                .status(self.status)
+                .header("proxy-authenticate", "Basic realm=upstream")
+                .body(Body::from("private upstream challenge"))
+                .unwrap();
             if let Some(value) = request.headers().get(PROXY_AUTHORIZATION) {
                 response
                     .headers_mut()
                     .insert("x-observed-auth", value.clone());
             }
-            Ok::<_, Infallible>(response)
+            let mut target = BytesMut::new();
+            rama_http_types::proto::h1::head::encode_request_target(
+                request.method(),
+                request.uri(),
+                request.extensions(),
+                &mut target,
+            )
+            .unwrap();
+            response.headers_mut().insert(
+                "x-observed-target",
+                HeaderValue::from_bytes(&target).unwrap(),
+            );
+            request
+                .extensions()
+                .clone_to::<ProxyRoute>(response.extensions());
+            Ok(response)
         }
     }
 
-    fn observe_proxy_authorization() -> ObserveProxyAuthorization {
-        ObserveProxyAuthorization::default()
+    fn observe_proxy_authorization(
+        route: Option<EstablishedProxyRoute>,
+    ) -> ObserveProxyAuthorization {
+        let extensions = Extensions::new();
+        if let Some(route) = route {
+            extensions.insert(route);
+        }
+        ObserveProxyAuthorization {
+            extensions,
+            status: StatusCode::OK,
+        }
     }
 
     fn observed_auth(response: &Response) -> Option<&HeaderValue> {
@@ -299,219 +315,192 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn configured_credentials_override_existing_header_only_for_forward_connection() {
-        let response = HttpForwardProxyLayer::new()
-            .into_layer(observe_proxy_authorization())
-            .serve(authenticated_request(HttpProxyConnectionMode::Forward))
-            .await
-            .unwrap();
-        assert_eq!(
-            observed_auth(&response).unwrap(),
-            "Basic dXBzdHJlYW06c2VjcmV0"
-        );
-
-        let response = HttpForwardProxyLayer::new()
-            .into_layer(observe_proxy_authorization())
-            .serve(authenticated_request(HttpProxyConnectionMode::Direct))
-            .await
-            .unwrap();
-        assert!(observed_auth(&response).is_none());
-
-        let response = HttpForwardProxyLayer::new()
-            .into_layer(observe_proxy_authorization())
-            .serve(authenticated_request(HttpProxyConnectionMode::Tunnel))
-            .await
-            .unwrap();
-        assert!(observed_auth(&response).is_none());
+    async fn configured_credentials_and_target_follow_only_the_established_route() {
+        let proxy = authenticated_proxy();
+        for route in [
+            None,
+            Some(EstablishedProxyRoute::Direct),
+            Some(EstablishedProxyRoute::Tunnel(proxy.clone())),
+            Some(EstablishedProxyRoute::Tunnel(
+                "socks5://upstream:secret@proxy.example:1080"
+                    .parse()
+                    .unwrap(),
+            )),
+            Some(EstablishedProxyRoute::Forward(proxy.clone())),
+        ] {
+            let is_forward = route
+                .as_ref()
+                .is_some_and(EstablishedProxyRoute::is_http_forward);
+            let stale_route = if is_forward {
+                EstablishedProxyRoute::Direct
+            } else {
+                EstablishedProxyRoute::Forward(proxy.clone())
+            };
+            let request = request_with_stale_route(Some(stale_route));
+            let requested_route = request
+                .extensions()
+                .get_ref::<ProxyRoute>()
+                .unwrap()
+                .clone();
+            let response = HttpForwardProxyLayer::new()
+                .into_layer(observe_proxy_authorization(route.clone()))
+                .serve(request)
+                .await
+                .unwrap();
+            assert_eq!(
+                response.extensions().get_ref::<ProxyRoute>(),
+                Some(&requested_route),
+                "connection facts must not overwrite input intent",
+            );
+            if is_forward {
+                assert_eq!(
+                    observed_auth(&response).unwrap(),
+                    "Basic dXBzdHJlYW06c2VjcmV0",
+                );
+                assert_eq!(
+                    response.headers()["x-observed-target"],
+                    "http://origin.example/resource",
+                );
+            } else {
+                assert!(observed_auth(&response).is_none(), "route: {route:?}");
+                assert_eq!(response.headers()["x-observed-target"], "/resource");
+            }
+        }
     }
 
     #[tokio::test]
-    async fn reads_established_mode_directly_from_wrapped_connection() {
-        let extensions = Extensions::default();
-        extensions.insert(HttpProxyConnectionMode::Forward);
-        let mut proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
-        proxy.credential = Some(ProxyCredential::Basic(
-            Basic::try_from("upstream:secret").unwrap(),
-        ));
-        extensions.insert(ProxyRoute::Proxy(proxy));
-        let service = ObserveProxyAuthorization { extensions };
-        let response = HttpForwardProxyLayer::new()
-            .into_layer(service)
-            .serve(request_with(
-                None,
-                Some(ProxyCredential::Basic(
-                    Basic::try_from("upstream:secret").unwrap(),
-                )),
-            ))
-            .await
+    async fn established_forward_route_works_without_request_route_metadata() {
+        let request = Request::builder()
+            .uri("http://origin.example/resource")
+            .body(Body::empty())
             .unwrap();
-        assert_eq!(
-            observed_auth(&response).unwrap(),
-            "Basic dXBzdHJlYW06c2VjcmV0"
-        );
-    }
-
-    #[tokio::test]
-    async fn credentials_are_bound_to_established_proxy_not_mutable_request_route() {
-        let extensions = Extensions::default();
-        extensions.insert(HttpProxyConnectionMode::Forward);
-        let mut established_proxy: ProxyAddress = "http://proxy-a.example:8080".parse().unwrap();
-        established_proxy.credential = Some(ProxyCredential::Basic(
-            Basic::try_from("proxy-a:secret-a").unwrap(),
-        ));
-        extensions.insert(ProxyRoute::Proxy(established_proxy));
-
-        let request = request_with(None, None);
-        let mut mutated_proxy: ProxyAddress = "http://proxy-b.example:8080".parse().unwrap();
-        mutated_proxy.credential = Some(ProxyCredential::Basic(
-            Basic::try_from("proxy-b:secret-b").unwrap(),
-        ));
-        request
-            .extensions()
-            .insert(ProxyRoute::Proxy(mutated_proxy));
-
         let response = HttpForwardProxyLayer::new()
-            .into_layer(ObserveProxyAuthorization { extensions })
+            .into_layer(observe_proxy_authorization(Some(
+                EstablishedProxyRoute::Forward(authenticated_proxy()),
+            )))
             .serve(request)
             .await
             .unwrap();
         assert_eq!(
             observed_auth(&response).unwrap(),
-            "Basic cHJveHktYTpzZWNyZXQtYQ=="
+            "Basic dXBzdHJlYW06c2VjcmV0",
         );
-        assert_ne!(
-            observed_auth(&response).unwrap(),
-            "Basic cHJveHktYjpzZWNyZXQtYg=="
-        );
+        assert!(response.extensions().get_ref::<ProxyRoute>().is_none());
     }
 
     #[tokio::test]
-    async fn proxy_auth_can_be_disabled() {
-        let response = HttpForwardProxyLayer::new()
-            .with_proxy_auth(false)
-            .into_layer(observe_proxy_authorization())
-            .serve(authenticated_request(HttpProxyConnectionMode::Forward))
-            .await
-            .unwrap();
-        assert_eq!(observed_auth(&response).unwrap(), "Basic downstream-secret");
-
-        let response = HttpForwardProxyLayer::new()
-            .with_proxy_auth(false)
-            .into_layer(observe_proxy_authorization())
-            .serve(authenticated_request(HttpProxyConnectionMode::Tunnel))
-            .await
-            .unwrap();
-        assert!(observed_auth(&response).is_none());
+    async fn proxy_auth_can_be_disabled_without_leaking_manual_auth_to_other_routes() {
+        for route in [
+            None,
+            Some(EstablishedProxyRoute::Direct),
+            Some(EstablishedProxyRoute::Tunnel(authenticated_proxy())),
+            Some(EstablishedProxyRoute::Tunnel(
+                "socks5://proxy.example:1080".parse().unwrap(),
+            )),
+            Some(EstablishedProxyRoute::Forward(authenticated_proxy())),
+        ] {
+            let is_forward = route
+                .as_ref()
+                .is_some_and(EstablishedProxyRoute::is_http_forward);
+            let response = HttpForwardProxyLayer::new()
+                .with_proxy_auth(false)
+                .into_layer(observe_proxy_authorization(route))
+                .serve(request_with_stale_route(Some(
+                    EstablishedProxyRoute::Forward(authenticated_proxy()),
+                )))
+                .await
+                .unwrap();
+            if is_forward {
+                assert_eq!(observed_auth(&response).unwrap(), "Basic downstream-secret");
+            } else {
+                assert!(observed_auth(&response).is_none());
+            }
+        }
     }
 
     #[tokio::test]
     async fn bearer_credentials_are_applied_and_manual_auth_is_preserved_without_route_credentials()
     {
-        let response = HttpForwardProxyLayer::new()
-            .into_layer(observe_proxy_authorization())
-            .serve(request_with(
-                Some(HttpProxyConnectionMode::Forward),
+        for (credential, expected) in [
+            (
                 Some(ProxyCredential::Bearer(
                     Bearer::try_from("upstream-token").unwrap(),
                 )),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(observed_auth(&response).unwrap(), "Bearer upstream-token");
-
-        let response = HttpForwardProxyLayer::new()
-            .into_layer(observe_proxy_authorization())
-            .serve(request_with(Some(HttpProxyConnectionMode::Forward), None))
-            .await
-            .unwrap();
-        assert_eq!(observed_auth(&response).unwrap(), "Basic downstream-secret");
-    }
-
-    #[tokio::test]
-    async fn established_direct_mode_fails_closed_and_shadows_a_request_marker() {
-        let request = authenticated_request(HttpProxyConnectionMode::Direct);
-        request
-            .extensions()
-            .insert(HttpProxyConnectionMode::Forward);
-        let response = HttpForwardProxyLayer::new()
-            .into_layer(observe_proxy_authorization())
-            .serve(request)
-            .await
-            .unwrap();
-        assert!(observed_auth(&response).is_none());
-    }
-
-    #[tokio::test]
-    async fn missing_egress_mode_fails_closed() {
-        let request = request_with(
-            None,
-            Some(ProxyCredential::Basic(
-                Basic::try_from("upstream:secret").unwrap(),
-            )),
-        );
-        request
-            .extensions()
-            .insert(HttpProxyConnectionMode::Forward);
-        let response = HttpForwardProxyLayer::new()
-            .into_layer(observe_proxy_authorization())
-            .serve(request)
-            .await
-            .unwrap();
-        assert!(observed_auth(&response).is_none());
-    }
-
-    #[tokio::test]
-    async fn auth_challenge_is_exposed_by_default_and_optionally_isolated() {
-        #[derive(Debug, Clone, Default)]
-        struct Challenge {
-            extensions: Extensions,
+                "Bearer upstream-token",
+            ),
+            (None, "Basic downstream-secret"),
+        ] {
+            let response = HttpForwardProxyLayer::new()
+                .into_layer(observe_proxy_authorization(Some(
+                    EstablishedProxyRoute::Forward(proxy_with(credential)),
+                )))
+                .serve(request_with_stale_route(None))
+                .await
+                .unwrap();
+            assert_eq!(observed_auth(&response).unwrap(), expected);
         }
+    }
 
-        impl ExtensionsRef for Challenge {
-            fn extensions(&self) -> &Extensions {
-                &self.extensions
+    #[tokio::test]
+    async fn non_proxy_auth_responses_are_preserved_when_isolation_is_enabled() {
+        for status in [StatusCode::OK, StatusCode::UNAUTHORIZED] {
+            let mut connection = observe_proxy_authorization(Some(EstablishedProxyRoute::Forward(
+                authenticated_proxy(),
+            )));
+            connection.status = status;
+            let response = HttpForwardProxyLayer::new()
+                .with_isolate_auth_error(true)
+                .into_layer(connection)
+                .serve(request_with_stale_route(Some(
+                    EstablishedProxyRoute::Direct,
+                )))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), status);
+        }
+    }
+
+    #[tokio::test]
+    async fn auth_challenge_is_isolated_only_for_an_established_forward_route() {
+        for isolate in [false, true] {
+            for route in [
+                None,
+                Some(EstablishedProxyRoute::Direct),
+                Some(EstablishedProxyRoute::Tunnel(authenticated_proxy())),
+                Some(EstablishedProxyRoute::Tunnel(
+                    "socks5://proxy.example:1080".parse().unwrap(),
+                )),
+                Some(EstablishedProxyRoute::Forward(authenticated_proxy())),
+            ] {
+                let is_forward = route
+                    .as_ref()
+                    .is_some_and(EstablishedProxyRoute::is_http_forward);
+                let stale_route = if is_forward {
+                    EstablishedProxyRoute::Direct
+                } else {
+                    EstablishedProxyRoute::Forward(authenticated_proxy())
+                };
+                let mut challenge = observe_proxy_authorization(route);
+                challenge.status = StatusCode::PROXY_AUTHENTICATION_REQUIRED;
+                let result = HttpForwardProxyLayer::new()
+                    .with_isolate_auth_error(isolate)
+                    .into_layer(challenge)
+                    .serve(request_with_stale_route(Some(stale_route)))
+                    .await;
+                if isolate && is_forward {
+                    assert!(matches!(
+                        result.unwrap_err().downcast_ref::<HttpProxyError>(),
+                        Some(HttpProxyError::AuthRequired),
+                    ));
+                } else {
+                    let response = result.unwrap();
+                    assert_eq!(response.status(), StatusCode::PROXY_AUTHENTICATION_REQUIRED);
+                    assert_eq!(
+                        response.headers()["proxy-authenticate"],
+                        "Basic realm=upstream",
+                    );
+                }
             }
         }
-
-        impl Service<Request> for Challenge {
-            type Output = Response;
-            type Error = Infallible;
-
-            async fn serve(&self, _: Request) -> Result<Self::Output, Self::Error> {
-                Ok(Response::builder()
-                    .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
-                    .header("proxy-authenticate", "Basic realm=upstream")
-                    .body(Body::from("private upstream challenge"))
-                    .unwrap())
-            }
-        }
-
-        let challenge = Challenge::default;
-
-        let response = HttpForwardProxyLayer::new()
-            .into_layer(challenge())
-            .serve(authenticated_request(HttpProxyConnectionMode::Forward))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::PROXY_AUTHENTICATION_REQUIRED);
-
-        let error = HttpForwardProxyLayer::new()
-            .with_isolate_auth_error(true)
-            .into_layer(challenge())
-            .serve(authenticated_request(HttpProxyConnectionMode::Forward))
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            error.downcast_ref::<HttpProxyError>(),
-            Some(HttpProxyError::AuthRequired)
-        ));
-
-        let response = HttpForwardProxyLayer::new()
-            .with_isolate_auth_error(true)
-            .into_layer(challenge())
-            .serve(authenticated_request(HttpProxyConnectionMode::Direct))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::PROXY_AUTHENTICATION_REQUIRED);
     }
 }

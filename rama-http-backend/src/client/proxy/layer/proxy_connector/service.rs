@@ -15,15 +15,12 @@ use rama_http::{
     io::upgrade,
 };
 use rama_http_headers::ProxyAuthorization;
-use rama_http_types::{
-    Version,
-    proxy::{HttpProxyConnectionMode, PlaintextHttpProxyMode},
-};
+use rama_http_types::{Version, proxy::PlaintextHttpProxyMode};
 use rama_net::{
     AuthorityInputExt, HttpVersionInputExt, Protocol, ProtocolInputExt, TargetHttpVersionInputExt,
     client::{
         ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
-        ConnectorTransportProtocol, EstablishedClientConnection, ProxyRoute,
+        ConnectorTransportProtocol, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
     },
     http::TargetHttpVersion,
     transport::TransportProtocol,
@@ -151,6 +148,7 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let route_configured = input.extensions().contains::<ProxyRoute>();
         let maybe_proxy_info = input
             .extensions()
             .get_ref::<ProxyRoute>()
@@ -175,6 +173,9 @@ where
                             "establish direct connection (no http proxy given or required)",
                         )
                     })?;
+                if route_configured {
+                    conn.extensions().insert(EstablishedProxyRoute::Direct);
+                }
                 return Ok(EstablishedClientConnection {
                     input,
                     conn: MaybeHttpProxiedConnection::direct(conn),
@@ -559,24 +560,22 @@ pin_project! {
 
 impl<S: ExtensionsRef + Unpin + Io> MaybeHttpProxiedConnection<S> {
     fn direct(conn: S) -> Self {
-        conn.extensions().insert(HttpProxyConnectionMode::Direct);
-        conn.extensions().insert(ProxyRoute::Direct);
         Self {
             inner: Connection::Direct { conn },
         }
     }
 
     fn proxied(conn: S, proxy: rama_net::address::ProxyAddress) -> Self {
-        conn.extensions().insert(HttpProxyConnectionMode::Forward);
-        conn.extensions().insert(ProxyRoute::Proxy(proxy));
+        conn.extensions()
+            .insert(EstablishedProxyRoute::Forward(proxy));
         Self {
             inner: Connection::Proxied { conn },
         }
     }
 
     fn upgraded_proxy(conn: upgrade::Upgraded, proxy: rama_net::address::ProxyAddress) -> Self {
-        conn.extensions().insert(HttpProxyConnectionMode::Tunnel);
-        conn.extensions().insert(ProxyRoute::Proxy(proxy));
+        conn.extensions()
+            .insert(EstablishedProxyRoute::Tunnel(proxy));
         Self {
             inner: Connection::UpgradedProxy { conn },
         }
@@ -747,6 +746,94 @@ mod tests {
             _: &'a Extensions,
         ) -> core::pin::Pin<Box<dyn Stream<Item = Result<IpAddr, BoxError>> + Send + 'a>> {
             Box::pin(stream::iter([Ok(self.ip_addr)]))
+        }
+    }
+
+    #[tokio::test]
+    async fn optional_direct_connection_records_only_the_original_route_selection() {
+        for route_configured in [false, true] {
+            for rewrite_input in [false, true] {
+                let transport = service_fn(move |mut input: ConnectRequest| async move {
+                    if rewrite_input {
+                        input.extensions = Extensions::new();
+                        if !route_configured {
+                            input.extensions.insert(ProxyRoute::Direct);
+                        }
+                    }
+                    let (stream, _peer) = tokio::io::duplex(64);
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        input,
+                        conn: MockSocket::new(stream),
+                    })
+                });
+                let connector = HttpProxyConnector::optional(transport);
+                let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                    .with_application_protocol(Protocol::HTTP);
+                if route_configured {
+                    input.extensions.insert(ProxyRoute::Direct);
+                }
+
+                let established = connector.serve(input).await.unwrap();
+                assert_eq!(
+                    established
+                        .conn
+                        .extensions()
+                        .get_ref::<EstablishedProxyRoute>(),
+                    route_configured.then_some(&EstablishedProxyRoute::Direct),
+                    "route configured: {route_configured}, input rewritten: {rewrite_input}",
+                );
+                assert!(!established.conn.extensions().contains::<ProxyRoute>());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn established_http_route_distinguishes_forward_and_tunnel_for_the_same_proxy() {
+        for protocol in [None, Some(Protocol::HTTP)] {
+            let mut proxy = "http://alice:private-password@proxy.example:8080"
+                .parse::<ProxyAddress>()
+                .unwrap();
+            proxy.protocol = protocol;
+
+            for mode in [
+                PlaintextHttpProxyMode::Forward,
+                PlaintextHttpProxyMode::Tunnel,
+            ] {
+                let http_server = HttpServer::auto(Executor::default()).service(service_fn(
+                    async |req: Request| {
+                        assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                        Ok::<_, Infallible>(Response::new(Body::empty()))
+                    },
+                ));
+                let connector =
+                    HttpProxyConnector::required(MockConnectorService::new(move || {
+                        http_server.clone()
+                    }));
+                let input = ConnectRequest::new(HostWithPort::example_domain_http())
+                    .with_application_protocol(Protocol::HTTP);
+                input.extensions.insert(ProxyRoute::Proxy(proxy.clone()));
+                input.extensions.insert(mode);
+
+                let established = connector.serve(input).await.unwrap();
+                let expected = match mode {
+                    PlaintextHttpProxyMode::Forward => {
+                        EstablishedProxyRoute::Forward(proxy.clone())
+                    }
+                    PlaintextHttpProxyMode::Tunnel => EstablishedProxyRoute::Tunnel(proxy.clone()),
+                };
+                assert_eq!(
+                    established
+                        .conn
+                        .extensions()
+                        .get_ref::<EstablishedProxyRoute>(),
+                    Some(&expected),
+                );
+                assert!(!established.conn.extensions().contains::<ProxyRoute>());
+                assert_eq!(
+                    established.input.extensions.get_ref::<ProxyRoute>(),
+                    Some(&ProxyRoute::Proxy(proxy.clone())),
+                );
+            }
         }
     }
 
@@ -1102,9 +1189,13 @@ mod tests {
                 .unwrap()
                 .expect("transport closure permits direct fallback");
             assert_eq!(
-                established.conn.extensions().get_ref::<ProxyRoute>(),
-                Some(&ProxyRoute::Direct)
+                established
+                    .conn
+                    .extensions()
+                    .get_ref::<EstablishedProxyRoute>(),
+                Some(&EstablishedProxyRoute::Direct)
             );
+            assert!(!established.conn.extensions().contains::<ProxyRoute>());
             assert_eq!(dials.load(Ordering::Relaxed), 2);
         }
     }
@@ -1186,9 +1277,12 @@ mod tests {
             established
                 .conn
                 .extensions()
-                .get_ref::<HttpProxyConnectionMode>()
-                .copied(),
-            Some(HttpProxyConnectionMode::Tunnel)
+                .get_ref::<EstablishedProxyRoute>(),
+            Some(&EstablishedProxyRoute::Tunnel(ProxyAddress {
+                address: HostWithPort::example_domain_http(),
+                credential: None,
+                protocol: Some(Protocol::HTTP),
+            }))
         );
     }
 

@@ -14,7 +14,7 @@ pub use ::rama_http::{
 };
 
 #[doc(inline)]
-pub use ::rama_http::proxy::{HttpProxyConnectionMode, PlaintextHttpProxyMode};
+pub use ::rama_http::proxy::PlaintextHttpProxyMode;
 
 #[cfg(feature = "http-backend")]
 #[cfg_attr(docsrs, doc(cfg(feature = "http-backend")))]

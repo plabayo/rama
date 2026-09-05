@@ -284,7 +284,8 @@ mod tests {
     };
     use rama_net::client::{
         ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
-        EstablishedClientConnection, ProxyRoute, ProxyRoutes, ProxyRoutesConnector,
+        EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute, ProxyRoutes,
+        ProxyRoutesConnector,
     };
     use rama_net::conn::{ConnectionHealth, ConnectionHealthWatcher};
     use rama_net::http::{HttpRequestVersion, TargetHttpVersion};
@@ -326,9 +327,13 @@ mod tests {
             .body(())
             .unwrap();
 
+        let unconfigured_id = BasicConnIdentifier::new().id(&request).unwrap();
+        assert_eq!(unconfigured_id.proxy_address, None);
+
         request.extensions().insert(ProxyRoute::Direct);
         let direct_id = BasicConnIdentifier::new().id(&request).unwrap();
         assert_eq!(direct_id.proxy_address, None);
+        assert_ne!(unconfigured_id, direct_id);
 
         let proxy_address = ProxyAddress {
             protocol: Some(Protocol::HTTP),
@@ -1061,7 +1066,10 @@ mod tests {
             inner,
         );
 
-        let proxy = ProxyRoute::Proxy("http://proxy.example:8080".parse::<ProxyAddress>().unwrap());
+        let proxy_address = "http://alice:private-password@proxy.example:8080"
+            .parse::<ProxyAddress>()
+            .unwrap();
+        let proxy = ProxyRoute::Proxy(proxy_address.clone());
         let req = || {
             let req = create_test_request(Version::HTTP_11);
             req.extensions().insert(proxy.clone());
@@ -1069,12 +1077,22 @@ mod tests {
         };
 
         let est1 = connector.serve(req()).await.unwrap();
+        assert_eq!(
+            est1.conn.extensions().get_ref::<EstablishedProxyRoute>(),
+            Some(&EstablishedProxyRoute::Tunnel(proxy_address.clone())),
+        );
+        assert!(!est1.conn.extensions().contains::<ProxyRoute>());
         let resp1 = est1.conn.serve(req()).await.unwrap();
         assert_eq!(conn_id(&resp1), 0);
         // Drain to end-of-stream so the tunneled connection returns to the pool.
         resp1.into_body().collect().await.unwrap();
 
         let est2 = connector.serve(req()).await.unwrap();
+        assert_eq!(
+            est2.conn.extensions().get_ref::<EstablishedProxyRoute>(),
+            Some(&EstablishedProxyRoute::Tunnel(proxy_address)),
+        );
+        assert!(!est2.conn.extensions().contains::<ProxyRoute>());
         let resp2 = est2.conn.serve(req()).await.unwrap();
         assert_eq!(
             conn_id(&resp2),

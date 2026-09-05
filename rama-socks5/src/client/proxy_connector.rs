@@ -13,7 +13,7 @@ use rama_net::{
     address::ProxyAddress,
     client::{
         ConnectionError, ConnectionErrorKind, ConnectorService, ConnectorTarget,
-        ConnectorTransportProtocol, EstablishedClientConnection, ProxyRoute,
+        ConnectorTransportProtocol, EstablishedClientConnection, EstablishedProxyRoute, ProxyRoute,
     },
     transport::TransportProtocol,
     user::ProxyCredential,
@@ -320,6 +320,7 @@ where
     type Error = ConnectionError;
 
     async fn serve(&self, input: Input) -> Result<Self::Output, Self::Error> {
+        let route_requested = input.extensions().contains::<ProxyRoute>();
         let proxy_info = match input.extensions().get_ref::<ProxyRoute>() {
             Some(ProxyRoute::Proxy(proxy_info)) => proxy_info.clone(),
             None | Some(ProxyRoute::Direct) => {
@@ -337,7 +338,12 @@ where
                             "establish connection target (no socks5 proxy defined and neither required)",
                         )
                     })?;
-                    established.conn.extensions().insert(ProxyRoute::Direct);
+                    if route_requested {
+                        established
+                            .conn
+                            .extensions()
+                            .insert(EstablishedProxyRoute::Direct);
+                    }
                     Ok(established)
                 };
             }
@@ -359,7 +365,7 @@ where
         // Preserve the selected route before local DNS resolution changes the
         // proxy's dial address. Connection consumers need the route that won
         // selection, including its original address and credentials.
-        let selected_route = ProxyRoute::Proxy(proxy_info.clone());
+        let selected_route = EstablishedProxyRoute::Tunnel(proxy_info.clone());
 
         #[cfg(feature = "dns")]
         let normalized_proxy_info = self
@@ -485,14 +491,17 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn optional_direct_connection_publishes_direct_route() {
+    async fn optional_direct_connection_preserves_absent_or_explicit_route() {
         for route in [None, Some(ProxyRoute::Direct)] {
-            let inner = service_fn(|input: ConnectRequest| async move {
+            let route_requested = route.is_some();
+            let inner = service_fn(move |input: ConnectRequest| async move {
                 let (io, _peer) = tokio::io::duplex(64);
                 let conn = ServiceInput::new(io);
-                conn.extensions().insert(ProxyRoute::Proxy(
-                    "socks5://stale.example:1080".parse().unwrap(),
-                ));
+                if route_requested {
+                    conn.extensions().insert(EstablishedProxyRoute::Tunnel(
+                        "socks5://stale.example:1080".parse().unwrap(),
+                    ));
+                }
                 Ok::<_, Infallible>(EstablishedClientConnection { input, conn })
             });
             let input = ConnectRequest::new(HostWithPort::example_domain_http());
@@ -505,8 +514,11 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(
-                established.conn.extensions().get_ref::<ProxyRoute>(),
-                Some(&ProxyRoute::Direct),
+                established
+                    .conn
+                    .extensions()
+                    .get_ref::<EstablishedProxyRoute>(),
+                route_requested.then_some(&EstablishedProxyRoute::Direct),
             );
         }
     }
@@ -570,8 +582,11 @@ mod tests {
             .expect("SOCKS handshake timed out")
             .unwrap();
         assert_eq!(
-            established.conn.extensions().get_ref::<ProxyRoute>(),
-            Some(&ProxyRoute::Proxy(selected)),
+            established
+                .conn
+                .extensions()
+                .get_ref::<EstablishedProxyRoute>(),
+            Some(&EstablishedProxyRoute::Tunnel(selected)),
         );
         tokio::time::timeout(Duration::from_secs(2), peer_task)
             .await
