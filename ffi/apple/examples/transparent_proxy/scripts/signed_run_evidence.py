@@ -48,7 +48,10 @@ GIT_HEAD_RE = re.compile(r"[0-9a-f]{40,64}")
 KEY_RE = re.compile(r"[a-z][a-z0-9_]*")
 EVIDENCE_KIND_RE = re.compile(r"[a-z][a-z0-9_-]*")
 ABSENCE_NAME = "provider-absence.tsv"
-SOAK_SLEEP_ARTIFACTS = ("run-meta.tsv", "phases.tsv", "system.ndjson", "sleep-probes.tsv")
+SOAK_SLEEP_ARTIFACTS = (
+    "run-meta.tsv", "phases.tsv", "system.ndjson", "sleep-probes.tsv",
+    "wake-download-headers.txt", "wake-download.body", "wake-download.txt",
+)
 ABSENCE_FIXED_ORDER = (
     "schema_version",
     "bundle_id",
@@ -2086,6 +2089,7 @@ def _validate_soak_semantics(envelope: VerifiedEnvelope) -> None:
         "crashes-before.tsv",
         "crashes/crash-snapshot.tsv", "workload-claims.tsv",
         "real-download.metrics", "real-download.curl.log", "real-download.txt",
+        "fanout.txt", *SOAK_SLEEP_ARTIFACTS,
         "stress/stress-manifest.tsv", "stress/stress-status.tsv",
         *(artifact for artifact, _ in SOAK_PRODUCER_SOURCES),
     )
@@ -2885,12 +2889,15 @@ def _proven_soak_sleep_window(
     from soak_pressure_log import (
         filter_provider_ndjson_records, parse_ndjson_lines, parse_oslog_timestamp,
         parse_phase_marker_lines, parse_probe_lines, sleep_wake_evidence,
+        sleep_workload_artifact_issues,
     )
 
     if any(name not in artifacts for name in SOAK_SLEEP_ARTIFACTS):
         raise EvidenceError("provider generation gap lacks raw soak sleep evidence")
     try:
-        raw = {name: artifacts[name].decode("utf-8") for name in SOAK_SLEEP_ARTIFACTS}
+        raw = {name: artifacts[name].decode("utf-8") for name in (
+            "run-meta.tsv", "phases.tsv", "system.ndjson", "sleep-probes.tsv",
+        )}
     except UnicodeError as error:
         raise EvidenceError("raw soak sleep evidence is not UTF-8") from error
     meta, _ = _strict_tsv_values(artifacts["run-meta.tsv"], "soak sleep metadata")
@@ -2904,6 +2911,9 @@ def _proven_soak_sleep_window(
     if run_uuid is None or any(meta.get(key) != value for key, value in expected.items()):
         raise EvidenceError("soak sleep evidence is not bound to this successful run")
     _validate_soak_identity_metadata(meta, identity)
+    workload_issues = sleep_workload_artifact_issues(meta, artifacts)
+    if workload_issues:
+        raise EvidenceError("unproven soak sleep workload: " + "; ".join(workload_issues))
     phases, _, _, _, issues = parse_phase_marker_lines(
         raw["phases.tsv"].splitlines(),
         ["idle-baseline", "baseline", "stress", "fanout", "idle-holders",

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import uuid
 
 
@@ -1208,6 +1209,94 @@ def parse_probe_lines(lines, label="liveness probe"):
         records.append((started, completed, curl_rc, fields[4]))
         previous_completion = completed
     return records, issues
+
+
+SLEEP_WORKLOAD_ARTIFACT_LIMITS = {
+    "wake-download-headers.txt": 1024 * 1024,
+    "wake-download.body": 32 * 1024 * 1024,
+    "wake-download.txt": 64 * 1024,
+}
+
+
+def read_sleep_workload_artifacts(directory):
+    """Read only bounded regular files after the wake worker has been joined."""
+    artifacts = {}
+    for name, maximum in SLEEP_WORKLOAD_ARTIFACT_LIMITS.items():
+        path = os.path.join(directory, name)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as source:
+            before = os.fstat(source.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size > maximum:
+                raise ValueError(f"sleep-wake workload artifact is not bounded and regular: {name}")
+            content = source.read(maximum + 1)
+            after = os.fstat(source.fileno())
+            identity = lambda value: (
+                value.st_dev, value.st_ino, value.st_mode, value.st_size,
+                value.st_mtime_ns, value.st_ctime_ns,
+            )
+            if len(content) != before.st_size or identity(before) != identity(after):
+                raise ValueError(f"sleep-wake workload artifact changed while reading: {name}")
+            artifacts[name] = content
+    return artifacts
+
+
+def sleep_workload_artifact_issues(meta, artifacts):
+    """Replay retained HTTP evidence, including deliberate partial-transfer TERM.
+
+    The live capture still establishes timing and liveness. Final raw bytes must
+    corroborate its HTTP status and observed body length; a natural completion
+    must additionally prove the complete canonical 32 MiB transfer.
+    """
+    issues = []
+    for name, maximum in SLEEP_WORKLOAD_ARTIFACT_LIMITS.items():
+        content = artifacts.get(name)
+        if not isinstance(content, bytes) or len(content) > maximum:
+            issues.append(f"sleep-wake workload artifact is missing or oversized: {name}")
+    if issues:
+        return issues
+    body_size = len(artifacts["wake-download.body"])
+    established = parse_artifact_uint(meta.get("wake_workload_established_bytes"))
+    if established in (None, 0) or body_size < established:
+        issues.append("sleep-wake retained body does not contain the established bytes")
+
+    headers = artifacts["wake-download-headers.txt"].replace(b"\r\n", b"\n")
+    codes = []
+    if b"\r" not in headers and headers.endswith(b"\n\n"):
+        for block in headers[:-2].split(b"\n\n"):
+            lines = block.split(b"\n")
+            status = re.fullmatch(rb"HTTP/(?:1\.[01]|2|3) ([1-5][0-9]{2})(?: [^\n]*)?", lines[0])
+            if status is None or any(
+                re.fullmatch(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+:[^\x00\n]*", line) is None
+                for line in lines[1:]
+            ):
+                codes = []
+                break
+            codes.append(status.group(1).decode("ascii"))
+    code = codes[-1] if codes else None
+    if code is None or not code.startswith("2") or code != meta.get("wake_workload_http_code"):
+        issues.append("sleep-wake retained headers do not match the established HTTP 2xx status")
+
+    outcome = parse_artifact_uint(meta.get("wake_workload_child_rc"), maximum=255)
+    output = artifacts["wake-download.txt"]
+    # TERM normally interrupts curl before its writeout runs. If a complete
+    # writeout was emitted before TERM, it must still describe the retained body.
+    if output or outcome == 0:
+        metrics = re.fullmatch(
+            rb"wake-download: code=([0-9]{3}) size=(0|[1-9][0-9]*) "
+            rb"time=((?:0|[1-9][0-9]*)(?:\.[0-9]+)?)s\n", output,
+        )
+        if (
+            metrics is None
+            or metrics.group(1).decode("ascii") != code
+            or parse_artifact_uint(metrics.group(2).decode("ascii")) != body_size
+            or Decimal(metrics.group(3).decode("ascii")) <= 0
+        ):
+            issues.append("sleep-wake curl writeout does not match its retained status/body")
+    if outcome == 0 and body_size != SLEEP_WORKLOAD_ARTIFACT_LIMITS["wake-download.body"]:
+        issues.append("naturally completed sleep-wake download is not the canonical 32 MiB")
+    if outcome not in (0, 143):
+        issues.append("sleep-wake retained workload has no valid joined child outcome")
+    return issues
 
 
 def sleep_wake_evidence(

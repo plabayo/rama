@@ -63,9 +63,11 @@ from soak_pressure_log import (
     provider_allocation_failure,
     probe_succeeded,
     release_soak_profile_issues,
+    read_sleep_workload_artifacts,
     selected_count,
     selection_event,
     sleep_wake_evidence,
+    sleep_workload_artifact_issues,
     settled_final_flow_gauge,
     soak_evidence_issues,
     soak_workload_claim_issues,
@@ -2684,6 +2686,149 @@ class SoakPressureLogTests(unittest.TestCase):
             "a raw failure cannot bless a contradictory contribution field",
         )
 
+    def test_sleep_workload_replays_partial_term_and_complete_transfer_artifacts(self):
+        meta = {"wake_workload_established_bytes": "64", "wake_workload_http_code": "200",
+                "wake_workload_child_rc": "143"}
+        artifacts = {"wake-download.body": bytes(range(128)),
+                     "wake-download-headers.txt": b"HTTP/1.1 302 Found\r\nLocation: /bytes\r\n\r\nHTTP/2 200\r\n\r\n",
+                     "wake-download.txt": b""}
+        self.assertEqual(sleep_workload_artifact_issues(meta, artifacts), [])
+        complete = dict(artifacts, **{
+            "wake-download.body": b"x" * (32 * 1024 * 1024),
+            "wake-download.txt": b"wake-download: code=200 size=33554432 time=50.000000s\n",
+        })
+        self.assertEqual(sleep_workload_artifact_issues(dict(meta, wake_workload_child_rc="0"), complete), [])
+        self.assertEqual(sleep_workload_artifact_issues(meta, complete), [])
+        variants = {
+            "missing": {"wake-download.body": None},
+            "empty": {"wake-download.body": b""},
+            "short": {"wake-download.body": b"x" * 63},
+            "oversized": {"wake-download.body": complete["wake-download.body"] + b"x"},
+            "non-2xx": {"wake-download-headers.txt": b"HTTP/2 500\r\n\r\n"},
+            "different 2xx": {"wake-download-headers.txt": b"HTTP/2 204\r\n\r\n"},
+            "incomplete headers": {"wake-download-headers.txt": b"HTTP/2 200\r\n"},
+            "curl error": {"wake-download.txt": b"curl: (28) transfer timed out\n"},
+            "wrong size": {"wake-download.txt": b"wake-download: code=200 size=64 time=1.000000s\n"},
+            "wrong code": {"wake-download.txt": b"wake-download: code=500 size=128 time=1.000000s\n"},
+            "zero time": {"wake-download.txt": b"wake-download: code=200 size=128 time=0s\n"},
+            "duplicate output": {"wake-download.txt": complete["wake-download.txt"] * 2},
+        }
+        for label, changes in variants.items():
+            with self.subTest(label=label):
+                self.assertTrue(sleep_workload_artifact_issues(meta, dict(artifacts, **changes)))
+        self.assertTrue(sleep_workload_artifact_issues(dict(meta, wake_workload_child_rc="0"), artifacts))
+        self.assertTrue(sleep_workload_artifact_issues(dict(meta, wake_workload_child_rc="137"), artifacts))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, content in artifacts.items():
+                (root / name).write_bytes(content)
+            self.assertEqual(read_sleep_workload_artifacts(root), artifacts)
+            body = root / "wake-download.body"
+            body.unlink()
+            body.symlink_to(root / "wake-download.txt")
+            with self.assertRaises(OSError):
+                read_sleep_workload_artifacts(root)
+
+    def test_embedded_sleep_extractor_requires_retained_wake_transfer(self):
+        shell = (Path(__file__).parent / "soak_test.sh").read_text()
+        block = shell[shell.index("sleep_probe_records = []\n"):shell.index("\nleaks_path = ")]
+        meta = {"mode": "cap-validate", "sleep_command_ok": "1", "post_wake_ok": "1",
+                "sleep_command_start": "100", "sleep_command_end": "101",
+                "wake_workload_started": "91", "wake_workload_established": "92",
+                "wake_workload_established_nonzero_bytes": "1", "wake_workload_established_bytes": "64",
+                "wake_workload_http_code": "200", "wake_workload_alive_at_sleep_command": "1",
+                "wake_workload_child_rc": "143", "wake_workload_joined": "1"}
+        artifacts = {"wake-download.body": b"x" * 64,
+                     "wake-download-headers.txt": b"HTTP/2 200\r\n\r\n", "wake-download.txt": b""}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "sleep-probes.tsv").write_text("151\t152\t1970-01-01T00:02:32Z\t0\t200\n")
+            for name, content in artifacts.items():
+                (root / name).write_bytes(content)
+            def replay():
+                scope = {"out": temporary, "os": os, "meta": meta,
+                         "phases": [("sleep-wake", Decimal(90), Decimal(300))],
+                         "sleep_epochs": [Decimal(110)], "wake_epochs": [Decimal(150)],
+                         "phase_of": lambda _: "sleep-wake", "parse_probe_lines": parse_probe_lines,
+                         "sleep_wake_evidence": sleep_wake_evidence,
+                         "read_sleep_workload_artifacts": read_sleep_workload_artifacts,
+                         "sleep_workload_artifact_issues": sleep_workload_artifact_issues}
+                exec(compile(block, "pinned-soak-sleep-extractor", "exec"), scope)
+                return scope["sleep_result"]
+            self.assertEqual(replay(), {"issues": [], "outage_window": (Decimal(110), Decimal(150))})
+            for name, content in artifacts.items():
+                with self.subTest(missing=name):
+                    (root / name).unlink()
+                    proof = replay()
+                    self.assertTrue(proof["issues"])
+                    self.assertIsNone(proof["outage_window"])
+                    (root / name).write_bytes(content)
+            (root / "wake-download.body").write_bytes(b"")
+            self.assertIsNone(replay()["outage_window"])
+
+    def test_soak_curl_calls_isolate_configuration_and_preserve_raw_outcomes(self):
+        shell = (Path(__file__).parent / "soak_test.sh").read_text()
+        start = shell.index("run_hermetic_curl() (\n")
+        helper = shell[start:shell.index("\n)\n", start) + 3]
+        def function(name):
+            start = shell.index(name + "() {\n")
+            return shell[start:shell.index("\n}\n", start) + 3]
+        def command(start_text, end_text):
+            start = shell.index(start_text)
+            return shell[start:shell.index(end_text, start)]
+        cases = {
+            "probe": (function("probe_record") + "\nprobe_record\n", "200", 0),
+            "fanout": (function("run_active_holder") + '\nrun_active_holder fanout "$OUT/header with spaces" "$FIXTURE_URL"\n',
+                       "200\t33554432\t1.000000", 1),
+            "preflight": (command("DL_CHECK_RC=0\n", '[[ "$DL_CHECK"') + '\nprintf "%s\\n" "$DL_CHECK_RC"\n', "200", 0),
+            "steady": (command("owned_job run_hermetic_curl -L -f -sS -o /dev/null", "ACTIVE_CHILD_PID=$!") + '\nwait "$!"\n', "200\t33554432\t1\t1", 42),
+            "wake": (command('  wake_download_job() {', "  WAKE_DL_PID=$!") + '\nwait "$!"\n', "", 42),
+        }
+        keys = "http_proxy https_proxy all_proxy no_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY CURL_HOME CURL_CA_BUNDLE SSL_CERT_FILE SSL_CERT_DIR".split()
+        url = "https://fixture.invalid/a path?literal=$(untouched)&glob=*"
+        stub = '''
+exec() {
+  printf '%s\\0' "$@" > "$OUT/argv"
+  for key in $FIXTURE_KEYS; do
+    [[ -z "${!key+x}" ]] || printf '%s\\n' "$key" >> "$OUT/leaked-env"
+  done
+  printf '%s' "$MOCK_OUTPUT"
+  return "$MOCK_RC"
+}
+owned_job() { printf 'supervisor fixture: termination notice\n' >&2; "$@"; }
+epoch_now() { printf '100.000000\\n'; }
+dl_url() { printf '%s' "$FIXTURE_URL"; }
+'''
+        for label, (body, output, failed_status) in cases.items():
+            for curl_rc in (0, 42, 143):
+                with self.subTest(label=label, curl_rc=curl_rc), tempfile.TemporaryDirectory() as temporary:
+                    env = {"PATH": "/usr/bin:/bin", "OUT": temporary,
+                           "FIXTURE_URL": url, "HTTPS_PROBE": url, "DL_MAX_BYTES": "33554432",
+                           "FIXTURE_KEYS": " ".join(keys), "MOCK_OUTPUT": output, "MOCK_RC": str(curl_rc),
+                           **{key: "fixture ambient configuration" for key in keys}}
+                    result = subprocess.run(["/bin/bash", "-c", helper + stub + body],
+                                            env=env, capture_output=True, text=True, timeout=5)
+                    expected_status = 0 if curl_rc == 0 else failed_status
+                    if label in ("steady", "wake"):
+                        expected_status = curl_rc
+                    self.assertEqual(result.returncode, expected_status, result.stderr)
+                    args = (Path(temporary) / "argv").read_bytes().split(b"\0")[:-1]
+                    self.assertEqual(args[:6], [b"/usr/bin/curl", b"--disable", b"--noproxy", b"*", b"--proxy", b""])
+                    self.assertEqual(args[-1], url.encode())
+                    self.assertFalse((Path(temporary) / "leaked-env").exists())
+                    if label == "probe":
+                        self.assertEqual(result.stdout, f"100.000000\t100.000000\t{curl_rc}\t200\n")
+                    elif label == "fanout":
+                        self.assertEqual((Path(temporary) / "fanout.txt").read_text(),
+                                         f"fanout\t200\t33554432\t1.000000\tcurl_exit={curl_rc}\n")
+                        self.assertIn(str(Path(temporary) / "header with spaces").encode(), args)
+                    elif label == "preflight":
+                        self.assertEqual(result.stdout, f"{curl_rc}\n")
+                    elif label == "wake":
+                        self.assertEqual((Path(temporary) / "wake-download.txt").read_text(), output)
+                        self.assertIn("supervisor fixture: termination notice",
+                                      (Path(temporary) / "wake-download-supervisor.log").read_text())
+
     def test_sleep_wake_requires_ordered_command_local_events_and_recovery(self):
         skipped = sleep_wake_evidence(
             "skipped", "skipped", None, None, [], [], [], None
@@ -3357,6 +3502,7 @@ class SoakPressureLogTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as artifact_dir:
             out = Path(artifact_dir)
+            (out / "fanout.txt").write_text("")
             source_contents = {
                 "soak_test": b"fixture soak source\n",
                 "stress_traffic": b"fixture stress source\n",
@@ -3738,6 +3884,10 @@ class SoakPressureLogTests(unittest.TestCase):
             status, output = run_extractor()
             self.assertEqual(status, 0, output)
             (out / "fanout.txt").unlink()
+            status, output = run_extractor()
+            self.assertEqual(status, 2, output)
+            self.assertIn("active fanout outcome artifact is missing", output)
+            (out / "fanout.txt").write_text("")
 
             rows[2]["timestamp"] = "1970-01-01 00:01:40.900000+0000"
             (out / "system.ndjson").write_text(

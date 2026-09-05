@@ -248,6 +248,9 @@ def make_sleep_soak_run(directory: Path, *, sleep_seconds=45, pre_gap_ms=0, post
         "wake_workload_joined": "1", "wake_workload_child_rc": "143",
     }
     write_tsv(directory / "run-meta.tsv", meta.items())
+    (directory / "wake-download-headers.txt").write_bytes(b"HTTP/2 200\r\n\r\n")
+    (directory / "wake-download.body").write_bytes(b"x" * 64)
+    (directory / "wake-download.txt").write_bytes(b"")
     (directory / "phases.tsv").write_text(
         f"sleep-wake\tstart\t{epoch_text(base + 10000)}\t{iso(base + 10000)}\n"
         f"sleep-wake\tend\t{epoch_text(end)}\t{iso(end)}\n"
@@ -1123,6 +1126,21 @@ class StatusAndIdentityTests(unittest.TestCase):
             rows[-2] = (key, "|".join(fields))
             write_tsv(path, rows)
         mutations = {
+            "missing wake body": (
+                lambda root: (root / "wake-download.body").unlink(), "lacks raw soak sleep"),
+            "short wake body": (
+                lambda root: (root / "wake-download.body").write_bytes(b"x" * 63),
+                "retained body does not contain"),
+            "failed wake headers": (
+                lambda root: (root / "wake-download-headers.txt").write_bytes(b"HTTP/2 503\r\n\r\n"),
+                "retained headers do not match"),
+            "contradictory wake writeout": (
+                lambda root: (root / "wake-download.txt").write_bytes(
+                    b"wake-download: code=200 size=1 time=1.000000s\n"),
+                "writeout does not match"),
+            "incomplete natural wake completion": (
+                lambda root: replace_file(root, "run-meta.tsv", "wake_workload_child_rc\t143", "wake_workload_child_rc\t0"),
+                "canonical 32 MiB"),
             "missing raw log": (
                 lambda root: (root / "system.ndjson").unlink(), "lacks raw soak sleep"),
             "claimed summary": (
@@ -2519,6 +2537,8 @@ class CrashAndReleaseSetTests(unittest.TestCase):
                     "idle-cpu-post.tsv", "baseline-mem.txt", "final-mem.txt", "leaks.txt",
                     "crashes-before.tsv", "real-download.metrics", "real-download.curl.log",
                     "real-download.txt", "stress/stress-manifest.tsv",
+                    "fanout.txt", "sleep-probes.tsv", "wake-download.body",
+                    "wake-download-headers.txt", "wake-download.txt",
                 ):
                     (soak / name).parent.mkdir(parents=True, exist_ok=True)
                     (soak / name).write_text("unused\n")
@@ -2650,6 +2670,8 @@ class CrashAndReleaseSetTests(unittest.TestCase):
                     "provider-timeline.tsv", "idle-cpu-baseline.tsv", "idle-cpu-post.tsv",
                     "baseline-mem.txt", "final-mem.txt", "leaks.txt", "crashes-before.tsv",
                     "real-download.metrics", "real-download.curl.log", "real-download.txt",
+                    "fanout.txt", "sleep-probes.tsv", "wake-download-headers.txt",
+                    "wake-download.body", "wake-download.txt",
                     "stress/stress-manifest.tsv",
                 ):
                     (soak / name).parent.mkdir(parents=True, exist_ok=True)

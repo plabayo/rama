@@ -1188,11 +1188,21 @@ trap handle_exit EXIT
 trap 'handle_signal 130' INT
 trap 'handle_signal 143' TERM
 
+# Every soak HTTP leg uses the system curl with the same configuration
+# isolation as the nested stress worker. Ambient proxies or dotfiles must not
+# change the transport while the evidence describes a canonical workload.
+run_hermetic_curl() (
+  unset http_proxy https_proxy all_proxy no_proxy
+  unset HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY
+  unset CURL_HOME CURL_CA_BUNDLE SSL_CERT_FILE SSL_CERT_DIR
+  exec /usr/bin/curl --disable --noproxy '*' --proxy '' "$@"
+)
+
 # Output: start_epoch<TAB>completion_epoch<TAB>curl_rc<TAB>http_code.
 probe_record() {
   local started completed code curl_rc=0
   started="$(epoch_now)"
-  code="$(curl -sS -o /dev/null --max-time 12 -w '%{http_code}' "$HTTPS_PROBE" 2>/dev/null)" \
+  code="$(run_hermetic_curl -sS -o /dev/null --max-time 12 -w '%{http_code}' "$HTTPS_PROBE" 2>/dev/null)" \
     || curl_rc=$?
   completed="$(epoch_now)"
   [[ "$code" =~ ^[0-9]{3}$ ]] || code=000
@@ -1416,7 +1426,7 @@ holder_marker_established() {
 run_active_holder() {
   local phase_label="$1" marker="$2" target="$3"
   local metrics code downloaded elapsed curl_rc=0
-  metrics="$(curl -sS -o /dev/null --dump-header "$marker" --max-time 70 \
+  metrics="$(run_hermetic_curl -sS -o /dev/null --dump-header "$marker" --max-time 70 \
     -w $'%{http_code}\t%{size_download}\t%{time_total}' "$target" \
     2>> "$OUT/fanout.curl.log")" || curl_rc=$?
   IFS=$'\t' read -r code downloaded elapsed <<< "$metrics"
@@ -1593,7 +1603,7 @@ run_flow_pool() {
 
 # ── Preconditions ─────────────────────────────────────────────────────
 hdr "rama transparent proxy soak — comprehensive single session"
-[[ -x "$(command -v curl)" ]] || die "curl not found"
+[[ -x /usr/bin/curl ]] || die "system curl not found"
 [[ -f "$STRESS_SH" ]] || die "stress script not found at $STRESS_SH (is REPO correct?)"
 [[ -n "$PYTHON_BIN" ]] || die "python3 is required for signed soak evidence"
 [[ -f "$EVIDENCE_HELPER" ]] || die "signed evidence helper not found at $EVIDENCE_HELPER"
@@ -1731,7 +1741,7 @@ say "${GREEN}network preflight ok ($PROBE_CODE); provider correlation starts bel
 # Sanity-check the download host actually serves through the proxy (Cloudflare
 # 403s under MITM; the rama host does not).
 DL_CHECK_RC=0
-DL_CHECK="$(curl -sS -o /dev/null --max-time 20 -w '%{http_code}' \
+DL_CHECK="$(run_hermetic_curl -sS -o /dev/null --max-time 20 -w '%{http_code}' \
   "$(dl_url 65536 16384 0)" 2>/dev/null)" || DL_CHECK_RC=$?
 [[ "$DL_CHECK" =~ ^[0-9]{3}$ ]] || DL_CHECK=000
 if (( DL_CHECK_RC == 0 )) && [[ "$DL_CHECK" =~ ^2 ]]; then
@@ -2165,6 +2175,7 @@ if [[ "$MODE" == "find-ceiling" ]]; then
   fi
   launched=0; last_good=0; ceiling=""; CEILING_FOUND=0
   FLOW_POOL_LABEL=ceiling
+  : > "$OUT/fanout.txt"
   CEILING_OUTAGE_START=""; CEILING_OUTAGE_END=""
   while (( launched < MAX_SAFE_FLOWS * 3 )); do
     for ((i=0; i<CEIL_STEP; i++)); do spawn_active; launched=$((launched+1)); done
@@ -2337,7 +2348,7 @@ hdr "phase 4 — real-world download (32 MiB steady stream)"
 REAL_DOWNLOAD_METRICS=""
 REAL_DOWNLOAD_CURL_RC=0
 : > "$OUT/real-download.metrics"
-owned_job curl -L -f -sS -o /dev/null --max-time 120 \
+owned_job run_hermetic_curl -L -f -sS -o /dev/null --max-time 120 \
   --header 'Accept-Encoding: identity' \
   -w $'%{http_code}\t%{size_download}\t%{speed_download}\t%{time_total}' \
   "$(dl_url "$DL_MAX_BYTES" 32768 5)" > "$OUT/real-download.metrics" \
@@ -2405,10 +2416,15 @@ else
   WAKE_WORKLOAD_JOINED=0
   : > "$OUT/wake-download-headers.txt"
   : > "$OUT/wake-download.body"
-  owned_job curl -L -f -sS --no-buffer -o "$OUT/wake-download.body" \
+  # Keep supervisor termination diagnostics separate from curl's own writeout.
+  # shellcheck disable=SC2329  # invoked by the owned_job supervisor
+  wake_download_job() {
+    run_hermetic_curl -L -f -sS --no-buffer -o "$OUT/wake-download.body" \
       --dump-header "$OUT/wake-download-headers.txt" --max-time 600 \
       -w 'wake-download: code=%{http_code} size=%{size_download} time=%{time_total}s\n' \
-      "$(dl_url "$DL_MAX_BYTES" 16384 250)" > "$OUT/wake-download.txt" 2>&1 &
+      "$(dl_url "$DL_MAX_BYTES" 16384 250)" > "$OUT/wake-download.txt" 2>&1
+  }
+  owned_job wake_download_job > "$OUT/wake-download-supervisor.log" 2>&1 &
   WAKE_DL_PID=$!
   remember_owned_child "$WAKE_DL_PID"
   WAKE_ESTABLISH_DEADLINE=$(( $(date +%s) + 20 ))
@@ -2891,8 +2907,10 @@ from soak_pressure_log import (
     provider_allocation_failure,
     probe_succeeded,
     release_soak_profile_issues,
+    read_sleep_workload_artifacts,
     selection_event,
     sleep_wake_evidence,
+    sleep_workload_artifact_issues,
     settled_final_flow_gauge,
     soak_evidence_issues,
     soak_workload_claim_issues,
@@ -3272,7 +3290,7 @@ if os.path.exists(ptl):
 # every recorded non-2xx, truncated body, or nonzero curl outcome is a failure.
 fo_ok = fo_bad = ceiling_fo_ok = ceiling_fo_bad = 0
 fof = os.path.join(out, "fanout.txt")
-if os.path.exists(fof):
+if os.path.isfile(fof) and not os.path.islink(fof):
     for line_number, ln in enumerate(open(fof, errors="replace"), 1):
         mm = re.fullmatch(
             r"(fanout|ceiling)\t(\d{3})\t(\d+)\t"
@@ -3300,6 +3318,8 @@ if os.path.exists(fof):
             # they are reported separately and never weaken the independent,
             # phase-local allocation-exhaustion proof.
             ceiling_fo_bad += 1
+elif meta.get("configured_skip_fanout") == "0" or meta.get("mode") == "find-ceiling":
+    numeric_log_issues.append("active fanout outcome artifact is missing or not regular")
 
 def meta_true(key):
     return meta.get(key) == "1"
@@ -3476,6 +3496,13 @@ if meta.get("mode") != "find-ceiling" and meta.get("post_wake_ok") != "skipped":
             "joined": meta.get("wake_workload_joined"),
         },
     )
+    try:
+        wake_artifacts = read_sleep_workload_artifacts(out)
+        sleep_result["issues"].extend(sleep_workload_artifact_issues(meta, wake_artifacts))
+    except (OSError, ValueError) as error:
+        sleep_result["issues"].append(f"sleep-wake raw workload evidence is unavailable: {error}")
+    if sleep_result["issues"]:
+        sleep_result["outage_window"] = None
 
 leaks_path = os.path.join(out, "leaks.txt")
 try:
