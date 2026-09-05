@@ -1472,7 +1472,10 @@ where
         // Run the service, applying the idle timeout and watching the flow
         // guard here (the streams don't). On idle/shutdown we drop `serve`,
         // whose streams' `Drop` fires the gated close callbacks.
-        let reason = {
+        // Include cancellation's destruction of the pinned service future in
+        // the panic boundary. Its destructors run before the byte/reason
+        // snapshots below and must not bypass the common close epilogue.
+        let reason = std::panic::AssertUnwindSafe(async {
             // Match the UDP boundary below: a user service can panic while
             // constructing its future or while that future is polled. Keep
             // both failure modes inside this task so the directional close
@@ -1527,7 +1530,18 @@ where
                     }
                 }
             }
-        };
+        })
+        .catch_unwind()
+        .await
+        .unwrap_or_else(|panic| {
+            tracing::error!(
+                target: "rama_apple_ne::tproxy",
+                flow_id = meta_for_close.flow_id,
+                panic_message = %panic_payload_message(panic.as_ref()),
+                "transparent proxy tcp service destruction panicked; closing flow",
+            );
+            BridgeCloseReason::ServicePanic
+        });
 
         let (ingress_received, ingress_sent) =
             counters_for_close.snapshot(BridgeDirection::Ingress);

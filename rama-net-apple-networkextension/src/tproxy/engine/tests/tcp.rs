@@ -862,6 +862,127 @@ fn tcp_service_poll_panic_runs_close_epilogue() {
     assert_tcp_service_panic_runs_close_epilogue(0xE1E1_1002, true);
 }
 
+#[test]
+fn tcp_idle_close_contains_service_destruction_panic() {
+    assert_tcp_service_destruction_panic_runs_close_epilogue(0xE1E1_1003, false);
+}
+
+#[test]
+fn tcp_engine_shutdown_contains_service_destruction_panic() {
+    assert_tcp_service_destruction_panic_runs_close_epilogue(0xE1E1_1004, true);
+}
+
+fn assert_tcp_service_destruction_panic_runs_close_epilogue(flow_id: u64, shutdown: bool) {
+    install_close_capture();
+
+    struct PanicOnDrop {
+        _bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl Drop for PanicOnDrop {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+            panic!("synthetic TCP service destruction panic");
+        }
+    }
+
+    let drops = Arc::new(AtomicUsize::new(0));
+    let service_drops = drops.clone();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let handler = TestHandler {
+        tcp_matcher: Arc::new(move |meta| {
+            let ready_tx = ready_tx.clone();
+            let drops = service_drops.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(
+                    move |bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| {
+                        let ready_tx = ready_tx.clone();
+                        let drops = drops.clone();
+                        async move {
+                            let guard = PanicOnDrop {
+                                _bridge: bridge,
+                                drops,
+                            };
+                            _ = ready_tx.send(());
+                            std::future::pending::<()>().await;
+                            drop(guard);
+                            Ok::<(), Infallible>(())
+                        }
+                    },
+                )
+                .boxed(),
+            }
+        }),
+        ..TestHandler::passthrough()
+    };
+    let builder = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(TestRuntimeFactory);
+    let engine = if shutdown {
+        builder.without_tcp_idle_timeout()
+    } else {
+        builder.with_tcp_idle_timeout(Duration::from_millis(20))
+    }
+    .build()
+    .expect("build engine");
+    let (closed_tx, closed_rx) = std::sync::mpsc::channel();
+    let ingress_closed_tx = closed_tx.clone();
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp);
+    meta.flow_id = flow_id;
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        meta,
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        move || _ = ingress_closed_tx.send(BridgeDirection::Ingress),
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(
+        |_| TcpDeliverStatus::Accepted,
+        || {},
+        move || _ = closed_tx.send(BridgeDirection::Egress),
+    );
+    ready_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("service must hold its guard before termination");
+
+    if !shutdown {
+        let started = Instant::now();
+        while flow_close_count(flow_id) < 2 && started.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            flow_close_count(flow_id),
+            2,
+            "idle must run both close epilogues"
+        );
+    }
+    engine.stop(0);
+
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(flow_close_count(flow_id), 2);
+    assert_eq!(flow_close_reason(flow_id).as_deref(), Some("service_panic"));
+    let closed = closed_rx.try_iter().collect::<Vec<_>>();
+    assert_eq!(closed.len(), 2, "each directional callback must fire once");
+    assert!(
+        closed
+            .iter()
+            .any(|direction| matches!(direction, BridgeDirection::Ingress))
+    );
+    assert!(
+        closed
+            .iter()
+            .any(|direction| matches!(direction, BridgeDirection::Egress))
+    );
+    drop(session);
+    assert_eq!(
+        flow_close_count(flow_id),
+        2,
+        "session drop must not repeat close"
+    );
+}
+
 /// A server-speaks-first flow whose client half-closes without sending must not
 /// be fast-cancelled: after `on_client_eof` the egress side stays alive
 /// (`on_egress_bytes` still returns `Accepted`).

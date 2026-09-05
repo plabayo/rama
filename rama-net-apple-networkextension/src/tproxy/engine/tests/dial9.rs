@@ -271,6 +271,122 @@ fn udp_destruction_panic_on_shutdown_pairs_dial9_open_and_close() {
 }
 
 #[test]
+fn tcp_destruction_panic_on_shutdown_preserves_final_bytes_and_dial9_pair() {
+    const FLOW_ID: u64 = 0xE1E1_3011;
+    const REQUEST: &[u8] = b"request";
+    const FINAL_RESPONSE: &[u8] = b"final-response";
+    let _slot = recorder_slot();
+    let temp_dir = rama_utils::fs::tempdir().expect("create trace directory");
+
+    struct FinalWriteOnDrop {
+        bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>,
+    }
+
+    impl Drop for FinalWriteOnDrop {
+        fn drop(&mut self) {
+            let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+            let result = tokio::io::AsyncWrite::poll_write(
+                std::pin::Pin::new(&mut self.bridge.0),
+                &mut cx,
+                FINAL_RESPONSE,
+            );
+            assert!(matches!(result, std::task::Poll::Ready(Ok(n)) if n == FINAL_RESPONSE.len()));
+            panic!("synthetic TCP destruction panic after final response");
+        }
+    }
+
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let handler = TestHandler {
+        tcp_matcher: Arc::new(move |meta| {
+            let ready_tx = ready_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(
+                    move |mut bridge: BridgeIo<crate::TcpFlow, crate::NwTcpStream>| {
+                        let ready_tx = ready_tx.clone();
+                        async move {
+                            let mut request = [0; REQUEST.len()];
+                            bridge.0.read_exact(&mut request).await.unwrap();
+                            assert_eq!(request, REQUEST);
+                            let guard = FinalWriteOnDrop { bridge };
+                            _ = ready_tx.send(());
+                            std::future::pending::<()>().await;
+                            drop(guard);
+                            Ok::<(), Infallible>(())
+                        }
+                    },
+                )
+                .boxed(),
+            }
+        }),
+        ..TestHandler::passthrough()
+    };
+    let engine = build_dial9_engine(handler, temp_dir.path());
+    let provider_pid = engine.provider_pid;
+    let provider_generation = engine.provider_generation;
+    let (observed_tx, observed_rx) = std::sync::mpsc::channel();
+    let closed_tx = observed_tx.clone();
+    let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Tcp);
+    meta.flow_id = FLOW_ID;
+    let SessionFlowAction::Intercept(mut session) = engine.new_tcp_session(
+        meta,
+        move |bytes| {
+            _ = observed_tx.send(Some(bytes.to_vec()));
+            TcpDeliverStatus::Accepted
+        },
+        || {},
+        move || _ = closed_tx.send(None),
+    ) else {
+        panic!("expected intercept session");
+    };
+    session.activate(|_| TcpDeliverStatus::Accepted, || {}, || {});
+    assert_eq!(session.on_client_bytes(REQUEST), TcpDeliverStatus::Accepted);
+    ready_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("service must own its guard before shutdown");
+    engine.stop(0);
+
+    assert_eq!(
+        observed_rx.try_recv().unwrap(),
+        Some(FINAL_RESPONSE.to_vec())
+    );
+    assert_eq!(observed_rx.try_recv().unwrap(), None);
+    assert!(observed_rx.try_recv().is_err());
+    assert_eq!(flow_close_count(FLOW_ID), 2);
+    assert_eq!(flow_close_reason(FLOW_ID).as_deref(), Some("service_panic"));
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowOpened"), 1);
+    assert_eq!(count_dial9_events(temp_dir.path(), "TproxyFlowClosed"), 1);
+    assert_eq!(
+        dial9_flow_closed_reasons(temp_dir.path()),
+        vec![(FLOW_ID, 14)]
+    );
+    assert_eq!(
+        dial9_udp_flow_closed_bytes(temp_dir.path(), FLOW_ID),
+        (REQUEST.len() as u64, FINAL_RESPONSE.len() as u64),
+        "close accounting must include the final destructor write",
+    );
+    let mut identities = dial9_provider_identities(temp_dir.path(), FLOW_ID);
+    identities.sort();
+    assert_eq!(
+        identities,
+        vec![
+            (
+                "TproxyFlowClosed".to_owned(),
+                u64::from(provider_pid),
+                provider_generation,
+                FLOW_ID
+            ),
+            (
+                "TproxyFlowOpened".to_owned(),
+                u64::from(provider_pid),
+                provider_generation,
+                FLOW_ID
+            ),
+        ]
+    );
+}
+
+#[test]
 fn tcp_service_panic_pairs_dial9_open_and_close() {
     const FLOW_ID: u64 = 0xE1E1_3001;
     let _slot = recorder_slot();
