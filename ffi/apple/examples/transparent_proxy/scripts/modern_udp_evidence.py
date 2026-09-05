@@ -892,6 +892,34 @@ def _validate_representative_decisions(status, decisions, phases):
     return result, unblocked_generation, result["blocked"]["generation"]
 
 
+def _validate_probe_receipts(root, status, representative):
+    # Common release verification materializes this module from the exact
+    # evidence-head blob, alongside this archived validator. Never execute a
+    # producer file taken from an unverified bundle to interpret its receipts.
+    from modern_udp_e2e_probe import PROBE_LABELS, read_probe_receipt, replay_probe_receipt
+
+    rows = _tabular_rows(root, "udp-probe-results.tsv", ("label", "source_pid", "exit_code"), 4096)
+    if [row[0] for row in rows] != list(PROBE_LABELS):
+        raise BundleVerificationError("UDP probe result label/cardinality mismatch")
+    previous_end = 0
+    try:
+        for label, pid, exit_code in rows:
+            decision = representative[label]
+            if (_bundle_uint(pid, 2**31 - 1) != decision["source_pid"] or exit_code != "0"):
+                raise BundleVerificationError("UDP probe joined child did not pass with the exact source PID")
+            receipt = read_probe_receipt(root / f"udp-probe-{label}.json")
+            if replay_probe_receipt(receipt, status["run_uuid"], label,
+                                    decision["source_pid"], decision["remote"]) != 0:
+                raise BundleVerificationError("UDP probe raw protocol outcome did not pass")
+            if (not _bundle_uint(status["run_start_epoch_ms"]) <= receipt["start_epoch_ms"]
+                    <= receipt["end_epoch_ms"] <= _bundle_uint(status["run_end_epoch_ms"])
+                    or receipt["start_monotonic_ns"] < previous_end):
+                raise BundleVerificationError("UDP probe receipts are unordered or outside the run")
+            previous_end = receipt["end_monotonic_ns"]
+    except (OSError, ValueError) as error:
+        raise BundleVerificationError(f"UDP probe receipt verification failed: {error}") from error
+
+
 ECHO_CLIENT_KEYS = {
     "schema_version", "kind", "run_uuid", "endpoint", "socket_count",
     "datagrams_per_socket", "payload_bytes", "expected_count", "sent_count",
@@ -1442,6 +1470,7 @@ def _verify_bundle_semantics(directory):
     representative, unblocked_generation, blocked_generation = (
         _validate_representative_decisions(status, decisions, phases)
     )
+    _validate_probe_receipts(root, status, representative)
     representative_pids = {row["source_pid"] for row in representative.values()}
     echo_pid = _bundle_uint(status["echo_source_pid"], 2**31 - 1)
     if echo_pid in representative_pids:

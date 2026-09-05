@@ -75,6 +75,8 @@ COMMON_EVIDENCE_STATUS="$TMP_DIR/evidence-status.tsv"
 BOUNDED_CLEANUP_FAILED="$TMP_DIR/.bounded-cleanup-failed"
 DIAL9_BASELINE="$TMP_DIR/dial9-baseline.json"
 DIAL9_SUMMARY="$TMP_DIR/dial9-evidence.json"
+PROBE_RESULTS="$TMP_DIR/udp-probe-results.tsv"
+printf 'label\tsource_pid\texit_code\n' > "$PROBE_RESULTS" || exit 2
 
 LOG_PID=""
 PROVIDER_GENERATION_MONITOR_PID=""
@@ -1357,12 +1359,14 @@ fatal_issue() {
 }
 
 run_probe() {
-  local description="$1" expected_product_rc="$2"
-  shift 2
-  local rc=0
+  local description="$1" expected_product_rc="$2" label="$3" protocol="$4" server="$5"
+  shift 5
+  local rc=0 port=53 receipt="$TMP_DIR/udp-probe-$label.json"
+  [[ "$protocol" != ntp ]] || port=123
   UDP_PROBE_ATTEMPT_COUNT=$((UDP_PROBE_ATTEMPT_COUNT + 1))
   LAST_PROBE_LOG_START="$(provider_log_line)"
-  start_owned_command probe /usr/bin/python3 "$PROBE" "$@" || {
+  start_owned_command probe /usr/bin/python3 "$PROBE" "$protocol" --server "$server" \
+    --run-uuid "$RUN_UUID" --probe-label "$label" --result-file "$receipt" "$@" || {
     add_issue "$description could not start its owned probe"
     return 1
   }
@@ -1371,6 +1375,16 @@ run_probe() {
   join_owned_command "$ACTIVE_PROBE_PID" "$((SECONDS + 30))" || rc=$?
   (( OWNED_JOIN_REAPED == 0 )) || ACTIVE_PROBE_PID=""
   close_probe_decision_window "$LAST_PROBE_LOG_START" "$LAST_PROBE_PID"
+  # Preserve the observed child exit separately from its raw protocol receipt.
+  # Neither a missing/partial publication nor a mismatched result earns a pass.
+  if ! printf '%s\t%s\t%s\n' "$label" "$LAST_PROBE_PID" "$rc" >> "$PROBE_RESULTS" \
+    || ! /usr/bin/python3 "$PROBE" verify-receipt "$receipt" \
+      --run-uuid "$RUN_UUID" --probe-label "$label" --source-pid "$LAST_PROBE_PID" \
+      --endpoint "$server:$port" --exit-code "$rc"
+  then
+    add_issue "$description lacks a complete matching raw protocol receipt"
+    return 1
+  fi
   case "$rc" in
     0) UDP_PROBE_PASS_COUNT=$((UDP_PROBE_PASS_COUNT + 1)) ;;
     10)
@@ -2110,15 +2124,15 @@ UNBLOCKED_LOG_LINE="$(provider_log_line)"
 UDP_ERROR_PROVIDER_LOG_LINE="$UNBLOCKED_LOG_LINE"
 
 CURRENT_PHASE=unblocked-probes
-run_probe "pass-through DNS control" none dns --server "$PASSTHROUGH_DNS"
+run_probe "pass-through DNS control" none passthrough dns "$PASSTHROUGH_DNS"
 PASSTHROUGH_DNS_SOURCE_PID="$LAST_PROBE_PID"
 PASSTHROUGH_DNS_LOG_START="$LAST_PROBE_LOG_START"
 PASSTHROUGH_DNS_LOG_END="$LAST_PROBE_LOG_END"
-run_probe "intercept NTP control" none ntp --server "$INTERCEPT_NTP"
+run_probe "intercept NTP control" none ntp ntp "$INTERCEPT_NTP"
 NTP_SOURCE_PID="$LAST_PROBE_PID"
 NTP_LOG_START="$LAST_PROBE_LOG_START"
 NTP_LOG_END="$LAST_PROBE_LOG_END"
-run_probe "future blocked DNS control" none dns --server "$BLOCKED_DNS"
+run_probe "future blocked DNS control" none control dns "$BLOCKED_DNS"
 CONTROL_DNS_SOURCE_PID="$LAST_PROBE_PID"
 CONTROL_DNS_LOG_START="$LAST_PROBE_LOG_START"
 CONTROL_DNS_LOG_END="$LAST_PROBE_LOG_END"
@@ -2223,7 +2237,7 @@ close_probe_decision_window "$ECHO_LOG_START" "$ECHO_SOURCE_PID" "$ECHO_SOCKET_C
 ECHO_LOG_END="$LAST_PROBE_LOG_END"
 
 CURRENT_PHASE=pressure-recovery-canary
-run_probe "post-pressure NTP recovery canary" none ntp --server "$INTERCEPT_NTP"
+run_probe "post-pressure NTP recovery canary" none recovery ntp "$INTERCEPT_NTP"
 RECOVERY_NTP_SOURCE_PID="$LAST_PROBE_PID"
 RECOVERY_NTP_LOG_START="$LAST_PROBE_LOG_START"
 RECOVERY_NTP_LOG_END="$LAST_PROBE_LOG_END"
@@ -2249,7 +2263,7 @@ require_provider_identity || true
 BLOCKED_LOG_LINE="$(provider_log_line)"
 
 CURRENT_PHASE=blocked-probe
-run_probe "blocked DNS probe" 10 dns --server "$BLOCKED_DNS" \
+run_probe "blocked DNS probe" 10 blocked dns "$BLOCKED_DNS" \
   --timeout 4 --expect-no-response
 BLOCKED_DNS_SOURCE_PID="$LAST_PROBE_PID"
 BLOCKED_DNS_LOG_START="$LAST_PROBE_LOG_START"

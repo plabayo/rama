@@ -11,6 +11,7 @@ import select
 import shlex
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -875,6 +876,38 @@ def _decision(run_uuid, provider_pid, generation, action, flow_id, remote, local
     )
 
 
+def probe_receipt_fixture(label, source_pid, endpoint, *, start_epoch_ms=1100, run_uuid=RUN_UUID):
+    """An ordinary captured request/response, independent of the replay helper."""
+    protocol = "ntp" if label in ("ntp", "recovery") else "dns"
+    if protocol == "dns":
+        question = b"\x07example\x03com\x00\x00\x01\x00\x01"
+        request = struct.pack("!HHHHHH", 0x1234, 0x0100, 1, 0, 0, 0) + question
+        response = struct.pack("!HHHHHH", 0x1234, 0x8180, 1, 1, 0, 0) + question
+        response += b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 60, 4) + bytes((93, 184, 216, 34))
+    else:
+        request = bytes((0x23,)) + bytes(39) + struct.pack("!II", 2_208_988_801, 0)
+        response = bytes((0x24, 1)) + bytes(22) + request[40:48] + bytes(16)
+    start = start_epoch_ms * 1_000_000 + 1_000_000_000
+    timeout = label == "blocked"
+    elapsed_ms = 4002 if timeout else 3
+    server, port = endpoint.rsplit(":", 1)
+    return {
+        "schema_version": 1, "kind": "udp_protocol_probe", "run_uuid": run_uuid,
+        "probe_label": label, "source_pid": source_pid, "protocol": protocol,
+        "endpoint": endpoint, "dns_name": "example.com" if protocol == "dns" else None,
+        "expect_no_response": timeout, "timeout_ns": (4 if timeout else 8) * 1_000_000_000,
+        "request_hex": request.hex(), "sent_bytes": len(request),
+        "response_hex": None if timeout else response.hex(),
+        "response_peer": None if timeout else [server, int(port)],
+        "receive_outcome": "timeout" if timeout else "response",
+        "start_epoch_ms": start_epoch_ms, "end_epoch_ms": start_epoch_ms + elapsed_ms,
+        "start_monotonic_ns": start, "receive_started_monotonic_ns": start + 1_000_000,
+        "receive_completed_monotonic_ns": start + (elapsed_ms - 1) * 1_000_000,
+        "end_monotonic_ns": start + elapsed_ms * 1_000_000,
+        "close_error": False, "exit_code": 0, "schema_complete": True,
+    }
+
+
 def build_strict_bundle(directory):
     provider_pid = 9001
     unblocked_generation = 7
@@ -912,6 +945,18 @@ def build_strict_bundle(directory):
                   "127.0.0.1:41005", "com.apple.python3", 1005)
     )
     (directory / "provider.log").write_text("\n".join(lines) + "\n")
+    probe_results = ["label\tsource_pid\texit_code\n"]
+    for label, pid, endpoint, started in (
+        ("passthrough", 1001, "1.1.1.1:53", 1100),
+        ("ntp", 1003, "162.159.200.1:123", 1200),
+        ("control", 1002, "8.8.8.8:53", 1300),
+        ("recovery", 1006, "162.159.200.1:123", 1700),
+        ("blocked", 1005, "8.8.8.8:53", 4500),
+    ):
+        value = probe_receipt_fixture(label, pid, endpoint, start_epoch_ms=started)
+        (directory / f"udp-probe-{label}.json").write_text(json.dumps(value) + "\n")
+        probe_results.append(f"{label}\t{pid}\t0\n")
+    (directory / "udp-probe-results.tsv").write_text("".join(probe_results))
 
     phase_rows = (
         ("schema_version", 1), ("unblocked_start_line", 0),
@@ -1015,7 +1060,7 @@ def build_strict_bundle(directory):
         "status transition connecting -> connected",
     ]
     restore_slice = "".join(
-        f"[1970-01-01T00:00:04Z] INFO: {message}\n" for message in restore_messages
+        f"[1970-01-01T00:00:09Z] INFO: {message}\n" for message in restore_messages
     )
     (directory / "restore-container.log").write_text(restore_slice)
     (directory / "restore.log").write_text(
@@ -1025,7 +1070,7 @@ def build_strict_bundle(directory):
     restore_rows = (
         ("schema_version", 1), ("run_uuid", RUN_UUID), ("provider_pid", provider_pid),
         ("replaced_provider_generation", blocked_generation),
-        ("restore_started_epoch_ms", 4000), ("restore_completed_epoch_ms", 4500),
+        ("restore_started_epoch_ms", 9000), ("restore_completed_epoch_ms", 9500),
         ("container_start_line", 100), ("container_end_line", 113),
         ("slice_line_count", 13),
         ("slice_sha256", hashlib.sha256(restore_slice.encode()).hexdigest()),
@@ -1068,7 +1113,7 @@ def build_strict_bundle(directory):
         f"run_uuid\t{RUN_UUID}\n"
         f"provider_generation_identity\t{DIGEST}\n"
         "since_epoch_ms\t1000\n"
-        "snapshot_epoch_ms\t6000\n"
+        "snapshot_epoch_ms\t11000\n"
         "process_names\torg.ramaproxy.example.tproxy.dev.provider\n"
         "crash_count\t0\n"
         f"crash_names_sha256\t{hashlib.sha256(b'').hexdigest()}\n"
@@ -1086,14 +1131,17 @@ def build_strict_bundle(directory):
         f"running_executable_path_sha256\t{'b' * 64}\n"
         "cadence_ms\t2000\n"
         "max_gap_ms\t5000\n"
-        "sample_count\t3\n"
+        "sample_count\t5\n"
         f"sample_000001\t900|{generation_tail}\n"
         f"sample_000002\t3000|{generation_tail}\n"
         f"sample_000003\t6000|{generation_tail}\n"
+        f"sample_000004\t9000|{generation_tail}\n"
+        f"sample_000005\t11000|{generation_tail}\n"
         "schema_complete\t1\n"
     )
     engine_digest = hashlib.sha256(b"9001:7:8").hexdigest()
     _write_status(directory, {
+        "run_end_epoch_ms": 10000,
         "http3_source_pid": 3000, "http3_flow_id": 2000,
         "http3_request_count": 6, "http3_pass_count": 6, "http3_flow_count": 6,
         "http3_min_concurrent": 2, "echo_source_pid": echo_pid,
@@ -1110,6 +1158,169 @@ def reseal_test_manifest(directory):
             content = path.read_bytes()
             rows.append(f"{path.name}\t{len(content)}\t{hashlib.sha256(content).hexdigest()}\n")
     (directory / "evidence-manifest.tsv").write_text("".join(rows))
+
+
+class ProtocolProbeReceiptTests(unittest.TestCase):
+    def capture(self, root, label, *, outcome="response", mutate=None, close_error=False,
+                partial_send=False, early_timeout=False):
+        """Mock only our socket and clock; never contact a protocol endpoint."""
+        protocol = "ntp" if label in ("ntp", "recovery") else "dns"
+        server, port = ("162.159.200.1", 123) if protocol == "ntp" else ("8.8.8.8", 53)
+        now = [10_000_000_000]
+        sent = []
+        received = []
+        timeout = 4 if label == "blocked" else 8
+        path = root / f"udp-probe-{label}.json"
+
+        class MockSocket:
+            def settimeout(self, seconds):
+                self.timeout = seconds
+
+            def sendto(self, packet, endpoint):
+                sent.append((bytes(packet), endpoint))
+                now[0] += 1_000_000
+                return len(packet) - int(partial_send)
+
+            def recvfrom(self, maximum):
+                received.append(maximum)
+                now[0] += 1_000_000 if outcome != "timeout" or early_timeout else timeout * 1_000_000_000
+                if outcome == "timeout":
+                    raise socket.timeout("ordinary mocked timeout")
+                if outcome == "error":
+                    raise OSError("ordinary mocked socket error")
+                packet = sent[0][0]
+                if protocol == "dns":
+                    response = packet[:2] + struct.pack("!HHHHH", 0x8180, 1, 1, 0, 0) + packet[12:]
+                    response += b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 60, 4) + bytes((93, 184, 216, 34))
+                else:
+                    response = bytes((0x24, 1)) + bytes(22) + packet[40:48] + bytes(16)
+                pair = (response, (server, port))
+                return mutate(*pair) if mutate else pair
+
+            def close(self):
+                if close_error:
+                    raise OSError("ordinary mocked close error")
+
+        error = None
+        with mock.patch.object(udp_probe.socket, "socket", return_value=MockSocket()), \
+                mock.patch.object(udp_probe.time, "clock_gettime_ns", side_effect=lambda _: now[0]), \
+                mock.patch.object(udp_probe.time, "time_ns", side_effect=lambda: now[0] + 1_000_000_000_000), \
+                mock.patch.object(udp_probe.time, "time", side_effect=lambda: 1000 + now[0] / 1e9), \
+                mock.patch("builtins.print"):
+            try:
+                keywords = dict(run_uuid=RUN_UUID, probe_label=label, result_file=str(path))
+                if protocol == "dns":
+                    udp_probe.dns_query(server, "example.com", timeout, label == "blocked", **keywords)
+                else:
+                    udp_probe.ntp_query(server, timeout, **keywords)
+            except Exception as caught:
+                error = caught
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0][1], (server, port))
+        self.assertEqual(received, [] if partial_send else [65_535])
+        self.assertFalse(list(root.glob(".udp-probe-*.tmp")))
+        return path, error
+
+    def replay(self, value):
+        return udp_probe.replay_probe_receipt(
+            value, RUN_UUID, value["probe_label"], os.getpid(), value["endpoint"]
+        )
+
+    def test_all_five_canaries_publish_raw_receipts_and_replay(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for label in udp_probe.PROBE_LABELS:
+                with self.subTest(label=label):
+                    path, error = self.capture(root, label, outcome="timeout" if label == "blocked" else "response")
+                    self.assertIsNone(error)
+                    value = udp_probe.read_probe_receipt(path)
+                    self.assertEqual(self.replay(value), 0)
+                    self.assertEqual(len(bytes.fromhex(value["request_hex"])), value["sent_bytes"])
+                    self.assertEqual(value["response_hex"] is None, label == "blocked")
+                    self.assertEqual(path.stat().st_nlink, 1)
+
+    def test_malformed_packets_and_wrong_peers_preserve_raw_failed_outcomes(self):
+        mutations = (
+            ("control", "truncated", lambda response, peer: (b"short", peer)),
+            ("control", "transaction", lambda response, peer: (bytes((response[0] ^ 1,)) + response[1:], peer)),
+            ("control", "response", lambda response, peer: (response[:2] + b"\x01" + response[3:], peer)),
+            ("control", "rcode", lambda response, peer: (response[:3] + b"\x83" + response[4:], peer)),
+            ("control", "answer", lambda response, peer: (response[:6] + bytes(2) + response[8:], peer)),
+            ("control", "peer", lambda response, peer: (response, ("8.8.4.4", peer[1]))),
+            ("ntp", "truncated", lambda response, peer: (response[:47], peer)),
+            ("ntp", "mode", lambda response, peer: (b"\x23" + response[1:], peer)),
+            ("ntp", "stratum", lambda response, peer: (response[:1] + b"\x00" + response[2:], peer)),
+            ("recovery", "originate", lambda response, peer: (response[:24] + bytes(8) + response[32:], peer)),
+            ("recovery", "peer", lambda response, peer: (response, (peer[0], 124))),
+            ("blocked", "malformed", lambda response, peer: (b"short", peer)),
+        )
+        for label, name, mutation in mutations:
+            with self.subTest(label=label, mutation=name), tempfile.TemporaryDirectory() as temporary:
+                path, error = self.capture(Path(temporary), label, mutate=mutation)
+                self.assertIsInstance(error, RuntimeError)
+                self.assertNotIsInstance(error, ProductViolation)
+                value = udp_probe.read_probe_receipt(path)
+                self.assertEqual(value["receive_outcome"], "response")
+                self.assertEqual(self.replay(value), udp_probe.PROBE_ERROR_EXIT)
+                value["exit_code"] = 0
+                with self.assertRaisesRegex(ValueError, "raw protocol evidence"):
+                    self.replay(value)
+
+    def test_timeout_socket_failure_and_block_violation_remain_distinct(self):
+        cases = (
+            ("control", "timeout", False, False, socket.timeout, 20),
+            ("ntp", "error", False, False, OSError, 20),
+            ("blocked", "error", True, False, OSError, 20),
+            ("ntp", "response", True, False, OSError, 20),
+            ("ntp", "response", False, True, RuntimeError, 20),
+            ("blocked", "response", False, False, ProductViolation, 10),
+            ("blocked", "response", True, False, ProductViolation, 10),
+            ("blocked", "timeout", True, False, None, 0),
+        )
+        for label, outcome, close_error, partial_send, expected_error, expected in cases:
+            with self.subTest(case=(label, outcome, close_error, partial_send)), tempfile.TemporaryDirectory() as temporary:
+                path, error = self.capture(Path(temporary), label, outcome=outcome,
+                                           close_error=close_error, partial_send=partial_send)
+                if expected_error is None:
+                    self.assertIsNone(error)
+                else:
+                    self.assertIsInstance(error, expected_error)
+                value = udp_probe.read_probe_receipt(path)
+                self.assertEqual(self.replay(value), expected)
+
+    def test_early_timeout_cannot_supply_block_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path, _ = self.capture(Path(temporary), "blocked", outcome="timeout", early_timeout=True)
+            with self.assertRaisesRegex(ValueError, "full timeout"):
+                self.replay(udp_probe.read_probe_receipt(path))
+
+    def test_publication_failure_and_duplicate_publication_never_replace_a_receipt(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with mock.patch.object(udp_probe.os, "link", side_effect=OSError("fixture publication failure")):
+                path, error = self.capture(root, "ntp")
+            self.assertIsInstance(error, OSError)
+            self.assertFalse(path.exists())
+            path, error = self.capture(root, "ntp")
+            self.assertIsNone(error)
+            original = path.read_bytes()
+            _, error = self.capture(root, "ntp")
+            self.assertIsInstance(error, FileExistsError)
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_receipt_reader_rejects_incomplete_duplicate_and_oversized_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "receipt.json"
+            with self.assertRaises(OSError):
+                udp_probe.read_probe_receipt(path)
+            value = probe_receipt_fixture("ntp", os.getpid(), "162.159.200.1:123")
+            content = json.dumps(value)
+            for raw in ("", content[:-1], content[:-1] + ',"exit_code":0}',
+                        " " * (udp_probe.PROBE_RECEIPT_MAX_BYTES + 1)):
+                with self.subTest(length=len(raw)):
+                    path.write_text(raw)
+                    with self.assertRaises(ValueError):
+                        udp_probe.read_probe_receipt(path)
 
 
 class ModernStatusTests(unittest.TestCase):
@@ -1284,6 +1495,130 @@ class StrictBundleTests(unittest.TestCase):
             self.assertEqual(result.stdout, "0\n")
             self.assertEqual(result.stderr, "")
 
+    def test_rejects_missing_duplicate_mismatched_and_failed_probe_receipts(self):
+        cases = (
+            "missing", "truncated", "duplicate-key", "duplicate-row", "missing-row",
+            "wrong-run", "wrong-label", "wrong-pid", "wrong-endpoint", "child-exit",
+            "bad-dns-id", "dns-timeout", "bad-ntp-originate", "wrong-peer",
+            "short-ntp", "raw-failure", "short-block-timeout", "bad-request",
+            "receipt-after-run", "receipt-reordered", "oversized-packet", "extra-field",
+        )
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                build_strict_bundle(root)
+                label = "blocked" if case == "short-block-timeout" else (
+                    "passthrough" if case in ("bad-dns-id", "dns-timeout") else "recovery"
+                )
+                path = root / f"udp-probe-{label}.json"
+                value = json.loads(path.read_text())
+                results = root / "udp-probe-results.tsv"
+                if case == "missing":
+                    path.unlink()
+                elif case == "truncated":
+                    path.write_text(path.read_text()[:-3])
+                elif case == "duplicate-key":
+                    path.write_text(json.dumps(value)[:-1] + ',"exit_code":0}\n')
+                elif case == "duplicate-row":
+                    results.write_text(results.read_text() + "recovery\t1006\t0\n")
+                elif case == "missing-row":
+                    results.write_text(results.read_text().replace("recovery\t1006\t0\n", ""))
+                elif case == "child-exit":
+                    results.write_text(results.read_text().replace("recovery\t1006\t0", "recovery\t1006\t20"))
+                else:
+                    if case == "wrong-run":
+                        value["run_uuid"] = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+                    elif case == "wrong-label":
+                        value["probe_label"] = "ntp"
+                    elif case == "wrong-pid":
+                        value["source_pid"] += 1
+                    elif case == "wrong-endpoint":
+                        value["endpoint"] = "162.159.200.2:123"
+                    elif case == "bad-dns-id":
+                        value["response_hex"] = "ffff" + value["response_hex"][4:]
+                    elif case == "dns-timeout":
+                        value.update(receive_outcome="timeout", response_hex=None, response_peer=None, exit_code=20)
+                    elif case in ("bad-ntp-originate", "raw-failure"):
+                        packet = bytearray.fromhex(value["response_hex"])
+                        packet[24] ^= 1
+                        value["response_hex"] = packet.hex()
+                        if case == "raw-failure":
+                            value["exit_code"] = 20
+                    elif case == "wrong-peer":
+                        value["response_peer"] = ["127.0.0.1", 123]
+                    elif case == "short-ntp":
+                        value["response_hex"] = "00" * 47
+                    elif case == "short-block-timeout":
+                        value["receive_completed_monotonic_ns"] -= 1
+                    elif case == "bad-request":
+                        value["request_hex"] = "00" * 48
+                    elif case == "receipt-after-run":
+                        value["start_epoch_ms"] += 10000
+                        value["end_epoch_ms"] += 10000
+                    elif case == "receipt-reordered":
+                        for key in ("start_monotonic_ns", "receive_started_monotonic_ns",
+                                    "receive_completed_monotonic_ns", "end_monotonic_ns"):
+                            value[key] -= 1_000_000_000
+                    elif case == "oversized-packet":
+                        value["response_hex"] = "00" * 65536
+                    elif case == "extra-field":
+                        value["passed"] = True
+                    path.write_text(json.dumps(value) + "\n")
+                reseal_test_manifest(root)
+                with self.assertRaisesRegex(BundleVerificationError, "UDP probe|UDP blocked"):
+                    verify_bundle(root)
+
+    def test_common_release_dispatch_replays_archived_probe_bytes(self):
+        import signed_run_evidence as evidence
+        from test_signed_run_evidence import (
+            HEAD, current_script_source, write_generation_samples, write_identity, write_tsv,
+        )
+        from modern_udp_evidence import PRODUCER_SOURCE_NAMES
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            build, generation = write_identity(root, pid=9001, start=500)
+            identity_path = root / evidence.PROVIDER_IDENTITY_NAME
+            identity_path.write_text(identity_path.read_text().replace(
+                "running_executable_path\t/fixture/running/provider\n",
+                f"running_executable_path\t/fixture/running/{evidence.DEV_PROVIDER_BUNDLE_ID}\n",
+            ))
+            for path in root.rglob("*"):
+                if path.is_file() and path.name != evidence.PROVIDER_IDENTITY_NAME:
+                    path.write_text(path.read_text().replace(DIGEST, generation))
+            for name in PRODUCER_SOURCE_NAMES:
+                (root / name).write_bytes((SCRIPT_DIR / name.removeprefix("source-")).read_bytes())
+            producer_digest = producer_sources_sha256(root)
+            for name in ("udp-evidence-status.tsv", "workload-claims.tsv"):
+                path = root / name
+                path.write_text(re.sub(r"(?m)^producer_sources_sha256\t[0-9a-f]{64}$",
+                                      f"producer_sources_sha256\t{producer_digest}", path.read_text()))
+            udp = dict(line.split("\t") for line in (root / "udp-evidence-status.tsv").read_text().splitlines())
+            common = {key: udp[key] for key in (
+                "complete", "passed", "exit_code", "evidence_kind", "run_uuid",
+                "run_start_epoch_ms", "run_end_epoch_ms", "provider_generation_identity", "schema_complete",
+            )}
+            common.update(git_head=HEAD, git_dirty="0", provider_build_identity=build,
+                          workload_claims_sha256=evidence.sha256_file(root / evidence.CLAIMS_NAME))
+            write_tsv(root / evidence.STATUS_NAME, ((key, common[key]) for key in evidence.STATUS_ORDER))
+            write_generation_samples(root, dict(common, run_end_epoch_ms="11000"))
+            # The native decoder has separate fixture coverage. This regression
+            # exercises the actual common -> archived Python replay boundary.
+            for name in ("dial9-baseline.json", "dial9-evidence.json"):
+                (root / name).write_text("{}\n")
+            with mock.patch.object(evidence, "_source_blob_at_head", side_effect=current_script_source), \
+                    mock.patch.object(evidence, "_validate_modern_dial9"):
+                evidence.seal(root)
+                evidence._validate_modern_semantics(evidence._verify_and_capture(root))
+                receipt = root / "udp-probe-ntp.json"
+                value = json.loads(receipt.read_text())
+                value["response_peer"] = ["127.0.0.1", 123]
+                receipt.write_text(json.dumps(value) + "\n")
+                evidence.seal(root)
+                with self.assertRaisesRegex(evidence.EvidenceError, "raw-bundle validator rejected.*UDP probe receipt"):
+                    evidence._validate_modern_semantics(evidence._verify_and_capture(root))
+
     def test_rejects_scalar_only_fabricated_modern_bundle(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1309,7 +1644,7 @@ class StrictBundleTests(unittest.TestCase):
                 verify_bundle(root)
 
     def test_rejects_resealed_crash_snapshot_for_another_generation_or_window(self):
-        for old, new in ((DIGEST, "b" * 64), ("snapshot_epoch_ms\t6000", "snapshot_epoch_ms\t4999")):
+        for old, new in ((DIGEST, "b" * 64), ("snapshot_epoch_ms\t11000", "snapshot_epoch_ms\t4999")):
             with self.subTest(mutation=new):
                 with tempfile.TemporaryDirectory() as temporary:
                     root = Path(temporary)
@@ -1731,6 +2066,50 @@ class QuicShapedEchoTests(unittest.TestCase):
 
 
 class HarnessSourceContractTests(unittest.TestCase):
+    def test_run_probe_cross_checks_joined_exit_before_counting_a_pass(self):
+        helper = BoundedCommandCleanupTests.shell_function
+        for case in ("pass", "missing", "failed-raw", "bad-response", "child-exit", "blocked-violation"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                label = "blocked" if case == "blocked-violation" else "control"
+                receipt = probe_receipt_fixture(label, 42, "8.8.8.8:53")
+                child_exit = 20 if case == "child-exit" else 0
+                if case in ("failed-raw", "bad-response"):
+                    receipt["response_hex"] = "00"
+                    receipt["exit_code"] = 20 if case == "failed-raw" else 0
+                if case == "blocked-violation":
+                    response = probe_receipt_fixture("control", 42, "8.8.8.8:53")
+                    receipt.update(receive_outcome="response", response_hex=response["response_hex"],
+                                   response_peer=response["response_peer"], exit_code=10)
+                    child_exit = 10
+                if case != "missing":
+                    (root / f"udp-probe-{label}.json").write_text(json.dumps(receipt) + "\n")
+                program = helper("run_probe") + textwrap.dedent(f"""\
+                    TMP_DIR={shlex.quote(str(root))}
+                    PROBE={shlex.quote(str(SCRIPT_DIR / 'modern_udp_e2e_probe.py'))}
+                    RUN_UUID={shlex.quote(RUN_UUID)}
+                    PROBE_RESULTS="$TMP_DIR/udp-probe-results.tsv"
+                    printf 'label\\tsource_pid\\texit_code\\n' > "$PROBE_RESULTS"
+                    UDP_PROBE_ATTEMPT_COUNT=0 UDP_PROBE_PASS_COUNT=0 ISSUES=0 FAILURES=0
+                    provider_log_line() {{ printf '1\\n'; }}
+                    start_owned_command() {{ OWNED_COMMAND_SOURCE_PID=42; OWNED_COMMAND_PID=41; }}
+                    join_owned_command() {{ OWNED_JOIN_REAPED=1; return {child_exit}; }}
+                    close_probe_decision_window() {{ :; }}
+                    add_issue() {{ ISSUES=$((ISSUES + 1)); }}
+                    add_failure() {{ FAILURES=$((FAILURES + 1)); }}
+                    run_probe fixture {'10' if label == 'blocked' else 'none'} {label} dns 8.8.8.8
+                    printf '%s %s %s %s\\n' "$UDP_PROBE_ATTEMPT_COUNT" \\
+                      "$UDP_PROBE_PASS_COUNT" "$ISSUES" "$FAILURES"
+                """)
+                result = subprocess.run(["/bin/bash", "-c", program], capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                expected = "1 1 0 0\n" if case == "pass" else (
+                    "1 0 0 1\n" if case == "blocked-violation" else "1 0 1 0\n"
+                )
+                self.assertEqual(result.stdout, expected, result.stderr)
+                self.assertEqual((root / "udp-probe-results.tsv").read_text(),
+                                 f"label\tsource_pid\texit_code\n{label}\t42\t{child_exit}\n")
+
     def test_pressure_producer_records_accepted_not_sent_byte_bounds(self):
         helper = BoundedCommandCleanupTests.shell_function
         with tempfile.TemporaryDirectory() as temporary:

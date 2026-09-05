@@ -1706,6 +1706,10 @@ def _validate_modern_semantics(envelope: VerifiedEnvelope) -> None:
             temporary_root / "soak_pressure_log.py",
             source_copies["source-soak_pressure_log.py"],
         )
+        _write_atomic(
+            temporary_root / "modern_udp_e2e_probe.py",
+            source_copies["source-modern_udp_e2e_probe.py"],
+        )
         result = _run_python_validator(
             [str(parser_path), str(root / "udp-evidence-status.tsv")]
         )
