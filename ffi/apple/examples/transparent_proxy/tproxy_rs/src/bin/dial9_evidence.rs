@@ -12,7 +12,7 @@ use std::{
 };
 
 use dial9_trace_format::{decoder::Decoder, types::FieldValueRef};
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -579,7 +579,10 @@ fn decode_file(
             let file =
                 File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
             let mut bytes = Vec::new();
-            GzDecoder::new(file)
+            // Decode the complete sealed artifact: a single-member decoder
+            // silently ignores further members or trailing corruption. The
+            // limit applies to the combined output of every gzip member.
+            MultiGzDecoder::new(file)
                 .take(MAX_DECODED_TRACE_BYTES + 1)
                 .read_to_end(&mut bytes)
                 .map_err(|error| format!("decompress {}: {error}", path.display()))?;
@@ -1281,6 +1284,75 @@ mod tests {
         assert_eq!(result.required_bytes_out, Some(48));
         assert_eq!(result.udp_paired_flow_count, 1);
         assert!(destination.join("trace.9.bin.gz").is_file());
+    }
+
+    #[test]
+    fn gzip_collection_rejects_duplicate_members_and_trailing_garbage() {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(&trace_bytes(77, 2, true)).unwrap();
+        let member = encoder.finish().unwrap();
+        for (label, suffix, expected_error) in [
+            (
+                "duplicate-member",
+                member.as_slice(),
+                "does not satisfy every exact flow requirement",
+            ),
+            ("trailing-garbage", b"CORRUPT TRAILING BYTES", "decompress"),
+            (
+                "truncated-member",
+                &member[..member.len() - 4],
+                "decompress",
+            ),
+        ] {
+            let source = TempDir::new().unwrap();
+            let output = TempDir::new().unwrap();
+            let baseline = snapshot(source.path(), false);
+            let mut artifact = member.clone();
+            artifact.extend_from_slice(suffix);
+            write_trace(source.path(), "trace.1.bin.gz", &artifact);
+            let requirements_path = write_requirements(output.path(), PROVIDER_GENERATION);
+            let (requirements, sha256) = load_requirements(&requirements_path).unwrap();
+            let destination = output.path().join("dial9-traces");
+            let error = collect(
+                source.path(),
+                &baseline,
+                &destination,
+                &PairRequirement {
+                    requirements,
+                    requirements_sha256: Some(sha256),
+                    ..Default::default()
+                },
+                Duration::ZERO,
+            )
+            .expect_err(label);
+            assert!(error.contains(expected_error), "{label}: {error}");
+            assert!(!destination.exists(), "{label} was published");
+        }
+    }
+
+    #[test]
+    fn gzip_collection_decodes_every_complete_member() {
+        let source = TempDir::new().unwrap();
+        let output = TempDir::new().unwrap();
+        let baseline = snapshot(source.path(), false);
+        let mut artifact = Vec::new();
+        for flow_id in [77, 78] {
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+            encoder.write_all(&trace_bytes(flow_id, 2, true)).unwrap();
+            artifact.extend_from_slice(&encoder.finish().unwrap());
+        }
+        write_trace(source.path(), "trace.1.bin.gz", &artifact);
+        let result = collect(
+            source.path(),
+            &baseline,
+            &output.path().join("dial9-traces"),
+            &PairRequirement::default(),
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert_eq!(result.tproxy_open_count, 2);
+        assert_eq!(result.tproxy_close_count, 2);
+        assert_eq!(result.paired_flow_count, 2);
     }
 
     #[test]
