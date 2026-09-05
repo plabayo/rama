@@ -206,7 +206,7 @@ final class TcpClientReadPump: @unchecked Sendable {
         // Replay any chunk Rust rejected with `.paused` last time before we
         // ask the kernel for new bytes. If this still gets `.paused` we hold
         // the chunk and wait for the next `resume()`.
-        if pendingPayload != nil, !deliverPendingPayloadLocked() { return }
+        if pendingPayload != nil, !deliverPendingPayloadLocked(isInitialDelivery: false) { return }
 
         phase = .reading
         // `[weak self]` breaks the otherwise-fatal retain cycle:
@@ -308,7 +308,7 @@ final class TcpClientReadPump: @unchecked Sendable {
                 }
                 _ = session
                 self.pendingPayload = transitPayload
-                if self.deliverPendingPayloadLocked() {
+                if self.deliverPendingPayloadLocked(isInitialDelivery: true) {
                     self.requestReadLocked()
                 }
             }
@@ -318,7 +318,9 @@ final class TcpClientReadPump: @unchecked Sendable {
     /// Deliver bounded views from one physical callback root. Accepted views
     /// may remain owned by Rust while the cursor advances; a paused view leaves
     /// the cursor unchanged for exact replay.
-    private func deliverPendingPayloadLocked() -> Bool {
+    /// Only initial delivery logs a pause, so resumed attempts do not format
+    /// another diagnostic for the same physical callback.
+    private func deliverPendingPayloadLocked(isInitialDelivery: Bool) -> Bool {
         while var cursor = pendingPayload {
             guard let session else {
                 pendingPayload = nil
@@ -331,10 +333,12 @@ final class TcpClientReadPump: @unchecked Sendable {
                 cursor.advance(by: slice.count)
                 pendingPayload = cursor.isEmpty ? nil : cursor
             case .paused:
-                logger(FlowLogMessage(
-                    level: .trace,
-                    text: "tcp client read pump: replay cursor occupied (\(cursor.remainingBytes) B); ingress channel full"
-                ))
+                if isInitialDelivery {
+                    logger(FlowLogMessage(
+                        level: .trace,
+                        text: "tcp client read pump: replay cursor occupied (\(cursor.remainingBytes) B); ingress channel full"
+                    ))
+                }
                 phase = .paused
                 return false
             case .closed:

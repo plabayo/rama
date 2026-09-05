@@ -29,6 +29,7 @@ final class TcpReadPumpReplayTests: XCTestCase {
         private var retained: TcpPayloadSlice?
         private weak var observedRoot: TcpRetainedBuffer?
         private var _received: [Data] = []
+        private var _accepted: [Data] = []
         private let retainAccepted: Bool
         private let beforeRead: (() -> Void)?
 
@@ -52,8 +53,10 @@ final class TcpReadPumpReplayTests: XCTestCase {
             defer { lock.unlock() }
             observedRoot = payload.root
             beforeRead?()
-            _received.append(payload.copiedData)
+            let data = payload.copiedData
+            _received.append(data)
             let status = statuses.isEmpty ? .accepted : statuses.removeFirst()
+            if status == .accepted { _accepted.append(data) }
             if status == .accepted, retainAccepted { retained = payload }
             return status
         }
@@ -61,6 +64,11 @@ final class TcpReadPumpReplayTests: XCTestCase {
         var received: [Data] {
             lock.lock(); defer { lock.unlock() }
             return _received
+        }
+
+        var accepted: [Data] {
+            lock.lock(); defer { lock.unlock() }
+            return _accepted
         }
 
         var observedRootIsAlive: Bool {
@@ -214,6 +222,88 @@ final class TcpReadPumpReplayTests: XCTestCase {
         XCTAssertEqual(sink.received.map(\.count), [32, 32, 16])
         XCTAssertEqual(Data(sink.received.joined()), Data(repeating: 0x6A, count: 80))
         XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        withExtendedLifetime(pump) {}
+    }
+
+    func testClientReplayLogsOnlyInitialPausePerPhysicalCallback() {
+        let repeatedPauses = 8
+        let sink = OwnedSliceSink(
+            [.accepted, .paused]
+                + Array(repeating: .paused, count: repeatedPauses)
+                + [.accepted, .paused, .accepted]
+                + [.paused, .paused, .accepted, .accepted])
+        let flow = MockTcpFlow()
+        let queue = makeQueue()
+        let budget = WriterMemoryBudget(
+            policy: WriterMemoryPolicy(
+                maxBytes: 256, maxItems: 16, tcpWaiterMaxBytes: 32,
+                udpPressureReserveBytes: 0, udpPressureReserveItems: 0))
+        let diagnostics = TestValue<[String]>([])
+        let pump = TcpClientReadPump(
+            flow: flow, session: sink, queue: queue,
+            logger: { message in
+                if message.level == .trace, message.text.contains("replay cursor occupied") {
+                    diagnostics.update { $0.append(message.text) }
+                }
+            },
+            onTerminal: { _ in }, writerMemoryBudget: budget)
+
+        queue.sync { pump.requestRead() }
+        XCTAssertEqual(flow.pendingReadCount, 1)
+        let first = Data((0..<80).map(UInt8.init))
+        flow.completeReadSynchronously(data: first, error: nil)
+        queue.sync {}
+        XCTAssertEqual(sink.received, [Data(first.prefix(32)), Data(first[32..<64])])
+        XCTAssertEqual(diagnostics.get().count, 1)
+        XCTAssertEqual(flow.pendingReadCount, 0)
+        XCTAssertEqual(budget.snapshot().retainedBytes, first.count)
+
+        for _ in 0..<repeatedPauses {
+            queue.sync { pump.resume() }
+            XCTAssertEqual(sink.received.last, Data(first[32..<64]))
+            XCTAssertEqual(sink.accepted, [Data(first.prefix(32))])
+            XCTAssertEqual(diagnostics.get().count, 1, "resumed pauses must not log")
+            XCTAssertEqual(flow.pendingReadCount, 0)
+            XCTAssertEqual(budget.snapshot().retainedBytes, first.count)
+        }
+
+        // Accept the middle view, then pause on the final view of the same root.
+        queue.sync { pump.resume() }
+        XCTAssertEqual(sink.received.last, Data(first.suffix(16)))
+        XCTAssertEqual(Data(sink.accepted.joined()), Data(first.prefix(64)))
+        XCTAssertEqual(diagnostics.get().count, 1, "later slices are still replay")
+        XCTAssertEqual(flow.pendingReadCount, 0)
+        XCTAssertEqual(budget.snapshot().retainedBytes, first.count)
+
+        queue.sync { pump.resume() }
+        XCTAssertEqual(Data(sink.accepted.joined()), first)
+        XCTAssertEqual(sink.received.count, repeatedPauses + 5)
+        XCTAssertEqual(flow.pendingReadCount, 1)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertFalse(sink.observedRootIsAlive)
+
+        // A new physical callback may emit its own initial pause diagnostic.
+        let second = Data((80..<128).map(UInt8.init))
+        flow.completeReadSynchronously(data: second, error: nil)
+        queue.sync {}
+        XCTAssertEqual(sink.received.last, Data(second.prefix(32)))
+        XCTAssertEqual(diagnostics.get().count, 2)
+        XCTAssertEqual(flow.pendingReadCount, 0)
+        XCTAssertEqual(budget.snapshot().retainedBytes, second.count)
+
+        queue.sync { pump.resume() }
+        XCTAssertEqual(sink.received.last, Data(second.prefix(32)))
+        XCTAssertEqual(diagnostics.get().count, 2)
+        XCTAssertEqual(flow.pendingReadCount, 0)
+        XCTAssertEqual(budget.snapshot().retainedBytes, second.count)
+
+        queue.sync { pump.resume() }
+        XCTAssertEqual(Data(sink.accepted.joined()), first + second)
+        XCTAssertEqual(sink.accepted.map(\.count), [32, 32, 16, 32, 16])
+        XCTAssertEqual(diagnostics.get().count, 2)
+        XCTAssertEqual(flow.pendingReadCount, 1)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertFalse(sink.observedRootIsAlive)
         withExtendedLifetime(pump) {}
     }
 

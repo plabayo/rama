@@ -193,7 +193,7 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
 
         // Replay any chunk Rust rejected with `.paused` last time before
         // issuing a new receive.
-        if pendingPayload != nil, !deliverPendingPayloadLocked() { return }
+        if pendingPayload != nil, !deliverPendingPayloadLocked(isInitialDelivery: false) { return }
 
         phase = .reading
         connection.receive(
@@ -292,7 +292,7 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                     }
                     self.pendingPayload = transitPayload
                     self.pendingTerminal = terminal
-                    if !self.deliverPendingPayloadLocked() {
+                    if !self.deliverPendingPayloadLocked(isInitialDelivery: true) {
                         return
                     }
                 } else if let terminal {
@@ -304,7 +304,8 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
         }
     }
 
-    private func deliverPendingPayloadLocked() -> Bool {
+    /// Resumed delivery does not format another pause diagnostic for this root.
+    private func deliverPendingPayloadLocked(isInitialDelivery: Bool) -> Bool {
         while var cursor = pendingPayload {
             guard let session else {
                 pendingPayload = nil
@@ -327,9 +328,11 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
                     return false
                 }
             case .paused:
-                RamaLog.trace(
-                    "tcp egress read pump: replay cursor occupied (\(cursor.remainingBytes) B); egress channel full"
-                )
+                if isInitialDelivery {
+                    RamaLog.trace(
+                        "tcp egress read pump: replay cursor occupied (\(cursor.remainingBytes) B); egress channel full"
+                    )
+                }
                 phase = .paused
                 if case .failure(let error) = pendingTerminal {
                     scheduleEgressReleaseLocked(error)
