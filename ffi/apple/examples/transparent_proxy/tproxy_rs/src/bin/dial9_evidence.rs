@@ -597,13 +597,27 @@ fn duplicate_required_field<'a>(
     None
 }
 
+fn read_bounded_trace(reader: impl std::io::Read, limit: u64) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    reader.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "trace exceeds decoded byte limit",
+        ));
+    }
+    Ok(bytes)
+}
+
 fn decode_file(
     path: &Path,
     artifact_index: u32,
     encoding: ArtifactEncoding,
     summary: &mut EventSummary,
 ) -> Result<(), String> {
-    let encoded_size = fs::metadata(path)
+    let file = File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    let encoded_size = file
+        .metadata()
         .map_err(|error| format!("stat {}: {error}", path.display()))?
         .len();
     if encoded_size > MAX_DECODED_TRACE_BYTES {
@@ -612,27 +626,23 @@ fn decode_file(
             path.display()
         ));
     }
+    // Bound reads from this same open handle too: metadata is only an early
+    // rejection, not an allocation limit if a producer changes the file.
+    let mut encoded = file.take(MAX_DECODED_TRACE_BYTES + 1);
     let bytes = match encoding {
-        ArtifactEncoding::Raw => {
-            fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?
-        }
+        ArtifactEncoding::Raw => read_bounded_trace(&mut encoded, MAX_DECODED_TRACE_BYTES)
+            .map_err(|error| format!("read {}: {error}", path.display()))?,
         ArtifactEncoding::Gzip => {
-            let file =
-                File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
-            let mut bytes = Vec::new();
             // Decode the complete sealed artifact: a single-member decoder
             // silently ignores further members or trailing corruption. The
             // limit applies to the combined output of every gzip member.
-            MultiGzDecoder::new(file)
-                .take(MAX_DECODED_TRACE_BYTES + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|error| format!("decompress {}: {error}", path.display()))?;
-            bytes
+            read_bounded_trace(MultiGzDecoder::new(&mut encoded), MAX_DECODED_TRACE_BYTES)
+                .map_err(|error| format!("decompress {}: {error}", path.display()))?
         }
     };
-    if bytes.len() as u64 > MAX_DECODED_TRACE_BYTES {
+    if encoded.limit() == 0 {
         return Err(format!(
-            "dial9 artifact {} exceeds the decompressed limit",
+            "dial9 artifact {} exceeds the decode limit",
             path.display()
         ));
     }
@@ -1297,6 +1307,63 @@ mod tests {
         )
         .unwrap();
         path
+    }
+
+    #[test]
+    fn trace_reader_accepts_the_limit_and_bounds_oversize_reads() {
+        const LIMIT: u64 = 32;
+        for size in [0, LIMIT - 1, LIMIT] {
+            let bytes = vec![0xA5; size as usize];
+            assert_eq!(read_bounded_trace(bytes.as_slice(), LIMIT).unwrap(), bytes);
+        }
+
+        let mut reader = std::io::Cursor::new(vec![0xA5; 128]);
+        let error = read_bounded_trace(&mut reader, LIMIT).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(
+            reader.position(),
+            LIMIT + 1,
+            "reject without reading the remaining input"
+        );
+    }
+
+    #[test]
+    fn gzip_trace_reader_bounds_the_combined_member_output() {
+        let mut encoded = Vec::new();
+        for payload in [b"first-member".as_slice(), b"second-member".as_slice()] {
+            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+            encoder.write_all(payload).unwrap();
+            encoded.extend(encoder.finish().unwrap());
+        }
+        let expected = b"first-membersecond-member";
+        let read = || MultiGzDecoder::new(encoded.as_slice());
+        assert_eq!(
+            read_bounded_trace(read(), expected.len() as u64).unwrap(),
+            expected
+        );
+        assert_eq!(
+            read_bounded_trace(read(), expected.len() as u64 - 1)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidData,
+        );
+    }
+
+    #[test]
+    fn oversized_encoded_trace_is_rejected_before_decoding() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("oversized-trace");
+        File::create(&path)
+            .unwrap()
+            .set_len(MAX_DECODED_TRACE_BYTES + 1)
+            .unwrap();
+        for encoding in [ArtifactEncoding::Raw, ArtifactEncoding::Gzip] {
+            let mut summary = EventSummary::default();
+            let error = decode_file(&path, 0, encoding, &mut summary).unwrap_err();
+            assert!(error.contains("exceeds the decode limit"));
+            assert_eq!(summary.open_count, 0);
+            assert_eq!(summary.close_count, 0);
+        }
     }
 
     #[test]
