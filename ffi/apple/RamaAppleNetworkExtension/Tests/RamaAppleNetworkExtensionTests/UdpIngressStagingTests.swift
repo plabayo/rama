@@ -1,11 +1,24 @@
 import Foundation
 import Darwin
+import MachO
 @preconcurrency import NetworkExtension
 import XCTest
 
 @testable import RamaAppleNetworkExtension
 
 final class UdpIngressStagingTests: XCTestCase {
+    private static func loadedThreadSanitizerRuntimes() -> [String] {
+        (0..<_dyld_image_count()).compactMap { index in
+            guard let name = _dyld_get_image_name(index) else { return nil }
+            let path = String(cString: name)
+            let filename = URL(fileURLWithPath: path).lastPathComponent
+            guard filename.hasPrefix("libclang_rt.tsan_"),
+                filename.hasSuffix("_dynamic.dylib")
+            else { return nil }
+            return path
+        }
+    }
+
     private final class WeakWaiterProbe {
         weak var value: NSObject?
         init(_ value: NSObject) { self.value = value }
@@ -49,7 +62,13 @@ final class UdpIngressStagingTests: XCTestCase {
 
     func testCoordinatorIdentityLookupAllowsConcurrentFinalOwnerCancellation() throws {
         let marker = "RAMA_UDP_OWNER_DEINIT_CHILD"
+        let sanitizerMarker = "RAMA_UDP_OWNER_DEINIT_TSAN_RUNTIMES"
         if ProcessInfo.processInfo.environment[marker] == "1" {
+            if let expected = ProcessInfo.processInfo.environment[sanitizerMarker] {
+                let loaded = Set(Self.loadedThreadSanitizerRuntimes())
+                XCTAssertTrue(expected.split(separator: ":").allSatisfy { loaded.contains(String($0)) },
+                    "the subprocess must preserve the parent's loaded ThreadSanitizer runtime")
+            }
             let policy = UdpIngressStagingPolicy(
                 maxItemsPerFlow: 1, maxItemsPerGeneration: 2,
                 maxBytesPerFlow: 1, maxBytesPerGeneration: 1)
@@ -113,6 +132,20 @@ final class UdpIngressStagingTests: XCTestCase {
         ]
         var environment = ProcessInfo.processInfo.environment
         environment[marker] = "1"
+        let sanitizerRuntimes = Self.loadedThreadSanitizerRuntimes()
+        if !sanitizerRuntimes.isEmpty {
+            // SwiftPM's xctest launcher may consume DYLD_INSERT_LIBRARIES.
+            // A directly launched child must preload the actual parent runtime
+            // before dlopen loads the instrumented test bundle. Discover its
+            // loaded image instead of assuming a selected Xcode/toolchain path.
+            var preloads = (environment["DYLD_INSERT_LIBRARIES"] ?? "")
+                .split(separator: ":").map(String.init)
+            for runtime in sanitizerRuntimes where !preloads.contains(runtime) {
+                preloads.append(runtime)
+            }
+            environment["DYLD_INSERT_LIBRARIES"] = preloads.joined(separator: ":")
+            environment[sanitizerMarker] = sanitizerRuntimes.joined(separator: ":")
+        }
         child.environment = environment
         let output = Pipe()
         child.standardOutput = output
