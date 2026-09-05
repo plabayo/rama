@@ -95,6 +95,15 @@ def is_udp_443_endpoint(value):
     return is_udp_endpoint(value, 443)
 
 
+def is_http3_passthrough_local_endpoint(local, remote, source_app, action):
+    """Only the one-process-per-flow nscurl canary may omit normalized local metadata."""
+    return (
+        source_app == "com.apple.nscurl" and action == "passthrough"
+        and is_udp_443_endpoint(remote)
+        and (local == "unavailable" or is_udp_endpoint(local))
+    )
+
+
 def parse_pressure_reasons(value):
     if value == "none":
         return set()
@@ -800,7 +809,10 @@ def _decision_records(lines):
             raise BundleVerificationError("provider decision contains a zero identity")
         if groups[3] not in ("passthrough", "intercept", "blocked"):
             raise BundleVerificationError("provider decision has an unknown action")
-        if not is_udp_endpoint(groups[5]) or not is_udp_endpoint(groups[6]):
+        if not is_udp_endpoint(groups[5]) or not (
+            is_udp_endpoint(groups[6])
+            or is_http3_passthrough_local_endpoint(groups[6], groups[5], groups[7], groups[3])
+        ):
             raise BundleVerificationError("provider decision has a non-canonical endpoint")
         records.append({
             "line": line_number,

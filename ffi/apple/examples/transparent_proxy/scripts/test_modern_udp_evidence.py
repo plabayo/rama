@@ -1566,6 +1566,53 @@ class StrictBundleTests(unittest.TestCase):
         ))
         reseal_test_manifest(root)
 
+    def test_http3_unavailable_local_preserves_raw_workload_identity_checks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            provider_log = root / "provider.log"
+            baseline = [
+                re.sub(r"local_endpoint=[^ ]+", "local_endpoint=unavailable", line)
+                if "source_app=com.apple.nscurl " in line else line
+                for line in provider_log.read_text().splitlines()
+            ]
+            provider_log.write_text("\n".join(baseline) + "\n")
+            reseal_test_manifest(root)
+            self.assertEqual(verify_bundle(root), 0)
+            h3 = next(i for i, line in enumerate(baseline) if "source_pid=3000" in line)
+            echo = next(i for i, line in enumerate(baseline) if "source_pid=2002" in line)
+            for case, index, old, new in (
+                ("python", h3, "com.apple.nscurl", "com.apple.python3"),
+                ("echo", echo, "local_endpoint=127.0.0.1:50000", "local_endpoint=unavailable"),
+                ("port", h3, "remote_endpoint=1.1.1.1:443", "remote_endpoint=1.1.1.1:53"),
+                ("intercept", h3, "rama_decision=passthrough", "rama_decision=intercept"),
+                ("blocked", h3, "rama_decision=passthrough", "rama_decision=blocked"),
+                ("zero-local", h3, "local_endpoint=unavailable", "local_endpoint=127.0.0.1:0"),
+                ("unknown-local", h3, "local_endpoint=unavailable", "local_endpoint=missing"),
+                ("pid", h3, "source_pid=3000", "source_pid=9999"),
+                ("run", h3, RUN_UUID, "00000000-0000-4000-8000-000000000001"),
+                ("generation", h3, "provider_generation=7", "provider_generation=8"),
+                ("provider", h3, "provider_pid=9001", "provider_pid=9002"),
+                ("remote", h3, "remote_endpoint=1.1.1.1:443", "remote_endpoint=8.8.8.8:443"),
+                ("duplicate-flow", h3, "flow_id=2000", "flow_id=2001"),
+            ):
+                with self.subTest(case=case):
+                    lines = baseline.copy()
+                    self.assertIn(old, lines[index])
+                    lines[index] = lines[index].replace(old, new)
+                    provider_log.write_text("\n".join(lines) + "\n")
+                    reseal_test_manifest(root)
+                    with self.assertRaises(BundleVerificationError):
+                        verify_bundle(root)
+            # Moving a valid unavailable decision outside its H3 phase cannot
+            # substitute for a current worker, even with unchanged identities.
+            lines = baseline.copy()
+            lines[0], lines[h3] = lines[h3], lines[0]
+            provider_log.write_text("\n".join(lines) + "\n")
+            reseal_test_manifest(root)
+            with self.assertRaises(BundleVerificationError):
+                verify_bundle(root)
+
     def test_ntp_requirements_match_exact_receipt_bytes_in_both_directions(self):
         for label, requirement_label in (("ntp", "ntp"), ("recovery", "recovery-ntp")):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
@@ -2418,6 +2465,60 @@ class QuicShapedEchoTests(unittest.TestCase):
 
 
 class HarnessSourceContractTests(unittest.TestCase):
+    def test_http3_shell_gate_uses_the_same_typed_local_endpoint_rule(self):
+        helper = BoundedCommandCleanupTests.shell_function
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "http3-pids.tsv").write_text("".join(
+                f"{index // 2 + 1}\t{index % 2 + 1}\t{3000 + index}\n" for index in range(6)
+            ))
+            (root / "http3-endpoints.txt").write_text("1.1.1.1:443\n")
+            (root / "echo-identities.tsv").write_text("7\t1000\t127.0.0.1:50000\n")
+            (root / "source-modern_udp_evidence.py").write_bytes(
+                (SCRIPT_DIR / "modern_udp_evidence.py").read_bytes()
+            )
+            baseline = [
+                _decision(RUN_UUID, 9001, 7, "passthrough", 2000 + index,
+                          "1.1.1.1:443", "unavailable", "com.apple.nscurl", 3000 + index)
+                for index in range(6)
+            ]
+            program = (
+                helper("decision_records") + helper("decision_marker_count_for_pid")
+                + helper("check_http3_decisions") + textwrap.dedent(f"""\
+                    TMP_DIR={shlex.quote(str(root))}
+                    MODERN_EVIDENCE="$TMP_DIR/source-modern_udp_evidence.py"
+                    PROVIDER_LOG="$TMP_DIR/provider.log"
+                    HTTP3_PIDS="$TMP_DIR/http3-pids.tsv"
+                    HTTP3_ENDPOINTS="$TMP_DIR/http3-endpoints.txt"
+                    HTTP3_PROVIDER_LOG_LINE=0 HTTP3_PROVIDER_LOG_END=6 HTTP3_REQUEST_COUNT=6
+                    RUN_UUID={RUN_UUID} PROVIDER_PID=9001 UNBLOCKED_PROVIDER_GENERATION=7
+                    PASSTHROUGH_DNS_FLOW_ID=101 CONTROL_DNS_FLOW_ID=102 NTP_FLOW_ID=103
+                    PRESSURE_FLOW_ID=104 RECOVERY_NTP_FLOW_ID=106 BLOCKED_DNS_FLOW_ID=105
+                    ISSUES=0
+                    add_issue() {{ ISSUES=$((ISSUES + 1)); }}
+                    check_http3_decisions
+                    result=$?
+                    [[ "$result" == 0 && "$ISSUES" == 0 ]]
+                """)
+            )
+            for old, new, passed in (
+                ("local_endpoint=unavailable", "local_endpoint=unavailable", True),
+                ("local_endpoint=unavailable", "local_endpoint=127.0.0.1:52000", True),
+                ("local_endpoint=unavailable", "local_endpoint=127.0.0.1:0", False),
+                ("com.apple.nscurl", "com.apple.python3", False),
+                ("remote_endpoint=1.1.1.1:443", "remote_endpoint=1.1.1.1:53", False),
+                ("rama_decision=passthrough", "rama_decision=intercept", False),
+                ("provider_generation=7", "provider_generation=8", False),
+                ("source_pid=3000", "source_pid=3001", False),
+            ):
+                with self.subTest(old=old, new=new):
+                    lines = baseline.copy()
+                    lines[0] = lines[0].replace(old, new)
+                    (root / "provider.log").write_text("\n".join(lines) + "\n")
+                    result = subprocess.run(["/bin/bash", "-c", program], capture_output=True,
+                                            text=True, timeout=5)
+                    self.assertEqual(result.returncode == 0, passed, result.stdout + result.stderr)
+
     def test_run_probe_cross_checks_joined_exit_before_counting_a_pass(self):
         helper = BoundedCommandCleanupTests.shell_function
         for case in ("pass", "missing", "failed-raw", "bad-response", "child-exit", "blocked-violation"):

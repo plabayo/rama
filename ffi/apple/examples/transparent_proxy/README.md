@@ -331,6 +331,15 @@ with numeric reason `1` and readable reason `shutdown`, fall inside the actual
 monotonic gate window, and contain at least one complete 48-byte request and
 response.
 
+The H3 pass-through canary may receive no usable local endpoint from the
+pre-open flow metadata. It records `local_endpoint=unavailable` only for
+`nscurl` pass-through decisions to UDP/443. Its correspondence still requires
+one distinct provider flow per owned process, the exact remote endpoint,
+run UUID, provider generation, and phase. This is not a complete socket-tuple
+proof or evidence of H3 interception. Python probes explicitly bind before
+traffic; every echo socket still requires a concrete local endpoint and an
+exact endpoint-to-flow bijection.
+
 To keep the same 128 controlled UDP flows active for at least 126 seconds,
 use 64 requests per socket with two-second pacing:
 

@@ -1768,20 +1768,16 @@ check_http3_decisions() {
   decision_records "$HTTP3_PROVIDER_LOG_LINE" "$HTTP3_PROVIDER_LOG_END" > "$records"
   metrics="$(/usr/bin/python3 - "$records" "$HTTP3_PIDS" "$HTTP3_ENDPOINTS" \
     "$RUN_UUID" "$PROVIDER_PID" "$HTTP3_REQUEST_COUNT" "$TMP_DIR/echo-identities.tsv" \
-    "$PASSTHROUGH_DNS_FLOW_ID,$CONTROL_DNS_FLOW_ID,$NTP_FLOW_ID,$PRESSURE_FLOW_ID,$RECOVERY_NTP_FLOW_ID,$BLOCKED_DNS_FLOW_ID" <<'PY'
-import ipaddress, sys
+    "$PASSTHROUGH_DNS_FLOW_ID,$CONTROL_DNS_FLOW_ID,$NTP_FLOW_ID,$PRESSURE_FLOW_ID,$RECOVERY_NTP_FLOW_ID,$BLOCKED_DNS_FLOW_ID" \
+    "$MODERN_EVIDENCE" <<'PY'
+import runpy, sys
+is_http3_passthrough_local_endpoint = runpy.run_path(sys.argv[9])["is_http3_passthrough_local_endpoint"]
 rows = [line.rstrip("\n").split("\t") for line in open(sys.argv[1]) if line.strip()]
 pids = {line.rstrip("\n").split("\t")[2] for line in open(sys.argv[2]) if line.strip()}
 endpoints = {line.strip() for line in open(sys.argv[3]) if line.strip()}
 run_uuid, provider_pid, expected = sys.argv[4], sys.argv[5], int(sys.argv[6])
 echo_flows = {line.rstrip("\n").split("\t")[1] for line in open(sys.argv[7]) if line.strip()}
 representative_flows = set(sys.argv[8].split(","))
-def valid_endpoint(value):
-    try:
-        host, port = (value[1:].split("]:", 1) if value.startswith("[") else value.rsplit(":", 1))
-        return str(ipaddress.ip_address(host)) == host and 1 <= int(port) <= 65535
-    except (TypeError, ValueError):
-        return False
 if any(not flow.isdigit() or int(flow) <= 0 for flow in echo_flows | representative_flows):
     raise SystemExit(2)
 selected = [row for row in rows if len(row) == 9 and row[5] in pids]
@@ -1789,8 +1785,9 @@ if len(pids) != expected or len(selected) != expected:
     raise SystemExit(2)
 if {row[5] for row in selected} != pids or len({row[1] for row in selected}) != expected:
     raise SystemExit(2)
-if any(row[0] != "passthrough" or row[2] not in endpoints or not valid_endpoint(row[3])
-       or row[4] != "com.apple.nscurl" or row[6] != run_uuid
+if any(row[2] not in endpoints
+       or not is_http3_passthrough_local_endpoint(row[3], row[2], row[4], row[0])
+       or row[6] != run_uuid
        or row[7] != provider_pid for row in selected):
     raise SystemExit(2)
 if {row[1] for row in selected} & (echo_flows | representative_flows):

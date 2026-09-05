@@ -266,15 +266,25 @@ fn udp_e2e_diagnostic(
     if !UDP_E2E_PROBE_BUNDLE_IDENTIFIERS.contains(&source_app) {
         return Err(UdpE2eDiagnosticRejection::SourceAppNotAllowlisted);
     }
-    let local_endpoint = meta
-        .local_endpoint
-        .as_ref()
-        .ok_or(UdpE2eDiagnosticRejection::MissingLocalEndpoint)?
-        .clone()
-        .canonicalize();
-    if local_endpoint.port == 0 {
-        return Err(UdpE2eDiagnosticRejection::ZeroLocalPort);
-    }
+    let local_endpoint = match meta.local_endpoint.as_ref() {
+        Some(endpoint) => {
+            let endpoint = endpoint.clone().canonicalize();
+            if endpoint.port == 0 {
+                return Err(UdpE2eDiagnosticRejection::ZeroLocalPort);
+            }
+            endpoint.to_string()
+        }
+        // nscurl's unbound passthrough canary has one owned process per flow.
+        // Its normalized metadata can omit the local endpoint before open.
+        // Python fanout still requires concrete endpoint-to-flow correspondence.
+        None if source_app == "com.apple.nscurl"
+            && remote_endpoint.port == 443
+            && matches!(action, TransparentProxyFlowAction::Passthrough) =>
+        {
+            "unavailable".to_owned()
+        }
+        None => return Err(UdpE2eDiagnosticRejection::MissingLocalEndpoint),
+    };
     let source_pid = meta
         .source_app_pid
         .ok_or(UdpE2eDiagnosticRejection::MissingSourcePid)?;
@@ -762,6 +772,65 @@ mod udp_policy_tests {
             .as_deref(),
             Some(expected.as_str())
         );
+    }
+
+    #[test]
+    fn e2e_unavailable_local_is_only_for_nscurl_udp443_passthrough() {
+        for endpoint in ["1.1.1.1:443", "[2606:4700:4700::1111]:443"] {
+            let mut meta = udp_meta_for_app(endpoint, "com.apple.nscurl");
+            meta.local_endpoint = None;
+            let endpoints = [endpoint.parse().unwrap()];
+            let diagnostic = |meta: &TransparentProxyFlowMeta, action| {
+                udp_e2e_diagnostic(true, Some(RUN_UUID), &endpoints, 99, 7, meta, action)
+            };
+            let expected = format!(
+                "udp_e2e_decision run_uuid={RUN_UUID} provider_pid=99 provider_generation=7 rama_decision=passthrough flow_id={} remote_endpoint={endpoint} local_endpoint=unavailable source_app=com.apple.nscurl source_pid=4242",
+                meta.flow_id,
+            );
+            assert_eq!(
+                diagnostic(&meta, TransparentProxyFlowAction::Passthrough),
+                Ok(Some(expected)),
+            );
+            for action in [
+                TransparentProxyFlowAction::Intercept,
+                TransparentProxyFlowAction::Blocked,
+            ] {
+                assert_eq!(
+                    diagnostic(&meta, action),
+                    Err(UdpE2eDiagnosticRejection::MissingLocalEndpoint)
+                );
+            }
+            meta.source_app_pid = None;
+            assert_eq!(
+                diagnostic(&meta, TransparentProxyFlowAction::Passthrough),
+                Err(UdpE2eDiagnosticRejection::MissingSourcePid),
+            );
+            meta.source_app_pid = Some(4242);
+            meta.local_endpoint = Some("127.0.0.1:0".parse().unwrap());
+            assert_eq!(
+                diagnostic(&meta, TransparentProxyFlowAction::Passthrough),
+                Err(UdpE2eDiagnosticRejection::ZeroLocalPort),
+            );
+        }
+        for (endpoint, app) in [
+            ("1.1.1.1:443", "com.apple.python3"),
+            ("1.1.1.1:53", "com.apple.nscurl"),
+        ] {
+            let mut meta = udp_meta_for_app(endpoint, app);
+            meta.local_endpoint = None;
+            assert_eq!(
+                udp_e2e_diagnostic(
+                    true,
+                    Some(RUN_UUID),
+                    &[endpoint.parse().unwrap()],
+                    99,
+                    7,
+                    &meta,
+                    TransparentProxyFlowAction::Passthrough
+                ),
+                Err(UdpE2eDiagnosticRejection::MissingLocalEndpoint),
+            );
+        }
     }
 
     #[test]

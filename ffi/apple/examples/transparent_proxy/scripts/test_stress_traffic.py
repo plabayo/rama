@@ -3479,6 +3479,9 @@ class SignedUdpGateWiringTests(unittest.TestCase):
             def __init__(self, outcome):
                 self.outcome = outcome
 
+            def bind(self, _):
+                pass
+
             def settimeout(self, _):
                 pass
 
@@ -3524,6 +3527,9 @@ class SignedUdpGateWiringTests(unittest.TestCase):
                 self.peer = peer
                 self.packet = None
 
+            def bind(self, _):
+                pass
+
             def settimeout(self, _):
                 pass
 
@@ -3557,6 +3563,9 @@ class SignedUdpGateWiringTests(unittest.TestCase):
             def __init__(self):
                 self.packets = []
                 self.closed = False
+
+            def bind(self, _):
+                pass
 
             def settimeout(self, timeout):
                 self.timeout = timeout
