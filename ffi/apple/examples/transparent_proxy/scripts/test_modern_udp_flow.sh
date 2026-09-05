@@ -1620,6 +1620,7 @@ check_exact_decision() {
   local source_app="$5" expected_pid="$6" description="$7" target="$8"
   local action flow_id remote local_endpoint source source_pid run_uuid provider_pid provider_generation
   local found=0 unexpected=0 matching_flow_id="" matching_generation="" raw_count
+  local byte_counts bytes_in bytes_out
   while IFS=$'\t' read -r action flow_id remote local_endpoint source source_pid run_uuid provider_pid provider_generation; do
     [[ "$source_pid" == "$expected_pid" ]] || continue
     if ! is_canonical_udp_endpoint "$local_endpoint"; then
@@ -1655,6 +1656,21 @@ check_exact_decision() {
     add_issue "$description did not have one unambiguous decision record"
     return 1
   fi
+  if [[ "$target" == ntp || "$target" == recovery ]]; then
+    # Bind Dial9's exact byte requirements to the once-only transaction the
+    # child retained. NTP extensions can change response length, not ingress.
+    byte_counts="$(/usr/bin/python3 "$PROBE" verify-receipt "$TMP_DIR/udp-probe-$target.json" \
+      --run-uuid "$RUN_UUID" --probe-label "$target" --source-pid "$expected_pid" \
+      --endpoint "$endpoint" --exit-code 0 --print-byte-counts)" || {
+        add_issue "$description lacks successful raw byte evidence"
+        return 1
+      }
+    if [[ ! "$byte_counts" =~ ^48\ [1-9][0-9]*$ ]]; then
+      add_issue "$description returned malformed raw byte evidence"
+      return 1
+    fi
+    read -r bytes_in bytes_out <<< "$byte_counts"
+  fi
   case "$target" in
     passthrough) PASSTHROUGH_DNS_FLOW_ID="$matching_flow_id" ;;
     control) CONTROL_DNS_FLOW_ID="$matching_flow_id" ;;
@@ -1662,7 +1678,7 @@ check_exact_decision() {
       NTP_FLOW_ID="$matching_flow_id"
       UNBLOCKED_PROVIDER_GENERATION="$matching_generation"
       append_dial9_requirement ntp "$matching_flow_id" "$expected_pid" \
-        "$matching_generation" 48 65535 48 65535
+        "$matching_generation" "$bytes_in" "$bytes_in" "$bytes_out" "$bytes_out"
       ;;
     pressure)
       PRESSURE_FLOW_ID="$matching_flow_id"
@@ -1679,7 +1695,7 @@ check_exact_decision() {
     recovery)
       RECOVERY_NTP_FLOW_ID="$matching_flow_id"
       append_dial9_requirement recovery-ntp "$matching_flow_id" "$expected_pid" \
-        "$matching_generation" 48 65535 48 65535
+        "$matching_generation" "$bytes_in" "$bytes_in" "$bytes_out" "$bytes_out"
       ;;
     http3) HTTP3_FLOW_ID="$matching_flow_id"; HTTP3_REMOTE_ENDPOINT="$endpoint" ;;
     *) add_issue "internal decision target is invalid: $target"; return 1 ;;

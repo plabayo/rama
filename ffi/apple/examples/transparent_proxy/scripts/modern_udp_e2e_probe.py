@@ -916,6 +916,7 @@ def main() -> None:
     verify.add_argument("--source-pid", type=int, required=True)
     verify.add_argument("--endpoint", required=True)
     verify.add_argument("--exit-code", type=int, required=True)
+    verify.add_argument("--print-byte-counts", action="store_true")
 
     pressure = subparsers.add_parser("pressure")
     pressure.add_argument("--server", required=True)
@@ -952,10 +953,15 @@ def main() -> None:
         ntp_query(args.server, args.timeout, run_uuid=args.run_uuid,
                   probe_label=args.probe_label, result_file=args.result_file)
     elif args.command == "verify-receipt":
-        result = replay_probe_receipt(read_probe_receipt(args.path), args.run_uuid,
+        receipt = read_probe_receipt(args.path)
+        result = replay_probe_receipt(receipt, args.run_uuid,
                                       args.probe_label, args.source_pid, args.endpoint)
         if result != args.exit_code:
             raise ValueError("UDP probe receipt disagrees with the joined child exit")
+        if args.print_byte_counts:
+            if result != 0:
+                raise ValueError("UDP byte requirements need a successful raw probe")
+            print(receipt["sent_bytes"], len(receipt["response_hex"] or "") // 2)
     elif args.command == "pressure":
         pressure_burst(args.server, args.count, args.payload_bytes, args.settle)
     elif args.command == "echo-server":

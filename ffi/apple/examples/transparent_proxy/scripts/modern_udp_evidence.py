@@ -902,6 +902,7 @@ def _validate_probe_receipts(root, status, representative):
     if [row[0] for row in rows] != list(PROBE_LABELS):
         raise BundleVerificationError("UDP probe result label/cardinality mismatch")
     previous_end = 0
+    byte_counts = {}
     try:
         for label, pid, exit_code in rows:
             decision = representative[label]
@@ -916,8 +917,10 @@ def _validate_probe_receipts(root, status, representative):
                     or receipt["start_monotonic_ns"] < previous_end):
                 raise BundleVerificationError("UDP probe receipts are unordered or outside the run")
             previous_end = receipt["end_monotonic_ns"]
+            byte_counts[label] = (receipt["sent_bytes"], len(receipt["response_hex"] or "") // 2)
     except (OSError, ValueError) as error:
         raise BundleVerificationError(f"UDP probe receipt verification failed: {error}") from error
+    return byte_counts
 
 
 ECHO_CLIENT_KEYS = {
@@ -1278,7 +1281,8 @@ REQUIREMENT_HEADER = (
 )
 
 
-def _validate_requirements(root, status, representative, echo_identities, unblocked_generation):
+def _validate_requirements(root, status, representative, echo_identities, unblocked_generation,
+                           probe_bytes):
     content = _read_bundle_bytes(root, "dial9-requirements.tsv", 2 * 1024 * 1024)
     try:
         text = content.decode("utf-8", errors="strict")
@@ -1311,14 +1315,16 @@ def _validate_requirements(root, status, representative, echo_identities, unbloc
     ):
         raise BundleVerificationError("Dial9 requirement identity/range is invalid")
     fixed = (
-        (representative["ntp"], 48, 65_535, 48, 65_535),
+        (representative["ntp"], probe_bytes["ntp"][0], probe_bytes["ntp"][0],
+         probe_bytes["ntp"][1], probe_bytes["ntp"][1]),
         # The pressure burst sends equal-sized datagrams once each. Its exact
         # flow must accept at least one and reject at least one; rejected bytes
         # never enter the Rust ingress counter recorded by Dial9 at close.
         (representative["pressure"], _bundle_uint(status["pressure_payload_bytes"]),
          _bundle_uint(status["pressure_expected_bytes"])
          - _bundle_uint(status["pressure_payload_bytes"]), 0, 0),
-        (representative["recovery"], 48, 65_535, 48, 65_535),
+        (representative["recovery"], probe_bytes["recovery"][0], probe_bytes["recovery"][0],
+         probe_bytes["recovery"][1], probe_bytes["recovery"][1]),
     )
     for row, (decision, min_in, max_in, min_out, max_out) in zip(parsed[:3], fixed):
         if (
@@ -1470,7 +1476,7 @@ def _verify_bundle_semantics(directory):
     representative, unblocked_generation, blocked_generation = (
         _validate_representative_decisions(status, decisions, phases)
     )
-    _validate_probe_receipts(root, status, representative)
+    probe_bytes = _validate_probe_receipts(root, status, representative)
     representative_pids = {row["source_pid"] for row in representative.values()}
     echo_pid = _bundle_uint(status["echo_source_pid"], 2**31 - 1)
     if echo_pid in representative_pids:
@@ -1494,7 +1500,7 @@ def _verify_bundle_semantics(directory):
     _validate_udp_callback_errors(provider_lines, phases)
     _validate_pressure_raw(status, provider_lines, phases, representative)
     _validate_requirements(
-        root, status, representative, echo_identities, unblocked_generation
+        root, status, representative, echo_identities, unblocked_generation, probe_bytes
     )
     _validate_restore(root, status, blocked_generation)
     crash_snapshot_epoch = _validate_crash_snapshot(root, status)

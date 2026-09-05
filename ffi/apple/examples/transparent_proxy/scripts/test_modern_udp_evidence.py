@@ -1035,9 +1035,9 @@ def build_strict_bundle(directory):
 
     requirement_rows = [
         "label\tprovider_pid\tprovider_generation\tflow_id\tprotocol\tsource_pid\tclose_reason\tmin_bytes_in\tmax_bytes_in\tmin_bytes_out\tmax_bytes_out\n",
-        "ntp\t9001\t7\t103\t2\t1003\t1\t48\t65535\t48\t65535\n",
+        "ntp\t9001\t7\t103\t2\t1003\t1\t48\t48\t48\t48\n",
         "pressure\t9001\t7\t104\t2\t1004\t1\t4096\t2093056\t0\t0\n",
-        "recovery-ntp\t9001\t7\t106\t2\t1006\t1\t48\t65535\t48\t65535\n",
+        "recovery-ntp\t9001\t7\t106\t2\t1006\t1\t48\t48\t48\t48\n",
     ]
     requirement_rows.extend(
         f"echo-{index}\t9001\t7\t{flow_id}\t2\t2002\t1\t1200\t1200\t1200\t1200\n"
@@ -1543,6 +1543,95 @@ class StrictBundleTests(unittest.TestCase):
         ))
         reseal_test_manifest(root)
 
+    def test_ntp_requirements_match_exact_receipt_bytes_in_both_directions(self):
+        for label, requirement_label in (("ntp", "ntp"), ("recovery", "recovery-ntp")):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                build_strict_bundle(root)
+                receipt_path = root / f"udp-probe-{label}.json"
+                receipt = json.loads(receipt_path.read_text())
+                # Preserve the existing probe's variable-length NTP response
+                # contract, while requiring its exact observed length in Dial9.
+                receipt["response_hex"] += "00" * 20
+                receipt_path.write_text(json.dumps(receipt) + "\n")
+                requirements = root / "dial9-requirements.tsv"
+                rows = requirements.read_text().splitlines()
+                row_index = next(index for index, row in enumerate(rows)
+                                 if row.startswith(requirement_label + "\t"))
+                prefix = rows[row_index].split("\t")[:7]
+
+                def write_bounds(bounds):
+                    rows[row_index] = "\t".join(prefix + list(map(str, bounds)))
+                    requirements.write_text("\n".join(rows) + "\n")
+                    status = root / "udp-evidence-status.tsv"
+                    status.write_text(re.sub(
+                        r"(?m)^dial9_requirements_sha256\t[0-9a-f]{64}$",
+                        f"dial9_requirements_sha256\t{hashlib.sha256(requirements.read_bytes()).hexdigest()}",
+                        status.read_text(),
+                    ))
+                    reseal_test_manifest(root)
+
+                write_bounds((48, 48, 68, 68))
+                self.assertEqual(verify_bundle(root), 0)
+                for bounds in ((48, 65535, 48, 65535), (49, 49, 68, 68),
+                               (96, 96, 68, 68), (48, 48, 48, 48),
+                               (48, 48, 69, 69), (48, 48, 67, 69)):
+                    with self.subTest(bounds=bounds):
+                        write_bounds(bounds)
+                        with self.assertRaisesRegex(BundleVerificationError,
+                                                    "representative Dial9 requirement mismatch"):
+                            verify_bundle(root)
+
+    def test_ntp_producer_derives_requirements_from_bound_successful_receipts(self):
+        helper = BoundedCommandCleanupTests.shell_function
+        for label, pid, flow_id, requirement_label in (
+            ("ntp", 1003, 103, "ntp"), ("recovery", 1006, 106, "recovery-ntp"),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                receipt_path = root / f"udp-probe-{label}.json"
+                receipt = probe_receipt_fixture(label, pid, "162.159.200.1:123")
+                receipt["response_hex"] += "00" * 20
+                receipt_path.write_text(json.dumps(receipt) + "\n")
+                requirements = root / "requirements.tsv"
+                program = helper("check_exact_decision") + helper("append_dial9_requirement") + textwrap.dedent(f"""\
+                    TMP_DIR={shlex.quote(str(root))}
+                    PROBE={shlex.quote(str(SCRIPT_DIR / 'modern_udp_e2e_probe.py'))}
+                    DIAL9_REQUIREMENTS={shlex.quote(str(requirements))}
+                    RUN_UUID={RUN_UUID} PROVIDER_PID=9001
+                    decision_records() {{ printf '%s\\n' 'intercept\t{flow_id}\t162.159.200.1:123\t127.0.0.1:5555\tcom.apple.python3\t{pid}\t{RUN_UUID}\t9001\t7'; }}
+                    decision_marker_count_for_pid() {{ printf '1\\n'; }}
+                    is_canonical_udp_endpoint() {{ return 0; }}
+                    add_issue() {{ printf '%s\\n' "$1" >&2; }}
+                    add_failure() {{ printf '%s\\n' "$1" >&2; }}
+                    check_exact_decision 0 1 intercept 162.159.200.1:123 \\
+                      com.apple.python3 {pid} {label} {label}
+                """)
+                result = subprocess.run(["/bin/bash", "-c", program], capture_output=True,
+                                        text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(requirements.read_text(),
+                    f"{requirement_label}\t9001\t7\t{flow_id}\t2\t{pid}\t1\t48\t48\t68\t68\n")
+                # A missing, wrong-generation-source, or failed probe cannot
+                # produce a new permissive Dial9 row.
+                for error in ("missing", "pid", "protocol"):
+                    with self.subTest(error=error):
+                        bad = dict(receipt)
+                        if error == "missing":
+                            receipt_path.unlink()
+                        else:
+                            if error == "pid":
+                                bad["source_pid"] += 1
+                            else:
+                                bad["response_hex"] = "00" * 48
+                                bad["exit_code"] = 20
+                            receipt_path.write_text(json.dumps(bad) + "\n")
+                        requirements.unlink(missing_ok=True)
+                        result = subprocess.run(["/bin/bash", "-c", program], capture_output=True,
+                                                text=True, timeout=5)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertFalse(requirements.exists())
+
     def test_pressure_requirements_allow_accepted_bytes_but_require_a_drop(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1764,6 +1853,25 @@ class StrictBundleTests(unittest.TestCase):
                     mock.patch.object(evidence, "_validate_modern_dial9"):
                 evidence.seal(root)
                 evidence._validate_modern_semantics(evidence._verify_and_capture(root))
+                requirements_path = root / "dial9-requirements.tsv"
+                original_requirements = requirements_path.read_text()
+                status_path = root / "udp-evidence-status.tsv"
+                original_status = status_path.read_text()
+                requirements_path.write_text(original_requirements.replace(
+                    "ntp\t9001\t7\t103\t2\t1003\t1\t48\t48\t48\t48",
+                    "ntp\t9001\t7\t103\t2\t1003\t1\t48\t65535\t48\t65535",
+                ))
+                status_path.write_text(re.sub(
+                    r"(?m)^dial9_requirements_sha256\t[0-9a-f]{64}$",
+                    f"dial9_requirements_sha256\t{hashlib.sha256(requirements_path.read_bytes()).hexdigest()}",
+                    original_status,
+                ))
+                evidence.seal(root)
+                with self.assertRaisesRegex(evidence.EvidenceError,
+                        "raw-bundle validator rejected.*representative Dial9 requirement mismatch"):
+                    evidence._validate_modern_semantics(evidence._verify_and_capture(root))
+                requirements_path.write_text(original_requirements)
+                status_path.write_text(original_status)
                 receipt = root / "udp-probe-ntp.json"
                 value = json.loads(receipt.read_text())
                 value["response_peer"] = ["127.0.0.1", 123]
