@@ -336,6 +336,116 @@ final class FlowPressureReaperTests: XCTestCase {
             "registry relief and overlap must not both subtract the linger")
     }
 
+    func testPromotedRetirementKeepsSelectedHardCapReplacement() {
+        applyFlowPressureRuntimeConfig(
+            softCap: 3, lowWater: 1, idleFloorMs: 5_000, hardCap: 3)
+        let core = makeCore()
+        let generation = core.attachEngine(makeEngine())
+        let (victimQueue, victimGate) = gatedQueue("hard-cap-net-zero-retirement")
+        var victimGateReleased = false
+        defer {
+            if !victimGateReleased { victimGate.signal() }
+        }
+        let victim = Fx(core: core, idleSeconds: 30, flowQueue: victimQueue)
+        let terminalQueue = DispatchQueue(label: "rama.test.pressure.promoted-retirement")
+        pressureFlowQueues.append(terminalQueue)
+        let terminal = Fx(core: core, idleSeconds: 0, flowQueue: terminalQueue)
+        let terminalPump = NwTcpConnectionWritePump(
+            connection: terminal.conn,
+            queue: terminalQueue,
+            lingerCloseDeadline: .milliseconds(0),
+            onDrained: {})
+        terminal.ctx.egressWritePump = terminalPump
+        terminal.ctx.engineGeneration = generation
+        insert(core, [victim, terminal])
+        let releaseIndependentRetirement = core.beginResourceRetirement()
+        defer {
+            releaseIndependentRetirement()
+            terminalPump.armTerminalLingerCancel()
+            drain(terminalQueue)
+        }
+
+        let refused = MockTcpFlow()
+        guard case .reject = core.admitTcpStart(
+            flowId: ObjectIdentifier(refused),
+            meta: makeMeta(protocolRaw: 1),
+            engineGeneration: generation)
+        else { return XCTFail("the independent retirement must fill the hard cap") }
+        pollUntilPressure("one hard-cap replacement is selected") {
+            core.testPressurePendingVictimCount == 1
+        }
+        XCTAssertEqual(core.testLiveResourceOccupancy, 3)
+
+        // Production terminal transfers the other connection to linger before
+        // removing its registry owner. Both transitions free zero physical
+        // capacity, so the already selected replacement is still necessary.
+        terminalQueue.sync { terminal.ctx.applyPromotedTerminal() }
+        XCTAssertEqual(core.tcpFlowCount, 1)
+        XCTAssertEqual(core.testRetiringResourceCount, 2)
+        XCTAssertEqual(core.testLiveResourceOccupancy, 3)
+        XCTAssertEqual(terminal.conn.cancelCount, 0)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 1)
+        XCTAssertEqual(core.testPressureCanceledTotal, 0)
+        XCTAssertTrue(core.testPressureRecheckScheduled)
+
+        victimGate.signal()
+        victimGateReleased = true
+        drain(victimQueue)
+        guard observePressureStateQueue(core) else { return }
+        XCTAssertTrue(victim.wasTornDown)
+        XCTAssertEqual(core.testPressureEvictedTotal, 1)
+        XCTAssertEqual(core.testLiveResourceOccupancy, 2)
+    }
+
+    func testPromotedRetirementStillCancelsSelectedLowWaterVictim() {
+        applyFlowPressureRuntimeConfig(
+            softCap: 3, lowWater: 2, idleFloorMs: 5_000, hardCap: 4)
+        let core = makeCore()
+        let generation = core.attachEngine(makeEngine())
+        let (victimQueue, victimGate) = gatedQueue("low-water-net-zero-retirement")
+        var victimGateReleased = false
+        defer {
+            if !victimGateReleased { victimGate.signal() }
+        }
+        let victim = Fx(core: core, idleSeconds: 30, flowQueue: victimQueue)
+        let terminalQueue = DispatchQueue(label: "rama.test.pressure.soft-promoted-retirement")
+        pressureFlowQueues.append(terminalQueue)
+        let terminal = Fx(core: core, idleSeconds: 0, flowQueue: terminalQueue)
+        let active = Fx(core: core, idleSeconds: 0)
+        let terminalPump = NwTcpConnectionWritePump(
+            connection: terminal.conn,
+            queue: terminalQueue,
+            lingerCloseDeadline: .milliseconds(0),
+            onDrained: {})
+        terminal.ctx.egressWritePump = terminalPump
+        terminal.ctx.engineGeneration = generation
+        insert(core, [victim, terminal, active])
+        defer {
+            terminalPump.armTerminalLingerCancel()
+            drain(terminalQueue)
+        }
+
+        core.reapIdleUnderPressure()
+        pollUntilPressure("one low-water victim is selected") {
+            core.testPressurePendingVictimCount == 1
+        }
+        terminalQueue.sync { terminal.ctx.applyPromotedTerminal() }
+        XCTAssertEqual(core.tcpFlowCount, 2)
+        XCTAssertEqual(core.testRetiringResourceCount, 1)
+        XCTAssertEqual(core.testLiveResourceOccupancy, 3)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 0)
+        XCTAssertEqual(core.testPressureCanceledTotal, 1)
+
+        victimGate.signal()
+        victimGateReleased = true
+        drain(victimQueue)
+        guard observePressureStateQueue(core) else { return }
+        XCTAssertFalse(victim.wasTornDown)
+        XCTAssertEqual(core.testPressureSelectionsTotal, 1)
+        XCTAssertEqual(core.testPressureEvictedTotal, 0)
+        XCTAssertEqual(core.testLiveResourceOccupancy, 3)
+    }
+
     func testUdpHardCapRefusalReplacesOneIdleFlowBelowSoftCap() {
         applyFlowPressureRuntimeConfig(
             softCap: 2, lowWater: 1, idleFloorMs: 5_000, hardCap: 2)

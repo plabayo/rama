@@ -364,7 +364,8 @@ final class TransparentProxyCore: @unchecked Sendable {
                 flowId: flowId,
                 contextId: contextId,
                 engineGeneration: engineGeneration,
-                mayCancelSelectedVictim: true)
+                mayCancelSelectedVictim: true,
+                providesPhysicalRelief: false)
             if announcement.announced {
                 state.markRegisteredRetirementOverlap(
                     flowId: flowId,
@@ -998,7 +999,8 @@ final class TransparentProxyCore: @unchecked Sendable {
             flowId: ObjectIdentifier,
             contextId: ObjectIdentifier?,
             engineGeneration: UInt64?,
-            mayCancelSelectedVictim: Bool
+            mayCancelSelectedVictim: Bool,
+            providesPhysicalRelief: Bool = true
         ) -> (announced: Bool, canceled: Bool) {
             if let engineGeneration {
                 guard activeEngineGeneration == engineGeneration else {
@@ -1022,7 +1024,12 @@ final class TransparentProxyCore: @unchecked Sendable {
             guard providesRelief, mayCancelSelectedVictim else {
                 return (true, false)
             }
-            return (true, cancelNewestSelected())
+            // A registered-to-linger transfer relieves registry-based soft
+            // pressure but still owns the same physical resource. Preserve a
+            // hard-cap replacement until capacity actually leaves the ledger.
+            return (
+                true,
+                cancelNewestSelected(includeHardCapReplacement: providesPhysicalRelief))
         }
 
         /// Add one claimant for a physical resource. Multiple detach/promoted
@@ -1213,7 +1220,14 @@ final class TransparentProxyCore: @unchecked Sendable {
             return expired
         }
 
-        mutating func cancelNewestSelected() -> Bool {
+        mutating func cancelNewestSelected(includeHardCapReplacement: Bool = true) -> Bool {
+            // At most one hard-cap replacement exists. Temporarily skipping
+            // its ref lets a registry-only removal cancel an older low-water
+            // victim without losing the hard-cap ticket's expiry ordering.
+            var preservedHardCap: PressureSelectionRef?
+            defer {
+                if let preservedHardCap { selectionOrder.append(preservedHardCap) }
+            }
             while selectionOrder.count > selectionHead {
                 let ref = selectionOrder.removeLast()
                 guard let reservation = reservations[ref.id],
@@ -1221,6 +1235,10 @@ final class TransparentProxyCore: @unchecked Sendable {
                     reservation.phase == .selected,
                     pendingRemovalFlowIds[reservation.flowId] == nil
                 else { continue }
+                if !includeHardCapReplacement, reservation.goal == .hardCapReplacement {
+                    preservedHardCap = ref
+                    continue
+                }
                 setPhase(.canceled, for: ref.id)
                 recordOutcome(.canceled, goal: reservation.goal)
                 compactSelectionOrderIfNeeded()
