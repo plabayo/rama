@@ -16,9 +16,10 @@ use rama_http_types::{
         FallbackHttpVersion, H2ClientContextParams, Http1ClientContextParams, TargetHttpVersion,
     },
     proto::h2::PseudoHeaderOrder,
+    proxy::HttpProxyConnectionMode,
 };
 use rama_net::client::{
-    ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection,
+    ConnectionError, ConnectionErrorKind, ConnectorService, EstablishedClientConnection, ProxyRoute,
 };
 use rama_net::conn::is_connection_error;
 use rama_net::{AuthorityInputExt, HttpVersionInputExt, TargetHttpVersionInputExt};
@@ -53,6 +54,16 @@ where
         .get_ref::<TargetHttpVersion>()
         .map(|target| target.0)
         .or_else(|| resolve_input_target_http_version(input))
+}
+
+fn normalize_http_proxy_connection_metadata(extensions: &Extensions) {
+    let mode = *extensions.get_ref_or_insert(|| HttpProxyConnectionMode::Direct);
+    if mode == HttpProxyConnectionMode::Direct {
+        // SOCKS connectors publish their selected route without depending on
+        // HTTP types. Preserve that route while classifying the HTTP peer as
+        // direct. Never infer an established route from request metadata.
+        extensions.get_ref_or_insert(|| ProxyRoute::Direct);
+    }
 }
 
 #[cfg(test)]
@@ -125,6 +136,121 @@ mod target_version_tests {
             resolve_target_http_version(&io, &input),
             Some(Version::HTTP_2)
         );
+    }
+}
+
+#[cfg(test)]
+mod proxy_metadata_tests {
+    use rama_core::ServiceInput;
+    use rama_http_types::Body;
+    use rama_net::{address::HostWithPort, client::ConnectRequest, http::HttpRequestVersion};
+    use std::time::Duration;
+
+    use super::*;
+
+    async fn check_established_proxy_metadata(version: Version, eager: bool) {
+        let socks = ProxyRoute::Proxy("socks5://selected.example:1080".parse().unwrap());
+        let http = ProxyRoute::Proxy("http://user:secret@selected.example:8080".parse().unwrap());
+        for (mode, route, expected_mode, expected_route) in [
+            (
+                None,
+                None,
+                HttpProxyConnectionMode::Direct,
+                Some(ProxyRoute::Direct),
+            ),
+            (
+                None,
+                Some(socks.clone()),
+                HttpProxyConnectionMode::Direct,
+                Some(socks),
+            ),
+            (
+                Some(HttpProxyConnectionMode::Direct),
+                None,
+                HttpProxyConnectionMode::Direct,
+                Some(ProxyRoute::Direct),
+            ),
+            (
+                Some(HttpProxyConnectionMode::Forward),
+                Some(http.clone()),
+                HttpProxyConnectionMode::Forward,
+                Some(http.clone()),
+            ),
+            (
+                Some(HttpProxyConnectionMode::Tunnel),
+                Some(http.clone()),
+                HttpProxyConnectionMode::Tunnel,
+                Some(http),
+            ),
+            (
+                Some(HttpProxyConnectionMode::Forward),
+                None,
+                HttpProxyConnectionMode::Forward,
+                None,
+            ),
+            (
+                Some(HttpProxyConnectionMode::Tunnel),
+                None,
+                HttpProxyConnectionMode::Tunnel,
+                None,
+            ),
+        ] {
+            let (io, _peer) = tokio::io::duplex(4096);
+            let io = ServiceInput::new(io);
+            if let Some(mode) = mode {
+                io.extensions().insert(mode);
+            }
+            if let Some(route) = route {
+                io.extensions().insert(route);
+            }
+            let conn = tokio::time::timeout(Duration::from_secs(2), async move {
+                if eager {
+                    http2_eager_handshake::<_, Body>(io, Executor::default())
+                        .await
+                        .unwrap()
+                        .0
+                } else {
+                    let input = ConnectRequest::new(HostWithPort::example_domain_http());
+                    input.extensions.insert(HttpRequestVersion(version));
+                    // Input intent must never fill gaps in established facts.
+                    input.extensions.insert(HttpProxyConnectionMode::Forward);
+                    input.extensions.insert(ProxyRoute::Proxy(
+                        "http://wrong:credential@request.example:8080"
+                            .parse()
+                            .unwrap(),
+                    ));
+                    http_connect::<_, _, Body>(io, input, Executor::default())
+                        .await
+                        .unwrap()
+                        .conn
+                }
+            })
+            .await
+            .expect("HTTP handshake timed out");
+
+            assert_eq!(
+                conn.extensions().get_ref::<HttpProxyConnectionMode>(),
+                Some(&expected_mode),
+                "version: {version:?}, eager: {eager}",
+            );
+            assert_eq!(
+                conn.extensions().get_ref::<ProxyRoute>(),
+                expected_route.as_ref(),
+                "version: {version:?}, eager: {eager}, mode: {expected_mode:?}",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn http_connections_publish_established_proxy_metadata() {
+        for version in [Version::HTTP_11, Version::HTTP_2] {
+            check_established_proxy_metadata(version, false).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn eager_http2_connection_publishes_established_proxy_metadata() {
+        check_established_proxy_metadata(Version::HTTP_2, true).await;
     }
 }
 
@@ -299,6 +425,7 @@ where
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     let extensions = io.extensions().clone();
+    normalize_http_proxy_connection_metadata(&extensions);
     let server_host = input.host();
     let server_address = server_host
         .as_ref()
@@ -413,6 +540,7 @@ where
         StreamingBody<Data: Send + Sync + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     let extensions = io.extensions().clone();
+    normalize_http_proxy_connection_metadata(&extensions);
 
     tracing::trace!("eager h2 client handshake");
     let mut builder = rama_http_core::client::conn::http2::Builder::new(exec.clone());

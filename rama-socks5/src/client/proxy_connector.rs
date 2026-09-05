@@ -1,6 +1,8 @@
 use crate::{Socks5Client, client::proxy_error::Socks5ProxyError};
 use rama_core::error::BoxErrorExt as _;
-use rama_core::{Layer, Service, error::BoxError, io::Io, telemetry::tracing};
+use rama_core::{
+    Layer, Service, error::BoxError, extensions::ExtensionsRef, io::Io, telemetry::tracing,
+};
 #[cfg(feature = "dns")]
 use rama_dns::client::{
     GlobalDnsResolver,
@@ -330,11 +332,13 @@ where
                     tracing::trace!(
                         "socks5 proxy connector: no proxy required or set: proceed with direct connection"
                     );
-                    self.inner.connect(input).await.map_err(|error| {
+                    let established = self.inner.connect(input).await.map_err(|error| {
                         error.context(
                             "establish connection target (no socks5 proxy defined and neither required)",
                         )
-                    })
+                    })?;
+                    established.conn.extensions().insert(ProxyRoute::Direct);
+                    Ok(established)
                 };
             }
         };
@@ -351,6 +355,11 @@ where
             )
             .context_debug_field("protocol", proxy_info.protocol.clone()));
         }
+
+        // Preserve the selected route before local DNS resolution changes the
+        // proxy's dial address. Connection consumers need the route that won
+        // selection, including its original address and credentials.
+        let selected_route = ProxyRoute::Proxy(proxy_info.clone());
 
         #[cfg(feature = "dns")]
         let normalized_proxy_info = self
@@ -457,6 +466,7 @@ where
             }
         }
 
+        conn.extensions().insert(selected_route);
         Ok(EstablishedClientConnection { input, conn })
     }
 }
@@ -469,8 +479,105 @@ mod tests {
         address::HostWithPort,
         client::{ConnectRequest, ProxyRoute},
     };
+    use std::{convert::Infallible, sync::Arc, time::Duration};
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
     use super::*;
+
+    #[tokio::test]
+    async fn optional_direct_connection_publishes_direct_route() {
+        for route in [None, Some(ProxyRoute::Direct)] {
+            let inner = service_fn(|input: ConnectRequest| async move {
+                let (io, _peer) = tokio::io::duplex(64);
+                let conn = ServiceInput::new(io);
+                conn.extensions().insert(ProxyRoute::Proxy(
+                    "socks5://stale.example:1080".parse().unwrap(),
+                ));
+                Ok::<_, Infallible>(EstablishedClientConnection { input, conn })
+            });
+            let input = ConnectRequest::new(HostWithPort::example_domain_http());
+            if let Some(route) = route {
+                input.extensions.insert(route);
+            }
+
+            let established = Socks5ProxyConnector::optional(inner)
+                .connect(input)
+                .await
+                .unwrap();
+            assert_eq!(
+                established.conn.extensions().get_ref::<ProxyRoute>(),
+                Some(&ProxyRoute::Direct),
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_socks_connection_publishes_exact_selected_route() {
+        let selected: ProxyAddress = "socks5://user:secret@proxy.example:1080".parse().unwrap();
+        let (io, mut peer) = tokio::io::duplex(4096);
+        let peer_task = tokio::spawn(async move {
+            assert_eq!(peer.read_u8().await.unwrap(), 5);
+            let methods_len = peer.read_u8().await.unwrap();
+            let mut methods = vec![0; usize::from(methods_len)];
+            peer.read_exact(&mut methods).await.unwrap();
+            assert!(methods.contains(&0));
+            peer.write_all(&[5, 0]).await.unwrap();
+
+            let mut head = [0; 4];
+            peer.read_exact(&mut head).await.unwrap();
+            assert_eq!(head, [5, 1, 0, 3]);
+            let host_len = peer.read_u8().await.unwrap();
+            let mut host = vec![0; usize::from(host_len)];
+            peer.read_exact(&mut host).await.unwrap();
+            assert_eq!(host, b"example.com");
+            assert_eq!(peer.read_u16().await.unwrap(), 80);
+            peer.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 80])
+                .await
+                .unwrap();
+        });
+        let io = Arc::new(parking_lot::Mutex::new(Some(io)));
+        let inner = service_fn(move |input: ConnectRequest| {
+            let io = io.lock().take().unwrap();
+            async move {
+                #[cfg(feature = "dns")]
+                assert_eq!(
+                    input
+                        .extensions
+                        .get_ref::<ProxyRoute>()
+                        .and_then(ProxyRoute::proxy_address)
+                        .unwrap()
+                        .address
+                        .host,
+                    "127.0.0.1".parse::<Host>().unwrap(),
+                );
+                Ok::<_, Infallible>(EstablishedClientConnection {
+                    input,
+                    conn: ServiceInput::new(io),
+                })
+            }
+        });
+        let connector = Socks5ProxyConnector::optional(inner);
+        #[cfg(feature = "dns")]
+        let connector = connector.with_dns_address_resolver(std::net::Ipv4Addr::LOCALHOST);
+        let input = ConnectRequest::new(HostWithPort::example_domain_http())
+            .with_application_protocol(Protocol::HTTP);
+        input.extensions.insert(ProxyRoute::Proxy(selected.clone()));
+        #[cfg(feature = "dns")]
+        input.extensions.insert(DnsResolveIpMode::SingleIpV4);
+
+        let established = tokio::time::timeout(Duration::from_secs(2), connector.connect(input))
+            .await
+            .expect("SOCKS handshake timed out")
+            .unwrap();
+        assert_eq!(
+            established.conn.extensions().get_ref::<ProxyRoute>(),
+            Some(&ProxyRoute::Proxy(selected)),
+        );
+        tokio::time::timeout(Duration::from_secs(2), peer_task)
+            .await
+            .expect("SOCKS peer timed out")
+            .unwrap();
+    }
 
     #[tokio::test]
     async fn stamps_physical_tcp_before_connecting_to_proxy() {

@@ -3020,47 +3020,78 @@ mod conn {
 
     #[tokio::test]
     async fn h2_connect_rejected_validates_content_length() {
-        let (client_io, server_io, _) = setup_duplex_test_server();
+        for (content_length, valid) in [("1", false), ("17", true), ("999", false)] {
+            let (client_io, server_io, _) = setup_duplex_test_server();
+            let (headers_received_tx, headers_received_rx) = oneshot::channel();
+            let (done_tx, done_rx) = oneshot::channel();
 
-        let server_task = tokio::spawn(async move {
-            let sock = ServiceInput::new(server_io);
-            let mut h2 = rama::http::core::h2::server::handshake(sock).await.unwrap();
+            let server_task = tokio::spawn(async move {
+                let sock = ServiceInput::new(server_io);
+                let mut h2 = rama::http::core::h2::server::handshake(sock).await.unwrap();
 
-            let (req, mut respond) = h2.accept().await.unwrap().unwrap();
-            assert_eq!(req.method(), Method::CONNECT);
+                let (req, mut respond) = h2.accept().await.unwrap().unwrap();
+                let driver = tokio::spawn(async move {
+                    poll_fn(|cx| h2.poll_closed(cx)).await.unwrap();
+                });
+                assert_eq!(req.method(), Method::CONNECT);
 
-            let res = Response::builder()
-                .status(StatusCode::BAD_REQUEST)
-                .header("content-length", "999")
-                .body(())
-                .unwrap();
-            let mut send_stream = respond.send_response(res, false).unwrap();
-            send_stream
-                .send_data("No bread for you!".into(), true)
-                .unwrap();
-        });
+                let res = Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header("content-length", content_length)
+                    .body(())
+                    .unwrap();
+                let mut send_stream = respond.send_response(res, false).unwrap();
+                // Deliver the headers before malformed DATA so a transport
+                // failure cannot stand in for response-body validation.
+                headers_received_rx.await.unwrap();
+                send_stream
+                    .send_data("No bread for you!".into(), true)
+                    .unwrap();
+                done_rx.await.unwrap();
+                driver.abort();
+            });
 
-        let io = ServiceInput::new(client_io);
-        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
-            .handshake::<_, Empty<Bytes>>(io)
-            .await
-            .expect("http handshake");
-
-        tokio::spawn(async move {
-            _ = conn.await;
-        });
-
-        let req = Request::connect(Uri::parse_authority_form("localhost").unwrap())
-            .body(Empty::new())
-            .unwrap();
-        if let Ok(res) = client.send_request(req).await {
-            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-            concat(res)
+            let io = ServiceInput::new(client_io);
+            let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+                .handshake::<_, Empty<Bytes>>(io)
                 .await
-                .expect_err("rejected CONNECT must validate response content-length");
-        }
+                .expect("http handshake");
 
-        server_task.await.unwrap();
+            let client_task = tokio::spawn(async move {
+                conn.await
+                    .expect("stream errors must not close the connection");
+            });
+
+            let req = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+                .body(Empty::new())
+                .unwrap();
+            let res = tokio::time::timeout(Duration::from_secs(2), client.send_request(req))
+                .await
+                .expect("rejected CONNECT response headers must arrive")
+                .expect("rejected CONNECT must expose its response headers");
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+            headers_received_tx.send(()).unwrap();
+            let body = tokio::time::timeout(Duration::from_secs(2), concat(res))
+                .await
+                .expect("rejected CONNECT response body must finish");
+            if valid {
+                assert_eq!(body.unwrap(), "No bread for you!");
+            } else {
+                let error = body.expect_err("rejected CONNECT must validate content-length");
+                let h2_error = std::error::Error::source(&error)
+                    .and_then(|cause| cause.downcast_ref::<rama::http::core::h2::Error>())
+                    .expect("invalid content-length must cause an H2 stream error");
+                assert_eq!(
+                    h2_error.reason(),
+                    Some(rama::http::core::h2::Reason::PROTOCOL_ERROR),
+                    "content-length: {content_length}",
+                );
+            }
+
+            done_tx.send(()).unwrap();
+            server_task.await.unwrap();
+            client_task.abort();
+        }
     }
 
     #[tokio::test]

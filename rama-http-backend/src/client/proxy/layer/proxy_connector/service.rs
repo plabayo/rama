@@ -919,29 +919,40 @@ mod tests {
 
     #[tokio::test]
     async fn connect_statuses_establish_tunnels_only_for_success() {
-        let http_server =
-            HttpServer::auto(Executor::default()).service(service_fn(|_req: Request| async move {
-                Ok::<_, Infallible>(
-                    Response::builder()
-                        .status(StatusCode::CREATED)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
-            }));
-        let connector = HttpProxyConnectorLayer::required()
-            .into_layer(MockConnectorService::new(move || http_server.clone()));
-        let input = ConnectRequest::new(HostWithPort::example_domain_https())
-            .with_application_protocol(Protocol::HTTPS);
-        input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
-            address: HostWithPort::example_domain_http(),
-            credential: None,
-            protocol: Some(Protocol::HTTP),
-        }));
+        for version in [Version::HTTP_11, Version::HTTP_2] {
+            for status in [
+                StatusCode::OK,
+                StatusCode::CREATED,
+                StatusCode::NO_CONTENT,
+                StatusCode::from_u16(299).unwrap(),
+            ] {
+                let http_server = HttpServer::auto(Executor::default()).service(service_fn(
+                    move |_req: Request| async move {
+                        Ok::<_, Infallible>(
+                            Response::builder()
+                                .status(status)
+                                .body(Body::empty())
+                                .unwrap(),
+                        )
+                    },
+                ));
+                let connector = HttpProxyConnectorLayer::required()
+                    .with_version(version)
+                    .into_layer(MockConnectorService::new(move || http_server.clone()));
+                let input = ConnectRequest::new(HostWithPort::example_domain_https())
+                    .with_application_protocol(Protocol::HTTPS);
+                input.extensions.insert(ProxyRoute::Proxy(ProxyAddress {
+                    address: HostWithPort::example_domain_http(),
+                    credential: None,
+                    protocol: Some(Protocol::HTTP),
+                }));
 
-        tokio::time::timeout(Duration::from_secs(2), connector.serve(input))
-            .await
-            .expect("successful CONNECT must not wait indefinitely for an upgraded tunnel")
-            .expect("every successful CONNECT response establishes a tunnel");
+                tokio::time::timeout(Duration::from_secs(2), connector.serve(input))
+                    .await
+                    .expect("successful CONNECT must not wait indefinitely for an upgraded tunnel")
+                    .expect("every successful CONNECT response establishes a tunnel");
+            }
+        }
 
         for (status, expected_domain, expected_kind) in [
             (
@@ -996,6 +1007,105 @@ mod tests {
                 .expect_err("a rejected CONNECT must not establish a tunnel");
             assert_eq!(error.domain(), expected_domain, "status: {status}");
             assert_eq!(error.kind(), expected_kind, "status: {status}");
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_protocol_errors_never_fall_back_to_direct() {
+        for version in [Version::HTTP_11, Version::HTTP_2] {
+            let dials = Arc::new(AtomicUsize::new(0));
+            let transport = MockConnectorService::new({
+                let dials = dials.clone();
+                move || {
+                    dials.fetch_add(1, Ordering::Relaxed);
+                    service_fn(move |mut socket: MockSocket| async move {
+                        if version == Version::HTTP_2 {
+                            let mut conn =
+                                rama_http_core::h2::server::handshake(socket).await.unwrap();
+                            let (req, mut respond) = conn.accept().await.unwrap().unwrap();
+                            assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                            respond.send_reset(rama_http_core::h2::Reason::PROTOCOL_ERROR);
+                            _ = std::future::poll_fn(|cx| conn.poll_closed(cx)).await;
+                        } else {
+                            let mut request = Vec::new();
+                            while !request.ends_with(b"\r\n\r\n") {
+                                request.push(socket.read_u8().await.unwrap());
+                            }
+                            assert!(request.starts_with(b"CONNECT "));
+                            socket.write_all(b"HTTP/1.1 INVALID\r\n\r\n").await.unwrap();
+                        }
+                        Ok::<_, Infallible>(())
+                    })
+                }
+            });
+            let connector = ProxyRoutesConnector::new(
+                HttpProxyConnector::optional(transport).with_version(version),
+            );
+            let input = ConnectRequest::new(HostWithPort::example_domain_https())
+                .with_application_protocol(Protocol::HTTPS);
+            input.extensions.insert(ProxyRoutes::new([
+                ProxyRoute::Proxy("http://proxy.example:8080".parse().unwrap()),
+                ProxyRoute::Direct,
+            ]));
+
+            let error = tokio::time::timeout(Duration::from_secs(2), connector.serve(input))
+                .await
+                .expect("CONNECT protocol error must complete promptly")
+                .expect_err("CONNECT protocol error must not establish a direct connection");
+            assert_eq!(error.domain(), ConnectionErrorDomain::Transport);
+            assert_eq!(
+                error.kind(),
+                ConnectionErrorKind::Protocol,
+                "{version:?}: {error:?}"
+            );
+            assert_eq!(dials.load(Ordering::Relaxed), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_closed_proxy_may_fall_back_to_direct() {
+        for version in [Version::HTTP_11, Version::HTTP_2] {
+            let dials = Arc::new(AtomicUsize::new(0));
+            let transport = MockConnectorService::new({
+                let dials = dials.clone();
+                move || {
+                    dials.fetch_add(1, Ordering::Relaxed);
+                    service_fn(move |mut socket: MockSocket| async move {
+                        if version == Version::HTTP_2 {
+                            let mut conn =
+                                rama_http_core::h2::server::handshake(socket).await.unwrap();
+                            let (req, _) = conn.accept().await.unwrap().unwrap();
+                            assert_eq!(req.method(), rama_http_types::Method::CONNECT);
+                        } else {
+                            let mut request = Vec::new();
+                            while !request.ends_with(b"\r\n\r\n") {
+                                request.push(socket.read_u8().await.unwrap());
+                            }
+                            assert!(request.starts_with(b"CONNECT "));
+                        }
+                        Ok::<_, Infallible>(())
+                    })
+                }
+            });
+            let connector = ProxyRoutesConnector::new(
+                HttpProxyConnector::optional(transport).with_version(version),
+            );
+            let input = ConnectRequest::new(HostWithPort::example_domain_https())
+                .with_application_protocol(Protocol::HTTPS);
+            input.extensions.insert(ProxyRoutes::new([
+                ProxyRoute::Proxy("http://proxy.example:8080".parse().unwrap()),
+                ProxyRoute::Direct,
+            ]));
+
+            let established = tokio::time::timeout(Duration::from_secs(2), connector.serve(input))
+                .await
+                .unwrap()
+                .expect("transport closure permits direct fallback");
+            assert_eq!(
+                established.conn.extensions().get_ref::<ProxyRoute>(),
+                Some(&ProxyRoute::Direct)
+            );
+            assert_eq!(dials.load(Ordering::Relaxed), 2);
         }
     }
 

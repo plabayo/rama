@@ -1133,6 +1133,12 @@ impl Client {
         // 6. (irrelevant to Response)
         // 7. Read till EOF.
 
+        // Every successful CONNECT switches to tunnel framing, including 204.
+        // Check it before ordinary bodyless responses so an upgrade is published.
+        if *method == Some(Method::CONNECT) && inc.subject.is_success() {
+            return Ok(Some((DecodedLength::ZERO, true)));
+        }
+
         match inc.subject.as_u16() {
             101 => {
                 return Ok(Some((DecodedLength::ZERO, true)));
@@ -1147,11 +1153,6 @@ impl Client {
         match *method {
             Some(Method::HEAD) => {
                 return Ok(Some((DecodedLength::ZERO, false)));
-            }
-            Some(Method::CONNECT) => {
-                if let 200..=299 = inc.subject.as_u16() {
-                    return Ok(Some((DecodedLength::ZERO, true)));
-                }
             }
             Some(_) => {}
             None => {
@@ -2499,21 +2500,25 @@ mod tests {
             DecodedLength::ZERO
         );
 
-        // CONNECT with 200 never has body
-        {
+        // Every successful CONNECT upgrades, including ordinary bodyless 204.
+        for status in 200..=299 {
             let msg = parse_with_method(
-                "\
-                 HTTP/1.1 200 OK\r\n\
-                 \r\n\
-                 ",
+                &format!("HTTP/1.1 {status} Success\r\n\r\n"),
                 Method::CONNECT,
             );
             assert_eq!(msg.decode, DecodedLength::ZERO);
             assert!(!msg.keep_alive, "should be upgrade");
             assert!(msg.wants_upgrade, "should be upgrade");
         }
+        for status in [204, 304] {
+            let msg = parse(&format!("HTTP/1.1 {status} Bodyless\r\n\r\n"));
+            assert!(
+                !msg.wants_upgrade,
+                "ordinary bodyless responses do not upgrade"
+            );
+        }
 
-        // CONNECT receiving non 200 can have a body
+        // Rejected CONNECT responses can have a body.
         assert_eq!(
             parse_with_method(
                 "\
