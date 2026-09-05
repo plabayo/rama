@@ -24,9 +24,15 @@ fn main() {
     println!("cargo:rerun-if-changed={}", header.display());
     println!("cargo:rerun-if-env-changed=RAMA_TPROXY_EXAMPLE_LIB_DIR");
 
+    // The Rust test executable already supplies its default System allocator
+    // shim. Linking the production Jemalloc staticlib supplies a conflicting
+    // shim, and the linker can select the driver's System shim instead. Build
+    // a separate System archive for this harness; Swift and signed app builds
+    // continue to use the production archive with its default Jemalloc feature.
+    let system_target_dir = transparent_proxy_dir.join("tproxy_rs/target/ffi-e2e-system");
     let lib_dir = env::var_os("RAMA_TPROXY_EXAMPLE_LIB_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| transparent_proxy_dir.join("tproxy_rs/target/debug"));
+        .unwrap_or_else(|| system_target_dir.join("debug"));
 
     // Keep the linked engine staticlib fresh w.r.t. the rama sources.
     //
@@ -49,18 +55,30 @@ fn main() {
             "cargo:rerun-if-changed={}",
             tproxy_rs_dir.join("Cargo.toml").display()
         );
+        println!(
+            "cargo:rerun-if-changed={}",
+            tproxy_rs_dir.join("Cargo.lock").display()
+        );
         // Watch every rama* crate's `src` so a change to any of them
         // (rama-ws, rama-http, rama-net-apple-networkextension, ...) re-runs
         // this script and rebuilds the staticlib.
         if let Some(repo_root) = transparent_proxy_dir.ancestors().nth(4)
             && let Ok(entries) = std::fs::read_dir(repo_root)
         {
+            println!(
+                "cargo:rerun-if-changed={}",
+                repo_root.join("Cargo.toml").display()
+            );
             for entry in entries.flatten() {
                 if entry.file_name().to_string_lossy().starts_with("rama")
                     && let src = entry.path().join("src")
                     && src.is_dir()
                 {
                     println!("cargo:rerun-if-changed={}", src.display());
+                    println!(
+                        "cargo:rerun-if-changed={}",
+                        entry.path().join("Cargo.toml").display()
+                    );
                 }
             }
         }
@@ -69,8 +87,12 @@ fn main() {
         let status = std::process::Command::new(cargo)
             .current_dir(&tproxy_rs_dir)
             .arg("build")
-            // Build into tproxy_rs's own target dir, not the e2e's.
-            .env_remove("CARGO_TARGET_DIR")
+            .arg("--locked")
+            .arg("--no-default-features")
+            // Keep both the harness target and production Jemalloc archive
+            // separate from this test-only System build.
+            .arg("--target-dir")
+            .arg(&system_target_dir)
             .status()
             .expect("spawn cargo build for tproxy_rs staticlib");
         assert!(
