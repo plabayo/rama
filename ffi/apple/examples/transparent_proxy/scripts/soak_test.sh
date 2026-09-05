@@ -420,7 +420,8 @@ capture_idle_cpu_series() {
     && sudo -n true 2>/dev/null
   then
     privilege=sudo
- (
+    # shellcheck disable=SC2329  # invoked by the owned_job supervisor
+    capture_idle_cpu_series_job() {
       # The first top value is lifetime/decayed CPU and is discarded by the
       # parser; the following ten are one-second interval values.
       # shellcheck disable=SC2024
@@ -433,8 +434,10 @@ capture_idle_cpu_series() {
             fi
             printf '%s\t%s\n' "$timestamp" "$line"
           done
-    ) > "$raw_file" &
+    }
+    owned_job capture_idle_cpu_series_job > "$raw_file" &
     CPU_SERIES_PID=$!
+    remember_owned_child "$CPU_SERIES_PID"
     bounded_wait_and_join "$CPU_SERIES_PID" 15 sudo
     command_rc="$BOUNDED_CHILD_RC"
     joined="$BOUNDED_CHILD_REAPED"
@@ -491,9 +494,10 @@ capture_idle_cpu_diagnostic() {
     # The invoking user intentionally owns the stdout/stderr redirections;
     # sample's root-owned -file output is normalized immediately after join.
     # shellcheck disable=SC2024
-    sudo -n /usr/bin/sample "$PID" 5 -file "$OUT/idle-cpu.sample.txt" \
+    owned_job sudo -n /usr/bin/sample "$PID" 5 -file "$OUT/idle-cpu.sample.txt" \
       > "$OUT/idle-cpu.sample.stdout" 2> "$OUT/idle-cpu.sample.stderr" &
     CPU_SAMPLE_PID=$!
+    remember_owned_child "$CPU_SAMPLE_PID"
     bounded_wait_and_join "$CPU_SAMPLE_PID" 8 sudo
     CPU_SAMPLE_COMMAND_RC="$BOUNDED_CHILD_RC"
     CPU_SAMPLE_JOINED="$BOUNDED_CHILD_REAPED"
@@ -550,26 +554,26 @@ kill_holders() {
   # shared deadline so cleanup remains bounded even with hundreds of holders.
   [[ -n "$HOLDER_PIDFILE" && -f "$HOLDER_PIDFILE" ]] || return 0
   local holder_pids=() _p _marker deadline force_deadline active
-  local forced=0 reaped=0 unreaped=0
+  local forced=0 reaped=0 unreaped=0 holder_rc
   HOLDER_CLEANUP_LAST_UNREAPED=0
   while IFS=$'\t' read -r _p _marker; do
     [[ "$_p" =~ ^[1-9][0-9]*$ ]] && holder_pids+=("$_p")
   done < "$HOLDER_PIDFILE"
   (( ${#holder_pids[@]} > 0 )) || return 0
   for _p in "${holder_pids[@]}"; do
-    child_job_is_active "$_p" && signal_child "$_p" TERM direct
+    ! soak_owned_child_has_exited "$_p" && signal_child "$_p" TERM direct
   done
   deadline=$(( SECONDS + 5 ))
   while (( SECONDS < deadline )); do
     active=0
     for _p in "${holder_pids[@]}"; do
-      child_job_is_active "$_p" && { active=1; break; }
+      ! soak_owned_child_has_exited "$_p" && { active=1; break; }
     done
     (( active )) || break
     sleep 0.1
   done
   for _p in "${holder_pids[@]}"; do
-    if child_job_is_active "$_p"; then
+    if ! soak_owned_child_has_exited "$_p"; then
       forced=$((forced + 1))
       signal_child "$_p" KILL direct
     fi
@@ -578,24 +582,31 @@ kill_holders() {
   while (( SECONDS < force_deadline )); do
     active=0
     for _p in "${holder_pids[@]}"; do
-      child_job_is_active "$_p" && { active=1; break; }
+      ! soak_owned_child_has_exited "$_p" && { active=1; break; }
     done
     (( active )) || break
     sleep 0.1
   done
   for _p in "${holder_pids[@]}"; do
-    if child_job_is_active "$_p"; then
+    if ! soak_owned_child_has_exited "$_p"; then
       unreaped=$((unreaped + 1))
       continue
     fi
-    wait "$_p" 2>/dev/null || true
+    if wait "$_p" 2>/dev/null; then holder_rc=0; else holder_rc=$?; fi
+    # A missing child status or a failed containment guard is not a joined
+    # owned holder, even when a process-table snapshot currently looks empty.
+    if [[ "$holder_rc" == 125 || "$holder_rc" == 127 ]]; then
+      unreaped=$((unreaped + 1))
+      HOLDER_CLEANUP_OK=0
+      continue
+    fi
     reaped=$((reaped + 1))
   done
   if (( unreaped == 0 )); then
     : > "$HOLDER_PIDFILE"
   fi
   HOLDER_CLEANUP_LAST_UNREAPED="$unreaped"
-  (( unreaped == 0 )) || HOLDER_CLEANUP_OK=0
+  (( unreaped == 0 && forced == 0 )) || HOLDER_CLEANUP_OK=0
   printf '%s\ttotal=%s\treaped=%s\tforced=%s\tunreaped=%s\n' \
     "${FLOW_POOL_LABEL:-unknown}" "${#holder_pids[@]}" "$reaped" \
     "$forced" "$unreaped" >> "$OUT/holder-cleanup.tsv"
@@ -606,6 +617,7 @@ cleanup() {
   CLEANUP_STARTED=1
   if [[ -n "$ACTIVE_CHILD_PID" ]]; then
     bounded_stop_and_join "$ACTIVE_CHILD_PID" 5 "$ACTIVE_CHILD_PRIVILEGE"
+    (( BOUNDED_CHILD_OK )) || FINAL_CLEANUP_OK=0
     if (( BOUNDED_CHILD_REAPED )); then
       ACTIVE_CHILD_PID=""
       ACTIVE_CHILD_PRIVILEGE=root-only
@@ -615,6 +627,7 @@ cleanup() {
   fi
   if [[ -n "$PROBE_MON_PID" ]]; then
     bounded_stop_and_join "$PROBE_MON_PID" 5 direct
+    (( BOUNDED_CHILD_OK )) || FINAL_CLEANUP_OK=0
     if (( BOUNDED_CHILD_REAPED )); then
       PROBE_MON_PID=""
     else
@@ -623,6 +636,7 @@ cleanup() {
   fi
   if [[ -n "$GENERATION_MON_PID" ]]; then
     bounded_stop_and_join "$GENERATION_MON_PID" 5 direct
+    (( BOUNDED_CHILD_OK )) || FINAL_CLEANUP_OK=0
     if (( BOUNDED_CHILD_REAPED )); then
       GENERATION_MON_PID=""
     else
@@ -631,6 +645,7 @@ cleanup() {
   fi
   if [[ -n "$WAKE_DL_PID" ]]; then
     bounded_stop_and_join "$WAKE_DL_PID" 5 direct
+    (( BOUNDED_CHILD_OK )) || FINAL_CLEANUP_OK=0
     if (( BOUNDED_CHILD_REAPED )); then
       WAKE_DL_PID=""
     else
@@ -639,6 +654,7 @@ cleanup() {
   fi
   if [[ -n "$CPU_SAMPLE_PID" ]]; then
     bounded_stop_and_join "$CPU_SAMPLE_PID" 2 sudo
+    (( BOUNDED_CHILD_OK )) || FINAL_CLEANUP_OK=0
     if (( BOUNDED_CHILD_REAPED )); then
       CPU_SAMPLE_PID=""
     else
@@ -647,6 +663,7 @@ cleanup() {
   fi
   if [[ -n "$CPU_SERIES_PID" ]]; then
     bounded_stop_and_join "$CPU_SERIES_PID" 2 sudo
+    (( BOUNDED_CHILD_OK )) || FINAL_CLEANUP_OK=0
     if (( BOUNDED_CHILD_REAPED )); then
       CPU_SERIES_PID=""
     else
@@ -654,9 +671,10 @@ cleanup() {
     fi
   fi
   kill_holders
-  (( HOLDER_CLEANUP_LAST_UNREAPED == 0 )) || FINAL_CLEANUP_OK=0
+  (( HOLDER_CLEANUP_LAST_UNREAPED == 0 && HOLDER_CLEANUP_OK )) || FINAL_CLEANUP_OK=0
   if [[ -n "$SUDO_KEEPALIVE_PID" ]]; then
     bounded_stop_and_join "$SUDO_KEEPALIVE_PID" 5 direct
+    (( BOUNDED_CHILD_OK )) || FINAL_CLEANUP_OK=0
     if (( BOUNDED_CHILD_REAPED )); then
       SUDO_KEEPALIVE_PID=""
     else
@@ -665,6 +683,7 @@ cleanup() {
   fi
   if (( LOG_STREAM_STARTED )) && [[ -n "$LOG_STREAM_PID" ]]; then
     bounded_stop_and_join "$LOG_STREAM_PID" 5 sudo
+    (( BOUNDED_CHILD_OK )) || FINAL_CLEANUP_OK=0
     if (( BOUNDED_CHILD_REAPED )); then
       LOG_STREAM_PID=""
       LOG_STREAM_STARTED=0
@@ -678,118 +697,278 @@ cleanup() {
 # TERM to KILL after a bounded interval, and call `wait` only after the job is no
 # longer active. The caller treats anything except a clean exit or TERM as
 # incomplete evidence.
+# Every owned background function receives a separate process group. Its EXIT
+# guard keeps the group leader alive after an early command exit, so orphaned
+# grandchildren and inherited artifact descriptors remain attributable.
+set -m
+SOAK_CHILD_IDENTITIES=()
+SOAK_CHILD_GROUPS=()
+
+owned_job_exit() {
+  local soak_job_exit_rc="$1" soak_guard_rc=0
+  trap - EXIT
+  trap '' TERM
+  "${PYTHON_BIN:-python3}" -c '
+import os, signal, subprocess, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+leader = os.getppid()
+if os.getpgrp() != leader:
+    sys.exit(125)
+while True:
+    probe = subprocess.Popen(["ps", "-axo", "pid=,pgid=,state="],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    output, _ = probe.communicate()
+    if probe.returncode != 0:
+        sys.exit(125)
+    members = [row.split() for row in output.splitlines()]
+    if not any(len(row) == 3 and row[1] == str(leader)
+        and row[0] not in (str(leader), str(os.getpid()), str(probe.pid))
+        and not row[2].startswith("Z") for row in members):
+        break
+    time.sleep(0.1)
+' || soak_guard_rc=$?
+  (( soak_guard_rc == 0 )) || soak_job_exit_rc=125
+  exit "$soak_job_exit_rc"
+}
+
+owned_job() {
+  local soak_command_rc=0
+  # Keep commands and nested pipelines in this job's group. Inheriting monitor
+  # mode here would give the foreground command a different group and let an
+  # early-exiting command orphan its descendants outside the EXIT guard.
+  set +m
+  trap 'owned_job_exit "$?"' EXIT
+  trap 'exit 143' TERM
+  "$@" || soak_command_rc=$?
+  # Bash 3.2 does not run an EXIT trap on every implicit background-function
+  # return. Enter the guard explicitly on normal command completion as well.
+  owned_job_exit "$soak_command_rc"
+}
+
 child_job_is_active() {
   jobs -p | grep -Fqx -- "$1"
 }
 
-signal_child() {
-  local pid="$1" signal="$2" privilege="$3"
-  local child
-  if [[ "$privilege" != root-only ]]; then
-    while IFS= read -r child; do
-      [[ "$child" =~ ^[1-9][0-9]*$ ]] || continue
-      signal_child "$child" "$signal" "$privilege"
-    done < <(pgrep -P "$pid" 2>/dev/null || true)
+child_job_has_exited() {
+  local pid="$1" state
+  child_job_is_active "$pid" || return 0
+  state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  [[ "$state" == Z* ]] || { [[ -z "$state" ]] && ! kill -0 "$pid" 2>/dev/null; }
+}
+
+# Unlike provider/runtime attribution, ownership survives exec. Revalidate the
+# PID/start generation before every signal, including CONT and escalation.
+soak_child_identity() {
+  local snapshot
+  snapshot="$(ps -ww -o pid= -o lstart= -p "$1" 2>/dev/null)" || return 1
+  [[ -n "$snapshot" ]] || return 1
+  printf '%s' "$snapshot" | shasum -a 256 | awk 'NR == 1 { print $1 }'
+}
+
+remember_owned_child() {
+  local pid="$1"
+  SOAK_CHILD_IDENTITIES[pid]="$(soak_child_identity "$pid" || true)"
+  # Monitor mode gives every owned launch this group, including jobs that
+  # finish before the next ps. Retain it even if identity inspection fails:
+  # missing inspection must never erase a surviving orphan's exit check.
+  SOAK_CHILD_GROUPS[pid]="$pid"
+}
+
+soak_signal_identity() {
+  local pid="$1" identity="$2" signal="$3" privilege="$4" group="${5:-0}"
+  local target="$pid" state attempt
+  [[ "$identity" =~ ^[0-9a-f]{64}$ \
+    && "$(soak_child_identity "$pid" || true)" == "$identity" ]] || return 1
+  if (( group )) && [[ "$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')" == "$pid" ]]; then
+    target="-$pid"
   fi
   if [[ "$privilege" == sudo ]]; then
-    sudo -n kill "-$signal" "$pid" 2>/dev/null \
-      || kill "-$signal" "$pid" 2>/dev/null \
-      || true
+    sudo -n kill "-$signal" -- "$target" 2>/dev/null \
+      || kill "-$signal" -- "$target" 2>/dev/null || return 1
   else
-    kill "-$signal" "$pid" 2>/dev/null || true
+    kill "-$signal" -- "$target" 2>/dev/null || return 1
+  fi
+  [[ "$signal" == STOP ]] || return 0
+  for ((attempt=0; attempt<10; attempt++)); do
+    [[ "$(soak_child_identity "$pid" || true)" == "$identity" ]] || return 1
+    state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+    [[ "$state" == T* || "$state" == Z* ]] && return 0
+    sleep 0.01
+  done
+  soak_signal_identity "$pid" "$identity" CONT "$privilege" "$group" || true
+  return 1
+}
+
+soak_identity_has_exited() {
+  local pid="$1" identity="$2" observed state
+  observed="$(soak_child_identity "$pid" || true)"
+  [[ -n "$observed" && "$observed" != "$identity" ]] && return 0
+  state="$(ps -o state= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  [[ "$state" == Z* ]] || { [[ -z "$state" ]] && ! kill -0 "$pid" 2>/dev/null; }
+}
+
+# The leader and then each discovered generation are stopped before following
+# parent links. Group membership also finds descendants already reparented to
+# launchd/init; unrelated processes sharing the soak shell's group are excluded.
+soak_collect_tree() {
+  local pid="$1" identity="$2" privilege="$3" deadline="$4"
+  local child child_identity relation children group failed=0 discovery_rc=0
+  [[ "${SOAK_COLLECT_SEEN[pid]:-}" != "$identity" ]] || return 0
+  SOAK_COLLECT_SEEN[pid]="$identity"
+  SOAK_COLLECT_COUNT=$((SOAK_COLLECT_COUNT + 1))
+  # Record even the final stopped identity before failing the bounded walk.
+  printf '%s\t%s\n' "$pid" "$identity"
+  (( SOAK_COLLECT_COUNT <= 128 && SECONDS < deadline )) || return 1
+  [[ "$(soak_child_identity "$pid" || true)" == "$identity" ]] || return 1
+  group="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
+  if [[ "$group" == "$pid" ]]; then
+    children="$(pgrep -g "$pid" 2>/dev/null)" || discovery_rc=$?
+  else
+    children="$(pgrep -P "$pid" 2>/dev/null)" || discovery_rc=$?
+  fi
+  (( discovery_rc <= 1 )) || failed=1
+  while IFS= read -r child; do
+    [[ "$child" =~ ^[1-9][0-9]*$ && "$child" != "$pid" ]] || continue
+    (( SOAK_COLLECT_COUNT < 128 && SECONDS < deadline )) || { failed=1; break; }
+    [[ -z "${SOAK_COLLECT_SEEN[child]:-}" ]] || continue
+    child_identity="$(soak_child_identity "$child" || true)"
+    [[ "$child_identity" =~ ^[0-9a-f]{64}$ ]] || continue
+    if [[ "$group" == "$pid" ]]; then
+      relation="$(ps -o pgid= -p "$child" 2>/dev/null | tr -d '[:space:]')"
+    else
+      relation="$(ps -o ppid= -p "$child" 2>/dev/null | tr -d '[:space:]')"
+    fi
+    [[ "$relation" == "$pid" ]] || continue
+    if soak_signal_identity "$child" "$child_identity" STOP "$privilege"; then
+      soak_collect_tree "$child" "$child_identity" "$privilege" "$deadline" || failed=1
+    elif ! soak_identity_has_exited "$child" "$child_identity"; then
+      failed=1
+    fi
+  done <<< "$children"
+  return "$failed"
+}
+
+soak_tree_has_exited() {
+  local tree="$1" pid identity
+  while IFS=$'\t' read -r pid identity; do
+    [[ "$pid" =~ ^[1-9][0-9]*$ && "$identity" =~ ^[0-9a-f]{64}$ ]] || continue
+    soak_identity_has_exited "$pid" "$identity" || return 1
+  done <<< "$tree"
+}
+
+# Holder shutdown shares one deadline across all jobs. Its supervisor keeps
+# the group leader attributable until surviving/stopped descendants are gone.
+signal_child() {
+  local pid="$1" signal="$2" privilege="$3" identity
+  identity="${SOAK_CHILD_IDENTITIES[pid]:-}"
+  [[ "$identity" =~ ^[0-9a-f]{64}$ ]] || return 0
+  soak_signal_identity "$pid" "$identity" "$signal" "$privilege" 1 || true
+  if [[ "$signal" == TERM ]]; then
+    soak_signal_identity "$pid" "$identity" CONT "$privilege" 1 || true
   fi
 }
 
-# BOUNDED_CHILD_OK is also consumed by the function-level regression harness.
+soak_owned_group_has_exited() {
+  local pid="$1" snapshot
+  [[ "${SOAK_CHILD_GROUPS[pid]:-}" == "$pid" ]] || return 0
+  snapshot="$(ps -axo pgid=,state= 2>/dev/null)" || return 1
+  ! awk -v group="$pid" '$1 == group && $2 !~ /^Z/ { found=1 } END { exit !found }' <<< "$snapshot"
+}
+
+soak_owned_child_has_exited() {
+  child_job_has_exited "$1" && soak_owned_group_has_exited "$1"
+}
+
+# BOUNDED_CHILD_REAPED proves both wait(root) and exit of every captured
+# descendant. A forced descendant is incomplete evidence even if root exited0.
 # shellcheck disable=SC2034
 BOUNDED_CHILD_RC=missing
 BOUNDED_CHILD_OK=0
 BOUNDED_CHILD_REAPED=0
 BOUNDED_CHILD_FORCED=0
-bounded_stop_and_join() {
-  local pid="$1" timeout="$2" privilege="$3"
-  local deadline force_deadline child_rc
+bounded_child_join() {
+  local pid="$1" timeout="$2" privilege="$3" mode="$4"
+  local deadline force_deadline child_rc identity tree="" tree_pid tree_identity
+  local tree_incomplete=0
   BOUNDED_CHILD_RC=missing
   BOUNDED_CHILD_OK=0
   BOUNDED_CHILD_REAPED=0
   BOUNDED_CHILD_FORCED=0
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
-  if child_job_is_active "$pid"; then
-    signal_child "$pid" TERM "$privilege"
+  identity="${SOAK_CHILD_IDENTITIES[pid]:-}"
+  # Legacy function-level callers may still supply a live owned shell child.
+  if [[ -z "$identity" ]] && child_job_is_active "$pid"; then
+    identity="$(soak_child_identity "$pid" || true)"
   fi
-  deadline=$(( SECONDS + timeout ))
-  while child_job_is_active "$pid" && (( SECONDS < deadline )); do
-    sleep 0.1
-  done
-  if child_job_is_active "$pid"; then
-    BOUNDED_CHILD_FORCED=1
-    if [[ "$privilege" == root-only ]]; then
-      signal_child "$pid" KILL direct
-    else
-      signal_child "$pid" KILL "$privilege"
+  deadline=$((SECONDS + timeout))
+  if [[ "$mode" == wait ]]; then
+    while ! soak_owned_child_has_exited "$pid" && (( SECONDS < deadline )); do sleep 0.1; done
+    soak_owned_child_has_exited "$pid" || BOUNDED_CHILD_FORCED=1
+  fi
+  if ! soak_owned_child_has_exited "$pid"; then
+    if [[ "$mode" == wait ]]; then deadline=$((SECONDS + 2)); fi
+    if soak_signal_identity "$pid" "$identity" STOP "$privilege" 1; then
+      tree="$(SOAK_COLLECT_SEEN=(); SOAK_COLLECT_COUNT=0
+        soak_collect_tree "$pid" "$identity" "$privilege" "$deadline")" || tree_incomplete=1
+    elif ! soak_owned_child_has_exited "$pid"; then
+      tree_incomplete=1
     fi
-    force_deadline=$(( SECONDS + 2 ))
-    while child_job_is_active "$pid" && (( SECONDS < force_deadline )); do
+    if [[ "$privilege" == root-only ]]; then
+      soak_signal_identity "$pid" "$identity" TERM direct || true
+    else
+      while IFS=$'\t' read -r tree_pid tree_identity; do
+        [[ "$tree_pid" =~ ^[1-9][0-9]*$ && "$tree_identity" =~ ^[0-9a-f]{64}$ ]] || continue
+        soak_signal_identity "$tree_pid" "$tree_identity" TERM "$privilege" 1 || true
+      done <<< "$tree"
+    fi
+    while IFS=$'\t' read -r tree_pid tree_identity; do
+      [[ "$tree_pid" =~ ^[1-9][0-9]*$ && "$tree_identity" =~ ^[0-9a-f]{64}$ ]] || continue
+      soak_signal_identity "$tree_pid" "$tree_identity" CONT "$privilege" || true
+    done <<< "$tree"
+    # Resume the complete owned group as well as the individually frozen tree.
+    soak_signal_identity "$pid" "$identity" CONT "$privilege" 1 || true
+    while (( SECONDS < deadline )); do
+      soak_owned_child_has_exited "$pid" && soak_tree_has_exited "$tree" && break
       sleep 0.1
     done
   fi
-  child_job_is_active "$pid" && return 0
-  if wait "$pid" 2>/dev/null; then
-    child_rc=0
-  else
-    child_rc=$?
+  if ! soak_owned_child_has_exited "$pid" || ! soak_tree_has_exited "$tree"; then
+    BOUNDED_CHILD_FORCED=1
+    while IFS=$'\t' read -r tree_pid tree_identity; do
+      [[ "$tree_pid" =~ ^[1-9][0-9]*$ && "$tree_identity" =~ ^[0-9a-f]{64}$ ]] || continue
+      soak_signal_identity "$tree_pid" "$tree_identity" KILL "$privilege" 1 || true
+    done <<< "$tree"
+    # A supervisor may have started its EXIT guard after the frozen snapshot.
+    # Its still-matching group leader keeps escalation bound to this job.
+    soak_signal_identity "$pid" "$identity" KILL "$privilege" 1 || true
+    force_deadline=$((SECONDS + 2))
+    while (( SECONDS < force_deadline )); do
+      soak_owned_child_has_exited "$pid" && soak_tree_has_exited "$tree" && break
+      sleep 0.1
+    done
   fi
-  BOUNDED_CHILD_RC="$child_rc"
+  if child_job_has_exited "$pid"; then
+    if wait "$pid" 2>/dev/null; then child_rc=0; else child_rc=$?; fi
+    BOUNDED_CHILD_RC="$child_rc"
+    [[ "$child_rc" != 125 && "$child_rc" != 127 ]] || return 0
+  else
+    return 0
+  fi
+  (( tree_incomplete == 0 )) && soak_tree_has_exited "$tree" \
+    && soak_owned_group_has_exited "$pid" || return 0
   BOUNDED_CHILD_REAPED=1
-  if (( ! BOUNDED_CHILD_FORCED )) && [[ "$child_rc" == 0 || "$child_rc" == 143 ]]; then
-    # shellcheck disable=SC2034  # asserted by the function-level regression harness
+  if (( ! BOUNDED_CHILD_FORCED )) \
+    && { [[ "$child_rc" == 0 ]] || { [[ "$mode" == stop && "$child_rc" == 143 ]]; }; }
+  then
     BOUNDED_CHILD_OK=1
   fi
 }
 
-# Join a normally self-terminating diagnostic under a hard deadline. Unlike
-# bounded_stop_and_join, this waits first and signals only if the command
-# exceeds its budget.
-bounded_wait_and_join() {
-  local pid="$1" timeout="$2" privilege="$3"
-  local deadline force_deadline child_rc
-  BOUNDED_CHILD_RC=missing
-  BOUNDED_CHILD_OK=0
-  BOUNDED_CHILD_REAPED=0
-  BOUNDED_CHILD_FORCED=0
-  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 0
-  deadline=$(( SECONDS + timeout ))
-  while child_job_is_active "$pid" && (( SECONDS < deadline )); do
-    sleep 0.1
-  done
-  if child_job_is_active "$pid"; then
-    BOUNDED_CHILD_FORCED=1
-    signal_child "$pid" TERM "$privilege"
-    force_deadline=$(( SECONDS + 2 ))
-    while child_job_is_active "$pid" && (( SECONDS < force_deadline )); do
-      sleep 0.1
-    done
-  fi
-  if child_job_is_active "$pid"; then
-    signal_child "$pid" KILL "$privilege"
-    force_deadline=$(( SECONDS + 2 ))
-    while child_job_is_active "$pid" && (( SECONDS < force_deadline )); do
-      sleep 0.1
-    done
-  fi
-  child_job_is_active "$pid" && return 0
-  if wait "$pid" 2>/dev/null; then
-    child_rc=0
-  else
-    child_rc=$?
-  fi
-  BOUNDED_CHILD_RC="$child_rc"
-  BOUNDED_CHILD_REAPED=1
-  if (( ! BOUNDED_CHILD_FORCED )) && [[ "$child_rc" == 0 ]]; then
-    # shellcheck disable=SC2034  # consumed by cleanup/evidence callers
-    BOUNDED_CHILD_OK=1
-  fi
-}
+bounded_stop_and_join() { bounded_child_join "$1" "$2" "$3" stop; }
+
+# A natural diagnostic must finish by itself; timeout/TERM/KILL never becomes
+# successful evidence merely because the wrapper eventually reports exit0.
+bounded_wait_and_join() { bounded_child_join "$1" "$2" "$3" wait; }
 
 soak_verdict_exit_code() {
   "$PYTHON_BIN" - "$OUT/soak-verdict.tsv" "$EXAMPLE_DIR/scripts" <<'PY'
@@ -888,9 +1067,9 @@ finalize_and_exit() {
     [[ "$requested_exit" == 130 || "$requested_exit" == 143 ]] \
       && failure_exit="$requested_exit"
     write_incomplete_status \
-      "cleanup could not reap every artifact writer; evidence remains unsealed" \
+      "cleanup did not prove complete artifact-writer shutdown; evidence remains unsealed" \
       "$failure_exit"
-    warn "cleanup could not reap every artifact writer; refusing to seal or package mutable evidence"
+    warn "cleanup did not prove complete artifact-writer shutdown; refusing to seal or package mutable evidence"
     exit "$failure_exit"
   fi
   if (( ARTIFACTS_INITIALIZED == 0 )); then
@@ -1182,7 +1361,8 @@ wait_for_fresh_gauge() {
 }
 
 start_probe_monitor() {
-  ( while true; do
+  # shellcheck disable=SC2329  # invoked by the owned_job supervisor
+  probe_monitor_job() { while true; do
       _provider_identity="$(process_identity "$PID" || true)"
       printf '%s\t%s\n' "$(epoch_now)" "${_provider_identity:-gone}" \
         >> "$OUT/provider-timeline.tsv"
@@ -1196,8 +1376,10 @@ start_probe_monitor() {
         >> "$OUT/provider-timeline.tsv"
       [[ "$_provider_identity" == "$PROVIDER_START_IDENTITY" ]] || exit 42
       sleep 5
-    done ) &
+    done; }
+  owned_job probe_monitor_job &
   PROBE_MON_PID=$!
+  remember_owned_child "$PROBE_MON_PID"
 }
 
 # Common evidence owns the canonical provider-generation sample encoding and
@@ -1205,7 +1387,8 @@ start_probe_monitor() {
 # probe can legitimately spend longer than the five-second attribution gap in
 # curl. The common helper serializes concurrent appends with an external lock.
 start_provider_generation_monitor() {
-  (
+  # shellcheck disable=SC2329  # invoked by the owned_job supervisor
+  provider_generation_monitor_job() {
     while evidence_tool capture-provider-generation \
       --identity "$OUT/provider-identity.tsv" \
       --append "$OUT/provider-generation-samples.tsv" \
@@ -1213,9 +1396,11 @@ start_provider_generation_monitor() {
     do
       sleep 2
     done
-  ) >> "$OUT/provider-generation.stdout" \
+  }
+  owned_job provider_generation_monitor_job >> "$OUT/provider-generation.stdout" \
     2>> "$OUT/provider-generation.stderr" &
   GENERATION_MON_PID=$!
+  remember_owned_child "$GENERATION_MON_PID"
 }
 
 # Count live and explicitly established workers, rewriting to survivors only.
@@ -1246,6 +1431,7 @@ holder_marker_established() {
   fi
 }
 
+# shellcheck disable=SC2329  # invoked by the owned_job supervisor
 run_active_holder() {
   local phase_label="$1" marker="$2" target="$3"
   local metrics code downloaded elapsed curl_rc=0
@@ -1269,9 +1455,11 @@ spawn_active() {
   HOLDER_SEQUENCE=$((HOLDER_SEQUENCE + 1))
   marker="$OUT/holder-markers/${FLOW_POOL_LABEL}.${HOLDER_SEQUENCE}.active.headers"
   : > "$marker"
-  run_active_holder "$FLOW_POOL_LABEL" "$marker" \
+  owned_job run_active_holder "$FLOW_POOL_LABEL" "$marker" \
     "$(dl_url "$DL_MAX_BYTES" 16384 "$delay")" &
-  printf '%s\t%s\n' "$!" "$marker" >> "$HOLDER_PIDFILE"
+  local holder_pid=$!
+  remember_owned_child "$holder_pid"
+  printf '%s\t%s\n' "$holder_pid" "$marker" >> "$HOLDER_PIDFILE"
 }
 
 # spawn one SILENT flow: raw TCP connect that sends nothing, exits on EOF
@@ -1284,11 +1472,14 @@ spawn_silent() {
   local marker
   HOLDER_SEQUENCE=$((HOLDER_SEQUENCE + 1))
   marker="$OUT/holder-markers/${FLOW_POOL_LABEL}.${HOLDER_SEQUENCE}.silent.connected"
-  ( exec 3<>/dev/tcp/"$DL_HOST"/443 2>/dev/null \
+  silent_holder_job() { exec 3<>/dev/tcp/"$DL_HOST"/443 2>/dev/null \
       && printf 'connected\n' > "$marker" \
-      && IFS= read -r -t "$IDLE_HOLD" -u 3 _ ) \
+      && IFS= read -r -t "$IDLE_HOLD" -u 3 _; }
+  owned_job silent_holder_job \
     >/dev/null 2>&1 &
-  printf '%s\t%s\n' "$!" "$marker" >> "$HOLDER_PIDFILE"
+  local holder_pid=$!
+  remember_owned_child "$holder_pid"
+  printf '%s\t%s\n' "$holder_pid" "$marker" >> "$HOLDER_PIDFILE"
 }
 
 update_sustained_hold() {
@@ -1527,8 +1718,11 @@ say "idle tail:   ${IDLE_TAIL}s"
 
 say "caching sudo (you may be prompted once)..."
 sudo -v || die "sudo is required"
-( while true; do sudo -n -v 2>/dev/null || exit 0; sleep 30; done ) &
+# shellcheck disable=SC2329  # invoked by the owned_job supervisor
+sudo_keepalive_job() { while true; do sudo -n -v 2>/dev/null || exit 0; sleep 30; done; }
+owned_job sudo_keepalive_job &
 SUDO_KEEPALIVE_PID=$!
+remember_owned_child "$SUDO_KEEPALIVE_PID"
 
 # ── Optional install ──────────────────────────────────────────────────
 if [[ "$DO_INSTALL" == 1 ]]; then
@@ -1683,10 +1877,11 @@ LOG_STREAM_START_EPOCH="$(epoch_now)"
 # Word splitting intentionally expands optional `stdbuf -oL`; the destination
 # is user-owned even though the log reader itself runs through sudo.
 # shellcheck disable=SC2086,SC2024
-sudo $LOGBUF log stream --level debug --style ndjson \
+owned_job sudo $LOGBUF log stream --level debug --style ndjson \
   --predicate "processID == $PID AND subsystem == \"$PROVIDER_BUNDLE\"" \
   > "$OUT/system.ndjson" 2>/dev/null &
 LOG_STREAM_PID=$!
+remember_owned_child "$LOG_STREAM_PID"
 LOG_STREAM_STARTED=1
 sleep 2
 if sudo -n kill -0 "$LOG_STREAM_PID" 2>/dev/null; then
@@ -1899,7 +2094,8 @@ BASELINE_MEM_START_EPOCH_MS="$(epoch_ms_now)"
 BASELINE_MEM_PROVIDER_PID="$PID"
 BASELINE_MEM_IDENTITY_BEFORE="$(process_identity "$PID" || true)"
 BASELINE_MEM_STATUS="$OUT/baseline-mem-command-status.tsv"
-(
+# shellcheck disable=SC2329  # invoked by the owned_job supervisor
+baseline_memory_job() {
   set +e
   privilege=unavailable
   sudo -n true >/dev/null 2>&1
@@ -1924,8 +2120,10 @@ BASELINE_MEM_STATUS="$OUT/baseline-mem-command-status.tsv"
   } > "$BASELINE_MEM_STATUS" || status_write_rc=$?
   [[ "$sudo_rc" == 0 && "$ps_rc" == 0 && "$vmmap_rc" == 0 \
     && "$status_write_rc" == 0 ]]
-) > "$OUT/baseline-mem.txt" 2>&1 &
+}
+owned_job baseline_memory_job > "$OUT/baseline-mem.txt" 2>&1 &
 ACTIVE_CHILD_PID=$!
+remember_owned_child "$ACTIVE_CHILD_PID"
 ACTIVE_CHILD_PRIVILEGE=sudo
 bounded_wait_and_join "$ACTIVE_CHILD_PID" 30 sudo
 BASELINE_MEM_CHILD_RC="$BOUNDED_CHILD_RC"
@@ -2076,8 +2274,9 @@ if [[ "$SKIP_STRESS" != 1 ]]; then
     STRESS_POST_TARGET=https://http-test.ramaproxy.org/octet-stream \
     STRESS_MAX_P95_MS=10000 STRESS_MIN_THROUGHPUT_MILLI_RPS=100 \
     STRESS_MAX_RSS_GROWTH_BYTES=67108864 STRESS_MAX_CPU_PERCENT=400 \
-      bash "$STRESS_SH" > "$OUT/stress-run.txt" 2>&1 &
+      owned_job bash "$STRESS_SH" > "$OUT/stress-run.txt" 2>&1 &
   ACTIVE_CHILD_PID=$!
+  remember_owned_child "$ACTIVE_CHILD_PID"
   ACTIVE_CHILD_PRIVILEGE=direct
   # Allow the configured run plus generous script cleanup/reporting grace,
   # while retaining a hard upper bound for a wedged worker/tool.
@@ -2157,13 +2356,18 @@ hdr "phase 4 — real-world download (32 MiB steady stream)"
 REAL_DOWNLOAD_METRICS=""
 REAL_DOWNLOAD_CURL_RC=0
 : > "$OUT/real-download.metrics"
-curl -L -f -sS -o /dev/null --max-time 120 \
+owned_job curl -L -f -sS -o /dev/null --max-time 120 \
   --header 'Accept-Encoding: identity' \
   -w $'%{http_code}\t%{size_download}\t%{speed_download}\t%{time_total}' \
   "$(dl_url "$DL_MAX_BYTES" 32768 5)" > "$OUT/real-download.metrics" \
   2>"$OUT/real-download.curl.log" &
 ACTIVE_CHILD_PID=$!
-wait "$ACTIVE_CHILD_PID" || REAL_DOWNLOAD_CURL_RC=$?
+remember_owned_child "$ACTIVE_CHILD_PID"
+ACTIVE_CHILD_PRIVILEGE=direct
+bounded_wait_and_join "$ACTIVE_CHILD_PID" 120 direct
+REAL_DOWNLOAD_CURL_RC="$BOUNDED_CHILD_RC"
+(( BOUNDED_CHILD_FORCED )) && REAL_DOWNLOAD_CURL_RC=124
+(( BOUNDED_CHILD_REAPED )) || die "real download writer could not be reaped; refusing mutable evidence finalization"
 ACTIVE_CHILD_PID=""
 REAL_DOWNLOAD_METRICS="$(<"$OUT/real-download.metrics")"
 IFS=$'\t' read -r REAL_DOWNLOAD_CODE REAL_DOWNLOAD_BYTES \
@@ -2220,11 +2424,12 @@ else
   WAKE_WORKLOAD_JOINED=0
   : > "$OUT/wake-download-headers.txt"
   : > "$OUT/wake-download.body"
-  curl -L -f -sS --no-buffer -o "$OUT/wake-download.body" \
+  owned_job curl -L -f -sS --no-buffer -o "$OUT/wake-download.body" \
       --dump-header "$OUT/wake-download-headers.txt" --max-time 600 \
       -w 'wake-download: code=%{http_code} size=%{size_download} time=%{time_total}s\n' \
       "$(dl_url "$DL_MAX_BYTES" 16384 250)" > "$OUT/wake-download.txt" 2>&1 &
   WAKE_DL_PID=$!
+  remember_owned_child "$WAKE_DL_PID"
   WAKE_ESTABLISH_DEADLINE=$(( $(date +%s) + 20 ))
   while (( $(date +%s) < WAKE_ESTABLISH_DEADLINE )); do
     WAKE_WORKLOAD_HTTP_CODE="$(
@@ -2355,7 +2560,8 @@ FINAL_MEM_START_EPOCH_MS="$(epoch_ms_now)"
 FINAL_MEM_PROVIDER_PID="$SNAP_PID"
 FINAL_MEM_IDENTITY_BEFORE="$(process_identity "$SNAP_PID" || true)"
 FINAL_MEM_STATUS="$OUT/final-mem-command-status.tsv"
-(
+# shellcheck disable=SC2329  # invoked by the owned_job supervisor
+final_memory_job() {
   set +e
   privilege=unavailable
   sudo -n true >/dev/null 2>&1
@@ -2394,8 +2600,10 @@ FINAL_MEM_STATUS="$OUT/final-mem-command-status.tsv"
   [[ "$sudo_rc" == 0 && "$ps_rc" == 0 && "$vmmap_rc" == 0 \
     && "$heap_rc" == 0 && "$heap_filter_rc" == 0 \
     && "$status_write_rc" == 0 ]]
-) > "$OUT/final-mem.txt" 2>&1 &
+}
+owned_job final_memory_job > "$OUT/final-mem.txt" 2>&1 &
 ACTIVE_CHILD_PID=$!
+remember_owned_child "$ACTIVE_CHILD_PID"
 ACTIVE_CHILD_PRIVILEGE=sudo
 bounded_wait_and_join "$ACTIVE_CHILD_PID" 30 sudo
 FINAL_MEM_CHILD_RC="$BOUNDED_CHILD_RC"
@@ -2459,8 +2667,9 @@ fi
 # The privileged command writes through the invoking shell into user-owned OUT
 # and is joined under a hard deadline because `leaks` attaches to the process.
 # shellcheck disable=SC2024
-sudo -n leaks "$SNAP_PID" > "$OUT/leaks.txt" 2>&1 &
+owned_job sudo -n leaks "$SNAP_PID" > "$OUT/leaks.txt" 2>&1 &
 ACTIVE_CHILD_PID=$!
+remember_owned_child "$ACTIVE_CHILD_PID"
 ACTIVE_CHILD_PRIVILEGE=sudo
 bounded_wait_and_join "$ACTIVE_CHILD_PID" 60 sudo
 LEAKS_COMMAND_RC="$BOUNDED_CHILD_RC"
@@ -2506,11 +2715,12 @@ if (( DIAL9_BASELINE_READY == 1 )) && [[ -x "$DIAL9_EVIDENCE_BIN" ]]; then
   DIAL9_COLLECT_RC=0
   # The unprivileged shell intentionally owns the artifact redirections.
   # shellcheck disable=SC2024
-  sudo -n "$DIAL9_EVIDENCE_BIN" collect \
+  owned_job sudo -n "$DIAL9_EVIDENCE_BIN" collect \
     "$DIAL9_DIR" "$OUT/dial9-baseline.json" "$OUT/dial9-traces" \
     --wait-seconds 135 \
     > "$OUT/dial9-evidence.json" 2> "$OUT/dial9-collect.err" &
   ACTIVE_CHILD_PID=$!
+  remember_owned_child "$ACTIVE_CHILD_PID"
   ACTIVE_CHILD_PRIVILEGE=sudo
   bounded_wait_and_join "$ACTIVE_CHILD_PID" 145 sudo
   DIAL9_COLLECT_RC="$BOUNDED_CHILD_RC"

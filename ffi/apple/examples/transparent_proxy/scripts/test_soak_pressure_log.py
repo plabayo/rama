@@ -7,6 +7,8 @@ from pathlib import Path
 import json
 import re
 import socket
+import signal
+import sys
 import subprocess
 import tempfile
 import threading
@@ -3989,7 +3991,7 @@ class SoakPressureLogTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(result.stdout, "/kernel/provider\n")
 
-    def test_unreaped_writer_leaves_truthful_unsealed_directory(self):
+    def exercise_incomplete_cleanup_finalizer(self, reaped):
         shell = Path(__file__).with_name("soak_test.sh").read_text()
 
         def extract(name, following):
@@ -4017,7 +4019,7 @@ class SoakPressureLogTests(unittest.TestCase):
                 "CLEANUP_STARTED=0\nFINAL_CLEANUP_OK=1\n"
                 "HOLDER_CLEANUP_LAST_UNREAPED=0\nARTIFACTS_INITIALIZED=1\n"
                 "FINALIZATION_STARTED=0\n"
-                "bounded_stop_and_join() { BOUNDED_CHILD_REAPED=0; }\n"
+                f"bounded_stop_and_join() {{ BOUNDED_CHILD_REAPED={reaped}; BOUNDED_CHILD_OK=0; }}\n"
                 "kill_holders() { HOLDER_CLEANUP_LAST_UNREAPED=0; }\n"
                 "warn() { :; }\n"
                 + write_status + cleanup + finalizer
@@ -4032,9 +4034,15 @@ class SoakPressureLogTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2, result.stdout)
             verdict = (out / "soak-verdict.tsv").read_text()
             self.assertIn("complete\t0\npassed\t0\nexit_code\t2\n", verdict)
-            self.assertIn("cleanup could not reap every artifact writer", verdict)
+            self.assertIn("cleanup did not prove complete artifact-writer shutdown", verdict)
             self.assertFalse((out / "evidence-manifest.tsv").exists())
             self.assertFalse(out.with_suffix(".tgz").exists())
+
+    def test_unreaped_writer_leaves_truthful_unsealed_directory(self):
+        self.exercise_incomplete_cleanup_finalizer(reaped=0)
+
+    def test_forced_cleanup_cannot_reuse_a_passing_verdict(self):
+        self.exercise_incomplete_cleanup_finalizer(reaped=1)
 
     def test_soak_shell_bounds_privileged_diagnostics_and_freezes_run_end(self):
         shell = Path(__file__).with_name("soak_test.sh").read_text()
@@ -4196,6 +4204,209 @@ class SoakPressureLogTests(unittest.TestCase):
             1,
         )[0]
         self.assertNotIn("epoch_ms_now", status)
+
+
+class SoakOwnedProcessCleanupTests(unittest.TestCase):
+    @staticmethod
+    def cleanup_helpers():
+        source = Path(__file__).with_name("soak_test.sh").read_text()
+        marker = "# Every owned background function"
+        if marker not in source:
+            marker = "child_job_is_active() {"
+        return source[source.index(marker):source.index("\nsoak_verdict_exit_code() {")]
+
+    @staticmethod
+    def live_process(pid):
+        result = subprocess.run(
+            ["ps", "-o", "state=", "-p", str(pid)], capture_output=True, text=True,
+        )
+        state = result.stdout.strip()
+        return bool(state) and not state.startswith("Z")
+
+    def run_fixture(self, mode, join="stop", identity_mismatch=False, expire_discovery=False):
+        fixture = r"""
+import os, signal, sys, time
+from pathlib import Path
+root = Path(sys.argv[1])
+mode = sys.argv[2]
+def record():
+    with (root / "fixture.pids").open("a") as output:
+        output.write(str(os.getpid()) + "\n")
+def resistant():
+    record()
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    (root / "ready").write_text("ready")
+    if mode == "stopped":
+        os.kill(os.getpid(), signal.SIGSTOP)
+    while True:
+        time.sleep(1)
+record()
+if mode in ("clean", "error", "guard_error"):
+    (root / "ready").write_text("ready")
+    sys.exit({"clean": 0, "error": 7, "guard_error": 125}[mode])
+if mode == "term":
+    (root / "ready").write_text("ready")
+    while True:
+        time.sleep(1)
+child = os.fork()
+if child == 0:
+    if mode == "grandchild":
+        grandchild = os.fork()
+        if grandchild != 0:
+            os._exit(0)
+    resistant()
+if mode == "grandchild":
+    os.waitpid(child, 0)
+while not (root / "ready").exists():
+    time.sleep(0.01)
+if mode in ("exit_first", "grandchild"):
+    sys.exit(0)
+while True:
+    time.sleep(1)
+"""
+        helpers = self.cleanup_helpers()
+        if expire_discovery:
+            helpers = helpers.replace("soak_collect_tree() {", "real_soak_collect_tree() {", 1)
+            helpers += '\nsoak_collect_tree() { real_soak_collect_tree "$1" "$2" "$3" "$SECONDS"; }\n'
+        harness = helpers + r"""
+PYTHON_BIN=$1
+fixture_root=$2
+fixture_mode=$3
+fixture_output=/dev/stdout
+if [[ "$5" == mismatch ]]; then fixture_output="$fixture_root/fixture.out"; fi
+if declare -F owned_job >/dev/null; then
+  owned_job "$PYTHON_BIN" "$fixture_root/fixture.py" "$fixture_root" "$fixture_mode" >"$fixture_output" 2>&1 &
+else
+  "$PYTHON_BIN" "$fixture_root/fixture.py" "$fixture_root" "$fixture_mode" >"$fixture_output" 2>&1 &
+fi
+root_pid=$!
+printf '%s\n' "$root_pid" > "$fixture_root/root.pid"
+if declare -F remember_owned_child >/dev/null; then remember_owned_child "$root_pid"; fi
+ready_deadline=$((SECONDS + 3))
+while [[ ! -e "$fixture_root/ready" ]] && (( SECONDS < ready_deadline )); do sleep 0.01; done
+[[ -e "$fixture_root/ready" ]] || exit 91
+if [[ "$fixture_mode" == exit_first || "$fixture_mode" == grandchild ]]; then sleep 0.2; fi
+if [[ "$5" == mismatch ]]; then SOAK_CHILD_IDENTITIES[root_pid]=$(printf '%064d' 0); fi
+bounded_${4}_and_join "$root_pid" 2 direct
+printf 'status=%s,%s,%s,%s\n' "$BOUNDED_CHILD_RC" "$BOUNDED_CHILD_OK" "$BOUNDED_CHILD_REAPED" "$BOUNDED_CHILD_FORCED"
+"""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "fixture.py").write_text(fixture)
+            unrelated = subprocess.Popen(
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                start_new_session=True, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            process = subprocess.Popen(
+                ["/bin/bash", "-c", harness, "soak-cleanup-fixture", sys.executable,
+                 str(root), mode, join, "mismatch" if identity_mismatch else "match"],
+                start_new_session=True, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True,
+            )
+            try:
+                output, _ = process.communicate(timeout=20)
+                self.assertEqual(process.returncode, 0, output)
+                statuses = re.findall(r"^status=(.*)$", output, re.MULTILINE)
+                self.assertEqual(len(statuses), 1, output)
+                pids = [int(pid) for pid in (root / "fixture.pids").read_text().split()]
+                live = [pid for pid in pids if self.live_process(pid)]
+                self.assertIsNone(unrelated.poll(), "cleanup touched an unrelated process")
+                return statuses[0].split(","), live
+            finally:
+                # Fixture cleanup is separate from the behavior being asserted.
+                # Never signal the runner's group or a PID outside this fixture.
+                if (root / "root.pid").exists():
+                    pid = int((root / "root.pid").read_text())
+                    try:
+                        if os.getpgid(pid) == pid:
+                            os.killpg(pid, signal.SIGKILL)
+                        else:
+                            os.kill(pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                if (root / "fixture.pids").exists():
+                    for pid in map(int, (root / "fixture.pids").read_text().split()):
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=5)
+                unrelated.terminate()
+                unrelated.wait(timeout=5)
+
+    def test_stop_reaps_term_resistant_and_stopped_descendants(self):
+        for mode in ("resistant", "stopped"):
+            with self.subTest(mode=mode):
+                status, live = self.run_fixture(mode)
+                self.assertEqual(live, [])
+                self.assertEqual(status[1:], ["0", "1", "1"])
+
+    def test_wait_reaps_orphans_and_stdout_holders_after_direct_command_exits(self):
+        for mode in ("exit_first", "grandchild"):
+            with self.subTest(mode=mode):
+                status, live = self.run_fixture(mode, join="wait")
+                self.assertEqual(live, [])
+                self.assertEqual(status[1:], ["0", "1", "1"])
+
+    def test_natural_completion_preserves_command_exit_status(self):
+        for mode, expected in (("clean", ["0", "1", "1", "0"]),
+                               ("error", ["7", "0", "1", "0"])):
+            with self.subTest(mode=mode):
+                status, live = self.run_fixture(mode, join="wait")
+                self.assertEqual(live, [])
+                self.assertEqual(status, expected)
+
+    def test_normal_term_stop_is_complete_without_forcing(self):
+        status, live = self.run_fixture("term")
+        self.assertEqual(live, [])
+        self.assertEqual(status, ["143", "1", "1", "0"])
+
+    def test_guard_failure_status_cannot_claim_proven_cleanup(self):
+        status, live = self.run_fixture("guard_error", join="wait")
+        self.assertEqual(live, [])
+        self.assertEqual(status, ["125", "0", "0", "0"])
+
+    def test_expired_discovery_cleans_group_but_cannot_claim_complete_evidence(self):
+        status, live = self.run_fixture("grandchild", join="wait", expire_discovery=True)
+        self.assertEqual(live, [])
+        self.assertEqual(status[1:], ["0", "0", "1"])
+
+    def test_discovery_visits_each_owned_generation_once(self):
+        from test_modern_udp_evidence import exercise_owned_chain_discovery
+        helpers = self.cleanup_helpers() + r"""
+soak_fixture_pid_identity() { soak_child_identity "$1"; }
+soak_fixture_signal_owned_identity() { soak_signal_identity "$1" "$2" "$3" direct 1; }
+soak_fixture_collect_owned_tree() {
+  SOAK_COLLECT_SEEN=(); SOAK_COLLECT_COUNT=0
+  soak_collect_tree "$1" "$2" direct "$3"
+}
+"""
+        exercise_owned_chain_discovery(self, helpers, "soak_fixture_")
+
+    def test_changed_generation_is_never_signalled_or_claimed_reaped(self):
+        status, live = self.run_fixture("term", identity_mismatch=True)
+        self.assertTrue(live)
+        self.assertEqual(status[1:], ["0", "0", "1"])
+
+    def test_unowned_pid_is_never_signalled_or_claimed_reaped(self):
+        unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            result = subprocess.run(
+                ["/bin/bash", "-c", self.cleanup_helpers() + r"""
+bounded_stop_and_join "$1" 1 direct
+printf '%s,%s,%s,%s\n' "$BOUNDED_CHILD_RC" "$BOUNDED_CHILD_OK" "$BOUNDED_CHILD_REAPED" "$BOUNDED_CHILD_FORCED"
+""", "unowned-pid", str(unrelated.pid)],
+                capture_output=True, text=True, timeout=3,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(result.stdout.strip(), "127,0,0,0")
+            self.assertIsNone(unrelated.poll())
+        finally:
+            unrelated.terminate()
+            unrelated.wait(timeout=5)
 
 
 if __name__ == "__main__":
