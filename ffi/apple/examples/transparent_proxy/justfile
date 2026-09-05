@@ -47,24 +47,24 @@ install-tproxy-app-dist-reset-profile:
     ./scripts/install_tproxy_app_bundle.sh dist "{{tproxy_built_app_dist}}" 1; \
     echo "Installed Developer ID system extension bundle at $INSTALLED_SYSEXT"
 
-build-tproxy-dev: build-tproxy-rs build-tproxy-app-dev
+build-tproxy-dev: build-tproxy-app-dev
 
-build-tproxy-dist: build-tproxy-rs build-tproxy-app-dist
+build-tproxy-dist: build-tproxy-app-dist
 
 build-tproxy: build-tproxy-dev build-tproxy-dist
 
-notarize-tproxy-dist: build-tproxy-rs notarize-tproxy-app-dist
+notarize-tproxy-dist: notarize-tproxy-app-dist
 
 clear-tproxy-files:
     sudo rm -rf /var/root/Library/Application Support/rama/tproxy/dial9-traces
 
-install-tproxy-dev: build-tproxy-rs clear-tproxy-files install-tproxy-app-dev
+install-tproxy-dev: clear-tproxy-files install-tproxy-app-dev
 
-install-tproxy-dev-reset-profile: build-tproxy-rs install-tproxy-app-dev-reset-profile
+install-tproxy-dev-reset-profile: install-tproxy-app-dev-reset-profile
 
-install-tproxy-dist: build-tproxy-rs clear-tproxy-files install-tproxy-app-dist
+install-tproxy-dist: clear-tproxy-files install-tproxy-app-dist
 
-install-tproxy-dist-reset-profile: build-tproxy-rs install-tproxy-app-dist-reset-profile
+install-tproxy-dist-reset-profile: install-tproxy-app-dist-reset-profile
 
 clean: clean-rust clean-swift clean-xcode
 
@@ -182,7 +182,7 @@ test-e2e: build-tproxy-rs-debug clippy-tproxy-ffi-e2e cleanup-tproxy-ffi-e2e run
 # transparent pass-through (`false`), provider forwarding (`true`), and block
 # (`true`) against public protocol endpoints, including HTTP/3 on UDP/443.
 # Requires Internet access, Apple Development signing, and sysext approval.
-test-modern-udp-signed: build-tproxy-rs build-tproxy-app-dev
+test-modern-udp-signed: build-tproxy-app-dev
     ./scripts/test_modern_udp_flow.sh "{{tproxy_built_app_dev}}"
 
 # The explicit full gate is signed/on-device: unlike ordinary `qa`, it must prove
@@ -203,7 +203,8 @@ verify-gate20-evidence modern soak stress:
 # Requires nightly Rust (`rustup toolchain install nightly`). The static lib
 # (`tproxy_rs`) and the test crate (`tproxy_ffi_e2e`) must both be built with
 # the sanitizer flag, otherwise memory accesses across that boundary are not
-# fully instrumented. See `cases::stress::*` for high-churn memory-safety cases.
+# fully instrumented. Run every FFI case, including the UDP ownership,
+# backpressure, and 8,192-session cases as well as the churn scenarios.
 [working-directory: './tproxy_rs']
 build-tproxy-rs-asan:
     RUSTFLAGS="-Z sanitizer=address -D warnings --cfg tokio_unstable" \
@@ -214,7 +215,7 @@ run-tproxy-ffi-e2e-asan:
     RUSTFLAGS="-Z sanitizer=address -D warnings --cfg tokio_unstable" \
         RAMA_TPROXY_EXAMPLE_LIB_DIR="../tproxy_rs/target/aarch64-apple-darwin/debug" \
         cargo +nightly test --target aarch64-apple-darwin \
-        --test e2e -- --test-threads=1 --nocapture cases::stress
+        --test e2e -- --test-threads=1 --nocapture
 
 # Convenience target: build the staticlib with ASan and run the e2e stress
 # cases under it. Slower than `test-e2e` and requires nightly.

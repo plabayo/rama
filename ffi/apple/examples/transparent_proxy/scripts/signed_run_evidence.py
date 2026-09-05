@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 import fcntl
@@ -283,26 +284,13 @@ def _read_regular_bytes(path: Path) -> bytes:
         after_path = path.lstat()
     except OSError as error:
         raise EvidenceError(f"artifact changed while reading: {path}") from error
-    stable = (
-        before_path.st_dev,
-        before_path.st_ino,
-        before_path.st_size,
-        before_path.st_mtime_ns,
-        before_fd.st_dev,
-        before_fd.st_ino,
-        before_fd.st_size,
-        before_fd.st_mtime_ns,
-    ) == (
-        after_path.st_dev,
-        after_path.st_ino,
-        after_path.st_size,
-        after_path.st_mtime_ns,
-        after_fd.st_dev,
-        after_fd.st_ino,
-        after_fd.st_size,
-        after_fd.st_mtime_ns,
+    identity = lambda value: (
+        value.st_dev, value.st_ino, value.st_mode, value.st_size,
+        value.st_mtime_ns, value.st_ctime_ns,
     )
-    if not stable:
+    if identity(before_path) != identity(before_fd) \
+        or identity(before_fd) != identity(after_fd) \
+        or identity(after_fd) != identity(after_path):
         raise EvidenceError(f"artifact changed while reading: {path}")
     return b"".join(chunks)
 
@@ -337,7 +325,8 @@ def _read_regular_at(directory_fd: int, name: str, display: str) -> bytes:
     except OSError as error:
         raise EvidenceError(f"artifact changed while reading: {display}") from error
     identity = lambda value: (
-        value.st_dev, value.st_ino, value.st_mode, value.st_size, value.st_mtime_ns
+        value.st_dev, value.st_ino, value.st_mode, value.st_size,
+        value.st_mtime_ns, value.st_ctime_ns,
     )
     if identity(before) != identity(opened) or identity(opened) != identity(after_opened) \
         or identity(after_opened) != identity(after):
@@ -367,6 +356,29 @@ def _write_atomic(path: Path, content: bytes) -> None:
     finally:
         os.close(descriptor)
     os.replace(temporary, path)
+
+
+def _write_atomic_at(directory_fd: int, name: str, content: bytes) -> None:
+    """Publish one child of a pinned directory without resolving its pathname."""
+    _reject_unsafe_name(name)
+    if PurePosixPath(name).name != name:
+        raise EvidenceError("atomic directory output must be a direct child")
+    temporary = f"{name}.tmp.{os.getpid()}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    descriptor = os.open(temporary, flags, 0o600, dir_fd=directory_fd)
+    try:
+        view = memoryview(content)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fsync(descriptor)
+        os.replace(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+    finally:
+        os.close(descriptor)
+        try:
+            os.unlink(temporary, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
 
 
 def _parse_tsv_bytes(
@@ -581,13 +593,55 @@ def _retain_semantic_artifact(name: str) -> bool:
     }
 
 
+@contextmanager
+def _directory_fd(directory: Path):
+    """Pin the root and its parent entries while allowing existing OS aliases."""
+    supplied = Path(directory).absolute()
+    descriptors = []
+    entries = []
+    identity = lambda value: (value.st_dev, value.st_ino, value.st_mode)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        before = supplied.lstat()
+        if not stat.S_ISDIR(before.st_mode):
+            raise EvidenceError("evidence root is not a real directory")
+        # Resolve pre-existing parent aliases such as macOS /var -> /private/var,
+        # but never resolve the checked root itself. Pin every resulting path
+        # component with openat and cross-check the originally observed root.
+        canonical = supplied.parent.resolve(strict=True) / supplied.name
+        descriptor = os.open(canonical.anchor, flags)
+        descriptors.append(descriptor)
+        for component in canonical.parts[1:]:
+            observed = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
+            child = os.open(component, flags, dir_fd=descriptor)
+            descriptors.append(child)
+            opened = os.fstat(child)
+            if identity(observed) != identity(opened):
+                raise EvidenceError("evidence parent changed while opening root")
+            entries.append((descriptor, component, opened))
+            descriptor = child
+        opened_root = os.fstat(descriptor)
+        if identity(before) != identity(opened_root):
+            raise EvidenceError("evidence root changed before traversal")
+        yield descriptor
+        if identity(supplied.lstat()) != identity(opened_root):
+            raise EvidenceError("evidence root changed during traversal")
+        for parent_fd, component, opened in reversed(entries):
+            after = os.stat(component, dir_fd=parent_fd, follow_symlinks=False)
+            if identity(after) != identity(opened):
+                raise EvidenceError("evidence parent changed during traversal")
+    except OSError as error:
+        raise EvidenceError("cannot safely open or recheck evidence root") from error
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
 def _manifest_artifacts(
     directory: Path,
+    *,
+    directory_fd: int | None = None,
 ) -> tuple[dict[str, tuple[int, str]], dict[str, bytes]]:
-    supplied_root = Path(directory)
-    if supplied_root.is_symlink() or not supplied_root.is_dir():
-        raise EvidenceError("evidence root is not a real directory")
-    root = supplied_root.resolve(strict=True)
     artifacts: dict[str, tuple[int, str]] = {}
     retained: dict[str, bytes] = {}
     directory_flags = os.O_RDONLY
@@ -652,40 +706,32 @@ def _manifest_artifacts(
         except OSError as error:
             raise EvidenceError(f"cannot recheck evidence directory: {prefix or '.'}") from error
 
-    try:
-        root_fd = os.open(root, directory_flags)
-    except OSError as error:
-        raise EvidenceError("cannot safely open evidence root") from error
-    try:
-        opened_root = os.fstat(root_fd)
-        walk(root_fd, "")
-        final_root = os.stat(root, follow_symlinks=False)
-        if (opened_root.st_dev, opened_root.st_ino, opened_root.st_mode) != (
-            final_root.st_dev, final_root.st_ino, final_root.st_mode
-        ):
-            raise EvidenceError("evidence root changed during traversal")
-    finally:
-        os.close(root_fd)
+    if directory_fd is None:
+        with _directory_fd(Path(directory)) as root_fd:
+            walk(root_fd, "")
+    else:
+        walk(directory_fd, "")
     return artifacts, retained
 
 
 def seal(directory: Path, actual_exit_code: int | None = None) -> str:
     """Write a deterministic recursive manifest and return its SHA-256."""
     root = Path(directory)
-    artifacts, retained = _manifest_artifacts(root)
-    read_status(
-        root,
-        actual_exit_code=actual_exit_code,
-        artifact_bytes=retained,
-        artifact_index=artifacts,
-    )
-    if MANIFEST_NAME in artifacts:
-        raise EvidenceError("manifest cannot contain itself")
-    content = "".join(
-        f"{digest}\t{size}\t{name}\n"
-        for name, (size, digest) in sorted(artifacts.items())
-    ).encode("utf-8")
-    _write_atomic(root / MANIFEST_NAME, content)
+    with _directory_fd(root) as root_fd:
+        artifacts, retained = _manifest_artifacts(root, directory_fd=root_fd)
+        read_status(
+            root,
+            actual_exit_code=actual_exit_code,
+            artifact_bytes=retained,
+            artifact_index=artifacts,
+        )
+        if MANIFEST_NAME in artifacts:
+            raise EvidenceError("manifest cannot contain itself")
+        content = "".join(
+            f"{digest}\t{size}\t{name}\n"
+            for name, (size, digest) in sorted(artifacts.items())
+        ).encode("utf-8")
+        _write_atomic_at(root_fd, MANIFEST_NAME, content)
     return hashlib.sha256(content).hexdigest()
 
 
@@ -1217,6 +1263,24 @@ def _validate_modern_echo(
     return identities
 
 
+@contextmanager
+def _protected_build_source(source: Path):
+    """Protect source contents and directory entries while the compiler runs.
+
+    The sibling target must already exist. Permissions provide local mutation
+    protection; they do not authenticate an owner who can reset mode bits.
+    """
+    paths = [source, *source.rglob("*"), source.parent]
+    modes = [(path, stat.S_IMODE(path.stat().st_mode)) for path in paths]
+    try:
+        for path, mode in modes:
+            path.chmod(mode & ~0o222)
+        yield
+    finally:
+        for path, mode in reversed(modes):
+            path.chmod(mode)
+
+
 def _build_pinned_dial9_binary(git_head: str, build_root: Path) -> Path:
     """Build the decoder in an isolated target from an exact clean checkout."""
     script_directory = Path(__file__).resolve().parent
@@ -1272,26 +1336,28 @@ def _build_pinned_dial9_binary(git_head: str, build_root: Path) -> Path:
         raise EvidenceError("cargo is unavailable for pinned Dial9 replay")
     manifest = source / "ffi/apple/examples/transparent_proxy/tproxy_rs/Cargo.toml"
     target = build_root / "cargo-target"
+    target.mkdir()
     try:
-        result = subprocess.run(
-            [
-                cargo, "build", "--locked", "--offline", "--manifest-path",
-                str(manifest), "--bin", "dial9_evidence",
-            ],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="strict",
-            timeout=900,
-            env={
-                **os.environ,
-                "CARGO_NET_OFFLINE": "true",
-                "CARGO_TARGET_DIR": str(target),
-                "LC_ALL": "C",
-            },
-        )
+        with _protected_build_source(source):
+            result = subprocess.run(
+                [
+                    cargo, "build", "--locked", "--offline", "--manifest-path",
+                    str(manifest), "--bin", "dial9_evidence",
+                ],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="strict",
+                timeout=900,
+                env={
+                    **os.environ,
+                    "CARGO_NET_OFFLINE": "true",
+                    "CARGO_TARGET_DIR": str(target),
+                    "LC_ALL": "C",
+                },
+            )
     except (OSError, subprocess.TimeoutExpired, UnicodeError) as error:
         raise EvidenceError("could not build the pinned Dial9 decoder") from error
     if result.returncode != 0:
@@ -2364,6 +2430,7 @@ def verify_provider_generation_samples(
     if count < 3 or len(samples) != count:
         raise EvidenceError("provider generation proof requires at least three samples")
     epochs: list[int] = []
+    process_start = _canonical_uint(expected["running_start_epoch_ms"])
     expected_tail = "|".join((
         expected["running_pid"], expected["running_start_epoch_ms"],
         expected["running_command_sha256"], expected["running_executable_path_sha256"],
@@ -2373,6 +2440,8 @@ def verify_provider_generation_samples(
         if key != f"sample_{index:06d}" or len(fields) != 2 or fields[1] != expected_tail:
             raise EvidenceError("provider generation sample is malformed or substituted")
         epoch = _canonical_uint(fields[0])
+        if epoch < process_start:
+            raise EvidenceError("provider generation sample predates the process start")
         if epochs and epoch < epochs[-1]:
             raise EvidenceError("provider generation samples are not chronological")
         epochs.append(epoch)

@@ -4,6 +4,12 @@
 # every command outcome and uses pipefail without nounset for host compatibility.
 set -o pipefail
 
+# Python before 3.10 uses a process-relative monotonic epoch on macOS. These
+# samples come from separate interpreters, so use the shared kernel clock.
+monotonic_ms_now() {
+  /usr/bin/python3 -c 'import time; print(time.clock_gettime_ns(time.CLOCK_MONOTONIC) // 1_000_000)'
+}
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BUILT_APP="${1:-$ROOT_DIR/.xcode-derived/tproxy-app-dev/Build/Products/Debug/RamaTransparentProxyExampleContainer.app}"
@@ -754,7 +760,7 @@ collect_dial9_evidence() {
     add_issue "exact intercepted-flow Dial9 requirements are unavailable"
     return 1
   fi
-  gate_end_monotonic_ms="$(/usr/bin/python3 -c 'import time; print(time.monotonic_ns() // 1_000_000)')"
+  gate_end_monotonic_ms="$(monotonic_ms_now)"
   DIAL9_CLOSE_AGE_BOUND_MS=$((gate_end_monotonic_ms - GATE_START_MONOTONIC_MS))
   (( DIAL9_CLOSE_AGE_BOUND_MS > 0 )) || {
     add_issue "signed UDP gate produced an invalid monotonic evidence window"
@@ -1062,7 +1068,7 @@ run_sustained_http3() {
   HTTP3_MIN_CONCURRENT="$HTTP3_CONCURRENCY"
   HTTP3_PROVIDER_LOG_LINE="$(provider_log_line)"
   UDP_PROBE_ATTEMPT_COUNT=$((UDP_PROBE_ATTEMPT_COUNT + 1))
-  start_ms="$(/usr/bin/python3 -c 'import time; print(time.monotonic_ns() // 1_000_000)')"
+  start_ms="$(monotonic_ms_now)"
   for round in $(seq 1 "$HTTP3_ROUNDS"); do
     round_pids="$TMP_DIR/http3-round-$round.pids"
     barrier="$TMP_DIR/http3-round-$round.release"
@@ -1110,7 +1116,7 @@ run_sustained_http3() {
       sleep "$HTTP3_ROUND_INTERVAL"
     fi
   done
-  end_ms="$(/usr/bin/python3 -c 'import time; print(time.monotonic_ns() // 1_000_000)')"
+  end_ms="$(monotonic_ms_now)"
   HTTP3_DURATION_MS=$((end_ms - start_ms))
   {
     printf 'schema_version\t1\nstart_monotonic_ms\t%s\nend_monotonic_ms\t%s\n' \
@@ -1523,7 +1529,7 @@ then
 fi
 ECHO_EXPECTED_COUNT=$((ECHO_SOCKET_COUNT * ECHO_DATAGRAMS_PER_SOCKET))
 PRESSURE_EXPECTED_BYTES=$((PRESSURE_COUNT * PRESSURE_PAYLOAD_BYTES))
-GATE_START_MONOTONIC_MS="$(/usr/bin/python3 -c 'import time; print(time.monotonic_ns() // 1_000_000)')"
+GATE_START_MONOTONIC_MS="$(monotonic_ms_now)"
 [[ "$GATE_START_MONOTONIC_MS" =~ ^[1-9][0-9]*$ ]] \
   || fatal_issue "could not capture the signed UDP monotonic gate start"
 MACOS_MAJOR="$(sw_vers -productVersion | cut -d. -f1)"

@@ -20,7 +20,9 @@ just build-tproxy-dev
 ```
 
 This builds the Rust staticlib and the developer-signed macOS container app + system extension.
-The Rust staticlib is produced at:
+Clean signed builds compile both Rust architectures from a pinned source archive
+and export the host's `dial9_evidence` helper for the live validation scripts.
+For a standalone universal Rust library, run `just build-tproxy-rs`. It produces:
 
 ```
 ffi/apple/examples/transparent_proxy/tproxy_rs/target/universal/librama_tproxy_example.a
@@ -627,6 +629,7 @@ runs explicitly and compare their already-sealed bundles:
 ```sh
 BASE=$(mktemp -d /tmp/rama-stress-direct.XXXXXX)
 CAND=$(mktemp -d /tmp/rama-stress-proxy.XXXXXX)
+PAIR=$(mktemp -d /tmp/rama-stress-pair.XXXXXX)
 
 # With the transparent proxy disabled:
 STRESS_DURATION=120 STRESS_CONCURRENCY=32 \
@@ -637,13 +640,20 @@ STRESS_DURATION=120 STRESS_CONCURRENCY=32 \
 STRESS_DURATION=120 STRESS_CONCURRENCY=32 \
   STRESS_TRAFFIC_ROLE=proxy-candidate STRESS_LOG_DIR="$CAND" \
   STRESS_MONITOR_PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider) \
+  STRESS_BUILT_PROVIDER="$BUILT_PROVIDER" \
+  STRESS_INSTALLED_PROVIDER="$INSTALLED_PROVIDER" \
   just stress-traffic
 
 scripts/stress_compare.py create "$BASE" "$CAND" \
-  "$CAND/stress-comparison.tsv"
+  "$PAIR/stress-comparison.tsv"
 scripts/stress_compare.py verify "$BASE" "$CAND" \
-  "$CAND/stress-comparison.tsv"
+  "$PAIR/stress-comparison.tsv"
 ```
+
+Set `BUILT_PROVIDER` and `INSTALLED_PROVIDER` to the exact built and installed
+system-extension bundles verified for the running development provider. Keep
+comparison outputs outside both sealed run directories; adding files to a run
+invalidates its artifact manifest.
 
 The paired gate requires an explicit traffic-only `direct-baseline`, a
 provider-monitored `proxy-candidate`, identical workload and harness identities,
@@ -656,10 +666,10 @@ It also writes an adjacent `stress-comparison.tsv.source-stress_compare.py` and
 seals that exact source's SHA-256 into the verdict. Verification fails if either
 the sealed copy or the currently executing comparator differs, so an old verdict
 cannot silently acquire new comparison semantics.
-The `direct-baseline` role is an operator assertion: the local integrity bundle
-can prove what the harness measured and when, but cannot independently prove
-that the Network Extension was disabled. Release evidence should retain the
-profile-disable/enable audit record alongside both bundles.
+The `direct-baseline` harness samples development-provider absence throughout
+the run. This does not establish the absence of unrelated Network Extensions.
+Record other active providers and retain the profile-disable/enable audit
+record alongside both bundles.
 
 A final device/release claim requires at least three interleaved adjacent pairs,
 ordered `direct-1, proxy-1, direct-2, proxy-2, direct-3, proxy-3`, against the
@@ -667,15 +677,17 @@ same stable workload and preferably a stable local endpoint. Create and verify
 each strict pair as above, then seal the aggregate:
 
 ```sh
-scripts/stress_compare.py create-series "$CAND3/stress-series.tsv" \
-  "$BASE1" "$CAND1" "$CAND1/stress-comparison.tsv" \
-  "$BASE2" "$CAND2" "$CAND2/stress-comparison.tsv" \
-  "$BASE3" "$CAND3" "$CAND3/stress-comparison.tsv"
-scripts/stress_compare.py verify-series "$CAND3/stress-series.tsv" \
-  "$BASE1" "$CAND1" "$CAND1/stress-comparison.tsv" \
-  "$BASE2" "$CAND2" "$CAND2/stress-comparison.tsv" \
-  "$BASE3" "$CAND3" "$CAND3/stress-comparison.tsv"
+SERIES_PARENT=$(mktemp -d /tmp/rama-stress-series.XXXXXX)
+SERIES="$SERIES_PARENT/release-set"
+scripts/stress_compare.py create-series "$SERIES" \
+  "$BASE1" "$CAND1" "$PAIR1/stress-comparison.tsv" \
+  "$BASE2" "$CAND2" "$PAIR2/stress-comparison.tsv" \
+  "$BASE3" "$CAND3" "$PAIR3/stress-comparison.tsv"
+scripts/stress_compare.py verify-series "$SERIES"
 ```
+
+`create-series` requires a new directory outside all member runs and copies
+the verified inputs into a self-contained sealed release set.
 
 The series gate rejects fewer than three pairs, weakened per-pair thresholds,
 workload drift, reordered/overlapping pairs, or gaps over ten minutes. Its sealed

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 
@@ -634,6 +635,25 @@ class QuicShapedEchoTests(unittest.TestCase):
 
 
 class HarnessSourceContractTests(unittest.TestCase):
+    def test_separate_clock_processes_measure_the_same_elapsed_window(self):
+        shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()
+        helper = re.search(r"^monotonic_ms_now\(\) \{\n.*?^\}", shell, re.M | re.S)
+        self.assertIsNotNone(helper)
+        started = time.monotonic()
+        result = subprocess.run(
+            ["bash", "-c", helper.group() + "\n"
+             "first=$(monotonic_ms_now)\n"
+             "sleep 0.1\n"
+             "second=$(monotonic_ms_now)\n"
+             "printf '%s %s\\n' \"$first\" \"$second\"\n"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, timeout=5,
+        )
+        elapsed_ms = (time.monotonic() - started) * 1000
+        first, second = map(int, result.stdout.split())
+        self.assertGreaterEqual(second - first, 90)
+        self.assertLessEqual(second - first, elapsed_ms + 100)
+
     def test_restore_is_only_narrowly_exempted_for_paired_empty_overrides(self):
         swift = (SCRIPT_DIR.parent / "tproxy_app/Container/main.swift").read_text()
         shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()

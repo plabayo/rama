@@ -35,13 +35,18 @@ else
   git_dirty="unavailable"
 fi
 
+ISOLATED_BUILD_ROOT=""
 ISOLATED_SOURCE_ROOT=""
+DIAL9_EXPORT_TEMP=""
 cleanup_isolated_source() {
   local status=$?
   trap - EXIT INT TERM
-  if [[ -n "$ISOLATED_SOURCE_ROOT" ]]; then
-    chmod -R u+w "$ISOLATED_SOURCE_ROOT" >/dev/null 2>&1 || true
-    rm -rf "$ISOLATED_SOURCE_ROOT"
+  if [[ -n "$DIAL9_EXPORT_TEMP" ]]; then
+    rm -f "$DIAL9_EXPORT_TEMP"
+  fi
+  if [[ -n "$ISOLATED_BUILD_ROOT" ]]; then
+    chmod -R u+w "$ISOLATED_BUILD_ROOT" >/dev/null 2>&1 || true
+    rm -rf "$ISOLATED_BUILD_ROOT"
   fi
   exit "$status"
 }
@@ -49,17 +54,30 @@ trap cleanup_isolated_source EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Clean distribution builds use a read-only git archive pinned to the recorded
-# head. Dirty and source-archive builds remain available for local iteration,
-# but carry dirty/unavailable metadata and cannot pass signed evidence. Build
-# outputs are written only to ignored/untracked paths in the archive.
+# Clean distribution builds protect a head-pinned archive's files and directory
+# entries against writes and atomic replacement, retaining writable generated
+# roots. Owner-controlled permissions are a local integrity guard, not remote
+# authentication. Dirty/source-archive builds remain available for iteration,
+# but carry dirty/unavailable metadata and cannot pass signed evidence.
 if [[ "$git_dirty" == 0 ]]; then
-  ISOLATED_SOURCE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/rama-tproxy-source.XXXXXX")"
+  ISOLATED_BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/rama-tproxy-source.XXXXXX")"
+  ISOLATED_SOURCE_ROOT="$ISOLATED_BUILD_ROOT/source"
+  mkdir "$ISOLATED_SOURCE_ROOT"
   git -C "$SOURCE_ROOT" archive "$git_head" | tar -x -C "$ISOLATED_SOURCE_ROOT"
   find "$ISOLATED_SOURCE_ROOT" -type f -exec chmod a-w {} +
   ISOLATED_ROOT="$ISOLATED_SOURCE_ROOT/ffi/apple/examples/transparent_proxy"
   APP_DIR="$ISOLATED_ROOT/tproxy_app"
   SPEC_PATH="$APP_DIR/Project.dist.yml"
+  # XcodeGen replaces the project directory, so complete it before protecting
+  # its parent. All compiler output stays inside generated writable roots.
+  xcodegen generate --spec "$SPEC_PATH"
+  mkdir -p "$ISOLATED_ROOT/tproxy_rs/target" \
+    "$ISOLATED_SOURCE_ROOT/.build" "$ISOLATED_SOURCE_ROOT/.swiftpm"
+  find "$ISOLATED_SOURCE_ROOT" -type d -exec chmod a-w {} +
+  chmod -R u+w "$ISOLATED_ROOT/tproxy_rs/target" \
+    "$APP_DIR/RamaTransparentProxyExample.xcodeproj" \
+    "$ISOLATED_SOURCE_ROOT/.build" "$ISOLATED_SOURCE_ROOT/.swiftpm"
+  chmod a-w "$ISOLATED_BUILD_ROOT"
 fi
 
 BUILD_ROOT="$(cd "$APP_DIR/.." && pwd)"
@@ -73,6 +91,8 @@ RUST_TARGET_DIR="$BUILD_ROOT/tproxy_rs/target"
     -output "$RUST_TARGET_DIR/universal/librama_tproxy_example.a" \
     "$RUST_TARGET_DIR/aarch64-apple-darwin/debug/librama_tproxy_example.a" \
     "$RUST_TARGET_DIR/x86_64-apple-darwin/debug/librama_tproxy_example.a"
+  /usr/bin/lipo "$RUST_TARGET_DIR/universal/librama_tproxy_example.a" \
+    -verify_arch arm64 x86_64
 )
 
 if [ -z "$workspace_version" ]; then
@@ -127,7 +147,9 @@ install_profile_if_needed "$EXT_PROFILE_PATH"
 
 cd "$APP_DIR"
 mkdir -p "$DERIVED_DATA_PATH"
-xcodegen generate --spec "$SPEC_PATH"
+if [[ -z "$ISOLATED_SOURCE_ROOT" ]]; then
+  xcodegen generate --spec "$SPEC_PATH"
+fi
 cmd=(
   xcodebuild
   -project RamaTransparentProxyExample.xcodeproj
@@ -154,4 +176,20 @@ if [[ "$git_dirty" == 0 ]]; then
     echo "Source repository head/clean state changed during the isolated build" >&2
     exit 1
   fi
+  case "$(uname -m)" in
+    arm64|aarch64) HOST_TARGET=aarch64-apple-darwin ;;
+    x86_64) HOST_TARGET=x86_64-apple-darwin ;;
+    *) echo "Unsupported host architecture for the Dial9 decoder" >&2; exit 1 ;;
+  esac
+  DIAL9_SOURCE="$RUST_TARGET_DIR/$HOST_TARGET/debug/dial9_evidence"
+  DIAL9_DESTINATION="$ROOT_DIR/tproxy_rs/target/$HOST_TARGET/debug/dial9_evidence"
+  [[ -f "$DIAL9_SOURCE" && ! -L "$DIAL9_SOURCE" && -x "$DIAL9_SOURCE" ]] || {
+    echo "Pinned build produced no executable host Dial9 decoder" >&2
+    exit 1
+  }
+  mkdir -p "$(dirname "$DIAL9_DESTINATION")"
+  DIAL9_EXPORT_TEMP="$(mktemp "$DIAL9_DESTINATION.tmp.XXXXXX")"
+  cp -p "$DIAL9_SOURCE" "$DIAL9_EXPORT_TEMP"
+  mv -f "$DIAL9_EXPORT_TEMP" "$DIAL9_DESTINATION"
+  DIAL9_EXPORT_TEMP=""
 fi

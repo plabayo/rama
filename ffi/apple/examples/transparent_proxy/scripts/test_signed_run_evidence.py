@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import plistlib
 import subprocess
+import tarfile
 import tempfile
+import textwrap
 import time
 import unittest
 import uuid
@@ -480,6 +483,143 @@ def make_strict_modern_run(directory: Path):
 
 
 class ManifestTests(unittest.TestCase):
+    def test_seal_publication_stays_on_pinned_root_after_path_swap(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "run"
+            other = base / "other"
+            detached = base / "detached"
+            make_run(root, "candidate")
+            other.mkdir()
+            marker = other / evidence.MANIFEST_NAME
+            marker.write_bytes(b"unrelated manifest\n")
+            original_publish = evidence._write_atomic_at
+
+            def swap_before_publish(directory_fd, name, content):
+                root.rename(detached)
+                root.symlink_to(other, target_is_directory=True)
+                original_publish(directory_fd, name, content)
+
+            with mock.patch.object(evidence, "_write_atomic_at", swap_before_publish):
+                with self.assertRaisesRegex(evidence.EvidenceError, "root changed"):
+                    evidence.seal(root)
+            self.assertEqual(marker.read_bytes(), b"unrelated manifest\n")
+            self.assertTrue((detached / evidence.MANIFEST_NAME).is_file())
+            self.assertFalse(list(detached.glob("*.tmp.*")))
+
+    def test_pinned_decoder_build_protects_source_but_keeps_sibling_target_writable(self):
+        archive = io.BytesIO()
+        source_name = "ffi/apple/examples/transparent_proxy/tproxy_rs/Cargo.toml"
+        source_bytes = b"pinned decoder source\n"
+        with tarfile.open(fileobj=archive, mode="w") as output:
+            member = tarfile.TarInfo(source_name)
+            member.size = len(source_bytes)
+            member.mode = 0o644
+            output.addfile(member, io.BytesIO(source_bytes))
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            cargo_called = False
+
+            def fake_run(command, **kwargs):
+                nonlocal cargo_called
+                if command[0] == "git":
+                    self.assertIn("archive", command)
+                    self.assertEqual(command[-1], HEAD)
+                    return subprocess.CompletedProcess(command, 0, archive.getvalue(), b"")
+                cargo_called = True
+                self.assertEqual(command[1:5], ["build", "--locked", "--offline", "--manifest-path"])
+                manifest = Path(command[5])
+                self.assertEqual(manifest.read_bytes(), source_bytes)
+                target = Path(kwargs["env"]["CARGO_TARGET_DIR"])
+                self.assertEqual(target, work / "cargo-target")
+                replacement = target / "replacement"
+                replacement.write_bytes(b"different source\n")
+                with self.assertRaises(PermissionError):
+                    manifest.write_bytes(b"different source\n")
+                with self.assertRaises(PermissionError):
+                    replacement.replace(manifest)
+                with self.assertRaises(PermissionError):
+                    manifest.parent.rename(manifest.parent.with_name("changed-crate"))
+                with self.assertRaises(PermissionError):
+                    (work / "source").rename(work / "changed-source")
+                binary = target / "debug/dial9_evidence"
+                binary.parent.mkdir()
+                binary.write_text("#!/bin/sh\nexit 0\n")
+                binary.chmod(0o755)
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            git_results = [
+                subprocess.CompletedProcess([], 0, str(work), ""),
+                subprocess.CompletedProcess([], 0, HEAD, ""),
+                subprocess.CompletedProcess([], 0, "", ""),
+            ]
+            with mock.patch.object(evidence, "_run", side_effect=git_results), \
+                mock.patch.object(evidence.subprocess, "run", side_effect=fake_run), \
+                mock.patch.object(evidence.shutil, "which", return_value="/fixture/cargo"):
+                binary = evidence._build_pinned_dial9_binary(HEAD, work)
+            self.assertTrue(cargo_called)
+            self.assertTrue(os.access(binary, os.X_OK))
+            self.assertEqual((work / "source" / source_name).read_bytes(), source_bytes)
+            (work / "post-build-output").write_text("parent mode restored\n")
+
+    def test_direct_read_rejects_replaced_and_restored_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            artifact = root / "artifact"
+            replacement = root / "replacement"
+            detached = root / "detached"
+            artifact.write_bytes(b"original")
+            replacement.write_bytes(b"substituted")
+            original_open = os.open
+
+            def swapped_open(path, flags, *args, **kwargs):
+                if Path(path) != artifact:
+                    return original_open(path, flags, *args, **kwargs)
+                artifact.rename(detached)
+                replacement.rename(artifact)
+                descriptor = original_open(path, flags, *args, **kwargs)
+                artifact.rename(replacement)
+                detached.rename(artifact)
+                return descriptor
+
+            with mock.patch.object(evidence.os, "open", side_effect=swapped_open):
+                with self.assertRaisesRegex(evidence.EvidenceError, "changed while reading"):
+                    evidence._read_regular_bytes(artifact)
+            self.assertEqual(artifact.read_bytes(), b"original")
+
+    def test_root_or_parent_swap_before_open_cannot_select_another_envelope(self):
+        for swap_parent in (False, True):
+            with self.subTest(swap_parent=swap_parent), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary)
+                parent = base / "requested-parent"
+                other_parent = base / "other-parent"
+                parent.mkdir()
+                other_parent.mkdir()
+                root = parent / "run"
+                other = other_parent / "run"
+                make_run(root, "candidate", outcome=("1", "0", "1"))
+                make_run(other, "candidate")
+                evidence.seal(root)
+                evidence.seal(other)
+                original_lstat = Path.lstat
+                swapped = False
+
+                def swap_after_root_stat(path, *args, **kwargs):
+                    nonlocal swapped
+                    result = original_lstat(path, *args, **kwargs)
+                    if path == root and not swapped:
+                        swapped = True
+                        source = parent if swap_parent else root
+                        target = other_parent if swap_parent else other
+                        source.rename(base / "detached")
+                        source.symlink_to(target, target_is_directory=True)
+                    return result
+
+                with mock.patch.object(Path, "lstat", swap_after_root_stat):
+                    with self.assertRaises(evidence.EvidenceError):
+                        evidence.verify(root)
+                self.assertTrue(swapped)
+
     def test_signed_builds_reject_tracked_source_mutation_during_build(self):
         source_scripts = Path(__file__).resolve().parent
         for wrapper_name, spec_name in (
@@ -516,6 +656,11 @@ class ManifestTests(unittest.TestCase):
                     "exit 77\n"
                 )
                 cargo.chmod(0o755)
+                xcodegen = tools / "xcodegen"
+                xcodegen.write_text(
+                    '#!/bin/sh\nmkdir -p "$(dirname "$3")/RamaTransparentProxyExample.xcodeproj"\n'
+                )
+                xcodegen.chmod(0o755)
                 subprocess.run(
                     ["git", "init", "-q", str(fixture)], check=True,
                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -558,6 +703,158 @@ class ManifestTests(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(mutation_result.read_text(), "blocked")
+
+    def test_signed_build_composition_protects_source_and_exports_pinned_decoder(self):
+        source_scripts = Path(__file__).resolve().parent
+        for wrapper_name, spec_name, configuration in (
+            ("build_tproxy_app_with_signing.sh", "Project.yml", "Debug"),
+            ("build_tproxy_app_with_developer_id_signing.sh", "Project.dist.yml", "Release"),
+        ):
+            with self.subTest(wrapper=wrapper_name), tempfile.TemporaryDirectory() as temporary:
+                fixture = Path(temporary)
+                example = fixture / "ffi/apple/examples/transparent_proxy"
+                scripts = example / "scripts"
+                app = example / "tproxy_app"
+                rust = example / "tproxy_rs"
+                tools = fixture / "tools"
+                output = fixture / "fixture-output"
+                for path in (scripts, app, rust, tools, output):
+                    path.mkdir(parents=True)
+                wrapper = scripts / wrapper_name
+                # Keep the production lipo path fixed; replace only that native
+                # binary in this copied wrapper so the test performs no build.
+                wrapper.write_text((source_scripts / wrapper_name).read_text().replace(
+                    "/usr/bin/lipo", str(tools / "lipo")
+                ))
+                wrapper.chmod(0o755)
+                (fixture / ".gitignore").write_text("fixture-output/\ntarget/\n.xcode-derived/\n")
+                (fixture / "Cargo.toml").write_text(
+                    '[workspace]\nmembers = []\n[workspace.package]\nversion = "1.0.0"\n'
+                )
+                (app / spec_name).write_text("name: RamaTransparentProxyExample\n")
+                (rust / "sentinel.txt").write_text("pinned source\n")
+                tool_program = textwrap.dedent('''\
+                    import json, os, sys
+                    from pathlib import Path
+                    name = Path(sys.argv[0]).name
+                    args = sys.argv[1:]
+                    cwd = Path.cwd()
+                    with Path(os.environ["BUILD_TRACE"]).open("a") as trace:
+                        trace.write(json.dumps([name, str(cwd), args]) + "\\n")
+                    if name == "xcodegen":
+                        project = Path(args[2]).parent / "RamaTransparentProxyExample.xcodeproj"
+                        project.mkdir()
+                        (project / "project.pbxproj").write_text("generated project\\n")
+                    elif name == "cargo":
+                        assert args[:3] == ["build", "--locked", "--target"], args
+                        target = Path(os.environ["CARGO_TARGET_DIR"]) / args[3] / "debug"
+                        target.mkdir(parents=True)
+                        (target / "librama_tproxy_example.a").write_text(args[3])
+                        binary = target / "dial9_evidence"
+                        binary.write_text("#!/bin/sh\\nexit 0\\n")
+                        binary.chmod(0o755)
+                        replacement = target / "replacement"
+                        replacement.write_text("substituted source\\n")
+                        source = cwd.parents[4]
+                        attempts = [
+                            lambda: (cwd / "sentinel.txt").write_text("mutated\\n"),
+                            lambda: replacement.replace(cwd / "sentinel.txt"),
+                            lambda: cwd.rename(cwd.with_name("replaced-rust")),
+                            lambda: source.rename(source.with_name("replaced-source")),
+                        ]
+                        for mutate in attempts:
+                            try:
+                                mutate()
+                            except PermissionError:
+                                pass
+                            else:
+                                raise AssertionError("archived source mutation was allowed")
+                        assert (cwd / "sentinel.txt").read_text() == "pinned source\\n"
+                    elif name == "lipo":
+                        if args[:2] == ["-create", "-output"]:
+                            inputs = [Path(value) for value in args[3:]]
+                            assert len(inputs) == 2 and all(path.is_file() for path in inputs)
+                            names = {"aarch64-apple-darwin": "arm64", "x86_64-apple-darwin": "x86_64"}
+                            slices = [names[path.read_text()] for path in inputs]
+                            fault = os.environ.get("LIPO_FIXTURE_ARCHES")
+                            if fault == "missing":
+                                slices.pop()
+                            elif fault == "wrong":
+                                slices[-1] = "armv7"
+                            Path(args[2]).write_text("\\n".join(slices))
+                        else:
+                            assert args[1:] == ["-verify_arch", "arm64", "x86_64"], args
+                            if not set(args[2:]) <= set(Path(args[0]).read_text().splitlines()):
+                                raise SystemExit(37)
+                    elif name == "xcodebuild":
+                        project = cwd / "RamaTransparentProxyExample.xcodeproj"
+                        assert (project / "project.pbxproj").read_text() == "generated project\\n"
+                        (project / "build-state").write_text("writable generated project\\n")
+                        assert (cwd.parent / "tproxy_rs/target/universal/librama_tproxy_example.a").is_file()
+                        derived = Path(args[args.index("-derivedDataPath") + 1])
+                        (derived / "built-product").write_text("mock product\\n")
+                    else:
+                        raise AssertionError(name)
+                    ''')
+                for name in ("cargo", "lipo", "xcodegen", "xcodebuild"):
+                    path = tools / name
+                    path.write_text(f"#!{__import__('sys').executable}\n" + tool_program)
+                    path.chmod(0o755)
+                for args in (
+                    ["init", "-q"], ["config", "user.email", "fixture@example.invalid"],
+                    ["config", "user.name", "Fixture"], ["config", "commit.gpgSign", "false"],
+                    ["add", "."], ["commit", "-qm", "fixture"],
+                ):
+                    subprocess.run(["git", "-C", str(fixture), *args], check=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                trace_path = output / "trace.jsonl"
+                result = subprocess.run(
+                    [str(wrapper)], capture_output=True, text=True,
+                    env={**os.environ, "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+                         "BUILD_TRACE": str(trace_path),
+                         "RAMA_TPROXY_DERIVED_DATA_PATH": str(output / "derived")},
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                trace = [json.loads(line) for line in trace_path.read_text().splitlines()]
+                self.assertEqual([row[0] for row in trace],
+                                 ["xcodegen", "cargo", "cargo", "lipo", "lipo", "xcodebuild"])
+                self.assertEqual([row[2][-1] for row in trace if row[0] == "cargo"],
+                                 ["aarch64-apple-darwin", "x86_64-apple-darwin"])
+                self.assertEqual(trace[4][2],
+                                 [trace[3][2][2], "-verify_arch", "arm64", "x86_64"])
+                xcode_args = trace[-1][2]
+                self.assertEqual(xcode_args[xcode_args.index("-configuration") + 1], configuration)
+                self.assertEqual(xcode_args[-2:], ["clean", "build"])
+                archive = Path(trace[1][1]).parents[4]
+                self.assertFalse(archive.parent.exists(), "isolated build tree leaked")
+                host_target = (
+                    "aarch64-apple-darwin" if os.uname().machine in ("arm64", "aarch64")
+                    else "x86_64-apple-darwin"
+                )
+                decoder = rust / "target" / host_target / "debug/dial9_evidence"
+                self.assertEqual(decoder.read_text(), "#!/bin/sh\nexit 0\n")
+                self.assertTrue(os.access(decoder, os.X_OK))
+                self.assertFalse(list(decoder.parent.glob("*.tmp.*")))
+                self.assertTrue((output / "derived/built-product").is_file())
+                self.assertEqual((rust / "sentinel.txt").read_text(), "pinned source\n")
+                for fault in ("missing", "wrong"):
+                    with self.subTest(architecture_fault=fault):
+                        trace_path.write_text("")
+                        decoder.write_text("previous decoder\n")
+                        rejected = subprocess.run(
+                            [str(wrapper)], capture_output=True, text=True,
+                            env={**os.environ,
+                                 "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+                                 "BUILD_TRACE": str(trace_path), "LIPO_FIXTURE_ARCHES": fault,
+                                 "RAMA_TPROXY_DERIVED_DATA_PATH": str(output / "derived")},
+                        )
+                        self.assertEqual(rejected.returncode, 37, rejected.stdout + rejected.stderr)
+                        rejected_trace = [json.loads(line) for line in trace_path.read_text().splitlines()]
+                        self.assertEqual([row[0] for row in rejected_trace],
+                                         ["xcodegen", "cargo", "cargo", "lipo", "lipo"])
+                        self.assertEqual(decoder.read_text(), "previous decoder\n")
+                        failed_archive = Path(rejected_trace[1][1]).parents[4]
+                        self.assertFalse(failed_archive.parent.exists(), "failed build tree leaked")
 
     def test_parent_directory_swap_to_symlink_is_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -717,6 +1014,28 @@ class StatusAndIdentityTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(evidence.EvidenceError, "starts after"):
                 evidence.seal(root)
+
+    def test_provider_generation_samples_cannot_predate_process_start(self):
+        for kind in ("modern_udp", "soak", "stress-candidate"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "run"
+                # The fixture consistently derives the replacement generation
+                # and its samples, so this is a temporal invariant check rather
+                # than a hash/identity mismatch.
+                make_run(root, kind, process_start=1_700_000_001_500)
+                with self.assertRaisesRegex(evidence.EvidenceError, "predates"):
+                    evidence.seal(root)
+
+    def test_provider_start_at_first_sample_and_incomplete_preflight_are_valid(self):
+        for outcome, process_start in (
+            (("1", "1", "0"), 1_700_000_001_000),
+            (("0", "0", "2"), 1_700_000_001_500),
+        ):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "run"
+                make_run(root, "modern_udp", outcome=outcome, process_start=process_start)
+                evidence.seal(root)
+                self.assertEqual(evidence.verify(root)["exit_code"], outcome[2])
 
     def test_status_semantics_and_actual_exit_must_match(self):
         with tempfile.TemporaryDirectory() as temporary:
