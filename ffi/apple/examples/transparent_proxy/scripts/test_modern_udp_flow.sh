@@ -249,7 +249,17 @@ bounded_owned_tree_has_exited() {
 
 bounded_collect_owned_tree() {
   local pid="$1" expected_identity="$2" child child_identity children child_ppid group
-  local failed=0 discovery_rc=0
+  local failed=0 discovery_rc=0 discovery_deadline="${3:-$((SECONDS + 1))}"
+  if [[ "${4:-}" != recursive ]]; then
+    local BOUNDED_COLLECT_SEEN=() BOUNDED_COLLECT_COUNT=0
+  fi
+  [[ "${BOUNDED_COLLECT_SEEN[pid]:-}" != "$expected_identity" ]] || return 0
+  BOUNDED_COLLECT_SEEN[pid]="$expected_identity"
+  BOUNDED_COLLECT_COUNT=$((BOUNDED_COLLECT_COUNT + 1))
+  # Retain every already-stopped identity even when discovery expires, so
+  # partial snapshots still carry authority to thaw and kill the root group.
+  printf '%s\t%s\n' "$pid" "$expected_identity"
+  (( BOUNDED_COLLECT_COUNT <= 128 && SECONDS < discovery_deadline )) || return 1
   # The caller has stopped this generation. Recheck before following a parent
   # pid that might otherwise have exited and been reused during discovery.
   [[ "$(bounded_pid_identity "$pid" generation || true)" == "$expected_identity" ]] || return 1
@@ -266,6 +276,10 @@ bounded_collect_owned_tree() {
   while IFS= read -r child; do
     [[ "$child" =~ ^[1-9][0-9]*$ ]] || continue
     [[ "$child" != "$pid" ]] || continue
+    # The group snapshot also lists members reached through parent links.
+    # Those stopped generations must not trigger another recursive traversal.
+    [[ -z "${BOUNDED_COLLECT_SEEN[child]:-}" ]] || continue
+    (( BOUNDED_COLLECT_COUNT < 128 && SECONDS < discovery_deadline )) || { failed=1; break; }
     child_identity="$(bounded_pid_identity "$child" generation || true)"
     [[ "$child_identity" =~ ^[0-9a-f]{64}$ ]] || continue
     if [[ "$group" == "$pid" ]]; then
@@ -275,12 +289,11 @@ bounded_collect_owned_tree() {
     fi
     [[ "$child_ppid" == "$pid" ]] || continue
     if bounded_signal_owned_identity "$child" "$child_identity" STOP; then
-      bounded_collect_owned_tree "$child" "$child_identity" || failed=1
+      bounded_collect_owned_tree "$child" "$child_identity" "$discovery_deadline" recursive || failed=1
     elif ! bounded_owned_identity_has_exited "$child" "$child_identity"; then
       failed=1
     fi
   done <<< "$children"
-  printf '%s\t%s\n' "$pid" "$expected_identity"
   return "$failed"
 }
 
@@ -381,10 +394,13 @@ sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(s
   done
   if ! bounded_owned_job_has_exited "$pid"; then
     timed_out=1
+    # Discovery consumes the existing TERM grace; it must not delay escalation
+    # by starting its own unbounded walk before this watchdog begins.
+    deadline=$((SECONDS + 1))
     if [[ "$identity" =~ ^[0-9a-f]{64}$ ]] \
       && bounded_signal_owned_identity "$pid" "$identity" STOP
     then
-      tree_text="$(bounded_collect_owned_tree "$pid" "$identity")" || tree_incomplete=1
+      tree_text="$(bounded_collect_owned_tree "$pid" "$identity" "$deadline")" || tree_incomplete=1
     elif ! bounded_owned_job_has_exited "$pid"; then
       tree_incomplete=1
     fi
@@ -396,7 +412,6 @@ sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(s
       [[ "$tree_pid" =~ ^[1-9][0-9]*$ && "$tree_identity" =~ ^[0-9a-f]{64}$ ]] || continue
       bounded_signal_owned_identity "$tree_pid" "$tree_identity" CONT || true
     done <<< "$tree_text"
-    deadline=$((SECONDS + 1))
     while (( SECONDS < deadline )); do
       if bounded_owned_job_has_exited "$pid" && bounded_owned_tree_has_exited "$tree_text"; then break; fi
       sleep 0.1

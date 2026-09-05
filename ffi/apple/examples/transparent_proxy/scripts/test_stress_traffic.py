@@ -2001,7 +2001,7 @@ class StressTrafficValidationTests(unittest.TestCase):
             self.assertFalse(survivors, f"bounded capture descendants survived: {survivors}")
 
     def run_stopped_grandchild_cleanup_fixture(
-        self, *, capture=False, deny_kill=False, early_orphan=False
+        self, *, capture=False, deny_kill=False, early_orphan=False, expire_discovery=False
     ):
         shell = STRESS_SCRIPT.read_text()
         functions = "".join(
@@ -2073,6 +2073,11 @@ class StressTrafficValidationTests(unittest.TestCase):
                 SYSTEM_LOG_JOINED=0
                 SYSTEM_LOG_CHILD_RC=none
                 """)
+            if expire_discovery:
+                program += self.stress_function(shell, "collect_owned_tree").replace(
+                    "collect_owned_tree()", "real_collect_owned_tree()", 1
+                )
+                program += 'collect_owned_tree() { real_collect_owned_tree "$1" "$2" "$SECONDS"; }\n'
             if capture:
                 program += textwrap.dedent(f"""
                     run_bounded_capture {shlex.quote(str(root / 'output'))} 2 \
@@ -2137,7 +2142,7 @@ class StressTrafficValidationTests(unittest.TestCase):
             )
             self.assertEqual(len(pids.read_text().splitlines()), 3, output)
             if capture:
-                expected = "rc=124 incomplete=0 evidence=1 timeout=1 jobs=0"
+                expected = f"rc={125 if expire_discovery else 124} incomplete={int(expire_discovery)} evidence=1 timeout=1 jobs=0"
             else:
                 expected = f"incomplete={int(deny_kill)} jobs=0"
             self.assertEqual(output.splitlines()[-1], expected, output)
@@ -2153,6 +2158,25 @@ class StressTrafficValidationTests(unittest.TestCase):
 
     def test_cleanup_rejects_live_descendant_after_direct_job_has_exited(self):
         self.run_stopped_grandchild_cleanup_fixture(deny_kill=True)
+
+    def test_discovery_visits_each_owned_generation_once(self):
+        from test_modern_udp_evidence import exercise_owned_chain_discovery
+        shell = STRESS_SCRIPT.read_text()
+        helpers = "".join(self.stress_function(shell, name) for name in (
+            "pid_identity", "owned_identity_has_exited", "collect_owned_tree", "signal_owned_identity",
+        ))
+        exercise_owned_chain_discovery(self, helpers, "")
+
+    def test_expired_discovery_retains_root_cleanup_authority(self):
+        from test_modern_udp_evidence import exercise_owned_chain_discovery
+        shell = STRESS_SCRIPT.read_text()
+        helpers = "".join(self.stress_function(shell, name) for name in (
+            "pid_identity", "owned_identity_has_exited", "collect_owned_tree", "signal_owned_identity",
+        ))
+        exercise_owned_chain_discovery(self, helpers, "", expired=True)
+
+    def test_capture_expired_discovery_reaps_group_and_blocks_evidence(self):
+        self.run_stopped_grandchild_cleanup_fixture(capture=True, early_orphan=True, expire_discovery=True)
 
     def test_monitored_provider_death_is_a_run_failure(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2658,18 +2682,20 @@ class SoakConfigurationValidationTests(unittest.TestCase):
     def test_holder_cleanup_is_pid_scoped_and_joins_the_batch(self):
         shell = SOAK_SCRIPT.read_text()
         cleanup = self.soak_function(shell, "kill_holders")
-        active = self.soak_function(shell, "child_job_is_active")
-        signal = self.soak_function(shell, "signal_child")
+        start = shell.index("# Every owned background function")
+        end = shell.index("\nsoak_verdict_exit_code() {", start)
+        helpers = shell[start:end]
         self.assertNotIn("pkill -f", cleanup)
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             pidfile = root / "holders.tsv"
             program = (
-                active + signal + cleanup
+                helpers + cleanup
                 + f"\nOUT={shlex.quote(str(root))}\n"
                 + f"HOLDER_PIDFILE={shlex.quote(str(pidfile))}\n"
                 + "FLOW_POOL_LABEL=test\nHOLDER_CLEANUP_OK=1\n"
-                + "sleep 30 & first=$!\nsleep 30 & second=$!\n"
+                + 'sleep 30 & first=$!\nremember_owned_child "$first"\n'
+                + 'sleep 30 & second=$!\nremember_owned_child "$second"\n'
                 + "printf '%s\\tmarker\\n%s\\tmarker\\n' \"$first\" \"$second\" "
                 + '> "$HOLDER_PIDFILE"\nkill_holders\n'
                 + "printf 'ok=%s jobs=%s\\n' \"$HOLDER_CLEANUP_OK\" "

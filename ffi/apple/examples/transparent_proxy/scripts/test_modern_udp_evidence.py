@@ -43,6 +43,80 @@ RUN_UUID = "12345678-1234-4234-8234-123456789abc"
 DIGEST = "a" * 64
 
 
+def exercise_owned_chain_discovery(test, helpers, prefix, *, expired=False):
+    """Use eight native processes, then prove cleanup before fallback teardown."""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        pids_file = root / "pids"
+        chain = textwrap.dedent("""\
+            import os, signal, sys, time
+            os.setsid()
+            for index in range(8):
+                with open(sys.argv[1], "a") as output:
+                    output.write(str(os.getpid()) + "\\n")
+                if index == 7 or os.fork() != 0:
+                    break
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            time.sleep(30)
+        """)
+        process = subprocess.Popen([sys.executable, "-c", chain, str(pids_file)])
+        pids = []
+        try:
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                pids = list(map(int, pids_file.read_text().splitlines())) if pids_file.exists() else []
+                if len(pids) == 8:
+                    break
+                time.sleep(0.02)
+            test.assertEqual(len(pids), 8)
+            program = helpers + textwrap.dedent(f"""\
+                set -u
+                identity="$({prefix}pid_identity {process.pid} generation)"
+                {prefix}signal_owned_identity {process.pid} "$identity" STOP || exit 9
+                tree_text="$({prefix}collect_owned_tree {process.pid} "$identity" $((SECONDS + {0 if expired else 5})))"
+                result=$?
+                while IFS=$'\\t' read -r pid generation; do
+                  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || continue
+                  {prefix}signal_owned_identity "$pid" "$generation" KILL || true
+                done <<< "$tree_text"
+                printf 'rc=%s\\n%s\\n' "$result" "$tree_text"
+            """)
+            started = time.monotonic()
+            result = subprocess.run(["/bin/bash", "-c", program], capture_output=True, text=True, timeout=8)
+            test.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            test.assertLess(time.monotonic() - started, 5)
+            lines = result.stdout.splitlines()
+            test.assertEqual(lines[0], f"rc={int(expired)}", result.stdout)
+            observed = [int(line.split("\t")[0]) for line in lines[1:]]
+            test.assertEqual(len(observed), 1 if expired else 8, result.stdout)
+            test.assertEqual(set(observed), {process.pid} if expired else set(pids))
+            process.wait(timeout=2)
+            deadline = time.monotonic() + 2
+            survivors = pids
+            while survivors and time.monotonic() < deadline:
+                survivors = []
+                for pid in pids:
+                    try:
+                        os.kill(pid, 0)
+                        survivors.append(pid)
+                    except ProcessLookupError:
+                        pass
+                if survivors:
+                    time.sleep(0.02)
+            test.assertFalse(survivors, f"owned chain survived discovery cleanup: {survivors}")
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except PermissionError:
+                # macOS can return EPERM for a now-empty group whose leader
+                # has exited; still require proof that our child is gone.
+                if process.poll() is None:
+                    raise
+            process.wait(timeout=2)
+
+
 class BoundedCommandCleanupTests(unittest.TestCase):
     @staticmethod
     def shell_function(name):
@@ -68,7 +142,7 @@ class BoundedCommandCleanupTests(unittest.TestCase):
         if inspected.returncode != 0 or not inspected.stdout.strip():
             self.skipTest("host sandbox blocks process identity inspection")
 
-    def run_tree_fixture(self, *, delayed_writer=False, orphan=False, deny_kill=False, interrupt=None):
+    def run_tree_fixture(self, *, delayed_writer=False, orphan=False, deny_kill=False, interrupt=None, expire_discovery=False):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             pids = root / "pids"
@@ -106,6 +180,11 @@ class BoundedCommandCleanupTests(unittest.TestCase):
                 time.sleep(30)
             """))
             program = self.helper_source() + f"\nBOUNDED_CLEANUP_FAILED={shlex.quote(str(failed))}\nexec 3>&1\n"
+            if expire_discovery:
+                program += self.shell_function("bounded_collect_owned_tree").replace(
+                    "bounded_collect_owned_tree()", "real_bounded_collect_owned_tree()", 1
+                )
+                program += "bounded_collect_owned_tree() { real_bounded_collect_owned_tree \"$1\" \"$2\" \"$SECONDS\"; }\n"
             if interrupt is not None:
                 program += (
                     "trap 'exit 130' INT\ntrap 'exit 143' TERM\n"
@@ -171,10 +250,10 @@ class BoundedCommandCleanupTests(unittest.TestCase):
                     self.assertEqual(output.splitlines()[-1], f"signal-exit={128 + interrupt} jobs=0")
                 else:
                     self.assertEqual(process.returncode, 0, output)
-                    expected = 125 if deny_kill else 124
+                    expected = 125 if deny_kill or expire_discovery else 124
                     self.assertEqual(output.splitlines()[-1], f"rc={expected} jobs=0")
                 self.assertLess(time.monotonic() - started, 10)
-                self.assertEqual(failed.exists(), deny_kill)
+                self.assertEqual(failed.exists(), deny_kill or expire_discovery)
                 self.assertTrue(pids.exists())
                 pid_values = [int(value) for value in pids.read_text().splitlines()]
                 self.assertEqual(len(pid_values), 3)
@@ -205,6 +284,15 @@ class BoundedCommandCleanupTests(unittest.TestCase):
 
     def test_timeout_stops_delayed_artifact_writer(self):
         self.run_tree_fixture(delayed_writer=True)
+
+    def test_discovery_visits_each_owned_generation_once(self):
+        exercise_owned_chain_discovery(self, self.helper_source(), "bounded_")
+
+    def test_expired_discovery_retains_root_cleanup_authority(self):
+        exercise_owned_chain_discovery(self, self.helper_source(), "bounded_", expired=True)
+
+    def test_expired_discovery_reaps_group_and_blocks_evidence(self):
+        self.run_tree_fixture(orphan=True, expire_discovery=True)
 
     def test_timeout_reaps_stopped_term_resistant_descendants_holding_pipes(self):
         self.run_tree_fixture()
