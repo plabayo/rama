@@ -18,11 +18,13 @@ import threading
 import textwrap
 import time
 import unittest
+from unittest import mock
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
+import modern_udp_e2e_probe as udp_probe  # noqa: E402
 from modern_udp_e2e_probe import (  # noqa: E402
     ProductViolation,
     controlled_echo_load,
@@ -1367,6 +1369,165 @@ class StrictBundleTests(unittest.TestCase):
             reseal_test_manifest(root)
             with self.assertRaises(BundleVerificationError):
                 verify_bundle(root)
+
+
+class PressureProbePacingTests(unittest.TestCase):
+    class Clock:
+        def __init__(self):
+            self.now = 100.0
+            self.sleeps = []
+            self.oversleep = {}
+
+        def monotonic(self):
+            return self.now
+
+        def sleep(self, seconds):
+            self.sleeps.append((self.now, seconds))
+            self.now += seconds + self.oversleep.get(len(self.sleeps), 0.0)
+
+    class Socket:
+        def __init__(self, clock):
+            self.clock = clock
+            self.attempts = []
+            self.delays = {}
+            self.errors = {}
+            self.partial = set()
+            self.timeout = None
+            self.closes = 0
+
+        def settimeout(self, seconds):
+            self.timeout = seconds
+
+        def sendto(self, packet, peer):
+            sequence = len(self.attempts)
+            started = self.clock.now
+            self.clock.now += self.delays.get(sequence, 0.0)
+            self.attempts.append((
+                bytes(packet), peer, started, self.clock.now, self.timeout,
+            ))
+            if sequence in self.errors:
+                raise self.errors[sequence]
+            return len(packet) - int(sequence in self.partial)
+
+        def close(self):
+            self.closes += 1
+
+    def setUp(self):
+        self.clock = self.Clock()
+        self.socket = self.Socket(self.clock)
+        self.factory = mock.Mock(return_value=self.socket)
+        self.output = mock.Mock()
+
+    def run_probe(self, *, count=512, payload_bytes=4096, deadline=120.0):
+        with mock.patch.object(udp_probe.time, "monotonic", self.clock.monotonic), \
+                mock.patch.object(udp_probe.time, "sleep", self.clock.sleep), \
+                mock.patch.object(udp_probe.socket, "socket", self.factory), \
+                mock.patch.object(udp_probe, "print", self.output, create=True), \
+                mock.patch.object(udp_probe, "PRESSURE_DEADLINE_SECONDS", deadline):
+            pressure_burst("162.159.200.1", count, payload_bytes, 4.0)
+
+    def assert_once_only_sequences(self):
+        marker = b"rama-udp-e2e-pressure-v1 162.159.200.1:123\0"
+        for sequence, (packet, peer, _, _, _) in enumerate(self.socket.attempts):
+            self.assertEqual(len(packet), 4096)
+            self.assertEqual(packet[:len(marker)], marker)
+            self.assertEqual(int.from_bytes(packet[len(marker):len(marker) + 8], "big"), sequence)
+            self.assertEqual(peer, ("162.159.200.1", 123))
+
+    def test_canonical_workload_primes_recovers_and_sends_every_packet_once(self):
+        self.run_probe()
+        self.assertEqual(len(self.socket.attempts), 512)
+        self.assert_once_only_sequences()
+        self.factory.assert_called_once_with(socket.AF_INET, socket.SOCK_DGRAM)
+        self.assertEqual(self.socket.closes, 1)
+        self.output.assert_called_once()
+        self.assertLess(self.socket.attempts[65][3] - 100, 2.0)
+        for sequence in range(1, 512):
+            previous = self.socket.attempts[sequence - 1]
+            current = self.socket.attempts[sequence]
+            self.assertAlmostEqual(current[2] - previous[3], 2.5 if sequence == 66 else 0.02)
+        self.assertEqual(self.clock.sleeps[-1][1], 4.0)
+        self.assertAlmostEqual(self.clock.now - 100, 16.7)
+        self.assertTrue(all(row[4] == 5.0 for row in self.socket.attempts))
+
+    def test_scheduler_and_send_delays_do_not_compress_later_intervals(self):
+        self.clock.oversleep[40] = 0.7
+        self.socket.delays[45] = 0.3
+        self.run_probe()
+        self.assert_once_only_sequences()
+        for sequence in range(1, 512):
+            previous = self.socket.attempts[sequence - 1]
+            current = self.socket.attempts[sequence]
+            self.assertGreaterEqual(current[2] - previous[3], 0.02 - 1e-9)
+        self.assertAlmostEqual(self.socket.attempts[40][2] - self.socket.attempts[39][3], 0.72)
+        self.assertAlmostEqual(self.clock.now - 100, 17.7)
+
+    def test_socket_errors_and_partial_datagrams_never_retry(self):
+        for sequence, error in (
+            (0, socket.timeout("blocked send")),
+            (65, socket.timeout("blocked send")),
+            (66, socket.timeout("blocked send")),
+            (511, OSError("socket unavailable")),
+            (66, None),
+        ):
+            with self.subTest(sequence=sequence, error=error):
+                self.setUp()
+                if error is None:
+                    self.socket.partial.add(sequence)
+                else:
+                    self.socket.errors[sequence] = error
+                with self.assertRaises(RuntimeError if error is None else OSError):
+                    self.run_probe()
+                self.assertEqual(len(self.socket.attempts), sequence + 1)
+                self.assert_once_only_sequences()
+                self.assertEqual(self.socket.closes, 1)
+                self.output.assert_not_called()
+
+    def test_unschedulable_load_is_rejected_before_socket_creation(self):
+        # This byte product is admissible, but its pacing cannot fit in 120s.
+        with self.assertRaisesRegex(ValueError, "schedule exceeds"):
+            self.run_probe(count=100_000, payload_bytes=64)
+        self.factory.assert_not_called()
+        self.output.assert_not_called()
+
+    def test_short_load_deadline_omits_a_recovery_pause_that_is_never_reached(self):
+        for count in (64, 65, 66):
+            with self.subTest(count=count):
+                self.setUp()
+                self.run_probe(count=count, deadline=5.5)
+                self.assertEqual(len(self.socket.attempts), count)
+                self.assert_once_only_sequences()
+                self.assertAlmostEqual(self.clock.now - 100, (count - 1) * 0.02 + 4.0)
+                self.assertTrue(all(seconds == 0.02 for _, seconds in self.clock.sleeps[:-1]))
+                self.output.assert_called_once()
+
+    def test_whole_deadline_rejects_late_sleep_or_send_completion(self):
+        for late_operation in ("sleep", "send"):
+            with self.subTest(late_operation=late_operation):
+                self.setUp()
+                if late_operation == "sleep":
+                    self.clock.oversleep[1] = 120.0
+                else:
+                    # Even an unexpectedly late successful syscall cannot
+                    # bypass the total deadline when it returns to Python.
+                    self.socket.delays[0] = 120.0
+                with self.assertRaisesRegex(TimeoutError, "deadline expired"):
+                    self.run_probe()
+                self.assertEqual(len(self.socket.attempts), 1)
+                self.assertEqual(self.socket.closes, 1)
+                self.output.assert_not_called()
+
+    def test_send_timeout_uses_remaining_deadline_and_settle_is_bounded(self):
+        self.run_probe(deadline=17.0)
+        self.assertAlmostEqual(self.socket.attempts[-1][4], 4.3)
+        self.assertTrue(all(0 < row[4] <= 5.0 for row in self.socket.attempts))
+        self.setUp()
+        self.socket.delays[50] = 0.5
+        with self.assertRaisesRegex(TimeoutError, "cannot finish its pause after 512 sends"):
+            self.run_probe(deadline=17.0)
+        self.assertEqual(len(self.socket.attempts), 512)
+        self.assertEqual(self.socket.closes, 1)
+        self.output.assert_not_called()
 
 
 class QuicShapedEchoTests(unittest.TestCase):

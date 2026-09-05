@@ -5,12 +5,16 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rama::{
     Service,
+    bytes::Bytes,
     error::BoxError,
     extensions::ExtensionsRef as _,
     net::{
         apple::networkextension::{
             Datagram, UdpFlow,
-            tproxy::{TransparentProxyFlowMeta, TransparentProxyServiceContext},
+            tproxy::{
+                DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES, TransparentProxyFlowMeta,
+                TransparentProxyServiceContext,
+            },
         },
         client::ConnectorTarget,
     },
@@ -22,6 +26,7 @@ use rama::{
 use super::UdpPolicyScope;
 
 const E2E_PRESSURE_MARKER: &[u8] = b"rama-udp-e2e-pressure-v1 ";
+const E2E_PRESSURE_MAX_RETAINED_ITEMS: usize = 4_096;
 const UDP_RECV_SCRATCH_LEN: usize = 65_536;
 
 thread_local! {
@@ -128,9 +133,9 @@ async fn service(mut ingress: UdpFlow, udp_policy_scope: UdpPolicyScope) -> Resu
     // The signed E2E's first pressure datagram carries a versioned marker and
     // its exact peer. Only an active, allowlisted Python flow whose metadata,
     // datagram peer, and marker all agree may pause. Consuming that first
-    // datagram before the hold still leaves the production-sized channel to be
-    // filled by the remaining 511 datagrams. Ordinary NTP/HTTP3/background
-    // traffic and an expired E2E scope never take this path.
+    // datagram starts a bounded payload-retention window which keeps pulling
+    // ingress until real byte pressure pauses reads. Ordinary NTP/HTTP3/
+    // background traffic and an expired E2E scope never take this path.
     let mut pressure_probe_pending = true;
 
     // Egress state per address family. Receive scratch is shared by all flows
@@ -147,8 +152,8 @@ async fn service(mut ingress: UdpFlow, udp_policy_scope: UdpPolicyScope) -> Resu
         // matching-family socket is already bound (`if` guards).
         tokio::select! {
             maybe_datagram = ingress.recv() => {
-                let Some(datagram) = maybe_datagram else { break };
-                let Some(peer) = datagram.peer.or(initial_target) else {
+                let Some(mut datagram) = maybe_datagram else { break };
+                let Some(mut peer) = datagram.peer.or(initial_target) else {
                     // No per-datagram peer (rare kernel-attribution gap)
                     // and no initial target either — nowhere to send.
                     continue;
@@ -162,7 +167,20 @@ async fn service(mut ingress: UdpFlow, udp_policy_scope: UdpPolicyScope) -> Resu
                         peer,
                         &datagram.payload,
                     ) {
-                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        let Some(next) = hold_and_sink_e2e_pressure_flow(
+                            &mut ingress,
+                            datagram,
+                            udp_policy_scope,
+                            flow_meta.as_deref(),
+                            initial_target,
+                        ).await else { break };
+                        // The first non-probe datagram returns to ordinary
+                        // forwarding with its original payload and peer.
+                        datagram = next;
+                        let Some(next_peer) = datagram.peer.or(initial_target) else {
+                            continue;
+                        };
+                        peer = next_peer;
                     }
                 }
                 let socket = match peer {
@@ -224,6 +242,69 @@ async fn service(mut ingress: UdpFlow, udp_policy_scope: UdpPolicyScope) -> Resu
     );
 
     Ok(())
+}
+
+#[derive(Default)]
+struct E2ePressureRetention {
+    payloads: Vec<Bytes>,
+    bytes: usize,
+}
+
+impl E2ePressureRetention {
+    fn retain(&mut self, payload: Bytes) {
+        if self.payloads.len() < E2E_PRESSURE_MAX_RETAINED_ITEMS
+            && payload.len() <= DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES - self.bytes
+        {
+            self.bytes += payload.len();
+            self.payloads.push(payload);
+        }
+    }
+}
+
+/// Exercise physical ingress-byte retention without withholding read demand.
+///
+/// Sleeping immediately after the first `recv` prevents subsequent Apple
+/// reads: another `recv` is the only ordinary demand edge. Retaining charged
+/// payload roots while continuing to receive can instead fill the real flow
+/// byte budget without requiring an oversized Swift callback batch. The
+/// independent timer must release roots even while pressure parks `recv`.
+async fn hold_and_sink_e2e_pressure_flow(
+    ingress: &mut UdpFlow,
+    first: Datagram,
+    scope: UdpPolicyScope,
+    meta: Option<&TransparentProxyFlowMeta>,
+    initial_target: Option<SocketAddr>,
+) -> Option<Datagram> {
+    let mut retained = E2ePressureRetention::default();
+    retained.retain(first.payload);
+    let mut retained = Some(retained);
+    let hold = tokio::time::sleep(Duration::from_secs(2));
+    tokio::pin!(hold);
+    loop {
+        tokio::select! {
+            biased;
+            () = &mut hold, if retained.is_some() => {
+                retained = None;
+            }
+            next = ingress.recv() => {
+                let datagram = next?;
+                let Some(peer) = datagram.peer.or(initial_target) else {
+                    return Some(datagram);
+                };
+                if !should_hold_e2e_pressure_flow(
+                    scope, std::time::Instant::now(), meta, peer, &datagram.payload,
+                ) {
+                    return Some(datagram);
+                }
+                if let Some(retained) = &mut retained {
+                    retained.retain(datagram.payload);
+                }
+                // Only the scoped marker protocol is consumed here. It is
+                // deliberately not NTP, so do not send its remaining packets
+                // to a public NTP server after the retention window expires.
+            }
+        }
+    }
 }
 
 fn should_hold_e2e_pressure_flow(
@@ -318,7 +399,14 @@ async fn recv_from_slot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama::net::apple::networkextension::tproxy::TransparentProxyFlowProtocol;
+    use rama::{
+        net::apple::networkextension::tproxy::{
+            FlowAction, SessionFlowAction, TransparentProxyConfig, TransparentProxyEngineBuilder,
+            TransparentProxyFlowProtocol, TransparentProxyHandler,
+        },
+        rt::Executor,
+    };
+    use std::sync::{Arc, mpsc};
 
     const TEST_WORKERS: usize = 2;
     const CONCURRENT_FLOWS: usize = 64;
@@ -508,6 +596,243 @@ mod tests {
         payload.push(0);
         payload.resize(4096, 0);
         payload
+    }
+
+    #[test]
+    fn pressure_retention_bounds_owned_bytes_and_items_and_releases_every_root() {
+        struct OwnedPayload {
+            bytes: [u8; 64],
+            drops: Arc<AtomicUsize>,
+        }
+        impl AsRef<[u8]> for OwnedPayload {
+            fn as_ref(&self) -> &[u8] {
+                &self.bytes
+            }
+        }
+        impl Drop for OwnedPayload {
+            fn drop(&mut self) {
+                self.drops.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let drops = Arc::new(AtomicUsize::new(0));
+        let mut retained = E2ePressureRetention::default();
+        for _ in 0..4_097 {
+            retained.retain(Bytes::from_owner(OwnedPayload {
+                bytes: [0; 64],
+                drops: drops.clone(),
+            }));
+        }
+        assert_eq!(retained.payloads.len(), 4_096);
+        assert_eq!(retained.bytes, 256 * 1024);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        drop(retained);
+        assert_eq!(drops.load(Ordering::Relaxed), 4_097);
+
+        let mut retained = E2ePressureRetention::default();
+        retained.retain(Bytes::from(vec![
+            0;
+            DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES + 1
+        ]));
+        assert!(retained.payloads.is_empty());
+        for _ in 0..4_097 {
+            retained.retain(Bytes::from_static(b"x"));
+        }
+        assert_eq!(retained.payloads.len(), 4_096);
+        assert_eq!(retained.bytes, 4_096);
+    }
+
+    #[derive(Clone)]
+    struct PressureTestHandler {
+        scope: UdpPolicyScope,
+        result: mpsc::Sender<Option<Datagram>>,
+        released: mpsc::Sender<()>,
+    }
+
+    struct ObservedChargedRoot {
+        payload: Option<Bytes>,
+        released: mpsc::Sender<()>,
+    }
+
+    impl AsRef<[u8]> for ObservedChargedRoot {
+        fn as_ref(&self) -> &[u8] {
+            self.payload.as_ref().expect("live payload root")
+        }
+    }
+
+    impl Drop for ObservedChargedRoot {
+        fn drop(&mut self) {
+            drop(self.payload.take());
+            _ = self.released.send(());
+        }
+    }
+
+    impl TransparentProxyHandler for PressureTestHandler {
+        fn transparent_proxy_config(&self) -> TransparentProxyConfig {
+            TransparentProxyConfig::default()
+        }
+
+        async fn match_udp_flow(
+            &self,
+            _exec: Executor,
+            meta: TransparentProxyFlowMeta,
+        ) -> FlowAction<impl Service<UdpFlow, Output = (), Error = Infallible>> {
+            let result = self.result.clone();
+            let released = self.released.clone();
+            let scope = self.scope;
+            let service_meta = meta.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |mut flow: UdpFlow| {
+                    let result = result.clone();
+                    let released = released.clone();
+                    let meta = service_meta.clone();
+                    async move {
+                        let mut first = flow.recv().await.expect("initial pressure marker");
+                        first.payload = Bytes::from_owner(ObservedChargedRoot {
+                            payload: Some(first.payload),
+                            released,
+                        });
+                        let initial_target = first.peer;
+                        assert!(should_hold_e2e_pressure_flow(
+                            scope,
+                            std::time::Instant::now(),
+                            Some(&meta),
+                            initial_target.expect("pressure peer"),
+                            &first.payload,
+                        ));
+                        let next = hold_and_sink_e2e_pressure_flow(
+                            &mut flow,
+                            first,
+                            scope,
+                            Some(&meta),
+                            initial_target,
+                        )
+                        .await;
+                        _ = result.send(next);
+                        Ok(())
+                    }
+                }),
+            }
+        }
+    }
+
+    #[test]
+    fn pressure_hold_keeps_default_engine_reads_active_and_releases_on_pending_recv() {
+        let (result_tx, result_rx) = mpsc::channel();
+        let (released_tx, released_rx) = mpsc::channel();
+        let handler = PressureTestHandler {
+            scope: UdpPolicyScope::new(true, std::time::Instant::now()),
+            result: result_tx,
+            released: released_tx,
+        };
+        let engine = TransparentProxyEngineBuilder::new(move |_| {
+            std::future::ready(Ok::<_, Infallible>(handler.clone()))
+        })
+        .build()
+        .expect("default engine for an in-process pressure fixture");
+        let (demand_tx, demand_rx) = mpsc::channel();
+        let (close_tx, close_rx) = mpsc::channel();
+        let peer = "162.159.200.1:123".parse().unwrap();
+        let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+            meta("162.159.200.1:123", "com.apple.python3"),
+            |_| panic!("the diagnostic marker must not produce egress"),
+            move || _ = demand_tx.send(()),
+            move || _ = close_tx.send(()),
+        ) else {
+            panic!("expected an intercepted in-process flow");
+        };
+        session.activate();
+        let started = std::time::Instant::now();
+        let payload = pressure_payload("162.159.200.1:123");
+        // Exactly one packet per read demand keeps the 32-slot channel empty
+        // between receives. Retained charged roots, not channel count or a
+        // synthetic counter, must account for the following pressure pause.
+        for _ in 0..65 {
+            demand_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("the retention window must continue pulling ingress");
+            session.on_client_datagram(&payload, Some(peer));
+        }
+        assert_eq!(
+            demand_rx.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "the 65th 4-KiB packet must pause the physically full byte budget"
+        );
+        released_rx
+            .try_recv()
+            .expect_err("the charged marker root must remain held while reads are paused");
+        demand_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("the independent hold timer must refund roots and resume ingress");
+        assert!(started.elapsed() >= Duration::from_secs(2));
+        released_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("the timer must destroy the charged root before the recovery canary");
+        // The probe marker remains a diagnostic sink after the hold, while a
+        // following unmarked packet must still reach ordinary forwarding.
+        session.on_client_datagram(&payload, Some(peer));
+        let canary = vec![0x23; 4096];
+        session.on_client_datagram(&canary, Some(peer));
+        let returned = result_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("ordinary canary must resume after payload release")
+            .expect("the unmarked canary must return to ordinary forwarding");
+        assert_eq!(returned.payload.as_ref(), canary);
+        assert_eq!(returned.peer, Some(peer));
+        drop(returned);
+        close_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the fixture service must finish its close callback");
+        session.on_client_close();
+        engine.stop(0);
+        close_rx
+            .try_recv()
+            .expect_err("the fixture must not duplicate its close callback");
+    }
+
+    #[test]
+    fn pressure_hold_releases_charged_roots_when_pending_service_is_cancelled() {
+        let (result_tx, result_rx) = mpsc::channel();
+        let (released_tx, released_rx) = mpsc::channel();
+        let handler = PressureTestHandler {
+            scope: UdpPolicyScope::new(true, std::time::Instant::now()),
+            result: result_tx,
+            released: released_tx,
+        };
+        let engine = TransparentProxyEngineBuilder::new(move |_| {
+            std::future::ready(Ok::<_, Infallible>(handler.clone()))
+        })
+        .build()
+        .expect("default engine for a cancelled in-process pressure fixture");
+        let (demand_tx, demand_rx) = mpsc::channel();
+        let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+            meta("162.159.200.1:123", "com.apple.python3"),
+            |_| panic!("the diagnostic marker must not produce egress"),
+            move || _ = demand_tx.send(()),
+            || {},
+        ) else {
+            panic!("expected an intercepted in-process flow");
+        };
+        session.activate();
+        demand_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        session.on_client_datagram(
+            &pressure_payload("162.159.200.1:123"),
+            Some("162.159.200.1:123".parse().unwrap()),
+        );
+        demand_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the helper must retain the marker and await more ingress");
+        released_rx
+            .try_recv()
+            .expect_err("the marker root must remain held before cancellation");
+        session.on_client_close();
+        released_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("cancellation must destroy the held charged root without awaiting the timer");
+        engine.stop(0);
+        result_rx
+            .try_recv()
+            .expect_err("cancellation must not forward the consumed diagnostic marker");
     }
 
     #[test]

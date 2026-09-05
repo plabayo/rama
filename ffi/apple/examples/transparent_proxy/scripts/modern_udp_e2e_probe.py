@@ -24,6 +24,11 @@ QUIC_SHAPED_MARKER = b"rama-quic-shaped-not-valid-quic-v1\0"
 QUIC_SHAPED_VERSION = 0xFACEB00C
 CONTROLLED_ECHO_SCHEMA_VERSION = 1
 MAX_LOAD_BYTES = 256 * 1024 * 1024
+PRESSURE_INITIAL_DATAGRAMS = 66
+PRESSURE_INTERVAL_SECONDS = 0.02
+PRESSURE_RECOVERY_SECONDS = 2.5
+PRESSURE_SEND_TIMEOUT_SECONDS = 5.0
+PRESSURE_DEADLINE_SECONDS = 120.0
 
 
 class ProductViolation(RuntimeError):
@@ -127,7 +132,7 @@ def ntp_query(server: str, timeout: float) -> None:
 
 
 def pressure_burst(server: str, count: int, payload_bytes: int, settle: float) -> None:
-    """Burst one intercepted flow, then leave time for its resume callback."""
+    """Pace one intercepted flow through pressure and recovery, without retries."""
     if not 64 <= count <= 100_000:
         raise ValueError("pressure count must be in 64..100000")
     if not 64 <= payload_bytes <= 60_000:
@@ -136,6 +141,11 @@ def pressure_burst(server: str, count: int, payload_bytes: int, settle: float) -
         raise ValueError("pressure byte product exceeds the bounded load budget")
     if not 0 <= settle <= 30:
         raise ValueError("pressure settle seconds must be in 0..30")
+    scheduled_seconds = (count - 1) * PRESSURE_INTERVAL_SECONDS + settle
+    if count > PRESSURE_INITIAL_DATAGRAMS:
+        scheduled_seconds += PRESSURE_RECOVERY_SECONDS - PRESSURE_INTERVAL_SECONDS
+    if scheduled_seconds >= PRESSURE_DEADLINE_SECONDS:
+        raise ValueError("pressure paced schedule exceeds the whole-probe deadline")
 
     address = ipaddress.ip_address(server)
     if address.version != 4:
@@ -146,22 +156,60 @@ def pressure_burst(server: str, count: int, payload_bytes: int, settle: float) -
         raise ValueError("pressure payload is too small for its endpoint marker")
     packet = bytearray(payload_bytes)
     packet[:sequence_offset] = marker
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.settimeout(2.0)
+    deadline = time.monotonic() + PRESSURE_DEADLINE_SECONDS
     sent = 0
+
+    def remaining_seconds() -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"pressure probe deadline expired after {sent} sends")
+        return remaining
+
+    def pause(seconds: float) -> None:
+        if seconds >= remaining_seconds():
+            raise TimeoutError(f"pressure probe cannot finish its pause after {sent} sends")
+        if seconds:
+            time.sleep(seconds)
+        remaining_seconds()
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         for sequence in range(count):
+            if sequence:
+                # The scoped service keeps receiving and retaining payloads
+                # during its two-second hold. The first 64 canonical 4-KiB
+                # datagrams fill the real 256-KiB flow budget; the next two can
+                # exercise rejection. Spacing these sends avoids knowingly
+                # overrunning Swift's 32-item staging with the entire workload.
+                # OS batching and runtime scheduling remain unproved here: the
+                # native gate must still observe the exact Rust drop/recovery
+                # and reject every Swift staging loss.
+                pause(PRESSURE_RECOVERY_SECONDS if sequence == PRESSURE_INITIAL_DATAGRAMS
+                      else PRESSURE_INTERVAL_SECONDS)
+            # Start each interval after the preceding send completed. A slow
+            # send or scheduler delay must never create a catch-up burst. The
+            # send timeout exceeds the deliberate service hold, while the one
+            # monotonic deadline also bounds cumulative delays and settling.
+            sock.settimeout(min(PRESSURE_SEND_TIMEOUT_SECONDS, remaining_seconds()))
             packet[sequence_offset:sequence_offset + 8] = sequence.to_bytes(8, "big")
-            if sock.sendto(packet, (server, 123)) != len(packet):
+            try:
+                written = sock.sendto(packet, (server, 123))
+            except socket.timeout as error:
+                raise TimeoutError(
+                    f"pressure datagram {sequence + 1}/{count} send timed out "
+                    f"after {sent} confirmed sends"
+                ) from error
+            if written != len(packet):
                 raise RuntimeError("pressure burst sent a partial datagram")
             sent += 1
+            remaining_seconds()
     finally:
         sock.close()
     if sent != count:
         raise RuntimeError(f"pressure burst sent {sent} of {count} datagrams")
-    time.sleep(settle)
+    pause(settle)
     print(
-        f"UDP pressure burst sent {sent} datagrams ({payload_bytes} bytes each) "
+        f"UDP pressure probe sent {sent} paced datagrams ({payload_bytes} bytes each) "
         f"to {server}:123 and settled for {settle:.3f}s"
     )
 
