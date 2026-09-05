@@ -15,7 +15,7 @@ static NEXT_PROVIDER_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 fn next_provider_generation() -> u64 {
     let Ok(generation) =
-        NEXT_PROVIDER_GENERATION.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+        NEXT_PROVIDER_GENERATION.try_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
             generation.checked_add(1)
         })
     else {
@@ -1460,9 +1460,7 @@ where
             crate::tproxy::dial9::record_flow_closed(
                 _provider_pid,
                 _provider_generation,
-                meta_for_close.flow_id,
-                meta_for_close.protocol.as_u32(),
-                meta_for_close.source_app_pid,
+                &meta_for_close,
                 BridgeCloseReason::Shutdown,
                 age_ms,
                 0,
@@ -1565,9 +1563,7 @@ where
             crate::tproxy::dial9::record_flow_closed(
                 _provider_pid,
                 _provider_generation,
-                meta_for_close.flow_id,
-                meta_for_close.protocol.as_u32(),
-                meta_for_close.source_app_pid,
+                &meta_for_close,
                 dial9_reason,
                 age_ms,
                 ingress_received,
@@ -2133,9 +2129,7 @@ where
                     crate::tproxy::dial9::record_flow_closed(
                         _provider_pid,
                         _provider_generation,
-                        meta_for_close.flow_id,
-                        meta_for_close.protocol.as_u32(),
-                        meta_for_close.source_app_pid,
+                        &meta_for_close,
                         close_reason,
                         age_ms,
                         bytes_in,
@@ -2171,66 +2165,74 @@ where
         //     misbehaving idle reaper or a service-side wedge that
         //     keeps the idle signal alive without making real progress.
         //     See builder doc for semantics.
-        // A user service can panic either while constructing its future or
-        // while that future is polled. Keep both inside the task so the common
-        // close epilogue and Swift `on_server_closed` notification still run.
-        let mut serve_fut = std::pin::pin!(async move {
-            let future = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                service.serve(flow)
-            })) {
-                Ok(future) => future,
-                Err(panic) => return Err(panic),
+        // Finish dropping the service and its UdpFlow before accounting and
+        // notifying close. A service destructor may send one final datagram;
+        // it must precede the close callback and be included in the byte total.
+        // Dropping the receiver also closes ingress demand and frees queued
+        // payload owners before foreign code observes the terminal edge.
+        let close_reason = {
+            // A user service can panic either while constructing its future or
+            // while that future is polled. Keep both inside the task so the common
+            // close epilogue and Swift `on_server_closed` notification still run.
+            let mut serve_fut = std::pin::pin!(async move {
+                let future = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    service.serve(flow)
+                })) {
+                    Ok(future) => future,
+                    Err(panic) => return Err(panic),
+                };
+                std::panic::AssertUnwindSafe(future).catch_unwind().await
+            });
+            let idle_fut = async {
+                let (Some(timeout), Some(notify)) =
+                    (udp_idle_timeout, idle_notify_for_task.as_ref())
+                else {
+                    std::future::pending::<()>().await;
+                    return;
+                };
+                wait_for_udp_idle(timeout, notify).await;
             };
-            std::panic::AssertUnwindSafe(future).catch_unwind().await
-        });
-        let idle_fut = async {
-            let (Some(timeout), Some(notify)) = (udp_idle_timeout, idle_notify_for_task.as_ref())
-            else {
-                std::future::pending::<()>().await;
-                return;
-            };
-            wait_for_udp_idle(timeout, notify).await;
-        };
-        let close_reason = tokio::select! {
-            () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,
-            res = &mut serve_fut => {
-                match res {
-                    Ok(service_result) => {
-                        _ = service_result;
-                        BridgeCloseReason::PeerEofLeft
-                    }
-                    Err(panic) => {
-                        tracing::error!(
-                            target: "rama_apple_ne::tproxy",
-                            flow_id = meta_for_close.flow_id,
-                            panic_message = %panic_payload_message(panic.as_ref()),
-                            "transparent proxy udp service panicked; closing flow",
-                        );
-                        BridgeCloseReason::ServicePanic
+            tokio::select! {
+                () = flow_guard_for_task.cancelled() => BridgeCloseReason::Shutdown,
+                res = &mut serve_fut => {
+                    match res {
+                        Ok(service_result) => {
+                            _ = service_result;
+                            BridgeCloseReason::PeerEofLeft
+                        }
+                        Err(panic) => {
+                            tracing::error!(
+                                target: "rama_apple_ne::tproxy",
+                                flow_id = meta_for_close.flow_id,
+                                panic_message = %panic_payload_message(panic.as_ref()),
+                                "transparent proxy udp service panicked; closing flow",
+                            );
+                            BridgeCloseReason::ServicePanic
+                        }
                     }
                 }
-            }
-            () = idle_fut => {
-                tracing::debug!(
-                    target: "rama_apple_ne::tproxy",
-                    flow_id = meta_for_close.flow_id,
-                    idle_ms = udp_idle_timeout
-                        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-                        .unwrap_or(0),
-                    "transparent proxy udp flow idle; closing",
-                );
-                BridgeCloseReason::IdleTimeout
-            }
-            () = &mut lifetime_fut => {
-                tracing::warn!(
-                    target: "rama_apple_ne::tproxy",
-                    flow_id = meta_for_close.flow_id,
-                    lifetime_ms = udp_max_flow_lifetime
-                        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-                        .unwrap_or(0),
-                    "transparent proxy udp flow exceeded max lifetime; closing",
-                );
-                BridgeCloseReason::MaxLifetime
+                () = idle_fut => {
+                    tracing::debug!(
+                        target: "rama_apple_ne::tproxy",
+                        flow_id = meta_for_close.flow_id,
+                        idle_ms = udp_idle_timeout
+                            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+                            .unwrap_or(0),
+                        "transparent proxy udp flow idle; closing",
+                    );
+                    BridgeCloseReason::IdleTimeout
+                }
+                () = &mut lifetime_fut => {
+                    tracing::warn!(
+                        target: "rama_apple_ne::tproxy",
+                        flow_id = meta_for_close.flow_id,
+                        lifetime_ms = udp_max_flow_lifetime
+                            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+                            .unwrap_or(0),
+                        "transparent proxy udp flow exceeded max lifetime; closing",
+                    );
+                    BridgeCloseReason::MaxLifetime
+                }
             }
         };
         #[cfg(feature = "dial9")]
@@ -2241,9 +2243,7 @@ where
             crate::tproxy::dial9::record_flow_closed(
                 _provider_pid,
                 _provider_generation,
-                meta_for_close.flow_id,
-                meta_for_close.protocol.as_u32(),
-                meta_for_close.source_app_pid,
+                &meta_for_close,
                 close_reason,
                 age_ms,
                 bytes_in,

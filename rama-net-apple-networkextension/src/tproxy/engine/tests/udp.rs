@@ -178,6 +178,7 @@ fn assert_udp_echo_payload_release_does_not_reenter_callback_gate(
         // A regressed service worker holds callback_active forever. Avoid an
         // unbounded session Drop and let the engine's bounded stop dispose its
         // runtime so this assertion reports the defect instead of hanging.
+        #[expect(clippy::mem_forget)] // Only the deliberately wedged failure path.
         std::mem::forget(session);
         engine.stop(0);
         panic!("dropping the echoed ingress payload reentered its callback lifetime gate");
@@ -248,6 +249,171 @@ fn udp_service_construction_panic_runs_close_epilogue() {
 #[test]
 fn udp_service_poll_panic_runs_close_epilogue() {
     assert_udp_service_panic_runs_close_epilogue(0xE1E1_2102, true);
+}
+
+#[test]
+fn udp_idle_close_drops_service_before_callbacks_and_byte_snapshot() {
+    assert_udp_terminal_drop_precedes_close(false);
+}
+
+#[test]
+fn udp_max_lifetime_close_drops_service_before_callbacks_and_byte_snapshot() {
+    assert_udp_terminal_drop_precedes_close(true);
+}
+
+fn assert_udp_terminal_drop_precedes_close(max_lifetime: bool) {
+    const FINAL_PAYLOAD: &[u8] = b"service-final";
+    const QUEUED_PAYLOAD: &[u8] = b"pending-ingress";
+
+    struct FinalDatagramOnDrop {
+        flow: crate::UdpFlow,
+        datagram: Option<crate::Datagram>,
+    }
+
+    impl Drop for FinalDatagramOnDrop {
+        fn drop(&mut self) {
+            self.flow
+                .send(self.datagram.take().expect("owned final datagram"));
+        }
+    }
+
+    #[derive(Debug)]
+    enum Observed {
+        Datagram(Vec<u8>),
+        Closed {
+            retained_bytes: usize,
+            charged_bytes: usize,
+            totals: Option<(u64, u64)>,
+        },
+    }
+
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let handler = TestHandler {
+        udp_matcher: Arc::new(move |meta| {
+            let ready_tx = ready_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |mut flow: crate::UdpFlow| {
+                    let ready_tx = ready_tx.clone();
+                    async move {
+                        let datagram = flow.recv().await.expect("test ingress datagram");
+                        let final_datagram = FinalDatagramOnDrop {
+                            flow,
+                            datagram: Some(datagram),
+                        };
+                        _ = ready_tx.send(());
+                        std::future::pending::<()>().await;
+                        drop(final_datagram);
+                        Ok::<(), Infallible>(())
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        ..TestHandler::passthrough()
+    };
+    let builder = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(TestRuntimeFactory);
+    let engine = if max_lifetime {
+        builder
+            .with_udp_max_flow_lifetime(Duration::from_millis(300))
+            .without_udp_idle_timeout()
+    } else {
+        builder.with_udp_idle_timeout(Duration::from_millis(200))
+    }
+    .build()
+    .expect("build engine");
+    let budget = engine.udp_ingress_budget_for_test();
+    let close_budget = budget.clone();
+    let (events_tx, events_rx) = std::sync::mpsc::channel();
+    let datagram_events_tx = events_tx.clone();
+    #[cfg(feature = "dial9")]
+    let counters = Arc::new(Mutex::new(None::<Arc<UdpFlowByteCounters>>));
+    #[cfg(feature = "dial9")]
+    let close_counters = counters.clone();
+    let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
+        TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
+        move |datagram| {
+            _ = datagram_events_tx.send(Observed::Datagram(datagram.payload.to_vec()));
+        },
+        || {},
+        move || {
+            let snapshot = close_budget.snapshot();
+            #[cfg(feature = "dial9")]
+            let totals = Some(
+                close_counters
+                    .lock()
+                    .as_ref()
+                    .expect("installed byte counters")
+                    .snapshot(),
+            );
+            #[cfg(not(feature = "dial9"))]
+            let totals = None;
+            _ = events_tx.send(Observed::Closed {
+                retained_bytes: snapshot.retained_bytes,
+                charged_bytes: snapshot.charged_bytes,
+                totals,
+            });
+        },
+    ) else {
+        panic!("expected intercepted flow");
+    };
+    #[cfg(feature = "dial9")]
+    {
+        *counters.lock() = Some(session.byte_counters.clone());
+    }
+    session.activate();
+    session.on_client_datagram(FINAL_PAYLOAD, None);
+    ready_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("service owns the retained final datagram");
+    session.on_client_datagram(QUEUED_PAYLOAD, None);
+
+    // Inspect callback order and ownership at the close edge itself. Waiting
+    // for eventual task cleanup would miss a close emitted before destruction.
+    let first = events_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("terminal callback");
+    let second = events_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("remaining terminal callback");
+    let accepted_at_close = budget.snapshot().accepted_datagrams;
+    session.on_client_datagram(b"late ingress", None);
+    let accepted_after_close = budget.snapshot().accepted_datagrams;
+    session.on_client_close();
+    engine.stop(0);
+
+    assert!(
+        matches!(&first, Observed::Datagram(payload) if payload == FINAL_PAYLOAD),
+        "the service destructor must send before close: {first:?}",
+    );
+    let Observed::Closed {
+        retained_bytes,
+        charged_bytes,
+        totals,
+    } = second
+    else {
+        panic!("expected close after the final datagram, got {second:?}");
+    };
+    assert_eq!(retained_bytes, 0, "close retained ingress payload owners");
+    assert_eq!(charged_bytes, 0, "close retained ingress byte charges");
+    #[cfg(feature = "dial9")]
+    assert_eq!(
+        totals,
+        Some((
+            (FINAL_PAYLOAD.len() + QUEUED_PAYLOAD.len()) as u64,
+            FINAL_PAYLOAD.len() as u64,
+        )),
+        "the terminal byte snapshot must include the destructor's datagram",
+    );
+    #[cfg(not(feature = "dial9"))]
+    assert_eq!(totals, None);
+    assert_eq!(accepted_at_close, 2);
+    assert_eq!(accepted_after_close, accepted_at_close);
+    assert!(
+        events_rx.try_recv().is_err(),
+        "no callback may follow close"
+    );
 }
 
 #[test]

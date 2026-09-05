@@ -24,6 +24,8 @@ struct WriterMemoryPolicy: Sendable, Equatable {
     /// the FIFO head can always fit in the TCP share.
     let tcpWaiterMaxBytes: Int
     /// Capacity kept available to lossy UDP while TCP waiters hold the gate.
+    /// Production configuration leaves space for one TCP read view and one
+    /// maximum-sized retry before allocating this reserve.
     let udpPressureReserveBytes: Int
     let udpPressureReserveItems: Int
 
@@ -60,12 +62,13 @@ struct WriterMemoryPolicy: Sendable, Equatable {
         self.maxBytes = maxBytes
         self.maxItems = maxItems
         self.tcpWaiterMaxBytes = tcpWaiterMaxBytes
+        let transitViewBytes = min(64 * 1024, tcpWaiterMaxBytes)
         self.udpPressureReserveBytes = min(
             udpPressureReserveBytes,
-            maxBytes - tcpWaiterMaxBytes)
+            max(0, maxBytes - tcpWaiterMaxBytes - transitViewBytes))
         self.udpPressureReserveItems = min(
             udpPressureReserveItems,
-            maxItems - 1)
+            max(0, maxItems - 2))
     }
 
     static let `default` = Self(

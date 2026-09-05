@@ -5,6 +5,126 @@ import XCTest
 @testable import RamaAppleNetworkExtension
 
 final class WriterMemoryBudgetTests: XCTestCase {
+    private final class RetainingReadSink: TcpClientBytesSink {
+        let payload = TestValue<TcpPayloadSlice?>(nil)
+
+        func onClientBytes(_ data: Data) -> RamaTcpDeliverStatusBridge {
+            XCTFail("the read pump must transfer its physical payload owner")
+            return .closed
+        }
+
+        func onClientPayload(_ payload: TcpPayloadSlice) -> RamaTcpDeliverStatusBridge {
+            self.payload.set(payload)
+            return .accepted
+        }
+    }
+
+    func testMinimumByteBudgetDeliversTcpWhileMaximumWriterAndUdpProgress() {
+        assertMinimumTransportCapacity(maxBytes: 8 * 1024 * 1024 + 128 * 1024)
+    }
+
+    func testMinimumItemBudgetDeliversTcpWhileMaximumWriterAndUdpProgress() {
+        assertMinimumTransportCapacity(maxItems: 256)
+    }
+
+    func testCombinedMinimumBudgetDeliversTcpWhileMaximumWriterAndUdpProgress() {
+        assertMinimumTransportCapacity(
+            maxBytes: 8 * 1024 * 1024 + 128 * 1024, maxItems: 256)
+    }
+
+    func testReconfiguredMinimumBudgetDeliversTcpWhileMaximumWriterAndUdpProgress() {
+        assertMinimumTransportCapacity(
+            maxBytes: 8 * 1024 * 1024 + 128 * 1024,
+            maxItems: 256,
+            reconfigure: true)
+    }
+
+    private func assertMinimumTransportCapacity(
+        maxBytes: Int = WriterMemoryPolicy.default.maxBytes,
+        maxItems: Int = WriterMemoryPolicy.default.maxItems,
+        reconfigure: Bool = false
+    ) {
+        // These are the public Rust configuration bounds, not a reduced
+        // test-only reserve. Exercise the production policy constructor and
+        // actual read pump before checking the pressure coordinator.
+        let maximumWriterBytes = 8 * 1024 * 1024
+        let policy = TransparentProxyRuntimePolicy(
+            tcpWritePumpMaxPendingBytes: maximumWriterBytes,
+            flowPressureSoftCap: 450,
+            flowPressureLowWater: 350,
+            flowPressureIdleFloorMs: 120_000,
+            liveFlowHardCap: 500,
+            udpIdleTimeoutMs: 30_000,
+            tcpStartInFlightHardCap: 128,
+            tcpStartInFlightSoftCap: 64,
+            tcpStartLatencyBreakerP95Ms: 0,
+            tcpStartLatencyBreakerCloseP95Ms: 0,
+            tcpPressureConnectTimeoutMs: 0,
+            tcpBreakerConnectTimeoutMs: 0,
+            flowRefusalPassthrough: true,
+            writerMemoryMaxBytes: maxBytes,
+            writerMemoryMaxItems: maxItems)
+        XCTAssertEqual(policy.tcpWritePump.maxPendingBytes, maximumWriterBytes)
+        let budget = WriterMemoryBudget(policy: reconfigure ? .default : policy.writerMemory)
+        if reconfigure { budget.reconfigure(policy: policy.writerMemory) }
+
+        let queue = DispatchQueue(label: "rama.writer-budget.minimum.read")
+        let flow = MockTcpFlow()
+        let sink = RetainingReadSink()
+        let terminalCount = TestValue(0)
+        let pump = TcpClientReadPump(
+            flow: flow, session: sink, queue: queue, logger: { _ in },
+            onTerminal: { _ in terminalCount.update { $0 += 1 } },
+            writerMemoryBudget: budget)
+        queue.sync { pump.requestRead() }
+        let readData = Data(repeating: 0xA7, count: 64 * 1024)
+        flow.completeReadSynchronously(data: readData, error: nil)
+        queue.sync {}
+        XCTAssertEqual(terminalCount.get(), 0, "an empty budget must accept a normal TCP read")
+        XCTAssertEqual(sink.payload.get()?.copiedData, readData)
+        guard sink.payload.get() != nil else { return }
+        XCTAssertEqual(budget.snapshot().retainedBytes, readData.count)
+
+        // Keep that real read root live while a maximum TCP retry waits. The
+        // UDP charge represents one maximum-size datagram and zero-length
+        // datagrams filling the remaining service item reserve.
+        let fillerBytes = maxBytes - readData.count - policy.writerMemory.udpPressureReserveBytes
+        XCTAssertTrue(budget.tryReserve(bytes: fillerBytes))
+        let granted = expectation(description: "maximum TCP retry progresses beside retained read")
+        let grantBox = TestValue<WriterMemoryGrant?>(nil)
+        let waiter = budget.waitForTcpCapacity(bytes: maximumWriterBytes) { grant in
+            grantBox.set(grant)
+            granted.fulfill()
+        }
+        defer { waiter.cancel() }
+        let udpBytes = Int(UInt16.max)
+        let udpItems = policy.writerMemory.udpPressureReserveItems
+        guard case .pressureUdp? = budget.tryReserveUdp(bytes: udpBytes, items: udpItems) else {
+            budget.release(bytes: fillerBytes)
+            sink.payload.set(nil)
+            return XCTFail("maximum UDP datagram must fit while the TCP retry is waiting")
+        }
+        budget.release(bytes: fillerBytes)
+        wait(for: [granted], timeout: 3)
+        XCTAssertEqual(budget.snapshot().retainedBytes, readData.count + maximumWriterBytes + udpBytes)
+        XCTAssertEqual(budget.snapshot().retainedItems, udpItems + 2)
+        if maxItems == 256 {
+            XCTAssertEqual(budget.snapshot().retainedItems, maxItems)
+            XCTAssertNil(budget.tryReserveUdp(bytes: 0), "the aggregate item bound still holds")
+        }
+        XCTAssertEqual(sink.payload.get()?.copiedData, readData)
+
+        grantBox.update { grant in
+            grant?.release()
+            grant = nil
+        }
+        budget.releaseUdp(
+            bytes: udpBytes, items: udpItems, pressureBytes: udpBytes, pressureItems: udpItems)
+        sink.payload.set(nil)
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
+        XCTAssertEqual(budget.snapshot().retainedItems, 0)
+    }
+
     func testCanceledHeadMiddleAndTailPreserveFifoAcrossGrantBatches() {
         let budget = WriterMemoryBudget(
             policy: WriterMemoryPolicy(
@@ -222,7 +342,7 @@ final class WriterMemoryBudgetTests: XCTestCase {
     func testUdpUsesSpareHeadroomWhileTcpWaitsAndTcpStillProgresses() {
         let budget = WriterMemoryBudget(
             policy: WriterMemoryPolicy(
-                maxBytes: 1_024,
+                maxBytes: 1_280,
                 maxItems: 256,
                 tcpWaiterMaxBytes: 512,
                 udpPressureReserveBytes: 256,
@@ -266,8 +386,8 @@ final class WriterMemoryBudgetTests: XCTestCase {
     func testSaturatedUdpItemReserveDoesNotDoubleCountAgainstTcpGrant() {
         let budget = WriterMemoryBudget(
             policy: WriterMemoryPolicy(
-                maxBytes: 128 * 1024,
-                maxItems: 256,
+                maxBytes: 192 * 1024,
+                maxItems: 257,
                 tcpWaiterMaxBytes: 64 * 1024,
                 udpPressureReserveBytes: 64 * 1024,
                 udpPressureReserveItems: 255))
@@ -389,6 +509,7 @@ final class WriterMemoryBudgetTests: XCTestCase {
     func testDownReconfigurePreservesUdpReserveForHistoricalMaxTcpPump() {
         let oldTcpMax = 8 * 1024 * 1024
         let udpReserve = WriterMemoryPolicy.minimumUdpPressureReserveBytes
+        let transitBytes = 64 * 1024
         let budget = WriterMemoryBudget(
             policy: WriterMemoryPolicy(
                 maxBytes: 64 * 1024 * 1024,
@@ -400,7 +521,7 @@ final class WriterMemoryBudgetTests: XCTestCase {
             policy: WriterMemoryPolicy(
                 maxBytes: oldTcpMax,
                 maxItems: 512,
-                tcpWaiterMaxBytes: oldTcpMax - udpReserve,
+                tcpWaiterMaxBytes: oldTcpMax - udpReserve - transitBytes,
                 udpPressureReserveBytes: udpReserve,
                 udpPressureReserveItems: 8))
 
@@ -417,7 +538,9 @@ final class WriterMemoryBudgetTests: XCTestCase {
         XCTAssertFalse(budget.snapshot().tcpWaiterGate)
         XCTAssertEqual(budget.snapshot().retainedBytes, 0)
 
-        let currentTcpShare = oldTcpMax - udpReserve
+        var transit = budget.makeTcpTransitCursor(Data(repeating: 0xA7, count: transitBytes))
+        XCTAssertNotNil(transit, "down-reconfigure must also retain a TCP read")
+        let currentTcpShare = oldTcpMax - udpReserve - transitBytes
         XCTAssertTrue(budget.tryReserve(bytes: currentTcpShare, items: 1))
         let waiter = budget.waitForTcpCapacity(bytes: 1) { grant in grant.release() }
         guard case .pressureUdp? = budget.tryReserveUdp(
@@ -437,6 +560,9 @@ final class WriterMemoryBudgetTests: XCTestCase {
             items: 1,
             pressureBytes: udpReserve,
             pressureItems: 1)
+        XCTAssertEqual(transit?.remainingBytes, transitBytes)
+        transit = nil
+        XCTAssertEqual(budget.snapshot().retainedBytes, 0)
     }
 
     func testAggregatePressureTelemetryIsOrderedSampledAndRecovers() {

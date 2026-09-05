@@ -32,7 +32,7 @@ pub const WRITER_MEMORY_UDP_SERVICE_RESERVE_BYTES: usize = 64 * 1024;
 pub const MAX_WRITER_MEMORY_MAX_BYTES: usize = ((1_u64 << 40) - 1) as usize;
 pub const MAX_WRITER_MEMORY_MAX_ITEMS: usize = (1_usize << 23) - 1;
 const MIN_WRITER_MEMORY_MAX_BYTES: usize =
-    MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES + WRITER_MEMORY_UDP_SERVICE_RESERVE_BYTES;
+    MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES + WRITER_MEMORY_UDP_SERVICE_RESERVE_BYTES + kib(64);
 const MIN_WRITER_MEMORY_MAX_ITEMS: usize = 256;
 
 /// Default combined TCP+UDP live-flow soft cap that triggers the Swift-side
@@ -955,8 +955,10 @@ impl TransparentProxyConfig {
     generate_set_and_with! {
         /// Set the core/process-lifetime payload cap shared by Swift transport
         /// pumps and direct-forwarder buffers.
-        /// Values are clamped to the packed atomic's representable range. The
-        /// minimum admits every supported per-pump TCP chunk and UDP datagram.
+        /// Values are clamped to `[8 MiB + 128 KiB, 2^40 - 1]`. The minimum
+        /// holds one maximum-sized TCP writer retry, one 64 KiB TCP read view,
+        /// and one maximum UDP datagram simultaneously. Apple client reads
+        /// with larger backing allocations can still exhaust a small budget.
         pub fn writer_memory_max_bytes(mut self, bytes: usize) -> Self {
             self.writer_memory_max_bytes = bytes.clamp(
                 MIN_WRITER_MEMORY_MAX_BYTES,
@@ -1172,6 +1174,13 @@ mod transparent_proxy_config_tests {
         assert_eq!(
             tcp_then_writer.writer_memory_max_bytes(),
             MIN_WRITER_MEMORY_MAX_BYTES
+        );
+        assert!(
+            tcp_then_writer.writer_memory_max_bytes()
+                >= tcp_then_writer.tcp_write_pump_max_pending_bytes()
+                    + WRITER_MEMORY_UDP_SERVICE_RESERVE_BYTES
+                    + kib(64),
+            "the smallest aggregate must leave a TCP read view beside the maximum retry and UDP"
         );
     }
 

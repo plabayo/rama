@@ -2928,7 +2928,7 @@ mod tests {
         }
 
         let mut now = tokio::time::Instant::now();
-        let mut large_hint_probed = vec![false; FLOW_COUNT / 2];
+        let mut large_hint_probed = [false; FLOW_COUNT / 2];
         // Far more than a full FIFO rotation. Small flows keep releasing real
         // capacity and immediately need another read. A discarded large
         // packet is only a size hint: its next packet can be a small QUIC ACK.
