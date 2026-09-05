@@ -1262,6 +1262,96 @@ class StatusAndIdentityTests(unittest.TestCase):
 
 
 class CrashAndReleaseSetTests(unittest.TestCase):
+    def make_release_set_with_soak_child(self, base):
+        modern = base / "modern"
+        soak = base / "soak"
+        series = base / "series"
+        modern_status = make_run(modern, "modern_udp", claims=[
+            ("dial9_diagnostic_only", "0"),
+            ("dial9_workload_coverage", "1"),
+            ("dial9_claim", "exact-workload"),
+        ])
+        soak_status = make_run(soak, "soak", claims=[
+            ("dial9_diagnostic_only", "1"),
+            ("dial9_workload_coverage", "0"),
+            ("dial9_claim", "unattributed-diagnostic"),
+        ])
+        series_status = make_stress_series(series)
+        child = soak / "stress/stress-status.tsv"
+        child.parent.mkdir()
+        write_tsv(child, [("run_uuid", str(uuid.uuid4())), ("schema_complete", "1")])
+        roots = [modern, soak, series]
+        for root in roots:
+            evidence.seal(root)
+        return roots, [modern_status, soak_status, series_status], child
+
+    def test_release_set_uuid_uniqueness_includes_soak_stress_child(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            roots, statuses, child = self.make_release_set_with_soak_child(Path(temporary))
+            series = evidence._verify_and_capture(roots[2])
+            for status in [*statuses, *series.nested_statuses]:
+                with self.subTest(collision_kind=status["evidence_kind"], uuid=status["run_uuid"]):
+                    write_tsv(child, [("run_uuid", status["run_uuid"]), ("schema_complete", "1")])
+                    evidence.seal(roots[1])
+                    # Diagnostic envelopes remain inspectable; the release set
+                    # alone imposes uniqueness across independently sealed runs.
+                    evidence.verify(roots[1])
+                    with mock.patch.object(evidence, "_validate_release_kind"):
+                        with self.assertRaisesRegex(
+                            evidence.EvidenceError, "duplicate top-level or nested"
+                        ):
+                            evidence.verify_release_set(roots)
+
+    def test_release_set_accepts_unique_soak_stress_child_uuid(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            roots, statuses, _ = self.make_release_set_with_soak_child(Path(temporary))
+            with mock.patch.object(evidence, "_validate_release_kind"):
+                self.assertEqual(evidence.verify_release_set(roots), statuses)
+
+    def test_release_set_requires_canonical_soak_stress_child_uuid(self):
+        canonical = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        malformed = (
+            f"run_uuid\t{canonical.upper()}\nschema_complete\t1\n",
+            f"run_uuid\t{{{canonical}}}\nschema_complete\t1\n",
+            "run_uuid\tinvalid\nschema_complete\t1\n",
+            "schema_complete\t1\n",
+            f"run_uuid\t{canonical}\nrun_uuid\t{canonical}\nschema_complete\t1\n",
+            f"run_uuid\t{canonical}\nschema_complete\t1",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            roots, _, child = self.make_release_set_with_soak_child(Path(temporary))
+            for content in malformed:
+                with self.subTest(content=content):
+                    child.write_text(content)
+                    evidence.seal(roots[1])
+                    evidence.verify(roots[1])
+                    with mock.patch.object(evidence, "_validate_release_kind"):
+                        with self.assertRaises(evidence.EvidenceError):
+                            evidence.verify_release_set(roots)
+
+    def test_release_set_soak_child_uuid_uses_manifest_retained_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            roots, statuses, child = self.make_release_set_with_soak_child(Path(temporary))
+            write_tsv(child, [("run_uuid", statuses[0]["run_uuid"]), ("schema_complete", "1")])
+            evidence.seal(roots[1])
+            original_scan = evidence._manifest_artifacts
+
+            def scan_then_replace_child(directory):
+                result = original_scan(directory)
+                if directory == roots[1]:
+                    write_tsv(child, [("run_uuid", str(uuid.uuid4())), ("schema_complete", "1")])
+                return result
+
+            with mock.patch.object(
+                evidence, "_manifest_artifacts", side_effect=scan_then_replace_child
+            ), mock.patch.object(evidence, "_validate_release_kind"), mock.patch.object(
+                evidence, "_read_regular_bytes", side_effect=AssertionError("filesystem reread")
+            ):
+                with self.assertRaisesRegex(
+                    evidence.EvidenceError, "duplicate top-level or nested"
+                ):
+                    evidence.verify_release_set(roots)
+
     def test_release_set_uuid_uniqueness_includes_nested_series_members(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
@@ -1685,10 +1775,13 @@ class CrashAndReleaseSetTests(unittest.TestCase):
                     "probe-timeline.txt", "provider-timeline.tsv", "idle-cpu-baseline.tsv",
                     "idle-cpu-post.tsv", "baseline-mem.txt", "final-mem.txt", "leaks.txt",
                     "crashes-before.tsv", "real-download.metrics", "real-download.curl.log",
-                    "real-download.txt", "stress/stress-manifest.tsv", "stress/stress-status.tsv",
+                    "real-download.txt", "stress/stress-manifest.tsv",
                 ):
                     (soak / name).parent.mkdir(parents=True, exist_ok=True)
                     (soak / name).write_text("unused\n")
+                write_tsv(soak / "stress/stress-status.tsv", [
+                    ("run_uuid", str(uuid.uuid4())), ("schema_complete", "1"),
+                ])
                 for artifact, source in evidence.SOAK_PRODUCER_SOURCES:
                     (soak / artifact).write_bytes(Path(__file__).with_name(source).read_bytes())
                 evidence.seal(soak)

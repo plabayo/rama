@@ -584,7 +584,7 @@ def read_status(
 
 
 def _retain_semantic_artifact(name: str) -> bool:
-    return PurePosixPath(name).name in {
+    return name == "stress/stress-status.tsv" or PurePosixPath(name).name in {
         STATUS_NAME,
         CLAIMS_NAME,
         PROVIDER_IDENTITY_NAME,
@@ -969,6 +969,14 @@ def verify_release_set(
         for envelope in verified
         for row in (envelope.status, *envelope.nested_statuses)
     ]
+    for envelope in verified:
+        child_name = "stress/stress-status.tsv"
+        if envelope.status["evidence_kind"] == "soak" and child_name in envelope.artifacts:
+            # Legacy diagnostic soak children have no common status envelope.
+            # Apply release UUID rules to the manifest-retained bytes; standalone
+            # diagnostic inspection can still accept an incomplete child record.
+            child, _ = _parse_tsv_bytes(envelope.retained[child_name])
+            run_uuids.append(_canonical_uuid(child.get("run_uuid", "")))
     if len(set(kinds)) != len(kinds):
         raise EvidenceError("release set contains duplicate evidence kinds")
     if len(set(run_uuids)) != len(run_uuids):
