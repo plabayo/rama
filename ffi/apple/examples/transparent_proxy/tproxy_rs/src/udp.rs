@@ -830,9 +830,12 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("cancellation must destroy the held charged root without awaiting the timer");
         engine.stop(0);
-        result_rx
-            .try_recv()
-            .expect_err("cancellation must not forward the consumed diagnostic marker");
+        // Closing ingress can produce EOF before cooperative cancellation wins
+        // the service select. Neither terminal path may return a datagram.
+        assert!(
+            !matches!(result_rx.try_recv(), Ok(Some(_))),
+            "cancellation must not forward the consumed diagnostic marker"
+        );
     }
 
     #[test]

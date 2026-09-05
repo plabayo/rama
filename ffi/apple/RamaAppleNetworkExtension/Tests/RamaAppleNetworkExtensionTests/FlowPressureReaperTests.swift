@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Network
 import NetworkExtension
@@ -23,6 +24,48 @@ import XCTest
 /// activity times. Admission and composition tests use production entry points
 /// and real per-flow queues.
 final class FlowPressureReaperTests: XCTestCase {
+
+    /// Queue/lock deadlocks cannot be recovered safely inside XCTest. Keep a
+    /// process-exit watchdog alive for the complete invocation, including the
+    /// original synchronous setup, assertions, and teardown. Each invocation
+    /// owns its state; this installs no process-global alarm or signal handler.
+    override func invokeTest() {
+        let completed = DispatchSemaphore(value: 0)
+        let running = Locked(true)
+        let deadline = DispatchTime.now() + .seconds(60)
+        let diagnostic =
+            "error: \(name) exceeded the 60-second deadlock watchdog "
+            + "(including setup/teardown); terminating XCTest with exit status 124.\n"
+
+        // Use a dedicated thread: the Dispatch worker pool is itself part of
+        // the pressure tests and may be unable to service a queued timer.
+        Thread.detachNewThread {
+            guard completed.wait(timeout: deadline) == .timedOut else { return }
+            let expired = running.withLock { value in
+                guard value else { return false }
+                value = false
+                return true
+            }
+            guard expired else { return }
+
+            // Even a blocked stderr consumer must not prevent process exit.
+            // Only the failure path needs this second short-lived thread.
+            let logged = DispatchSemaphore(value: 0)
+            Thread.detachNewThread {
+                FileHandle.standardError.write(Data(diagnostic.utf8))
+                logged.signal()
+            }
+            _ = logged.wait(timeout: .now() + .seconds(1))
+            // Do not run Swift destructors or test cleanup after a genuine
+            // deadlock; the OS reclaims all threads and resources on exit.
+            Darwin._exit(124)
+        }
+        defer {
+            running.withLock { $0 = false }
+            completed.signal()
+        }
+        super.invokeTest()
+    }
 
     private var savedSoftCap: UInt32 = 0
     private var savedLowWater: UInt32 = 0
@@ -2299,17 +2342,18 @@ final class FlowPressureReaperTests: XCTestCase {
         _ = core.tcpFlowCount
     }
 
-    /// Bounded serial-queue barrier. A deadlocked teardown fails this test
-    /// promptly instead of hanging the whole test process in `sync`.
+    /// Queue-order observation. The invocation watchdog also bounds later
+    /// synchronous assertions and teardown if this observation times out.
     private func drain(_ queue: DispatchQueue, timeout: TimeInterval = 30.0) {
         let drained = expectation(description: "flow queue drained")
         queue.async { drained.fulfill() }
         wait(for: [drained], timeout: timeout)
     }
 
-    /// Pressure-suite liveness watchdog with lock-only diagnostics. Queue-only
-    /// tests should use the explicit observation barriers below when possible;
-    /// real timer-plumbing tests use this without assuming a tight fire time.
+    /// Progress polling for real timer plumbing, without a tight fire time.
+    /// Conditions and diagnostics can wait on core queues/locks, so the
+    /// invocation watchdog is the final bound if an individual read stalls.
+    /// Queue-only tests should prefer the observation barriers below.
     private func pollUntilPressure(
         _ message: String = "condition not met before liveness watchdog",
         timeout: TimeInterval = 30.0,
