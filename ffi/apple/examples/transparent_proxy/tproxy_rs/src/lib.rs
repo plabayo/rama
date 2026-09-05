@@ -1,6 +1,9 @@
 use std::{
     convert::Infallible,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -174,9 +177,67 @@ fn udp_flow_action_for_flow(
     flow_action_for_flow(meta)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+enum UdpE2eDiagnosticRejection {
+    // These are the eight bits of the shared mask. Adding another reason
+    // requires widening both this representation and the atomic mask.
+    MissingRemoteEndpoint = 1 << 0,
+    EndpointNotAllowlisted = 1 << 1,
+    MissingRunUuid = 1 << 2,
+    MissingSourceApp = 1 << 3,
+    SourceAppNotAllowlisted = 1 << 4,
+    MissingLocalEndpoint = 1 << 5,
+    ZeroLocalPort = 1 << 6,
+    MissingSourcePid = 1 << 7,
+}
+
+impl UdpE2eDiagnosticRejection {
+    fn label(self) -> &'static str {
+        match self {
+            Self::MissingRemoteEndpoint => "missing_remote_endpoint",
+            Self::EndpointNotAllowlisted => "endpoint_not_allowlisted",
+            Self::MissingRunUuid => "missing_run_uuid",
+            Self::MissingSourceApp => "missing_source_app",
+            Self::SourceAppNotAllowlisted => "source_app_not_allowlisted",
+            Self::MissingLocalEndpoint => "missing_local_endpoint",
+            Self::ZeroLocalPort => "zero_local_port",
+            Self::MissingSourcePid => "missing_source_pid",
+        }
+    }
+}
+
+/// Shared by handler clones: each rejection reason is public at most once per
+/// engine generation. Only active E2E new-flow decisions touch this mask.
+#[derive(Clone, Default)]
+struct UdpE2eDiagnosticRejections(Arc<AtomicU8>);
+
+impl UdpE2eDiagnosticRejections {
+    fn receipt(
+        &self,
+        run_uuid: Option<&str>,
+        provider_pid: u32,
+        provider_generation: u64,
+        reason: UdpE2eDiagnosticRejection,
+    ) -> Option<String> {
+        // The validated launch configuration supplies the canonical UUID.
+        // Never publish a rejection without that qualification identity.
+        let run_uuid = run_uuid?;
+        let bit = reason as u8;
+        if self.0.fetch_or(bit, Ordering::Relaxed) & bit != 0 {
+            return None;
+        }
+        Some(format!(
+            "udp_e2e_diagnostic_rejected run_uuid={run_uuid} provider_pid={provider_pid} provider_generation={provider_generation} reason={}",
+            reason.label(),
+        ))
+    }
+}
+
 /// Build the one privacy-relaxed message used by the signed E2E. Keeping the
 /// allowlist and formatting here makes the behavior example-owned and directly
 /// testable; the reusable Swift provider only forwards normalized metadata.
+/// Failed prerequisites identify only a fixed reason, never rejected metadata.
 fn udp_e2e_diagnostic(
     enabled: bool,
     run_uuid: Option<&str>,
@@ -185,29 +246,43 @@ fn udp_e2e_diagnostic(
     provider_generation: u64,
     meta: &TransparentProxyFlowMeta,
     action: TransparentProxyFlowAction,
-) -> Option<String> {
+) -> Result<Option<String>, UdpE2eDiagnosticRejection> {
     if !enabled {
-        return None;
+        return Ok(None);
     }
 
-    let remote_endpoint = meta.remote_endpoint.as_ref()?;
+    let remote_endpoint = meta
+        .remote_endpoint
+        .as_ref()
+        .ok_or(UdpE2eDiagnosticRejection::MissingRemoteEndpoint)?;
     if !diagnostic_endpoints.contains(remote_endpoint) {
-        return None;
+        return Err(UdpE2eDiagnosticRejection::EndpointNotAllowlisted);
     }
-    let run_uuid = run_uuid?;
-    let source_app = meta.source_app_bundle_identifier.as_deref()?;
+    let run_uuid = run_uuid.ok_or(UdpE2eDiagnosticRejection::MissingRunUuid)?;
+    let source_app = meta
+        .source_app_bundle_identifier
+        .as_deref()
+        .ok_or(UdpE2eDiagnosticRejection::MissingSourceApp)?;
     if !UDP_E2E_PROBE_BUNDLE_IDENTIFIERS.contains(&source_app) {
-        return None;
+        return Err(UdpE2eDiagnosticRejection::SourceAppNotAllowlisted);
     }
-    let local_endpoint = meta.local_endpoint.as_ref()?.clone().canonicalize();
+    let local_endpoint = meta
+        .local_endpoint
+        .as_ref()
+        .ok_or(UdpE2eDiagnosticRejection::MissingLocalEndpoint)?
+        .clone()
+        .canonicalize();
     if local_endpoint.port == 0 {
-        return None;
+        return Err(UdpE2eDiagnosticRejection::ZeroLocalPort);
     }
+    let source_pid = meta
+        .source_app_pid
+        .ok_or(UdpE2eDiagnosticRejection::MissingSourcePid)?;
 
-    Some(format!(
+    Ok(Some(format!(
         "udp_e2e_decision run_uuid={run_uuid} provider_pid={provider_pid} provider_generation={provider_generation} rama_decision={action} flow_id={} remote_endpoint={remote_endpoint} local_endpoint={local_endpoint} source_app={source_app} source_pid={}",
-        meta.flow_id, meta.source_app_pid?,
-    ))
+        meta.flow_id, source_pid,
+    )))
 }
 
 /// One line per new flow surfacing the Apple NE interface metadata: egress
@@ -294,6 +369,7 @@ struct DemoTransparentProxyHandler {
     udp_policy_scope: UdpPolicyScope,
     evidence_run_uuid: Option<Arc<str>>,
     udp_e2e_diagnostic_endpoints: Arc<[HostWithPort]>,
+    udp_e2e_diagnostic_rejections: UdpE2eDiagnosticRejections,
     provider_pid: u32,
     provider_generation: u64,
     egress_connect_timeout: Option<std::time::Duration>,
@@ -329,9 +405,19 @@ impl DemoTransparentProxyHandler {
         let udp_passthrough_ports: Arc<[u16]> = demo_config.udp_passthrough_ports.clone().into();
         let udp_blocked_endpoints = demo_config.udp_blocked_endpoints.clone().into();
         let evidence_run_uuid = demo_config.evidence_run_uuid.map(Arc::<str>::from);
-        let udp_e2e_diagnostic_endpoints = demo_config.udp_e2e_diagnostic_endpoints.into();
+        let udp_e2e_diagnostic_endpoints: Arc<[HostWithPort]> =
+            demo_config.udp_e2e_diagnostic_endpoints.into();
         let provider_pid = ctx.provider_pid();
         let provider_generation = ctx.provider_generation();
+        if udp_policy_scope.is_e2e_active_at(Instant::now())
+            && let Some(run_uuid) = evidence_run_uuid.as_deref()
+        {
+            tracing::debug!(
+                "udp_e2e_diagnostic_active run_uuid={run_uuid} provider_pid={provider_pid} provider_generation={provider_generation} endpoint_count={} probe_app_count={}",
+                udp_e2e_diagnostic_endpoints.len(),
+                UDP_E2E_PROBE_BUNDLE_IDENTIFIERS.len(),
+            );
+        }
         // Treat 0 / absent as "platform default".
         let egress_connect_timeout = demo_config
             .tcp_connect_timeout_ms
@@ -379,6 +465,7 @@ impl DemoTransparentProxyHandler {
             udp_policy_scope,
             evidence_run_uuid,
             udp_e2e_diagnostic_endpoints,
+            udp_e2e_diagnostic_rejections: UdpE2eDiagnosticRejections::default(),
             provider_pid,
             provider_generation,
             egress_connect_timeout,
@@ -535,7 +622,7 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
                 &self.udp_blocked_endpoints,
             );
         let action = udp_flow_action_for_flow(&meta, udp_passthrough_ports, udp_blocked_endpoints);
-        if let Some(message) = udp_e2e_diagnostic(
+        let diagnostic = udp_e2e_diagnostic(
             self.udp_policy_scope.is_e2e_active_at(now),
             self.evidence_run_uuid.as_deref(),
             &self.udp_e2e_diagnostic_endpoints,
@@ -543,7 +630,17 @@ impl TransparentProxyHandler for DemoTransparentProxyHandler {
             self.provider_generation,
             &meta,
             action,
-        ) {
+        );
+        let message = match diagnostic {
+            Ok(message) => message,
+            Err(reason) => self.udp_e2e_diagnostic_rejections.receipt(
+                self.evidence_run_uuid.as_deref(),
+                self.provider_pid,
+                self.provider_generation,
+                reason,
+            ),
+        };
+        if let Some(message) = message {
             tracing::debug!("{message}");
         }
         let udp_service = self.udp_service.clone();
@@ -631,98 +728,161 @@ mod udp_policy_tests {
         );
     }
 
+    const RUN_UUID: &str = "12345678-1234-4234-8234-123456789abc";
+    const REJECTION_REASONS: [UdpE2eDiagnosticRejection; 8] = [
+        UdpE2eDiagnosticRejection::MissingRemoteEndpoint,
+        UdpE2eDiagnosticRejection::EndpointNotAllowlisted,
+        UdpE2eDiagnosticRejection::MissingRunUuid,
+        UdpE2eDiagnosticRejection::MissingSourceApp,
+        UdpE2eDiagnosticRejection::SourceAppNotAllowlisted,
+        UdpE2eDiagnosticRejection::MissingLocalEndpoint,
+        UdpE2eDiagnosticRejection::ZeroLocalPort,
+        UdpE2eDiagnosticRejection::MissingSourcePid,
+    ];
+
     #[test]
-    fn e2e_diagnostics_are_gated_and_allowlisted() {
+    fn e2e_diagnostics_preserve_the_exact_success_message() {
         let python = udp_meta_for_app("1.1.1.1:53", "com.apple.python3");
         let endpoints = ["1.1.1.1:53".parse().expect("valid endpoint")];
-        let run_uuid = "12345678-1234-4234-8234-123456789abc";
         let expected = format!(
-            "udp_e2e_decision run_uuid={run_uuid} provider_pid=99 provider_generation=7 rama_decision=passthrough flow_id={} remote_endpoint=1.1.1.1:53 local_endpoint=127.0.0.1:50001 source_app=com.apple.python3 source_pid=4242",
+            "udp_e2e_decision run_uuid={RUN_UUID} provider_pid=99 provider_generation=7 rama_decision=passthrough flow_id={} remote_endpoint=1.1.1.1:53 local_endpoint=127.0.0.1:50001 source_app=com.apple.python3 source_pid=4242",
             python.flow_id,
         );
         assert_eq!(
             udp_e2e_diagnostic(
                 true,
-                Some(run_uuid),
+                Some(RUN_UUID),
                 &endpoints,
                 99,
                 7,
                 &python,
                 TransparentProxyFlowAction::Passthrough,
             )
+            .unwrap()
             .as_deref(),
             Some(expected.as_str())
         );
-        assert_eq!(
-            udp_e2e_diagnostic(
-                false,
-                Some(run_uuid),
-                &endpoints,
-                99,
-                7,
-                &python,
-                TransparentProxyFlowAction::Passthrough,
-            ),
-            None
-        );
+    }
 
-        let background = udp_meta_for_app("1.1.1.1:53", "com.example.background");
-        assert_eq!(
-            udp_e2e_diagnostic(
-                true,
-                Some(run_uuid),
-                &endpoints,
-                99,
-                7,
-                &background,
-                TransparentProxyFlowAction::Passthrough,
-            ),
-            None
-        );
+    #[test]
+    fn e2e_diagnostics_distinguish_all_rejected_prerequisites() {
+        let endpoints = ["1.1.1.1:53".parse().expect("valid endpoint")];
+        for reason in REJECTION_REASONS {
+            let mut meta = udp_meta_for_app("1.1.1.1:53", "com.apple.python3");
+            let mut run_uuid = Some(RUN_UUID);
+            match reason {
+                UdpE2eDiagnosticRejection::MissingRemoteEndpoint => meta.remote_endpoint = None,
+                UdpE2eDiagnosticRejection::EndpointNotAllowlisted => {
+                    meta.remote_endpoint = Some("8.8.8.8:53".parse().unwrap());
+                }
+                UdpE2eDiagnosticRejection::MissingRunUuid => run_uuid = None,
+                UdpE2eDiagnosticRejection::MissingSourceApp => {
+                    meta.source_app_bundle_identifier = None;
+                }
+                UdpE2eDiagnosticRejection::SourceAppNotAllowlisted => {
+                    meta.source_app_bundle_identifier =
+                        Some("com.example.background".parse().unwrap());
+                }
+                UdpE2eDiagnosticRejection::MissingLocalEndpoint => meta.local_endpoint = None,
+                UdpE2eDiagnosticRejection::ZeroLocalPort => {
+                    meta.local_endpoint = Some("127.0.0.1:0".parse().unwrap());
+                }
+                UdpE2eDiagnosticRejection::MissingSourcePid => meta.source_app_pid = None,
+            }
+            assert_eq!(
+                udp_e2e_diagnostic(
+                    true,
+                    run_uuid,
+                    &endpoints,
+                    99,
+                    7,
+                    &meta,
+                    TransparentProxyFlowAction::Passthrough,
+                ),
+                Err(reason),
+            );
+            // Normal and expired E2E mode must return before any rejection is
+            // offered to the shared mask, even with missing metadata.
+            let start = Instant::now();
+            for (scope, now) in [
+                (UdpPolicyScope::Normal, start),
+                (
+                    UdpPolicyScope::new(true, start),
+                    start + UDP_E2E_SAFETY_LIFETIME,
+                ),
+            ] {
+                assert_eq!(
+                    udp_e2e_diagnostic(
+                        scope.is_e2e_active_at(now),
+                        run_uuid,
+                        &endpoints,
+                        99,
+                        7,
+                        &meta,
+                        TransparentProxyFlowAction::Passthrough,
+                    ),
+                    Ok(None),
+                );
+            }
+        }
+    }
 
-        let mut missing_pid = python;
-        missing_pid.source_app_pid = None;
-        assert_eq!(
-            udp_e2e_diagnostic(
-                true,
-                Some(run_uuid),
-                &endpoints,
-                99,
-                7,
-                &missing_pid,
-                TransparentProxyFlowAction::Passthrough,
-            ),
-            None
+    #[test]
+    fn e2e_rejection_receipts_are_bounded_across_clones_and_threads() {
+        let rejections = UdpE2eDiagnosticRejections::default();
+        let start = std::sync::Barrier::new(16);
+        let receipts = std::thread::scope(|scope| {
+            let workers = (0..16)
+                .map(|_| {
+                    let cloned = rejections.clone();
+                    let start = &start;
+                    scope.spawn(move || {
+                        start.wait();
+                        REJECTION_REASONS
+                            .into_iter()
+                            .cycle()
+                            .take(REJECTION_REASONS.len() * 4)
+                            .filter_map(|reason| cloned.receipt(Some(RUN_UUID), 99, 7, reason))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect::<Vec<_>>();
+            workers
+                .into_iter()
+                .flat_map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(receipts.len(), REJECTION_REASONS.len());
+        for reason in REJECTION_REASONS {
+            // Exact output guards against accidentally publishing rejected
+            // endpoints, application identifiers, or source process metadata.
+            let expected = format!(
+                "udp_e2e_diagnostic_rejected run_uuid={RUN_UUID} provider_pid=99 provider_generation=7 reason={}",
+                reason.label(),
+            );
+            assert_eq!(receipts.iter().filter(|line| **line == expected).count(), 1);
+            assert!(rejections.receipt(Some(RUN_UUID), 99, 7, reason).is_none());
+        }
+        let next_generation = UdpE2eDiagnosticRejections::default();
+        assert!(
+            next_generation
+                .receipt(
+                    Some(RUN_UUID),
+                    99,
+                    8,
+                    UdpE2eDiagnosticRejection::MissingLocalEndpoint,
+                )
+                .is_some()
         );
+    }
 
-        let mut missing_local = udp_meta_for_app("1.1.1.1:53", "com.apple.python3");
-        missing_local.local_endpoint = None;
-        assert_eq!(
-            udp_e2e_diagnostic(
-                true,
-                Some(run_uuid),
-                &endpoints,
-                99,
-                7,
-                &missing_local,
-                TransparentProxyFlowAction::Passthrough,
-            ),
-            None
-        );
-
-        let unscoped = udp_meta_for_app("8.8.8.8:53", "com.apple.python3");
-        assert_eq!(
-            udp_e2e_diagnostic(
-                true,
-                Some(run_uuid),
-                &endpoints,
-                99,
-                7,
-                &unscoped,
-                TransparentProxyFlowAction::Passthrough,
-            ),
-            None
-        );
+    #[test]
+    fn e2e_rejections_without_run_identity_are_silent_and_do_not_consume_budget() {
+        let rejections = UdpE2eDiagnosticRejections::default();
+        for reason in REJECTION_REASONS {
+            assert!(rejections.receipt(None, 99, 7, reason).is_none());
+            assert!(rejections.receipt(Some(RUN_UUID), 99, 7, reason).is_some());
+        }
     }
 }
 

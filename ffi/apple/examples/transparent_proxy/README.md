@@ -357,6 +357,13 @@ is passed through `startOptions` without ever being written to the saved
 `NETransparentProxyManager` profile. Downstream users configure and decide UDP
 flows in Rust; they do not need a custom Swift provider.
 
+The temporary mode emits `udp_e2e_diagnostic_active` once when configured and
+`udp_e2e_diagnostic_rejected` at most once per rejection reason per engine
+generation. These records expose only the run/provider identity, counts, and
+fixed reasons such as `missing_local_endpoint` or `missing_source_pid`.
+They explain absent decision records without publishing rejected flow metadata;
+they cannot satisfy the gate's exact traffic-attribution requirements.
+
 The default targets are maintained public services and therefore require
 Internet access. They can be replaced for a restricted runner with
 `RAMA_TPROXY_E2E_PASSTHROUGH_DNS`, `RAMA_TPROXY_E2E_INTERCEPT_NTP`,
