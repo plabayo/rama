@@ -4223,7 +4223,7 @@ class SoakOwnedProcessCleanupTests(unittest.TestCase):
         state = result.stdout.strip()
         return bool(state) and not state.startswith("Z")
 
-    def run_fixture(self, mode, join="stop", identity_mismatch=False, expire_discovery=False):
+    def run_fixture(self, mode, join="stop", identity_mismatch=False, expire_discovery=False, producer_site=None):
         fixture = r"""
 import os, signal, sys, time
 from pathlib import Path
@@ -4250,6 +4250,8 @@ if mode == "term":
         time.sleep(1)
 child = os.fork()
 if child == 0:
+    if mode == "subgroup":
+        os.setsid()
     if mode == "grandchild":
         grandchild = os.fork()
         if grandchild != 0:
@@ -4290,6 +4292,46 @@ if [[ "$5" == mismatch ]]; then SOAK_CHILD_IDENTITIES[root_pid]=$(printf '%064d'
 bounded_${4}_and_join "$root_pid" 2 direct
 printf 'status=%s,%s,%s,%s\n' "$BOUNDED_CHILD_RC" "$BOUNDED_CHILD_OK" "$BOUNDED_CHILD_REAPED" "$BOUNDED_CHILD_FORCED"
 """
+        if producer_site is not None:
+            source = Path(__file__).with_name("soak_test.sh").read_text()
+            pid_variable = {
+                "probe": "PROBE_MON_PID", "log": "LOG_STREAM_PID",
+                "wake": "WAKE_DL_PID", "generation": "GENERATION_MON_PID",
+            }[producer_site]
+            if producer_site == "wake":
+                start = source.rindex('  bounded_stop_and_join "$WAKE_DL_PID" 5 direct')
+                terminal = '  (( BOUNDED_CHILD_REAPED )) && WAKE_DL_PID=""'
+                end = source.index(terminal, start) + len(terminal)
+            else:
+                start = source.rindex(f'if [[ -n "${pid_variable}" ]]; then')
+                end = source.index("\nfi\n", start) + len("\nfi\n")
+            # Execute the real terminal producer call site, including clearing
+            # its PID. No later cleanup can rediscover the discarded result.
+            producer = (
+                "FINAL_CLEANUP_OK=1\nwarn() { :; }\nsudo() { shift; \"$@\"; }\n"
+                + f'{pid_variable}="$root_pid"\n'
+                + source[start:end]
+            )
+            harness = harness.replace('bounded_${4}_and_join "$root_pid" 2 direct', producer)
+            def function(name):
+                return name + "() {" + source.split(name + "() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+            # This is a producer/finalizer composition fixture, not a signed
+            # envelope. Stub unrelated verification; reaching seal is a bug.
+            harness += function("write_incomplete_status") + function("finalize_and_exit") + r"""
+OUT="$fixture_root"
+REPO="$fixture_root" REPO_HEAD=fixture REPO_DIRTY=0
+FINALIZATION_STARTED=0 ARTIFACTS_INITIALIZED=1
+cleanup() { :; }
+capture_crashes_after() { :; }
+soak_verdict_exit_code() { printf '0\n'; }
+git() { if [[ "$*" == *"rev-parse HEAD" ]]; then printf 'fixture\n'; fi; return 0; }
+write_common_status() { :; }
+evidence_tool() { printf '%s\n' "$1" >> "$OUT/seal-attempts"; }
+package_sealed_evidence() { :; }
+hdr() { :; }
+say() { :; }
+finalize_and_exit 0
+"""
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "fixture.py").write_text(fixture)
@@ -4306,12 +4348,19 @@ printf 'status=%s,%s,%s,%s\n' "$BOUNDED_CHILD_RC" "$BOUNDED_CHILD_OK" "$BOUNDED_
             )
             try:
                 output, _ = process.communicate(timeout=20)
-                self.assertEqual(process.returncode, 0, output)
+                incomplete_producer = producer_site is not None and mode == "subgroup"
+                self.assertEqual(process.returncode, 2 if incomplete_producer else 0, output)
                 statuses = re.findall(r"^status=(.*)$", output, re.MULTILINE)
                 self.assertEqual(len(statuses), 1, output)
                 pids = [int(pid) for pid in (root / "fixture.pids").read_text().split()]
                 live = [pid for pid in pids if self.live_process(pid)]
                 self.assertIsNone(unrelated.poll(), "cleanup touched an unrelated process")
+                if incomplete_producer:
+                    self.assertFalse((root / "seal-attempts").exists(), output)
+                    verdict = (root / "soak-verdict.tsv").read_text()
+                    self.assertIn("cleanup did not prove complete artifact-writer shutdown", verdict)
+                elif producer_site is not None:
+                    self.assertEqual((root / "seal-attempts").read_text().splitlines(), ["seal", "verify"])
                 return statuses[0].split(","), live
             finally:
                 # Fixture cleanup is separate from the behavior being asserted.
@@ -4343,6 +4392,20 @@ printf 'status=%s,%s,%s,%s\n' "$BOUNDED_CHILD_RC" "$BOUNDED_CHILD_OK" "$BOUNDED_
                 status, live = self.run_fixture(mode)
                 self.assertEqual(live, [])
                 self.assertEqual(status[1:], ["0", "1", "1"])
+
+    def test_terminal_producer_cannot_discard_forced_descendant_cleanup(self):
+        for producer_site in ("probe", "log", "wake", "generation"):
+            with self.subTest(producer_site=producer_site):
+                status, live = self.run_fixture("subgroup", producer_site=producer_site)
+                self.assertEqual(live, [])
+                self.assertEqual(status, ["143", "0", "1", "1"])
+
+    def test_terminal_producer_accepts_normal_term_cleanup(self):
+        for producer_site in ("probe", "log", "wake", "generation"):
+            with self.subTest(producer_site=producer_site):
+                status, live = self.run_fixture("term", producer_site=producer_site)
+                self.assertEqual(live, [])
+                self.assertEqual(status, ["143", "1", "1", "0"])
 
     def test_wait_reaps_orphans_and_stdout_holders_after_direct_command_exits(self):
         for mode in ("exit_first", "grandchild"):
