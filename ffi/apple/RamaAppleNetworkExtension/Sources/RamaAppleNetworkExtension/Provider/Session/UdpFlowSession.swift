@@ -134,7 +134,10 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     /// Cross-thread demand is saturated before dispatch so one Rust callback
     /// per datagram cannot allocate one flow-queue block per datagram.
     private let readDemand = Locked(UdpReadDemandGate())
-    private var ingressStaging = UdpIngressFlowStaging(
+    /// Production assigns the shared budget before publishing the flow. Keep
+    /// the standalone test fallback lazy so new flows do not allocate and
+    /// immediately discard a private coordinator, atomics, and lease timer.
+    private lazy var ingressStaging = UdpIngressFlowStaging(
         generation: UdpIngressGenerationStagingBudget(policy: .testDefaults))
     /// Queue-confined replacement read held behind Swift staging capacity.
     /// It is logically `.reading`, so one additional Rust demand continues to
