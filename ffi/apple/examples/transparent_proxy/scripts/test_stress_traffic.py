@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -32,11 +33,14 @@ from modern_udp_evidence import (
     pressure_window_observation,
 )
 from stress_evidence import (
+    parse_transfers,
+    post_response_sha256,
     seal as seal_stress_evidence,
     sha256_file,
     verify as verify_stress_evidence,
     write_workload as write_stress_workload,
     write_metrics as write_stress_metrics,
+    zero_body_sha256,
 )
 from stress_compare import (
     create_comparison,
@@ -139,10 +143,14 @@ def write_self_attested_traffic_run(
         http_version = "1.1" if worker in {
             "small_http1", "plain_http", "churn_close"
         } else "2"
+        response_metadata = (
+            f" response_sha256={zero_body_sha256(post_bytes)}"
+            if worker == "post_large" else ""
+        )
         (log_dir / f"{worker}.log").write_text("".join(
             f"request_id={request_id} status=200 curl_exit=0 "
             f"downloaded={downloaded} uploaded={uploaded} "
-            f"http_version={http_version} duration_seconds={duration}\n"
+            f"http_version={http_version} duration_seconds={duration}{response_metadata}\n"
             for request_id in request_ids[worker]
         ))
     (log_dir / "source-stress_traffic.sh").write_bytes(STRESS_SCRIPT.read_bytes())
@@ -767,6 +775,12 @@ class StressTrafficValidationTests(unittest.TestCase):
             self.assertEqual(str(uuid.UUID(run_uuid)), run_uuid)
             self.assertGreaterEqual(end, start)
             self.assertRegex(manifest_hash, r"^[0-9a-f]{64}$")
+            post_rows = (log_dir / "post_large.log").read_text().splitlines()
+            expected_hash = hashlib.sha256(bytes(1024)).hexdigest()
+            self.assertTrue(all(
+                row.endswith(f" response_sha256={expected_hash}") for row in post_rows
+            ))
+            self.assertEqual(list((log_dir / ".responses").glob("*")), [])
 
     def test_status_only_curl_cannot_fake_transfer_or_protocol_evidence(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -885,6 +899,160 @@ class StressTrafficValidationTests(unittest.TestCase):
                 (root / "logs" / "post_large.summary").read_text(),
                 r"fail=[1-9][0-9]*",
             )
+            rows = (root / "logs" / "post_large.log").read_text().splitlines()
+            self.assertGreater(len(rows), 0)
+            wrong_hash = hashlib.sha256(b"\1" * 1024).hexdigest()
+            self.assertNotEqual(wrong_hash, hashlib.sha256(bytes(1024)).hexdigest())
+            self.assertTrue(all(
+                row.endswith(f" response_sha256={wrong_hash}") for row in rows
+            ))
+
+    def test_post_checksum_measurement_failure_retains_rejecting_raw_record(self):
+        shell = STRESS_SCRIPT.read_text()
+        helpers = "".join(self.stress_function(shell, name) for name in (
+            "http_status_is_ok", "transfer_matches_workload", "stress_request_id",
+            "do_one_curl",
+        ))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "post.body").write_bytes(bytes(8))
+            (root / "responses").mkdir()
+            program = helpers + textwrap.dedent(f"""\
+                LOG_DIR={shlex.quote(str(root))}
+                RESPONSE_TMP_DIR="$LOG_DIR/responses" POST_FILE="$LOG_DIR/post.body"
+                POST_BYTES=8 TRAFFIC_ROLE=direct-baseline EVIDENCE_HELPER=unused
+                RUN_UUID=00000000-0000-0000-0000-000000000001
+                run_hermetic_curl() {{
+                  local argument previous='' output=''
+                  for argument in "$@"; do
+                    [[ "$previous" == --output ]] && output="$argument"
+                    previous="$argument"
+                  done
+                  cp "$POST_FILE" "$output"
+                  printf '200\t8\t8\t2\t0.050'
+                }}
+                python3() {{ return 2; }}
+                do_one_curl post_large unused-target 1 --http2
+            """)
+            result = subprocess.run(
+                ["bash", "-c", program], capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            row = (root / "post_large.log").read_text()
+            self.assertIn("status=200 curl_exit=0 downloaded=8 uploaded=8", row)
+            self.assertTrue(row.endswith(" response_sha256=unavailable\n"))
+            self.assertEqual(list((root / "responses").iterdir()), [])
+
+    def test_post_response_checksum_requires_exact_bounded_regular_contents(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            response = root / "response"
+            for length in (0, 7, 8, 9):
+                with self.subTest(length=length):
+                    response.write_bytes(bytes(length))
+                    if length == 8:
+                        self.assertEqual(
+                            post_response_sha256(response, 8),
+                            hashlib.sha256(bytes(8)).hexdigest(),
+                        )
+                    else:
+                        with self.assertRaisesRegex(ValueError, "wrong byte count"):
+                            post_response_sha256(response, 8)
+            response.write_bytes(b"\1" * 8)
+            self.assertEqual(
+                post_response_sha256(response, 8), hashlib.sha256(b"\1" * 8).hexdigest()
+            )
+            # A larger regular file is read only through the expected body
+            # and one trailing byte; its metadata is not the content proof.
+            response.write_bytes(bytes(1024 * 1024))
+            read_lengths = []
+            real_fdopen = os.fdopen
+
+            class ObservedFile:
+                def __init__(self, *args, **kwargs):
+                    self.source = real_fdopen(*args, **kwargs)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    self.source.close()
+
+                def fileno(self):
+                    return self.source.fileno()
+
+                def read(self, size):
+                    chunk = self.source.read(size)
+                    read_lengths.append(len(chunk))
+                    return chunk
+
+            with mock.patch("stress_evidence.os.fdopen", ObservedFile):
+                with self.assertRaisesRegex(ValueError, "wrong byte count"):
+                    post_response_sha256(response, 8)
+            self.assertEqual(read_lengths, [8, 1])
+            pipe = root / "pipe"
+            os.mkfifo(pipe)
+            with self.assertRaisesRegex(ValueError, "not a regular file"):
+                post_response_sha256(pipe, 8)
+            link = root / "link"
+            link.symlink_to(response)
+            with self.assertRaises(OSError):
+                post_response_sha256(link, 8)
+            for invalid_size in (0, 1_073_741_825):
+                with self.assertRaisesRegex(ValueError, "invalid POST body size"):
+                    post_response_sha256(response, invalid_size)
+
+    def test_post_response_checksum_replay_rejects_invalid_raw_metadata(self):
+        expected_hash = hashlib.sha256(bytes(1024)).hexdigest()
+        cases = (
+            ("post_large", "", "response SHA256 contract"),
+            ("post_large", " response_sha256=unavailable", "malformed"),
+            ("post_large", f" response_sha256={expected_hash.upper()}", "malformed"),
+            ("post_large", f" response_sha256={expected_hash[:-1]}", "malformed"),
+            ("post_large", f" response_sha256={expected_hash}0", "malformed"),
+            ("post_large", f" response_sha256={hashlib.sha256(b'1' * 1024).hexdigest()}", "response SHA256 contract"),
+            ("post_large", f" response_sha256={expected_hash} response_sha256={expected_hash}", "malformed"),
+        ) + tuple(
+            (worker, f" response_sha256={expected_hash}", "unexpected")
+            for worker in (
+                "small_https", "small_http1", "plain_http", "large_get",
+                "head_only", "churn_close", "parallel_pool",
+            )
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            for index, (worker, metadata, error) in enumerate(cases):
+                with self.subTest(worker=worker, metadata=metadata):
+                    run = Path(temporary) / str(index)
+                    run_uuid, _ = write_self_attested_traffic_run(run, post_bytes=1024)
+                    raw = run / f"{worker}.log"
+                    rows = [re.sub(r" response_sha256=[0-9a-f]{64}$", "", row)
+                            for row in raw.read_text().splitlines()]
+                    raw.write_text("".join(row + metadata + "\n" for row in rows))
+                    # A passing summary cannot stand in for the raw content
+                    # observation, even when byte counts and IDs are exact.
+                    with self.assertRaisesRegex(ValueError, error):
+                        parse_transfers(run, run_uuid)
+
+    def test_post_response_checksum_is_replayed_by_source_and_common_verifiers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            for common in (False, True):
+                with self.subTest(common=common):
+                    run = Path(temporary) / str(common)
+                    write_self_attested_traffic_run(run, post_bytes=1024)
+                    if common:
+                        add_common_stress_envelope(run)
+                    raw = run / "post_large.log"
+                    wrong_hash = hashlib.sha256(b"\1" * 1024).hexdigest()
+                    raw.write_text(re.sub(
+                        r"response_sha256=[0-9a-f]{64}",
+                        f"response_sha256={wrong_hash}", raw.read_text(),
+                    ))
+                    if common:
+                        reseal_common_stress_envelope(run)
+                    else:
+                        reseal_self_attested_traffic_run(run)
+                    with self.assertRaisesRegex(ValueError, "response SHA256 contract"):
+                        verify_stress_evidence(run)
 
     def test_analysis_only_rejects_an_empty_artifact_directory(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -946,7 +946,7 @@ stress_request_id() {
 do_one_curl() {
   local label="$1" target="$2" ordinal="$3"; shift 3
   local metrics code downloaded uploaded http_version duration_seconds curl_rc=0 matched=1
-  local response_file="" output_file=/dev/null request_id
+  local response_file="" output_file=/dev/null request_id response_metadata="" response_sha256
   request_id="$(stress_request_id "$label" "$ordinal")" || return 1
   if [[ "$label" == post_large ]]; then
     response_file="$RESPONSE_TMP_DIR/post.${BASHPID:-$$}.$RANDOM"
@@ -961,14 +961,22 @@ do_one_curl() {
   if [[ "$TRAFFIC_ROLE" == proxy-candidate ]]; then
     curl_args+=(--header "X-Rama-Tproxy-Stress-Run: $RUN_UUID:$request_id")
   fi
-  # The numeric transfer record is sufficient for the verdict. Curl's prose
-  # errors can echo a configured private target, so never persist stderr.
+  # Curl's prose errors can echo a configured private target, so never persist
+  # stderr. POST records also retain the response digest before cleanup: the
+  # summary alone cannot preserve a failed echo comparison for later replay.
   metrics=$(run_hermetic_curl "${curl_args[@]}" "$@" --url "$target" 2>/dev/null) || curl_rc=$?
   IFS=$'\t' read -r code downloaded uploaded http_version duration_seconds <<< "$metrics"
   [[ "$code" =~ ^[0-9]{3}$ ]] || code=000
-  printf 'request_id=%s status=%s curl_exit=%s downloaded=%s uploaded=%s http_version=%s duration_seconds=%s\n' \
+  if [[ "$label" == post_large ]]; then
+    # One bounded read of at most POST_BYTES + 1; never hash an unbounded or
+    # non-regular response. Keep a rejecting raw field if measurement fails.
+    response_sha256=$(python3 "$EVIDENCE_HELPER" post-response-sha256 \
+      "$response_file" "$POST_BYTES" 2>/dev/null) || { response_sha256=unavailable; matched=0; }
+    response_metadata=" response_sha256=$response_sha256"
+  fi
+  printf 'request_id=%s status=%s curl_exit=%s downloaded=%s uploaded=%s http_version=%s duration_seconds=%s%s\n' \
     "$request_id" "$code" "$curl_rc" "${downloaded:-?}" "${uploaded:-?}" \
-    "${http_version:-?}" "${duration_seconds:-?}" >>"$LOG_DIR/${label}.log"
+    "${http_version:-?}" "${duration_seconds:-?}" "$response_metadata" >>"$LOG_DIR/${label}.log"
   (( curl_rc == 0 )) \
     && http_status_is_ok "$code" \
     && transfer_matches_workload \

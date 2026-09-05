@@ -7,14 +7,15 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import stat
 import sys
 from urllib.parse import urlsplit
 import uuid
 
-import signed_run_evidence
-
-
-SCHEMA_VERSION = 3
+# Schema 4 binds POST echo integrity to each raw request record.
+SCHEMA_VERSION = 4
+MAX_BODY_BYTES = 1_073_741_824
+HASH_CHUNK_BYTES = 1024 * 1024
 WORKERS = (
     "small_https", "small_http1", "plain_http", "large_get", "post_large",
     "head_only", "churn_close", "parallel_pool",
@@ -48,7 +49,8 @@ STRESS_MARKER_RE = re.compile(
 TRANSFER_RE = re.compile(
     r"request_id=([0-9a-f]{64}) status=(2\d\d) curl_exit=0 "
     r"downloaded=(\d+) uploaded=(\d+) http_version=(\S+) "
-    r"duration_seconds=([0-9]+(?:\.[0-9]+)?)$"
+    r"duration_seconds=([0-9]+(?:\.[0-9]+)?)"
+    r"(?: response_sha256=([0-9a-f]{64}))?$"
 )
 SUMMARY_RE = re.compile(r"(\S+) done: iters=(\d+) ok=(\d+) fail=(\d+)$")
 RESOURCE_SAMPLE_RE = re.compile(
@@ -138,6 +140,41 @@ def canonical_uint(value, maximum=2**64 - 1):
     return number
 
 
+def zero_body_sha256(byte_count):
+    """Hash the canonical POST body without allocating its complete contents."""
+    if not 0 < byte_count <= MAX_BODY_BYTES:
+        raise ValueError("invalid POST body size")
+    digest = hashlib.sha256()
+    chunk = bytes(min(byte_count, HASH_CHUNK_BYTES))
+    remaining = byte_count
+    while remaining:
+        count = min(remaining, len(chunk))
+        digest.update(chunk[:count])
+        remaining -= count
+    return digest.hexdigest()
+
+
+def post_response_sha256(path, byte_count):
+    """Hash an exact-sized regular response, reading at most byte_count + 1 bytes."""
+    if not 0 < byte_count <= MAX_BODY_BYTES:
+        raise ValueError("invalid POST body size")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb", buffering=0) as source:
+        if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+            raise ValueError("POST response is not a regular file")
+        digest = hashlib.sha256()
+        remaining = byte_count
+        while remaining:
+            chunk = source.read(min(remaining, HASH_CHUNK_BYTES))
+            if not chunk:
+                raise ValueError("POST response has the wrong byte count")
+            digest.update(chunk)
+            remaining -= len(chunk)
+        if source.read(1):
+            raise ValueError("POST response has the wrong byte count")
+    return digest.hexdigest()
+
+
 def canonical_uuid(value):
     if str(uuid.UUID(value)) != value:
         raise ValueError("non-canonical UUID")
@@ -167,8 +204,8 @@ def write_workload(
 ):
     duration = canonical_uint(duration_text, 86_400)
     concurrency = canonical_uint(concurrency_text, 512)
-    large_bytes = canonical_uint(large_bytes_text, 1_073_741_824)
-    post_bytes = canonical_uint(post_bytes_text, 1_073_741_824)
+    large_bytes = canonical_uint(large_bytes_text, MAX_BODY_BYTES)
+    post_bytes = canonical_uint(post_bytes_text, MAX_BODY_BYTES)
     if any(value == 0 for value in (duration, concurrency, large_bytes, post_bytes)):
         raise ValueError("invalid stress workload bounds")
     values = (
@@ -204,8 +241,8 @@ def read_workload(directory):
     workload = {
         "duration_seconds": canonical_uint(values["duration_seconds"], 86_400),
         "concurrency": canonical_uint(values["concurrency"], 512),
-        "large_bytes": canonical_uint(values["large_bytes"], 1_073_741_824),
-        "post_bytes": canonical_uint(values["post_bytes"], 1_073_741_824),
+        "large_bytes": canonical_uint(values["large_bytes"], MAX_BODY_BYTES),
+        "post_bytes": canonical_uint(values["post_bytes"], MAX_BODY_BYTES),
     }
     workload.update({key: values[key] for key in RELEASE_TARGETS})
     if any(workload[key] == 0 for key in (
@@ -272,6 +309,9 @@ def read_unique_tsv(path, allowed, required=None):
 
 
 def read_status(path):
+    # The per-request checksum command does not need envelope dependencies.
+    import signed_run_evidence
+
     directory = path.parent
     if not (directory / signed_run_evidence.STATUS_NAME).exists():
         values, rows = read_unique_tsv(path, LEGACY_STATUS_FIELDS)
@@ -357,6 +397,7 @@ def parse_summary(directory, worker):
 
 def parse_transfers(directory, run_uuid=None):
     workload = read_workload(directory)
+    expected_response_sha256 = zero_body_sha256(workload["post_bytes"])
     result = {}
     all_request_ids = set()
     for worker in WORKERS:
@@ -371,9 +412,15 @@ def parse_transfers(directory, run_uuid=None):
             match = TRANSFER_RE.fullmatch(line)
             if match is None:
                 raise ValueError(f"malformed {worker} raw transfer")
-            request_id, _, downloaded_text, uploaded_text, http_version, duration_text = (
-                match.groups()
-            )
+            (
+                request_id, _, downloaded_text, uploaded_text, http_version,
+                duration_text, response_sha256,
+            ) = match.groups()
+            if worker == "post_large":
+                if response_sha256 != expected_response_sha256:
+                    raise ValueError("post_large violated its response SHA256 contract")
+            elif response_sha256 is not None:
+                raise ValueError(f"unexpected {worker} response SHA256 metadata")
             if request_id in all_request_ids:
                 raise ValueError("stress request IDs are not globally unique")
             all_request_ids.add(request_id)
@@ -648,6 +695,8 @@ def seal(
 
 
 def parse_identity(directory, status):
+    import signed_run_evidence
+
     identity_path = artifact_path(directory, "provider-identity.tsv")
     first_row = identity_path.read_text(encoding="utf-8").splitlines()[0]
     if first_row.startswith("pid\t"):
@@ -731,6 +780,8 @@ def verify_ndjson_window(
     path, provider_pid, subsystem, run_uuid, start, end, traffic_start, traffic_end,
     *, require_attribution=True,
 ):
+    import signed_run_evidence
+
     provider_rows = 0
     marker_ids = set()
     for line in path.read_text(encoding="utf-8", errors="strict").splitlines():
@@ -814,6 +865,8 @@ def measure_attribution(
 
 
 def verify(directory):
+    import signed_run_evidence
+
     common_envelope = (directory / signed_run_evidence.STATUS_NAME).exists()
     if common_envelope:
         signed_run_evidence.verify(directory)
@@ -978,6 +1031,8 @@ def main():
         directory = Path(directory_text)
         if command == "workload" and len(args) == 8:
             print(write_workload(directory, *args))
+        elif command == "post-response-sha256" and len(args) == 1:
+            print(post_response_sha256(directory, canonical_uint(args[0], MAX_BODY_BYTES)))
         elif command == "metrics" and len(args) in {8, 9}:
             print(*write_metrics(directory, *args), sep="\t")
         elif command == "attribution" and len(args) == 7:
@@ -988,8 +1043,9 @@ def main():
             print(*verify(directory), sep="\t")
         else:
             raise ValueError(
-                "usage: stress_evidence.py <workload|metrics|attribution|seal|verify> "
-                "DIR [arguments]"
+                "usage: stress_evidence.py "
+                "<workload|metrics|attribution|seal|verify|post-response-sha256> "
+                "PATH [arguments]"
             )
     except (OSError, UnicodeError, ValueError) as error:
         print(f"stress evidence failed: {error}", file=sys.stderr)
