@@ -80,7 +80,8 @@
 #   DO_INSTALL      1 = `just install-tproxy-dev` first. Default 0.
 #   STRESS_SECONDS  phase-1 stress duration (0..86400; positive unless skipped). Default 180.
 #   CONCURRENCY     phase-1 stress pool size (1..512). Default 24.
-#   DL_HOST         download/holder host (rama http-test). Default http-test.ramaproxy.org.
+#   STRESS_TARGET_HOST shared HTTP test DNS host. Default http-test.ramaproxy.org.
+#   DL_HOST         legacy alias for the same host; conflicting settings fail.
 #   FANOUT_TARGET   phase-2 concurrent active flows. Default auto
 #                   (min(softCap+25%, MAX_SAFE_FLOWS), floored at 40, then
 #                   bounded by enabled hard-cap headroom from the baseline).
@@ -109,8 +110,9 @@ REPO="${REPO:-$(cd -- "$SCRIPT_DIR/../../../../.." && pwd)}"
 EXAMPLE_DIR="$REPO/ffi/apple/examples/transparent_proxy"
 STRESS_SH="$EXAMPLE_DIR/scripts/stress_traffic.sh"
 PROVIDER_BUNDLE="org.ramaproxy.example.tproxy.dev.provider"
-HTTPS_PROBE="https://http-test.ramaproxy.org/method"
-DL_HOST="${DL_HOST:-http-test.ramaproxy.org}"
+TARGET_HOST="${STRESS_TARGET_HOST-${DL_HOST-http-test.ramaproxy.org}}"
+HTTPS_PROBE="https://${TARGET_HOST}/method"
+DL_HOST="${DL_HOST-$TARGET_HOST}"
 DL_MAX_BYTES=$(( 32 * 1024 * 1024 ))   # http-test /bytes server cap (MAX_BYTES)
 DIAL9_DIR="/var/root/Library/Application Support/rama/tproxy/dial9-traces"
 EVIDENCE_HELPER="$EXAMPLE_DIR/scripts/signed_run_evidence.py"
@@ -1613,6 +1615,9 @@ hdr "rama transparent proxy soak — comprehensive single session"
 [[ -f "$STRESS_SH" ]] || die "stress script not found at $STRESS_SH (is REPO correct?)"
 [[ -n "$PYTHON_BIN" ]] || die "python3 is required for signed soak evidence"
 [[ -f "$EVIDENCE_HELPER" ]] || die "signed evidence helper not found at $EVIDENCE_HELPER"
+"$PYTHON_BIN" "$EVIDENCE_HELPER" http-test-host "$TARGET_HOST" >/dev/null \
+  || die "invalid HTTP test host"
+[[ "$DL_HOST" == "$TARGET_HOST" ]] || die "DL_HOST and STRESS_TARGET_HOST must match"
 RUN_UUID="$("$PYTHON_BIN" -c 'import uuid; print(uuid.uuid4())')"
 REPO_HEAD="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || true)"
 [[ "$REPO_HEAD" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
@@ -1682,6 +1687,7 @@ RELEASE_PROFILE_SHA256="$(sha256_path "$OUT/release-soak-profile.tsv")"
 ARTIFACTS_INITIALIZED=1
 {
   printf 'repo_head\t%s\nrepo_dirty\t%s\n' "$REPO_HEAD" "$REPO_DIRTY"
+  printf 'target_host\t%s\n' "$TARGET_HOST"
   printf 'udp_workload_exercised\t0\n'
   printf 'dial9_claim\tunattributed-diagnostic\n'
   printf 'dial9_diagnostic_only\t1\ndial9_coverage_claimed\t0\n'
@@ -2250,10 +2256,11 @@ if [[ "$SKIP_STRESS" != 1 ]]; then
     STRESS_TRAFFIC_ROLE=unpaired-diagnostic STRESS_ALLOW_TEST_TOOLS=0 \
     STRESS_CURL_TOOL=/usr/bin/curl STRESS_LOG_TOOL=/usr/bin/log \
     STRESS_LARGE_BYTES=16777216 STRESS_POST_BYTES=8388608 \
-    STRESS_HTTP_TARGET=http://http-test.ramaproxy.org/method \
-    STRESS_HTTPS_TARGET=https://http-test.ramaproxy.org/method \
-    STRESS_LARGE_TARGET='https://http-test.ramaproxy.org/bytes?size=16777216' \
-    STRESS_POST_TARGET=https://http-test.ramaproxy.org/octet-stream \
+    STRESS_TARGET_HOST="$TARGET_HOST" \
+    STRESS_HTTP_TARGET="http://${TARGET_HOST}/method" \
+    STRESS_HTTPS_TARGET="https://${TARGET_HOST}/method" \
+    STRESS_LARGE_TARGET="https://${TARGET_HOST}/bytes?size=16777216" \
+    STRESS_POST_TARGET="https://${TARGET_HOST}/octet-stream" \
     STRESS_MAX_P95_MS=10000 STRESS_MIN_THROUGHPUT_MILLI_RPS=100 \
     STRESS_MAX_RSS_GROWTH_BYTES=67108864 STRESS_MAX_CPU_PERCENT=400 \
       owned_job bash "$STRESS_SH" > "$OUT/stress-run.txt" 2>&1 &

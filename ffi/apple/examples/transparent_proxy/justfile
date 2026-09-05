@@ -209,10 +209,11 @@ test-full: qa test-e2e test-modern-udp-signed
 # Verify the three independently sealed Gate 20 run directories as one exact
 # source/provider generation. The shared helper owns all cross-artifact
 # semantics, including the sole modern exact-workload Dial9 proof.
-verify-gate20-evidence modern soak stress:
+verify-gate20-evidence modern soak stress http_host="http-test.ramaproxy.org":
     python3 ./scripts/signed_run_evidence.py verify-release-set \
         --require-kind modern_udp --require-kind soak --require-kind stress-series \
-        "{{modern}}" "{{soak}}" "{{stress}}"
+        --expected-http-host {{quote(http_host)}} \
+        {{quote(modern)}} {{quote(soak)}} {{quote(stress)}}
 
 # Run the Rust FFI e2e suite under AddressSanitizer to surface memory errors,
 # including use-after-free. ASan does not detect data races.

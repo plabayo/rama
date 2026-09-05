@@ -12,8 +12,10 @@ import sys
 from urllib.parse import urlsplit
 import uuid
 
-# Schema 4 binds POST echo integrity to each raw request record.
-SCHEMA_VERSION = 4
+from signed_run_evidence import DEFAULT_HTTP_TEST_HOST, http_test_targets, validate_http_test_host
+
+# Schema 5 binds one declared HTTP test host into the workload identity.
+SCHEMA_VERSION = 5
 MAX_BODY_BYTES = 1_073_741_824
 HASH_CHUNK_BYTES = 1024 * 1024
 WORKERS = (
@@ -60,7 +62,7 @@ RESOURCE_SAMPLE_RE = re.compile(
 RESOURCE_SAMPLE_MAX_GAP_MS = 7_000
 WINDOW_CLOCK_DRIFT_TOLERANCE_NS = 5_000_000_000
 WORKLOAD_FIELDS = (
-    "schema_version", "duration_seconds", "concurrency", "large_bytes",
+    "schema_version", "target_host", "duration_seconds", "concurrency", "large_bytes",
     "post_bytes", "http_target_sha256", "https_target_sha256",
     "large_target_sha256", "post_target_sha256", "schema_complete",
 )
@@ -83,12 +85,7 @@ RELEASE_WORKLOAD_NUMERIC = {
     "large_bytes": 16_777_216,
     "post_bytes": 8_388_608,
 }
-RELEASE_TARGETS = {
-    "http_target_sha256": "http://http-test.ramaproxy.org/method",
-    "https_target_sha256": "https://http-test.ramaproxy.org/method",
-    "large_target_sha256": "https://http-test.ramaproxy.org/bytes?size=16777216",
-    "post_target_sha256": "https://http-test.ramaproxy.org/octet-stream",
-}
+RELEASE_TARGETS = http_test_targets(DEFAULT_HTTP_TEST_HOST)
 RELEASE_THRESHOLDS = {
     "max_p95_ms": "10000",
     "min_throughput_milli_rps": "100",
@@ -201,6 +198,7 @@ def _validated_target(value, scheme):
 def write_workload(
     directory, duration_text, concurrency_text, large_bytes_text, post_bytes_text,
     http_target, https_target, large_target, post_target,
+    target_host=DEFAULT_HTTP_TEST_HOST,
 ):
     duration = canonical_uint(duration_text, 86_400)
     concurrency = canonical_uint(concurrency_text, 512)
@@ -210,6 +208,7 @@ def write_workload(
         raise ValueError("invalid stress workload bounds")
     values = (
         ("schema_version", str(SCHEMA_VERSION)),
+        ("target_host", validate_http_test_host(target_host)),
         ("duration_seconds", str(duration)),
         ("concurrency", str(concurrency)),
         ("large_bytes", str(large_bytes)),
@@ -239,6 +238,7 @@ def read_workload(directory):
     if values["schema_version"] != str(SCHEMA_VERSION) or values["schema_complete"] != "1":
         raise ValueError("stress workload schema is invalid")
     workload = {
+        "target_host": validate_http_test_host(values["target_host"]),
         "duration_seconds": canonical_uint(values["duration_seconds"], 86_400),
         "concurrency": canonical_uint(values["concurrency"], 512),
         "large_bytes": canonical_uint(values["large_bytes"], MAX_BODY_BYTES),
@@ -259,7 +259,7 @@ def verify_release_policy(directory, status):
     workload = read_workload(directory)
     expected_targets = {
         key: hashlib.sha256(value.encode("utf-8")).hexdigest()
-        for key, value in RELEASE_TARGETS.items()
+        for key, value in http_test_targets(workload["target_host"]).items()
     }
     if any(workload[key] != value for key, value in RELEASE_WORKLOAD_NUMERIC.items()):
         raise ValueError("release stress workload does not use the canonical load profile")
@@ -1043,7 +1043,7 @@ def main():
     try:
         command, directory_text, *args = sys.argv[1:]
         directory = Path(directory_text)
-        if command == "workload" and len(args) == 8:
+        if command == "workload" and len(args) in (8, 9):
             print(write_workload(directory, *args))
         elif command == "post-response-sha256" and len(args) == 1:
             print(post_response_sha256(directory, canonical_uint(args[0], MAX_BODY_BYTES)))

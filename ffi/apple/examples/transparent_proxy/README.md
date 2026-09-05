@@ -781,6 +781,41 @@ system-extension bundles verified for the running development provider. Keep
 comparison outputs outside both sealed run directories; adding files to a run
 invalidates its artifact manifest.
 
+Use a controlled HTTP test server with sufficient capacity for release
+measurements. Set `STRESS_TARGET_HOST` to its lowercase DNS hostname for all six
+stress runs and the soak. The default is `http-test.ramaproxy.org`. This selects
+the same host for HTTP and HTTPS `/method`, the 16 MiB `/bytes` download and the
+8 MiB `/octet-stream` echo; release roles still reject changed routes, sizes or
+thresholds. Soak also uses it for probes, active downloads and silent TCP
+holders. Its legacy `DL_HOST` setting is an alias; conflicting values fail.
+
+The server must provide trusted TLS, HTTP/1.1 and HTTP/2, exact echo/download
+behavior, paced `/bytes` responses and sufficiently long silent TCP connections
+on port 443. Check these capabilities and server rate limits before the native
+campaign. Hostname validation does not prove the server implementation, its
+resolved address or its performance isolation. Existing soak downloads may
+follow redirects, so this names the initial target, not every eventual peer.
+
+The workload records its host and exact route hashes. Pair/series verification
+requires the same complete workload across all six runs. Final release
+verification additionally requires a caller-selected expected host, independent
+of the artifact and environment:
+
+```sh
+just verify-gate20-evidence "$MODERN" "$SOAK" "$SERIES" "$TEST_HOST"
+# Equivalent explicit CLI policy:
+python3 scripts/signed_run_evidence.py verify-release-set \
+  --expected-http-host "$TEST_HOST" \
+  --require-kind modern_udp --require-kind soak --require-kind stress-series \
+  "$MODERN" "$SOAK" "$SERIES"
+```
+
+Omitting the expected host requires the default public hostname; a custom-host
+artifact cannot silently change that policy. The verifier reads this field from
+the manifest-retained workloads and soak metadata. Stress schema 5 adds this
+host binding; older schema 4 artifacts retain their original source/verifier
+boundary and are not current release evidence.
+
 The paired gate requires an explicit traffic-only `direct-baseline`, a
 provider-monitored `proxy-candidate`, identical workload and harness identities,
 baseline-before-candidate ordering, and at most a ten-minute gap. Release-gate
@@ -799,7 +834,7 @@ record alongside both bundles.
 
 A final device/release claim requires at least three interleaved adjacent pairs,
 ordered `direct-1, proxy-1, direct-2, proxy-2, direct-3, proxy-3`, against the
-same stable workload and preferably a stable local endpoint. Create and verify
+same stable workload and controlled test server. Create and verify
 each strict pair as above, then seal the aggregate:
 
 ```sh

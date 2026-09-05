@@ -39,6 +39,16 @@ def write_tsv(path: Path, rows):
     )
 
 
+def write_http_workload(directory: Path, target_host=evidence.DEFAULT_HTTP_TEST_HOST):
+    from stress_evidence import write_workload
+    targets = evidence.http_test_targets(target_host)
+    write_workload(
+        directory, "60", "16", "16777216", "8388608",
+        targets["http_target_sha256"], targets["https_target_sha256"],
+        targets["large_target_sha256"], targets["post_target_sha256"], target_host,
+    )
+
+
 def write_empty_crash_snapshot(directory: Path, status, process_name="provider"):
     crashes = directory / "crashes"
     crashes.mkdir(exist_ok=True)
@@ -196,6 +206,12 @@ def make_run(
         write_empty_crash_snapshot(directory, values)
     if kind in {"modern_udp", "soak", "stress-candidate"}:
         write_generation_samples(directory, values)
+    if kind == "soak":
+        write_tsv(directory / "run-meta.tsv", [
+            ("target_host", evidence.DEFAULT_HTTP_TEST_HOST),
+        ])
+        (directory / "stress").mkdir()
+        write_http_workload(directory / "stress")
     nested = directory / "logs" / "nested"
     nested.mkdir(parents=True)
     (nested / "empty.log").write_bytes(b"")
@@ -228,6 +244,7 @@ def make_sleep_soak_run(directory: Path, *, sleep_seconds=45, pre_gap_ms=0, post
     def iso(ms):
         return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     meta = {
+        "target_host": evidence.DEFAULT_HTTP_TEST_HOST,
         "run_uuid": status["run_uuid"], "run_start_epoch_ms": status["run_start_epoch_ms"],
         "run_end_epoch_ms": str(end), "provider_start_pid": "42",
         "provider_bundle": evidence.DEV_PROVIDER_BUNDLE_ID,
@@ -310,7 +327,7 @@ def make_direct_run(directory: Path, *, start=1000, end=2000):
     return values
 
 
-def make_stress_series(directory: Path):
+def make_stress_series(directory: Path, target_host=evidence.DEFAULT_HTTP_TEST_HOST):
     candidate_statuses = []
     for pair in range(1, 4):
         pair_dir = directory / "members" / f"pair-{pair:03d}"
@@ -324,6 +341,8 @@ def make_stress_series(directory: Path):
             pid=40 + pair,
             process_start=1_700_000_000_000 + pair * 100,
         ))
+        write_http_workload(baseline, target_host)
+        write_http_workload(candidate, target_host)
         evidence.seal(baseline)
         evidence.seal(candidate)
     generations = sorted(
@@ -2009,6 +2028,170 @@ class DynamicCodeIdentityTests(unittest.TestCase):
                     self.assertEqual(output.read_bytes(), original)
 
 
+class HttpTestHostTests(unittest.TestCase):
+    HOST = "controlled.example.invalid"
+
+    def test_http_test_host_requires_a_canonical_dns_name(self):
+        longest = ".".join(("a" * 63, "b" * 63, "c" * 63, "d" * 61))
+        for host in (evidence.DEFAULT_HTTP_TEST_HOST, self.HOST, "a.b", "ci-01.example.test", longest):
+            with self.subTest(host=host):
+                self.assertEqual(evidence.validate_http_test_host(host), host)
+        invalid = (
+            None, "", "localhost", "host.localhost", "host.local", "127.0.0.1",
+            "::1", "[::1]", "Controlled.example.invalid", "example.invalid.",
+            "https://example.invalid", "example.invalid:443", "user@example.invalid",
+            "example.invalid/path", "example.invalid?size=1", "example.invalid#fragment",
+            "example.invalid\n", "example.invalid\t", " example.invalid",
+            "example..invalid", "-ci.example.invalid", "ci-.example.invalid",
+            "ci_host.example.invalid", "éxample.invalid", "a" * 64 + ".invalid",
+            longest + "d",
+        )
+        for host in invalid:
+            with self.subTest(host=host), self.assertRaises(evidence.EvidenceError):
+                evidence.validate_http_test_host(host)
+
+    def test_http_test_host_keeps_exact_routes_and_transfer_size(self):
+        self.assertEqual(evidence.http_test_targets(self.HOST), {
+            "http_target_sha256": "http://controlled.example.invalid/method",
+            "https_target_sha256": "https://controlled.example.invalid/method",
+            "large_target_sha256": "https://controlled.example.invalid/bytes?size=16777216",
+            "post_target_sha256": "https://controlled.example.invalid/octet-stream",
+        })
+
+    def make_host_release_set(self, base, target_host):
+        modern, soak, series = (base / name for name in ("modern", "soak", "series"))
+        modern_status = make_run(modern, "modern_udp", claims=[
+            ("dial9_diagnostic_only", "0"), ("dial9_workload_coverage", "1"),
+            ("dial9_claim", "exact-workload"),
+        ])
+        soak_status = make_run(soak, "soak", claims=[
+            ("dial9_diagnostic_only", "1"), ("dial9_workload_coverage", "0"),
+            ("dial9_claim", "unattributed-diagnostic"),
+        ])
+        write_tsv(soak / "run-meta.tsv", [("target_host", target_host)])
+        write_http_workload(soak / "stress", target_host)
+        write_tsv(soak / "stress/stress-status.tsv", [
+            ("run_uuid", str(uuid.uuid4())), ("schema_complete", "1"),
+        ])
+        series_status = make_stress_series(series, target_host)
+        for root in (modern, soak, series):
+            evidence.seal(root)
+        return [modern, soak, series], [modern_status, soak_status, series_status]
+
+    @staticmethod
+    def verify_host_release_set(roots, **kwargs):
+        # These fixtures exercise the real envelope scan, host policy, release
+        # identities and dispatch. Native per-kind replay has separate tests.
+        with mock.patch.object(evidence, "_validate_modern_semantics"), \
+             mock.patch.object(evidence, "_validate_soak_semantics"), \
+             mock.patch.object(evidence, "_validate_stress_series_semantics"):
+            return evidence.verify_release_set(roots, **kwargs)
+
+    def test_release_host_requires_explicit_caller_choice_and_preserves_default(self):
+        for host in (evidence.DEFAULT_HTTP_TEST_HOST, self.HOST):
+            with self.subTest(host=host), tempfile.TemporaryDirectory() as temporary:
+                roots, statuses = self.make_host_release_set(Path(temporary), host)
+                self.assertEqual(
+                    self.verify_host_release_set(roots, expected_http_host=host), statuses,
+                )
+                if host == evidence.DEFAULT_HTTP_TEST_HOST:
+                    self.assertEqual(self.verify_host_release_set(roots), statuses)
+                else:
+                    with mock.patch.dict(os.environ, {"STRESS_TARGET_HOST": host}):
+                        with self.assertRaisesRegex(evidence.EvidenceError, "expected host"):
+                            self.verify_host_release_set(roots)
+                with self.assertRaisesRegex(evidence.EvidenceError, "expected host"):
+                    self.verify_host_release_set(roots, expected_http_host="other.example.invalid")
+
+    def test_release_host_rejects_invalid_expected_host_before_reading_artifacts(self):
+        with mock.patch.object(evidence, "_verify_and_capture") as capture:
+            with self.assertRaises(evidence.EvidenceError):
+                evidence.verify_release_set([Path("one"), Path("two")], expected_http_host="https://example.invalid")
+            capture.assert_not_called()
+
+    def test_release_host_checks_every_member_and_both_soak_declarations(self):
+        names = [
+            (2, f"members/pair-{pair:03d}/{role}/stress-workload.tsv")
+            for pair in range(1, 4) for role in ("baseline", "candidate")
+        ] + [(1, "run-meta.tsv"), (1, "stress/stress-workload.tsv")]
+        with tempfile.TemporaryDirectory() as temporary:
+            roots, _ = self.make_host_release_set(Path(temporary), self.HOST)
+            for root_index, name in names:
+                root = roots[root_index]
+                path = root / name
+                original = path.read_text()
+                mutations = (
+                    None,
+                    original.replace(f"target_host\t{self.HOST}\n", ""),
+                    original.replace(f"target_host\t{self.HOST}\n", f"target_host\t{self.HOST}\ntarget_host\t{self.HOST}\n"),
+                    original.replace(self.HOST, "other.example.invalid"),
+                    original.replace(self.HOST, "CONTROLLED.example.invalid"),
+                )
+                for content in mutations:
+                    with self.subTest(name=name, content=content):
+                        if content is None:
+                            path.unlink()
+                        else:
+                            path.write_text(content)
+                        if root_index == 2:
+                            evidence.seal(path.parent)
+                        evidence.seal(root)
+                        with self.assertRaises(evidence.EvidenceError):
+                            self.verify_host_release_set(roots, expected_http_host=self.HOST)
+                        path.write_text(original)
+                        if root_index == 2:
+                            evidence.seal(path.parent)
+                        evidence.seal(root)
+
+    def test_release_host_uses_original_manifest_bytes_when_files_change(self):
+        for root_index, name in (
+            (2, "members/pair-003/candidate/stress-workload.tsv"),
+            (1, "run-meta.tsv"),
+            (1, "stress/stress-workload.tsv"),
+        ):
+            for originally_matching in (True, False):
+                with self.subTest(name=name, originally_matching=originally_matching), \
+                     tempfile.TemporaryDirectory() as temporary:
+                    roots, statuses = self.make_host_release_set(Path(temporary), self.HOST)
+                    root = roots[root_index]
+                    path = root / name
+                    matching = path.read_text()
+                    mismatched = matching.replace(self.HOST, "other.example.invalid")
+                    path.write_text(matching if originally_matching else mismatched)
+                    if root_index == 2:
+                        evidence.seal(path.parent)
+                    evidence.seal(root)
+                    original_scan = evidence._manifest_artifacts
+
+                    def scan_then_replace(directory):
+                        result = original_scan(directory)
+                        if directory == root:
+                            path.write_text(mismatched if originally_matching else matching)
+                        return result
+
+                    with mock.patch.object(evidence, "_manifest_artifacts", side_effect=scan_then_replace), \
+                         mock.patch.object(evidence, "_read_regular_bytes", side_effect=AssertionError("filesystem reread")):
+                        if originally_matching:
+                            self.assertEqual(
+                                self.verify_host_release_set(roots, expected_http_host=self.HOST), statuses,
+                            )
+                        else:
+                            with self.assertRaisesRegex(evidence.EvidenceError, "expected host"):
+                                self.verify_host_release_set(roots, expected_http_host=self.HOST)
+
+    def test_release_cli_passes_explicit_expected_host(self):
+        hosts = []
+        def verify(directories, required_kinds=None, expected_http_host=evidence.DEFAULT_HTTP_TEST_HOST):
+            hosts.append(expected_http_host)
+            return [{"evidence_kind": "soak"}]
+        with mock.patch.object(evidence, "verify_release_set", side_effect=verify):
+            with mock.patch("sys.stdout", new_callable=io.StringIO):
+                self.assertEqual(evidence.main([
+                    "verify-release-set", "one", "two", "--expected-http-host", self.HOST,
+                ]), 0)
+        self.assertEqual(hosts, [self.HOST])
+
+
 class CrashAndReleaseSetTests(unittest.TestCase):
     def make_release_set_with_soak_child(self, base):
         modern = base / "modern"
@@ -2026,7 +2209,7 @@ class CrashAndReleaseSetTests(unittest.TestCase):
         ])
         series_status = make_stress_series(series)
         child = soak / "stress/stress-status.tsv"
-        child.parent.mkdir()
+        child.parent.mkdir(exist_ok=True)
         write_tsv(child, [("run_uuid", str(uuid.uuid4())), ("schema_complete", "1")])
         roots = [modern, soak, series]
         for root in roots:
@@ -2757,7 +2940,8 @@ class CrashAndReleaseSetTests(unittest.TestCase):
                 soak, modern = root / "soak", root / "modern"
                 make_run(soak, "soak")
                 make_run(modern, "modern_udp")
-                meta = {"release_profile_eligible": "1", **{
+                meta = {"target_host": evidence.DEFAULT_HTTP_TEST_HOST,
+                        "release_profile_eligible": "1", **{
                     key: "1" for key in (
                         "stress_ok", "fanout_established_target_sustained",
                         "idle_holders_established_target_sustained", "real_download_ok",
@@ -2823,6 +3007,7 @@ class CrashAndReleaseSetTests(unittest.TestCase):
         from test_soak_pressure_log import SoakPressureLogTests
         meta = SoakPressureLogTests.valid_release_profile_meta()
         meta.update({
+            "target_host": evidence.DEFAULT_HTTP_TEST_HOST,
             "fanout_target": "40", "fanout_hold_seconds": "90",
             "idle_holders_target": "40", "idle_holders_hold_seconds": "150",
             "idle_cpu_post_quiescence_seconds": "60", "hardcap": "100",
@@ -2973,7 +3158,8 @@ class CrashAndReleaseSetTests(unittest.TestCase):
             parent = dict(git_head=HEAD, git_dirty="0", run_uuid=str(uuid.uuid4()),
                           run_start_epoch_ms="99000", run_end_epoch_ms="281000")
             meta = {"stress_child_rc": "0", "configured_stress_seconds": "180",
-                    "configured_stress_concurrency": "24"}
+                    "configured_stress_concurrency": "24",
+                    "target_host": evidence.DEFAULT_HTTP_TEST_HOST}
             phases = ("stress\tstart\t99.000000\t1970-01-01T00:01:39Z\n"
                       "stress\tend\t281.000000\t1970-01-01T00:04:41Z\n")
             (root / "phases.tsv").write_text(phases)

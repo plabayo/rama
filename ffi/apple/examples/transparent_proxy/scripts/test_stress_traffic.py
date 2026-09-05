@@ -35,9 +35,11 @@ from modern_udp_evidence import (
 from stress_evidence import (
     parse_transfers,
     post_response_sha256,
+    read_workload as read_stress_workload,
     seal as seal_stress_evidence,
     sha256_file,
     verify as verify_stress_evidence,
+    verify_release_policy,
     write_workload as write_stress_workload,
     write_metrics as write_stress_metrics,
     zero_body_sha256,
@@ -96,6 +98,7 @@ def write_self_attested_traffic_run(
     start=100000, end=160000, duration="0.050", workload_identity="b" * 64,
     ndjson_pid=42, workload_duration=60, workload_concurrency=16,
     large_bytes=16777216, post_bytes=8388608,
+    target_host="http-test.ramaproxy.org",
 ) -> tuple[str, bytes]:
     """Build a syntactically honest fixture; it never claims external authenticity."""
     workers = (
@@ -122,11 +125,12 @@ def write_self_attested_traffic_run(
     workload_identity = write_stress_workload(
         log_dir, str(workload_duration), str(workload_concurrency),
         str(large_bytes), str(post_bytes),
-        "http://http-test.ramaproxy.org/method",
-        "https://http-test.ramaproxy.org/method",
-        f"https://http-test.ramaproxy.org/bytes?size={large_bytes}",
-        "https://http-test.ramaproxy.org/octet-stream"
+        f"http://{target_host}/method",
+        f"https://{target_host}/method",
+        f"https://{target_host}/bytes?size={large_bytes}",
+        f"https://{target_host}/octet-stream"
         + ("" if workload_identity == "b" * 64 else f"?variant={workload_identity}"),
+        target_host,
     )
     for worker in workers:
         (log_dir / f"{worker}.summary").write_text(
@@ -737,6 +741,7 @@ class StressTrafficValidationTests(unittest.TestCase):
                         downloaded="$uploaded"
                       fi
                       [[ "$previous" == --output ]] && output="$argument"
+                      [[ "$previous" == --url ]] && printf '%s\\n' "$argument" >> "$CALL_TARGETS"
                       previous="$argument"
                     done
                     if [[ -n "$body" && "$output" != /dev/null ]]; then
@@ -756,8 +761,17 @@ class StressTrafficValidationTests(unittest.TestCase):
                 STRESS_LARGE_BYTES="1024",
                 STRESS_POST_BYTES="1024",
                 STRESS_SKIP_LIVENESS="1",
+                STRESS_TARGET_HOST="controlled.example.invalid",
+                CALL_TARGETS=str(root / "called-targets.txt"),
             )
             self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertEqual(set((root / "called-targets.txt").read_text().splitlines()), {
+                "http://controlled.example.invalid/method",
+                "https://controlled.example.invalid/method",
+                "https://controlled.example.invalid/bytes?size=1024",
+                "https://controlled.example.invalid/octet-stream",
+            })
+            self.assertEqual(read_stress_workload(log_dir)["target_host"], "controlled.example.invalid")
             summaries = sorted(log_dir.glob("*.summary"))
             self.assertEqual(len(summaries), 8, result.stdout)
             for summary in summaries:
@@ -1690,6 +1704,7 @@ class StressTrafficValidationTests(unittest.TestCase):
             root = Path(temp_dir)
             cases = (
                 ({"workload_identity": "f" * 64}, {}, "different workloads"),
+                ({"target_host": "controlled.example.invalid"}, {}, "different workloads"),
                 ({"start": 800000, "end": 860000}, {}, "not adjacent"),
                 ({}, {"role": "unpaired-diagnostic"}, "not an explicit"),
             )
@@ -1711,6 +1726,108 @@ class StressTrafficValidationTests(unittest.TestCase):
                     create_comparison(
                         baseline, candidate, root / f"comparison-{index}.tsv"
                     )
+
+    def test_controlled_host_workload_round_trip_and_strict_identity(self):
+        host = "controlled.example.invalid"
+        targets = signed_run_evidence.http_test_targets(host)
+        status = dict(
+            max_p95_ms="10000", min_throughput_milli_rps="100",
+            max_rss_growth_bytes="67108864", max_cpu_percent="400",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            digest = write_stress_workload(
+                root, "60", "16", "16777216", "8388608",
+                targets["http_target_sha256"], targets["https_target_sha256"],
+                targets["large_target_sha256"], targets["post_target_sha256"], host,
+            )
+            workload = root / "stress-workload.tsv"
+            original = workload.read_text()
+            self.assertTrue(original.startswith(f"schema_version\t5\ntarget_host\t{host}\n"))
+            self.assertEqual(digest, sha256_file(workload))
+            self.assertEqual(read_stress_workload(root)["target_host"], host)
+            verify_release_policy(root, status)
+            mutations = (
+                original.replace(f"target_host\t{host}\n", ""),
+                original.replace(f"target_host\t{host}\n", f"target_host\t{host}\ntarget_host\t{host}\n"),
+                original.replace(f"target_host\t{host}", "target_host\tother.example.invalid"),
+                original.replace(
+                    hashlib.sha256(targets["http_target_sha256"].encode()).hexdigest(),
+                    hashlib.sha256(b"http://other.example.invalid/method").hexdigest(),
+                ),
+                original.replace("large_bytes\t16777216", "large_bytes\t1024"),
+            )
+            for content in mutations:
+                with self.subTest(content=content):
+                    workload.write_text(content)
+                    with self.assertRaises(ValueError):
+                        verify_release_policy(root, status)
+            workload.write_text(original)
+            with self.assertRaisesRegex(ValueError, "hard threshold policy"):
+                verify_release_policy(root, dict(status, max_p95_ms="10001"))
+
+    def test_release_pair_rejects_matching_workload_with_false_declared_host(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            baseline, candidate = root / "baseline", root / "candidate"
+            write_self_attested_traffic_run(baseline)
+            write_self_attested_traffic_run(
+                candidate, monitored=True, role="proxy-candidate", start=161000, end=221000,
+            )
+            for run in (baseline, candidate):
+                workload = run / "stress-workload.tsv"
+                workload.write_text(workload.read_text().replace(
+                    "target_host\thttp-test.ramaproxy.org",
+                    "target_host\tcontrolled.example.invalid",
+                ))
+                status = run / "stress-status.tsv"
+                status.write_text(re.sub(
+                    r"(?m)^workload_identity\t.*$",
+                    f"workload_identity\t{sha256_file(workload)}", status.read_text(),
+                ))
+                reseal_self_attested_traffic_run(run)
+                add_common_stress_envelope(run)
+            self.assertEqual(
+                sha256_file(baseline / "stress-workload.tsv"),
+                sha256_file(candidate / "stress-workload.tsv"),
+            )
+            with self.assertRaisesRegex(ValueError, "canonical target identities"):
+                create_comparison(baseline, candidate, root / "comparison.tsv")
+
+    def test_controlled_host_series_requires_the_same_host_in_every_pair(self):
+        host = "controlled.example.invalid"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pairs = []
+            for index in range(4):
+                # The fourth pair is an otherwise identical replacement for
+                # pair three at a different host, including its own valid seal.
+                start = 100000 + min(index, 2) * 122000
+                target_host = host if index < 3 else "other.example.invalid"
+                baseline = root / f"baseline-{index}"
+                candidate = root / f"candidate-{index}"
+                comparison = root / f"comparison-{index}.tsv"
+                write_self_attested_traffic_run(
+                    baseline, start=start, end=start + 60000, target_host=target_host,
+                )
+                write_self_attested_traffic_run(
+                    candidate, monitored=True, role="proxy-candidate",
+                    start=start + 61000, end=start + 121000, target_host=target_host,
+                )
+                add_common_stress_envelope(baseline)
+                add_common_stress_envelope(candidate)
+                self.assertEqual(create_comparison(baseline, candidate, comparison), 0)
+                self.assertEqual(verify_comparison(baseline, candidate, comparison), 0)
+                pairs.append((baseline, candidate, comparison))
+            series = root / "series"
+            self.assertEqual(create_series(pairs[:3], series), 0)
+            self.assertEqual(verify_series(series), 0)
+            for pair in range(1, 4):
+                for role in ("baseline", "candidate"):
+                    member = series / "members" / f"pair-{pair:03d}" / role
+                    self.assertEqual(read_stress_workload(member)["target_host"], host)
+            with self.assertRaisesRegex(ValueError, "workload"):
+                create_series([*pairs[:2], pairs[3]], root / "mixed-host-series")
 
     def test_release_pair_rejects_weakened_workload_and_relaxed_resource_policy(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -2836,6 +2953,67 @@ class StressTrafficValidationTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 2, result.stdout)
                 self.assertIn("canonical workload", result.stdout)
+
+    def test_release_producer_accepts_custom_host_and_rejects_route_overrides_before_traffic(self):
+        host = "controlled.example.invalid"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log_dir = root / "logs"
+            log_dir.mkdir()
+            (log_dir / "sentinel").write_text("stop before capture or traffic\n")
+            result = self.run_stress(
+                log_dir, STRESS_TRAFFIC_ROLE="direct-baseline", STRESS_TARGET_HOST=host,
+            )
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertIn("STRESS_LOG_DIR must be empty", result.stdout)
+            for override in (
+                {"STRESS_HTTP_TARGET": "http://other.example.invalid/method"},
+                {"STRESS_HTTPS_TARGET": f"https://{host}:444/method"},
+                {"STRESS_LARGE_TARGET": f"https://{host}/bytes?size=1024"},
+                {"STRESS_POST_TARGET": f"https://{host}/other"},
+            ):
+                with self.subTest(override=override):
+                    result = self.run_stress(
+                        log_dir, STRESS_TRAFFIC_ROLE="direct-baseline",
+                        STRESS_TARGET_HOST=host, **override,
+                    )
+                    self.assertEqual(result.returncode, 2, result.stdout)
+                    self.assertIn("canonical workload", result.stdout)
+            self.assertEqual([path.name for path in log_dir.iterdir()], ["sentinel"])
+
+    def test_soak_shared_host_and_legacy_alias_preflight_before_traffic(self):
+        host = "controlled.example.invalid"
+        cases = (
+            ({"STRESS_TARGET_HOST": host}, True),
+            ({"DL_HOST": host}, True),
+            ({"STRESS_TARGET_HOST": host, "DL_HOST": host}, True),
+            ({"STRESS_TARGET_HOST": host, "DL_HOST": "other.example.invalid"}, False),
+            ({"STRESS_TARGET_HOST": "https://example.invalid"}, False),
+            ({"DL_HOST": "127.0.0.1"}, False),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for index, (overrides, accepted) in enumerate(cases):
+                with self.subTest(overrides=overrides):
+                    output = root / str(index)
+                    if accepted:
+                        output.mkdir()
+                        (output / "sentinel").write_text("stop before provider capture or traffic\n")
+                    environment = os.environ.copy()
+                    for key in ("STRESS_TARGET_HOST", "DL_HOST", "REPO"):
+                        environment.pop(key, None)
+                    environment.update(OUT=str(output), DO_INSTALL="0", **overrides)
+                    result = subprocess.run(
+                        ["bash", str(SOAK_SCRIPT)], env=environment,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=10,
+                    )
+                    self.assertEqual(result.returncode, 2, result.stdout)
+                    if accepted:
+                        self.assertIn("is not empty", result.stdout)
+                        self.assertEqual([path.name for path in output.iterdir()], ["sentinel"])
+                    else:
+                        self.assertRegex(result.stdout, "must match|invalid HTTP test host")
+                        self.assertFalse(output.exists(), result.stdout)
 
     def test_common_envelope_rejects_mutated_crash_or_generation_proof_before_reseal(self):
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -18,6 +18,7 @@
 #   STRESS_CONCURRENCY    parallel curls in the pool worker (1..512). Default 16.
 #   STRESS_LARGE_BYTES    bytes for the large-GET worker (max 1 GiB). Default 16 MiB.
 #   STRESS_POST_BYTES     bytes for the POST-body worker (max 1 GiB). Default 8 MiB.
+#   STRESS_TARGET_HOST   shared HTTP test DNS host. Default http-test.ramaproxy.org.
 #   STRESS_HTTP_TARGET    plain-HTTP target. Default http-test /method
 #   STRESS_HTTPS_TARGET   HTTPS target. Default http-test /method
 #   STRESS_LARGE_TARGET   large-download target. Default http-test /bytes
@@ -178,10 +179,14 @@ if [[ "$DURATION" != 0 && ( "$LARGE_BYTES" == 0 || "$POST_BYTES" == 0 ) ]]; then
   exit 2
 fi
 
-HTTP_TARGET="${STRESS_HTTP_TARGET:-http://http-test.ramaproxy.org/method}"
-HTTPS_TARGET="${STRESS_HTTPS_TARGET:-https://http-test.ramaproxy.org/method}"
-POST_TARGET="${STRESS_POST_TARGET:-https://http-test.ramaproxy.org/octet-stream}"
-LARGE_TARGET="${STRESS_LARGE_TARGET:-https://http-test.ramaproxy.org/bytes?size=${LARGE_BYTES}}"
+EVIDENCE_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/stress_evidence.py"
+COMMON_EVIDENCE_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/signed_run_evidence.py"
+TARGET_HOST="${STRESS_TARGET_HOST-http-test.ramaproxy.org}"
+python3 "$COMMON_EVIDENCE_HELPER" http-test-host "$TARGET_HOST" >/dev/null || exit 2
+HTTP_TARGET="${STRESS_HTTP_TARGET:-http://${TARGET_HOST}/method}"
+HTTPS_TARGET="${STRESS_HTTPS_TARGET:-https://${TARGET_HOST}/method}"
+POST_TARGET="${STRESS_POST_TARGET:-https://${TARGET_HOST}/octet-stream}"
+LARGE_TARGET="${STRESS_LARGE_TARGET:-https://${TARGET_HOST}/bytes?size=${LARGE_BYTES}}"
 WORKLOAD_IDENTITY=none
 
 if [[ "$TRAFFIC_ROLE" == direct-baseline || "$TRAFFIC_ROLE" == proxy-candidate ]]; then
@@ -189,10 +194,10 @@ if [[ "$TRAFFIC_ROLE" == direct-baseline || "$TRAFFIC_ROLE" == proxy-candidate ]
     || "$LARGE_BYTES" != 16777216 || "$POST_BYTES" != 8388608 \
     || "$MAX_P95_MS" != 10000 || "$MIN_THROUGHPUT_MILLI_RPS" != 100 \
     || "$MAX_RSS_GROWTH_BYTES" != 67108864 || "$MAX_CPU_PERCENT" != 400 \
-    || "$HTTP_TARGET" != http://http-test.ramaproxy.org/method \
-    || "$HTTPS_TARGET" != https://http-test.ramaproxy.org/method \
-    || "$LARGE_TARGET" != 'https://http-test.ramaproxy.org/bytes?size=16777216' \
-    || "$POST_TARGET" != https://http-test.ramaproxy.org/octet-stream ]]
+    || "$HTTP_TARGET" != "http://${TARGET_HOST}/method" \
+    || "$HTTPS_TARGET" != "https://${TARGET_HOST}/method" \
+    || "$LARGE_TARGET" != "https://${TARGET_HOST}/bytes?size=16777216" \
+    || "$POST_TARGET" != "https://${TARGET_HOST}/octet-stream" ]]
   then
     printf '[stress] release stress roles require the canonical workload, targets, and hard threshold policy\n' >&2
     exit 2
@@ -201,8 +206,6 @@ fi
 
 LOG_DIR="${STRESS_LOG_DIR:-$(mktemp -d /tmp/rama-stress.XXXXXX)}"
 mkdir -p "$LOG_DIR"
-EVIDENCE_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/stress_evidence.py"
-COMMON_EVIDENCE_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/signed_run_evidence.py"
 RUN_UUID=none
 RUN_START_EPOCH=0
 RUN_END_EPOCH=0
@@ -262,7 +265,7 @@ if (( ! ANALYZE_ONLY )); then
   WORKLOAD_IDENTITY="$(
     "$EVIDENCE_HELPER" workload "$LOG_DIR" \
       "$DURATION" "$CONCURRENCY" "$LARGE_BYTES" "$POST_BYTES" \
-      "$HTTP_TARGET" "$HTTPS_TARGET" "$LARGE_TARGET" "$POST_TARGET"
+      "$HTTP_TARGET" "$HTTPS_TARGET" "$LARGE_TARGET" "$POST_TARGET" "$TARGET_HOST"
   )" || {
     printf '[stress] stress targets or workload parameters are invalid\n' >&2
     exit 2

@@ -43,6 +43,7 @@ PROVIDER_IDENTITY_NAME = "provider-identity.tsv"
 SCHEMA_VERSION = 1
 DEV_PROVIDER_BUNDLE_ID = "org.ramaproxy.example.tproxy.dev.provider"
 DEV_TEAM_ID = "ADPG6C355H"
+DEFAULT_HTTP_TEST_HOST = "http-test.ramaproxy.org"
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
 CDHASH_RE = re.compile(r"[0-9a-f]{40,64}")
 GIT_HEAD_RE = re.compile(r"[0-9a-f]{40,64}")
@@ -167,6 +168,31 @@ STRESS_MEMBER_PRODUCER_SOURCES = (
 
 class EvidenceError(ValueError):
     """The evidence is malformed, incomplete, inconsistent, or tampered."""
+
+
+def validate_http_test_host(host: str) -> str:
+    """Require a canonical DNS host shared by HTTP, TLS and raw TCP tests."""
+    if not isinstance(host, str) or not 1 <= len(host) <= 253:
+        raise EvidenceError("HTTP test host must be a canonical DNS hostname")
+    labels = host.split(".")
+    if len(labels) < 2 or any(
+        re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) is None
+        for label in labels
+    ) or not re.search(r"[a-z]", labels[-1]):
+        raise EvidenceError("HTTP test host must be a canonical DNS hostname")
+    if host.endswith((".localhost", ".local")):
+        raise EvidenceError("HTTP test host must not be a local-only hostname")
+    return host
+
+
+def http_test_targets(host: str) -> dict[str, str]:
+    host = validate_http_test_host(host)
+    return {
+        "http_target_sha256": f"http://{host}/method",
+        "https_target_sha256": f"https://{host}/method",
+        "large_target_sha256": f"https://{host}/bytes?size=16777216",
+        "post_target_sha256": f"https://{host}/octet-stream",
+    }
 
 
 class ReplayCleanupError(EvidenceError):
@@ -846,6 +872,7 @@ def _retain_semantic_artifact(name: str) -> bool:
         ABSENCE_NAME,
         MANIFEST_NAME,
         "crash-snapshot.tsv",
+        "stress-workload.tsv",
         GENERATION_SAMPLES_NAME,
         *SOAK_SLEEP_ARTIFACTS,
     }
@@ -1192,9 +1219,11 @@ def _verify_and_capture(
 
 
 def verify_release_set(
-    directories: list[Path], required_kinds: set[str] | None = None
+    directories: list[Path], required_kinds: set[str] | None = None,
+    expected_http_host: str = DEFAULT_HTTP_TEST_HOST,
 ) -> list[dict[str, str]]:
     """Verify passing runs came from one clean source and provider generation."""
+    expected_http_host = validate_http_test_host(expected_http_host)
     if len(directories) < 2:
         raise EvidenceError("release set requires at least two evidence directories")
     verified = [_verify_and_capture(Path(directory)) for directory in directories]
@@ -1242,7 +1271,7 @@ def verify_release_set(
             f"release set kind mismatch: expected={sorted(required_kinds)} actual={sorted(kinds)}"
         )
     for envelope in verified:
-        _validate_release_kind(envelope)
+        _validate_release_kind(envelope, expected_http_host)
     claims_by_kind = {
         envelope.status["evidence_kind"]: envelope.claims
         for envelope in verified
@@ -1259,6 +1288,29 @@ def verify_release_set(
     if len(dial9_owners) != 1 or "modern" not in dial9_owners[0]:
         raise EvidenceError("release set lacks one modern exact-workload Dial9 proof")
     return statuses
+
+
+def _validate_release_http_host(envelope: VerifiedEnvelope, expected_host: str) -> None:
+    """Pin the target to caller input using only the original manifest scan."""
+    expected_host = validate_http_test_host(expected_host)
+    kind = envelope.status["evidence_kind"]
+    if kind == "stress-series":
+        names = [
+            f"members/pair-{pair:03d}/{role}/stress-workload.tsv"
+            for pair in range(1, 4) for role in ("baseline", "candidate")
+        ]
+    elif kind == "soak":
+        names = ["run-meta.tsv", "stress/stress-workload.tsv"]
+    else:
+        return
+    for name in names:
+        try:
+            content = envelope.retained[name]
+        except KeyError as error:
+            raise EvidenceError(f"release HTTP host artifact is missing: {name}") from error
+        values, _ = _strict_tsv_values(content, f"release HTTP host artifact {name}")
+        if values.get("target_host") != expected_host:
+            raise EvidenceError(f"release HTTP host differs from expected host: {name}")
 
 
 def _required_artifacts(
@@ -2227,12 +2279,9 @@ def _validate_soak_stress_artifacts(
         raise EvidenceError("soak nested stress workload differs from the configured release load")
     if any(workload.get(key) != value for key, value in {
         "large_bytes": "16777216", "post_bytes": "8388608",
-        **{key: hashlib.sha256(value.encode()).hexdigest() for key, value in {
-            "http_target_sha256": "http://http-test.ramaproxy.org/method",
-            "https_target_sha256": "https://http-test.ramaproxy.org/method",
-            "large_target_sha256": "https://http-test.ramaproxy.org/bytes?size=16777216",
-            "post_target_sha256": "https://http-test.ramaproxy.org/octet-stream",
-        }.items()},
+        "target_host": validate_http_test_host(meta.get("target_host")),
+        **{key: hashlib.sha256(value.encode()).hexdigest()
+           for key, value in http_test_targets(meta.get("target_host")).items()},
     }.items()) or any(child.get(key) != value for key, value in {
         "max_p95_ms": "10000", "min_throughput_milli_rps": "100",
         "max_rss_growth_bytes": "67108864", "max_cpu_percent": "400",
@@ -2456,7 +2505,10 @@ def _validate_stress_series_semantics(envelope: VerifiedEnvelope) -> None:
             )
 
 
-def _validate_release_kind(envelope: VerifiedEnvelope) -> None:
+def _validate_release_kind(
+    envelope: VerifiedEnvelope, expected_http_host: str = DEFAULT_HTTP_TEST_HOST,
+) -> None:
+    _validate_release_http_host(envelope, expected_http_host)
     kind = envelope.status["evidence_kind"]
     if kind == "modern_udp":
         _validate_modern_semantics(envelope)
@@ -3766,6 +3818,10 @@ Release verification reruns each kind's evidence-head semantic validator over
 a hash-checked materialization. Modern evidence also rebuilds the Dial9 decoder
 from an archived clean checkout at that head, decodes the sealed trace set, and
 requires the recomputed summary to equal the sealed JSON.
+The caller's --expected-http-host (default http-test.ramaproxy.org) must match
+the manifest-retained target_host in every stress member and soak metadata.
+The expected host is never inferred from an artifact or environment variable.
+This binds the selected hostname, not DNS resolution or server implementation.
 """
 
 
@@ -3773,6 +3829,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("help", help="print the shared evidence contract")
+    http_host = subparsers.add_parser("http-test-host", help="validate a shared HTTP test hostname")
+    http_host.add_argument("host")
 
     capture = subparsers.add_parser("capture-provider")
     capture.add_argument("--built-provider", required=True, type=Path)
@@ -3819,6 +3877,7 @@ def _parser() -> argparse.ArgumentParser:
     release = subparsers.add_parser("verify-release-set")
     release.add_argument("directories", nargs="+", type=Path)
     release.add_argument("--require-kind", action="append")
+    release.add_argument("--expected-http-host", default=DEFAULT_HTTP_TEST_HOST)
     return parser
 
 
@@ -3827,6 +3886,8 @@ def main(arguments: list[str] | None = None) -> int:
     try:
         if args.command == "help":
             print(CONTRACT, end="")
+        elif args.command == "http-test-host":
+            print(validate_http_test_host(args.host))
         elif args.command == "process-executable":
             print(_process_executable_path(args.pid))
         elif args.command == "process-generation-identity":
@@ -3884,6 +3945,7 @@ def main(arguments: list[str] | None = None) -> int:
             values = verify_release_set(
                 args.directories,
                 set(args.require_kind) if args.require_kind else None,
+                args.expected_http_host,
             )
             print("verified_release_set\t" + ",".join(row["evidence_kind"] for row in values))
         else:  # pragma: no cover - argparse makes this unreachable
