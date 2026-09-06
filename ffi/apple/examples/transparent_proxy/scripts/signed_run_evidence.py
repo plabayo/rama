@@ -1491,7 +1491,7 @@ def _validate_modern_echo(
         (server, "controlled_echo_server"),
     ):
         if (
-            value.get("schema_version") != 1
+            value.get("schema_version") != 2
             or value.get("schema_complete") is not True
             or value.get("kind") != kind
             or value.get("run_uuid") != run_uuid
@@ -1516,6 +1516,8 @@ def _validate_modern_echo(
         or client.get("error_count") != 0
         or server.get("duplicate_count") != 0
         or server.get("malformed_count") != 0
+        or type(server.get("peer_mismatch_count")) is not int
+        or server["peer_mismatch_count"] != 0
         or client.get("payload_set_sha256") != digest
         or client.get("echo_set_sha256") != digest
         or server.get("payload_set_sha256") != digest

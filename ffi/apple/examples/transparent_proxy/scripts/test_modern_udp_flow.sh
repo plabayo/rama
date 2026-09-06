@@ -2127,7 +2127,7 @@ done
 ECHO_ENDPOINT="$(/usr/bin/python3 - "$ECHO_READY" "$RUN_UUID" <<'PY'
 import ipaddress, json, sys
 value = json.load(open(sys.argv[1]))
-if value.get("schema_version") != 1 or value.get("schema_complete") is not True:
+if value.get("schema_version") != 2 or value.get("schema_complete") is not True:
     raise SystemExit(2)
 if value.get("run_uuid") != sys.argv[2] or not isinstance(value.get("server_pid"), int):
     raise SystemExit(2)
@@ -2289,13 +2289,16 @@ wait_for_child_until "$ECHO_SERVER_PID" "$CONCURRENT_LOAD_DEADLINE" || ECHO_SERV
 (( OWNED_JOIN_REAPED == 0 )) || ECHO_SERVER_PID=""
 ECHO_METRICS="$(/usr/bin/python3 - "$ECHO_CLIENT_RESULT" "$ECHO_SERVER_RESULT" \
   "$RUN_UUID" "$ECHO_ENDPOINT" "$ECHO_EXPECTED_COUNT" \
-  "$ECHO_SOCKET_COUNT" "$ECHO_DATAGRAMS_PER_SOCKET" "$ECHO_PAYLOAD_BYTES" <<'PY'
-import hashlib, ipaddress, json, re, sys
+  "$ECHO_SOCKET_COUNT" "$ECHO_DATAGRAMS_PER_SOCKET" "$ECHO_PAYLOAD_BYTES" \
+  "$MODERN_EVIDENCE" <<'PY'
+import hashlib, ipaddress, json, re, runpy, sys
+sys.dont_write_bytecode = True
+validate_echo_socket_maps = runpy.run_path(sys.argv[9])["validate_echo_socket_maps"]
 client, server = (json.load(open(path)) for path in sys.argv[1:3])
 run_uuid, endpoint, expected = sys.argv[3], sys.argv[4], int(sys.argv[5])
 socket_count, per_socket, payload_bytes = map(int, sys.argv[6:9])
 for value, kind in ((client, "controlled_echo_client"), (server, "controlled_echo_server")):
-    if value.get("schema_version") != 1 or value.get("schema_complete") is not True:
+    if value.get("schema_version") != 2 or value.get("schema_complete") is not True:
         raise SystemExit(2)
     if value.get("kind") != kind or value.get("run_uuid") != run_uuid:
         raise SystemExit(2)
@@ -2328,6 +2331,7 @@ for endpoint_value in local_endpoints:
 local_digest = hashlib.sha256("\n".join(sorted(local_endpoints)).encode()).hexdigest()
 if local_digest != client["local_endpoint_set_sha256"]:
     raise SystemExit(2)
+validate_echo_socket_maps(client, server, socket_count)
 digest = client.get("payload_set_sha256")
 if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
     raise SystemExit(2)

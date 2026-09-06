@@ -456,7 +456,7 @@ def make_strict_modern_run(directory: Path):
     expected = int(udp["echo_expected_count"])
     digest = udp["echo_payload_set_sha256"]
     echo_common = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_uuid": common["run_uuid"],
         "endpoint": udp["echo_endpoint"],
         "expected_count": expected,
@@ -494,12 +494,17 @@ def make_strict_modern_run(directory: Path):
     client["local_endpoint_set_sha256"] = hashlib.sha256(
         "\n".join(client["local_endpoints"]).encode()
     ).hexdigest()
+    client["socket_endpoints"] = [
+        [index, endpoint] for index, endpoint in enumerate(client["local_endpoints"])
+    ]
     server = dict(echo_common, **{
         "kind": "controlled_echo_server",
         "received_count": expected,
         "echo_count": expected,
         "duplicate_count": 0,
         "malformed_count": 0,
+        "peer_mismatch_count": 0,
+        "socket_peers": [[index, endpoint] for index, endpoint in enumerate(client["local_endpoints"])],
         "payload_set_sha256": digest,
     })
     (directory / "controlled-echo-client.json").write_text(json.dumps(client))
@@ -2689,18 +2694,21 @@ class CrashAndReleaseSetTests(unittest.TestCase):
 
             client_path = root / "controlled-echo-client.json"
             client = json.loads(client_path.read_text())
-            client["exact_echo_count"] -= 1
-            client_path.write_text(json.dumps(client))
-            evidence.seal(root)
-            changed = evidence._verify_and_capture(root)
-            with mock.patch.object(
-                evidence, "_source_blob_at_head", side_effect=current_script_source
-            ), mock.patch.object(
-                evidence, "_verify_pinned_dial9_replay"
-            ), mock.patch.object(
-                evidence, "_validate_modern_domain_semantics"
-            ), self.assertRaisesRegex(evidence.EvidenceError, "echo result cardinality"):
-                evidence._validate_modern_semantics(changed)
+            for key, value, message in (
+                ("exact_echo_count", client["exact_echo_count"] - 1, "echo result cardinality"),
+                ("schema_version", 1, "controlled_echo_client identity/result"),
+            ):
+                client_path.write_text(json.dumps({**client, key: value}))
+                evidence.seal(root)
+                changed = evidence._verify_and_capture(root)
+                with self.subTest(field=key), mock.patch.object(
+                    evidence, "_source_blob_at_head", side_effect=current_script_source
+                ), mock.patch.object(
+                    evidence, "_verify_pinned_dial9_replay"
+                ), mock.patch.object(
+                    evidence, "_validate_modern_domain_semantics"
+                ), self.assertRaisesRegex(evidence.EvidenceError, message):
+                    evidence._validate_modern_semantics(changed)
 
     def test_modern_semantics_rejects_missing_or_substituted_echo_identity(self):
         with tempfile.TemporaryDirectory() as temporary:

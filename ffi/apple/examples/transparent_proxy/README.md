@@ -638,6 +638,14 @@ test client. Start the client after the ready file appears. Preserve both
 machines' results to compare counts and payload hashes. Successful replies
 prove the echo workload; transparent-proxy interception additionally requires
 an intercepting UDP/443 policy and matching provider/Dial9 flow identities.
+Schema2 receipts also record `socket_endpoints` on the client and `socket_peers`
+on the receiver, indexed by the payload's socket ID. Each map must cover every
+socket exactly once. Proxy egress and NAT can change addresses: compare these
+maps by socket ID, without requiring their address values to match. This fixed
+flow fixture rejects a peer change or tuple reuse within one socket ID; a new
+flow after intentional idle expiry needs a new identity. The receiver bounds
+indices to512 sockets and64 packets each, and retained payload to256MiB.
+Current replay requires schema2; old receipts lack these address records.
 The signed modern harness currently supplies its own loopback echo server and
 tests H3 pass-through plus one intercepted request. These commands do not extend its release
 seal or replace the required idle, mixed TCP, recovery and performance phases.

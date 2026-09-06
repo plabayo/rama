@@ -43,6 +43,7 @@ from modern_udp_evidence import (  # noqa: E402
     pressure_window_observation,
     producer_sources_sha256,
     validate_echo_decision_bijection,
+    validate_echo_socket_maps,
     verify_bundle,
     _validate_echo_timing,
 )
@@ -1023,11 +1024,12 @@ def build_strict_bundle(directory):
     )
 
     client = {
-        "schema_version": 1, "kind": "controlled_echo_client", "run_uuid": RUN_UUID,
+        "schema_version": 2, "kind": "controlled_echo_client", "run_uuid": RUN_UUID,
         "endpoint": echo_endpoint, "socket_count": 128, "datagrams_per_socket": 1,
         "payload_bytes": 1200, "expected_count": 128, "sent_count": 128,
         "received_count": 128, "exact_echo_count": 128, "unique_echo_count": 128,
         "independent_socket_count": 128, "local_endpoints": echo_endpoints,
+        "socket_endpoints": [[index, endpoint] for index, endpoint in enumerate(echo_endpoints)],
         "local_endpoint_set_sha256": hashlib.sha256("\n".join(echo_endpoints).encode()).hexdigest(),
         "payload_set_sha256": echo_digest, "echo_set_sha256": echo_digest,
         "error_count": 0, "passed": True, "schema_complete": True,
@@ -1036,13 +1038,15 @@ def build_strict_bundle(directory):
         "packet_timings_ns": [[index, 0, 1000000000, 1001000000] for index in range(128)],
     }
     server = {
-        "schema_version": 1, "kind": "controlled_echo_server", "run_uuid": RUN_UUID,
+        "schema_version": 2, "kind": "controlled_echo_server", "run_uuid": RUN_UUID,
         "endpoint": echo_endpoint, "expected_count": 128, "received_count": 128,
         "echo_count": 128, "duplicate_count": 0, "malformed_count": 0,
+        "peer_mismatch_count": 0,
+        "socket_peers": [[index, endpoint] for index, endpoint in enumerate(echo_endpoints)],
         "payload_set_sha256": echo_digest, "passed": True, "schema_complete": True,
     }
     ready = {
-        "schema_version": 1, "run_uuid": RUN_UUID, "endpoint": echo_endpoint,
+        "schema_version": 2, "run_uuid": RUN_UUID, "endpoint": echo_endpoint,
         "server_pid": 4000, "schema_complete": True,
     }
     for name, value in (
@@ -1773,6 +1777,32 @@ class ModernStatusTests(unittest.TestCase):
 
 
 class StrictBundleTests(unittest.TestCase):
+    def test_echo_socket_maps_are_required_by_sealed_raw_replay(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            self.assertEqual(verify_bundle(root), 0)
+            for filename, key in (("controlled-echo-client.json", "socket_endpoints"),
+                                  ("controlled-echo-server.json", "socket_peers")):
+                path = root / filename
+                original = path.read_bytes()
+                for mutation in ("missing", "index", "reused", "schema"):
+                    value = json.loads(original)
+                    if mutation == "missing":
+                        value.pop(key)
+                    elif mutation == "index":
+                        value[key][0][0] = 1
+                    elif mutation == "reused":
+                        value[key][1][1] = value[key][0][1]
+                    else:
+                        value["schema_version"] = 1
+                    with self.subTest(filename=filename, mutation=mutation):
+                        path.write_text(json.dumps(value))
+                        reseal_test_manifest(root)
+                        with self.assertRaises(BundleVerificationError):
+                            verify_bundle(root)
+                    path.write_bytes(original)
+
     def test_intercepted_http3_requires_raw_tuple_phase_result_and_transport_bounds(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -2516,6 +2546,136 @@ class PressureProbePacingTests(unittest.TestCase):
 
 
 class QuicShapedEchoTests(unittest.TestCase):
+    def test_actual_receiver_preserves_payload_socket_to_peer_mapping(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ready, result = root / "ready.json", root / "server.json"
+            command = [
+                sys.executable, str(SCRIPT_DIR / "modern_udp_e2e_probe.py"), "echo-server",
+                "--run-uuid", RUN_UUID, "--expected-count", "12", "--max-seconds", "5",
+                "--ready-file", str(ready), "--result-file", str(result),
+            ]
+            with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as server:
+                try:
+                    deadline = time.monotonic() + 3
+                    while not ready.exists() and server.poll() is None and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertTrue(ready.exists(), "receiver published readiness")
+                    readiness = json.loads(ready.read_text())
+                    port = int(readiness["endpoint"].rsplit(":", 1)[1])
+                    client_path = root / "client.json"
+                    controlled_echo_load(
+                        "127.0.0.1", port, RUN_UUID, 4, 3, 1200, 4, 2, str(client_path), 20
+                    )
+                    stdout, stderr = server.communicate(timeout=5)
+                    self.assertEqual((server.returncode, stdout, stderr), (0, b"", b""))
+                    client, receiver = json.loads(client_path.read_text()), json.loads(result.read_text())
+                    self.assertEqual(client["schema_version"], 2)
+                    self.assertEqual(receiver["schema_version"], 2)
+                    self.assertEqual(readiness["schema_version"], 2)
+                    validate_echo_socket_maps(client, receiver, 4)
+                    self.assertEqual(client["socket_endpoints"], receiver["socket_peers"])
+                    self.assertEqual(receiver["payload_set_sha256"], client["echo_set_sha256"])
+                    self.assertEqual(receiver["echo_count"], 12)
+                finally:
+                    if server.poll() is None:
+                        server.kill()
+                    server.communicate(timeout=5)
+
+    def test_receiver_rejects_changed_reused_and_out_of_bounds_socket_identities(self):
+        packets = [
+            (0, 0, ("127.0.0.1", 50001)),
+            (0, 1, ("127.0.0.1", 50002)),  # same index changed peer
+            (1, 0, ("127.0.0.1", 50001)),  # another index reused peer
+            (512, 0, ("127.0.0.1", 50003)),
+            (0, 64, ("127.0.0.1", 50001)),
+        ]
+        receiver = mock.Mock()
+        receiver.getsockname.return_value = ("127.0.0.1", 44444)
+        receiver.sendto.side_effect = lambda payload, _peer: len(payload)
+        receiver.recvfrom.side_effect = [
+            (quic_shaped_payload(RUN_UUID, index, sequence, 1200), peer)
+            for index, sequence, peer in packets
+        ] + [OSError("fixture input ended")]
+        with tempfile.TemporaryDirectory() as directory:
+            result = Path(directory) / "server.json"
+            with mock.patch.object(udp_probe.socket, "socket", return_value=receiver), \
+                    mock.patch.object(udp_probe.signal, "signal"):
+                with self.assertRaisesRegex(OSError, "fixture input ended"):
+                    udp_probe.controlled_echo_server(
+                        "127.0.0.1", 44444, RUN_UUID, 2, 5,
+                        str(Path(directory) / "ready.json"), str(result),
+                    )
+            value = json.loads(result.read_text())
+            self.assertFalse(value["passed"])
+            self.assertEqual(value["peer_mismatch_count"], 2)
+            self.assertEqual(value["malformed_count"], 2)
+            self.assertEqual(value["socket_peers"], [[0, "127.0.0.1:50001"]])
+            self.assertEqual(value["received_count"], 1)
+            receiver.sendto.assert_called_once()
+            receiver.close.assert_called_once()
+            receiver.reset_mock()
+            receiver.recvfrom.side_effect = [
+                (quic_shaped_payload(RUN_UUID, index, 0, 1200), ("127.0.0.1", 50001 + index))
+                for index in range(2)
+            ]
+            with mock.patch.object(udp_probe.socket, "socket", return_value=receiver), \
+                    mock.patch.object(udp_probe.signal, "signal"), \
+                    mock.patch.object(udp_probe, "MAX_LOAD_BYTES", 1200):
+                with self.assertRaisesRegex(RuntimeError, "did not receive one exact payload"):
+                    udp_probe.controlled_echo_server(
+                        "127.0.0.1", 44444, RUN_UUID, 2, 5,
+                        str(Path(directory) / "ready.json"), str(result),
+                    )
+            limited = json.loads(result.read_text())
+            self.assertFalse(limited["passed"])
+            self.assertEqual(limited["received_count"], 1)
+            self.assertEqual(limited["malformed_count"], 1)
+            receiver.sendto.assert_called_once()
+            receiver.close.assert_called_once()
+        with mock.patch.object(udp_probe.socket, "socket") as factory:
+            with self.assertRaises(ValueError):
+                udp_probe.controlled_echo_server("127.0.0.1", 0, RUN_UUID, 32769, 5, "", "")
+            factory.assert_not_called()
+
+    def test_socket_map_replay_keeps_nat_address_spaces_distinct_and_rejects_mutations(self):
+        client = {
+            "socket_endpoints": [[0, "192.168.0.7:50001"], [1, "192.168.0.7:50002"]],
+            "local_endpoints": ["192.168.0.7:50001", "192.168.0.7:50002"],
+        }
+        receiver = {
+            "socket_peers": [[0, "203.0.113.7:60001"], [1, "203.0.113.7:60002"]],
+            "peer_mismatch_count": 0,
+        }
+        validate_echo_socket_maps(client, receiver, 2)
+        for which, key in (("client", "socket_endpoints"), ("server", "socket_peers")):
+            for mutation in ("missing", "duplicate", "swapped", "boolean", "reused", "wildcard", "port", "scope"):
+                c, s = json.loads(json.dumps(client)), json.loads(json.dumps(receiver))
+                rows = (c if which == "client" else s)[key]
+                if mutation == "missing":
+                    rows.pop()
+                elif mutation == "duplicate":
+                    rows[1][0] = 0
+                elif mutation == "swapped":
+                    rows.reverse()
+                elif mutation == "boolean":
+                    rows[0][0] = False
+                elif mutation == "reused":
+                    rows[1][1] = rows[0][1]
+                elif mutation == "wildcard":
+                    rows[0][1] = "0.0.0.0:50001"
+                elif mutation == "port":
+                    rows[0][1] = "127.0.0.1:050001"
+                else:
+                    rows[0][1] = "[fe80::1%en0]:50001"
+                with self.subTest(which=which, mutation=mutation), self.assertRaises(BundleVerificationError):
+                    validate_echo_socket_maps(c, s, 2)
+        for mismatch in (1, False, "0"):
+            with self.subTest(mismatch=mismatch), self.assertRaises(BundleVerificationError):
+                validate_echo_socket_maps(client, {**receiver, "peer_mismatch_count": mismatch}, 2)
+        with self.assertRaises(BundleVerificationError):
+            validate_echo_socket_maps({**client, "local_endpoints": []}, receiver, 2)
+
     def test_paced_socket_load_records_and_rederives_every_packet_window(self):
         server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         server.bind(("127.0.0.1", 0))

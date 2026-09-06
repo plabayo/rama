@@ -957,6 +957,7 @@ ECHO_CLIENT_KEYS = {
     "datagrams_per_socket", "payload_bytes", "expected_count", "sent_count",
     "received_count", "exact_echo_count", "unique_echo_count",
     "independent_socket_count", "local_endpoints", "local_endpoint_set_sha256",
+    "socket_endpoints",
     "payload_set_sha256", "echo_set_sha256", "error_count", "passed",
     "schema_complete",
     "interval_ms", "start_epoch_ms", "end_epoch_ms", "start_monotonic_ns",
@@ -965,11 +966,47 @@ ECHO_CLIENT_KEYS = {
 ECHO_SERVER_KEYS = {
     "schema_version", "kind", "run_uuid", "endpoint", "expected_count",
     "received_count", "echo_count", "duplicate_count", "malformed_count",
+    "peer_mismatch_count", "socket_peers",
     "payload_set_sha256", "passed", "schema_complete",
 }
 ECHO_READY_KEYS = {
     "schema_version", "run_uuid", "endpoint", "server_pid", "schema_complete",
 }
+
+
+def validate_echo_socket_maps(client, server, socket_count):
+    """Bind each payload socket index to distinct client and receiver tuples.
+
+    NAT and proxy egress can change tuples: these maps must share indices,
+    not addresses. The receiver records and rejects changes within one index.
+    """
+    if type(socket_count) is not int or not 1 <= socket_count <= 512:
+        raise BundleVerificationError("controlled echo socket-map count is outside its bounds")
+    for value, name in ((client, "socket_endpoints"), (server, "socket_peers")):
+        rows = value.get(name)
+        if not isinstance(rows, list) or len(rows) != socket_count:
+            raise BundleVerificationError(f"controlled echo {name} has incomplete index coverage")
+        endpoints = []
+        for index, row in enumerate(rows):
+            if (not isinstance(row, list) or len(row) != 2
+                    or type(row[0]) is not int or row[0] != index
+                    or not isinstance(row[1], str) or not is_udp_endpoint(row[1])):
+                raise BundleVerificationError(f"controlled echo {name} has an invalid indexed tuple")
+            endpoint = row[1]
+            host, port = (endpoint[1:].split("]:", 1) if endpoint.startswith("[")
+                          else endpoint.rsplit(":", 1))
+            address = ipaddress.ip_address(host)
+            canonical = f"[{address}]:{int(port)}" if address.version == 6 else f"{address}:{int(port)}"
+            if (endpoint != canonical or "%" in host
+                    or address.is_unspecified or address.is_multicast):
+                raise BundleVerificationError(f"controlled echo {name} tuple is not concrete and canonical")
+            endpoints.append(endpoint)
+        if len(set(endpoints)) != socket_count:
+            raise BundleVerificationError(f"controlled echo {name} reuses a tuple across socket indices")
+        if name == "socket_endpoints" and sorted(endpoints) != client.get("local_endpoints"):
+            raise BundleVerificationError("controlled echo indexed client tuples disagree with its endpoint set")
+    if type(server.get("peer_mismatch_count")) is not int or server["peer_mismatch_count"] != 0:
+        raise BundleVerificationError("controlled echo receiver observed a changed or reused peer")
 
 
 def _validate_echo_timing(client, status, sockets, per_socket):
@@ -1020,10 +1057,11 @@ def _validate_echo_raw(root, status, decisions, phases, unblocked_generation):
     run_uuid = status["run_uuid"]
     echo_pid = _bundle_uint(status["echo_source_pid"], 2**31 - 1)
     _validate_echo_timing(client, status, sockets, per_socket)
+    validate_echo_socket_maps(client, server, sockets)
     if not endpoint.startswith("127.0.0.1:") or not is_udp_endpoint(endpoint):
         raise BundleVerificationError("controlled echo endpoint is not canonical loopback")
     common = {
-        "schema_version": 1, "run_uuid": run_uuid, "endpoint": endpoint,
+        "schema_version": 2, "run_uuid": run_uuid, "endpoint": endpoint,
         "expected_count": expected, "passed": True, "schema_complete": True,
     }
     for value, kind in ((client, "controlled_echo_client"), (server, "controlled_echo_server")):
@@ -1065,7 +1103,7 @@ def _validate_echo_raw(root, status, decisions, phases, unblocked_generation):
         raise BundleVerificationError("controlled echo endpoint-set digest mismatch")
     if (
         ready != {
-            "schema_version": 1, "run_uuid": run_uuid, "endpoint": endpoint,
+            "schema_version": 2, "run_uuid": run_uuid, "endpoint": endpoint,
             "server_pid": ready["server_pid"], "schema_complete": True,
         }
         or _bundle_uint(ready["server_pid"], 2**31 - 1) == 0

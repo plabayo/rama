@@ -27,7 +27,7 @@ PROBE_ERROR_EXIT = 20
 PRESSURE_MARKER_PREFIX = b"rama-udp-e2e-pressure-v1 "
 QUIC_SHAPED_MARKER = b"rama-quic-shaped-not-valid-quic-v1\0"
 QUIC_SHAPED_VERSION = 0xFACEB00C
-CONTROLLED_ECHO_SCHEMA_VERSION = 1
+CONTROLLED_ECHO_SCHEMA_VERSION = 2
 MAX_LOAD_BYTES = 256 * 1024 * 1024
 PRESSURE_INITIAL_DATAGRAMS = 66
 PRESSURE_INTERVAL_SECONDS = 0.02
@@ -930,8 +930,8 @@ def controlled_echo_server(
     result_file: str,
 ) -> None:
     canonical_uuid(run_uuid)
-    if not 1 <= expected_count <= 65_536:
-        raise ValueError("expected echo count must be in 1..65536")
+    if not 1 <= expected_count <= 512 * 64:
+        raise ValueError("expected echo count must be in 1..32768")
     if not 1 <= max_seconds <= 600:
         raise ValueError("echo server max seconds must be in 1..600")
     address = ipaddress.ip_address(bind)
@@ -952,6 +952,10 @@ def controlled_echo_server(
     signal.signal(signal.SIGTERM, request_stop)
     signal.signal(signal.SIGINT, request_stop)
     received = {}
+    received_bytes = 0
+    socket_peers = {}
+    peer_sockets = {}
+    peer_mismatch_count = 0
     duplicate_count = 0
     malformed_count = 0
     echo_count = 0
@@ -975,13 +979,31 @@ def controlled_echo_server(
                 continue
             try:
                 identity = parse_quic_shaped_payload(payload, run_uuid)
+                if identity[0] >= 512 or identity[1] >= 64:
+                    raise ValueError("controlled echo payload index exceeds the load bounds")
             except ValueError:
                 malformed_count += 1
                 continue
             if identity in received:
                 duplicate_count += 1
                 continue
+            if received_bytes + len(payload) > MAX_LOAD_BYTES:
+                malformed_count += 1
+                break
+            peer_text = (
+                f"[{peer[0]}]:{peer[1]}" if address.version == 6
+                else f"{peer[0]}:{peer[1]}"
+            )
+            # Preserve payload identity across the two network address spaces.
+            # This fixture requires one stable, distinct peer per socket index.
+            if (socket_peers.get(identity[0], peer_text) != peer_text
+                    or peer_sockets.get(peer_text, identity[0]) != identity[0]):
+                peer_mismatch_count += 1
+                continue
+            socket_peers[identity[0]] = peer_text
+            peer_sockets[peer_text] = identity[0]
             received[identity] = payload
+            received_bytes += len(payload)
             if sock.sendto(payload, peer) != len(payload):
                 raise RuntimeError("controlled echo server sent a partial datagram")
             echo_count += 1
@@ -997,11 +1019,14 @@ def controlled_echo_server(
             "echo_count": echo_count,
             "duplicate_count": duplicate_count,
             "malformed_count": malformed_count,
+            "peer_mismatch_count": peer_mismatch_count,
+            "socket_peers": [[index, peer] for index, peer in sorted(socket_peers.items())],
             "payload_set_sha256": payload_set_sha256(received),
             "passed": len(received) == expected_count
                 and echo_count == expected_count
                 and duplicate_count == 0
-                and malformed_count == 0,
+                and malformed_count == 0
+                and peer_mismatch_count == 0,
             "schema_complete": True,
         }
         write_json_result(result_file, result)
@@ -1146,6 +1171,8 @@ def controlled_echo_load(
         "unique_echo_count": len(echoed),
         "independent_socket_count": len(set(local_endpoints)),
         "local_endpoints": sorted(local_endpoints),
+        "socket_endpoints": [[index, row[4]] for index, row in enumerate(rows)
+                             if row[4] is not None],
         "local_endpoint_set_sha256": hashlib.sha256(
             "\n".join(sorted(local_endpoints)).encode("utf-8")
         ).hexdigest(),
