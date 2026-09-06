@@ -850,7 +850,13 @@ jobs:
       - name: Run tests in release mode (--ignored)
         timeout-minutes: 80
         run: |
-          cargo nextest run --profile ci --all-features --release --workspace --run-ignored=only
+          # Preserve resource evidence if the runner shuts down during compilation.
+          free -m
+          df -h "$GITHUB_WORKSPACE"
+          stdbuf -oL vmstat -w -t 30 &
+          resource_monitor=$!
+          trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
+          /usr/bin/time -v cargo nextest run --profile ci --all-features --release --workspace --run-ignored=only
 
   test-ws-autobahn-server:
     runs-on: ubuntu-latest
