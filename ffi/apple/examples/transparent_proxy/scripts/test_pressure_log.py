@@ -794,6 +794,29 @@ class PressureLogTests(unittest.TestCase):
         _, issues = parse_ndjson_lines([preamble, record])
         self.assertEqual(issues, ["malformed NDJSON record at line 1"])
 
+    def test_native_log_footer_requires_exact_count_shape_and_final_position(self):
+        record = {"processID": 10, "subsystem": "org.example.provider"}
+        footer = {"count": 1, "finished": 1}
+        decoded, issues = parse_ndjson_lines(
+            [json.dumps(record), json.dumps(footer), "\n"])
+        self.assertEqual(decoded, [record])
+        self.assertEqual(issues, [])
+        for invalid in (
+            {**footer, "count": 0}, {**footer, "count": True},
+            {**footer, "finished": True}, {**footer, "finished": 0},
+            {**footer, "eventMessage": "unexpected event"},
+        ):
+            with self.subTest(footer=invalid):
+                decoded, _ = parse_ndjson_lines(
+                    [json.dumps(record), json.dumps(invalid)])
+                _, issues = filter_provider_ndjson_records(
+                    decoded, 10, "org.example.provider")
+                self.assertTrue(issues)
+        decoded, _ = parse_ndjson_lines(
+            [json.dumps(footer), json.dumps(record)])
+        _, issues = filter_provider_ndjson_records(decoded, 10, "org.example.provider")
+        self.assertTrue(issues)
+
     def test_oslog_timestamp_requires_a_complete_known_format(self):
         self.assertEqual(
             parse_oslog_timestamp("1970-01-01 00:01:40.000001+0000"),

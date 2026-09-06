@@ -713,7 +713,7 @@ def unique_json_object(pairs):
     return value
 
 def parse_ndjson_lines(lines, *, provider_pid=None, subsystem=None):
-    """Decode records, allowing only the bound log stream's optional preamble."""
+    """Decode records and the native stream's optional preamble/count footer."""
     pid = _nonnegative_int(provider_pid)
     preamble = None
     if pid is not None and pid > 0 and isinstance(subsystem, str) and subsystem:
@@ -735,6 +735,14 @@ def parse_ndjson_lines(lines, *, provider_pid=None, subsystem=None):
             continue
         if not isinstance(value, dict):
             issues.append(f"non-object NDJSON record at line {line_number}")
+            continue
+        # `log stream --style ndjson` emits this metadata when stopped cleanly.
+        if (
+            line_number == records[-1][0]
+            and set(value) == {"count", "finished"}
+            and type(value["finished"]) is int and value["finished"] == 1
+            and type(value["count"]) is int and value["count"] == len(decoded)
+        ):
             continue
         decoded.append(value)
     return decoded, issues
