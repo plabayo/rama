@@ -17,6 +17,8 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
     /// the egress is dead and wedges → flow leak. See
     /// `pumpCore(_:didTerminateWith:)`.
     private let onTerminal: @Sendable (Error) -> Void
+    /// One FIN submission result on the callback queue, before any owner teardown.
+    private let onFinComplete: @Sendable (Error?) -> Void
     /// Grace after the whole promoted flow reaches terminal before this pump
     /// force-cancels the egress connection. It is deliberately not armed by a
     /// successful local FIN: a quiet response half is still valid TCP.
@@ -57,6 +59,7 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
         lingerCloseDeadline: DispatchTimeInterval,
         onDrained: @escaping @Sendable () -> Void,
         onTerminal: @escaping @Sendable (Error) -> Void = { _ in },
+        onFinComplete: @escaping @Sendable (Error?) -> Void = { _ in },
         onActivity: @escaping @Sendable () -> Bool = { true },
         readSideIdleMs: @escaping @Sendable () -> UInt64 = { .max },
         writerMemoryBudget: WriterMemoryBudget = WriterMemoryBudget(),
@@ -68,6 +71,7 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
         self.lingerCloseMs = Self.millis(from: lingerCloseDeadline)
         self.readSideIdleMs = readSideIdleMs
         self.onTerminal = onTerminal
+        self.onFinComplete = onFinComplete
         self.callbackQueue = queue
         let core = TcpWritePumpCore(
             queue: queue,
@@ -99,7 +103,6 @@ final class NwTcpConnectionWritePump: @unchecked Sendable {
         core.delegate = self
         queue.setSpecific(key: callbackQueueKey, value: 1)
     }
-
 
     /// Same status contract as `TcpClientWritePump.enqueue`.
     @discardableResult
@@ -325,6 +328,7 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
         // <https://developer.apple.com/documentation/network/nwconnection/contentcontext/finalmessage>.
         let callbackQueue = self.callbackQueue
         let callbackQueueKey = self.callbackQueueKey
+        let onFinComplete = self.onFinComplete
         connection.send(
             content: nil,
             contentContext: .finalMessage,
@@ -335,6 +339,7 @@ extension NwTcpConnectionWritePump: TcpWritePumpCoreDelegate {
                 // otherwise the waiter can complete a clean two-sided drain
                 // and make the errorful teardown lose its one-shot race.
                 let finish: @Sendable () -> Void = { [weak self] in
+                    onFinComplete(error)
                     if let error {
                         self?.lingerWork?.cancel()
                         self?.lingerWork = nil

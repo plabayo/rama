@@ -323,6 +323,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             onServerClosed: { [weak self] in
                 self?.flowQueue.async { [weak self] in
                     guard let self else { return }
+                    self.ctx.logDiagnostic(.rustServerClosed)
                     if self.ctx.mode != .viaRust {
                         self.ctx.directForwarder?.markRustS2CDone()
                         return
@@ -816,6 +817,9 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                     self.ctx.applyWriterTerminal(error)
                 }
             },
+            onFinComplete: { [weak ctx] error in
+                ctx?.logDiagnostic(.egressFin, error: error)
+            },
             // C→S byte progress on `flowQueue` — see `buildClientWritePump`.
             onActivity: { [weak self] in
                 self?.ctx.recordActivityUnlessPressureEvicted() ?? false
@@ -873,6 +877,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         flow.open(withLocalEndpoint: nil) { [weak self] error in
             self?.flowQueue.async { [weak self] in
                 guard let self else { return }
+                self.ctx.logDiagnostic(.kernelOpen, error: error)
                 self.withActiveEngineGeneration {
                     if let error {
                         self.core?.logDebug("flow.open error after egress ready: \(error)")
@@ -930,6 +935,7 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                 guard let self, !self.ctx.isDone else { return }
                 self.core?.logTrace(
                     "tcp client read EOF (half-close): forward to egress, keep download open")
+                self.ctx.logDiagnostic(.clientEof)
                 session?.onClientEof()
             },
             onHardError: { [weak self] err in

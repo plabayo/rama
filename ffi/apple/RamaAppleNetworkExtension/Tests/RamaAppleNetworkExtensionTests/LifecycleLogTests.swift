@@ -1,4 +1,6 @@
 import Foundation
+import Network
+import NetworkExtension
 import XCTest
 
 @testable import RamaAppleNetworkExtension
@@ -32,6 +34,40 @@ final class LifecycleLogTests: XCTestCase {
         LifecycleLog.errorOverride = nil
         LifecycleLog.subsystem = Bundle.main.bundleIdentifier ?? "org.plabayo.rama.ne"
         super.tearDown()
+    }
+
+    func testTcpTerminalDiagnosticsAreBoundedAndExcludePrivateErrors() {
+        let privateError = NSError(
+            domain: "private.example/request?token=secret", code: 37,
+            userInfo: [NSLocalizedDescriptionKey: "private application payload"])
+        let cases: [(Error?, String, Int)] = [
+            (nil, "none", 0),
+            (NWError.posix(.EACCES), "posix", Int(EACCES)),
+            (NWError.dns(-65563), "dns", -65563),
+            (NWError.tls(-9806), "tls", -9806),
+            (NSError(domain: NEAppProxyErrorDomain, code: 1), "app_proxy", 1),
+            (privateError, "other", 37),
+        ]
+        let events: [TcpFlowContext.DiagnosticEvent] = [
+            .kernelOpen, .clientEof, .rustServerClosed, .kernelWriteClose, .egressFin,
+        ]
+        var ids = Set<UInt64>()
+        for (error, kind, code) in cases {
+            let context = TcpFlowContext()
+            context.engineGeneration = 7
+            XCTAssertTrue(ids.insert(context.diagnosticId).inserted)
+            for event in events {
+                guard let record = context.diagnosticRecord(for: event, error: error) else {
+                    return XCTFail("first terminal observation must be available")
+                }
+                XCTAssertTrue(record.contains("diagnostic_id=\(context.diagnosticId) "))
+                XCTAssertTrue(record.contains("engine_generation=7 "))
+                XCTAssertTrue(record.contains("error_kind=\(kind) error_code=\(code)"))
+                XCTAssertFalse(record.contains("private"))
+                XCTAssertFalse(record.contains("secret"))
+                XCTAssertNil(context.diagnosticRecord(for: event, error: error))
+            }
+        }
     }
 
     // MARK: - Configurable subsystem

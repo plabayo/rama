@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import NetworkExtension
 
 /// Per-flow data-path mode. Switches from `.viaRust` to
 /// `.promoted` when the in-Rust service calls
@@ -49,6 +50,28 @@ struct TcpFlowMaintenanceState {
 /// Mutable flow state is confined to its dedicated serial queue. Fields read
 /// by maintenance scans are mirrored through one locked snapshot.
 final class TcpFlowContext: @unchecked Sendable {
+    enum DiagnosticEvent: UInt8 {
+        case kernelOpen, clientEof, rustServerClosed, kernelWriteClose, egressFin
+
+        var name: String {
+            switch self {
+            case .kernelOpen: return "kernel_open_result"
+            case .clientEof: return "client_read_eof"
+            case .rustServerClosed: return "rust_server_closed"
+            case .kernelWriteClose: return "kernel_write_close"
+            case .egressFin: return "egress_fin_result"
+            }
+        }
+    }
+
+    // Correlate bounded terminal diagnostics without exposing object addresses,
+    // application identity, or endpoints. Provider process identity scopes IDs.
+    private static let nextDiagnosticId = Locked<UInt64>(0)
+    let diagnosticId = TcpFlowContext.nextDiagnosticId.withLock { value in
+        value &+= 1
+        return value
+    }
+    private var reportedDiagnosticEvents: UInt8 = 0
     private let maintenanceState = Locked(TcpFlowMaintenanceState())
     // Connection is held behind the injectable protocol so unit tests
     // can drive the per-flow state machine via a mock instead of
@@ -257,6 +280,45 @@ final class TcpFlowContext: @unchecked Sendable {
     init() {
     }
 
+    /// Called only on the flow queue, like the close transitions it describes.
+    /// Each event appears at most once, including a duplicate terminal callback.
+    func logDiagnostic(_ event: DiagnosticEvent, error: Error? = nil) {
+        if let record = diagnosticRecord(for: event, error: error) {
+            RamaLog.debugPublic(record)
+        }
+    }
+
+    func diagnosticRecord(for event: DiagnosticEvent, error: Error? = nil) -> String? {
+        let mask: UInt8 = 1 << event.rawValue
+        guard reportedDiagnosticEvents & mask == 0 else { return nil }
+        reportedDiagnosticEvents |= mask
+        let errorKind: String
+        let errorCode: Int
+        if let networkError = error as? NWError {
+            switch networkError {
+            case .posix(let code): (errorKind, errorCode) = ("posix", Int(code.rawValue))
+            case .dns(let code): (errorKind, errorCode) = ("dns", Int(code))
+            case .tls(let code): (errorKind, errorCode) = ("tls", Int(code))
+            default: (errorKind, errorCode) = ("network", (networkError as NSError).code)
+            }
+        } else if let error {
+            let value = error as NSError
+            switch value.domain {
+            case NSPOSIXErrorDomain: errorKind = "posix"
+            case NSURLErrorDomain: errorKind = "url"
+            case NEAppProxyErrorDomain: errorKind = "app_proxy"
+            default: errorKind = "other"
+            }
+            errorCode = value.code
+        } else {
+            (errorKind, errorCode) = ("none", 0)
+        }
+        return "tcp_terminal diagnostic_id=\(diagnosticId) engine_generation=\(engineGeneration ?? 0) "
+            + "event=\(event.name) mode=\(mode == .viaRust ? "via_rust" : "promoted") "
+            + "egress_ready=\(egressReady ? 1 : 0) done=\(isDone ? 1 : 0) "
+            + "error_kind=\(errorKind) error_code=\(errorCode)"
+    }
+
     func closeClientReadOnce(_ error: Error?) {
         guard !clientReadClosed else { return }
         clientReadClosed = true
@@ -266,6 +328,7 @@ final class TcpFlowContext: @unchecked Sendable {
     func closeClientWriteOnce(_ error: Error?) {
         guard !clientWriteClosed else { return }
         clientWriteClosed = true
+        logDiagnostic(.kernelWriteClose, error: error)
         flow?.closeWriteWithError(error)
     }
 
