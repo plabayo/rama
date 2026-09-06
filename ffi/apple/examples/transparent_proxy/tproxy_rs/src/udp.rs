@@ -14,6 +14,7 @@ use rama::{
     service::service_fn,
     telemetry::tracing,
     udp::{UdpSocket, bind_udp_with_address},
+    utils::octets::kib,
 };
 
 #[cfg(any(test, feature = "e2e"))]
@@ -31,7 +32,7 @@ use super::UdpPolicyScope;
 const E2E_PRESSURE_MARKER: &[u8] = b"rama-udp-e2e-pressure-v1 ";
 #[cfg(any(test, feature = "e2e"))]
 const E2E_PRESSURE_MAX_RETAINED_ITEMS: usize = 4_096;
-const UDP_RECV_SCRATCH_LEN: usize = 65_536;
+const UDP_RECV_SCRATCH_LEN: usize = kib(64);
 
 thread_local! {
     /// One receive allocation per runtime worker that actually receives UDP.
@@ -635,7 +636,7 @@ mod tests {
             }));
         }
         assert_eq!(retained.payloads.len(), 4_096);
-        assert_eq!(retained.bytes, 256 * 1024);
+        assert_eq!(retained.bytes, kib(256));
         assert_eq!(drops.load(Ordering::Relaxed), 1);
         drop(retained);
         assert_eq!(drops.load(Ordering::Relaxed), 4_097);
@@ -748,7 +749,7 @@ mod tests {
         let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
             meta("162.159.200.1:123", "com.apple.python3"),
             |_| panic!("the diagnostic marker must not produce egress"),
-            move || _ = demand_tx.send(()),
+            move |_| _ = demand_tx.send(()),
             move || _ = close_tx.send(()),
         ) else {
             panic!("expected an intercepted in-process flow");
@@ -820,7 +821,7 @@ mod tests {
         let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
             meta("162.159.200.1:123", "com.apple.python3"),
             |_| panic!("the diagnostic marker must not produce egress"),
-            move || _ = demand_tx.send(()),
+            move |_| _ = demand_tx.send(()),
             || {},
         ) else {
             panic!("expected an intercepted in-process flow");

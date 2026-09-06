@@ -6,11 +6,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+use rama::utils::octets::{kib, mib};
 use serial_test::serial;
 
 use crate::shared::{
     bindings,
-    clients::{UdpFfiSession, udp_roundtrip, udp_roundtrip_v1},
+    clients::{UdpFfiSession, udp_roundtrip},
     env::{AbortOnDrop, setup_env},
     ffi::{EngineHandle, engine_with_udp_ingress_probe_lease_ms},
     servers::spawn_udp_echo,
@@ -18,8 +19,8 @@ use crate::shared::{
 };
 
 const MAX_UDP_DATAGRAM: usize = u16::MAX as usize;
-const DEFAULT_PER_FLOW_BYTES: usize = 256 * 1024;
-const DEFAULT_GLOBAL_BYTES: usize = 16 * 1024 * 1024;
+const DEFAULT_PER_FLOW_BYTES: usize = kib(256);
+const DEFAULT_GLOBAL_BYTES: usize = mib(16);
 const GLOBAL_FILL_FLOWS: usize = 64;
 const DATAGRAMS_PER_FILL_FLOW: usize = 4;
 const PER_FLOW_TAIL_BYTES: usize =
@@ -61,47 +62,6 @@ async fn ffi_contract_udp_basic_echo() {
 
 #[tokio::test]
 #[serial]
-async fn ffi_contract_udp_v1_callback_abi_remains_compatible() {
-    let env = setup_env().await;
-    let response = udp_roundtrip_v1(env.engine, localhost(env.ports.udp), b"udp ffi v1").await;
-    assert_eq!(response, b"UDP FFI V1");
-}
-
-#[tokio::test]
-#[serial]
-async fn ffi_contract_udp_v1_pressure_demand_auto_acks_before_long_expiry() {
-    let env = setup_env().await;
-    let engine =
-        engine_with_udp_ingress_probe_lease_ms(Some(ACK_TEST_PROBE_LEASE.as_millis() as u64));
-    let remote = localhost(env.ports.udp);
-    let mut fillers = fill_default_global_budget(&engine, remote);
-    let blocked_payload = vec![b'v'; MAX_UDP_DATAGRAM];
-    let mut stalled = UdpFfiSession::new_v1(engine.clone(), remote);
-    stalled.stage_client_datagram_before_activation(&blocked_payload, Some(remote));
-
-    fillers.remove(0).close_from_client_and_assert(1);
-    assert_eq!(
-        stalled.wait_for_read_demand().await,
-        0,
-        "legacy callback ABI cannot expose the internal probe ID"
-    );
-    stalled.activate();
-    let payload = b"v1 pressure auto ack";
-    assert_eq!(stalled.send_client_datagram(payload, Some(remote)), 0);
-    let response = tokio::time::timeout(
-        ACK_TEST_PROBE_LEASE - ACK_TEST_NEGATIVE_WINDOW,
-        stalled.recv_server_datagram(),
-    )
-    .await
-    .expect("V1 auto-ACK must recover pressure before the long lease expires");
-    assert_eq!(response.payload, b"V1 PRESSURE AUTO ACK");
-
-    stalled.close_from_client_and_assert(1);
-    close_udp_sessions(fillers);
-}
-
-#[tokio::test]
-#[serial]
 async fn ffi_contract_udp_ingress_owns_borrowed_payload_and_peer_after_return() {
     let env = setup_env().await;
     let remote = localhost(env.ports.udp);
@@ -138,7 +98,7 @@ async fn ffi_contract_udp_ingress_owns_borrowed_payload_and_peer_after_return() 
 
 #[tokio::test]
 #[serial]
-async fn ffi_contract_udp_v2_global_budget_probe_ack_and_cleanup() {
+async fn ffi_contract_udp_global_budget_probe_ack_and_cleanup() {
     let env = setup_env().await;
     // A 500 ms production-path lease leaves a 10x margin around the 50 ms
     // negative observations below. The default remains 10 ms; this test uses
@@ -201,14 +161,14 @@ async fn ffi_contract_udp_v2_global_budget_probe_ack_and_cleanup() {
     let stale_probe_id = probe_id.checked_add(1).unwrap_or(probe_id - 1);
     stalled.acknowledge_client_read(stale_probe_id);
     stalled.acknowledge_client_read(probe_id);
-    let recovery_payload = b"v2 global pressure recovered";
+    let recovery_payload = b"global pressure recovered";
     let delivered_probe_id = stalled.send_client_datagram(recovery_payload, Some(remote));
     assert_eq!(delivered_probe_id, probe_id);
     // An already-ACKed ID is stale too and must remain a harmless no-op.
     stalled.acknowledge_client_read(delivered_probe_id);
 
     let response = stalled.recv_server_datagram().await;
-    assert_eq!(response.payload, b"V2 GLOBAL PRESSURE RECOVERED");
+    assert_eq!(response.payload, b"GLOBAL PRESSURE RECOVERED");
     assert_eq!(
         response.peer.as_ref().map(|peer| peer.socket_addr()),
         Some(remote)
@@ -321,7 +281,7 @@ async fn ffi_contract_udp_v2_global_budget_probe_ack_and_cleanup() {
 
 #[tokio::test]
 #[serial]
-async fn ffi_contract_udp_v2_rejects_owner_payload_before_exact_ack() {
+async fn ffi_contract_udp_rejects_owner_payload_before_exact_ack() {
     let env = setup_env().await;
     let engine =
         engine_with_udp_ingress_probe_lease_ms(Some(ACK_TEST_PROBE_LEASE.as_millis() as u64));
@@ -355,7 +315,7 @@ async fn ffi_contract_udp_v2_rejects_owner_payload_before_exact_ack() {
         )
         .await
         .is_err(),
-        "pre-ACK owner payload crossed the real V2 ABI into the service"
+        "pre-ACK owner payload crossed the real UDP ABI into the service"
     );
     assert!(
         verifiers[4]

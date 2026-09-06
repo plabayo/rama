@@ -298,7 +298,7 @@ final class CoreUdpLifecycleTests: XCTestCase {
         }
     }
 
-    /// Linked Swift/Rust V2 pressure contract. The first four real
+    /// Linked Swift/Rust probe pressure contract. The first four real
     /// `UdpFlowSession`s receive non-zero leased reads. Completing the first
     /// Apple read runs the production
     /// `UdpFlowSession.acknowledgeProbe -> RamaUdpSessionHandle.completeClientRead`
@@ -306,7 +306,7 @@ final class CoreUdpLifecycleTests: XCTestCase {
     /// lease and advances the next FIFO waiter. Deleting the ACK or replacing
     /// its ID with zero makes Rust reject the payload and no successor can be
     /// scheduled before the configured expiry.
-    func testV2PressureReadAcknowledgesExactLeaseAndAdvancesFifo() {
+    func testProbePressureReadAcknowledgesExactLeaseAndAdvancesFifo() {
         let engine = makePressureEngine()
         let core = TransparentProxyCore()
         core.attachEngine(engine)
@@ -347,7 +347,7 @@ final class CoreUdpLifecycleTests: XCTestCase {
         // provisional credits (with four bytes left over).
         fillers.removeFirst().onClientClose()
         for flow in flows.prefix(4) {
-            waitFor("initial nonzero V2 pressure read", timeout: 10) {
+            waitFor("initial nonzero pressure read", timeout: 10) {
                 flow.pendingReadCount == 1
             }
             XCTAssertEqual(flow.readInvocationUptimeNanoseconds.count, 2)

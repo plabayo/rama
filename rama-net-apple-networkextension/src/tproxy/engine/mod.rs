@@ -552,58 +552,17 @@ where
         }
     }
 
+    /// Create a UDP session whose read-demand callback carries a probe ID.
+    /// Non-zero IDs must be acknowledged with
+    /// [`TransparentProxyUdpSession::on_client_read_complete`] after the read
+    /// completes and before delivering its datagrams. The demand callback must
+    /// schedule the read and return without synchronously re-entering the session.
     pub fn new_udp_session<OnDatagram, OnClosed, OnDemand>(
         &self,
         meta: TransparentProxyFlowMeta,
         on_server_datagram: OnDatagram,
         on_client_read_demand: OnDemand,
         on_server_closed: OnClosed,
-    ) -> SessionFlowAction<TransparentProxyUdpSession>
-    where
-        OnDatagram: Fn(Datagram) + Send + Sync + 'static,
-        OnClosed: Fn() + Send + Sync + 'static,
-        OnDemand: Fn() + Send + Sync + 'static,
-    {
-        self.new_udp_session_inner(
-            meta,
-            on_server_datagram,
-            move |_| on_client_read_demand(),
-            on_server_closed,
-            true,
-        )
-    }
-
-    /// Variant used by the Apple bridge to carry leased global-pressure probe
-    /// IDs through the read-completion ACK path. Ordinary embedders can keep
-    /// using [`Self::new_udp_session`].
-    pub fn new_udp_session_with_probe<OnDatagram, OnClosed, OnDemand>(
-        &self,
-        meta: TransparentProxyFlowMeta,
-        on_server_datagram: OnDatagram,
-        on_client_read_demand: OnDemand,
-        on_server_closed: OnClosed,
-    ) -> SessionFlowAction<TransparentProxyUdpSession>
-    where
-        OnDatagram: Fn(Datagram) + Send + Sync + 'static,
-        OnClosed: Fn() + Send + Sync + 'static,
-        OnDemand: Fn(u64) + Send + Sync + 'static,
-    {
-        self.new_udp_session_inner(
-            meta,
-            on_server_datagram,
-            on_client_read_demand,
-            on_server_closed,
-            false,
-        )
-    }
-
-    fn new_udp_session_inner<OnDatagram, OnClosed, OnDemand>(
-        &self,
-        meta: TransparentProxyFlowMeta,
-        on_server_datagram: OnDatagram,
-        on_client_read_demand: OnDemand,
-        on_server_closed: OnClosed,
-        auto_ack_probe_after_demand: bool,
     ) -> SessionFlowAction<TransparentProxyUdpSession>
     where
         OnDatagram: Fn(Datagram) + Send + Sync + 'static,
@@ -650,7 +609,6 @@ where
                 udp_channel_capacity,
                 udp_ingress_per_flow_max_bytes,
                 udp_ingress_budget,
-                auto_ack_probe_after_demand,
                 udp_max_flow_lifetime,
                 udp_idle_timeout,
                 decision_deadline,
@@ -1913,7 +1871,6 @@ async fn new_udp_session_flow_action<OnDatagram, OnClosed, OnDemand, H>(
     udp_channel_capacity: usize,
     udp_ingress_per_flow_max_bytes: usize,
     udp_ingress_budget: Arc<UdpIngressBudget>,
-    auto_ack_probe_after_demand: bool,
     udp_max_flow_lifetime: Option<Duration>,
     udp_idle_timeout: Option<Duration>,
     decision_deadline: Duration,
@@ -2041,11 +1998,10 @@ where
     let user_demand_sink: UdpDemandSink = Arc::new(on_client_read_demand);
     let client_read_demand_sink =
         guarded_udp_demand_sink(callback_active.clone(), user_demand_sink);
-    let ingress_control = UdpIngressFlowControl::new_with_auto_ack(
+    let ingress_control = UdpIngressFlowControl::new_with_flow_id(
         udp_ingress_per_flow_max_bytes,
         udp_ingress_budget,
         client_read_demand_sink,
-        auto_ack_probe_after_demand,
         meta.flow_id,
     );
 

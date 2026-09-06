@@ -14,18 +14,18 @@ use std::sync::{
 use std::time::Duration;
 
 #[test]
-fn udp_v2_probe_ack_preserves_credit_until_delivery() {
-    check_udp_v2_probe(UdpProbeCompletion::Deliver);
+fn udp_probe_ack_preserves_credit_until_delivery() {
+    check_udp_probe(UdpProbeCompletion::Deliver);
 }
 
 #[test]
-fn udp_v2_probe_requires_matching_ack_before_delivery() {
-    check_udp_v2_probe(UdpProbeCompletion::BeforeAck);
+fn udp_probe_requires_matching_ack_before_delivery() {
+    check_udp_probe(UdpProbeCompletion::BeforeAck);
 }
 
 #[test]
-fn udp_v2_probe_ack_after_close_cannot_restore_credit_or_demand() {
-    check_udp_v2_probe(UdpProbeCompletion::AfterClose);
+fn udp_probe_ack_after_close_cannot_restore_credit_or_demand() {
+    check_udp_probe(UdpProbeCompletion::AfterClose);
 }
 
 #[derive(Clone, Copy)]
@@ -35,7 +35,7 @@ enum UdpProbeCompletion {
     AfterClose,
 }
 
-fn check_udp_v2_probe(completion: UdpProbeCompletion) {
+fn check_udp_probe(completion: UdpProbeCompletion) {
     let (received_tx, received_rx) = std::sync::mpsc::channel();
     let handler = TestHandler {
         udp_matcher: Arc::new(move |meta| {
@@ -73,7 +73,7 @@ fn check_udp_v2_probe(completion: UdpProbeCompletion) {
         let (demand_tx, demand_rx) = std::sync::mpsc::channel();
         let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
         meta.flow_id = flow_id;
-        let SessionFlowAction::Intercept(mut session) = engine.new_udp_session_with_probe(
+        let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
             meta,
             |_| {},
             move |probe_id| {
@@ -81,7 +81,7 @@ fn check_udp_v2_probe(completion: UdpProbeCompletion) {
             },
             || {},
         ) else {
-            panic!("expected intercepted V2 session");
+            panic!("expected intercepted probe-aware session");
         };
         session.activate();
         assert_eq!(demand_rx.recv_timeout(Duration::from_secs(5)).unwrap(), 0);
@@ -177,7 +177,7 @@ fn udp_bridge_delivers_server_datagram() {
             lock.extend_from_slice(&datagram.payload);
             _ = notify_tx.send(());
         },
-        || {},
+        |_| {},
         || {},
     ) else {
         panic!("expected intercept session");
@@ -273,7 +273,7 @@ fn assert_udp_echo_payload_release_does_not_reenter_callback_gate(
             drop(retained_prior.lock().take());
             assert!(!callback_panics, "synthetic UDP echo callback panic");
         },
-        || {},
+        |_| {},
         move || _ = closed_tx.send(()),
     ) else {
         panic!("expected intercept session");
@@ -347,7 +347,7 @@ fn assert_udp_service_panic_runs_close_epilogue(flow_id: u64, panic_while_pollin
     meta.flow_id = flow_id;
 
     let SessionFlowAction::Intercept(mut session) =
-        engine.new_udp_session(meta, |_| {}, || {}, move || _ = closed_tx.send(()))
+        engine.new_udp_session(meta, |_| {}, |_| {}, move || _ = closed_tx.send(()))
     else {
         panic!("expected intercept session");
     };
@@ -430,7 +430,7 @@ fn udp_terminal_close_joins_admitted_copy_count_and_publish() {
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
         |_| {},
-        || {},
+        |_| {},
         move || {
             #[cfg(feature = "dial9")]
             let totals = Some(
@@ -554,7 +554,7 @@ fn assert_udp_preactivation_terminal_drains_ingress(lifetime: bool) {
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
         |_| panic!("no preactivation egress callback"),
-        move || {
+        move |_| {
             demands.fetch_add(1, Ordering::Relaxed);
         },
         move || {
@@ -719,7 +719,7 @@ fn assert_udp_terminal_drop_precedes_close(
                 "synthetic UDP final datagram callback panic",
             );
         },
-        || {},
+        |_| {},
         move || {
             let snapshot = close_budget.snapshot();
             #[cfg(feature = "dial9")]
@@ -848,7 +848,7 @@ fn udp_huge_lifetime_and_idle_timeout_still_reach_close_epilogue() {
     meta.flow_id = FLOW_ID;
 
     let SessionFlowAction::Intercept(mut session) =
-        engine.new_udp_session(meta, |_| {}, || {}, || {})
+        engine.new_udp_session(meta, |_| {}, |_| {}, || {})
     else {
         panic!("expected intercept session");
     };
@@ -899,7 +899,7 @@ fn udp_max_lifetime_has_distinct_close_reason() {
     meta.flow_id = FLOW_ID;
 
     let SessionFlowAction::Intercept(mut session) =
-        engine.new_udp_session(meta, |_| {}, || {}, move || _ = closed_tx.send(()))
+        engine.new_udp_session(meta, |_| {}, |_| {}, move || _ = closed_tx.send(()))
     else {
         panic!("expected intercept session");
     };
@@ -951,7 +951,7 @@ fn udp_explicit_max_lifetime_closes_despite_continuous_activity() {
     meta.flow_id = FLOW_ID;
 
     let SessionFlowAction::Intercept(mut session) =
-        engine.new_udp_session(meta, |_| {}, || {}, move || _ = closed_tx.send(()))
+        engine.new_udp_session(meta, |_| {}, |_| {}, move || _ = closed_tx.send(()))
     else {
         panic!("expected intercept session");
     };
@@ -1005,7 +1005,7 @@ fn udp_default_no_max_lifetime_allows_activity_to_reset_idle_timeout() {
     meta.flow_id = FLOW_ID;
 
     let SessionFlowAction::Intercept(mut session) =
-        engine.new_udp_session(meta, |_| {}, || {}, move || _ = closed_tx.send(()))
+        engine.new_udp_session(meta, |_| {}, |_| {}, move || _ = closed_tx.send(()))
     else {
         panic!("expected intercept session");
     };
@@ -1141,7 +1141,7 @@ fn udp_loopback_multi_peer_service_owned_egress() {
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
             .with_remote_endpoint(HostWithPort::local_ipv4(addr_a.port())),
         |_| {},
-        || {},
+        |_| {},
         || {},
     ) else {
         panic!("expected intercept session");
@@ -1216,7 +1216,7 @@ fn udp_session_requests_client_read_demand() {
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
         |_| {},
-        move || {
+        move |_| {
             demand_count_clone.fetch_add(1, Ordering::Relaxed);
             _ = notify_tx.send(());
         },
@@ -1280,7 +1280,7 @@ fn udp_zero_length_datagram_from_client_reaches_service() {
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
             .with_remote_endpoint(HostWithPort::local_ipv4(5353)),
         |_| {},
-        || {},
+        |_| {},
         || {},
     ) else {
         panic!("expected intercept session");
@@ -1382,7 +1382,7 @@ fn udp_zero_length_datagram_from_egress_reaches_service() {
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
             .with_remote_endpoint(HostWithPort::local_ipv4(server_addr.port())),
         |_| {},
-        || {},
+        |_| {},
         || {},
     ) else {
         panic!("expected intercept session");
@@ -1446,7 +1446,7 @@ fn udp_send_with_no_peer_is_delivered_to_callback_with_none() {
             peers_clone.lock().push(datagram.peer);
             _ = notify_tx.send(());
         },
-        || {},
+        |_| {},
         || {},
     ) else {
         panic!("expected intercept session");
@@ -1491,7 +1491,7 @@ fn udp_activate_after_engine_stop_is_safe_noop() {
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
         |_| {},
-        || {},
+        |_| {},
         || {},
     ) else {
         panic!("expected intercept session");
@@ -1534,7 +1534,7 @@ fn udp_double_activate_is_safe_noop() {
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
         |_| {},
-        || {},
+        |_| {},
         || {},
     ) else {
         panic!("expected intercept session");
@@ -1586,7 +1586,7 @@ fn udp_large_datagram_near_max_payload_roundtrips() {
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
         |_| {},
-        || {},
+        |_| {},
         || {},
     ) else {
         panic!("expected intercept session");
@@ -1664,7 +1664,7 @@ fn udp_send_preserves_ipv6_scope_id_through_engine_callback() {
             observed_clone.lock().push(datagram.peer);
             _ = notify_tx.send(());
         },
-        || {},
+        |_| {},
         || {},
     ) else {
         panic!("expected intercept session");
@@ -1731,7 +1731,7 @@ fn udp_max_payload_charge_survives_bytes_clones_and_resumes_after_final_drop() {
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
         |_| {},
-        move || {
+        move |_| {
             let previous = demand_count_for_sink.fetch_add(1, Ordering::Relaxed);
             if previous == 0 {
                 _ = initial_demand_tx.send(());
@@ -1833,7 +1833,7 @@ fn udp_count_full_resumes_only_after_recv_releases_a_slot() {
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
         |_| {},
-        move || {
+        move |_| {
             demand_count_for_sink.fetch_add(1, Ordering::Relaxed);
         },
         || {},
@@ -1879,6 +1879,7 @@ fn udp_global_release_wakes_a_stalled_flow_with_an_empty_local_queue() {
     const FLOW_B: u64 = 0xB001;
     let (a_tx, a_rx) = std::sync::mpsc::sync_channel(1);
     let (b_tx, b_rx) = std::sync::mpsc::sync_channel(1);
+    let (b_probe_tx, b_probe_rx) = std::sync::mpsc::channel();
     let handler = TestHandler {
         app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
@@ -1911,6 +1912,7 @@ fn udp_global_release_wakes_a_stalled_flow_with_an_empty_local_queue() {
         .with_runtime_factory(TestRuntimeFactory)
         .with_udp_ingress_per_flow_max_bytes(MAX_UDP_DATAGRAM_PAYLOAD_SIZE)
         .with_udp_ingress_global_max_bytes(MAX_UDP_DATAGRAM_PAYLOAD_SIZE)
+        .with_udp_ingress_probe_lease(Duration::from_secs(1))
         .build()
         .expect("build engine");
     let budget = engine.udp_ingress_budget_for_test();
@@ -1924,7 +1926,7 @@ fn udp_global_release_wakes_a_stalled_flow_with_an_empty_local_queue() {
     let SessionFlowAction::Intercept(mut session_a) = engine.new_udp_session(
         meta_a,
         |_| {},
-        move || {
+        move |_| {
             a_demands_cb.fetch_add(1, Ordering::Relaxed);
         },
         || {},
@@ -1936,7 +1938,10 @@ fn udp_global_release_wakes_a_stalled_flow_with_an_empty_local_queue() {
     let SessionFlowAction::Intercept(mut session_b) = engine.new_udp_session(
         meta_b,
         |_| {},
-        move || {
+        move |probe_id| {
+            if probe_id != 0 {
+                _ = b_probe_tx.send(probe_id);
+            }
             b_demands_cb.fetch_add(1, Ordering::Relaxed);
         },
         || {},
@@ -1981,6 +1986,8 @@ fn udp_global_release_wakes_a_stalled_flow_with_an_empty_local_queue() {
     }
     assert_eq!(budget.snapshot().global_waiters, 0);
 
+    let probe_id = b_probe_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+    session_b.on_client_read_complete(probe_id);
     session_b.on_client_datagram(&payload, None);
     let held_b = b_rx
         .recv_timeout(Duration::from_secs(1))
@@ -2019,7 +2026,7 @@ fn udp_default_global_budget_bounds_many_flows_and_engine_stop_releases_queues()
         let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
         meta.flow_id = flow_id as u64;
         let SessionFlowAction::Intercept(mut session) =
-            engine.new_udp_session(meta, |_| {}, || {}, || {})
+            engine.new_udp_session(meta, |_| {}, |_| {}, || {})
         else {
             panic!("expected intercepted flow {flow_id}");
         };
@@ -2084,7 +2091,7 @@ fn udp_service_panic_releases_retained_ingress_and_closes_demand() {
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
         |_| {},
-        move || {
+        move |_| {
             demand_count_cb.fetch_add(1, Ordering::Relaxed);
         },
         move || _ = closed_tx.send(()),

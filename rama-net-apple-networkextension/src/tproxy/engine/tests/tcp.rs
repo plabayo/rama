@@ -69,7 +69,7 @@ fn tcp_bridge_delivers_server_bytes() {
 
 #[test]
 fn tcp_bridge_bounds_each_server_callback_to_exported_write_pump_cap() {
-    const CONFIGURED_CAP: usize = 256 * 1024;
+    const CONFIGURED_CAP: usize = rama_utils::octets::kib(256);
     const PAYLOAD_LEN: usize = CONFIGURED_CAP * 2 + 13;
 
     let handler = TestHandler {

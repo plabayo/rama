@@ -149,15 +149,7 @@ unsafe extern "C" fn on_udp_server_closed(ctx: *mut c_void) {
     _ = ctx.sender.send(UdpCallbackEvent::ServerClosed);
 }
 
-unsafe extern "C" fn on_udp_client_read_demand(ctx: *mut c_void) {
-    let ctx = unsafe { &*(ctx as *const UdpCallbackContext) };
-    _ = ctx.sender.send(UdpCallbackEvent::ClientReadDemand {
-        probe_id: 0,
-        observed_at: Instant::now(),
-    });
-}
-
-unsafe extern "C" fn on_udp_client_read_demand_v2(ctx: *mut c_void, probe_id: u64) {
+unsafe extern "C" fn on_udp_client_read_demand(ctx: *mut c_void, probe_id: u64) {
     let ctx = unsafe { &*(ctx as *const UdpCallbackContext) };
     _ = ctx.sender.send(UdpCallbackEvent::ClientReadDemand {
         probe_id,
@@ -555,28 +547,9 @@ pub(crate) struct UdpFfiSession {
     pending_datagrams: VecDeque<UdpDatagram>,
 }
 
-#[derive(Clone, Copy)]
-enum UdpCallbackAbi {
-    V1,
-    V2,
-}
-
 impl UdpFfiSession {
-    /// Create a probe-aware V2 session, matching the current Swift bridge.
+    /// Create a session matching the Swift bridge's probe/ACK contract.
     pub(crate) fn new(engine: Arc<EngineHandle>, remote_addr: SocketAddr) -> Self {
-        Self::new_with_abi(engine, remote_addr, UdpCallbackAbi::V2)
-    }
-
-    /// Create a legacy V1 session to keep the additive ABI honest.
-    pub(crate) fn new_v1(engine: Arc<EngineHandle>, remote_addr: SocketAddr) -> Self {
-        Self::new_with_abi(engine, remote_addr, UdpCallbackAbi::V1)
-    }
-
-    fn new_with_abi(
-        engine: Arc<EngineHandle>,
-        remote_addr: SocketAddr,
-        abi: UdpCallbackAbi,
-    ) -> Self {
         let (tx, events) = mpsc::unbounded_channel();
         let context = Box::into_raw(Box::new(UdpCallbackContext { sender: tx })) as usize;
         let remote_host = remote_addr.ip().to_string().into_bytes();
@@ -612,28 +585,16 @@ impl UdpFfiSession {
             is_bound_is_set: false,
         };
         let result = unsafe {
-            match abi {
-                UdpCallbackAbi::V1 => bindings::rama_transparent_proxy_engine_new_udp_session(
-                    engine.raw,
-                    &meta,
-                    bindings::RamaTransparentProxyUdpSessionCallbacks {
-                        context: context as *mut c_void,
-                        on_server_datagram: Some(on_udp_server_datagram),
-                        on_client_read_demand: Some(on_udp_client_read_demand),
-                        on_server_closed: Some(on_udp_server_closed),
-                    },
-                ),
-                UdpCallbackAbi::V2 => bindings::rama_transparent_proxy_engine_new_udp_session_v2(
-                    engine.raw,
-                    &meta,
-                    bindings::RamaTransparentProxyUdpSessionCallbacksV2 {
-                        context: context as *mut c_void,
-                        on_server_datagram: Some(on_udp_server_datagram),
-                        on_client_read_demand: Some(on_udp_client_read_demand_v2),
-                        on_server_closed: Some(on_udp_server_closed),
-                    },
-                ),
-            }
+            bindings::rama_transparent_proxy_engine_new_udp_session(
+                engine.raw,
+                &meta,
+                bindings::RamaTransparentProxyUdpSessionCallbacks {
+                    context: context as *mut c_void,
+                    on_server_datagram: Some(on_udp_server_datagram),
+                    on_client_read_demand: Some(on_udp_client_read_demand),
+                    on_server_closed: Some(on_udp_server_closed),
+                },
+            )
         };
         assert_eq!(
             result.action,
@@ -727,8 +688,8 @@ impl UdpFfiSession {
     }
 
     /// Submit one datagram after the caller has consumed a read-demand event.
-    /// Returns the exact V2 probe ID associated with that read (zero for an
-    /// ordinary V2 demand and for every legacy V1 demand).
+    /// A non-zero probe ID must be acknowledged separately before this call.
+    /// Returns the exact probe ID associated with that read (zero for ordinary demand).
     pub(crate) fn send_client_datagram(&mut self, payload: &[u8], peer: Option<SocketAddr>) -> u64 {
         let probe_id = self
             .demand_permits
@@ -1031,39 +992,15 @@ pub(crate) async fn udp_roundtrip(
     let mut session = UdpFfiSession::new(engine, remote_addr);
     session.activate();
     let probe_id = session.wait_for_read_demand().await;
-    assert_eq!(probe_id, 0, "ordinary V2 UDP demand must use ID zero");
+    assert_eq!(probe_id, 0, "ordinary UDP demand must use ID zero");
+    session.acknowledge_client_read(probe_id);
     let delivered_probe_id = session.send_client_datagram(payload, Some(remote_addr));
     assert_eq!(delivered_probe_id, probe_id);
-    session.acknowledge_client_read(delivered_probe_id);
     let response = session.recv_server_datagram().await;
     assert_eq!(
         response.peer,
         Some(OwnedUdpPeer::from_socket_addr(remote_addr)),
         "UDP FFI reply must retain the real recv_from peer"
-    );
-    session.close_from_client_and_assert(1);
-    response.payload
-}
-
-/// Legacy V1 one-shot path. V1 deliberately has no probe ID; the callback is
-/// normalized to zero in the harness while payload and peer assertions remain
-/// identical to V2.
-pub(crate) async fn udp_roundtrip_v1(
-    engine: Arc<EngineHandle>,
-    remote_addr: SocketAddr,
-    payload: &[u8],
-) -> Vec<u8> {
-    let mut session = UdpFfiSession::new_v1(engine, remote_addr);
-    session.activate();
-    let probe_id = session.wait_for_read_demand().await;
-    assert_eq!(probe_id, 0, "V1 UDP demand must normalize to ID zero");
-    let delivered_probe_id = session.send_client_datagram(payload, Some(remote_addr));
-    assert_eq!(delivered_probe_id, 0);
-    let response = session.recv_server_datagram().await;
-    assert_eq!(
-        response.peer,
-        Some(OwnedUdpPeer::from_socket_addr(remote_addr)),
-        "V1 UDP reply must retain the real recv_from peer"
     );
     session.close_from_client_and_assert(1);
     response.payload
@@ -1091,16 +1028,16 @@ mod udp_callback_tests {
     use super::*;
 
     #[test]
-    fn v2_demand_callback_preserves_probe_id() {
+    fn demand_callback_preserves_probe_id() {
         let (sender, mut events) = mpsc::unbounded_channel();
         let context = UdpCallbackContext { sender };
 
         unsafe {
-            on_udp_client_read_demand_v2(ptr::from_ref(&context).cast_mut().cast(), 0xfeed_beef);
+            on_udp_client_read_demand(ptr::from_ref(&context).cast_mut().cast(), 0xfeed_beef);
         }
 
         assert!(matches!(
-            events.try_recv().expect("V2 demand callback event"),
+            events.try_recv().expect("demand callback event"),
             UdpCallbackEvent::ClientReadDemand {
                 probe_id: 0xfeed_beef,
                 ..

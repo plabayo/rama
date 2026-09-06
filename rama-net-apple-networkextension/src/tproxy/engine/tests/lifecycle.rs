@@ -268,7 +268,10 @@ fn udp_ingress_byte_limits_are_immutable_validated_builder_state() {
     );
     let snapshot = engine.udp_ingress_budget_for_test().snapshot();
     assert_eq!(snapshot.retained_bytes, 0);
-    assert_eq!(DEFAULT_UDP_INGRESS_GLOBAL_MAX_BYTES, 16 * 1024 * 1024);
+    assert_eq!(
+        DEFAULT_UDP_INGRESS_GLOBAL_MAX_BYTES,
+        rama_utils::octets::mib(16)
+    );
     engine.stop(0);
 }
 

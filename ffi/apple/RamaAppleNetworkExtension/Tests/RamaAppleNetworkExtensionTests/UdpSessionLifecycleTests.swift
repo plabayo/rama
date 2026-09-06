@@ -138,11 +138,11 @@ final class UdpSessionLifecycleTests: XCTestCase {
     }
 
     #if DEBUG || RAMA_TESTING
-        /// Rust holds its demand gate across the synchronous V2 callback. Close
+        /// Rust holds its demand gate across the synchronous probe callback. Close
         /// must publish cancellation and release the Swift handle lock before it
         /// asks Rust to drain that gate, or a callback-triggered ACK forms the
         /// inverse lock order and deadlocks.
-        func testCloseReleasesHandleLockBeforeDrainingInflightV2Demand() {
+        func testCloseReleasesHandleLockBeforeDrainingInflightProbeDemand() {
             let engine = makeEngine()
             defer { engine.stop(reason: 0) }
 
@@ -208,8 +208,8 @@ final class UdpSessionLifecycleTests: XCTestCase {
             session.activate()
             XCTAssertEqual(
                 demandEntered.wait(timeout: .now() + 30), .success,
-                "real V2 UDP demand callback was not entered")
-            XCTAssertEqual(probeId.get(), 0, "initial ordinary V2 demand must use probe ID zero")
+                "real UDP demand callback was not entered")
+            XCTAssertEqual(probeId.get(), 0, "initial ordinary demand must use probe ID zero")
 
             DispatchQueue.global(qos: .userInitiated).async {
                 session.onClientClose()
@@ -227,7 +227,7 @@ final class UdpSessionLifecycleTests: XCTestCase {
 
             XCTAssertEqual(
                 callbackReturned.wait(timeout: .now() + 35), .success,
-                "V2 demand callback did not leave after its liveness rescue")
+                "probe demand callback did not leave after its liveness rescue")
             XCTAssertTrue(
                 callbackAckCompleted.get(),
                 "callback-triggered ACK could not acquire the Swift handle lock before close drained Rust's demand gate")

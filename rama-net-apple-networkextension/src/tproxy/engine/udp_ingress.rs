@@ -12,12 +12,13 @@ use std::{
 
 use atomic_waker::AtomicWaker;
 use rama_core::{bytes::Bytes, graceful::ShutdownGuard};
+use rama_utils::octets::{kib, mib};
 
 use super::UdpDemandSink;
 
 pub const MAX_UDP_DATAGRAM_PAYLOAD_SIZE: usize = u16::MAX as usize;
-pub const DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES: usize = 256 * 1024;
-pub const DEFAULT_UDP_INGRESS_GLOBAL_MAX_BYTES: usize = 16 * 1024 * 1024;
+pub const DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES: usize = kib(256);
+pub const DEFAULT_UDP_INGRESS_GLOBAL_MAX_BYTES: usize = mib(16);
 pub const DEFAULT_UDP_INGRESS_PROBE_LEASE: Duration = Duration::from_millis(10);
 pub const MAX_UDP_INGRESS_PROBE_LEASE: Duration = Duration::from_mins(1);
 
@@ -1513,7 +1514,6 @@ pub(super) struct UdpIngressFlowControl {
     pub(super) submission_close_started: AtomicBool,
     demand_gate: parking_lot::Mutex<()>,
     demand: UdpDemandSink,
-    auto_ack_probe_after_demand: bool,
     global: Arc<UdpIngressBudget>,
 }
 
@@ -1524,14 +1524,13 @@ impl UdpIngressFlowControl {
         global: Arc<UdpIngressBudget>,
         demand: UdpDemandSink,
     ) -> Arc<Self> {
-        Self::new_with_auto_ack(max_retained_bytes, global, demand, false, 0)
+        Self::new_with_flow_id(max_retained_bytes, global, demand, 0)
     }
 
-    pub(super) fn new_with_auto_ack(
+    pub(super) fn new_with_flow_id(
         max_retained_bytes: usize,
         global: Arc<UdpIngressBudget>,
         demand: UdpDemandSink,
-        auto_ack_probe_after_demand: bool,
         flow_id: u64,
     ) -> Arc<Self> {
         Arc::new(Self {
@@ -1550,7 +1549,6 @@ impl UdpIngressFlowControl {
             submission_close_started: AtomicBool::new(false),
             demand_gate: parking_lot::Mutex::new(()),
             demand,
-            auto_ack_probe_after_demand,
             global,
         })
     }
@@ -1780,9 +1778,6 @@ impl UdpIngressFlowControl {
         let _gate = self.demand_gate.lock();
         if self.state.load(Ordering::Acquire) == INGRESS_OPEN {
             (self.demand)(probe_id);
-            if self.auto_ack_probe_after_demand {
-                self.acknowledge_probe(probe_id);
-            }
         }
     }
 
@@ -4424,7 +4419,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_auto_ack_keeps_credit_until_bounded_delivery_grace() {
+    fn acknowledged_probe_keeps_credit_until_bounded_delivery_grace() {
         const FLOW_COUNT: usize = GLOBAL_WAKE_BATCH * 2;
         let global = Arc::new(UdpIngressBudget::new(GLOBAL_WAKE_BATCH));
         let holder =
@@ -4436,14 +4431,12 @@ mod tests {
         let mut flows = Vec::with_capacity(FLOW_COUNT);
         for _ in 0..FLOW_COUNT {
             let callbacks = callbacks.clone();
-            let flow = UdpIngressFlowControl::new_with_auto_ack(
+            let flow = UdpIngressFlowControl::new(
                 1,
                 global.clone(),
                 Arc::new(move |_| {
                     callbacks.fetch_add(1, Ordering::Relaxed);
                 }),
-                true,
-                0,
             );
             assert!(flow.try_copy_payload(&[0]).is_none());
             flows.push(flow);
@@ -4453,6 +4446,9 @@ mod tests {
         let now = tokio::time::Instant::now();
         assert_eq!(global.wake_fitting_batch(now), GLOBAL_WAKE_BATCH);
         assert_eq!(callbacks.load(Ordering::Relaxed), GLOBAL_WAKE_BATCH);
+        for flow in &flows {
+            flow.acknowledge_probe(flow.global_probe_id.load(Ordering::Acquire));
+        }
         assert_eq!(global.snapshot().provisional_probe_count, GLOBAL_WAKE_BATCH);
         assert_eq!(global.snapshot().charged_bytes, GLOBAL_WAKE_BATCH);
         assert_eq!(global.wake_fitting_batch(now), 0);

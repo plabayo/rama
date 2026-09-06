@@ -144,7 +144,7 @@ fn engine_stop_drains_8192_pending_udp_close_epilogues() {
         let SessionFlowAction::Intercept(session) = engine.new_udp_session(
             TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
             |_| {},
-            || {},
+            |_| {},
             move || {
                 closed.fetch_add(1, Ordering::Relaxed);
             },

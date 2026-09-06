@@ -227,7 +227,7 @@ fn udp_session_passthrough_by_default() {
     let decision = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
         |_| {},
-        || {},
+        |_| {},
         || {},
     );
     assert!(matches!(decision, SessionFlowAction::Passthrough));
@@ -265,7 +265,7 @@ fn udp_session_can_be_blocked() {
     let decision = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
         |_| {},
-        || {},
+        |_| {},
         || {},
     );
     assert!(matches!(decision, SessionFlowAction::Blocked));
@@ -355,7 +355,7 @@ fn udp_decision_panic_blocks_by_default() {
     let decision = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
         |_| {},
-        || {},
+        |_| {},
         || {},
     );
     assert!(matches!(decision, SessionFlowAction::Blocked));
@@ -580,7 +580,7 @@ fn assert_shared_tcp_udp_decision_gate(configured_limit: Option<usize>) {
             if flow_id % 2 == 0 {
                 engine.new_tcp_session(meta, |_| TcpDeliverStatus::Accepted, || {}, || {})
             } else {
-                match engine.new_udp_session(meta, |_| {}, || {}, || {}) {
+                match engine.new_udp_session(meta, |_| {}, |_| {}, || {}) {
                     SessionFlowAction::Blocked => SessionFlowAction::Blocked,
                     SessionFlowAction::Passthrough => SessionFlowAction::Passthrough,
                     SessionFlowAction::Intercept(_) => panic!("probe never intercepts"),
@@ -600,7 +600,7 @@ fn assert_shared_tcp_udp_decision_gate(configured_limit: Option<usize>) {
     let udp_overload = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
         |_| {},
-        || {},
+        |_| {},
         || {},
     );
     assert!(matches!(tcp_overload, SessionFlowAction::Passthrough));
@@ -648,7 +648,7 @@ fn saturated_decision_gate_honors_block_refusal_independently_of_deadline() {
         worker_engine.new_udp_session(
             TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
             |_| {},
-            || {},
+            |_| {},
             || {},
         )
     });
@@ -664,7 +664,7 @@ fn saturated_decision_gate_honors_block_refusal_independently_of_deadline() {
     let udp_overload = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
         |_| {},
-        || {},
+        |_| {},
         || {},
     );
     assert!(matches!(overload, SessionFlowAction::Blocked));
@@ -787,7 +787,7 @@ fn fast_sequential_mass_decisions_are_never_shed() {
                 engine.new_udp_session(
                     TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
                     |_| {},
-                    || {},
+                    |_| {},
                     || {},
                 ),
                 SessionFlowAction::Passthrough

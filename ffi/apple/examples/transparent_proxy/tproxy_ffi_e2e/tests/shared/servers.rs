@@ -50,7 +50,7 @@ use rama::{
             SelfSignedCaConfig, TlsServerConfig,
         },
     },
-    utils::octets::kib,
+    utils::octets::{kib, mib},
 };
 
 use serde_json::json;
@@ -135,7 +135,7 @@ fn http_app(
                         // Used to exercise the symmetric-backpressure path that fired
                         // ENOBUFS for large h2 responses (`go mod download` etc.) before
                         // the writer pumps were bounded with drain signaling.
-                        let size_kb = req
+                        let total = req
                             .uri()
                             .query()
                             .and_then(|q| {
@@ -146,9 +146,9 @@ fn http_app(
                                 })
                             })
                             .and_then(|v| v.parse::<usize>().ok())
-                            .unwrap_or(4096)
-                            .min(64 * 1024); // cap at 64 MiB to keep test runtime sane
-                        let total = kib(size_kb);
+                            .map(kib)
+                            .unwrap_or(mib(4))
+                            .min(mib(64));
                         let body = Body::from_stream(stream_fn(move |mut yielder| async move {
                             // 16 KiB chunks — same shape as the bridge's read buffer.
                             let chunk_size: usize = kib(16);

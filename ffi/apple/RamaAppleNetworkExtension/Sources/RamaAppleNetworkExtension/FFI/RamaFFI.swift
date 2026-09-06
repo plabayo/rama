@@ -865,7 +865,7 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
                     onClientReadDemand: onClientReadDemand,
                     onServerClosed: onServerClosed
                 ))
-            let callbacks = RamaTransparentProxyUdpSessionCallbacksV2(
+            let callbacks = RamaTransparentProxyUdpSessionCallbacks(
                 context: callbackBox.toOpaque(),
                 on_server_datagram: ramaUdpOnServerDatagramCallback,
                 on_client_read_demand: ramaUdpOnClientReadDemandCallback,
@@ -873,7 +873,7 @@ final class RamaTransparentProxyEngineHandle: @unchecked Sendable {
             )
 
             let result = withFlowMeta(meta) { metaPtr in
-                rama_transparent_proxy_engine_new_udp_session_v2(p, metaPtr, callbacks)
+                rama_transparent_proxy_engine_new_udp_session(p, metaPtr, callbacks)
             }
             guard let action = RamaTransparentProxyFlowActionBridge(rawValue: result.action.rawValue)
             else {

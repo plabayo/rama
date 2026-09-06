@@ -102,7 +102,7 @@ fn udp_flow_exposes_meta_extension() {
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp).with_source_app_pid(888),
         |_| {},
-        || {},
+        |_| {},
         || {},
     ) else {
         panic!("expected intercept session");

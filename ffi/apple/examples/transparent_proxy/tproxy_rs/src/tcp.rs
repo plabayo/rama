@@ -308,6 +308,7 @@ impl Service<BridgeIo<TcpFlow, NwTcpStream>> for TcpInterceptService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama::utils::octets::{kib, mib};
     use rama::{ServiceInput, crypto::cert::boring::generate_certificate_authority_x509};
     use tokio::{
         io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader, duplex},
@@ -332,7 +333,7 @@ mod tests {
         };
 
         for within_connect_tunnel in [false, true] {
-            for body_len in [64 * 1024, 1024 * 1024] {
+            for body_len in [kib(64), mib(1)] {
                 for eager_buffered in [false, true] {
                     tokio::time::timeout(Duration::from_secs(10), async {
                         let body: Vec<u8> = (0..body_len).map(|i| (i % 251) as u8).collect();

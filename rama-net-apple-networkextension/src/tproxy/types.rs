@@ -8,7 +8,7 @@ use rama_net::address::{
 };
 use rama_utils::{
     macros::generate_set_and_with,
-    octets::kib,
+    octets::{kib, mib},
     str::{NonEmptyStr, arcstr::ArcStr},
 };
 
@@ -21,14 +21,14 @@ const MIN_TCP_WRITE_PUMP_MAX_PENDING_BYTES: usize = 1;
 /// Largest accepted TCP write-pump cap, per pump. Two TCP pumps can
 /// exist per flow, so this caps worst-case write-side buffering at
 /// 16 MiB per flow while still leaving room for bursty protocols.
-const MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES: usize = kib(8192);
+const MAX_TCP_WRITE_PUMP_MAX_PENDING_BYTES: usize = mib(8);
 
 /// Core/process-lifetime Swift retained-payload envelope. The packed C11
 /// atomic reserves 40 bits for bytes and 23 bits for retained items; keep Rust
 /// configuration inside that exact wire representation.
-pub const DEFAULT_WRITER_MEMORY_MAX_BYTES: usize = 64 * 1024 * 1024;
+pub const DEFAULT_WRITER_MEMORY_MAX_BYTES: usize = mib(64);
 pub const DEFAULT_WRITER_MEMORY_MAX_ITEMS: usize = 65_536;
-pub const WRITER_MEMORY_UDP_SERVICE_RESERVE_BYTES: usize = 64 * 1024;
+pub const WRITER_MEMORY_UDP_SERVICE_RESERVE_BYTES: usize = kib(64);
 pub const MAX_WRITER_MEMORY_MAX_BYTES: usize = ((1_u64 << 40) - 1) as usize;
 pub const MAX_WRITER_MEMORY_MAX_ITEMS: usize = (1_usize << 23) - 1;
 const MIN_WRITER_MEMORY_MAX_BYTES: usize =

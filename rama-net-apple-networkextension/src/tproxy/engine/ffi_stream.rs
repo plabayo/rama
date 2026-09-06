@@ -354,7 +354,7 @@ mod tests {
     use std::task::{Context, Wake, Waker};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-    const TEST_WRITE_CHUNK_LIMIT: usize = 16 * 1024;
+    const TEST_WRITE_CHUNK_LIMIT: usize = rama_utils::octets::kib(16);
 
     /// Waker that counts how many times it was woken.
     struct CountWaker(AtomicUsize);

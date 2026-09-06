@@ -113,7 +113,9 @@ async fn ffi_contract_http_h1_complete_response_after_client_write_eof() {
     let env = setup_env().await;
     let origin = TcpListener::bind("127.0.0.1:0").await.expect("bind origin");
     let ingress = spawn_ingress_listener(env.engine.clone(), origin.local_addr().unwrap()).await;
-    let body: Vec<u8> = (0..256 * 1024).map(|i| (i % 251) as u8).collect();
+    let body: Vec<u8> = (0..rama::utils::octets::kib(256))
+        .map(|i| (i % 251) as u8)
+        .collect();
     let body_len = body.len();
     let (write_closed, after_write_close) = oneshot::channel();
 

@@ -133,7 +133,7 @@ fn run_one_scenario(seed: u32) -> Vec<Action> {
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp),
         |_| {},
-        || {},
+        |_| {},
         || {},
     ) else {
         panic!("expected intercept session");

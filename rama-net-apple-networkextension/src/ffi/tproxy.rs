@@ -434,23 +434,12 @@ pub struct TransparentProxyTcpSessionCallbacks {
 /// `flow.writeDatagrams`. Peer may be marked absent
 /// (`UdpPeerView { present: false, .. }`) when the engine cannot
 /// supply attribution.
-#[repr(C)]
-pub struct TransparentProxyUdpSessionCallbacks {
-    pub context: *mut c_void,
-    pub on_server_datagram:
-        Option<unsafe extern "C" fn(*mut c_void, BytesView, crate::ffi::UdpPeerView)>,
-    pub on_client_read_demand: Option<unsafe extern "C" fn(*mut c_void)>,
-    pub on_server_closed: Option<unsafe extern "C" fn(*mut c_void)>,
-}
-
-/// Additive probe-aware UDP callback ABI. V1 remains unchanged for existing
-/// C clients; Swift uses V2 to ACK bounded coordinator scheduling credits.
-/// A non-zero demand callback must only schedule the foreign read and return;
-/// it must never synchronously re-enter the session. Once that read completes,
-/// ACK its exact ID first, then submit all datagrams produced by the completion.
+/// The read-demand callback must only schedule the foreign read and return;
+/// it must never synchronously re-enter the session. For a non-zero probe ID,
+/// ACK that exact ID once the read completes, then submit its datagrams.
 /// Pre-ACK delivery is rejected and cannot consume the leased credit.
 #[repr(C)]
-pub struct TransparentProxyUdpSessionCallbacksV2 {
+pub struct TransparentProxyUdpSessionCallbacks {
     pub context: *mut c_void,
     pub on_server_datagram:
         Option<unsafe extern "C" fn(*mut c_void, BytesView, crate::ffi::UdpPeerView)>,

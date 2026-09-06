@@ -458,8 +458,7 @@ typedef struct {
 } RamaUdpPeerView;
 
 typedef void (*RamaUdpServerDatagramFn)(void* _Nullable context, RamaBytesView bytes, RamaUdpPeerView peer);
-typedef void (*RamaUdpClientReadDemandFn)(void* _Nullable context);
-typedef void (*RamaUdpClientReadDemandFnV2)(void* _Nullable context, uint64_t probe_id);
+typedef void (*RamaUdpClientReadDemandFn)(void* _Nullable context, uint64_t probe_id);
 typedef void (*RamaUdpServerClosedFn)(void* _Nullable context);
 
 /// Callbacks Swift provides for Rust UDP session events.
@@ -468,21 +467,9 @@ typedef void (*RamaUdpServerClosedFn)(void* _Nullable context);
 /// `RamaTransparentProxyTcpSessionCallbacks` above. Same rules apply here — the
 /// pointee must outlive the `*_free` call, callbacks may run on any thread, and
 /// `bytes` is borrowed for the duration of each call.
-typedef struct {
-    /// Opaque user context passed back to callbacks. See lifetime contract above.
-    void* context;
-    /// Called when Rust has one datagram to write to client-side UDP flow.
-    RamaUdpServerDatagramFn on_server_datagram;
-    /// Called when Rust requests one client-side UDP read (`flow.readDatagrams`).
-    RamaUdpClientReadDemandFn on_client_read_demand;
-    /// Called when Rust closes server-side UDP flow.
-    RamaUdpServerClosedFn on_server_closed;
-} RamaTransparentProxyUdpSessionCallbacks;
-
-/// Additive probe-aware UDP callback ABI. The original callback struct and
-/// constructor remain unchanged for existing clients. For a non-zero
-/// `probe_id`, the callback MUST only schedule the foreign read and return; it
-/// MUST NOT synchronously re-enter this session. After that read completes,
+/// The read-demand callback MUST only schedule the foreign read and return;
+/// it MUST NOT synchronously re-enter this session. A zero `probe_id` is an
+/// ordinary read demand. For a non-zero ID, after that read completes,
 /// ACK the exact ID first with
 /// `rama_transparent_proxy_udp_session_on_client_read_complete`, then submit
 /// every datagram from that completion with
@@ -491,15 +478,9 @@ typedef struct {
 typedef struct {
     void* context;
     RamaUdpServerDatagramFn on_server_datagram;
-    RamaUdpClientReadDemandFnV2 on_client_read_demand;
+    RamaUdpClientReadDemandFn on_client_read_demand;
     RamaUdpServerClosedFn on_server_closed;
-} RamaTransparentProxyUdpSessionCallbacksV2;
-
-_Static_assert(
-    sizeof(RamaTransparentProxyUdpSessionCallbacksV2) ==
-        sizeof(RamaTransparentProxyUdpSessionCallbacks),
-    "Rama UDP callback V2 ABI layout drift"
-);
+} RamaTransparentProxyUdpSessionCallbacks;
 
 // ── Egress (NWConnection) options ────────────────────────────────────────────
 
@@ -1002,12 +983,6 @@ RamaTransparentProxyUdpSessionResult rama_transparent_proxy_engine_new_udp_sessi
     RamaTransparentProxyUdpSessionCallbacks callbacks
 );
 
-RamaTransparentProxyUdpSessionResult rama_transparent_proxy_engine_new_udp_session_v2(
-    RamaTransparentProxyEngine* engine,
-    const RamaTransparentProxyFlowMeta* _Nullable meta,
-    RamaTransparentProxyUdpSessionCallbacksV2 callbacks
-);
-
 /// Free a UDP session.
 ///
 /// NULL is allowed and ignored.
@@ -1021,7 +996,7 @@ void rama_transparent_proxy_udp_session_free(RamaTransparentProxyUdpSession* _Nu
 /// with an endpoint.
 /// Admission is nonblocking and lossy: a full channel, exhausted byte budget,
 /// or paused session drops the datagram and emits sampled pressure telemetry.
-/// A V2 global-pressure probe reserves one datagram, not its whole read batch;
+/// A global-pressure probe reserves one datagram, not its whole read batch;
 /// later datagrams require ordinary capacity and cannot bypass queued waiters.
 void rama_transparent_proxy_udp_session_on_client_datagram(
     RamaTransparentProxyUdpSession* session,

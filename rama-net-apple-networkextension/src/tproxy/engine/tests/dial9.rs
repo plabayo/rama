@@ -264,7 +264,7 @@ fn foreign_thread_admission_records_tcp_udp_pairs_without_moving_policy_polling(
                 udp_meta.flow_id = UDP_FLOW_ID;
                 udp_meta.source_app_pid = Some(SOURCE_PID);
                 let SessionFlowAction::Intercept(mut udp) =
-                    engine.new_udp_session(udp_meta, |_| {}, || {}, || {})
+                    engine.new_udp_session(udp_meta, |_| {}, |_| {}, || {})
                 else {
                     panic!("expected UDP intercept");
                 };
@@ -395,7 +395,7 @@ fn foreign_thread_decision_deadlines_record_tcp_and_udp_events() {
                 let mut udp_meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
                 udp_meta.flow_id = UDP_FLOW_ID;
                 assert!(matches!(
-                    engine.new_udp_session(udp_meta, |_| {}, || {}, || {}),
+                    engine.new_udp_session(udp_meta, |_| {}, |_| {}, || {}),
                     SessionFlowAction::Blocked
                 ));
                 assert!(Dial9Handle::try_current_thread().is_none());
@@ -474,7 +474,7 @@ fn udp_destruction_panic_on_shutdown_pairs_dial9_open_and_close() {
     let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
     meta.flow_id = FLOW_ID;
     let SessionFlowAction::Intercept(mut session) =
-        engine.new_udp_session(meta, |_| {}, || {}, move || _ = closed_tx.send(()))
+        engine.new_udp_session(meta, |_| {}, |_| {}, move || _ = closed_tx.send(()))
     else {
         panic!("expected intercept session");
     };
@@ -746,7 +746,7 @@ fn udp_engine_stop_before_activate_pairs_dial9_open_and_shutdown_close() {
     let engine = build_dial9_engine(handler, temp_dir.path());
     let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
     meta.flow_id = FLOW_ID;
-    let SessionFlowAction::Intercept(session) = engine.new_udp_session(meta, |_| {}, || {}, || {})
+    let SessionFlowAction::Intercept(session) = engine.new_udp_session(meta, |_| {}, |_| {}, || {})
     else {
         panic!("expected intercept session");
     };
@@ -889,7 +889,7 @@ fn engine_stop_waits_for_udp_close_epilogue_before_sealing_dial9() {
     let SessionFlowAction::Intercept(session) = engine.new_udp_session(
         meta,
         |_| {},
-        || {},
+        |_| {},
         move || {
             close_entered_tx
                 .send(())
@@ -1020,7 +1020,7 @@ fn udp_pre_activation_max_lifetime_records_decoded_dial9_reason() {
     let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
     meta.flow_id = FLOW_ID;
     let SessionFlowAction::Intercept(mut session) =
-        engine.new_udp_session(meta, |_| {}, || {}, move || _ = closed_tx.send(()))
+        engine.new_udp_session(meta, |_| {}, |_| {}, move || _ = closed_tx.send(()))
     else {
         panic!("expected intercept session");
     };
@@ -1096,7 +1096,7 @@ fn udp_pressure_close_counts_only_accepted_whole_datagrams_after_recovery() {
     let SessionFlowAction::Intercept(mut session) = engine.new_udp_session(
         meta,
         |_| panic!("pressure service must not produce egress"),
-        move || _ = demand_tx.send(()),
+        move |_| _ = demand_tx.send(()),
         move || _ = closed_tx.send(()),
     ) else {
         panic!("expected intercept session");
@@ -1201,7 +1201,7 @@ fn udp_echo_records_real_dial9_byte_totals() {
         move |datagram| {
             _ = echo_tx.send(datagram.payload.len());
         },
-        || {},
+        |_| {},
         move || _ = closed_tx.send(()),
     ) else {
         panic!("expected intercept session");

@@ -8,7 +8,7 @@ use rama::{
     bytes::Bytes,
     futures::future::join_all,
     http::{BodyExtractExt as _, Version, body::util::BodyExt as _},
-    utils::octets::kib,
+    utils::octets::{kib, mib},
 };
 use serial_test::serial;
 use std::time::Duration;
@@ -136,13 +136,13 @@ h2_large_body_test!(
     ffi_contract_http_h2_plain_direct_large_response_body,
     HttpTargetKind::Plain,
     ProxyKind::None,
-    8 * 1024
+    mib(8) / kib(1)
 );
 h2_large_body_test!(
     ffi_contract_http_h2_tls_direct_large_response_body,
     HttpTargetKind::Tls,
     ProxyKind::None,
-    8 * 1024
+    mib(8) / kib(1)
 );
 h2_concurrent_large_test!(
     ffi_contract_http_h2_plain_direct_concurrent_large_streams,

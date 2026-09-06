@@ -215,7 +215,7 @@ fn udp_max_flow_lifetime_closes_stuck_service() {
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(53)),
         |_bytes| {},
-        || {},
+        |_| {},
         move || {
             closed_cb.fetch_add(1, Ordering::Relaxed);
         },
@@ -266,7 +266,7 @@ fn udp_max_flow_lifetime_closes_session_that_never_activates() {
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(53)),
         |_bytes| {},
-        || {},
+        |_| {},
         move || {
             closed_cb.fetch_add(1, Ordering::Relaxed);
         },
@@ -336,7 +336,7 @@ fn udp_on_client_datagram_stops_demand_on_overflow() {
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(53)),
         |_bytes| {},
-        move || {
+        move |_| {
             demand_cb.fetch_add(1, Ordering::Relaxed);
         },
         || {},
@@ -393,7 +393,7 @@ fn udp_on_client_close_runs_service_close_epilogue() {
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(53)),
         |_bytes| {},
-        || {},
+        |_| {},
         || {},
     ) else {
         panic!("expected intercept session");
@@ -466,7 +466,7 @@ fn udp_on_client_close_suppresses_subsequent_dispatch() {
         move |_bytes| {
             datagram.fetch_add(1, Ordering::Relaxed);
         },
-        move || {
+        move |_| {
             demand_cb.fetch_add(1, Ordering::Relaxed);
         },
         || {},
@@ -552,7 +552,7 @@ fn udp_on_client_datagram_no_demand_after_receiver_dropped() {
         TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp)
             .with_remote_endpoint(HostWithPort::example_domain_with_port(53)),
         |_bytes| {},
-        move || {
+        move |_| {
             demand_cb.fetch_add(1, Ordering::Relaxed);
         },
         || {},

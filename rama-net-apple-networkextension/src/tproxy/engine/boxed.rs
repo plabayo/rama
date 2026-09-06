@@ -52,13 +52,6 @@ trait BoxedTransparentProxyEngineInner: Send + Sync + 'static {
         &self,
         meta: TransparentProxyFlowMeta,
         on_server_datagram: BoxedServerDatagramSink,
-        on_client_read_demand: BoxedDemandSink,
-        on_server_closed: BoxedClosedSink,
-    ) -> SessionFlowAction<TransparentProxyUdpSession>;
-    fn new_udp_session_with_probe(
-        &self,
-        meta: TransparentProxyFlowMeta,
-        on_server_datagram: BoxedServerDatagramSink,
         on_client_read_demand: BoxedUdpDemandSink,
         on_server_closed: BoxedClosedSink,
     ) -> SessionFlowAction<TransparentProxyUdpSession>;
@@ -135,27 +128,10 @@ where
         &self,
         meta: TransparentProxyFlowMeta,
         on_server_datagram: BoxedServerDatagramSink,
-        on_client_read_demand: BoxedDemandSink,
-        on_server_closed: BoxedClosedSink,
-    ) -> SessionFlowAction<TransparentProxyUdpSession> {
-        self.new_udp_session(
-            meta,
-            move |datagram: crate::Datagram| {
-                on_server_datagram(datagram.payload.as_ref(), datagram.peer)
-            },
-            move || on_client_read_demand(),
-            move || on_server_closed(),
-        )
-    }
-
-    fn new_udp_session_with_probe(
-        &self,
-        meta: TransparentProxyFlowMeta,
-        on_server_datagram: BoxedServerDatagramSink,
         on_client_read_demand: BoxedUdpDemandSink,
         on_server_closed: BoxedClosedSink,
     ) -> SessionFlowAction<TransparentProxyUdpSession> {
-        self.new_udp_session_with_probe(
+        self.new_udp_session(
             meta,
             move |datagram: crate::Datagram| {
                 on_server_datagram(datagram.payload.as_ref(), datagram.peer)
@@ -236,30 +212,10 @@ impl BoxedTransparentProxyEngine {
         &self,
         meta: TransparentProxyFlowMeta,
         on_server_datagram: BoxedServerDatagramSink,
-        on_client_read_demand: BoxedDemandSink,
+        on_client_read_demand: BoxedUdpDemandSink,
         on_server_closed: BoxedClosedSink,
     ) -> SessionFlowAction<TransparentProxyUdpSession> {
         self.0.new_udp_session(
-            meta,
-            on_server_datagram,
-            on_client_read_demand,
-            on_server_closed,
-        )
-    }
-
-    #[doc(hidden)]
-    pub fn new_udp_session_with_probe<OnDemand>(
-        &self,
-        meta: TransparentProxyFlowMeta,
-        on_server_datagram: BoxedServerDatagramSink,
-        on_client_read_demand: Arc<OnDemand>,
-        on_server_closed: BoxedClosedSink,
-    ) -> SessionFlowAction<TransparentProxyUdpSession>
-    where
-        OnDemand: Fn(u64) + Send + Sync + 'static,
-    {
-        let on_client_read_demand: BoxedUdpDemandSink = on_client_read_demand;
-        self.0.new_udp_session_with_probe(
             meta,
             on_server_datagram,
             on_client_read_demand,
