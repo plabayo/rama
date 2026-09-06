@@ -178,6 +178,12 @@ pub(crate) fn spawn_xpc_server(
     );
 
     let router = XpcMessageRouter::new()
+        .with_typed_route::<EmptyRequest, crate::allocator::AllocatorStatsReply, _>(
+            "getAllocatorStats:withReply:",
+            service_fn(|_req: EmptyRequest| async move {
+                Ok::<_, BoxError>(crate::allocator::snapshot())
+            }),
+        )
         .with_typed_route::<UpdateSettingsRequest, UpdateSettingsReply, _>(
             "updateSettings:withReply:",
             service_fn({

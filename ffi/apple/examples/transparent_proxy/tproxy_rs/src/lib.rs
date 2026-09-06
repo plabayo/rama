@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 #[global_allocator]
 static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
+mod allocator;
 mod concurrency;
 mod config;
 mod demo_trace_traffic;

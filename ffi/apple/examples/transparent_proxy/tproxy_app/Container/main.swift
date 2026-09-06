@@ -315,6 +315,10 @@ extension String {
     }
 }
 
+if CommandLine.arguments.dropFirst().contains(where: { $0.hasPrefix("--allocator-stats") }) {
+    AllocatorStatsCommand.run(arguments: Array(CommandLine.arguments.dropFirst()), bundle: .main)
+}
+
 let app = NSApplication.shared
 let delegate = ContainerController()
 app.delegate = delegate

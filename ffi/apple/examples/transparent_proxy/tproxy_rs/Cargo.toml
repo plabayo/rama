@@ -11,7 +11,7 @@ crate-type = ["staticlib"]
 
 [features]
 default = ["jemallocator"]
-jemallocator = ["dep:jemallocator"]
+jemallocator = ["dep:jemallocator", "dep:tikv-jemalloc-sys"]
 
 [dependencies]
 ahash = "0.8"
@@ -26,6 +26,7 @@ rama = { path = "../../../../../", features = ["dial9", "net-apple-networkextens
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
+tikv-jemalloc-sys = { version = "0.6", optional = true, features = ["stats"] }
 tokio = { version = "1.53", features = ["net", "time"] }
 
 [dev-dependencies]

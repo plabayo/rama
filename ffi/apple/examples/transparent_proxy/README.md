@@ -518,6 +518,44 @@ org.ramaproxy.example.tproxy.dev.provider.systemextension/Contents/Info.plist \
   | grep -E 'NEMach|TProxy|XpcService|BundleVersion'
 ```
 
+### Allocator memory snapshot
+
+The signed container can query the already-running provider without launching
+the menu app, activating the extension, changing a profile, or requiring sudo:
+
+```sh
+/Applications/RamaTransparentProxyExampleContainer.app/Contents/MacOS/RamaTransparentProxyExampleContainer \
+  --allocator-stats > /tmp/rama-allocator-stats.json
+```
+
+Use this flag alone. The command uses the existing XPC peer checks (same signing
+team and exact container/provider identifiers), prints one JSON reply, and exits
+nonzero on unavailable statistics, connection errors, or a 10-second deadline.
+The container must match the installed provider's versioned Mach service name.
+It does not start an inactive proxy.
+
+Default builds enable jemalloc statistics. A snapshot refreshes the statistics
+epoch once, then reads byte counts (`allocated`, `active`, `resident`, `metadata`,
+`mapped`, `retained`), all-arena dirty/muzzy page counts, page size, arena limit
+(`narenas`), and
+background/decay settings. Each optional setting has a `value` or an `error`;
+unsupported settings are not reported as zero. `arenas_*_decay_ms` are defaults
+for new arenas, not an assertion about each existing arena. System-allocator
+builds (`--no-default-features`, including ASan) explicitly report unavailable.
+
+Compare snapshots from the same provider PID at baseline, load, and idle tail.
+`allocated` estimates live jemalloc allocations, `active` includes fragmentation,
+and `resident` estimates resident pages including allocator metadata and dirty
+pages. `mapped` counts mapped active extents; `retained` is reserved virtual
+memory and is not an RSS count. These readings exclude Swift/Apple malloc
+and are not an atomic snapshot of a busy process; thread caches and collection
+timing also affect accounting. Pair them with RSS/`vmmap`, rather than replacing
+the release memory threshold. The diagnostic never purges arenas, flushes caches,
+or changes decay/background-thread policy; enabling statistics adds accounting
+overhead that belongs in the subsequent performance qualification. Refreshing
+statistics also takes allocator locks and has a cost; use occasional diagnostic
+samples rather than treating this as a per-flow or high-frequency monitor.
+
 ### Wire capture (for diagnosing TLS / handshake issues)
 
 `tcpdump` on `en0` captures the **egress** side (provider →
