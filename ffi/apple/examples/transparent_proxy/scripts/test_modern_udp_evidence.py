@@ -846,7 +846,7 @@ def passing_status():
         "pressure_probe_passed": "1", "pressure_drop_transitions": "1",
         "pressure_resume_transitions": "1", "pressure_drop_reasons": "global_bytes",
         "pressure_recovered_reasons": "global_bytes", "run_uuid": RUN_UUID,
-        "run_start_epoch_ms": "1000", "run_end_epoch_ms": "5000",
+        "run_start_epoch_ms": "1000", "run_end_epoch_ms": "136000",
         "evidence_kind": "modern_udp", "provider_generation_identity": DIGEST,
         "producer_sources_sha256": DIGEST,
         "engine_generations_sha256": DIGEST, "http3_request_count": "12",
@@ -856,9 +856,9 @@ def passing_status():
         "http3_intercept_flow_id": "2500", "http3_intercept_provider_generation": "8",
         "http3_intercept_local_endpoint": "192.0.2.1:54000",
         "http3_intercept_remote_endpoint": "1.1.1.1:443",
-        "echo_socket_count": "128", "echo_datagrams_per_socket": "1",
-        "echo_payload_bytes": "1200", "echo_expected_count": "128",
-        "echo_exact_echo_count": "128", "echo_flow_count": "128",
+        "echo_socket_count": "128", "echo_datagrams_per_socket": "64",
+        "echo_payload_bytes": "1200", "echo_expected_count": "8192",
+        "echo_exact_echo_count": "8192", "echo_flow_count": "128",
         "echo_payload_set_sha256": DIGEST, "echo_endpoint": "127.0.0.1:44444",
         "echo_source_pid": "2002", "pressure_datagram_count": "512",
         "pressure_payload_bytes": "4096", "pressure_expected_bytes": "2097152",
@@ -951,6 +951,20 @@ def http3_receipt_fixture():
     }, body
 
 
+def echo_timing_fixture(*, start_epoch_ms=1500, sockets=128):
+    """64 shared rounds, with each response returning 1 ms after its send."""
+    return {
+        "interval_ms": 2000,
+        "start_epoch_ms": start_epoch_ms, "end_epoch_ms": start_epoch_ms + 126001,
+        "start_monotonic_ns": 1_000_000_000, "end_monotonic_ns": 127_001_000_000,
+        "packet_timings_ns": [
+            [index, sequence, 1_000_000_000 + sequence * 2_000_000_000,
+             1_001_000_000 + sequence * 2_000_000_000]
+            for index in range(sockets) for sequence in range(64)
+        ],
+    }
+
+
 def build_strict_bundle(directory):
     provider_pid = 9001
     unblocked_generation = 7
@@ -997,8 +1011,8 @@ def build_strict_bundle(directory):
         ("passthrough", 1001, "1.1.1.1:53", 1100),
         ("ntp", 1003, "162.159.200.1:123", 1200),
         ("control", 1002, "8.8.8.8:53", 1300),
-        ("recovery", 1006, "162.159.200.1:123", 1700),
-        ("blocked", 1005, "8.8.8.8:53", 4500),
+        ("recovery", 1006, "162.159.200.1:123", 127700),
+        ("blocked", 1005, "8.8.8.8:53", 130500),
     ):
         value = probe_receipt_fixture(label, pid, endpoint, start_epoch_ms=started)
         (directory / f"udp-probe-{label}.json").write_text(json.dumps(value) + "\n")
@@ -1025,22 +1039,20 @@ def build_strict_bundle(directory):
 
     client = {
         "schema_version": 2, "kind": "controlled_echo_client", "run_uuid": RUN_UUID,
-        "endpoint": echo_endpoint, "socket_count": 128, "datagrams_per_socket": 1,
-        "payload_bytes": 1200, "expected_count": 128, "sent_count": 128,
-        "received_count": 128, "exact_echo_count": 128, "unique_echo_count": 128,
+        "endpoint": echo_endpoint, "socket_count": 128, "datagrams_per_socket": 64,
+        "payload_bytes": 1200, "expected_count": 8192, "sent_count": 8192,
+        "received_count": 8192, "exact_echo_count": 8192, "unique_echo_count": 8192,
         "independent_socket_count": 128, "local_endpoints": echo_endpoints,
         "socket_endpoints": [[index, endpoint] for index, endpoint in enumerate(echo_endpoints)],
         "local_endpoint_set_sha256": hashlib.sha256("\n".join(echo_endpoints).encode()).hexdigest(),
         "payload_set_sha256": echo_digest, "echo_set_sha256": echo_digest,
         "error_count": 0, "passed": True, "schema_complete": True,
-        "interval_ms": 0, "start_epoch_ms": 1500, "end_epoch_ms": 1501,
-        "start_monotonic_ns": 1000000000, "end_monotonic_ns": 1001000000,
-        "packet_timings_ns": [[index, 0, 1000000000, 1001000000] for index in range(128)],
+        **echo_timing_fixture(),
     }
     server = {
         "schema_version": 2, "kind": "controlled_echo_server", "run_uuid": RUN_UUID,
-        "endpoint": echo_endpoint, "expected_count": 128, "received_count": 128,
-        "echo_count": 128, "duplicate_count": 0, "malformed_count": 0,
+        "endpoint": echo_endpoint, "expected_count": 8192, "received_count": 8192,
+        "echo_count": 8192, "duplicate_count": 0, "malformed_count": 0,
         "peer_mismatch_count": 0,
         "socket_peers": [[index, endpoint] for index, endpoint in enumerate(echo_endpoints)],
         "payload_set_sha256": echo_digest, "passed": True, "schema_complete": True,
@@ -1055,7 +1067,7 @@ def build_strict_bundle(directory):
     ):
         (directory / name).write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
     (directory / "controlled-echo-client.log").write_text(
-        f"QUIC-shaped UDP controlled echo ok: sockets=128 datagrams=128 bytes=1200 sha256={echo_digest}\n"
+        f"QUIC-shaped UDP controlled echo ok: sockets=128 datagrams=8192 bytes=1200 sha256={echo_digest}\n"
     )
     (directory / "controlled-echo-server.log").write_bytes(b"")
     (directory / "echo-identities.tsv").write_text("".join(
@@ -1076,7 +1088,7 @@ def build_strict_bundle(directory):
     (directory / "http3-results.tsv").write_text("".join(result_rows))
     (directory / "http3-round-results.tsv").write_text(
         "round\texpected_workers\tbarrier_release_epoch_ms\tpre_release_alive\n"
-        "1\t2\t2000\t2\n2\t2\t3000\t2\n3\t2\t4000\t2\n"
+        "1\t2\t128000\t2\n2\t2\t129000\t2\n3\t2\t130000\t2\n"
     )
     (directory / "http3-timing.tsv").write_text(
         "schema_version\t1\nstart_monotonic_ms\t100\nend_monotonic_ms\t2600\n"
@@ -1084,6 +1096,10 @@ def build_strict_bundle(directory):
     )
     (directory / "http3-endpoints.txt").write_text("1.1.1.1:443\n")
     receipt, body = http3_receipt_fixture()
+    for key in ("start_epoch_ms", "end_epoch_ms"):
+        receipt[key] += 126000
+    for key in ("start_monotonic_ns", "end_monotonic_ns"):
+        receipt[key] += 126_000_000_000
     (directory / "http3-url.txt").write_text(receipt["url"] + "\n")
     (directory / "http3-intercept-client.json").write_text(json.dumps(receipt) + "\n")
     (directory / "http3-intercept-body.txt").write_bytes(body)
@@ -1096,7 +1112,7 @@ def build_strict_bundle(directory):
         "recovery-ntp\t9001\t7\t106\t2\t1006\t1\t48\t48\t48\t48\n",
     ]
     requirement_rows.extend(
-        f"echo-{index}\t9001\t7\t{flow_id}\t2\t2002\t1\t1200\t1200\t1200\t1200\n"
+        f"echo-{index}\t9001\t7\t{flow_id}\t2\t2002\t1\t76800\t76800\t76800\t76800\n"
         for index, flow_id in enumerate(echo_flows)
     )
     requirement_rows.append("http3-intercept\t9001\t8\t2500\t2\t3500\t1\t1\t16777216\t1\t16777216\n")
@@ -1117,7 +1133,7 @@ def build_strict_bundle(directory):
         "status transition connecting -> connected",
     ]
     restore_slice = "".join(
-        f"[1970-01-01T00:00:09Z] INFO: {message}\n" for message in restore_messages
+        f"[1970-01-01T00:02:15Z] INFO: {message}\n" for message in restore_messages
     )
     (directory / "restore-container.log").write_text(restore_slice)
     (directory / "restore.log").write_text(
@@ -1127,7 +1143,7 @@ def build_strict_bundle(directory):
     restore_rows = (
         ("schema_version", 1), ("run_uuid", RUN_UUID), ("provider_pid", provider_pid),
         ("replaced_provider_generation", blocked_generation),
-        ("restore_started_epoch_ms", 9000), ("restore_completed_epoch_ms", 9500),
+        ("restore_started_epoch_ms", 135000), ("restore_completed_epoch_ms", 135500),
         ("container_start_line", 100), ("container_end_line", 113),
         ("slice_line_count", 13),
         ("slice_sha256", hashlib.sha256(restore_slice.encode()).hexdigest()),
@@ -1155,7 +1171,7 @@ def build_strict_bundle(directory):
         "dial9_claim\texact-workload\n"
         "quic_shaped_not_valid_quic\t1\n"
         "echo_socket_count\t128\n"
-        "echo_exact_echo_count\t128\n"
+        "echo_exact_echo_count\t8192\n"
         "http3_request_count\t6\n"
         "http3_pass_count\t6\n"
         "http3_intercept_passed\t1\n"
@@ -1171,13 +1187,14 @@ def build_strict_bundle(directory):
         f"run_uuid\t{RUN_UUID}\n"
         f"provider_generation_identity\t{DIGEST}\n"
         "since_epoch_ms\t1000\n"
-        "snapshot_epoch_ms\t11000\n"
+        "snapshot_epoch_ms\t137000\n"
         "process_names\torg.ramaproxy.example.tproxy.dev.provider\n"
         "crash_count\t0\n"
         f"crash_names_sha256\t{hashlib.sha256(b'').hexdigest()}\n"
         "schema_complete\t1\n"
     )
     generation_tail = f"9001|500|500000|{'c' * 40}|{DIGEST}|{'b' * 64}"
+    generation_epochs = [900, 3000, 6000, 9000, *range(11000, 137001, 2000)]
     (directory / "provider-generation-samples.tsv").write_text(
         "schema_version\t1\n"
         f"provider_generation_identity\t{DIGEST}\n"
@@ -1189,17 +1206,14 @@ def build_strict_bundle(directory):
         f"running_executable_path_sha256\t{'b' * 64}\n"
         "cadence_ms\t2000\n"
         "max_gap_ms\t5000\n"
-        "sample_count\t5\n"
-        f"sample_000001\t900|{generation_tail}\n"
-        f"sample_000002\t3000|{generation_tail}\n"
-        f"sample_000003\t6000|{generation_tail}\n"
-        f"sample_000004\t9000|{generation_tail}\n"
-        f"sample_000005\t11000|{generation_tail}\n"
-        "schema_complete\t1\n"
+        f"sample_count\t{len(generation_epochs)}\n"
+        + "".join(f"sample_{index:06d}\t{epoch}|{generation_tail}\n"
+                  for index, epoch in enumerate(generation_epochs, 1))
+        + "schema_complete\t1\n"
     )
     engine_digest = hashlib.sha256(b"9001:7:8").hexdigest()
     _write_status(directory, {
-        "run_end_epoch_ms": 10000,
+        "run_end_epoch_ms": 136000,
         "http3_source_pid": 3000, "http3_flow_id": 2000,
         "http3_request_count": 6, "http3_pass_count": 6, "http3_flow_count": 6,
         "http3_min_concurrent": 2, "echo_source_pid": echo_pid,
@@ -1723,8 +1737,168 @@ class ProtocolProbeReceiptTests(unittest.TestCase):
 
 
 class ModernStatusTests(unittest.TestCase):
+    @staticmethod
+    def status_lines(verdict=(1, 1, 0), attempts=9, passes=9, diagnostics=()):
+        lines = passing_status()
+        complete, passed, exit_code = verdict
+        for key, value in (
+            ("complete", complete), ("passed", passed), ("exit_code", exit_code),
+            ("udp_probe_attempt_count", attempts), ("udp_probe_pass_count", passes),
+        ):
+            lines = replace(lines, key, str(value))
+        return lines[:-1] + [f"{key}\t{value}\n" for key, value in diagnostics] + lines[-1:]
+
+    def test_signed_udp_status_parser_distinguishes_pass_failure_and_incomplete(self):
+        baseline = dict(row.rstrip("\n").split("\t") for row in self.status_lines())
+        self.assertEqual(parse_signed_udp_status_lines(self.status_lines()), 0)
+        failure = self.status_lines(
+            verdict=(1, 0, 1), passes=4,
+            diagnostics=(("failure", "blocked DNS replied"),),
+        )
+        self.assertEqual(parse_signed_udp_status_lines(failure), 1)
+        incomplete = self.status_lines(
+            verdict=(0, 0, 2), passes=4,
+            diagnostics=(
+                ("issue", "provider log stream died"),
+                ("observed_failure", "blocked DNS replied"),
+            ),
+        )
+        self.assertEqual(parse_signed_udp_status_lines(incomplete), 2)
+        early = self.status_lines(
+            verdict=(0, 0, 2), attempts=0, passes=0,
+            diagnostics=(("issue", "preflight failed"),),
+        )
+        replacements = {
+            "callback_generation": "unknown", "provider_pid": "none",
+            "run_uuid": "none",
+            "provider_identity": "none", "provider_identity_stable": "0",
+            "http3_source_pid": "none",
+            "http3_flow_id": "none", "http3_remote_endpoint": "none",
+            "http3_intercept_passed": "0", "http3_intercept_source_pid": "none",
+            "http3_intercept_flow_id": "none", "http3_intercept_provider_generation": "none",
+            "http3_intercept_local_endpoint": "none", "http3_intercept_remote_endpoint": "none",
+            "pressure_probe_attempted": "0", "pressure_probe_passed": "0",
+            "pressure_drop_transitions": "0", "pressure_resume_transitions": "0",
+            "pressure_drop_reasons": "none", "pressure_recovered_reasons": "none",
+            "passthrough_dns_source_pid": "none", "passthrough_dns_flow_id": "none",
+            "control_dns_source_pid": "none", "control_dns_flow_id": "none",
+            "ntp_source_pid": "none", "ntp_flow_id": "none",
+            "pressure_source_pid": "none", "pressure_flow_id": "none",
+            "blocked_dns_source_pid": "none", "blocked_dns_flow_id": "none",
+            "dial9_required_flow_id": "none", "dial9_required_close_reason": "none",
+            "dial9_required_close_reason_name": "none", "dial9_close_age_bound_ms": "0",
+            "dial9_required_close_age_ms": "none", "dial9_required_bytes_in": "none",
+            "dial9_required_bytes_out": "none",
+        }
+        early = [
+            f"{key}\t{replacements.get(key, value)}\n"
+            for key, value in (row.rstrip("\n").split("\t") for row in early)
+        ]
+        self.assertEqual(parse_signed_udp_status_lines(early), 2)
+        self.assertIsNone(parse_signed_udp_status_lines(self.status_lines(passes=4)))
+        duplicate = self.status_lines()[:-1] + ["complete\t1\n", "schema_complete\t1\n"]
+        self.assertIsNone(parse_signed_udp_status_lines(duplicate))
+
+        for invalid in ("-1", "+1", "01", "1.0", str(2**64)):
+            with self.subTest(invalid=invalid):
+                malformed = self.status_lines()
+                malformed[3] = f"udp_probe_attempt_count\t{invalid}\n"
+                self.assertIsNone(parse_signed_udp_status_lines(malformed))
+        def replace(rows, key, value):
+            return [
+                f"{row_key}\t{value if row_key == key else row_value}\n"
+                for row_key, row_value in (
+                    row.rstrip("\n").split("\t") for row in rows
+                )
+            ]
+
+        malformed_baseline = replace(
+            self.status_lines(), "dial9_baseline_max_index", "01"
+        )
+        self.assertIsNone(parse_signed_udp_status_lines(malformed_baseline))
+        duplicate_required_pair = replace(
+            self.status_lines(), "dial9_required_pair_count", "2"
+        )
+        self.assertIsNone(parse_signed_udp_status_lines(duplicate_required_pair))
+        sampled_drop_count_is_not_recovery_semantics = replace(
+            self.status_lines(), "rust_udp_drop_transitions", "2"
+        )
+        self.assertEqual(
+            parse_signed_udp_status_lines(sampled_drop_count_is_not_recovery_semantics), 0
+        )
+        pressure_loss_failure = self.status_lines(
+            verdict=(1, 0, 1),
+            diagnostics=(("failure", "UDP ingress pressure loss"),),
+        )
+        pressure_loss_failure = replace(
+            pressure_loss_failure, "swift_udp_staging_drop_samples", "1"
+        )
+        self.assertEqual(parse_signed_udp_status_lines(pressure_loss_failure), 1)
+        dial9_fault_failure = self.status_lines(
+            verdict=(1, 0, 1),
+            diagnostics=(("failure", "NTP Dial9 service panic"),),
+        )
+        dial9_fault_failure = replace(
+            dial9_fault_failure, "dial9_required_close_reason", "14"
+        )
+        dial9_fault_failure = replace(
+            dial9_fault_failure, "dial9_required_close_reason_name", "service_panic"
+        )
+        self.assertEqual(parse_signed_udp_status_lines(dial9_fault_failure), 1)
+        unsupported_schema = replace(self.status_lines(), "schema_version", "3")
+        self.assertIsNone(parse_signed_udp_status_lines(unsupported_schema))
+
+        for key, value in (
+            ("provider_identity_stable", "0"),
+            ("http3_source_pid", "none"),
+            ("run_uuid", "not-a-uuid"),
+            ("http3_remote_endpoint", "cloudflare.com:443"),
+            ("http3_intercept_passed", "0"),
+            ("http3_intercept_source_pid", "none"),
+            ("http3_intercept_flow_id", baseline["http3_flow_id"]),
+            ("http3_intercept_provider_generation", "0"),
+            ("http3_intercept_local_endpoint", "unavailable"),
+            ("http3_intercept_remote_endpoint", "1.1.1.1:53"),
+            ("pressure_resume_transitions", "0"),
+            ("pressure_recovered_reasons", "flow_bytes"),
+            ("ntp_flow_id", baseline["pressure_flow_id"]),
+            ("dial9_required_close_reason", "15"),
+            ("dial9_required_close_reason_name", "idle_timeout"),
+            ("dial9_required_close_age_ms", str(int(baseline["dial9_close_age_bound_ms"]) + 1)),
+            ("dial9_matched_requirement_count", "66"),
+        ):
+            with self.subTest(key=key):
+                self.assertIsNone(parse_signed_udp_status_lines(
+                    replace(self.status_lines(), key, value)
+                ))
+
     def test_accepts_exact_hardened_status(self):
         self.assertEqual(parse_signed_udp_status_lines(passing_status()), 0)
+
+    def test_release_shape_rejects_noncanonical_self_consistent_counts(self):
+        for sockets, per_socket, accepted in (
+            (128, 64, True), (450, 64, True),
+            (127, 64, False), (451, 64, False), (512, 64, False),
+            (128, 1, False), (128, 63, False),
+        ):
+            lines = passing_status()
+            for key, value in {
+                "echo_socket_count": sockets, "echo_flow_count": sockets,
+                "echo_datagrams_per_socket": per_socket,
+                "echo_expected_count": sockets * per_socket,
+                "echo_exact_echo_count": sockets * per_socket,
+                "dial9_requirement_count": sockets + 4,
+                "dial9_matched_requirement_count": sockets + 4,
+                "dial9_required_pair_count": sockets + 4,
+            }.items():
+                lines = replace(lines, key, str(value))
+            with self.subTest(sockets=sockets, per_socket=per_socket):
+                self.assertEqual(parse_signed_udp_status_lines(lines), 0 if accepted else None)
+        for deadline in (179, 181, 599):
+            with self.subTest(deadline=deadline):
+                self.assertIsNone(parse_signed_udp_status_lines(
+                    replace(passing_status(), "concurrent_load_deadline_seconds", str(deadline))
+                ))
 
     def test_rejects_weakened_cardinality_and_generation_evidence(self):
         for key, value in (
@@ -1777,6 +1951,70 @@ class ModernStatusTests(unittest.TestCase):
 
 
 class StrictBundleTests(unittest.TestCase):
+    def test_active_population_is_rederived_from_raw_packet_times(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            self.assertEqual(verify_bundle(root), 0)
+            path = root / "controlled-echo-client.json"
+            original = path.read_bytes()
+            status_path = root / "udp-evidence-status.tsv"
+            original_status = status_path.read_text()
+            for mutation in ("waves", "short-overlap", "idle-hole", "interval"):
+                value = json.loads(original)
+                timings = value["packet_timings_ns"]
+                if mutation == "interval":
+                    value["interval_ms"] = 1999
+                else:
+                    for row in timings:
+                        delay = (
+                            (row[0] // 32) * 10_000_000_000 if mutation == "waves"
+                            else (row[0] // 64) * 40_000_000_000 if mutation == "short-overlap"
+                            else 58_000_000_000 if row[1] >= 1 else 0
+                        )
+                        row[2] += delay
+                        row[3] += delay
+                    value["end_monotonic_ns"] = max(row[3] for row in timings)
+                    value["end_epoch_ms"] = value["start_epoch_ms"] + (
+                        value["end_monotonic_ns"] - value["start_monotonic_ns"]
+                    ) // 1_000_000
+                overlap = min(row[2] for row in timings if row[1] == 63) - max(
+                    row[3] for row in timings if row[1] == 0
+                )
+                if mutation == "waves":
+                    self.assertGreaterEqual(overlap, 90_000_000_000)
+                    self.assertTrue(all(
+                        timings[index * 64 + 63][2] - timings[index * 64][2] == 126_000_000_000
+                        for index in range(128)
+                    ))
+                elif mutation == "short-overlap":
+                    self.assertLess(overlap, 90_000_000_000)
+                elif mutation == "idle-hole":
+                    self.assertGreaterEqual(timings[1][3] - timings[0][2], 60_000_000_000)
+                # Keep the enclosing run large enough to isolate the packet
+                # proof. The idle hole also exceeds the canonical 180 s budget;
+                # short overlap necessarily violates bootstrap with 64 rounds.
+                status_path.write_text("".join(replace(
+                    original_status.splitlines(keepends=True), "run_end_epoch_ms", "200000"
+                )))
+                status = dict(line.split("\t") for line in status_path.read_text().splitlines())
+                if mutation != "idle-hole":
+                    _validate_echo_timing(value, status, 128, 64)
+                path.write_text(json.dumps(value))
+                reseal_test_manifest(root)
+                with self.subTest(mutation=mutation), self.assertRaisesRegex(
+                    BundleVerificationError, "controlled echo (active population|clock window)"
+                ):
+                    verify_bundle(root)
+            path.write_bytes(original)
+            status_path.write_text(original_status)
+            self.assertEqual(verify_bundle(root), 0)
+
+    def test_active_population_timing_accepts_the_canonical_upper_socket_bound(self):
+        value = echo_timing_fixture(sockets=450)
+        status = dict(line.rstrip("\n").split("\t") for line in passing_status())
+        _validate_echo_timing(value, status, 450, 64, require_active_population=True)
+
     def test_echo_socket_maps_are_required_by_sealed_raw_replay(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1817,8 +2055,8 @@ class StrictBundleTests(unittest.TestCase):
                 ("http3-intercept-result.tsv", "3500\t0", "3500\t20"),
                 ("http3-url.txt", "/cdn-cgi/trace", "/another-response"),
                 ("http3-intercept-body.txt", "http=http/3", "http=http/2"),
-                ("http3-intercept-client.json", '"start_epoch_ms": 8600', '"start_epoch_ms": 8500'),
-                ("http3-intercept-client.json", '"start_monotonic_ns": 9600000000', '"start_monotonic_ns": 9500000000'),
+                ("http3-intercept-client.json", '"start_epoch_ms": 134600', '"start_epoch_ms": 134500'),
+                ("http3-intercept-client.json", '"start_monotonic_ns": 135600000000', '"start_monotonic_ns": 135500000000'),
                 ("dial9-requirements.tsv", "http3-intercept\t9001\t8", "http3-intercept\t9001\t7"),
                 ("dial9-requirements.tsv", "\t1\t16777216\t1\t16777216", "\t0\t16777216\t1\t16777216"),
                 ("dial9-requirements.tsv", "\t1\t16777216\t1\t16777216", "\t1\t33554432\t1\t16777216"),
@@ -2157,9 +2395,11 @@ class StrictBundleTests(unittest.TestCase):
                         value["start_epoch_ms"] += 10000
                         value["end_epoch_ms"] += 10000
                     elif case == "receipt-reordered":
+                        control = json.loads((root / "udp-probe-control.json").read_text())
+                        rewind = value["start_monotonic_ns"] - control["start_monotonic_ns"] + 1_000_000
                         for key in ("start_monotonic_ns", "receive_started_monotonic_ns",
                                     "receive_completed_monotonic_ns", "end_monotonic_ns"):
-                            value[key] -= 1_000_000_000
+                            value[key] -= rewind
                     elif case == "oversized-packet":
                         value["response_hex"] = "00" * 65536
                     elif case == "extra-field":
@@ -2203,7 +2443,8 @@ class StrictBundleTests(unittest.TestCase):
             common.update(git_head=HEAD, git_dirty="0", provider_build_identity=build,
                           workload_claims_sha256=evidence.sha256_file(root / evidence.CLAIMS_NAME))
             write_tsv(root / evidence.STATUS_NAME, ((key, common[key]) for key in evidence.STATUS_ORDER))
-            write_generation_samples(root, dict(common, run_end_epoch_ms="11000"))
+            write_generation_samples(root, dict(common, run_end_epoch_ms="137000"),
+                                     sample_epochs=list(range(1000, 137001, 2000)))
             # The native decoder has separate fixture coverage. This regression
             # exercises the actual common -> archived Python replay boundary.
             for name in ("dial9-baseline.json", "dial9-evidence.json"):
@@ -2212,6 +2453,16 @@ class StrictBundleTests(unittest.TestCase):
                     mock.patch.object(evidence, "_validate_modern_dial9"):
                 evidence.seal(root)
                 evidence._validate_modern_semantics(evidence._verify_and_capture(root))
+                echo_client = root / "controlled-echo-client.json"
+                original_echo = echo_client.read_bytes()
+                value = json.loads(original_echo)
+                value["packet_timings_ns"][1][2] = value["packet_timings_ns"][0][2]
+                echo_client.write_text(json.dumps(value))
+                evidence.seal(root)
+                with self.assertRaisesRegex(evidence.EvidenceError,
+                        "raw-bundle validator rejected.*per-flow pacing"):
+                    evidence._validate_modern_semantics(evidence._verify_and_capture(root))
+                echo_client.write_bytes(original_echo)
                 requirements_path = root / "dial9-requirements.tsv"
                 original_requirements = requirements_path.read_text()
                 status_path = root / "udp-evidence-status.tsv"
@@ -2264,7 +2515,7 @@ class StrictBundleTests(unittest.TestCase):
                 verify_bundle(root)
 
     def test_rejects_resealed_crash_snapshot_for_another_generation_or_window(self):
-        for old, new in ((DIGEST, "b" * 64), ("snapshot_epoch_ms\t11000", "snapshot_epoch_ms\t4999")):
+        for old, new in ((DIGEST, "b" * 64), ("snapshot_epoch_ms\t137000", "snapshot_epoch_ms\t4999")):
             with self.subTest(mutation=new):
                 with tempfile.TemporaryDirectory() as temporary:
                     root = Path(temporary)
@@ -2696,7 +2947,7 @@ class QuicShapedEchoTests(unittest.TestCase):
             with tempfile.TemporaryDirectory() as directory:
                 result = Path(directory) / "result.json"
                 controlled_echo_load(
-                    "127.0.0.1", port, RUN_UUID, 4, 3, 1200, 4, 2, str(result), 40
+                    "127.0.0.1", port, RUN_UUID, 4, 3, 1200, 2, 2, str(result), 40
                 )
                 value = json.loads(result.read_text())
                 status = {
@@ -2708,6 +2959,9 @@ class QuicShapedEchoTests(unittest.TestCase):
                 self.assertEqual(value["exact_echo_count"], 12)
                 self.assertEqual(value["independent_socket_count"], 4)
                 _validate_echo_timing(value, status, 4, 3)
+                first_responses = [row[3] for row in value["packet_timings_ns"] if row[1] == 0]
+                second_sends = [row[2] for row in value["packet_timings_ns"] if row[1] == 1]
+                self.assertLess(max(first_responses), min(second_sends))
                 for index in range(4):
                     rows = value["packet_timings_ns"][index * 3:index * 3 + 3]
                     self.assertGreaterEqual(rows[-1][2] - rows[0][2], 80_000_000)
@@ -2884,6 +3138,46 @@ class QuicShapedEchoTests(unittest.TestCase):
 
 
 class HarnessSourceContractTests(unittest.TestCase):
+    def test_live_echo_metrics_replay_raw_timing_before_counting_a_pass(self):
+        shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()
+        start = shell.index('ECHO_METRICS="$(')
+        end = shell.index('close_pressure_probe_window "$PRESSURE_LOG_START"', start)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            captured = root / "source-modern_udp_evidence.py"
+            captured.write_bytes((SCRIPT_DIR / "modern_udp_evidence.py").read_bytes())
+            program = textwrap.dedent(f"""\
+                TMP_DIR={shlex.quote(str(root))}
+                ECHO_CLIENT_RESULT="$TMP_DIR/controlled-echo-client.json"
+                ECHO_SERVER_RESULT="$TMP_DIR/controlled-echo-server.json"
+                MODERN_EVIDENCE="$TMP_DIR/source-modern_udp_evidence.py"
+                RUN_UUID={RUN_UUID} RUN_START_EPOCH_MS=1000
+                ECHO_ENDPOINT=127.0.0.1:44444 ECHO_EXPECTED_COUNT=8192
+                ECHO_SOCKET_COUNT=128 ECHO_DATAGRAMS_PER_SOCKET=64 ECHO_PAYLOAD_BYTES=1200
+                CONCURRENT_LOAD_DEADLINE_SECONDS=180 ECHO_CLIENT_RC=0 ECHO_SERVER_RC=0
+                UDP_PROBE_PASS_COUNT=0 ECHO_EXACT_ECHO_COUNT=none ISSUES=0
+                add_issue() {{ ISSUES=$((ISSUES + 1)); }}
+            """) + shell[start:end] + (
+                'printf "%s %s %s\\n" "$UDP_PROBE_PASS_COUNT" "$ISSUES" "$ECHO_EXACT_ECHO_COUNT"\n'
+            )
+            path = root / "controlled-echo-client.json"
+            original = path.read_bytes()
+            for mutation in ("valid", "unpaced", "interval", "missing-timings"):
+                value = json.loads(original)
+                if mutation == "unpaced":
+                    value["packet_timings_ns"][1][2] = value["packet_timings_ns"][0][2]
+                elif mutation == "interval":
+                    value["interval_ms"] = 1999
+                elif mutation == "missing-timings":
+                    value.pop("packet_timings_ns")
+                path.write_text(json.dumps(value))
+                result = subprocess.run(["/bin/bash", "-c", program], capture_output=True,
+                                        text=True, timeout=5)
+                with self.subTest(mutation=mutation):
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout, "1 0 8192\n" if mutation == "valid" else "0 1 none\n")
+
     def test_intercepted_http3_shell_requirement_preserves_exact_identity(self):
         helper = BoundedCommandCleanupTests.shell_function
         with tempfile.TemporaryDirectory() as temporary:
@@ -3194,12 +3488,12 @@ class HarnessSourceContractTests(unittest.TestCase):
         self.assertIn('"--udp-passthrough-ports="', shell)
         self.assertIn('"--udp-blocked-endpoints="', shell)
 
-    def test_concurrent_load_has_one_outer_sub_ten_minute_deadline(self):
+    def test_concurrent_load_has_one_outer_canonical_deadline(self):
         shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()
         self.assertIn("CONCURRENT_LOAD_DEADLINE=$((SECONDS +", shell)
         self.assertIn("wait_for_child_until \"$ACTIVE_PRESSURE_PID\"", shell)
         self.assertIn("wait_for_child_until \"$ACTIVE_ECHO_PID\"", shell)
-        self.assertIn("CONCURRENT_LOAD_DEADLINE_SECONDS >= 600", shell)
+        self.assertIn("CONCURRENT_LOAD_DEADLINE_SECONDS != 180", shell)
         self.assertGreaterEqual(
             shell.count("ACTIVE_WORKLOAD_FORCED_TERMINATION_COUNT=$(("), 1
         )

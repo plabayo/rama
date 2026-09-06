@@ -38,8 +38,8 @@ BLOCKED_DNS="${RAMA_TPROXY_E2E_BLOCKED_DNS:-8.8.8.8}"
 HTTP3_URL="${RAMA_TPROXY_E2E_HTTP3_URL:-https://cloudflare.com/cdn-cgi/trace}"
 HTTP3_LIBCURL="${RAMA_TPROXY_E2E_HTTP3_LIBCURL:-}"
 ECHO_SOCKET_COUNT="${RAMA_TPROXY_E2E_ECHO_SOCKETS:-128}"
-ECHO_DATAGRAMS_PER_SOCKET="${RAMA_TPROXY_E2E_ECHO_DATAGRAMS_PER_SOCKET:-1}"
-ECHO_INTERVAL_MS="${RAMA_TPROXY_E2E_ECHO_INTERVAL_MS:-0}"
+ECHO_DATAGRAMS_PER_SOCKET="${RAMA_TPROXY_E2E_ECHO_DATAGRAMS_PER_SOCKET:-64}"
+ECHO_INTERVAL_MS="${RAMA_TPROXY_E2E_ECHO_INTERVAL_MS:-2000}"
 ECHO_PAYLOAD_BYTES="${RAMA_TPROXY_E2E_ECHO_PAYLOAD_BYTES:-1200}"
 ECHO_CONCURRENCY="${RAMA_TPROXY_E2E_ECHO_CONCURRENCY:-32}"
 HTTP3_CONCURRENCY="${RAMA_TPROXY_E2E_HTTP3_CONCURRENCY:-4}"
@@ -2041,13 +2041,13 @@ esac
 [[ "$RUN_START_EPOCH_MS" =~ ^[1-9][0-9]*$ ]] \
   || fatal_issue "could not capture the signed UDP wall-clock start"
 if [[ ! "$ECHO_SOCKET_COUNT" =~ ^[1-9][0-9]*$ ]] \
-  || (( ECHO_SOCKET_COUNT < 128 || ECHO_SOCKET_COUNT > 512 )) \
+  || (( ECHO_SOCKET_COUNT < 128 || ECHO_SOCKET_COUNT > 450 )) \
   || [[ ! "$ECHO_DATAGRAMS_PER_SOCKET" =~ ^[1-9][0-9]*$ ]] \
-  || (( ECHO_DATAGRAMS_PER_SOCKET > 64 )) \
+  || (( ECHO_DATAGRAMS_PER_SOCKET != 64 )) \
   || [[ ! "$ECHO_INTERVAL_MS" =~ ^(0|[1-9][0-9]*)$ ]] \
-  || (( ECHO_INTERVAL_MS > 10000 )) \
+  || (( ECHO_INTERVAL_MS != 2000 )) \
   || [[ ! "$ECHO_PAYLOAD_BYTES" =~ ^[1-9][0-9]*$ ]] \
-  || (( ECHO_PAYLOAD_BYTES < 128 || ECHO_PAYLOAD_BYTES > 60000 )) \
+  || (( ECHO_PAYLOAD_BYTES < 1200 || ECHO_PAYLOAD_BYTES > 60000 )) \
   || [[ ! "$ECHO_CONCURRENCY" =~ ^[1-9][0-9]*$ ]] \
   || (( ECHO_CONCURRENCY > ECHO_SOCKET_COUNT || ECHO_CONCURRENCY > 128 \
     || ECHO_SOCKET_COUNT > ECHO_CONCURRENCY * 16 \
@@ -2070,8 +2070,7 @@ if [[ ! "$PRESSURE_COUNT" =~ ^[1-9][0-9]*$ ]] \
   || (( PRESSURE_PAYLOAD_BYTES < 64 || PRESSURE_PAYLOAD_BYTES > 60000 \
     || PRESSURE_COUNT * PRESSURE_PAYLOAD_BYTES > MAX_LOAD_BYTES )) \
   || [[ ! "$CONCURRENT_LOAD_DEADLINE_SECONDS" =~ ^[1-9][0-9]*$ ]] \
-  || (( CONCURRENT_LOAD_DEADLINE_SECONDS < 30 \
-    || CONCURRENT_LOAD_DEADLINE_SECONDS >= 600 ))
+  || (( CONCURRENT_LOAD_DEADLINE_SECONDS != 180 ))
 then
   fatal_issue "UDP pressure configuration is outside its bounded range"
 fi
@@ -2114,7 +2113,7 @@ sudo -n true 2>/dev/null \
 CURRENT_PHASE=echo-server-start
 start_owned_command echo-server /usr/bin/python3 "$PROBE" echo-server --bind 127.0.0.1 --port 0 \
   --run-uuid "$RUN_UUID" --expected-count "$ECHO_EXPECTED_COUNT" \
-  --max-seconds 180 --ready-file "$ECHO_READY" \
+  --max-seconds 600 --ready-file "$ECHO_READY" \
   --result-file "$ECHO_SERVER_RESULT" > "$TMP_DIR/controlled-echo-server.log" 2>&1 \
   || fatal_issue "could not start the owned controlled echo server"
 ECHO_SERVER_PID="$OWNED_COMMAND_PID"
@@ -2290,10 +2289,10 @@ wait_for_child_until "$ECHO_SERVER_PID" "$CONCURRENT_LOAD_DEADLINE" || ECHO_SERV
 ECHO_METRICS="$(/usr/bin/python3 - "$ECHO_CLIENT_RESULT" "$ECHO_SERVER_RESULT" \
   "$RUN_UUID" "$ECHO_ENDPOINT" "$ECHO_EXPECTED_COUNT" \
   "$ECHO_SOCKET_COUNT" "$ECHO_DATAGRAMS_PER_SOCKET" "$ECHO_PAYLOAD_BYTES" \
-  "$MODERN_EVIDENCE" <<'PY'
-import hashlib, ipaddress, json, re, runpy, sys
+  "$MODERN_EVIDENCE" "$RUN_START_EPOCH_MS" "$CONCURRENT_LOAD_DEADLINE_SECONDS" <<'PY'
+import hashlib, ipaddress, json, re, runpy, sys, time
 sys.dont_write_bytecode = True
-validate_echo_socket_maps = runpy.run_path(sys.argv[9])["validate_echo_socket_maps"]
+validators = runpy.run_path(sys.argv[9])
 client, server = (json.load(open(path)) for path in sys.argv[1:3])
 run_uuid, endpoint, expected = sys.argv[3], sys.argv[4], int(sys.argv[5])
 socket_count, per_socket, payload_bytes = map(int, sys.argv[6:9])
@@ -2331,7 +2330,12 @@ for endpoint_value in local_endpoints:
 local_digest = hashlib.sha256("\n".join(sorted(local_endpoints)).encode()).hexdigest()
 if local_digest != client["local_endpoint_set_sha256"]:
     raise SystemExit(2)
-validate_echo_socket_maps(client, server, socket_count)
+validators["validate_echo_socket_maps"](client, server, socket_count)
+validators["_validate_echo_timing"](client, {
+    "run_start_epoch_ms": sys.argv[10],
+    "run_end_epoch_ms": str(time.time_ns() // 1_000_000),
+    "concurrent_load_deadline_seconds": sys.argv[11],
+}, socket_count, per_socket, require_active_population=True)
 digest = client.get("payload_set_sha256")
 if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
     raise SystemExit(2)

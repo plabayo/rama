@@ -1091,51 +1091,57 @@ def controlled_echo_load(
     start_epoch_ms = time.time_ns() // 1_000_000
     start_monotonic_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
 
-    def one_socket(socket_index: int):
-        sock = sockets[socket_index]
-        sent = received = exact = 0
-        echoed = {}
-        timings = []
-        try:
-            for sequence in range(datagrams_per_socket):
-                if timings and interval_ms:
-                    deadline = timings[-1][2] + interval_ms * 1_000_000
-                    while True:
-                        remaining = deadline - time.clock_gettime_ns(time.CLOCK_MONOTONIC)
-                        if remaining <= 0:
-                            break
-                        time.sleep(remaining / 1_000_000_000)
-                payload = expected[(socket_index, sequence)]
-                sent_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
-                if sock.send(payload) != len(payload):
-                    raise RuntimeError("controlled echo client sent a partial datagram")
-                sent += 1
-                response, peer = sock.recvfrom(65_535)
-                received_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
-                received += 1
-                if peer[0] != str(address) or peer[1] != port:
-                    raise ProductViolation(f"echo response came from unexpected peer {peer}")
-                if response != payload:
-                    raise ProductViolation("echo response did not exactly match its request")
-                if parse_quic_shaped_payload(response, run_uuid) != (socket_index, sequence):
-                    raise ProductViolation("echo response carried the wrong flow identity")
-                echoed[(socket_index, sequence)] = response
-                timings.append([socket_index, sequence, sent_ns, received_ns])
-                exact += 1
-            local = sock.getsockname()
-            local_endpoint = (
-                f"[{local[0]}]:{local[1]}" if address.version == 6
-                else f"{local[0]}:{local[1]}"
-            )
-            return sent, received, exact, echoed, local_endpoint, None, timings
-        except Exception as error:
-            return sent, received, exact, echoed, None, error, timings
+    rows = [[0, 0, 0, {}, None, None, []] for _ in range(socket_count)]
 
-    rows = []
+    def one_datagram(socket_index: int, sequence: int):
+        sock = sockets[socket_index]
+        row = rows[socket_index]
+        timings = row[6]
+        try:
+            if timings and interval_ms:
+                deadline = timings[-1][2] + interval_ms * 1_000_000
+                while True:
+                    remaining = deadline - time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+                    if remaining <= 0:
+                        break
+                    time.sleep(remaining / 1_000_000_000)
+            payload = expected[(socket_index, sequence)]
+            sent_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+            if sock.send(payload) != len(payload):
+                raise RuntimeError("controlled echo client sent a partial datagram")
+            row[0] += 1
+            response, peer = sock.recvfrom(65_535)
+            received_ns = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+            row[1] += 1
+            if peer[0] != str(address) or peer[1] != port:
+                raise ProductViolation(f"echo response came from unexpected peer {peer}")
+            if response != payload:
+                raise ProductViolation("echo response did not exactly match its request")
+            if parse_quic_shaped_payload(response, run_uuid) != (socket_index, sequence):
+                raise ProductViolation("echo response carried the wrong flow identity")
+            row[3][(socket_index, sequence)] = response
+            timings.append([socket_index, sequence, sent_ns, received_ns])
+            row[2] += 1
+            if sequence == datagrams_per_socket - 1:
+                local = sock.getsockname()
+                row[4] = (
+                    f"[{local[0]}]:{local[1]}" if address.version == 6
+                    else f"{local[0]}:{local[1]}"
+                )
+        except Exception as error:
+            row[5] = error
+
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
-            futures = [executor.submit(one_socket, index) for index in range(socket_count)]
-            rows = [future.result() for future in futures]
+            # Complete a round across the whole population before the next one.
+            # Workers limit outstanding exchanges, not the number of live flows:
+            # every socket stays open and participates throughout the same run.
+            # There is at most one worker touching each socket and its receipt.
+            for sequence in range(datagrams_per_socket):
+                futures = [executor.submit(one_datagram, index, sequence)
+                           for index in range(socket_count) if rows[index][5] is None]
+                for future in futures:
+                    future.result()
     finally:
         for sock in sockets:
             sock.close()

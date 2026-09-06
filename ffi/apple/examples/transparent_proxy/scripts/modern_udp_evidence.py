@@ -400,8 +400,8 @@ def parse_signed_udp_status_lines(lines):
         and optional_uints["http3_intercept_provider_generation"] not in (None, 0)
         and is_udp_endpoint(values["http3_intercept_local_endpoint"])
         and is_udp_443_endpoint(values["http3_intercept_remote_endpoint"])
-        and 128 <= numeric["echo_socket_count"] <= 512
-        and 1 <= numeric["echo_datagrams_per_socket"] <= 64
+        and 128 <= numeric["echo_socket_count"] <= 450
+        and numeric["echo_datagrams_per_socket"] == 64
         and 1_200 <= numeric["echo_payload_bytes"] <= 60_000
         and numeric["echo_expected_count"]
             == numeric["echo_socket_count"] * numeric["echo_datagrams_per_socket"]
@@ -416,7 +416,7 @@ def parse_signed_udp_status_lines(lines):
         and numeric["pressure_expected_bytes"]
             == numeric["pressure_datagram_count"] * numeric["pressure_payload_bytes"]
         and numeric["pressure_expected_bytes"] <= 256 * 1024 * 1024
-        and 1 <= numeric["concurrent_load_deadline_seconds"] < 600
+        and numeric["concurrent_load_deadline_seconds"] == 180
         and numeric["concurrent_load_timed_out"] == 0
         and numeric["active_workload_forced_termination_count"] == 0
         and _valid_uuid(values["run_uuid"])
@@ -1009,12 +1009,17 @@ def validate_echo_socket_maps(client, server, socket_count):
         raise BundleVerificationError("controlled echo receiver observed a changed or reused peer")
 
 
-def _validate_echo_timing(client, status, sockets, per_socket):
+def _validate_echo_timing(client, status, sockets, per_socket, *, require_active_population=False):
     names = ("interval_ms", "start_epoch_ms", "end_epoch_ms",
              "start_monotonic_ns", "end_monotonic_ns")
     if any(type(client[name]) is not int or not 0 <= client[name] < 2**63 for name in names):
         raise BundleVerificationError("controlled echo clock samples are not canonical integers")
     interval = client["interval_ms"]
+    if require_active_population and (
+        not 128 <= sockets <= 450 or per_socket != 64 or interval != 2000
+        or _bundle_uint(status["concurrent_load_deadline_seconds"]) != 180
+    ):
+        raise BundleVerificationError("controlled echo active population shape is not canonical")
     start, end = client["start_monotonic_ns"], client["end_monotonic_ns"]
     wall_start, wall_end = client["start_epoch_ms"], client["end_epoch_ms"]
     if (
@@ -1029,6 +1034,9 @@ def _validate_echo_timing(client, status, sockets, per_socket):
     if not isinstance(timings, list) or len(timings) != sockets * per_socket:
         raise BundleVerificationError("controlled echo packet timing cardinality mismatch")
     previous = {}
+    first_received = []
+    second_sent = []
+    last_sent = []
     for ordinal, row in enumerate(timings):
         if (not isinstance(row, list) or len(row) != 4
                 or any(type(value) is not int or not 0 <= value < 2**63 for value in row)):
@@ -1041,7 +1049,23 @@ def _validate_echo_timing(client, status, sockets, per_socket):
             previous_sent, previous_received = previous[socket_index]
             if sent < previous_sent + interval * 1_000_000 or sent < previous_received:
                 raise BundleVerificationError("controlled echo per-flow pacing is not supported by raw samples")
+            # The proxy can observe either direction anywhere within each
+            # exchange. Bound even that conservative gap below its 60 s idle
+            # timeout so a long per-flow span cannot hide idle recreation.
+            if require_active_population and received - previous_sent >= 60_000_000_000:
+                raise BundleVerificationError("controlled echo active population contains an idle hole")
         previous[socket_index] = sent, received
+        if sequence == 0:
+            first_received.append(received)
+        elif sequence == 1:
+            second_sent.append(sent)
+        if sequence == per_socket - 1:
+            last_sent.append(sent)
+    if require_active_population:
+        if max(first_received) > min(second_sent):
+            raise BundleVerificationError("controlled echo active population bootstrap is not concurrent")
+        if min(last_sent) - max(first_received) < 90_000_000_000:
+            raise BundleVerificationError("controlled echo active population overlap is shorter than 90 seconds")
 
 
 def _validate_echo_raw(root, status, decisions, phases, unblocked_generation):
@@ -1056,7 +1080,7 @@ def _validate_echo_raw(root, status, decisions, phases, unblocked_generation):
     digest = status["echo_payload_set_sha256"]
     run_uuid = status["run_uuid"]
     echo_pid = _bundle_uint(status["echo_source_pid"], 2**31 - 1)
-    _validate_echo_timing(client, status, sockets, per_socket)
+    _validate_echo_timing(client, status, sockets, per_socket, require_active_population=True)
     validate_echo_socket_maps(client, server, sockets)
     if not endpoint.startswith("127.0.0.1:") or not is_udp_endpoint(endpoint):
         raise BundleVerificationError("controlled echo endpoint is not canonical loopback")

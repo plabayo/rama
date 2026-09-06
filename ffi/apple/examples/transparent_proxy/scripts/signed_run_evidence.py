@@ -1484,6 +1484,12 @@ def _validate_modern_echo(
     digest = udp["echo_payload_set_sha256"]
     endpoint = udp["echo_endpoint"]
     flow_count = _canonical_uint(udp["echo_flow_count"], 512)
+    if (
+        not 128 <= sockets <= 450 or per_socket != 64
+        or type(client.get("interval_ms")) is not int or client["interval_ms"] != 2000
+        or _canonical_uint(udp["concurrent_load_deadline_seconds"]) != 180
+    ):
+        raise EvidenceError("modern echo active population shape is not canonical")
     if expected != sockets * per_socket or flow_count != sockets:
         raise EvidenceError("modern echo cardinality arithmetic mismatch")
     for value, kind in (

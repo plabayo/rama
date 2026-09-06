@@ -361,20 +361,24 @@ the library's dependencies or the capture host. Offline evidence replay neither
 loads that library nor makes network requests. The automated suite exercises
 the client with mocks, so CI does not need libcurl or signing for those tests.
 
-To keep the same 128 controlled UDP flows active for at least 126 seconds,
-use 64 requests per socket with two-second pacing:
+The signed workload defaults to 128 controlled UDP sockets, each sending 64
+requests with two-second pacing. It permits 128–450 sockets within the same
+180-second workload deadline:
 
 ```sh
 RAMA_TPROXY_E2E_ECHO_SOCKETS=128 \
-RAMA_TPROXY_E2E_ECHO_CONCURRENCY=128 \
-RAMA_TPROXY_E2E_ECHO_DATAGRAMS_PER_SOCKET=64 \
-RAMA_TPROXY_E2E_ECHO_INTERVAL_MS=2000 \
   just test-modern-udp-signed
 ```
 
-The client records each packet's flow/sequence and monotonic send/receive
-timestamps. Verification checks exact timing cardinality, per-flow pacing,
-the bounded workload window, and agreement with the run's wall-clock window.
+The client exchanges one packet across every socket before beginning the next
+round. Its 32 workers limit outstanding exchanges; all sockets remain open
+throughout the rounds. Each packet records its flow/sequence and monotonic
+send/receive timestamps. Release verification requires all initial responses
+before the next round, at least 90 seconds shared by the entire population,
+and gaps below the engine's 60-second UDP idle timeout. It also checks exact
+timing cardinality, per-flow pacing, the workload deadline, and agreement with
+the run's wall-clock window. Smaller configurations remain available through
+the standalone `echo-load` command for developer testing.
 
 Exact endpoint and source-application fields remain private during normal
 operation. The example Rust policy owns the E2E mode, probe allowlist, public
@@ -621,14 +625,15 @@ python3 scripts/modern_udp_e2e_probe.py echo-server \
   --ready-file echo-ready.json --result-file echo-server.json
 ```
 
-On the client, use the server's reachable IP address. This profile holds 128
-independent sockets for at least 126 seconds of successful traffic, with 64
-1200-byte requests per socket spaced by at least two seconds:
+On the client, use the server's reachable IP address. This profile sends 64
+1200-byte requests from each of 128 persistent sockets, with each socket's
+requests spaced by at least two seconds. Every socket participates in each
+round even when the population exceeds the worker count:
 
 ```sh
 python3 scripts/modern_udp_e2e_probe.py echo-load \
   --server "$ECHO_SERVER_ADDRESS" --port 443 --run-uuid "$RUN_UUID" \
-  --socket-count 128 --concurrency 128 --datagrams-per-socket 64 \
+  --socket-count 128 --concurrency 32 --datagrams-per-socket 64 \
   --payload-bytes 1200 --interval-ms 2000 --timeout 8 \
   --result-file echo-client.json
 ```

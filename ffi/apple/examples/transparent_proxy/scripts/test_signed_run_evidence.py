@@ -66,10 +66,12 @@ def write_empty_crash_snapshot(directory: Path, status, process_name="provider")
     write_tsv(crashes / "crash-snapshot.tsv", rows)
 
 
-def write_generation_samples(directory: Path, status):
+def write_generation_samples(directory: Path, status, *, sample_epochs=None):
     identity = evidence.read_provider_identity(directory / evidence.PROVIDER_IDENTITY_NAME)
     start = int(status["run_start_epoch_ms"])
     end = int(status["run_end_epoch_ms"])
+    if sample_epochs is None:
+        sample_epochs = [start, start + (end - start) // 2, end]
     path_hash = hashlib.sha256(identity["running_executable_path"].encode()).hexdigest()
     tail = "|".join((
         identity["running_pid"], identity["running_start_epoch_ms"],
@@ -87,10 +89,9 @@ def write_generation_samples(directory: Path, status):
         ("running_executable_path_sha256", path_hash),
         ("cadence_ms", "2000"),
         ("max_gap_ms", "5000"),
-        ("sample_count", "3"),
-        ("sample_000001", f"{start}|{tail}"),
-        ("sample_000002", f"{start + (end - start) // 2}|{tail}"),
-        ("sample_000003", f"{end}|{tail}"),
+        ("sample_count", str(len(sample_epochs))),
+        *((f"sample_{index:06d}", f"{epoch}|{tail}")
+          for index, epoch in enumerate(sample_epochs, 1)),
         ("schema_complete", "1"),
     ]
     write_tsv(directory / evidence.GENERATION_SAMPLES_NAME, rows)
@@ -383,9 +384,15 @@ def make_stress_series(directory: Path, target_host=evidence.DEFAULT_HTTP_TEST_H
 
 def make_strict_modern_run(directory: Path):
     from modern_udp_evidence import PRODUCER_SOURCE_NAMES, producer_sources_sha256
-    from test_modern_udp_evidence import passing_status
+    from test_modern_udp_evidence import echo_timing_fixture, passing_status
 
     common = make_run(directory, "modern_udp")
+    common["run_end_epoch_ms"] = str(int(common["run_end_epoch_ms"]) + 126000)
+    write_empty_crash_snapshot(directory, common)
+    write_generation_samples(directory, common, sample_epochs=[
+        *range(int(common["run_start_epoch_ms"]), int(common["run_end_epoch_ms"]), 2000),
+        int(common["run_end_epoch_ms"]),
+    ])
     udp_rows = [tuple(line.rstrip("\n").split("\t", 1)) for line in passing_status()]
     udp = dict(udp_rows)
     pressure_defaults = (
@@ -465,16 +472,7 @@ def make_strict_modern_run(directory: Path):
     }
     client = dict(echo_common, **{
         "kind": "controlled_echo_client",
-        "interval_ms": 0,
-        "start_epoch_ms": int(common["run_start_epoch_ms"]),
-        "end_epoch_ms": int(common["run_start_epoch_ms"]) + 1,
-        "start_monotonic_ns": 1000000000,
-        "end_monotonic_ns": 1001000000,
-        "packet_timings_ns": [
-            [index, sequence, 1000000000, 1000000000]
-            for index in range(int(udp["echo_socket_count"]))
-            for sequence in range(int(udp["echo_datagrams_per_socket"]))
-        ],
+        **echo_timing_fixture(start_epoch_ms=int(common["run_start_epoch_ms"])),
         "socket_count": int(udp["echo_socket_count"]),
         "datagrams_per_socket": int(udp["echo_datagrams_per_socket"]),
         "payload_bytes": int(udp["echo_payload_bytes"]),
@@ -2697,6 +2695,7 @@ class CrashAndReleaseSetTests(unittest.TestCase):
             for key, value, message in (
                 ("exact_echo_count", client["exact_echo_count"] - 1, "echo result cardinality"),
                 ("schema_version", 1, "controlled_echo_client identity/result"),
+                ("interval_ms", 1999, "echo active population shape"),
             ):
                 client_path.write_text(json.dumps({**client, key: value}))
                 evidence.seal(root)
@@ -2709,6 +2708,37 @@ class CrashAndReleaseSetTests(unittest.TestCase):
                     evidence, "_validate_modern_domain_semantics"
                 ), self.assertRaisesRegex(evidence.EvidenceError, message):
                     evidence._validate_modern_semantics(changed)
+
+    def test_modern_echo_precheck_requires_canonical_population_and_workload_shape(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "modern"
+            common = make_strict_modern_run(root)
+            udp, _ = evidence._parse_tsv_bytes((root / "udp-evidence-status.tsv").read_bytes())
+            client_path = root / "controlled-echo-client.json"
+            original = client_path.read_bytes()
+            self.assertEqual(len(evidence._validate_modern_echo(root, udp, common["run_uuid"])), 128)
+            for sockets, per_socket, interval, deadline in (
+                (127, 64, 2000, 180), (451, 64, 2000, 180), (512, 64, 2000, 180),
+                (128, 1, 2000, 180), (128, 63, 2000, 180),
+                (128, 64, 0, 180), (128, 64, 1999, 180), (128, 64, 2000.0, 180),
+                (128, 64, 2000, 179), (128, 64, 2000, 181),
+            ):
+                changed = dict(udp, echo_socket_count=str(sockets), echo_flow_count=str(sockets),
+                               echo_datagrams_per_socket=str(per_socket),
+                               echo_expected_count=str(sockets * per_socket),
+                               echo_exact_echo_count=str(sockets * per_socket),
+                               concurrent_load_deadline_seconds=str(deadline))
+                client = json.loads(original)
+                client.update(socket_count=sockets, independent_socket_count=sockets,
+                              datagrams_per_socket=per_socket, interval_ms=interval)
+                for key in ("expected_count", "sent_count", "received_count", "exact_echo_count", "unique_echo_count"):
+                    client[key] = sockets * per_socket
+                client_path.write_text(json.dumps(client))
+                with self.subTest(sockets=sockets, per_socket=per_socket,
+                                  interval=interval, deadline=deadline), self.assertRaisesRegex(
+                    evidence.EvidenceError, "echo active population shape"
+                ):
+                    evidence._validate_modern_echo(root, changed, common["run_uuid"])
 
     def test_modern_semantics_rejects_missing_or_substituted_echo_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
