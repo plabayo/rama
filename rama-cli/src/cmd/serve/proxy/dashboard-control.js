@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 const session = document.body.dataset.inspectorSession;
 let current, editing, ruleIndex = -1, ruleResponse, responseTarget;
 let loading = false, reload = false, scopeDirty = false, limitsDirty = false;
-let revision = 0;
+let revision = 0, controlTab = "pending";
 const presets = [
   ["Block access", { status: 403, headers: [["content-type", "text/plain; charset=utf-8"], ["cache-control", "no-store"]], body: "Blocked by Rama proxy.\n" }],
   ["Redirect (preserve method)", { status: 307, headers: [["location", ""], ["cache-control", "no-store"]], body: "" }],
@@ -69,7 +69,7 @@ async function refresh() {
       $("mitm-allow").value = current.scope.allow.join("\n");
       $("mitm-deny").value = current.scope.deny.join("\n");
     }
-    renderPending(); renderRules(); renderHosts();
+    renderControlPanes(); renderPending(); renderRules(); renderHosts();
     const connections = $("automatic-connections"); connections.replaceChildren();
     for (const connection of c.automatic_connections) connections.append(button(`${connectionLabel(connection)} · Resume interception`, async () => { await api(`/api/control/resume/${connection.connection}`, {}); await refresh(); }));
     if (editing && !c.pending.some((m) => m.id === editing.id)) {
@@ -92,6 +92,16 @@ async function decide(ids, decision) {
   await refresh();
   const errors = results.filter((r) => r.error);
   if (errors.length) throw new Error(errors.map((r) => `#${r.id}: ${r.error}`).join("; "));
+}
+function renderControlPanes() {
+  const enabled = current?.control.config.enabled;
+  const pendingVisible = enabled || current?.control.pending.length > 0;
+  for (const name of ["pending", "rules", "hosts"]) {
+    $(`control-${name}`).hidden = name !== controlTab || (name === "pending" && !pendingVisible);
+  }
+  $("intercept-help").hidden = !enabled;
+  $("intercept-off-help").hidden = !!enabled;
+  $("forward-all").textContent = enabled ? "Forward all and turn off" : "Forward all";
 }
 function selectedIds() { return [...document.querySelectorAll("[data-pending-select]:checked")].map((e) => Number(e.value)); }
 function renderPending() {
@@ -253,7 +263,8 @@ document.addEventListener("rama-control-refresh", () => { scopeDirty = false; sc
 document.addEventListener("click", (event) => {
   const tab = event.target.closest("[data-control-tab]");
   if (tab) {
-    for (const name of ["pending", "rules", "hosts"]) $(`control-${name}`).hidden = name !== tab.dataset.controlTab;
+    controlTab = tab.dataset.controlTab;
+    renderControlPanes();
     document.querySelectorAll("[data-control-tab]").forEach((button) => button.setAttribute("aria-pressed", String(button === tab)));
   }
   const bulk = event.target.closest("[data-bulk]"); if (bulk) void run(() => decide(selectedIds(), { action: bulk.dataset.bulk }));

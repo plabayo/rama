@@ -1948,12 +1948,12 @@ body:has(.live-shell.focused) .filter-panel {
   align-items: center;
   gap: 10px;
 }
-.control-heading { padding: 16px 20px; gap: 16px 24px; border-bottom: 1px solid var(--line); }
+.control-heading { padding: 16px 20px; gap: 16px 24px; }
 .control-heading .intercept-switch { display: inline-flex; align-items: center; gap: 10px; font-weight: 600; }
 .control-tabs { margin-left: auto; gap: 6px; }
 .control-tabs button[aria-pressed=true] { color: var(--purple); border-color: #9b8cff66; background: #9b8cff16; }
 .control-heading #control-status:not(:empty) { flex-basis: 100%; }
-.control-pane { padding: 20px; }
+.control-pane { padding: 20px; border-top: 1px solid var(--line); }
 .control-pane p { max-width: 85ch; margin: 0 0 18px; color: var(--muted); font-size: 12px; line-height: 1.65; }
 .control-pane > p:last-child { margin: 18px 0 0; }
 .control-toolbar { margin-bottom: 20px; gap: 12px; }

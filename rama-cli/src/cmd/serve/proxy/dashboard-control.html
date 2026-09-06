@@ -8,8 +8,9 @@
     </div>
     <span id="control-status" role="status" aria-live="polite"></span>
   </div>
-  <div id="control-pending" class="control-pane">
-    <p>All supported protocols require approval when interception is on, unless a rule says to forward automatically. HTTP headers are held before forwarding. WebSocket application messages are held in both directions.</p>
+  <div id="control-pending" class="control-pane" hidden>
+    <p id="intercept-help">All supported protocols require approval when interception is on, unless a rule says to forward automatically. HTTP headers are held before forwarding. WebSocket application messages are held in both directions.</p>
+    <p id="intercept-off-help" hidden>Interception is off. Queued messages still need approval.</p>
     <div class="control-toolbar">
       <button type="button" class="ghost" data-bulk="forward">Forward selected</button>
       <button type="button" class="ghost" data-bulk="block">Block selected</button>
