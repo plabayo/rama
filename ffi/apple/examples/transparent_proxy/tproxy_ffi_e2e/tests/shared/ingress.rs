@@ -14,8 +14,7 @@ use super::{bindings, ffi::EngineHandle};
 // ── Ingress (client → service) callback context ───────────────────────────────
 
 struct TcpServerCallbackContext {
-    sender: mpsc::UnboundedSender<Vec<u8>>,
-    closed: Arc<Notify>,
+    sender: mpsc::UnboundedSender<Option<Vec<u8>>>,
     /// Fired by the FFI when the per-flow ingress channel transitions from
     /// full to has-space after `on_client_bytes` returned `Paused`. The
     /// ingress reader awaits on this before retrying a rejected chunk.
@@ -34,7 +33,7 @@ unsafe extern "C" fn on_tcp_server_bytes(
     } else {
         unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len).to_vec() }
     };
-    _ = ctx.sender.send(payload);
+    _ = ctx.sender.send(Some(payload));
     // The e2e harness uses an unbounded mpsc + tight-loop writer, so there's
     // no Swift-side backpressure to surface here.
     bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_ACCEPTED
@@ -42,7 +41,8 @@ unsafe extern "C" fn on_tcp_server_bytes(
 
 unsafe extern "C" fn on_tcp_server_closed(ctx: *mut c_void) {
     let ctx = unsafe { &*(ctx as *const TcpServerCallbackContext) };
-    ctx.closed.notify_waiters();
+    // The close marker shares the byte queue, so all accepted chunks drain first.
+    _ = ctx.sender.send(None);
 }
 
 /// Resume signal from Rust: the per-flow ingress channel has space again.
@@ -61,8 +61,7 @@ unsafe extern "C" fn on_tcp_egress_read_demand(ctx: *mut c_void) {
 // ── Egress (service → upstream) callback context ─────────────────────────────
 
 struct TcpEgressCallbackContext {
-    sender: mpsc::UnboundedSender<Vec<u8>>,
-    closed: Arc<Notify>,
+    sender: mpsc::UnboundedSender<Option<Vec<u8>>>,
     /// See `TcpServerCallbackContext.client_read_demand` — same role for
     /// the egress (NWConnection-receive) direction.
     egress_read_demand: Arc<Notify>,
@@ -78,13 +77,35 @@ unsafe extern "C" fn on_tcp_write_to_egress(
     } else {
         unsafe { std::slice::from_raw_parts(bytes.ptr, bytes.len).to_vec() }
     };
-    _ = ctx.sender.send(payload);
+    _ = ctx.sender.send(Some(payload));
     bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_ACCEPTED
 }
 
 unsafe extern "C" fn on_tcp_close_egress(ctx: *mut c_void) {
     let ctx = unsafe { &*(ctx as *const TcpEgressCallbackContext) };
-    ctx.closed.notify_waiters();
+    // The close marker shares the byte queue, so all accepted chunks drain first.
+    _ = ctx.sender.send(None);
+}
+
+/// The connection task exclusively owns the session. Its pump futures are
+/// polled together, so calls that borrow the FFI session mutably cannot overlap.
+struct TcpSessionGuard {
+    raw: usize,
+    // Keep the callback allocations stable and live through `session_free`.
+    server_context: Box<TcpServerCallbackContext>,
+    egress_context: Box<TcpEgressCallbackContext>,
+}
+
+impl Drop for TcpSessionGuard {
+    fn drop(&mut self) {
+        // Free first: it cancels the session and waits for callbacks already
+        // holding the lifetime gate. Only then may the boxed contexts drop.
+        unsafe {
+            bindings::rama_transparent_proxy_tcp_session_free(
+                self.raw as *mut bindings::RamaTransparentProxyTcpSession,
+            );
+        }
+    }
 }
 
 pub(crate) struct IngressGuard {
@@ -101,18 +122,23 @@ impl IngressGuard {
 
     pub(crate) async fn shutdown(mut self) {
         self.shutdown.notify_waiters();
-        let accept_task = self.accept_task.take().expect("accept task");
+        let accept_task = self.accept_task.as_mut().expect("accept task");
         accept_task.abort();
-        _ = accept_task.await;
+        _ = (&mut *accept_task).await;
+        self.accept_task.take();
 
         let mut tasks = self.connection_tasks.lock().await;
-        for mut task in tasks.drain(..) {
-            if tokio::time::timeout(Duration::from_millis(200), &mut task)
+        // Retain every handle in the shared collection until it is joined.
+        // If shutdown itself is cancelled, Drop can still abort and join them.
+        while let Some(task) = tasks.last_mut() {
+            if tokio::time::timeout(Duration::from_millis(200), &mut *task)
                 .await
                 .is_err()
             {
                 task.abort();
+                _ = (&mut *task).await;
             }
+            tasks.pop();
         }
     }
 }
@@ -120,14 +146,20 @@ impl IngressGuard {
 impl Drop for IngressGuard {
     fn drop(&mut self) {
         self.shutdown.notify_waiters();
-        if let Some(accept_task) = self.accept_task.take() {
-            accept_task.abort();
+        let accept_task = self.accept_task.take();
+        if let Some(task) = &accept_task {
+            task.abort();
         }
         let connection_tasks = self.connection_tasks.clone();
         tokio::spawn(async move {
+            if let Some(task) = accept_task {
+                _ = task.await;
+            }
             let mut tasks = connection_tasks.lock().await;
-            for task in tasks.drain(..) {
+            while let Some(task) = tasks.last_mut() {
                 task.abort();
+                _ = (&mut *task).await;
+                tasks.pop();
             }
         });
     }
@@ -156,10 +188,12 @@ pub(crate) async fn spawn_ingress_listener(
                     };
                     let engine = engine.clone();
                     let shutdown = shutdown_task.clone();
-                    let task = tokio::spawn(async move {
+                    let mut tasks = connection_tasks_task.lock().await;
+                    // No await between spawning and recording the handle: aborting
+                    // the accept task must not orphan a connection task.
+                    tasks.push(tokio::spawn(async move {
                         serve_one_ingress_connection(engine, stream, remote_addr, shutdown).await;
-                    });
-                    connection_tasks_task.lock().await.push(task);
+                    }));
                 }
             }
         }
@@ -201,25 +235,21 @@ async fn serve_one_ingress_connection(
 
     // Ingress (client) side: server callbacks deliver bytes from the Rust
     // service back to the client connection.
-    let (server_bytes_tx, mut server_bytes_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    let server_closed = Arc::new(Notify::new());
+    let (server_bytes_tx, mut server_bytes_rx) = mpsc::unbounded_channel();
     let client_read_demand = Arc::new(Notify::new());
-    let server_ctx_ptr = Box::into_raw(Box::new(TcpServerCallbackContext {
-        sender: server_bytes_tx,
-        closed: server_closed.clone(),
-        client_read_demand: client_read_demand.clone(),
-    })) as usize;
-
-    // Egress side: callbacks deliver bytes from the Rust service to the
-    // upstream socket.
-    let (egress_bytes_tx, mut egress_bytes_rx) = mpsc::unbounded_channel::<Vec<u8>>();
-    let egress_closed = Arc::new(Notify::new());
+    let (egress_bytes_tx, mut egress_bytes_rx) = mpsc::unbounded_channel();
     let egress_read_demand = Arc::new(Notify::new());
-    let egress_ctx_ptr = Box::into_raw(Box::new(TcpEgressCallbackContext {
-        sender: egress_bytes_tx,
-        closed: egress_closed.clone(),
-        egress_read_demand: egress_read_demand.clone(),
-    })) as usize;
+    let mut session_guard = TcpSessionGuard {
+        raw: 0,
+        server_context: Box::new(TcpServerCallbackContext {
+            sender: server_bytes_tx,
+            client_read_demand: client_read_demand.clone(),
+        }),
+        egress_context: Box::new(TcpEgressCallbackContext {
+            sender: egress_bytes_tx,
+            egress_read_demand: egress_read_demand.clone(),
+        }),
+    };
 
     let session = {
         let remote_host = remote_addr.ip().to_string().into_bytes();
@@ -260,13 +290,15 @@ async fn serve_one_ingress_connection(
                 engine.raw,
                 &meta,
                 bindings::RamaTransparentProxyTcpSessionCallbacks {
-                    context: server_ctx_ptr as *mut c_void,
+                    context: ptr::from_mut(session_guard.server_context.as_mut()).cast(),
                     on_server_bytes: Some(on_tcp_server_bytes),
                     on_server_closed: Some(on_tcp_server_closed),
                     on_client_read_demand: Some(on_tcp_client_read_demand),
                 },
             )
         };
+        // Establish ownership before assertions or activation can fail.
+        session_guard.raw = result.session as usize;
         assert_eq!(
             result.action,
             bindings::RamaTransparentProxyFlowAction_RAMA_FLOW_ACTION_INTERCEPT,
@@ -284,7 +316,7 @@ async fn serve_one_ingress_connection(
         bindings::rama_transparent_proxy_tcp_session_activate(
             session as *mut bindings::RamaTransparentProxyTcpSession,
             bindings::RamaTransparentProxyTcpEgressCallbacks {
-                context: egress_ctx_ptr as *mut c_void,
+                context: ptr::from_mut(session_guard.egress_context.as_mut()).cast(),
                 on_write_to_egress: Some(on_tcp_write_to_egress),
                 on_close_egress: Some(on_tcp_close_egress),
                 on_egress_read_demand: Some(on_tcp_egress_read_demand),
@@ -292,36 +324,24 @@ async fn serve_one_ingress_connection(
         );
     }
 
-    // Ingress writer: service-bound bytes → client socket.
-    let server_writer = tokio::spawn(async move {
-        while let Some(chunk) = server_bytes_rx.recv().await {
+    // Each close marker follows the accepted bytes on its queue. Draining
+    // either writer half-closes that socket without cancelling its reader.
+    let server_writer = async move {
+        while let Some(Some(chunk)) = server_bytes_rx.recv().await {
             if client_write.write_all(&chunk).await.is_err() {
                 break;
             }
         }
         _ = client_write.shutdown().await;
-    });
-
-    // Egress writer: service-bound bytes → upstream socket.
-    let egress_closed_for_writer = egress_closed.clone();
-    let egress_writer = tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                next = egress_bytes_rx.recv() => {
-                    match next {
-                        Some(chunk) => {
-                            if egress_write.write_all(&chunk).await.is_err() {
-                                break;
-                            }
-                        }
-                        None => break,
-                    }
-                }
-                _ = egress_closed_for_writer.notified() => break,
+    };
+    let egress_writer = async move {
+        while let Some(Some(chunk)) = egress_bytes_rx.recv().await {
+            if egress_write.write_all(&chunk).await.is_err() {
+                break;
             }
         }
         _ = egress_write.shutdown().await;
-    });
+    };
 
     // Egress reader: upstream socket → on_egress_bytes / on_egress_eof.
     //
@@ -331,7 +351,7 @@ async fn serve_one_ingress_connection(
     // stream (see `tcp_byte_stream_preserved_under_egress_backpressure`).
     let egress_session = session;
     let egress_read_demand_for_reader = egress_read_demand.clone();
-    let egress_reader = tokio::spawn(async move {
+    let egress_reader = async move {
         let mut reader = egress_read;
         let mut buf = [0_u8; kib(16)];
         let mut pending: Option<Vec<u8>> = None;
@@ -388,96 +408,84 @@ async fn serve_one_ingress_connection(
                 }
             }
         }
-    });
+    };
 
     // Ingress reader: client socket → on_client_bytes / on_client_eof.
     //
     // Same backpressure-honouring shape as the egress reader above.
-    let mut reader = client_read;
-    let mut buf = [0_u8; kib(16)];
-    let mut pending: Option<Vec<u8>> = None;
-    'ingress: loop {
-        // Replay before reading new data.
-        while let Some(chunk) = pending.take() {
-            let status = unsafe {
-                bindings::rama_transparent_proxy_tcp_session_on_client_bytes(
-                    session as *mut bindings::RamaTransparentProxyTcpSession,
-                    bindings::RamaBytesView {
-                        ptr: chunk.as_ptr(),
-                        len: chunk.len(),
-                    },
-                )
-            };
-            match status {
-                bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_ACCEPTED => {}
-                bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_PAUSED => {
-                    pending = Some(chunk);
-                    tokio::select! {
-                        _ = client_read_demand.notified() => {}
-                        _ = shutdown.notified() => {
-                            unsafe {
-                                bindings::rama_transparent_proxy_tcp_session_on_client_eof(
-                                    session as *mut bindings::RamaTransparentProxyTcpSession,
-                                );
-                            }
-                            break 'ingress;
+    let client_reader = async move {
+        let mut reader = client_read;
+        let mut buf = [0_u8; kib(16)];
+        let mut pending: Option<Vec<u8>> = None;
+        'ingress: loop {
+            while let Some(chunk) = pending.take() {
+                let status = unsafe {
+                    bindings::rama_transparent_proxy_tcp_session_on_client_bytes(
+                        session as *mut bindings::RamaTransparentProxyTcpSession,
+                        bindings::RamaBytesView {
+                            ptr: chunk.as_ptr(),
+                            len: chunk.len(),
+                        },
+                    )
+                };
+                match status {
+                    bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_ACCEPTED => {}
+                    bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_PAUSED => {
+                        pending = Some(chunk);
+                        client_read_demand.notified().await;
+                    }
+                    _ => break 'ingress,
+                }
+            }
+
+            match reader.read(&mut buf).await {
+                Ok(0) | Err(_) => {
+                    unsafe {
+                        bindings::rama_transparent_proxy_tcp_session_on_client_eof(
+                            session as *mut bindings::RamaTransparentProxyTcpSession,
+                        );
+                    }
+                    break;
+                }
+                Ok(n) => {
+                    let status = unsafe {
+                        bindings::rama_transparent_proxy_tcp_session_on_client_bytes(
+                            session as *mut bindings::RamaTransparentProxyTcpSession,
+                            bindings::RamaBytesView {
+                                ptr: buf.as_ptr(),
+                                len: n,
+                            },
+                        )
+                    };
+                    match status {
+                        bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_ACCEPTED => {}
+                        bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_PAUSED => {
+                            pending = Some(buf[..n].to_vec());
+                            client_read_demand.notified().await;
                         }
-                        _ = server_closed.notified() => break 'ingress,
+                        _ => break,
                     }
                 }
-                _ => break 'ingress, // closed
             }
         }
+    };
 
+    tokio::pin!(server_writer, egress_writer, egress_reader, client_reader);
+    let mut server_writer_done = false;
+    let mut egress_writer_done = false;
+    let mut egress_reader_done = false;
+    let mut client_reader_done = false;
+    while !server_writer_done || !egress_writer_done {
         tokio::select! {
-            result = reader.read(&mut buf) => {
-                match result {
-                    Ok(0) | Err(_) => {
-                        unsafe {
-                            bindings::rama_transparent_proxy_tcp_session_on_client_eof(
-                                session as *mut bindings::RamaTransparentProxyTcpSession,
-                            );
-                        }
-                        break;
-                    }
-                    Ok(n) => {
-                        let status = unsafe {
-                            bindings::rama_transparent_proxy_tcp_session_on_client_bytes(
-                                session as *mut bindings::RamaTransparentProxyTcpSession,
-                                bindings::RamaBytesView {
-                                    ptr: buf.as_ptr(),
-                                    len: n,
-                                },
-                            )
-                        };
-                        match status {
-                            bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_ACCEPTED => {}
-                            bindings::RamaTcpDeliverStatus_RAMA_TCP_DELIVER_PAUSED => {
-                                pending = Some(buf[..n].to_vec());
-                            }
-                            _ => break, // closed
-                        }
-                    }
-                }
-            }
-            _ = shutdown.notified() => {
-                unsafe {
-                    bindings::rama_transparent_proxy_tcp_session_on_client_eof(
-                        session as *mut bindings::RamaTransparentProxyTcpSession,
-                    );
-                }
-                break;
-            }
-            _ = server_closed.notified() => break,
+            // Client EOF only completes client_reader. Continue polling the
+            // sibling pumps until both directions have drained accepted bytes.
+            _ = &mut server_writer, if !server_writer_done => server_writer_done = true,
+            _ = &mut egress_writer, if !egress_writer_done => egress_writer_done = true,
+            _ = &mut egress_reader, if !egress_reader_done => egress_reader_done = true,
+            _ = &mut client_reader, if !client_reader_done => client_reader_done = true,
+            _ = shutdown.notified() => break,
         }
     }
-
-    // Tear down the bridges. Aborting is fine because the FFI session owns
-    // the underlying tokio tasks via its own shutdown guard.
-    server_writer.abort();
-    egress_writer.abort();
-    egress_reader.abort();
-    _ = server_writer.await;
-    _ = egress_writer.await;
-    _ = egress_reader.await;
+    // All four pump futures drop before session_guard, including on task
+    // cancellation. No detached reader can enter the FFI during or after free.
 }

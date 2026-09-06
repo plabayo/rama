@@ -8,6 +8,12 @@ use rama::http::{
     BodyExtractExt as _, Version, header::ACCEPT_ENCODING, service::client::HttpClientExt as _,
 };
 use serial_test::serial;
+use std::time::Duration;
+use tokio::{
+    io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader},
+    net::{TcpListener, TcpStream},
+    sync::oneshot,
+};
 
 use crate::shared::{
     clients::{
@@ -100,6 +106,88 @@ h1_feature_test!(
     HttpTargetKind::Tls,
     ProxyKind::Socks5
 );
+
+#[tokio::test]
+#[serial]
+async fn ffi_contract_http_h1_complete_response_after_client_write_eof() {
+    let env = setup_env().await;
+    let origin = TcpListener::bind("127.0.0.1:0").await.expect("bind origin");
+    let ingress = spawn_ingress_listener(env.engine.clone(), origin.local_addr().unwrap()).await;
+    let body: Vec<u8> = (0..256 * 1024).map(|i| (i % 251) as u8).collect();
+    let body_len = body.len();
+    let (write_closed, after_write_close) = oneshot::channel();
+
+    let client_exchange = async {
+        let mut client = TcpStream::connect(ingress.local_addr()).await.unwrap();
+        let headers = format!(
+            "POST /half-close HTTP/1.1\r\nHost: upstream.test\r\n\
+             Content-Type: application/octet-stream\r\nContent-Length: {body_len}\r\n\
+             Connection: close\r\n\r\n"
+        );
+        client.write_all(headers.as_bytes()).await.unwrap();
+        client.write_all(&body).await.unwrap();
+        client.shutdown().await.unwrap();
+        write_closed.send(()).unwrap();
+
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        let boundary = response
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("complete response headers after client write EOF");
+        let headers = std::str::from_utf8(&response[..boundary]).unwrap();
+        assert!(headers.starts_with("HTTP/1.1 200 OK\r\n"), "{headers}");
+        assert!(
+            headers
+                .to_ascii_lowercase()
+                .contains(&format!("{OBSERVED_HEADER}:"))
+        );
+        assert_eq!(&response[boundary + 4..], body.as_slice());
+    };
+    let origin_exchange = async {
+        let (stream, _) = origin.accept().await.unwrap();
+        let mut stream = BufReader::new(stream);
+        let mut headers = String::new();
+        loop {
+            let start = headers.len();
+            assert_ne!(stream.read_line(&mut headers).await.unwrap(), 0);
+            if &headers[start..] == "\r\n" {
+                break;
+            }
+        }
+        assert!(headers.starts_with("POST /half-close HTTP/1.1\r\n"));
+        assert!(
+            headers
+                .to_ascii_lowercase()
+                .contains(&format!("content-length: {body_len}\r\n"))
+        );
+        assert!(
+            headers
+                .to_ascii_lowercase()
+                .contains(&format!("{OBSERVED_HEADER}:"))
+        );
+        let mut received = vec![0; body_len];
+        stream.read_exact(&mut received).await.unwrap();
+        assert_eq!(received, body);
+        after_write_close.await.unwrap();
+        // Make the response unavailable until the complete request and the
+        // client's write EOF have been sent through the real FFI composition.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n\
+             Content-Length: {body_len}\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(headers.as_bytes()).await.unwrap();
+        stream.write_all(&received).await.unwrap();
+        stream.shutdown().await.unwrap();
+    };
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(client_exchange, origin_exchange);
+    })
+    .await;
+    ingress.shutdown().await;
+    result.expect("bounded HTTP half-close exchange");
+}
 
 async fn run_h1_html_smoke(target: HttpTargetKind, proxy: ProxyKind) {
     let env = setup_env().await;
