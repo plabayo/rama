@@ -1,9 +1,21 @@
-//! On-demand allocator accounting. Only `epoch` is written, to refresh stats;
-//! this never purges, flushes caches, or changes allocator policy.
+//! Allocator startup policy and on-demand accounting. Snapshot queries only
+//! refresh `epoch`; they never purge, flush caches, or change allocator policy.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+
+// The bundled jemalloc build has no background purging thread on macOS.
+// Reclaim unused dirty pages without waiting for later arena activity.
+// This is a startup default; jemalloc's normal later configuration can override it.
+#[cfg(all(feature = "jemallocator", target_os = "macos"))]
+#[used]
+#[unsafe(export_name = "_rjem_malloc_conf")]
+pub static JEMALLOC_STARTUP_CONF: Option<&'static std::ffi::c_char> =
+    // SAFETY: tikv-jemalloc-sys declares this weak, prefixed C symbol as the
+    // same nullable pointer type. The NUL-terminated C string has static storage
+    // and its first byte is a valid, aligned c_char for the program's lifetime.
+    Some(unsafe { &*c"dirty_decay_ms:0".as_ptr() });
 
 #[derive(Debug, Serialize)]
 pub(crate) struct AllocatorStatsReply {
@@ -251,6 +263,11 @@ mod tests {
             assert!(stats.resident >= stats.metadata);
             assert!(stats.page_size.is_power_of_two());
             assert!(stats.narenas > 0);
+            #[cfg(target_os = "macos")]
+            {
+                assert_eq!(stats.opt_dirty_decay_ms.value, Some(0));
+                assert_eq!(stats.arenas_dirty_decay_ms.value, Some(0));
+            }
         }
         #[cfg(not(feature = "jemallocator"))]
         {

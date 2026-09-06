@@ -556,6 +556,16 @@ overhead that belongs in the subsequent performance qualification. Refreshing
 statistics also takes allocator locks and has a cost; use occasional diagnostic
 samples rather than treating this as a per-flow or high-frequency monitor.
 
+The macOS example sets jemalloc's startup default to `dirty_decay_ms:0` so
+unused dirty pages are purged when created. The bundled jemalloc build has no
+background purging thread on macOS; an inactive arena can otherwise retain freed
+pages while waiting for further allocation activity. Arena limits, thread caches,
+and muzzy decay keep their defaults. Purging can increase system calls,
+refaults, and CPU use, so memory, latency, and throughput must be qualified
+together. This does not reclaim live allocations or eliminate fragmentation.
+The snapshot reports the effective settings; normal jemalloc configuration
+precedence still permits a startup override.
+
 ### Wire capture (for diagnosing TLS / handshake issues)
 
 `tcpdump` on `en0` captures the **egress** side (provider →
