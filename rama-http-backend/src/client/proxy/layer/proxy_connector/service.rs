@@ -323,6 +323,9 @@ where
             });
         }
 
+        // CONNECT is a separate proxy exchange: deliberately omit request
+        // extensions, including telemetry, so origin Protocol/TargetHttpVersion
+        // metadata cannot change the proxy handshake.
         let mut connector = InnerHttpProxyConnector::new(authority.clone(), Extensions::new())
             .map_err(|error| {
                 ConnectionError::local(error, ConnectionErrorKind::InvalidInput)

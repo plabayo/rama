@@ -200,6 +200,106 @@ async fn serve_connect() {
 }
 
 #[tokio::test]
+async fn serve_connect_tunnel_data_is_not_request_content() {
+    h2_support::trace_init!();
+
+    for extended in [false, true] {
+        for content_length in ["0", "1", "100"] {
+            let (io, mut client) = mock::new();
+
+            let client = async move {
+                client.assert_server_handshake().await;
+                let pseudo = if extended {
+                    frame::Pseudo::request(
+                        Method::CONNECT,
+                        &uri::Uri::from_static("http://localhost/tunnel"),
+                        Protocol::from_static("websocket").into(),
+                    )
+                } else {
+                    frame::Pseudo::request(
+                        Method::CONNECT,
+                        &uri::Uri::parse_authority_form("localhost:443").unwrap(),
+                        None,
+                    )
+                };
+                client
+                    .send_frame(
+                        frames::headers(1)
+                            .pseudo(pseudo)
+                            .field("content-length", content_length),
+                    )
+                    .await;
+                client.recv_frame(frames::headers(1).response(200)).await;
+                client
+                    .send_frame(frames::data(1, &b"hello"[..]).eos())
+                    .await;
+                client
+                    .recv_frame(frames::data(1, &b"received"[..]).eos())
+                    .await;
+            };
+
+            let server = async move {
+                let mut builder = server::Builder::new();
+                if extended {
+                    builder.set_enable_connect_protocol();
+                }
+                let mut srv = builder.handshake::<_, Bytes>(io).await.unwrap();
+                let (req, mut response) = srv.next().await.unwrap().unwrap();
+                assert_eq!(req.method(), Method::CONNECT);
+                assert_eq!(req.headers()["content-length"], content_length);
+                let mut body = req.into_body();
+                let mut send = response.send_response(Response::new(()), false).unwrap();
+                let exchange = async move {
+                    assert_eq!(body.data().await.unwrap().unwrap(), &b"hello"[..]);
+                    assert!(body.data().await.is_none());
+                    send.send_data(Bytes::from_static(b"received"), true)
+                        .unwrap();
+                };
+                let mut connection = Box::pin(async move {
+                    assert!(srv.next().await.is_none());
+                });
+                connection.drive(exchange).await;
+                connection.await;
+            };
+
+            tokio::time::timeout(std::time::Duration::from_secs(5), join(client, server))
+                .await
+                .expect("CONNECT tunnel exchange timed out");
+        }
+    }
+}
+
+#[tokio::test]
+async fn serve_connect_rejects_malformed_content_length() {
+    h2_support::trace_init!();
+    let (io, mut client) = mock::new();
+    let client = async move {
+        client.assert_server_handshake().await;
+        client
+            .send_frame(
+                frames::headers(1)
+                    .request(
+                        Method::CONNECT,
+                        uri::Uri::parse_authority_form("localhost:443").unwrap(),
+                    )
+                    .field("content-length", "invalid"),
+            )
+            .await;
+        client.recv_frame(frames::reset(1).protocol_error()).await;
+    };
+    let server = async move {
+        let mut srv = server::Builder::new()
+            .handshake::<_, Bytes>(io)
+            .await
+            .unwrap();
+        assert!(srv.next().await.is_none());
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), join(client, server))
+        .await
+        .expect("malformed CONNECT request timed out");
+}
+
+#[tokio::test]
 #[ignore]
 async fn push_request() {
     h2_support::trace_init!();

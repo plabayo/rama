@@ -1,4 +1,4 @@
-use rama_core::error::{BoxError, ErrorContext as _};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _};
 use rama_core::telemetry::tracing;
 use rama_core::{Layer, Service};
 use rama_http_headers::{Connection, HeaderMapExt, SecWebSocketAccept, SecWebSocketKey, Upgrade};
@@ -159,10 +159,10 @@ fn upgrade_response_to_h2_or_h3<Body>(
     if request_ctx.is_websocket() && response.status().is_success() {
         // RFC 6455 requires 101 for HTTP/1 WebSocket acceptance, while any 2xx
         // accepts Extended CONNECT. Preserve rejection across that transition.
-        return Err(BoxError::from(format!(
-            "cannot translate HTTP/1 WebSocket rejection {} to HTTP/2+: a 2xx response would accept Extended CONNECT",
-            response.status(),
-        )));
+        return Err(BoxError::from_static_str(
+            "cannot translate HTTP/1 WebSocket rejection to HTTP/2+: a 2xx response would accept Extended CONNECT",
+        )
+        .context_field("status", response.status()));
     }
 
     if response.status() == StatusCode::SWITCHING_PROTOCOLS {
@@ -176,13 +176,16 @@ fn upgrade_response_to_h2_or_h3<Body>(
             // upgrade headers are removed by the illegal-header strip below).
             response.headers_mut().remove(SEC_WEBSOCKET_ACCEPT);
         } else {
-            return Err(BoxError::from(format!(
-                "cannot translate a `101 Switching Protocols` response to HTTP/2+ for protocol {}: only websocket is supported",
+            return Err(BoxError::from_static_str(
+                "cannot translate a `101 Switching Protocols` response to HTTP/2+: only websocket is supported",
+            )
+            .context_str_field(
+                "protocol",
                 request_ctx
                     .connect_protocol
                     .as_ref()
                     .map_or("<unknown upgrade>", Protocol::as_str),
-            )));
+            ));
         }
     }
 
@@ -209,10 +212,10 @@ fn downgrade_response_to_h1<Body>(
         return Ok(());
     };
     if !is_websocket_protocol(protocol) {
-        return Err(BoxError::from(format!(
-            "cannot translate an Extended CONNECT `{}` response to HTTP/1: only websocket is supported",
-            protocol.as_str(),
-        )));
+        return Err(BoxError::from_static_str(
+            "cannot translate an Extended CONNECT response to HTTP/1: only websocket is supported",
+        )
+        .context_str_field("protocol", protocol.as_str()));
     }
 
     // A WebSocket success (`2xx`) becomes the HTTP/1 `101` accept; a non-success

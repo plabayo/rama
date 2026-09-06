@@ -277,6 +277,11 @@ impl<BodyIn, ConnResponse, L> EasyHttpWebClient<BodyIn, ConnResponse, L> {
         /// This is enabled by default and acts only when the established connection
         /// is positively identified as an HTTP forward-proxy connection. It never
         /// adds credentials to direct, SOCKS, or HTTP CONNECT-tunneled requests.
+        ///
+        /// Disabling this only disables insertion. Caller-provided
+        /// `Proxy-Authorization` headers are preserved on established HTTP
+        /// forward routes and always stripped on every other route, including
+        /// connections without established route metadata.
         pub fn forward_proxy_auth(mut self, enabled: bool) -> Self {
             self.forward_proxy_layer.set_proxy_auth(enabled);
             self
@@ -284,7 +289,8 @@ impl<BodyIn, ConnResponse, L> EasyHttpWebClient<BodyIn, ConnResponse, L> {
     }
 
     /// Disable automatic Basic or Bearer credentials on HTTP forward-proxy
-    /// requests.
+    /// requests. The credential-stripping policy described by
+    /// [`Self::with_forward_proxy_auth`] still applies.
     #[must_use]
     pub fn without_forward_proxy_auth(self) -> Self {
         self.with_forward_proxy_auth(false)
@@ -358,6 +364,9 @@ where
             conn: http_connection,
         } = self.connector.serve(req).await.into_opaque_error()?;
 
+        // Publish connection metadata for JIT middleware. The forward-proxy
+        // layer refreshes it after those layers run; the backend independently
+        // refreshes it for callers that use the backend without this client.
         req.extensions()
             .insert(Egress(http_connection.extensions().clone()));
 

@@ -4,7 +4,8 @@ use rama::{
     extensions::ExtensionsRef as _,
     http::{
         Request, Response, StatusCode, body::util::BodyExt as _, convert::curl,
-        header::PROXY_AUTHORIZATION, service::web::response::IntoResponse as _,
+        header::PROXY_AUTHORIZATION, proxy::PlaintextHttpProxyMode,
+        service::web::response::IntoResponse as _,
     },
     net::{ProtocolInputExt as _, client::ProxyRoute},
     service::MirrorService,
@@ -41,11 +42,13 @@ impl Service<Request> for CurlWriter {
                     .as_ref()
                     .is_none_or(|protocol| protocol.is_http())
             });
-        let is_forward_proxy = !self.proxy_tunnel
-            && parts
-                .protocol()
-                .is_some_and(|protocol| protocol.is_http_based() && !protocol.is_secure())
-            && selected_proxy.is_some();
+        let proxy_mode = if self.proxy_tunnel {
+            PlaintextHttpProxyMode::Tunnel
+        } else {
+            PlaintextHttpProxyMode::Forward
+        };
+        let is_forward_proxy =
+            proxy_mode.should_forward(parts.protocol()) && selected_proxy.is_some();
         let configured_forward_credential = is_forward_proxy
             && self.forward_proxy_auth
             && selected_proxy.is_some_and(|proxy| proxy.credential.is_some());

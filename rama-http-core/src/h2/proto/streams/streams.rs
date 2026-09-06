@@ -439,7 +439,8 @@ where
             Error::library_go_away(err)
         })?;
 
-        // Update the request so it points at this stream as its egress connection
+        // Refine the connection snapshot to this HTTP/2 stream, including
+        // stream-specific metadata that was unavailable to the outer layers.
         req_ext.insert(Egress(stream.extensions.clone()));
         stream.req_extensions = Some(req_ext);
 

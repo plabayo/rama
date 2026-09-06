@@ -227,10 +227,18 @@ impl Recv {
                     return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());
                 };
 
-                stream.content_length = ContentLength::Remaining(content_length);
+                // CONNECT requests have no HTTP content: subsequent DATA is
+                // tunnel traffic (RFC 9110 section 9.3.6 / RFC 9113 section 8.5).
+                // Validate the field syntax, but do not count tunnel bytes
+                // against it, including when a client sends Content-Length: 0.
+                let is_connect = frame.pseudo().method == Some(rama_http_types::Method::CONNECT);
+                if !is_connect {
+                    stream.content_length = ContentLength::Remaining(content_length);
+                }
                 // END_STREAM on headers frame with non-zero content-length is malformed.
                 // https://datatracker.ietf.org/doc/html/rfc9113#section-8.1.1
-                if frame.is_end_stream()
+                if !is_connect
+                    && frame.is_end_stream()
                     && content_length > 0
                     && frame
                         .pseudo()

@@ -49,6 +49,8 @@ where
         // route fallback and pool selection, never the requested ProxyRoute.
         // A fresh snapshot also shadows stale markers when the connection
         // has no established route. Request-side route intent stays intact.
+        // Keep this independent of EasyHttpWebClient/HttpForwardProxyLayer:
+        // standalone backend callers need the same encoding guarantee.
         req.extensions().insert(Egress(self.extensions.clone()));
 
         // Check if this http connection can actually be used for this request version

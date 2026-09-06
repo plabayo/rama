@@ -39,9 +39,12 @@ impl std::error::Error for HttpForwardProxyAuthRequired {}
 /// have completed.
 ///
 /// Configured Basic or Bearer credentials are inserted by default. Call
-/// [`Self::with_proxy_auth`] with `false` to opt out. A proxy-generated `407`
-/// response is exposed by default for ordinary HTTP clients; intermediary
-/// clients can enable [`Self::with_isolate_auth_error`] to turn it into
+/// [`Self::with_proxy_auth`] with `false` to disable insertion. Caller-provided
+/// `Proxy-Authorization` headers are always stripped on direct, SOCKS,
+/// CONNECT-tunneled, or unclassified connections, even with insertion disabled.
+/// Manual authentication is preserved only on established HTTP forward routes.
+/// A proxy-generated `407` response is exposed by default for ordinary HTTP
+/// clients; intermediary clients can enable [`Self::with_isolate_auth_error`] to turn it into
 /// [`HttpForwardProxyAuthRequired`] before any proxy response headers or body
 /// reach their downstream peer.
 ///
@@ -75,6 +78,10 @@ impl HttpForwardProxyLayer {
     rama_utils::macros::generate_set_and_with! {
         /// Enable or disable preemptive Basic or Bearer authentication for HTTP
         /// forward-proxy requests.
+        ///
+        /// This controls insertion only. Caller-provided `Proxy-Authorization`
+        /// is preserved on established HTTP forward routes and always stripped
+        /// on every other route, including connections without route metadata.
         pub fn proxy_auth(mut self, enabled: bool) -> Self {
             self.proxy_auth = enabled;
             self
@@ -166,6 +173,8 @@ where
 
         // Refresh the snapshot after caller middleware, including when the
         // connection has no route. Encoders must not revive a stale marker.
+        // This remains necessary for wrapped custom connections that do not
+        // use HttpClientService and its own independent snapshot refresh.
         req.extensions().insert(Egress(inner_extensions.clone()));
         let is_forward_proxy = http_proxy.is_some();
 
