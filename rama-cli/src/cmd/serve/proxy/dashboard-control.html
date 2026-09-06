@@ -2,22 +2,10 @@
   <div class="control-heading">
     <label class="intercept-switch"><input type="checkbox" id="intercept-enabled"> Intercept · require approval</label>
     <div class="control-tabs" role="group" aria-label="Traffic controls">
-    <button type="button" class="ghost" aria-pressed="true" data-control-tab="pending">Pending <span id="pending-count">0</span></button>
     <button type="button" class="ghost" data-control-tab="rules">Rules</button>
     <button type="button" class="ghost" data-control-tab="hosts">Hosts</button>
     </div>
     <span id="control-status" role="status" aria-live="polite"></span>
-  </div>
-  <div id="control-pending" class="control-pane" hidden>
-    <p id="intercept-help">All supported protocols require approval when interception is on, unless a rule says to forward automatically. HTTP headers are held before forwarding. WebSocket application messages are held in both directions.</p>
-    <p id="intercept-off-help" hidden>Interception is off. Queued messages still need approval.</p>
-    <div class="control-toolbar">
-      <button type="button" class="ghost" data-bulk="forward">Forward selected</button>
-      <button type="button" class="ghost" data-bulk="block">Block selected</button>
-      <button type="button" class="ghost" id="forward-all">Forward all and turn off</button>
-    </div>
-    <div id="pending-list" class="control-list" aria-live="polite"></div>
-    <div id="automatic-connections"></div>
   </div>
   <div id="control-rules" class="control-pane" hidden>
     <p>Local response rules run first. Interception rules then choose “Require approval” or “Forward automatically”. Empty matcher fields match everything; host and path support *. A leading dot includes a host’s subdomains. Protocol names are extensible (for example http, https, ws, wss).</p>
@@ -47,10 +35,11 @@
     <p>Up to 4,096 recent hosts are retained; 100 matching rows are shown. Counts describe observed connections, not requests. Adding a host to MITM scope affects new connections. Explicit CLI restrictions still apply.</p>
   </div>
 </section>
-<dialog id="intercept-editor" class="control-dialog">
-  <form method="dialog"><button class="ghost dialog-close" aria-label="Close editor">Close</button></form>
+<div id="intercept-editor-home" hidden>
+<section id="intercept-editor" class="control-dialog inline-editor" hidden aria-label="Edit intercepted message">
+  <button type="button" id="close-intercept" class="ghost dialog-close">Close editor</button>
   <h2 id="intercept-title"></h2><p id="intercept-description"></p>
-  <div id="http-edit-fields"><label>Headers (one name: value per line)<textarea id="intercept-headers" rows="12" spellcheck="false"></textarea></label><label>Response status <input id="intercept-status" type="number" min="200" max="599"></label></div>
+  <div id="http-edit-fields"><label>Headers (one name: value per line)<textarea id="intercept-headers" rows="6" spellcheck="false"></textarea></label><label>Response status <input id="intercept-status" type="number" min="200" max="599"></label></div>
   <label id="ws-edit-fields">Message <textarea id="intercept-payload" rows="12" spellcheck="false"></textarea></label>
   <div class="control-toolbar">
     <button type="button" id="forward-message">Forward</button>
@@ -61,7 +50,8 @@
     <button type="button" class="ghost" id="rule-from-message">Create rule…</button>
   </div>
   <p id="intercept-error" role="alert"></p>
-</dialog>
+</section>
+</div>
 <dialog id="response-editor" class="control-dialog">
   <form method="dialog"><button class="ghost dialog-close">Close</button></form>
   <h2>Respond locally</h2>

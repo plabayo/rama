@@ -92,6 +92,10 @@ function navigateToFocus(focus) {
 }
 
 function activateFocusControl(control) {
+  if (control.dataset.approvalId) {
+    document.dispatchEvent(new CustomEvent("rama-edit-approval", { detail: { id: Number(control.dataset.approvalId) } }));
+    return;
+  }
   const kind = control.dataset.inspectorFocus;
   const id = control.dataset.focusId;
   if (kind === "overview") {

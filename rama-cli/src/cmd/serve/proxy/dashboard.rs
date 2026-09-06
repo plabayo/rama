@@ -5,6 +5,7 @@ use super::{
         ReplayRequest, StoredRecord, WebSocketReplayError, captured_header_value,
         captured_http_version,
     },
+    control::PendingSummary,
     har::{HarController, HarDownload, export_selected},
     inspection::InspectionState,
     mitm_policy::MitmPolicy,
@@ -102,6 +103,19 @@ struct UiSession {
     connection_cursors: Vec<Option<u64>>,
     next_connection_cursor: Option<u64>,
     focus: UiFocus,
+}
+
+struct LiveStatus {
+    recording: bool,
+    pending: Vec<PendingSummary>,
+}
+
+impl LiveStatus {
+    fn for_exchange(&self, id: u64) -> impl Iterator<Item = &PendingSummary> {
+        self.pending
+            .iter()
+            .filter(move |message| message.exchange == Some(id))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -285,6 +299,10 @@ impl DashboardState {
                 details.insert(id, detail);
             }
         }
+        let mut pending = self.capture.control().pending_summaries();
+        for message in &mut pending {
+            message.connection_display_id = self.capture.connection_display_id(message.connection);
+        }
         render_live_panel(
             session_id,
             heartbeat_sequence,
@@ -292,7 +310,10 @@ impl DashboardState {
             &session,
             &details,
             &har,
-            inspection_enabled,
+            &LiveStatus {
+                recording: inspection_enabled,
+                pending,
+            },
         )
     }
 }
@@ -532,7 +553,7 @@ async fn events(
                     }
                     result = control_changes.changed() => {
                         if result.is_err() { break; }
-                        render_dashboard = false;
+                        render_dashboard = true;
                     }
                     result = ui_changes.changed() => {
                         if result.is_err() {
@@ -807,8 +828,9 @@ async fn pause_inspection(
     let _transition = state.recording_transition.lock().await;
     state.har.pause().await;
     if state.inspection.pause().await {
+        state.capture.control().stop_and_forward();
         rama::telemetry::tracing::info!(
-            "proxy recording paused; MITM and forwarding policy are unchanged"
+            "proxy inspector paused; MITM sessions closed and new traffic passes through"
         );
         state.notify();
     }
@@ -824,7 +846,7 @@ async fn resume_inspection(
     }
     let _transition = state.recording_transition.lock().await;
     if state.inspection.resume().await {
-        rama::telemetry::tracing::info!("proxy recording resumed");
+        rama::telemetry::tracing::info!("proxy inspector resumed");
         state.notify();
     }
     StatusCode::NO_CONTENT
@@ -1274,7 +1296,7 @@ async fn start_har(
     if !state.inspection.is_enabled() {
         return error_response(
             StatusCode::CONFLICT,
-            "Resume recording before starting a HAR recording",
+            "Resume inspector before starting a HAR recording",
         );
     }
     match state.har.start_browser(query.file_name).await {
@@ -1527,7 +1549,7 @@ fn render_index(session: &str) -> impl IntoHtml {
                             "data-attr:disabled" = "$inspection_busy",
                             "data-on:click" = "@post('/api/inspection/pause')",
                             span!(class = "button-spinner", "aria-hidden" = "true"),
-                            span!(class = "inspection-action-label", "Pause recording")
+                            span!(class = "inspection-action-label", "Pause inspector")
                         ),
                         button!(
                             r#type = "button",
@@ -1536,7 +1558,7 @@ fn render_index(session: &str) -> impl IntoHtml {
                             "data-attr:disabled" = "$inspection_busy",
                             "data-on:click" = "@post('/api/inspection/resume')",
                             span!(class = "button-spinner", "aria-hidden" = "true"),
-                            span!(class = "inspection-action-label", "Resume recording")
+                            span!(class = "inspection-action-label", "Resume inspector")
                         )
                     ),
                     span!(
@@ -1780,7 +1802,7 @@ fn render_live_panel(
     session: &UiSession,
     details: &BTreeMap<u64, InspectorDetails>,
     har: &super::har::HarStatus,
-    inspection_enabled: bool,
+    live: &LiveStatus,
 ) -> String {
     match session.focus {
         UiFocus::Overview => render_overview_panel(
@@ -1790,24 +1812,15 @@ fn render_live_panel(
             session,
             details,
             har,
-            inspection_enabled,
+            live,
         )
         .into_string(),
-        UiFocus::Connection(id) => render_connection_focus(
-            heartbeat_sequence,
-            id,
-            snapshot,
-            session,
-            details,
-            inspection_enabled,
-        ),
-        UiFocus::Request(id) => render_request_focus(
-            heartbeat_sequence,
-            id,
-            snapshot,
-            details,
-            inspection_enabled,
-        ),
+        UiFocus::Connection(id) => {
+            render_connection_focus(heartbeat_sequence, id, snapshot, session, details, live)
+        }
+        UiFocus::Request(id) => {
+            render_request_focus(heartbeat_sequence, id, snapshot, details, live)
+        }
     }
 }
 
@@ -1818,8 +1831,9 @@ fn render_overview_panel(
     session: &UiSession,
     _details: &BTreeMap<u64, InspectorDetails>,
     har: &super::har::HarStatus,
-    inspection_enabled: bool,
+    live: &LiveStatus,
 ) -> impl IntoHtml {
+    let inspection_enabled = live.recording;
     let connection_offset = snapshot.connection_offset;
     let connection_start = if snapshot.connections.is_empty() {
         0
@@ -1947,6 +1961,7 @@ fn render_overview_panel(
         )
     );
     let exchange_rows = snapshot.exchanges.iter().take(250).map(|exchange| {
+        let pending = live.for_exchange(exchange.id).next();
         let is_selected = session.selected.contains(&exchange.id);
         let class = if exchange.active {
             "exchange active"
@@ -1979,7 +1994,7 @@ fn render_overview_panel(
             class = "row-identity",
             button!(
                 class = select_class,
-                title = "Include this request in exports",
+                title = "Select this request for exports and approval actions",
                 "data-on:click" = format!("@post('/api/select/{}')", exchange.id),
                 select_label
             ),
@@ -1999,7 +2014,11 @@ fn render_overview_panel(
         let protocol_state = div!(
             class = "exchange-protocol-state",
             PreEscaped(render_protocol_badge(exchange)),
-            PreEscaped(render_exchange_status(exchange))
+            PreEscaped(
+                pending
+                    .map(approval_badge)
+                    .unwrap_or_else(|| render_exchange_status(exchange))
+            )
         )
         .into_string();
         let metrics = div!(
@@ -2027,6 +2046,8 @@ fn render_overview_panel(
         )
         .into_string();
         article!(
+            id = format!("request-{}", exchange.id),
+            "data-approval-id"? = pending.map(|message| message.id.to_string()),
             class = class,
             tabindex = "0",
             "aria-label" = format!("Open request #{}", exchange.id),
@@ -2041,6 +2062,7 @@ fn render_overview_panel(
                 PreEscaped(metrics),
                 PreEscaped(actions)
             ),
+            PreEscaped(render_approval_slots(live.for_exchange(exchange.id)))
         )
     });
     let har_control = if har.active {
@@ -2077,22 +2099,13 @@ fn render_overview_panel(
         )
         .into_string()
     };
-    let requests = if snapshot.exchanges.is_empty() {
-        let (title, description) = if session.selected_connections.is_empty() {
-            (
-                "Waiting for matching traffic",
-                "Point a client at the proxy; updates appear here immediately.",
-            )
-        } else {
-            (
-                "No requests for the selected connections",
-                "Select another connection or clear the connection selection.",
-            )
-        };
-        div!(class = "empty", strong!(title), p!(description)).into_string()
-    } else {
-        div!(class = "exchange-list", exchange_rows.collect::<Vec<_>>()).into_string()
-    };
+    let fallback = render_pending_fallbacks(&live.pending, &snapshot.exchanges, None);
+    let requests = div!(
+        class = "exchange-list",
+        exchange_rows.collect::<Vec<_>>(),
+        PreEscaped(fallback),
+    )
+    .into_string();
     let selection_exports = match (session.selected_connections.len(), session.selected.len()) {
         (0, 0) => div!(
             class = "export",
@@ -2189,7 +2202,13 @@ fn render_overview_panel(
                         PreEscaped(selection_exports)
                     )
                 ),
-                PreEscaped(requests)
+                render_approval_toolbar(),
+                PreEscaped(requests),
+                p!(
+                    "data-request-empty" = "",
+                    hidden = "",
+                    "Waiting for matching traffic."
+                )
             )
         )
     )
@@ -2254,9 +2273,9 @@ fn inspection_notice(enabled: bool) -> Option<impl IntoHtml> {
         aside!(
             class = "inspection-notice",
             role = "status",
-            strong!("Recording paused"),
+            strong!("Inspector paused"),
             span!(
-                "Stored captures are retained. HTTP, WebSocket and host recording are paused. MITM scope and pending approvals are unchanged. Any active HAR is finalized and retained for download."
+                "Inspection is paused. New traffic passes through without MITM, recording or traffic rules. Existing inspected connections are closed. Stored captures and completed HAR files are retained."
             )
         )
     })
@@ -2267,8 +2286,9 @@ fn render_request_focus(
     id: u64,
     snapshot: &CaptureSnapshot,
     details: &BTreeMap<u64, InspectorDetails>,
-    inspection_enabled: bool,
+    live: &LiveStatus,
 ) -> String {
+    let inspection_enabled = live.recording;
     let Some(detail) = details.get(&id) else {
         return section!(
             id = "live",
@@ -2286,10 +2306,17 @@ fn render_request_focus(
                 None,
                 None,
             ),
+            render_approval_toolbar(),
+            PreEscaped(render_approval_slots(live.for_exchange(id))),
             div!(
                 class = "focus-empty",
                 strong!("Request unavailable"),
                 p!("It may have been cleared or retired by the capture limit.")
+            ),
+            render_approval_toolbar(),
+            div!(
+                class = "exchange-list",
+                PreEscaped(render_pending_fallbacks(&live.pending, &[], Some(id)))
             )
         )
         .into_string();
@@ -2339,7 +2366,12 @@ fn render_request_focus(
                 detail.summary.active,
             )),
         ),
-        article!(class = "focus-surface", render_details(detail))
+        render_approval_toolbar(),
+        article!(
+            class = "focus-surface",
+            PreEscaped(render_approval_slots(live.for_exchange(id))),
+            render_details(detail)
+        )
     )
     .into_string()
 }
@@ -2350,8 +2382,9 @@ fn render_connection_focus(
     snapshot: &CaptureSnapshot,
     session: &UiSession,
     details: &BTreeMap<u64, InspectorDetails>,
-    inspection_enabled: bool,
+    live: &LiveStatus,
 ) -> String {
+    let inspection_enabled = live.recording;
     let Some(connection) = snapshot
         .connections
         .iter()
@@ -2388,7 +2421,7 @@ fn render_connection_focus(
         .exchanges
         .iter()
         .filter(|exchange| exchange.connection_id == id)
-        .map(render_focused_request_row)
+        .map(|exchange| render_focused_request_row(exchange, live))
         .collect::<Vec<_>>();
     let tls_detail = details
         .values()
@@ -2465,18 +2498,31 @@ fn render_connection_focus(
                     .map(|ended| overview_item("Ended", display_timestamp(ended))),
             ),
             tls_detail.map(render_connection_tls).map(PreEscaped),
-            section!(
-                class = "connection-requests",
-                div!(
-                    class = "section-title",
-                    h2!(format!("Requests · {}", request_rows.len())),
-                    span!("Updates stream while this connection remains open")
-                ),
-                PreEscaped(if request_rows.is_empty() {
-                    div!(class = "empty", strong!("No captured requests yet")).into_string()
-                } else {
-                    div!(class = "exchange-list", request_rows).into_string()
-                })
+            PreEscaped(
+                section!(
+                    class = "connection-requests",
+                    div!(
+                        class = "section-title",
+                        h2!(format!("Requests · {}", request_rows.len())),
+                        span!("Updates stream while this connection remains open")
+                    ),
+                    render_approval_toolbar(),
+                    div!(
+                        class = "exchange-list",
+                        request_rows,
+                        PreEscaped(render_pending_fallbacks(
+                            &live.pending,
+                            &snapshot.exchanges,
+                            Some(id)
+                        ))
+                    ),
+                    p!(
+                        "data-request-empty" = "",
+                        hidden = "",
+                        "Waiting for matching traffic."
+                    )
+                )
+                .into_string()
             )
         )
     )
@@ -2495,13 +2541,16 @@ fn connection_route(connection: &ConnectionSummary, exchanges: &[ExchangeSummary
     }
 }
 
-fn render_focused_request_row(exchange: &ExchangeSummary) -> impl IntoHtml {
+fn render_focused_request_row(exchange: &ExchangeSummary, live: &LiveStatus) -> impl IntoHtml {
+    let pending = live.for_exchange(exchange.id).next();
     let method = if matches!(exchange.protocol.as_str(), "ws" | "wss") {
         "WS".to_owned()
     } else {
         exchange.method.clone()
     };
     article!(
+        id = format!("request-{}", exchange.id),
+        "data-approval-id"? = pending.map(|message| message.id.to_string()),
         class = if exchange.active {
             "exchange active focus-request-row"
         } else {
@@ -2525,7 +2574,11 @@ fn render_focused_request_row(exchange: &ExchangeSummary) -> impl IntoHtml {
                 small!(exchange.url.clone())
             ),
             PreEscaped(render_protocol_badge(exchange)),
-            PreEscaped(render_exchange_status(exchange)),
+            PreEscaped(
+                pending
+                    .map(approval_badge)
+                    .unwrap_or_else(|| render_exchange_status(exchange))
+            ),
             span!(class = "bytes", format_bytes(exchange.response_bytes)),
             time!(
                 class = "exchange-time",
@@ -2533,8 +2586,179 @@ fn render_focused_request_row(exchange: &ExchangeSummary) -> impl IntoHtml {
                 display_timestamp(&exchange.started_at)
             ),
             span!(class = "focus-open-hint", "Open →")
-        )
+        ),
+        PreEscaped(render_approval_slots(live.for_exchange(exchange.id)))
     )
+}
+
+fn approval_badge(message: &PendingSummary) -> String {
+    span!(
+        class = "approval-badge",
+        match message.direction.as_str() {
+            "request" => "Awaiting request approval",
+            "response" => "Awaiting response approval",
+            _ => "Awaiting message approval",
+        }
+    )
+    .into_string()
+}
+
+fn render_approval_toolbar() -> impl IntoHtml {
+    div!(
+        id = "approval-toolbar",
+        "data-ignore-morph" = "",
+        class = "approval-toolbar",
+        hidden = "",
+        button!(
+            r#type = "button",
+            id = "approval-filter",
+            class = "ghost compact",
+            "aria-pressed" = "false",
+            "data-inspector-focus" = "overview",
+            "Awaiting approval (0)"
+        ),
+        div!(
+            id = "approval-actions",
+            class = "control-actions",
+            hidden = "",
+            button!(
+                r#type = "button",
+                class = "ghost compact",
+                "data-bulk" = "forward",
+                "Forward selected"
+            ),
+            button!(
+                r#type = "button",
+                class = "ghost compact",
+                "data-bulk" = "block",
+                "Block selected"
+            ),
+            button!(
+                r#type = "button",
+                id = "forward-all",
+                class = "ghost compact",
+                "Forward all and turn off"
+            )
+        ),
+        p!(
+            id = "approval-view-note",
+            hidden = "",
+            "Showing all queued traffic, oldest first, including traffic outside capture filters."
+        ),
+        div!(id = "automatic-connections")
+    )
+}
+
+fn render_approval_slots<'a>(pending: impl Iterator<Item = &'a PendingSummary>) -> String {
+    pending
+        .map(|message| {
+            div!(
+                id = format!("approval-item-{}", message.id),
+                class = "approval-item",
+                "data-pending-id" = message.id.to_string(),
+                div!(
+                    class = "approval-message-heading",
+                    input!(
+                        r#type = "checkbox",
+                        id = format!("approval-select-{}", message.id),
+                        "data-ignore-morph" = "",
+                        "data-pending-select" = "",
+                        value = message.id.to_string(),
+                        "aria-label" =
+                            format!("Select queued {} #{}", message.direction, message.id)
+                    ),
+                    button!(
+                        r#type = "button",
+                        class = "approval-open",
+                        "data-edit-approval" = message.id.to_string(),
+                        format!("Edit {} · approval #{}", message.direction, message.id)
+                    ),
+                    message
+                        .queued_at
+                        .map(|at| time!(datetime = at.to_string(), display_timestamp(&at)))
+                ),
+                div!(
+                    id = format!("approval-slot-{}", message.id),
+                    "data-ignore-morph" = ""
+                )
+            )
+            .into_string()
+        })
+        .collect()
+}
+
+fn render_pending_fallbacks(
+    pending: &[PendingSummary],
+    exchanges: &[ExchangeSummary],
+    connection: Option<u64>,
+) -> String {
+    let retained = exchanges
+        .iter()
+        .map(|exchange| exchange.id)
+        .collect::<BTreeSet<_>>();
+    let mut groups = BTreeMap::<String, Vec<&PendingSummary>>::new();
+    for message in pending.iter().filter(|message| {
+        connection.is_none_or(|id| id == message.connection)
+            && message.exchange.is_none_or(|id| !retained.contains(&id))
+    }) {
+        let key = message
+            .exchange
+            .map(|id| format!("request-{id}"))
+            .unwrap_or_else(|| {
+                if matches!(message.direction.as_str(), "request" | "response") {
+                    format!("unrecorded-{}", message.id)
+                } else {
+                    format!("unrecorded-connection-{}", message.connection)
+                }
+            });
+        groups.entry(key).or_default().push(message);
+    }
+    groups
+        .into_iter()
+        .filter_map(|(key, messages)| {
+            let first = messages.first()?;
+            Some(
+                article!(
+                    id = key,
+                    class = "exchange active temporary-request",
+                    tabindex = "0",
+                    "data-inspector-focus" = "request",
+                    "data-approval-id" = first.id.to_string(),
+                    div!(
+                        class = "exchange-row",
+                        div!(
+                            class = "capture-ref",
+                            strong!(
+                                first
+                                    .exchange
+                                    .map(|id| format!("#{id}"))
+                                    .unwrap_or_else(|| "Unrecorded".to_owned())
+                            ),
+                            span!(
+                                first
+                                    .connection_display_id
+                                    .map(|id| format!("conn #{id}"))
+                                    .unwrap_or_else(|| format!("connection {}", first.connection))
+                            )
+                        ),
+                        span!(class = "method", first.method.clone()),
+                        div!(
+                            class = "target",
+                            strong!(first.url.clone()),
+                            small!("Outside the current captured view")
+                        ),
+                        div!(
+                            class = "exchange-protocol-state",
+                            span!(first.protocol.to_uppercase()),
+                            PreEscaped(approval_badge(first))
+                        )
+                    ),
+                    PreEscaped(render_approval_slots(messages.into_iter()))
+                )
+                .into_string(),
+            )
+        })
+        .collect()
 }
 
 fn render_connection_tls(details: &InspectorDetails) -> String {
@@ -3788,6 +4012,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_traffic_uses_request_rows_without_creating_captures() {
+        use super::super::control::{Config, ControlConnection, Message};
+        let state = test_state();
+        state.ensure_session("known");
+        let control = state.capture.control();
+        control
+            .configure(
+                0,
+                Config {
+                    enabled: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut changes = control.subscribe();
+        let task = tokio::spawn({
+            let control = control.clone();
+            async move {
+                control
+                    .decide(
+                        &ControlConnection::new(91),
+                        Message {
+                            exchange: Some(71),
+                            connection: 91,
+                            protocol: "https".into(),
+                            direction: "request".into(),
+                            method: "GET".into(),
+                            url: "https://example.test/<script>".into(),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+            }
+        });
+        changes.changed().await.unwrap();
+        let pending = control.pending_summaries();
+        let rendered = state.render_live("known", 1).await;
+        assert_eq!(rendered.matches("id=\"request-71\"").count(), 1);
+        assert!(rendered.contains("Awaiting request approval"));
+        assert!(rendered.contains("id=\"approval-slot-1\" data-ignore-morph"));
+        assert!(!rendered.contains("https://example.test/<script>"));
+        assert!(rendered.contains("<span>Requests</span><strong>0</strong>"));
+        let fixture = test_state();
+        capture_request_for_replay(&fixture, "http://example.test/").await;
+        let mut exchange = fixture
+            .capture
+            .snapshot_limited_for_connections(&CaptureFilter::default(), &BTreeSet::new(), 0, 8, 8)
+            .await
+            .exchanges
+            .pop()
+            .unwrap();
+        exchange.id = 71;
+        let live = LiveStatus {
+            recording: true,
+            pending,
+        };
+        assert!(render_pending_fallbacks(&live.pending, &[exchange.clone()], None).is_empty());
+        let row = render_focused_request_row(&exchange, &live).into_string();
+        assert!(row.contains("id=\"request-71\""));
+        assert!(row.contains("id=\"approval-slot-1\""));
+        control.stop_and_forward();
+        task.await.unwrap();
+        assert!(
+            !state
+                .render_live("known", 2)
+                .await
+                .contains("id=\"request-71\"")
+        );
+    }
+
+    #[tokio::test]
     async fn inspection_pause_and_resume_are_global_but_session_authenticated() {
         let state = test_state();
         state.ensure_session("known");
@@ -3810,7 +4105,7 @@ mod tests {
         assert!(!state.inspection.is_enabled());
         let paused = state.render_live("known", 1).await;
         assert!(paused.contains("data-inspection-paused=\"true\""));
-        assert!(paused.contains("Recording paused"));
+        assert!(paused.contains("Inspector paused"));
         assert_eq!(
             resume_inspection(State(state.clone()), signals("known")).await,
             StatusCode::NO_CONTENT
@@ -3818,7 +4113,7 @@ mod tests {
         assert!(state.inspection.is_enabled());
         let resumed = state.render_live("known", 2).await;
         assert!(resumed.contains("data-inspection-paused=\"false\""));
-        assert!(!resumed.contains("Recording paused"));
+        assert!(!resumed.contains("Inspector paused"));
     }
 
     #[tokio::test]

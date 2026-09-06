@@ -1,9 +1,11 @@
 // Shared traffic policy lives in the proxy. Local drafts never apply themselves.
-const $ = (id) => document.getElementById(id);
+const inlineEditor = document.getElementById("intercept-editor");
+const $ = (id) => document.getElementById(id) || inlineEditor.querySelector(`#${id}`);
 const session = document.body.dataset.inspectorSession;
 let current, editing, ruleIndex = -1, ruleResponse, responseTarget;
 let loading = false, reload = false, scopeDirty = false, limitsDirty = false;
-let revision = 0, controlTab = "pending";
+let revision = 0, controlTab = null, approvalOnly = false, editSequence = 0;
+const actions = new Map();
 const presets = [
   ["Block access", { status: 403, headers: [["content-type", "text/plain; charset=utf-8"], ["cache-control", "no-store"]], body: "Blocked by Rama proxy.\n" }],
   ["Redirect (preserve method)", { status: 307, headers: [["location", ""], ["cache-control", "no-store"]], body: "" }],
@@ -59,7 +61,8 @@ async function refresh() {
     current = await api("/api/control");
     const c = current.control;
     $("intercept-enabled").checked = c.config.enabled;
-    $("pending-count").textContent = c.pending.length;
+    $("intercept-enabled").disabled = !c.recording;
+    $("intercept-enabled").title = c.recording ? "" : "Resume the inspector to enable interception";
     if (!limitsDirty) {
       $("queue-limit").value = c.config.queue_limit;
       $("approval-timeout").value = c.config.timeout_seconds;
@@ -69,13 +72,9 @@ async function refresh() {
       $("mitm-allow").value = current.scope.allow.join("\n");
       $("mitm-deny").value = current.scope.deny.join("\n");
     }
-    renderControlPanes(); renderPending(); renderRules(); renderHosts();
-    const connections = $("automatic-connections"); connections.replaceChildren();
-    for (const connection of c.automatic_connections) connections.append(button(`${connectionLabel(connection)} · Resume interception`, async () => { await api(`/api/control/resume/${connection.connection}`, {}); await refresh(); }));
-    if (editing && !c.pending.some((m) => m.id === editing.id)) {
-      $("intercept-error").textContent = "This message has been resolved or its connection ended.";
-      for (const id of ["forward-message", "forward-connection", "block-message", "respond-message", "close-websocket"]) $(id).disabled = true;
-    }
+    renderControlPanes(); renderApprovals(); renderRules(); renderHosts();
+    if (editing && !c.pending.some((m) => m.id === editing.id)) closeEditor();
+    mountEditor();
   } finally { loading = false; if (reload) { reload = false; scheduleRefresh(); } }
 }
 let refreshTimer;
@@ -94,51 +93,86 @@ async function decide(ids, decision) {
   if (errors.length) throw new Error(errors.map((r) => `#${r.id}: ${r.error}`).join("; "));
 }
 function renderControlPanes() {
-  const enabled = current?.control.config.enabled;
-  const pendingVisible = enabled || current?.control.pending.length > 0;
-  for (const name of ["pending", "rules", "hosts"]) {
-    $(`control-${name}`).hidden = name !== controlTab || (name === "pending" && !pendingVisible);
-  }
-  $("intercept-help").hidden = !enabled;
-  $("intercept-off-help").hidden = !!enabled;
-  $("forward-all").textContent = enabled ? "Forward all and turn off" : "Forward all";
+  for (const name of ["rules", "hosts"]) $(`control-${name}`).hidden = name !== controlTab;
 }
-function selectedIds() { return [...document.querySelectorAll("[data-pending-select]:checked")].map((e) => Number(e.value)); }
-function renderPending() {
-  const selected = new Set(selectedIds());
-  const list = $("pending-list"); list.replaceChildren();
-  if (!current.control.pending.length) list.append(node("p", "No messages awaiting approval."));
-  for (const m of current.control.pending) {
-    const row = node("div", undefined, "control-row");
-    const check = node("input"); check.type = "checkbox"; check.value = m.id; check.dataset.pendingSelect = ""; check.checked = selected.has(m.id); check.setAttribute("aria-label", `Select message ${m.id}`);
-    const seconds = Math.max(0, Math.floor((Date.now() - Date.parse(m.queued_at)) / 1000));
-    const detail = node("div"), open = button(`#${m.id} · ${m.protocol} · ${m.direction} · ${m.method} ${m.url}`, () => editMessage(m.id));
-    open.className = "control-primary";
-    detail.append(open, node("span", `Awaiting approval · ${seconds}s · ${connectionLabel(m)}`, "control-meta"));
-    row.append(check, detail);
-    list.append(row);
+function selectedIds() {
+  const ids = new Set([...document.querySelectorAll("[data-pending-select]:checked")].map((e) => Number(e.value)));
+  for (const row of document.querySelectorAll(".exchange[data-approval-id]")) {
+    if (row.querySelector(".select.selected")) {
+      row.querySelectorAll("[data-pending-id]").forEach((item) => ids.add(Number(item.dataset.pendingId)));
+    }
   }
-  document.querySelectorAll(".approval-badge").forEach((n) => n.remove());
-  for (const m of current.control.pending) {
-    if (!m.exchange) continue;
-    const row = document.querySelector(`.exchange[data-focus-id="${m.exchange}"]`);
-    if (row) row.append(node("span", `Awaiting ${m.direction} approval`, "approval-badge"));
+  return [...ids].filter((id) => current?.control.pending.some((message) => message.id === id));
+}
+function renderApprovalView() {
+  const live = $("live");
+  if (!live) return;
+  live.classList.toggle("approvals-only", approvalOnly);
+  const filter = $("approval-filter");
+  if (filter) filter.setAttribute("aria-pressed", String(approvalOnly));
+  if ($("approval-view-note")) $("approval-view-note").hidden = !approvalOnly;
+  const ranks = new Map((current?.control.pending || []).map((message, index) => [message.id, index]));
+  live.querySelectorAll(".exchange[data-approval-id]").forEach((row) => {
+    row.style.setProperty("--approval-order", ranks.get(Number(row.dataset.approvalId)) ?? 0);
+  });
+  live.querySelectorAll("[data-request-empty]").forEach((empty) => {
+    const list = empty.previousElementSibling;
+    empty.hidden = !!list?.querySelector(approvalOnly ? ".exchange[data-approval-id]" : ".exchange");
+    empty.textContent = approvalOnly ? "No messages awaiting approval." : "Waiting for matching traffic.";
+  });
+}
+function renderApprovals() {
+  const toolbar = $("approval-toolbar");
+  if (!toolbar || !current) return;
+  const c = current.control, active = c.config.enabled || c.pending.length > 0;
+  toolbar.hidden = !active && !approvalOnly && !c.automatic_connections.length;
+  $("approval-filter").textContent = `Awaiting approval (${c.pending.length})`;
+  $("approval-actions").hidden = !active;
+  $("forward-all").textContent = c.config.enabled ? "Forward all and turn off" : "Forward all";
+  const selected = selectedIds().length;
+  for (const button of toolbar.querySelectorAll("[data-bulk]")) {
+    button.disabled = !selected;
+    button.textContent = `${button.dataset.bulk === "forward" ? "Forward" : "Block"} selected (${selected})`;
   }
+  const connections = $("automatic-connections"); connections.replaceChildren();
+  for (const connection of c.automatic_connections) connections.append(button(`${connectionLabel(connection)} · Resume interception`, async () => { await api(`/api/control/resume/${connection.connection}`, {}); await refresh(); }));
+  renderApprovalView();
+}
+function closeEditor() {
+  editSequence += 1;
+  editing = undefined;
+  inlineEditor.hidden = true;
+  $("intercept-editor-home").append(inlineEditor);
+}
+function mountEditor() {
+  if (!editing) return;
+  const slot = $(`approval-slot-${editing.id}`);
+  const parent = slot || $("intercept-editor-home");
+  if (inlineEditor.parentElement !== parent) parent.append(inlineEditor);
 }
 async function editMessage(id) {
-  editing = await api(`/api/control/pending/${id}`);
+  const sequence = ++editSequence;
+  const message = await api(`/api/control/pending/${id}`);
+  if (sequence !== editSequence) return;
+  // Reopening the current message must preserve the user's draft.
+  if (editing?.id === id) { mountEditor(); return; }
+  editing = message;
   const m = editing, http = ["request", "response"].includes(m.direction);
-  $("intercept-title").textContent = `#${id} · ${m.protocol} · ${m.direction}`;
+  $("intercept-title").textContent = `Edit ${m.direction} · approval #${id}`;
   $("intercept-description").textContent = `${m.method} ${m.url} · ${connectionLabel(m)}${m.binary ? " · Binary payload uses base64" : ""}`;
   $("http-edit-fields").hidden = !http; $("ws-edit-fields").hidden = http;
   $("intercept-headers").value = formatHeaders(m.headers);
-  $("intercept-status").value = m.status || ""; $("intercept-status").disabled = m.direction !== "response";
+  $("intercept-status").value = m.status || "";
+  $("intercept-status").closest("label").hidden = m.direction !== "response";
   $("intercept-payload").value = m.payload || "";
   $("block-message").textContent = http ? "Block" : "Drop message";
   $("respond-message").hidden = !http; $("close-websocket").hidden = http;
   $("intercept-error").textContent = "";
   for (const id of ["forward-message", "forward-connection", "block-message", "respond-message", "close-websocket"]) $(id).disabled = false;
-  $("intercept-editor").showModal();
+  inlineEditor.hidden = false;
+  mountEditor();
+  inlineEditor.scrollIntoView({ block: "nearest" });
+  (http ? $("intercept-headers") : $("intercept-payload")).focus({ preventScroll: true });
 }
 function readResponse() { return { status: Number($("response-status").value), headers: readHeaders($("response-headers").value), body: $("response-body").value }; }
 function fillResponse(response) { $("response-status").value = response.status; $("response-headers").value = formatHeaders(response.headers); $("response-body").value = response.body; }
@@ -202,8 +236,10 @@ function renderHosts() {
     list.append(row);
   }
 }
-function on(id, action, target) { $(id).addEventListener("click", () => run(action, target)); }
+function on(id, action, target) { actions.set(id, () => run(action, target)); }
 on("intercept-enabled", async () => { const config = structuredClone(current.control.config); config.enabled = $("intercept-enabled").checked; await configure(config); });
+on("close-intercept", closeEditor);
+on("approval-filter", () => { approvalOnly = $("live")?.classList.contains("focused") ? true : !approvalOnly; renderApprovals(); });
 on("forward-all", async () => { await api("/api/control/forward-all", {}); await refresh(); });
 function editedDecision(action = "forward") {
   const decision = { action };
@@ -213,15 +249,20 @@ function editedDecision(action = "forward") {
   } else decision.payload = $("intercept-payload").value;
   return decision;
 }
-on("forward-message", async () => { await decide([editing.id], editedDecision()); $("intercept-editor").close(); }, "intercept-error");
-on("forward-connection", async () => { await decide([editing.id], editedDecision("connection")); $("intercept-editor").close(); }, "intercept-error");
-on("block-message", async () => { await decide([editing.id], { action: ["request", "response"].includes(editing.direction) ? "block" : "drop" }); $("intercept-editor").close(); }, "intercept-error");
+async function decideEditing(decision) {
+  const id = editing.id;
+  await decide([id], decision);
+  if (editing?.id === id) closeEditor();
+}
+on("forward-message", () => decideEditing(editedDecision()), "intercept-error");
+on("forward-connection", () => decideEditing(editedDecision("connection")), "intercept-error");
+on("block-message", () => decideEditing({ action: ["request", "response"].includes(editing.direction) ? "block" : "drop" }), "intercept-error");
 on("close-websocket", async () => {
   const reason = window.prompt("Close reason", "Closed by Rama proxy"); if (reason === null) return;
   const code = window.prompt("WebSocket close code", "1008"); if (code === null) return;
-  await decide([editing.id], { action: "close", code: Number(code), reason }); $("intercept-editor").close();
+  await decideEditing({ action: "close", code: Number(code), reason });
 }, "intercept-error");
-on("respond-message", () => responseEditor(current.control.config.default_response, async (response) => { await decide([editing.id], { action: "respond", response }); $("intercept-editor").close(); }));
+on("respond-message", () => { const id = editing.id; responseEditor(current.control.config.default_response, async (response) => { await decide([id], { action: "respond", response }); if (editing?.id === id) closeEditor(); }); });
 on("default-response", () => responseEditor(current.control.config.default_response, async (response) => { const config = structuredClone(current.control.config); config.default_response = response; await configure(config); }));
 on("send-response", async () => { await responseTarget(readResponse()); $("response-editor").close(); }, "response-error");
 on("save-response-preset", async () => { const name = window.prompt("Preset name"); if (!name?.trim()) return; const config = structuredClone(current.control.config); config.presets.push({ name: name.trim(), response: readResponse() }); await configure(config); }, "response-error");
@@ -261,20 +302,28 @@ for (const id of ["mitm-mode", "mitm-allow", "mitm-deny"]) $(id).addEventListene
 for (const id of ["queue-limit", "approval-timeout"]) $(id).addEventListener("input", () => { limitsDirty = true; });
 document.addEventListener("rama-control-refresh", () => { scopeDirty = false; scheduleRefresh(); });
 document.addEventListener("click", (event) => {
+  const action = actions.get(event.target.closest("button[id], input[id]")?.id);
+  if (action) { action(); return; }
+  const edit = event.target.closest("[data-edit-approval]");
+  if (edit) { void run(() => editMessage(Number(edit.dataset.editApproval))); return; }
   const tab = event.target.closest("[data-control-tab]");
   if (tab) {
-    controlTab = tab.dataset.controlTab;
+    controlTab = controlTab === tab.dataset.controlTab ? null : tab.dataset.controlTab;
     renderControlPanes();
-    document.querySelectorAll("[data-control-tab]").forEach((button) => button.setAttribute("aria-pressed", String(button === tab)));
+    document.querySelectorAll("[data-control-tab]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.controlTab === controlTab)));
   }
   const bulk = event.target.closest("[data-bulk]"); if (bulk) void run(() => decide(selectedIds(), { action: bulk.dataset.bulk }));
   const create = event.target.closest("[data-create-traffic-rule]");
   if (create) void run(async () => { const message = await api(`/api/control/from/${create.dataset.createTrafficRule}`); editRule(-1, message); });
 });
+document.addEventListener("rama-edit-approval", (event) => { void run(() => editMessage(event.detail.id)); });
+document.addEventListener("change", (event) => {
+  if (event.target.matches("[data-pending-select]")) renderApprovals();
+});
 let lastHeartbeat;
 new MutationObserver(() => {
   const heartbeat = $("live-heartbeat");
   const sequence = heartbeat?.dataset.sequence;
-  if (sequence !== lastHeartbeat) { lastHeartbeat = sequence; scheduleRefresh(); }
-}).observe(document.documentElement, { childList: true, subtree: true });
+  if (sequence !== lastHeartbeat) { lastHeartbeat = sequence; renderApprovalView(); mountEditor(); scheduleRefresh(); }
+}).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["data-sequence"] });
 void run(refresh);

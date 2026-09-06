@@ -96,6 +96,13 @@ where
                 .await
                 .map(|r| r.map(Body::new));
         };
+        if !store.inspection_state().is_enabled() {
+            return self
+                .inner
+                .serve(Request::from_parts(parts, Body::new(body)))
+                .await
+                .map(|r| r.map(Body::new));
+        }
         let connection = parts
             .extensions
             .get_ref::<ControlConnection>()

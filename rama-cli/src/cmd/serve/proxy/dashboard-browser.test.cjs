@@ -15,6 +15,7 @@ function liveContext(document, requestAnimationFrame = () => 0) {
     handlers[type] = handler;
   };
   const context = vm.createContext({
+    CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init.detail; } },
     URL,
     URLSearchParams,
     clearTimeout() {},
@@ -202,3 +203,15 @@ function previewFixture() {
   };
   return { button, label, output };
 }
+
+test("activating a pending request opens its inline editor instead of navigating", () => {
+  const events = [];
+  const { context } = liveContext({
+    documentElement: {}, getElementById: () => null, querySelector: () => null,
+    visibilityState: "visible", dispatchEvent: (event) => events.push(event),
+  });
+  vm.runInContext('activateFocusControl({ dataset: { approvalId: "17", inspectorFocus: "request", focusId: "3" } })', context);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].type, "rama-edit-approval");
+  assert.equal(events[0].detail.id, 17);
+});

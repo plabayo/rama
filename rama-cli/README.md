@@ -48,7 +48,9 @@ Start the inspector with `rama serve proxy --mitm`. Forwarding is automatic by
 default; add `--intercept` or enable **Intercept · require approval** in the
 inspector to hold HTTP request and response headers and WebSocket application
 messages in both directions. The pending queue is shared across browser tabs,
-ordered by arrival, and independent of capture limits and recording state.
+ordered by arrival, and independent of capture limits. Inspection requires the
+inspector to be running. Queued items appear inline in the request list; use
+**Awaiting approval** to show only queued traffic, oldest first.
 
 Open a pending item to edit headers or a WebSocket text/binary message, **Forward**
 it, or **Block** it. Repeated headers are preserved. HTTP bodies stay streaming;
@@ -62,8 +64,7 @@ Ping replies and close handshakes continue while application messages are held.
 
 **Forward automatically for this connection** also releases its other pending
 items and applies to subsequent messages, including other HTTP/2 streams on the
-same connection. The connection can be returned to interception from the pending
-pane. Automatic response/drop/close rules still apply. Turning interception off
+same connection. The connection can be returned to interception from the request list. Automatic response/drop/close rules still apply. Turning interception off
 only affects new items; **Forward all and turn off** also releases the queue.
 Pending approvals expire after five minutes by default: HTTP receives 504 and
 WebSockets close. Queue overflow returns 503 or closes the WebSocket, never an
@@ -87,8 +88,11 @@ connections; existing tunnels cannot be upgraded. CLI allow/deny restrictions
 remain a ceiling and deny rules win. Scope domain patterns preserve their existing
 subdomain behavior; `=example.com` selects exactly one host.
 
-**Pause recording** freezes captures and host statistics, including observations
-on existing connections. It does not change MITM scope or release pending traffic.
+**Pause inspector** stops MITM, capture, host observations and traffic rules.
+New connections pass through unchanged. Existing inspected connections are closed
+because established TLS/WebSocket sessions cannot become opaque tunnels; clients
+can reconnect through the paused proxy. Remaining HTTP approvals are forwarded
+unchanged and interception is turned off. Scope and rules are retained for resume.
 An active HAR is finalized and kept for download; start a new HAR after resuming.
 Settings belong to the running proxy. Opening a browser restores display filters
 only; saved browser preferences never overwrite live traffic policy. Use the

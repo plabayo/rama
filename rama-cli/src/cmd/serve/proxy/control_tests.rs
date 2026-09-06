@@ -650,3 +650,47 @@ async fn manual_block_uses_the_current_default_and_stale_rule_application_is_rej
         }
     ));
 }
+
+#[tokio::test]
+async fn pause_bypasses_rules_and_holds_without_waiting_for_pending_approval() {
+    let control = control();
+    let recording = control.0.recording.clone();
+    let connection = ControlConnection::new(1);
+    let task = spawn(&control, &connection, request());
+    pending(&control, 1).await;
+    tokio::time::timeout(Duration::from_secs(1), recording.pause())
+        .await
+        .unwrap();
+    control.stop_and_forward();
+    assert!(matches!(task.await.unwrap().0, Decision::Forward { .. }));
+    assert!(control.snapshot().pending.is_empty());
+    let mut config = control.snapshot().config;
+    config.enabled = true;
+    assert!(
+        control
+            .configure(control.snapshot().revision, config.clone())
+            .is_err()
+    );
+    config.enabled = false;
+    config.rules = vec![rule(
+        Action::Respond {
+            response: ResponseSpec::default(),
+        },
+        Matcher::default(),
+    )];
+    control
+        .configure(control.snapshot().revision, config)
+        .unwrap();
+    assert!(!control.is_active());
+    assert!(matches!(
+        control.decide(&connection, request()).await.0,
+        Decision::Forward { .. }
+    ));
+    recording.resume().await;
+    assert!(control.is_active());
+    assert!(matches!(
+        control.decide(&connection, request()).await.0,
+        Decision::Respond { .. }
+    ));
+    assert!(!control.snapshot().config.enabled);
+}

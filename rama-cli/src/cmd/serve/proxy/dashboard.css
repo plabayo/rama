@@ -2018,3 +2018,31 @@ body:has(.live-shell.focused) .filter-panel {
   .rule-row .control-actions { grid-column: 2; }
   .control-dialog { padding: 20px; }
 }
+
+/* Approval controls share the request list; editor slots survive live morphs. */
+.exchange-list { display: flex; flex-direction: column; }
+.exchange-list > .exchange { flex-shrink: 0; }
+.approvals-only .exchange-list > .exchange:not([data-approval-id]) { display: none; }
+.approvals-only .exchange-list > .exchange { order: var(--approval-order, 0); }
+.approval-toolbar { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.approval-toolbar[hidden], .approval-toolbar [hidden], .inline-editor[hidden] { display: none; }
+.approval-toolbar p { flex-basis: 100%; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+#approval-filter[aria-pressed=true] { color: var(--purple); border-color: var(--purple); }
+#automatic-connections:empty { display: none; }
+.approval-item { margin: 0 16px; padding: 12px 0; border-top: 1px solid var(--line); cursor: default; }
+.approval-message-heading { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 11px; }
+.approval-message-heading time { color: var(--muted); }
+.approval-open { border: 0; padding: 4px 0; background: transparent; color: var(--purple); font: inherit; cursor: pointer; }
+.inline-editor { width: 100%; max-height: none; margin: 16px 0 0; padding: 16px 0 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; overflow: visible; }
+@media (min-width: 901px) {
+  .workspace:has(.inline-editor:not([hidden])) { height: clamp(620px, calc(100vh - 160px), 960px); flex-basis: clamp(620px, calc(100vh - 160px), 960px); }
+}
+.inline-editor h2 { font-size: 16px; }
+.inline-editor textarea { min-height: 120px; }
+.temporary-request .exchange-row { grid-template-columns: auto auto minmax(0, 1fr) auto; }
+[data-request-empty] { padding: 24px 16px; color: var(--muted); font-size: 12px; }
+@media (max-width: 600px) {
+  .temporary-request .exchange-row { grid-template-columns: auto minmax(0, 1fr); }
+  .temporary-request .target { grid-column: 1 / -1; }
+  .inline-editor .dialog-close { float: none; margin: 0 0 12px; }
+}

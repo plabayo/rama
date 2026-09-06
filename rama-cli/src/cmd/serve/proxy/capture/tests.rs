@@ -2493,8 +2493,8 @@ async fn blocking_without_capture_admission_never_calls_origin_or_polls_upload()
 }
 
 #[tokio::test]
-async fn recording_pause_does_not_bypass_pending_or_new_approvals() {
-    use super::super::control::{Config, Decision};
+async fn paused_inspector_forwards_without_capturing_or_holding() {
+    use super::super::control::Config;
     let store = test_store();
     store
         .control()
@@ -2521,8 +2521,16 @@ async fn recording_pause_does_not_bypass_pending_or_new_approvals() {
             .await
             .unwrap()
     });
-    let id = approval_id(&store, "request").await;
-    assert!(!task.is_finished());
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .status()
+            .as_u16(),
+        200
+    );
+    assert!(store.control().snapshot().pending.is_empty());
     assert!(
         store
             .snapshot(&CaptureFilter::default())
@@ -2530,8 +2538,6 @@ async fn recording_pause_does_not_bypass_pending_or_new_approvals() {
             .exchanges
             .is_empty()
     );
-    store.control().resolve(id, Decision::Block).unwrap();
-    assert_eq!(task.await.unwrap().status().as_u16(), 403);
 }
 
 #[tokio::test]

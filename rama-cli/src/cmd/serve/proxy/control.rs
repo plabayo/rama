@@ -597,13 +597,22 @@ impl Control {
     }
     pub(super) fn is_active(&self) -> bool {
         let policy = self.0.policy.load();
-        policy.config.enabled || !policy.rules.is_empty()
+        self.0.recording.is_enabled() && (policy.config.enabled || !policy.rules.is_empty())
     }
     pub(super) fn subscribe(&self) -> watch::Receiver<u64> {
         self.0.changes.subscribe()
     }
     fn changed(&self) {
         self.0.changes.send_modify(|v| *v = v.wrapping_add(1));
+    }
+    pub(super) fn pending_summaries(&self) -> Vec<PendingSummary> {
+        self.0
+            .state
+            .lock()
+            .pending
+            .values()
+            .map(|p| PendingSummary::from(p.message.as_ref()))
+            .collect()
     }
     pub(super) fn snapshot(&self) -> Snapshot {
         let mut state = self.0.state.lock();
@@ -655,6 +664,11 @@ impl Control {
             .map(CompiledRule::new)
             .collect::<Result<_, _>>()?;
         let _state = self.0.state.lock();
+        if config.enabled && !self.0.recording.is_enabled() {
+            return Err(BoxError::from_static_str(
+                "Resume the inspector before enabling interception",
+            ));
+        }
         if self.0.policy.load().revision != revision {
             return Err(BoxError::from_static_str(
                 "settings changed in another tab; reload settings before applying",
@@ -865,6 +879,9 @@ impl Control {
         connection: &ControlConnection,
         mut message: Message,
     ) -> (Decision, Option<String>) {
+        let Some(permit) = self.0.recording.try_capture() else {
+            return (Decision::forward(), None);
+        };
         let policy = self.0.policy.load_full();
         for rule in &policy.rules {
             if !rule.matches(&message) {
@@ -939,6 +956,8 @@ impl Control {
             );
         }
         self.changed();
+        // A hold must never keep pause waiting on a capture-write permit.
+        drop(permit);
         let _guard = PendingGuard {
             control: self.clone(),
             id,
@@ -1039,18 +1058,18 @@ pub(super) struct WebSocketContext {
     pub request: Message,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(super) struct PendingSummary {
-    id: u64,
+    pub id: u64,
     pub connection: u64,
     pub connection_display_id: Option<u64>,
-    exchange: Option<u64>,
-    protocol: String,
-    direction: String,
-    method: String,
-    url: String,
-    status: Option<u16>,
-    queued_at: Option<jiff::Timestamp>,
+    pub exchange: Option<u64>,
+    pub protocol: String,
+    pub direction: String,
+    pub method: String,
+    pub url: String,
+    pub status: Option<u16>,
+    pub queued_at: Option<jiff::Timestamp>,
 }
 impl From<&Message> for PendingSummary {
     fn from(m: &Message) -> Self {

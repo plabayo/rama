@@ -19,7 +19,7 @@ use control::{Control, ControlConnection};
 use dashboard::DashboardState;
 use dashboard_auth::DashboardAuthService;
 use har::HarController;
-use inspection::InspectionState;
+use inspection::{InspectionGate, InspectionState};
 use mitm_policy::MitmPolicy;
 use portal::PortalService;
 use rama::{
@@ -666,6 +666,7 @@ struct MitmTargetPolicyService<I, P> {
     policy: MitmPolicy,
     control: Option<Control>,
     defer_ip_target: bool,
+    inspection: InspectionState,
 }
 
 impl<I, P, IO> Service<IO> for MitmTargetPolicyService<I, P>
@@ -680,11 +681,12 @@ where
     type Error = BoxError;
 
     async fn serve(&self, input: IO) -> Result<(), BoxError> {
-        let should_inspect = if self.defer_ip_target {
-            self.policy.should_peek_target(input.extensions())
-        } else {
-            self.policy.should_inspect_target(input.extensions())
-        };
+        let should_inspect = self.inspection.is_enabled()
+            && if self.defer_ip_target {
+                self.policy.should_peek_target(input.extensions())
+            } else {
+                self.policy.should_inspect_target(input.extensions())
+            };
         if !self.defer_ip_target || !should_inspect {
             observe_target(
                 self.control.as_ref(),
@@ -703,6 +705,7 @@ where
 
 #[derive(Debug, Clone)]
 struct TlsHelloMitmPolicyService<I, P> {
+    inspection: InspectionState,
     inspect: I,
     passthrough: P,
     policy: MitmPolicy,
@@ -735,14 +738,16 @@ where
             sni.as_ref(),
             should_inspect,
         );
-        if should_inspect {
-            self.inspect.serve(input).await.map_err(Into::into)
-        } else {
-            self.passthrough
-                .serve(input.input)
+        if should_inspect && let Some(session) = self.inspection.session() {
+            return session
+                .run(self.inspect.serve(input))
                 .await
-                .map_err(Into::into)
+                .map_err(Into::into);
         }
+        self.passthrough
+            .serve(input.input)
+            .await
+            .map_err(Into::into)
     }
 }
 
@@ -865,6 +870,11 @@ macro_rules! build_mitm_service {
                 ),
             ),
         );
+        let websocket_relay = InspectionGate {
+            inspection: inspection.clone(),
+            inspect: websocket_relay,
+            passthrough: MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())),
+        };
         let websocket_layer = HttpUpgradeMitmRelayLayer::new(
             exec.clone(),
             HttpWebSocketRelayServiceRequestMatcher::new(websocket_relay),
@@ -890,6 +900,13 @@ macro_rules! build_mitm_service {
                 .with_tolerate_decode_errors(true),
             ArcLayer::new(),
         ));
+        // Only inspected HTTP/TLS/WebSocket sessions are cancelled on pause.
+        // Unsupported protocols and excluded hosts remain ordinary tunnels.
+        let http_mitm_relay = InspectionGate {
+            inspection: inspection.clone(),
+            inspect: http_mitm_relay,
+            passthrough: MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())),
+        };
         let maybe_http = HttpPeekRouter::new(http_mitm_relay)
             .with_known_non_http_protocol_methods()
             .maybe_with_peek_timeout(peek_timeout)
@@ -905,9 +922,11 @@ macro_rules! build_mitm_service {
             policy: mitm_policy.clone(),
             control: Some(capture_control.clone()),
             defer_ip_target: false,
+            inspection: inspection.clone(),
         };
         let tls = TlsMitmRelay::new_cached_in_memory($certificate, $private_key);
         let tls = TlsHelloMitmPolicyService {
+            inspection: inspection.clone(),
             inspect: tls.into_layer(maybe_http.clone()),
             passthrough: passthrough.clone(),
             policy: mitm_policy.clone(),
@@ -923,6 +942,7 @@ macro_rules! build_mitm_service {
             policy: mitm_policy,
             control: Some(capture_control),
             defer_ip_target: true,
+            inspection,
         })
     }};
 }
@@ -2075,6 +2095,11 @@ fn new_proxy_client(
             ),
         ),
     );
+    let websocket_relay = InspectionGate {
+        inspection: inspection.clone(),
+        inspect: websocket_relay,
+        passthrough: MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())),
+    };
     let websocket = (
         RemoveRequestHeaderLayer::hop_by_hop(),
         RemoveResponseHeaderLayer::proxy_auth(),

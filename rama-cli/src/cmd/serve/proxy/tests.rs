@@ -887,6 +887,7 @@ async fn mitm_policy_composes_connect_target_and_tls_sni() {
         }
     });
     let service = TlsHelloMitmPolicyService {
+        inspection: InspectionState::default(),
         inspect,
         passthrough,
         policy: MitmPolicy::try_new(
@@ -951,6 +952,7 @@ async fn mitm_prepeek_gate_defers_unmatched_targets_but_rejects_denied_targets()
         }
     });
     let service = MitmTargetPolicyService {
+        inspection: InspectionState::default(),
         inspect,
         passthrough,
         policy: MitmPolicy::try_new(
@@ -3115,7 +3117,7 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pausing_recording_keeps_mitm_but_freezes_capture_until_resumed() {
+async fn pausing_inspector_tunnels_origin_tls_without_capturing_until_resumed() {
     let origin_listener =
         TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
             .await
@@ -3237,12 +3239,11 @@ async fn pausing_recording_keeps_mitm_but_freezes_capture_until_resumed() {
         .unwrap();
     assert_eq!(paused.status(), StatusCode::NO_CONTENT);
 
-    let response = timeout(Duration::from_secs(10), trusted_client.serve(request()))
+    // The origin certificate is no longer replaced by the inspector CA.
+    timeout(Duration::from_secs(10), trusted_client.serve(request()))
         .await
         .unwrap()
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    response.into_body().collect().await.unwrap();
+        .unwrap_err();
     let response = insecure_client.serve(request()).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -3528,6 +3529,57 @@ async fn live_interception_holds_upgrade_and_websocket_data_but_not_control_fram
         Message::Close(_)
     ));
     wait_interception(address, &session, 0).await;
+    drop(socket);
+    // Pause ends an already inspected idle WebSocket, then new upgraded
+    // connections relay raw bytes without recording or approval rules.
+    interception_api(
+        address,
+        &session,
+        "/api/control/forward-all",
+        Some(json!({})),
+    )
+    .await;
+    let connect = || async {
+        let extensions = Extensions::new();
+        extensions.insert(ProxyRoute::Proxy(
+            format!("http://{address}").parse().unwrap(),
+        ));
+        proxy_websocket_client()
+            .websocket(format!("ws://{origin}/echo"))
+            .handshake(extensions)
+            .await
+            .unwrap()
+    };
+    let mut socket = connect().await;
+    socket
+        .send_message(Message::text("before pause"))
+        .await
+        .unwrap();
+    assert_eq!(
+        socket.recv_message().await.unwrap(),
+        Message::text("before pause")
+    );
+    interception_api(address, &session, "/api/inspection/pause", Some(json!({}))).await;
+    let closed = timeout(Duration::from_secs(2), socket.recv_message())
+        .await
+        .unwrap();
+    assert!(closed.is_err() || matches!(closed, Ok(Message::Close(_))));
+    let paused = interception_api(address, &session, "/api/control", None).await;
+    assert_eq!(paused["control"]["recording"], false);
+    let mut socket = connect().await;
+    socket
+        .send_message(Message::text("raw while paused"))
+        .await
+        .unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(2), socket.recv_message())
+            .await
+            .unwrap()
+            .unwrap(),
+        Message::text("raw while paused")
+    );
+    let after = wait_interception(address, &session, 0).await;
+    assert_eq!(after["control"]["hosts"], paused["control"]["hosts"]);
     drop(socket);
     _ = shutdown_tx.send(());
     shutdown
