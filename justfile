@@ -120,8 +120,11 @@ _zigbuild-linux-gnu-with-native-env RECIPE TARGET:
 _zigbuild-linux-gnu-with-native-env-unix RECIPE TARGET:
     AR="zig ar" AWS_LC_SYS_CMAKE_BUILDER=0 just {{RECIPE}} {{TARGET}}
 
+# jemalloc 0.7 links its installed archive, then removes out/build. Its
+# unquoted install paths lose Windows backslashes in sh; install relative to
+# out/build so the archive and headers land in out/lib and out/include.
 _zigbuild-linux-gnu-with-native-env-windows RECIPE TARGET:
-    $gitShell = (Get-Command sh.exe).Source; $shortShell = (New-Object -ComObject Scripting.FileSystemObject).GetFile($gitShell).ShortPath.Replace('\', '/'); $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"; $env:MAKEFLAGS = "SHELL=$shortShell"; $env:AR = "zig ar"; $env:AWS_LC_SYS_CMAKE_BUILDER = "0"; just {{RECIPE}} {{TARGET}}
+    $gitShell = (Get-Command sh.exe).Source; $shortShell = (New-Object -ComObject Scripting.FileSystemObject).GetFile($gitShell).ShortPath.Replace('\', '/'); $env:RUSTUP_TOOLCHAIN = "stable-x86_64-pc-windows-gnu"; $env:MAKEFLAGS = "SHELL=$shortShell LIBDIR=../lib INCLUDEDIR=../include"; $env:AR = "zig ar"; $env:AWS_LC_SYS_CMAKE_BUILDER = "0"; just {{RECIPE}} {{TARGET}}
 
 # check no_std crates against a target without std: any dep that links
 # std fails loudly here instead of poisoning downstream no_std consumers

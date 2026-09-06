@@ -228,6 +228,9 @@ final class LiveFlowHardCapTests: XCTestCase {
         let generation = core.attachEngine(makeEngine())
         defer { core.testDetachAndDrainFlowQueues() }
         let flows = (0..<500).map { _ in MockUdpFlow() }
+        // The registry retains identifiers, not these mocks. Prevent optimized
+        // builds from reusing an existing identity for the replacement below.
+        defer { withExtendedLifetime(flows) {} }
         for (index, flow) in flows.enumerated() {
             XCTAssertEqual(
                 core.registerUdpFlow(
