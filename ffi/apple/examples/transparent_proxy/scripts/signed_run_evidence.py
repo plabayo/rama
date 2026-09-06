@@ -1811,11 +1811,12 @@ def _validate_modern_dial9(
     http3_generation = _canonical_uint(udp["http3_intercept_provider_generation"])
     unblocked_generation = by_label["ntp"]["provider_generation"]
     # The pinned raw validator binds this distinct generation to the blocked
-    # profile's H3 decision. All earlier roles keep their unblocked generation.
+    # profile's H3 decision. Pressure, recovery and echo run in that same
+    # intercepting profile; only the initial NTP control uses the first one.
     if (
         http3["provider_generation"] != http3_generation
         or http3_generation == unblocked_generation
-        or any(row["provider_generation"] != unblocked_generation for row in parsed_rows[:-1])
+        or any(row["provider_generation"] != http3_generation for row in parsed_rows[1:])
         or tuple(http3[key] for key in (
             "min_bytes_in", "max_bytes_in", "min_bytes_out", "max_bytes_out"
         )) != (1, 16_777_216, 1, 16_777_216)

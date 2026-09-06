@@ -215,7 +215,7 @@ def validate_ntp_response(packet: bytes, response: bytes, peer, server: str) -> 
         )
 
 
-PROBE_LABELS = ("passthrough", "ntp", "control", "recovery", "blocked")
+PROBE_LABELS = ("passthrough", "ntp", "control", "blocked", "recovery")
 PROBE_RECEIPT_MAX_BYTES = 2 * 65_535 + 4096  # one hex UDP response plus bounded metadata
 PROBE_RECEIPT_KEYS = {
     "schema_version", "kind", "run_uuid", "probe_label", "source_pid",

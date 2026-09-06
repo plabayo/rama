@@ -508,7 +508,7 @@ def make_strict_modern_run(directory: Path):
     (directory / "controlled-echo-client.json").write_text(json.dumps(client))
     (directory / "controlled-echo-server.json").write_text(json.dumps(server))
     (directory / "echo-identities.tsv").write_text("".join(
-        f"7\t{200 + index}\t{client['local_endpoints'][index]}\n"
+        f"8\t{200 + index}\t{client['local_endpoints'][index]}\n"
         for index in range(int(udp["echo_flow_count"]))
     ))
 
@@ -531,7 +531,7 @@ def make_strict_modern_run(directory: Path):
             payload = int(udp["pressure_payload_bytes"])
             bounds = [str(payload), str(int(udp["pressure_expected_bytes"]) - payload), "0", "0"]
         requirement_rows.append([
-            label, "42", "7", flow_id, "2", source_pid, "1",
+            label, "42", "7" if label == "ntp" else "8", flow_id, "2", source_pid, "1",
             *bounds,
         ])
     echo_bytes = str(
@@ -539,7 +539,7 @@ def make_strict_modern_run(directory: Path):
     )
     for index in range(int(udp["echo_flow_count"])):
         requirement_rows.append([
-            f"echo-{index}", "42", "7", str(200 + index), "2",
+            f"echo-{index}", "42", "8", str(200 + index), "2",
             udp["echo_source_pid"], "1",
             echo_bytes, echo_bytes, echo_bytes, echo_bytes,
         ])

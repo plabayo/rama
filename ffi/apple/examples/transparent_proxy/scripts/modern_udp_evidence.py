@@ -753,10 +753,10 @@ PHASE_FIELDS = (
     "schema_version", "unblocked_start_line", "udp_error_start_line",
     "passthrough_start_line", "passthrough_end_line", "ntp_start_line",
     "ntp_end_line", "control_start_line", "control_end_line",
-    "pressure_start_line", "pressure_end_line", "echo_start_line",
-    "echo_end_line", "recovery_start_line", "recovery_end_line",
     "http3_start_line", "http3_end_line", "blocked_profile_start_line",
     "blocked_start_line", "blocked_end_line",
+    "pressure_start_line", "pressure_end_line", "echo_start_line",
+    "echo_end_line", "recovery_start_line", "recovery_end_line",
     "http3_intercept_start_line", "http3_intercept_end_line", "provider_log_end_line",
     "schema_complete",
 )
@@ -778,6 +778,9 @@ def _provider_phases(root, line_count):
         phases["passthrough_start_line"], phases["passthrough_end_line"],
         phases["ntp_start_line"], phases["ntp_end_line"],
         phases["control_start_line"], phases["control_end_line"],
+        phases["http3_start_line"], phases["http3_end_line"],
+        phases["blocked_profile_start_line"], phases["blocked_start_line"],
+        phases["blocked_end_line"],
         phases["pressure_start_line"],
     )
     if list(sequential) != sorted(sequential):
@@ -790,9 +793,7 @@ def _provider_phases(root, line_count):
     later = (
         concurrent_end,
         phases["recovery_start_line"], phases["recovery_end_line"],
-        phases["http3_start_line"], phases["http3_end_line"],
-        phases["blocked_profile_start_line"], phases["blocked_start_line"],
-        phases["blocked_end_line"], phases["http3_intercept_start_line"],
+        phases["http3_intercept_start_line"],
         phases["http3_intercept_end_line"], phases["provider_log_end_line"],
     )
     if list(later) != sorted(later):
@@ -908,9 +909,11 @@ def _validate_representative_decisions(status, decisions, phases):
         raise BundleVerificationError("independent DNS canary reused the blocked endpoint")
     if len({result[label]["remote"] for label in ("ntp", "pressure", "recovery")}) != 1:
         raise BundleVerificationError("NTP pressure/recovery canaries target different endpoints")
-    unblocked_labels = ("passthrough", "ntp", "control", "pressure", "recovery")
+    unblocked_labels = ("passthrough", "ntp", "control")
     generations = {result[label]["generation"] for label in unblocked_labels}
-    if len(generations) != 1 or result["blocked"]["generation"] in generations:
+    if (len(generations) != 1 or result["blocked"]["generation"] in generations
+            or any(result[label]["generation"] != result["blocked"]["generation"]
+                   for label in ("pressure", "recovery"))):
         raise BundleVerificationError("provider generation transition is not exact")
     unblocked_generation = next(iter(generations))
     expected_digest = hashlib.sha256(
@@ -1068,7 +1071,9 @@ def _validate_echo_timing(client, status, sockets, per_socket, *, require_active
             raise BundleVerificationError("controlled echo active population overlap is shorter than 90 seconds")
 
 
-def _validate_echo_raw(root, status, decisions, phases, unblocked_generation):
+def _validate_echo_raw(root, status, decisions, phases, blocked_generation):
+    from modern_udp_e2e_probe import read_probe_receipt
+
     client = _strict_json(root, "controlled-echo-client.json", ECHO_CLIENT_KEYS, 4 * 1024 * 1024)
     server = _strict_json(root, "controlled-echo-server.json", ECHO_SERVER_KEYS)
     ready = _strict_json(root, "controlled-echo-ready.json", ECHO_READY_KEYS)
@@ -1081,6 +1086,15 @@ def _validate_echo_raw(root, status, decisions, phases, unblocked_generation):
     run_uuid = status["run_uuid"]
     echo_pid = _bundle_uint(status["echo_source_pid"], 2**31 - 1)
     _validate_echo_timing(client, status, sockets, per_socket, require_active_population=True)
+    blocked = read_probe_receipt(root / "udp-probe-blocked.json")
+    recovery = read_probe_receipt(root / "udp-probe-recovery.json")
+    if (
+        not blocked["end_epoch_ms"] <= client["start_epoch_ms"]
+            <= client["end_epoch_ms"] <= recovery["start_epoch_ms"]
+        or not blocked["end_monotonic_ns"] <= client["start_monotonic_ns"]
+            <= client["end_monotonic_ns"] <= recovery["start_monotonic_ns"]
+    ):
+        raise BundleVerificationError("controlled echo receipt is outside the blocked/recovery window")
     validate_echo_socket_maps(client, server, sockets)
     if not endpoint.startswith("127.0.0.1:") or not is_udp_endpoint(endpoint):
         raise BundleVerificationError("controlled echo endpoint is not canonical loopback")
@@ -1154,7 +1168,7 @@ def _validate_echo_raw(root, status, decisions, phases, unblocked_generation):
     )
     if any(not _in_phase(row, phases, "echo") for row in selected):
         raise BundleVerificationError("controlled echo decision escaped its raw phase")
-    if {row["generation"] for row in selected} != {unblocked_generation}:
+    if {row["generation"] for row in selected} != {blocked_generation}:
         raise BundleVerificationError("controlled echo used the wrong provider generation")
     identity_text = _read_bundle_text(root, "echo-identities.tsv", 256 * 1024)
     expected_identity_text = "".join(
@@ -1217,14 +1231,14 @@ def _validate_http3_intercept_raw(root, status, decisions, phases, generation, r
         body = read_http3_body(root / "http3-intercept-body.txt")
         if replay_http3_receipt(receipt, body, status["run_uuid"], source_pid, url) != 0:
             raise ValueError("client did not pass")
-        blocked = read_probe_receipt(root / "udp-probe-blocked.json")
+        recovery = read_probe_receipt(root / "udp-probe-recovery.json")
         restore = _exact_key_tsv(root, "restore-receipt.tsv", RESTORE_FIELDS)
         if (
-            not _bundle_uint(status["run_start_epoch_ms"]) <= blocked["end_epoch_ms"]
+            not _bundle_uint(status["run_start_epoch_ms"]) <= recovery["end_epoch_ms"]
                 <= receipt["start_epoch_ms"] <= receipt["end_epoch_ms"]
                 <= _bundle_uint(restore["restore_started_epoch_ms"])
                 <= _bundle_uint(status["run_end_epoch_ms"])
-            or receipt["start_monotonic_ns"] < blocked["end_monotonic_ns"]
+            or receipt["start_monotonic_ns"] < recovery["end_monotonic_ns"]
         ):
             raise ValueError("client receipt is outside the blocked profile lifetime")
     except (OSError, ValueError) as error:
@@ -1372,9 +1386,9 @@ def _validate_pressure_raw(status, lines, phases, representative):
         raise BundleVerificationError("pinned pressure parser is unavailable") from error
     pressure_flow = representative["pressure"]["flow_id"]
     healthy_ranges = (
-        (phases["unblocked_start_line"], phases["pressure_start_line"]),
-        (phases["pressure_end_line"], phases["blocked_profile_start_line"]),
-        (phases["blocked_profile_start_line"], phases["provider_log_end_line"]),
+        (phases["unblocked_start_line"], phases["blocked_profile_start_line"]),
+        (phases["blocked_profile_start_line"], phases["pressure_start_line"]),
+        (phases["pressure_end_line"], phases["provider_log_end_line"]),
     )
     healthy = [
         summarize_udp_pressure_rows(
@@ -1442,8 +1456,7 @@ REQUIREMENT_HEADER = (
 )
 
 
-def _validate_requirements(root, status, representative, echo_identities, unblocked_generation,
-                           probe_bytes, http3_intercept):
+def _validate_requirements(root, status, representative, echo_identities, probe_bytes, http3_intercept):
     content = _read_bundle_bytes(root, "dial9-requirements.tsv", 2 * 1024 * 1024)
     try:
         text = content.decode("utf-8", errors="strict")
@@ -1475,8 +1488,6 @@ def _validate_requirements(root, status, representative, echo_identities, unbloc
         for row in parsed
     ):
         raise BundleVerificationError("Dial9 requirement identity/range is invalid")
-    if any(row["provider_generation"] != unblocked_generation for row in parsed[:-1]):
-        raise BundleVerificationError("unblocked Dial9 workload used another generation")
     fixed = (
         (representative["ntp"], probe_bytes["ntp"][0], probe_bytes["ntp"][0],
          probe_bytes["ntp"][1], probe_bytes["ntp"][1]),
@@ -1491,7 +1502,8 @@ def _validate_requirements(root, status, representative, echo_identities, unbloc
     )
     for row, (decision, min_in, max_in, min_out, max_out) in zip(parsed[:3], fixed):
         if (
-            row["flow_id"] != decision["flow_id"]
+            row["provider_generation"] != decision["generation"]
+            or row["flow_id"] != decision["flow_id"]
             or row["source_pid"] != decision["source_pid"]
             or (row["min_bytes_in"], row["max_bytes_in"], row["min_bytes_out"], row["max_bytes_out"])
                 != (min_in, max_in, min_out, max_out)
@@ -1657,7 +1669,7 @@ def _verify_bundle_semantics(directory):
     if echo_pid in representative_pids:
         raise BundleVerificationError("controlled echo source PID collides with a canary")
     echo_identities = _validate_echo_raw(
-        root, status, decisions, phases, unblocked_generation
+        root, status, decisions, phases, blocked_generation
     )
     http3, http3_pids = _validate_http3_raw(
         root, status, decisions, phases, unblocked_generation,
@@ -1679,7 +1691,7 @@ def _verify_bundle_semantics(directory):
     _validate_udp_callback_errors(provider_lines, phases)
     _validate_pressure_raw(status, provider_lines, phases, representative)
     _validate_requirements(
-        root, status, representative, echo_identities, unblocked_generation, probe_bytes,
+        root, status, representative, echo_identities, probe_bytes,
         http3_intercept,
     )
     _validate_restore(root, status, blocked_generation)

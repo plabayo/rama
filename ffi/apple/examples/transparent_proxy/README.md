@@ -292,8 +292,9 @@ been approved:
 just test-modern-udp-signed
 ```
 
-The test first reaches every public resource with an unblocked profile, then
-enables the exact blocked-DNS override. It captures the provider's structured
+The test first runs DNS/NTP controls and H3 pass-through with an unblocked
+profile, then enables the exact blocked-DNS override and UDP/443 interception.
+It captures the provider's structured
 Rust log, verifies the exact remote address/port and Rama decision, verifies
 pass-through flows never enter provider handling, and checks that the accepted
 NTP endpoint reaches Rama's UDP forwarding service. It also snapshots the
@@ -341,8 +342,13 @@ proof or evidence of H3 interception. Python probes explicitly bind before
 traffic; every echo socket still requires a concrete local endpoint and an
 exact endpoint-to-flow bijection.
 
-After the blocked-DNS canary, the second profile also intercepts UDP/443. The
-existing Python probe loads an installed HTTP/3-capable libcurl and makes one
+After the blocked-DNS canary, the controlled echo population and deliberate
+pressure burst run together in the second profile, followed by the NTP recovery
+canary. Their decisions and Dial9 requirements must all use that profile's
+intercepting generation. The initial NTP control remains bound to the first
+generation. Raw receipt clocks and provider-log boundaries enforce this order.
+
+The existing Python probe then loads an installed HTTP/3-capable libcurl and makes one
 IPv4 request with a fresh handle bound to a nonzero local port. It requires
 HTTP/3 and status 200, limits the transfer to 15 seconds and the response body
 to 1 MiB, and retains normal TLS verification. The raw body, its digest, child

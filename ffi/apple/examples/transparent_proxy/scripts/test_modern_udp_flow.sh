@@ -873,16 +873,16 @@ write_provider_log_phases() {
     printf 'ntp_start_line\t%s\nntp_end_line\t%s\n' "$NTP_LOG_START" "$NTP_LOG_END"
     printf 'control_start_line\t%s\ncontrol_end_line\t%s\n' \
       "$CONTROL_DNS_LOG_START" "$CONTROL_DNS_LOG_END"
-    printf 'pressure_start_line\t%s\npressure_end_line\t%s\n' \
-      "$PRESSURE_LOG_START" "$PRESSURE_END_LOG_LINE"
-    printf 'echo_start_line\t%s\necho_end_line\t%s\n' "$ECHO_LOG_START" "$ECHO_LOG_END"
-    printf 'recovery_start_line\t%s\nrecovery_end_line\t%s\n' \
-      "$RECOVERY_NTP_LOG_START" "$RECOVERY_NTP_LOG_END"
     printf 'http3_start_line\t%s\nhttp3_end_line\t%s\n' \
       "$HTTP3_PROVIDER_LOG_LINE" "$HTTP3_PROVIDER_LOG_END"
     printf 'blocked_profile_start_line\t%s\n' "$BLOCKED_LOG_LINE"
     printf 'blocked_start_line\t%s\nblocked_end_line\t%s\n' \
       "$BLOCKED_DNS_LOG_START" "$BLOCKED_DNS_LOG_END"
+    printf 'pressure_start_line\t%s\npressure_end_line\t%s\n' \
+      "$PRESSURE_LOG_START" "$PRESSURE_END_LOG_LINE"
+    printf 'echo_start_line\t%s\necho_end_line\t%s\n' "$ECHO_LOG_START" "$ECHO_LOG_END"
+    printf 'recovery_start_line\t%s\nrecovery_end_line\t%s\n' \
+      "$RECOVERY_NTP_LOG_START" "$RECOVERY_NTP_LOG_END"
     printf 'http3_intercept_start_line\t%s\nhttp3_intercept_end_line\t%s\n' \
       "$HTTP3_INTERCEPT_LOG_START" "$HTTP3_INTERCEPT_LOG_END"
     printf 'provider_log_end_line\t%s\nschema_complete\t1\n' "$provider_log_end"
@@ -1747,6 +1747,12 @@ check_exact_decision() {
     add_issue "$description did not have one unambiguous decision record"
     return 1
   fi
+  if [[ "$target" == pressure || "$target" == recovery ]] \
+    && [[ "$matching_generation" != "$BLOCKED_PROVIDER_GENERATION" ]]
+  then
+    add_issue "$description used a different blocked provider generation"
+    return 1
+  fi
   if [[ "$target" == ntp || "$target" == recovery ]]; then
     # Bind Dial9's exact byte requirements to the once-only transaction the
     # child retained. NTP extensions can change response length, not ingress.
@@ -1849,9 +1855,8 @@ PY
       add_issue "controlled echo flow identity collided with another probe flow"
     fi
   done
-  [[ "$UNBLOCKED_PROVIDER_GENERATION" == none \
-    || "$UNBLOCKED_PROVIDER_GENERATION" == "$generation" ]] \
-    || add_issue "controlled echo flow used a different unblocked provider generation"
+  [[ "$BLOCKED_PROVIDER_GENERATION" == "$generation" ]] \
+    || add_issue "controlled echo flow used a different blocked provider generation"
 }
 
 check_http3_decisions() {
@@ -1939,12 +1944,12 @@ try:
     pressure_end = int(sys.argv[5])
     blocked_start = int(sys.argv[6])
     pressure_flow_id = int(sys.argv[7])
-    if not 0 <= unblocked_start <= pressure_start <= pressure_end <= blocked_start <= len(lines):
+    if not 0 <= unblocked_start <= blocked_start <= pressure_start <= pressure_end <= len(lines):
         raise ValueError("invalid provider log phase boundaries")
     healthy_segments = (
-        lines[unblocked_start:pressure_start],
-        lines[pressure_end:blocked_start],
-        lines[blocked_start:],
+        lines[unblocked_start:blocked_start],
+        lines[blocked_start:pressure_start],
+        lines[pressure_end:],
     )
     healthy = [
         summarize_udp_pressure_rows(
@@ -2250,6 +2255,35 @@ CONTROL_DNS_SOURCE_PID="$LAST_PROBE_PID"
 CONTROL_DNS_LOG_START="$LAST_PROBE_LOG_START"
 CONTROL_DNS_LOG_END="$LAST_PROBE_LOG_END"
 
+CURRENT_PHASE=sustained-http3
+run_sustained_http3
+
+# Reinstall with one exact public DNS endpoint blocked. A new client socket is
+# used below, so this must create a fresh NE flow and decision.
+CURRENT_PHASE=blocked-install
+BLOCKED_CONTAINER_LINE="$(container_log_line)"
+if ! run_bounded 90 "$INSTALLER" dev "$BUILT_APP" 0 \
+  "--udp-passthrough-ports=" \
+  "--udp-blocked-endpoints=$BLOCKED_DNS:53" \
+  "--evidence-run-uuid=$RUN_UUID" \
+  "--udp-e2e-diagnostic-endpoints=$DIAGNOSTIC_ENDPOINTS"
+then
+  fatal_issue "could not install the blocked UDP E2E profile"
+fi
+wait_for_connected "$BLOCKED_CONTAINER_LINE" \
+  || fatal_issue "blocked UDP E2E profile did not connect"
+require_provider_identity || true
+BLOCKED_LOG_LINE="$(provider_log_line)"
+
+CURRENT_PHASE=blocked-probe
+run_probe "blocked DNS probe" 10 blocked dns "$BLOCKED_DNS" \
+  --timeout 4 --expect-no-response
+BLOCKED_DNS_SOURCE_PID="$LAST_PROBE_PID"
+BLOCKED_DNS_LOG_START="$LAST_PROBE_LOG_START"
+BLOCKED_DNS_LOG_END="$LAST_PROBE_LOG_END"
+
+# Keep the sustained echo population in the profile that intercepts UDP/443.
+CURRENT_PHASE=concurrent-udp-load
 PRESSURE_LOG_LINE="$(provider_log_line)"
 PRESSURE_PROBE_ATTEMPTED=1
 PRESSURE_LOG_START="$PRESSURE_LOG_LINE"
@@ -2364,33 +2398,6 @@ RECOVERY_NTP_SOURCE_PID="$LAST_PROBE_PID"
 RECOVERY_NTP_LOG_START="$LAST_PROBE_LOG_START"
 RECOVERY_NTP_LOG_END="$LAST_PROBE_LOG_END"
 
-CURRENT_PHASE=sustained-http3
-run_sustained_http3
-
-# Reinstall with one exact public DNS endpoint blocked. A new client socket is
-# used below, so this must create a fresh NE flow and decision.
-CURRENT_PHASE=blocked-install
-BLOCKED_CONTAINER_LINE="$(container_log_line)"
-if ! run_bounded 90 "$INSTALLER" dev "$BUILT_APP" 0 \
-  "--udp-passthrough-ports=" \
-  "--udp-blocked-endpoints=$BLOCKED_DNS:53" \
-  "--evidence-run-uuid=$RUN_UUID" \
-  "--udp-e2e-diagnostic-endpoints=$DIAGNOSTIC_ENDPOINTS"
-then
-  fatal_issue "could not install the blocked UDP E2E profile"
-fi
-wait_for_connected "$BLOCKED_CONTAINER_LINE" \
-  || fatal_issue "blocked UDP E2E profile did not connect"
-require_provider_identity || true
-BLOCKED_LOG_LINE="$(provider_log_line)"
-
-CURRENT_PHASE=blocked-probe
-run_probe "blocked DNS probe" 10 blocked dns "$BLOCKED_DNS" \
-  --timeout 4 --expect-no-response
-BLOCKED_DNS_SOURCE_PID="$LAST_PROBE_PID"
-BLOCKED_DNS_LOG_START="$LAST_PROBE_LOG_START"
-BLOCKED_DNS_LOG_END="$LAST_PROBE_LOG_END"
-
 CURRENT_PHASE=intercepted-http3
 run_intercepted_http3 || true
 
@@ -2407,15 +2414,16 @@ check_exact_decision "$NTP_LOG_START" "$NTP_LOG_END" intercept \
 check_exact_decision "$CONTROL_DNS_LOG_START" "$CONTROL_DNS_LOG_END" passthrough \
   "$BLOCKED_DNS:53" com.apple.python3 "$CONTROL_DNS_SOURCE_PID" \
   "Rust pre-block control decision for public DNS" control
+check_exact_decision "$BLOCKED_DNS_LOG_START" "$BLOCKED_DNS_LOG_END" blocked \
+  "$BLOCKED_DNS:53" com.apple.python3 "$BLOCKED_DNS_SOURCE_PID" \
+  "Rust blocked decision for an exact public DNS endpoint" blocked
 check_exact_decision "$PRESSURE_LOG_START" "$PRESSURE_END_LOG_LINE" intercept \
   "$INTERCEPT_NTP:123" com.apple.python3 "$PRESSURE_SOURCE_PID" \
   "Rust intercept decision for the deliberate pressure flow" pressure
 check_exact_decision "$RECOVERY_NTP_LOG_START" "$RECOVERY_NTP_LOG_END" intercept \
   "$INTERCEPT_NTP:123" com.apple.python3 "$RECOVERY_NTP_SOURCE_PID" \
   "Rust post-pressure NTP recovery decision" recovery
-check_exact_decision "$BLOCKED_DNS_LOG_START" "$BLOCKED_DNS_LOG_END" blocked \
-  "$BLOCKED_DNS:53" com.apple.python3 "$BLOCKED_DNS_SOURCE_PID" \
-  "Rust blocked decision for an exact public DNS endpoint" blocked
+
 
 check_echo_decisions || true
 check_http3_decisions || true

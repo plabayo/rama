@@ -953,13 +953,15 @@ def http3_receipt_fixture():
 
 def echo_timing_fixture(*, start_epoch_ms=1500, sockets=128):
     """64 shared rounds, with each response returning 1 ms after its send."""
+    start_monotonic_ns = start_epoch_ms * 1_000_000 + 1_000_000_000
     return {
         "interval_ms": 2000,
         "start_epoch_ms": start_epoch_ms, "end_epoch_ms": start_epoch_ms + 126001,
-        "start_monotonic_ns": 1_000_000_000, "end_monotonic_ns": 127_001_000_000,
+        "start_monotonic_ns": start_monotonic_ns,
+        "end_monotonic_ns": start_monotonic_ns + 126_001_000_000,
         "packet_timings_ns": [
-            [index, sequence, 1_000_000_000 + sequence * 2_000_000_000,
-             1_001_000_000 + sequence * 2_000_000_000]
+            [index, sequence, start_monotonic_ns + sequence * 2_000_000_000,
+             start_monotonic_ns + 1_000_000 + sequence * 2_000_000_000]
             for index in range(sockets) for sequence in range(64)
         ],
     }
@@ -979,17 +981,6 @@ def build_strict_bundle(directory):
         _decision(RUN_UUID, provider_pid, 7, "intercept", 103, "162.159.200.1:123", "127.0.0.1:41003", "com.apple.python3", 1003),
         _decision(RUN_UUID, provider_pid, 7, "passthrough", 102, "8.8.8.8:53", "127.0.0.1:41002", "com.apple.python3", 1002),
     ]
-    lines.extend(
-        _decision(RUN_UUID, provider_pid, 7, "intercept", flow_id, echo_endpoint,
-                  endpoint, "com.apple.python3", echo_pid)
-        for flow_id, endpoint in zip(echo_flows, echo_endpoints)
-    )
-    lines.extend([
-        _decision(RUN_UUID, provider_pid, 7, "intercept", 104, "162.159.200.1:123", "127.0.0.1:41004", "com.apple.python3", 1004),
-        'UDP ingress pressure dropped datagram flow_id=104 pressure="global_bytes" cumulative_drops=1 global_retained_bytes=4096 global_max_retained_bytes=4096',
-        'UDP ingress pressure resumed flow flow_id=104 pressure="global_bytes" cumulative_resumptions=1 global_retained_bytes=0 global_max_retained_bytes=4096',
-        _decision(RUN_UUID, provider_pid, 7, "intercept", 106, "162.159.200.1:123", "127.0.0.1:41006", "com.apple.python3", 1006),
-    ])
     h3_pids = list(range(3000, 3006))
     h3_flows = list(range(2000, 2006))
     lines.extend(
@@ -1001,6 +992,17 @@ def build_strict_bundle(directory):
         _decision(RUN_UUID, provider_pid, 8, "blocked", 105, "8.8.8.8:53",
                   "127.0.0.1:41005", "com.apple.python3", 1005)
     )
+    lines.extend(
+        _decision(RUN_UUID, provider_pid, 8, "intercept", flow_id, echo_endpoint,
+                  endpoint, "com.apple.python3", echo_pid)
+        for flow_id, endpoint in zip(echo_flows, echo_endpoints)
+    )
+    lines.extend([
+        _decision(RUN_UUID, provider_pid, 8, "intercept", 104, "162.159.200.1:123", "127.0.0.1:41004", "com.apple.python3", 1004),
+        'UDP ingress pressure dropped datagram flow_id=104 pressure="global_bytes" cumulative_drops=1 global_retained_bytes=4096 global_max_retained_bytes=4096',
+        'UDP ingress pressure resumed flow flow_id=104 pressure="global_bytes" cumulative_resumptions=1 global_retained_bytes=0 global_max_retained_bytes=4096',
+        _decision(RUN_UUID, provider_pid, 8, "intercept", 106, "162.159.200.1:123", "127.0.0.1:41006", "com.apple.python3", 1006),
+    ])
     lines.append(
         _decision(RUN_UUID, provider_pid, 8, "intercept", 2500, "1.1.1.1:443",
                   "192.0.2.1:54000", "com.apple.python3", 3500)
@@ -1011,8 +1013,8 @@ def build_strict_bundle(directory):
         ("passthrough", 1001, "1.1.1.1:53", 1100),
         ("ntp", 1003, "162.159.200.1:123", 1200),
         ("control", 1002, "8.8.8.8:53", 1300),
-        ("recovery", 1006, "162.159.200.1:123", 127700),
-        ("blocked", 1005, "8.8.8.8:53", 130500),
+        ("blocked", 1005, "8.8.8.8:53", 4500),
+        ("recovery", 1006, "162.159.200.1:123", 134700),
     ):
         value = probe_receipt_fixture(label, pid, endpoint, start_epoch_ms=started)
         (directory / f"udp-probe-{label}.json").write_text(json.dumps(value) + "\n")
@@ -1024,12 +1026,13 @@ def build_strict_bundle(directory):
         ("udp_error_start_line", 0), ("passthrough_start_line", 0),
         ("passthrough_end_line", 1), ("ntp_start_line", 1), ("ntp_end_line", 2),
         ("control_start_line", 2), ("control_end_line", 3),
-        ("pressure_start_line", 3), ("pressure_end_line", 134),
-        ("echo_start_line", 3), ("echo_end_line", 134),
-        ("recovery_start_line", 134), ("recovery_end_line", 135),
-        ("http3_start_line", 135), ("http3_end_line", 141),
-        ("blocked_profile_start_line", 141), ("blocked_start_line", 141),
-        ("blocked_end_line", 142), ("http3_intercept_start_line", 142),
+        ("http3_start_line", 3), ("http3_end_line", 9),
+        ("blocked_profile_start_line", 9), ("blocked_start_line", 9),
+        ("blocked_end_line", 10),
+        ("pressure_start_line", 10), ("pressure_end_line", 141),
+        ("echo_start_line", 10), ("echo_end_line", 141),
+        ("recovery_start_line", 141), ("recovery_end_line", 142),
+        ("http3_intercept_start_line", 142),
         ("http3_intercept_end_line", 143), ("provider_log_end_line", 143),
         ("schema_complete", 1),
     )
@@ -1047,7 +1050,7 @@ def build_strict_bundle(directory):
         "local_endpoint_set_sha256": hashlib.sha256("\n".join(echo_endpoints).encode()).hexdigest(),
         "payload_set_sha256": echo_digest, "echo_set_sha256": echo_digest,
         "error_count": 0, "passed": True, "schema_complete": True,
-        **echo_timing_fixture(),
+        **echo_timing_fixture(start_epoch_ms=8600),
     }
     server = {
         "schema_version": 2, "kind": "controlled_echo_server", "run_uuid": RUN_UUID,
@@ -1071,7 +1074,7 @@ def build_strict_bundle(directory):
     )
     (directory / "controlled-echo-server.log").write_bytes(b"")
     (directory / "echo-identities.tsv").write_text("".join(
-        f"7\t{flow_id}\t{endpoint}\n" for flow_id, endpoint in zip(echo_flows, echo_endpoints)
+        f"8\t{flow_id}\t{endpoint}\n" for flow_id, endpoint in zip(echo_flows, echo_endpoints)
     ))
 
     pid_rows = []
@@ -1088,7 +1091,7 @@ def build_strict_bundle(directory):
     (directory / "http3-results.tsv").write_text("".join(result_rows))
     (directory / "http3-round-results.tsv").write_text(
         "round\texpected_workers\tbarrier_release_epoch_ms\tpre_release_alive\n"
-        "1\t2\t128000\t2\n2\t2\t129000\t2\n3\t2\t130000\t2\n"
+        "1\t2\t2000\t2\n2\t2\t3000\t2\n3\t2\t4000\t2\n"
     )
     (directory / "http3-timing.tsv").write_text(
         "schema_version\t1\nstart_monotonic_ms\t100\nend_monotonic_ms\t2600\n"
@@ -1097,9 +1100,9 @@ def build_strict_bundle(directory):
     (directory / "http3-endpoints.txt").write_text("1.1.1.1:443\n")
     receipt, body = http3_receipt_fixture()
     for key in ("start_epoch_ms", "end_epoch_ms"):
-        receipt[key] += 126000
+        receipt[key] += 126200
     for key in ("start_monotonic_ns", "end_monotonic_ns"):
-        receipt[key] += 126_000_000_000
+        receipt[key] += 126_200_000_000
     (directory / "http3-url.txt").write_text(receipt["url"] + "\n")
     (directory / "http3-intercept-client.json").write_text(json.dumps(receipt) + "\n")
     (directory / "http3-intercept-body.txt").write_bytes(body)
@@ -1108,11 +1111,11 @@ def build_strict_bundle(directory):
     requirement_rows = [
         "label\tprovider_pid\tprovider_generation\tflow_id\tprotocol\tsource_pid\tclose_reason\tmin_bytes_in\tmax_bytes_in\tmin_bytes_out\tmax_bytes_out\n",
         "ntp\t9001\t7\t103\t2\t1003\t1\t48\t48\t48\t48\n",
-        "pressure\t9001\t7\t104\t2\t1004\t1\t4096\t2093056\t0\t0\n",
-        "recovery-ntp\t9001\t7\t106\t2\t1006\t1\t48\t48\t48\t48\n",
+        "pressure\t9001\t8\t104\t2\t1004\t1\t4096\t2093056\t0\t0\n",
+        "recovery-ntp\t9001\t8\t106\t2\t1006\t1\t48\t48\t48\t48\n",
     ]
     requirement_rows.extend(
-        f"echo-{index}\t9001\t7\t{flow_id}\t2\t2002\t1\t76800\t76800\t76800\t76800\n"
+        f"echo-{index}\t9001\t8\t{flow_id}\t2\t2002\t1\t76800\t76800\t76800\t76800\n"
         for index, flow_id in enumerate(echo_flows)
     )
     requirement_rows.append("http3-intercept\t9001\t8\t2500\t2\t3500\t1\t1\t16777216\t1\t16777216\n")
@@ -1951,6 +1954,77 @@ class ModernStatusTests(unittest.TestCase):
 
 
 class StrictBundleTests(unittest.TestCase):
+    def test_second_profile_generation_and_workload_order_are_required(self):
+        for mutation in ("pressure-generation", "recovery-generation", "echo-generation",
+                         "old-phases", "old-probe-order", "echo-before-blocked", "echo-after-recovery"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                build_strict_bundle(root)
+                if mutation.endswith("generation"):
+                    pid = {"pressure-generation": 1004, "recovery-generation": 1006,
+                           "echo-generation": 2002}[mutation]
+                    path = root / "provider.log"
+                    lines = path.read_text().splitlines()
+                    path.write_text("\n".join(
+                        line.replace("provider_generation=8", "provider_generation=7")
+                        if f"source_pid={pid}" in line else line for line in lines
+                    ) + "\n")
+                elif mutation == "old-phases":
+                    path = root / "provider-log-phases.tsv"
+                    prior_order = {
+                        "pressure_start_line": 3, "pressure_end_line": 134,
+                        "echo_start_line": 3, "echo_end_line": 134,
+                        "recovery_start_line": 134, "recovery_end_line": 135,
+                        "http3_start_line": 135, "http3_end_line": 141,
+                        "blocked_profile_start_line": 141, "blocked_start_line": 141,
+                        "blocked_end_line": 142,
+                    }
+                    path.write_text("".join(
+                        f"{key}\t{prior_order.get(key, value)}\n"
+                        for key, value in (line.split("\t") for line in path.read_text().splitlines())
+                    ))
+                elif mutation == "old-probe-order":
+                    path = root / "udp-probe-results.tsv"
+                    rows = path.read_text().splitlines()
+                    rows[-2], rows[-1] = rows[-1], rows[-2]
+                    path.write_text("\n".join(rows) + "\n")
+                else:
+                    path = root / "controlled-echo-client.json"
+                    value = json.loads(path.read_text())
+                    offset_ms = -7200 if mutation == "echo-before-blocked" else 200
+                    for key in ("start_epoch_ms", "end_epoch_ms"):
+                        value[key] += offset_ms
+                    for key in ("start_monotonic_ns", "end_monotonic_ns"):
+                        value[key] += offset_ms * 1_000_000
+                    for row in value["packet_timings_ns"]:
+                        row[2] += offset_ms * 1_000_000
+                        row[3] += offset_ms * 1_000_000
+                    path.write_text(json.dumps(value))
+                reseal_test_manifest(root)
+                with self.assertRaisesRegex(
+                    BundleVerificationError, "generation|phase boundaries|probe result label|blocked/recovery window"
+                ):
+                    verify_bundle(root)
+
+    def test_dial9_rows_keep_the_exact_generation_of_each_workload(self):
+        for label in ("ntp", "pressure", "recovery-ntp", "echo-0"):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                build_strict_bundle(root)
+                path = root / "dial9-requirements.tsv"
+                rows = [line.split("\t") for line in path.read_text().splitlines()]
+                row = next(row for row in rows if row[0] == label)
+                row[2] = "8" if label == "ntp" else "7"
+                path.write_text("\n".join("\t".join(row) for row in rows) + "\n")
+                status = root / "udp-evidence-status.tsv"
+                status.write_text("".join(replace(
+                    status.read_text().splitlines(keepends=True), "dial9_requirements_sha256",
+                    hashlib.sha256(path.read_bytes()).hexdigest(),
+                )))
+                reseal_test_manifest(root)
+                with self.assertRaisesRegex(BundleVerificationError, "Dial9 requirement mismatch"):
+                    verify_bundle(root)
+
     def test_active_population_is_rederived_from_raw_packet_times(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -2048,15 +2122,15 @@ class StrictBundleTests(unittest.TestCase):
             self.assertEqual(verify_bundle(root), 0)
             cases = (
                 ("provider.log", "local_endpoint=192.0.2.1:54000", "local_endpoint=192.0.2.1:54001"),
-                ("provider.log", "provider_generation=8 rama_decision=intercept", "provider_generation=7 rama_decision=intercept"),
+                ("provider.log", "provider_generation=8 rama_decision=intercept flow_id=2500", "provider_generation=7 rama_decision=intercept flow_id=2500"),
                 ("provider.log", "source_pid=3500", "source_pid=3501"),
                 ("provider.log", "rama_decision=intercept flow_id=2500", "rama_decision=passthrough flow_id=2500"),
                 ("provider-log-phases.tsv", "http3_intercept_end_line\t143", "http3_intercept_end_line\t142"),
                 ("http3-intercept-result.tsv", "3500\t0", "3500\t20"),
                 ("http3-url.txt", "/cdn-cgi/trace", "/another-response"),
                 ("http3-intercept-body.txt", "http=http/3", "http=http/2"),
-                ("http3-intercept-client.json", '"start_epoch_ms": 134600', '"start_epoch_ms": 134500'),
-                ("http3-intercept-client.json", '"start_monotonic_ns": 135600000000', '"start_monotonic_ns": 135500000000'),
+                ("http3-intercept-client.json", '"start_epoch_ms": 134800', '"start_epoch_ms": 134700'),
+                ("http3-intercept-client.json", '"start_monotonic_ns": 135800000000', '"start_monotonic_ns": 135700000000'),
                 ("dial9-requirements.tsv", "http3-intercept\t9001\t8", "http3-intercept\t9001\t7"),
                 ("dial9-requirements.tsv", "\t1\t16777216\t1\t16777216", "\t0\t16777216\t1\t16777216"),
                 ("dial9-requirements.tsv", "\t1\t16777216\t1\t16777216", "\t1\t33554432\t1\t16777216"),
@@ -2185,6 +2259,7 @@ class StrictBundleTests(unittest.TestCase):
             ("ntp", 1003, 103, "ntp"), ("recovery", 1006, 106, "recovery-ntp"),
         ):
             with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                generation = 7 if label == "ntp" else 8
                 root = Path(temporary)
                 receipt_path = root / f"udp-probe-{label}.json"
                 receipt = probe_receipt_fixture(label, pid, "162.159.200.1:123")
@@ -2195,8 +2270,8 @@ class StrictBundleTests(unittest.TestCase):
                     TMP_DIR={shlex.quote(str(root))}
                     PROBE={shlex.quote(str(SCRIPT_DIR / 'modern_udp_e2e_probe.py'))}
                     DIAL9_REQUIREMENTS={shlex.quote(str(requirements))}
-                    RUN_UUID={RUN_UUID} PROVIDER_PID=9001
-                    decision_records() {{ printf '%s\\n' 'intercept\t{flow_id}\t162.159.200.1:123\t127.0.0.1:5555\tcom.apple.python3\t{pid}\t{RUN_UUID}\t9001\t7'; }}
+                    RUN_UUID={RUN_UUID} PROVIDER_PID=9001 BLOCKED_PROVIDER_GENERATION=8
+                    decision_records() {{ printf '%s\\n' 'intercept\t{flow_id}\t162.159.200.1:123\t127.0.0.1:5555\tcom.apple.python3\t{pid}\t{RUN_UUID}\t9001\t{generation}'; }}
                     decision_marker_count_for_pid() {{ printf '1\\n'; }}
                     is_canonical_udp_endpoint() {{ return 0; }}
                     add_issue() {{ printf '%s\\n' "$1" >&2; }}
@@ -2208,7 +2283,7 @@ class StrictBundleTests(unittest.TestCase):
                                         text=True, timeout=5)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(requirements.read_text(),
-                    f"{requirement_label}\t9001\t7\t{flow_id}\t2\t{pid}\t1\t48\t48\t68\t68\n")
+                    f"{requirement_label}\t9001\t{generation}\t{flow_id}\t2\t{pid}\t1\t48\t48\t68\t68\n")
                 # A missing, wrong-generation-source, or failed probe cannot
                 # produce a new permissive Dial9 row.
                 for error in ("missing", "pid", "protocol"):
@@ -3138,6 +3213,68 @@ class QuicShapedEchoTests(unittest.TestCase):
 
 
 class HarnessSourceContractTests(unittest.TestCase):
+    def test_workload_callers_keep_sustained_echo_in_the_second_profile(self):
+        shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()
+        start = shell.index("CURRENT_PHASE=unblocked-probes\n")
+        end = shell.index("# Let os_log", start)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            (root / "source-modern_udp_evidence.py").write_bytes(
+                (SCRIPT_DIR / "modern_udp_evidence.py").read_bytes()
+            )
+            # Execute the real caller ordering, with every traffic, process,
+            # and profile operation replaced by a recorder. The only child
+            # interpreter parses the already-captured echo fixture.
+            program = textwrap.dedent(f"""\
+                TMP_DIR={shlex.quote(str(root))}
+                ECHO_CLIENT_RESULT="$TMP_DIR/controlled-echo-client.json"
+                ECHO_SERVER_RESULT="$TMP_DIR/controlled-echo-server.json"
+                MODERN_EVIDENCE="$TMP_DIR/source-modern_udp_evidence.py"
+                RUN_UUID={RUN_UUID} RUN_START_EPOCH_MS=1000 PROFILE=first
+                PASSTHROUGH_DNS=1.1.1.1 INTERCEPT_NTP=162.159.200.1 BLOCKED_DNS=8.8.8.8
+                INSTALLER=/fixture/installer BUILT_APP=/fixture/app PROBE=/fixture/probe
+                ECHO_ENDPOINT=127.0.0.1:44444 ECHO_EXPECTED_COUNT=8192
+                ECHO_SOCKET_COUNT=128 ECHO_DATAGRAMS_PER_SOCKET=64 ECHO_PAYLOAD_BYTES=1200
+                ECHO_INTERVAL_MS=2000 ECHO_CONCURRENCY=32 ECHO_SERVER_PID=4000
+                PRESSURE_COUNT=512 PRESSURE_PAYLOAD_BYTES=4096
+                CONCURRENT_LOAD_DEADLINE_SECONDS=180 UDP_PROBE_ATTEMPT_COUNT=0 UDP_PROBE_PASS_COUNT=0
+                record() {{ printf '%s:%s\\n' "$1" "$PROFILE" >> "$TMP_DIR/call-order"; }}
+                run_probe() {{
+                  record "probe-$3"
+                  LAST_PROBE_PID=42 LAST_PROBE_LOG_START=0 LAST_PROBE_LOG_END=1
+                }}
+                run_sustained_http3() {{ record passthrough-http3; }}
+                run_bounded() {{
+                  [[ "$2" == "$INSTALLER" ]] || exit 90
+                  PROFILE=second
+                  record install
+                  printf '%s\\n' "$@" > "$TMP_DIR/install-arguments"
+                }}
+                start_owned_command() {{ record "$1"; OWNED_COMMAND_SOURCE_PID=43 OWNED_COMMAND_PID=44; }}
+                wait_for_child_until() {{ OWNED_JOIN_REAPED=1; }}
+                close_pressure_probe_window() {{ LAST_PROBE_LOG_END=1; }}
+                close_probe_decision_window() {{ LAST_PROBE_LOG_END=1; }}
+                container_log_line() {{ printf '0\\n'; }}
+                provider_log_line() {{ printf '0\\n'; }}
+                wait_for_connected() {{ :; }}
+                require_provider_identity() {{ :; }}
+                run_intercepted_http3() {{ record intercepted-http3; }}
+                fatal_issue() {{ printf '%s\\n' "$1" >&2; exit 91; }}
+                add_issue() {{ fatal_issue "$1"; }}
+            """) + shell[start:end]
+            result = subprocess.run(["/bin/bash", "-c", program], capture_output=True,
+                                    text=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((root / "call-order").read_text().splitlines(), [
+                "probe-passthrough:first", "probe-ntp:first", "probe-control:first",
+                "passthrough-http3:first", "install:second", "probe-blocked:second",
+                "echo:second", "pressure:second", "probe-recovery:second", "intercepted-http3:second",
+            ])
+            arguments = (root / "install-arguments").read_text().splitlines()
+            self.assertIn("--udp-passthrough-ports=", arguments)
+            self.assertIn("--udp-blocked-endpoints=8.8.8.8:53", arguments)
+
     def test_live_echo_metrics_replay_raw_timing_before_counting_a_pass(self):
         shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()
         start = shell.index('ECHO_METRICS="$(')
@@ -3222,9 +3359,9 @@ class HarnessSourceContractTests(unittest.TestCase):
                 (root / f"source-{name}").write_bytes((SCRIPT_DIR / name).read_bytes())
                 (live / name).write_text("raise RuntimeError('live source must not be imported')\n")
             (root / "provider.log").write_text("\n".join((
-                _decision(RUN_UUID, 9001, 7, "intercept", 1000,
+                _decision(RUN_UUID, 9001, 8, "intercept", 1000,
                           "127.0.0.1:443", "127.0.0.1:50000", "com.apple.python3", 2002),
-                _decision(RUN_UUID, 9001, 7, "intercept", 104,
+                _decision(RUN_UUID, 9001, 8, "intercept", 104,
                           "162.159.200.1:123", "127.0.0.1:41004", "com.apple.python3", 1004),
                 'UDP ingress pressure dropped datagram flow_id=104 pressure="global_bytes" cumulative_drops=1 global_retained_bytes=4096 global_max_retained_bytes=4096',
                 'UDP ingress pressure resumed flow flow_id=104 pressure="global_bytes" cumulative_resumptions=1 global_retained_bytes=0 global_max_retained_bytes=4096',
@@ -3243,12 +3380,12 @@ class HarnessSourceContractTests(unittest.TestCase):
                 DIAL9_REQUIREMENTS="$TMP_DIR/requirements.tsv"
                 : > "$DIAL9_REQUIREMENTS"
                 ECHO_CLIENT_RESULT="$TMP_DIR/echo-client.json"
-                RUN_UUID={RUN_UUID} PROVIDER_PID=9001 UNBLOCKED_PROVIDER_GENERATION=7
+                RUN_UUID={RUN_UUID} PROVIDER_PID=9001 BLOCKED_PROVIDER_GENERATION=8
                 ECHO_SOURCE_PID=2002 ECHO_ENDPOINT=127.0.0.1:443 ECHO_SOCKET_COUNT=1
                 ECHO_DATAGRAMS_PER_SOCKET=1 ECHO_PAYLOAD_BYTES=1200 ECHO_LOG_START=0 ECHO_LOG_END=1
                 PASSTHROUGH_DNS_FLOW_ID=101 CONTROL_DNS_FLOW_ID=102 NTP_FLOW_ID=103
                 PRESSURE_FLOW_ID=none RECOVERY_NTP_FLOW_ID=106 BLOCKED_DNS_FLOW_ID=105
-                UNBLOCKED_LOG_LINE=0 PRESSURE_LOG_LINE=1 PRESSURE_END_LOG_LINE=4 BLOCKED_LOG_LINE=4
+                UNBLOCKED_LOG_LINE=0 PRESSURE_LOG_LINE=1 PRESSURE_END_LOG_LINE=4 BLOCKED_LOG_LINE=0
                 ISSUES=0 FAILURES=0
                 add_issue() {{ ISSUES=$((ISSUES + 1)); printf '%s\\n' "$1" >&2; }}
                 add_failure() {{ FAILURES=$((FAILURES + 1)); printf '%s\\n' "$1" >&2; }}
@@ -3264,11 +3401,11 @@ class HarnessSourceContractTests(unittest.TestCase):
                   "$PRESSURE_RECOVERED_REASONS" "$OUTSIDE_PRESSURE_EVENTS"
                 [[ "$ISSUES" == 0 && "$FAILURES" == 0 ]]
             """)
-            for generation, issues in ((7, 0), (8, 1)):
+            for generation, issues in ((8, 0), (7, 1)):
                 with self.subTest(generation=generation):
                     result = subprocess.run(
                         ["/bin/bash", "-c", program.replace(
-                            "UNBLOCKED_PROVIDER_GENERATION=7", f"UNBLOCKED_PROVIDER_GENERATION={generation}"
+                            "BLOCKED_PROVIDER_GENERATION=8", f"BLOCKED_PROVIDER_GENERATION={generation}"
                         )], cwd=live, capture_output=True, text=True, timeout=10,
                         env={**{key: value for key, value in os.environ.items()
                                 if key != "PYTHONDONTWRITEBYTECODE"}, "PYTHONPATH": str(live)},
@@ -3277,10 +3414,10 @@ class HarnessSourceContractTests(unittest.TestCase):
                     self.assertEqual(result.stdout,
                                      f"{issues} 0 1 1 1 1 global_bytes global_bytes 0\n", result.stderr)
                     self.assertEqual(result.stderr, "" if issues == 0 else
-                                     "controlled echo flow used a different unblocked provider generation\n")
-                    self.assertEqual((root / "echo-identities.tsv").read_text(), "7\t1000\t127.0.0.1:50000\n")
+                                     "controlled echo flow used a different blocked provider generation\n")
+                    self.assertEqual((root / "echo-identities.tsv").read_text(), "8\t1000\t127.0.0.1:50000\n")
                     self.assertEqual((root / "requirements.tsv").read_text(),
-                                     "echo-0\t9001\t7\t1000\t2\t2002\t1\t1200\t1200\t1200\t1200\n")
+                                     "echo-0\t9001\t8\t1000\t2\t2002\t1\t1200\t1200\t1200\t1200\n")
             self.assertEqual(list(root.rglob("__pycache__")), [])
 
     def test_http3_shell_gate_uses_the_same_typed_local_endpoint_rule(self):
@@ -3387,12 +3524,12 @@ class HarnessSourceContractTests(unittest.TestCase):
             requirements = Path(temporary) / "requirements.tsv"
             program = helper("check_exact_decision") + helper("append_dial9_requirement") + textwrap.dedent(f"""\
                 DIAL9_REQUIREMENTS={shlex.quote(str(requirements))}
-                RUN_UUID={shlex.quote(RUN_UUID)} PROVIDER_PID=9001
+                RUN_UUID={shlex.quote(RUN_UUID)} PROVIDER_PID=9001 BLOCKED_PROVIDER_GENERATION=8
                 PRESSURE_PAYLOAD_BYTES=4096 PRESSURE_EXPECTED_BYTES=2097152
                 decision_records() {{
                   printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' \\
                     intercept 104 162.159.200.1:123 127.0.0.1:41004 \\
-                    com.apple.python3 1004 "$RUN_UUID" 9001 7
+                    com.apple.python3 1004 "$RUN_UUID" 9001 8
                 }}
                 decision_marker_count_for_pid() {{ printf '1\\n'; }}
                 is_canonical_udp_endpoint() {{ return 0; }}
@@ -3406,7 +3543,7 @@ class HarnessSourceContractTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(requirements.read_text(),
-                "pressure\t9001\t7\t104\t2\t1004\t1\t4096\t2093056\t0\t0\n")
+                "pressure\t9001\t8\t104\t2\t1004\t1\t4096\t2093056\t0\t0\n")
 
     def test_finalizer_captures_late_collection_and_restoration_errors(self):
         helper = BoundedCommandCleanupTests.shell_function
