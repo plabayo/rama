@@ -917,17 +917,27 @@ fn udp_max_lifetime_has_distinct_close_reason() {
     engine.stop(0);
 }
 
-fn udp_activity_draining_handler() -> TestHandler {
+fn udp_activity_draining_handler(
+    received_tx: tokio::sync::mpsc::UnboundedSender<()>,
+) -> TestHandler {
     TestHandler {
         app_message_handler: Arc::new(|_| None),
         tcp_matcher: Arc::new(|_| FlowAction::Passthrough),
-        udp_matcher: Arc::new(|meta| FlowAction::Intercept {
-            meta,
-            service: service_fn(|mut flow: crate::UdpFlow| async move {
-                while flow.recv().await.is_some() {}
-                Ok::<(), Infallible>(())
-            })
-            .boxed(),
+        udp_matcher: Arc::new(move |meta| {
+            let received_tx = received_tx.clone();
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |mut flow: crate::UdpFlow| {
+                    let received_tx = received_tx.clone();
+                    async move {
+                        while flow.recv().await.is_some() {
+                            received_tx.send(()).expect("activity receiver");
+                        }
+                        Ok::<(), Infallible>(())
+                    }
+                })
+                .boxed(),
+            }
         }),
         tcp_egress_options: None,
         on_sleep: None,
@@ -939,13 +949,15 @@ fn udp_activity_draining_handler() -> TestHandler {
 fn udp_explicit_max_lifetime_closes_despite_continuous_activity() {
     const FLOW_ID: u64 = 0xE1E1_2003;
     install_close_capture();
-    let engine =
-        TransparentProxyEngineBuilder::new(TestHandlerFactory(udp_activity_draining_handler()))
-            .with_runtime_factory(TestRuntimeFactory)
-            .with_udp_max_flow_lifetime(Duration::from_millis(400))
-            .with_udp_idle_timeout(Duration::from_millis(150))
-            .build()
-            .expect("build engine");
+    let (received_tx, mut received_rx) = tokio::sync::mpsc::unbounded_channel();
+    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(
+        udp_activity_draining_handler(received_tx),
+    ))
+    .with_runtime_factory(paused_test_runtime)
+    .with_udp_max_flow_lifetime(Duration::from_millis(400))
+    .with_udp_idle_timeout(Duration::from_millis(150))
+    .build()
+    .expect("build engine");
     let (closed_tx, closed_rx) = std::sync::mpsc::sync_channel(1);
     let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
     meta.flow_id = FLOW_ID;
@@ -957,49 +969,56 @@ fn udp_explicit_max_lifetime_closes_despite_continuous_activity() {
     };
     session.activate();
 
-    let started = std::time::Instant::now();
-    let mut activity_count = 0;
-    loop {
-        if closed_rx.try_recv().is_ok() {
-            break;
+    engine.rt.as_ref().unwrap().block_on_borrowed(async {
+        // Confirm real service activity at 0..350 ms. Advancing the engine's
+        // own clock avoids a descheduled test thread accidentally going idle.
+        for _ in 0..8 {
+            session.on_client_datagram(b"keepalive", None);
+            tokio::time::timeout(Duration::from_millis(1), received_rx.recv())
+                .await
+                .expect("service must consume each keepalive before time advances")
+                .expect("activity receiver must stay open");
+            assert_eq!(
+                closed_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            );
+            tokio::time::advance(Duration::from_millis(50)).await;
         }
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "explicit UDP max lifetime did not close an active flow"
-        );
-        session.on_client_datagram(b"keepalive", None);
-        activity_count += 1;
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    assert!(
-        activity_count >= 5,
-        "test must exercise repeated activity before the absolute cap"
-    );
-
-    let reason_deadline = std::time::Instant::now() + Duration::from_secs(1);
-    while flow_close_reason(FLOW_ID).is_none() && std::time::Instant::now() < reason_deadline {
-        std::thread::sleep(Duration::from_millis(5));
-    }
+        // The last keepalive leaves the idle deadline at 500 ms, but the
+        // absolute cap must still close at 400 ms.
+        tokio::time::timeout(
+            Duration::from_millis(1),
+            session.service_task.take().unwrap(),
+        )
+        .await
+        .expect("absolute lifetime must close at its deadline")
+        .expect("UDP task");
+    });
+    closed_rx
+        .try_recv()
+        .expect("max lifetime must notify close");
     assert_eq!(
         flow_close_reason(FLOW_ID).as_deref(),
         Some("max_lifetime"),
         "activity resets idle time but must not extend an explicitly configured absolute cap"
     );
     session.on_client_close();
-    engine.stop(0);
+    stop_paused_engine(engine);
 }
 
 #[test]
 fn udp_default_no_max_lifetime_allows_activity_to_reset_idle_timeout() {
     const FLOW_ID: u64 = 0xE1E1_2004;
     install_close_capture();
-    let engine =
-        TransparentProxyEngineBuilder::new(TestHandlerFactory(udp_activity_draining_handler()))
-            .with_runtime_factory(TestRuntimeFactory)
-            // Do not configure max lifetime: this exercises the long-lived default.
-            .with_udp_idle_timeout(Duration::from_millis(200))
-            .build()
-            .expect("build engine");
+    let (received_tx, mut received_rx) = tokio::sync::mpsc::unbounded_channel();
+    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(
+        udp_activity_draining_handler(received_tx),
+    ))
+    .with_runtime_factory(paused_test_runtime)
+    // Do not configure max lifetime: this exercises the long-lived default.
+    .with_udp_idle_timeout(Duration::from_millis(200))
+    .build()
+    .expect("build engine");
     let (closed_tx, closed_rx) = std::sync::mpsc::sync_channel(1);
     let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
     meta.flow_id = FLOW_ID;
@@ -1011,25 +1030,35 @@ fn udp_default_no_max_lifetime_allows_activity_to_reset_idle_timeout() {
     };
     session.activate();
 
-    // Keep the flow active for longer than one idle window. Every datagram
-    // must move the idle deadline; no absolute default lifetime competes.
-    for _ in 0..10 {
-        session.on_client_datagram(b"keepalive", None);
-        match closed_rx.recv_timeout(Duration::from_millis(30)) {
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Ok(()) => panic!("active UDP flow closed before traffic stopped"),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                panic!("UDP close callback disconnected")
-            }
+    engine.rt.as_ref().unwrap().block_on_borrowed(async {
+        // Keep the flow active beyond its 200 ms idle window, confirming that
+        // the service consumed each keepalive before advancing the clock.
+        for _ in 0..10 {
+            session.on_client_datagram(b"keepalive", None);
+            tokio::time::timeout(Duration::from_millis(1), received_rx.recv())
+                .await
+                .expect("service must consume each keepalive before time advances")
+                .expect("activity receiver must stay open");
+            assert_eq!(
+                closed_rx.try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            );
+            tokio::time::advance(Duration::from_millis(30)).await;
         }
-    }
-
+        tokio::time::timeout(
+            Duration::from_millis(200),
+            session.service_task.take().unwrap(),
+        )
+        .await
+        .expect("idle timeout must close after activity stops")
+        .expect("UDP task");
+    });
     closed_rx
-        .recv_timeout(Duration::from_secs(1))
+        .try_recv()
         .expect("idle timeout must close the flow after activity stops");
     assert_eq!(flow_close_reason(FLOW_ID).as_deref(), Some("idle_timeout"));
     session.on_client_close();
-    engine.stop(0);
+    stop_paused_engine(engine);
 }
 
 /// End-to-end UDP loopback: client sends a datagram, the service

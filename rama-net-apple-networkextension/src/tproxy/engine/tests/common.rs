@@ -178,6 +178,32 @@ impl TransparentProxyAsyncRuntimeFactory for TestRuntimeFactory {
     }
 }
 
+pub(super) fn paused_test_runtime(
+    _cfg: Option<&[u8]>,
+) -> Result<TransparentProxyAsyncRuntime, BoxError> {
+    install_close_capture();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .start_paused(true)
+        .build()?;
+    Ok(TransparentProxyAsyncRuntime::from_tokio(rt))
+}
+
+pub(super) fn stop_paused_engine(engine: TransparentProxyEngine<TestHandler>) {
+    // A current-thread fixture has no background workers to poll the ordinary
+    // blocking stop. Drive its graceful drain before dropping the runtime.
+    engine.udp_ingress_budget.close_flow_releases();
+    let pair = engine.shutdown.lock().take().expect("live test engine");
+    engine.rt.as_ref().unwrap().block_on_borrowed(async {
+        _ = pair.trigger.send(());
+        pair.shutdown
+            .shutdown_with_limit(Duration::from_secs(1))
+            .await
+            .expect("paused engine must drain");
+    });
+    drop(engine);
+}
+
 pub(super) fn build_engine(handler: TestHandler) -> TransparentProxyEngine<TestHandler> {
     TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
         .with_runtime_factory(TestRuntimeFactory)
