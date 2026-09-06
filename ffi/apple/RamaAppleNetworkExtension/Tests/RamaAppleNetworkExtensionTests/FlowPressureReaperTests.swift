@@ -396,7 +396,6 @@ final class FlowPressureReaperTests: XCTestCase {
         let terminalPump = NwTcpConnectionWritePump(
             connection: terminal.conn,
             queue: terminalQueue,
-            lingerCloseDeadline: .milliseconds(0),
             onDrained: {})
         terminal.ctx.egressWritePump = terminalPump
         terminal.ctx.engineGeneration = generation
@@ -404,7 +403,7 @@ final class FlowPressureReaperTests: XCTestCase {
         let releaseIndependentRetirement = core.beginResourceRetirement()
         defer {
             releaseIndependentRetirement()
-            terminalPump.armTerminalLingerCancel()
+            terminalPump.releaseTerminalConnection()
             drain(terminalQueue)
         }
 
@@ -458,13 +457,12 @@ final class FlowPressureReaperTests: XCTestCase {
         let terminalPump = NwTcpConnectionWritePump(
             connection: terminal.conn,
             queue: terminalQueue,
-            lingerCloseDeadline: .milliseconds(0),
             onDrained: {})
         terminal.ctx.egressWritePump = terminalPump
         terminal.ctx.engineGeneration = generation
         insert(core, [victim, terminal, active])
         defer {
-            terminalPump.armTerminalLingerCancel()
+            terminalPump.releaseTerminalConnection()
             drain(terminalQueue)
         }
 
@@ -1009,6 +1007,75 @@ final class FlowPressureReaperTests: XCTestCase {
         gateReleased = true
         drain(queue)
         XCTAssertFalse(blocked.wasTornDown)
+    }
+
+    func testExpiredHardCapTombstoneCannotClearNewReplacement() {
+        checkHardCapTombstoneCannotClearNewReplacement(expired: true)
+    }
+
+    func testCanceledHardCapTombstoneCannotClearNewReplacement() {
+        checkHardCapTombstoneCannotClearNewReplacement(expired: false)
+    }
+
+    private func checkHardCapTombstoneCannotClearNewReplacement(expired: Bool) {
+        defaultFlowPressureSoftCap = 4
+        defaultFlowPressureLowWater = 1
+        defaultFlowPressureIdleFloorMs = 5_000
+        defaultLiveFlowHardCap = 4
+        let core = makeCore()
+        let (oldQueue, oldGate) = gatedQueue("hard-cap-old-tombstone")
+        let (newQueue, newGate) = gatedQueue("hard-cap-live-replacement")
+        defer {
+            oldGate.signal()
+            newGate.signal()
+        }
+        let old = Fx(core: core, idleSeconds: 40, flowQueue: oldQueue)
+        let replacement = Fx(core: core, idleSeconds: 30, flowQueue: newQueue)
+        let spare = Fx(core: core, idleSeconds: 20)
+        insert(core, [old, replacement, spare])
+        var releaseRetirement = core.beginResourceRetirement()
+        defer { releaseRetirement() }
+
+        core.testRequestHardCapReplacement()
+        pollUntilPressure("first hard-cap replacement selected") {
+            core.testPressureSelectionsTotal == 1
+        }
+        if expired {
+            core.testRunPressureRecheck(afterMs: 10_000)
+            XCTAssertEqual(core.testPressureExpiredTotal, 1)
+        } else {
+            releaseRetirement()
+            pollUntilPressure("first replacement canceled") {
+                core.testPressureCanceledTotal == 1
+            }
+            releaseRetirement = core.beginResourceRetirement()
+        }
+
+        core.testRequestHardCapReplacement()
+        pollUntilPressure("new hard-cap replacement selected") {
+            core.testPressureSelectionsTotal == 2
+        }
+        oldGate.signal()
+        drain(oldQueue)
+        XCTAssertTrue(observePressureStateQueue(core))
+
+        core.testRequestHardCapReplacement()
+        XCTAssertTrue(observePressureStateQueue(core))
+        XCTAssertEqual(core.testPressureSelectionsTotal, 2)
+        XCTAssertEqual(core.testPressurePendingVictimCount, 1)
+        XCTAssertFalse(spare.wasTornDown)
+
+        releaseRetirement()
+        releaseRetirement = {}
+        XCTAssertTrue(observePressureStateQueue(core))
+        newGate.signal()
+        drain(newQueue)
+        pollUntilPressure("live replacement canceled after capacity is released") {
+            core.testPressurePendingVictimCount == 0
+        }
+        XCTAssertFalse(old.wasTornDown)
+        XCTAssertFalse(replacement.wasTornDown)
+        XCTAssertEqual(core.testPressureEvictedTotal, 0)
     }
 
     func testSparedHardCapReplacementDoesNotRepairToLowWater() {

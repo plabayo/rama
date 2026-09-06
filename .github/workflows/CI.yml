@@ -234,8 +234,8 @@ jobs:
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Install just
         run: brew install just
-      - name: Install xcodegen
-        run: brew install xcodegen
+      - name: Install Apple example build and lint tools
+        run: brew install xcodegen shellcheck
       - name: Run transparent proxy Apple QA
         run: just qa-ffi-apple
       - name: Run transparent proxy Apple FFI e2e tests

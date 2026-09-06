@@ -286,11 +286,13 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
 
     // MARK: - Phase: engine session
 
-    func requestEngineSession() -> RamaTransparentProxyTcpSessionDecision? {
-        guard let lease = core?.engineLeaseForNewFlow() else { return nil }
-        installEngineLease(lease)
-        return requestEngineSession(using: lease)
-    }
+    #if DEBUG || RAMA_TESTING
+        func requestEngineSession() -> RamaTransparentProxyTcpSessionDecision? {
+            guard let lease = core?.engineLeaseForNewFlow() else { return nil }
+            installEngineLease(lease)
+            return requestEngineSession(using: lease)
+        }
+    #endif
 
     private func installEngineLease(_ lease: TransparentProxyCore.EngineFlowLease) {
         runtimePolicy = lease.runtimePolicy
@@ -519,12 +521,11 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
 
     func closeClientAfterRustDrain() {
         guard beginTerminalDrain(.clientWriter) else { return }
-        let egressReadError = ctx.egressReadError
         ctx.clientWritePump?.closeWhenDrained { [weak self] wasOpened in
             guard let self else { return }
             self.pendingClientDrainClose = ClientDrainClose(
                 wasOpened: wasOpened,
-                error: egressReadError)
+                error: self.ctx.egressReadError)
             self.finishTerminalDrain(.clientWriter)
         }
         armTerminalDrainBackstop()
@@ -790,7 +791,6 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
         let pump = NwTcpConnectionWritePump(
             connection: connection,
             queue: flowQueue,
-            lingerCloseDeadline: .milliseconds(Int(lingerCloseMs)),
             onDrained: { [weak self] in
                 guard let self else { return }
                 // Always wake the Rust egress bridge first; the
@@ -823,13 +823,6 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
             // C→S byte progress on `flowQueue` — see `buildClientWritePump`.
             onActivity: { [weak self] in
                 self?.ctx.recordActivityUnlessPressureEvicted() ?? false
-            },
-            // The release grace is armed only once the whole promoted flow is
-            // terminal. Keep the activity clock as a defensive guard against
-            // a future caller arming it while a late callback is still moving.
-            readSideIdleMs: { [weak ctx] in
-                guard let ctx else { return .max }
-                return ctx.idleMs()
             },
             writerMemoryBudget: writerMemoryBudget,
             writePolicy: effectiveRuntimePolicy.tcpWritePump
@@ -904,17 +897,13 @@ final class TcpFlowSession<F: TcpFlowLike>: TcpFlowSessionAnchor, @unchecked Sen
                             else { return }
                             readPump.start()
                             self.armReadTerminal(session: session)
-                            // `armPromoteCallback()` was moved to
-                            // `handleEgressReady` (before `session.activate`)
-                            // to close the registration race with the service
-                            // task.
                             self.ctx.clientReadPump?.requestRead()
                         }
                     }
                     if let clientWritePump = self.ctx.clientWritePump {
                         clientWritePump.markOpened(finishOpen)
                     } else {
-                        finishOpen()
+                        self.flowQueue.async(execute: finishOpen)
                     }
                 }
             }

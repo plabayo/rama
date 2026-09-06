@@ -291,15 +291,9 @@ final class TransparentProxyCore: @unchecked Sendable {
             self.runtimePolicyStorage = nil
             return (engine: engine, tcp: tcp, udp: udp)
         }
-        // Registration enters this group while admission and generation are
-        // still protected by `lifecycleLock`, then performs the short startup
-        // submission on its flow queue. Close admission first, wait for those
-        // already-entered submissions, and only then dispatch teardown: a
-        // startup and teardown can never mutate one flow concurrently.
-        // The following state-queue barrier drains and invalidates any stale
-        // pressure triggers those submissions published after the atomic
-        // detach boundary but before leaving the group, so none can survive
-        // into the next attach. The episode was already classified above.
+        // Admission is closed under lifecycleLock. Entrants must be short,
+        // nonblocking, and never reenter the lifecycle lock: detach holds it
+        // while waiting here. Drain their pressure triggers before teardown.
         flowLifecycleGroup.wait()
         stateQueue.sync { self.resetMaintenanceStateLocked() }
         // The snapshots retain every context/session until its teardown has
@@ -462,6 +456,8 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// short queue-confined state transition. Detach closes admission under
     /// the same lock and waits for all entrants before dispatching teardown or
     /// stopping Rust. A callback arriving after that boundary is discarded.
+    /// The body must not block or reenter a lifecycle operation, including
+    /// this method; detach holds lifecycleLock while waiting for it to leave.
     @discardableResult
     func withActiveEngineGeneration(
         _ generation: UInt64,
@@ -974,7 +970,9 @@ final class TransparentProxyCore: @unchecked Sendable {
             {
                 hardCapSelection = nil
             }
-            if reservation.goal == .hardCapReplacement {
+            if reservation.goal == .hardCapReplacement,
+                reservation.phase == .selected || reservation.phase == .committed
+            {
                 hasOutstandingHardCapReplacement = false
             }
             removeCounts(for: reservation.phase)
@@ -1223,7 +1221,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         mutating func cancelNewestSelected(includeHardCapReplacement: Bool = true) -> Bool {
             // At most one hard-cap replacement exists. Temporarily skipping
             // its ref lets a registry-only removal cancel an older low-water
-            // victim without losing the hard-cap ticket's expiry ordering.
+            // victim while retaining the hard-cap ticket for expiry checks.
             var preservedHardCap: PressureSelectionRef?
             defer {
                 if let preservedHardCap { selectionOrder.append(preservedHardCap) }
@@ -1383,14 +1381,6 @@ final class TransparentProxyCore: @unchecked Sendable {
         let timeoutMs = defaultPromotedIdleTimeoutMs
         guard timeoutMs > 0 else { return false }
         return flowIdleMs(state) > UInt64(timeoutMs)
-    }
-
-    /// Milliseconds since this flow last moved an app byte, on the monotonic
-    /// `DispatchTime` clock (mach-uptime; pauses during sleep). Bumped by the
-    /// forwarder's `onActivity` for `.promoted` flows. Same off-`flowQueue`
-    /// read relaxation as `egressReady`.
-    private static func flowIdleMs(_ ctx: TcpFlowContext) -> UInt64 {
-        flowIdleMs(ctx.maintenanceSnapshot())
     }
 
     private static func elapsedMs(nowNs: UInt64, sinceNs: UInt64) -> UInt64 {
@@ -2360,13 +2350,7 @@ final class TransparentProxyCore: @unchecked Sendable {
             guard let self else { return }
             let toKick = self.collectMaintenanceKicksLocked()
             guard !toKick.isEmpty else { return }
-            // Hop off `stateQueue` before firing teardowns. `removeTcpFlow`
-            // is now `.async` so an inline teardown body (engine-less ctx
-            // without a `flowQueue`) no longer sync-re-enters `stateQueue`
-            // → the old deadlock is gone. Kept as belt-and-suspenders so we
-            // never run a teardown body while holding `stateQueue`'s context
-            // (keeps the maintenance tick short and the queue free for other
-            // mutations). Costs one async per tick.
+            // Keep teardown work off the registry queue so maintenance stays short.
             DispatchQueue.global(qos: .utility).async {
                 self.fireWatchdogKicks(toKick)
             }
@@ -2586,14 +2570,7 @@ final class TransparentProxyCore: @unchecked Sendable {
         return kicks
     }
 
-    /// One maintenance tick, off-`stateQueue` half: actually fire the
-    /// teardowns identified by [`collectMaintenanceKicksLocked`].
-    ///
-    /// Hopped off `stateQueue` deliberately. `removeTcpFlow` is `.async`
-    /// now, so an inline teardown body (engine-less / test ctx without a
-    /// `flowQueue`) no longer sync-re-enters `stateQueue` — kept as
-    /// belt-and-suspenders so a teardown body never runs while holding the
-    /// maintenance tick's `stateQueue` context. Costs nothing in production.
+    /// Fire collected teardowns outside the registry queue.
     private func fireWatchdogKicks(_ kicks: MaintenanceKicks) {
         guard !kicks.isEmpty else { return }
         if !kicks.preReadyStuck.isEmpty {
@@ -3905,10 +3882,6 @@ final class TransparentProxyCore: @unchecked Sendable {
 
     // MARK: - Logging helpers
 
-    // Identical to the helpers the provider used to expose; consolidated
-    // here so closures that capture `self` (the core) from inside the
-    // moved flow-handling methods still have the same surface available.
-
     func logTrace(_ message: String) {
         RamaLog.trace(message)
     }
@@ -3952,12 +3925,14 @@ final class TransparentProxyCore: @unchecked Sendable {
             switch message.level {
             case .trace: RamaLog.tracePublic(publicText)
             case .debug: RamaLog.debugPublic(publicText)
+            case .info: LifecycleLog.notice(publicText)
             case .error: RamaLog.errorPublic(publicText)
             }
         }
         switch message.level {
         case .trace: logTrace(message.text)
         case .debug: logDebug(message.text)
+        case .info: RamaLog.info(message.text)
         case .error: logError(message.text)
         }
     }
@@ -4194,8 +4169,6 @@ final class TransparentProxyCore: @unchecked Sendable {
     /// `UdpFlowContext` so the production registry's
     /// `UdpFlowSessionAnchor` invariant holds in tests that drive the
     /// `detachEngine` registry walk without spinning up a full session.
-    /// (System sleep no longer iterates the registry — it just stops the
-    /// telemetry timer and notifies the engine.)
     final class _TestUdpFlowSessionAnchor: UdpFlowSessionAnchor {
         let ctx: UdpFlowContext
         init(ctx: UdpFlowContext) { self.ctx = ctx }

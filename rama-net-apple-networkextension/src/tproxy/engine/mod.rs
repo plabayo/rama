@@ -1746,6 +1746,10 @@ impl TransparentProxyUdpSession {
     /// bridge is what makes multi-peer UDP (DNS, NTP, mDNS, gaming)
     /// faithfully proxied. `None` is the safety-valve for paths that
     /// lack endpoint attribution.
+    ///
+    /// Admission is lossy under channel or byte pressure. A global probe lease
+    /// covers one datagram; the rest of a read batch uses ordinary capacity and
+    /// cannot bypass queued waiters. Rejections emit sampled pressure telemetry.
     pub fn on_client_datagram(&mut self, bytes: &[u8], peer: Option<SocketAddr>) {
         // Fire BEFORE the channel send: even if the channel is closed
         // (session torn down) the activity itself happened, and the

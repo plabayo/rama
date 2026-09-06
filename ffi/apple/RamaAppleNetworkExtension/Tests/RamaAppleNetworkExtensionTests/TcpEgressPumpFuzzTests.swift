@@ -177,7 +177,6 @@ final class TcpEgressPumpFuzzTests: XCTestCase {
         // race between random actions and the watchdogs is
         // realistic — the test asserts the *final* state after the
         // deadlines have passed, not behavior at exact deadlines.
-        let lingerMs = 80
         let eofGraceMs = 80
 
         var appliedActions: [Action] = []
@@ -187,7 +186,6 @@ final class TcpEgressPumpFuzzTests: XCTestCase {
             let writePump = NwTcpConnectionWritePump(
                 connection: mock,
                 queue: queue,
-                lingerCloseDeadline: .milliseconds(lingerMs),
                 onDrained: {}
             )
             let readPump = NwTcpConnectionReadPump(

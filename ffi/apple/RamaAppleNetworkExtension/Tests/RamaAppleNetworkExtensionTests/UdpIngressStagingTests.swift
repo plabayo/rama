@@ -1441,85 +1441,9 @@ final class UdpIngressStagingTests: XCTestCase {
         XCTAssertEqual(generation.testRetainedItems, 0)
     }
 
-    func testPerFlowReleaseBeforeWaitPublicationWakesExactlyOnce() {
-        let (generation, flow) = makeFlow(items: 1, flowBytes: 1, generationBytes: 10)
-        var held = flow.stage(datagrams: [Data([1])], endpoints: nil).batch
-        let rejected = flow.stage(datagrams: [Data([2])], endpoints: nil)
-        withExtendedLifetime(held) {
-            XCTAssertEqual(rejected.blockedReason, .flowItems)
-        }
 
-        held = nil
-        let tickets = Locked<[UInt64]>([])
-        XCTAssertTrue(
-            flow.waitForCapacity(
-                reason: rejected.blockedReason!,
-                neededItems: rejected.neededItems,
-                neededBytes: rejected.neededBytes
-            ) { ticket in
-                tickets.withLock { $0.append(ticket) }
-            })
-        let granted = tickets.withLock { $0 }
-        XCTAssertEqual(granted.count, 1)
-        XCTAssertNotEqual(granted[0], 0)
-        XCTAssertFalse(flow.testWaitSnapshot.waiting)
-        XCTAssertEqual(flow.testWaitSnapshot.activeTicket, granted[0])
-        XCTAssertEqual(generation.testGrantCount, 1)
-        var resumed: UdpIngressStageOutcome? = flow.stage(
-            datagrams: [Data([2])], endpoints: nil, grantTicket: granted[0])
-        XCTAssertNotNil(resumed?.batch)
-        XCTAssertEqual(generation.testGrantCount, 0)
-        resumed = nil
-        XCTAssertEqual(generation.testRetainedItems, 0)
-    }
 
-    func testManyLocalByteWaitersUseBoundedGenerationHeadroom() {
-        let flowCount = 64
-        let generation = UdpIngressGenerationStagingBudget(
-            policy: UdpIngressStagingPolicy(
-                maxItemsPerFlow: 2,
-                maxItemsPerGeneration: flowCount * 2,
-                maxBytesPerFlow: 10,
-                maxBytesPerGeneration: flowCount + 10),
-            automaticScheduling: false)
-        let flows = (0..<flowCount).map { _ in UdpIngressFlowStaging(generation: generation) }
-        var held: [UdpIngressStagedBatch] = []
-        held.reserveCapacity(flowCount)
-        let granted = Locked<[(Int, UInt64)]>([])
 
-        for (index, flow) in flows.enumerated() {
-            guard let batch = flow.stage(datagrams: [Data([0])], endpoints: nil).batch else {
-                return XCTFail("initial byte must fit")
-            }
-            held.append(batch)
-            let rejected = flow.stage(datagrams: [Data(count: 10)], endpoints: nil)
-            XCTAssertEqual(rejected.blockedReason, .flowBytes)
-            XCTAssertTrue(
-                flow.waitForCapacity(
-                    reason: rejected.blockedReason!,
-                    neededItems: rejected.neededItems,
-                    neededBytes: rejected.neededBytes
-                ) { ticket in granted.withLock { $0.append((index, ticket)) } })
-        }
-
-        held.removeAll()
-        // A release may make a previously nonfitting discovery exact. Its
-        // callback still belongs to the serial runner, so drive that runner
-        // explicitly when automatic scheduling is disabled in this test.
-        for _ in 0..<udpIngressStagingMaxGrants {
-            generation.testRunCoordinator(now: DispatchTime.now().uptimeNanoseconds)
-        }
-        let initialGrants = granted.withLock { $0 }
-        XCTAssertEqual(initialGrants.count, udpIngressStagingMaxGrants)
-        XCTAssertTrue(initialGrants.allSatisfy { $0.1 != 0 })
-        XCTAssertEqual(generation.testGrantCount, udpIngressStagingMaxGrants)
-        XCTAssertEqual(generation.testWaiterCount, flowCount - udpIngressStagingMaxGrants)
-        XCTAssertLessThanOrEqual(generation.testPeakGrantCount, udpIngressStagingMaxGrants)
-
-        flows.forEach { $0.close() }
-        XCTAssertEqual(generation.testGrantCount, 0)
-        XCTAssertEqual(generation.testWaiterCount, 0)
-    }
 
     func testGenerationCoordinatorCapsFourQuietGrantsAndFifthAdvancesOnLeaseExpiry() {
         let generation = UdpIngressGenerationStagingBudget(

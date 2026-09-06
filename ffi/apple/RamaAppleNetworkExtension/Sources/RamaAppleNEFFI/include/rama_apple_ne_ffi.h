@@ -1019,6 +1019,10 @@ void rama_transparent_proxy_udp_session_free(RamaTransparentProxyUdpSession* _Nu
 /// `peer.present = false` is allowed and is treated as "no peer
 /// attribution"; in production every kernel-delivered datagram comes
 /// with an endpoint.
+/// Admission is nonblocking and lossy: a full channel, exhausted byte budget,
+/// or paused session drops the datagram and emits sampled pressure telemetry.
+/// A V2 global-pressure probe reserves one datagram, not its whole read batch;
+/// later datagrams require ordinary capacity and cannot bypass queued waiters.
 void rama_transparent_proxy_udp_session_on_client_datagram(
     RamaTransparentProxyUdpSession* session,
     RamaBytesView bytes,

@@ -42,13 +42,9 @@ fi
 # explicitly ineligible for the shared signed evidence envelope.
 ISOLATED_BUILD_ROOT=""
 ISOLATED_SOURCE_ROOT=""
-DIAL9_EXPORT_TEMP=""
 cleanup_isolated_source() {
   local status=$?
   trap - EXIT INT TERM
-  if [[ -n "$DIAL9_EXPORT_TEMP" ]]; then
-    rm -f "$DIAL9_EXPORT_TEMP"
-  fi
   if [[ -n "$ISOLATED_BUILD_ROOT" ]]; then
     chmod -R u+w "$ISOLATED_BUILD_ROOT" >/dev/null 2>&1 || true
     rm -rf "$ISOLATED_BUILD_ROOT"
@@ -156,22 +152,5 @@ if [[ "$GIT_DIRTY" == 0 ]]; then
     echo "Source repository head/clean state changed during the isolated build" >&2
     exit 1
   fi
-  # Live evidence producers use the generated checkout decoder. Export the
-  # decoder built from this same archive before deleting the isolated outputs.
-  case "$(uname -m)" in
-    arm64|aarch64) HOST_TARGET=aarch64-apple-darwin ;;
-    x86_64) HOST_TARGET=x86_64-apple-darwin ;;
-    *) echo "Unsupported host architecture for the Dial9 decoder" >&2; exit 1 ;;
-  esac
-  DIAL9_SOURCE="$RUST_TARGET_DIR/$HOST_TARGET/debug/dial9_evidence"
-  DIAL9_DESTINATION="$ROOT_DIR/tproxy_rs/target/$HOST_TARGET/debug/dial9_evidence"
-  [[ -f "$DIAL9_SOURCE" && ! -L "$DIAL9_SOURCE" && -x "$DIAL9_SOURCE" ]] || {
-    echo "Pinned build produced no executable host Dial9 decoder" >&2
-    exit 1
-  }
-  mkdir -p "$(dirname "$DIAL9_DESTINATION")"
-  DIAL9_EXPORT_TEMP="$(mktemp "$DIAL9_DESTINATION.tmp.XXXXXX")"
-  cp -p "$DIAL9_SOURCE" "$DIAL9_EXPORT_TEMP"
-  mv -f "$DIAL9_EXPORT_TEMP" "$DIAL9_DESTINATION"
-  DIAL9_EXPORT_TEMP=""
+
 fi

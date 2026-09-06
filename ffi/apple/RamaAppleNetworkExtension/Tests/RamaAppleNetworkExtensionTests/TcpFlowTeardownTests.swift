@@ -103,7 +103,6 @@ final class TcpFlowTeardownTests: XCTestCase {
         let egressWriter = NwTcpConnectionWritePump(
             connection: fx.conn,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(50),
             onDrained: {})
         fx.ctx.clientWritePump = clientWriter
         fx.ctx.egressWritePump = egressWriter

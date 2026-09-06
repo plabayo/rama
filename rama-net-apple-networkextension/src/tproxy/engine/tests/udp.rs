@@ -14,6 +14,134 @@ use std::sync::{
 use std::time::Duration;
 
 #[test]
+fn udp_v2_probe_ack_preserves_credit_until_delivery() {
+    check_udp_v2_probe(UdpProbeCompletion::Deliver);
+}
+
+#[test]
+fn udp_v2_probe_requires_matching_ack_before_delivery() {
+    check_udp_v2_probe(UdpProbeCompletion::BeforeAck);
+}
+
+#[test]
+fn udp_v2_probe_ack_after_close_cannot_restore_credit_or_demand() {
+    check_udp_v2_probe(UdpProbeCompletion::AfterClose);
+}
+
+#[derive(Clone, Copy)]
+enum UdpProbeCompletion {
+    Deliver,
+    BeforeAck,
+    AfterClose,
+}
+
+fn check_udp_v2_probe(completion: UdpProbeCompletion) {
+    let (received_tx, received_rx) = std::sync::mpsc::channel();
+    let handler = TestHandler {
+        udp_matcher: Arc::new(move |meta| {
+            let received_tx = received_tx.clone();
+            let flow_id = meta.flow_id;
+            FlowAction::Intercept {
+                meta,
+                service: service_fn(move |mut flow: crate::UdpFlow| {
+                    let received_tx = received_tx.clone();
+                    async move {
+                        if let Some(datagram) = flow.recv().await {
+                            received_tx.send((flow_id, datagram)).unwrap();
+                        }
+                        let _hold = flow;
+                        std::future::pending::<Result<(), Infallible>>().await
+                    }
+                })
+                .boxed(),
+            }
+        }),
+        ..TestHandler::passthrough()
+    };
+    let engine = TransparentProxyEngineBuilder::new(TestHandlerFactory(handler))
+        .with_runtime_factory(TestRuntimeFactory)
+        .with_udp_ingress_per_flow_max_bytes(MAX_UDP_DATAGRAM_PAYLOAD_SIZE)
+        .with_udp_ingress_global_max_bytes(MAX_UDP_DATAGRAM_PAYLOAD_SIZE)
+        .with_udp_ingress_probe_lease(Duration::from_secs(30))
+        .without_udp_idle_timeout()
+        .build()
+        .unwrap();
+    let budget = engine.udp_ingress_budget_for_test();
+    let mut sessions = Vec::new();
+    let mut demands = Vec::new();
+    for flow_id in 1..=2 {
+        let (demand_tx, demand_rx) = std::sync::mpsc::channel();
+        let mut meta = TransparentProxyFlowMeta::new(TransparentProxyFlowProtocol::Udp);
+        meta.flow_id = flow_id;
+        let SessionFlowAction::Intercept(mut session) = engine.new_udp_session_with_probe(
+            meta,
+            |_| {},
+            move |probe_id| {
+                _ = demand_tx.send(probe_id);
+            },
+            || {},
+        ) else {
+            panic!("expected intercepted V2 session");
+        };
+        session.activate();
+        assert_eq!(demand_rx.recv_timeout(Duration::from_secs(5)).unwrap(), 0);
+        sessions.push(session);
+        demands.push(demand_rx);
+    }
+
+    let payload = vec![0x71; MAX_UDP_DATAGRAM_PAYLOAD_SIZE];
+    sessions[0].on_client_datagram(&payload, None);
+    let (flow_id, holder) = received_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_eq!(flow_id, 1);
+    sessions[1].on_client_datagram(&payload, None);
+    assert_eq!(budget.snapshot().global_waiters, 1);
+    drop(holder);
+    let probe_id = demands[1].recv_timeout(Duration::from_secs(5)).unwrap();
+    assert_ne!(probe_id, 0);
+    assert_eq!(budget.snapshot().provisional_probe_bytes, payload.len());
+    assert_eq!(budget.snapshot().charged_bytes, payload.len());
+
+    match completion {
+        UdpProbeCompletion::Deliver => {
+            sessions[1].on_client_read_complete(probe_id);
+            sessions[1].on_client_read_complete(probe_id);
+            assert_eq!(budget.snapshot().provisional_probe_bytes, payload.len());
+            sessions[1].on_client_datagram(&payload, None);
+            let (flow_id, received) = received_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(flow_id, 2);
+            assert_eq!(received.payload.as_ref(), payload);
+            assert_eq!(budget.snapshot().provisional_probe_bytes, 0);
+            assert_eq!(budget.snapshot().retained_bytes, payload.len());
+            drop(received);
+        }
+        UdpProbeCompletion::BeforeAck => {
+            sessions[0].on_client_read_complete(probe_id);
+            sessions[1].on_client_read_complete(probe_id + 1);
+            sessions[1].on_client_datagram(&payload, None);
+            received_rx.try_recv().expect_err("no datagram admitted");
+            assert_eq!(budget.snapshot().retained_bytes, 0);
+            assert_eq!(budget.snapshot().global_waiters, 1);
+            assert_eq!(budget.snapshot().provisional_probe_bytes, payload.len());
+            assert_eq!(budget.snapshot().dropped_global_bytes_full, 2);
+        }
+        UdpProbeCompletion::AfterClose => {
+            sessions[1].on_client_close();
+            assert_eq!(budget.snapshot().charged_bytes, 0);
+            sessions[1].on_client_read_complete(probe_id);
+            sessions[1].on_client_datagram(&payload, None);
+            received_rx.try_recv().expect_err("no datagram admitted");
+            demands[1].try_recv().expect_err("no demand after close");
+        }
+    }
+    for session in &mut sessions {
+        session.on_client_close();
+    }
+    engine.stop(0);
+    assert_eq!(budget.snapshot().charged_bytes, 0);
+    assert_eq!(budget.snapshot().global_waiters, 0);
+}
+
+#[test]
 fn udp_bridge_delivers_server_datagram() {
     let got = Arc::new(Mutex::new(Vec::<u8>::new()));
     let got_clone = got.clone();

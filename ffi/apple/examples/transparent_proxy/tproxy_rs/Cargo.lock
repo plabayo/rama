@@ -3066,14 +3066,10 @@ dependencies = [
  "arc-swap",
  "base64",
  "dial9",
- "dial9-trace-format",
- "flate2",
  "moka",
  "rama",
  "serde",
  "serde_json",
- "sha2",
- "tempfile",
  "tikv-jemalloc-sys",
  "tikv-jemallocator",
  "tokio",
@@ -3625,7 +3621,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

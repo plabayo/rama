@@ -54,6 +54,7 @@ import RamaAppleNEFFI
 enum FlowLogLevel: Equatable {
     case trace
     case debug
+    case info
     case error
 }
 
@@ -492,14 +493,10 @@ nonisolated(unsafe) var defaultPromotedIdleTimeoutMs: UInt32 = 900_000
 //     and the promoted maintenance reaper remain the slower per-mode hygiene
 //     backstops; this is the fast, global one.)
 //
-// IMPORTANT — these defaults are UNVALIDATED guesses. The kernel ceiling is
-// undocumented (~600 live flows observed at the failure edge); `…SoftCap` sits
-// below that with margin. They MUST be calibrated against an on-device
-// burst/soak run (see scripts/soak_test.sh + the burst regression test) before
-// being trusted. `…SoftCap == 0` disables the backstop. These controls share
-// one lock because provider startup applies them as a unit while maintenance
-// may already exist in defensive/test configurations. They are not read on
-// the per-byte or per-datagram data path.
+// The kernel ceiling is undocumented (~600 live flows observed). Calibrate
+// these margins with on-device burst and soak workloads. A zero soft cap
+// disables the soft backstop. Startup publishes the controls under one lock;
+// the byte and datagram paths do not read them.
 private struct FlowPressureDefaults {
     var softCap: UInt32 = 450
     var lowWater: UInt32 = 350

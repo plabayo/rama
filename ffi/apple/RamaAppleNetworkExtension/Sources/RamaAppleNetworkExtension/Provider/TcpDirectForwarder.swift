@@ -285,21 +285,23 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// (`c2sReadDrained`) ensures the forwarder hasn't issued
     /// its own `readData` yet, so no out-of-order interleaving
     /// is possible.
-    func acceptClientCarryover(
-        _ payload: Data?
-    ) {
-        let buffered: TcpPayloadCursor?
-        if let payload, !payload.isEmpty {
-            buffered = writerMemoryBudget.makeTcpTransitCursor(payload)
-            guard buffered != nil else {
-                queue.async { self.failReadLocked(Self.memoryPressureError()) }
-                return
+    #if DEBUG || RAMA_TESTING
+        func acceptClientCarryover(
+            _ payload: Data?
+        ) {
+            let buffered: TcpPayloadCursor?
+            if let payload, !payload.isEmpty {
+                buffered = writerMemoryBudget.makeTcpTransitCursor(payload)
+                guard buffered != nil else {
+                    queue.async { self.failReadLocked(Self.memoryPressureError()) }
+                    return
+                }
+            } else {
+                buffered = nil
             }
-        } else {
-            buffered = nil
+            acceptClientCarryoverCursor(buffered)
         }
-        acceptClientCarryoverCursor(buffered)
-    }
+    #endif
 
     /// Production promotion handoff. The read pump and forwarder share the
     /// same physical root/charge; no release-and-reserve gap or second copy.
@@ -346,21 +348,23 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// Sink for `NwTcpConnectionReadPump.cancelForPromote` —
     /// receives in flight at cutover time. See
     /// `acceptClientCarryover` for the late-arrival semantics.
-    func acceptEgressCarryover(
-        _ payload: Data?
-    ) {
-        let buffered: TcpPayloadCursor?
-        if let payload, !payload.isEmpty {
-            buffered = writerMemoryBudget.makeTcpTransitCursor(payload)
-            guard buffered != nil else {
-                queue.async { self.failReadLocked(Self.memoryPressureError()) }
-                return
+    #if DEBUG || RAMA_TESTING
+        func acceptEgressCarryover(
+            _ payload: Data?
+        ) {
+            let buffered: TcpPayloadCursor?
+            if let payload, !payload.isEmpty {
+                buffered = writerMemoryBudget.makeTcpTransitCursor(payload)
+                guard buffered != nil else {
+                    queue.async { self.failReadLocked(Self.memoryPressureError()) }
+                    return
+                }
+            } else {
+                buffered = nil
             }
-        } else {
-            buffered = nil
+            acceptEgressCarryoverCursor(buffered)
         }
-        acceptEgressCarryoverCursor(buffered)
-    }
+    #endif
 
     func acceptEgressCarryoverCursor(_ buffered: TcpPayloadCursor?) {
         queue.async {
@@ -463,7 +467,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
             self.s2cPhase = .finished
             self.releaseAllBufferedLocked()
             self.updateDrainPendingLocked()
-            self.fireTerminalLocked(armLinger: false)
+            self.fireTerminalLocked(releaseConnection: false)
         }
     }
 
@@ -762,7 +766,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
         }
         c2sPhase = .finishing
         egressWritePump.closeWhenDrained { [weak self] in
-            guard let self else { return }
+            guard let self, !self.cancelled else { return }
             self.c2sBackstop?.cancel()
             self.c2sBackstop = nil
             self.c2sPhase = .finished
@@ -781,7 +785,7 @@ final class TcpDirectForwarder: @unchecked Sendable {
         // callback. Use it to detect drain completion so the
         // terminal-fire is paced by the pump's actual close.
         clientWritePump.closeWhenDrained { [weak self] _ in
-            guard let self else { return }
+            guard let self, !self.cancelled else { return }
             self.s2cBackstop?.cancel()
             self.s2cBackstop = nil
             // Every S->C byte has drained: surface the server's EOF to
@@ -936,10 +940,10 @@ final class TcpDirectForwarder: @unchecked Sendable {
     private func maybeFireTerminalLocked() {
         guard !terminalFired else { return }
         guard c2sPhase == .finished, s2cPhase == .finished else { return }
-        fireTerminalLocked(armLinger: true)
+        fireTerminalLocked(releaseConnection: true)
     }
 
-    private func fireTerminalLocked(armLinger: Bool) {
+    private func fireTerminalLocked(releaseConnection: Bool) {
         guard !terminalFired else { return }
         terminalFired = true
         releaseAllBufferedLocked()
@@ -948,15 +952,10 @@ final class TcpDirectForwarder: @unchecked Sendable {
         c2sBackstop = nil
         s2cBackstop?.cancel()
         s2cBackstop = nil
-        // Both directions are terminal and the egress FIN send completed.
-        // Only now may the bounded connection-release linger begin; arming it
-        // at local FIN would truncate a valid quiet response half.
-        // The terminal callback first moves the connection from registered
-        // occupancy into the retirement ledger. Arm immediately afterward so
-        // its release closure is present before the linger can fire.
+        // Publish retirement accounting before releasing the egress resource.
         onTerminal()
-        if armLinger {
-            egressWritePump.armTerminalLingerCancel()
+        if releaseConnection {
+            egressWritePump.releaseTerminalConnection()
         }
     }
 

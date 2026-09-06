@@ -155,6 +155,8 @@ impl HttpMitmRelay {
         // `H2ServerContextParams`, which is what closes #932 for TLS h2.
         // See `rama_http_core::server::conn::http2::apply_h2_server_context_params`.
         let mut http_server = HttpServer::auto(exec.clone());
+        // Request EOF must not discard a response still being produced by the origin.
+        http_server.http1_mut().set_half_close(true);
         http_server.h2_mut().set_enable_connect_protocol();
         Self {
             http_server,

@@ -203,10 +203,6 @@ private final class UdpIngressStagingWaiter: @unchecked Sendable {
     let pressureIdentity: Locked<Int?>
     let neededItems: Int
     let neededBytes: Int
-    /// Mutated only while the owning flow lock is held. A waiter begins here
-    /// for flow-local pressure and joins the generation coordinator exactly
-    /// once when its local capacity becomes sufficient.
-    var generationScoped: Bool
     let onGrant: @Sendable (UInt64) -> Void
     weak var previous: UdpIngressStagingWaiter?
     var next: UdpIngressStagingWaiter?
@@ -222,14 +218,12 @@ private final class UdpIngressStagingWaiter: @unchecked Sendable {
         owner: UdpIngressFlowStaging,
         neededItems: Int,
         neededBytes: Int,
-        generationScoped: Bool,
         onGrant: @escaping @Sendable (UInt64) -> Void
     ) {
         self.owner = owner
         self.pressureIdentity = owner.pressureIdentity
         self.neededItems = neededItems
         self.neededBytes = neededBytes
-        self.generationScoped = generationScoped
         self.onGrant = onGrant
     }
 
@@ -1420,24 +1414,10 @@ final class UdpIngressGenerationStagingBudget: @unchecked Sendable {
     }
 
     fileprivate func release(
-        items: Int, bytes: Int, registering waiter: UdpIngressStagingWaiter? = nil
+        items: Int, bytes: Int
     ) -> [(UdpIngressStagingWaiter, UInt64)] {
-        guard let waiter else {
-            releaseRetainedCapacity(items: items, bytes: bytes)
-            return wakeAfterCapacityReleaseIfWaiting()
-        }
-        return withCoordinatorState { state in
-            // Publish FIFO exclusion before returning this flow's local
-            // capacity. A ticket-zero producer racing the promotion must
-            // either precede the gate or roll its reservation back.
-            appendLocked(waiter, state: &state)
-            releaseRetainedCapacity(items: items, bytes: bytes)
-            requestScanLocked(&state)
-            let deliveries = driveCoordinatorLocked(
-                &state, now: DispatchTime.now().uptimeNanoseconds)
-            scheduleLeaseTimerLocked(&state)
-            return deliveries
-        }
+        releaseRetainedCapacity(items: items, bytes: bytes)
+        return wakeAfterCapacityReleaseIfWaiting()
     }
 
     #if DEBUG || RAMA_TESTING
@@ -1679,11 +1659,8 @@ final class UdpIngressFlowStaging: @unchecked Sendable {
         }
     }
 
-    /// Arm one coalesced capacity-driven replacement read. Generation
-    /// pressure enters the shared coordinator immediately. Per-flow pressure
-    /// waits for this flow's own retained batch release, then enters that same
-    /// coordinator before any callback can run. Every restart therefore owns
-    /// a nonzero provisional grant and participates in the global wake bound.
+    /// Each flow releases its staged completion before reading again, so only
+    /// process capacity needs a waiter; per-flow caps bound one callback prefix.
     @discardableResult
     func waitForCapacity(
         reason: UdpIngressStagingDropReason,
@@ -1699,30 +1676,17 @@ final class UdpIngressFlowStaging: @unchecked Sendable {
             generation.requestFitsCurrentGlobalLimits(
                 items: neededItems, bytes: neededBytes)
         else { return false }
-        let generationScoped = reason == .generationItems || reason == .generationBytes
         let waiter = UdpIngressStagingWaiter(
             owner: self,
             neededItems: neededItems,
             neededBytes: neededBytes,
-            generationScoped: generationScoped,
             onGrant: onReady)
         var deliveries: [(UdpIngressStagingWaiter, UInt64)] = []
         let armed = state.withLock { state -> Bool in
             guard !state.closed else { return false }
             guard state.waiter == nil, state.activeGrantTicket == 0 else { return true }
             state.waiter = waiter
-            if generationScoped {
-                deliveries = generation.register(waiter)
-            } else {
-                let itemHeadroom = max(
-                    policy.maxItemsPerFlow - state.retainedItems, 0)
-                let byteHeadroom = max(
-                    policy.maxBytesPerFlow - state.retainedBytes, 0)
-                if neededItems <= itemHeadroom, neededBytes <= byteHeadroom {
-                    waiter.generationScoped = true
-                    deliveries = generation.register(waiter)
-                }
-            }
+            deliveries = generation.register(waiter)
             return true
         }
         guard armed else { return false }
@@ -1753,22 +1717,7 @@ final class UdpIngressFlowStaging: @unchecked Sendable {
             precondition(state.retainedBytes >= bytes, "UDP flow staging byte underflow")
             state.retainedItems -= items
             state.retainedBytes -= bytes
-            var promotedWaiter: UdpIngressStagingWaiter?
-            if let waiter = state.waiter, !waiter.generationScoped {
-                let itemHeadroom = max(
-                    policy.maxItemsPerFlow - state.retainedItems, 0)
-                let byteHeadroom = max(
-                    policy.maxBytesPerFlow - state.retainedBytes, 0)
-                if waiter.neededItems <= itemHeadroom, waiter.neededBytes <= byteHeadroom {
-                    waiter.generationScoped = true
-                    promotedWaiter = waiter
-                }
-            }
-            // Flow -> generation is the sole nested lock order. Combining the
-            // retained release and waiter publication under one generation
-            // lock prevents a missed wake and costs at most one bounded scan.
-            generationDeliveries = generation.release(
-                items: items, bytes: bytes, registering: promotedWaiter)
+            generationDeliveries = generation.release(items: items, bytes: bytes)
         }
         generation.deliver(generationDeliveries)
     }

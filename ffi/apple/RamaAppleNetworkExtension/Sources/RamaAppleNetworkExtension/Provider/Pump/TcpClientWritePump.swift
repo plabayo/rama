@@ -47,6 +47,8 @@ final class TcpClientWritePump: @unchecked Sendable {
     func markOpened(
         _ completion: @escaping @Sendable () -> Void = {}
     ) {
+        // Defer even on this queue: completion may enter a lifecycle lease,
+        // which must not nest inside the caller's lease during engine detach.
         core.queue.async { [weak self] in
             guard let self else {
                 completion()

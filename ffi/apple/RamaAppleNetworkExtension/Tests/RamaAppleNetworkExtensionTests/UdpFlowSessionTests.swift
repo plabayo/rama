@@ -338,7 +338,7 @@ final class UdpFlowSessionTests: XCTestCase {
         fx.session.testProbeAcknowledger = { id in
             acknowledged.withLock { $0.append(id) }
         }
-        var retained = fx.session.testFillIngressStaging()
+        var retained = fx.session.testFillGlobalIngressStaging()
         XCTAssertNotNil(retained)
         fx.session.ctx.requestReadWithProbe?(61)
         fx.session.ctx.requestReadWithProbe?(62)
@@ -368,7 +368,7 @@ final class UdpFlowSessionTests: XCTestCase {
         fx.session.testProbeAcknowledger = { id in
             acknowledged.withLock { $0.append(id) }
         }
-        var retained = fx.session.testFillIngressStaging()
+        var retained = fx.session.testFillGlobalIngressStaging()
         XCTAssertNotNil(retained)
         fx.session.ctx.requestReadWithProbe?(81)
         fx.session.ctx.requestReadWithProbe?(82)

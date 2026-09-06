@@ -1,21 +1,14 @@
-use std::{cell::RefCell, convert::Infallible, io, net::SocketAddr, time::Duration};
+use std::{cell::RefCell, convert::Infallible, io, net::SocketAddr};
 
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rama::{
     Service,
-    bytes::Bytes,
     error::BoxError,
     extensions::ExtensionsRef as _,
     net::{
-        apple::networkextension::{
-            Datagram, UdpFlow,
-            tproxy::{
-                DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES, TransparentProxyFlowMeta,
-                TransparentProxyServiceContext,
-            },
-        },
+        apple::networkextension::{Datagram, UdpFlow, tproxy::TransparentProxyServiceContext},
         client::ConnectorTarget,
     },
     service::service_fn,
@@ -23,9 +16,20 @@ use rama::{
     udp::{UdpSocket, bind_udp_with_address},
 };
 
+#[cfg(any(test, feature = "e2e"))]
+use rama::bytes::Bytes;
+#[cfg(any(test, feature = "e2e"))]
+use rama::net::apple::networkextension::tproxy::{
+    DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES, TransparentProxyFlowMeta,
+};
+#[cfg(any(test, feature = "e2e"))]
+use std::time::Duration;
+
 use super::UdpPolicyScope;
 
+#[cfg(any(test, feature = "e2e"))]
 const E2E_PRESSURE_MARKER: &[u8] = b"rama-udp-e2e-pressure-v1 ";
+#[cfg(any(test, feature = "e2e"))]
 const E2E_PRESSURE_MAX_RETAINED_ITEMS: usize = 4_096;
 const UDP_RECV_SCRATCH_LEN: usize = 65_536;
 
@@ -106,6 +110,9 @@ pub(super) async fn try_new_service(
 /// first peer the app addressed when the flow was opened — not a
 /// binding constraint; we log it for telemetry only.
 async fn service(mut ingress: UdpFlow, udp_policy_scope: UdpPolicyScope) -> Result<(), Infallible> {
+    #[cfg(not(any(test, feature = "e2e")))]
+    let _ = udp_policy_scope;
+    #[cfg(any(test, feature = "e2e"))]
     let flow_meta = ingress.extensions().get_arc::<TransparentProxyFlowMeta>();
     let initial_target_hwp = ingress
         .extensions()
@@ -130,12 +137,7 @@ async fn service(mut ingress: UdpFlow, udp_policy_scope: UdpPolicyScope) -> Resu
         "tproxy udp forwarding started"
     );
 
-    // The signed E2E's first pressure datagram carries a versioned marker and
-    // its exact peer. Only an active, allowlisted Python flow whose metadata,
-    // datagram peer, and marker all agree may pause. Consuming that first
-    // datagram starts a bounded payload-retention window which keeps pulling
-    // ingress until real byte pressure pauses reads. Ordinary NTP/HTTP3/
-    // background traffic and an expired E2E scope never take this path.
+    #[cfg(any(test, feature = "e2e"))]
     let mut pressure_probe_pending = true;
 
     // Egress state per address family. Receive scratch is shared by all flows
@@ -152,37 +154,43 @@ async fn service(mut ingress: UdpFlow, udp_policy_scope: UdpPolicyScope) -> Resu
         // matching-family socket is already bound (`if` guards).
         tokio::select! {
             maybe_datagram = ingress.recv() => {
-                let Some(mut datagram) = maybe_datagram else { break };
-                let Some(mut peer) = datagram.peer.or(initial_target) else {
+                let Some(datagram) = maybe_datagram else { break };
+                let Some(peer) = datagram.peer.or(initial_target) else {
                     // No per-datagram peer (rare kernel-attribution gap)
                     // and no initial target either — nowhere to send.
                     continue;
                 };
-                if pressure_probe_pending {
-                    pressure_probe_pending = false;
-                    if should_hold_e2e_pressure_flow(
-                        udp_policy_scope,
-                        std::time::Instant::now(),
-                        flow_meta.as_deref(),
-                        peer,
-                        &datagram.payload,
-                    ) {
-                        let Some(next) = hold_and_sink_e2e_pressure_flow(
-                            &mut ingress,
-                            datagram,
+                #[cfg(any(test, feature = "e2e"))]
+                let (datagram, peer) = {
+                    let mut datagram = datagram;
+                    let mut peer = peer;
+                    if pressure_probe_pending {
+                        pressure_probe_pending = false;
+                        if should_hold_e2e_pressure_flow(
                             udp_policy_scope,
+                            std::time::Instant::now(),
                             flow_meta.as_deref(),
-                            initial_target,
-                        ).await else { break };
-                        // The first non-probe datagram returns to ordinary
-                        // forwarding with its original payload and peer.
-                        datagram = next;
-                        let Some(next_peer) = datagram.peer.or(initial_target) else {
-                            continue;
-                        };
-                        peer = next_peer;
+                            peer,
+                            &datagram.payload,
+                        ) {
+                            let Some(next) = hold_and_sink_e2e_pressure_flow(
+                                &mut ingress,
+                                datagram,
+                                udp_policy_scope,
+                                flow_meta.as_deref(),
+                                initial_target,
+                            ).await else { break };
+                            // The first non-probe datagram returns to ordinary
+                            // forwarding with its original payload and peer.
+                            datagram = next;
+                            let Some(next_peer) = datagram.peer.or(initial_target) else {
+                                continue;
+                            };
+                            peer = next_peer;
+                        }
                     }
-                }
+                    (datagram, peer)
+                };
                 let socket = match peer {
                     SocketAddr::V4(_) => match ensure_bound(&mut egress_v4, "0.0.0.0:0").await {
                         Some(s) => s,
@@ -244,12 +252,14 @@ async fn service(mut ingress: UdpFlow, udp_policy_scope: UdpPolicyScope) -> Resu
     Ok(())
 }
 
+#[cfg(any(test, feature = "e2e"))]
 #[derive(Default)]
 struct E2ePressureRetention {
     payloads: Vec<Bytes>,
     bytes: usize,
 }
 
+#[cfg(any(test, feature = "e2e"))]
 impl E2ePressureRetention {
     fn retain(&mut self, payload: Bytes) {
         if self.payloads.len() < E2E_PRESSURE_MAX_RETAINED_ITEMS
@@ -268,6 +278,7 @@ impl E2ePressureRetention {
 /// payload roots while continuing to receive can instead fill the real flow
 /// byte budget without requiring an oversized Swift callback batch. The
 /// independent timer must release roots even while pressure parks `recv`.
+#[cfg(any(test, feature = "e2e"))]
 async fn hold_and_sink_e2e_pressure_flow(
     ingress: &mut UdpFlow,
     first: Datagram,
@@ -307,6 +318,7 @@ async fn hold_and_sink_e2e_pressure_flow(
     }
 }
 
+#[cfg(any(test, feature = "e2e"))]
 fn should_hold_e2e_pressure_flow(
     scope: UdpPolicyScope,
     now: std::time::Instant,

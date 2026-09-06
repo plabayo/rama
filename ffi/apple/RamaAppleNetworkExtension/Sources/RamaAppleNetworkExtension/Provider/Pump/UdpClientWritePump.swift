@@ -21,6 +21,13 @@ enum UdpWritePumpPhase {
     case closed
 }
 
+private struct UdpWriterDropSample {
+    let aggregate: Bool
+    let droppedItems: UInt64
+    let droppedBytes: UInt64
+    let aggregateDroppedItems: UInt64
+}
+
 private struct UdpWriterSharedState {
     var closed = false
     /// False once natural server completion has stopped admission. Existing
@@ -38,14 +45,30 @@ private struct UdpWriterSharedState {
     var pressureRetainedBytes = 0
     var pressureRetainedItems = 0
     var fallbackEndpoint: NWEndpoint?
-    var fullWasLogged = false
+    var droppedFull: UInt64 = 0
+    var droppedAggregate: UInt64 = 0
+    var droppedBytes: UInt64 = 0
     #if DEBUG || RAMA_TESTING
         var acceptedDispatches: UInt64 = 0
-        var droppedFull: UInt64 = 0
-        var droppedAggregate: UInt64 = 0
         var fullLogCount: UInt64 = 0
         var borrowedMaterializations: UInt64 = 0
     #endif
+
+    mutating func recordDrop(bytes: Int, aggregate: Bool) -> UdpWriterDropSample? {
+        droppedFull = droppedFull == .max ? .max : droppedFull + 1
+        if aggregate {
+            droppedAggregate = droppedAggregate == .max ? .max : droppedAggregate + 1
+        }
+        let (totalBytes, overflow) = droppedBytes.addingReportingOverflow(UInt64(max(0, bytes)))
+        droppedBytes = overflow ? .max : totalBytes
+        guard droppedFull.nonzeroBitCount == 1 else { return nil }
+        #if DEBUG || RAMA_TESTING
+            fullLogCount += 1
+        #endif
+        return UdpWriterDropSample(
+            aggregate: aggregate, droppedItems: droppedFull, droppedBytes: droppedBytes,
+            aggregateDroppedItems: droppedAggregate)
+    }
 }
 
 final class UdpClientWritePump: @unchecked Sendable {
@@ -109,6 +132,8 @@ final class UdpClientWritePump: @unchecked Sendable {
     /// Admission is synchronized before dispatch so the queue backlog itself
     /// cannot retain more datagrams than the documented lossy bound.
     private let shared = Locked(UdpWriterSharedState())
+    /// Serializes close with kernel submission without blocking Rust admission.
+    private let writeSubmissionGate = Locked(())
     /// Each pending entry pairs a reply datagram with the
     /// `sentBy` endpoint to use for `flow.writeDatagrams`. Capturing
     /// the endpoint AT ENQUEUE TIME (instead of reading the latest
@@ -284,7 +309,7 @@ final class UdpClientWritePump: @unchecked Sendable {
         // the transport plumbing.
         enum Admission {
             case accepted
-            case full(log: Bool, aggregate: Bool)
+            case full(UdpWriterDropSample?)
             case closed
         }
         let admission = shared.withLock { state -> Admission in
@@ -295,24 +320,11 @@ final class UdpClientWritePump: @unchecked Sendable {
                 byteCount <= udpWritePumpMaxRetainedBytes,
                 state.retainedBytes <= udpWritePumpMaxRetainedBytes - byteCount
             else {
-                let shouldLog = !state.fullWasLogged
-                state.fullWasLogged = true
-                #if DEBUG || RAMA_TESTING
-                    state.droppedFull &+= 1
-                    if shouldLog { state.fullLogCount &+= 1 }
-                #endif
-                return .full(log: shouldLog, aggregate: false)
+                return .full(state.recordDrop(bytes: byteCount, aggregate: false))
             }
 
             guard let budgetAdmission = writerMemoryBudget.tryReserveUdp(bytes: byteCount) else {
-                let shouldLog = !state.fullWasLogged
-                state.fullWasLogged = true
-                #if DEBUG || RAMA_TESTING
-                    state.droppedFull &+= 1
-                    state.droppedAggregate &+= 1
-                    if shouldLog { state.fullLogCount &+= 1 }
-                #endif
-                return .full(log: shouldLog, aggregate: true)
+                return .full(state.recordDrop(bytes: byteCount, aggregate: true))
             }
 
             let (data, explicitEndpoint) = materialize()
@@ -370,20 +382,17 @@ final class UdpClientWritePump: @unchecked Sendable {
         switch admission {
         case .accepted:
             if !activityRecordedAtEntry { onActivity() }
-        case .full(let shouldLog, let aggregate):
+        case .full(let sample):
             // Receiving a datagram remains activity even when the bounded,
             // lossy writer must drop it. The activity clock is thread-safe.
             if !activityRecordedAtEntry { onActivity() }
-            if shouldLog {
-                if aggregate {
-                    RamaLog.trace(
-                        "udp client write pump rejected by process writer-memory envelope; dropping subsequent arrivals in this flow episode"
-                    )
-                } else {
-                    RamaLog.trace(
-                        "udp client write pump full (count cap \(udpWritePumpMaxPending), datagram byte cap \(udpWritePumpMaxDatagramBytes), retained byte cap \(udpWritePumpMaxRetainedBytes)), dropping subsequent arrivals"
-                    )
-                }
+            if let sample {
+                let text = "UDP client writer dropped datagrams "
+                    + "reason=\(sample.aggregate ? "aggregate_capacity" : "flow_capacity") "
+                    + "cumulative_dropped_items=\(sample.droppedItems) "
+                    + "cumulative_dropped_bytes=\(sample.droppedBytes) "
+                    + "aggregate_dropped_items=\(sample.aggregateDroppedItems)"
+                logger(FlowLogMessage(level: .info, text: text, publicText: text))
             }
         case .closed:
             break
@@ -503,12 +512,14 @@ final class UdpClientWritePump: @unchecked Sendable {
             closeLocked()
             return
         }
-        shared.withLock { state in
-            guard !state.closed else { return }
-            state.closed = true
-            state.accepting = false
-            state.fallbackEndpoint = nil
-            queue.async { self.closeLocked() }
+        writeSubmissionGate.withLock { _ in
+            shared.withLock { state in
+                guard !state.closed else { return }
+                state.closed = true
+                state.accepting = false
+                state.fallbackEndpoint = nil
+                queue.async { self.closeLocked() }
+            }
         }
     }
 
@@ -585,12 +596,8 @@ final class UdpClientWritePump: @unchecked Sendable {
         #if DEBUG || RAMA_TESTING
             testBeforeWriteGate?()
         #endif
-        // Linearize the nonblocking kernel write invocation with off-queue
-        // `close()`. If close wins this lock, no write can begin after close
-        // returns. If this block wins, the write began before close returned.
-        var postLockBatchOwner: [PendingDatagram] = []
-        let started = shared.withLock { state -> Bool in
-            guard !state.closed else { return false }
+        let started = writeSubmissionGate.withLock { _ -> Bool in
+            guard !shared.withLock({ $0.closed }) else { return false }
             phase = .writing
 
             var datagrams: [Data] = []
@@ -624,12 +631,7 @@ final class UdpClientWritePump: @unchecked Sendable {
                 phase = .idle
                 return false
             }
-            precondition(state.waiting >= datagrams.count)
-            state.waiting -= datagrams.count
-            // Some test doubles or defensive transports may synchronously
-            // discard the completion. Keep one owner outside `shared` so the
-            // batch cannot last-drop and re-enter this nonrecursive lock.
-            postLockBatchOwner = retainedBatch
+            releaseWaiting(datagrams.count)
             // `[weak self]` breaks the flow→completion→pump cycle.
             flow.writeDatagrams(datagrams, sentBy: endpoints) {
                 [weak self, retainedBatch] error in
@@ -658,8 +660,6 @@ final class UdpClientWritePump: @unchecked Sendable {
             }
             return true
         }
-        withExtendedLifetime(postLockBatchOwner) {}
-        postLockBatchOwner.removeAll()
         if !started { closeLocked() }
     }
 

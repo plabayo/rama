@@ -777,6 +777,28 @@ final class TcpClientWritePumpTests: XCTestCase {
         )
     }
 
+    func testOpenCompletionLeavesCallerLifecycleScope() {
+        let queue = makeQueue()
+        let pump = TcpClientWritePump(
+            flow: MockTcpFlow(),
+            queue: queue,
+            logger: { _ in },
+            onTerminalError: { _ in },
+            onDrained: {}
+        )
+        let insideCaller = TestValue(false)
+        let completed = expectation(description: "open completes outside caller's lifecycle lease")
+        queue.async {
+            insideCaller.set(true)
+            pump.markOpened {
+                XCTAssertFalse(insideCaller.get(), "nested lifecycle leases can deadlock detach")
+                completed.fulfill()
+            }
+            insideCaller.set(false)
+        }
+        wait(for: [completed], timeout: 1)
+    }
+
     /// A service may enqueue its complete response and close its output while
     /// the claimed kernel flow is still opening. The close must wait for open,
     /// preserve the queued response, and complete immediately after its write.

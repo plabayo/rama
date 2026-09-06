@@ -121,7 +121,9 @@ final class UdpFlowContext: @unchecked Sendable {
     /// Writer pump for client-bound replies; per-datagram `sentBy`
     /// endpoint is set from Rust's per-datagram peer attribution.
     var writer: UdpClientWritePump?
-    var requestRead: (() -> Void)?
+    #if DEBUG || RAMA_TESTING
+        var requestRead: (() -> Void)?
+    #endif
     /// Probe-aware Rust demand path. The legacy no-argument closure above is
     /// retained for ordinary service demand and focused phase tests.
     var requestReadWithProbe: ((UInt64) -> Void)?

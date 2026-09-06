@@ -13,11 +13,13 @@ protocol NwEgressBytesSink: AnyObject {
     func onEgressEof()
     func onEgressError()
 }
-extension NwEgressBytesSink {
-    func onEgressPayload(_ payload: TcpPayloadSlice) -> RamaTcpDeliverStatusBridge {
-        onEgressBytes(payload.copiedData)
+#if DEBUG || RAMA_TESTING
+    extension NwEgressBytesSink {
+        func onEgressPayload(_ payload: TcpPayloadSlice) -> RamaTcpDeliverStatusBridge {
+            onEgressBytes(payload.copiedData)
+        }
     }
-}
+#endif
 extension RamaTcpSessionHandle: NwEgressBytesSink {}
 
 private enum EgressReadTerminal {
@@ -116,20 +118,22 @@ final class NwTcpConnectionReadPump: @unchecked Sendable {
     /// Symmetric to [`TcpClientReadPump.cancelForPromote`] for the
     /// egress (NWConnection-receive) direction. See its doc for
     /// the carryover semantics and the `onComplete` barrier.
-    func cancelForPromote(
-        onCarryover: @escaping @Sendable (Data?) -> Void,
-        onError: @escaping @Sendable (Error) -> Void = { _ in },
-        onComplete: @escaping @Sendable () -> Void
-    ) {
-        runOnQueue {
-            self.cancelForPromoteLocked(
-                onCarryover: { payload in
-                    onCarryover(payload?.copiedRemainder)
-                },
-                onError: onError,
-                onComplete: onComplete)
+    #if DEBUG || RAMA_TESTING
+        func cancelForPromote(
+            onCarryover: @escaping @Sendable (Data?) -> Void,
+            onError: @escaping @Sendable (Error) -> Void = { _ in },
+            onComplete: @escaping @Sendable () -> Void
+        ) {
+            runOnQueue {
+                self.cancelForPromoteLocked(
+                    onCarryover: { payload in
+                        onCarryover(payload?.copiedRemainder)
+                    },
+                    onError: onError,
+                    onComplete: onComplete)
+            }
         }
-    }
+    #endif
 
     func cancelForPromoteWithReservations(
         onCarryover: @escaping @Sendable (TcpPayloadCursor?) -> Void,

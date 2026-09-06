@@ -137,6 +137,11 @@ impl DemoProxyConfig {
     }
 
     fn validate(config: Self) -> Result<Self, BoxError> {
+        if config.udp_e2e_mode && !cfg!(any(test, feature = "e2e")) {
+            return Err(BoxError::from_static_str(
+                "udp_e2e_mode requires the e2e build feature",
+            ));
+        }
         let has_evidence_identity =
             config.evidence_run_uuid.is_some() || !config.udp_e2e_diagnostic_endpoints.is_empty();
         if !config.udp_e2e_mode && has_evidence_identity {

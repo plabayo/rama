@@ -243,7 +243,9 @@ struct TcpPayloadSlice: @unchecked Sendable {
 
     /// Compatibility copy for test/legacy sinks which only understand `Data`
     /// and may retain it after the synchronous sink call returns.
-    var copiedData: Data { Data(bytes: bytes, count: count) }
+    #if DEBUG || RAMA_TESTING
+        var copiedData: Data { Data(bytes: bytes, count: count) }
+    #endif
 }
 
 /// Remaining logical range of one retained TCP root. Advancing the cursor does
@@ -275,10 +277,12 @@ struct TcpPayloadCursor: @unchecked Sendable {
     }
 
     /// Compatibility copy used only by the legacy promotion test surface.
-    var copiedRemainder: Data {
-        guard !isEmpty else { return Data() }
-        return Data(bytes: root.bytes.advanced(by: offset), count: remainingBytes)
-    }
+    #if DEBUG || RAMA_TESTING
+        var copiedRemainder: Data {
+            guard !isEmpty else { return Data() }
+            return Data(bytes: root.bytes.advanced(by: offset), count: remainingBytes)
+        }
+    #endif
 }
 
 /// Cancellation handle for one queued TCP reservation. Queue records do not

@@ -94,7 +94,6 @@ final class TcpEgressPumpInteractionTests: XCTestCase {
         let writePump = NwTcpConnectionWritePump(
             connection: mock,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(600),
             onDrained: {}
         )
         let readPump = NwTcpConnectionReadPump(
@@ -147,7 +146,6 @@ final class TcpEgressPumpInteractionTests: XCTestCase {
         let writePump = NwTcpConnectionWritePump(
             connection: mock,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(200),
             onDrained: {}
         )
         let readPump = NwTcpConnectionReadPump(
@@ -159,7 +157,7 @@ final class TcpEgressPumpInteractionTests: XCTestCase {
 
         readPump.start()
         writePump.closeWhenDrained()
-        writePump.armTerminalLingerCancel()
+        writePump.releaseTerminalConnection()
         mock.completePendingReceive(
             isComplete: false,
             error: NWError.posix(.ECONNRESET))
@@ -211,7 +209,6 @@ final class TcpEgressPumpInteractionTests: XCTestCase {
             let writePump = NwTcpConnectionWritePump(
                 connection: mock,
                 queue: queue,
-                lingerCloseDeadline: .milliseconds(50),
                 onDrained: {}
             )
             let readPump = NwTcpConnectionReadPump(
@@ -261,7 +258,6 @@ final class TcpEgressPumpInteractionTests: XCTestCase {
             let writePump = NwTcpConnectionWritePump(
                 connection: mock,
                 queue: queue,
-                lingerCloseDeadline: .milliseconds(100),
                 onDrained: {}
             )
             let readPump = NwTcpConnectionReadPump(
@@ -275,7 +271,7 @@ final class TcpEgressPumpInteractionTests: XCTestCase {
 
             readPump.start()
             writePump.closeWhenDrained()
-            writePump.armTerminalLingerCancel()
+            writePump.releaseTerminalConnection()
             mock.completePendingReceive(
                 isComplete: false,
                 error: NWError.posix(.ECONNRESET))

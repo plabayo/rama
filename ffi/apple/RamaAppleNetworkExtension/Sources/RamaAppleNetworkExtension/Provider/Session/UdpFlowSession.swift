@@ -519,9 +519,11 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
     }
 
     func installRequestRead() {
-        ctx.requestRead = { [weak self] in
-            self?.enqueueReadDemand(probeId: 0)
-        }
+        #if DEBUG || RAMA_TESTING
+            ctx.requestRead = { [weak self] in
+                self?.enqueueReadDemand(probeId: 0)
+            }
+        #endif
         ctx.requestReadWithProbe = { [weak self] probeId in
             self?.enqueueReadDemand(probeId: probeId)
         }
@@ -807,11 +809,13 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
         }
     }
 
-    func requestEngineSession() -> RamaTransparentProxyUdpSessionDecision? {
-        guard let lease = core?.engineLeaseForNewFlow() else { return nil }
-        installEngineLease(lease)
-        return requestEngineSession(using: lease)
-    }
+    #if DEBUG || RAMA_TESTING
+        func requestEngineSession() -> RamaTransparentProxyUdpSessionDecision? {
+            guard let lease = core?.engineLeaseForNewFlow() else { return nil }
+            installEngineLease(lease)
+            return requestEngineSession(using: lease)
+        }
+    #endif
 
     private func installEngineLease(_ lease: TransparentProxyCore.EngineFlowLease) {
         runtimePolicy = lease.runtimePolicy
@@ -927,9 +931,18 @@ final class UdpFlowSession<F: UdpFlowLike>: UdpFlowSessionAnchor, @unchecked Sen
 
         func testCloseIngressStaging() { ingressStaging.close() }
 
-        func testFillIngressStaging() -> UdpIngressStagedBatch? {
-            ingressStaging.stage(
-                datagrams: [Data(count: effectiveRuntimePolicy.udpIngressStaging.maxBytesPerFlow)],
+        func testFillGlobalIngressStaging() -> UdpIngressStagedBatch? {
+            let flowPolicy = effectiveRuntimePolicy.udpIngressStaging
+            let policy = UdpIngressStagingPolicy(
+                maxItemsPerFlow: flowPolicy.maxItemsPerFlow,
+                maxItemsPerGeneration: flowPolicy.maxItemsPerFlow,
+                maxBytesPerFlow: flowPolicy.maxBytesPerFlow,
+                maxBytesPerGeneration: flowPolicy.maxBytesPerFlow)
+            let budget = UdpIngressGenerationStagingBudget(policy: policy)
+            ingressStaging = UdpIngressFlowStaging(generation: budget)
+            let holder = UdpIngressFlowStaging(generation: budget)
+            return holder.stage(
+                datagrams: [Data(count: flowPolicy.maxBytesPerFlow)],
                 endpoints: nil
             ).batch
         }

@@ -11,11 +11,13 @@ protocol TcpClientBytesSink: AnyObject {
     func onClientBytes(_ data: Data) -> RamaTcpDeliverStatusBridge
     func onClientPayload(_ payload: TcpPayloadSlice) -> RamaTcpDeliverStatusBridge
 }
-extension TcpClientBytesSink {
-    func onClientPayload(_ payload: TcpPayloadSlice) -> RamaTcpDeliverStatusBridge {
-        onClientBytes(payload.copiedData)
+#if DEBUG || RAMA_TESTING
+    extension TcpClientBytesSink {
+        func onClientPayload(_ payload: TcpPayloadSlice) -> RamaTcpDeliverStatusBridge {
+            onClientBytes(payload.copiedData)
+        }
     }
-}
+#endif
 extension RamaTcpSessionHandle: TcpClientBytesSink {}
 
 /// Cross-thread access pattern: `state`-protected fields are
@@ -129,23 +131,25 @@ final class TcpClientReadPump: @unchecked Sendable {
     /// Does NOT fire `onTerminal` — the per-flow context's
     /// teardown path is owned by the cutover orchestrator from
     /// this point on.
-    func cancelForPromote(
-        onCarryover: @escaping @Sendable (Data?) -> Void,
-        onError: @escaping @Sendable (Error) -> Void = { _ in },
-        onComplete: @escaping @Sendable () -> Void
-    ) {
-        runOnQueue {
-            self.cancelForPromoteLocked(
-                onCarryover: { payload, error in
-                    if let error {
-                        onError(error)
-                    } else {
-                        onCarryover(payload?.copiedRemainder)
-                    }
-                },
-                onComplete: onComplete)
+    #if DEBUG || RAMA_TESTING
+        func cancelForPromote(
+            onCarryover: @escaping @Sendable (Data?) -> Void,
+            onError: @escaping @Sendable (Error) -> Void = { _ in },
+            onComplete: @escaping @Sendable () -> Void
+        ) {
+            runOnQueue {
+                self.cancelForPromoteLocked(
+                    onCarryover: { payload, error in
+                        if let error {
+                            onError(error)
+                        } else {
+                            onCarryover(payload?.copiedRemainder)
+                        }
+                    },
+                    onComplete: onComplete)
+            }
         }
-    }
+    #endif
 
     /// Production cutover variant which transfers an existing replay-buffer
     /// charge into the direct forwarder instead of release/re-reserve racing.
@@ -300,13 +304,12 @@ final class TcpClientReadPump: @unchecked Sendable {
                     return
                 }
 
-                guard let session = self.session else {
+                guard self.session != nil else {
                     // Session was torn down while a read was in flight — drop
                     // the bytes and stop reading.
                     self.terminate(with: nil)
                     return
                 }
-                _ = session
                 self.pendingPayload = transitPayload
                 if self.deliverPendingPayloadLocked(isInitialDelivery: true) {
                     self.requestReadLocked()

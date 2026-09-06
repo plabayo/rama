@@ -149,7 +149,10 @@ final class UdpIngressProcessLifetimeTests: XCTestCase {
                 sourceAppPid: 43))
         XCTAssertEqual(holder.startWithDecision(), .intercept)
         XCTAssertEqual(waiter.startWithDecision(), .intercept)
-        var retained = holder.testFillIngressStaging()
+        let holderStaging = UdpIngressFlowStaging(
+            generation: lease.udpIngressStagingBudget,
+            policy: lease.runtimePolicy.udpIngressStaging)
+        var retained = holderStaging.stage(datagrams: [Data([1])], endpoints: nil).batch
         XCTAssertNotNil(retained)
         let lateGrants = Locked(0)
         XCTAssertTrue(

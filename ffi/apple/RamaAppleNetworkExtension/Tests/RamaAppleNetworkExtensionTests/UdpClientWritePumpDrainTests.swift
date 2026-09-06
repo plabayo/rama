@@ -30,6 +30,60 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         var writeCount: Int { writes.withLock { $0 } }
     }
 
+    private final class BlockingSubmissionUdpFlow: UdpFlowWritable, @unchecked Sendable {
+        let entered = DispatchSemaphore(value: 0)
+        let proceed = DispatchSemaphore(value: 0)
+
+        func writeDatagrams(
+            _ datagrams: [Data], sentBy remoteEndpoints: [NWEndpoint],
+            completionHandler: @escaping @Sendable (Error?) -> Void
+        ) {
+            entered.signal()
+            XCTAssertEqual(proceed.wait(timeout: .now() + 30), .success)
+        }
+    }
+
+    func testSlowKernelSubmissionDoesNotBlockReplyAdmission() {
+        let flow = BlockingSubmissionUdpFlow()
+        let queue = makeQueue()
+        let pump = UdpClientWritePump(
+            flow: flow, queue: queue, logger: { _ in }, onTerminalError: { _ in })
+        pump.markOpened()
+        pump.enqueue(tag(1), sentBy: ep())
+        XCTAssertEqual(flow.entered.wait(timeout: .now() + 5), .success)
+
+        let admitted = expectation(description: "reply admitted during kernel submission")
+        DispatchQueue.global().async {
+            pump.enqueue(Data([0, 2]), sentBy: NWHostEndpoint(hostname: "127.0.0.1", port: "5353"))
+            admitted.fulfill()
+        }
+        wait(for: [admitted], timeout: 5)
+        flow.proceed.signal()
+        pump.close()
+        queue.sync {}
+        XCTAssertEqual(pump.testAdmissionSnapshot.acceptedDispatches, 2)
+        XCTAssertEqual(pump.testAdmissionSnapshot.retainedBytes, 0)
+    }
+
+    func testCapacityDropsEmitSampledReleaseTelemetry() {
+        let flow = MockUdpFlow()
+        let queue = makeQueue()
+        let logs = Locked<[FlowLogMessage]>([])
+        let pump = UdpClientWritePump(
+            flow: flow, queue: queue,
+            logger: { message in logs.withLock { $0.append(message) } },
+            onTerminalError: { _ in })
+        for _ in 0..<(udpWritePumpMaxPending + 9) { pump.enqueue(tag(1), sentBy: ep()) }
+        let samples = logs.withLock { $0 }
+        XCTAssertEqual(samples.count, 4)
+        XCTAssertTrue(samples.allSatisfy { $0.level == .info && $0.publicText == $0.text })
+        XCTAssertTrue(samples.last?.text.contains("cumulative_dropped_items=8 ") == true)
+        XCTAssertTrue(samples.last?.text.contains("cumulative_dropped_bytes=16 ") == true)
+        XCTAssertEqual(pump.testAdmissionSnapshot.droppedFull, 9)
+        pump.close()
+        queue.sync {}
+    }
+
     private func makeQueue() -> DispatchQueue {
         DispatchQueue(label: "rama.tproxy.udp.write.drain.test", qos: .utility)
     }
@@ -490,7 +544,7 @@ final class UdpClientWritePumpDrainTests: XCTestCase {
         XCTAssertEqual(saturated.waiting, udpWritePumpMaxPending)
         XCTAssertEqual(saturated.acceptedDispatches, 257)
         XCTAssertEqual(saturated.droppedFull, 9_744)
-        XCTAssertEqual(saturated.fullLogCount, 1)
+        XCTAssertEqual(saturated.fullLogCount, 14)
         XCTAssertEqual(activityCount, 10_001)
 
         pump.close()

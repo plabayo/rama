@@ -129,7 +129,8 @@ impl FfiBridgeStream {
         paused_drain_max_wait: Duration,
         write_chunk_limit: usize,
     ) -> Self {
-        assert!(write_chunk_limit > 0, "write chunk limit must be non-zero");
+        debug_assert!(write_chunk_limit > 0, "write chunk limit must be non-zero");
+        let write_chunk_limit = write_chunk_limit.max(1);
         Self {
             rx,
             read_cursor: None,

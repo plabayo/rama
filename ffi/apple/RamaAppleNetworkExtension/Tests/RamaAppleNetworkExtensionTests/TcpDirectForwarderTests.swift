@@ -116,7 +116,6 @@ final class TcpDirectForwarderTests: XCTestCase {
                 writerMemoryBudget: writerMemoryBudget)
             egressWritePump = NwTcpConnectionWritePump(
                 connection: connection, queue: queue,
-                lingerCloseDeadline: .milliseconds(100),
                 onDrained: { forwarderRef.get()?.onEgressPumpDrained() },
                 // Mirror production's promoted-mode wiring
                 // (`TcpFlowSession.buildEgressWritePump`): a terminal
@@ -747,9 +746,7 @@ final class TcpDirectForwarderTests: XCTestCase {
         XCTAssertEqual(h.terminalCount, 1)
         XCTAssertEqual(h.c2sPhase, .finished)
         XCTAssertEqual(h.s2cPhase, .finished)
-        XCTAssertFalse(
-            h.egressWritePump.testHasTerminalLinger,
-            "external teardown must not retain a cancelled connection in a fresh linger")
+
     }
 
     /// Double cancel is a no-op on the second call.

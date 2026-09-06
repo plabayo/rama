@@ -19,7 +19,7 @@ pub const MAX_UDP_DATAGRAM_PAYLOAD_SIZE: usize = u16::MAX as usize;
 pub const DEFAULT_UDP_INGRESS_PER_FLOW_MAX_BYTES: usize = 256 * 1024;
 pub const DEFAULT_UDP_INGRESS_GLOBAL_MAX_BYTES: usize = 16 * 1024 * 1024;
 pub const DEFAULT_UDP_INGRESS_PROBE_LEASE: Duration = Duration::from_millis(10);
-pub const MAX_UDP_INGRESS_PROBE_LEASE: Duration = Duration::from_secs(60);
+pub const MAX_UDP_INGRESS_PROBE_LEASE: Duration = Duration::from_mins(1);
 
 const INGRESS_OPEN: u8 = 0;
 const INGRESS_PAUSED_COUNT: u8 = 1;
@@ -1079,11 +1079,12 @@ impl UdpIngressBudget {
             let Some(lease) = coordinator.leases.remove(&id) else {
                 continue;
             };
-            assert!(
+            debug_assert!(
                 coordinator.provisional_bytes >= lease.bytes,
                 "UDP provisional byte reservation underflow"
             );
-            coordinator.provisional_bytes -= lease.bytes;
+            coordinator.provisional_bytes =
+                coordinator.provisional_bytes.saturating_sub(lease.bytes);
             self.release_charge(lease.bytes);
             if let Some(flow) = lease.flow.upgrade() {
                 _ = flow.global_probe_id.compare_exchange(
@@ -1126,11 +1127,12 @@ impl UdpIngressBudget {
                     debug_assert!(false, "validated UDP probe lease disappeared under lock");
                     return false;
                 };
-                assert!(
+                debug_assert!(
                     coordinator.provisional_bytes >= lease.bytes,
                     "UDP provisional byte reservation underflow"
                 );
-                coordinator.provisional_bytes -= lease.bytes;
+                coordinator.provisional_bytes =
+                    coordinator.provisional_bytes.saturating_sub(lease.bytes);
                 _ = flow.global_probe_id.compare_exchange(
                     probe_id,
                     0,
@@ -1191,11 +1193,12 @@ impl UdpIngressBudget {
                     debug_assert!(false, "validated UDP probe lease disappeared under lock");
                     return ProbeLeaseConsumption::NoLease;
                 };
-                assert!(
+                debug_assert!(
                     coordinator.provisional_bytes >= lease.bytes,
                     "UDP provisional byte reservation underflow"
                 );
-                coordinator.provisional_bytes -= lease.bytes;
+                coordinator.provisional_bytes =
+                    coordinator.provisional_bytes.saturating_sub(lease.bytes);
                 _ = flow.global_probe_id.compare_exchange(
                     probe_id,
                     0,
@@ -1232,11 +1235,12 @@ impl UdpIngressBudget {
                     return ProbeLeaseConsumption::NoLease;
                 };
                 debug_assert_eq!(lease.bytes, lease_bytes);
-                assert!(
+                debug_assert!(
                     coordinator.provisional_bytes >= lease_bytes,
                     "UDP provisional byte reservation underflow"
                 );
-                coordinator.provisional_bytes -= lease_bytes;
+                coordinator.provisional_bytes =
+                    coordinator.provisional_bytes.saturating_sub(lease_bytes);
                 self.record_retained_reservation(len);
                 _ = flow.global_probe_id.compare_exchange(
                     probe_id,
@@ -1279,11 +1283,12 @@ impl UdpIngressBudget {
                         false
                     } else {
                         let lease = entry.remove();
-                        assert!(
+                        debug_assert!(
                             coordinator.provisional_bytes >= lease.bytes,
                             "UDP provisional byte reservation underflow"
                         );
-                        coordinator.provisional_bytes -= lease.bytes;
+                        coordinator.provisional_bytes =
+                            coordinator.provisional_bytes.saturating_sub(lease.bytes);
                         self.release_charge(lease.bytes);
                         _ = flow.global_probe_id.compare_exchange(
                             probe_id,

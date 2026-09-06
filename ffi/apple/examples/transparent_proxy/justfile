@@ -181,40 +181,17 @@ qa-rust: sort clippy rust-doc rust-test rust-test-ignored
 check-spec-parity:
     ./scripts/check_spec_parity.sh
 
-test-evidence:
-    python3 ./scripts/test_modern_udp_evidence.py
-    python3 ./scripts/test_soak_pressure_log.py
-    python3 ./scripts/test_stress_traffic.py
-    python3 ./scripts/test_signed_run_evidence.py
+lint-scripts:
+    shellcheck ./scripts/*.sh
 
-# Compatibility alias for existing developer commands.
-test-soak-log-parser: test-evidence
+test-tools: lint-scripts
+    python3 ./scripts/test_tools.py
 
-qa: qa-rust check-spec-parity test-evidence build-tproxy-dev
+qa: qa-rust check-spec-parity test-tools build-tproxy-dev
 
 test-e2e: build-tproxy-rs-debug clippy-tproxy-ffi-e2e cleanup-tproxy-ffi-e2e run-tproxy-ffi-e2e run-tproxy-ffi-e2e-swift
 
-# Real signed-system-extension E2E (macOS 15+). Builds and installs the dev
-# app, supplies non-persisted test-only UDP policy start options, and proves
-# transparent pass-through (`false`), provider forwarding (`true`), and block
-# (`true`) against public protocol endpoints, including HTTP/3 on UDP/443.
-# Requires Internet access, Apple Development signing, and sysext approval.
-test-modern-udp-signed: build-tproxy-app-dev
-    ./scripts/test_modern_udp_flow.sh "{{tproxy_built_app_dev}}"
-
-# The explicit full gate is signed/on-device: unlike ordinary `qa`, it must prove
-# the modern UDP callback paths and HTTP/3 pass-through against the live sysext.
-test-full: qa test-e2e test-modern-udp-signed
-
-# Verify the three independently sealed Gate 20 run directories as one exact
-# source/provider generation. The shared helper owns all cross-artifact
-# semantics, including the sole modern exact-workload Dial9 proof.
-verify-gate20-evidence modern soak stress echo_plan_sha256 http_host="http-test.ramaproxy.org":
-    python3 ./scripts/signed_run_evidence.py verify-release-set \
-        --require-kind modern_udp --require-kind soak --require-kind stress-series \
-        --expected-http-host {{quote(http_host)}} \
-        --expected-echo-plan-sha256 {{quote(echo_plan_sha256)}} \
-        {{quote(modern)}} {{quote(soak)}} {{quote(stress)}}
+test-full: qa test-e2e
 
 # Run the Rust FFI e2e suite under AddressSanitizer to surface memory errors,
 # including use-after-free. ASan does not detect data races.
@@ -229,13 +206,13 @@ verify-gate20-evidence modern soak stress echo_plan_sha256 http_host="http-test.
 [working-directory: './tproxy_rs']
 build-tproxy-rs-asan:
     RUSTFLAGS="-Z sanitizer=address -D warnings --cfg tokio_unstable" \
-        cargo +nightly build --locked --no-default-features --target aarch64-apple-darwin
+        cargo +nightly build --locked --no-default-features --target-dir target/asan --target aarch64-apple-darwin
 
 [working-directory: './tproxy_ffi_e2e']
 run-tproxy-ffi-e2e-asan:
     RUSTFLAGS="-Z sanitizer=address -D warnings --cfg tokio_unstable" \
-        RAMA_TPROXY_EXAMPLE_LIB_DIR="../tproxy_rs/target/aarch64-apple-darwin/debug" \
-        cargo +nightly test --target aarch64-apple-darwin \
+        RAMA_TPROXY_EXAMPLE_LIB_DIR="../tproxy_rs/target/asan/aarch64-apple-darwin/debug" \
+        cargo +nightly test --target-dir target/asan --target aarch64-apple-darwin \
         --test e2e -- --test-threads=1 --nocapture
 
 # Convenience target: build the staticlib with ASan and run the e2e stress
@@ -246,12 +223,6 @@ test-e2e-asan: build-tproxy-rs-asan run-tproxy-ffi-e2e-asan
 # TSan. This does not provide TSan race coverage for the linked Rust staticlib.
 test-e2e-sanitizers: test-e2e-asan run-tproxy-ffi-e2e-swift-tsan
 
-# Generate live traffic against public HTTP/HTTPS endpoints to stress
-# the running sysext. Mixes small/large GET, large POST, parallel
-# connections, plain HTTP, and HTTP/1.1 ↔ HTTP/2. The sysext must be
-# installed and active. Tune via STRESS_DURATION /
-# STRESS_CONCURRENCY etc; with `MONITOR_PID=$(pgrep -f
-# org.ramaproxy.example.tproxy.dev.provider)` it also samples the
-# extension's RSS / VM regions / leaks every 5s.
+# Generate HTTP traffic through the running proxy; use --help for workload options.
 stress-traffic *ARGS:
-    bash ./scripts/stress_traffic.sh {{ARGS}}
+    python3 ./scripts/stress_traffic.py {{ARGS}}

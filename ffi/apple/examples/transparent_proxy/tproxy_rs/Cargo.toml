@@ -11,6 +11,7 @@ crate-type = ["staticlib"]
 
 [features]
 default = ["jemallocator"]
+e2e = []
 jemallocator = ["dep:jemallocator", "dep:tikv-jemalloc-sys"]
 
 [dependencies]
@@ -18,19 +19,13 @@ ahash = "0.8"
 arc-swap = "1"
 base64 = "0.23"
 dial9 = { version = "0.5.0", default-features = false, features = ["tokio"] }
-dial9-trace-format = "0.5.0"
-flate2 = "1"
 jemallocator = { package = "tikv-jemallocator", version = "0.6", optional = true }
 moka = { version = "0.12", features = ["sync"] }
 rama = { path = "../../../../../", features = ["dial9", "net-apple-networkextension", "net-apple-xpc", "tcp", "udp", "dns", "socks5", "ws", "http-full", "boring"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha2 = "0.11"
 tikv-jemalloc-sys = { version = "0.6", optional = true, features = ["stats"] }
 tokio = { version = "1.53", features = ["net", "time"] }
-
-[dev-dependencies]
-tempfile = "3"
 
 [lints.rust]
 unused_imports = "warn"

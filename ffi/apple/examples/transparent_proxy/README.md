@@ -20,8 +20,7 @@ just build-tproxy-dev
 ```
 
 This builds the Rust staticlib and the developer-signed macOS container app + system extension.
-Clean signed builds compile both Rust architectures from a pinned source archive
-and export the host's `dial9_evidence` helper for the live validation scripts.
+Clean signed builds compile both Rust architectures from a pinned source archive.
 For a standalone universal Rust library, run `just build-tproxy-rs`. It produces:
 
 ```
@@ -272,198 +271,30 @@ So this example deliberately demonstrates both:
 
 ## Logs
 
-### Signed modern UDP callback E2E (macOS 15+)
+### UDP diagnostics
 
-The signed example includes a real-socket test for
-`NEAppProxyUDPFlowHandling`. It installs the current development build,
-passes test-only policy overrides as non-persisted start options, and
-drives public protocol endpoints through the active system extension:
-
-- Cloudflare DNS (`1.1.1.1:53`) declined by Rama (`false`, direct pass-through)
-- Cloudflare NTP (`162.159.200.1:123`) accepted by Rama (`true`, UDP forwarding)
-- Google Public DNS (`8.8.8.8:53`) accepted then closed by Rama (`true`, blocked)
-- Cloudflare HTTP/3 declined by Rama (`false`, direct UDP/443 pass-through)
-- One bound Cloudflare HTTP/3 request forwarded by Rama (`true`, UDP interception)
-
-Run it on a macOS 15+ signing host where the development system extension has
-been approved:
+Run the Swift and Rust FFI regression suites with `just test-e2e`. The standalone
+protocol probe supports DNS, NTP, HTTP/3, and controlled UDP echo workloads:
 
 ```sh
-just test-modern-udp-signed
+python3 scripts/modern_udp_e2e_probe.py --help
 ```
 
-The test first runs DNS/NTP controls and H3 pass-through with an unblocked
-profile, then enables the exact blocked-DNS override and UDP/443 interception.
-It captures the provider's structured
-Rust log, verifies the exact remote address/port and Rama decision, verifies
-pass-through flows never enter provider handling, and checks that the accepted
-NTP endpoint reaches Rama's UDP forwarding service. It also snapshots the
-root-owned Dial9 trace directory before the run, restores the default profile
-afterward, waits for a new sealed segment, and decodes an exact
-`TproxyFlowOpened`/`TproxyFlowClosed` pair for that NTP flow ID and UDP protocol.
-Stale or still-active trace segments cannot satisfy the gate. The terminal
-`udp-evidence-status.tsv` artifact distinguishes a complete product failure
-from an infrastructure/cleanup failure and records probe, log-join, profile
-restore, provider-process identity, Dial9 close reason/age/byte counts, Rust
-UDP-ingress pressure, and Swift pre-queue staging counts. The provider PID and
-start identity must remain stable through evidence collection; profile
-restoration is verified separately and restarts the engine generation. Malformed/redacted
-pressure lines make the evidence incomplete. The test deliberately stalls one
-E2E UDP service and bursts 512 datagrams. The hold uses the same ten-minute
-expiry as the temporary policy and applies only when the Python bundle, flow
-metadata endpoint, actual datagram peer, and versioned payload endpoint marker
-all agree. It leaves the production channel capacity unchanged, so interrupted
-cleanup cannot permanently degrade unrelated UDP. The gate requires a Rust
-ingress drop transition and its recovery for that exact decision `flow_id`
-inside the pressure phase, rejects foreign-flow or outside-phase drops, and
-rejects any Swift pre-queue staging loss. On macOS 15+, an exact
-initial endpoint reaching Rust also proves that the modern typed callback
-delivered the flow; the generic fallback has no public remote endpoint to
-forward. The UDP/443 request uses Apple's
-`nscurl --http3-prior-knowledge` and requires the response to report
-`http=http/3`; the matching provider record must also be a fresh UDP/443 flow
-attributed to the launched `nscurl` PID, at one of the URL's resolved endpoints.
-The UUID in the URL is only a cache buster; it is not observable in the UDP
-decision record and is not claimed as a flow-binding token. Instead, the gate
-closes the decision window after a bounded quiescence interval following the
-launched PID's record and
-requires exactly one matching PID/endpoint decision, so a TCP fallback or an
-unrelated background QUIC flow cannot satisfy it. The NTP Dial9 pair must close
-with numeric reason `1` and readable reason `shutdown`, fall inside the actual
-monotonic gate window, and contain at least one complete 48-byte request and
-response.
+The example's marker/hold/sink path requires the explicit Rust `e2e` feature and
+`udp_e2e_mode` launch configuration. Ordinary builds reject that configuration.
+Use that feature only for a diagnostic build; it is disabled by default.
 
-The H3 pass-through canary may receive no usable local endpoint from the
-pre-open flow metadata. It records `local_endpoint=unavailable` only for
-`nscurl` pass-through decisions to UDP/443. Its correspondence still requires
-one distinct provider flow per owned process, the exact remote endpoint,
-run UUID, provider generation, and phase. This is not a complete socket-tuple
-proof or evidence of H3 interception. Python probes explicitly bind before
-traffic; every echo socket still requires a concrete local endpoint and an
-exact endpoint-to-flow bijection.
+UDP overload is bounded and lossy. Swift retains an admissible prefix of each
+Apple read completion; excess datagrams are dropped with sampled diagnostics.
+Under Rust global-byte exhaustion, one FIFO probe lease admits one datagram.
+The remainder of that completion competes for ordinary capacity and can be
+rejected while other flows wait. ACKs identify the exact probe owner and do not
+reserve a whole read batch. These bounds protect memory and fair recovery;
+heavy QUIC throughput still needs signed, on-device qualification.
 
-After the blocked-DNS canary, the controlled echo population and deliberate
-pressure burst run together in the second profile, followed by the NTP recovery
-canary. Their decisions and Dial9 requirements must all use that profile's
-intercepting generation. The initial NTP control remains bound to the first
-generation. Raw receipt clocks and provider-log boundaries enforce this order.
-
-The existing Python probe then loads an installed HTTP/3-capable libcurl and makes one
-IPv4 request with a fresh handle bound to a nonzero local port. It requires
-HTTP/3 and status 200, limits the transfer to 15 seconds and the response body
-to 1 MiB, and retains normal TLS verification. The raw body, its digest, child
-exit, clock window, and exact local/remote endpoints must agree with one Python
-intercept decision in that profile. The finalizer restores the normal profile
-before collecting Dial9 once, sealing both workload generations. The H3 flow
-must close with reason `shutdown` and positive encrypted UDP byte counts no
-larger than 16 MiB per direction; HTTP body size is not a transport byte count.
-
-The client uses `/opt/homebrew/opt/curl/lib/libcurl.4.dylib` or
-`/usr/local/opt/curl/lib/libcurl.4.dylib` when available. Set
-`RAMA_TPROXY_E2E_HTTP3_LIBCURL` to an absolute path for another installation.
-The harness does not install a library. Its receipt records the resolved main
-library path, SHA-256, and version as toolchain provenance; this does not attest
-the library's dependencies or the capture host. Offline evidence replay neither
-loads that library nor makes network requests. The automated suite exercises
-the client with mocks, so CI does not need libcurl or signing for those tests.
-
-The signed workload defaults to 128 controlled UDP sockets, each sending 64
-requests with two-second pacing. It permits 128–450 sockets within the same
-180-second workload deadline:
-
-```sh
-RAMA_TPROXY_E2E_ECHO_SOCKETS=128 \
-  just test-modern-udp-signed
-```
-
-The client exchanges one packet across every socket before beginning the next
-round. Its 32 workers limit outstanding exchanges; all sockets remain open
-throughout the rounds. Each packet records its flow/sequence and monotonic
-send/receive timestamps. Release verification requires all initial responses
-before the next round, at least 90 seconds shared by the entire population,
-and gaps below the engine's 60-second UDP idle timeout. It also checks exact
-timing cardinality, per-flow pacing, the workload deadline, and agreement with
-the run's wall-clock window. Smaller configurations remain available through
-the standalone `echo-load` command for developer testing.
-
-Exact endpoint and source-application fields remain private during normal
-operation. The example Rust policy owns the E2E mode, probe allowlist, public
-test diagnostics, and ten-minute expiry for temporary UDP overrides. The
-reusable `RamaAppleNetworkExtension` provider remains final and contains no
-test policy or probe knowledge. Rust receives the normalized source-app bundle
-identifier, so both bare and team-prefixed `python3` signing identifiers resolve
-to `com.apple.python3`. Unrelated background flows remain private, and the mode
-is passed through `startOptions` without ever being written to the saved
-`NETransparentProxyManager` profile. Downstream users configure and decide UDP
-flows in Rust; they do not need a custom Swift provider.
-
-The temporary mode emits `udp_e2e_diagnostic_active` once when configured and
-`udp_e2e_diagnostic_rejected` at most once per rejection reason per engine
-generation. These records expose only the run/provider identity, counts, and
-fixed reasons such as `missing_local_endpoint` or `missing_source_pid`.
-They explain absent decision records without publishing rejected flow metadata;
-they cannot satisfy the gate's exact traffic-attribution requirements.
-
-The default targets are maintained public services and therefore require
-Internet access. They can be replaced for a restricted runner with
-`RAMA_TPROXY_E2E_PASSTHROUGH_DNS`, `RAMA_TPROXY_E2E_INTERCEPT_NTP`,
-`RAMA_TPROXY_E2E_BLOCKED_DNS`, and `RAMA_TPROXY_E2E_HTTP3_URL`. The first three
-values must be IP literals so callback-log assertions remain deterministic.
-Cached `sudo` credentials are required to read and copy the extension's
-root-owned Dial9 segments. Prime them with `sudo -v` immediately before the
-recipe; the script itself uses non-interactive `sudo -n` and fails incomplete
-instead of prompting mid-run.
-
-The legacy callback remains compile- and unit-tested on current CI. On the
-oldest supported pre-macOS-15 signing host, run the same real-socket probe with
-the explicit legacy opt-in:
-
-```sh
-RAMA_TPROXY_ALLOW_LEGACY_UDP_E2E=1 just test-modern-udp-signed
-```
-
-That run retains the same Rust pass-through, intercept, block, endpoint, and
-UDP/443 assertions. An older signed runner is not currently available in hosted
-CI.
-
-Check the extension is registered, then stream Rama and NetworkExtension
-events. Use `--level debug` for `log stream`; `log show` has separate
-`--info --debug` output flags and otherwise returns default-level events only.
-
-```sh
-systemextensionsctl list
-log stream --level debug --style compact \
-  --predicate 'subsystem BEGINSWITH "org.ramaproxy.example.tproxy" OR process == "neagent" OR process == "nesessionmanager" OR process == "sysextd" OR process == "launchd"'
-
-log show --last 5m --style compact --info --debug \
-  --predicate 'subsystem BEGINSWITH "org.ramaproxy.example.tproxy" OR process == "neagent" OR process == "nesessionmanager" OR process == "sysextd" OR process == "launchd"'
-```
-
-`--info` and `--debug` only select events that macOS retained; they do not
-retroactively persist debug events. For a planned reproduction, keep
-`log stream --level debug` running. To make a later replay self-contained,
-temporarily enable debug persistence and reset it after the reproduction:
-The subsystem below is the development provider bundle identifier; substitute
-the installed provider identifier for another build flavor.
-
-```sh
-sudo log config --subsystem org.ramaproxy.example.tproxy.dev.provider \
-  --mode level:debug,persist:debug
-# reproduce, then export with `log show --info --debug` or `log collect`
-sudo log config --subsystem org.ramaproxy.example.tproxy.dev.provider --reset
-```
-
-Private metadata remains `<private>` by design; `sudo` does not turn a
-redacted field public. Lifecycle text, counters, and other support-critical
-summaries are emitted separately as public fields. Rust `tracing` events
-share the same subsystem — see
-[Observability with dial9](#observability-with-dial9).
-
-The example exports its own and the Apple bridge's debug events, while other
-Rama targets default to info to avoid per-chunk protocol noise. WebSocket
-payloads are never logged; process arguments are included only as private
-demo metadata. Per-message WebSocket events are trace-level and therefore
-omitted from this debug stream.
+UDP contributes to the shared 500-flow hard cap but is not a TCP reaper victim.
+A UDP-dominant population therefore relies on natural close, the UDP idle
+watchdog, and configured refusal of new flows for relief.
 
 ## Troubleshooting
 
@@ -549,22 +380,16 @@ and `resident` estimates resident pages including allocator metadata and dirty
 pages. `mapped` counts mapped active extents; `retained` is reserved virtual
 memory and is not an RSS count. These readings exclude Swift/Apple malloc
 and are not an atomic snapshot of a busy process; thread caches and collection
-timing also affect accounting. Pair them with RSS/`vmmap`, rather than replacing
-the release memory threshold. The diagnostic never purges arenas, flushes caches,
+timing also affect accounting. Pair them with RSS/`vmmap`, alongside measured workload latency and throughput. The diagnostic never purges arenas, flushes caches,
 or changes decay/background-thread policy; enabling statistics adds accounting
 overhead that belongs in the subsequent performance qualification. Refreshing
 statistics also takes allocator locks and has a cost; use occasional diagnostic
 samples rather than treating this as a per-flow or high-frequency monitor.
 
-The macOS example sets jemalloc's startup default to `dirty_decay_ms:0` so
-unused dirty pages are purged when created. The bundled jemalloc build has no
-background purging thread on macOS; an inactive arena can otherwise retain freed
-pages while waiting for further allocation activity. Arena limits, thread caches,
-and muzzy decay keep their defaults. Purging can increase system calls,
-refaults, and CPU use, so memory, latency, and throughput must be qualified
-together. This does not reclaim live allocations or eliminate fragmentation.
-The snapshot reports the effective settings; normal jemalloc configuration
-precedence still permits a startup override.
+The example keeps jemalloc's default decay policy. Measure live allocations,
+fragmentation, and process footprint before changing that policy. A whole-process
+RSS limit must account for the configured Swift writer and UDP staging envelopes,
+Rust retained payloads, runtime overhead, and Apple framework allocations.
 
 ### Wire capture (for diagnosing TLS / handshake issues)
 
@@ -664,318 +489,39 @@ connectivity without a reboot. (For the consuming product, replace the
 `org.ramaproxy.example.tproxy` ids with that product's subsystem /
 provider ids.)
 
-## Stress + resource-usage testing
+## Stress and resource measurements
 
-### Controlled remote UDP workload
-
-The existing probe can exercise a controlled echo server on UDP/443. Use the
-same checkout and a fresh lowercase UUID on both machines. On your test server,
-choose its listening address and retain the ready/result files:
+With the proxy installed and active, run:
 
 ```sh
-python3 scripts/modern_udp_e2e_probe.py echo-server \
-  --bind "$ECHO_BIND_ADDRESS" --port 443 --run-uuid "$RUN_UUID" \
-  --expected-count 8192 --max-seconds 600 \
-  --ready-file echo-ready.json --result-file echo-server.json
+just stress-traffic --duration 120 --concurrency 32
+just stress-traffic --help
+just test-tools
 ```
 
-On the client, use the server's reachable IP address. This profile sends 64
-1200-byte requests from each of 128 persistent sockets, with each socket's
-requests spaced by at least two seconds. Every socket participates in each
-round even when the population exceeds the worker count:
+The load tool cycles through HTTP, HTTPS HTTP/1.1, HTTP/2, large downloads, and
+POST uploads. Use `--http-url` and `--https-url` to target a controlled HTTP test
+server implementing `/method`, `/bytes?size=N`, and `/octet-stream`. Requests
+stop starting at the duration limit; in-flight requests get up to 20 seconds to
+finish. Interrupting stops new requests and waits for that bounded drain.
+
+JSON results report request counts, failures, downloaded bytes, throughput, and
+an upper bound on p95 latency from power-of-two millisecond buckets. Curl errors,
+truncated responses, and HTTP failures produce a nonzero exit. The tool does not
+change proxy configuration or infer a memory threshold from traffic results.
+Compare equivalent workloads with and without the proxy and measure the provider
+separately using the tools below.
+
+`just test-tools` runs ShellCheck (`brew install shellcheck`) and the pressure-parser,
+protocol-probe, and HTTP-load regressions. A skipped test fails the gate. `check-spec-parity` also checks that
+the parser matches the Swift/Rust pressure telemetry. Parse retained os_log
+records with the command below. It reports malformed telemetry and sampled drops;
+a successful parse does not prove a workload or pressure recovery was exercised.
 
 ```sh
-python3 scripts/modern_udp_e2e_probe.py echo-load \
-  --server "$ECHO_SERVER_ADDRESS" --port 443 --run-uuid "$RUN_UUID" \
-  --socket-count 128 --concurrency 32 --datagrams-per-socket 64 \
-  --payload-bytes 1200 --interval-ms 2000 --timeout 8 \
-  --result-file echo-client.json
+python3 scripts/pressure_log.py provider.ndjson --pid 12345 \
+    --subsystem org.ramaproxy.example.tproxy.dev.provider
 ```
-
-The server needs permission to bind UDP/443 and a firewall rule allowing the
-test client. Start the client after the ready file appears. Preserve both
-machines' results to compare counts and payload hashes. Successful replies
-prove the echo workload; transparent-proxy interception additionally requires
-an intercepting UDP/443 policy and matching provider/Dial9 flow identities.
-Schema2 receipts also record `socket_endpoints` on the client and `socket_peers`
-on the receiver, indexed by the payload's socket ID. Each map must cover every
-socket exactly once. Proxy egress and NAT can change addresses: compare these
-maps by socket ID, without requiring their address values to match. This fixed
-flow fixture rejects a peer change or tuple reuse within one socket ID; a new
-flow after intentional idle expiry needs a new identity. The receiver bounds
-indices to512 sockets and64 packets each, and retained payload to256MiB.
-Current replay requires schema2; old receipts lack these address records.
-The signed modern harness defaults to a local loopback server for developer
-checks. A controlled remote run uses an independently reviewed plan and a
-standard-library Python controller supplied by the operator:
-
-```sh
-RAMA_TPROXY_E2E_ECHO_PLAN="$ECHO_PLAN" \
-RAMA_TPROXY_E2E_ECHO_PLAN_SHA256="$EXPECTED_ECHO_PLAN_SHA256" \
-RAMA_TPROXY_E2E_ECHO_CONTROLLER="$ECHO_CONTROLLER" \
-RAMA_TPROXY_E2E_ECHO_LAUNCHER="$ECHO_LAUNCHER" \
-  just test-modern-udp-signed
-```
-
-The first supported plan is `remote_active_v1`: exactly 128 sockets ×64 packets,
-1200 bytes, 2000 ms pacing and32 workers. The plan fixes a fresh run UUID,
-source HEAD, public UDP/443 target, owned Fly Machine and previous instance,
-full deployment configuration digest, image index and resolved image digests,
-and probe/launcher/controller source hashes. `REMOTE_PLAN_KEYS` and
-`REMOTE_PROFILE` in `scripts/modern_udp_evidence.py` define the contract. Keep
-the expected plan digest outside the evidence directory and supply that same
-value to release verification; recomputing it from an untrusted bundle removes
-this independent check. A plan for a previous source HEAD cannot qualify a new
-build.
-
-The harness captures the external sources once, then runs the captured
-controller with isolated Python and fixed `start`, `join` and `stop` arguments:
-`--plan`, `--output-dir`, and `--state-file`. Start has60 seconds to establish
-readiness before the client; join has45 seconds; failure cleanup has60 seconds.
-The state path is an existing empty mode0600 file outside the sealed bundle.
-The controller must accept that reservation and preserve ownership/lease state
-there if cleanup fails. Credentials and lease nonces must remain outside public
-evidence. Use bounded exclusive ownership when signalling the remote Machine;
-a separate instance check followed by a bare Machine-ID stop is insufficient
-under competing controllers.
-
-The maintained validator contains no cloud client. It reads captured Machine
-API observations and complete framed logs, verifies the exact new instance,
-source/runtime/configuration, readiness while alive, and normal init exit joined
-by instance and exit-event ID. Nonzero exits, restarts, OOM, requested stops,
-missing/contradictory frames and unsuccessful controller operations fail replay.
-Public client target, actual private receiver bind and NAT peers remain distinct.
-Local wall and kernel-monotonic clocks bracket the client; remote clock epochs
-are not compared with macOS clocks. The receiver's600-second lifetime check uses
-its own wall-clock fields. Offline replay never executes the archived controller
-or launcher. This evidence trusts the pinned operator/controller and capture
-channel; source hashes are not remote attestation.
-
-Canonical release dispatch now requires this remote plan and
-`--expected-echo-plan-sha256`; local loopback bundles remain developer diagnostics.
-This integration proves only the sustained active population and its existing
-provider/Dial9 bindings. It does not add idle-expiry, mixed-TCP, burst/public
-recovery, or actual500-flow admission-accounting proof, and cannot replace those
-release phases. `expected_flow_hard_limit=500` is an expectation, not measured
-capacity evidence.
-
-### Automated evidence regressions
-
-Run `just test-evidence` for the modern UDP, soak, stress, and signed-run
-evidence suites. `just qa` and the macOS CI Apple QA job run the same suites;
-`just test-soak-log-parser` remains an alias. They cover raw-data validation,
-failed or incomplete runs, build-wrapper composition, and local socket,
-subprocess, and terminal cleanup. Read any reported skips: restricted process
-visibility or loopback access can prevent those local fixtures from running.
-
-These suites do not install a provider or certify live signed traffic. The
-signed modern UDP gate, on-device soak, and paired performance runs below
-require separate execution. Developer ID signing and notarization also remain
-separate from CI's unsigned build checks.
-
-### On-device soak
-
-From this example directory, with the signed development provider installed
-and enabled:
-
-```sh
-./scripts/soak_test.sh
-# Build and install first on a development machine:
-DO_INSTALL=1 ./scripts/soak_test.sh
-```
-
-The script discovers its checkout from its own location; `REPO` can override
-that path. It requires macOS, Python 3, the system curl, network access, and
-interactive sudo authentication. Installation also requires development
-signing and system-extension approval. Keep the terminal available for the
-sleep/wake phase and wake the machine when prompted.
-
-Defaults exercise 180 seconds of traffic at concurrency 24, active and idle
-TCP holders, downloads, recovery, and idle CPU sampling. The default holder
-limit is 300 flows. Evidence is written beneath `~/rama-tproxy-soak/`; `OUT`
-can select a fresh empty directory. The script header documents other
-controls. Skipping phases is useful for diagnosis but cannot satisfy the
-canonical release profile. Exit codes are 0 for a complete passing run, 1
-for a complete run with failed checks, and 2 for incomplete evidence.
-This TCP soak does not replace the mass UDP/443 and long-lived UDP gates.
-
-### One-click traffic stress
-
-Run live traffic against public HTTP/HTTPS endpoints while the
-sysext is active. Small/large GETs, large POST bodies, plain HTTP,
-parallel connections, HTTP/1.1 ↔ HTTP/2 mix, quick connection churn:
-
-```sh
-just stress-traffic
-```
-
-Tunables (env vars):
-
-```sh
-STRESS_DURATION=120 STRESS_CONCURRENCY=32 just stress-traffic
-STRESS_LARGE_BYTES=$((64 * 1024 * 1024)) just stress-traffic   # 64 MiB GET
-```
-
-To couple the run with periodic resource sampling of the extension
-process — and to enable pre/post-run `vmmap`+`heap` snapshots so
-the diff sits in the same log dir — hand the script the sysext PID
-via `STRESS_MONITOR_PID`:
-
-```sh
-STRESS_MONITOR_PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider) \
-  just stress-traffic
-```
-
-For a provider-monitored run, the script also owns a bounded NDJSON log stream,
-joins it, seals it into the bundle, and verifies that the monitored provider PID
-has a record inside the run window:
-
-```sh
-# Cache a sudo timestamp first so the script can capture
-# vmmap/heap snapshots non-interactively without hanging on a
-# password prompt (the sysext is root-owned).
-sudo -v
-
-STRESS_MONITOR_PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider) \
-  STRESS_DURATION=180 just stress-traffic
-
-# Re-run the same artifact directory in analysis-only mode:
-STRESS_LOG_DIR=/tmp/rama-stress.<run> \
-  STRESS_DURATION=0 just stress-traffic
-sudo leaks $(pgrep -f org.ramaproxy.example.tproxy.dev.provider) | head -50
-```
-
-The script writes per-worker logs to a tmp directory and prints,
-on exit:
-
-- per-worker `iters / ok / fail` summary
-- top-5 errors per worker (4xx/5xx, `000` transport failures, curl errors)
-- truncation scan: `curl: ... N out of M bytes received` lines
-- pre/post `vmmap`+`heap` snapshot if `STRESS_MONITOR_PID` was set
-- close-reason histogram if `STRESS_NDJSON` points at a captured
-  system log
-
-A terminal traffic run enforces configurable absolute p95 latency, throughput,
-provider RSS-growth, and provider CPU limits. It writes `stress-manifest.tsv`
-with the run UUID/window and SHA-256 identities for worker output, metrics,
-harness sources, git state, and (in monitored mode) process, signing,
-pre/post/monitor, and NDJSON artifacts. Analysis-only mode verifies the sealed
-source bundle and writes `stress-analysis-status.tsv`; it never overwrites the
-immutable `stress-status.tsv`. These are self-attested local-integrity records,
-not proof against a party able to fabricate an entire bundle.
-
-The absolute defaults are safety ceilings, not a performance claim. For a
-regression gate, run the identical workload twice, adjacent in time: first with
-the transparent proxy disabled, then with it enabled and monitored. Label the
-runs explicitly and compare their already-sealed bundles:
-
-```sh
-BASE=$(mktemp -d /tmp/rama-stress-direct.XXXXXX)
-CAND=$(mktemp -d /tmp/rama-stress-proxy.XXXXXX)
-PAIR=$(mktemp -d /tmp/rama-stress-pair.XXXXXX)
-
-# With the transparent proxy disabled:
-STRESS_DURATION=60 STRESS_CONCURRENCY=16 \
-  STRESS_TRAFFIC_ROLE=direct-baseline STRESS_LOG_DIR="$BASE" \
-  just stress-traffic
-
-# Enable the proxy; monitored mode owns its NDJSON capture:
-STRESS_DURATION=60 STRESS_CONCURRENCY=16 \
-  STRESS_TRAFFIC_ROLE=proxy-candidate STRESS_LOG_DIR="$CAND" \
-  STRESS_MONITOR_PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider) \
-  STRESS_BUILT_PROVIDER="$BUILT_PROVIDER" \
-  STRESS_INSTALLED_PROVIDER="$INSTALLED_PROVIDER" \
-  just stress-traffic
-
-scripts/stress_compare.py create "$BASE" "$CAND" \
-  "$PAIR/stress-comparison.tsv"
-scripts/stress_compare.py verify "$BASE" "$CAND" \
-  "$PAIR/stress-comparison.tsv"
-```
-
-Set `BUILT_PROVIDER` and `INSTALLED_PROVIDER` to the exact built and installed
-system-extension bundles verified for the running development provider. Keep
-comparison outputs outside both sealed run directories; adding files to a run
-invalidates its artifact manifest.
-
-Use a controlled HTTP test server with sufficient capacity for release
-measurements. Set `STRESS_TARGET_HOST` to its lowercase DNS hostname for all six
-stress runs and the soak. The default is `http-test.ramaproxy.org`. This selects
-the same host for HTTP and HTTPS `/method`, the 16 MiB `/bytes` download and the
-8 MiB `/octet-stream` echo; release roles still reject changed routes, sizes or
-thresholds. Soak also uses it for probes, active downloads and silent TCP
-holders. Its legacy `DL_HOST` setting is an alias; conflicting values fail.
-
-The server must provide trusted TLS, HTTP/1.1 and HTTP/2, exact echo/download
-behavior, paced `/bytes` responses and sufficiently long silent TCP connections
-on port 443. Check these capabilities and server rate limits before the native
-campaign. Hostname validation does not prove the server implementation, its
-resolved address or its performance isolation. Existing soak downloads may
-follow redirects, so this names the initial target, not every eventual peer.
-
-The workload records its host and exact route hashes. Pair/series verification
-requires the same complete workload across all six runs. Final release
-verification additionally requires a caller-selected expected host, independent
-of the artifact and environment:
-
-```sh
-just verify-gate20-evidence "$MODERN" "$SOAK" "$SERIES" "$EXPECTED_ECHO_PLAN_SHA256" "$TEST_HOST"
-# Equivalent explicit CLI policy:
-python3 scripts/signed_run_evidence.py verify-release-set \
-  --expected-http-host "$TEST_HOST" \
-  --expected-echo-plan-sha256 "$EXPECTED_ECHO_PLAN_SHA256" \
-  --require-kind modern_udp --require-kind soak --require-kind stress-series \
-  "$MODERN" "$SOAK" "$SERIES"
-```
-
-Omitting the expected host requires the default public hostname; a custom-host
-artifact cannot silently change that policy. The verifier reads this field from
-the manifest-retained workloads and soak metadata. Stress schema 5 adds this
-host binding; older schema 4 artifacts retain their original source/verifier
-boundary and are not current release evidence.
-
-The paired gate requires an explicit traffic-only `direct-baseline`, a
-provider-monitored `proxy-candidate`, identical workload and harness identities,
-baseline-before-candidate ordering, and at most a ten-minute gap. Release-gate
-defaults allow candidate p95 up to 1.5× baseline and require at least two-thirds of baseline
-throughput, while the candidate still has to pass the absolute RSS/CPU and
-latency/throughput ceilings. `stress_compare.py create` accepts optional
-`MAX_P95_RATIO_MILLI MIN_THROUGHPUT_RATIO_MILLI MAX_GAP_MS` overrides.
-It also writes an adjacent `stress-comparison.tsv.source-stress_compare.py` and
-seals that exact source's SHA-256 into the verdict. Verification fails if either
-the sealed copy or the currently executing comparator differs, so an old verdict
-cannot silently acquire new comparison semantics.
-The `direct-baseline` harness samples development-provider absence throughout
-the run. This does not establish the absence of unrelated Network Extensions.
-Record other active providers and retain the profile-disable/enable audit
-record alongside both bundles.
-
-A final device/release claim requires at least three interleaved adjacent pairs,
-ordered `direct-1, proxy-1, direct-2, proxy-2, direct-3, proxy-3`, against the
-same stable workload and controlled test server. Create and verify
-each strict pair as above, then seal the aggregate:
-
-```sh
-SERIES_PARENT=$(mktemp -d /tmp/rama-stress-series.XXXXXX)
-SERIES="$SERIES_PARENT/release-set"
-scripts/stress_compare.py create-series "$SERIES" \
-  "$BASE1" "$CAND1" "$PAIR1/stress-comparison.tsv" \
-  "$BASE2" "$CAND2" "$PAIR2/stress-comparison.tsv" \
-  "$BASE3" "$CAND3" "$PAIR3/stress-comparison.tsv"
-scripts/stress_compare.py verify-series "$SERIES"
-```
-
-`create-series` requires a new directory outside all member runs and copies
-the verified inputs into a self-contained sealed release set.
-
-The series gate rejects fewer than three pairs, weakened per-pair thresholds,
-workload drift, reordered/overlapping pairs, or gaps over ten minutes. Its sealed
-verdict reports median and worst p95/throughput ratios plus worst candidate
-p95, throughput, RSS growth, and CPU. Preserve the enable/disable audit record
-for every transition; the bundle cannot independently prove that operator step.
-
-Pair with [Bundle everything for offline triage](#bundle-everything-for-offline-triage)
-below to also collect dial9 traces from the same window.
 
 ### Apple-native resource and leak inspection
 
@@ -1002,7 +548,7 @@ A typical leak-hunt loop while stress is running:
 ```sh
 PID=$(pgrep -f org.ramaproxy.example.tproxy.dev.provider)
 sudo heap $PID > /tmp/heap.before.txt
-STRESS_DURATION=180 just stress-traffic
+just stress-traffic --duration 180
 sudo heap $PID > /tmp/heap.after.txt
 diff /tmp/heap.before.txt /tmp/heap.after.txt | head -60
 sudo leaks $PID

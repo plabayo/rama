@@ -332,7 +332,7 @@ final class TcpFlowContext: @unchecked Sendable {
         flow?.closeWriteWithError(error)
     }
 
-    // ── Teardown (folded in from the former `TcpFlowTeardown`) ──────────
+    // MARK: - Teardown
     //
     // Several terminal-state transitions race each other (egress
     // `.failed`/`.waiting`/`.cancelled`, connect timeout, writer/read pump
@@ -454,22 +454,15 @@ final class TcpFlowContext: @unchecked Sendable {
         }
     }
 
-    /// The promoted forwarder reached its natural terminal (both directions
-    /// finished). Unlike `applyDrainedClose`, in `.promoted` mode the egress
-    /// NWConnection's FIN/linger is owned by the egress write pump, so we
-    /// MUST NOT cancel the connection here — that would abort the FIN. We
-    /// mark `isDone` (so a racing wake-recheck / watchdog no-ops), detach the
-    /// connection's handlers, drop the registry entry, and close the kernel
-    /// flow clean. We deliberately do NOT nil `directForwarder` (its
-    /// callbacks capture `[weak ctx]`, so it drops when the ctx leaves the
-    /// registry; niling here would race observers reading its phase).
+    /// Publish terminal accounting; the forwarder then releases the drained
+    /// connection through the write pump on this same flow queue.
     func applyPromotedTerminal() {
         guard !isDone else { return }
         isDone = true
         // Move this flow from reclaimable registry occupancy into the hard-cap
         // retirement ledger before its async registry removal can expose a
         // replacement slot. The write pump releases the token only at the
-        // linger's actual `cancelAndDetach` point.
+        // connection's actual `cancelAndDetach` point.
         if let core, let egressWritePump {
             let identity = retirementIdentity()
             let release: @Sendable () -> Void

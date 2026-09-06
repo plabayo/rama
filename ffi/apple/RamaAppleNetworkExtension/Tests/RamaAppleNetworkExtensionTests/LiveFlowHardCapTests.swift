@@ -222,6 +222,46 @@ final class LiveFlowHardCapTests: XCTestCase {
         XCTAssertEqual(blockUdp.closeWriteCallCount, 1)
     }
 
+    func testUdpDominantPopulationStaysBoundedAtProductionHardCap() {
+        defaultLiveFlowHardCap = 500
+        let core = TransparentProxyCore()
+        let generation = core.attachEngine(makeEngine())
+        defer { core.testDetachAndDrainFlowQueues() }
+        let flows = (0..<500).map { _ in MockUdpFlow() }
+        for (index, flow) in flows.enumerated() {
+            XCTAssertEqual(
+                core.registerUdpFlow(
+                    ObjectIdentifier(flow),
+                    anchor: _TestUdpFlowSessionAnchor(ctx: UdpFlowContext()),
+                    engineGeneration: generation),
+                index + 1)
+        }
+        for passthrough in [true, false] {
+            defaultFlowRefusalPassthrough = passthrough
+            let udp = MockUdpFlow()
+            XCTAssertEqual(
+                core.handleUdpFlowDecision(udp, meta: meta(protocolRaw: 2, port: 443)),
+                passthrough ? .passthrough : .blocked)
+            let tcp = MockTcpFlow()
+            XCTAssertEqual(
+                core.handleTcpFlow(tcp, meta: meta(protocolRaw: 1, port: 443)),
+                !passthrough)
+            XCTAssertEqual(udp.closeReadCallCount, passthrough ? 0 : 1)
+            XCTAssertEqual(tcp.closeReadCallCount, passthrough ? 0 : 1)
+        }
+        XCTAssertEqual(core.testLiveResourceOccupancy, 500)
+        XCTAssertTrue(flows.allSatisfy { $0.closeReadCallCount == 0 })
+        core.removeUdpFlow(ObjectIdentifier(flows[0]), engineGeneration: generation)
+        XCTAssertEqual(core.udpFlowCount, 499)
+        let replacement = MockUdpFlow()
+        XCTAssertEqual(
+            core.registerUdpFlow(
+                ObjectIdentifier(replacement),
+                anchor: _TestUdpFlowSessionAnchor(ctx: UdpFlowContext()),
+                engineGeneration: generation),
+            500)
+    }
+
     func testStaleStartupGenerationCannotDetachNewEngine() {
         let core = TransparentProxyCore()
         let first = core.attachEngine(makeEngine())
@@ -378,7 +418,6 @@ final class LiveFlowHardCapTests: XCTestCase {
         let pump = NwTcpConnectionWritePump(
             connection: connection,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(40),
             onDrained: {})
         let context = TcpFlowContext()
         context.core = core
@@ -435,7 +474,7 @@ final class LiveFlowHardCapTests: XCTestCase {
             "detach release must not release the promoted pump's claim")
         XCTAssertEqual(connection.cancelCount, 0)
 
-        pump.armTerminalLingerCancel()
+        pump.releaseTerminalConnection()
         pollUntil("promoted linger releases the shared retirement resource") {
             core.testRetiringResourceCount == 0 && connection.cancelCount == 1
         }
@@ -453,7 +492,6 @@ final class LiveFlowHardCapTests: XCTestCase {
         let pump = NwTcpConnectionWritePump(
             connection: connection,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(300),
             onDrained: {})
         let ctx = TcpFlowContext()
         ctx.core = core
@@ -478,7 +516,7 @@ final class LiveFlowHardCapTests: XCTestCase {
                 anchor: _TestUdpFlowSessionAnchor(ctx: UdpFlowContext())),
             "the live NWConnection must still consume the only hard-cap slot")
 
-        pump.armTerminalLingerCancel()
+        pump.releaseTerminalConnection()
         pollUntil("test cleanup linger must release its token") {
             core.testRetiringResourceCount == 0
         }
@@ -494,7 +532,6 @@ final class LiveFlowHardCapTests: XCTestCase {
         let pump = NwTcpConnectionWritePump(
             connection: connection,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(40),
             onDrained: {})
         let ctx = TcpFlowContext()
         ctx.core = core
@@ -509,8 +546,8 @@ final class LiveFlowHardCapTests: XCTestCase {
             1)
 
         queue.sync { ctx.applyPromotedTerminal() }
-        pump.armTerminalLingerCancel()
-        XCTAssertEqual(core.testRetiringResourceCount, 1)
+        queue.sync { pump.releaseTerminalConnection() }
+        XCTAssertEqual(core.testRetiringResourceCount, 0)
 
         pollUntil("linger must invoke connection cancellation") {
             connection.cancelCount == 1

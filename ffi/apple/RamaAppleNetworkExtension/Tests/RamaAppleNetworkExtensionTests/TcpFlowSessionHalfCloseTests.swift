@@ -489,9 +489,7 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         session.ctx.egressWritePump = NwTcpConnectionWritePump(
             connection: conn,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(60_000),
-            onDrained: {},
-            readSideIdleMs: { 0 })
+            onDrained: {})
         conn.transition(to: .ready)
 
         queue.sync { session.closeEgressAfterRustDrain() }
@@ -521,9 +519,7 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         session.ctx.egressWritePump = NwTcpConnectionWritePump(
             connection: conn,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(60_000),
-            onDrained: {},
-            readSideIdleMs: { 0 })
+            onDrained: {})
         conn.transition(to: .ready)
 
         queue.sync { session.closeClientAfterRustDrain() }
@@ -572,9 +568,7 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         session.ctx.egressWritePump = NwTcpConnectionWritePump(
             connection: conn,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(60_000),
-            onDrained: {},
-            readSideIdleMs: { 0 })
+            onDrained: {})
         conn.transition(to: .ready)
 
         queue.sync { session.closeEgressAfterRustDrain() }
@@ -607,9 +601,7 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         session.ctx.egressWritePump = NwTcpConnectionWritePump(
             connection: conn,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(60_000),
-            onDrained: {},
-            readSideIdleMs: { 0 })
+            onDrained: {})
         conn.transition(to: .ready)
 
         waitFor("client write remains in flight") {
@@ -670,9 +662,7 @@ final class TcpFlowSessionHalfCloseTests: XCTestCase {
         session.ctx.egressWritePump = NwTcpConnectionWritePump(
             connection: conn,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(60_000),
-            onDrained: {},
-            readSideIdleMs: { 0 })
+            onDrained: {})
         conn.transition(to: .ready)
         waitFor("client write remains in flight") {
             flow.pendingWriteCompletionCount == 1

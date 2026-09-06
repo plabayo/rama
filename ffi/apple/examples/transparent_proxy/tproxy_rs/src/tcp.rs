@@ -155,13 +155,9 @@ impl DemoTcpMitmService {
         let settings = self.state.load_full();
         let peek_duration = Duration::from_secs_f64(self.peek_duration_s.max(0.5));
 
-        let mut http_mitm_svc = HttpMitmRelay::new(exec.clone()).with_http_middleware(
+        let http_mitm_svc = HttpMitmRelay::new(exec.clone()).with_http_middleware(
             self.http_relay_middleware(exec.clone(), within_connect_tunnel, settings.clone()),
         );
-        // A client may finish sending while the origin is still preparing its response.
-        // Preserve that response and its buffered drain, just as the raw TCP relay does.
-        http_mitm_svc.http1_mut().set_half_close(true);
-
         // `promote_passthrough` is ONLY safe on a raw kernel-flow ↔
         // NWConnection bridge — see `PromoteHandle`'s safety contract.
         // Inside TLS / HTTP MITM the bridge carries post-decryption
@@ -251,7 +247,6 @@ impl DemoTcpMitmService {
                 crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
             ),
             DemoTraceTrafficLayer,
-            crate::http::headers::StressRequestAttributionLayer,
             SetRequestHeaderLayer::if_not_present_typed(
                 crate::http::headers::XRamaTransparentProxyObservedHeader::new(),
             ),

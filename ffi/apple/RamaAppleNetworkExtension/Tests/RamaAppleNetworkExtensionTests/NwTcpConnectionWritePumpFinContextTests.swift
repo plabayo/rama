@@ -50,7 +50,6 @@ final class NwTcpConnectionWritePumpFinContextTests: XCTestCase {
         let pump = NwTcpConnectionWritePump(
             connection: mock,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(2_000),
             onDrained: {}
         )
 
@@ -88,7 +87,6 @@ final class NwTcpConnectionWritePumpFinContextTests: XCTestCase {
         let pump = NwTcpConnectionWritePump(
             connection: mock,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(2_000),
             onDrained: {})
 
         pump.closeWhenDrained {
@@ -110,7 +108,6 @@ final class NwTcpConnectionWritePumpFinContextTests: XCTestCase {
         let pump = NwTcpConnectionWritePump(
             connection: mock,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(2_000),
             onDrained: { drained.update { $0 += 1 } }
         )
 
@@ -136,7 +133,6 @@ final class NwTcpConnectionWritePumpFinContextTests: XCTestCase {
         let pump = NwTcpConnectionWritePump(
             connection: mock,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(2_000),
             onDrained: { drained.update { $0 += 1 } }
         )
 
@@ -170,7 +166,6 @@ final class NwTcpConnectionWritePumpFinContextTests: XCTestCase {
         let pump = NwTcpConnectionWritePump(
             connection: mock,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(2_000),
             onDrained: {},
             onTerminal: { _ in
                 events.withLock { $0.append("terminal") }
@@ -202,7 +197,6 @@ final class NwTcpConnectionWritePumpFinContextTests: XCTestCase {
         let pump = NwTcpConnectionWritePump(
             connection: mock,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(2_000),
             onDrained: {},
             onTerminal: { error in
                 observed.set(error)
@@ -236,7 +230,6 @@ final class NwTcpConnectionWritePumpFinContextTests: XCTestCase {
             let pump = NwTcpConnectionWritePump(
                 connection: mock,
                 queue: queue,
-                lingerCloseDeadline: .never,
                 onDrained: {})
             weakPump = pump
             pump.closeWhenDrained()
@@ -261,7 +254,6 @@ final class NwTcpConnectionWritePumpFinContextTests: XCTestCase {
         var pump: NwTcpConnectionWritePump? = NwTcpConnectionWritePump(
             connection: mock,
             queue: queue,
-            lingerCloseDeadline: .milliseconds(2_000),
             onDrained: {})
 
         XCTAssertEqual(pump?.enqueue(Data([0x01])), .accepted)
