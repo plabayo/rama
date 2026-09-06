@@ -79,6 +79,8 @@ const RAMA_LOGO_SVG: &str = include_str!("../../../../../docs/img/rama_logo.svg"
 const HAR_JS: &str = include_str!("dashboard-har.js");
 const DETAILS_JS: &str = include_str!("dashboard-details.js");
 const LIVE_JS: &str = include_str!("dashboard-live.js");
+const CONTROL_JS: &str = include_str!("dashboard-control.js");
+const CONTROL_HTML: &str = include_str!("dashboard-control.html");
 const PREFERENCES_JS: &str = include_str!("dashboard-preferences.js");
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -106,6 +108,7 @@ struct UiSession {
 pub(super) struct DashboardState {
     capture: CaptureStore,
     inspection: InspectionState,
+    recording_transition: Arc<tokio::sync::Mutex<()>>,
     har: HarController,
     sessions: Arc<RwLock<BTreeMap<String, UiSession>>>,
     next_session_sequence: Arc<AtomicU64>,
@@ -131,6 +134,7 @@ impl DashboardState {
         Self {
             capture,
             inspection,
+            recording_transition: Arc::new(tokio::sync::Mutex::new(())),
             har,
             sessions: Arc::new(RwLock::new(BTreeMap::new())),
             next_session_sequence: Arc::new(AtomicU64::new(1)),
@@ -320,6 +324,15 @@ pub(super) fn service(state: DashboardState) -> DashboardService {
         .with_post("/api/filter", update_filter)
         .with_post("/api/filter/reset", reset_filters)
         .with_post("/api/mitm-policy", update_mitm_policy)
+        .with_get("/api/control", control_state)
+        .with_get("/api/control/pending/{id}", control_pending)
+        .with_get("/api/control/from/{id}", control_from_capture)
+        .with_post("/api/control/config", control_config)
+        .with_post("/api/control/forward-all", control_forward_all)
+        .with_post("/api/control/decision", control_decision)
+        .with_post("/api/control/resume/{id}", control_resume)
+        .with_post("/api/control/hosts/clear", control_clear_hosts)
+        .with_get("/assets/control.js", Script(CONTROL_JS))
         .with_post("/api/inspection/pause", pause_inspection)
         .with_post("/api/inspection/resume", resume_inspection)
         .with_post("/api/captures/clear", clear_captures)
@@ -396,6 +409,8 @@ struct MitmPolicyUpdate {
     session: String,
     allow: Vec<String>,
     deny: Vec<String>,
+    #[serde(default)]
+    mode: super::mitm_policy::ScopeMode,
 }
 
 #[derive(Debug, Deserialize)]
@@ -477,6 +492,7 @@ async fn events(
     };
     let mut capture_changes = state.capture.subscribe();
     let mut ui_changes = state.ui_changes.subscribe();
+    let mut control_changes = state.capture.control().subscribe();
     Sse::new(KeepAliveStream::new(
         KeepAlive::new(),
         stream_fn(move |mut yielder| async move {
@@ -513,6 +529,10 @@ async fn events(
                             break;
                         }
                         render_dashboard = true;
+                    }
+                    result = control_changes.changed() => {
+                        if result.is_err() { break; }
+                        render_dashboard = false;
                     }
                     result = ui_changes.changed() => {
                         if result.is_err() {
@@ -597,7 +617,7 @@ async fn update_mitm_policy(
     }
     if let Err(error) = state
         .mitm_policy
-        .update_runtime(&update.allow, &update.deny)
+        .update_scope(update.mode, &update.allow, &update.deny)
     {
         return error_response(StatusCode::BAD_REQUEST, error);
     }
@@ -610,6 +630,173 @@ async fn update_mitm_policy(
     StatusCode::NO_CONTENT.into_response()
 }
 
+#[derive(Deserialize)]
+struct ControlQuery {
+    session: String,
+}
+#[derive(Deserialize)]
+struct ControlConfigUpdate {
+    session: String,
+    revision: u64,
+    config: super::control::Config,
+    apply_rule: Option<usize>,
+}
+#[derive(Deserialize)]
+struct ControlDecision {
+    session: String,
+    ids: Vec<u64>,
+    decision: super::control::Decision,
+}
+
+async fn control_state(
+    State(state): State<DashboardState>,
+    Query(query): Query<ControlQuery>,
+) -> Response {
+    if !state.has_session(&query.session) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let mut snapshot = state.capture.control().snapshot();
+    for message in &mut snapshot.pending {
+        message.connection_display_id = state.capture.connection_display_id(message.connection);
+    }
+    for connection in &mut snapshot.automatic_connections {
+        connection.connection_display_id =
+            state.capture.connection_display_id(connection.connection);
+    }
+    for host in &mut snapshot.hosts {
+        host.eligible = rama::net::address::Host::try_from(host.host.as_str())
+            .is_ok_and(|host| state.mitm_policy.should_inspect_host(&host));
+    }
+    Json(serde_json::json!({ "control": snapshot, "scope": state.mitm_policy.snapshot() }))
+        .into_response()
+}
+async fn control_pending(
+    State(state): State<DashboardState>,
+    Path(id): Path<u64>,
+    Query(query): Query<ControlQuery>,
+) -> Response {
+    if !state.has_session(&query.session) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    match state.capture.control().pending(id) {
+        Some(message) => {
+            let mut message = message.as_ref().clone();
+            message.connection_display_id = state.capture.connection_display_id(message.connection);
+            Json(message).into_response()
+        }
+        None => StatusCode::CONFLICT.into_response(),
+    }
+}
+async fn control_from_capture(
+    State(state): State<DashboardState>,
+    Path(id): Path<u64>,
+    Query(query): Query<ControlQuery>,
+) -> Response {
+    if !state.has_session(&query.session) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Ok(details) = state.capture.inspector_details(id, 0, 0).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let url = &details.summary.url;
+    let uri = url.parse::<rama::net::uri::Uri>().ok();
+    let host = uri
+        .as_ref()
+        .and_then(|u| u.authority())
+        .map(|a| a.host().to_str().into_owned())
+        .unwrap_or_else(|| details.summary.endpoint.clone());
+    let path = uri
+        .as_ref()
+        .and_then(|u| u.path())
+        .map(|p| p.as_encoded_str().into_owned())
+        .unwrap_or_else(|| "/".into());
+    Json(serde_json::json!({"host": host, "path": path, "url": url, "method": details.summary.method, "protocol": details.summary.protocol})).into_response()
+}
+async fn control_config(
+    State(state): State<DashboardState>,
+    Json(update): Json<ControlConfigUpdate>,
+) -> Response {
+    if !state.has_session(&update.session) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if update
+        .apply_rule
+        .is_some_and(|index| index >= update.config.rules.len())
+    {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    match state
+        .capture
+        .control()
+        .configure(update.revision, update.config)
+    {
+        Ok(()) => {
+            if let Some(index) = update.apply_rule
+                && let Err(error) = state
+                    .capture
+                    .control()
+                    .apply_rule(index, update.revision + 1)
+            {
+                return error_response(StatusCode::CONFLICT, error);
+            }
+            state.notify();
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(error) => error_response(StatusCode::BAD_REQUEST, error),
+    }
+}
+async fn control_decision(
+    State(state): State<DashboardState>,
+    Json(update): Json<ControlDecision>,
+) -> Response {
+    if !state.has_session(&update.session) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if update.ids.is_empty() || update.ids.len() > 256 {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let results = update
+        .ids
+        .into_iter()
+        .map(|id| {
+            let result = state.capture.control().resolve(id, update.decision.clone());
+            serde_json::json!({ "id": id, "error": result.err().map(|e| e.to_string()) })
+        })
+        .collect::<Vec<_>>();
+    Json(results).into_response()
+}
+async fn control_forward_all(
+    State(state): State<DashboardState>,
+    Json(query): Json<ControlQuery>,
+) -> Response {
+    if !state.has_session(&query.session) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    state.capture.control().stop_and_forward();
+    StatusCode::NO_CONTENT.into_response()
+}
+async fn control_resume(
+    State(state): State<DashboardState>,
+    Path(id): Path<u64>,
+    Json(query): Json<ControlQuery>,
+) -> Response {
+    if !state.has_session(&query.session) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    state.capture.control().resume_connection(id);
+    StatusCode::NO_CONTENT.into_response()
+}
+async fn control_clear_hosts(
+    State(state): State<DashboardState>,
+    Json(query): Json<ControlQuery>,
+) -> Response {
+    if !state.has_session(&query.session) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    state.capture.control().clear_hosts();
+    StatusCode::NO_CONTENT.into_response()
+}
+
 async fn pause_inspection(
     State(state): State<DashboardState>,
     ReadSignals(signals): ReadSignals<UiSignals>,
@@ -617,9 +804,11 @@ async fn pause_inspection(
     if !state.has_session(&signals.session) {
         return StatusCode::NOT_FOUND;
     }
+    let _transition = state.recording_transition.lock().await;
+    state.har.pause().await;
     if state.inspection.pause().await {
         rama::telemetry::tracing::info!(
-            "proxy inspection paused; new connections will pass through without MITM"
+            "proxy recording paused; MITM and forwarding policy are unchanged"
         );
         state.notify();
     }
@@ -633,10 +822,9 @@ async fn resume_inspection(
     if !state.has_session(&signals.session) {
         return StatusCode::NOT_FOUND;
     }
+    let _transition = state.recording_transition.lock().await;
     if state.inspection.resume().await {
-        rama::telemetry::tracing::info!(
-            "proxy inspection resumed; new connections will be eligible for MITM"
-        );
+        rama::telemetry::tracing::info!("proxy recording resumed");
         state.notify();
     }
     StatusCode::NO_CONTENT
@@ -1082,6 +1270,13 @@ async fn start_har(
     if !state.has_session(&query.session) {
         return StatusCode::NOT_FOUND.into_response();
     }
+    let _transition = state.recording_transition.lock().await;
+    if !state.inspection.is_enabled() {
+        return error_response(
+            StatusCode::CONFLICT,
+            "Resume recording before starting a HAR recording",
+        );
+    }
     match state.har.start_browser(query.file_name).await {
         Ok(_) => {
             state.notify();
@@ -1291,6 +1486,7 @@ fn render_index(session: &str) -> impl IntoHtml {
             script!(r#type = "module", src = "/assets/details.js"),
             script!(r#type = "module", src = "/assets/live.js"),
             script!(r#type = "module", src = "/assets/preferences.js"),
+            script!(r#type = "module", src = "/assets/control.js"),
         ),
         body!(
             "data-inspector-session" = session.to_owned(),
@@ -1331,7 +1527,7 @@ fn render_index(session: &str) -> impl IntoHtml {
                             "data-attr:disabled" = "$inspection_busy",
                             "data-on:click" = "@post('/api/inspection/pause')",
                             span!(class = "button-spinner", "aria-hidden" = "true"),
-                            span!(class = "inspection-action-label", "Pause inspection")
+                            span!(class = "inspection-action-label", "Pause recording")
                         ),
                         button!(
                             r#type = "button",
@@ -1340,7 +1536,7 @@ fn render_index(session: &str) -> impl IntoHtml {
                             "data-attr:disabled" = "$inspection_busy",
                             "data-on:click" = "@post('/api/inspection/resume')",
                             span!(class = "button-spinner", "aria-hidden" = "true"),
-                            span!(class = "inspection-action-label", "Resume inspection")
+                            span!(class = "inspection-action-label", "Resume recording")
                         )
                     ),
                     span!(
@@ -1482,10 +1678,19 @@ fn render_index(session: &str) -> impl IntoHtml {
                                     "Choose which new connections are inspected; deny always wins"
                                 )
                             ),
-                            span!(class = "scope-summary", "Browser-saved")
+                            span!(class = "scope-summary", "Shared by all dashboards")
                         ),
                         div!(
                             class = "scope-editor",
+                            label!(
+                                span!("MITM scope"),
+                                select!(
+                                    id = "mitm-mode",
+                                    option!(value = "all", "All eligible hosts"),
+                                    option!(value = "selected", "Selected hosts only"),
+                                    option!(value = "none", "No hosts")
+                                )
+                            ),
                             label!(
                                 span!("Allow domains"),
                                 textarea!(
@@ -1507,7 +1712,7 @@ fn render_index(session: &str) -> impl IntoHtml {
                                     "data-mitm-policy" = "deny"
                                 ),
                                 small!(
-                                    "Plain domains include all subdomains; deny overrides allow."
+                                    "Plain domains include subdomains; prefix = for an exact host. Deny overrides allow."
                                 )
                             ),
                             div!(
@@ -1527,6 +1732,7 @@ fn render_index(session: &str) -> impl IntoHtml {
                         )
                     ),
                 ),
+                PreEscaped(CONTROL_HTML),
                 section!(
                     id = "live",
                     class = "live-shell",
@@ -1845,7 +2051,14 @@ fn render_overview_panel(
             target = "har-download",
             title = har.path.clone().unwrap_or_default(),
             span!(class = "record-dot"),
-            span!("HAR recording"),
+            span!(
+                (if har.suspended {
+                    "HAR paused"
+                } else {
+                    "HAR recording"
+                })
+                .to_owned()
+            ),
             button!(
                 r#type = "submit",
                 class = "danger compact",
@@ -2041,9 +2254,9 @@ fn inspection_notice(enabled: bool) -> Option<impl IntoHtml> {
         aside!(
             class = "inspection-notice",
             role = "status",
-            strong!("Inspection paused"),
+            strong!("Recording paused"),
             span!(
-                "Stored captures are retained. Existing traffic is not being recorded, and new connections pass through without MITM."
+                "Stored captures are retained. HTTP, WebSocket and host recording are paused. MITM scope and pending approvals are unchanged. Any active HAR is finalized and retained for download."
             )
         )
     })
@@ -2562,6 +2775,21 @@ fn format_response_status(status: u16) -> String {
 }
 
 fn render_exchange_status(exchange: &super::capture::ExchangeSummary) -> String {
+    if let Some(decision) = &exchange.decision {
+        return span!(
+            class = "status",
+            title = decision.clone(),
+            format!(
+                "{} · {}",
+                exchange
+                    .status
+                    .map(format_response_status)
+                    .unwrap_or_default(),
+                decision
+            )
+        )
+        .into_string();
+    }
     let websocket = matches!(exchange.protocol.as_str(), "ws" | "wss");
     let (label, title, class, state, indicator) = match (exchange.status, exchange.active) {
         (None, true) => (
@@ -2671,7 +2899,19 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
         } => Some((*status, version, headers)),
         _ => None,
     });
-    let request_headers = request_head.map(|(_, _, _, headers)| headers.as_slice());
+    let request_headers = details
+        .records
+        .iter()
+        .rev()
+        .find_map(|record| match record {
+            StoredRecord::Interception {
+                direction,
+                forwarded_headers: Some(headers),
+                ..
+            } if direction == "request" => Some(headers.as_slice()),
+            _ => None,
+        })
+        .or_else(|| request_head.map(|(_, _, _, headers)| headers.as_slice()));
     let response_headers = response_head.map(|(_, _, headers)| headers.as_slice());
     let overview = section!(
         class = "detail-overview",
@@ -2758,6 +2998,12 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
             ),
             div!(
                 class = "detail-actions",
+                button!(
+                    r#type = "button",
+                    class = "ghost compact",
+                    "data-create-traffic-rule" = details.summary.id.to_string(),
+                    "Create traffic rule…"
+                ),
                 (!matches!(details.summary.protocol.as_str(), "ws" | "wss"))
                     .then(|| PreEscaped(render_curl_button(details.summary.id, "Copy as cURL"))),
                 (!matches!(details.summary.protocol.as_str(), "ws" | "wss")).then(|| button!(
@@ -2823,6 +3069,32 @@ fn render_details(details: &InspectorDetails) -> impl IntoHtml {
             )
             .map(PreEscaped),
         ),
+        details
+            .records
+            .iter()
+            .filter_map(|record| match record {
+                StoredRecord::Interception {
+                    direction,
+                    outcome,
+                    original_headers,
+                    original_status,
+                    original_payload,
+                    ..
+                } => Some(section!(
+                    class = "detail-card",
+                    h3!(format!("{direction} · {outcome}")),
+                    original_status.map(|status| p!(format!("Original status: {status}"))),
+                    details!(
+                        summary!("Original headers / message"),
+                        pre!(serde_json::to_string_pretty(original_headers).unwrap_or_default()),
+                        original_payload
+                            .as_ref()
+                            .map(|payload| pre!(payload.clone()))
+                    )
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
         render_capture_outcomes(&details.records).map(PreEscaped),
     )
 }
@@ -3413,6 +3685,7 @@ mod tests {
             .count();
         InspectorDetails {
             summary: super::super::capture::ExchangeSummary {
+                decision: None,
                 id: 1,
                 connection_id: 1,
                 connection_display_id: 1,
@@ -3537,7 +3810,7 @@ mod tests {
         assert!(!state.inspection.is_enabled());
         let paused = state.render_live("known", 1).await;
         assert!(paused.contains("data-inspection-paused=\"true\""));
-        assert!(paused.contains("Inspection paused"));
+        assert!(paused.contains("Recording paused"));
         assert_eq!(
             resume_inspection(State(state.clone()), signals("known")).await,
             StatusCode::NO_CONTENT
@@ -3545,7 +3818,7 @@ mod tests {
         assert!(state.inspection.is_enabled());
         let resumed = state.render_live("known", 2).await;
         assert!(resumed.contains("data-inspection-paused=\"false\""));
-        assert!(!resumed.contains("Inspection paused"));
+        assert!(!resumed.contains("Recording paused"));
     }
 
     #[tokio::test]
@@ -3656,6 +3929,7 @@ mod tests {
                 session: session.to_owned(),
                 allow: vec!["example.test".to_owned()],
                 deny: vec!["private.example.test".to_owned()],
+                mode: super::super::mitm_policy::ScopeMode::All,
             })
         };
         assert_eq!(
@@ -5209,5 +5483,42 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+    #[tokio::test]
+    async fn traffic_policy_requires_a_live_dashboard_session_and_rejects_stale_writes() {
+        let state = test_state();
+        state.ensure_session("known");
+        let config = || super::super::control::Config {
+            enabled: true,
+            ..Default::default()
+        };
+        let request = |session: &str, revision| {
+            Json(ControlConfigUpdate {
+                session: session.into(),
+                revision,
+                config: config(),
+                apply_rule: None,
+            })
+        };
+        assert_eq!(
+            control_config(State(state.clone()), request("unknown", 0))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert!(!state.capture.control().snapshot().config.enabled);
+        assert_eq!(
+            control_config(State(state.clone()), request("known", 0))
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            control_config(State(state.clone()), request("known", 0))
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(state.capture.control().snapshot().revision, 1);
     }
 }

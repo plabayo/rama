@@ -747,7 +747,7 @@ fn mitm_portal_routing_matches_only_the_reserved_host() {
 }
 
 #[tokio::test]
-async fn mitm_portal_hijack_follows_the_inspection_gate() {
+async fn mitm_portal_remains_available_while_recording_is_paused() {
     let inspection = InspectionState::default();
     let policy = MitmPolicy::try_new(&[], &[]).unwrap();
     let http = MitmPortalMatcher::http(inspection.clone(), policy.clone());
@@ -766,8 +766,8 @@ async fn mitm_portal_hijack_follows_the_inspection_gate() {
     assert!(!rama::matcher::Matcher::matches(&connect, None, &get));
     assert!(rama::matcher::Matcher::matches(&connect, None, &tunnel));
     inspection.pause().await;
-    assert!(!rama::matcher::Matcher::matches(&http, None, &get));
-    assert!(!rama::matcher::Matcher::matches(&connect, None, &tunnel));
+    assert!(rama::matcher::Matcher::matches(&http, None, &get));
+    assert!(rama::matcher::Matcher::matches(&connect, None, &tunnel));
     inspection.resume().await;
     assert!(rama::matcher::Matcher::matches(&http, None, &get));
 
@@ -894,7 +894,7 @@ async fn mitm_policy_composes_connect_target_and_tls_sni() {
             &["blocked.example.test".to_owned()],
         )
         .unwrap(),
-        inspection: InspectionState::default(),
+        control: None,
     };
     let hello = |target: &str, domain: &str| {
         let input = Extensions::new();
@@ -958,7 +958,7 @@ async fn mitm_prepeek_gate_defers_unmatched_targets_but_rejects_denied_targets()
             &["blocked.example.test".to_owned()],
         )
         .unwrap(),
-        inspection: InspectionState::default(),
+        control: None,
         defer_ip_target: true,
     };
     let input = |target: &str| {
@@ -2781,9 +2781,7 @@ async fn websocket_inspector_replays_live_text_and_binary_in_original_direction(
     }))
     .with_message_injection(true);
     let relay = tokio::spawn(async move {
-        relay_service
-            .serve(BridgeIo(relay_ingress, relay_egress))
-            .await
+        Box::pin(relay_service.serve(BridgeIo(relay_ingress, relay_egress))).await
     });
     let mut peer_ingress =
         AsyncWebSocket::from_raw_socket(MockSocket::new(peer_ingress_io), Role::Client, None).await;
@@ -3117,7 +3115,7 @@ async fn encrypted_http_and_socks5_mitm_apply_icap_reqmod_and_respmod() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pausing_disables_new_mitm_and_capture_until_resumed() {
+async fn pausing_recording_keeps_mitm_but_freezes_capture_until_resumed() {
     let origin_listener =
         TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
             .await
@@ -3239,13 +3237,12 @@ async fn pausing_disables_new_mitm_and_capture_until_resumed() {
         .unwrap();
     assert_eq!(paused.status(), StatusCode::NO_CONTENT);
 
-    assert!(
-        timeout(Duration::from_secs(10), trusted_client.serve(request()))
-            .await
-            .expect("paused trusted request timed out")
-            .is_err(),
-        "trusting only the proxy CA must fail while the origin TLS tunnel passes through"
-    );
+    let response = timeout(Duration::from_secs(10), trusted_client.serve(request()))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    response.into_body().collect().await.unwrap();
     let response = insecure_client.serve(request()).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -3297,5 +3294,245 @@ async fn pausing_disables_new_mitm_and_capture_until_resumed() {
     drop(events);
 
     shutdown_proxy(shutdown_tx, shutdown).await;
+    origin_task.abort();
+}
+
+async fn interception_api(
+    address: std::net::SocketAddr,
+    session: &str,
+    path: &str,
+    body: Option<serde_json::Value>,
+) -> serde_json::Value {
+    let client = EasyHttpWebClient::default();
+    let (method, url, body) = match body {
+        Some(mut value) => {
+            value["session"] = session.into();
+            (
+                rama::http::Method::POST,
+                format!("http://{address}{path}"),
+                Body::from(serde_json::to_vec(&value).unwrap()),
+            )
+        }
+        None => (
+            rama::http::Method::GET,
+            format!("http://{address}{path}?session={session}"),
+            Body::empty(),
+        ),
+    };
+    let response = client
+        .serve(dashboard_request(
+            Request::builder()
+                .method(method)
+                .uri(url)
+                .header("content-type", "application/json")
+                .body(body)
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert!(
+        status.is_success(),
+        "{status}: {}",
+        String::from_utf8_lossy(&body)
+    );
+    if body.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&body).unwrap()
+    }
+}
+
+async fn wait_interception(
+    address: std::net::SocketAddr,
+    session: &str,
+    count: usize,
+) -> serde_json::Value {
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = interception_api(address, session, "/api/control", None).await;
+            if snapshot["control"]["pending"].as_array().unwrap().len() == count {
+                return snapshot;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("interception queue did not reach expected size")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_interception_holds_upgrade_and_websocket_data_but_not_control_frames() {
+    use serde_json::json;
+    let (origin, origin_task) = spawn_websocket_origin().await;
+    let address = reserve_loopback_address();
+    let cli = TestCli::parse_from([
+        "test",
+        "--bind",
+        &address.to_string(),
+        &format!("--mitm={address}"),
+        "--intercept",
+    ]);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = rama::graceful::Shutdown::new(async move {
+        _ = shutdown_rx.await;
+    });
+    run(shutdown.guard(), cli.proxy).await.unwrap();
+    let dashboard = EasyHttpWebClient::default();
+    let response = dashboard
+        .serve(dashboard_request(
+            Request::builder()
+                .uri(format!("http://{address}/"))
+                .body(Body::empty())
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    let html = response.into_body().collect().await.unwrap().to_bytes();
+    let session = dashboard_session_id(&String::from_utf8_lossy(&html)).to_owned();
+    let client = proxy_websocket_client();
+    let extensions = Extensions::new();
+    extensions.insert(ProxyRoute::Proxy(
+        format!("http://{address}").parse().unwrap(),
+    ));
+    let handshake = tokio::spawn(async move {
+        client
+            .websocket(format!("ws://{origin}/echo"))
+            .handshake(extensions)
+            .await
+            .unwrap()
+    });
+    for direction in ["request", "response"] {
+        let state = wait_interception(address, &session, 1).await;
+        let pending = &state["control"]["pending"][0];
+        assert_eq!(pending["direction"], direction);
+        assert!(!handshake.is_finished());
+        let results = interception_api(
+            address,
+            &session,
+            "/api/control/decision",
+            Some(json!({"ids": [pending["id"]], "decision": {"action": "forward"}})),
+        )
+        .await;
+        assert!(results[0]["error"].is_null(), "{results}");
+    }
+    let mut socket = timeout(Duration::from_secs(2), handshake)
+        .await
+        .unwrap()
+        .unwrap();
+    socket
+        .send_message(Message::text("original"))
+        .await
+        .unwrap();
+    let state = wait_interception(address, &session, 1).await;
+    let pending = &state["control"]["pending"][0];
+    assert_eq!(pending["protocol"], "ws");
+    assert_eq!(pending["direction"], "ingress");
+    socket
+        .send_message(Message::Ping(rama::bytes::Bytes::from_static(b"alive")))
+        .await
+        .unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(2), socket.recv_message())
+            .await
+            .unwrap()
+            .unwrap(),
+        Message::Pong(rama::bytes::Bytes::from_static(b"alive"))
+    );
+    interception_api(address, &session, "/api/control/decision", Some(json!({"ids": [pending["id"]], "decision": {"action": "forward", "payload": "edited upstream"}}))).await;
+    let state = wait_interception(address, &session, 1).await;
+    let pending = &state["control"]["pending"][0];
+    assert_eq!(pending["direction"], "egress");
+    let message = interception_api(
+        address,
+        &session,
+        &format!("/api/control/pending/{}", pending["id"]),
+        None,
+    )
+    .await;
+    assert_eq!(message["payload"], "edited upstream");
+    interception_api(address, &session, "/api/control/decision", Some(json!({"ids": [pending["id"]], "decision": {"action": "forward", "payload": "edited downstream"}}))).await;
+    assert_eq!(
+        timeout(Duration::from_secs(2), socket.recv_message())
+            .await
+            .unwrap()
+            .unwrap(),
+        Message::text("edited downstream")
+    );
+
+    socket
+        .send_message(Message::binary(vec![0, 255, 3]))
+        .await
+        .unwrap();
+    let state = wait_interception(address, &session, 1).await;
+    let pending = &state["control"]["pending"][0];
+    interception_api(
+        address,
+        &session,
+        "/api/control/decision",
+        Some(json!({"ids": [pending["id"]], "decision": {"action": "drop"}})),
+    )
+    .await;
+    wait_interception(address, &session, 0).await;
+    socket
+        .send_message(Message::text("release connection"))
+        .await
+        .unwrap();
+    let state = wait_interception(address, &session, 1).await;
+    let pending = &state["control"]["pending"][0];
+    let connection = pending["connection"].clone();
+    interception_api(
+        address,
+        &session,
+        "/api/control/decision",
+        Some(json!({"ids": [pending["id"]], "decision": {"action": "connection"}})),
+    )
+    .await;
+    assert_eq!(
+        timeout(Duration::from_secs(2), socket.recv_message())
+            .await
+            .unwrap()
+            .unwrap(),
+        Message::text("release connection")
+    );
+    socket
+        .send_message(Message::text("future messages also pass"))
+        .await
+        .unwrap();
+    assert_eq!(
+        timeout(Duration::from_secs(2), socket.recv_message())
+            .await
+            .unwrap()
+            .unwrap(),
+        Message::text("future messages also pass")
+    );
+    interception_api(
+        address,
+        &session,
+        &format!("/api/control/resume/{connection}"),
+        Some(json!({})),
+    )
+    .await;
+    socket
+        .send_message(Message::text("cancel this pending message"))
+        .await
+        .unwrap();
+    wait_interception(address, &session, 1).await;
+    socket.send_message(Message::Close(None)).await.unwrap();
+    assert!(matches!(
+        timeout(Duration::from_secs(2), socket.recv_message())
+            .await
+            .unwrap()
+            .unwrap(),
+        Message::Close(_)
+    ));
+    wait_interception(address, &session, 0).await;
+    drop(socket);
+    _ = shutdown_tx.send(());
+    shutdown
+        .shutdown_with_limit(Duration::from_secs(2))
+        .await
+        .unwrap();
     origin_task.abort();
 }

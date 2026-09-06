@@ -38,12 +38,14 @@ static SELECTED_EXPORT_LIMIT: LazyLock<Arc<Semaphore>> =
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct HarStatus {
     pub active: bool,
+    pub suspended: bool,
     pub path: Option<String>,
     pub started_at: Option<String>,
 }
 
 #[derive(Debug)]
 struct ActiveHar {
+    suspended: std::sync::atomic::AtomicBool,
     recorder: FileRecorder,
     path: PathBuf,
     display_path: String,
@@ -198,6 +200,15 @@ fn captured_har_entry(details: CaptureDetails) -> Result<spec::Entry, BoxError> 
                 headers,
                 ..
             } => request_head = Some((method, url, version, headers)),
+            StoredRecord::Interception {
+                direction,
+                forwarded_headers: Some(headers),
+                ..
+            } if direction == "request" => {
+                if let Some((_, _, _, current)) = &mut request_head {
+                    *current = headers;
+                }
+            }
             StoredRecord::RequestBody { data } => request_body.extend(
                 BASE64
                     .decode(data)
@@ -511,6 +522,7 @@ impl HarController {
         }
         let recorder = FileRecorder::try_new_at(&path).context("create HAR recorder")?;
         let active = ActiveHar {
+            suspended: std::sync::atomic::AtomicBool::new(false),
             recorder,
             path,
             display_path,
@@ -519,6 +531,7 @@ impl HarController {
         };
         let status = HarStatus {
             active: true,
+            suspended: false,
             path: Some(active.display_path.clone()),
             started_at: Some(active.started_at.clone()),
         };
@@ -570,6 +583,19 @@ impl HarController {
         })
     }
 
+    /// Finalize the current HAR without losing its staged download. A new HAR
+    /// must be started explicitly: reopening an exact-path recorder would overwrite it.
+    pub(super) async fn pause(&self) {
+        let _transition = self.transition.write().await;
+        if let Some(active) = self.active.load_full() {
+            active
+                .suspended
+                .store(true, std::sync::atomic::Ordering::Release);
+            active.recorder.stop_record().await;
+        }
+    }
+
+    #[cfg(test)]
     pub(super) async fn stop(&self) -> HarStatus {
         let _transition = self.transition.write().await;
         let active = self.active.swap(None);
@@ -577,12 +603,14 @@ impl HarController {
             active.recorder.stop_record().await;
             HarStatus {
                 active: false,
+                suspended: false,
                 path: Some(active.display_path.clone()),
                 started_at: Some(active.started_at.clone()),
             }
         } else {
             HarStatus {
                 active: false,
+                suspended: false,
                 path: None,
                 started_at: None,
             }
@@ -593,6 +621,9 @@ impl HarController {
         let state = self.active.load();
         HarStatus {
             active: state.is_some(),
+            suspended: state
+                .as_deref()
+                .is_some_and(|a| a.suspended.load(std::sync::atomic::Ordering::Acquire)),
             path: state.as_deref().map(|active| active.display_path.clone()),
             started_at: state.as_deref().map(|active| active.started_at.clone()),
         }
@@ -601,7 +632,10 @@ impl HarController {
 
 impl Toggle for HarController {
     async fn status(&self) -> bool {
-        self.active.load().is_some()
+        self.active
+            .load()
+            .as_deref()
+            .is_some_and(|a| !a.suspended.load(std::sync::atomic::Ordering::Acquire))
     }
 }
 
@@ -609,13 +643,17 @@ impl Recorder for HarController {
     async fn record(&self, log: spec::Log) -> Option<Extensions> {
         let _transition = self.transition.read().await;
         match self.active.load_full() {
-            Some(active) => active.recorder.record(log).await,
-            None => None,
+            Some(active) if !active.suspended.load(std::sync::atomic::Ordering::Acquire) => {
+                active.recorder.record(log).await
+            }
+            _ => None,
         }
     }
 
     async fn stop_record(&self) {
-        _ = self.stop().await;
+        // HARExportService calls this whenever its toggle is off. Lifecycle is
+        // controlled explicitly here: that observation must neither delete a
+        // suspended download nor stop a recording started by another request.
     }
 }
 
@@ -625,8 +663,10 @@ impl StreamingRecorder for HarController {
     async fn start_http_recording(&self, request: HttpRequestCapture) -> Option<Self::Session> {
         let _transition = self.transition.read().await;
         match self.active.load_full() {
-            Some(active) => active.recorder.start_http_recording(request).await,
-            None => None,
+            Some(active) if !active.suspended.load(std::sync::atomic::Ordering::Acquire) => {
+                active.recorder.start_http_recording(request).await
+            }
+            _ => None,
         }
     }
 }
@@ -651,6 +691,7 @@ mod tests {
     fn captured_har_entry_preserves_observed_timing_and_byte_totals() {
         let entry = captured_har_entry(CaptureDetails {
             summary: super::super::capture::ExchangeSummary {
+                decision: None,
                 id: 7,
                 connection_id: 11,
                 connection_display_id: 3,
@@ -890,5 +931,51 @@ mod tests {
         assert!(value.get("log").is_some());
         drop(reader);
         assert!(!staging.exists());
+    }
+    #[tokio::test]
+    async fn paused_har_stays_frozen_and_downloadable_while_traffic_continues() {
+        use rama::{
+            Layer as _, Service as _,
+            http::{Body, Request, Response, layer::har::layer::HARExportLayer},
+            service::service_fn,
+        };
+        let controller = HarController::default();
+        controller.start_browser("paused.har".into()).await.unwrap();
+        let service = HARExportLayer::new(controller.clone(), controller.clone()).into_layer(
+            service_fn(async |_: Request| Ok::<_, BoxError>(Response::new(Body::empty()))),
+        );
+        service
+            .serve(
+                Request::builder()
+                    .uri("http://example.test/before")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        controller.pause().await;
+        let active = controller.active.load_full().unwrap();
+        let before = tokio::fs::read(&active.path).await.unwrap();
+        service
+            .serve(
+                Request::builder()
+                    .uri("http://example.test/after")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(controller.status().suspended);
+        assert_eq!(tokio::fs::read(&active.path).await.unwrap(), before);
+        let mut download = controller.stop_browser().await.unwrap();
+        let mut bytes = Vec::new();
+        download.reader.read_to_end(&mut bytes).await.unwrap();
+        assert_eq!(bytes, before);
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["log"]["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            value["log"]["entries"][0]["request"]["url"],
+            "http://example.test/before"
+        );
     }
 }

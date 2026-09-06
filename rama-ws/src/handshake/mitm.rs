@@ -1,4 +1,4 @@
-use std::{convert::Infallible, num::NonZeroUsize, time::Duration};
+use std::{collections::VecDeque, convert::Infallible, num::NonZeroUsize, time::Duration};
 
 use rama_core::{
     Layer, Service,
@@ -25,6 +25,23 @@ const DEFAULT_CLOSE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const RELAY_WRITER_QUEUE_CAPACITY: usize = 8;
 const DEFAULT_MESSAGE_INJECTION_QUEUE_CAPACITY: NonZeroUsize = NonZeroUsize::new(16).unwrap();
 const DEFAULT_MAX_INJECTED_MESSAGE_SIZE: usize = 16 << 20;
+
+/// Opt in to bounded reading while relay middleware awaits an external decision.
+///
+/// Insert this extension on each transport that should keep reading. Application
+/// data stays ordered and control events are observed after earlier middleware
+/// completes, but ping replies and peer-initiated close are handled immediately.
+/// Exceeding either bound closes both legs with code 1009. Without this extension,
+/// the relay applies ordinary backpressure without reading ahead.
+#[derive(Debug, Clone, Copy)]
+pub struct WebSocketRelayReadAhead {
+    /// Maximum number of messages retained per direction.
+    pub max_messages: NonZeroUsize,
+    /// Maximum combined payload bytes retained per direction.
+    pub max_bytes: NonZeroUsize,
+}
+
+impl extensions::Extension for WebSocketRelayReadAhead {}
 
 /// A pair of established WebSocket message transports joined by a relay.
 ///
@@ -1168,6 +1185,11 @@ async fn relay_direction<H, Source>(
         WebSocketRelayDirection::Egress => ("egress", "ingress"),
     };
 
+    let read_ahead = relay_extensions
+        .get_ref::<WebSocketRelayReadAhead>()
+        .copied();
+    let mut buffered: VecDeque<(crate::Message, bool)> = VecDeque::new();
+    let mut buffered_bytes = 0usize;
     let open_extensions = std::mem::take(relay_extensions);
     let open_result = tokio::select! {
         biased;
@@ -1203,20 +1225,29 @@ async fn relay_direction<H, Source>(
         }
     }
 
-    loop {
-        let source_result = tokio::select! {
-            biased;
-            _ = close_control.next() => {
-                return drain_close(
-                    direction,
-                    source_name,
-                    &mut source,
-                    &source_writer,
-                    &signals,
-                ).await;
-            }
-            result = source.next() => result,
-        };
+    'relay: loop {
+        let (source_result, control_handled) =
+            if let Some((message, handled)) = buffered.pop_front() {
+                buffered_bytes -= message.len();
+                (Some(Ok(message)), handled)
+            } else {
+                (
+                    tokio::select! {
+                        biased;
+                        _ = close_control.next() => {
+                            return drain_close(
+                                direction,
+                                source_name,
+                                &mut source,
+                                &source_writer,
+                                &signals,
+                            ).await;
+                        }
+                        result = source.next() => result,
+                    },
+                    false,
+                )
+            };
 
         let message = match source_result {
             Some(Ok(message)) => message,
@@ -1245,9 +1276,11 @@ async fn relay_direction<H, Source>(
                 false,
                 None,
             ),
-            crate::Message::Ping(bytes) => {
-                (WebSocketRelayEvent::Ping(bytes.clone()), true, Some(bytes))
-            }
+            crate::Message::Ping(bytes) => (
+                WebSocketRelayEvent::Ping(bytes.clone()),
+                !control_handled,
+                (!control_handled).then_some(bytes),
+            ),
             crate::Message::Pong(bytes) => (WebSocketRelayEvent::Pong(bytes), false, None),
             crate::Message::Close(frame) => {
                 let event = WebSocketRelayEvent::Close(frame.clone());
@@ -1352,19 +1385,55 @@ async fn relay_direction<H, Source>(
             }
         }
 
-        let extensions = std::mem::take(relay_extensions);
-        let handler_result = tokio::select! {
-            biased;
-            _ = close_control.next() => {
-                return drain_close(
-                    direction,
-                    source_name,
-                    &mut source,
-                    &source_writer,
-                    &signals,
-                ).await;
+        // Keep extensions available to a close observer if the in-flight
+        // middleware is cancelled by a close read on this same leg.
+        let extensions = if read_ahead.is_some() {
+            relay_extensions.clone()
+        } else {
+            std::mem::take(relay_extensions)
+        };
+        let handling = handler.serve(direction, event, extensions);
+        tokio::pin!(handling);
+        let handler_result = loop {
+            tokio::select! {
+                biased;
+                _ = close_control.next() => {
+                    return drain_close(direction, source_name, &mut source, &source_writer, &signals).await;
+                }
+                result = &mut handling => break result,
+                next = source.next(), if read_ahead.is_some() => {
+                    let Some(Ok(message)) = next else {
+                        signal(&signals, RelaySignal::Terminate);
+                        return;
+                    };
+                    if matches!(message, crate::Message::Close(_)) {
+                        buffered.clear();
+                        buffered_bytes = message.len();
+                        buffered.push_front((message, false));
+                        continue 'relay;
+                    }
+                    let Some(limits) = read_ahead else { signal(&signals, RelaySignal::Terminate); return; };
+                    if buffered.len() >= limits.max_messages.get()
+                        || message.len() > limits.max_bytes.get().saturating_sub(buffered_bytes)
+                    {
+                        start_coordinated_close(&source_writer, &destination_writer, &close_controls, &signals,
+                            Some(CloseFrame { code: CloseCode::Size, reason: "relay read-ahead limit exceeded".into() }));
+                        return drain_close(direction, source_name, &mut source, &source_writer, &signals).await;
+                    }
+                    if let crate::Message::Ping(payload) = &message {
+                        for response in [queue_flush(&source_writer), queue_message(&destination_writer, crate::Message::Pong(payload.clone()))] {
+                            let Some(response) = response else { signal(&signals, RelaySignal::Terminate); return; };
+                            match await_writer_or_close(response, &mut close_control).await {
+                                WriterWait::Complete(Ok(())) => (),
+                                WriterWait::Complete(Err(_)) => { signal(&signals, RelaySignal::Terminate); return; }
+                                WriterWait::StartClosing => return drain_close(direction, source_name, &mut source, &source_writer, &signals).await,
+                            }
+                        }
+                    }
+                    buffered_bytes += message.len();
+                    buffered.push_back((message, true));
+                }
             }
-            result = handler.serve(direction, event, extensions) => result,
         };
 
         let RelayHandlerOutput {
@@ -1599,7 +1668,8 @@ mod tests {
             WebSocketRelayEventInput, WebSocketRelayEventOutput, WebSocketRelayEventService,
             WebSocketRelayInjector, WebSocketRelayInput, WebSocketRelayIoLayer,
             WebSocketRelayIoService, WebSocketRelayMessage, WebSocketRelayOutput,
-            WebSocketRelayService, WriterCommand, valid_close_frame, writer_loop,
+            WebSocketRelayReadAhead, WebSocketRelayService, WriterCommand, valid_close_frame,
+            writer_loop,
         },
         protocol::{CloseFrame, Role, frame::coding::CloseCode},
     };
@@ -3283,5 +3353,137 @@ mod tests {
         assert!(service.message_injection);
         assert_eq!(service.message_injection_queue_capacity.get(), 5);
         assert_eq!(service.max_injected_message_size, None);
+    }
+    #[tokio::test]
+    async fn read_ahead_keeps_ping_and_same_side_close_live_during_a_hold() {
+        let (relay_in, peer_in) = duplex(kib(16));
+        let (relay_out, peer_out) = duplex(kib(16));
+        let (started_tx, started_rx) = oneshot::channel();
+        let service = WebSocketRelayEventService::new(StallingIngressPingMiddleware {
+            started: Arc::new(Mutex::new(Some(started_tx))),
+        });
+        let ingress = MockSocket::new(relay_in);
+        ingress.extensions().insert(WebSocketRelayReadAhead {
+            max_messages: NonZeroUsize::new(8).unwrap(),
+            max_bytes: NonZeroUsize::new(1024).unwrap(),
+        });
+        let relay = tokio::spawn(async move {
+            service
+                .serve(BridgeIo(ingress, MockSocket::new(relay_out)))
+                .await
+        });
+        let mut client =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_in), Role::Client, None).await;
+        let mut server =
+            AsyncWebSocket::from_raw_socket(MockSocket::new(peer_out), Role::Server, None).await;
+        for payload in [b"first".as_slice(), b"second".as_slice()] {
+            client
+                .send_message(Message::Ping(Bytes::copy_from_slice(payload)))
+                .await
+                .unwrap();
+            assert_eq!(
+                expect_message(&mut client, "pong while middleware is held").await,
+                Message::Pong(Bytes::copy_from_slice(payload))
+            );
+            assert_eq!(
+                expect_message(&mut server, "opposite heartbeat while middleware is held").await,
+                Message::Pong(Bytes::copy_from_slice(payload))
+            );
+        }
+        timeout(Duration::from_secs(1), started_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        client
+            .send_message(Message::text("data must not escape the hold"))
+            .await
+            .unwrap();
+        let frame = test_close_frame("same-side close");
+        client
+            .send_message(Message::Close(Some(frame.clone())))
+            .await
+            .unwrap();
+        assert_eq!(
+            expect_message(&mut client, "same-side close reply").await,
+            Message::Close(Some(frame.clone()))
+        );
+        assert_eq!(
+            expect_message(&mut server, "close skips held data").await,
+            Message::Close(Some(frame))
+        );
+        server.flush().await.unwrap();
+        timeout(Duration::from_secs(1), relay)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_ahead_bounds_message_count_and_payload_bytes() {
+        for (count, bytes, payloads) in [(1, 1024, vec!["a", "b"]), (8, 4, vec!["oversized"])] {
+            let (relay_in, peer_in) = duplex(kib(16));
+            let (relay_out, peer_out) = duplex(kib(16));
+            let (started_tx, started_rx) = oneshot::channel();
+            let service = WebSocketRelayEventService::new(StallingIngressPingMiddleware {
+                started: Arc::new(Mutex::new(Some(started_tx))),
+            })
+            .with_close_handshake_timeout(Duration::from_millis(50));
+            let ingress = MockSocket::new(relay_in);
+            ingress.extensions().insert(WebSocketRelayReadAhead {
+                max_messages: NonZeroUsize::new(count).unwrap(),
+                max_bytes: NonZeroUsize::new(bytes).unwrap(),
+            });
+            let relay = tokio::spawn(async move {
+                service
+                    .serve(BridgeIo(ingress, MockSocket::new(relay_out)))
+                    .await
+            });
+            let mut client =
+                AsyncWebSocket::from_raw_socket(MockSocket::new(peer_in), Role::Client, None).await;
+            let mut server =
+                AsyncWebSocket::from_raw_socket(MockSocket::new(peer_out), Role::Server, None)
+                    .await;
+            client
+                .send_message(Message::Ping(Bytes::new()))
+                .await
+                .unwrap();
+            assert!(matches!(
+                expect_message(&mut client, "initial pong").await,
+                Message::Pong(_)
+            ));
+            assert!(matches!(
+                expect_message(&mut server, "initial heartbeat").await,
+                Message::Pong(_)
+            ));
+            timeout(Duration::from_secs(1), started_rx)
+                .await
+                .unwrap()
+                .unwrap();
+            for payload in payloads {
+                client.send_message(Message::text(payload)).await.unwrap();
+            }
+            assert!(matches!(
+                expect_message(&mut client, "bounded read-ahead closes client").await,
+                Message::Close(Some(CloseFrame {
+                    code: CloseCode::Size,
+                    ..
+                }))
+            ));
+            assert!(matches!(
+                expect_message(&mut server, "bounded read-ahead closes server").await,
+                Message::Close(Some(CloseFrame {
+                    code: CloseCode::Size,
+                    ..
+                }))
+            ));
+            _ = client.flush().await;
+            _ = server.flush().await;
+            timeout(Duration::from_secs(1), relay)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
     }
 }

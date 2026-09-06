@@ -1,6 +1,9 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 
-use rama_core::error::{BoxError, ErrorContext as _};
+use rama_core::{
+    error::{BoxError, ErrorContext as _},
+    telemetry::tracing,
+};
 use rama_http::HeaderMap;
 use serde::{Deserialize, Serialize};
 
@@ -9,9 +12,28 @@ use crate::*;
 
 /// Load the profiles embedded with the rama-ua crate.
 ///
+/// Complementary captures are merged before incomplete profiles are skipped with
+/// a warning. Malformed data and bundles with no usable profiles remain errors.
 /// This function is only available if the `embed-profiles` feature is enabled.
 pub fn try_load_embedded_profiles() -> Result<impl Iterator<Item = UserAgentProfile>, BoxError> {
-    Ok(try_load_profiles_json(include_bytes!("embed_profiles.json"))?.into_iter())
+    Ok(load_embedded_profiles(include_bytes!("embed_profiles.json"))?.into_iter())
+}
+
+fn load_embedded_profiles(bytes: &[u8]) -> Result<Vec<UserAgentProfile>, BoxError> {
+    let mut profiles = Vec::new();
+    for row in parse_profile_rows(bytes)? {
+        match row.try_into_profile() {
+            Ok(profile) => profiles.push(profile),
+            Err(error) if error.is::<IncompleteProfile>() => {
+                tracing::warn!(%error, "skip incomplete embedded user-agent profile");
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    if profiles.is_empty() {
+        return Err("embedded user-agent database has no usable profiles".into());
+    }
+    Ok(profiles)
 }
 
 /// Load a JSON array of captured user-agent profile rows.
@@ -21,6 +43,13 @@ pub fn try_load_embedded_profiles() -> Result<impl Iterator<Item = UserAgentProf
 /// merged profile must contain the HTTP/1, HTTP/2 and TLS components required
 /// by [`UserAgentProfile`]. No embedded or synthetic data is used to fill gaps.
 pub fn try_load_profiles_json(bytes: &[u8]) -> Result<Vec<UserAgentProfile>, BoxError> {
+    parse_profile_rows(bytes)?
+        .into_iter()
+        .map(UserAgentProfileInput::try_into_profile)
+        .collect()
+}
+
+fn parse_profile_rows(bytes: &[u8]) -> Result<Vec<UserAgentProfileInput>, BoxError> {
     let rows: Vec<UserAgentProfileInput> =
         serde_json::from_slice(bytes).context("deserialize user-agent profiles")?;
     let mut profiles = Vec::<UserAgentProfileInput>::new();
@@ -33,11 +62,26 @@ pub fn try_load_profiles_json(bytes: &[u8]) -> Result<Vec<UserAgentProfile>, Box
             profiles.push(row);
         }
     }
-    profiles
-        .into_iter()
-        .map(UserAgentProfileInput::try_into_profile)
-        .collect()
+    Ok(profiles)
 }
+
+#[derive(Debug)]
+struct IncompleteProfile {
+    user_agent: String,
+    field: &'static str,
+}
+
+impl fmt::Display for IncompleteProfile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "user-agent profile '{}' is missing {}",
+            self.user_agent, self.field
+        )
+    }
+}
+
+impl std::error::Error for IncompleteProfile {}
 
 #[derive(Debug, Deserialize, Serialize)]
 /// Serializable user-agent profile input used by Rama's embedded and custom
@@ -133,19 +177,14 @@ impl UserAgentProfileInput {
 
     fn try_into_profile(self) -> Result<UserAgentProfile, BoxError> {
         let ua = UserAgent::new(self.uastr);
-        let missing = |field: &str| {
-            BoxError::from(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!(
-                    "user-agent profile '{}' is missing {field}",
-                    ua.header_str()
-                ),
-            ))
+        let missing = |field| IncompleteProfile {
+            user_agent: ua.header_str().to_owned(),
+            field,
         };
         Ok(UserAgentProfile {
-            ua_kind: ua
-                .ua_kind()
-                .ok_or_else(|| missing("a recognized User-Agent kind"))?,
+            ua_kind: ua.ua_kind().ok_or_else(|| {
+                format!("unrecognized User-Agent in profile '{}'", ua.header_str())
+            })?,
             ua_version: ua.ua_version(),
             platform: ua.platform(),
             http: Arc::new(HttpProfile {
@@ -241,6 +280,9 @@ mod tests {
         let profiles = try_load_profiles_json(&encoded).unwrap();
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].ua_str(), Some(user_agent.as_str()));
+        let embedded = load_embedded_profiles(&encoded).unwrap();
+        assert_eq!(embedded.len(), 1);
+        assert_eq!(embedded[0].ua_str(), Some(user_agent.as_str()));
     }
 
     #[test]
@@ -253,5 +295,80 @@ mod tests {
 
         let error = try_load_profiles_json(&serde_json::to_vec(&[row]).unwrap()).unwrap_err();
         assert!(error.to_string().contains("h2_settings"));
+    }
+
+    fn complete_row() -> serde_json::Value {
+        let rows: Vec<serde_json::Value> =
+            serde_json::from_slice(include_bytes!("embed_profiles.json")).unwrap();
+        rows.into_iter()
+            .find(|row| {
+                serde_json::from_value::<UserAgentProfileInput>(row.clone())
+                    .unwrap()
+                    .try_into_profile()
+                    .is_ok()
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn embedded_skips_incomplete_profiles_while_custom_imports_remain_strict() {
+        let complete = complete_row();
+        let fields = [
+            "h1_settings",
+            "h1_headers_navigate",
+            "h2_settings",
+            "h2_headers_navigate",
+            #[cfg(feature = "tls")]
+            "tls_client_hello",
+        ];
+        for field in fields {
+            let mut incomplete = complete.clone();
+            incomplete["uastr"] = serde_json::json!(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/999.0.0.0 Safari/537.36"
+            );
+            incomplete[field] = serde_json::Value::Null;
+            let bytes = serde_json::to_vec(&[&incomplete, &complete]).unwrap();
+            let profiles = load_embedded_profiles(&bytes).unwrap();
+            assert_eq!(profiles.len(), 1, "{field}");
+            assert_eq!(profiles[0].ua_str(), complete["uastr"].as_str());
+            let error = try_load_profiles_json(&bytes).unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<IncompleteProfile>().unwrap().field,
+                field
+            );
+            let bytes = serde_json::to_vec(&[incomplete]).unwrap();
+            assert!(
+                load_embedded_profiles(&bytes)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("no usable profiles")
+            );
+        }
+        assert!(
+            load_embedded_profiles(b"[]")
+                .unwrap_err()
+                .to_string()
+                .contains("no usable profiles")
+        );
+    }
+
+    #[test]
+    fn embedded_does_not_hide_malformed_or_unsupported_profiles() {
+        load_embedded_profiles(b"[").unwrap_err();
+        let complete = complete_row();
+        for (field, value) in [
+            ("h2_settings", serde_json::json!("invalid settings")),
+            (
+                "h1_headers_navigate",
+                serde_json::json!([["invalid header name", "value"]]),
+            ),
+            ("uastr", serde_json::json!("unknown-browser")),
+        ] {
+            let mut invalid = complete.clone();
+            invalid[field] = value;
+            let bytes = serde_json::to_vec(&[&complete, &invalid]).unwrap();
+            assert!(load_embedded_profiles(&bytes).is_err(), "{field}");
+            assert!(try_load_profiles_json(&bytes).is_err(), "{field}");
+        }
     }
 }

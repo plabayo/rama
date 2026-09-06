@@ -1,6 +1,7 @@
 //! Multi-protocol forward proxy with optional Relay/Peek MITM inspection.
 
 mod capture;
+mod control;
 mod dashboard;
 mod dashboard_auth;
 mod har;
@@ -14,10 +15,11 @@ use capture::{
     MarkProtocolLayer, ObserveConnectionLayer,
 };
 use clap::{Args, ValueEnum};
+use control::{Control, ControlConnection};
 use dashboard::DashboardState;
 use dashboard_auth::DashboardAuthService;
 use har::HarController;
-use inspection::{InspectionPermit, InspectionState};
+use inspection::InspectionState;
 use mitm_policy::MitmPolicy;
 use portal::PortalService;
 use rama::{
@@ -113,7 +115,6 @@ use rama::{
 use std::{
     collections::BTreeSet,
     convert::Infallible,
-    future::Future as _,
     num::NonZeroU64,
     path::PathBuf,
     pin::Pin,
@@ -663,7 +664,7 @@ struct MitmTargetPolicyService<I, P> {
     inspect: I,
     passthrough: P,
     policy: MitmPolicy,
-    inspection: InspectionState,
+    control: Option<Control>,
     defer_ip_target: bool,
 }
 
@@ -684,12 +685,16 @@ where
         } else {
             self.policy.should_inspect_target(input.extensions())
         };
-        if !should_inspect {
-            self.passthrough.serve(input).await.map_err(Into::into)
-        } else if let Some(permit) = self.inspection.try_capture() {
-            serve_with_inspection_permit(&self.inspect, input, permit)
-                .await
-                .map_err(Into::into)
+        if !self.defer_ip_target || !should_inspect {
+            observe_target(
+                self.control.as_ref(),
+                input.extensions(),
+                None,
+                should_inspect,
+            );
+        }
+        if should_inspect {
+            self.inspect.serve(input).await.map_err(Into::into)
         } else {
             self.passthrough.serve(input).await.map_err(Into::into)
         }
@@ -701,7 +706,7 @@ struct TlsHelloMitmPolicyService<I, P> {
     inspect: I,
     passthrough: P,
     policy: MitmPolicy,
-    inspection: InspectionState,
+    control: Option<Control>,
 }
 
 impl<I, P, IO> Service<InputWithClientHello<IO>> for TlsHelloMitmPolicyService<I, P>
@@ -724,15 +729,14 @@ where
         let should_inspect = self
             .policy
             .should_inspect_target_and_host(input.input.extensions(), sni.as_ref());
-        if !should_inspect {
-            self.passthrough
-                .serve(input.input)
-                .await
-                .map_err(Into::into)
-        } else if let Some(permit) = self.inspection.try_capture() {
-            serve_with_inspection_permit(&self.inspect, input, permit)
-                .await
-                .map_err(Into::into)
+        observe_target(
+            self.control.as_ref(),
+            input.input.extensions(),
+            sni.as_ref(),
+            should_inspect,
+        );
+        if should_inspect {
+            self.inspect.serve(input).await.map_err(Into::into)
         } else {
             self.passthrough
                 .serve(input.input)
@@ -742,45 +746,71 @@ where
     }
 }
 
-/// Poll an inspection service once before releasing its routing permit.
-///
-/// This makes a completed pause a classification boundary without retaining a
-/// permit for the lifetime of an already-established tunnel or WebSocket.
-async fn serve_with_inspection_permit<S, Input>(
-    service: &S,
-    input: Input,
-    permit: InspectionPermit,
-) -> Result<S::Output, S::Error>
+fn observe_target(
+    control: Option<&Control>,
+    extensions: &rama::extensions::Extensions,
+    sni: Option<&rama::net::address::Host>,
+    inspected: bool,
+) {
+    let Some(control) = control else {
+        return;
+    };
+    let Some(connection) = extensions.get_ref::<ControlConnection>() else {
+        return;
+    };
+    let target = extensions.get_ref::<rama::net::client::ConnectorTarget>();
+    let host = sni.or_else(|| target.as_ref().map(|t| &t.0.host));
+    if let Some(host) = host {
+        control.observe(
+            connection,
+            &host.to_string(),
+            inspected,
+            if sni.is_some() {
+                "TLS SNI"
+            } else {
+                "proxy destination"
+            },
+            if inspected {
+                "MITM eligible"
+            } else {
+                "passed through without inspection"
+            },
+        );
+    }
+}
+
+/// Record the final outcome when protocol peeking falls back to a byte tunnel.
+#[derive(Debug, Clone)]
+struct ObservePassthroughService<S> {
+    inner: S,
+    control: Control,
+}
+
+impl<S, IO> Service<IO> for ObservePassthroughService<S>
 where
-    S: Service<Input>,
+    IO: rama::extensions::ExtensionsRef + Send + 'static,
+    S: Service<IO, Output = (), Error: Into<BoxError>>,
 {
-    let future = service.serve(input);
-    tokio::pin!(future);
-    let ready = std::future::poll_fn(|context| match future.as_mut().poll(context) {
-        Poll::Ready(result) => Poll::Ready(Some(result)),
-        Poll::Pending => Poll::Ready(None),
-    })
-    .await;
-    drop(permit);
-    match ready {
-        Some(result) => result,
-        None => future.await,
+    type Output = ();
+    type Error = BoxError;
+
+    async fn serve(&self, input: IO) -> Result<(), BoxError> {
+        observe_target(Some(&self.control), input.extensions(), None, false);
+        self.inner.serve(input).await.map_err(Into::into)
     }
 }
 
 #[derive(Debug, Clone)]
 struct MitmPortalMatcher {
     domain: DomainMatcher,
-    inspection: InspectionState,
     policy: MitmPolicy,
     connect_only: bool,
 }
 
 impl MitmPortalMatcher {
-    fn http(inspection: InspectionState, policy: MitmPolicy) -> Self {
+    fn http(_inspection: InspectionState, policy: MitmPolicy) -> Self {
         Self {
             domain: DomainMatcher::exact(MITM_PORTAL_DOMAIN),
-            inspection,
             policy,
             connect_only: false,
         }
@@ -800,10 +830,9 @@ impl<Body> rama::matcher::Matcher<Request<Body>> for MitmPortalMatcher {
         extensions: Option<&rama::extensions::Extensions>,
         request: &Request<Body>,
     ) -> bool {
-        self.inspection.is_enabled()
-            && !self
-                .policy
-                .is_denied(&rama::net::address::Host::Name(MITM_PORTAL_DOMAIN))
+        !self
+            .policy
+            .is_denied(&rama::net::address::Host::Name(MITM_PORTAL_DOMAIN))
             && (!self.connect_only || request.method() == rama::http::Method::CONNECT)
             && self.domain.matches(extensions, request)
     }
@@ -812,6 +841,7 @@ impl<Body> rama::matcher::Matcher<Request<Body>> for MitmPortalMatcher {
 macro_rules! build_mitm_service {
     ($exec:expr, $capture:expr, $inspection:expr, $har:expr, $portal:expr, $certificate:expr, $private_key:expr, $peek_timeout:expr, $mitm_policy:expr, $icap:expr) => {{
         let capture = $capture;
+        let capture_control = capture.control();
         let inspection = $inspection;
         let har = $har;
         let exec = $exec;
@@ -849,11 +879,11 @@ macro_rules! build_mitm_service {
                 MitmPortalMatcher::http(inspection.clone(), mitm_policy.clone()),
                 portal,
             ),
+            CaptureHttpLayer::new(Some(capture.clone())),
             websocket_layer,
             RemoveResponseHeaderLayer::proxy_auth(),
             icap,
             RemoveRequestHeaderLayer::proxy_auth(),
-            CaptureHttpLayer::new(Some(capture)),
             HARExportLayer::new(har.clone(), har),
             DecompressionLayer::new()
                 .with_insert_accept_encoding_header(false)
@@ -863,16 +893,17 @@ macro_rules! build_mitm_service {
         let maybe_http = HttpPeekRouter::new(http_mitm_relay)
             .with_known_non_http_protocol_methods()
             .maybe_with_peek_timeout(peek_timeout)
-            .with_fallback(
-                MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())),
-            );
+            .with_fallback(ObservePassthroughService {
+                inner: MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())),
+                control: capture_control.clone(),
+            });
         let passthrough = ConsumeErrLayer::trace_as_debug()
             .into_layer(MapOutputLayer::new(drop).into_layer(IoForwardService::new(exec.clone())));
         let non_tls = MitmTargetPolicyService {
             inspect: maybe_http.clone(),
             passthrough: passthrough.clone(),
             policy: mitm_policy.clone(),
-            inspection: inspection.clone(),
+            control: Some(capture_control.clone()),
             defer_ip_target: false,
         };
         let tls = TlsMitmRelay::new_cached_in_memory($certificate, $private_key);
@@ -880,7 +911,7 @@ macro_rules! build_mitm_service {
             inspect: tls.into_layer(maybe_http.clone()),
             passthrough: passthrough.clone(),
             policy: mitm_policy.clone(),
-            inspection: inspection.clone(),
+            control: Some(capture_control.clone()),
         };
         let application = PeekTlsClientHelloService::new(tls)
             .maybe_with_peek_timeout(peek_timeout)
@@ -890,7 +921,7 @@ macro_rules! build_mitm_service {
             inspect,
             passthrough,
             policy: mitm_policy,
-            inspection,
+            control: Some(capture_control),
             defer_ip_target: true,
         })
     }};
@@ -1106,6 +1137,14 @@ pub struct CliCommandProxy {
     /// rules override allow rules.
     #[arg(long, value_delimiter = ',', requires = "mitm")]
     mitm_deny: Vec<String>,
+
+    /// Initial MITM scope. Selected starts with no hosts until selected in the UI.
+    #[arg(long, value_enum, default_value_t = mitm_policy::ScopeMode::All, requires = "mitm")]
+    mitm_scope: mitm_policy::ScopeMode,
+
+    /// Require approval for all supported protocols (HTTP and WebSocket) from startup.
+    #[arg(long, requires = "mitm")]
+    intercept: bool,
 
     /// Disable Nagle on ingress and egress sockets. Use
     /// --tcp-no-delay=false to opt back into Nagle coalescing.
@@ -1334,6 +1373,7 @@ async fn run_with_dashboard_token(
     .with_forward_proxy_auth(!cfg.no_upstream_proxy_forward_auth)
     .with_tunnel_plaintext_http(cfg.upstream_proxy_tunnel);
     let mitm_policy = MitmPolicy::try_new(&cfg.mitm_allow, &cfg.mitm_deny)?;
+    mitm_policy.update_scope(cfg.mitm_scope, &[], &[])?;
     let inspection = InspectionState::default();
     let peek_timeout =
         (cfg.peek_timeout_ms > 0).then(|| Duration::from_millis(cfg.peek_timeout_ms));
@@ -1356,6 +1396,15 @@ async fn run_with_dashboard_token(
             )
         })
         .transpose()?;
+    if let Some(capture) = &capture {
+        capture.control().configure(
+            0,
+            control::Config {
+                enabled: cfg.intercept,
+                ..Default::default()
+            },
+        )?;
+    }
     let har = HarController::default();
 
     let ca = if mitm_enabled {
@@ -1994,7 +2043,6 @@ fn new_proxy_client(
     let client = upstream.http_service(client);
     let base = require_request_service(
         (
-            CaptureHttpLayer::new(capture.clone()),
             HARExportLayer::new(har.clone(), har),
             DecompressionLayer::new()
                 .with_insert_accept_encoding_header(false)
@@ -2019,8 +2067,9 @@ fn new_proxy_client(
     let websocket_relay = WebSocketRelayIoLayer::new().into_layer(
         CaptureWebSocketLayer::new(capture.clone()).into_layer(
             HARWebSocketLayer::new().into_layer(
-                WebSocketRelayEventService::new(service_fn(move |input| {
-                    inspect_websocket_event(capture.clone(), input)
+                WebSocketRelayEventService::new(service_fn({
+                    let capture = capture.clone();
+                    move |input| inspect_websocket_event(capture.clone(), input)
                 }))
                 .with_message_injection(true),
             ),
@@ -2048,8 +2097,16 @@ fn new_proxy_client(
         )
         .into_layer(ordinary),
     );
+    let proxy = CaptureHttpLayer::new(capture)
+        .with_policy(mitm_policy.clone())
+        .into_layer(proxy);
     let proxy = portal
-        .map(|portal| HijackLayer::new(MitmPortalMatcher::http(inspection, mitm_policy), portal))
+        .map(|portal| {
+            HijackLayer::new(
+                MitmPortalMatcher::http(inspection, mitm_policy.clone()),
+                portal,
+            )
+        })
         .into_layer(proxy);
     let proxy = StreamCompressionLayer::new()
         .with_compress_predicate(MirrorDecompressed::new())
@@ -2108,15 +2165,106 @@ where
     service
 }
 
+fn close_intercepted_websocket(
+    extensions: rama::extensions::Extensions,
+    code: u16,
+    reason: String,
+) -> WebSocketRelayEventOutput {
+    use rama::http::ws::{
+        handshake::mitm::WebSocketRelayClose,
+        protocol::{CloseFrame, frame::coding::CloseCode},
+    };
+    WebSocketRelayEventOutput {
+        messages: vec![],
+        close: Some(WebSocketRelayClose::WithFrame(CloseFrame {
+            code: CloseCode::from(code),
+            reason: reason.into(),
+        })),
+        extensions,
+    }
+}
+
 async fn inspect_websocket_event(
     capture: Option<CaptureStore>,
     input: WebSocketRelayEventInput,
 ) -> Result<WebSocketRelayEventOutput, Infallible> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+    use control::{Decision, WebSocketContext};
     let WebSocketRelayEventInput {
         direction,
-        event,
+        mut event,
         extensions,
     } = input;
+    if let (Some(store), Some(context), WebSocketRelayEvent::Data(data)) = (
+        capture.as_ref().filter(|s| s.control().is_active()),
+        extensions.get_ref::<WebSocketContext>(),
+        &event,
+    ) {
+        let mut message = context.request.clone();
+        message.protocol = if message.protocol == "https" {
+            "wss"
+        } else {
+            "ws"
+        }
+        .into();
+        message.direction = format!("{direction:?}").to_ascii_lowercase();
+        message.exchange = extensions.get_ref::<ExchangeId>().map(|id| id.0);
+        message.binary = matches!(data, WebSocketRelayMessage::Binary(_));
+        message.kind = if message.binary { "binary" } else { "text" }.into();
+        let size = match data {
+            WebSocketRelayMessage::Text(t) => t.len(),
+            WebSocketRelayMessage::Binary(b) => b.len().saturating_mul(4).div_ceil(3),
+        };
+        message.oversized = size > 256 * 1024;
+        message.payload = (!message.oversized).then(|| match data {
+            WebSocketRelayMessage::Text(t) => t.to_string(),
+            WebSocketRelayMessage::Binary(b) => BASE64.encode(b),
+        });
+        let (decision, reason) = store
+            .control()
+            .decide(&context.connection, message.clone())
+            .await;
+        if let (Some(id), Some(reason)) = (message.exchange, reason) {
+            let outcome = match &decision {
+                Decision::Forward { .. } => "Forwarded",
+                Decision::Close { .. } => "Closed",
+                _ => "Dropped",
+            };
+            store
+                .record_decision(id, &message, &format!("{outcome} · {reason}"), None)
+                .await;
+        }
+        match decision {
+            Decision::Forward {
+                payload: Some(payload),
+                ..
+            } => {
+                event = WebSocketRelayEvent::Data(if message.binary {
+                    let Ok(bytes) = BASE64.decode(payload) else {
+                        return Ok(close_intercepted_websocket(
+                            extensions,
+                            1011,
+                            "Invalid approved payload".into(),
+                        ));
+                    };
+                    WebSocketRelayMessage::Binary(bytes.into())
+                } else {
+                    WebSocketRelayMessage::Text(payload.into())
+                });
+            }
+            Decision::Drop | Decision::Block => {
+                return Ok(WebSocketRelayEventOutput {
+                    messages: vec![],
+                    close: None,
+                    extensions,
+                });
+            }
+            Decision::Close { code, reason } => {
+                return Ok(close_intercepted_websocket(extensions, code, reason));
+            }
+            _ => (),
+        }
+    }
     if let (Some(capture), Some(exchange_id)) =
         (capture, extensions.get_ref::<ExchangeId>().copied())
     {

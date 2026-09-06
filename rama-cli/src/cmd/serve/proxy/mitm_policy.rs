@@ -7,7 +7,26 @@ use rama::{
         client::ConnectorTarget,
     },
 };
+use serde::{Deserialize, Serialize};
 use std::{fmt, sync::Arc};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum ScopeMode {
+    #[default]
+    All,
+    Selected,
+    None,
+}
+
+#[derive(Serialize)]
+pub(super) struct ScopeSnapshot {
+    pub mode: ScopeMode,
+    pub allow: Vec<String>,
+    pub deny: Vec<String>,
+    pub cli_allow: Vec<String>,
+    pub cli_deny: Vec<String>,
+}
 
 const MAX_RUNTIME_RULES: usize = 256;
 const MAX_RULE_LENGTH: usize = 255;
@@ -43,7 +62,9 @@ impl RuleSet {
             if runtime && value.len() > MAX_RULE_LENGTH {
                 return Err(BoxError::from_static_str("MITM domain pattern is too long"));
             }
-            let pattern = if value.starts_with('.') || value.contains('*') {
+            let pattern = if let Some(host) = value.strip_prefix('=') {
+                HostPattern::exact(Host::try_from(host).context("parse exact MITM host")?)
+            } else if value.starts_with('.') || value.contains('*') {
                 HostPattern::try_new(value.to_owned())?
             } else {
                 let host = Host::try_from(value).context("parse MITM domain host")?;
@@ -74,6 +95,7 @@ impl RuleSet {
 
 #[derive(Debug, Default)]
 struct RuntimeRules {
+    mode: ScopeMode,
     allow: RuleSet,
     deny: RuleSet,
 }
@@ -112,8 +134,30 @@ impl MitmPolicy {
         })))
     }
 
+    #[cfg(test)]
     pub(super) fn update_runtime(&self, allow: &[String], deny: &[String]) -> Result<(), BoxError> {
+        self.update_scope(self.0.runtime.load().mode, allow, deny)
+    }
+
+    pub(super) fn snapshot(&self) -> ScopeSnapshot {
+        let rules = self.0.runtime.load();
+        ScopeSnapshot {
+            mode: rules.mode,
+            allow: rules.allow.sources.to_vec(),
+            deny: rules.deny.sources.to_vec(),
+            cli_allow: self.0.cli_allow.sources.to_vec(),
+            cli_deny: self.0.cli_deny.sources.to_vec(),
+        }
+    }
+
+    pub(super) fn update_scope(
+        &self,
+        mode: ScopeMode,
+        allow: &[String],
+        deny: &[String],
+    ) -> Result<(), BoxError> {
         let rules = RuntimeRules {
+            mode,
             allow: RuleSet::try_new(allow, true)?,
             deny: RuleSet::try_new(deny, true)?,
         };
@@ -121,7 +165,6 @@ impl MitmPolicy {
         Ok(())
     }
 
-    #[cfg(test)]
     pub(super) fn should_inspect_host(&self, host: &Host) -> bool {
         let runtime = self.0.runtime.load();
         self.should_inspect_observed_hosts(&runtime, [host])
@@ -165,6 +208,11 @@ impl MitmPolicy {
         runtime: &RuntimeRules,
         hosts: impl IntoIterator<Item = &'a Host>,
     ) -> bool {
+        if runtime.mode == ScopeMode::None
+            || (runtime.mode == ScopeMode::Selected && runtime.allow.is_empty())
+        {
+            return false;
+        }
         let mut observed = false;
         let mut allowed = false;
         for host in hosts {
@@ -298,5 +346,24 @@ mod tests {
         let extensions = Extensions::new();
         extensions.insert(ConnectorTarget("192.0.2.1:443".parse().unwrap()));
         assert!(!denied_ip.should_peek_target(&extensions));
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    #[test]
+    fn selected_empty_and_none_never_inspect_including_unknown_destinations() {
+        let policy = MitmPolicy::try_new(&[], &[]).unwrap();
+        for mode in [ScopeMode::Selected, ScopeMode::None] {
+            policy.update_scope(mode, &[], &[]).unwrap();
+            assert!(!policy.should_inspect_target(&Extensions::new()));
+            assert!(!policy.should_inspect_host(&Host::try_from("example.test").unwrap()));
+        }
+        policy
+            .update_scope(ScopeMode::Selected, &["=example.test".into()], &[])
+            .unwrap();
+        assert!(policy.should_inspect_host(&Host::try_from("example.test").unwrap()));
+        assert!(!policy.should_inspect_host(&Host::try_from("sub.example.test").unwrap()));
     }
 }

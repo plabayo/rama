@@ -318,14 +318,16 @@ main {
 
 .scope-editor {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-  padding: 0 13px 13px;
+  grid-template-columns: minmax(180px, .75fr) repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 20px;
+  padding: 12px 20px 20px;
 }
 
 .scope-editor label {
   display: grid;
-  gap: 5px;
+  align-content: start;
+  gap: 8px;
   color: var(--muted);
   font-size: 11px;
 }
@@ -350,6 +352,7 @@ main {
 
 .scope-actions {
   grid-column: 1 / -1;
+  padding-top: 4px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
@@ -1929,4 +1932,89 @@ body:has(.live-shell.focused) .filter-panel {
   .detail-columns {
     grid-template-columns: 1fr;
   }
+}
+
+/* Traffic controls stay outside the live capture morph, preserving drafts. */
+.traffic-control {
+  margin: 20px 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.control-heading, .control-toolbar, .control-tabs, .control-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.control-heading { padding: 16px 20px; gap: 16px 24px; border-bottom: 1px solid var(--line); }
+.control-heading .intercept-switch { display: inline-flex; align-items: center; gap: 10px; font-weight: 600; }
+.control-tabs { margin-left: auto; gap: 6px; }
+.control-tabs button[aria-pressed=true] { color: var(--purple); border-color: #9b8cff66; background: #9b8cff16; }
+.control-heading #control-status:not(:empty) { flex-basis: 100%; }
+.control-pane { padding: 20px; }
+.control-pane p { max-width: 85ch; margin: 0 0 18px; color: var(--muted); font-size: 12px; line-height: 1.65; }
+.control-pane > p:last-child { margin: 18px 0 0; }
+.control-toolbar { margin-bottom: 20px; gap: 12px; }
+.control-pane[hidden], .control-dialog [hidden] { display: none; }
+.control-list { max-height: 420px; overflow: auto; }
+.control-list > p { padding: 16px 0; margin: 0; }
+.control-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 14px; padding: 16px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.control-row:last-child { border-bottom: 0; }
+.control-row > div { min-width: 0; }
+.control-row span, .control-row button { overflow-wrap: anywhere; }
+.control-row .control-primary { display: block; text-align: left; padding: 0; border: 0; background: transparent; font-weight: 600; line-height: 1.5; }
+.control-row .control-meta { display: block; margin-top: 6px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.rule-row { grid-template-columns: auto minmax(0, 1fr) auto; }
+.host-row { grid-template-columns: minmax(180px, 1.4fr) minmax(180px, 1fr) auto; gap: 20px; }
+.host-row strong { display: block; font-size: 13px; margin-bottom: 6px; overflow-wrap: anywhere; }
+.host-row time { display: block; margin-top: 6px; color: var(--muted); font-size: 11px; }
+.host-filters { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(170px, .6fr); align-items: end; gap: 16px; }
+.host-filters > label:not(.control-check), .control-limits > label { display: grid; gap: 8px; color: var(--muted); font-size: 12px; }
+.host-filters > button { justify-self: end; }
+.control-check { display: inline-flex; align-items: center; gap: 9px; line-height: 1.5; font-size: 12px; }
+.control-limits { display: flex; flex-wrap: wrap; align-items: end; gap: 20px; margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--line); }
+#import-control { max-width: 230px; font-size: 11px; }
+#automatic-connections { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+.traffic-control input:not([type=checkbox]):not([type=file]), .traffic-control select,
+.control-dialog input:not([type=checkbox]), .control-dialog textarea, .control-dialog select,
+#mitm-mode { width: 100%; min-width: 0; min-height: 38px; border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; background: #0b1120; color: var(--ink); font: inherit; }
+.traffic-control input[type=checkbox], .control-dialog input[type=checkbox] { width: 15px; height: 15px; margin: 0; flex-shrink: 0; accent-color: var(--purple); }
+.control-dialog button, .traffic-control button { min-height: 34px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: var(--panel2); color: var(--ink); font: inherit; font-size: 12px; cursor: pointer; }
+.control-dialog button:hover, .traffic-control button:hover { border-color: #93a1b866; }
+.control-dialog button:disabled, .traffic-control button:disabled { opacity: .5; cursor: default; }
+.control-dialog :is(input, textarea, select, button):focus-visible, .traffic-control :is(input, select, button):focus-visible, #mitm-mode:focus-visible { outline: 2px solid var(--purple); outline-offset: 2px; }
+.control-dialog { width: min(850px, 92vw); max-height: 88vh; overflow: auto; padding: 24px; border: 1px solid var(--line); border-radius: 16px; background: var(--panel); color: var(--ink); }
+.control-dialog::backdrop { background: #090d18bb; }
+.control-dialog h2 { margin: 4px 0 12px; font-size: 20px; }
+.control-dialog p { color: var(--muted); font-size: 12px; line-height: 1.65; margin: 12px 0 20px; }
+.control-dialog label { display: grid; align-content: start; gap: 8px; margin: 18px 0; color: var(--muted); font-size: 12px; }
+.control-dialog textarea { font: 12px/1.6 ui-monospace, monospace; resize: vertical; }
+.control-dialog input[type=number] { max-width: 130px; }
+.control-dialog .control-toolbar { margin: 24px 0 0; gap: 10px; padding-top: 20px; border-top: 1px solid var(--line); }
+.control-dialog .control-check { display: flex; }
+.control-dialog [role=alert]:empty { display: none; }
+.dialog-close { float: right; margin-left: 16px; }
+.rule-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 0 20px; }
+.rule-fields label { margin: 10px 0; }
+.approval-badge { color: #ffca8d; background: #ff9d4d22; padding: 4px 8px; border-radius: 6px; font-size: 11px; }
+#control-status, #intercept-error, #response-error, #rule-error { color: var(--red); overflow-wrap: anywhere; }
+@media (max-width: 1000px) {
+  .scope-editor { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .scope-editor label:first-child { grid-column: 1 / -1; max-width: 360px; }
+  .host-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .host-row .control-actions { grid-column: 1 / -1; }
+}
+@media (max-width: 600px) {
+  .control-heading, .control-pane { padding: 16px; }
+  .control-tabs { margin-left: 0; }
+  .scope-editor { grid-template-columns: 1fr; padding: 12px 16px 16px; }
+  .scope-editor label:first-child { max-width: none; }
+  .mitm-scope summary > div { display: grid; gap: 4px; }
+  .rule-fields, .host-filters, .host-row { grid-template-columns: 1fr; }
+  .host-filters > button { justify-self: start; }
+  .rule-row { grid-template-columns: auto minmax(0, 1fr); }
+  .rule-row .control-actions { grid-column: 2; }
+  .control-dialog { padding: 20px; }
 }

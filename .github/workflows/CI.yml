@@ -49,6 +49,8 @@ jobs:
       - name: proxy dashboard browser regressions
         run: |
           node --test rama-cli/src/cmd/serve/proxy/dashboard-browser.test.cjs
+      - name: profile generator regressions
+        run: python3 -m unittest discover -s rama-fp/progen -p 'test_*.py'
       - name: extra-checks
         run: |
           ./scripts/extra-checks.sh

@@ -1,4 +1,4 @@
-//! Runtime gate shared by MITM routing and capture writers.
+//! Runtime recording gate shared by capture writers and host observations.
 
 use std::sync::{
     Arc,
@@ -18,7 +18,7 @@ struct InspectionStateInner {
     transition: Mutex<()>,
 }
 
-/// Process-wide runtime state for inspection and capture.
+/// Process-wide runtime state for recording.
 ///
 /// The proxy hot path remains lock-free. Pausing prevents new permits and then
 /// waits for writers that already hold one, so a successful pause response is
@@ -51,7 +51,7 @@ impl InspectionState {
         self.0.state.load(Ordering::Acquire) & PAUSED == 0
     }
 
-    /// Enter one capture-write operation if inspection is still enabled.
+    /// Enter one capture-write operation if recording is still enabled.
     ///
     /// The compare-and-exchange closes the race with `pause`: either the
     /// writer count wins first and is awaited, or the paused bit wins first
@@ -74,7 +74,7 @@ impl InspectionState {
         }
     }
 
-    /// Disable inspection and wait until every capture write that already
+    /// Pause recording and wait until every capture write that already
     /// started has completed.
     pub(super) async fn pause(&self) -> bool {
         let _transition = self.0.transition.lock().await;

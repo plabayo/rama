@@ -1828,6 +1828,7 @@ async fn replay_requires_one_complete_request_end_on_an_inactive_exchange() {
 #[test]
 fn filter_is_case_insensitive_across_summary_fields() {
     let summary = ExchangeSummary {
+        decision: None,
         id: 1,
         connection_id: 1,
         connection_display_id: 1,
@@ -2270,4 +2271,413 @@ fn captured_header_values_round_trip_binary_bytes_and_reserved_prefix_text() {
         let restored = captured_header_value(&encoded).unwrap();
         assert_eq!(restored, headers[name.as_str()]);
     }
+}
+
+// These tests assert forwarding boundaries, rather than the controller's implementation.
+#[derive(Debug)]
+struct ApprovalBody {
+    polls: Arc<AtomicUsize>,
+    bytes: Option<Bytes>,
+}
+impl StreamingBody for ApprovalBody {
+    type Data = Bytes;
+    type Error = Infallible;
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<rama::http::body::Frame<Bytes>, Infallible>>> {
+        self.polls.fetch_add(1, Ordering::Relaxed);
+        std::task::Poll::Ready(
+            self.bytes
+                .take()
+                .map(|bytes| Ok(rama::http::body::Frame::data(bytes))),
+        )
+    }
+}
+async fn approval_id(store: &CaptureStore, direction: &str) -> u64 {
+    let control = store.control();
+    let mut changes = control.subscribe();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let snapshot = serde_json::to_value(control.snapshot()).unwrap();
+            if let Some(message) = snapshot["pending"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["direction"] == direction)
+            {
+                return message["id"].as_u64().unwrap();
+            }
+            changes.changed().await.unwrap();
+        }
+    })
+    .await
+    .expect("approval did not arrive")
+}
+
+#[tokio::test]
+async fn approval_holds_heads_without_polling_bodies_and_preserves_header_edits() {
+    use super::super::control::{Config, Decision};
+    let store = test_store();
+    store
+        .control()
+        .configure(
+            0,
+            Config {
+                enabled: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let request_polls = Arc::new(AtomicUsize::new(0));
+    let response_polls = Arc::new(AtomicUsize::new(0));
+    let called = Arc::new(AtomicUsize::new(0));
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn({
+            let called = called.clone();
+            let response_polls = response_polls.clone();
+            move |request: Request| {
+                let called = called.clone();
+                let response_polls = response_polls.clone();
+                async move {
+                    called.fetch_add(1, Ordering::Relaxed);
+                    assert_eq!(request.headers().get_all("x-edit").iter().count(), 2);
+                    assert_eq!(
+                        request.into_body().collect().await.unwrap().to_bytes(),
+                        "request body"
+                    );
+                    Ok::<_, Infallible>(Response::new(ApprovalBody {
+                        polls: response_polls,
+                        bytes: Some(Bytes::from_static(b"response body")),
+                    }))
+                }
+            }
+        }));
+    let task = tokio::spawn({
+        let polls = request_polls.clone();
+        async move {
+            service
+                .serve(
+                    Request::builder()
+                        .uri("https://example.test/")
+                        .body(ApprovalBody {
+                            polls,
+                            bytes: Some(Bytes::from_static(b"request body")),
+                        })
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        }
+    });
+    let id = approval_id(&store, "request").await;
+    assert_eq!(called.load(Ordering::Relaxed), 0);
+    assert_eq!(request_polls.load(Ordering::Relaxed), 0);
+    store
+        .control()
+        .resolve(
+            id,
+            Decision::Forward {
+                headers: Some(vec![
+                    ("x-edit".into(), "one".into()),
+                    ("x-edit".into(), "two".into()),
+                ]),
+                status: None,
+                payload: None,
+            },
+        )
+        .unwrap();
+    let id = approval_id(&store, "response").await;
+    assert_eq!(called.load(Ordering::Relaxed), 1);
+    assert_eq!(response_polls.load(Ordering::Relaxed), 0);
+    assert!(!task.is_finished());
+    store
+        .control()
+        .resolve(
+            id,
+            Decision::Forward {
+                headers: Some(vec![("x-result".into(), "edited".into())]),
+                status: Some(201),
+                payload: None,
+            },
+        )
+        .unwrap();
+    let response = task.await.unwrap();
+    assert_eq!(response.status().as_u16(), 201);
+    assert_eq!(response.headers()["x-result"], "edited");
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "response body"
+    );
+    let snapshot = store.snapshot(&CaptureFilter::default()).await;
+    let details = store.details(snapshot.exchanges[0].id).await.unwrap();
+    assert_eq!(
+        details
+            .records
+            .iter()
+            .filter(|r| matches!(r, StoredRecord::Interception { .. }))
+            .count(),
+        2
+    );
+    let replay = store
+        .replay_request(snapshot.exchanges[0].id)
+        .await
+        .unwrap();
+    assert_eq!(
+        replay
+            .headers
+            .iter()
+            .filter(|(name, _)| name == "x-edit")
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn blocking_without_capture_admission_never_calls_origin_or_polls_upload() {
+    use super::super::control::{Config, Decision};
+    let store = test_store_with_total_limit(1, 1, 1);
+    store
+        .control()
+        .configure(
+            0,
+            Config {
+                enabled: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let polls = Arc::new(AtomicUsize::new(0));
+    let called = Arc::new(AtomicUsize::new(0));
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn({
+            let called = called.clone();
+            move |_: Request| {
+                called.fetch_add(1, Ordering::Relaxed);
+                async { Ok::<_, Infallible>(Response::new(Body::empty())) }
+            }
+        }));
+    let task = tokio::spawn({
+        let polls = polls.clone();
+        async move {
+            service
+                .serve(
+                    Request::builder()
+                        .method("POST")
+                        .uri("http://example.test/upload")
+                        .body(ApprovalBody {
+                            polls,
+                            bytes: Some(Bytes::from_static(b"secret body")),
+                        })
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        }
+    });
+    let id = approval_id(&store, "request").await;
+    assert!(
+        store
+            .snapshot(&CaptureFilter::default())
+            .await
+            .exchanges
+            .is_empty()
+    );
+    store.control().resolve(id, Decision::Block).unwrap();
+    let response = task.await.unwrap();
+    assert_eq!(response.status().as_u16(), 403);
+    assert_eq!(response.headers()["connection"], "close");
+    assert_eq!(called.load(Ordering::Relaxed), 0);
+    assert_eq!(polls.load(Ordering::Relaxed), 0);
+    assert!(store.control().snapshot().pending.is_empty());
+}
+
+#[tokio::test]
+async fn recording_pause_does_not_bypass_pending_or_new_approvals() {
+    use super::super::control::{Config, Decision};
+    let store = test_store();
+    store
+        .control()
+        .configure(
+            0,
+            Config {
+                enabled: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    store.inspection_state().pause().await;
+    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
+        async |_: Request| Ok::<_, Infallible>(Response::new(Body::empty())),
+    ));
+    let task = tokio::spawn(async move {
+        service
+            .serve(
+                Request::builder()
+                    .uri("http://example.test/")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    });
+    let id = approval_id(&store, "request").await;
+    assert!(!task.is_finished());
+    assert!(
+        store
+            .snapshot(&CaptureFilter::default())
+            .await
+            .exchanges
+            .is_empty()
+    );
+    store.control().resolve(id, Decision::Block).unwrap();
+    assert_eq!(task.await.unwrap().status().as_u16(), 403);
+}
+
+#[tokio::test]
+async fn http2_blocking_and_connection_release_preserve_sibling_streams() {
+    use super::super::control::{Config, ControlConnection, Decision, ResponseSpec};
+    use rama::{
+        http::{Version, client::http_connect, core::h2, proxy::mitm::HttpMitmRelay},
+        io::BridgeIo,
+        layer::ArcLayer,
+        net::test_utils::client::MockSocket,
+        rt::Executor,
+    };
+    let store = test_store();
+    let control = store.control();
+    control
+        .configure(
+            0,
+            Config {
+                enabled: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let (client_io, ingress_io) = tokio::io::duplex(64 * 1024);
+    let (egress_io, origin_io) = tokio::io::duplex(64 * 1024);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let origin_calls = calls.clone();
+    let origin = tokio::spawn(async move {
+        let mut connection = h2::server::handshake(MockSocket::new(origin_io))
+            .await
+            .unwrap();
+        while let Some(Ok((_, mut reply))) = connection.accept().await {
+            origin_calls.fetch_add(1, Ordering::Relaxed);
+            reply
+                .send_response(
+                    Response::builder()
+                        .header("x-upstream", "yes")
+                        .body(())
+                        .unwrap(),
+                    true,
+                )
+                .unwrap();
+        }
+    });
+    let ingress = MockSocket::new(ingress_io);
+    let id = store.begin_connection(None, "https");
+    ingress.extensions().insert(ConnectionId(id));
+    ingress.extensions().insert(ControlConnection::new(id));
+    let middleware = CaptureHttpLayer::new(Some(store.clone()));
+    let relay = tokio::spawn(async move {
+        Box::pin(
+            HttpMitmRelay::new(Executor::default())
+                .with_http_middleware((middleware, ArcLayer::new()))
+                .serve(BridgeIo(ingress, MockSocket::new(egress_io))),
+        )
+        .await
+        .unwrap();
+    });
+    let request = |path: &str| {
+        Request::builder()
+            .uri(format!("https://origin.test/{path}"))
+            .version(Version::HTTP_2)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let conn = Arc::new(
+        http_connect(
+            MockSocket::new(client_io),
+            request("setup"),
+            Executor::default(),
+        )
+        .await
+        .unwrap()
+        .conn,
+    );
+    let first_conn = conn.clone();
+    let first_request = request("blocked");
+    let first = tokio::spawn(async move { first_conn.serve(first_request).await.unwrap() });
+    let first_id = approval_id(&store, "request").await;
+    let second_conn = conn.clone();
+    let second_request = request("replacement");
+    let second = tokio::spawn(async move { second_conn.serve(second_request).await.unwrap() });
+    let mut changes = control.subscribe();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while control.snapshot().pending.len() != 2 {
+            changes.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    control.resolve(first_id, Decision::Block).unwrap();
+    let response = first.await.unwrap();
+    assert_eq!(response.status().as_u16(), 403);
+    assert!(!response.headers().contains_key("connection"));
+    response.into_body().collect().await.unwrap();
+    assert!(!second.is_finished());
+    let second_id = approval_id(&store, "request").await;
+    assert_eq!(control.pending(second_id).unwrap().connection, id);
+    control.resolve(second_id, Decision::forward()).unwrap();
+    let response_id = approval_id(&store, "response").await;
+    control
+        .resolve(
+            response_id,
+            Decision::Respond {
+                response: ResponseSpec::error(503, "locally replaced"),
+            },
+        )
+        .unwrap();
+    let response = second.await.unwrap();
+    assert_eq!(response.status().as_u16(), 503);
+    assert!(!response.headers().contains_key("connection"));
+    assert_eq!(
+        response.into_body().collect().await.unwrap().to_bytes(),
+        "locally replaced"
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    let third_conn = conn.clone();
+    let third_request = request("release");
+    let third = tokio::spawn(async move { third_conn.serve(third_request).await.unwrap() });
+    let id = approval_id(&store, "request").await;
+    control
+        .resolve(
+            id,
+            Decision::Connection {
+                headers: None,
+                status: None,
+                payload: None,
+            },
+        )
+        .unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(3), third)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.headers()["x-upstream"], "yes");
+    response.into_body().collect().await.unwrap();
+    let response = tokio::time::timeout(Duration::from_secs(3), conn.serve(request("future")))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    response.into_body().collect().await.unwrap();
+    assert_eq!(calls.load(Ordering::Relaxed), 3);
+    assert!(control.snapshot().pending.is_empty());
+    drop(conn);
+    relay.abort();
+    origin.abort();
 }

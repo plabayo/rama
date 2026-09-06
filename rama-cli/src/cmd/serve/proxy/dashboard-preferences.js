@@ -1,5 +1,5 @@
 const FILTER_KEY = "ramaProxyInspector.filters.v1";
-const MITM_POLICY_KEY = "ramaProxyInspector.mitmPolicy.v1";
+
 
 function storageGet(key) {
   try {
@@ -75,11 +75,11 @@ function showPolicyStatus(message, kind = "") {
   status.classList.toggle("success", kind === "success");
 }
 
-async function applyPolicy({ persist = true } = {}) {
+async function applyPolicy() {
   const { allow, deny, apply } = policyControls();
   const session = document.body.dataset.inspectorSession;
   if (!allow || !deny || !apply || !session) return;
-  const policy = { allow: parseRules(allow.value), deny: parseRules(deny.value) };
+  const policy = { mode: document.getElementById("mitm-mode").value, allow: parseRules(allow.value), deny: parseRules(deny.value) };
   apply.disabled = true;
   showPolicyStatus("Applying…");
   try {
@@ -94,11 +94,8 @@ async function applyPolicy({ persist = true } = {}) {
       const detail = (await response.text()).trim();
       throw new Error(detail || `HTTP ${response.status}`);
     }
-    const stored = !persist || storageSet(MITM_POLICY_KEY, policy);
-    showPolicyStatus(
-      stored ? "Applied globally · saved in this browser" : "Applied globally · browser storage unavailable",
-      "success",
-    );
+    showPolicyStatus("Applied globally", "success");
+    document.dispatchEvent(new Event("rama-control-refresh"));
   } catch (error) {
     showPolicyStatus(`Could not apply: ${error.message}`, "error");
   } finally {
@@ -106,15 +103,6 @@ async function applyPolicy({ persist = true } = {}) {
   }
 }
 
-function restorePolicy() {
-  const policy = storedObject(MITM_POLICY_KEY);
-  if (!policy || !Array.isArray(policy.allow) || !Array.isArray(policy.deny)) return;
-  const { allow, deny } = policyControls();
-  if (!allow || !deny) return;
-  allow.value = policy.allow.join("\n");
-  deny.value = policy.deny.join("\n");
-  void applyPolicy({ persist: false });
-}
 
 document.addEventListener("input", (event) => {
   if (event.target.closest("[data-persist-filter]")) saveFilters();
@@ -134,7 +122,7 @@ document.addEventListener("click", (event) => {
   }
 });
 
-restorePolicy();
+
 if (document.readyState === "complete") {
   setTimeout(restoreFilters, 0);
 } else {

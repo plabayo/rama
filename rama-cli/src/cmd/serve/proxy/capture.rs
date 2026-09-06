@@ -9,7 +9,6 @@ use rama::{
     http::{
         Body, BodyCaptureEvent, BodyCaptureSink, CaptureBody, CaptureOutcome, HeaderMap,
         HeaderValue, Request, Response, StreamingBody,
-        body::util::BodyExt as _,
         fingerprint::{AkamaiH2, Ja4H},
         proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture},
         ws::handshake::mitm::{
@@ -48,7 +47,13 @@ use tokio::{
     sync::{Mutex, watch},
 };
 
-use super::inspection::InspectionState;
+#[cfg(test)]
+use rama::http::body::util::BodyExt as _;
+
+use super::{
+    control::{Control, ControlConnection},
+    inspection::InspectionState,
+};
 
 const FILE_MAGIC: &[u8; 8] = b"RMCAP\0\x01\0";
 const NONCE_LEN: usize = 12;
@@ -123,6 +128,8 @@ impl CapturedConnection {
 }
 
 struct CapturedExchange {
+    decision: RwLock<Option<String>>,
+    decision_count: AtomicUsize,
     summary_template: ExchangeSummary,
     connection: Option<Arc<CapturedConnection>>,
     status: AtomicU16,
@@ -173,6 +180,7 @@ struct RecordLocation {
 impl CapturedExchange {
     fn snapshot(&self) -> ExchangeSummary {
         let mut summary = self.summary_template.clone();
+        summary.decision = self.decision.read().clone();
         if let Some(connection) = &self.connection {
             summary.connection_display_id =
                 connection.display_id.get().copied().unwrap_or_default();
@@ -289,6 +297,7 @@ impl<T> Default for CaptureRegistry<T> {
 }
 
 struct CaptureStoreInner {
+    control: Control,
     inspection: InspectionState,
     key: [u8; 32],
     temp_cleanup: TempPathCleanup,
@@ -651,6 +660,7 @@ impl CaptureStore {
         rama::rt::spawn(temp_cleanup_worker.run());
         let (changes, _) = watch::channel(0);
         Ok(Self(Arc::new(CaptureStoreInner {
+            control: Control::new(inspection.clone()),
             inspection,
             key,
             temp_cleanup,
@@ -680,6 +690,24 @@ impl CaptureStore {
         })))
     }
 
+    pub(super) fn control(&self) -> Control {
+        self.0.control.clone()
+    }
+
+    pub(super) fn new_control_connection(&self) -> ControlConnection {
+        ControlConnection::new(self.0.next_connection_id.fetch_add(1, Ordering::Relaxed))
+    }
+
+    pub(super) fn begin_observed_connection(
+        &self,
+        id: u64,
+        socket: Option<SocketInfo>,
+        ingress: &str,
+    ) -> Option<u64> {
+        let _permit = self.0.inspection.try_capture()?;
+        self.begin_connection_labeled_inner(socket, ingress, None, true, Some(id))
+    }
+
     pub(super) fn inspection_state(&self) -> InspectionState {
         self.0.inspection.clone()
     }
@@ -706,7 +734,7 @@ impl CaptureStore {
         label: Option<String>,
     ) -> Option<u64> {
         let _permit = self.0.inspection.try_capture()?;
-        self.begin_connection_labeled_inner(socket, ingress, label, true)
+        self.begin_connection_labeled_inner(socket, ingress, label, true, None)
     }
 
     #[cfg(test)]
@@ -716,7 +744,7 @@ impl CaptureStore {
         ingress: &str,
         label: Option<String>,
     ) -> u64 {
-        self.begin_connection_labeled_inner(socket, ingress, label, false)
+        self.begin_connection_labeled_inner(socket, ingress, label, false, None)
             .expect("unbounded test connection admission")
     }
 
@@ -726,8 +754,9 @@ impl CaptureStore {
         ingress: &str,
         label: Option<String>,
         enforce_limit: bool,
+        id: Option<u64>,
     ) -> Option<u64> {
-        let id = self.0.next_connection_id.fetch_add(1, Ordering::Relaxed);
+        let id = id.unwrap_or_else(|| self.0.next_connection_id.fetch_add(1, Ordering::Relaxed));
         let (local_address, peer_address) = socket
             .map(|socket| {
                 (
@@ -1184,7 +1213,10 @@ impl CaptureStore {
             })
             .unwrap_or_default();
         let entry = Arc::new(CapturedExchange {
+            decision: RwLock::new(None),
+            decision_count: AtomicUsize::new(0),
             summary_template: ExchangeSummary {
+                decision: None,
                 id,
                 connection_id,
                 connection_display_id: connection
@@ -1368,6 +1400,45 @@ impl CaptureStore {
             self.changed();
         }
         Ok(())
+    }
+
+    pub(super) async fn record_decision(
+        &self,
+        id: u64,
+        original: &super::control::Message,
+        outcome: &str,
+        headers: Option<&HeaderMap>,
+    ) {
+        let Some(_permit) = self.0.inspection.try_capture() else {
+            return;
+        };
+        let entry = self.0.exchanges.read().entries.get(&id).cloned();
+        if let Some(entry) = entry {
+            if entry
+                .decision_count
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    (count < self.0.max_websocket_messages.saturating_add(2)).then(|| count + 1)
+                })
+                .is_err()
+            {
+                return;
+            }
+            *entry.decision.write() = Some(outcome.into());
+            let record = StoredRecord::Interception {
+                direction: original.direction.clone(),
+                outcome: outcome.into(),
+                original_headers: original.headers.clone(),
+                original_status: original.status,
+                original_payload: original.payload.clone(),
+                forwarded_headers: headers.map(headers_to_vec),
+            };
+            if let Err(error) = self.append(id, &entry, &record).await {
+                rama::telemetry::tracing::debug!(
+                    "failed to capture interception decision: {error}"
+                );
+            }
+            self.changed();
+        }
     }
 
     async fn append(
@@ -1902,6 +1973,17 @@ impl CaptureStore {
         self.changed();
     }
 
+    pub(super) fn connection_display_id(&self, id: u64) -> Option<u64> {
+        self.0
+            .connections
+            .read()
+            .entries
+            .get(&id)?
+            .display_id
+            .get()
+            .copied()
+    }
+
     pub(super) fn connection_summary(&self, id: u64) -> Option<ConnectionSummary> {
         let mut summary = self
             .0
@@ -2421,6 +2503,15 @@ impl CaptureStore {
                     tls_client_hello,
                     ..
                 } => head = Some((method, url, version, headers, tls_client_hello)),
+                StoredRecord::Interception {
+                    direction,
+                    forwarded_headers: Some(headers),
+                    ..
+                } if direction == "request" => {
+                    if let Some((_, _, _, current, _)) = &mut head {
+                        *current = headers;
+                    }
+                }
                 StoredRecord::RequestBody { data } => body.extend(
                     BASE64
                         .decode(data)
@@ -2894,7 +2985,7 @@ fn capture_outcome(outcome: CaptureOutcome) -> &'static str {
     }
 }
 
-fn headers_to_vec(headers: &HeaderMap) -> Vec<(String, String)> {
+pub(super) fn headers_to_vec(headers: &HeaderMap) -> Vec<(String, String)> {
     headers
         .iter()
         .map(|(name, value)| {

@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
 
-from datetime import datetime
 import os
 import json
-import psycopg
 import time
 
-def write_profile_to_file(row, f):
-    f.write("UserAgentProfile {\n")
-    for key, value in row.items():
-        f.write(f"    {key}: {value},\n")
-    f.write("}\n")
+# Required by a TLS-enabled UserAgentProfile. Optional observations (fetch,
+# XHR, WebSocket, JavaScript, etc.) do not determine completeness.
+REQUIRED_PROFILE_FIELDS = (
+    "h1_settings", "h1_headers_navigate", "h2_settings",
+    "h2_headers_navigate", "tls_client_hello",
+)
+
+
+def report_profile_completeness(profiles):
+    incomplete = 0
+    for profile in profiles:
+        missing = [name for name in REQUIRED_PROFILE_FIELDS if profile.get(name) is None]
+        if missing:
+            incomplete += 1
+            print(f"Incomplete profile {profile['uastr']!r}: missing {', '.join(missing)}")
+    print(f"Total profiles: {len(profiles)} ({len(profiles) - incomplete} complete, {incomplete} incomplete)")
 
 
 def main():
@@ -19,6 +28,9 @@ def main():
     if not database_url:
         print("Error: RAMA_FP_DATABASE_URL environment variable not set")
         return
+
+    # Keep diagnostics usable without installing the database driver.
+    import psycopg
 
     # Connect to the database
     try:
@@ -60,7 +72,7 @@ def main():
 
                     f.write(json.dumps(profiles, sort_keys=True))
 
-                print(f"Total profiles: {len(profiles)}")
+                report_profile_completeness(profiles)
 
     except Exception as e:
         print(f"Error connecting to database: {e}")

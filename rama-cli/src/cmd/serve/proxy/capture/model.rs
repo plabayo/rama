@@ -30,6 +30,7 @@ pub(in crate::cmd::serve::proxy) struct ConnectionSummary {
 
 #[derive(Debug, Clone, Serialize)]
 pub(in crate::cmd::serve::proxy) struct ExchangeSummary {
+    pub decision: Option<String>,
     pub id: u64,
     pub connection_id: u64,
     pub connection_display_id: u64,
@@ -184,6 +185,14 @@ pub(in crate::cmd::serve::proxy) struct CaptureSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(in crate::cmd::serve::proxy) enum StoredRecord {
+    Interception {
+        direction: String,
+        outcome: String,
+        original_headers: Vec<(String, String)>,
+        original_status: Option<u16>,
+        original_payload: Option<String>,
+        forwarded_headers: Option<Vec<(String, String)>>,
+    },
     RequestHead {
         method: String,
         url: String,
