@@ -16,6 +16,12 @@ CONTAINER_PROFILE_SPECIFIER="${RAMA_TPROXY_CONTAINER_PROFILE_SPECIFIER:-}"
 EXT_PROFILE_SPECIFIER="${RAMA_TPROXY_EXTENSION_PROFILE_SPECIFIER:-}"
 BUILD_VERSION="${RAMA_TPROXY_CURRENT_PROJECT_VERSION:-$(date +%Y%m%d%H%M%S)}"
 SKIP_CODESIGNING="${RAMA_TPROXY_SKIP_CODESIGNING:-0}"
+CONFIGURATION="${RAMA_TPROXY_CONFIGURATION:-Debug}"
+case "$CONFIGURATION" in
+  Debug) RUST_PROFILE=debug; RUST_PROFILE_ARGS=() ;;
+  Release) RUST_PROFILE=release; RUST_PROFILE_ARGS=(--release) ;;
+  *) echo "RAMA_TPROXY_CONFIGURATION must be Debug or Release" >&2; exit 1 ;;
+esac
 
 # Embed the exact source state in both bundles.  A non-git source archive is
 # still buildable for normal development, but signed evidence rejects the
@@ -80,13 +86,13 @@ BUILD_ROOT="$(cd "$APP_DIR/.." && pwd)"
 RUST_TARGET_DIR="$BUILD_ROOT/tproxy_rs/target"
 (
   cd "$BUILD_ROOT/tproxy_rs"
-  CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build --locked --target aarch64-apple-darwin
-  CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build --locked --target x86_64-apple-darwin
+  CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build --locked "${RUST_PROFILE_ARGS[@]}" --target aarch64-apple-darwin
+  CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build --locked "${RUST_PROFILE_ARGS[@]}" --target x86_64-apple-darwin
   mkdir -p "$RUST_TARGET_DIR/universal"
   /usr/bin/lipo -create \
     -output "$RUST_TARGET_DIR/universal/librama_tproxy_example.a" \
-    "$RUST_TARGET_DIR/aarch64-apple-darwin/debug/librama_tproxy_example.a" \
-    "$RUST_TARGET_DIR/x86_64-apple-darwin/debug/librama_tproxy_example.a"
+    "$RUST_TARGET_DIR/aarch64-apple-darwin/$RUST_PROFILE/librama_tproxy_example.a" \
+    "$RUST_TARGET_DIR/x86_64-apple-darwin/$RUST_PROFILE/librama_tproxy_example.a"
   /usr/bin/lipo "$RUST_TARGET_DIR/universal/librama_tproxy_example.a" \
     -verify_arch arm64 x86_64
 )
@@ -104,7 +110,7 @@ cmd=(
   xcodebuild
   -project RamaTransparentProxyExample.xcodeproj
   -scheme RamaTransparentProxyExampleContainer
-  -configuration Debug
+  -configuration "$CONFIGURATION"
   -derivedDataPath "$DERIVED_DATA_PATH"
   RAMA_TPROXY_CURRENT_PROJECT_VERSION="$BUILD_VERSION"
   RAMA_TPROXY_GIT_HEAD="$GIT_HEAD"

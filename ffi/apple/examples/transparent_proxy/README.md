@@ -21,6 +21,10 @@ just build-tproxy-dev
 
 This builds the Rust staticlib and the developer-signed macOS container app + system extension.
 Clean signed builds compile both Rust architectures from a pinned source archive.
+Developer builds default to Debug. For on-device performance measurements, set
+`RAMA_TPROXY_CONFIGURATION=Release` to optimize both Rust and Swift; the app is
+then under `.xcode-derived/tproxy-app-dev/Build/Products/Release/`. Developer ID
+distribution builds always use Release for both languages.
 For a standalone universal Rust library, run `just build-tproxy-rs`. It produces:
 
 ```

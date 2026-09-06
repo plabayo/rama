@@ -80,13 +80,13 @@ BUILD_ROOT="$(cd "$APP_DIR/.." && pwd)"
 RUST_TARGET_DIR="$BUILD_ROOT/tproxy_rs/target"
 (
   cd "$BUILD_ROOT/tproxy_rs"
-  CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build --locked --target aarch64-apple-darwin
-  CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build --locked --target x86_64-apple-darwin
+  CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build --locked --release --target aarch64-apple-darwin
+  CARGO_TARGET_DIR="$RUST_TARGET_DIR" cargo build --locked --release --target x86_64-apple-darwin
   mkdir -p "$RUST_TARGET_DIR/universal"
   /usr/bin/lipo -create \
     -output "$RUST_TARGET_DIR/universal/librama_tproxy_example.a" \
-    "$RUST_TARGET_DIR/aarch64-apple-darwin/debug/librama_tproxy_example.a" \
-    "$RUST_TARGET_DIR/x86_64-apple-darwin/debug/librama_tproxy_example.a"
+    "$RUST_TARGET_DIR/aarch64-apple-darwin/release/librama_tproxy_example.a" \
+    "$RUST_TARGET_DIR/x86_64-apple-darwin/release/librama_tproxy_example.a"
   /usr/bin/lipo "$RUST_TARGET_DIR/universal/librama_tproxy_example.a" \
     -verify_arch arm64 x86_64
 )
