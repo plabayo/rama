@@ -3,7 +3,8 @@ set working-directory := '.'
 
 xcode_derived_data_dev := "./.xcode-derived/tproxy-app-dev"
 xcode_derived_data_dist := "./.xcode-derived/tproxy-app-dist"
-tproxy_built_app_dev := xcode_derived_data_dev + "/Build/Products/Debug/RamaTransparentProxyExampleContainer.app"
+xcode_configuration_dev := env_var_or_default("RAMA_TPROXY_CONFIGURATION", "Debug")
+tproxy_built_app_dev := xcode_derived_data_dev + "/Build/Products/" + xcode_configuration_dev + "/RamaTransparentProxyExampleContainer.app"
 tproxy_built_app_dist := xcode_derived_data_dist + "/Build/Products/Release/RamaTransparentProxyExampleContainer.app"
 
 [working-directory: './tproxy_rs']

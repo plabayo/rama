@@ -25,6 +25,13 @@ Developer builds default to Debug. For on-device performance measurements, set
 `RAMA_TPROXY_CONFIGURATION=Release` to optimize both Rust and Swift; the app is
 then under `.xcode-derived/tproxy-app-dev/Build/Products/Release/`. Developer ID
 distribution builds always use Release for both languages.
+
+To build and install an optimized developer-signed app:
+
+```sh
+RAMA_TPROXY_CONFIGURATION=Release just install-tproxy-app-dev
+```
+
 For a standalone universal Rust library, run `just build-tproxy-rs`. It produces:
 
 ```
