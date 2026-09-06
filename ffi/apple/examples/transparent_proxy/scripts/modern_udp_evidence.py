@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Strict parser and raw-bundle verifier for signed modern-UDP evidence."""
 
+import base64
 import csv
 from datetime import datetime
 import ipaddress
@@ -10,6 +11,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import time
 import uuid
 
 
@@ -715,26 +717,28 @@ def _validate_crash_snapshot(root, status):
     return snapshot_epoch
 
 
-def _strict_json(root, name, expected_keys, maximum=2 * 1024 * 1024):
-    content = _read_bundle_bytes(root, name, maximum)
+def _unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise BundleVerificationError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
 
-    def unique_object(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                raise BundleVerificationError(f"duplicate JSON key in {name}: {key}")
-            result[key] = value
-        return result
 
+def _json_bytes(content, name, expected_keys=None):
     try:
-        value = json.loads(
-            content.decode("utf-8", errors="strict"), object_pairs_hook=unique_object
-        )
+        value = json.loads(content.decode("utf-8", errors="strict"),
+                           object_pairs_hook=_unique_json_object)
     except (UnicodeError, ValueError, RecursionError) as error:
         raise BundleVerificationError(f"malformed JSON artifact: {name}") from error
-    if not isinstance(value, dict) or set(value) != set(expected_keys):
+    if not isinstance(value, dict) or (expected_keys is not None and set(value) != set(expected_keys)):
         raise BundleVerificationError(f"incorrect JSON field set: {name}")
     return value
+
+
+def _strict_json(root, name, expected_keys, maximum=2 * 1024 * 1024):
+    return _json_bytes(_read_bundle_bytes(root, name, maximum), name, expected_keys)
 
 
 def _status_values(root):
@@ -977,6 +981,288 @@ ECHO_READY_KEYS = {
 }
 
 
+# The controller is an explicitly trusted, independently pinned producer. This
+# proof parser reads its captured platform data; it never executes that producer.
+REMOTE_PLAN_NAME = "controlled-echo-plan.json"
+REMOTE_PROFILE = {
+    "schema_version": 1, "kind": "controlled_echo_plan", "profile": "remote_active_v1",
+    "socket_count": 128, "datagrams_per_socket": 64, "payload_bytes": 1200,
+    "interval_ms": 2000, "concurrency": 32, "server_max_seconds": 600,
+    "expected_flow_hard_limit": 500,
+}
+REMOTE_PLAN_KEYS = set(REMOTE_PROFILE) | {
+    "run_uuid", "git_head", "endpoint", "app", "machine_id", "previous_instance_id",
+    "image_index_digest", "image_digest", "config_sha256", "probe_sha256",
+    "launcher_sha256", "controller_sha256",
+}
+REMOTE_SOURCES = {
+    "probe_sha256": "source-modern_udp_e2e_probe.py",
+    "launcher_sha256": "source-echo-launcher.py",
+    "controller_sha256": "source-echo-controller.py",
+}
+REMOTE_OPERATION_FIELDS = (
+    "operation", "start_epoch_ms", "end_epoch_ms", "start_monotonic_ms",
+    "end_monotonic_ms", "exit_code",
+)
+
+
+def _canonical_json(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+
+
+def read_remote_echo_plan(root, expected_digest=None):
+    content = _read_bundle_bytes(root, REMOTE_PLAN_NAME, 64 * 1024)
+    digest = hashlib.sha256(content).hexdigest()
+    if expected_digest is not None and (
+        re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None or digest != expected_digest
+    ):
+        raise BundleVerificationError("remote echo independently expected plan digest mismatch")
+    plan = _json_bytes(content, REMOTE_PLAN_NAME, REMOTE_PLAN_KEYS)
+    if any(type(plan[key]) is not type(value) or plan[key] != value
+           for key, value in REMOTE_PROFILE.items()):
+        raise BundleVerificationError("remote echo profile is not the supported bounded active workload")
+    if not _valid_uuid(plan["run_uuid"]) or uuid.UUID(plan["run_uuid"]).version != 4:
+        raise BundleVerificationError("remote echo plan UUID is not canonical v4")
+    for key, pattern in (
+        ("git_head", r"[0-9a-f]{40}"), ("app", r"[a-z0-9][a-z0-9-]{0,62}"),
+        ("machine_id", r"[0-9a-f]{14}"), ("previous_instance_id", r"[0-9A-HJKMNP-TV-Z]{26}"),
+        ("image_index_digest", r"sha256:[0-9a-f]{64}"), ("image_digest", r"sha256:[0-9a-f]{64}"),
+        *((key, r"[0-9a-f]{64}") for key in ("config_sha256", *REMOTE_SOURCES)),
+    ):
+        if not isinstance(plan[key], str) or re.fullmatch(pattern, plan[key]) is None:
+            raise BundleVerificationError(f"remote echo plan has invalid {key}")
+    endpoint = plan["endpoint"]
+    if not isinstance(endpoint, str) or not is_udp_443_endpoint(endpoint):
+        raise BundleVerificationError("remote echo target must be a canonical public UDP443 literal")
+    host = endpoint[1:].split("]:")[0] if endpoint.startswith("[") else endpoint.rsplit(":", 1)[0]
+    address = ipaddress.ip_address(host)
+    if endpoint != (f"[{address}]:443" if address.version == 6 else f"{address}:443"):
+        raise BundleVerificationError("remote echo public endpoint is not canonical")
+    if not address.is_global or address.is_multicast or "%" in host:
+        raise BundleVerificationError("remote echo target must be public unicast")
+    for key, name in REMOTE_SOURCES.items():
+        if hashlib.sha256(_read_bundle_bytes(root, name, 256 * 1024)).hexdigest() != plan[key]:
+            raise BundleVerificationError(f"remote echo captured source mismatch: {name}")
+    return plan
+
+
+def _remote_json(root, name):
+    return _strict_json(root, "remote-echo/" + name, None, 2 * 1024 * 1024)
+
+
+def _remote_frames(root, name, plan, expected_kinds):
+    text = _read_bundle_text(root, "remote-echo/" + name, 2 * 1024 * 1024)
+    decoder = json.JSONDecoder(object_pairs_hook=_unique_json_object)
+    position, records, groups = 0, 0, {}
+    while position < len(text):
+        while position < len(text) and text[position].isspace():
+            position += 1
+        if position == len(text):
+            break
+        try:
+            record, position = decoder.raw_decode(text, position)
+        except (ValueError, RecursionError) as error:
+            raise BundleVerificationError("remote echo log JSON stream is malformed") from error
+        records += 1
+        if records > 4096 or not isinstance(record, dict):
+            raise BundleVerificationError("remote echo log record bound/type exceeded")
+        message = record.get("message")
+        if not isinstance(message, str) or '"qframe"' not in message:
+            continue
+        frame = _json_bytes(message.encode(), "remote echo frame")
+        if frame.get("run_uuid") != plan["run_uuid"]:
+            continue
+        if (record.get("instance") != plan["machine_id"]
+                or set(frame) != {"qframe", "run_uuid", "kind", "sha256", "length", "index", "count", "base64"}
+                or type(frame["qframe"]) is not int or frame["qframe"] != 1
+                or frame["kind"] not in expected_kinds
+                or not isinstance(frame["sha256"], str)
+                or re.fullmatch(r"[0-9a-f]{64}", frame["sha256"]) is None
+                or any(type(frame[key]) is not int for key in ("length", "index", "count"))
+                or not 0 < frame["length"] <= 64 * 1024
+                or frame["count"] != (frame["length"] + 479) // 480
+                or not 0 <= frame["index"] < frame["count"]):
+            raise BundleVerificationError("remote echo frame identity/shape mismatch")
+        try:
+            chunk = base64.b64decode(frame["base64"], validate=True)
+        except (ValueError, TypeError) as error:
+            raise BundleVerificationError("remote echo frame base64 is invalid") from error
+        size = min(480, frame["length"] - frame["index"] * 480)
+        if len(chunk) != size or base64.b64encode(chunk).decode() != frame["base64"]:
+            raise BundleVerificationError("remote echo frame length/encoding mismatch")
+        identity = (frame["sha256"], frame["length"], frame["count"])
+        previous_identity, chunks = groups.setdefault(frame["kind"], (identity, {}))
+        if previous_identity != identity or frame["index"] in chunks:
+            raise BundleVerificationError("remote echo duplicate or contradictory frame")
+        chunks[frame["index"]] = chunk
+    if set(groups) != set(expected_kinds):
+        raise BundleVerificationError("remote echo frame set is incomplete")
+    result = {}
+    for kind, ((digest, length, count), chunks) in groups.items():
+        if set(chunks) != set(range(count)):
+            raise BundleVerificationError("remote echo framed record is truncated")
+        data = b"".join(chunks[index] for index in range(count))
+        if len(data) != length or hashlib.sha256(data).hexdigest() != digest:
+            raise BundleVerificationError("remote echo framed record digest mismatch")
+        result[kind] = _json_bytes(data, "remote echo framed record")
+        if _canonical_json(result[kind]) != data:
+            raise BundleVerificationError("remote echo framed record is not canonical JSON")
+    return result
+
+
+def validate_remote_echo(root, *, stage="join", client=None, expected_digest=None):
+    """Replay the first supported data-only platform proof, Fly init exit v1.
+
+    Local operation clocks bracket the client. Remote clock epochs are never
+    compared with macOS clocks. A passing result requires normal remote exit;
+    successful cleanup after a failed operation cannot make the test pass.
+    """
+    plan = read_remote_echo_plan(root, expected_digest)
+    rows = _tabular_rows(root, "remote-echo/operations.tsv", REMOTE_OPERATION_FIELDS, 4096)
+    operations = {}
+    if [row[0] for row in rows] != (["start"] if stage == "start" else ["start", "join"]):
+        raise BundleVerificationError("remote echo operation sequence is incomplete or includes cleanup")
+    for row in rows:
+        values = [_bundle_uint(value, 2**63 - 1) for value in row[1:]]
+        wall_start, wall_end, mono_start, mono_end, code = values
+        if (code != 0 or not 0 < wall_start <= wall_end or not 0 < mono_start <= mono_end
+                or mono_end - mono_start > (65_000 if row[0] == "start" else 50_000)
+                or abs((wall_end - wall_start) - (mono_end - mono_start)) > 2000):
+            raise BundleVerificationError("remote echo operation clocks/exit/deadline mismatch")
+        operations[row[0]] = values
+    base = f"https://api.machines.dev/v1/apps/{plan['app']}/machines/{plan['machine_id']}"
+
+    def observation(name, operation, *, method="GET", suffix="", logs=False):
+        value = _remote_json(root, name + ".observation.json")
+        start, end = value.get("start_epoch_ns"), value.get("end_epoch_ns")
+        bracket = operations[operation]
+        if (type(start) is not int or type(end) is not int
+                or not bracket[0] * 1_000_000 <= start <= end < (bracket[1] + 1) * 1_000_000
+                or (logs and (type(value.get("exit_code")) is not int or value["exit_code"] != 0))
+                or (not logs and (type(value.get("status")) is not int or value["status"] != 200
+                    or value.get("method") != method or value.get("url") != base + suffix))):
+            raise BundleVerificationError("remote echo raw control observation mismatch")
+        return start, end
+
+    previous = _remote_json(root, "previous-machine.json")
+    observation("previous-machine", "start")
+    if previous.get("id") != plan["machine_id"] or previous.get("instance_id") != plan["previous_instance_id"] or previous.get("state") != "stopped":
+        raise BundleVerificationError("remote echo prior owned instance mismatch")
+    start = _remote_json(root, "start-machine.json")
+    observation("start-machine", "start", method="POST")
+    ready_machine = _remote_json(root, "ready-machine.json")
+    ready_observation = observation("ready-machine", "start")
+    ready_logs_observation = observation("ready-logs", "start", logs=True)
+    if ready_logs_observation[1] > ready_observation[0]:
+        raise BundleVerificationError("remote echo was not observed alive after ready retrieval")
+    instance = start.get("instance_id")
+    if not isinstance(instance, str) or re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{26}", instance) is None or instance == plan["previous_instance_id"]:
+        raise BundleVerificationError("remote echo new instance identity mismatch")
+
+    def check_machine(machine, state=None):
+        config = machine.get("config")
+        if (machine.get("id") != plan["machine_id"] or machine.get("instance_id") != instance
+                or (state is not None and machine.get("state") != state)
+                or not isinstance(config, dict)
+                or hashlib.sha256(_canonical_json(config)).hexdigest() != plan["config_sha256"]
+                or not isinstance(machine.get("image_ref"), dict)
+                or machine["image_ref"].get("digest") != plan["image_digest"]):
+            raise BundleVerificationError("remote echo deployment/instance/runtime mismatch")
+        if (config.get("image") != "registry-1.docker.io/library/python@" + plan["image_index_digest"]
+                or config.get("env") != {"RAMA_QUAL_PROBE_SHA256": plan["probe_sha256"],
+                    "RAMA_QUAL_RUN_UUID": plan["run_uuid"], "RAMA_QUAL_SOURCE_HEAD": plan["git_head"]}
+                or config.get("init") != {"exec": ["/usr/local/bin/python3", "/opt/rama-qualification/udp-launch.py"]}
+                or config.get("guest") != {"cpu_kind": "shared", "cpus": 1, "memory_mb": 512}
+                or config.get("restart") != {"policy": "no"}
+                or config.get("services") != [{"protocol": "udp", "internal_port": 443,
+                    "autostop": False, "autostart": False, "ports": [{"port": 443}], "force_instance_key": None}]):
+            raise BundleVerificationError("remote echo runtime/service configuration mismatch")
+        files = config.get("files")
+        expected_files = {"/opt/rama-qualification/modern_udp_e2e_probe.py": plan["probe_sha256"],
+                          "/opt/rama-qualification/udp-launch.py": plan["launcher_sha256"]}
+        if not isinstance(files, list) or len(files) != 2:
+            raise BundleVerificationError("remote echo deployed source set mismatch")
+        for value in files:
+            if (not isinstance(value, dict) or set(value) != {"guest_path", "raw_value"}
+                    or not all(isinstance(item, str) for item in value.values())):
+                raise BundleVerificationError("remote echo deployed source shape mismatch")
+            expected = expected_files.pop(value["guest_path"], None)
+            try:
+                content = base64.b64decode(value["raw_value"], validate=True)
+            except ValueError as error:
+                raise BundleVerificationError("remote echo deployed source encoding is invalid") from error
+            if hashlib.sha256(content).hexdigest() != expected:
+                raise BundleVerificationError("remote echo deployed source bytes mismatch")
+    check_machine(start)
+    check_machine(ready_machine, "started")
+    frames = _remote_frames(root, "ready-logs.json", plan, {"identity", "ready"})
+    identity, ready = frames["identity"], frames["ready"]
+    if (identity.get("machine_id") != plan["machine_id"] or identity.get("machine_version") != instance
+            or identity.get("run_uuid") != plan["run_uuid"] or identity.get("source_head") != plan["git_head"]
+            or identity.get("probe_sha256") != plan["probe_sha256"] or identity.get("launcher_sha256") != plan["launcher_sha256"]
+            or identity.get("image") != "registry-1.docker.io/library/python@" + plan["image_index_digest"]
+            or identity.get("argv") != ["/opt/rama-qualification/udp-launch.py"]
+            or identity.get("expected_count") != 8192 or identity.get("max_seconds") != 600
+            or not _valid_uuid(identity.get("boot_id")) or type(identity.get("pid")) is not int
+            or not 1 <= identity["pid"] < 2**31 or ready.get("server_pid") != identity["pid"]
+            or ready.get("run_uuid") != plan["run_uuid"] or ready.get("schema_version") != 2
+            or ready.get("schema_complete") is not True
+            or ready.get("endpoint") != f"{identity.get('bind_address')}:443"
+            or not is_udp_443_endpoint(ready.get("endpoint", ""))):
+        raise BundleVerificationError("remote echo receiver identity/readiness mismatch")
+    address = ipaddress.ip_address(identity["bind_address"])
+    if (address.version != 4 or str(address) != identity["bind_address"]
+            or address.is_unspecified or address.is_multicast
+            or type(identity.get("start_monotonic_ns")) is not int
+            or identity["start_monotonic_ns"] <= 0):
+        raise BundleVerificationError("remote echo bind/start clock is not concrete")
+    stat_text = identity.get("proc_stat", "")
+    if (not isinstance(stat_text, str) or not stat_text.startswith(str(identity["pid"]) + " (")
+            or ") " not in stat_text or len(stat_text.rsplit(") ", 1)[1].split()) < 20
+            or _bundle_uint(stat_text.rsplit(") ", 1)[1].split()[19]) == 0):
+        raise BundleVerificationError("remote echo process start identity is missing")
+    if stage == "start":
+        return plan, ready, None
+    terminal = _remote_json(root, "exit-machine.json")
+    observation("exit-machine", "join")
+    check_machine(terminal, "stopped")
+    wait = _remote_json(root, "wait.json")
+    observation("wait", "join", suffix=f"/wait?state=stopped&instance_id={instance}&timeout=10")
+    observation("exit-logs", "join", logs=True)
+    events = terminal.get("events")
+    if not isinstance(events, list) or not all(isinstance(event, dict) for event in events):
+        raise BundleVerificationError("remote echo terminal events are malformed")
+    exits = [event for event in events if event.get("id") == wait.get("event_id")]
+    if (wait.get("ok") is not True or wait.get("state") != "stopped" or wait.get("version") != instance
+            or len(exits) != 1 or exits[0].get("type") != "exit" or exits[0].get("status") != "stopped"):
+        raise BundleVerificationError("remote echo exact-instance wait/exit event mismatch")
+    request = exits[0].get("request")
+    if (exits[0].get("source") != "flyd" or not isinstance(request, dict)
+            or type(request.get("restart_count")) is not int or request["restart_count"] != 0
+            or not isinstance(request.get("exit_event"), dict)):
+        raise BundleVerificationError("remote echo exit event source/restart mismatch")
+    exited = request["exit_event"]
+    required = {"requested_stop": False, "restarting": False, "guest_exit_code": 0,
+                "guest_signal": -1, "guest_error": "", "exit_code": 0, "signal": -1,
+                "error": "", "oom_killed": False}
+    if any(type(exited.get(key)) is not type(value) or exited.get(key) != value for key, value in required.items()):
+        raise BundleVerificationError("remote echo receiver did not exit normally")
+    final_frames = _remote_frames(root, "exit-logs.json", plan, {"identity", "ready", "result", "return"})
+    returned = final_frames["return"]
+    if (final_frames["identity"] != identity or final_frames["ready"] != ready
+            or returned.get("run_uuid") != plan["run_uuid"] or returned.get("outcome") != "success"
+            or type(identity.get("start_epoch_ns")) is not int or type(returned.get("end_epoch_ns")) is not int
+            or not 0 < returned["end_epoch_ns"] - identity["start_epoch_ns"] <= 605_000_000_000):
+        raise BundleVerificationError("remote echo final frames/generation/lifetime mismatch")
+    if client is not None and (
+        client["run_uuid"] != plan["run_uuid"] or client["endpoint"] != plan["endpoint"]
+        or not operations["start"][1] <= client["start_epoch_ms"] <= client["end_epoch_ms"] <= operations["join"][0]
+        or not operations["start"][3] * 1_000_000 <= client["start_monotonic_ns"] <= client["end_monotonic_ns"] <= operations["join"][2] * 1_000_000
+    ):
+        raise BundleVerificationError("remote echo client was not bracketed by ready and join")
+    return plan, ready, final_frames["result"]
+
+
 def validate_echo_socket_maps(client, server, socket_count):
     """Bind each payload socket index to distinct client and receiver tuples.
 
@@ -1071,9 +1357,8 @@ def _validate_echo_timing(client, status, sockets, per_socket, *, require_active
             raise BundleVerificationError("controlled echo active population overlap is shorter than 90 seconds")
 
 
-def _validate_echo_raw(root, status, decisions, phases, blocked_generation):
-    from modern_udp_e2e_probe import read_probe_receipt
-
+def validate_echo_results(root, status):
+    """Shared live/raw payload, timing, tuple and remote-lifecycle checks."""
     client = _strict_json(root, "controlled-echo-client.json", ECHO_CLIENT_KEYS, 4 * 1024 * 1024)
     server = _strict_json(root, "controlled-echo-server.json", ECHO_SERVER_KEYS)
     ready = _strict_json(root, "controlled-echo-ready.json", ECHO_READY_KEYS)
@@ -1084,26 +1369,27 @@ def _validate_echo_raw(root, status, decisions, phases, blocked_generation):
     endpoint = status["echo_endpoint"]
     digest = status["echo_payload_set_sha256"]
     run_uuid = status["run_uuid"]
-    echo_pid = _bundle_uint(status["echo_source_pid"], 2**31 - 1)
     _validate_echo_timing(client, status, sockets, per_socket, require_active_population=True)
-    blocked = read_probe_receipt(root / "udp-probe-blocked.json")
-    recovery = read_probe_receipt(root / "udp-probe-recovery.json")
-    if (
-        not blocked["end_epoch_ms"] <= client["start_epoch_ms"]
-            <= client["end_epoch_ms"] <= recovery["start_epoch_ms"]
-        or not blocked["end_monotonic_ns"] <= client["start_monotonic_ns"]
-            <= client["end_monotonic_ns"] <= recovery["start_monotonic_ns"]
-    ):
-        raise BundleVerificationError("controlled echo receipt is outside the blocked/recovery window")
     validate_echo_socket_maps(client, server, sockets)
-    if not endpoint.startswith("127.0.0.1:") or not is_udp_endpoint(endpoint):
+    remote = (root / REMOTE_PLAN_NAME).exists()
+    if remote:
+        plan, remote_ready, remote_server = validate_remote_echo(root, client=client)
+        if (ready != remote_ready or server != remote_server
+                or plan["run_uuid"] != run_uuid or plan["endpoint"] != endpoint
+                or (sockets, per_socket, payload_bytes, client["interval_ms"]) != (
+                    plan["socket_count"], plan["datagrams_per_socket"],
+                    plan["payload_bytes"], plan["interval_ms"])):
+            raise BundleVerificationError("remote echo receipt differs from its framed source")
+    elif not endpoint.startswith("127.0.0.1:") or not is_udp_endpoint(endpoint):
         raise BundleVerificationError("controlled echo endpoint is not canonical loopback")
+    server_endpoint = ready["endpoint"] if remote else endpoint
     common = {
-        "schema_version": 2, "run_uuid": run_uuid, "endpoint": endpoint,
+        "schema_version": 2, "run_uuid": run_uuid,
         "expected_count": expected, "passed": True, "schema_complete": True,
     }
     for value, kind in ((client, "controlled_echo_client"), (server, "controlled_echo_server")):
-        if value.get("kind") != kind or any(value.get(key) != item for key, item in common.items()):
+        if (value.get("kind") != kind or any(value.get(key) != item for key, item in common.items())
+                or value.get("endpoint") != (endpoint if value is client else server_endpoint)):
             raise BundleVerificationError(f"{kind} raw result identity mismatch")
     if (
         client["socket_count"] != sockets
@@ -1132,7 +1418,7 @@ def _validate_echo_raw(root, status, decisions, phases, blocked_generation):
         not isinstance(local_endpoints, list)
         or local_endpoints != sorted(set(local_endpoints))
         or len(local_endpoints) != sockets
-        or any(not isinstance(value, str) or not value.startswith("127.0.0.1:")
+        or any(not isinstance(value, str) or (not remote and not value.startswith("127.0.0.1:"))
                or not is_udp_endpoint(value) for value in local_endpoints)
     ):
         raise BundleVerificationError("controlled echo local endpoint set is not exact")
@@ -1141,7 +1427,7 @@ def _validate_echo_raw(root, status, decisions, phases, blocked_generation):
         raise BundleVerificationError("controlled echo endpoint-set digest mismatch")
     if (
         ready != {
-            "schema_version": 2, "run_uuid": run_uuid, "endpoint": endpoint,
+            "schema_version": 2, "run_uuid": run_uuid, "endpoint": server_endpoint,
             "server_pid": ready["server_pid"], "schema_complete": True,
         }
         or _bundle_uint(ready["server_pid"], 2**31 - 1) == 0
@@ -1156,6 +1442,26 @@ def _validate_echo_raw(root, status, decisions, phases, blocked_generation):
     if _read_bundle_bytes(root, "controlled-echo-server.log", 64 * 1024, allow_empty=True):
         raise BundleVerificationError("controlled echo server emitted unexpected output")
 
+    return client, server, ready
+
+
+def _validate_echo_raw(root, status, decisions, phases, blocked_generation):
+    from modern_udp_e2e_probe import read_probe_receipt
+
+    client, _, _ = validate_echo_results(root, status)
+    sockets = _bundle_uint(status["echo_socket_count"], 512)
+    echo_pid = _bundle_uint(status["echo_source_pid"], 2**31 - 1)
+    endpoint, run_uuid = status["echo_endpoint"], status["run_uuid"]
+    local_endpoints = client["local_endpoints"]
+    blocked = read_probe_receipt(root / "udp-probe-blocked.json")
+    recovery = read_probe_receipt(root / "udp-probe-recovery.json")
+    if (
+        not blocked["end_epoch_ms"] <= client["start_epoch_ms"]
+            <= client["end_epoch_ms"] <= recovery["start_epoch_ms"]
+        or not blocked["end_monotonic_ns"] <= client["start_monotonic_ns"]
+            <= client["end_monotonic_ns"] <= recovery["start_monotonic_ns"]
+    ):
+        raise BundleVerificationError("controlled echo receipt is outside the blocked/recovery window")
     selected = [row for row in decisions if row["source_pid"] == echo_pid]
     shell_rows = [[
         row["action"], str(row["flow_id"]), row["remote"], row["local"],
@@ -1710,7 +2016,81 @@ def verify_bundle(directory):
         raise BundleVerificationError("raw modern bundle has malformed semantics") from error
 
 
+def prepare_remote_echo(root, plan_path, controller_path, launcher_path, expected_digest, git_head):
+    # Capture once, then execute only these exact controller bytes. The external
+    # controller must use only the standard library and the two pinned payloads.
+    for source, name in ((plan_path, REMOTE_PLAN_NAME),
+                         (controller_path, "source-echo-controller.py"),
+                         (launcher_path, "source-echo-launcher.py")):
+        source = Path(source)
+        content = _read_bundle_bytes(source.parent, source.name, 256 * 1024)
+        with (root / name).open("xb") as output:
+            output.write(content)
+        (root / name).chmod(0o444)
+    plan = read_remote_echo_plan(root, expected_digest)
+    if plan["git_head"] != git_head:
+        raise BundleVerificationError("remote echo plan does not match the current source HEAD")
+    (root / "remote-echo").mkdir()
+    (root / "remote-echo/operations.tsv").write_text("\t".join(REMOTE_OPERATION_FIELDS) + "\n")
+    host = plan["endpoint"][1:].split("]:")[0] if plan["endpoint"].startswith("[") else plan["endpoint"].rsplit(":", 1)[0]
+    print(plan["run_uuid"], plan["endpoint"], host, 443)
+
+
+def materialize_remote_echo(root, stage):
+    _, ready, server = validate_remote_echo(root, stage=stage)
+    for name, value in (("controlled-echo-ready.json", ready), ("controlled-echo-server.json", server)):
+        if value is None:
+            continue
+        path = root / name
+        if path.exists():
+            if _strict_json(root, name, set(value)) != value:
+                raise BundleVerificationError("remote echo materialized receipt changed")
+        else:
+            with path.open("xb") as output:
+                output.write(_canonical_json(value) + b"\n")
+    if stage == "start":
+        (root / "controlled-echo-server.log").open("xb").close()
+
+
+def echo_metrics(root, run_uuid, endpoint, sockets, per_socket, payload, run_start, deadline):
+    client = _strict_json(root, "controlled-echo-client.json", ECHO_CLIENT_KEYS, 4 * 1024 * 1024)
+    expected = int(sockets) * int(per_socket)
+    status = {
+        "run_uuid": run_uuid, "echo_endpoint": endpoint, "echo_socket_count": sockets,
+        "echo_datagrams_per_socket": per_socket, "echo_payload_bytes": payload,
+        "echo_payload_set_sha256": client["payload_set_sha256"],
+        "echo_expected_count": str(expected), "echo_exact_echo_count": str(expected),
+        "echo_flow_count": sockets, "run_start_epoch_ms": run_start,
+        "run_end_epoch_ms": str(time.time_ns() // 1_000_000),
+        "concurrent_load_deadline_seconds": deadline,
+    }
+    validate_echo_results(root, status)
+    print(expected, client["payload_set_sha256"])
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ("prepare-remote-echo", "materialize-remote-echo", "echo-metrics"):
+        try:
+            command, args = sys.argv[1], sys.argv[2:]
+            if command == "prepare-remote-echo" and len(args) == 6:
+                prepare_remote_echo(Path(args[0]), *args[1:])
+            elif command == "materialize-remote-echo" and len(args) == 2 and args[1] in ("start", "join"):
+                materialize_remote_echo(Path(args[0]), args[1])
+            elif command == "echo-metrics" and len(args) == 8:
+                echo_metrics(Path(args[0]), *args[1:])
+            else:
+                raise BundleVerificationError("invalid remote echo command arguments")
+        except (BundleVerificationError, OSError, ValueError, KeyError, TypeError) as error:
+            print(f"controlled echo validation failed: {error}", file=sys.stderr)
+            raise SystemExit(2)
+        return
+    if len(sys.argv) == 5 and sys.argv[1] == "verify-bundle" and sys.argv[3] == "--expected-echo-plan-sha256":
+        try:
+            read_remote_echo_plan(Path(sys.argv[2]), sys.argv[4])
+        except (BundleVerificationError, OSError) as error:
+            print(f"remote echo plan verification failed: {error}", file=sys.stderr)
+            raise SystemExit(2)
+        sys.argv = sys.argv[:3]
     if len(sys.argv) == 3 and sys.argv[1] == "verify-bundle":
         try:
             parsed = verify_bundle(sys.argv[2])

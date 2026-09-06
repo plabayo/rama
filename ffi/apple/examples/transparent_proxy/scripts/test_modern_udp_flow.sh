@@ -42,6 +42,16 @@ ECHO_DATAGRAMS_PER_SOCKET="${RAMA_TPROXY_E2E_ECHO_DATAGRAMS_PER_SOCKET:-64}"
 ECHO_INTERVAL_MS="${RAMA_TPROXY_E2E_ECHO_INTERVAL_MS:-2000}"
 ECHO_PAYLOAD_BYTES="${RAMA_TPROXY_E2E_ECHO_PAYLOAD_BYTES:-1200}"
 ECHO_CONCURRENCY="${RAMA_TPROXY_E2E_ECHO_CONCURRENCY:-32}"
+REMOTE_ECHO_PLAN="${RAMA_TPROXY_E2E_ECHO_PLAN:-}"
+REMOTE_ECHO_CONTROLLER="${RAMA_TPROXY_E2E_ECHO_CONTROLLER:-}"
+REMOTE_ECHO_LAUNCHER="${RAMA_TPROXY_E2E_ECHO_LAUNCHER:-}"
+REMOTE_ECHO_PLAN_SHA256="${RAMA_TPROXY_E2E_ECHO_PLAN_SHA256:-}"
+REMOTE_ECHO_ENABLED=0
+REMOTE_ECHO_START_ATTEMPTED=0
+REMOTE_ECHO_JOINED=0
+REMOTE_ECHO_STATE=""
+ECHO_SERVER_HOST=127.0.0.1
+ECHO_SERVER_PORT=0
 HTTP3_CONCURRENCY="${RAMA_TPROXY_E2E_HTTP3_CONCURRENCY:-4}"
 HTTP3_ROUNDS="${RAMA_TPROXY_E2E_HTTP3_ROUNDS:-3}"
 HTTP3_ROUND_INTERVAL="${RAMA_TPROXY_E2E_HTTP3_ROUND_INTERVAL:-1}"
@@ -1093,7 +1103,35 @@ stop_log_capture() {
 }
 
 # shellcheck disable=SC2329  # invoked from the EXIT trap
+remote_echo_operation() {
+  local operation="$1" timeout_seconds="$2" rc=0 start_wall start_mono end_wall end_mono
+  start_wall="$(/usr/bin/python3 -c 'import time; print(time.time_ns() // 1000000)')" || return 2
+  start_mono="$(monotonic_ms_now)" || return 2
+  run_bounded "$timeout_seconds" /usr/bin/python3 -I "$TMP_DIR/source-echo-controller.py" \
+    "$operation" --plan "$TMP_DIR/controlled-echo-plan.json" \
+    --output-dir "$TMP_DIR/remote-echo" --state-file "$REMOTE_ECHO_STATE" \
+    > "$TMP_DIR/remote-echo/$operation.controller.log" 2>&1 || rc=$?
+  end_wall="$(/usr/bin/python3 -c 'import time; print(time.time_ns() // 1000000)')" || return 2
+  end_mono="$(monotonic_ms_now)" || return 2
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$operation" "$start_wall" "$end_wall" "$start_mono" "$end_mono" "$rc" \
+    >> "$TMP_DIR/remote-echo/operations.tsv" || return 2
+  return "$rc"
+}
+
+# shellcheck disable=SC2329  # invoked from the EXIT trap
 stop_echo_server() {
+  if (( REMOTE_ECHO_START_ATTEMPTED == 1 && REMOTE_ECHO_JOINED == 0 )); then
+    if remote_echo_operation stop 60; then
+      /bin/rm -f "$REMOTE_ECHO_STATE"
+    else
+      add_issue "remote echo cleanup could not prove terminal exit; ownership state: $REMOTE_ECHO_STATE"
+    fi
+    # Cleanup is never a substitute for a successful normal remote join.
+    add_issue "remote echo did not complete its normal joined lifecycle"
+    return
+  fi
+  if (( REMOTE_ECHO_ENABLED == 1 )); then /bin/rm -f "$REMOTE_ECHO_STATE"; fi
   local rc=0
   [[ "$ECHO_SERVER_PID" =~ ^[1-9][0-9]*$ ]] || return 0
   # A normally completed server has already been reaped and unregistered.
@@ -2033,6 +2071,23 @@ PY
 capture_producer_sources \
   || fatal_issue "could not capture exact modern evidence producer sources"
 
+if [[ -n "$REMOTE_ECHO_PLAN$REMOTE_ECHO_CONTROLLER$REMOTE_ECHO_LAUNCHER$REMOTE_ECHO_PLAN_SHA256" ]]; then
+  [[ -n "$REMOTE_ECHO_PLAN" && -n "$REMOTE_ECHO_CONTROLLER" && -n "$REMOTE_ECHO_LAUNCHER" \
+    && "$REMOTE_ECHO_PLAN_SHA256" =~ ^[0-9a-f]{64}$ ]] \
+    || fatal_issue "remote echo requires plan, controller, launcher and independent plan SHA256"
+  [[ "$ECHO_SOCKET_COUNT $ECHO_DATAGRAMS_PER_SOCKET $ECHO_PAYLOAD_BYTES $ECHO_INTERVAL_MS $ECHO_CONCURRENCY" \
+    == "128 64 1200 2000 32" ]] \
+    || fatal_issue "echo overrides conflict with the supported remote active profile"
+  remote_fields="$(/usr/bin/python3 "$MODERN_EVIDENCE" prepare-remote-echo "$TMP_DIR" \
+    "$REMOTE_ECHO_PLAN" "$REMOTE_ECHO_CONTROLLER" "$REMOTE_ECHO_LAUNCHER" \
+    "$REMOTE_ECHO_PLAN_SHA256" "$(git -C "$ROOT_DIR" rev-parse HEAD)")" \
+    || fatal_issue "remote echo plan/source capture failed"
+  read -r RUN_UUID ECHO_ENDPOINT ECHO_SERVER_HOST ECHO_SERVER_PORT <<< "$remote_fields"
+  REMOTE_ECHO_STATE="$(mktemp /tmp/rama-remote-echo-state.XXXXXX)" \
+    || fatal_issue "could not create private remote ownership state"
+  REMOTE_ECHO_ENABLED=1
+fi
+
 case "$(uname -m)" in
   arm64) DIAL9_EVIDENCE_BIN="$ROOT_DIR/tproxy_rs/target/aarch64-apple-darwin/debug/dial9_evidence" ;;
   x86_64) DIAL9_EVIDENCE_BIN="$ROOT_DIR/tproxy_rs/target/x86_64-apple-darwin/debug/dial9_evidence" ;;
@@ -2115,6 +2170,7 @@ printf '%s\n' "$HTTP3_URL" > "$TMP_DIR/http3-url.txt" \
 sudo -n true 2>/dev/null \
   || fatal_issue "cached sudo credentials are required for root-owned dial9 evidence"
 
+if (( REMOTE_ECHO_ENABLED == 0 )); then
 CURRENT_PHASE=echo-server-start
 start_owned_command echo-server /usr/bin/python3 "$PROBE" echo-server --bind 127.0.0.1 --port 0 \
   --run-uuid "$RUN_UUID" --expected-count "$ECHO_EXPECTED_COUNT" \
@@ -2142,6 +2198,9 @@ if host != "127.0.0.1" or not 1 <= int(port) <= 65535:
 print(endpoint)
 PY
 )" || fatal_issue "controlled echo readiness artifact is malformed"
+
+ECHO_SERVER_PORT="${ECHO_ENDPOINT##*:}"
+fi
 
 HTTP3_ENDPOINTS="$TMP_DIR/http3-endpoints.txt"
 if ! /usr/bin/python3 - "$HTTP3_URL" > "$HTTP3_ENDPOINTS" <<'PY'
@@ -2284,6 +2343,13 @@ BLOCKED_DNS_LOG_END="$LAST_PROBE_LOG_END"
 
 # Keep the sustained echo population in the profile that intercepts UDP/443.
 CURRENT_PHASE=concurrent-udp-load
+if (( REMOTE_ECHO_ENABLED == 1 )); then
+  REMOTE_ECHO_START_ATTEMPTED=1
+  remote_echo_operation start 60 \
+    || fatal_issue "remote echo could not establish the planned receiver generation"
+  /usr/bin/python3 "$MODERN_EVIDENCE" materialize-remote-echo "$TMP_DIR" start \
+    || fatal_issue "remote echo readiness failed raw replay"
+fi
 PRESSURE_LOG_LINE="$(provider_log_line)"
 PRESSURE_PROBE_ATTEMPTED=1
 PRESSURE_LOG_START="$PRESSURE_LOG_LINE"
@@ -2291,7 +2357,7 @@ ECHO_LOG_START="$PRESSURE_LOG_LINE"
 UDP_PROBE_ATTEMPT_COUNT=$((UDP_PROBE_ATTEMPT_COUNT + 1))
 CONCURRENT_LOAD_DEADLINE=$((SECONDS + CONCURRENT_LOAD_DEADLINE_SECONDS))
 start_owned_command echo /usr/bin/python3 "$PROBE" echo-load \
-  --server "${ECHO_ENDPOINT%:*}" --port "${ECHO_ENDPOINT##*:}" \
+  --server "$ECHO_SERVER_HOST" --port "$ECHO_SERVER_PORT" \
   --run-uuid "$RUN_UUID" --socket-count "$ECHO_SOCKET_COUNT" \
   --datagrams-per-socket "$ECHO_DATAGRAMS_PER_SOCKET" \
   --interval-ms "$ECHO_INTERVAL_MS" \
@@ -2318,66 +2384,21 @@ ECHO_CLIENT_RC=0
 wait_for_child_until "$ACTIVE_ECHO_PID" "$CONCURRENT_LOAD_DEADLINE" || ECHO_CLIENT_RC=$?
 (( OWNED_JOIN_REAPED == 0 )) || ACTIVE_ECHO_PID=""
 ECHO_SERVER_RC=0
-wait_for_child_until "$ECHO_SERVER_PID" "$CONCURRENT_LOAD_DEADLINE" || ECHO_SERVER_RC=$?
-(( OWNED_JOIN_REAPED == 0 )) || ECHO_SERVER_PID=""
-ECHO_METRICS="$(/usr/bin/python3 - "$ECHO_CLIENT_RESULT" "$ECHO_SERVER_RESULT" \
-  "$RUN_UUID" "$ECHO_ENDPOINT" "$ECHO_EXPECTED_COUNT" \
-  "$ECHO_SOCKET_COUNT" "$ECHO_DATAGRAMS_PER_SOCKET" "$ECHO_PAYLOAD_BYTES" \
-  "$MODERN_EVIDENCE" "$RUN_START_EPOCH_MS" "$CONCURRENT_LOAD_DEADLINE_SECONDS" <<'PY'
-import hashlib, ipaddress, json, re, runpy, sys, time
-sys.dont_write_bytecode = True
-validators = runpy.run_path(sys.argv[9])
-client, server = (json.load(open(path)) for path in sys.argv[1:3])
-run_uuid, endpoint, expected = sys.argv[3], sys.argv[4], int(sys.argv[5])
-socket_count, per_socket, payload_bytes = map(int, sys.argv[6:9])
-for value, kind in ((client, "controlled_echo_client"), (server, "controlled_echo_server")):
-    if value.get("schema_version") != 2 or value.get("schema_complete") is not True:
-        raise SystemExit(2)
-    if value.get("kind") != kind or value.get("run_uuid") != run_uuid:
-        raise SystemExit(2)
-    if value.get("endpoint") != endpoint or value.get("passed") is not True:
-        raise SystemExit(2)
-if client.get("expected_count") != expected or server.get("expected_count") != expected:
-    raise SystemExit(2)
-if any(client.get(key) != expected for key in (
-    "sent_count", "received_count", "exact_echo_count", "unique_echo_count",
-)) or server.get("received_count") != expected or server.get("echo_count") != expected:
-    raise SystemExit(2)
-if (client.get("socket_count") != socket_count
-        or client.get("independent_socket_count") != socket_count
-        or client.get("datagrams_per_socket") != per_socket
-        or client.get("payload_bytes") != payload_bytes):
-    raise SystemExit(2)
-if (server.get("duplicate_count") != 0 or server.get("malformed_count") != 0
-        or client.get("error_count") != 0):
-    raise SystemExit(2)
-if re.fullmatch(r"[0-9a-f]{64}", client.get("local_endpoint_set_sha256", "")) is None:
-    raise SystemExit(2)
-local_endpoints = client.get("local_endpoints")
-if not isinstance(local_endpoints, list) or len(set(local_endpoints)) != socket_count:
-    raise SystemExit(2)
-for endpoint_value in local_endpoints:
-    host, port = (endpoint_value[1:].split("]:", 1)
-                  if endpoint_value.startswith("[") else endpoint_value.rsplit(":", 1))
-    if str(ipaddress.ip_address(host)) != host or not 1 <= int(port) <= 65535:
-        raise SystemExit(2)
-local_digest = hashlib.sha256("\n".join(sorted(local_endpoints)).encode()).hexdigest()
-if local_digest != client["local_endpoint_set_sha256"]:
-    raise SystemExit(2)
-validators["validate_echo_socket_maps"](client, server, socket_count)
-validators["_validate_echo_timing"](client, {
-    "run_start_epoch_ms": sys.argv[10],
-    "run_end_epoch_ms": str(time.time_ns() // 1_000_000),
-    "concurrent_load_deadline_seconds": sys.argv[11],
-}, socket_count, per_socket, require_active_population=True)
-digest = client.get("payload_set_sha256")
-if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
-    raise SystemExit(2)
-if client.get("echo_set_sha256") != digest or server.get("payload_set_sha256") != digest:
-    raise SystemExit(2)
-print(expected, digest)
-PY
-)" || ECHO_METRICS=""
+if (( REMOTE_ECHO_ENABLED == 1 )); then
+  remote_echo_operation join 45 || ECHO_SERVER_RC=$?
+  if (( ECHO_SERVER_RC == 0 )); then
+    /usr/bin/python3 "$MODERN_EVIDENCE" materialize-remote-echo "$TMP_DIR" join \
+      || ECHO_SERVER_RC=2
+  fi
+  if (( ECHO_SERVER_RC == 0 )); then REMOTE_ECHO_JOINED=1; fi
+else
+  wait_for_child_until "$ECHO_SERVER_PID" "$CONCURRENT_LOAD_DEADLINE" || ECHO_SERVER_RC=$?
+  (( OWNED_JOIN_REAPED == 0 )) || ECHO_SERVER_PID=""
+fi
+ECHO_METRICS="$(/usr/bin/python3 "$MODERN_EVIDENCE" echo-metrics "$TMP_DIR" \
+  "$RUN_UUID" "$ECHO_ENDPOINT" "$ECHO_SOCKET_COUNT" "$ECHO_DATAGRAMS_PER_SOCKET" \
+  "$ECHO_PAYLOAD_BYTES" "$RUN_START_EPOCH_MS" "$CONCURRENT_LOAD_DEADLINE_SECONDS")" \
+  || ECHO_METRICS=""
 if (( ECHO_CLIENT_RC == 0 && ECHO_SERVER_RC == 0 )) \
   && [[ "$ECHO_METRICS" =~ ^[0-9]+\ [0-9a-f]{64}$ ]]
 then

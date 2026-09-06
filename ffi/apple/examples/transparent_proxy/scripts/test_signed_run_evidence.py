@@ -2031,6 +2031,46 @@ class DynamicCodeIdentityTests(unittest.TestCase):
                     self.assertEqual(output.read_bytes(), original)
 
 
+class RemoteEchoPlanAcceptanceTests(unittest.TestCase):
+    def test_release_expectation_is_independent_of_resealed_plan(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "run"
+            common = make_run(root, "modern_udp")
+            plan = {"git_head": HEAD, "run_uuid": common["run_uuid"]}
+            path = root / "controlled-echo-plan.json"
+            path.write_text(json.dumps(plan) + "\n")
+            expected = evidence.sha256_file(path)
+            evidence.seal(root)
+            envelope = evidence._verify_and_capture(root)
+            with mock.patch.object(evidence, "_validate_modern_semantics") as replay:
+                for digest in (None, "not-a-digest", "0" * 64):
+                    with self.subTest(digest=digest), self.assertRaisesRegex(evidence.EvidenceError, "expected echo plan"):
+                        evidence._validate_release_kind(envelope, expected_echo_plan_sha256=digest)
+                replay.assert_not_called()
+                evidence._validate_release_kind(envelope, expected_echo_plan_sha256=expected)
+                replay.assert_called_once_with(envelope, expected)
+                # Capture is immutable: changing the path cannot replace the
+                # original manifest-retained plan consumed by release dispatch.
+                path.write_text(json.dumps(dict(plan, endpoint="different")) + "\n")
+                evidence._validate_release_kind(envelope, expected_echo_plan_sha256=expected)
+                evidence.seal(root)
+                with self.assertRaisesRegex(evidence.EvidenceError, "plan digest mismatch"):
+                    evidence._validate_release_kind(evidence._verify_and_capture(root), expected_echo_plan_sha256=expected)
+
+    def test_matching_digest_cannot_hide_wrong_common_source_or_run(self):
+        for key, value in (("git_head", "b" * 40), ("run_uuid", str(uuid.uuid4()))):
+            with self.subTest(field=key), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary) / "run"
+                common = make_run(root, "modern_udp")
+                plan = {"git_head": HEAD, "run_uuid": common["run_uuid"], key: value}
+                path = root / "controlled-echo-plan.json"
+                path.write_text(json.dumps(plan) + "\n")
+                evidence.seal(root)
+                with self.assertRaisesRegex(evidence.EvidenceError, "source/run identity"):
+                    evidence._validate_release_kind(evidence._verify_and_capture(root),
+                        expected_echo_plan_sha256=evidence.sha256_file(path))
+
+
 class HttpTestHostTests(unittest.TestCase):
     HOST = "controlled.example.invalid"
 
@@ -2077,17 +2117,21 @@ class HttpTestHostTests(unittest.TestCase):
             ("run_uuid", str(uuid.uuid4())), ("schema_complete", "1"),
         ])
         series_status = make_stress_series(series, target_host)
+        (modern / "controlled-echo-plan.json").write_text(json.dumps({
+            "git_head": HEAD, "run_uuid": modern_status["run_uuid"],
+        }) + "\n")
+        self.expected_echo_plan_sha256 = evidence.sha256_file(modern / "controlled-echo-plan.json")
         for root in (modern, soak, series):
             evidence.seal(root)
         return [modern, soak, series], [modern_status, soak_status, series_status]
 
-    @staticmethod
-    def verify_host_release_set(roots, **kwargs):
+    def verify_host_release_set(self, roots, **kwargs):
         # These fixtures exercise the real envelope scan, host policy, release
         # identities and dispatch. Native per-kind replay has separate tests.
         with mock.patch.object(evidence, "_validate_modern_semantics"), \
              mock.patch.object(evidence, "_validate_soak_semantics"), \
              mock.patch.object(evidence, "_validate_stress_series_semantics"):
+            kwargs.setdefault("expected_echo_plan_sha256", self.expected_echo_plan_sha256)
             return evidence.verify_release_set(roots, **kwargs)
 
     def test_release_host_requires_explicit_caller_choice_and_preserves_default(self):
@@ -2184,7 +2228,7 @@ class HttpTestHostTests(unittest.TestCase):
 
     def test_release_cli_passes_explicit_expected_host(self):
         hosts = []
-        def verify(directories, required_kinds=None, expected_http_host=evidence.DEFAULT_HTTP_TEST_HOST):
+        def verify(directories, required_kinds=None, expected_http_host=evidence.DEFAULT_HTTP_TEST_HOST, expected_echo_plan_sha256=None):
             hosts.append(expected_http_host)
             return [{"evidence_kind": "soak"}]
         with mock.patch.object(evidence, "verify_release_set", side_effect=verify):
@@ -2662,7 +2706,7 @@ class CrashAndReleaseSetTests(unittest.TestCase):
             base = Path(temporary)
             modern = base / "modern"
             soak = base / "soak"
-            make_run(modern, "modern_udp", claims=[
+            modern_status = make_run(modern, "modern_udp", claims=[
                 ("dial9_diagnostic_only", "0"),
                 ("dial9_workload_coverage", "1"),
                 ("dial9_claim", "exact-workload"),
@@ -2672,10 +2716,12 @@ class CrashAndReleaseSetTests(unittest.TestCase):
                 ("dial9_workload_coverage", "0"),
                 ("dial9_claim", "unattributed-diagnostic"),
             ])
+            plan = modern / "controlled-echo-plan.json"
+            plan.write_text(json.dumps({"git_head": HEAD, "run_uuid": modern_status["run_uuid"]}) + "\n")
             evidence.seal(modern)
             evidence.seal(soak)
             with self.assertRaisesRegex(evidence.EvidenceError, "modern UDP evidence is missing"):
-                evidence.verify_release_set([modern, soak])
+                evidence.verify_release_set([modern, soak], expected_echo_plan_sha256=evidence.sha256_file(plan))
 
     def test_modern_semantics_recompute_echo_dial9_and_cross_bindings(self):
         with tempfile.TemporaryDirectory() as temporary:

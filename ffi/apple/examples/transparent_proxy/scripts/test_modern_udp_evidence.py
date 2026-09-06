@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Adversarial unit coverage for the signed modern UDP evidence path."""
 
+import base64
 import contextlib
 import ctypes as C
 import io
@@ -30,6 +31,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import modern_udp_e2e_probe as udp_probe  # noqa: E402
+import modern_udp_evidence as parser  # noqa: E402
 from modern_udp_e2e_probe import (  # noqa: E402
     ProductViolation,
     controlled_echo_load,
@@ -1226,6 +1228,107 @@ def build_strict_bundle(directory):
     })
 
 
+def add_remote_echo_fixture(root, *, git_head="a" * 40):
+    """Extend the existing full raw bundle with transport-realistic Fly receipts."""
+    def write(name, value):
+        (root / name).write_bytes(parser._canonical_json(value) + b"\n")
+    public, bind = "213.188.211.168:443", "172.19.27.67:443"
+    client = json.loads((root / "controlled-echo-client.json").read_text())
+    server = json.loads((root / "controlled-echo-server.json").read_text())
+    ready = json.loads((root / "controlled-echo-ready.json").read_text())
+    old_endpoint = client["endpoint"]
+    client["endpoint"], server["endpoint"], ready["endpoint"] = public, bind, bind
+    old_locals = client["local_endpoints"]
+    local_map = {value: value.replace("127.0.0.1", "192.168.1.20") for value in old_locals}
+    client["local_endpoints"] = sorted(local_map.values())
+    client["socket_endpoints"] = [[index, local_map[value]] for index, value in client["socket_endpoints"]]
+    client["local_endpoint_set_sha256"] = hashlib.sha256("\n".join(client["local_endpoints"]).encode()).hexdigest()
+    server["socket_peers"] = [[index, f"78.20.25.223:{40000 + index}"] for index in range(128)]
+    for name, value in (("controlled-echo-client.json", client), ("controlled-echo-server.json", server),
+                        ("controlled-echo-ready.json", ready)):
+        write(name, value)
+    for name in ("provider.log", "echo-identities.tsv", "udp-evidence-status.tsv"):
+        text = (root / name).read_text().replace(old_endpoint, public)
+        for previous, current in local_map.items():
+            text = text.replace(previous, current)
+        (root / name).write_text(text)
+    for name in ("source-echo-controller.py", "source-echo-launcher.py"):
+        (root / name).write_text('raise RuntimeError("archived sources must never execute")\n')
+    plan = {**parser.REMOTE_PROFILE, "run_uuid": RUN_UUID, "git_head": git_head,
+            "endpoint": public, "app": "rama-qual-fixture", "machine_id": "7845d4da1ed748",
+            "previous_instance_id": "01M1TKDGZX9KXY874ZEGJTQGJ4",
+            "image_index_digest": "sha256:" + "1" * 64, "image_digest": "sha256:" + "2" * 64}
+    for key, name in parser.REMOTE_SOURCES.items():
+        plan[key] = hashlib.sha256((root / name).read_bytes()).hexdigest()
+    config = {
+        "image": "registry-1.docker.io/library/python@" + plan["image_index_digest"],
+        "env": {"RAMA_QUAL_PROBE_SHA256": plan["probe_sha256"], "RAMA_QUAL_RUN_UUID": RUN_UUID,
+                "RAMA_QUAL_SOURCE_HEAD": git_head},
+        "init": {"exec": ["/usr/local/bin/python3", "/opt/rama-qualification/udp-launch.py"]},
+        "guest": {"cpu_kind": "shared", "cpus": 1, "memory_mb": 512},
+        "services": [{"protocol": "udp", "internal_port": 443, "autostop": False,
+                      "autostart": False, "ports": [{"port": 443}], "force_instance_key": None}],
+        "restart": {"policy": "no"},
+        "files": [{"guest_path": path, "raw_value": base64.b64encode((root / name).read_bytes()).decode()}
+                  for path, name in (("/opt/rama-qualification/modern_udp_e2e_probe.py", "source-modern_udp_e2e_probe.py"),
+                                     ("/opt/rama-qualification/udp-launch.py", "source-echo-launcher.py"))],
+    }
+    plan["config_sha256"] = hashlib.sha256(parser._canonical_json(config)).hexdigest()
+    write(parser.REMOTE_PLAN_NAME, plan)
+    remote = root / "remote-echo"
+    remote.mkdir()
+    instance = "01M1TKDGZX9KXY874ZEGJTQGJ5"
+    machine = {"id": plan["machine_id"], "instance_id": instance, "state": "started",
+               "config": config, "image_ref": {"digest": plan["image_digest"]}}
+    write("remote-echo/previous-machine.json", {**machine, "state": "stopped", "instance_id": plan["previous_instance_id"]})
+    for name in ("start-machine", "ready-machine"):
+        write("remote-echo/" + name + ".json", machine)
+    exit_event = {"requested_stop": False, "restarting": False, "guest_exit_code": 0,
+                  "guest_signal": -1, "guest_error": "", "exit_code": 0, "signal": -1,
+                  "error": "", "oom_killed": False}
+    write("remote-echo/exit-machine.json", {**machine, "state": "stopped", "events": [
+        {"id": "event-1", "type": "exit", "status": "stopped", "source": "flyd",
+         "request": {"exit_event": exit_event, "restart_count": 0}}]})
+    write("remote-echo/wait.json", {"ok": True, "state": "stopped", "event_id": "event-1", "version": instance})
+    identity = {"machine_id": plan["machine_id"], "machine_version": instance, "run_uuid": RUN_UUID,
+                "source_head": git_head, "probe_sha256": plan["probe_sha256"], "launcher_sha256": plan["launcher_sha256"],
+                "image": config["image"], "argv": ["/opt/rama-qualification/udp-launch.py"],
+                "expected_count": 8192, "max_seconds": 600, "boot_id": RUN_UUID,
+                "pid": ready["server_pid"], "bind_address": bind.rsplit(":", 1)[0],
+                "start_epoch_ns": 1_000_000_000_000, "start_monotonic_ns": 1_000_000_000,
+                "proc_stat": str(ready["server_pid"]) + " (python3) S " + " ".join(["0"] * 18 + ["80"] + ["0"] * 20) + "\n"}
+    def frames(values):
+        records = []
+        for kind, value in values.items():
+            data = parser._canonical_json(value)
+            for index in range((len(data) + 479) // 480):
+                frame = {"qframe": 1, "run_uuid": RUN_UUID, "kind": kind,
+                         "sha256": hashlib.sha256(data).hexdigest(), "length": len(data),
+                         "index": index, "count": (len(data) + 479) // 480,
+                         "base64": base64.b64encode(data[index * 480:index * 480 + 480]).decode()}
+                records.append(json.dumps({"instance": plan["machine_id"], "message": json.dumps(frame)}, indent=2))
+        return "\n".join(records) + "\n"
+    (remote / "ready-logs.json").write_text(frames({"identity": identity, "ready": ready}))
+    (remote / "exit-logs.json").write_text(frames({"identity": identity, "ready": ready, "result": server,
+        "return": {"run_uuid": RUN_UUID, "outcome": "success", "end_epoch_ns": 1_127_000_000_000}}))
+    base = f"https://api.machines.dev/v1/apps/{plan['app']}/machines/{plan['machine_id']}"
+    for name, started, ended in (("previous-machine", 7500, 7510), ("start-machine", 8000, 8010),
+                                 ("ready-logs", 8500, 8530), ("ready-machine", 8540, 8550),
+                                 ("exit-machine", 134615, 134620), ("wait", 134621, 134625),
+                                 ("exit-logs", 134626, 134640)):
+        value = {"start_epoch_ns": started * 1_000_000, "end_epoch_ns": ended * 1_000_000}
+        if name.endswith("logs"):
+            value["exit_code"] = 0
+        else:
+            value.update(status=200, method="POST" if name == "start-machine" else "GET", url=base)
+            if name == "wait":
+                value["url"] += f"/wait?state=stopped&instance_id={instance}&timeout=10"
+        write("remote-echo/" + name + ".observation.json", value)
+    (remote / "operations.tsv").write_text("\t".join(parser.REMOTE_OPERATION_FIELDS) + "\n"
+        "start\t7400\t8590\t8400\t9590\t0\njoin\t134610\t134650\t135610\t135650\t0\n")
+    return plan
+
+
 def reseal_test_manifest(directory):
     rows = []
     for path in sorted(directory.iterdir(), key=lambda value: value.name):
@@ -1953,6 +2056,104 @@ class ModernStatusTests(unittest.TestCase):
         self.assertIsNone(wrong_provider["flow_id"])
 
 
+class RemoteEchoEnvelopeTests(unittest.TestCase):
+    def test_public_target_private_bind_and_nat_replay_without_executing_controller(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            plan = add_remote_echo_fixture(root)
+            digest = hashlib.sha256((root / parser.REMOTE_PLAN_NAME).read_bytes()).hexdigest()
+            self.assertEqual(parser.read_remote_echo_plan(root, digest), plan)
+            self.assertEqual(verify_bundle(root), 0)
+            with self.assertRaisesRegex(BundleVerificationError, "independently expected"):
+                parser.read_remote_echo_plan(root, "0" * 64)
+
+    def test_raw_remote_control_contradictions_fail_replay(self):
+        mutations = {
+            "private-target": ("controlled-echo-plan.json", lambda v: v.update(endpoint="192.168.1.1:443")),
+            "stale-instance": ("remote-echo/ready-machine.json", lambda v: v.update(instance_id="01M1TKDGZX9KXY874ZEGJTQGJ4")),
+            "wrong-image": ("remote-echo/exit-machine.json", lambda v: v["image_ref"].update(digest="sha256:" + "3" * 64)),
+            "wrong-exit": ("remote-echo/exit-machine.json", lambda v: v["events"][0]["request"]["exit_event"].update(guest_exit_code=9)),
+            "restart-count": ("remote-echo/exit-machine.json", lambda v: v["events"][0]["request"].update(restart_count=1)),
+            "malformed-events": ("remote-echo/exit-machine.json", lambda v: v.update(events=[None])),
+            "malformed-image": ("remote-echo/exit-machine.json", lambda v: v.update(image_ref=None)),
+            "boolean-log-exit": ("remote-echo/ready-logs.observation.json", lambda v: v.update(exit_code=False)),
+            "oom": ("remote-echo/exit-machine.json", lambda v: v["events"][0]["request"]["exit_event"].update(oom_killed=True)),
+            "wrong-wait-instance": ("remote-echo/wait.json", lambda v: v.update(version="01M1TKDGZX9KXY874ZEGJTQGJ4")),
+            "wrong-exit-event": ("remote-echo/wait.json", lambda v: v.update(event_id="stale-event")),
+            "alive-before-ready": ("remote-echo/ready-machine.observation.json", lambda v: v.update(start_epoch_ns=8_510_000_000, end_epoch_ns=8_520_000_000)),
+            "wrong-control-target": ("remote-echo/wait.observation.json", lambda v: v.update(url=v["url"].replace("api.machines.dev", "example.invalid"))),
+            "rewritten-server-bind": ("controlled-echo-server.json", lambda v: v.update(endpoint="213.188.211.168:443")),
+        }
+        for label, (name, mutate) in mutations.items():
+            with self.subTest(mutation=label), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                build_strict_bundle(root)
+                add_remote_echo_fixture(root)
+                path = root / name
+                value = json.loads(path.read_text())
+                mutate(value)
+                path.write_text(json.dumps(value) + "\n")
+                with self.assertRaises(BundleVerificationError):
+                    verify_bundle(root)
+
+    def test_plan_rejects_a_self_consistent_changed_payload_shape(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            build_strict_bundle(root)
+            add_remote_echo_fixture(root)
+            client_path = root / "controlled-echo-client.json"
+            client = json.loads(client_path.read_text())
+            client["payload_bytes"] = 1300
+            client_path.write_text(json.dumps(client) + "\n")
+            status = dict(line.split("\t", 1) for line in (root / "udp-evidence-status.tsv").read_text().splitlines())
+            status["echo_payload_bytes"] = "1300"
+            with self.assertRaisesRegex(BundleVerificationError, "framed source"):
+                parser.validate_echo_results(root, status)
+
+    def test_remote_frames_and_operation_order_are_not_summary_only_proof(self):
+        for mutation in ("duplicate-frame", "truncated-frame", "ready-after-client", "cleanup-instead-of-join", "changed-controller"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                build_strict_bundle(root)
+                add_remote_echo_fixture(root)
+                if mutation == "changed-controller":
+                    with (root / "source-echo-controller.py").open("a") as output:
+                        output.write("# changed after capture\n")
+                elif mutation in ("duplicate-frame", "truncated-frame"):
+                    path = root / "remote-echo/exit-logs.json"
+                    text = path.read_text()
+                    _, end = json.JSONDecoder().raw_decode(text)
+                    path.write_text(text[:end] + "\n" + text if mutation == "duplicate-frame" else text[end:].lstrip())
+                else:
+                    path = root / "remote-echo/operations.tsv"
+                    text = path.read_text()
+                    if mutation == "ready-after-client":
+                        text = text.replace("8590\t8400\t9590", "8610\t8400\t9610")
+                    else:
+                        text = text.replace("\njoin\t", "\nstop\t")
+                    path.write_text(text)
+                with self.assertRaises(BundleVerificationError):
+                    verify_bundle(root)
+
+    def test_remote_preparation_captures_controller_once_before_execution(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            original, captured = base / "original", base / "captured"
+            original.mkdir(); captured.mkdir()
+            build_strict_bundle(original)
+            plan = add_remote_echo_fixture(original)
+            probe = "source-modern_udp_e2e_probe.py"
+            (captured / probe).write_bytes((original / probe).read_bytes())
+            digest = hashlib.sha256((original / parser.REMOTE_PLAN_NAME).read_bytes()).hexdigest()
+            with contextlib.redirect_stdout(io.StringIO()):
+                parser.prepare_remote_echo(captured, original / parser.REMOTE_PLAN_NAME,
+                    original / "source-echo-controller.py", original / "source-echo-launcher.py", digest, plan["git_head"])
+            (original / "source-echo-controller.py").write_text("different original bytes\n")
+            self.assertEqual(parser.read_remote_echo_plan(captured, digest), plan)
+            self.assertEqual((captured / "source-echo-controller.py").stat().st_mode & 0o222, 0)
+
+
 class StrictBundleTests(unittest.TestCase):
     def test_second_profile_generation_and_workload_order_are_required(self):
         for mutation in ("pressure-generation", "recovery-generation", "echo-generation",
@@ -2510,6 +2711,8 @@ class StrictBundleTests(unittest.TestCase):
                 path = root / name
                 path.write_text(re.sub(r"(?m)^producer_sources_sha256\t[0-9a-f]{64}$",
                                       f"producer_sources_sha256\t{producer_digest}", path.read_text()))
+            add_remote_echo_fixture(root, git_head=HEAD)
+            expected_plan = hashlib.sha256((root / parser.REMOTE_PLAN_NAME).read_bytes()).hexdigest()
             udp = dict(line.split("\t") for line in (root / "udp-evidence-status.tsv").read_text().splitlines())
             common = {key: udp[key] for key in (
                 "complete", "passed", "exit_code", "evidence_kind", "run_uuid",
@@ -2527,7 +2730,18 @@ class StrictBundleTests(unittest.TestCase):
             with mock.patch.object(evidence, "_source_blob_at_head", side_effect=current_script_source), \
                     mock.patch.object(evidence, "_validate_modern_dial9"):
                 evidence.seal(root)
-                evidence._validate_modern_semantics(evidence._verify_and_capture(root))
+                evidence._validate_release_kind(evidence._verify_and_capture(root), expected_echo_plan_sha256=expected_plan)
+                with self.assertRaisesRegex(evidence.EvidenceError, "independently expected echo plan"):
+                    evidence._validate_release_kind(evidence._verify_and_capture(root))
+                terminal = root / "remote-echo/exit-machine.json"
+                original_terminal = terminal.read_bytes()
+                value = json.loads(original_terminal)
+                value["events"][0]["request"]["exit_event"]["guest_exit_code"] = 9
+                terminal.write_text(json.dumps(value) + "\n")
+                evidence.seal(root)
+                with self.assertRaisesRegex(evidence.EvidenceError, "raw-bundle validator rejected.*did not exit normally"):
+                    evidence._validate_release_kind(evidence._verify_and_capture(root), expected_echo_plan_sha256=expected_plan)
+                terminal.write_bytes(original_terminal)
                 echo_client = root / "controlled-echo-client.json"
                 original_echo = echo_client.read_bytes()
                 value = json.loads(original_echo)
@@ -2536,7 +2750,7 @@ class StrictBundleTests(unittest.TestCase):
                 evidence.seal(root)
                 with self.assertRaisesRegex(evidence.EvidenceError,
                         "raw-bundle validator rejected.*per-flow pacing"):
-                    evidence._validate_modern_semantics(evidence._verify_and_capture(root))
+                    evidence._validate_release_kind(evidence._verify_and_capture(root), expected_echo_plan_sha256=expected_plan)
                 echo_client.write_bytes(original_echo)
                 requirements_path = root / "dial9-requirements.tsv"
                 original_requirements = requirements_path.read_text()
@@ -2554,7 +2768,7 @@ class StrictBundleTests(unittest.TestCase):
                 evidence.seal(root)
                 with self.assertRaisesRegex(evidence.EvidenceError,
                         "raw-bundle validator rejected.*representative Dial9 requirement mismatch"):
-                    evidence._validate_modern_semantics(evidence._verify_and_capture(root))
+                    evidence._validate_release_kind(evidence._verify_and_capture(root), expected_echo_plan_sha256=expected_plan)
                 requirements_path.write_text(original_requirements)
                 status_path.write_text(original_status)
                 receipt = root / "udp-probe-ntp.json"
@@ -2563,7 +2777,7 @@ class StrictBundleTests(unittest.TestCase):
                 receipt.write_text(json.dumps(value) + "\n")
                 evidence.seal(root)
                 with self.assertRaisesRegex(evidence.EvidenceError, "raw-bundle validator rejected.*UDP probe receipt"):
-                    evidence._validate_modern_semantics(evidence._verify_and_capture(root))
+                    evidence._validate_release_kind(evidence._verify_and_capture(root), expected_echo_plan_sha256=expected_plan)
 
     def test_rejects_scalar_only_fabricated_modern_bundle(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -3217,63 +3431,137 @@ class HarnessSourceContractTests(unittest.TestCase):
         shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()
         start = shell.index("CURRENT_PHASE=unblocked-probes\n")
         end = shell.index("# Let os_log", start)
+        for remote in (False, True):
+            with tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                build_strict_bundle(root)
+                (root / "source-modern_udp_evidence.py").write_bytes(
+                    (SCRIPT_DIR / "modern_udp_evidence.py").read_bytes()
+                )
+                if remote:
+                    add_remote_echo_fixture(root)
+                    (root / "controlled-echo-server.log").unlink()
+                    operations = (root / "remote-echo/operations.tsv").read_text()
+                    (root / "remote-echo/start-operations.tsv").write_text("\n".join(operations.splitlines()[:2]) + "\n")
+                    (root / "remote-echo/join-operations.tsv").write_text(operations)
+                # Execute the real caller ordering, with every traffic, process,
+                # and profile operation replaced by a recorder. The only child
+                # interpreter parses the already-captured echo fixture.
+                program = textwrap.dedent(f"""\
+                    TMP_DIR={shlex.quote(str(root))}
+                    ECHO_CLIENT_RESULT="$TMP_DIR/controlled-echo-client.json"
+                    ECHO_SERVER_RESULT="$TMP_DIR/controlled-echo-server.json"
+                    MODERN_EVIDENCE="$TMP_DIR/source-modern_udp_evidence.py"
+                    RUN_UUID={RUN_UUID} RUN_START_EPOCH_MS=1000 PROFILE=first
+                    PASSTHROUGH_DNS=1.1.1.1 INTERCEPT_NTP=162.159.200.1 BLOCKED_DNS=8.8.8.8
+                    INSTALLER=/fixture/installer BUILT_APP=/fixture/app PROBE=/fixture/probe
+                    REMOTE_ECHO_ENABLED={int(remote)}
+                    ECHO_ENDPOINT={"213.188.211.168:443" if remote else "127.0.0.1:44444"} ECHO_EXPECTED_COUNT=8192
+                    ECHO_SOCKET_COUNT=128 ECHO_DATAGRAMS_PER_SOCKET=64 ECHO_PAYLOAD_BYTES=1200
+                    ECHO_INTERVAL_MS=2000 ECHO_CONCURRENCY=32 ECHO_SERVER_PID=4000
+                    PRESSURE_COUNT=512 PRESSURE_PAYLOAD_BYTES=4096
+                    CONCURRENT_LOAD_DEADLINE_SECONDS=180 UDP_PROBE_ATTEMPT_COUNT=0 UDP_PROBE_PASS_COUNT=0
+                    record() {{ printf '%s:%s\\n' "$1" "$PROFILE" >> "$TMP_DIR/call-order"; }}
+                    run_probe() {{
+                      record "probe-$3"
+                      LAST_PROBE_PID=42 LAST_PROBE_LOG_START=0 LAST_PROBE_LOG_END=1
+                    }}
+                    run_sustained_http3() {{ record passthrough-http3; }}
+                    run_bounded() {{
+                      [[ "$2" == "$INSTALLER" ]] || exit 90
+                      PROFILE=second
+                      record install
+                      printf '%s\\n' "$@" > "$TMP_DIR/install-arguments"
+                    }}
+                    start_owned_command() {{
+                      record "$1"; OWNED_COMMAND_SOURCE_PID=43 OWNED_COMMAND_PID=44
+                      if [[ "$1" == echo ]]; then
+                        printf 'QUIC-shaped UDP controlled echo ok: sockets=128 datagrams=8192 bytes=1200 sha256={DIGEST}\\n'
+                      fi
+                    }}
+                    remote_echo_operation() {{
+                      record "remote-$1"
+                      cp "$TMP_DIR/remote-echo/$1-operations.tsv" "$TMP_DIR/remote-echo/operations.tsv"
+                    }}
+                    wait_for_child_until() {{ OWNED_JOIN_REAPED=1; }}
+                    close_pressure_probe_window() {{ LAST_PROBE_LOG_END=1; }}
+                    close_probe_decision_window() {{ LAST_PROBE_LOG_END=1; }}
+                    container_log_line() {{ printf '0\\n'; }}
+                    provider_log_line() {{ printf '0\\n'; }}
+                    wait_for_connected() {{ :; }}
+                    require_provider_identity() {{ :; }}
+                    run_intercepted_http3() {{ record intercepted-http3; }}
+                    fatal_issue() {{ printf '%s\\n' "$1" >&2; exit 91; }}
+                    add_issue() {{ fatal_issue "$1"; }}
+                """) + shell[start:end]
+                result = subprocess.run(["/bin/bash", "-c", program], capture_output=True,
+                                        text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual((root / "call-order").read_text().splitlines(), [
+                    "probe-passthrough:first", "probe-ntp:first", "probe-control:first",
+                    "passthrough-http3:first", "install:second", "probe-blocked:second",
+                    *(["remote-start:second"] if remote else []),
+                    "echo:second", "pressure:second",
+                    *(["remote-join:second"] if remote else []),
+                    "probe-recovery:second", "intercepted-http3:second",
+                ])
+                arguments = (root / "install-arguments").read_text().splitlines()
+                self.assertIn("--udp-passthrough-ports=", arguments)
+                self.assertIn("--udp-blocked-endpoints=8.8.8.8:53", arguments)
+
+    def test_remote_controller_invocation_and_failure_cleanup_keep_owned_state(self):
+        helper = BoundedCommandCleanupTests.shell_function
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            build_strict_bundle(root)
-            (root / "source-modern_udp_evidence.py").write_bytes(
-                (SCRIPT_DIR / "modern_udp_evidence.py").read_bytes()
-            )
-            # Execute the real caller ordering, with every traffic, process,
-            # and profile operation replaced by a recorder. The only child
-            # interpreter parses the already-captured echo fixture.
-            program = textwrap.dedent(f"""\
-                TMP_DIR={shlex.quote(str(root))}
-                ECHO_CLIENT_RESULT="$TMP_DIR/controlled-echo-client.json"
-                ECHO_SERVER_RESULT="$TMP_DIR/controlled-echo-server.json"
-                MODERN_EVIDENCE="$TMP_DIR/source-modern_udp_evidence.py"
-                RUN_UUID={RUN_UUID} RUN_START_EPOCH_MS=1000 PROFILE=first
-                PASSTHROUGH_DNS=1.1.1.1 INTERCEPT_NTP=162.159.200.1 BLOCKED_DNS=8.8.8.8
-                INSTALLER=/fixture/installer BUILT_APP=/fixture/app PROBE=/fixture/probe
-                ECHO_ENDPOINT=127.0.0.1:44444 ECHO_EXPECTED_COUNT=8192
-                ECHO_SOCKET_COUNT=128 ECHO_DATAGRAMS_PER_SOCKET=64 ECHO_PAYLOAD_BYTES=1200
-                ECHO_INTERVAL_MS=2000 ECHO_CONCURRENCY=32 ECHO_SERVER_PID=4000
-                PRESSURE_COUNT=512 PRESSURE_PAYLOAD_BYTES=4096
-                CONCURRENT_LOAD_DEADLINE_SECONDS=180 UDP_PROBE_ATTEMPT_COUNT=0 UDP_PROBE_PASS_COUNT=0
-                record() {{ printf '%s:%s\\n' "$1" "$PROFILE" >> "$TMP_DIR/call-order"; }}
-                run_probe() {{
-                  record "probe-$3"
-                  LAST_PROBE_PID=42 LAST_PROBE_LOG_START=0 LAST_PROBE_LOG_END=1
-                }}
-                run_sustained_http3() {{ record passthrough-http3; }}
-                run_bounded() {{
-                  [[ "$2" == "$INSTALLER" ]] || exit 90
-                  PROFILE=second
-                  record install
-                  printf '%s\\n' "$@" > "$TMP_DIR/install-arguments"
-                }}
-                start_owned_command() {{ record "$1"; OWNED_COMMAND_SOURCE_PID=43 OWNED_COMMAND_PID=44; }}
-                wait_for_child_until() {{ OWNED_JOIN_REAPED=1; }}
-                close_pressure_probe_window() {{ LAST_PROBE_LOG_END=1; }}
-                close_probe_decision_window() {{ LAST_PROBE_LOG_END=1; }}
-                container_log_line() {{ printf '0\\n'; }}
-                provider_log_line() {{ printf '0\\n'; }}
-                wait_for_connected() {{ :; }}
-                require_provider_identity() {{ :; }}
-                run_intercepted_http3() {{ record intercepted-http3; }}
-                fatal_issue() {{ printf '%s\\n' "$1" >&2; exit 91; }}
-                add_issue() {{ fatal_issue "$1"; }}
-            """) + shell[start:end]
-            result = subprocess.run(["/bin/bash", "-c", program], capture_output=True,
-                                    text=True, timeout=5)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual((root / "call-order").read_text().splitlines(), [
-                "probe-passthrough:first", "probe-ntp:first", "probe-control:first",
-                "passthrough-http3:first", "install:second", "probe-blocked:second",
-                "echo:second", "pressure:second", "probe-recovery:second", "intercepted-http3:second",
-            ])
-            arguments = (root / "install-arguments").read_text().splitlines()
-            self.assertIn("--udp-passthrough-ports=", arguments)
-            self.assertIn("--udp-blocked-endpoints=8.8.8.8:53", arguments)
+            (root / "remote-echo").mkdir()
+            controller = root / "source-echo-controller.py"
+            controller.write_text(textwrap.dedent('''\
+                import json, os, pathlib, stat, sys
+                args = sys.argv[1:]
+                operation = args[0]
+                plan, output, state = map(pathlib.Path, (args[2], args[4], args[6]))
+                assert args[1::2] == ['--plan', '--output-dir', '--state-file']
+                assert sys.flags.isolated == 1 and plan.name == 'controlled-echo-plan.json'
+                assert stat.S_IMODE(state.stat().st_mode) == 0o600
+                assert state.parent != output.parent
+                if operation == 'start':
+                    assert state.read_bytes() == b''
+                    state.write_text('owned')
+                (output / (operation + '.argv.json')).write_text(json.dumps(args))
+                sys.exit(7 if operation == 'stop' and (output / 'deny-stop').exists() else 0)
+            '''))
+            state = root.parent / (root.name + '-state')
+            state.touch(mode=0o600)
+            try:
+                program = helper("monotonic_ms_now") + helper("remote_echo_operation") + helper("stop_echo_server") + textwrap.dedent(f'''\
+                    TMP_DIR={shlex.quote(str(root))}
+                    REMOTE_ECHO_STATE={shlex.quote(str(state))}
+                    REMOTE_ECHO_ENABLED=1 REMOTE_ECHO_START_ATTEMPTED=1 REMOTE_ECHO_JOINED=0
+                    ECHO_SERVER_PID='' ISSUES=0
+                    run_bounded() {{
+                      printf '%s\\n' "$1" >> "$TMP_DIR/deadlines"
+                      shift
+                      "$@"
+                    }}
+                    add_issue() {{ ISSUES=$((ISSUES + 1)); }}
+                    remote_echo_operation start 60 || exit 90
+                    touch "$TMP_DIR/remote-echo/deny-stop"
+                    stop_echo_server
+                    [[ -f "$REMOTE_ECHO_STATE" && "$ISSUES" == 2 ]] || exit 91
+                    rm "$TMP_DIR/remote-echo/deny-stop"
+                    stop_echo_server
+                    [[ ! -e "$REMOTE_ECHO_STATE" && "$ISSUES" == 3 ]] || exit 92
+                ''')
+                result = subprocess.run(["/bin/bash", "-c", program], capture_output=True, text=True, timeout=5)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual((root / "deadlines").read_text().splitlines(), ["60"] * 3)
+                rows = [line.split("\t") for line in (root / "remote-echo/operations.tsv").read_text().splitlines()]
+                self.assertEqual([(row[0], row[-1]) for row in rows], [("start", "0"), ("stop", "7"), ("stop", "0")])
+                for row in rows:
+                    self.assertLessEqual(int(row[1]), int(row[2]))
+                    self.assertLessEqual(int(row[3]), int(row[4]))
+            finally:
+                state.unlink(missing_ok=True)
 
     def test_live_echo_metrics_replay_raw_timing_before_counting_a_pass(self):
         shell = (SCRIPT_DIR / "test_modern_udp_flow.sh").read_text()

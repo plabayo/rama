@@ -872,6 +872,7 @@ def _retain_semantic_artifact(name: str) -> bool:
         ABSENCE_NAME,
         MANIFEST_NAME,
         "crash-snapshot.tsv",
+        "controlled-echo-plan.json",
         "stress-workload.tsv",
         GENERATION_SAMPLES_NAME,
         *SOAK_SLEEP_ARTIFACTS,
@@ -1221,6 +1222,7 @@ def _verify_and_capture(
 def verify_release_set(
     directories: list[Path], required_kinds: set[str] | None = None,
     expected_http_host: str = DEFAULT_HTTP_TEST_HOST,
+    expected_echo_plan_sha256: str | None = None,
 ) -> list[dict[str, str]]:
     """Verify passing runs came from one clean source and provider generation."""
     expected_http_host = validate_http_test_host(expected_http_host)
@@ -1271,7 +1273,7 @@ def verify_release_set(
             f"release set kind mismatch: expected={sorted(required_kinds)} actual={sorted(kinds)}"
         )
     for envelope in verified:
-        _validate_release_kind(envelope, expected_http_host)
+        _validate_release_kind(envelope, expected_http_host, expected_echo_plan_sha256)
     claims_by_kind = {
         envelope.status["evidence_kind"]: envelope.claims
         for envelope in verified
@@ -1427,10 +1429,13 @@ def _run_python_validator(
         raise EvidenceError("workload-specific semantic validator could not run") from error
 
 
-def _validate_modern_domain_semantics(parser_path: Path, root: Path) -> None:
-    result = _run_python_validator(
-        [str(parser_path), "verify-bundle", str(root)], timeout=180
-    )
+def _validate_modern_domain_semantics(
+    parser_path: Path, root: Path, expected_echo_plan_sha256: str | None = None,
+) -> None:
+    arguments = [str(parser_path), "verify-bundle", str(root)]
+    if expected_echo_plan_sha256 is not None:
+        arguments += ["--expected-echo-plan-sha256", expected_echo_plan_sha256]
+    result = _run_python_validator(arguments, timeout=180)
     if result.returncode != 0 or result.stdout != "0\n":
         detail = (result.stderr or result.stdout).strip()
         raise EvidenceError(
@@ -1483,6 +1488,12 @@ def _validate_modern_echo(
     payload_bytes = _canonical_uint(udp["echo_payload_bytes"], 65_535)
     digest = udp["echo_payload_set_sha256"]
     endpoint = udp["echo_endpoint"]
+    # The pinned domain replay below proves this private bind against the
+    # independently expected public plan and raw platform lifecycle records.
+    server_endpoint = endpoint
+    if (root / "controlled-echo-plan.json").exists():
+        ready = _json_object(_read_regular_bytes(root / "controlled-echo-ready.json"), "remote echo ready")
+        server_endpoint = ready.get("endpoint")
     flow_count = _canonical_uint(udp["echo_flow_count"], 512)
     if (
         not 128 <= sockets <= 450 or per_socket != 64
@@ -1501,7 +1512,7 @@ def _validate_modern_echo(
             or value.get("schema_complete") is not True
             or value.get("kind") != kind
             or value.get("run_uuid") != run_uuid
-            or value.get("endpoint") != endpoint
+            or value.get("endpoint") != (endpoint if value is client else server_endpoint)
             or value.get("expected_count") != expected
             or value.get("passed") is not True
         ):
@@ -1946,7 +1957,9 @@ def _validate_modern_dial9(
         raise EvidenceError("modern Dial9 copied trace set mismatch")
 
 
-def _validate_modern_semantics(envelope: VerifiedEnvelope) -> None:
+def _validate_modern_semantics(
+    envelope: VerifiedEnvelope, expected_echo_plan_sha256: str | None = None,
+) -> None:
     required = (
         "udp-evidence-status.tsv",
         "controlled-echo-client.json",
@@ -2043,7 +2056,7 @@ def _validate_modern_semantics(envelope: VerifiedEnvelope) -> None:
             raise EvidenceError("modern workload claims do not match terminal cardinalities")
         echo_identities = _validate_modern_echo(root, udp, status["run_uuid"])
         _validate_modern_dial9(root, udp, echo_identities, status["git_head"])
-        _validate_modern_domain_semantics(parser_path, root)
+        _validate_modern_domain_semantics(parser_path, root, expected_echo_plan_sha256)
 
 
 def _extract_soak_validator(shell_source: bytes) -> str:
@@ -2516,11 +2529,22 @@ def _validate_stress_series_semantics(envelope: VerifiedEnvelope) -> None:
 
 def _validate_release_kind(
     envelope: VerifiedEnvelope, expected_http_host: str = DEFAULT_HTTP_TEST_HOST,
+    expected_echo_plan_sha256: str | None = None,
 ) -> None:
     _validate_release_http_host(envelope, expected_http_host)
     kind = envelope.status["evidence_kind"]
     if kind == "modern_udp":
-        _validate_modern_semantics(envelope)
+        if (not isinstance(expected_echo_plan_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", expected_echo_plan_sha256) is None):
+            raise EvidenceError("modern release requires an independently expected echo plan SHA256")
+        _required_artifacts(envelope, ("controlled-echo-plan.json",), "remote echo")
+        plan_bytes = envelope.retained["controlled-echo-plan.json"]
+        if hashlib.sha256(plan_bytes).hexdigest() != expected_echo_plan_sha256:
+            raise EvidenceError("modern independently expected echo plan digest mismatch")
+        plan = _json_object(plan_bytes, "remote echo plan")
+        if plan.get("git_head") != envelope.status["git_head"] or plan.get("run_uuid") != envelope.status["run_uuid"]:
+            raise EvidenceError("modern remote echo plan source/run identity mismatch")
+        _validate_modern_semantics(envelope, expected_echo_plan_sha256)
     elif kind == "soak":
         _validate_soak_semantics(envelope)
     elif kind == "stress-series":
@@ -3887,6 +3911,7 @@ def _parser() -> argparse.ArgumentParser:
     release.add_argument("directories", nargs="+", type=Path)
     release.add_argument("--require-kind", action="append")
     release.add_argument("--expected-http-host", default=DEFAULT_HTTP_TEST_HOST)
+    release.add_argument("--expected-echo-plan-sha256")
     return parser
 
 
@@ -3955,6 +3980,7 @@ def main(arguments: list[str] | None = None) -> int:
                 args.directories,
                 set(args.require_kind) if args.require_kind else None,
                 args.expected_http_host,
+                args.expected_echo_plan_sha256,
             )
             print("verified_release_set\t" + ",".join(row["evidence_kind"] for row in values))
         else:  # pragma: no cover - argparse makes this unreachable

@@ -705,9 +705,59 @@ flow fixture rejects a peer change or tuple reuse within one socket ID; a new
 flow after intentional idle expiry needs a new identity. The receiver bounds
 indices to512 sockets and64 packets each, and retained payload to256MiB.
 Current replay requires schema2; old receipts lack these address records.
-The signed modern harness currently supplies its own loopback echo server and
-tests H3 pass-through plus one intercepted request. These commands do not extend its release
-seal or replace the required idle, mixed TCP, recovery and performance phases.
+The signed modern harness defaults to a local loopback server for developer
+checks. A controlled remote run uses an independently reviewed plan and a
+standard-library Python controller supplied by the operator:
+
+```sh
+RAMA_TPROXY_E2E_ECHO_PLAN="$ECHO_PLAN" \
+RAMA_TPROXY_E2E_ECHO_PLAN_SHA256="$EXPECTED_ECHO_PLAN_SHA256" \
+RAMA_TPROXY_E2E_ECHO_CONTROLLER="$ECHO_CONTROLLER" \
+RAMA_TPROXY_E2E_ECHO_LAUNCHER="$ECHO_LAUNCHER" \
+  just test-modern-udp-signed
+```
+
+The first supported plan is `remote_active_v1`: exactly 128 sockets ×64 packets,
+1200 bytes, 2000 ms pacing and32 workers. The plan fixes a fresh run UUID,
+source HEAD, public UDP/443 target, owned Fly Machine and previous instance,
+full deployment configuration digest, image index and resolved image digests,
+and probe/launcher/controller source hashes. `REMOTE_PLAN_KEYS` and
+`REMOTE_PROFILE` in `scripts/modern_udp_evidence.py` define the contract. Keep
+the expected plan digest outside the evidence directory and supply that same
+value to release verification; recomputing it from an untrusted bundle removes
+this independent check. A plan for a previous source HEAD cannot qualify a new
+build.
+
+The harness captures the external sources once, then runs the captured
+controller with isolated Python and fixed `start`, `join` and `stop` arguments:
+`--plan`, `--output-dir`, and `--state-file`. Start has60 seconds to establish
+readiness before the client; join has45 seconds; failure cleanup has60 seconds.
+The state path is an existing empty mode0600 file outside the sealed bundle.
+The controller must accept that reservation and preserve ownership/lease state
+there if cleanup fails. Credentials and lease nonces must remain outside public
+evidence. Use bounded exclusive ownership when signalling the remote Machine;
+a separate instance check followed by a bare Machine-ID stop is insufficient
+under competing controllers.
+
+The maintained validator contains no cloud client. It reads captured Machine
+API observations and complete framed logs, verifies the exact new instance,
+source/runtime/configuration, readiness while alive, and normal init exit joined
+by instance and exit-event ID. Nonzero exits, restarts, OOM, requested stops,
+missing/contradictory frames and unsuccessful controller operations fail replay.
+Public client target, actual private receiver bind and NAT peers remain distinct.
+Local wall and kernel-monotonic clocks bracket the client; remote clock epochs
+are not compared with macOS clocks. The receiver's600-second lifetime check uses
+its own wall-clock fields. Offline replay never executes the archived controller
+or launcher. This evidence trusts the pinned operator/controller and capture
+channel; source hashes are not remote attestation.
+
+Canonical release dispatch now requires this remote plan and
+`--expected-echo-plan-sha256`; local loopback bundles remain developer diagnostics.
+This integration proves only the sustained active population and its existing
+provider/Dial9 bindings. It does not add idle-expiry, mixed-TCP, burst/public
+recovery, or actual500-flow admission-accounting proof, and cannot replace those
+release phases. `expected_flow_hard_limit=500` is an expectation, not measured
+capacity evidence.
 
 ### Automated evidence regressions
 
@@ -869,10 +919,11 @@ verification additionally requires a caller-selected expected host, independent
 of the artifact and environment:
 
 ```sh
-just verify-gate20-evidence "$MODERN" "$SOAK" "$SERIES" "$TEST_HOST"
+just verify-gate20-evidence "$MODERN" "$SOAK" "$SERIES" "$EXPECTED_ECHO_PLAN_SHA256" "$TEST_HOST"
 # Equivalent explicit CLI policy:
 python3 scripts/signed_run_evidence.py verify-release-set \
   --expected-http-host "$TEST_HOST" \
+  --expected-echo-plan-sha256 "$EXPECTED_ECHO_PLAN_SHA256" \
   --require-kind modern_udp --require-kind soak --require-kind stress-series \
   "$MODERN" "$SOAK" "$SERIES"
 ```
