@@ -39,6 +39,7 @@ pub struct CurlExportOptions {
     explicit_method: bool,
     preserve_host_header: bool,
     preserve_framing_headers: bool,
+    proxy_tunnel: bool,
     script_compatibility: CurlScriptCompatibility,
 }
 
@@ -51,7 +52,16 @@ impl CurlExportOptions {
             explicit_method: true,
             preserve_host_header: true,
             preserve_framing_headers: false,
+            proxy_tunnel: false,
             script_compatibility: CurlScriptCompatibility::CrossPlatform,
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Enable or disable curl's `--proxytunnel` option for HTTP(S) proxies.
+        pub fn proxy_tunnel(mut self, enabled: bool) -> Self {
+            self.proxy_tunnel = enabled;
+            self
         }
     }
 
@@ -654,6 +664,14 @@ fn write_curl_command_for_request_parts(
         && let Some(proxy_addr) = route.proxy_address()
     {
         writer.write_tuple("-x", proxy_addr, true);
+        if options.proxy_tunnel
+            && proxy_addr
+                .protocol
+                .as_ref()
+                .is_none_or(|protocol| protocol.is_http())
+        {
+            writer.write_single("--proxytunnel");
+        }
         if let Some(ProxyCredential::Bearer(bearer)) = &proxy_addr.credential
             && let Some(value) = ProxyAuthorization(bearer.clone()).encode_to_value()
         {
@@ -1004,6 +1022,30 @@ mod tests {
                 NL = rama_utils::str::NATIVE_NEWLINE
             ),
         );
+    }
+
+    #[test]
+    fn proxy_tunnel_option_is_emitted_only_for_http_proxies() {
+        for (proxy, expected) in [
+            ("http://proxy.example:8080", true),
+            ("https://proxy.example:8443", true),
+            ("socks5://proxy.example:1080", false),
+        ] {
+            let (parts, _) = crate::Request::builder()
+                .uri("http://origin.example/path")
+                .body(())
+                .unwrap()
+                .into_parts();
+            parts
+                .extensions
+                .insert(ProxyRoute::Proxy(proxy.parse::<ProxyAddress>().unwrap()));
+
+            let command = cmd_string_for_request_parts_with_options(
+                &parts,
+                CurlExportOptions::default().with_proxy_tunnel(true),
+            );
+            assert_eq!(command.contains("--proxytunnel"), expected, "{command}");
+        }
     }
 
     #[test]

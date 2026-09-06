@@ -467,8 +467,19 @@ where
             None => {}
         }
 
-        self.connect_routes_with_timeout(input, &DIRECT_PROXY_ROUTES, None)
-            .await
+        // No route decision was requested. Preserve that absence instead of
+        // turning an ordinary connection into an explicit direct-route attempt.
+        // Keep the same attempt isolation as an explicitly selected route.
+        let attempt = input.fork();
+        match self.timeout {
+            Some(timeout) => tokio::time::timeout(timeout, self.inner.connect(attempt))
+                .await
+                .map_err(|error| {
+                    ConnectionError::local(error, ConnectionErrorKind::Timeout)
+                        .context("proxy route connector: overall timeout")
+                })?,
+            None => self.inner.connect(attempt).await,
+        }
     }
 }
 
@@ -550,6 +561,59 @@ mod tests {
             ProxyRoute::Direct => "DIRECT".to_owned(),
             ProxyRoute::Proxy(address) => address.address.host.to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn unconfigured_routes_preserve_absence_with_or_without_timeout() {
+        #[derive(Debug, Extension)]
+        struct AttemptMarker;
+
+        for timeout in [None, Some(Duration::from_secs(5))] {
+            let inner = service_fn(|input: ConnectRequest| async move {
+                assert!(!input.extensions.contains::<ProxyRoute>());
+                assert!(!input.extensions.contains::<ProxyRouteIndex>());
+                input.extensions.insert(AttemptMarker);
+                Ok::<_, Infallible>(EstablishedClientConnection {
+                    input,
+                    conn: ServiceInput::new(()),
+                })
+            });
+            let mut connector = ProxyRoutesConnector::new(inner);
+            if let Some(timeout) = timeout {
+                connector.set_timeout(timeout);
+            }
+            let input = ConnectRequest::new(HostWithPort::example_domain_http());
+            let original_extensions = input.extensions.clone();
+            let established = connector.serve(input).await.unwrap();
+            assert!(!established.input.extensions.contains::<ProxyRoute>());
+            assert!(
+                !established
+                    .conn
+                    .extensions()
+                    .contains::<crate::client::EstablishedProxyRoute>()
+            );
+            assert!(established.input.extensions.contains::<AttemptMarker>());
+            assert!(!original_extensions.contains::<AttemptMarker>());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unconfigured_routes_still_obey_the_overall_timeout() {
+        let inner = service_fn(|_: ConnectRequest| async move {
+            std::future::pending::<
+                Result<EstablishedClientConnection<ServiceInput<()>, ConnectRequest>, Infallible>,
+            >()
+            .await
+        });
+        let connector = ProxyRoutesConnector::new(inner).with_timeout(Duration::from_secs(5));
+        let start = Instant::now();
+        let error = connector
+            .serve(ConnectRequest::new(HostWithPort::example_domain_http()))
+            .await
+            .unwrap_err();
+        assert_eq!(error.domain(), ConnectionErrorDomain::Local);
+        assert_eq!(error.kind(), ConnectionErrorKind::Timeout);
+        assert_eq!(start.elapsed(), Duration::from_secs(5));
     }
 
     #[tokio::test]

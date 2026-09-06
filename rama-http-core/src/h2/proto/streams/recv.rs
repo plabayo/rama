@@ -194,8 +194,31 @@ impl Recv {
             counts.inc_num_recv_streams(stream);
         }
 
-        if !stream.content_length.is_head() {
-            use super::stream::ContentLength;
+        use super::stream::ContentLength;
+
+        let ignore_content_length = match stream.content_length {
+            ContentLength::Head => true,
+            ContentLength::Connect => match frame.pseudo().status {
+                Some(status) if status.is_success() => {
+                    // A successful CONNECT switches this stream to tunnel
+                    // data. RFC 9110 requires response framing headers to be
+                    // ignored, regardless of their value.
+                    stream.content_length = ContentLength::Omitted;
+                    true
+                }
+                Some(status) if status.is_informational() => true,
+                Some(_) => {
+                    // A rejected CONNECT is an ordinary HTTP response and its
+                    // body retains normal Content-Length validation.
+                    stream.content_length = ContentLength::Omitted;
+                    false
+                }
+                None => true,
+            },
+            ContentLength::Omitted | ContentLength::Remaining(_) => false,
+        };
+
+        if !ignore_content_length {
             use rama_http_types::header;
 
             if let Some(content_length) = frame.fields().get(header::CONTENT_LENGTH) {
@@ -204,10 +227,18 @@ impl Recv {
                     return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());
                 };
 
-                stream.content_length = ContentLength::Remaining(content_length);
+                // CONNECT requests have no HTTP content: subsequent DATA is
+                // tunnel traffic (RFC 9110 section 9.3.6 / RFC 9113 section 8.5).
+                // Validate the field syntax, but do not count tunnel bytes
+                // against it, including when a client sends Content-Length: 0.
+                let is_connect = frame.pseudo().method == Some(rama_http_types::Method::CONNECT);
+                if !is_connect {
+                    stream.content_length = ContentLength::Remaining(content_length);
+                }
                 // END_STREAM on headers frame with non-zero content-length is malformed.
                 // https://datatracker.ietf.org/doc/html/rfc9113#section-8.1.1
-                if frame.is_end_stream()
+                if !is_connect
+                    && frame.is_end_stream()
                     && content_length > 0
                     && frame
                         .pseudo()

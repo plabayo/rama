@@ -2,7 +2,7 @@ use rama_core::error::BoxErrorExt as _;
 use rama_core::{
     Service,
     error::{BoxError, ErrorExt},
-    extensions::{Extensions, ExtensionsRef},
+    extensions::{Egress, Extensions, ExtensionsRef},
     telemetry::tracing,
 };
 use rama_http::StreamingBody;
@@ -45,6 +45,14 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut req: Request<Body>) -> Result<Self::Output, Self::Error> {
+        // Request-target encoding must follow the connection that survived
+        // route fallback and pool selection, never the requested ProxyRoute.
+        // A fresh snapshot also shadows stale markers when the connection
+        // has no established route. Request-side route intent stays intact.
+        // Keep this independent of EasyHttpWebClient/HttpForwardProxyLayer:
+        // standalone backend callers need the same encoding guarantee.
+        req.extensions().insert(Egress(self.extensions.clone()));
+
         // Check if this http connection can actually be used for this request version
         match (&self.sender, req.version()) {
             (SendRequest::Http1(_), Version::HTTP_10 | Version::HTTP_11)
@@ -185,6 +193,91 @@ mod tests {
         Body::new(OnIncompleteBody::new(body, move || {
             mark_broken(&extensions)
         }))
+    }
+
+    #[tokio::test]
+    async fn http1_sender_replaces_stale_connection_snapshots_before_encoding() {
+        use rama_core::ServiceInput;
+        use rama_net::{
+            address::ProxyAddress,
+            client::{EstablishedProxyRoute, ProxyRoute},
+        };
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let proxy: ProxyAddress = "http://proxy.example:8080".parse().unwrap();
+        for route in [
+            None,
+            Some(EstablishedProxyRoute::Direct),
+            Some(EstablishedProxyRoute::Tunnel(proxy.clone())),
+            Some(EstablishedProxyRoute::Tunnel(
+                "socks5://proxy.example:1080".parse().unwrap(),
+            )),
+            Some(EstablishedProxyRoute::Forward(proxy.clone())),
+        ] {
+            let is_forward = route
+                .as_ref()
+                .is_some_and(EstablishedProxyRoute::is_http_forward);
+            let (io, mut peer) = tokio::io::duplex(4096);
+            let (sender, connection) =
+                rama_http_core::client::conn::http1::handshake(ServiceInput::new(io))
+                    .await
+                    .unwrap();
+            tokio::spawn(async move {
+                drop(connection.await);
+            });
+            let extensions = Extensions::new();
+            if let Some(route) = route.clone() {
+                extensions.insert(route);
+            }
+            let service = HttpClientService {
+                sender: SendRequest::Http1(Mutex::new(sender)),
+                extensions,
+            };
+            let request = Request::builder()
+                .uri("http://origin.example/resource")
+                .body(Body::empty())
+                .unwrap();
+            request
+                .extensions()
+                .insert(ProxyRoute::Proxy(proxy.clone()));
+            let stale_route = if is_forward {
+                EstablishedProxyRoute::Direct
+            } else {
+                EstablishedProxyRoute::Forward(proxy.clone())
+            };
+            request.extensions().insert(stale_route.clone());
+            let stale_egress = Extensions::new();
+            stale_egress.insert(stale_route);
+            request.extensions().insert(Egress(stale_egress));
+
+            let (response, head) = tokio::time::timeout(Duration::from_secs(2), async {
+                tokio::join!(service.serve(request), async {
+                    let mut head = Vec::new();
+                    while !head.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        peer.read_exact(&mut byte).await.unwrap();
+                        head.push(byte[0]);
+                    }
+                    peer.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                        .await
+                        .unwrap();
+                    head
+                })
+            })
+            .await
+            .expect("HTTP exchange timed out");
+            response.unwrap();
+            let expected = if is_forward {
+                b"GET http://origin.example/resource HTTP/1.1\r\n".as_slice()
+            } else {
+                b"GET /resource HTTP/1.1\r\n".as_slice()
+            };
+            assert!(
+                head.starts_with(expected),
+                "route: {route:?}, head: {head:?}"
+            );
+        }
     }
 
     #[test]

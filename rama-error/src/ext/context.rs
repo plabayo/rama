@@ -1,7 +1,7 @@
 use core::fmt::{self, Write as _};
 
 use crate::{
-    BoxError,
+    BoxError, error_chain,
     std::{Box, String},
 };
 
@@ -248,19 +248,15 @@ impl fmt::Display for ErrorWithContext {
         // Cap the cause-chain walk so a malformed Error impl that returns a
         // cycle from .source() cannot produce an unbounded loop here.
         const MAX_CAUSE_DEPTH: usize = 64;
-        let mut idx = 0usize;
-        let mut cur = self.source.as_ref().source();
-        if cur.is_some() {
+        if let Some(source) = self.source.as_ref().source() {
             writeln!(f, "Caused by:")?;
-        }
-        while let Some(err) = cur {
-            if idx >= MAX_CAUSE_DEPTH {
-                writeln!(f, "  ... (truncated)")?;
-                break;
+            for (idx, err) in error_chain(source, MAX_CAUSE_DEPTH + 1).enumerate() {
+                if idx == MAX_CAUSE_DEPTH {
+                    writeln!(f, "  ... (truncated)")?;
+                    break;
+                }
+                writeln!(f, "  {idx}: {err}")?;
             }
-            writeln!(f, "  {idx}: {err}")?;
-            idx += 1;
-            cur = err.source();
         }
 
         Ok(())
@@ -469,6 +465,40 @@ mod tests {
         err2.insert_key_value("q", "a\"b\\c");
         let s2 = format!("{err2}");
         assert!(s2.contains(r#"q="a\"b\\c""#), "got: {s2:?}");
+    }
+
+    #[test]
+    fn cause_chain_truncation_marker_requires_an_omitted_cause() {
+        #[derive(Debug)]
+        struct Cause(Option<Box<Self>>);
+
+        impl fmt::Display for Cause {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("cause")
+            }
+        }
+
+        impl StdError for Cause {
+            fn source(&self) -> Option<&(dyn StdError + 'static)> {
+                self.0.as_deref().map(|source| source as _)
+            }
+        }
+
+        for cause_count in [0, 64, 65] {
+            let mut source = Cause(None);
+            for _ in 0..cause_count {
+                source = Cause(Some(Box::new(source)));
+            }
+            let err = ErrorWithContext::new(Box::new(source));
+            let output = format!("{err:#}");
+            assert_eq!(
+                output.matches(": cause\n").count(),
+                cause_count.min(64),
+                "cause count {cause_count}: {output:?}",
+            );
+            assert_eq!(output.contains("Caused by:"), cause_count > 0);
+            assert_eq!(output.contains("(truncated)"), cause_count > 64);
+        }
     }
 
     #[test]

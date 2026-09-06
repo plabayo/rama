@@ -173,7 +173,12 @@ impl<T> EasyHttpConnectorBuilder<T, TransportStage> {
 
 impl<T> EasyHttpConnectorBuilder<T, DnsStage> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Add a custom proxy tls connector that will be used to setup a tls connection to the proxy
+    /// Add a custom proxy TLS connector used to establish TLS to an HTTPS proxy.
+    ///
+    /// The layer must attach `rama_tls::client::NegotiatedTlsParameters` to
+    /// the established connection. Rama uses this as positive proof that TLS
+    /// was negotiated and to select the proxy-side HTTP version; missing
+    /// evidence fails closed before proxy HTTP is sent.
     pub fn with_custom_tls_proxy_connector<L>(
         self,
         connector_layer: L,
@@ -709,9 +714,11 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage<true>> {
     /// This will create a [`MultiplexPool`](crate::net::client::pool::MultiplexPool)
     /// using the provided limits and will use
     /// [`HttpConnIdentifier`](super::HttpConnIdentifier) to group connections on
-    /// protocol, authority, selected route, physical transport and any HTTP
-    /// version requirement. The default proxy-route failure cache is installed
-    /// behind the pool, so reusable connections bypass negative-cache checks.
+    /// protocol, authority, selected route, physical transport, any HTTP
+    /// version requirement, and the selected plaintext HTTP proxy mode. This
+    /// keeps forward-proxy connections separate from CONNECT tunnels to the
+    /// same proxy. The default proxy-route failure cache is installed behind
+    /// the pool, so reusable connections bypass negative-cache checks.
     ///
     /// Use `wait_for_pool_timeout` to limit how long we wait for the pool to give us a connection
     ///
@@ -760,6 +767,12 @@ impl<T> EasyHttpConnectorBuilder<T, HttpStage<true>> {
     /// connect-request adapter or proxy-route connector. It installs the default proxy-route failure cache behind
     /// the custom pool. Callers that want route-aware fallback around a custom pool can compose those layers
     /// explicitly around their [`PooledConnector`].
+    ///
+    /// When the connector supports plaintext HTTP through an HTTP proxy, the
+    /// custom [`ReqToConnId`] must keep ordinary forward-proxy connections
+    /// separate from CONNECT tunnels to the same proxy. Rama's
+    /// [`HttpConnIdentifier`](super::HttpConnIdentifier) includes this
+    /// distinction automatically.
     ///
     /// [`Pool`]: rama_net::client::pool::Pool
     /// [`ReqToConnId`]: rama_net::client::pool::ReqToConnID
@@ -858,6 +871,12 @@ impl<T> EasyHttpConnectorBuilder<T, ProxyRouteFailureCacheStage> {
     }
 
     /// Use a custom connection pool with the selected failure-cache policy.
+    ///
+    /// For a proxy-capable connector, the custom
+    /// [`ReqToConnID`](rama_net::client::pool::ReqToConnID) must partition
+    /// plaintext HTTP forward-proxy connections from CONNECT tunnels to the
+    /// same proxy. [`HttpConnIdentifier`](super::HttpConnIdentifier) does so by
+    /// default.
     pub fn with_custom_connection_pool<P, R>(
         self,
         pool: P,

@@ -44,6 +44,10 @@
 //! Boxed errors can be downcast to inspect their concrete type, but only at the
 //! top level. Downcasting does not walk the error source chain.
 //!
+//! The [`error_chain`] function visits an error and its sources up to an explicit
+//! limit, including cyclic or unusually long chains. Use [`error_chain_with`] to
+//! select causes exposed through APIs other than [`core::error::Error::source`].
+//!
 //! # Error extension
 //!
 //! The [`ErrorExt`] trait provides extension methods for working with errors.
@@ -170,6 +174,9 @@ use core::error::Error as StdError;
 ///
 /// See the [module level documentation](crate) for more information.
 pub type BoxError = self::std::Box<dyn StdError + Send + Sync + 'static>;
+
+mod chain;
+pub use chain::{error_chain, error_chain_with};
 
 mod ext;
 pub use ext::{BoxErrorExt, ErrorContext, ErrorExt};

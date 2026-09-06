@@ -32,7 +32,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: 1.97.1
+  RUST_TOOLCHAIN: stable
   SEGMENT_DOWNLOAD_TIMEOUT_MINS: 5
 
 permissions:

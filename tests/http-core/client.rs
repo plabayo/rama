@@ -1919,7 +1919,7 @@ mod conn {
     fn uri_absolute_form() {
         use rama_net::Protocol;
         use rama_net::address::{HostWithPort, ProxyAddress};
-        use rama_net::client::ProxyRoute;
+        use rama_net::client::EstablishedProxyRoute;
 
         let (server, addr) = setup_std_test_server();
         let rt = support::runtime();
@@ -1935,10 +1935,11 @@ mod conn {
             let n = sock.read(&mut buf).expect("read 1");
 
             // Notably:
-            // - absolute-form on the wire, because a forward HTTP proxy is configured
-            //   via the `ProxyRoute` extension below. The h1 encoder owns the wire
-            //   request-target (the h1 analog of `Pseudo::request`) and selects
-            //   absolute-form so the proxy learns the origin.
+            // - absolute-form on the wire, because the connection is explicitly
+            //   identified as an established HTTP forward-proxy connection below.
+            //   The h1 encoder owns the wire request-target (the h1 analog of
+            //   `Pseudo::request`) and selects absolute-form so the proxy learns
+            //   the origin.
             // - Still no Host header, since it wasn't set
             let expected = "GET http://rama.local/a HTTP/1.1\r\n\r\n";
             assert_eq!(s(&buf[..n]), expected);
@@ -1959,14 +1960,14 @@ mod conn {
             .uri("http://rama.local/a")
             .body(Empty::<Bytes>::new())
             .unwrap();
-        // Without this the low-level h1 client now coerces the absolute URI to
-        // origin-form (`GET /a`); the forward-proxy `ProxyRoute` is the routing
-        // signal that selects absolute-form.
-        req.extensions().insert(ProxyRoute::Proxy(ProxyAddress {
-            address: HostWithPort::example_domain_http(),
-            credential: None,
-            protocol: Some(Protocol::HTTP),
-        }));
+        // A low-level h1 client has no connector to publish the established
+        // route, so its caller must supply that connection fact explicitly.
+        req.extensions()
+            .insert(EstablishedProxyRoute::Forward(ProxyAddress {
+                address: HostWithPort::example_domain_http(),
+                credential: None,
+                protocol: Some(Protocol::HTTP),
+            }));
 
         let res = client.send_request(req).and_then(move |res| {
             assert_eq!(res.status(), rama::http::StatusCode::OK);
@@ -2890,7 +2891,7 @@ mod conn {
         let (client_io, server_io, _) = setup_duplex_test_server();
 
         // Spawn an HTTP2 server that asks for bread and responds with baguette.
-        tokio::spawn(async move {
+        let server_task = tokio::spawn(async move {
             let sock = ServiceInput::new(server_io);
             let mut h2 = rama::http::core::h2::server::handshake(sock).await.unwrap();
 
@@ -2902,7 +2903,26 @@ mod conn {
 
             let mut body = req.into_body();
 
-            let mut send_stream = respond.send_response(Response::new(()), false).unwrap();
+            respond
+                .send_informational(
+                    Response::builder()
+                        .status(StatusCode::EARLY_HINTS)
+                        .header("content-length", "not-a-number")
+                        .body(())
+                        .unwrap(),
+                )
+                .unwrap();
+
+            let mut send_stream = respond
+                .send_response(
+                    Response::builder()
+                        .status(StatusCode::CREATED)
+                        .header("content-length", "999")
+                        .body(())
+                        .unwrap(),
+                    false,
+                )
+                .unwrap();
 
             send_stream.send_data("Bread?".into(), true).unwrap();
 
@@ -2910,7 +2930,11 @@ mod conn {
             assert_eq!(&bytes[..], b"Baguette!");
             _ = body.flow_control().release_capacity(bytes.len());
 
-            assert!(body.data().await.is_none());
+            while let Some(bytes) = body.data().await {
+                let bytes = bytes.unwrap();
+                assert!(bytes.is_empty(), "unexpected extra CONNECT tunnel data");
+                _ = body.flow_control().release_capacity(bytes.len());
+            }
         });
 
         let io = ServiceInput::new(client_io);
@@ -2927,7 +2951,7 @@ mod conn {
             .body(Empty::<Bytes>::new())
             .unwrap();
         let res = client.send_request(req).await.expect("send_request");
-        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.status(), StatusCode::CREATED);
 
         let mut upgraded = rama::http::io::upgrade::handle_upgrade(res).await.unwrap();
 
@@ -2938,6 +2962,7 @@ mod conn {
         upgraded.write_all(b"Baguette!").await.unwrap();
 
         upgraded.shutdown().await.unwrap();
+        server_task.await.unwrap();
     }
 
     #[tokio::test]
@@ -2989,6 +3014,82 @@ mod conn {
         assert_eq!(body, "No bread for you!");
 
         done_tx.send(()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn h2_connect_rejected_validates_content_length() {
+        for (content_length, valid) in [("1", false), ("17", true), ("999", false)] {
+            let (client_io, server_io, _) = setup_duplex_test_server();
+            let (headers_received_tx, headers_received_rx) = oneshot::channel();
+            let (done_tx, done_rx) = oneshot::channel();
+
+            let server_task = tokio::spawn(async move {
+                let sock = ServiceInput::new(server_io);
+                let mut h2 = rama::http::core::h2::server::handshake(sock).await.unwrap();
+
+                let (req, mut respond) = h2.accept().await.unwrap().unwrap();
+                let driver = tokio::spawn(async move {
+                    poll_fn(|cx| h2.poll_closed(cx)).await.unwrap();
+                });
+                assert_eq!(req.method(), Method::CONNECT);
+
+                let res = Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .header("content-length", content_length)
+                    .body(())
+                    .unwrap();
+                let mut send_stream = respond.send_response(res, false).unwrap();
+                // Deliver the headers before malformed DATA so a transport
+                // failure cannot stand in for response-body validation.
+                headers_received_rx.await.unwrap();
+                send_stream
+                    .send_data("No bread for you!".into(), true)
+                    .unwrap();
+                done_rx.await.unwrap();
+                driver.abort();
+            });
+
+            let io = ServiceInput::new(client_io);
+            let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+                .handshake::<_, Empty<Bytes>>(io)
+                .await
+                .expect("http handshake");
+
+            let client_task = tokio::spawn(async move {
+                conn.await
+                    .expect("stream errors must not close the connection");
+            });
+
+            let req = Request::connect(Uri::parse_authority_form("localhost").unwrap())
+                .body(Empty::new())
+                .unwrap();
+            let res = tokio::time::timeout(Duration::from_secs(2), client.send_request(req))
+                .await
+                .expect("rejected CONNECT response headers must arrive")
+                .expect("rejected CONNECT must expose its response headers");
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+            headers_received_tx.send(()).unwrap();
+            let body = tokio::time::timeout(Duration::from_secs(2), concat(res))
+                .await
+                .expect("rejected CONNECT response body must finish");
+            if valid {
+                assert_eq!(body.unwrap(), "No bread for you!");
+            } else {
+                let error = body.expect_err("rejected CONNECT must validate content-length");
+                let h2_error = std::error::Error::source(&error)
+                    .and_then(|cause| cause.downcast_ref::<rama::http::core::h2::Error>())
+                    .expect("invalid content-length must cause an H2 stream error");
+                assert_eq!(
+                    h2_error.reason(),
+                    Some(rama::http::core::h2::Reason::PROTOCOL_ERROR),
+                    "content-length: {content_length}",
+                );
+            }
+
+            done_tx.send(()).unwrap();
+            server_task.await.unwrap();
+            client_task.abort();
+        }
     }
 
     #[tokio::test]

@@ -280,16 +280,8 @@ impl Error {
     }
 
     pub(crate) fn find_source<E: StdError + 'static>(&self) -> Option<&E> {
-        let mut cause = self.source();
-        while let Some(err) = cause {
-            if let Some(typed) = err.downcast_ref() {
-                return Some(typed);
-            }
-            cause = err.source();
-        }
-
-        // else
-        None
+        // Public predicates also inspect user-provided causes, which may cycle.
+        rama_core::error::error_chain(self.source()?, 64).find_map(|error| error.downcast_ref())
     }
 
     pub(super) fn h2_reason(&self) -> h2::Reason {
@@ -551,6 +543,38 @@ mod tests {
     #[test]
     fn error_size_of() {
         assert_eq!(mem::size_of::<Error>(), mem::size_of::<usize>());
+    }
+
+    #[test]
+    fn source_inspection_terminates_for_cyclic_causes() {
+        #[derive(Debug)]
+        struct Cycle;
+
+        impl fmt::Display for Cycle {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("cycle")
+            }
+        }
+
+        impl StdError for Cycle {
+            fn source(&self) -> Option<&(dyn StdError + 'static)> {
+                Some(self)
+            }
+        }
+
+        let error = Error::new_canceled().with(Cycle);
+        assert!(!error.is_timeout());
+        assert_eq!(error.h2_reason(), h2::Reason::INTERNAL_ERROR);
+    }
+
+    #[test]
+    fn timeout_source_inspection_respects_depth_limit() {
+        let mut error = Error::new_canceled().with(TimedOut);
+        for _ in 0..63 {
+            error = Error::new_canceled().with(error);
+        }
+        assert!(error.is_timeout());
+        assert!(!Error::new_canceled().with(error).is_timeout());
     }
 
     #[test]

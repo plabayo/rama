@@ -1,7 +1,7 @@
 use core::{convert::Infallible, fmt};
 
 use rama_core::{
-    error::{BoxError, ErrorExt as _, extra::OpaqueError},
+    error::{BoxError, ErrorExt as _, error_chain, extra::OpaqueError},
     telemetry::tracing,
 };
 
@@ -321,20 +321,15 @@ impl ConnectionError {
     fn classification_in_source_chain(
         source: &(dyn core::error::Error + 'static),
     ) -> Option<(ConnectionErrorDomain, ConnectionErrorKind)> {
-        let mut current = Some(source);
         let mut timeout = false;
         // Protect conversion from a malformed error implementation with a cyclic
         // source chain. Rama's own wrappers are shallow and acyclic.
-        for _ in 0..64 {
-            let Some(error) = current else {
-                break;
-            };
+        for error in error_chain(source, 64) {
             if let Some(error) = error.downcast_ref::<Self>() {
                 return Some((error.domain, error.kind));
             }
             timeout |= error.is::<rama_core::layer::timeout::Elapsed>()
                 || error.is::<tokio::time::error::Elapsed>();
-            current = error.source();
         }
         timeout.then_some((
             ConnectionErrorDomain::Transport,

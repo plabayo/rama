@@ -28,6 +28,7 @@ pub mod dns;
 pub mod dpi_proxy_credential;
 pub mod error_handling;
 pub mod follow_redirect;
+pub mod forward_proxy;
 pub mod forwarded;
 pub mod har;
 pub mod header_config;

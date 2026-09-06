@@ -131,9 +131,10 @@ async fn main() -> Result<(), BoxError> {
                     RemoveResponseHeaderLayer::hop_by_hop(),
                 ),
             )
-                .into_layer(EasyHttpWebClient::default_with_executor(
-                    Executor::graceful(guard),
-                )),
+                .into_layer(
+                    EasyHttpWebClient::default_with_executor(Executor::graceful(guard))
+                        .with_isolate_forward_proxy_auth_error(true),
+                ),
         ));
 
         tcp_service

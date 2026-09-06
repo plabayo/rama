@@ -1,4 +1,4 @@
-use rama_core::error::BoxError;
+use rama_core::error::{BoxError, error_chain};
 use rama_net::client::{ConnectionError, ConnectionErrorKind};
 use rama_utils::macros::enums::enum_builder;
 
@@ -151,12 +151,7 @@ enum_builder! {
 
 impl From<&BoxError> for ReplyKind {
     fn from(err: &BoxError) -> Self {
-        let mut source = Some(err.as_ref() as &(dyn std::error::Error + 'static));
-        for _ in 0..64 {
-            let Some(err) = source else {
-                break;
-            };
-
+        for err in error_chain(err.as_ref(), 64) {
             if let Some(err) = err.downcast_ref::<ConnectionError>()
                 && err.kind() == ConnectionErrorKind::Timeout
             {
@@ -174,8 +169,6 @@ impl From<&BoxError> for ReplyKind {
                     _ => Self::ConnectionRefused,
                 };
             }
-
-            source = err.source();
         }
 
         Self::ConnectionRefused

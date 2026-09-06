@@ -11,7 +11,7 @@ use rama_net::{
     ConnectorTargetInputExt, ConnectorTransportProtocolInputExt,
     client::{
         ConnectionError, ConnectionErrorKind, ConnectorTargetStream, EstablishedClientConnection,
-        race_connect,
+        EstablishedProxyRoute, ProxyRoute, race_connect,
     },
     stream::{Socket, SocketInfo},
     transport::TransportProtocol,
@@ -148,6 +148,11 @@ where
             addr.into(),
         );
         conn.extensions().insert(socket_info);
+        if input.extensions().contains::<ProxyRoute>() {
+            // TCP itself establishes no proxy protocol. A wrapping HTTP or
+            // SOCKS connector replaces this only after its exchange succeeds.
+            conn.extensions().insert(EstablishedProxyRoute::Direct);
+        }
 
         Ok(EstablishedClientConnection { input, conn })
     }
@@ -184,6 +189,49 @@ mod tests {
     use crate::client::connect::DenyTcpStreamConnector;
 
     use super::*;
+
+    #[tokio::test]
+    async fn connection_route_metadata_describes_the_tcp_dial() {
+        for route in [
+            None,
+            Some(ProxyRoute::Direct),
+            Some(ProxyRoute::Proxy(
+                "http://unused.proxy:8080".parse().unwrap(),
+            )),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let input = ConnectRequest::new(listener.local_addr().unwrap().into());
+            let route_requested = route.is_some();
+            if let Some(route) = route {
+                input.extensions.insert(route);
+            }
+            // A caller's claimed connection outcome must not be inherited by
+            // the freshly dialed stream, even when no route was requested.
+            input.extensions.insert(EstablishedProxyRoute::Forward(
+                "http://wrong:secret@request.proxy:8080".parse().unwrap(),
+            ));
+            let connector = TcpConnector::new();
+            let (established, _peer) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    tokio::try_join!(connector.serve(input), async {
+                        listener.accept().await.map_err(|error| {
+                            ConnectionError::transport(error, ConnectionErrorKind::Unavailable)
+                        })
+                    })
+                })
+                .await
+                .expect("TCP fixture timed out")
+                .unwrap();
+            assert_eq!(
+                established
+                    .conn
+                    .extensions()
+                    .get_ref::<EstablishedProxyRoute>(),
+                route_requested.then_some(&EstablishedProxyRoute::Direct),
+            );
+            assert!(!established.conn.extensions().contains::<ProxyRoute>());
+        }
+    }
 
     #[tokio::test]
     async fn rejects_udp_transport_inputs() {

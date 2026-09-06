@@ -41,7 +41,8 @@ impl<C: Credentials> HeaderDecode for ProxyAuthorization<C> {
 
 impl<C: Credentials> HeaderEncode for ProxyAuthorization<C> {
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        values.extend(self.0.encode().map(|value| {
+        values.extend(self.0.encode().map(|mut value| {
+            value.set_sensitive(true);
             debug_assert!(
                 value.as_bytes().starts_with(C::SCHEME.as_bytes()),
                 "Credentials::encode should include its scheme: scheme = {:?}, encoded = {:?}",
@@ -50,5 +51,35 @@ impl<C: Credentials> HeaderEncode for ProxyAuthorization<C> {
             );
             value
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rama_http_types::{HeaderMap, header::PROXY_AUTHORIZATION};
+    use rama_net::user::{Basic, Bearer};
+
+    use crate::HeaderMapExt as _;
+
+    use super::ProxyAuthorization;
+
+    #[test]
+    fn encoded_proxy_credentials_are_sensitive_and_wire_correct() {
+        let mut headers = HeaderMap::new();
+        headers.typed_insert(ProxyAuthorization(
+            Basic::try_from("proxy-user:proxy-password").unwrap(),
+        ));
+        let value = headers.get(PROXY_AUTHORIZATION).unwrap();
+        assert_eq!(value, "Basic cHJveHktdXNlcjpwcm94eS1wYXNzd29yZA==");
+        assert!(value.is_sensitive());
+        assert!(!format!("{headers:?}").contains("cHJveHktdXNlcjpwcm94eS1wYXNzd29yZA"));
+
+        headers.typed_insert(ProxyAuthorization(
+            Bearer::try_from("private-proxy-token").unwrap(),
+        ));
+        let value = headers.get(PROXY_AUTHORIZATION).unwrap();
+        assert_eq!(value, "Bearer private-proxy-token");
+        assert!(value.is_sensitive());
+        assert!(!format!("{headers:?}").contains("private-proxy-token"));
     }
 }

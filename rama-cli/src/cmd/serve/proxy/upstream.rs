@@ -25,6 +25,8 @@ type ListenerAddresses = Arc<RwLock<Arc<[SocketAddr]>>>;
 pub(super) struct UpstreamProxyConfig {
     explicit: Option<ProxyAddress>,
     system: bool,
+    forward_proxy_auth: bool,
+    tunnel_plaintext_http: bool,
     bypass: ProxyBypassLayer,
     listener_addresses: ListenerAddresses,
 }
@@ -38,9 +40,29 @@ impl UpstreamProxyConfig {
         Ok(Self {
             explicit,
             system,
+            forward_proxy_auth: true,
+            tunnel_plaintext_http: false,
             bypass: ProxyBypassLayer::new(BypassRules::from_no_proxy(bypass.join(","))?),
             listener_addresses: Arc::new(RwLock::new(Arc::from([]))),
         })
+    }
+
+    pub(super) fn with_forward_proxy_auth(mut self, enabled: bool) -> Self {
+        self.forward_proxy_auth = enabled;
+        self
+    }
+
+    pub(super) fn forward_proxy_auth(&self) -> bool {
+        self.forward_proxy_auth
+    }
+
+    pub(super) fn with_tunnel_plaintext_http(mut self, enabled: bool) -> Self {
+        self.tunnel_plaintext_http = enabled;
+        self
+    }
+
+    pub(super) fn tunnel_plaintext_http(&self) -> bool {
+        self.tunnel_plaintext_http
     }
 
     pub(super) fn set_listener_addresses(&self, addresses: impl IntoIterator<Item = SocketAddr>) {

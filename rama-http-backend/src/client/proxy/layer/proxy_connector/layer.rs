@@ -54,6 +54,11 @@ impl HttpProxyConnectorLayer {
 
     generate_set_and_with! {
         /// Set whether the inner connector supports TLS to an HTTPS proxy.
+        ///
+        /// A custom TLS connector must publish
+        /// `rama_tls::client::NegotiatedTlsParameters` on the established
+        /// connection. The HTTP proxy connector requires that positive
+        /// evidence before sending any bytes to an HTTPS proxy.
         pub fn tls_proxy_support(mut self, supported: bool) -> Self {
             self.tls_proxy_supported = supported;
             self

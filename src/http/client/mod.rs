@@ -27,6 +27,10 @@ use rama_core::{
     extensions::Egress,
     layer::MapErr,
 };
+use rama_http::{
+    layer::forward_proxy::{HttpForwardProxyLayer, HttpForwardProxyService},
+    proxy::PlaintextHttpProxyMode,
+};
 
 pub mod builder;
 #[doc(inline)]
@@ -57,6 +61,8 @@ pub use proxy_connector::{MaybeProxiedConnection, ProxyConnector, ProxyConnector
 /// with your own service fork and use the full power of Rust at your fingertips ;)
 pub struct EasyHttpWebClient<BodyIn, ConnResponse, L> {
     connector: BoxService<Request<BodyIn>, ConnResponse, OpaqueError>,
+    forward_proxy_layer: HttpForwardProxyLayer,
+    plaintext_http_proxy_mode: Option<PlaintextHttpProxyMode>,
     jit_layers: L,
 }
 
@@ -70,6 +76,8 @@ impl<BodyIn, ConnResponse, L: Clone> Clone for EasyHttpWebClient<BodyIn, ConnRes
     fn clone(&self) -> Self {
         Self {
             connector: self.connector.clone(),
+            forward_proxy_layer: self.forward_proxy_layer.clone(),
+            plaintext_http_proxy_mode: self.plaintext_http_proxy_mode,
             jit_layers: self.jit_layers.clone(),
         }
     }
@@ -186,7 +194,11 @@ impl<BodyIn, ConnResponse> EasyHttpWebClient<BodyIn, ConnResponse, ()>
 where
     BodyIn: Send + 'static,
 {
-    /// Create a new [`EasyHttpWebClient`] using the provided connector
+    /// Create a new [`EasyHttpWebClient`] using the provided connector.
+    ///
+    /// Custom proxy connectors must honor [`PlaintextHttpProxyMode`] and publish
+    /// [`EstablishedProxyRoute`](crate::net::client::EstablishedProxyRoute).
+    /// Connection wrappers must preserve that metadata through [`ExtensionsRef`].
     #[must_use]
     pub fn new<S>(connector: S) -> Self
     where
@@ -194,6 +206,8 @@ where
     {
         Self {
             connector: MapErr::into_opaque_error(connector).boxed(),
+            forward_proxy_layer: HttpForwardProxyLayer::new(),
+            plaintext_http_proxy_mode: None,
             jit_layers: (),
         }
     }
@@ -216,7 +230,9 @@ impl<BodyIn, ConnResponse, L> EasyHttpWebClient<BodyIn, ConnResponse, L> {
         BlockingHttpClient::with_runtime(self, runtime)
     }
 
-    /// Set the connector that this [`EasyHttpWebClient`] will use
+    /// Set the connector that this [`EasyHttpWebClient`] will use.
+    ///
+    /// Custom proxy connectors follow the metadata contract described in [`Self::new`].
     #[must_use]
     pub fn with_connector<S, BodyInNew, ConnResponseNew>(
         self,
@@ -228,21 +244,90 @@ impl<BodyIn, ConnResponse, L> EasyHttpWebClient<BodyIn, ConnResponse, L> {
     {
         EasyHttpWebClient {
             connector: MapErr::into_opaque_error(connector).boxed(),
+            forward_proxy_layer: self.forward_proxy_layer,
+            plaintext_http_proxy_mode: self.plaintext_http_proxy_mode,
             jit_layers: self.jit_layers,
         }
     }
 
-    /// [`Layer`] which will be applied just in time (JIT) before the request is send, but after
-    /// the connection has been established.
+    /// [`Layer`] which will be applied just in time (JIT) before the request is sent, but after
+    /// the connection has been established. Rama's built-in forward-proxy
+    /// policy is the innermost JIT service so it can act on the actual
+    /// connection after caller middleware has processed the request, and can
+    /// isolate a proxy challenge before caller middleware sees the response.
     ///
     /// Simplified flow of how the [`EasyHttpWebClient`] works:
     /// 1. External: let response = client.serve(request)
     /// 2. Internal: let http_connection = self.connector.serve(request)
-    /// 3. Internal: let response = jit_layers.layer(http_connection).serve(request)
+    /// 3. Internal: wrap the connection in Rama's forward-proxy policy
+    /// 4. Internal: let response = jit_layers.layer(http_connection).serve(request)
     pub fn with_jit_layer<T>(self, jit_layers: T) -> EasyHttpWebClient<BodyIn, ConnResponse, T> {
         EasyHttpWebClient {
             connector: self.connector,
+            forward_proxy_layer: self.forward_proxy_layer,
+            plaintext_http_proxy_mode: self.plaintext_http_proxy_mode,
             jit_layers,
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// Enable or disable automatic Basic or Bearer credentials on requests
+        /// sent directly to an HTTP forward proxy.
+        ///
+        /// This is enabled by default and acts only when the established connection
+        /// is positively identified as an HTTP forward-proxy connection. It never
+        /// adds credentials to direct, SOCKS, or HTTP CONNECT-tunneled requests.
+        ///
+        /// Disabling this only disables insertion. Caller-provided
+        /// `Proxy-Authorization` headers are preserved on established HTTP
+        /// forward routes and always stripped on every other route, including
+        /// connections without established route metadata.
+        pub fn forward_proxy_auth(mut self, enabled: bool) -> Self {
+            self.forward_proxy_layer.set_proxy_auth(enabled);
+            self
+        }
+    }
+
+    /// Disable automatic Basic or Bearer credentials on HTTP forward-proxy
+    /// requests. The credential-stripping policy described by
+    /// [`Self::with_forward_proxy_auth`] still applies.
+    #[must_use]
+    pub fn without_forward_proxy_auth(self) -> Self {
+        self.with_forward_proxy_auth(false)
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// Enable or disable carrying plaintext HTTP through an HTTP(S) proxy with
+        /// CONNECT instead of using ordinary forward-proxy semantics
+        /// (absolute-form on HTTP/1).
+        ///
+        /// If this method is not called, a request-level
+        /// [`PlaintextHttpProxyMode`]
+        /// is honored and
+        /// otherwise forwarding is the connector default. Calling this method
+        /// explicitly selects Tunnel (`true`) or Forward (`false`) for the client.
+        /// Tunneling does not encrypt the origin traffic: a plaintext `http://`
+        /// request remains plaintext inside the proxy tunnel.
+        pub fn tunnel_plaintext_http(mut self, enabled: bool) -> Self {
+            self.plaintext_http_proxy_mode = Some(if enabled {
+                PlaintextHttpProxyMode::Tunnel
+            } else {
+                PlaintextHttpProxyMode::Forward
+            });
+            self
+        }
+    }
+
+    crate::utils::macros::generate_set_and_with! {
+        /// Enable or disable isolation of `407 Proxy Authentication Required`
+        /// responses received from an established HTTP forward proxy.
+        ///
+        /// Ordinary clients expose such responses by default. Intermediaries should
+        /// enable this option so an upstream proxy's challenge, headers, and body
+        /// cannot be forwarded to a different downstream proxy client.
+        pub fn isolate_forward_proxy_auth_error(mut self, enabled: bool) -> Self {
+            self.forward_proxy_layer.set_isolate_auth_error(enabled);
+            self
         }
     }
 }
@@ -258,7 +343,7 @@ where
     ConnectionBody:
         StreamingBody<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     L: Layer<
-            Connection,
+            HttpForwardProxyService<Connection>,
             Service: Service<Request<ConnectionBody>, Output = Response, Error = BoxError>,
         > + Send
         + Sync
@@ -270,14 +355,22 @@ where
     async fn serve(&self, req: Request<Body>) -> Result<Self::Output, Self::Error> {
         let uri = req.uri().clone();
 
+        if let Some(mode) = self.plaintext_http_proxy_mode {
+            req.extensions().insert(mode);
+        }
+
         let EstablishedClientConnection {
             input: req,
             conn: http_connection,
         } = self.connector.serve(req).await.into_opaque_error()?;
 
+        // Publish connection metadata for JIT middleware. The forward-proxy
+        // layer refreshes it after those layers run; the backend independently
+        // refreshes it for callers that use the backend without this client.
         req.extensions()
             .insert(Egress(http_connection.extensions().clone()));
 
+        let http_connection = self.forward_proxy_layer.layer(http_connection);
         let http_connection = self.jit_layers.layer(http_connection);
 
         // NOTE: stack might change request version based on connector data,
@@ -309,6 +402,7 @@ mod tests {
         time::Duration,
     };
 
+    use rama_core::extensions::Extensions;
     use rama_core::{error::BoxErrorExt as _, service::service_fn};
     use rama_http::{Body, BodyExtractExt, Version};
     use rama_http_backend::server::HttpServer;
@@ -316,8 +410,9 @@ mod tests {
         address::ProxyAddress,
         client::{
             ConnectRequest, ConnectionError, ConnectionErrorDomain, ConnectionErrorKind,
-            ConnectorService, ConnectorTarget, ProxyRoute, ProxyRouteFailureCache,
-            ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheScope, ProxyRoutes,
+            ConnectorService, ConnectorTarget, EstablishedProxyRoute, ProxyRoute,
+            ProxyRouteFailureCache, ProxyRouteFailureCacheConfig, ProxyRouteFailureCacheScope,
+            ProxyRoutes,
         },
         test_utils::client::{MockConnectorService, MockSocket},
     };
@@ -330,6 +425,41 @@ mod tests {
     struct Output {
         conn: usize,
         resp: usize,
+    }
+
+    #[derive(Debug, Clone, Default)]
+    struct EmptyHttpConnection {
+        extensions: Extensions,
+    }
+
+    impl ExtensionsRef for EmptyHttpConnection {
+        fn extensions(&self) -> &Extensions {
+            &self.extensions
+        }
+    }
+
+    impl Service<Request> for EmptyHttpConnection {
+        type Output = Response;
+        type Error = BoxError;
+
+        async fn serve(&self, _request: Request) -> Result<Self::Output, Self::Error> {
+            Ok(Response::new(Body::empty()))
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct InspectConnectionRouteLayer(EstablishedProxyRoute);
+
+    impl<S: ExtensionsRef> Layer<S> for InspectConnectionRouteLayer {
+        type Service = S;
+
+        fn layer(&self, inner: S) -> Self::Service {
+            assert_eq!(
+                inner.extensions().get_ref::<EstablishedProxyRoute>(),
+                Some(&self.0),
+            );
+            inner
+        }
     }
 
     fn dummy_server<Input: Send + 'static>()
@@ -357,6 +487,201 @@ mod tests {
                 }
             }))
         })
+    }
+
+    #[tokio::test]
+    async fn custom_connector_receives_plaintext_http_proxy_mode() {
+        let connector = service_fn(|request: Request| async move {
+            assert_eq!(
+                request.extensions().get_ref::<PlaintextHttpProxyMode>(),
+                Some(&PlaintextHttpProxyMode::Tunnel)
+            );
+
+            let conn = EmptyHttpConnection::default();
+            Ok::<_, Infallible>(EstablishedClientConnection {
+                input: request,
+                conn,
+            })
+        });
+        let client = EasyHttpWebClient::new(connector).with_tunnel_plaintext_http(true);
+        let request = Request::builder()
+            .uri("http://example.com/")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = client.serve(request).await.unwrap();
+        assert_eq!(response.status(), crate::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn jit_layer_can_read_established_connection_extensions() {
+        let connector = service_fn(|request: Request| async move {
+            let conn = EmptyHttpConnection::default();
+            conn.extensions().insert(EstablishedProxyRoute::Direct);
+            Ok::<_, Infallible>(EstablishedClientConnection {
+                input: request,
+                conn,
+            })
+        });
+        let client = EasyHttpWebClient::new(connector)
+            .with_jit_layer(InspectConnectionRouteLayer(EstablishedProxyRoute::Direct));
+        let request = Request::builder()
+            .uri("http://example.com/")
+            .extension(ProxyRoute::Direct)
+            .body(Body::empty())
+            .unwrap();
+
+        let response = client.serve(request).await.unwrap();
+        assert_eq!(response.status(), crate::http::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn jit_request_metadata_cannot_change_proxy_credentials_target_or_challenge_isolation() {
+        use rama_core::{
+            bytes::BytesMut,
+            layer::{MapInputLayer, MapOutputLayer},
+        };
+        use rama_http::{HeaderValue, StatusCode, header::PROXY_AUTHORIZATION};
+
+        #[derive(Debug, Clone)]
+        struct InspectProxyConnection {
+            extensions: Extensions,
+        }
+
+        impl ExtensionsRef for InspectProxyConnection {
+            fn extensions(&self) -> &Extensions {
+                &self.extensions
+            }
+        }
+
+        impl Service<Request> for InspectProxyConnection {
+            type Output = Response;
+            type Error = BoxError;
+
+            async fn serve(&self, request: Request) -> Result<Response, BoxError> {
+                let route = self.extensions.get_ref::<EstablishedProxyRoute>();
+                let is_forward = route.is_some_and(EstablishedProxyRoute::is_http_forward);
+                assert_eq!(
+                    request
+                        .extensions()
+                        .egress()
+                        .unwrap()
+                        .0
+                        .get_ref::<EstablishedProxyRoute>(),
+                    route,
+                );
+                assert_eq!(
+                    request.extensions().get_ref::<ProxyRoute>(),
+                    Some(&ProxyRoute::Proxy(
+                        "http://wrong:request-secret@requested.example:8080"
+                            .parse()
+                            .unwrap(),
+                    )),
+                    "forward policy must preserve the caller's requested route",
+                );
+                let mut target = BytesMut::new();
+                rama_http::proto::h1::head::encode_request_target(
+                    request.method(),
+                    request.uri(),
+                    request.extensions(),
+                    &mut target,
+                )
+                .unwrap();
+                if is_forward {
+                    assert_eq!(
+                        request.headers().get(PROXY_AUTHORIZATION).unwrap(),
+                        "Basic dXBzdHJlYW06c2VjcmV0",
+                    );
+                    assert_eq!(&target[..], b"http://origin.example/resource");
+                } else {
+                    assert!(request.headers().get(PROXY_AUTHORIZATION).is_none());
+                    assert_eq!(&target[..], b"/resource");
+                }
+                Ok(Response::builder()
+                    .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+                    .header("proxy-authenticate", "Basic realm=private-upstream")
+                    .body(Body::from("private upstream challenge"))
+                    .unwrap())
+            }
+        }
+
+        let proxy: ProxyAddress = "http://upstream:secret@proxy.example:8080".parse().unwrap();
+        for isolate in [false, true] {
+            for route in [
+                None,
+                Some(EstablishedProxyRoute::Direct),
+                Some(EstablishedProxyRoute::Tunnel(proxy.clone())),
+                Some(EstablishedProxyRoute::Tunnel(
+                    "socks5://proxy.example:1080".parse().unwrap(),
+                )),
+                Some(EstablishedProxyRoute::Forward(proxy.clone())),
+            ] {
+                let is_forward = route
+                    .as_ref()
+                    .is_some_and(EstablishedProxyRoute::is_http_forward);
+                let connector = service_fn(move |request: Request| {
+                    let route = route.clone();
+                    async move {
+                        let extensions = Extensions::new();
+                        if let Some(route) = route {
+                            extensions.insert(route);
+                        }
+                        Ok::<_, Infallible>(EstablishedClientConnection {
+                            input: request,
+                            conn: InspectProxyConnection { extensions },
+                        })
+                    }
+                });
+                let stale_route = if is_forward {
+                    EstablishedProxyRoute::Direct
+                } else {
+                    EstablishedProxyRoute::Forward(proxy.clone())
+                };
+                let observed_responses = Arc::new(AtomicUsize::new(0));
+                let client = EasyHttpWebClient::new(connector)
+                    .with_isolate_forward_proxy_auth_error(isolate)
+                    .with_jit_layer((
+                        MapInputLayer::new(move |mut request: Request| {
+                            request.extensions().insert(stale_route.clone());
+                            let stale_egress = Extensions::new();
+                            stale_egress.insert(stale_route.clone());
+                            request.extensions().insert(Egress(stale_egress));
+                            request.headers_mut().insert(
+                                PROXY_AUTHORIZATION,
+                                HeaderValue::from_static("Basic downstream-secret"),
+                            );
+                            request
+                        }),
+                        MapOutputLayer::new({
+                            let observed_responses = observed_responses.clone();
+                            move |response: Response| {
+                                observed_responses.fetch_add(1, Ordering::Relaxed);
+                                response
+                            }
+                        }),
+                    ));
+                let request = Request::builder()
+                    .uri("http://origin.example/resource")
+                    .body(Body::empty())
+                    .unwrap();
+                request.extensions().insert(ProxyRoute::Proxy(
+                    "http://wrong:request-secret@requested.example:8080"
+                        .parse()
+                        .unwrap(),
+                ));
+                let result = client.serve(request).await;
+                if isolate && is_forward {
+                    assert!(result.is_err());
+                    assert_eq!(observed_responses.load(Ordering::Relaxed), 0);
+                } else {
+                    assert_eq!(
+                        result.unwrap().status(),
+                        StatusCode::PROXY_AUTHENTICATION_REQUIRED
+                    );
+                    assert_eq!(observed_responses.load(Ordering::Relaxed), 1);
+                }
+            }
+        }
     }
 
     #[test]
