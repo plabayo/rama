@@ -1416,7 +1416,7 @@ impl CaptureStore {
         if let Some(entry) = entry {
             if entry
                 .decision_count
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                     (count < self.0.max_websocket_messages.saturating_add(2)).then(|| count + 1)
                 })
                 .is_err()
