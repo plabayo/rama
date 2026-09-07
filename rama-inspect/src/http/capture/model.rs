@@ -2,18 +2,18 @@ use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(net))]
-pub(in crate::cmd::serve::proxy) struct ConnectionId(pub u64);
+pub struct ConnectionId(pub u64);
 
 #[derive(Debug, Clone, PartialEq, Eq, Extension)]
 #[extension(tags(proxy))]
-pub(in crate::cmd::serve::proxy) struct IngressProtocol(pub &'static str);
+pub struct IngressProtocol(pub &'static str);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension)]
 #[extension(tags(http))]
-pub(in crate::cmd::serve::proxy) struct ExchangeId(pub u64);
+pub struct ExchangeId(pub u64);
 
 #[derive(Debug, Clone, Serialize)]
-pub(in crate::cmd::serve::proxy) struct ConnectionSummary {
+pub struct ConnectionSummary {
     pub id: u64,
     pub display_id: u64,
     pub label: Option<String>,
@@ -29,7 +29,7 @@ pub(in crate::cmd::serve::proxy) struct ConnectionSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(in crate::cmd::serve::proxy) struct ExchangeSummary {
+pub struct ExchangeSummary {
     pub decision: Option<String>,
     pub id: u64,
     pub connection_id: u64,
@@ -63,8 +63,9 @@ pub(in crate::cmd::serve::proxy) struct ExchangeSummary {
     pub has_emulation_profile: bool,
 }
 
-#[derive(Debug, Clone, Default)]
-pub(in crate::cmd::serve::proxy) struct CaptureFilter {
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct CaptureFilter {
     pub search: String,
     pub connection_id: String,
     pub user_agent: String,
@@ -87,7 +88,7 @@ impl CaptureFilter {
             && matches_protocol(&summary.protocol, &self.protocol)
     }
 
-    pub(super) fn search_matches_summary(&self, summary: &ExchangeSummary) -> bool {
+    pub fn search_matches_summary(&self, summary: &ExchangeSummary) -> bool {
         if self.search.is_empty() {
             return true;
         }
@@ -110,7 +111,7 @@ impl CaptureFilter {
         )
     }
 
-    pub(super) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.search.is_empty()
             && self.connection_id.is_empty()
             && self.user_agent.is_empty()
@@ -163,14 +164,17 @@ pub(super) fn contains_folded(haystack: &str, needle: &str) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(in crate::cmd::serve::proxy) struct CapturedTlsParameters {
-    pub protocol_version: rama::tls::ProtocolVersion,
-    pub application_layer_protocol: Option<rama::net::tls::ApplicationProtocol>,
+pub struct CapturedTlsParameters {
+    #[cfg(feature = "tls")]
+    pub protocol_version: rama_tls::ProtocolVersion,
+    #[cfg(not(feature = "tls"))]
+    pub protocol_version: Value,
+    pub application_layer_protocol: Option<rama_net::tls::ApplicationProtocol>,
     pub peer_certificate_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(in crate::cmd::serve::proxy) struct CaptureSnapshot {
+pub struct CaptureSnapshot {
     pub connections: Vec<ConnectionSummary>,
     pub connection_offset: usize,
     pub next_connection_cursor: Option<u64>,
@@ -184,7 +188,7 @@ pub(in crate::cmd::serve::proxy) struct CaptureSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(in crate::cmd::serve::proxy) enum StoredRecord {
+pub enum StoredRecord {
     Interception {
         direction: String,
         outcome: String,
@@ -244,13 +248,13 @@ pub(in crate::cmd::serve::proxy) enum StoredRecord {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(in crate::cmd::serve::proxy) struct CaptureDetails {
+pub struct CaptureDetails {
     pub summary: ExchangeSummary,
     pub records: Vec<StoredRecord>,
 }
 
 #[derive(Debug, Clone)]
-pub(in crate::cmd::serve::proxy) struct InspectorDetails {
+pub struct InspectorDetails {
     pub summary: ExchangeSummary,
     pub records: Vec<StoredRecord>,
     pub websocket_page: usize,
@@ -259,7 +263,7 @@ pub(in crate::cmd::serve::proxy) struct InspectorDetails {
 }
 
 #[derive(Debug)]
-pub(in crate::cmd::serve::proxy) enum WebSocketReplayError {
+pub enum WebSocketReplayError {
     CaptureNotFound,
     MessageNotFound,
     ControlFrame,
@@ -295,13 +299,13 @@ impl std::error::Error for WebSocketReplayError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::cmd::serve::proxy) enum CapturedBody {
+pub enum CapturedBody {
     Request,
     Response,
 }
 
 #[derive(Debug, Clone)]
-pub(in crate::cmd::serve::proxy) struct ReplayRequest {
+pub struct ReplayRequest {
     pub method: String,
     pub url: String,
     pub version: String,

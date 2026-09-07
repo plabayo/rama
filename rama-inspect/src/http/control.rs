@@ -1,20 +1,19 @@
 //! Runtime traffic decisions. Protocol adapters own streams; this bounded queue owns only
 //! editable messages and one-shot decisions. Capture admission never controls forwarding.
 
-use super::{
-    capture::{captured_header_value, headers_to_vec},
-    inspection::InspectionState,
-};
+use super::capture::{captured_header_value, headers_to_vec};
+use crate::InspectionState;
+use crate::intercept::{Interception, QueueLimits};
 use arc_swap::ArcSwap;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use parking_lot::Mutex;
-use rama::{
+use rama_core::{
     error::{BoxError, BoxErrorExt as _, ErrorContext as _},
     extensions::Extension,
-    http::{Body, HeaderMap, HeaderName, Method, Response, StatusCode, Version, header},
-    net::address::{Host, HostPattern},
-    utils::thirdparty::wildcard::{Wildcard, WildcardBuilder},
 };
+use rama_http::{Body, HeaderMap, HeaderName, Method, Response, StatusCode, Version, header};
+use rama_net::address::{Host, HostPattern};
+use rama_utils::thirdparty::wildcard::{Wildcard, WildcardBuilder};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -24,7 +23,7 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::{oneshot, watch};
+use tokio::sync::watch;
 
 const MAX_RULES: usize = 256;
 const MAX_HEADERS: usize = 256;
@@ -34,17 +33,17 @@ const MAX_HOSTS: usize = 4096;
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(proxy))]
-pub(super) struct ControlConnection(pub Arc<Connection>);
+pub struct ControlConnection(pub Arc<Connection>);
 
 #[derive(Debug)]
-pub(super) struct Connection {
+pub struct Connection {
     pub id: u64,
     automatic: AtomicBool,
     observed: Mutex<BTreeMap<String, bool>>,
 }
 
 impl ControlConnection {
-    pub(super) fn new(id: u64) -> Self {
+    pub fn new(id: u64) -> Self {
         Self(Arc::new(Connection {
             id,
             automatic: AtomicBool::new(false),
@@ -55,7 +54,7 @@ impl ControlConnection {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub(super) struct Matcher {
+pub struct Matcher {
     pub host: String,
     pub path: String,
     pub protocol: String,
@@ -69,7 +68,7 @@ pub(super) struct Matcher {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
-pub(super) enum Action {
+pub enum Action {
     Intercept,
     Forward,
     Respond { response: ResponseSpec },
@@ -79,7 +78,7 @@ pub(super) enum Action {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 // Serde does not support deny_unknown_fields on a struct flattening a tagged enum.
-pub(super) struct Rule {
+pub struct Rule {
     pub name: String,
     pub enabled: bool,
     pub matcher: Matcher,
@@ -89,7 +88,7 @@ pub(super) struct Rule {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub(super) struct Config {
+pub struct Config {
     pub enabled: bool,
     pub queue_limit: usize,
     pub timeout_seconds: u64,
@@ -113,14 +112,14 @@ impl Default for Config {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Preset {
+pub struct Preset {
     pub name: String,
     pub response: ResponseSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub(super) struct ResponseSpec {
+pub struct ResponseSpec {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: String,
@@ -187,7 +186,7 @@ impl ResponseSpec {
         Ok(())
     }
 
-    pub(super) fn build(&self, message: &Message) -> Response {
+    pub fn build(&self, message: &Message) -> Response {
         // Stored configuration and manual decisions are validated before publication.
         let spec = if message.method == "CONNECT" && (200..300).contains(&self.status) {
             Self::error(502, "A local response cannot establish a CONNECT tunnel.")
@@ -216,13 +215,13 @@ impl ResponseSpec {
         if message.direction == "request" && message.version() != Version::HTTP_2 {
             response.headers_mut().insert(
                 header::CONNECTION,
-                rama::http::HeaderValue::from_static("close"),
+                rama_http::HeaderValue::from_static("close"),
             );
         }
         response
     }
 
-    pub(super) fn error(status: u16, body: &str) -> Self {
+    pub fn error(status: u16, body: &str) -> Self {
         Self {
             status,
             body: body.into(),
@@ -232,7 +231,7 @@ impl ResponseSpec {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub(super) struct Message {
+pub struct Message {
     pub id: u64,
     pub connection: u64,
     pub connection_display_id: Option<u64>,
@@ -256,14 +255,14 @@ pub(super) struct Message {
 }
 
 impl Message {
-    pub(super) fn version(&self) -> Version {
+    pub fn version(&self) -> Version {
         if self.http2 {
             Version::HTTP_2
         } else {
             Version::HTTP_11
         }
     }
-    pub(super) fn is_http(&self) -> bool {
+    pub fn is_http(&self) -> bool {
         matches!(self.direction.as_str(), "request" | "response")
     }
     fn size(&self) -> usize {
@@ -284,7 +283,7 @@ impl Message {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
-pub(super) enum Decision {
+pub enum Decision {
     Forward {
         headers: Option<Vec<(String, String)>>,
         status: Option<u16>,
@@ -307,7 +306,7 @@ pub(super) enum Decision {
 }
 
 impl Decision {
-    pub(super) fn forward() -> Self {
+    pub fn forward() -> Self {
         Self::Forward {
             headers: None,
             status: None,
@@ -427,7 +426,7 @@ fn validate_close(code: u16, reason: &str) -> Result<(), BoxError> {
     Ok(())
 }
 
-pub(super) fn parse_headers(values: &[(String, String)]) -> Result<HeaderMap, BoxError> {
+pub fn parse_headers(values: &[(String, String)]) -> Result<HeaderMap, BoxError> {
     if values.len() > MAX_HEADERS
         || values.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>() > MAX_MESSAGE_BYTES
     {
@@ -530,24 +529,21 @@ impl CompiledRule {
 struct Pending {
     message: Arc<Message>,
     connection: ControlConnection,
-    reply: oneshot::Sender<Decision>,
 }
 #[derive(Default)]
 struct State {
-    next_id: u64,
-    pending: BTreeMap<u64, Pending>,
-    bytes: usize,
     bypass: BTreeMap<u64, Weak<Connection>>,
     hosts: BTreeMap<String, HostSummary>,
 }
 struct Inner {
     policy: ArcSwap<Policy>,
+    queue: Interception<Pending, Decision>,
     state: Mutex<State>,
     changes: watch::Sender<u64>,
     recording: InspectionState,
 }
 #[derive(Clone)]
-pub(super) struct Control(Arc<Inner>);
+pub struct Control(Arc<Inner>);
 impl std::fmt::Debug for Control {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Control").finish_non_exhaustive()
@@ -555,7 +551,7 @@ impl std::fmt::Debug for Control {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(super) struct HostSummary {
+pub struct HostSummary {
     pub host: String,
     pub eligible: bool,
     pub connections: u64,
@@ -566,13 +562,13 @@ pub(super) struct HostSummary {
 }
 
 #[derive(Serialize)]
-pub(super) struct ConnectionSummary {
+pub struct ConnectionSummary {
     pub connection: u64,
     pub connection_display_id: Option<u64>,
 }
 
 #[derive(Serialize)]
-pub(super) struct Snapshot {
+pub struct Snapshot {
     pub revision: u64,
     pub config: Config,
     pub pending: Vec<PendingSummary>,
@@ -582,7 +578,7 @@ pub(super) struct Snapshot {
 }
 
 impl Control {
-    pub(super) fn new(recording: InspectionState) -> Self {
+    pub fn new(recording: InspectionState) -> Self {
         let (changes, _) = watch::channel(0);
         Self(Arc::new(Inner {
             policy: ArcSwap::from_pointee(Policy {
@@ -590,31 +586,48 @@ impl Control {
                 config: Config::default(),
                 rules: vec![],
             }),
+            queue: Interception::with_changes(changes.clone()),
             state: Mutex::new(State::default()),
             changes,
             recording,
         }))
     }
-    pub(super) fn is_active(&self) -> bool {
+    pub fn is_active(&self) -> bool {
         let policy = self.0.policy.load();
         self.0.recording.is_enabled() && (policy.config.enabled || !policy.rules.is_empty())
     }
-    pub(super) fn subscribe(&self) -> watch::Receiver<u64> {
+    /// Subscribe to initial and updated control content from a native UI or API.
+    pub fn subscribe(&self) -> impl rama_core::futures::Stream<Item = Snapshot> + Send + 'static {
+        use rama_core::futures::StreamExt;
+        let control = self.clone();
+        crate::subscription::subscribe(
+            self.subscribe_changes(),
+            rama_core::service::service_fn(move |()| {
+                let snapshot = control.snapshot();
+                async move { Ok::<_, std::convert::Infallible>(snapshot) }
+            }),
+            (),
+        )
+        .map(|result| match result {
+            Ok(value) => value,
+            Err(never) => match never {},
+        })
+    }
+    pub fn subscribe_changes(&self) -> watch::Receiver<u64> {
         self.0.changes.subscribe()
     }
     fn changed(&self) {
         self.0.changes.send_modify(|v| *v = v.wrapping_add(1));
     }
-    pub(super) fn pending_summaries(&self) -> Vec<PendingSummary> {
+    pub fn pending_summaries(&self) -> Vec<PendingSummary> {
         self.0
-            .state
-            .lock()
-            .pending
-            .values()
-            .map(|p| PendingSummary::from(p.message.as_ref()))
+            .queue
+            .entries()
+            .iter()
+            .map(|(_, p)| PendingSummary::from(p.message.as_ref()))
             .collect()
     }
-    pub(super) fn snapshot(&self) -> Snapshot {
+    pub fn snapshot(&self) -> Snapshot {
         let mut state = self.0.state.lock();
         let policy = self.0.policy.load();
         state
@@ -623,11 +636,7 @@ impl Control {
         Snapshot {
             revision: policy.revision,
             config: policy.config.clone(),
-            pending: state
-                .pending
-                .values()
-                .map(|p| PendingSummary::from(p.message.as_ref()))
-                .collect(),
+            pending: self.pending_summaries(),
             hosts: state.hosts.values().cloned().collect(),
             automatic_connections: state
                 .bypass
@@ -640,7 +649,7 @@ impl Control {
             recording: self.0.recording.is_enabled(),
         }
     }
-    pub(super) fn configure(&self, revision: u64, config: Config) -> Result<(), BoxError> {
+    pub fn configure(&self, revision: u64, config: Config) -> Result<(), BoxError> {
         if config.rules.len() > MAX_RULES
             || config.presets.len() > 32
             || !(1..=256).contains(&config.queue_limit)
@@ -682,7 +691,7 @@ impl Control {
         self.changed();
         Ok(())
     }
-    pub(super) fn observe(
+    pub fn observe(
         &self,
         connection: &ControlConnection,
         host: &str,
@@ -741,20 +750,17 @@ impl Control {
         drop(state);
         self.changed();
     }
-    pub(super) fn stop_and_forward(&self) {
-        let mut state = self.0.state.lock();
+    pub fn stop_and_forward(&self) {
+        let state = self.0.state.lock();
         let mut policy = self.0.policy.load().as_ref().clone();
         policy.config.enabled = false;
         policy.revision += 1;
         self.0.policy.store(Arc::new(policy));
-        let ids = state.pending.keys().copied().collect::<Vec<_>>();
-        for id in ids {
-            Self::send(&mut state, id, Decision::forward());
-        }
+        self.0.queue.release_where(|_| Some(Decision::forward()));
         drop(state);
         self.changed();
     }
-    pub(super) fn apply_rule(&self, index: usize, revision: u64) -> Result<(), BoxError> {
+    pub fn apply_rule(&self, index: usize, revision: u64) -> Result<(), BoxError> {
         let policy = self.0.policy.load_full();
         if policy.revision != revision {
             return Err(BoxError::from_static_str(
@@ -763,9 +769,10 @@ impl Control {
         }
         let rule = policy.rules.get(index).context("rule no longer exists")?;
         let decisions = {
-            let state = self.0.state.lock();
-            state
-                .pending
+            let _state = self.0.state.lock();
+            self.0
+                .queue
+                .entries()
                 .iter()
                 .filter(|(_, p)| rule.matches(&p.message))
                 .filter_map(|(id, p)| {
@@ -790,11 +797,11 @@ impl Control {
         }
         Ok(())
     }
-    pub(super) fn clear_hosts(&self) {
+    pub fn clear_hosts(&self) {
         self.0.state.lock().hosts.clear();
         self.changed();
     }
-    pub(super) fn resume_connection(&self, id: u64) {
+    pub fn resume_connection(&self, id: u64) {
         if let Some(connection) = self
             .0
             .state
@@ -807,74 +814,57 @@ impl Control {
         }
         self.changed();
     }
-    pub(super) fn pending(&self, id: u64) -> Option<Arc<Message>> {
-        self.0
-            .state
-            .lock()
-            .pending
-            .get(&id)
-            .map(|p| p.message.clone())
+    pub fn pending(&self, id: u64) -> Option<Arc<Message>> {
+        self.0.queue.get(id).map(|p| p.message.clone())
     }
-    pub(super) fn resolve(&self, id: u64, decision: Decision) -> Result<(), BoxError> {
+    pub fn resolve(&self, id: u64, decision: Decision) -> Result<(), BoxError> {
+        // This lock also serializes admission, policy updates, and connection release.
         let mut state = self.0.state.lock();
-        let pending = state
-            .pending
-            .get(&id)
-            .context("message is no longer awaiting approval")?;
-        decision.validate(&pending.message)?;
-        let decision = if matches!(decision, Decision::Block) && pending.message.is_http() {
-            Decision::Respond {
-                response: self.0.policy.load().config.default_response.clone(),
-            }
-        } else {
-            decision
-        };
-        if let Decision::Connection {
-            headers,
-            status,
-            payload,
-        } = decision
-        {
-            let connection = pending.connection.clone();
-            connection.0.automatic.store(true, Ordering::Release);
-            state
-                .bypass
-                .insert(connection.0.id, Arc::downgrade(&connection.0));
-            let ids = state
-                .pending
-                .iter()
-                .filter(|(_, p)| Arc::ptr_eq(&p.connection.0, &connection.0))
-                .map(|(id, _)| *id)
-                .collect::<Vec<_>>();
-            for other in ids {
-                Self::send(
-                    &mut state,
-                    other,
-                    if other == id {
-                        Decision::Forward {
-                            headers: headers.clone(),
-                            status,
-                            payload: payload.clone(),
-                        }
-                    } else {
-                        Decision::forward()
+        let mut connection_release = None;
+        let resolved = self
+            .0
+            .queue
+            .resolve_with(id, |pending| -> Result<Decision, BoxError> {
+                decision.validate(&pending.message)?;
+                Ok(match decision {
+                    Decision::Block if pending.message.is_http() => Decision::Respond {
+                        response: self.0.policy.load().config.default_response.clone(),
                     },
-                );
-            }
-        } else {
-            Self::send(&mut state, id, decision);
+                    Decision::Connection {
+                        headers,
+                        status,
+                        payload,
+                    } => {
+                        let connection = pending.connection.clone();
+                        connection.0.automatic.store(true, Ordering::Release);
+                        state
+                            .bypass
+                            .insert(connection.0.id, Arc::downgrade(&connection.0));
+                        connection_release = Some(connection);
+                        Decision::Forward {
+                            headers,
+                            status,
+                            payload,
+                        }
+                    }
+                    decision => decision,
+                })
+            })?;
+        if !resolved {
+            return Err(BoxError::from_static_str(
+                "message is no longer awaiting approval",
+            ));
+        }
+        if let Some(connection) = connection_release {
+            self.0.queue.release_where(|pending| {
+                Arc::ptr_eq(&pending.connection.0, &connection.0).then(Decision::forward)
+            });
         }
         drop(state);
         self.changed();
         Ok(())
     }
-    fn send(state: &mut State, id: u64, decision: Decision) {
-        if let Some(pending) = state.pending.remove(&id) {
-            state.bytes -= pending.message.size();
-            _ = pending.reply.send(decision);
-        }
-    }
-    pub(super) async fn decide(
+    pub async fn decide(
         &self,
         connection: &ControlConnection,
         mut message: Message,
@@ -911,10 +901,8 @@ impl Control {
         {
             return (Decision::forward(), Some(rule.rule.name.clone()));
         }
-        let (reply, receive) = oneshot::channel();
-        let id;
-        {
-            let mut state = self.0.state.lock();
+        let ticket = {
+            let _state = self.0.state.lock();
             // Serialize admission with the connection-wide decision so a concurrent
             // response cannot arrive just after its connection was released.
             if connection.0.automatic.load(Ordering::Acquire)
@@ -922,50 +910,52 @@ impl Control {
             {
                 return (Decision::forward(), None);
             }
-            if state.pending.len() >= policy.config.queue_limit
-                || message.size() > MAX_MESSAGE_BYTES
-                || state.bytes + message.size() > MAX_QUEUE_BYTES
-            {
-                return (
-                    if message.is_http() {
-                        Decision::Respond {
-                            response: ResponseSpec::error(503, "Rama interception queue is full."),
-                        }
-                    } else {
-                        Decision::Close {
-                            code: 1013,
-                            reason: "Interception queue is full".into(),
-                        }
-                    },
-                    Some("queue limit".into()),
-                );
-            }
-            state.next_id += 1;
-            id = state.next_id;
-            message.id = id;
-            message.connection = connection.0.id;
-            message.queued_at = Some(jiff::Timestamp::now());
-            state.bytes += message.size();
-            state.pending.insert(
-                id,
-                Pending {
-                    message: Arc::new(message.clone()),
-                    connection: connection.clone(),
-                    reply,
+            let queued = self.0.queue.enqueue_with(
+                message.size(),
+                QueueLimits {
+                    messages: policy.config.queue_limit,
+                    message_bytes: MAX_MESSAGE_BYTES,
+                    bytes: MAX_QUEUE_BYTES,
+                },
+                |id| {
+                    message.id = id;
+                    message.connection = connection.0.id;
+                    message.queued_at = Some(jiff::Timestamp::now());
+                    Pending {
+                        message: Arc::new(message.clone()),
+                        connection: connection.clone(),
+                    }
                 },
             );
-        }
-        self.changed();
+            match queued {
+                Ok(ticket) => ticket,
+                Err(_) => {
+                    return (
+                        if message.is_http() {
+                            Decision::Respond {
+                                response: ResponseSpec::error(
+                                    503,
+                                    "Rama interception queue is full.",
+                                ),
+                            }
+                        } else {
+                            Decision::Close {
+                                code: 1013,
+                                reason: "Interception queue is full".into(),
+                            }
+                        },
+                        Some("queue limit".into()),
+                    );
+                }
+            }
+        };
         // A hold must never keep pause waiting on a capture-write permit.
         drop(permit);
-        let _guard = PendingGuard {
-            control: self.clone(),
-            id,
-        };
-        let decision =
-            tokio::time::timeout(Duration::from_secs(policy.config.timeout_seconds), receive).await;
+        let decision = ticket
+            .wait(Duration::from_secs(policy.config.timeout_seconds))
+            .await;
         let decision = match decision {
-            Ok(Ok(Decision::Block)) => {
+            Ok(Decision::Block) => {
                 if message.is_http() {
                     Decision::Respond {
                         response: policy.config.default_response.clone(),
@@ -974,7 +964,7 @@ impl Control {
                     Decision::Drop
                 }
             }
-            Ok(Ok(decision)) => decision,
+            Ok(decision) => decision,
             _ => {
                 if message.is_http() {
                     Decision::Respond {
@@ -992,22 +982,7 @@ impl Control {
     }
 }
 
-struct PendingGuard {
-    control: Control,
-    id: u64,
-}
-impl Drop for PendingGuard {
-    fn drop(&mut self) {
-        let mut state = self.control.0.state.lock();
-        if let Some(p) = state.pending.remove(&self.id) {
-            state.bytes -= p.message.size();
-        }
-        drop(state);
-        self.control.changed();
-    }
-}
-
-pub(super) fn http_message(parts: &rama::http::request::Parts) -> Message {
+pub fn http_message(parts: &rama_http::request::Parts) -> Message {
     let host = parts
         .uri
         .authority()
@@ -1017,15 +992,11 @@ pub(super) fn http_message(parts: &rama::http::request::Parts) -> Message {
                 .headers
                 .get(header::HOST)
                 .and_then(|h| h.to_str().ok())
-                .and_then(|h| h.parse::<rama::net::address::Authority>().ok())
+                .and_then(|h| h.parse::<rama_net::address::Authority>().ok())
                 .map(|a| a.view().host().to_str().into_owned())
         })
         .unwrap_or_default();
-    let secure = parts
-        .extensions
-        .get_ref::<rama::tls::SecureTransport>()
-        .is_some()
-        || parts.uri.scheme().is_some_and(|s| s.as_str() == "https");
+    let secure = is_secure(parts);
     Message {
         protocol: if secure { "https" } else { "http" }.into(),
         direction: "request".into(),
@@ -1053,13 +1024,13 @@ pub(super) fn http_message(parts: &rama::http::request::Parts) -> Message {
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(proxy))]
-pub(super) struct WebSocketContext {
+pub struct WebSocketContext {
     pub connection: ControlConnection,
     pub request: Message,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(super) struct PendingSummary {
+pub struct PendingSummary {
     pub id: u64,
     pub connection: u64,
     pub connection_display_id: Option<u64>,
@@ -1091,3 +1062,15 @@ impl From<&Message> for PendingSummary {
 #[cfg(test)]
 #[path = "control_tests.rs"]
 mod tests;
+
+pub(super) fn is_secure(parts: &rama_http::request::Parts) -> bool {
+    #[cfg(feature = "tls")]
+    if parts
+        .extensions
+        .get_ref::<rama_tls::SecureTransport>()
+        .is_some()
+    {
+        return true;
+    }
+    parts.uri.scheme().is_some_and(|s| s.as_str() == "https")
+}

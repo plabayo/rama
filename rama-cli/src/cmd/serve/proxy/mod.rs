@@ -1,18 +1,23 @@
 //! Multi-protocol forward proxy with optional Relay/Peek MITM inspection.
 
 mod capture;
-mod control;
+#[cfg(test)]
+use capture::ExchangeId;
+#[cfg(test)]
+use rama::http::ws::handshake::mitm::WebSocketRelayMessage;
+use rama_inspect::http::control;
+use rama_inspect::websocket::inspect_websocket_event;
 mod dashboard;
 mod dashboard_auth;
 mod har;
-mod inspection;
-mod mitm_policy;
+use rama_inspect as inspection;
+use rama_inspect::http::mitm_policy;
 mod portal;
 mod upstream;
 
 use capture::{
-    CaptureHttpLayer, CaptureStore, CaptureWebSocketLayer, ConnectionId, ExchangeId,
-    MarkProtocolLayer, ObserveConnectionLayer,
+    CaptureHttpLayer, CaptureStore, CaptureWebSocketLayer, ConnectionId, MarkProtocolLayer,
+    ObserveConnectionLayer,
 };
 use clap::{Args, ValueEnum};
 use control::{Control, ControlConnection};
@@ -50,11 +55,7 @@ use rama::{
         ws::{
             handshake::{
                 matcher::HttpWebSocketRelayServiceRequestMatcher,
-                mitm::{
-                    WebSocketRelayEvent, WebSocketRelayEventInput, WebSocketRelayEventOutput,
-                    WebSocketRelayEventService, WebSocketRelayInjector, WebSocketRelayIoLayer,
-                    WebSocketRelayMessage,
-                },
+                mitm::{WebSocketRelayEventService, WebSocketRelayIoLayer},
             },
             layer::har::HARWebSocketLayer,
         },
@@ -1159,8 +1160,13 @@ pub struct CliCommandProxy {
     mitm_deny: Vec<String>,
 
     /// Initial MITM scope. Selected starts with no hosts until selected in the UI.
-    #[arg(long, value_enum, default_value_t = mitm_policy::ScopeMode::All, requires = "mitm")]
+    #[arg(long, default_value_t = mitm_policy::ScopeMode::All, requires = "mitm")]
     mitm_scope: mitm_policy::ScopeMode,
+
+    /// Print one JSON readiness record to stdout with the inspector link, API URL,
+    /// and bearer token. Diagnostics continue through the configured logger.
+    #[arg(long, requires = "mitm")]
+    inspect_json: bool,
 
     /// Require approval for all supported protocols (HTTP and WebSocket) from startup.
     #[arg(long, requires = "mitm")]
@@ -1405,15 +1411,18 @@ async fn run_with_dashboard_token(
     let capture = ua_db
         .as_ref()
         .map(|ua_db| {
-            CaptureStore::new_with_inspection(
-                cfg.capture_connections,
-                cfg.capture_exchanges,
-                cfg.capture_websocket_messages,
-                cfg.capture_body_limit,
-                cfg.capture_total_limit,
-                ua_db.clone(),
+            Ok::<_, BoxError>(CaptureStore::with_storage(
+                capture::storage(cfg.capture_total_limit)?,
+                capture::CaptureConfig {
+                    max_connections: cfg.capture_connections,
+                    max_exchanges: cfg.capture_exchanges,
+                    max_websocket_messages: cfg.capture_websocket_messages,
+                    body_limit: cfg.capture_body_limit,
+                    total_limit: 0, // The filesystem service bounds encrypted bytes.
+                    profiles: ua_db.clone(),
+                },
                 inspection.clone(),
-            )
+            ))
         })
         .transpose()?;
     if let Some(capture) = &capture {
@@ -1538,6 +1547,7 @@ async fn run_with_dashboard_token(
             network.local.port = %local_address.port(),
             "MITM inspector ready: http://{local_address}/?token={auth_token}"
         );
+        print_inspector_ready(local_address, &auth_token, cfg.inspect_json);
         let dashboard = standalone_dashboard_service(dashboard, local_address.into());
         let ui_exec = exec.clone();
         let ui_tcp_options = tcp_options.clone();
@@ -1739,6 +1749,7 @@ async fn run_with_dashboard_token(
         );
         if dashboard_here && let Some(auth_token) = dashboard_auth_token.as_ref() {
             tracing::info!("MITM inspector ready: http://{local_address}/?token={auth_token}");
+            print_inspector_ready(local_address, auth_token, cfg.inspect_json);
         }
 
         exec.clone().into_spawn_task(async move {
@@ -2190,155 +2201,6 @@ where
     service
 }
 
-fn close_intercepted_websocket(
-    extensions: rama::extensions::Extensions,
-    code: u16,
-    reason: String,
-) -> WebSocketRelayEventOutput {
-    use rama::http::ws::{
-        handshake::mitm::WebSocketRelayClose,
-        protocol::{CloseFrame, frame::coding::CloseCode},
-    };
-    WebSocketRelayEventOutput {
-        messages: vec![],
-        close: Some(WebSocketRelayClose::WithFrame(CloseFrame {
-            code: CloseCode::from(code),
-            reason: reason.into(),
-        })),
-        extensions,
-    }
-}
-
-async fn inspect_websocket_event(
-    capture: Option<CaptureStore>,
-    input: WebSocketRelayEventInput,
-) -> Result<WebSocketRelayEventOutput, Infallible> {
-    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-    use control::{Decision, WebSocketContext};
-    let WebSocketRelayEventInput {
-        direction,
-        mut event,
-        extensions,
-    } = input;
-    if let (Some(store), Some(context), WebSocketRelayEvent::Data(data)) = (
-        capture.as_ref().filter(|s| s.control().is_active()),
-        extensions.get_ref::<WebSocketContext>(),
-        &event,
-    ) {
-        let mut message = context.request.clone();
-        message.protocol = if message.protocol == "https" {
-            "wss"
-        } else {
-            "ws"
-        }
-        .into();
-        message.direction = format!("{direction:?}").to_ascii_lowercase();
-        message.exchange = extensions.get_ref::<ExchangeId>().map(|id| id.0);
-        message.binary = matches!(data, WebSocketRelayMessage::Binary(_));
-        message.kind = if message.binary { "binary" } else { "text" }.into();
-        let size = match data {
-            WebSocketRelayMessage::Text(t) => t.len(),
-            WebSocketRelayMessage::Binary(b) => b.len().saturating_mul(4).div_ceil(3),
-        };
-        message.oversized = size > 256 * 1024;
-        message.payload = (!message.oversized).then(|| match data {
-            WebSocketRelayMessage::Text(t) => t.to_string(),
-            WebSocketRelayMessage::Binary(b) => BASE64.encode(b),
-        });
-        let (decision, reason) = store
-            .control()
-            .decide(&context.connection, message.clone())
-            .await;
-        if let (Some(id), Some(reason)) = (message.exchange, reason) {
-            let outcome = match &decision {
-                Decision::Forward { .. } => "Forwarded",
-                Decision::Close { .. } => "Closed",
-                _ => "Dropped",
-            };
-            store
-                .record_decision(id, &message, &format!("{outcome} · {reason}"), None)
-                .await;
-        }
-        match decision {
-            Decision::Forward {
-                payload: Some(payload),
-                ..
-            } => {
-                event = WebSocketRelayEvent::Data(if message.binary {
-                    let Ok(bytes) = BASE64.decode(payload) else {
-                        return Ok(close_intercepted_websocket(
-                            extensions,
-                            1011,
-                            "Invalid approved payload".into(),
-                        ));
-                    };
-                    WebSocketRelayMessage::Binary(bytes.into())
-                } else {
-                    WebSocketRelayMessage::Text(payload.into())
-                });
-            }
-            Decision::Drop | Decision::Block => {
-                return Ok(WebSocketRelayEventOutput {
-                    messages: vec![],
-                    close: None,
-                    extensions,
-                });
-            }
-            Decision::Close { code, reason } => {
-                return Ok(close_intercepted_websocket(extensions, code, reason));
-            }
-            _ => (),
-        }
-    }
-    if let (Some(capture), Some(exchange_id)) =
-        (capture, extensions.get_ref::<ExchangeId>().copied())
-    {
-        if let Some(injector) = extensions.get_ref::<WebSocketRelayInjector>() {
-            capture.register_websocket_injector(exchange_id.0, injector.clone());
-        }
-        let (kind, data, close_code) = match &event {
-            WebSocketRelayEvent::Open => {
-                return Ok(WebSocketRelayEventInput {
-                    direction,
-                    event,
-                    extensions,
-                }
-                .into());
-            }
-            WebSocketRelayEvent::Data(WebSocketRelayMessage::Text(text)) => {
-                ("text", text.as_bytes().to_vec(), None)
-            }
-            WebSocketRelayEvent::Data(WebSocketRelayMessage::Binary(data)) => {
-                ("binary", data.to_vec(), None)
-            }
-            WebSocketRelayEvent::Ping(data) => ("ping", data.to_vec(), None),
-            WebSocketRelayEvent::Pong(data) => ("pong", data.to_vec(), None),
-            WebSocketRelayEvent::Close(frame) => (
-                "close",
-                frame
-                    .as_ref()
-                    .map(|frame| frame.reason.as_bytes().to_vec())
-                    .unwrap_or_default(),
-                frame.as_ref().map(|frame| u16::from(&frame.code)),
-            ),
-        };
-        capture
-            .record_websocket_message(
-                exchange_id.0,
-                format!("{direction:?}"),
-                kind.to_owned(),
-                data,
-                close_code,
-            )
-            .await;
-    }
-    Ok(WebSocketRelayEventOutput::from(WebSocketRelayEventInput {
-        direction,
-        event,
-        extensions,
-    }))
-}
-
 async fn write_new_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), BoxError> {
     use tokio::io::AsyncWriteExt as _;
     let mut file = tokio::fs::OpenOptions::new()
@@ -2349,6 +2211,25 @@ async fn write_new_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), BoxE
     file.write_all(bytes).await?;
     file.flush().await?;
     Ok(())
+}
+
+fn inspector_ready(address: std::net::SocketAddr, token: &str) -> serde_json::Value {
+    serde_json::json!({
+        "event": "rama.inspector.ready", "version": 1,
+        "inspector_url": format!("http://{address}/?token={token}"),
+        "api_url": format!("http://{address}/api"),
+        "authorization": { "scheme": "Bearer", "token": token },
+        "help_url": format!("http://{address}/api/help"),
+    })
+}
+#[expect(
+    clippy::print_stdout,
+    reason = "Explicitly requested machine-readable CLI output"
+)]
+fn print_inspector_ready(address: std::net::SocketAddr, token: &str, enabled: bool) {
+    if enabled {
+        println!("{}", inspector_ready(address, token));
+    }
 }
 
 #[cfg(test)]

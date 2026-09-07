@@ -174,3 +174,8 @@ pub mod utils {
     #[doc(inline)]
     pub use ::rama_tower as tower;
 }
+
+#[cfg(feature = "inspect")]
+#[cfg_attr(docsrs, doc(cfg(feature = "inspect")))]
+#[doc(inline)]
+pub use ::rama_inspect as inspect;

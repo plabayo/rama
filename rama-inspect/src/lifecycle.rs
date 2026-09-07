@@ -25,7 +25,7 @@ struct InspectionStateInner {
 /// waits for writers that already hold one, so a successful pause response is
 /// also a capture-write quiescence boundary.
 #[derive(Clone)]
-pub(super) struct InspectionState(Arc<InspectionStateInner>);
+pub struct InspectionState(Arc<InspectionStateInner>);
 
 impl Default for InspectionState {
     fn default() -> Self {
@@ -49,7 +49,7 @@ impl std::fmt::Debug for InspectionState {
 
 impl InspectionState {
     #[inline]
-    pub(super) fn is_enabled(&self) -> bool {
+    pub fn is_enabled(&self) -> bool {
         self.0.state.load(Ordering::Acquire) & PAUSED == 0
     }
 
@@ -58,7 +58,7 @@ impl InspectionState {
     /// The compare-and-exchange closes the race with `pause`: either the
     /// writer count wins first and is awaited, or the paused bit wins first
     /// and this operation does not start.
-    pub(super) fn try_capture(&self) -> Option<InspectionPermit> {
+    pub fn try_capture(&self) -> Option<InspectionPermit> {
         let mut state = self.0.state.load(Ordering::Acquire);
         loop {
             if state & PAUSED != 0 || state & WRITER_MASK == WRITER_MASK {
@@ -78,7 +78,7 @@ impl InspectionState {
 
     /// Register a cancellable MITM session before touching protocol data.
     /// Subscribe first so a concurrent pause cannot miss this session.
-    pub(super) fn session(&self) -> Option<InspectionSession> {
+    pub fn session(&self) -> Option<InspectionSession> {
         let paused = self.0.paused.subscribe();
         self.try_capture().map(|permit| InspectionSession {
             paused,
@@ -87,7 +87,7 @@ impl InspectionState {
     }
 
     /// Stop new inspection, cancel MITM sessions and drain capture writes.
-    pub(super) async fn pause(&self) -> bool {
+    pub async fn pause(&self) -> bool {
         let _transition = self.0.transition.lock().await;
         let previous = self.0.state.fetch_or(PAUSED, Ordering::AcqRel);
         self.0.paused.send_replace(());
@@ -97,20 +97,20 @@ impl InspectionState {
         previous & PAUSED == 0
     }
 
-    pub(super) async fn resume(&self) -> bool {
+    pub async fn resume(&self) -> bool {
         let _transition = self.0.transition.lock().await;
         self.0.state.fetch_and(WRITER_MASK, Ordering::AcqRel) & PAUSED != 0
     }
 }
 
 /// Holding this guard makes pause wait until the inspected future is dropped.
-pub(super) struct InspectionSession {
+pub struct InspectionSession {
     paused: watch::Receiver<()>,
     _permit: InspectionPermit,
 }
 
 impl InspectionSession {
-    pub(super) async fn run<F, E>(mut self, future: F) -> Result<(), E>
+    pub async fn run<F, E>(mut self, future: F) -> Result<(), E>
     where
         F: Future<Output = Result<(), E>>,
     {
@@ -124,20 +124,20 @@ impl InspectionSession {
 
 /// Choose raw forwarding while paused; end already inspected streams on pause.
 #[derive(Debug, Clone)]
-pub(super) struct InspectionGate<I, P> {
+pub struct InspectionGate<I, P> {
     pub inspection: InspectionState,
     pub inspect: I,
     pub passthrough: P,
 }
 
-impl<I, P, Input> rama::Service<Input> for InspectionGate<I, P>
+impl<I, P, Input> rama_core::Service<Input> for InspectionGate<I, P>
 where
     Input: Send + 'static,
-    I: rama::Service<Input, Output = (), Error: Into<rama::error::BoxError>>,
-    P: rama::Service<Input, Output = (), Error: Into<rama::error::BoxError>>,
+    I: rama_core::Service<Input, Output = (), Error: Into<rama_core::error::BoxError>>,
+    P: rama_core::Service<Input, Output = (), Error: Into<rama_core::error::BoxError>>,
 {
     type Output = ();
-    type Error = rama::error::BoxError;
+    type Error = rama_core::error::BoxError;
 
     async fn serve(&self, input: Input) -> Result<(), Self::Error> {
         if let Some(session) = self.inspection.session() {
@@ -152,7 +152,7 @@ where
 }
 
 #[must_use = "dropping the permit marks the capture operation complete"]
-pub(super) struct InspectionPermit(Arc<InspectionStateInner>);
+pub struct InspectionPermit(Arc<InspectionStateInner>);
 
 impl Drop for InspectionPermit {
     fn drop(&mut self) {

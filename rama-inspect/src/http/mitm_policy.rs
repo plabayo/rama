@@ -1,26 +1,49 @@
 use arc_swap::ArcSwap;
-use rama::{
+use rama_core::{
     error::{BoxError, BoxErrorExt as _, ErrorContext},
     extensions::Extensions,
-    net::{
-        address::{Host, HostPattern},
-        client::ConnectorTarget,
-    },
+};
+use rama_net::{
+    address::{Host, HostPattern},
+    client::ConnectorTarget,
 };
 use serde::{Deserialize, Serialize};
 use std::{fmt, sync::Arc};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(super) enum ScopeMode {
+pub enum ScopeMode {
     #[default]
     All,
     Selected,
     None,
 }
 
+impl std::str::FromStr for ScopeMode {
+    type Err = BoxError;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "all" => Ok(Self::All),
+            "selected" => Ok(Self::Selected),
+            "none" => Ok(Self::None),
+            _ => Err(BoxError::from_static_str(
+                "MITM scope must be all, selected, or none",
+            )),
+        }
+    }
+}
+impl fmt::Display for ScopeMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::All => "all",
+            Self::Selected => "selected",
+            Self::None => "none",
+        })
+    }
+}
+
 #[derive(Serialize)]
-pub(super) struct ScopeSnapshot {
+pub struct ScopeSnapshot {
     pub mode: ScopeMode,
     pub allow: Vec<String>,
     pub deny: Vec<String>,
@@ -123,10 +146,10 @@ impl fmt::Debug for MitmPolicyInner {
 /// empty browser list leaves the CLI ceiling unchanged. A match in either deny
 /// list always wins. Routing reads are lock-free.
 #[derive(Debug, Clone)]
-pub(super) struct MitmPolicy(Arc<MitmPolicyInner>);
+pub struct MitmPolicy(Arc<MitmPolicyInner>);
 
 impl MitmPolicy {
-    pub(super) fn try_new(cli_allow: &[String], cli_deny: &[String]) -> Result<Self, BoxError> {
+    pub fn try_new(cli_allow: &[String], cli_deny: &[String]) -> Result<Self, BoxError> {
         Ok(Self(Arc::new(MitmPolicyInner {
             cli_allow: RuleSet::try_new(cli_allow, false)?,
             cli_deny: RuleSet::try_new(cli_deny, false)?,
@@ -135,11 +158,11 @@ impl MitmPolicy {
     }
 
     #[cfg(test)]
-    pub(super) fn update_runtime(&self, allow: &[String], deny: &[String]) -> Result<(), BoxError> {
+    pub fn update_runtime(&self, allow: &[String], deny: &[String]) -> Result<(), BoxError> {
         self.update_scope(self.0.runtime.load().mode, allow, deny)
     }
 
-    pub(super) fn snapshot(&self) -> ScopeSnapshot {
+    pub fn snapshot(&self) -> ScopeSnapshot {
         let rules = self.0.runtime.load();
         ScopeSnapshot {
             mode: rules.mode,
@@ -150,7 +173,7 @@ impl MitmPolicy {
         }
     }
 
-    pub(super) fn update_scope(
+    pub fn update_scope(
         &self,
         mode: ScopeMode,
         allow: &[String],
@@ -165,28 +188,28 @@ impl MitmPolicy {
         Ok(())
     }
 
-    pub(super) fn should_inspect_host(&self, host: &Host) -> bool {
+    pub fn should_inspect_host(&self, host: &Host) -> bool {
         let runtime = self.0.runtime.load();
         self.should_inspect_observed_hosts(&runtime, [host])
     }
 
     /// Decide before protocol peeking. Every target reaches the peeker unless
     /// explicitly denied because TLS SNI can supply another eligible host.
-    pub(super) fn should_peek_target(&self, extensions: &Extensions) -> bool {
+    pub fn should_peek_target(&self, extensions: &Extensions) -> bool {
         extensions
             .get_ref::<ConnectorTarget>()
             .is_none_or(|target| !self.is_denied(&target.0.host))
     }
 
     /// Decide when peeking did not reveal a more useful domain.
-    pub(super) fn should_inspect_target(&self, extensions: &Extensions) -> bool {
+    pub fn should_inspect_target(&self, extensions: &Extensions) -> bool {
         self.should_inspect_target_and_host(extensions, None)
     }
 
     /// Decide after protocol peeking using every observed identity. A deny on
     /// either the connector target or TLS SNI wins. Otherwise either host can
     /// satisfy the effective allow scope.
-    pub(super) fn should_inspect_target_and_host(
+    pub fn should_inspect_target_and_host(
         &self,
         extensions: &Extensions,
         host: Option<&Host>,
@@ -198,7 +221,7 @@ impl MitmPolicy {
         self.should_inspect_observed_hosts(&runtime, target.into_iter().chain(host))
     }
 
-    pub(super) fn is_denied(&self, host: &Host) -> bool {
+    pub fn is_denied(&self, host: &Host) -> bool {
         let runtime = self.0.runtime.load();
         self.0.cli_deny.matches(host) || runtime.deny.matches(host)
     }
@@ -234,7 +257,7 @@ impl MitmPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama::extensions::Extensions;
+    use rama_core::extensions::Extensions;
 
     fn host(value: &str) -> Host {
         Host::try_from(value).unwrap()

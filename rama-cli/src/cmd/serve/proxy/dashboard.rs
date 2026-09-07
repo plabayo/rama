@@ -338,8 +338,14 @@ impl Service<Request> for DashboardService {
     }
 }
 
+mod api;
+
 pub(super) fn service(state: DashboardState) -> DashboardService {
     let router = Router::new_with_state(state)
+        .with_get("/api", api::discovery)
+        .with_get("/api/help", api::help)
+        .with_get("/api/captures", api::captures)
+        .with_get("/api/captures/events", api::capture_events)
         .with_get("/", index)
         .with_get("/events", events)
         .with_post("/api/filter", update_filter)
@@ -427,6 +433,7 @@ struct UiSignals {
 
 #[derive(Debug, Deserialize)]
 struct MitmPolicyUpdate {
+    #[serde(default)]
     session: String,
     allow: Vec<String>,
     deny: Vec<String>,
@@ -436,12 +443,14 @@ struct MitmPolicyUpdate {
 
 #[derive(Debug, Deserialize)]
 struct StartHarQuery {
+    #[serde(default)]
     session: String,
     file_name: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct HarSessionQuery {
+    #[serde(default)]
     session: String,
 }
 
@@ -511,9 +520,9 @@ async fn events(
     let Ok(event_stream_permit) = state.event_streams.clone().try_acquire_owned() else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
-    let mut capture_changes = state.capture.subscribe();
+    let mut capture_changes = state.capture.subscribe_changes();
     let mut ui_changes = state.ui_changes.subscribe();
-    let mut control_changes = state.capture.control().subscribe();
+    let mut control_changes = state.capture.control().subscribe_changes();
     Sse::new(KeepAliveStream::new(
         KeepAlive::new(),
         stream_fn(move |mut yielder| async move {
@@ -633,7 +642,7 @@ async fn update_mitm_policy(
     State(state): State<DashboardState>,
     Json(update): Json<MitmPolicyUpdate>,
 ) -> Response {
-    if !state.has_session(&update.session) {
+    if !update.session.is_empty() && !state.has_session(&update.session) {
         return StatusCode::NOT_FOUND.into_response();
     }
     if let Err(error) = state
@@ -653,10 +662,12 @@ async fn update_mitm_policy(
 
 #[derive(Deserialize)]
 struct ControlQuery {
+    #[serde(default)]
     session: String,
 }
 #[derive(Deserialize)]
 struct ControlConfigUpdate {
+    #[serde(default)]
     session: String,
     revision: u64,
     config: super::control::Config,
@@ -664,6 +675,7 @@ struct ControlConfigUpdate {
 }
 #[derive(Deserialize)]
 struct ControlDecision {
+    #[serde(default)]
     session: String,
     ids: Vec<u64>,
     decision: super::control::Decision,
@@ -673,7 +685,7 @@ async fn control_state(
     State(state): State<DashboardState>,
     Query(query): Query<ControlQuery>,
 ) -> Response {
-    if !state.has_session(&query.session) {
+    if !query.session.is_empty() && !state.has_session(&query.session) {
         return StatusCode::NOT_FOUND.into_response();
     }
     let mut snapshot = state.capture.control().snapshot();
@@ -696,7 +708,7 @@ async fn control_pending(
     Path(id): Path<u64>,
     Query(query): Query<ControlQuery>,
 ) -> Response {
-    if !state.has_session(&query.session) {
+    if !query.session.is_empty() && !state.has_session(&query.session) {
         return StatusCode::NOT_FOUND.into_response();
     }
     match state.capture.control().pending(id) {
@@ -713,7 +725,7 @@ async fn control_from_capture(
     Path(id): Path<u64>,
     Query(query): Query<ControlQuery>,
 ) -> Response {
-    if !state.has_session(&query.session) {
+    if !query.session.is_empty() && !state.has_session(&query.session) {
         return StatusCode::NOT_FOUND.into_response();
     }
     let Ok(details) = state.capture.inspector_details(id, 0, 0).await else {
@@ -737,7 +749,7 @@ async fn control_config(
     State(state): State<DashboardState>,
     Json(update): Json<ControlConfigUpdate>,
 ) -> Response {
-    if !state.has_session(&update.session) {
+    if !update.session.is_empty() && !state.has_session(&update.session) {
         return StatusCode::NOT_FOUND.into_response();
     }
     if update
@@ -770,7 +782,7 @@ async fn control_decision(
     State(state): State<DashboardState>,
     Json(update): Json<ControlDecision>,
 ) -> Response {
-    if !state.has_session(&update.session) {
+    if !update.session.is_empty() && !state.has_session(&update.session) {
         return StatusCode::NOT_FOUND.into_response();
     }
     if update.ids.is_empty() || update.ids.len() > 256 {
@@ -790,7 +802,7 @@ async fn control_forward_all(
     State(state): State<DashboardState>,
     Json(query): Json<ControlQuery>,
 ) -> Response {
-    if !state.has_session(&query.session) {
+    if !query.session.is_empty() && !state.has_session(&query.session) {
         return StatusCode::NOT_FOUND.into_response();
     }
     state.capture.control().stop_and_forward();
@@ -801,7 +813,7 @@ async fn control_resume(
     Path(id): Path<u64>,
     Json(query): Json<ControlQuery>,
 ) -> Response {
-    if !state.has_session(&query.session) {
+    if !query.session.is_empty() && !state.has_session(&query.session) {
         return StatusCode::NOT_FOUND.into_response();
     }
     state.capture.control().resume_connection(id);
@@ -811,7 +823,7 @@ async fn control_clear_hosts(
     State(state): State<DashboardState>,
     Json(query): Json<ControlQuery>,
 ) -> Response {
-    if !state.has_session(&query.session) {
+    if !query.session.is_empty() && !state.has_session(&query.session) {
         return StatusCode::NOT_FOUND.into_response();
     }
     state.capture.control().clear_hosts();
@@ -822,7 +834,7 @@ async fn pause_inspection(
     State(state): State<DashboardState>,
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> StatusCode {
-    if !state.has_session(&signals.session) {
+    if !signals.session.is_empty() && !state.has_session(&signals.session) {
         return StatusCode::NOT_FOUND;
     }
     let _transition = state.recording_transition.lock().await;
@@ -841,7 +853,7 @@ async fn resume_inspection(
     State(state): State<DashboardState>,
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> StatusCode {
-    if !state.has_session(&signals.session) {
+    if !signals.session.is_empty() && !state.has_session(&signals.session) {
         return StatusCode::NOT_FOUND;
     }
     let _transition = state.recording_transition.lock().await;
@@ -856,7 +868,7 @@ async fn clear_captures(
     State(state): State<DashboardState>,
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> StatusCode {
-    if !state.has_session(&signals.session) {
+    if !signals.session.is_empty() && !state.has_session(&signals.session) {
         return StatusCode::NOT_FOUND;
     }
     state.capture.clear().await;
@@ -1106,7 +1118,7 @@ async fn replay_websocket_message(
     Path(WebSocketMessagePath { id, index }): Path<WebSocketMessagePath>,
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> Response {
-    if !state.has_session(&signals.session) {
+    if !signals.session.is_empty() && !state.has_session(&signals.session) {
         return StatusCode::NOT_FOUND.into_response();
     }
     match state.capture.replay_websocket_message(id, index).await {
@@ -1135,7 +1147,7 @@ async fn send_websocket_message(
     Path(IdPath { id }): Path<IdPath>,
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> Response {
-    if !state.has_session(&signals.session) {
+    if !signals.session.is_empty() && !state.has_session(&signals.session) {
         return StatusCode::NOT_FOUND.into_response();
     }
     match state
@@ -1289,7 +1301,7 @@ async fn start_har(
     State(state): State<DashboardState>,
     Query(query): Query<StartHarQuery>,
 ) -> Response {
-    if !state.has_session(&query.session) {
+    if !query.session.is_empty() && !state.has_session(&query.session) {
         return StatusCode::NOT_FOUND.into_response();
     }
     let _transition = state.recording_transition.lock().await;
@@ -1312,7 +1324,7 @@ async fn stop_har(
     State(state): State<DashboardState>,
     Query(query): Query<HarSessionQuery>,
 ) -> Response {
-    if !state.has_session(&query.session) {
+    if !query.session.is_empty() && !state.has_session(&query.session) {
         return StatusCode::NOT_FOUND.into_response();
     }
     let result = state.har.stop_browser().await;
@@ -1382,7 +1394,7 @@ async fn replay(
     Path(IdPath { id }): Path<IdPath>,
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> Response {
-    if !state.has_session(&signals.session) {
+    if !signals.session.is_empty() && !state.has_session(&signals.session) {
         return StatusCode::NOT_FOUND.into_response();
     }
     let result = replay_captured(&state, id).await;
@@ -3828,7 +3840,8 @@ mod tests {
     ) -> DashboardState {
         let ua_db = Arc::new(UserAgentDatabase::try_embedded().unwrap());
         DashboardState::new(
-            CaptureStore::new(connections, exchanges, 1024, ua_db).unwrap(),
+            crate::cmd::serve::proxy::capture::test_store(connections, exchanges, 1024, ua_db)
+                .unwrap(),
             HarController::default(),
             Vec::new(),
             Arc::new(SocketOptions::default_tcp()),
@@ -3837,11 +3850,11 @@ mod tests {
         )
     }
 
-    fn test_state() -> DashboardState {
+    pub(super) fn test_state() -> DashboardState {
         test_state_with_limits(8, 8)
     }
 
-    async fn capture_request_for_replay(state: &DashboardState, uri: &str) {
+    pub(super) async fn capture_request_for_replay(state: &DashboardState, uri: &str) {
         let capture = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
             rama::service::service_fn(async |request: Request| {
                 request.into_body().collect().await.unwrap();
@@ -4026,7 +4039,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let mut changes = control.subscribe();
+        let mut changes = control.subscribe_changes();
         let task = tokio::spawn({
             let control = control.clone();
             async move {
@@ -4128,7 +4141,10 @@ mod tests {
 
         let state = test_state_with_limits(256, 8);
         for _ in 0..105 {
-            let id = state.capture.begin_connection(None, "http");
+            let id = state
+                .capture
+                .begin_connection_if_enabled(None, "http", None)
+                .unwrap();
             state.capture.confirm_connection(id);
         }
         state.ensure_session("known");
@@ -4176,7 +4192,10 @@ mod tests {
             .into_iter()
             .map(|connection| connection.id)
             .collect::<Vec<_>>();
-        let new_id = state.capture.begin_connection(None, "http");
+        let new_id = state
+            .capture
+            .begin_connection_if_enabled(None, "http", None)
+            .unwrap();
         state.capture.confirm_connection(new_id);
         let after_insert = state
             .capture
@@ -4625,8 +4644,14 @@ mod tests {
     #[tokio::test]
     async fn connection_rows_support_session_local_multi_selection() {
         let state = test_state();
-        let first = state.capture.begin_connection(None, "http");
-        let second = state.capture.begin_connection(None, "https");
+        let first = state
+            .capture
+            .begin_connection_if_enabled(None, "http", None)
+            .unwrap();
+        let second = state
+            .capture
+            .begin_connection_if_enabled(None, "https", None)
+            .unwrap();
         state.capture.confirm_connection(first);
         state.capture.confirm_connection(second);
         state.capture.finish_connection(first);
@@ -4656,9 +4681,15 @@ mod tests {
     #[tokio::test]
     async fn overview_numbers_only_confirmed_proxy_connections() {
         let state = test_state();
-        let dashboard = state.capture.begin_connection(None, "classifying");
+        let dashboard = state
+            .capture
+            .begin_connection_if_enabled(None, "classifying", None)
+            .unwrap();
         assert!(state.capture.discard_connection_if_empty(dashboard));
-        let proxy = state.capture.begin_connection(None, "http");
+        let proxy = state
+            .capture
+            .begin_connection_if_enabled(None, "http", None)
+            .unwrap();
         state.capture.confirm_connection(proxy);
         state.ensure_session("known");
         let service = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
@@ -4691,7 +4722,10 @@ mod tests {
     #[tokio::test]
     async fn request_rows_distinguish_response_lifecycle_and_offer_inline_replay() {
         let state = test_state();
-        let connection_id = state.capture.begin_connection(None, "http");
+        let connection_id = state
+            .capture
+            .begin_connection_if_enabled(None, "http", None)
+            .unwrap();
         state.capture.confirm_connection(connection_id);
         state.ensure_session("known");
         let success = super::super::capture::CaptureHttpLayer::new(Some(state.capture.clone()))
@@ -4736,7 +4770,10 @@ mod tests {
     #[tokio::test]
     async fn focused_connection_and_request_views_are_session_local_and_live() {
         let state = test_state();
-        let connection_id = state.capture.begin_connection(None, "https");
+        let connection_id = state
+            .capture
+            .begin_connection_if_enabled(None, "https", None)
+            .unwrap();
         state.capture.confirm_connection(connection_id);
         state.ensure_session("known");
         let service = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
@@ -4840,11 +4877,17 @@ mod tests {
 
     #[tokio::test]
     async fn focused_connection_is_not_retired_by_the_overview_display_limit() {
-        let state = test_state();
-        let oldest = state.capture.begin_connection(None, "http");
+        let state = test_state_with_limits(MAX_VISIBLE_CONNECTIONS + 1, 8);
+        let oldest = state
+            .capture
+            .begin_connection_if_enabled(None, "http", None)
+            .unwrap();
         state.capture.confirm_connection(oldest);
         for _ in 0..MAX_VISIBLE_CONNECTIONS {
-            let id = state.capture.begin_connection(None, "http");
+            let id = state
+                .capture
+                .begin_connection_if_enabled(None, "http", None)
+                .unwrap();
             state.capture.confirm_connection(id);
         }
         state.ensure_session("known");
@@ -4926,9 +4969,15 @@ mod tests {
     async fn selected_connections_and_requests_export_har_and_copy_as_curl() {
         let state = test_state();
         state.ensure_session("known");
-        let first_connection = state.capture.begin_connection(None, "http");
+        let first_connection = state
+            .capture
+            .begin_connection_if_enabled(None, "http", None)
+            .unwrap();
         state.capture.confirm_connection(first_connection);
-        let second_connection = state.capture.begin_connection(None, "http");
+        let second_connection = state
+            .capture
+            .begin_connection_if_enabled(None, "http", None)
+            .unwrap();
         state.capture.confirm_connection(second_connection);
         let service = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
             rama::service::service_fn(async |request: Request| {
@@ -4974,7 +5023,10 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let web_socket_connection = state.capture.begin_connection(None, "http");
+        let web_socket_connection = state
+            .capture
+            .begin_connection_if_enabled(None, "http", None)
+            .unwrap();
         state.capture.confirm_connection(web_socket_connection);
         let web_socket_service = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
             rama::service::service_fn(async |_request: Request| {

@@ -22,6 +22,7 @@ name = "rama"
 path = "src/main.rs"
 
 [dependencies]
+rama-inspect = { workspace = true, features = ["http", "websocket", "profiles", "encryption", "fs"] }
 arc-swap = { workspace = true }
 base64 = { workspace = true }
 bb8 = { workspace = true }
@@ -68,6 +69,7 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+rama = { path = "..", features = ["test-utils"] }
 
 [lints]
 workspace = true

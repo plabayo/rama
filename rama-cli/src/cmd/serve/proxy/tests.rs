@@ -2241,8 +2241,10 @@ async fn mitm_certificate_portal_is_hijacked_over_http_and_https() {
 #[tokio::test]
 async fn shared_dashboard_request_discards_its_provisional_connection() {
     let ua_db = Arc::new(UserAgentDatabase::try_embedded().unwrap());
-    let capture = CaptureStore::new(8, 8, 1024, ua_db.clone()).unwrap();
-    let connection_id = capture.begin_connection(None, "http");
+    let capture = crate::cmd::serve::proxy::capture::test_store(8, 8, 1024, ua_db.clone()).unwrap();
+    let connection_id = capture
+        .begin_connection_if_enabled(None, "http", None)
+        .unwrap();
     let dashboard = dashboard::service(DashboardState::new(
         capture.clone(),
         HarController::default(),
@@ -2289,7 +2291,7 @@ async fn shared_dashboard_request_discards_its_provisional_connection() {
 
 #[tokio::test]
 async fn websocket_inspector_records_and_relays_messages() {
-    let store = CaptureStore::new(
+    let store = crate::cmd::serve::proxy::capture::test_store(
         8,
         8,
         4,
@@ -2693,7 +2695,7 @@ async fn forward_http_client_applies_connect_timeout_to_tls_handshake() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn captured_http_summary_includes_ingress_and_egress_socket_addresses() {
     let (origin, origin_task) = spawn_plain_origin("socket-summary").await;
-    let store = CaptureStore::new(
+    let store = crate::cmd::serve::proxy::capture::test_store(
         8,
         8,
         mib_u64(1),
@@ -2702,13 +2704,16 @@ async fn captured_http_summary_includes_ingress_and_egress_socket_addresses() {
     .unwrap();
     let ingress_local: SocketAddress = "127.0.0.1:8080".parse().unwrap();
     let ingress_peer: SocketAddress = "127.0.0.1:54321".parse().unwrap();
-    let connection_id = store.begin_connection(
-        Some(rama::net::stream::SocketInfo::new(
-            Some(ingress_local),
-            ingress_peer,
-        )),
-        "http",
-    );
+    let connection_id = store
+        .begin_connection_if_enabled(
+            Some(rama::net::stream::SocketInfo::new(
+                Some(ingress_local),
+                ingress_peer,
+            )),
+            "http",
+            None,
+        )
+        .unwrap();
     store.confirm_connection(connection_id);
     let client = new_proxy_client(ProxyClientConfig {
         exec: Executor::default(),
@@ -2746,7 +2751,7 @@ async fn captured_http_summary_includes_ingress_and_egress_socket_addresses() {
 
 #[tokio::test]
 async fn websocket_inspector_replays_live_text_and_binary_in_original_direction() {
-    let store = CaptureStore::new(
+    let store = crate::cmd::serve::proxy::capture::test_store(
         8,
         8,
         4096,
@@ -3587,4 +3592,26 @@ async fn live_interception_holds_upgrade_and_websocket_data_but_not_control_fram
         .await
         .unwrap();
     origin_task.abort();
+}
+
+#[test]
+fn machine_readiness_uses_the_same_capability_as_the_human_link() {
+    TestCli::try_parse_from(["test", "--inspect-json"]).unwrap_err();
+    let cli = TestCli::try_parse_from([
+        "test",
+        "--mitm",
+        "--inspect-json",
+        "--mitm-scope",
+        "selected",
+    ])
+    .unwrap();
+    assert!(cli.proxy.inspect_json);
+    let ready = inspector_ready("[::1]:8123".parse().unwrap(), "example-token");
+    assert_eq!(ready["event"], "rama.inspector.ready");
+    assert_eq!(ready["api_url"], "http://[::1]:8123/api");
+    assert_eq!(
+        ready["inspector_url"],
+        "http://[::1]:8123/?token=example-token"
+    );
+    assert_eq!(ready["authorization"]["token"], "example-token");
 }

@@ -1,5 +1,6 @@
 use super::*;
-use rama::{extensions::ExtensionsRef as _, http::StatusCode};
+use rama_core::extensions::ExtensionsRef as _;
+use rama_http::StatusCode;
 
 #[derive(Clone)]
 struct EncryptedBodySink {
@@ -20,7 +21,7 @@ impl BodyCaptureSink for EncryptedBodySink {
 
     fn aborted(&self) {
         let this = self.clone();
-        rama::rt::spawn(async move {
+        rama_core::rt::spawn(async move {
             this.store
                 .body_event(
                     this.exchange_id,
@@ -33,22 +34,20 @@ impl BodyCaptureSink for EncryptedBodySink {
 }
 
 #[derive(Debug, Clone)]
-pub(in crate::cmd::serve::proxy) struct CaptureHttpLayer {
+pub struct CaptureHttpLayer {
     store: Option<CaptureStore>,
     policy: Option<super::super::mitm_policy::MitmPolicy>,
 }
 
 impl CaptureHttpLayer {
-    pub(in crate::cmd::serve::proxy) fn new(store: Option<CaptureStore>) -> Self {
+    pub fn new(store: Option<CaptureStore>) -> Self {
         Self {
             store,
             policy: None,
         }
     }
-    pub(in crate::cmd::serve::proxy) fn with_policy(
-        mut self,
-        policy: super::super::mitm_policy::MitmPolicy,
-    ) -> Self {
+    #[must_use]
+    pub fn with_policy(mut self, policy: super::super::mitm_policy::MitmPolicy) -> Self {
         self.policy = Some(policy);
         self
     }
@@ -67,7 +66,7 @@ impl<S> Layer<S> for CaptureHttpLayer {
 }
 
 #[derive(Debug, Clone)]
-pub(in crate::cmd::serve::proxy) struct CaptureHttpService<S> {
+pub struct CaptureHttpService<S> {
     inner: S,
     store: Option<CaptureStore>,
     policy: Option<super::super::mitm_policy::MitmPolicy>,
@@ -76,10 +75,14 @@ pub(in crate::cmd::serve::proxy) struct CaptureHttpService<S> {
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for CaptureHttpService<S>
 where
     S: Service<Request<Body>, Output = Response<ResBody>>,
-    ReqBody:
-        StreamingBody<Data = rama::bytes::Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
-    ResBody:
-        StreamingBody<Data = rama::bytes::Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    ReqBody: StreamingBody<Data = rama_core::bytes::Bytes, Error: Into<BoxError>>
+        + Send
+        + Sync
+        + 'static,
+    ResBody: StreamingBody<Data = rama_core::bytes::Bytes, Error: Into<BoxError>>
+        + Send
+        + Sync
+        + 'static,
 {
     type Output = Response<Body>;
     type Error = S::Error;
@@ -111,7 +114,7 @@ where
         parts.extensions.insert(connection.clone());
         let mut message = http_message(&parts);
         let in_scope = self.policy.as_ref().is_none_or(|p| {
-            rama::net::address::Host::try_from(message.host.as_str())
+            rama_net::address::Host::try_from(message.host.as_str())
                 .is_ok_and(|h| p.should_inspect_host(&h))
         });
         if self.policy.is_some() {
@@ -137,7 +140,7 @@ where
         let id = match store.begin_exchange(&parts).await {
             Ok(id) => id,
             Err(error) => {
-                rama::telemetry::tracing::error!("failed to begin MITM capture: {error}");
+                rama_core::telemetry::tracing::error!("failed to begin MITM capture: {error}");
                 None
             }
         };
@@ -189,13 +192,11 @@ where
         }
         message.conditional = matches!(
             parts.method,
-            rama::http::Method::GET | rama::http::Method::HEAD
-        ) && (parts
-            .headers
-            .contains_key(rama::http::header::IF_NONE_MATCH)
+            rama_http::Method::GET | rama_http::Method::HEAD
+        ) && (parts.headers.contains_key(rama_http::header::IF_NONE_MATCH)
             || parts
                 .headers
-                .contains_key(rama::http::header::IF_MODIFIED_SINCE));
+                .contains_key(rama_http::header::IF_MODIFIED_SINCE));
         let websocket_context = is_websocket_handshake(&parts).then(|| WebSocketContext {
             connection: connection.clone(),
             request: http_message(&parts),
@@ -315,7 +316,7 @@ where
             let (parts, body) = response.into_parts();
             parts.extensions.insert(ExchangeId(id));
             if let Err(error) = store.response_head(id, &parts).await {
-                rama::telemetry::tracing::debug!("failed to capture response head: {error}");
+                rama_core::telemetry::tracing::debug!("failed to capture response head: {error}");
             }
             if let Some(guard) =
                 store.websocket_exchange_guard_for_response(id, parts.status.as_u16())
@@ -348,17 +349,20 @@ where
 /// directional event streams can be associated without changing the generic
 /// HTTP upgrade machinery. Completion follows the relay service future, which
 /// also covers idle sockets and abnormal disconnects.
+#[cfg(feature = "websocket")]
 #[derive(Debug, Clone)]
-pub(in crate::cmd::serve::proxy) struct CaptureWebSocketLayer {
+pub struct CaptureWebSocketLayer {
     store: Option<CaptureStore>,
 }
 
+#[cfg(feature = "websocket")]
 impl CaptureWebSocketLayer {
-    pub(in crate::cmd::serve::proxy) fn new(store: Option<CaptureStore>) -> Self {
+    pub fn new(store: Option<CaptureStore>) -> Self {
         Self { store }
     }
 }
 
+#[cfg(feature = "websocket")]
 impl<S> Layer<S> for CaptureWebSocketLayer {
     type Service = CaptureWebSocketService<S>;
 
@@ -370,17 +374,19 @@ impl<S> Layer<S> for CaptureWebSocketLayer {
     }
 }
 
+#[cfg(feature = "websocket")]
 #[derive(Debug, Clone)]
-pub(in crate::cmd::serve::proxy) struct CaptureWebSocketService<S> {
+pub struct CaptureWebSocketService<S> {
     inner: S,
     store: Option<CaptureStore>,
 }
 
+#[cfg(feature = "websocket")]
 impl<S, Ingress, Egress> Service<WebSocketBridge<Ingress, Egress>> for CaptureWebSocketService<S>
 where
     S: Service<WebSocketBridge<Ingress, Egress>>,
-    Ingress: rama::extensions::ExtensionsRef + Send + 'static,
-    Egress: rama::extensions::ExtensionsRef + Send + 'static,
+    Ingress: rama_core::extensions::ExtensionsRef + Send + 'static,
+    Egress: rama_core::extensions::ExtensionsRef + Send + 'static,
 {
     type Output = S::Output;
     type Error = S::Error;
@@ -398,7 +404,7 @@ where
             bridge.ingress.extensions().insert(context);
         }
         if self.store.is_some() {
-            let limits = rama::http::ws::handshake::mitm::WebSocketRelayReadAhead {
+            let limits = rama_ws::handshake::mitm::WebSocketRelayReadAhead {
                 max_messages: std::num::NonZeroUsize::MIN.saturating_add(15),
                 max_bytes: std::num::NonZeroUsize::MIN.saturating_add(256 * 1024 - 1),
             };
@@ -437,13 +443,13 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub(in crate::cmd::serve::proxy) struct ObserveConnectionLayer {
+pub struct ObserveConnectionLayer {
     store: CaptureStore,
     label: &'static str,
 }
 
 impl ObserveConnectionLayer {
-    pub(in crate::cmd::serve::proxy) fn new(store: CaptureStore, label: &'static str) -> Self {
+    pub fn new(store: CaptureStore, label: &'static str) -> Self {
         Self { store, label }
     }
 }
@@ -461,7 +467,7 @@ impl<S> Layer<S> for ObserveConnectionLayer {
 }
 
 #[derive(Debug, Clone)]
-pub(in crate::cmd::serve::proxy) struct ObserveConnectionService<S> {
+pub struct ObserveConnectionService<S> {
     inner: S,
     store: CaptureStore,
     label: &'static str,
@@ -469,7 +475,7 @@ pub(in crate::cmd::serve::proxy) struct ObserveConnectionService<S> {
 
 impl<S, IO> Service<IO> for ObserveConnectionService<S>
 where
-    IO: rama::io::Io + Unpin + rama::extensions::ExtensionsRef + 'static,
+    IO: rama_core::io::Io + Unpin + rama_core::extensions::ExtensionsRef + 'static,
     S: Service<IO>,
 {
     type Output = S::Output;
@@ -491,16 +497,13 @@ where
 }
 
 #[derive(Debug, Clone)]
-pub(in crate::cmd::serve::proxy) struct MarkProtocolLayer {
+pub struct MarkProtocolLayer {
     store: Option<CaptureStore>,
     protocol: &'static str,
 }
 
 impl MarkProtocolLayer {
-    pub(in crate::cmd::serve::proxy) fn new(
-        store: Option<CaptureStore>,
-        protocol: &'static str,
-    ) -> Self {
+    pub fn new(store: Option<CaptureStore>, protocol: &'static str) -> Self {
         Self { store, protocol }
     }
 }
@@ -518,7 +521,7 @@ impl<S> Layer<S> for MarkProtocolLayer {
 }
 
 #[derive(Debug, Clone)]
-pub(in crate::cmd::serve::proxy) struct MarkProtocolService<S> {
+pub struct MarkProtocolService<S> {
     inner: S,
     store: Option<CaptureStore>,
     protocol: &'static str,
@@ -526,7 +529,7 @@ pub(in crate::cmd::serve::proxy) struct MarkProtocolService<S> {
 
 impl<S, IO> Service<IO> for MarkProtocolService<S>
 where
-    IO: rama::extensions::ExtensionsRef + Send + Sync + 'static,
+    IO: rama_core::extensions::ExtensionsRef + Send + Sync + 'static,
     S: Service<IO>,
 {
     type Output = S::Output;

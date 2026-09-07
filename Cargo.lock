@@ -4000,6 +4000,7 @@ dependencies = [
  "rama-http-backend",
  "rama-http-core",
  "rama-icap",
+ "rama-inspect",
  "rama-js",
  "rama-json",
  "rama-net",
@@ -4085,6 +4086,7 @@ dependencies = [
  "mimalloc",
  "parking_lot",
  "rama",
+ "rama-inspect",
  "ratatui",
  "serde",
  "serde_json",
@@ -4513,6 +4515,29 @@ dependencies = [
  "rama-utils",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "rama-inspect"
+version = "0.5.0"
+dependencies = [
+ "arc-swap",
+ "base64 0.23.1",
+ "jiff",
+ "parking_lot",
+ "rama-core",
+ "rama-crypto",
+ "rama-http",
+ "rama-http-backend",
+ "rama-http-core",
+ "rama-net",
+ "rama-tls",
+ "rama-ua",
+ "rama-utils",
+ "rama-ws",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

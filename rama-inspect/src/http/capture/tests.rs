@@ -1,6 +1,6 @@
 use super::*;
-use rama::extensions::ExtensionsRef as _;
-use rama::futures::StreamExt as _;
+use rama_core::extensions::ExtensionsRef as _;
+use rama_core::futures::StreamExt as _;
 use std::{convert::Infallible, time::Duration};
 use tokio::task::JoinSet;
 
@@ -52,22 +52,22 @@ fn decoded_body(records: &[StoredRecord], request: bool) -> Vec<u8> {
 #[test]
 fn captured_http_versions_have_stable_display_labels() {
     for (version, label) in [
-        (rama::http::Version::HTTP_09, "HTTP/0.9"),
-        (rama::http::Version::HTTP_10, "HTTP/1.0"),
-        (rama::http::Version::HTTP_11, "HTTP/1.1"),
-        (rama::http::Version::HTTP_2, "HTTP/2"),
-        (rama::http::Version::HTTP_3, "HTTP/3"),
+        (rama_http::Version::HTTP_09, "HTTP/0.9"),
+        (rama_http::Version::HTTP_10, "HTTP/1.0"),
+        (rama_http::Version::HTTP_11, "HTTP/1.1"),
+        (rama_http::Version::HTTP_2, "HTTP/2"),
+        (rama_http::Version::HTTP_3, "HTTP/3"),
     ] {
         assert_eq!(http_version_label(version), label);
         assert_eq!(captured_http_version(label).unwrap(), version);
     }
     assert_eq!(
         captured_http_version("HTTP/2.0").unwrap(),
-        rama::http::Version::HTTP_2
+        rama_http::Version::HTTP_2
     );
     assert_eq!(
         captured_http_version("HTTP/3").unwrap(),
-        rama::http::Version::HTTP_3
+        rama_http::Version::HTTP_3
     );
     captured_http_version("HTTP/4").unwrap_err();
 }
@@ -92,7 +92,7 @@ async fn confirming_a_connection_assigns_one_visible_number() {
 }
 
 #[tokio::test]
-async fn encrypted_records_round_trip_without_plaintext_on_disk() {
+async fn captured_headers_and_bodies_round_trip_through_storage() {
     let store = test_store();
     let request = Request::builder()
         .method("POST")
@@ -100,21 +100,16 @@ async fn encrypted_records_round_trip_without_plaintext_on_disk() {
         .header("authorization", "Bearer secret-value")
         .body(Body::from("private-payload"))
         .unwrap();
-    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-        async |_request: Request| {
+    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(
+        rama_core::service::service_fn(async |_request: Request| {
             Ok::<_, Infallible>(Response::new(Body::from("private-response")))
-        },
-    ));
+        }),
+    );
     let response = service.serve(request).await.unwrap();
     response.into_body().collect().await.unwrap();
 
     let details = store.details(1).await.unwrap();
     assert_eq!(details.summary.status, Some(200));
-    let bytes = tokio::fs::read(store.0.temp_dir.path().join("exchange-1.capture"))
-        .await
-        .unwrap();
-    assert!(!bytes.windows(12).any(|window| window == b"secret-value"));
-    assert!(!bytes.windows(15).any(|window| window == b"private-payload"));
     assert!(details.records.iter().any(|record| matches!(
         record,
         StoredRecord::ResponseBody { data } if BASE64.decode(data).unwrap() == b"private-response"
@@ -124,15 +119,15 @@ async fn encrypted_records_round_trip_without_plaintext_on_disk() {
 #[tokio::test]
 async fn inspector_metadata_is_body_free_and_body_decryption_streams_with_a_limit() {
     let store = test_store_with_limits(8, 8, 4096);
-    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-        async |request: Request| {
+    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(
+        rama_core::service::service_fn(async |request: Request| {
             assert_eq!(
                 request.into_body().collect().await.unwrap().to_bytes(),
                 "request-stream"
             );
             Ok::<_, Infallible>(Response::new(Body::from("response-stream")))
-        },
-    ));
+        }),
+    );
     service
         .serve(Request::new(Body::from("request-stream")))
         .await
@@ -330,7 +325,7 @@ async fn websocket_record_limit_stops_storage_with_one_truncation_state() {
             .await;
     }
     let entry = store.exchange(exchange_id).unwrap();
-    let committed_before = entry.file.lock().await.len;
+    let committed_before = entry.stored_bytes.load(Ordering::Acquire);
     for _ in 0..100 {
         store
             .record_websocket_message(
@@ -343,7 +338,7 @@ async fn websocket_record_limit_stops_storage_with_one_truncation_state() {
             .await;
     }
 
-    let committed_after = entry.file.lock().await.len;
+    let committed_after = entry.stored_bytes.load(Ordering::Acquire);
     let details = store.inspector_details(exchange_id, 0, 100).await.unwrap();
     assert_eq!(details.websocket_total, 3);
     assert_eq!(committed_after, committed_before);
@@ -386,7 +381,7 @@ async fn oversized_websocket_message_is_not_persisted_as_a_partial_message() {
 
 #[tokio::test]
 async fn exhausted_total_budget_abandons_a_new_capture_without_failing_traffic() {
-    let store = test_store_with_total_limit(8, 1024, FILE_MAGIC.len() as u64);
+    let store = test_store_with_total_limit(8, 1024, 8);
     let request = Request::builder()
         .uri("http://example.test/not-captured")
         .body(Body::empty())
@@ -404,7 +399,7 @@ async fn exhausted_total_budget_abandons_a_new_capture_without_failing_traffic()
 }
 
 #[tokio::test]
-async fn total_budget_charges_committed_files_and_releases_evicted_entries() {
+async fn total_budget_charges_committed_records_and_releases_evicted_entries() {
     let store = test_store_with_total_limit(1, 1024, 4096);
     let request = Request::builder()
         .uri("http://example.test/first")
@@ -424,7 +419,7 @@ async fn total_budget_charges_committed_files_and_releases_evicted_entries() {
         .await;
 
     let first_entry = store.exchange(first).unwrap();
-    let first_file_len = first_entry.file.lock().await.len;
+    let first_file_len = first_entry.stored_bytes.load(Ordering::Acquire);
     assert_eq!(store.0.budget.used.load(Ordering::Acquire), first_file_len);
     drop(first_entry);
 
@@ -440,7 +435,7 @@ async fn total_budget_charges_committed_files_and_releases_evicted_entries() {
     assert_ne!(second, first);
     assert!(store.exchange(first).is_err());
     let second_entry = store.exchange(second).unwrap();
-    let second_file_len = second_entry.file.lock().await.len;
+    let second_file_len = second_entry.stored_bytes.load(Ordering::Acquire);
     assert_eq!(store.0.budget.used.load(Ordering::Acquire), second_file_len);
     drop(second_entry);
 
@@ -525,36 +520,14 @@ async fn total_budget_stops_websocket_storage_but_keeps_byte_metrics_bounded() {
 }
 
 #[tokio::test]
-async fn dropping_store_removes_encrypted_capture_directory() {
-    let directory = {
-        let store = test_store();
-        let directory = store.0.temp_dir.path().to_owned();
-        let service = CaptureHttpLayer::new(Some(store)).into_layer(rama::service::service_fn(
-            async |request: Request| {
-                request.into_body().collect().await.unwrap();
-                Ok::<_, Infallible>(Response::new(Body::from("captured")))
-            },
-        ));
-        let response = service.serve(Request::new(Body::empty())).await.unwrap();
-        response.into_body().collect().await.unwrap();
-        assert!(directory.join("exchange-1.capture").exists());
-        directory
-    };
-
-    assert!(
-        !directory.exists(),
-        "dropping the last store must clean its encrypted temporary files"
-    );
-}
-
-#[tokio::test]
-async fn clearing_capture_state_removes_encrypted_files_and_summaries() {
+async fn clearing_capture_state_removes_summaries() {
     let store = test_store();
     let connection_id = store.begin_connection_labeled(None, "http", Some("clear-test".to_owned()));
     store.confirm_connection(connection_id);
-    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-        async |_request: Request| Ok::<_, Infallible>(Response::new(Body::from("response"))),
-    ));
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).into_layer(rama_core::service::service_fn(
+            async |_request: Request| Ok::<_, Infallible>(Response::new(Body::from("response"))),
+        ));
     service
         .serve(
             Request::builder()
@@ -570,29 +543,26 @@ async fn clearing_capture_state_removes_encrypted_files_and_summaries() {
         .await
         .unwrap();
     store.finish_connection(connection_id);
-    let capture_path = store.0.temp_dir.path().join("exchange-1.capture");
-    assert!(capture_path.exists());
 
     store.clear().await;
 
     let snapshot = store.snapshot(&CaptureFilter::default()).await;
     assert!(snapshot.connections.is_empty());
     assert!(snapshot.exchanges.is_empty());
-    assert!(!capture_path.exists());
 }
 
 #[tokio::test]
 async fn body_capture_limit_does_not_limit_forwarded_traffic() {
     let store = test_store_with_limits(8, 8, 4);
-    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-        async |request: Request| {
+    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(
+        rama_core::service::service_fn(async |request: Request| {
             assert_eq!(
                 request.into_body().collect().await.unwrap().to_bytes(),
                 "request-body"
             );
             Ok::<_, Infallible>(Response::new(Body::from("response-body")))
-        },
-    ));
+        }),
+    );
 
     let response = service
         .serve(Request::new(Body::from("request-body")))
@@ -643,7 +613,7 @@ async fn pause_preserves_existing_data_and_resumes_an_existing_exchange() {
         .unwrap()
         .unwrap();
     let frame = |value: &'static [u8]| {
-        BodyCaptureEvent::Frame(rama::http::body::Frame::data(Bytes::from_static(value)))
+        BodyCaptureEvent::Frame(rama_http::body::Frame::data(Bytes::from_static(value)))
     };
 
     store
@@ -756,9 +726,10 @@ async fn websocket_capture_resumes_after_a_paused_gap() {
 #[tokio::test]
 async fn failed_upstream_response_finishes_the_capture_as_an_error() {
     let store = test_store();
-    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-        async |_request: Request| Err::<Response<Body>, _>("upstream failed"),
-    ));
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).into_layer(rama_core::service::service_fn(
+            async |_request: Request| Err::<Response<Body>, _>("upstream failed"),
+        ));
 
     service
         .serve(Request::new(Body::empty()))
@@ -778,15 +749,15 @@ async fn cancelled_http_service_finalizes_its_active_exchange() {
     let store = test_store();
     let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let entered_tx = Arc::new(parking_lot::Mutex::new(Some(entered_tx)));
-    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-        move |_request: Request| {
+    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(
+        rama_core::service::service_fn(move |_request: Request| {
             let entered_tx = entered_tx.clone();
             async move {
                 entered_tx.lock().take().unwrap().send(()).unwrap();
                 std::future::pending::<Result<Response<Body>, Infallible>>().await
             }
-        },
-    ));
+        }),
+    );
 
     let task = tokio::spawn(async move { service.serve(Request::new(Body::empty())).await });
     entered_rx.await.unwrap();
@@ -800,30 +771,7 @@ async fn cancelled_http_service_finalizes_its_active_exchange() {
 }
 
 #[tokio::test]
-async fn encrypted_capture_authentication_rejects_tampering() {
-    let store = test_store();
-    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-        async |_request: Request| Ok::<_, Infallible>(Response::new(Body::from("captured"))),
-    ));
-    service
-        .serve(Request::new(Body::empty()))
-        .await
-        .unwrap()
-        .into_body()
-        .collect()
-        .await
-        .unwrap();
-
-    let path = store.0.temp_dir.path().join("exchange-1.capture");
-    let mut bytes = tokio::fs::read(&path).await.unwrap();
-    *bytes.last_mut().unwrap() ^= 1;
-    tokio::fs::write(path, bytes).await.unwrap();
-
-    store.details(1).await.unwrap_err();
-}
-
-#[tokio::test]
-async fn cancelled_append_is_truncated_before_the_next_record_is_published() {
+async fn cancelled_append_is_not_published_in_capture_indexes() {
     let store = test_store();
     let request = Request::builder()
         .uri("http://example.test/cancel-append")
@@ -866,14 +814,7 @@ async fn cancelled_append_is_truncated_before_the_next_record_is_published() {
         })
         .collect::<Vec<_>>();
     assert_eq!(replay_results, vec![(Some(204), None)]);
-    let committed_len = entry.file.lock().await.len;
-    assert_eq!(
-        tokio::fs::metadata(entry.path.as_ref())
-            .await
-            .unwrap()
-            .len(),
-        committed_len
-    );
+    assert_eq!(entry.records.read().len(), 2);
 }
 
 #[tokio::test]
@@ -903,13 +844,6 @@ async fn clear_prevents_an_in_flight_exchange_from_being_published_afterward() {
             .await
             .exchanges
             .is_empty()
-    );
-    store.0.temp_cleanup.flush().await;
-    assert!(
-        std::fs::read_dir(store.0.temp_dir.path())
-            .unwrap()
-            .next()
-            .is_none()
     );
 }
 
@@ -973,8 +907,8 @@ async fn active_exchange_limit_forwards_the_next_request_uncaptured() {
         .unwrap();
     let forwarded = Arc::new(AtomicBool::new(false));
     let observing = forwarded.clone();
-    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-        move |request: Request| {
+    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(
+        rama_core::service::service_fn(move |request: Request| {
             let observing = observing.clone();
             async move {
                 assert!(request.extensions().get_ref::<ExchangeId>().is_none());
@@ -985,8 +919,8 @@ async fn active_exchange_limit_forwards_the_next_request_uncaptured() {
                 observing.store(true, Ordering::Release);
                 Ok::<_, Infallible>(Response::new(Body::from("response")))
             }
-        },
-    ));
+        }),
+    );
 
     let response = service
         .serve(Request::new(Body::from("forwarded")))
@@ -1029,7 +963,7 @@ async fn finishing_an_unused_connection_removes_it_from_the_inspector() {
 #[tokio::test]
 async fn provisional_inspector_connections_do_not_emit_visible_changes() {
     let store = test_store();
-    let mut changes = store.subscribe();
+    let mut changes = store.subscribe_changes();
 
     let discarded = store.begin_connection(None, "classifying");
     store.set_connection_protocol(discarded, "http");
@@ -1073,20 +1007,22 @@ async fn cancelled_connection_service_is_finalized_by_lifecycle_guard() {
     let store = test_store();
     let confirming_store = store.clone();
     let service = ObserveConnectionLayer::new(store.clone(), "classifying").into_layer(
-        rama::service::service_fn(move |input: rama::ServiceInput<tokio::io::DuplexStream>| {
-            let confirming_store = confirming_store.clone();
-            async move {
-                let id = input.extensions().get_ref::<ConnectionId>().unwrap().0;
-                confirming_store.confirm_connection(id);
-                std::future::pending::<Result<(), Infallible>>().await
-            }
-        }),
+        rama_core::service::service_fn(
+            move |input: rama_core::ServiceInput<tokio::io::DuplexStream>| {
+                let confirming_store = confirming_store.clone();
+                async move {
+                    let id = input.extensions().get_ref::<ConnectionId>().unwrap().0;
+                    confirming_store.confirm_connection(id);
+                    std::future::pending::<Result<(), Infallible>>().await
+                }
+            },
+        ),
     );
     let (client, _server) = tokio::io::duplex(64);
 
     tokio::time::timeout(
         Duration::from_millis(10),
-        service.serve(rama::ServiceInput::new(client)),
+        service.serve(rama_core::ServiceInput::new(client)),
     )
     .await
     .expect_err("pending connection service should time out");
@@ -1112,7 +1048,7 @@ async fn websocket_capture_lifecycle_follows_the_relay_service_future() {
     let (parts, _) = request.into_parts();
     let exchange_id = store.begin_exchange(&parts).await.unwrap().unwrap();
     let response = Response::builder()
-        .status(rama::http::StatusCode::SWITCHING_PROTOCOLS)
+        .status(rama_http::StatusCode::SWITCHING_PROTOCOLS)
         .body(Body::empty())
         .unwrap();
     let (response_parts, _) = response.into_parts();
@@ -1135,13 +1071,16 @@ async fn websocket_capture_lifecycle_follows_the_relay_service_future() {
     assert!(open.connections[0].active);
     assert!(open.exchanges[0].active);
 
-    let ingress = rama::ServiceInput::new(());
-    let egress = rama::ServiceInput::new(());
+    let ingress = rama_core::ServiceInput::new(());
+    let egress = rama_core::ServiceInput::new(());
     egress.extensions().insert(ExchangeId(exchange_id));
     let observing_store = store.clone();
     let service =
-        CaptureWebSocketLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-            move |bridge: WebSocketBridge<rama::ServiceInput<()>, rama::ServiceInput<()>>| {
+        CaptureWebSocketLayer::new(Some(store.clone())).into_layer(rama_core::service::service_fn(
+            move |bridge: WebSocketBridge<
+                rama_core::ServiceInput<()>,
+                rama_core::ServiceInput<()>,
+            >| {
                 let observing_store = observing_store.clone();
                 async move {
                     assert_eq!(
@@ -1200,16 +1139,16 @@ async fn only_successful_websocket_responses_start_a_websocket_lifecycle() {
 #[tokio::test]
 async fn websocket_response_guard_finishes_when_the_relay_never_starts() {
     let store = test_store();
-    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-        async |_request: Request| {
+    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(
+        rama_core::service::service_fn(async |_request: Request| {
             Ok::<_, Infallible>(
                 Response::builder()
-                    .status(rama::http::StatusCode::SWITCHING_PROTOCOLS)
+                    .status(rama_http::StatusCode::SWITCHING_PROTOCOLS)
                     .body(Body::empty())
                     .unwrap(),
             )
-        },
-    ));
+        }),
+    );
     let response = service
         .serve(
             Request::builder()
@@ -1306,7 +1245,7 @@ async fn late_websocket_exchange_keeps_an_upgraded_connection_visibly_alive() {
         .header("connection", "upgrade")
         .header("upgrade", "websocket")
         .extension(ConnectionId(connection_id))
-        .extension(rama::tls::SecureTransport::default())
+        .extension(rama_tls::SecureTransport::default())
         .body(Body::empty())
         .unwrap();
     let exchange_id = store
@@ -1372,7 +1311,7 @@ async fn cancelled_websocket_relay_finalizes_its_capture_guard() {
         .unwrap()
         .unwrap();
     let response = Response::builder()
-        .status(rama::http::StatusCode::SWITCHING_PROTOCOLS)
+        .status(rama_http::StatusCode::SWITCHING_PROTOCOLS)
         .body(Body::empty())
         .unwrap();
     store
@@ -1380,12 +1319,12 @@ async fn cancelled_websocket_relay_finalizes_its_capture_guard() {
         .await
         .unwrap();
 
-    let ingress = rama::ServiceInput::new(());
-    let egress = rama::ServiceInput::new(());
+    let ingress = rama_core::ServiceInput::new(());
+    let egress = rama_core::ServiceInput::new(());
     egress.extensions().insert(ExchangeId(exchange_id));
     let service =
-        CaptureWebSocketLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-            |_bridge: WebSocketBridge<rama::ServiceInput<()>, rama::ServiceInput<()>>| async {
+        CaptureWebSocketLayer::new(Some(store.clone())).into_layer(rama_core::service::service_fn(
+            |_bridge: WebSocketBridge<rama_core::ServiceInput<()>, rama_core::ServiceInput<()>>| async {
                 std::future::pending::<Result<(), Infallible>>().await
             },
         ));
@@ -1457,7 +1396,7 @@ async fn concurrent_frames_use_atomic_metrics_and_serialized_encrypted_writes() 
         .await
         .unwrap()
         .unwrap();
-    let mut changes = store.subscribe();
+    let mut changes = store.subscribe_changes();
     let before = *changes.borrow_and_update();
 
     let mut tasks = JoinSet::new();
@@ -1468,8 +1407,8 @@ async fn concurrent_frames_use_atomic_metrics_and_serialized_encrypted_writes() 
                 .body_event(
                     exchange_id,
                     BodyDirection::Request,
-                    BodyCaptureEvent::Frame(rama::http::body::Frame::data(
-                        rama::bytes::Bytes::from_static(PAYLOAD),
+                    BodyCaptureEvent::Frame(rama_http::body::Frame::data(
+                        rama_core::bytes::Bytes::from_static(PAYLOAD),
                     )),
                 )
                 .await;
@@ -1714,12 +1653,12 @@ async fn replay_reconstructs_relative_url_headers_and_captured_body() {
         .header("x-replay", "yes")
         .body(Body::from("patch-body"))
         .unwrap();
-    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-        async |request: Request| {
+    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(
+        rama_core::service::service_fn(async |request: Request| {
             request.into_body().collect().await.unwrap();
             Ok::<_, Infallible>(Response::new(Body::empty()))
-        },
-    ));
+        }),
+    );
     service
         .serve(request)
         .await
@@ -1940,12 +1879,12 @@ async fn search_reads_encrypted_headers_and_payload_from_disk() {
         .header("x-private-marker", "header-needle")
         .body(Body::from("payload-needle"))
         .unwrap();
-    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-        async |request: Request| {
+    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(
+        rama_core::service::service_fn(async |request: Request| {
             request.into_body().collect().await.unwrap();
             Ok::<_, Infallible>(Response::new(Body::empty()))
-        },
-    ));
+        }),
+    );
     service
         .serve(request)
         .await
@@ -2002,28 +1941,28 @@ async fn captured_tls_extensions_produce_actual_fingerprints_and_export_data() {
         .header("sec-fetch-mode", "navigate")
         .extension(SecureTransport::with_client_hello(client_hello))
         .extension(NegotiatedTlsParameters {
-            protocol_version: rama::tls::ProtocolVersion::TLSv1_3,
-            application_layer_protocol: Some(rama::net::tls::ApplicationProtocol::HTTP_2),
+            protocol_version: rama_tls::ProtocolVersion::TLSv1_3,
+            application_layer_protocol: Some(rama_net::tls::ApplicationProtocol::HTTP_2),
             peer_certificate_chain: None,
         })
         .body(Body::empty())
         .unwrap();
-    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-        async |_request: Request| {
+    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(
+        rama_core::service::service_fn(async |_request: Request| {
             Ok::<_, Infallible>(
                 Response::builder()
                     .extension(NegotiatedTlsParameters {
-                        protocol_version: rama::tls::ProtocolVersion::TLSv1_2,
+                        protocol_version: rama_tls::ProtocolVersion::TLSv1_2,
                         application_layer_protocol: Some(
-                            rama::net::tls::ApplicationProtocol::HTTP_11,
+                            rama_net::tls::ApplicationProtocol::HTTP_11,
                         ),
                         peer_certificate_chain: None,
                     })
                     .body(Body::empty())
                     .unwrap(),
             )
-        },
-    ));
+        }),
+    );
     service
         .serve(request)
         .await
@@ -2044,18 +1983,18 @@ async fn captured_tls_extensions_produce_actual_fingerprints_and_export_data() {
         StoredRecord::RequestHead {
             ingress_tls: Some(value),
             ..
-        } if value.protocol_version == rama::tls::ProtocolVersion::TLSv1_3
+        } if value.protocol_version == rama_tls::ProtocolVersion::TLSv1_3
             && value.application_layer_protocol
-                == Some(rama::net::tls::ApplicationProtocol::HTTP_2)
+                == Some(rama_net::tls::ApplicationProtocol::HTTP_2)
     )));
     assert!(details.records.iter().any(|record| matches!(
         record,
         StoredRecord::ResponseHead {
             egress_tls: Some(value),
             ..
-        } if value.protocol_version == rama::tls::ProtocolVersion::TLSv1_2
+        } if value.protocol_version == rama_tls::ProtocolVersion::TLSv1_2
             && value.application_layer_protocol
-                == Some(rama::net::tls::ApplicationProtocol::HTTP_11)
+                == Some(rama_net::tls::ApplicationProtocol::HTTP_11)
     )));
     let profile = captured_emulation_profile(&details).unwrap().unwrap();
     assert!(profile.tls_client_hello.is_some());
@@ -2072,9 +2011,10 @@ async fn captured_tls_extensions_produce_actual_fingerprints_and_export_data() {
 async fn export_profiles_contains_only_observed_capture_data() {
     const PROFILE_UA: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1";
     let store = test_store();
-    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-        async |_request: Request| Ok::<_, Infallible>(Response::new(Body::empty())),
-    ));
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).into_layer(rama_core::service::service_fn(
+            async |_request: Request| Ok::<_, Infallible>(Response::new(Body::empty())),
+        ));
     service
         .serve(
             Request::builder()
@@ -2175,11 +2115,11 @@ fn profile_export_does_not_guess_an_unobserved_request_initiator() {
 #[test]
 fn h2_extended_connect_is_exported_as_websocket_observation() {
     let (parts, _) = Request::builder()
-        .method(rama::http::Method::CONNECT)
-        .version(rama::http::Version::HTTP_2)
+        .method(rama_http::Method::CONNECT)
+        .version(rama_http::Version::HTTP_2)
         .uri("https://example.test/socket")
         .header("user-agent", "example/1")
-        .extension(rama::http::proto::h2::ext::Protocol::from_static(
+        .extension(rama_http::proto::h2::ext::Protocol::from_static(
             "websocket",
         ))
         .body(())
@@ -2195,10 +2135,10 @@ fn h2_extended_connect_is_exported_as_websocket_observation() {
     assert!(profile.h2_headers_navigate.is_none());
 
     let (wrong_method, _) = Request::builder()
-        .method(rama::http::Method::GET)
-        .version(rama::http::Version::HTTP_2)
+        .method(rama_http::Method::GET)
+        .version(rama_http::Version::HTTP_2)
         .uri("https://example.test/socket")
-        .extension(rama::http::proto::h2::ext::Protocol::from_static(
+        .extension(rama_http::proto::h2::ext::Protocol::from_static(
             "websocket",
         ))
         .body(())
@@ -2207,8 +2147,8 @@ fn h2_extended_connect_is_exported_as_websocket_observation() {
     assert!(!is_websocket_handshake(&wrong_method));
 
     let (missing_protocol, _) = Request::builder()
-        .method(rama::http::Method::CONNECT)
-        .version(rama::http::Version::HTTP_2)
+        .method(rama_http::Method::CONNECT)
+        .version(rama_http::Version::HTTP_2)
         .uri("https://example.test/socket")
         .body(())
         .unwrap()
@@ -2220,10 +2160,10 @@ fn h2_extended_connect_is_exported_as_websocket_observation() {
 async fn successful_h2_extended_connect_stays_active_until_the_websocket_relay_finishes() {
     let store = test_store();
     let request = Request::builder()
-        .method(rama::http::Method::CONNECT)
-        .version(rama::http::Version::HTTP_2)
+        .method(rama_http::Method::CONNECT)
+        .version(rama_http::Version::HTTP_2)
         .uri("https://example.test/socket")
-        .extension(rama::http::proto::h2::ext::Protocol::from_static(
+        .extension(rama_http::proto::h2::ext::Protocol::from_static(
             "websocket",
         ))
         .body(Body::empty())
@@ -2234,8 +2174,8 @@ async fn successful_h2_extended_connect_stays_active_until_the_websocket_relay_f
         .unwrap()
         .unwrap();
     let response = Response::builder()
-        .version(rama::http::Version::HTTP_2)
-        .status(rama::http::StatusCode::OK)
+        .version(rama_http::Version::HTTP_2)
+        .status(rama_http::StatusCode::OK)
         .body(Body::empty())
         .unwrap();
     store
@@ -2285,18 +2225,18 @@ impl StreamingBody for ApprovalBody {
     fn poll_frame(
         mut self: std::pin::Pin<&mut Self>,
         _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<rama::http::body::Frame<Bytes>, Infallible>>> {
+    ) -> std::task::Poll<Option<Result<rama_http::body::Frame<Bytes>, Infallible>>> {
         self.polls.fetch_add(1, Ordering::Relaxed);
         std::task::Poll::Ready(
             self.bytes
                 .take()
-                .map(|bytes| Ok(rama::http::body::Frame::data(bytes))),
+                .map(|bytes| Ok(rama_http::body::Frame::data(bytes))),
         )
     }
 }
 async fn approval_id(store: &CaptureStore, direction: &str) -> u64 {
     let control = store.control();
-    let mut changes = control.subscribe();
+    let mut changes = control.subscribe_changes();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let snapshot = serde_json::to_value(control.snapshot()).unwrap();
@@ -2333,7 +2273,7 @@ async fn approval_holds_heads_without_polling_bodies_and_preserves_header_edits(
     let response_polls = Arc::new(AtomicUsize::new(0));
     let called = Arc::new(AtomicUsize::new(0));
     let service =
-        CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn({
+        CaptureHttpLayer::new(Some(store.clone())).into_layer(rama_core::service::service_fn({
             let called = called.clone();
             let response_polls = response_polls.clone();
             move |request: Request| {
@@ -2450,7 +2390,7 @@ async fn blocking_without_capture_admission_never_calls_origin_or_polls_upload()
     let polls = Arc::new(AtomicUsize::new(0));
     let called = Arc::new(AtomicUsize::new(0));
     let service =
-        CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn({
+        CaptureHttpLayer::new(Some(store.clone())).into_layer(rama_core::service::service_fn({
             let called = called.clone();
             move |_: Request| {
                 called.fetch_add(1, Ordering::Relaxed);
@@ -2507,9 +2447,10 @@ async fn paused_inspector_forwards_without_capturing_or_holding() {
         )
         .unwrap();
     store.inspection_state().pause().await;
-    let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(rama::service::service_fn(
-        async |_: Request| Ok::<_, Infallible>(Response::new(Body::empty())),
-    ));
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).into_layer(rama_core::service::service_fn(
+            async |_: Request| Ok::<_, Infallible>(Response::new(Body::empty())),
+        ));
     let task = tokio::spawn(async move {
         service
             .serve(
@@ -2543,13 +2484,11 @@ async fn paused_inspector_forwards_without_capturing_or_holding() {
 #[tokio::test]
 async fn http2_blocking_and_connection_release_preserve_sibling_streams() {
     use super::super::control::{Config, ControlConnection, Decision, ResponseSpec};
-    use rama::{
-        http::{Version, client::http_connect, core::h2, proxy::mitm::HttpMitmRelay},
-        io::BridgeIo,
-        layer::ArcLayer,
-        net::test_utils::client::MockSocket,
-        rt::Executor,
-    };
+    use rama_core::{io::BridgeIo, layer::ArcLayer, rt::Executor};
+    use rama_http::Version;
+    use rama_http_backend::{client::http_connect, proxy::mitm::HttpMitmRelay};
+    use rama_http_core::h2;
+    use rama_net::test_utils::client::MockSocket;
     let store = test_store();
     let control = store.control();
     control
@@ -2620,7 +2559,7 @@ async fn http2_blocking_and_connection_release_preserve_sibling_streams() {
     let second_conn = conn.clone();
     let second_request = request("replacement");
     let second = tokio::spawn(async move { second_conn.serve(second_request).await.unwrap() });
-    let mut changes = control.subscribe();
+    let mut changes = control.subscribe_changes();
     tokio::time::timeout(Duration::from_secs(3), async {
         while control.snapshot().pending.len() != 2 {
             changes.changed().await.unwrap();
