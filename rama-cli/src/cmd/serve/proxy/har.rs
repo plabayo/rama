@@ -1,11 +1,19 @@
-use super::capture::CaptureStore;
+use std::{
+    collections::BTreeSet,
+    fmt,
+    path::{Path, PathBuf},
+    pin::Pin,
+    sync::{Arc, LazyLock},
+    task::{Context, Poll},
+};
+
 use arc_swap::ArcSwapOption;
 use parking_lot::Mutex as SyncMutex;
-use rama::http::layer::har::inspect::write_captured_har_entry;
 use rama::{
     error::{BoxError, ErrorContext as _},
     extensions::Extensions,
     http::layer::har::{
+        inspect::write_captured_har_entry,
         recorder::{
             FileRecorder, FileRecorderSession, HttpRequestCapture, Recorder, StreamingRecorder,
         },
@@ -15,18 +23,12 @@ use rama::{
     utils::fs::TempDir,
 };
 use serde::Serialize;
-use std::{
-    collections::BTreeSet,
-    fmt,
-    path::{Path, PathBuf},
-    pin::Pin,
-    sync::{Arc, LazyLock},
-    task::{Context, Poll},
-};
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, BufWriter, ReadBuf},
     sync::{OwnedSemaphorePermit, RwLock, Semaphore},
 };
+
+use super::capture::CaptureStore;
 
 const MAX_CONCURRENT_SELECTED_EXPORTS: usize = 2;
 static SELECTED_EXPORT_LIMIT: LazyLock<Arc<Semaphore>> =
@@ -453,8 +455,9 @@ impl StreamingRecorder for HarController {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tokio::io::AsyncReadExt as _;
+
+    use super::*;
 
     #[tokio::test]
     async fn requires_a_fresh_har_path_and_reports_active_state() {
@@ -624,6 +627,7 @@ mod tests {
         drop(reader);
         assert!(!staging.exists());
     }
+
     #[tokio::test]
     async fn paused_har_stays_frozen_and_downloadable_while_traffic_continues() {
         use rama::{

@@ -1,10 +1,10 @@
 use std::fmt;
 
-use crate::Result;
-use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use rama_net::ClientIp;
 use rama_utils::macros::generate_set_and_with;
+
+use crate::{HeaderMap, HeaderName, HeaderValue, Method, Result, Uri, Version, body::Body};
 
 /// Represents an HTTP request.
 ///
@@ -1405,11 +1405,12 @@ mod tests {
 
     #[test]
     fn test_request_uri() {
-        use crate::header::HOST;
         use rama_net::{
             address::Domain,
             forwarded::{Forwarded, ForwardedElement},
         };
+
+        use crate::header::HOST;
 
         for (request, expected_uri_str) in [
             (Request::builder().uri("/foo").body(()).unwrap(), "/foo"),

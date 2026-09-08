@@ -1,21 +1,25 @@
 //! WebSocket capture and interception adapters, enabled independently of storage.
-use crate::handshake::mitm::{
-    WebSocketRelayEvent, WebSocketRelayEventInput, WebSocketRelayEventOutput,
-    WebSocketRelayInjector, WebSocketRelayMessage,
-};
-use crate::inspect::{
-    CaptureWebSocketExt, CapturedWebSocketMessage, WebSocketMessageKind, WebSocketMessageOrigin,
-};
-use crate::{
-    handshake::mitm::WebSocketRelayClose,
-    protocol::{CloseFrame, frame::coding::CloseCode},
-};
+
+use std::convert::Infallible;
+
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rama_core::bytes::Bytes;
-use rama_http::inspect::capture::{CaptureStore, HttpExchangeId};
-use rama_http::inspect::control::{Decision, HttpMessageDirection, HttpUpgradeContext, Payload};
-use rama_utils::str::arcstr::arcstr;
-use std::convert::Infallible;
+use rama_http::inspect::{
+    capture::{CaptureStore, HttpExchangeId},
+    control::{Decision, HttpMessageDirection, HttpUpgradeContext, Payload},
+};
+use rama_utils::str::non_empty_str;
+
+use crate::{
+    handshake::mitm::{
+        WebSocketRelayClose, WebSocketRelayEvent, WebSocketRelayEventInput,
+        WebSocketRelayEventOutput, WebSocketRelayInjector, WebSocketRelayMessage,
+    },
+    inspect::{
+        CaptureWebSocketExt, CapturedWebSocketMessage, WebSocketMessageKind, WebSocketMessageOrigin,
+    },
+    protocol::{CloseFrame, frame::coding::CloseCode},
+};
 
 fn close_intercepted_websocket(
     extensions: rama_core::extensions::Extensions,
@@ -60,11 +64,11 @@ pub async fn inspect_websocket_event(
         };
         message.exchange = extensions.get_ref::<HttpExchangeId>().map(|id| id.0);
         message.binary = matches!(data, WebSocketRelayMessage::Binary(_));
-        message.kind = if message.binary {
-            arcstr!("binary")
+        message.kind = Some(if message.binary {
+            non_empty_str!("binary")
         } else {
-            arcstr!("text")
-        };
+            non_empty_str!("text")
+        });
         let size = match data {
             WebSocketRelayMessage::Text(t) => t.len(),
             WebSocketRelayMessage::Binary(b) => b.len().saturating_mul(4).div_ceil(3),

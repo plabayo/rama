@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn render_index(session: &str) -> impl IntoHtml {
+pub(in crate::cmd::serve::proxy::dashboard) fn render_index(session: &str) -> impl IntoHtml {
     let session_signal = format!("'{session}'");
     html!(
         lang = "en",
@@ -305,6 +305,6 @@ pub(super) fn render_index(session: &str) -> impl IntoHtml {
 }
 
 #[cfg(test)]
-pub(super) fn escape_js_string(input: &str) -> String {
+pub(in crate::cmd::serve::proxy::dashboard) fn escape_js_string(input: &str) -> String {
     input.replace('\\', "\\\\").replace('\'', "\\'")
 }

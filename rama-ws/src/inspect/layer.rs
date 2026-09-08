@@ -1,6 +1,7 @@
-use crate::handshake::mitm::WebSocketBridge;
 use rama_core::{Layer, Service};
 use rama_http::inspect::capture::{CaptureStore, HttpExchangeId, HttpUpgradeCaptureGuard};
+
+use crate::handshake::mitm::WebSocketBridge;
 
 /// Bind an inspector exchange to the lifetime of the actual WebSocket relay.
 ///

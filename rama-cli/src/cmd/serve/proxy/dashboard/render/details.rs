@@ -1,6 +1,15 @@
+use std::fmt;
+
+use rama::{
+    http::{HeaderMap, inspect::control::HttpMessageDirection},
+    net::{Protocol, stream::SocketInfo},
+};
+
 use super::*;
 
-pub(super) fn render_details(details: &InspectorDetails) -> impl IntoHtml {
+pub(in crate::cmd::serve::proxy::dashboard) fn render_details(
+    details: &InspectorDetails,
+) -> impl IntoHtml {
     let request_head = details.records.iter().find_map(|record| match record {
         StoredRecord::RequestHead {
             method,
@@ -26,7 +35,7 @@ pub(super) fn render_details(details: &InspectorDetails) -> impl IntoHtml {
         .rev()
         .find_map(|record| match record {
             StoredRecord::Interception {
-                direction: rama::http::inspect::control::HttpMessageDirection::Request,
+                direction: HttpMessageDirection::Request,
                 forwarded_headers: Some(headers),
                 ..
             } => Some(headers),
@@ -52,7 +61,7 @@ pub(super) fn render_details(details: &InspectorDetails) -> impl IntoHtml {
             .map(|endpoint| overview_item("Endpoint", endpoint)),
         overview_item(
             "Status",
-            rama::utils::fmt::display_fn(|f: &mut std::fmt::Formatter<'_>| {
+            rama::utils::fmt::display_fn(|f: &mut fmt::Formatter<'_>| {
                 match details.summary.status {
                     Some(status) => write!(f, "{status}"),
                     None => f.write_str("Pending"),
@@ -80,13 +89,13 @@ pub(super) fn render_details(details: &InspectorDetails) -> impl IntoHtml {
         details
             .metadata
             .upstream
-            .get_ref::<rama::net::stream::SocketInfo>()
+            .get_ref::<SocketInfo>()
             .and_then(|socket| socket.local_addr())
             .map(|address| overview_item("Egress proxy", address)),
         details
             .metadata
             .upstream
-            .get_ref::<rama::net::stream::SocketInfo>()
+            .get_ref::<SocketInfo>()
             .map(|socket| socket.peer_addr())
             .map(|address| overview_item("Egress server", address)),
         overview_item(
@@ -134,21 +143,16 @@ pub(super) fn render_details(details: &InspectorDetails) -> impl IntoHtml {
                     "data-create-traffic-rule" = display(details.summary.id),
                     "Create traffic rule…"
                 ),
-                (!matches!(
-                    details.summary.protocol,
-                    rama::net::Protocol::WS | rama::net::Protocol::WSS
-                ))
-                .then(|| PreEscaped(render_curl_button(details.summary.id, "Copy as cURL"))),
-                (!matches!(
-                    details.summary.protocol,
-                    rama::net::Protocol::WS | rama::net::Protocol::WSS
-                ))
-                .then(|| button!(
-                    r#type = "button",
-                    class = "ghost compact replay-focus",
-                    "data-on:click" = format!("@post('/api/replay/{}')", details.summary.id),
-                    "Replay request"
-                )),
+                (!matches!(details.summary.protocol, Protocol::WS | Protocol::WSS))
+                    .then(|| PreEscaped(render_curl_button(details.summary.id, "Copy as cURL"))),
+                (!matches!(details.summary.protocol, Protocol::WS | Protocol::WSS)).then(
+                    || button!(
+                        r#type = "button",
+                        class = "ghost compact replay-focus",
+                        "data-on:click" = format!("@post('/api/replay/{}')", details.summary.id),
+                        "Replay request"
+                    )
+                ),
                 a!(
                     class = "ghost link",
                     href = format!("/api/har/export?ids={}", details.summary.id),
@@ -236,11 +240,11 @@ pub(super) fn render_details(details: &InspectorDetails) -> impl IntoHtml {
     )
 }
 
-pub(super) fn render_headers(
+pub(in crate::cmd::serve::proxy::dashboard) fn render_headers(
     exchange_id: u64,
     direction: &str,
-    title: impl std::fmt::Display,
-    headers: &rama::http::HeaderMap,
+    title: impl fmt::Display,
+    headers: &HeaderMap,
 ) -> String {
     const MAX_HEADERS: usize = 128;
     let shown = headers.len().min(MAX_HEADERS);
@@ -289,12 +293,12 @@ pub(super) fn render_headers(
     .into_string()
 }
 
-pub(super) fn render_payload_card(
+pub(in crate::cmd::serve::proxy::dashboard) fn render_payload_card(
     id: u64,
     direction: &str,
     bytes: u64,
     truncated: bool,
-    headers: Option<&rama::http::HeaderMap>,
+    headers: Option<&HeaderMap>,
 ) -> Option<String> {
     if bytes == 0 && !truncated {
         return None;

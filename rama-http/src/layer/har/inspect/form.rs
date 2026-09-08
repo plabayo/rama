@@ -1,8 +1,10 @@
 //! Bounded form-to-JSON conversion, including percent escapes split across reads.
-use super::streaming::escaped;
+
 use rama_core::error::BoxError;
 use rama_utils::octets::kib;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
+
+use super::streaming::escaped;
 
 const CHUNK: usize = kib(8);
 
@@ -47,11 +49,13 @@ struct Decoder {
     percent: [u8; 2],
     pending: usize,
 }
+
 impl Decoder {
     fn push(&mut self, byte: u8) {
         self.bytes[self.len] = byte;
         self.len += 1;
     }
+
     fn raw(&mut self, byte: u8) {
         if self.pending != 0 {
             if byte.is_ascii_hexdigit() {
@@ -75,12 +79,14 @@ impl Decoder {
             byte => self.push(byte),
         }
     }
+
     fn finish_escape(&mut self) {
         for index in 0..self.pending {
             self.push(self.percent[index]);
         }
         self.pending = 0;
     }
+
     async fn flush<W: AsyncWrite + Unpin>(
         &mut self,
         writer: &mut W,
@@ -114,6 +120,7 @@ impl Decoder {
         Ok(())
     }
 }
+
 fn hex(byte: u8) -> u8 {
     match byte {
         b'0'..=b'9' => byte - b'0',
@@ -121,6 +128,7 @@ fn hex(byte: u8) -> u8 {
         _ => byte - b'A' + 10,
     }
 }
+
 async fn write_part<W: AsyncWrite + Unpin>(
     writer: &mut W,
     reader: &mut (impl AsyncBufRead + Unpin),
@@ -167,17 +175,20 @@ async fn write_part<W: AsyncWrite + Unpin>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::{
         pin::Pin,
         task::{Context, Poll},
     };
+
     use tokio::io::{AsyncRead, ReadBuf};
+
+    use super::*;
 
     struct Counted<'a> {
         bytes: &'a [u8],
         fills: usize,
     }
+
     impl AsyncRead for Counted<'_> {
         fn poll_read(
             self: Pin<&mut Self>,
@@ -187,6 +198,7 @@ mod tests {
             panic!("buffered form parser must consume filled slices");
         }
     }
+
     impl AsyncBufRead for Counted<'_> {
         fn poll_fill_buf(
             self: Pin<&mut Self>,
@@ -196,11 +208,13 @@ mod tests {
             this.fills += 1;
             Poll::Ready(Ok(this.bytes))
         }
+
         fn consume(self: Pin<&mut Self>, amount: usize) {
             let this = self.get_mut();
             this.bytes = &this.bytes[amount..];
         }
     }
+
     #[tokio::test]
     async fn form_parser_polls_per_buffer_instead_of_per_byte() {
         let source = "a=%F0%9F%99%82".to_owned() + &"x".repeat(CHUNK * 8);

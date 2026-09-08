@@ -1,3 +1,5 @@
+use rama::http::Method;
+
 use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -108,7 +110,7 @@ async fn pausing_inspector_tunnels_origin_tls_without_capturing_until_resumed() 
     let control = |path: &str| {
         dashboard_request(
             Request::builder()
-                .method(rama::http::Method::POST)
+                .method(Method::POST)
                 .uri(format!("http://{ui_address}{path}"))
                 .header("content-type", "application/json")
                 .body(Body::from(

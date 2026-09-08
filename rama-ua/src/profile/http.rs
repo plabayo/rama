@@ -1,7 +1,7 @@
 use rama_core::extensions::Extension;
-use rama_http::fingerprint::{HttpRequestInput, Ja4H, Ja4HComputeError};
 use rama_http::{
     HeaderMap, HeaderName, Method, Version,
+    fingerprint::{HttpRequestInput, Ja4H, Ja4HComputeError},
     proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture},
 };
 use serde::{Deserialize, Serialize};

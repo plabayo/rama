@@ -1,13 +1,12 @@
-use core::cmp::min;
-use core::str::FromStr;
+use core::{cmp::min, str::FromStr};
+
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _, ErrorContext},
+    extensions::Extension,
+};
+use rama_utils::{macros::str::eq_ignore_ascii_case, str::smol_str::SmolStr};
 
 use crate::std::string::String;
-
-use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorContext};
-use rama_core::extensions::Extension;
-use rama_utils::macros::str::eq_ignore_ascii_case;
-use rama_utils::str::smol_str::SmolStr;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Extension)]
 #[extension(tags(net))]

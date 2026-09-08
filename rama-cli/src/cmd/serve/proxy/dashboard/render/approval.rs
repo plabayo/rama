@@ -1,7 +1,8 @@
-use super::*;
 use rama::http::inspect::control::HttpMessageDirection;
 
-pub(super) fn approval_badge(message: &PendingSummary) -> String {
+use super::*;
+
+pub(in crate::cmd::serve::proxy::dashboard) fn approval_badge(message: &PendingSummary) -> String {
     span!(
         class = "approval-badge",
         match message.direction {
@@ -13,7 +14,7 @@ pub(super) fn approval_badge(message: &PendingSummary) -> String {
     .into_string()
 }
 
-pub(super) fn render_approval_toolbar() -> impl IntoHtml {
+pub(in crate::cmd::serve::proxy::dashboard) fn render_approval_toolbar() -> impl IntoHtml {
     div!(
         id = "approval-toolbar",
         "data-ignore-morph" = "",
@@ -59,7 +60,7 @@ pub(super) fn render_approval_toolbar() -> impl IntoHtml {
     )
 }
 
-pub(super) fn render_pending_fallbacks(
+pub(in crate::cmd::serve::proxy::dashboard) fn render_pending_fallbacks(
     pending: &[PendingSummary],
     exchanges: &[HttpExchangeSummary],
     connection: Option<u64>,
@@ -132,6 +133,47 @@ pub(super) fn render_pending_fallbacks(
                 )
                 .into_string(),
             )
+        })
+        .collect()
+}
+
+pub(in crate::cmd::serve::proxy::dashboard) fn render_approval_slots<'a>(
+    pending: impl Iterator<Item = &'a PendingSummary>,
+) -> String {
+    pending
+        .map(|message| {
+            div!(
+                id = format!("approval-item-{}", message.id),
+                class = "approval-item",
+                "data-pending-id" = message.id.to_string(),
+                div!(
+                    class = "approval-message-heading",
+                    input!(
+                        r#type = "checkbox",
+                        id = format!("approval-select-{}", message.id),
+                        "data-ignore-morph" = "",
+                        "data-pending-select" = "",
+                        value = message.id.to_string(),
+                        "aria-label" =
+                            format!("Select queued {} #{}", message.direction, message.id)
+                    ),
+                    button!(
+                        r#type = "button",
+                        class = "approval-open",
+                        "data-edit-approval" = message.id.to_string(),
+                        format!("Edit {} · approval #{}", message.direction, message.id)
+                    ),
+                    message
+                        .queued_at
+                        .as_ref()
+                        .map(|at| time!(datetime = display(at), display(display_timestamp(at))))
+                ),
+                div!(
+                    id = format!("approval-slot-{}", message.id),
+                    "data-ignore-morph" = ""
+                )
+            )
+            .into_string()
         })
         .collect()
 }

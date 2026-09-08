@@ -1,5 +1,7 @@
+use rama_net::uri::PathRef;
+use rama_utils::str::NonEmptyStr;
+
 use super::*;
-use rama_utils::str::arcstr::ArcStr;
 
 rama_utils::macros::enums::enum_builder! {
     /// HTTP head direction or a direction supplied by an upgraded protocol.
@@ -14,8 +16,9 @@ rama_utils::macros::enums::enum_builder! {
 }
 
 /// A captured HTTP head or an adapter-supplied message on an upgraded connection.
-/// Direction and kind are adapter tags; routing and HTTP values retain their types.
+/// Routing and HTTP values retain their types; upgraded protocols supply their own kind tags.
 #[derive(Debug, Clone, Serialize)]
+#[serde(remote = "Self")]
 pub struct Message {
     pub id: u64,
     pub connection: u64,
@@ -26,9 +29,11 @@ pub struct Message {
     pub method: Method,
     pub url: Uri,
     pub host: Option<Host>,
-    pub path: String,
     pub port: Option<u16>,
-    pub kind: ArcStr,
+    /// Optional protocol-owned application message tag (for example WebSocket
+    /// `text` or `binary`). HTTP heads have no kind; custom upgrade adapters may
+    /// supply their own nonempty tags without adding a protocol dependency here.
+    pub kind: Option<NonEmptyStr>,
     pub headers: HeaderMap,
     pub status: Option<StatusCode>,
     #[serde(serialize_with = "payload::serialize_editor")]
@@ -39,6 +44,7 @@ pub struct Message {
     pub http_version: Version,
     pub queued_at: Option<jiff::Timestamp>,
 }
+
 impl Default for Message {
     fn default() -> Self {
         Self {
@@ -51,9 +57,8 @@ impl Default for Message {
             method: Method::GET,
             url: Uri::default(),
             host: None,
-            path: "/".into(),
             port: None,
-            kind: ArcStr::default(),
+            kind: None,
             headers: HeaderMap::new(),
             status: None,
             payload: None,
@@ -65,16 +70,49 @@ impl Default for Message {
         }
     }
 }
+
+impl Serialize for Message {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct WithPath<'a> {
+            #[serde(flatten, with = "Message")]
+            message: &'a Message,
+            #[serde(serialize_with = "serialize_path")]
+            path: PathRef<'a>,
+        }
+
+        fn serialize_path<S: serde::Serializer>(
+            path: &PathRef<'_>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            serializer.collect_str(path)
+        }
+
+        WithPath {
+            message: self,
+            path: self.path(),
+        }
+        .serialize(serializer)
+    }
+}
+
 impl Message {
+    /// Borrow the request URI's path, defaulting to the origin-form root.
+    pub fn path(&self) -> PathRef<'_> {
+        self.url.path_ref_or_root()
+    }
+
     pub fn version(&self) -> Version {
         self.http_version
     }
+
     pub fn is_http(&self) -> bool {
         matches!(
             self.direction,
             HttpMessageDirection::Request | HttpMessageDirection::Response
         )
     }
+
     pub(super) fn size(&self) -> usize {
         if self.oversized {
             return MAX_MESSAGE_BYTES + 1;
@@ -85,11 +123,10 @@ impl Message {
             .sum::<usize>()
             + self.payload.as_ref().map_or(0, Payload::len)
             + self.url.as_str().len()
-            + self.path.len()
             + self.protocol.as_str().len()
             + self.method.as_str().len()
             + self.direction.as_str().len()
-            + self.kind.len()
+            + self.kind.as_ref().map_or(0, |kind| kind.len())
             + 256
     }
 }

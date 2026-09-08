@@ -1,6 +1,12 @@
+use std::fmt;
+
+use rama::net::Protocol;
+
 use super::*;
 
-pub(super) fn render_protocol_badge(exchange: &HttpExchangeSummary) -> String {
+pub(in crate::cmd::serve::proxy::dashboard) fn render_protocol_badge(
+    exchange: &HttpExchangeSummary,
+) -> String {
     let secure = exchange.protocol.is_secure();
     span!(
         class = match secure {
@@ -14,11 +20,16 @@ pub(super) fn render_protocol_badge(exchange: &HttpExchangeSummary) -> String {
     .into_string()
 }
 
-pub(super) fn stat(label: &'static str, value: impl std::fmt::Display) -> impl IntoHtml {
+pub(in crate::cmd::serve::proxy::dashboard) fn stat(
+    label: &'static str,
+    value: impl fmt::Display,
+) -> impl IntoHtml {
     div!(class = "stat", span!(label), strong!(display(value)))
 }
 
-pub(super) fn status_class(status: Option<StatusCode>) -> &'static str {
+pub(in crate::cmd::serve::proxy::dashboard) fn status_class(
+    status: Option<StatusCode>,
+) -> &'static str {
     match status.map(|status| status.as_u16()) {
         Some(200..=399) => "status ok",
         Some(400..=599) => "status error",
@@ -26,7 +37,9 @@ pub(super) fn status_class(status: Option<StatusCode>) -> &'static str {
     }
 }
 
-pub(super) fn render_exchange_status(exchange: &HttpExchangeSummary) -> String {
+pub(in crate::cmd::serve::proxy::dashboard) fn render_exchange_status(
+    exchange: &HttpExchangeSummary,
+) -> String {
     if let Some(decision) = &exchange.decision {
         return span!(
             class = "status",
@@ -37,10 +50,7 @@ pub(super) fn render_exchange_status(exchange: &HttpExchangeSummary) -> String {
         )
         .into_string();
     }
-    let websocket = matches!(
-        exchange.protocol,
-        rama::net::Protocol::WS | rama::net::Protocol::WSS
-    );
+    let websocket = matches!(exchange.protocol, Protocol::WS | Protocol::WSS);
     let (fallback, suffix, class, state, indicator) = match (exchange.status, exchange.active) {
         (None, true) => (
             "Waiting for response",
@@ -72,12 +82,11 @@ pub(super) fn render_exchange_status(exchange: &HttpExchangeSummary) -> String {
         ),
         (Some(status), false) => ("", "", status_class(Some(status)), "finished", None),
     };
-    let label =
-        rama::utils::fmt::display_fn(|f: &mut std::fmt::Formatter<'_>| match exchange.status {
-            Some(status) => write!(f, "{status}"),
-            None => f.write_str(fallback),
-        });
-    let title = rama::utils::fmt::display_fn(|f: &mut std::fmt::Formatter<'_>| {
+    let label = rama::utils::fmt::display_fn(|f: &mut fmt::Formatter<'_>| match exchange.status {
+        Some(status) => write!(f, "{status}"),
+        None => f.write_str(fallback),
+    });
+    let title = rama::utils::fmt::display_fn(|f: &mut fmt::Formatter<'_>| {
         if let Some(status) = exchange.status {
             write!(f, "{status}")?;
         }
@@ -94,7 +103,10 @@ pub(super) fn render_exchange_status(exchange: &HttpExchangeSummary) -> String {
     .into_string()
 }
 
-pub(super) fn render_curl_button(exchange_id: u64, label: &'static str) -> String {
+pub(in crate::cmd::serve::proxy::dashboard) fn render_curl_button(
+    exchange_id: u64,
+    label: &'static str,
+) -> String {
     button!(
         r#type = "button",
         class = "ghost compact",
@@ -106,7 +118,10 @@ pub(super) fn render_curl_button(exchange_id: u64, label: &'static str) -> Strin
     .into_string()
 }
 
-pub(super) fn overview_item(label: &'static str, value: impl std::fmt::Display) -> impl IntoHtml {
+pub(in crate::cmd::serve::proxy::dashboard) fn overview_item(
+    label: &'static str,
+    value: impl fmt::Display,
+) -> impl IntoHtml {
     div!(
         class = "detail-overview-item",
         div!(

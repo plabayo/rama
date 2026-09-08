@@ -1,11 +1,13 @@
-use super::*;
-use rama_utils::fs::{CreatedFilePermissions, OpenOptionsSync, TempDir, TempPath, TempPathCleanup};
 use std::io::{Seek as _, SeekFrom};
+
+use rama_utils::fs::{CreatedFilePermissions, OpenOptionsSync, TempDir, TempPath, TempPathCleanup};
 use tokio::{
     fs::File,
     io::{AsyncSeekExt, AsyncWriteExt},
     sync::{Mutex, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore},
 };
+
+use super::*;
 
 /// Temporary filesystem storage, using Rama's private-directory and cleanup helpers.
 /// Each collection has its own file and append lock. Idle committed collections
@@ -20,6 +22,7 @@ use tokio::{
 pub struct FileStore {
     inner: Arc<Factory>,
 }
+
 #[derive(Debug)]
 struct Factory {
     limits: StorageLimits,
@@ -28,6 +31,7 @@ struct Factory {
     directory: TempDir,
     appends: Arc<Semaphore>,
 }
+
 impl FileStore {
     pub fn temporary(limits: StorageLimits) -> Result<Self, BoxError> {
         let directory = TempDir::with_prefix("rama-inspect-")?;
@@ -43,14 +47,17 @@ impl FileStore {
             }),
         })
     }
+
     /// Implementation-specific diagnostic, deliberately absent from storage contracts.
     pub fn directory(&self) -> &std::path::Path {
         self.inner.directory.path()
     }
+
     pub async fn flush_cleanup(&self) {
         self.inner.cleanup.flush().await;
     }
 }
+
 impl Service<CreateCollection> for FileStore {
     type Output = Collection;
     type Error = BoxError;
@@ -83,6 +90,7 @@ impl Service<CreateCollection> for FileStore {
         .await?
     }
 }
+
 struct State {
     // Only active or unsettled appends retain a descriptor. A cancelled Tokio
     // operation must be settled on this same handle before recovery can truncate.
@@ -93,6 +101,7 @@ struct State {
     // Failed/cancelled tails still occupy disk until recovery or collection drop.
     pending_reservation: Reservation,
 }
+
 impl State {
     fn writer(&mut self) -> std::io::Result<&mut File> {
         self.file
@@ -100,6 +109,7 @@ impl State {
             .ok_or_else(|| std::io::Error::other("capture writer is not open"))
     }
 }
+
 struct FileInner {
     state: Arc<Mutex<State>>,
     records: parking_lot::RwLock<Vec<(u64, u64)>>,
@@ -113,6 +123,7 @@ struct OpenedFile<G> {
     guard: G,
     _owner: Arc<FileInner>,
 }
+
 impl FileInner {
     // Perform path checks, open and seek in one blocking task rather than several
     // filesystem round-trips through the runtime. Keep the collection and optional
@@ -153,6 +164,7 @@ struct ActiveAppend {
     permit: Option<OwnedSemaphorePermit>,
     owner: Arc<FileInner>,
 }
+
 impl Drop for ActiveAppend {
     fn drop(&mut self) {
         let Some(mut state) = self.state.take() else {
@@ -187,8 +199,10 @@ impl Drop for ActiveAppend {
         });
     }
 }
+
 #[derive(Clone)]
 struct FileCollection(Arc<FileInner>);
+
 impl Service<AppendRecord> for FileCollection {
     type Output = RecordId;
     type Error = BoxError;
@@ -269,6 +283,7 @@ impl Service<AppendRecord> for FileCollection {
         Ok(id)
     }
 }
+
 impl Service<ReadRecord> for FileCollection {
     type Output = Reader;
     type Error = BoxError;
@@ -290,6 +305,7 @@ impl Service<ReadRecord> for FileCollection {
         }))
     }
 }
+
 impl Service<ListRecords> for FileCollection {
     type Output = Vec<RecordId>;
     type Error = BoxError;
@@ -302,8 +318,9 @@ impl Service<ListRecords> for FileCollection {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
+
+    use super::*;
 
     #[test]
     fn cancelled_queued_open_keeps_admission_until_blocking_work_settles() {

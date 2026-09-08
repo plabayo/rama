@@ -1,13 +1,12 @@
-use rama_core::telemetry::tracing;
 use std::fmt::{self, Write as _};
 
-use rama_core::extensions::Extensions;
+use rama_core::{extensions::Extensions, telemetry::tracing};
+use rama_net::tls::ApplicationProtocol;
 
 use crate::{
     CipherSuite, ExtensionId, ProtocolVersion, SecureTransport, SignatureScheme,
     client::{ClientHello, NegotiatedTlsParameters},
 };
-use rama_net::tls::ApplicationProtocol;
 
 fn write_hex_list<W, T>(writer: &mut W, values: impl IntoIterator<Item = T>) -> fmt::Result
 where
@@ -331,9 +330,8 @@ rama_utils::macros::serde_str::impl_serde_str!(serialize display Ja4);
 
 #[cfg(test)]
 mod tests {
-    use crate::client::parse_client_hello;
-
     use super::*;
+    use crate::client::parse_client_hello;
 
     #[derive(Debug)]
     struct TestCase {

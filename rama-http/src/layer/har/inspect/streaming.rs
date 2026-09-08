@@ -1,13 +1,15 @@
+use std::future::Future;
+
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use rama_core::error::BoxError;
+use rama_utils::octets::kib;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+
 use super::{HarObjectWriter, entry_metadata, form::write_params, spec};
 use crate::{
     headers::{ContentType, HeaderMapExt},
     inspect::capture::{CapturedBody, CapturedBodySource, ExchangeCapture, StoredRecord},
 };
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use rama_core::error::BoxError;
-use rama_utils::octets::kib;
-use std::future::Future;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 const CHUNK: usize = kib(8);
 
@@ -20,6 +22,7 @@ pub trait HarEntryExtension: Sync {
         capture: &ExchangeCapture,
     ) -> impl Future<Output = Result<(), BoxError>> + Send;
 }
+
 impl HarEntryExtension for () {
     async fn write_fields<W: AsyncWrite + Unpin + Send>(
         &self,
@@ -142,6 +145,7 @@ async fn write_entry<W: AsyncWrite + Unpin + Send>(
     extension.write_fields(&mut object, capture).await?;
     object.finish().await
 }
+
 async fn write_request<W: AsyncWrite + Unpin>(
     writer: &mut W,
     request: &spec::Request,
@@ -183,6 +187,7 @@ async fn write_request<W: AsyncWrite + Unpin>(
     object.field("comment", comment).await?;
     object.finish().await
 }
+
 async fn write_post_data<W: AsyncWrite + Unpin>(
     writer: &mut W,
     post: &spec::PostData,
@@ -224,6 +229,7 @@ async fn write_post_data<W: AsyncWrite + Unpin>(
     object.field("comment", comment).await?;
     object.finish().await
 }
+
 async fn write_response<W: AsyncWrite + Unpin>(
     writer: &mut W,
     response: &spec::Response,
@@ -261,6 +267,7 @@ async fn write_response<W: AsyncWrite + Unpin>(
     object.field("comment", comment).await?;
     object.finish().await
 }
+
 async fn write_content<W: AsyncWrite + Unpin>(
     writer: &mut W,
     content: &spec::Content,
@@ -307,6 +314,7 @@ struct BodyStats {
     size: u64,
     utf8: bool,
 }
+
 async fn scan(mut reader: impl AsyncRead + Unpin) -> Result<BodyStats, BoxError> {
     let mut stats = BodyStats {
         size: 0,
@@ -383,6 +391,7 @@ pub async fn write_json_string<W: AsyncWrite + Unpin>(
     writer.write_all(b"\"").await?;
     Ok(())
 }
+
 pub(super) async fn escaped<W: AsyncWrite + Unpin>(
     writer: &mut W,
     text: &str,

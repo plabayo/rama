@@ -1,13 +1,15 @@
-use super::{CapturedBody, CapturedExchange, ExchangeCapture};
-use rama_core::Service;
+use std::sync::Arc;
+
 use rama_core::{
+    Service,
     bytes::Bytes,
     error::BoxError,
     futures::{Stream, StreamExt, async_stream::stream_fn},
     stream::io::{ReaderStream, StreamReader},
 };
 use rama_inspect::storage::{ReadRecord, Reader};
-use std::sync::Arc;
+
+use super::{CapturedBody, CapturedExchange, ExchangeCapture};
 
 /// Pins the currently committed HTTP body records. Reopening this view always
 /// yields the same prefix, even during capture, eviction or clearing the inspector.
@@ -17,6 +19,7 @@ pub struct CapturedBodySource {
     body: CapturedBody,
     count: usize,
 }
+
 impl std::fmt::Debug for CapturedBodySource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CapturedBodySource")
@@ -25,6 +28,7 @@ impl std::fmt::Debug for CapturedBodySource {
             .finish_non_exhaustive()
     }
 }
+
 impl ExchangeCapture {
     pub fn body_source(&self, body: CapturedBody) -> CapturedBodySource {
         let count = match body {
@@ -38,6 +42,7 @@ impl ExchangeCapture {
         }
     }
 }
+
 impl CapturedBodySource {
     pub fn reader(&self) -> Reader {
         Box::pin(StreamReader::new(Box::pin(
@@ -45,6 +50,7 @@ impl CapturedBodySource {
                 .map(|chunk| chunk.map_err(std::io::Error::other)),
         )))
     }
+
     pub fn stream(
         &self,
         limit: Option<u64>,

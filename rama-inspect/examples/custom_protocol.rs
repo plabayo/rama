@@ -1,13 +1,16 @@
 //! A custom protocol controller requires no HTTP, TLS or filesystem feature.
+
+use std::time::Duration;
+
 use rama_core::futures::StreamExt;
 use rama_inspect::intercept::{Interception, QueueLimits};
-use std::time::Duration;
 
 #[derive(Debug)]
 struct Message {
     channel: u32,
     payload: Vec<u8>,
 }
+
 #[derive(Debug, PartialEq)]
 enum Decision {
     Continue,

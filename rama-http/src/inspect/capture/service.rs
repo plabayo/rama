@@ -1,6 +1,7 @@
+use rama_core::extensions::ExtensionsRef as _;
+
 use super::*;
 use crate::inspect::control::{ControlConnection, Decision, HttpUpgradeContext, http_message};
-use rama_core::extensions::ExtensionsRef as _;
 
 #[derive(Clone)]
 struct CaptureBodySink {
@@ -46,6 +47,7 @@ impl CaptureHttpLayer {
             policy: None,
         }
     }
+
     #[must_use]
     pub fn with_policy(mut self, policy: crate::inspect::mitm_policy::MitmPolicy) -> Self {
         self.policy = Some(policy);

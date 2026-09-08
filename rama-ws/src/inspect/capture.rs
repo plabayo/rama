@@ -1,8 +1,11 @@
-use crate::{
-    Utf8Bytes,
-    handshake::mitm::{WebSocketRelayDirection, WebSocketRelayInjector, WebSocketRelayMessage},
-    protocol::frame::coding::CloseCode,
+use std::{
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
 };
+
 use parking_lot::RwLock;
 use rama_core::{
     bytes::Bytes,
@@ -17,14 +20,13 @@ use rama_http::inspect::capture::{
 };
 use rama_net::Protocol;
 use serde::{Deserialize, Serialize};
-use std::{
-    fmt,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    },
-};
 use tokio::io::AsyncReadExt as _;
+
+use crate::{
+    Utf8Bytes,
+    handshake::mitm::{WebSocketRelayDirection, WebSocketRelayInjector, WebSocketRelayMessage},
+    protocol::frame::coding::CloseCode,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,6 +37,7 @@ pub enum WebSocketMessageKind {
     Pong,
     Close,
 }
+
 impl fmt::Display for WebSocketMessageKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -46,6 +49,7 @@ impl fmt::Display for WebSocketMessageKind {
         })
     }
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WebSocketMessageOrigin {
@@ -65,6 +69,7 @@ pub struct CapturedWebSocketMessage {
     pub close_code: Option<CloseCode>,
     pub origin: WebSocketMessageOrigin,
 }
+
 impl CapturedWebSocketMessage {
     pub fn new(
         direction: WebSocketRelayDirection,
@@ -81,6 +86,7 @@ impl CapturedWebSocketMessage {
         }
     }
 }
+
 /// Small serializable message head, independent of its raw payload reader.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct WebSocketMessageMetadata {
@@ -92,6 +98,7 @@ pub struct WebSocketMessageMetadata {
     pub close_code: Option<CloseCode>,
     pub origin: WebSocketMessageOrigin,
 }
+
 impl CapturedRecord for CapturedWebSocketMessage {
     type Metadata = WebSocketMessageMetadata;
     fn metadata(&self) -> Self::Metadata {
@@ -104,9 +111,11 @@ impl CapturedRecord for CapturedWebSocketMessage {
             origin: self.origin,
         }
     }
+
     fn payload(&self) -> Bytes {
         self.data.clone()
     }
+
     fn from_parts(metadata: Self::Metadata, data: Bytes) -> Self {
         Self {
             at: metadata.at,
@@ -117,6 +126,7 @@ impl CapturedRecord for CapturedWebSocketMessage {
             data,
         }
     }
+
     async fn matches_stream(
         record: CapturedRecordStream<Self::Metadata>,
         needle: &str,
@@ -130,6 +140,7 @@ impl CapturedRecord for CapturedWebSocketMessage {
 pub struct WebSocketLimits {
     pub messages: usize,
 }
+
 impl Default for WebSocketLimits {
     fn default() -> Self {
         Self { messages: 4096 }
@@ -177,11 +188,13 @@ struct State {
     messages: AtomicUsize,
     truncated: AtomicBool,
 }
+
 struct AppendGuard {
     exchange: ExchangeCapture,
     state: Arc<State>,
     committed: bool,
 }
+
 impl Drop for AppendGuard {
     fn drop(&mut self) {
         if !self.committed {
@@ -206,6 +219,7 @@ pub struct WebSocketMessagePreview {
     #[serde(with = "rama_utils::bytes::serde_base64")]
     pub data: Bytes,
 }
+
 impl From<CapturedWebSocketMessage> for WebSocketMessagePreview {
     fn from(message: CapturedWebSocketMessage) -> Self {
         Self {
@@ -226,6 +240,7 @@ pub enum WebSocketReplayError {
     InvalidCapture(BoxError),
     InvalidMessage(BoxError),
 }
+
 impl fmt::Display for WebSocketReplayError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -240,6 +255,7 @@ impl fmt::Display for WebSocketReplayError {
         }
     }
 }
+
 impl std::error::Error for WebSocketReplayError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
@@ -281,6 +297,7 @@ pub trait CaptureWebSocketExt {
         index: usize,
     ) -> Result<impl Stream<Item = Result<Bytes, BoxError>> + Send + 'static, BoxError>;
 }
+
 impl CaptureWebSocketExt for CaptureStore {
     async fn record_websocket_message(&self, id: u64, message: CapturedWebSocketMessage) {
         let Ok(exchange) = self.exchange_capture(id) else {
@@ -331,6 +348,7 @@ impl CaptureWebSocketExt for CaptureStore {
         }
         exchange.changed();
     }
+
     fn register_websocket_injector(&self, id: u64, injector: WebSocketRelayInjector) {
         if !injector.is_open() {
             return;
@@ -345,6 +363,7 @@ impl CaptureWebSocketExt for CaptureStore {
             exchange.set_active();
         }
     }
+
     async fn websocket_details(
         &self,
         id: u64,
@@ -392,6 +411,7 @@ impl CaptureWebSocketExt for CaptureStore {
         self.record_websocket_message(id, message).await;
         Ok(())
     }
+
     async fn send_websocket_message(
         &self,
         id: u64,
@@ -413,6 +433,7 @@ impl CaptureWebSocketExt for CaptureStore {
         self.record_websocket_message(id, captured).await;
         Ok(())
     }
+
     fn websocket_message_stream(
         &self,
         id: u64,
@@ -441,12 +462,14 @@ impl CaptureWebSocketExt for CaptureStore {
         }))
     }
 }
+
 fn body_direction(direction: WebSocketRelayDirection) -> CapturedBody {
     match direction {
         WebSocketRelayDirection::Ingress => CapturedBody::Request,
         WebSocketRelayDirection::Egress => CapturedBody::Response,
     }
 }
+
 async fn send(
     exchange: &ExchangeCapture,
     direction: WebSocketRelayDirection,

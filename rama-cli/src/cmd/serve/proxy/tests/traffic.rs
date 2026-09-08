@@ -1,3 +1,5 @@
+use rama::net::{Protocol, stream::SocketInfo};
+
 use super::*;
 
 #[test]
@@ -164,11 +166,8 @@ async fn captured_http_summary_includes_ingress_and_egress_socket_addresses() {
     let ingress_peer: SocketAddress = "127.0.0.1:54321".parse().unwrap();
     let connection_id = store
         .begin_connection_if_enabled(
-            Some(rama::net::stream::SocketInfo::new(
-                Some(ingress_local),
-                ingress_peer,
-            )),
-            rama::net::Protocol::HTTP,
+            Some(SocketInfo::new(Some(ingress_local), ingress_peer)),
+            Protocol::HTTP,
             None,
         )
         .unwrap();
@@ -197,11 +196,7 @@ async fn captured_http_summary_includes_ingress_and_egress_socket_addresses() {
     let connection = details.connection.as_ref().unwrap();
     assert_eq!(connection.local_address, Some(ingress_local));
     assert_eq!(connection.peer_address, Some(ingress_peer));
-    let upstream = details
-        .metadata
-        .upstream
-        .get_ref::<rama::net::stream::SocketInfo>()
-        .unwrap();
+    let upstream = details.metadata.upstream.get_ref::<SocketInfo>().unwrap();
     assert!(upstream.local_addr().is_some());
     assert_eq!(upstream.peer_addr(), origin);
     origin_task.abort();
@@ -320,16 +315,23 @@ async fn https_connect_is_mitm_relayed_end_to_end() {
 
 #[tokio::test]
 async fn http2_blocking_and_connection_release_preserve_sibling_streams() {
-    use rama::http::Version;
-    use rama::http::core::h2;
-    use rama::http::inspect::control::{Config, ControlConnection, Decision, ResponseSpec};
-    use rama::http::{client::http_connect, proxy::mitm::HttpMitmRelay};
-    use rama::net::test_utils::client::MockSocket;
-    use rama::{io::BridgeIo, layer::ArcLayer, rt::Executor};
+    use rama::{
+        http::{
+            Version,
+            client::http_connect,
+            core::h2,
+            inspect::control::{Config, ControlConnection, Decision, ResponseSpec},
+            proxy::mitm::HttpMitmRelay,
+        },
+        io::BridgeIo,
+        layer::ArcLayer,
+        net::test_utils::client::MockSocket,
+        rt::Executor,
+    };
     let store = capture::test_store(
         8,
         8,
-        1024,
+        kib_u64(1),
         Arc::new(UserAgentDatabase::try_embedded().unwrap()),
     )
     .unwrap();
@@ -343,8 +345,8 @@ async fn http2_blocking_and_connection_release_preserve_sibling_streams() {
             },
         )
         .unwrap();
-    let (client_io, ingress_io) = tokio::io::duplex(64 * 1024);
-    let (egress_io, origin_io) = tokio::io::duplex(64 * 1024);
+    let (client_io, ingress_io) = tokio::io::duplex(kib(64));
+    let (egress_io, origin_io) = tokio::io::duplex(kib(64));
     let calls = Arc::new(AtomicUsize::new(0));
     let origin_calls = calls.clone();
     let origin = tokio::spawn(async move {
@@ -366,7 +368,7 @@ async fn http2_blocking_and_connection_release_preserve_sibling_streams() {
     });
     let ingress = MockSocket::new(ingress_io);
     let id = store
-        .begin_connection_if_enabled(None, rama::net::Protocol::HTTPS, None)
+        .begin_connection_if_enabled(None, Protocol::HTTPS, None)
         .unwrap();
     ingress.extensions().insert(ConnectionId(id));
     ingress.extensions().insert(ControlConnection::new(id));

@@ -1,6 +1,7 @@
-use super::*;
 use rama_core::error::BoxErrorExt as _;
 use rama_inspect::storage::{ListRecords, MemoryStore, ReadRecord, Reader};
+
+use super::*;
 
 #[tokio::test]
 async fn limited_snapshot_keeps_full_totals_without_cloning_every_row() {
@@ -376,6 +377,7 @@ struct ReadFailureStore {
     memory: MemoryStore,
     blocked: Arc<AtomicU64>,
 }
+
 impl Service<CreateCollection> for ReadFailureStore {
     type Output = Collection;
     type Error = BoxError;
@@ -386,11 +388,13 @@ impl Service<CreateCollection> for ReadFailureStore {
         }))
     }
 }
+
 #[derive(Clone)]
 struct ReadFailureCollection {
     inner: Collection,
     blocked: Arc<AtomicU64>,
 }
+
 impl Service<AppendRecord> for ReadFailureCollection {
     type Output = RecordId;
     type Error = BoxError;
@@ -398,6 +402,7 @@ impl Service<AppendRecord> for ReadFailureCollection {
         self.inner.serve(input).await
     }
 }
+
 impl Service<ListRecords> for ReadFailureCollection {
     type Output = Vec<RecordId>;
     type Error = BoxError;
@@ -405,6 +410,7 @@ impl Service<ListRecords> for ReadFailureCollection {
         self.inner.serve(input).await
     }
 }
+
 impl Service<ReadRecord> for ReadFailureCollection {
     type Output = Reader;
     type Error = BoxError;
@@ -415,6 +421,7 @@ impl Service<ReadRecord> for ReadFailureCollection {
         self.inner.serve(input).await
     }
 }
+
 #[tokio::test(start_paused = true)]
 async fn search_skips_failed_records_and_retries_them_without_rescanning_successes() {
     let blocked = Arc::new(AtomicU64::new(1));

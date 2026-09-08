@@ -1,3 +1,5 @@
+use rama::net::Protocol;
+
 use super::*;
 
 #[test]
@@ -23,7 +25,7 @@ fn icap_cli_builds_request_and_response_adaptation() {
     .unwrap();
     let request = adaptation.request_service().unwrap();
     let response = adaptation.response_service().unwrap();
-    assert_eq!(request.service_protocol(), &rama::net::Protocol::ICAPS);
+    assert_eq!(request.service_protocol(), &Protocol::ICAPS);
     assert_eq!(request.preview(), Some(Preview::new(2048)));
     assert!(request.allows_204());
     assert!(request.allows_206());
@@ -306,7 +308,7 @@ async fn icap_pool_generation_replacement_closes_every_idle_transport() {
     let (connector, pool) = make_pool(4);
     let generation = ConnectorGeneration::new(4, connector, pool);
     let request = ConnectRequest::new("icap.test:1344".parse().unwrap())
-        .with_application_protocol(rama::net::Protocol::ICAP);
+        .with_application_protocol(Protocol::ICAP);
 
     let mut leased = Vec::new();
     for _ in 0..4 {
@@ -398,8 +400,7 @@ async fn icap_pool_retirement_is_not_held_open_by_a_pending_connect() {
     let (connector, pool) = make_pool(2);
     let generation = ConnectorGeneration::new(2, connector, pool);
     let request = |authority: &str| {
-        ConnectRequest::new(authority.parse().unwrap())
-            .with_application_protocol(rama::net::Protocol::ICAP)
+        ConnectRequest::new(authority.parse().unwrap()).with_application_protocol(Protocol::ICAP)
     };
 
     let idle = generation
@@ -485,7 +486,7 @@ async fn forward_client_applies_icap_reqmod_and_respmod() {
         .unwrap();
     let request_future = client.serve(request);
     assert!(
-        std::mem::size_of_val(&request_future) <= 24 * 1024,
+        std::mem::size_of_val(&request_future) <= kib(24),
         "ICAP inflated the proxy request future to {} bytes",
         std::mem::size_of_val(&request_future),
     );

@@ -1,7 +1,11 @@
 //! Machine-facing views share the same authenticated router and controllers as the GUI.
+
+use rama::{
+    futures::StreamExt,
+    http::{Method, inspect::capture::CaptureQuery},
+};
+
 use super::*;
-use rama::futures::StreamExt;
-use rama::http::inspect::capture::CaptureQuery;
 
 pub(super) async fn discovery() -> Response {
     Json(serde_json::json!({
@@ -57,7 +61,7 @@ pub(super) struct CapturesQuery {
     connection_id: FilterValue<ConnectionQuery>,
     user_agent: ArcStr,
     endpoint: ArcStr,
-    method: FilterValue<rama::http::Method>,
+    method: FilterValue<Method>,
     status: FilterValue<StatusQuery>,
     protocol: FilterValue<ProtocolQuery>,
     before: Option<u64>,
@@ -65,6 +69,7 @@ pub(super) struct CapturesQuery {
     exchanges: Option<usize>,
     connection_ids: Option<String>,
 }
+
 impl CapturesQuery {
     fn into_query(self) -> CaptureQuery {
         CaptureQuery {
@@ -84,6 +89,7 @@ impl CapturesQuery {
         }
     }
 }
+
 pub(super) async fn captures(
     State(state): State<DashboardState>,
     Query(query): Query<CapturesQuery>,
@@ -93,6 +99,7 @@ pub(super) async fn captures(
         Err(never) => match never {},
     }
 }
+
 pub(super) async fn capture_events(
     State(state): State<DashboardState>,
     Query(query): Query<CapturesQuery>,
@@ -127,10 +134,10 @@ pub(super) async fn capture_events(
 
 #[cfg(test)]
 mod tests {
+    use rama::http::{Method, body::Frame, header};
+
     use super::*;
     use crate::cmd::serve::proxy::dashboard_auth::DashboardAuthService;
-    use rama::http::Method;
-    use rama::http::{body::Frame, header};
 
     fn request(method: Method, uri: &str, body: &serde_json::Value) -> Request {
         Request::builder()
@@ -142,10 +149,12 @@ mod tests {
             .body(Body::from(serde_json::to_vec(body).unwrap()))
             .unwrap()
     }
+
     async fn json(response: Response) -> serde_json::Value {
         assert_eq!(response.status(), StatusCode::OK);
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
     }
+
     #[tokio::test]
     async fn machine_api_uses_startup_capability_without_a_browser_session() {
         let state = crate::cmd::serve::proxy::dashboard::tests::test_state();
@@ -251,6 +260,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
+
     #[tokio::test]
     async fn capture_listing_stream_and_exports_share_the_same_capture() {
         let state = crate::cmd::serve::proxy::dashboard::tests::test_state();

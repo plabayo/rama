@@ -1,9 +1,10 @@
-use super::*;
-use rama_core::error::{BoxErrorExt as _, ErrorExt as _};
 use rama_core::{
+    error::{BoxErrorExt as _, ErrorExt as _},
     futures::{StreamExt, async_stream::stream_fn},
     stream::io::ReaderStream,
 };
+
+use super::*;
 
 impl CaptureStore {
     pub async fn details(&self, id: u64) -> Result<CaptureDetails, BoxError> {

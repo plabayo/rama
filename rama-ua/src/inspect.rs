@@ -1,10 +1,10 @@
 //! Observed user-agent profiles for HTTP inspectors.
-use crate::{
-    UserAgent,
-    profile::{
-        Http1Settings, Http2Settings, RequestInitiator, UserAgentDatabase, UserAgentProfileInput,
-    },
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
 };
+
 use rama_core::{error::BoxError, extensions::Extension};
 use rama_http::{
     HeaderMap,
@@ -15,9 +15,12 @@ use rama_http::{
 use rama_inspect::search::matches_display;
 #[cfg(feature = "tls")]
 use rama_tls::inspect::TlsObservation;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
+
+use crate::{
+    UserAgent,
+    profile::{
+        Http1Settings, Http2Settings, RequestInitiator, UserAgentDatabase, UserAgentProfileInput,
+    },
 };
 
 #[derive(Debug, Clone, Extension, serde::Serialize)]
@@ -36,6 +39,7 @@ pub struct ProfileInspector {
     database: Arc<UserAgentDatabase>,
     fingerprints: Arc<fingerprint::FingerprintCache>,
 }
+
 impl ProfileInspector {
     pub fn new(database: Arc<UserAgentDatabase>) -> Self {
         Self {
@@ -43,6 +47,7 @@ impl ProfileInspector {
             database,
         }
     }
+
     pub fn observe(&self, parts: &rama_http::request::Parts, metadata: &CaptureMetadata) {
         if metadata.exchange.contains::<UserAgentObservation>() {
             return;
@@ -70,6 +75,7 @@ impl ProfileInspector {
             h2_settings: settings,
         });
     }
+
     pub fn database(&self) -> &UserAgentDatabase {
         &self.database
     }
@@ -136,6 +142,7 @@ pub async fn export_profiles(
     }
     Ok(profiles.into_values().collect())
 }
+
 fn fill_profile(
     profile: &mut UserAgentProfileInput,
     parts: rama_http::request::Parts,
@@ -226,6 +233,7 @@ pub struct KnownFingerprint {
     pub kind: crate::UserAgentKind,
     pub version: Option<usize>,
 }
+
 impl std::fmt::Display for KnownFingerprint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.kind)?;
@@ -235,6 +243,7 @@ impl std::fmt::Display for KnownFingerprint {
         Ok(())
     }
 }
+
 impl UserAgentObservation {
     pub fn matches_search(&self, query: &str) -> bool {
         self.user_agent

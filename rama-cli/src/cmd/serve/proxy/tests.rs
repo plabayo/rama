@@ -1,30 +1,31 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use clap::Parser;
 use rama::{
     bytes::Bytes,
-    http::ws::{
-        handshake::mitm::WebSocketRelayMessage,
-        inspect::{
-            CaptureWebSocketExt, CapturedWebSocketMessage, WebSocketMessageKind,
-            WebSocketMessageOrigin,
-        },
-    },
-};
-use rama::{
     crypto::pki_types::{CertificateDer, pem::PemObject as _},
     extensions::Extensions,
-    http::ws::{
-        AsyncWebSocket, Message,
-        handshake::{
-            client::HttpClientWebSocketExt as _,
-            mitm::{
-                WebSocketRelayDirection, WebSocketRelayEvent, WebSocketRelayEventInput,
-                WebSocketRelayEventService,
+    http::{
+        Body, HeaderValue, Method,
+        body::util::BodyExt as _,
+        inspect::control::HttpMessageDirection,
+        ws::{
+            AsyncWebSocket, Message,
+            handshake::{
+                client::HttpClientWebSocketExt as _,
+                mitm::{
+                    WebSocketRelayDirection, WebSocketRelayEvent, WebSocketRelayEventInput,
+                    WebSocketRelayEventService, WebSocketRelayMessage,
+                },
+                server::WebSocketAcceptor,
             },
-            server::WebSocketAcceptor,
+            inspect::{
+                CaptureWebSocketExt, CapturedWebSocketMessage, WebSocketMessageKind,
+                WebSocketMessageOrigin,
+            },
+            protocol::Role,
         },
-        protocol::Role,
     },
-    http::{Body, body::util::BodyExt as _},
     icap::{
         codec::{Header, HeaderSlot, ResponseLine},
         http::IncomingRequest as IcapHttpIncomingRequest,
@@ -40,15 +41,15 @@ use rama::{
     io::BridgeIo,
     net::{
         client::{ConnectorTarget, ProxyRoute},
+        stream::SocketInfo,
         test_utils::client::MockSocket,
     },
-    tls::client::{ServerVerifyMode, TlsClientConfig},
     tls::{
         ProtocolVersion,
-        client::{ClientHello, ClientHelloExtension},
+        client::{ClientHello, ClientHelloExtension, ServerVerifyMode, TlsClientConfig},
     },
+    utils::octets::{kib, kib_u64},
 };
-use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _, duplex},
     time::timeout,
@@ -65,12 +66,10 @@ struct TestCli {
 }
 
 fn with_local_address(request: Request, local_address: &str) -> Request {
-    request
-        .extensions()
-        .insert(rama::net::stream::SocketInfo::new(
-            Some(local_address.parse().unwrap()),
-            "198.51.100.10:54321".parse().unwrap(),
-        ));
+    request.extensions().insert(SocketInfo::new(
+        Some(local_address.parse().unwrap()),
+        "198.51.100.10:54321".parse().unwrap(),
+    ));
     request
 }
 
@@ -98,7 +97,7 @@ async fn spawn_plain_origin(
 
 async fn read_raw_http_head(stream: &mut tokio::net::TcpStream) -> String {
     let mut bytes = Vec::new();
-    let mut buffer = [0; 1024];
+    let mut buffer = [0; kib(1)];
     while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
         let read = stream.read(&mut buffer).await.unwrap();
         assert_ne!(read, 0, "HTTP request ended before its headers");
@@ -183,14 +182,13 @@ async fn proxy_test_icap_service(
         IcapMethodKind::Reqmod => {
             let (parts, body) = request.into_request()?.into_parts();
             let mut request = Request::from_parts(parts, Body::new(body.collect().await?));
-            request.headers_mut().insert(
-                "x-rama-icap-reqmod",
-                rama::http::HeaderValue::from_static("yes"),
-            );
+            request
+                .headers_mut()
+                .insert("x-rama-icap-reqmod", HeaderValue::from_static("yes"));
             if saw_proxy_authorization {
                 request.headers_mut().insert(
                     "x-rama-icap-saw-proxy-authorization",
-                    rama::http::HeaderValue::from_static("yes"),
+                    HeaderValue::from_static("yes"),
                 );
             }
             Ok(IcapOutgoingResponse::from_http_request(
@@ -200,13 +198,12 @@ async fn proxy_test_icap_service(
         IcapMethodKind::Respmod => {
             let (parts, body) = request.into_response()?.into_parts();
             let mut response = Response::from_parts(parts, Body::new(body.collect().await?));
-            response.headers_mut().insert(
-                "x-rama-icap-respmod",
-                rama::http::HeaderValue::from_static("yes"),
-            );
+            response
+                .headers_mut()
+                .insert("x-rama-icap-respmod", HeaderValue::from_static("yes"));
             response.headers_mut().insert(
                 rama::http::header::PROXY_AUTHENTICATE,
-                rama::http::HeaderValue::from_static("Basic realm=icap-test"),
+                HeaderValue::from_static("Basic realm=icap-test"),
             );
             Ok(IcapOutgoingResponse::from_http_response(
                 IcapMethodKind::Respmod,
@@ -415,13 +412,13 @@ async fn interception_api(
         Some(mut value) => {
             value["session"] = session.into();
             (
-                rama::http::Method::POST,
+                Method::POST,
                 format!("http://{address}{path}"),
                 Body::from(serde_json::to_vec(&value).unwrap()),
             )
         }
         None => (
-            rama::http::Method::GET,
+            Method::GET,
             format!("http://{address}{path}?session={session}"),
             Body::empty(),
         ),
@@ -470,7 +467,7 @@ async fn wait_interception(
 }
 
 async fn approval_id(store: &CaptureStore, direction: &str) -> u64 {
-    let direction = rama::http::inspect::control::HttpMessageDirection::from(direction);
+    let direction = HttpMessageDirection::from(direction);
     let control = store.control();
     let mut changes = control.subscribe_changes();
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -489,18 +486,11 @@ async fn approval_id(store: &CaptureStore, direction: &str) -> u64 {
     .unwrap()
 }
 
-mod traffic;
-
-mod upstream;
-
-mod icap;
-
-mod icap_transport;
-
 mod configuration;
-
-mod recording;
-
-mod websocket;
-
+mod icap;
+mod icap_transport;
 mod interception;
+mod recording;
+mod traffic;
+mod upstream;
+mod websocket;

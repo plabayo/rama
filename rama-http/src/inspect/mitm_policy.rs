@@ -1,3 +1,5 @@
+use std::{fmt, sync::Arc};
+
 use arc_swap::ArcSwap;
 use rama_core::{
     error::{BoxError, BoxErrorExt as _, ErrorContext},
@@ -8,7 +10,6 @@ use rama_net::{
     client::ConnectorTarget,
 };
 use serde::{Deserialize, Serialize};
-use std::{fmt, sync::Arc};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -32,6 +33,7 @@ impl std::str::FromStr for ScopeMode {
         }
     }
 }
+
 impl fmt::Display for ScopeMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -256,8 +258,9 @@ impl MitmPolicy {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rama_core::extensions::Extensions;
+
+    use super::*;
 
     fn host(value: &str) -> Host {
         Host::try_from(value).unwrap()

@@ -1,12 +1,24 @@
+use rama::{
+    http::{Version, layer::har::spec::LogFile, server::HttpServer},
+    net::{
+        Protocol,
+        address::{ProxyAddress, SocketAddress},
+        stream::SocketInfo,
+    },
+    service::service_fn,
+    tcp::server::TcpListener,
+};
+
 use super::*;
+use crate::cmd::serve::proxy::capture::{CaptureHttpLayer, ConnectionId};
 
 #[test]
 fn captured_request_transport_header_policy_is_explicit() {
     let captured = ReplayRequest {
         method: Method::POST,
         url: "https://example.test/upload".parse().unwrap(),
-        version: rama::http::Version::HTTP_2,
-        protocol: rama::net::Protocol::HTTPS,
+        version: Version::HTTP_2,
+        protocol: Protocol::HTTPS,
         headers: test_headers([
             ("host".to_owned(), "example.test".to_owned()),
             ("content-length".to_owned(), "4".to_owned()),
@@ -18,7 +30,7 @@ fn captured_request_transport_header_policy_is_explicit() {
     };
 
     let (preserved, body, _) = build_captured_request(captured.clone(), false).unwrap();
-    assert_eq!(preserved.version(), rama::http::Version::HTTP_2);
+    assert_eq!(preserved.version(), Version::HTTP_2);
     assert_eq!(preserved.headers().len(), 4);
     assert_eq!(body.as_ref(), b"body");
 
@@ -42,7 +54,7 @@ fn websocket_control_events_are_visible_but_not_replayable() {
     .map(Into::into)
     .collect();
     details.websocket.total = details.websocket.messages.len();
-    details.summary.protocol = rama::net::Protocol::WSS;
+    details.summary.protocol = Protocol::WSS;
     details.websocket.replay_active = true;
 
     let rendered = render_details(&details).into_string();
@@ -59,20 +71,16 @@ async fn request_rows_distinguish_response_lifecycle_and_offer_inline_replay() {
     let state = test_state();
     let connection_id = state
         .capture
-        .begin_connection_if_enabled(None, rama::net::Protocol::HTTP, None)
+        .begin_connection_if_enabled(None, Protocol::HTTP, None)
         .unwrap();
     state.capture.confirm_connection(connection_id);
     state.ensure_session("known");
-    let success =
-        crate::cmd::serve::proxy::capture::CaptureHttpLayer::new(Some(state.capture.clone()))
-            .into_layer(rama::service::service_fn(async |_request: Request| {
-                Ok::<_, Infallible>(Response::new(Body::from("response")))
-            }));
+    let success = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(service_fn(
+        async |_request: Request| Ok::<_, Infallible>(Response::new(Body::from("response"))),
+    ));
     let request = Request::builder()
         .uri("http://example.test/streaming")
-        .extension(crate::cmd::serve::proxy::capture::ConnectionId(
-            connection_id,
-        ))
+        .extension(ConnectionId(connection_id))
         .body(Body::empty())
         .unwrap();
     let response = success.serve(request).await.unwrap();
@@ -86,16 +94,12 @@ async fn request_rows_distinguish_response_lifecycle_and_offer_inline_replay() {
     assert!(streaming.contains(">Replay</button>"));
 
     response.into_body().collect().await.unwrap();
-    let failed =
-        crate::cmd::serve::proxy::capture::CaptureHttpLayer::new(Some(state.capture.clone()))
-            .into_layer(rama::service::service_fn(async |_request: Request| {
-                Err::<Response<Body>, _>("origin failed")
-            }));
+    let failed = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(service_fn(
+        async |_request: Request| Err::<Response<Body>, _>("origin failed"),
+    ));
     let request = Request::builder()
         .uri("http://example.test/failed")
-        .extension(crate::cmd::serve::proxy::capture::ConnectionId(
-            connection_id,
-        ))
+        .extension(ConnectionId(connection_id))
         .body(Body::empty())
         .unwrap();
     failed.serve(request).await.unwrap_err();
@@ -114,16 +118,16 @@ async fn selected_connections_and_requests_export_har_and_copy_as_curl() {
     state.ensure_session("known");
     let first_connection = state
         .capture
-        .begin_connection_if_enabled(None, rama::net::Protocol::HTTP, None)
+        .begin_connection_if_enabled(None, Protocol::HTTP, None)
         .unwrap();
     state.capture.confirm_connection(first_connection);
     let second_connection = state
         .capture
-        .begin_connection_if_enabled(None, rama::net::Protocol::HTTP, None)
+        .begin_connection_if_enabled(None, Protocol::HTTP, None)
         .unwrap();
     state.capture.confirm_connection(second_connection);
-    let service = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
-        rama::service::service_fn(async |request: Request| {
+    let service = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(service_fn(
+        async |request: Request| {
             request.into_body().collect().await.unwrap();
             Ok::<_, Infallible>(
                 Response::builder()
@@ -132,8 +136,8 @@ async fn selected_connections_and_requests_export_har_and_copy_as_curl() {
                     .body(Body::from("response-body"))
                     .unwrap(),
             )
-        }),
-    );
+        },
+    ));
     for (connection, url, body) in [
         (
             first_connection,
@@ -168,11 +172,11 @@ async fn selected_connections_and_requests_export_har_and_copy_as_curl() {
     }
     let web_socket_connection = state
         .capture
-        .begin_connection_if_enabled(None, rama::net::Protocol::HTTP, None)
+        .begin_connection_if_enabled(None, Protocol::HTTP, None)
         .unwrap();
     state.capture.confirm_connection(web_socket_connection);
     let web_socket_service = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
-        rama::service::service_fn(async |_request: Request| {
+        service_fn(async |_request: Request| {
             Ok::<_, Infallible>(
                 Response::builder()
                     .status(StatusCode::SWITCHING_PROTOCOLS)
@@ -267,7 +271,7 @@ async fn selected_connections_and_requests_export_har_and_copy_as_curl() {
     assert!(json.contains("\"send\":0"), "{json}");
     assert!(json.contains("\"wait\":"), "{json}");
     assert!(json.contains("\"receive\":"), "{json}");
-    let log: rama::http::layer::har::spec::LogFile = serde_json::from_slice(&body).unwrap();
+    let log: LogFile = serde_json::from_slice(&body).unwrap();
     assert_eq!(log.log.entries.len(), 3);
     assert_eq!(
         log.log.entries[0].request.url,
@@ -316,7 +320,7 @@ async fn selected_connections_and_requests_export_har_and_copy_as_curl() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
     let body = response.into_body().collect().await.unwrap().to_bytes();
-    let log: rama::http::layer::har::spec::LogFile = serde_json::from_slice(&body).unwrap();
+    let log: LogFile = serde_json::from_slice(&body).unwrap();
     assert_eq!(log.log.entries.len(), 2);
     assert_eq!(log.log.entries[0].connection.as_deref(), Some("1"));
     assert_eq!(log.log.entries[1].connection.as_deref(), Some("2"));
@@ -362,10 +366,9 @@ async fn websocket_replay_handler_enforces_session_and_maps_capture_state() {
         .header("upgrade", "websocket")
         .body(Body::empty())
         .unwrap();
-    let capture_service =
-        CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(rama::service::service_fn(
-            async |_request: Request| Ok::<_, Infallible>(Response::new(Body::empty())),
-        ));
+    let capture_service = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
+        service_fn(async |_request: Request| Ok::<_, Infallible>(Response::new(Body::empty()))),
+    );
     capture_service
         .serve(request)
         .await
@@ -491,15 +494,14 @@ async fn replay_honors_plaintext_proxy_tunnel_without_leaking_auth() {
             .await
             .unwrap();
     });
-    let mut proxy: rama::net::address::ProxyAddress =
-        format!("http://{proxy_address}").parse().unwrap();
+    let mut proxy: ProxyAddress = format!("http://{proxy_address}").parse().unwrap();
     proxy.credential = Some(rama::net::user::ProxyCredential::Basic(
         rama::net::user::Basic::try_from("upstream:secret").unwrap(),
     ));
     let upstream = UpstreamProxyConfig::new(Some(proxy), false, &[])
         .unwrap()
         .with_tunnel_plaintext_http(true);
-    let state = test_state_with_upstream(8, 8, upstream);
+    let state = test_state_with_upstream(8, 8, &upstream);
     capture_request_for_replay(&state, "http://origin.example/replay").await;
 
     assert_eq!(replay_captured(&state, 1).await.unwrap(), 200);
@@ -511,16 +513,13 @@ async fn replay_honors_plaintext_proxy_tunnel_without_leaking_auth() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn replay_isolates_forward_proxy_auth_challenge() {
-    let listener = rama::tcp::server::TcpListener::bind_address(
-        rama::net::address::SocketAddress::local_ipv4(0),
-        Executor::default(),
-    )
-    .await
-    .unwrap();
+    let listener = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .unwrap();
     let proxy_address = listener.local_addr().unwrap();
-    let proxy_task = tokio::spawn(listener.serve(
-        rama::http::server::HttpServer::auto(Executor::default()).service(
-            rama::service::service_fn(|_: Request| async move {
+    let proxy_task = tokio::spawn(
+        listener.serve(HttpServer::auto(Executor::default()).service(service_fn(
+            |_: Request| async move {
                 Ok::<_, Infallible>(
                     Response::builder()
                         .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
@@ -528,16 +527,16 @@ async fn replay_isolates_forward_proxy_auth_challenge() {
                         .body(Body::from("upstream-secret-body"))
                         .unwrap(),
                 )
-            }),
-        ),
-    ));
+            },
+        ))),
+    );
     let upstream = UpstreamProxyConfig::new(
         Some(format!("http://{proxy_address}").parse().unwrap()),
         false,
         &[],
     )
     .unwrap();
-    let state = test_state_with_upstream(8, 8, upstream);
+    let state = test_state_with_upstream(8, 8, &upstream);
     capture_request_for_replay(&state, "http://origin.example/replay").await;
 
     let error = replay_captured(&state, 1).await.unwrap_err();
@@ -547,38 +546,33 @@ async fn replay_isolates_forward_proxy_auth_challenge() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn replay_sends_captured_body_without_hop_by_hop_or_proxy_credentials() {
-    let origin = rama::tcp::server::TcpListener::bind_address(
-        rama::net::address::SocketAddress::local_ipv4(0),
-        Executor::default(),
-    )
-    .await
-    .unwrap();
+    let origin = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .unwrap();
     let origin_address = origin.local_addr().unwrap();
     let (observed_tx, mut observed_rx) = tokio::sync::mpsc::channel(1);
-    let origin_task = tokio::spawn(origin.serve(
-        rama::http::server::HttpServer::auto(Executor::default()).service(
-            rama::service::service_fn(move |request: Request| {
-                let observed_tx = observed_tx.clone();
-                async move {
-                    let leaked_headers = ["connection", "x-remove", "proxy-authorization"]
-                        .into_iter()
-                        .filter(|name| request.headers().contains_key(*name))
-                        .collect::<Vec<_>>();
-                    let body = request.into_body().collect().await.unwrap().to_bytes();
-                    observed_tx.send((leaked_headers, body)).await.unwrap();
-                    Ok::<_, Infallible>(Response::new(Body::from("replayed")))
-                }
-            }),
-        ),
-    ));
+    let origin_task = tokio::spawn(origin.serve(HttpServer::auto(Executor::default()).service(
+        service_fn(move |request: Request| {
+            let observed_tx = observed_tx.clone();
+            async move {
+                let leaked_headers = ["connection", "x-remove", "proxy-authorization"]
+                    .into_iter()
+                    .filter(|name| request.headers().contains_key(*name))
+                    .collect::<Vec<_>>();
+                let body = request.into_body().collect().await.unwrap().to_bytes();
+                observed_tx.send((leaked_headers, body)).await.unwrap();
+                Ok::<_, Infallible>(Response::new(Body::from("replayed")))
+            }
+        }),
+    )));
 
     let state = test_state();
-    let capture = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
-        rama::service::service_fn(async |request: Request| {
+    let capture = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(service_fn(
+        async |request: Request| {
             request.into_body().collect().await.unwrap();
             Ok::<_, Infallible>(Response::new(Body::empty()))
-        }),
-    );
+        },
+    ));
     capture
         .serve(
             Request::builder()
@@ -627,4 +621,123 @@ async fn replay_sends_captured_body_without_hop_by_hop_or_proxy_credentials() {
     assert!(rendered.contains(&format!("Inspector replay → {origin_address}")));
     assert!(!rendered.contains("unknown → unknown"));
     origin_task.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replay_reuses_connections_only_within_the_same_capture_source() {
+    let origin = TcpListener::bind_address(SocketAddress::local_ipv4(0), Executor::default())
+        .await
+        .unwrap();
+    let address = origin.local_addr().unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::channel(3);
+    let origin_task = tokio::spawn(origin.serve(HttpServer::auto(Executor::default()).service(
+        service_fn(move |request: Request| {
+            let tx = tx.clone();
+            async move {
+                let peer = request
+                    .extensions()
+                    .get_ref::<SocketInfo>()
+                    .unwrap()
+                    .peer_addr();
+                request.into_body().collect().await.unwrap();
+                tx.send(peer).await.unwrap();
+                Ok::<_, Infallible>(Response::new(Body::from("replayed")))
+            }
+        }),
+    )));
+    let state = test_state();
+    let capture = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(service_fn(
+        async |request: Request| {
+            request.into_body().collect().await.unwrap();
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        },
+    ));
+    for _ in 0..2 {
+        let source = state
+            .capture
+            .begin_connection_if_enabled(None, Protocol::HTTP, None)
+            .unwrap();
+        state.capture.confirm_connection(source);
+        capture
+            .serve(
+                Request::builder()
+                    .uri(format!("http://{address}/replay"))
+                    .extension(ConnectionId(source))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+    }
+    let result = tokio::time::timeout(Duration::from_secs(10), async {
+        for id in [1, 1, 2] {
+            assert_eq!(
+                replay_captured(&state.clone(), id).await.unwrap(),
+                StatusCode::OK
+            );
+        }
+        let first = rx.recv().await.unwrap();
+        let reused = rx.recv().await.unwrap();
+        let separate = rx.recv().await.unwrap();
+        assert_eq!(
+            first, reused,
+            "cloned dashboard states must share the replay pool"
+        );
+        assert_ne!(
+            first, separate,
+            "different captured connections must not share TLS profiles"
+        );
+    })
+    .await;
+    origin_task.abort();
+    result.expect("replay pool test timed out");
+}
+
+#[test]
+fn websocket_send_signals_reject_unknown_variants() {
+    for json in [
+        r#"{"websocket_direction":"incoming","websocket_kind":"text"}"#,
+        r#"{"websocket_direction":"ingress","websocket_kind":"ping"}"#,
+        r#"{"websocket_direction":"ingress","websocket_kind":""}"#,
+    ] {
+        serde_json::from_str::<UiSignals>(json).unwrap_err();
+    }
+    let signals: UiSignals =
+        serde_json::from_str(r#"{"websocket_direction":"egress","websocket_kind":"binary"}"#)
+            .unwrap();
+    assert_eq!(
+        signals.websocket_direction,
+        Some(WebSocketRelayDirection::Egress)
+    );
+    assert!(matches!(
+        signals.websocket_kind,
+        Some(WebSocketSendKind::Binary)
+    ));
+}
+
+#[tokio::test]
+async fn websocket_send_requires_direction_and_kind() {
+    for signals in [
+        UiSignals::default(),
+        UiSignals {
+            websocket_direction: Some(WebSocketRelayDirection::Ingress),
+            ..Default::default()
+        },
+        UiSignals {
+            websocket_kind: Some(WebSocketSendKind::Text),
+            ..Default::default()
+        },
+    ] {
+        let response = send_websocket_message(
+            State(test_state()),
+            Path(IdPath { id: 1 }),
+            ReadSignals(signals),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
 }

@@ -1,3 +1,5 @@
+use rama::http::Method;
+
 use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -278,7 +280,7 @@ async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
     let response = replay_dashboard
         .serve(dashboard_request(
             Request::builder()
-                .method(rama::http::Method::POST)
+                .method(Method::POST)
                 .uri(format!("http://{proxy_address}/api/focus/request/1"))
                 .body(Body::from(signal_body.clone()))
                 .unwrap(),
@@ -309,7 +311,7 @@ async fn shared_proxy_inspector_exposes_and_replays_live_websocket_messages() {
     let response = replay_dashboard
         .serve(dashboard_request(
             Request::builder()
-                .method(rama::http::Method::POST)
+                .method(Method::POST)
                 .uri(format!("http://{proxy_address}/api/websocket/1/replay/0"))
                 .body(Body::from(signal_body))
                 .unwrap(),
@@ -419,7 +421,7 @@ async fn mitm_wss_inspector_captures_first_message_in_both_directions() {
     let response = dashboard
         .serve(dashboard_request(
             Request::builder()
-                .method(rama::http::Method::POST)
+                .method(Method::POST)
                 .uri(format!("http://{ui_address}/api/focus/request/1"))
                 .body(Body::from(signal_body))
                 .unwrap(),
@@ -453,7 +455,7 @@ async fn mitm_wss_inspector_captures_first_message_in_both_directions() {
     let response = connection_dashboard
         .serve(dashboard_request(
             Request::builder()
-                .method(rama::http::Method::POST)
+                .method(Method::POST)
                 .uri(format!("http://{ui_address}/api/focus/connection/1"))
                 .body(Body::from(format!(r#"{{"session":"{session}"}}"#)))
                 .unwrap(),
@@ -507,7 +509,7 @@ async fn websocket_inspector_replays_live_text_and_binary_in_original_direction(
     let store = crate::cmd::serve::proxy::capture::test_store(
         8,
         8,
-        4096,
+        kib_u64(4),
         Arc::new(UserAgentDatabase::try_embedded().unwrap()),
     )
     .unwrap();

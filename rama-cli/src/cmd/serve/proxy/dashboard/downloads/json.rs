@@ -1,10 +1,11 @@
-use super::*;
 use rama::{
     futures::StreamExt,
     http::ws::inspect::{CapturedWebSocketMessage, har::write_captured_websocket_json},
     stream::io::ReaderStream,
 };
 use tokio::io::AsyncWriteExt as _;
+
+use super::*;
 
 pub(in crate::cmd::serve::proxy::dashboard) async fn capture_json(
     State(state): State<DashboardState>,
@@ -106,6 +107,7 @@ fn capture_metadata(details: &CaptureDetails) -> Result<Vec<u8>, serde_json::Err
     bytes.extend_from_slice(b",\"records\":[");
     Ok(bytes)
 }
+
 fn field<T: serde::Serialize>(
     bytes: &mut Vec<u8>,
     name: &'static str,

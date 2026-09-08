@@ -4086,7 +4086,6 @@ dependencies = [
  "mimalloc",
  "parking_lot",
  "rama",
- "rama-inspect",
  "ratatui",
  "serde",
  "serde_json",

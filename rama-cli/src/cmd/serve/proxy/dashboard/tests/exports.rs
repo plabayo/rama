@@ -1,3 +1,5 @@
+use rama::http::Version;
+
 use super::*;
 
 #[test]
@@ -5,7 +7,7 @@ fn unicode_header_values_are_bounded_on_a_character_boundary() {
     let details = test_details(vec![StoredRecord::RequestHead {
         method: Method::GET,
         url: "http://example.test".parse().unwrap(),
-        version: rama::http::Version::HTTP_11,
+        version: Version::HTTP_11,
         headers: test_headers([("x-unicode".to_owned(), "é".repeat(5_000))]),
     }]);
 

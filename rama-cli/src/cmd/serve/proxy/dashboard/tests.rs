@@ -1,33 +1,43 @@
+use std::time::Duration;
+
+use base64::engine::general_purpose::STANDARD as BASE64;
+use rama::{
+    http::{
+        HeaderMap, HeaderName, HeaderValue, Method, Version, inspect::capture::CaptureMetadata,
+        ws::inspect::CapturedWebSocketMessage,
+    },
+    net::{Protocol, address::ProxyAddress},
+    ua::profile::UserAgentDatabase,
+};
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
 use super::*;
 use crate::cmd::serve::proxy::capture::{CaptureHttpLayer, StoredRecord};
-use base64::engine::general_purpose::STANDARD as BASE64;
-use rama::http::{Method, ws::inspect::CapturedWebSocketMessage};
-use rama::ua::profile::UserAgentDatabase;
-use std::time::Duration;
-use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 fn test_state_with_limits(connections: usize, exchanges: usize) -> DashboardState {
     test_state_with_upstream(
         connections,
         exchanges,
-        UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+        &UpstreamProxyConfig::new(None, false, &[]).unwrap(),
     )
 }
 
 fn test_state_with_upstream(
     connections: usize,
     exchanges: usize,
-    upstream: UpstreamProxyConfig,
+    upstream: &UpstreamProxyConfig,
 ) -> DashboardState {
     let ua_db = Arc::new(UserAgentDatabase::try_embedded().unwrap());
     DashboardState::new(
-        crate::cmd::serve::proxy::capture::test_store(connections, exchanges, 1024, ua_db).unwrap(),
+        crate::cmd::serve::proxy::capture::test_store(connections, exchanges, kib_u64(1), ua_db)
+            .unwrap(),
         HarController::default(),
         Vec::new(),
         Arc::new(SocketOptions::default_tcp()),
         upstream,
         MitmPolicy::try_new(&[], &[]).unwrap(),
     )
+    .unwrap()
 }
 
 pub(super) fn test_state() -> DashboardState {
@@ -59,7 +69,7 @@ pub(super) async fn capture_request_for_replay(state: &DashboardState, uri: &str
 
 async fn read_http_head(stream: &mut tokio::net::TcpStream) -> String {
     let mut request = Vec::new();
-    let mut buffer = [0; 1024];
+    let mut buffer = [0; kib(1)];
     while !request.windows(4).any(|window| window == b"\r\n\r\n") {
         let read = stream.read(&mut buffer).await.unwrap();
         assert_ne!(read, 0, "HTTP request ended before its headers");
@@ -68,21 +78,20 @@ async fn read_http_head(stream: &mut tokio::net::TcpStream) -> String {
     String::from_utf8(request).unwrap()
 }
 
-fn test_headers(
-    values: impl IntoIterator<Item = (impl AsRef<str>, impl AsRef<str>)>,
-) -> rama::http::HeaderMap {
+fn test_headers(values: impl IntoIterator<Item = (impl AsRef<str>, impl AsRef<str>)>) -> HeaderMap {
     values
         .into_iter()
         .map(|(name, value)| {
             (
-                name.as_ref().parse::<rama::http::HeaderName>().unwrap(),
-                rama::http::HeaderValue::from_bytes(value.as_ref().as_bytes()).unwrap(),
+                name.as_ref().parse::<HeaderName>().unwrap(),
+                HeaderValue::from_bytes(value.as_ref().as_bytes()).unwrap(),
             )
         })
         .collect()
 }
+
 fn test_details(records: Vec<StoredRecord>) -> InspectorDetails {
-    let metadata = rama::http::inspect::capture::CaptureMetadata::default();
+    let metadata = CaptureMetadata::default();
     InspectorDetails {
         http: CaptureDetails {
             summary: HttpExchangeSummary {
@@ -92,10 +101,10 @@ fn test_details(records: Vec<StoredRecord>) -> InspectorDetails {
                 connection_display_id: 1,
                 started_at: "1970-01-01T00:00:00Z".parse().unwrap(),
                 method: Method::GET,
-                http_version: rama::http::Version::HTTP_11,
+                http_version: Version::HTTP_11,
                 url: "http://example.test".parse().unwrap(),
                 endpoint: Some("example.test".parse().unwrap()),
-                protocol: rama::net::Protocol::HTTP,
+                protocol: Protocol::HTTP,
                 user_agent: None,
                 status: Some(StatusCode::OK),
                 active: false,
@@ -156,8 +165,7 @@ async fn assert_replay_forward_proxy_auth(
             }),
         ),
     ));
-    let mut proxy: rama::net::address::ProxyAddress =
-        format!("http://{proxy_address}").parse().unwrap();
+    let mut proxy: ProxyAddress = format!("http://{proxy_address}").parse().unwrap();
     proxy.credential = configured_credential.map(|credential| {
         rama::net::user::ProxyCredential::Basic(
             rama::net::user::Basic::try_from(credential).unwrap(),
@@ -166,7 +174,7 @@ async fn assert_replay_forward_proxy_auth(
     let upstream = UpstreamProxyConfig::new(Some(proxy), false, &[])
         .unwrap()
         .with_forward_proxy_auth(forward_proxy_auth);
-    let state = test_state_with_upstream(8, 8, upstream);
+    let state = test_state_with_upstream(8, 8, &upstream);
     capture_request_for_replay(&state, "http://origin.example/replay").await;
 
     assert_eq!(replay_captured(&state, 1).await.unwrap(), 200);
@@ -183,12 +191,8 @@ async fn assert_replay_forward_proxy_auth(
     proxy_task.abort();
 }
 
-mod replay;
-
-mod navigation;
-
 mod controller;
-
-mod render;
-
 mod exports;
+mod navigation;
+mod render;
+mod replay;

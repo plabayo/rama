@@ -4,8 +4,7 @@ use rama_core::error::{BoxError, ErrorContext as _};
 use rama_http::HeaderMap;
 use serde::{Deserialize, Serialize};
 
-use crate::profile::*;
-use crate::*;
+use crate::{profile::*, *};
 
 /// Load the profiles embedded with the rama-ua crate.
 ///

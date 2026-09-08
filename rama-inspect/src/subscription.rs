@@ -32,8 +32,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rama_core::{futures::StreamExt, service::service_fn};
     use std::{
         convert::Infallible,
         sync::{
@@ -41,6 +39,10 @@ mod tests {
             atomic::{AtomicU64, Ordering},
         },
     };
+
+    use rama_core::{futures::StreamExt, service::service_fn};
+
+    use super::*;
     #[tokio::test]
     async fn initial_content_slow_consumers_and_changes_during_query() {
         let (changes, receiver) = watch::channel(0);
@@ -67,6 +69,7 @@ mod tests {
         }
         assert_eq!(stream.next().await, Some(Ok(99)));
     }
+
     #[tokio::test]
     async fn closed_source_delivers_unseen_content_and_then_ends() {
         let (changes, receiver) = watch::channel(0);

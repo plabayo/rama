@@ -1,5 +1,90 @@
-use super::*;
+use std::fmt;
+
+use rama::{
+    extensions::Extension,
+    http::{
+        client::{
+            BindBodyToConnLayer, EasyHttpWebClient, HttpConnId, HttpConnIdentifier,
+            HttpConnectRequestAdapter, HttpPooledConnectorConfig,
+        },
+        layer::version_adapter::RequestVersionAdapter,
+    },
+    net::{
+        Protocol,
+        client::{
+            ConnectRequest, ProxyRoutesConnector,
+            pool::{ConnID, MultiplexPool, ReqToConnID},
+        },
+    },
+    tcp::client::service::TcpConnector,
+    tls::client::{ClientHello, TlsClientConfig},
+};
 use tokio::io::AsyncReadExt as _;
+
+use super::*;
+
+/// Captured connections may have different TLS profiles even for the same route.
+/// Reuse connections only within one source; untracked exchanges stay isolated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Extension)]
+enum ReplaySource {
+    Connection(u64),
+    Exchange(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReplayPoolId {
+    http: HttpConnId,
+    source: ReplaySource,
+}
+
+impl ConnID for ReplayPoolId {}
+
+fn replay_pool_id(input: &ConnectRequest) -> Result<ReplayPoolId, BoxError> {
+    Ok(ReplayPoolId {
+        http: HttpConnIdentifier::new().id(input)?,
+        source: input
+            .extensions()
+            .get_ref::<ReplaySource>()
+            .copied()
+            .context("missing replay source")?,
+    })
+}
+
+pub(super) fn replay_client(
+    capture: CaptureStore,
+    tcp_options: Arc<SocketOptions>,
+    upstream: &UpstreamProxyConfig,
+) -> Result<BoxService<Request, Response, BoxError>, BoxError> {
+    let tls_config = TlsClientConfig::default_http();
+    let transport = TcpConnector::new().with_connector(tcp_options);
+    let config = HttpPooledConnectorConfig::default();
+    let pool = MultiplexPool::try_new(config.max_concurrent_streams, config.max_total)?
+        .with_selection(config.selection)
+        .maybe_with_idle_timeout(config.idle_timeout);
+    let client = EasyHttpWebClient::connector_builder()
+        .with_custom_transport_connector(transport)
+        .with_default_dns_connector()
+        .with_tls_proxy_support_using_boringssl()
+        .with_proxy_support()
+        .with_tls_support_using_boringssl(tls_config)
+        .with_default_http_connector(Executor::default())
+        .with_custom_connection_pool(pool, replay_pool_id, config.wait_for_pool_timeout)
+        .map_connector(|connector| {
+            let connector = BindBodyToConnLayer::new().into_layer(connector);
+            let connector = ProxyRoutesConnector::new(connector);
+            let connector = HttpConnectRequestAdapter::new(connector);
+            RequestVersionAdapter::new(connector)
+        })
+        .build_client()
+        .with_forward_proxy_auth(upstream.forward_proxy_auth())
+        .with_tunnel_plaintext_http(upstream.tunnel_plaintext_http())
+        .with_isolate_forward_proxy_auth_error(true);
+    let client = upstream.http_service(client);
+    let client = RemoveRequestHeaderLayer::hop_by_hop().into_layer(client);
+    let client = EmulateTlsProfileLayer::new().into_layer(client);
+    let client = CaptureHttpLayer::new(Some(capture)).into_layer(client);
+    Ok(client.boxed())
+}
 
 pub(super) async fn request_curl(
     State(state): State<DashboardState>,
@@ -9,10 +94,7 @@ pub(super) async fn request_curl(
         Ok(captured) => captured,
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
     };
-    if matches!(
-        captured.protocol,
-        rama::net::Protocol::WS | rama::net::Protocol::WSS
-    ) {
+    if matches!(captured.protocol, Protocol::WS | Protocol::WSS) {
         return error_response(
             StatusCode::BAD_REQUEST,
             "WebSocket handshakes cannot be represented as a replayable cURL command",
@@ -96,10 +178,18 @@ pub(super) async fn replay_captured(
     state: &DashboardState,
     id: u64,
 ) -> Result<StatusCode, BoxError> {
+    let exchange = state.capture.exchange_capture(id)?;
+    let connection_id = exchange.snapshot().connection_id;
+    let source = if connection_id == 0 {
+        ReplaySource::Exchange(id)
+    } else {
+        ReplaySource::Connection(connection_id)
+    };
     let captured = state.capture.replay_request(id).await?;
     let (request, body, tls_client_hello) = build_captured_request(captured, true)?;
     let (parts, ()) = request.into_parts();
     let mut request = Request::from_parts(parts, Body::from_stream(body.stream(None)));
+    request.extensions().insert(source);
     if let Some(client_hello) = tls_client_hello {
         request.extensions().insert_arc(Arc::new(TlsProfile {
             client_hello,
@@ -122,26 +212,11 @@ pub(super) async fn replay_captured(
     // Scrub the original hop metadata before emulation can normalize the
     // `Connection` field while retaining a header it named.
     remove_hop_by_hop_request_headers(request.headers_mut());
-    let tls_config = rama::tls::client::TlsClientConfig::default_http();
-    let transport =
-        rama::tcp::client::service::TcpConnector::new().with_connector(state.tcp_options.clone());
-    let client = rama::http::client::EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(transport)
-        .with_default_dns_connector()
-        .with_tls_proxy_support_using_boringssl()
-        .with_proxy_support()
-        .with_tls_support_using_boringssl(tls_config)
-        .with_default_http_connector(Executor::default())
-        .with_default_connection_pool()
-        .build_client()
-        .with_forward_proxy_auth(state.upstream.forward_proxy_auth())
-        .with_tunnel_plaintext_http(state.upstream.tunnel_plaintext_http())
-        .with_isolate_forward_proxy_auth_error(true);
-    let client = state.upstream.http_service(client);
-    let client = RemoveRequestHeaderLayer::hop_by_hop().into_layer(client);
-    let client = EmulateTlsProfileLayer::new().into_layer(client);
-    let client = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(client);
-    let response = client.serve(request).await.context("replay request")?;
+    let response = state
+        .replay_client
+        .serve(request)
+        .await
+        .context("replay request")?;
     let status = response.status();
     let mut body = response.into_body();
     while let Some(frame) = body.frame().await {
@@ -153,7 +228,7 @@ pub(super) async fn replay_captured(
 pub(super) fn build_captured_request<B>(
     captured: ReplayRequest<B>,
     strip_transport_headers: bool,
-) -> Result<(Request<()>, B, Option<rama::tls::client::ClientHello>), BoxError> {
+) -> Result<(Request<()>, B, Option<ClientHello>), BoxError> {
     let mut request = Request::builder()
         .method(captured.method)
         .version(captured.version)
@@ -173,6 +248,6 @@ pub(super) fn build_captured_request<B>(
     Ok((request, captured.body, hello))
 }
 
-pub(super) fn error_response(status: StatusCode, error: impl std::fmt::Display) -> Response {
+pub(super) fn error_response(status: StatusCode, error: impl fmt::Display) -> Response {
     (status, error.to_string()).into_response()
 }

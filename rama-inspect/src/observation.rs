@@ -1,6 +1,8 @@
 //! Shared, typed observations attached to a captured connection or operation.
-use rama_core::extensions::{Extension, Extensions};
+
 use std::sync::Arc;
+
+use rama_core::extensions::{Extension, Extensions};
 
 /// An append-only observation scope. Clones share observations; independent
 /// scopes keep connection, exchange and upstream data separate.
@@ -11,13 +13,16 @@ struct Inner {
     values: Extensions,
     insertion: parking_lot::Mutex<()>,
 }
+
 impl Observations {
     pub fn get_ref<T: Extension>(&self) -> Option<&T> {
         self.0.values.get_ref()
     }
+
     pub fn contains<T: Extension>(&self) -> bool {
         self.0.values.contains::<T>()
     }
+
     /// Retain the first value for this type. Existing observations are never replaced.
     pub fn insert<T: Extension>(&self, value: T) -> &T {
         self.get_or_insert(|| value)
@@ -33,6 +38,7 @@ impl Observations {
         self.0.values.get_ref_or_insert(create)
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

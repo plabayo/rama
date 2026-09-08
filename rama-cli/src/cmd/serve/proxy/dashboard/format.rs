@@ -1,6 +1,10 @@
+use std::fmt;
+
+use rama::http::HeaderValue;
+
 use super::*;
 
-pub(super) fn display(value: impl std::fmt::Display) -> impl IntoHtml {
+pub(super) fn display(value: impl fmt::Display) -> impl IntoHtml {
     join_display([value], "")
 }
 
@@ -12,7 +16,7 @@ pub(super) fn render_each(values: impl IntoIterator<Item = impl IntoHtml>) -> im
     }
 }
 
-pub(super) fn header_preview(value: &rama::http::HeaderValue) -> impl std::fmt::Display + '_ {
+pub(super) fn header_preview(value: &HeaderValue) -> impl fmt::Display + '_ {
     let bytes = value.as_bytes();
     let limit = std::str::from_utf8(bytes)
         .map(|text| {
@@ -20,8 +24,8 @@ pub(super) fn header_preview(value: &rama::http::HeaderValue) -> impl std::fmt::
                 .nth(4096)
                 .map_or(bytes.len(), |(index, _)| index)
         })
-        .unwrap_or(bytes.len().min(4096));
-    rama::utils::fmt::display_fn(move |f: &mut std::fmt::Formatter<'_>| {
+        .unwrap_or(bytes.len().min(kib(4)));
+    rama::utils::fmt::display_fn(move |f: &mut fmt::Formatter<'_>| {
         // Header values remain borrowed; only the final HTML buffer is allocated.
         match std::str::from_utf8(bytes) {
             Ok(text) => f.write_str(&text[..text.floor_char_boundary(limit)])?,

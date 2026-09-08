@@ -1,6 +1,8 @@
 //! Typed attachment records for protocols carried by an HTTP upgrade.
-use super::*;
+
 use std::{any::TypeId, ops::Range};
+
+use super::*;
 
 /// A protocol-owned record stored alongside an HTTP exchange. Each Rust type has
 /// an independent index; HTTP never decodes another protocol's record as its own.
@@ -8,6 +10,7 @@ pub(super) struct RecordIndex {
     pub ids: Vec<RecordId>,
     pub matches: super::attachment::SearchRecord,
 }
+
 impl RecordIndex {
     fn new<T: CapturedRecord>() -> Self {
         Self {
@@ -23,6 +26,7 @@ pub struct ExchangeCapture {
     pub(super) store: CaptureStore,
     pub(super) entry: Arc<CapturedExchange>,
 }
+
 impl fmt::Debug for ExchangeCapture {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ExchangeCapture")
@@ -30,6 +34,7 @@ impl fmt::Debug for ExchangeCapture {
             .finish_non_exhaustive()
     }
 }
+
 impl CaptureStore {
     pub fn exchange_capture(&self, id: u64) -> Result<ExchangeCapture, BoxError> {
         Ok(ExchangeCapture {
@@ -38,6 +43,7 @@ impl CaptureStore {
         })
     }
 }
+
 impl ExchangeCapture {
     /// Snapshot summary and observations without reading stored metadata records.
     pub fn summary_details(&self) -> CaptureDetails {
@@ -52,6 +58,7 @@ impl ExchangeCapture {
                 .map(|connection| connection.snapshot()),
         }
     }
+
     /// Read HTTP metadata without loading bodies, retaining this exchange across clears.
     pub async fn inspector_details(&self) -> Result<CaptureDetails, BoxError> {
         self.store.inspector_details_for_entry(&self.entry).await
@@ -60,18 +67,23 @@ impl ExchangeCapture {
     pub async fn details(&self) -> Result<CaptureDetails, BoxError> {
         self.store.details_for_entry(self.entry.clone()).await
     }
+
     pub fn id(&self) -> u64 {
         self.entry.summary_template.id
     }
+
     pub fn metadata(&self) -> &CaptureMetadata {
         &self.entry.metadata
     }
+
     pub fn inspection_state(&self) -> InspectionState {
         self.store.inspection_state()
     }
+
     pub fn snapshot(&self) -> HttpExchangeSummary {
         self.entry.snapshot()
     }
+
     pub fn state<T: Extension + Default>(&self) -> Arc<T> {
         // Serialize first registration; Extensions themselves are append-only.
         let _registration = self.entry.extension_records.write();
@@ -79,18 +91,22 @@ impl ExchangeCapture {
             .extensions
             .get_arc_or_insert(|| Arc::new(T::default()))
     }
+
     pub fn changed(&self) {
         self.store.changed();
     }
+
     pub fn set_active(&self) {
         self.entry.active.store(true, Ordering::Release);
         self.changed();
     }
+
     pub fn mark_truncated(&self) {
         self.entry.request_truncated.store(true, Ordering::Release);
         self.entry.response_truncated.store(true, Ordering::Release);
         self.changed();
     }
+
     pub fn record_bytes(&self, direction: CapturedBody, length: u64) {
         let (exchange, connection) = match direction {
             CapturedBody::Request => (
@@ -107,6 +123,7 @@ impl ExchangeCapture {
             saturating_add(counter, length);
         }
     }
+
     pub fn reserve_body(&self, direction: CapturedBody, length: u64) -> bool {
         let counter = match direction {
             CapturedBody::Request => &self.entry.request_stored,
@@ -114,6 +131,7 @@ impl ExchangeCapture {
         };
         reserve_capture_bytes(counter, self.store.0.body_limit, length)
     }
+
     pub fn count<T: CapturedRecord>(&self) -> usize {
         self.entry
             .extension_records
@@ -121,6 +139,7 @@ impl ExchangeCapture {
             .get(&TypeId::of::<T>())
             .map_or(0, |index| index.ids.len())
     }
+
     pub async fn append<T: CapturedRecord>(&self, record: &T) -> Result<bool, BoxError> {
         let (source, length) = super::attachment::encode(record)?;
         let Some(mut budget) = self.store.0.budget.try_reserve(length) else {
@@ -139,6 +158,7 @@ impl ExchangeCapture {
         self.changed();
         Ok(true)
     }
+
     /// Read typed metadata and stream the payload without materializing it.
     pub async fn record_stream<T: CapturedRecord>(
         &self,
@@ -158,6 +178,7 @@ impl ExchangeCapture {
             .await
             .map(Some)
     }
+
     /// Explicitly read one owned record. Prefer `record_stream` for large payloads.
     pub async fn record<T: CapturedRecord>(&self, index: usize) -> Result<Option<T>, BoxError> {
         match self.record_stream::<T>(index).await? {
@@ -165,6 +186,7 @@ impl ExchangeCapture {
             None => Ok(None),
         }
     }
+
     pub async fn records<T: CapturedRecord>(
         &self,
         range: Range<usize>,

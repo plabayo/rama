@@ -1,13 +1,11 @@
-use rama_core::extensions::Extensions;
-use rama_core::telemetry::tracing;
 use std::{fmt, io};
+
+use rama_core::{extensions::Extensions, telemetry::tracing};
 
 use crate::{
     CipherSuite, ECPointFormat, ExtensionId, ProtocolVersion, SecureTransport, SupportedGroup,
-    client::NegotiatedTlsParameters,
+    client::{ClientHello, NegotiatedTlsParameters},
 };
-
-use crate::client::ClientHello;
 
 #[derive(Debug, Clone, PartialEq)]
 /// Data which can be hashed using [`Self::hash`],
@@ -237,9 +235,8 @@ rama_utils::macros::serde_str::impl_serde_str!(serialize display Ja3);
 
 #[cfg(test)]
 mod tests {
-    use crate::client::parse_client_hello;
-
     use super::*;
+    use crate::client::parse_client_hello;
 
     #[derive(Debug)]
     struct TestCase {

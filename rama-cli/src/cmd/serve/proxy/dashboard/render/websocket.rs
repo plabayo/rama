@@ -1,7 +1,12 @@
-use super::*;
+use std::fmt;
+
 use rama::http::ws::inspect::{WebSocketMessageMetadata, WebSocketMessagePreview};
 
-pub(super) fn render_websocket_messages(details: &InspectorDetails) -> Option<String> {
+use super::*;
+
+pub(in crate::cmd::serve::proxy::dashboard) fn render_websocket_messages(
+    details: &InspectorDetails,
+) -> Option<String> {
     let messages = &details.websocket.messages;
     if details.websocket.total == 0 && !details.websocket.replay_active {
         return None;
@@ -248,7 +253,7 @@ pub(super) fn render_websocket_messages(details: &InspectorDetails) -> Option<St
     )
 }
 
-pub(super) fn is_textual_content_type(content_type: &str) -> bool {
+pub(in crate::cmd::serve::proxy::dashboard) fn is_textual_content_type(content_type: &str) -> bool {
     let content_type = content_type.to_ascii_lowercase();
     content_type.starts_with("text/")
         || [
@@ -262,10 +267,10 @@ pub(super) fn is_textual_content_type(content_type: &str) -> bool {
         .any(|needle| content_type.contains(needle))
 }
 
-pub(super) fn websocket_payload(
+pub(in crate::cmd::serve::proxy::dashboard) fn websocket_payload(
     kind: WebSocketMessageKind,
     bytes: &[u8],
-) -> (impl std::fmt::Display + '_, usize, bool) {
+) -> (impl fmt::Display + '_, usize, bool) {
     let text = matches!(
         kind,
         WebSocketMessageKind::Text | WebSocketMessageKind::Close
@@ -275,7 +280,7 @@ pub(super) fn websocket_payload(
     } else {
         WS_BINARY_PREVIEW_LIMIT
     };
-    let preview = rama::utils::fmt::display_fn(move |f: &mut std::fmt::Formatter<'_>| {
+    let preview = rama::utils::fmt::display_fn(move |f: &mut fmt::Formatter<'_>| {
         let end = bytes.len().min(limit);
         if text {
             match std::str::from_utf8(bytes) {
@@ -293,16 +298,18 @@ pub(super) fn websocket_payload(
     (preview, bytes.len(), bytes.len() > limit)
 }
 
-pub(super) fn format_bytes(bytes: u64) -> String {
-    const KIB: f64 = kib(1) as f64;
-    const MIB: f64 = mib(1) as f64;
-    match bytes {
-        0..=1023 => format!("{bytes} B"),
-        1024..=1_048_575 => format!("{:.1} KiB", bytes as f64 / KIB),
-        _ => format!("{:.1} MiB", bytes as f64 / MIB),
+pub(in crate::cmd::serve::proxy::dashboard) fn format_bytes(bytes: u64) -> String {
+    if bytes < kib_u64(1) {
+        format!("{bytes} B")
+    } else if bytes < mib(1) as u64 {
+        format!("{:.1} KiB", bytes as f64 / kib(1) as f64)
+    } else {
+        format!("{:.1} MiB", bytes as f64 / mib(1) as f64)
     }
 }
 
-pub(super) fn display_timestamp(timestamp: &jiff::Timestamp) -> impl std::fmt::Display + '_ {
+pub(in crate::cmd::serve::proxy::dashboard) fn display_timestamp(
+    timestamp: &jiff::Timestamp,
+) -> impl fmt::Display + '_ {
     timestamp.strftime("%F %T%.3f UTC")
 }

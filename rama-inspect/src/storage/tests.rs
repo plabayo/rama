@@ -1,6 +1,6 @@
+use tokio::{io::AsyncWriteExt, sync::oneshot};
+
 use super::*;
-use tokio::io::AsyncWriteExt;
-use tokio::sync::oneshot;
 
 async fn content(collection: &Collection, id: RecordId) -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -102,6 +102,7 @@ async fn exercise(store: impl Service<CreateCollection, Output = Collection, Err
 async fn memory_streaming_cancel_concurrency_and_retention() {
     exercise(MemoryStore::new(StorageLimits::default())).await;
 }
+
 #[tokio::test]
 async fn file_streaming_cancel_concurrency_and_retention() {
     exercise(FileStore::temporary(StorageLimits::default()).unwrap()).await;
@@ -135,6 +136,7 @@ async fn budget(store: impl Service<CreateCollection, Output = Collection, Error
         .await
         .unwrap();
 }
+
 #[tokio::test]
 async fn memory_budget_aborted_appends_and_pinned_readers() {
     budget(MemoryStore::new(StorageLimits {
@@ -143,6 +145,7 @@ async fn memory_budget_aborted_appends_and_pinned_readers() {
     }))
     .await;
 }
+
 #[tokio::test]
 async fn file_budget_aborted_appends_and_pinned_readers() {
     budget(
@@ -156,6 +159,7 @@ async fn file_budget_aborted_appends_and_pinned_readers() {
 }
 
 struct FailingReader(Option<oneshot::Sender<()>>);
+
 impl AsyncRead for FailingReader {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -171,6 +175,7 @@ impl AsyncRead for FailingReader {
         }
     }
 }
+
 #[tokio::test]
 async fn filesystem_truncates_failed_tail_before_next_append() {
     let store = FileStore::temporary(StorageLimits::default()).unwrap();

@@ -1,18 +1,25 @@
 //! Multi-protocol forward proxy with optional Relay/Peek MITM inspection.
 
 mod capture;
-#[cfg(test)]
-use capture::HttpExchangeId;
-use rama::http::inspect::control;
-use rama::http::ws::inspect::inspect_websocket_event;
 mod dashboard;
 mod dashboard_auth;
 mod har;
-use rama::http::inspect::mitm_policy;
-use rama_inspect as inspection;
 mod portal;
 mod upstream;
 
+use std::{
+    collections::BTreeSet,
+    convert::Infallible,
+    num::NonZeroU64,
+    path::PathBuf,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
+
+#[cfg(test)]
+use capture::HttpExchangeId;
 use capture::{
     CaptureHttpLayer, CaptureStore, CaptureWebSocketLayer, ConnectionId, MarkProtocolLayer,
     ObserveConnectionLayer,
@@ -32,8 +39,9 @@ use rama::{
     extensions::ExtensionsRef as _,
     graceful::ShutdownGuard,
     http::{
-        BodyLimitLayer, Request, Response, StatusCode,
+        BodyLimitLayer, Method, Request, Response, StatusCode,
         client::EasyHttpWebClient,
+        inspect::{control, mitm_policy},
         layer::{
             compression::{MirrorDecompressed, stream::StreamCompressionLayer},
             decompression::DecompressionLayer,
@@ -55,6 +63,7 @@ use rama::{
                 matcher::HttpWebSocketRelayServiceRequestMatcher,
                 mitm::{WebSocketRelayEventService, WebSocketRelayIoLayer},
             },
+            inspect::inspect_websocket_event,
             layer::har::HARWebSocketLayer,
         },
     },
@@ -69,12 +78,14 @@ use rama::{
         http::layer::{AdaptationLayer, ServiceEndpoint, UnsupportedMethodPolicy},
         proto::{MethodKind as IcapMethodKind, Preview},
     },
+    inspect as inspection,
     io::timeout::TimeoutIo,
     layer::{
         ArcLayer, ConsumeErrLayer, HijackLayer, LimitLayer, MapOutputLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
     },
     net::{
+        Protocol,
         address::{Authority, AuthorityRef, Domain, ProxyAddress, SocketAddress},
         client::{
             ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
@@ -84,7 +95,10 @@ use rama::{
         http::server::HttpPeekRouter,
         proxy::IoForwardService,
         socket::{SocketOptions, opts::TcpKeepAlive},
-        stream::layer::{TcpStreamOptionsLayer, ThrottleLayer, ThrottleMode},
+        stream::{
+            SocketInfo,
+            layer::{TcpStreamOptionsLayer, ThrottleLayer, ThrottleMode},
+        },
         uri::Uri,
     },
     proxy::socks5::{
@@ -93,7 +107,7 @@ use rama::{
     },
     rt::Executor,
     service::{BoxService, service_fn},
-    tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
+    tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing,
     tls::{
         boring::{
@@ -109,17 +123,7 @@ use rama::{
         },
     },
     ua::profile::UserAgentDatabase,
-    utils::octets::mib_u64,
-};
-use std::{
-    collections::BTreeSet,
-    convert::Infallible,
-    num::NonZeroU64,
-    path::PathBuf,
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
-    time::Duration,
+    utils::octets::{kib_u64, mib_u64},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, ReadBuf},
@@ -138,12 +142,12 @@ const TEST_DASHBOARD_TOKEN: &str =
 const DEFAULT_TCP_KEEPALIVE_IDLE_SECS: u64 = 15;
 const DEFAULT_TCP_KEEPALIVE_INTERVAL_SECS: u64 = 5;
 const DEFAULT_TCP_KEEPALIVE_PROBES: u32 = 3;
-const DEFAULT_ICAP_PREVIEW_BYTES: u64 = 1024;
+const DEFAULT_ICAP_PREVIEW_BYTES: u64 = kib_u64(1);
 const DEFAULT_ICAP_CONNECTIONS: usize = 64;
 const DEFAULT_ICAP_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_ICAP_IDLE_TIMEOUT_SECS: u64 = 60;
 
-type IcapTcpConnector = rama::tcp::client::service::TcpConnector<Arc<SocketOptions>>;
+type IcapTcpConnector = TcpConnector<Arc<SocketOptions>>;
 type IcapDnsConnector = rama::dns::client::DnsConnector<IcapTcpConnector>;
 type IcapRawConnector = IcapTlsConnector<IcapDnsConnector>;
 type IcapConnectTimeoutConnector = rama::layer::timeout::DefaultTimeout<IcapRawConnector>;
@@ -837,7 +841,7 @@ impl<Body> rama::matcher::Matcher<Request<Body>> for MitmPortalMatcher {
         !self
             .policy
             .is_denied(&rama::net::address::Host::Name(MITM_PORTAL_DOMAIN))
-            && (!self.connect_only || request.method() == rama::http::Method::CONNECT)
+            && (!self.connect_only || request.method() == Method::CONNECT)
             && self.domain.matches(extensions, request)
     }
 }
@@ -1292,9 +1296,7 @@ fn build_icap_adaptation(
             "--icap-allow-206 requires --icap-allow-204",
         ));
     }
-    if endpoint.service_protocol() == &rama::net::Protocol::ICAP
-        && endpoint.uri().userinfo().is_some()
-    {
+    if endpoint.service_protocol() == &Protocol::ICAP && endpoint.uri().userinfo().is_some() {
         tracing::warn!(
             service = ?endpoint.uri(),
             "ICAP URI credentials will be sent over a plaintext connection"
@@ -1308,7 +1310,7 @@ fn build_icap_adaptation(
     // This is intentionally a dedicated ICAP connector. In particular, it
     // does not inherit the HTTP egress client's default ALPN configuration.
     let connector = IcapTlsConnector::auto(rama::dns::client::DnsConnector::new(
-        rama::tcp::client::service::TcpConnector::new().with_connector(tcp_options),
+        TcpConnector::new().with_connector(tcp_options),
     ))
     .maybe_with_base_config(tls_config);
     let connector = connect_timeout
@@ -1486,9 +1488,9 @@ async fn run_with_dashboard_token(
                 har.clone(),
                 ca_pem,
                 tcp_options.clone(),
-                upstream.clone(),
+                &upstream,
                 mitm_policy.clone(),
-            )),
+            )?),
             token.clone(),
         )),
         _ => None,
@@ -1618,8 +1620,7 @@ async fn run_with_dashboard_token(
         let make_egress_connector = || {
             let connector = EasyHttpWebClient::connector_builder()
                 .with_custom_transport_connector(
-                    rama::tcp::client::service::TcpConnector::new()
-                        .with_connector(tcp_options.clone()),
+                    TcpConnector::new().with_connector(tcp_options.clone()),
                 )
                 .with_default_dns_connector()
                 .with_tls_proxy_support_using_boringssl()
@@ -1714,12 +1715,10 @@ async fn run_with_dashboard_token(
         let socks5 = Socks5Acceptor::new(exec.clone())
             .with_connector(Socks5Connector::new(socks_connector, socks_bridge));
 
-        let http = MarkProtocolLayer::new(capture.clone(), rama::net::Protocol::HTTP)
-            .into_layer(plain_http);
-        let https = MarkProtocolLayer::new(capture.clone(), rama::net::Protocol::HTTPS)
-            .into_layer(tls_acceptor);
-        let socks5 =
-            MarkProtocolLayer::new(capture.clone(), rama::net::Protocol::SOCKS5).into_layer(socks5);
+        let http = MarkProtocolLayer::new(capture.clone(), Protocol::HTTP).into_layer(plain_http);
+        let https =
+            MarkProtocolLayer::new(capture.clone(), Protocol::HTTPS).into_layer(tls_acceptor);
+        let socks5 = MarkProtocolLayer::new(capture.clone(), Protocol::SOCKS5).into_layer(socks5);
         let tcp_layers = (
             TcpStreamOptionsLayer::new(tcp_options.clone()),
             BodyLimitLayer::request_only(cfg.body_limit),
@@ -1737,10 +1736,7 @@ async fn run_with_dashboard_token(
             opt_per_sec(Some(cfg.throttle))
                 .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
             capture.clone().map(|capture| {
-                ObserveConnectionLayer::new(
-                    capture,
-                    rama::net::Protocol::from_static("classifying"),
-                )
+                ObserveConnectionLayer::new(capture, Protocol::from_static("classifying"))
             }),
         );
 
@@ -1985,13 +1981,13 @@ fn request_targets_mitm_portal(request: &Request) -> bool {
 }
 
 fn request_targets_dashboard(request: &Request, dashboard_address: SocketAddress) -> bool {
-    if request.method() == rama::http::Method::CONNECT {
+    if request.method() == Method::CONNECT {
         return false;
     }
     let dashboard_address: std::net::SocketAddr = dashboard_address.into();
     let local_address = request
         .extensions()
-        .get_ref::<rama::net::stream::SocketInfo>()
+        .get_ref::<SocketInfo>()
         .and_then(|socket| socket.local_addr())
         .map(Into::<std::net::SocketAddr>::into);
     if !dashboard_address.ip().is_unspecified()
@@ -2063,11 +2059,9 @@ fn new_proxy_client(
     } else {
         tracing::Level::DEBUG
     };
-    let tls_config = rama::tls::client::TlsClientConfig::default_http();
+    let tls_config = TlsClientConfig::default_http();
     let client = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(
-            rama::tcp::client::service::TcpConnector::new().with_connector(tcp_options),
-        )
+        .with_custom_transport_connector(TcpConnector::new().with_connector(tcp_options))
         .with_default_dns_connector()
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
@@ -2178,6 +2172,7 @@ fn tcp_socket_options(cfg: &CliCommandProxy) -> Arc<SocketOptions> {
     {
         keep_alive.interval = Some(Duration::from_secs(cfg.tcp_keepalive_interval));
     }
+
     #[cfg(not(any(
         target_os = "openbsd",
         target_os = "redox",
@@ -2230,6 +2225,7 @@ fn inspector_ready(address: std::net::SocketAddr, token: &str) -> serde_json::Va
         "help_url": format!("http://{address}/api/help"),
     })
 }
+
 #[expect(
     clippy::print_stdout,
     reason = "Explicitly requested machine-readable CLI output"

@@ -1,5 +1,5 @@
-use rama_core::{error::BoxError, telemetry::tracing};
-pub(super) use rama_inspect::search::matches_display;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     any::TypeId,
     collections::{BTreeMap, VecDeque},
@@ -8,10 +8,10 @@ use std::{
     sync::{Arc, Weak},
     time::Duration,
 };
-use tokio::{sync::Mutex, time::Instant};
 
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use rama_core::{error::BoxError, telemetry::tracing};
+pub(super) use rama_inspect::search::matches_display;
+use tokio::{sync::Mutex, time::Instant};
 
 const MAX_CACHED_SEARCHES: usize = 16;
 
@@ -23,6 +23,7 @@ pub(super) struct SearchWarnings {
     #[cfg(test)]
     pub(super) emitted: AtomicUsize,
 }
+
 impl SearchWarnings {
     fn warn(&self, error: &BoxError) {
         let now = Instant::now();
@@ -33,6 +34,7 @@ impl SearchWarnings {
             }
             *next = Some(now + Duration::from_secs(30));
         }
+
         #[cfg(test)]
         self.emitted.fetch_add(1, Ordering::Relaxed);
         tracing::warn!(%error, "capture search results are incomplete; backing off failed reads");
@@ -46,9 +48,11 @@ pub(super) struct SearchCaches {
     #[cfg(test)]
     pub(super) lookups: usize,
 }
+
 pub(super) struct SearchQuery {
     pub(super) needle: Box<str>,
 }
+
 impl SearchCaches {
     pub(super) fn get_or_insert(&mut self, needle: &str) -> Arc<SearchQuery> {
         #[cfg(test)]
@@ -80,6 +84,7 @@ impl SearchCaches {
 pub(super) struct ExchangeSearches {
     entries: VecDeque<(Weak<SearchQuery>, Arc<Mutex<SearchProgress>>)>,
 }
+
 impl ExchangeSearches {
     pub(super) fn get_or_insert(&mut self, query: &Arc<SearchQuery>) -> Arc<Mutex<SearchProgress>> {
         self.entries.retain(|(query, _)| query.strong_count() != 0);
@@ -105,6 +110,7 @@ pub(super) struct SearchProgress {
     pub(super) extensions: BTreeMap<TypeId, SearchCursor>,
     pub(super) matched: bool,
 }
+
 #[derive(Default)]
 pub(super) struct SearchCursor {
     next: usize,
@@ -112,10 +118,12 @@ pub(super) struct SearchCursor {
     // reread, even when an earlier record remains unavailable across snapshots.
     failed: BTreeMap<usize, ReadRetry>,
 }
+
 struct ReadRetry {
     attempts: u8,
     after: Instant,
 }
+
 impl SearchCursor {
     pub(super) async fn matches<F, Fut>(
         &mut self,
@@ -154,6 +162,7 @@ impl SearchCursor {
         }
         false
     }
+
     fn complete(
         &mut self,
         index: usize,

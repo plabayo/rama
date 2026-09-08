@@ -1,8 +1,10 @@
 //! Transport observations shared by protocol-specific inspectors.
-use crate::{Protocol, address::SocketAddress};
+
 use rama_core::extensions::Extension;
 use rama_inspect::Observations;
 use serde::{Deserialize, Serialize};
+
+use crate::{Protocol, address::SocketAddress};
 
 /// Correlates transport metadata across protocol layers on one connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension, Serialize, Deserialize)]

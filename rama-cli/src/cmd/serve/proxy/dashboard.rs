@@ -1,19 +1,38 @@
-use super::{
-    capture::{
-        CaptureDetails, CaptureFilter, CaptureHttpLayer, CaptureSnapshot, CaptureStore,
-        CaptureWebSocketExt, CapturedBody, ConnectionId, HttpConnectionSummary,
-        HttpExchangeSummary, ReplayRequest, StoredRecord, WebSocketReplayError,
+mod api;
+mod controller;
+mod downloads;
+mod exports;
+mod format;
+mod live;
+mod navigation;
+mod recording;
+mod render;
+mod replay;
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+use std::ops::DerefMut;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    convert::Infallible,
+    fmt,
+    ops::Deref,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
     },
-    control::PendingSummary,
-    har::{HarController, HarDownload, export_selected},
-    inspection::InspectionState,
-    mitm_policy::MitmPolicy,
-    upstream::UpstreamProxyConfig,
+    time::Duration,
 };
+
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use controller::*;
+use downloads::*;
+use exports::*;
+use format::*;
+use live::*;
+use navigation::*;
 use parking_lot::RwLock;
-use rama::http::inspect::capture::{ConnectionQuery, FilterValue, ProtocolQuery, StatusQuery};
-use rama::utils::str::arcstr::ArcStr;
 use rama::{
     Layer, Service,
     bytes::Bytes,
@@ -21,13 +40,14 @@ use rama::{
     extensions::ExtensionsRef as _,
     futures::async_stream::stream_fn,
     http::{
-        Body, Request, Response, StatusCode,
+        Body, HeaderMap, Method, Request, Response, StatusCode,
         body::util::BodyExt as _,
         convert::curl,
         headers::{
             CacheControl, ContentDisposition, ContentLength, ContentType, SourceList,
             XContentTypeOptions,
         },
+        inspect::capture::{ConnectionQuery, FilterValue, ProtocolQuery, StatusQuery},
         layer::remove_header::{
             RemoveRequestHeaderLayer, remove_hop_by_hop_request_headers,
             remove_proxy_auth_request_headers,
@@ -46,35 +66,53 @@ use rama::{
             datastar::PatchElements,
             server::{KeepAlive, KeepAliveStream},
         },
+        ws::{
+            handshake::mitm::{WebSocketRelayDirection, WebSocketRelayMessage},
+            inspect::{
+                WebSocketDetails, WebSocketMessageKind, WebSocketMessageOrigin,
+                WebSocketMessagePreview,
+            },
+        },
     },
-    net::socket::SocketOptions,
+    inspect::InspectionState,
+    net::{Protocol, socket::SocketOptions},
     rt::Executor,
     service::BoxService,
     stream::io::ReaderStream,
-    tls::boring::client::EmulateTlsProfileLayer,
-    ua::profile::{TlsProfile, UserAgentDatabase},
-    utils::octets::{kib, kib_u64, mib},
-    utils::str::NonEmptyStr,
-};
-use rama::{
-    http::ws::{
-        handshake::mitm::{WebSocketRelayDirection, WebSocketRelayMessage},
-        inspect::{WebSocketDetails, WebSocketMessageKind, WebSocketMessageOrigin},
+    tls::{
+        boring::client::EmulateTlsProfileLayer,
+        inspect::{CapturedTlsParameters, TlsObservation},
     },
-    tls::inspect::{CapturedTlsParameters, TlsObservation},
-    ua::inspect::UserAgentObservation,
+    ua::{
+        inspect::UserAgentObservation,
+        profile::{TlsProfile, UserAgentDatabase},
+    },
+    utils::{
+        octets::{kib, kib_u64, mib},
+        str::{NonEmptyStr, arcstr::ArcStr},
+    },
 };
+use recording::*;
+use render::*;
+use replay::*;
 use serde::Deserialize;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    convert::Infallible,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
+use tokio::sync::{Mutex, Semaphore, watch};
+
+use super::{
+    capture::{
+        CaptureDetails, CaptureFilter, CaptureHttpLayer, CaptureSnapshot, CaptureStore,
+        CaptureWebSocketExt, CapturedBody, ConnectionId, HttpConnectionSummary,
+        HttpExchangeSummary, ReplayRequest, StoredRecord, WebSocketReplayError,
     },
-    time::Duration,
+    control::PendingSummary,
+    har::{HarController, HarDownload, export_selected},
+    mitm_policy::MitmPolicy,
+    upstream::UpstreamProxyConfig,
 };
-use tokio::sync::{Semaphore, watch};
+use crate::cmd::serve::proxy::{
+    control::{Config as ControlConfig, Decision},
+    mitm_policy::ScopeMode,
+};
 
 const WS_TEXT_PREVIEW_LIMIT: usize = kib(16);
 const WS_BINARY_PREVIEW_LIMIT: usize = 256;
@@ -85,7 +123,7 @@ const MAX_UI_EVENT_STREAMS: usize = MAX_UI_SESSIONS;
 const MAX_VISIBLE_CONNECTIONS: usize = 100;
 const MAX_VISIBLE_EXCHANGES: usize = 250;
 const MAX_DASHBOARD_REQUEST_BODY: usize = mib(1);
-const REPLAY_PROTOCOL: rama::net::Protocol = rama::net::Protocol::from_static("replay");
+const REPLAY_PROTOCOL: Protocol = Protocol::from_static("replay");
 
 #[cfg(not(test))]
 const LIVE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
@@ -139,15 +177,14 @@ pub(super) struct DashboardState {
     render_delay: Duration,
     capture: CaptureStore,
     inspection: InspectionState,
-    recording_transition: Arc<tokio::sync::Mutex<()>>,
+    recording_transition: Arc<Mutex<()>>,
     har: HarController,
     sessions: Arc<RwLock<BTreeMap<String, UiSession>>>,
     next_session_sequence: Arc<AtomicU64>,
     event_streams: Arc<Semaphore>,
     ui_changes: watch::Sender<u64>,
     ca_pem: Arc<Vec<u8>>,
-    tcp_options: Arc<SocketOptions>,
-    upstream: UpstreamProxyConfig,
+    replay_client: BoxService<Request, Response, BoxError>,
     mitm_policy: MitmPolicy,
 }
 
@@ -157,27 +194,27 @@ impl DashboardState {
         har: HarController,
         ca_pem: Vec<u8>,
         tcp_options: Arc<SocketOptions>,
-        upstream: UpstreamProxyConfig,
+        upstream: &UpstreamProxyConfig,
         mitm_policy: MitmPolicy,
-    ) -> Self {
+    ) -> Result<Self, BoxError> {
         let (ui_changes, _) = watch::channel(0);
         let inspection = capture.inspection_state();
-        Self {
+        let replay_client = replay_client(capture.clone(), tcp_options, upstream)?;
+        Ok(Self {
             #[cfg(test)]
             render_delay: Duration::ZERO,
             capture,
             inspection,
-            recording_transition: Arc::new(tokio::sync::Mutex::new(())),
+            recording_transition: Arc::new(Mutex::new(())),
             har,
             sessions: Arc::new(RwLock::new(BTreeMap::new())),
             next_session_sequence: Arc::new(AtomicU64::new(1)),
             event_streams: Arc::new(Semaphore::new(MAX_UI_EVENT_STREAMS)),
             ui_changes,
             ca_pem: Arc::new(ca_pem),
-            tcp_options,
-            upstream,
+            replay_client,
             mitm_policy,
-        }
+        })
     }
 
     fn notify(&self) {
@@ -343,8 +380,8 @@ pub(super) struct DashboardService {
     inner: BoxService<Request, Response, Infallible>,
 }
 
-impl std::fmt::Debug for DashboardService {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for DashboardService {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DashboardService").finish_non_exhaustive()
     }
 }
@@ -357,8 +394,6 @@ impl Service<Request> for DashboardService {
         self.inner.serve(request).await
     }
 }
-
-mod api;
 
 pub(super) fn service(state: DashboardState) -> DashboardService {
     let router = Router::new_with_state(state)
@@ -443,12 +478,20 @@ struct UiSignals {
     connection_id: FilterValue<ConnectionQuery>,
     user_agent: ArcStr,
     endpoint: ArcStr,
-    method: FilterValue<rama::http::Method>,
+    method: FilterValue<Method>,
     status: FilterValue<StatusQuery>,
     protocol: FilterValue<ProtocolQuery>,
-    websocket_direction: String,
-    websocket_kind: String,
+    websocket_direction: Option<WebSocketRelayDirection>,
+    websocket_kind: Option<WebSocketSendKind>,
     websocket_payload: String,
+}
+
+/// Application messages the inspector may inject into a WebSocket relay.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum WebSocketSendKind {
+    Text,
+    Binary,
 }
 
 #[derive(Debug, Deserialize)]
@@ -458,7 +501,7 @@ struct MitmPolicyUpdate {
     allow: Vec<String>,
     deny: Vec<String>,
     #[serde(default)]
-    mode: crate::cmd::serve::proxy::mitm_policy::ScopeMode,
+    mode: ScopeMode,
 }
 
 #[derive(Debug, Deserialize)]
@@ -517,86 +560,50 @@ struct ControlQuery {
     #[serde(default)]
     session: Option<NonEmptyStr>,
 }
+
 #[derive(Deserialize)]
 struct ControlConfigUpdate {
     #[serde(default)]
     session: Option<NonEmptyStr>,
     revision: u64,
-    config: crate::cmd::serve::proxy::control::Config,
+    config: ControlConfig,
     apply_rule: Option<usize>,
 }
+
 #[derive(Deserialize)]
 struct ControlDecision {
     #[serde(default)]
     session: Option<NonEmptyStr>,
     ids: Vec<u64>,
-    decision: crate::cmd::serve::proxy::control::Decision,
+    decision: Decision,
 }
 
-fn render_approval_slots<'a>(pending: impl Iterator<Item = &'a PendingSummary>) -> String {
-    pending
-        .map(|message| {
-            div!(
-                id = format!("approval-item-{}", message.id),
-                class = "approval-item",
-                "data-pending-id" = message.id.to_string(),
-                div!(
-                    class = "approval-message-heading",
-                    input!(
-                        r#type = "checkbox",
-                        id = format!("approval-select-{}", message.id),
-                        "data-ignore-morph" = "",
-                        "data-pending-select" = "",
-                        value = message.id.to_string(),
-                        "aria-label" =
-                            format!("Select queued {} #{}", message.direction, message.id)
-                    ),
-                    button!(
-                        r#type = "button",
-                        class = "approval-open",
-                        "data-edit-approval" = message.id.to_string(),
-                        format!("Edit {} · approval #{}", message.direction, message.id)
-                    ),
-                    message
-                        .queued_at
-                        .as_ref()
-                        .map(|at| time!(datetime = display(at), display(display_timestamp(at))))
-                ),
-                div!(
-                    id = format!("approval-slot-{}", message.id),
-                    "data-ignore-morph" = ""
-                )
-            )
-            .into_string()
-        })
-        .collect()
-}
-
-fn header_value<'a>(headers: Option<&'a rama::http::HeaderMap>, expected: &str) -> Option<&'a str> {
+fn header_value<'a>(headers: Option<&'a HeaderMap>, expected: &str) -> Option<&'a str> {
     headers?.get(expected)?.to_str().ok()
 }
 
 const STYLE_CSS: &str = include_str!("dashboard.css");
 
-#[cfg(test)]
-mod tests;
-
 struct InspectorDetails {
     http: CaptureDetails,
-    websocket: WebSocketDetails<rama::http::ws::inspect::WebSocketMessagePreview>,
+    websocket: WebSocketDetails<WebSocketMessagePreview>,
 }
-impl std::ops::Deref for InspectorDetails {
+
+impl Deref for InspectorDetails {
     type Target = CaptureDetails;
+
     fn deref(&self) -> &Self::Target {
         &self.http
     }
 }
+
 #[cfg(test)]
-impl std::ops::DerefMut for InspectorDetails {
+impl DerefMut for InspectorDetails {
     fn deref_mut(&mut self) -> &mut CaptureDetails {
         &mut self.http
     }
 }
+
 trait InspectorView {
     async fn inspector_view(
         &self,
@@ -605,6 +612,7 @@ trait InspectorView {
         page_size: usize,
     ) -> Result<InspectorDetails, BoxError>;
 }
+
 impl InspectorView for CaptureStore {
     async fn inspector_view(
         &self,
@@ -635,60 +643,9 @@ impl InspectorView for CaptureStore {
     }
 }
 
-fn optional_display<T: std::fmt::Display>(value: Option<&T>) -> impl std::fmt::Display + '_ {
-    rama::utils::fmt::display_fn(move |f: &mut std::fmt::Formatter<'_>| match value {
+fn optional_display<T: fmt::Display>(value: Option<&T>) -> impl fmt::Display + '_ {
+    rama::utils::fmt::display_fn(move |f: &mut fmt::Formatter<'_>| match value {
         Some(value) => write!(f, "{value}"),
         None => f.write_str("unknown"),
     })
 }
-
-mod live;
-use live::*;
-
-mod navigation;
-use navigation::*;
-
-mod controller;
-use controller::*;
-
-mod recording;
-use recording::*;
-
-mod downloads;
-use downloads::*;
-
-mod exports;
-use exports::*;
-
-mod replay;
-use replay::*;
-
-mod render_index;
-use render_index::*;
-
-mod render_overview;
-use render_overview::*;
-
-mod render_focus;
-use render_focus::*;
-
-mod render_approval;
-use render_approval::*;
-
-mod render_tls;
-use render_tls::*;
-
-mod render_status;
-use render_status::*;
-
-mod render_details;
-use render_details::*;
-
-mod render_fingerprints;
-use render_fingerprints::*;
-
-mod render_websocket;
-use render_websocket::*;
-
-mod format;
-use format::*;

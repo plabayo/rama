@@ -1,3 +1,15 @@
+use std::{
+    convert::Infallible,
+    pin::Pin,
+    task::{Context, Poll},
+    time::Duration,
+};
+
+use rama_core::{Layer, Service, service::service_fn};
+use rama_inspect::storage::{MemoryStore, Storage};
+use rama_utils::octets::{kib, mib_u64};
+use tokio::io::{AsyncReadExt, AsyncWrite};
+
 use super::{streaming::write_json_string, *};
 use crate::{
     Body, HeaderMap, Request, Response,
@@ -8,18 +20,9 @@ use crate::{
         control::Message,
     },
 };
-use rama_core::{Layer, Service, service::service_fn};
-use rama_inspect::storage::{MemoryStore, Storage};
-use rama_utils::octets::{kib, mib_u64};
-use std::{
-    convert::Infallible,
-    pin::Pin,
-    task::{Context, Poll},
-    time::Duration,
-};
-use tokio::io::{AsyncReadExt, AsyncWrite};
 
 struct BoundedWrites(Vec<u8>);
+
 impl AsyncWrite for BoundedWrites {
     fn poll_write(
         mut self: Pin<&mut Self>,
@@ -30,9 +33,11 @@ impl AsyncWrite for BoundedWrites {
         self.0.extend_from_slice(data);
         Poll::Ready(Ok(data.len()))
     }
+
     fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
     }
+
     fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         Poll::Ready(Ok(()))
     }
@@ -202,3 +207,5 @@ async fn form_export_uses_forwarded_content_type_including_removal() {
         }
     }
 }
+
+mod metadata;

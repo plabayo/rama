@@ -1,9 +1,11 @@
-use super::{HttpExchangeSummary, model::contains_folded};
-use crate::{Method, StatusCode};
+use std::{convert::Infallible, fmt, str::FromStr};
+
 use rama_net::Protocol;
 use rama_utils::str::{NonEmptyStr, arcstr::ArcStr};
 use serde::Deserialize;
-use std::{convert::Infallible, fmt, str::FromStr};
+
+use super::{HttpExchangeSummary, model::contains_folded};
+use crate::{Method, StatusCode};
 
 /// A parsed selector. Unknown expressions remain visible without matching data.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -13,10 +15,12 @@ pub enum FilterValue<T> {
     Value(T),
     Unknown(NonEmptyStr),
 }
+
 impl<T> FilterValue<T> {
     pub fn is_empty(&self) -> bool {
         matches!(self, Self::Any)
     }
+
     fn matches(&self, test: impl FnOnce(&T) -> bool) -> bool {
         match self {
             Self::Any => true,
@@ -25,6 +29,7 @@ impl<T> FilterValue<T> {
         }
     }
 }
+
 impl<T: FromStr> FromStr for FilterValue<T> {
     type Err = Infallible;
     fn from_str(value: &str) -> Result<Self, Self::Err> {
@@ -40,6 +45,7 @@ impl<T: FromStr> FromStr for FilterValue<T> {
         })
     }
 }
+
 impl<T: FromStr> From<&str> for FilterValue<T> {
     fn from(value: &str) -> Self {
         match value.parse() {
@@ -48,6 +54,7 @@ impl<T: FromStr> From<&str> for FilterValue<T> {
         }
     }
 }
+
 impl<T: FromStr> From<String> for FilterValue<T> {
     fn from(value: String) -> Self {
         if value.is_empty() {
@@ -62,6 +69,7 @@ impl<T: FromStr> From<String> for FilterValue<T> {
         }
     }
 }
+
 impl<T: fmt::Display> fmt::Display for FilterValue<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -71,6 +79,7 @@ impl<T: fmt::Display> fmt::Display for FilterValue<T> {
         }
     }
 }
+
 impl<'de, T: FromStr> Deserialize<'de> for FilterValue<T> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = ArcStr::deserialize(deserializer)?;
@@ -85,25 +94,30 @@ impl<'de, T: FromStr> Deserialize<'de> for FilterValue<T> {
         })
     }
 }
+
 /// A human-visible connection number, optionally entered with a leading `#`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConnectionQuery(pub u64);
+
 impl FromStr for ConnectionQuery {
     type Err = std::num::ParseIntError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         s.trim().trim_start_matches('#').parse().map(Self)
     }
 }
+
 impl fmt::Display for ConnectionQuery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProtocolQuery {
     Exact(Protocol),
     Other,
 }
+
 impl FromStr for ProtocolQuery {
     type Err = rama_core::error::BoxError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -114,6 +128,7 @@ impl FromStr for ProtocolQuery {
         }
     }
 }
+
 impl ProtocolQuery {
     fn matches(&self, protocol: &Protocol) -> bool {
         match self {
@@ -125,6 +140,7 @@ impl ProtocolQuery {
         }
     }
 }
+
 impl fmt::Display for ProtocolQuery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -133,6 +149,7 @@ impl fmt::Display for ProtocolQuery {
         }
     }
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusQuery {
     Exact(StatusCode),
@@ -143,6 +160,7 @@ pub enum StatusQuery {
     ServerError,
     Pending,
 }
+
 impl FromStr for StatusQuery {
     type Err = rama_core::error::BoxError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -157,6 +175,7 @@ impl FromStr for StatusQuery {
         }
     }
 }
+
 impl StatusQuery {
     fn matches(self, summary: &HttpExchangeSummary) -> bool {
         match self {
@@ -176,6 +195,7 @@ impl StatusQuery {
         }
     }
 }
+
 impl fmt::Display for StatusQuery {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -203,6 +223,7 @@ pub struct CaptureFilter {
     pub status: FilterValue<StatusQuery>,
     pub protocol: FilterValue<ProtocolQuery>,
 }
+
 impl CaptureFilter {
     pub(super) fn matches_dimensions(&self, summary: &HttpExchangeSummary) -> bool {
         self.connection_id
@@ -232,6 +253,7 @@ impl CaptureFilter {
                 .protocol
                 .matches(|protocol| protocol.matches(&summary.protocol))
     }
+
     pub fn search_matches_summary(&self, summary: &HttpExchangeSummary) -> bool {
         self.search.is_empty()
             || super::search::matches_display(
@@ -256,6 +278,7 @@ impl CaptureFilter {
                 .as_ref()
                 .is_some_and(|value| super::search::matches_display(value, &self.search))
     }
+
     pub fn is_empty(&self) -> bool {
         self.search.is_empty()
             && self.connection_id.is_empty()
@@ -266,14 +289,17 @@ impl CaptureFilter {
             && self.protocol.is_empty()
     }
 }
+
 #[cfg(test)]
 pub(super) fn matches_connection_id(id: u64, query: &str) -> bool {
     FilterValue::<ConnectionQuery>::from(query).matches(|q| q.0 == id)
 }
+
 #[cfg(test)]
 pub(super) fn matches_status(summary: &HttpExchangeSummary, query: &str) -> bool {
     FilterValue::<StatusQuery>::from(query).matches(|q| q.matches(summary))
 }
+
 #[cfg(test)]
 pub(super) fn matches_protocol(protocol: &str, query: &str) -> bool {
     FilterValue::<ProtocolQuery>::from(query)

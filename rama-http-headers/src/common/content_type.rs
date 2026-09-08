@@ -240,6 +240,7 @@ impl ContentType {
     pub fn form_url_encoded() -> Self {
         Self::new(mime::APPLICATION_WWW_FORM_URLENCODED)
     }
+
     /// A constructor to easily create a `Content-Type: image/jpeg` header.
     #[inline]
     #[must_use]
@@ -543,8 +544,7 @@ impl std::str::FromStr for ContentType {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_decode;
-    use super::ContentType;
+    use super::{super::test_decode, ContentType};
 
     #[test]
     fn jose_json_is_valid() {

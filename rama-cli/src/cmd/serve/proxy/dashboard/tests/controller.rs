@@ -1,4 +1,5 @@
 use super::*;
+use crate::cmd::serve::proxy::{control::Config as ControlConfig, mitm_policy::ScopeMode};
 
 #[tokio::test]
 async fn pending_traffic_uses_request_rows_without_creating_captures() {
@@ -114,7 +115,7 @@ async fn dashboard_mitm_policy_is_session_authenticated_and_deny_wins() {
             session: NonEmptyStr::try_from(session).ok(),
             allow: vec!["example.test".to_owned()],
             deny: vec!["private.example.test".to_owned()],
-            mode: crate::cmd::serve::proxy::mitm_policy::ScopeMode::All,
+            mode: ScopeMode::All,
         })
     };
     assert_eq!(
@@ -150,7 +151,7 @@ async fn dashboard_mitm_policy_is_session_authenticated_and_deny_wins() {
 async fn traffic_policy_requires_a_live_dashboard_session_and_rejects_stale_writes() {
     let state = test_state();
     state.ensure_session("known");
-    let config = || crate::cmd::serve::proxy::control::Config {
+    let config = || ControlConfig {
         enabled: true,
         ..Default::default()
     };

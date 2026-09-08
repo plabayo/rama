@@ -1,4 +1,3 @@
-use super::*;
 use rama_core::{Layer, Service, service::service_fn};
 use rama_http::{
     Body, Request, Response, Version,
@@ -9,14 +8,18 @@ use rama_inspect::storage::{MemoryStore, Storage, StorageLimits};
 #[cfg(all(feature = "embed-profiles", feature = "tls"))]
 use rama_tls::{ProtocolVersion, SecureTransport, client::NegotiatedTlsParameters};
 
+use super::*;
+
 #[derive(Debug)]
 struct Observer(ProfileInspector);
+
 impl CaptureObserver for Observer {
     fn request(&self, parts: &rama_http::request::Parts, metadata: &CaptureMetadata) {
         #[cfg(feature = "tls")]
         TlsObservation::capture(&parts.extensions, &metadata.connection);
         self.0.observe(parts, metadata);
     }
+
     fn response(&self, parts: &rama_http::response::Parts, metadata: &CaptureMetadata) {
         #[cfg(feature = "tls")]
         TlsObservation::capture(&parts.extensions, &metadata.upstream);
@@ -24,6 +27,7 @@ impl CaptureObserver for Observer {
         let _ = (parts, metadata);
     }
 }
+
 fn store(database: UserAgentDatabase) -> CaptureStore {
     CaptureStore::with_storage(
         Storage::new(MemoryStore::new(StorageLimits::default())),

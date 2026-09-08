@@ -1,12 +1,17 @@
 //! HTTP inspection and a native content consumer without TLS, WS or file storage.
+
+use std::convert::Infallible;
+
 use rama_core::{Layer, Service, futures::StreamExt, service::service_fn};
-use rama_http::inspect::capture::{CaptureConfig, CaptureHttpLayer, CaptureQuery, CaptureStore};
-use rama_http::{Body, Request, Response, body::util::BodyExt};
+use rama_http::{
+    Body, Request, Response,
+    body::util::BodyExt,
+    inspect::capture::{CaptureConfig, CaptureHttpLayer, CaptureQuery, CaptureStore},
+};
 use rama_inspect::{
     InspectionState,
     storage::{MemoryStore, Storage, StorageLimits},
 };
-use std::convert::Infallible;
 
 #[tokio::main]
 async fn main() -> Result<(), rama_core::error::BoxError> {

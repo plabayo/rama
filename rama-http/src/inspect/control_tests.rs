@@ -22,17 +22,18 @@ fn control() -> Control {
         .unwrap();
     control
 }
+
 fn request() -> Message {
     Message {
         protocol: "https".parse().unwrap(),
         direction: "request".into(),
         method: "GET".parse().unwrap(),
         host: Some("example.test".parse().unwrap()),
-        path: "/api/data".into(),
         url: "https://example.test/api/data".parse().unwrap(),
         ..Default::default()
     }
 }
+
 async fn pending(control: &Control, count: usize) -> Vec<u64> {
     let mut changes = control.subscribe_changes();
     tokio::time::timeout(Duration::from_secs(3), async {
@@ -47,6 +48,7 @@ async fn pending(control: &Control, count: usize) -> Vec<u64> {
     .await
     .expect("pending queue did not reach expected length")
 }
+
 fn spawn(
     control: &Control,
     connection: &ControlConnection,
@@ -55,6 +57,7 @@ fn spawn(
     let (control, connection) = (control.clone(), connection.clone());
     tokio::spawn(async move { control.decide(&connection, message).await })
 }
+
 fn rule(action: Action, matcher: Matcher) -> Rule {
     Rule {
         name: "test rule".into(),
@@ -577,7 +580,7 @@ fn rule_conditions_combine_protocol_port_kind_and_header_patterns() {
         protocol: "ws".parse().unwrap(),
         direction: "ingress".into(),
         port: Some(8080),
-        kind: "binary".into(),
+        kind: Some(rama_utils::str::non_empty_str!("binary")),
         headers: headers(&[("X-Mode", "test-one")]),
         ..request()
     };
@@ -588,7 +591,7 @@ fn rule_conditions_combine_protocol_port_kind_and_header_patterns() {
             ..message.clone()
         },
         Message {
-            kind: "text".into(),
+            kind: Some(rama_utils::str::non_empty_str!("text")),
             ..message.clone()
         },
         Message {
@@ -819,4 +822,41 @@ fn rules_reject_misspelled_standard_methods_and_preserve_custom_case() {
         method: "CUSTOM-METHOD".parse().unwrap(),
         ..Message::default()
     }));
+}
+
+#[test]
+fn message_path_is_derived_from_uri_for_matching_and_serialization() {
+    #[derive(Deserialize)]
+    struct WireMessage {
+        path: Uri,
+        kind: Option<rama_utils::str::NonEmptyStr>,
+    }
+    for (url, expected) in [
+        (
+            "https://example.test/api/a%2Fb?q=1".parse().unwrap(),
+            "/api/a%2Fb",
+        ),
+        ("https://example.test".parse().unwrap(), "/"),
+        (Uri::parse_authority_form("example.test:443").unwrap(), "/"),
+    ] {
+        let message = Message { url, ..request() };
+        assert_eq!(message.path().as_encoded_str(), expected);
+        let wire: WireMessage =
+            serde_json::from_slice(&serde_json::to_vec(&message).unwrap()).unwrap();
+        assert_eq!(wire.path.as_str(), expected);
+        assert_eq!(wire.kind, None);
+    }
+    let mut message = request();
+    message.url = "https://example.test/new/path".parse().unwrap();
+    let compiled = CompiledRule::new(Rule {
+        name: "new path".into(),
+        enabled: true,
+        matcher: Matcher {
+            path: "/new/*".into(),
+            ..Default::default()
+        },
+        action: Action::Intercept,
+    })
+    .unwrap();
+    assert!(compiled.matches(&message));
 }

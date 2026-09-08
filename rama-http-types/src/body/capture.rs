@@ -1,12 +1,13 @@
-use parking_lot::Mutex;
-use pin_project_lite::pin_project;
-use rama_core::bytes::{Bytes, BytesMut};
 use std::{
     fmt,
     future::{Future, ready},
     pin::Pin,
     task::{Context, Poll, ready},
 };
+
+use parking_lot::Mutex;
+use pin_project_lite::pin_project;
+use rama_core::bytes::{Bytes, BytesMut};
 use sync_wrapper::SyncWrapper;
 use tokio::sync::oneshot;
 

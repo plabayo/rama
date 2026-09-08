@@ -19,6 +19,8 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 
 #[doc(inline)]
+pub use ::rama_http_headers as headers;
+#[doc(inline)]
 pub use ::rama_http_types::{
     Body, BodyCaptureEvent, BodyCaptureSink, BodyDataStream, BodyExtractExt, BodyLimit,
     BodyLimitLayer, BodyLimitService, BufferedBodyCapture, CaptureBody, CaptureCanceled,
@@ -27,9 +29,6 @@ pub use ::rama_http_types::{
     StatusCode, StreamingBody, Version, conn, fingerprint, header, method, mime, opentelemetry,
     proto, protocol_from_uri_or_extensions, proxy, request, response, sse, status, version,
 };
-
-#[doc(inline)]
-pub use ::rama_http_headers as headers;
 
 pub mod body;
 

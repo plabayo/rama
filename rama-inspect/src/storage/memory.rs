@@ -1,5 +1,6 @@
-use super::*;
 use tokio::sync::{Mutex, Semaphore};
+
+use super::*;
 
 /// Bounded memory storage. Open readers keep evicted data and its budget alive.
 #[derive(Debug, Clone)]
@@ -8,6 +9,7 @@ pub struct MemoryStore {
     budget: Arc<Budget>,
     appends: Arc<Semaphore>,
 }
+
 impl MemoryStore {
     pub fn new(limits: StorageLimits) -> Self {
         Self {
@@ -17,6 +19,7 @@ impl MemoryStore {
         }
     }
 }
+
 impl Service<CreateCollection> for MemoryStore {
     type Output = Collection;
     type Error = BoxError;
@@ -30,10 +33,12 @@ impl Service<CreateCollection> for MemoryStore {
         }))))
     }
 }
+
 struct Blob {
     bytes: Bytes,
     _reservation: Reservation,
 }
+
 struct MemoryInner {
     records: parking_lot::RwLock<Vec<Arc<Blob>>>,
     append_lock: Mutex<()>,
@@ -41,8 +46,10 @@ struct MemoryInner {
     budget: Arc<Budget>,
     appends: Arc<Semaphore>,
 }
+
 #[derive(Clone)]
 struct MemoryCollection(Arc<MemoryInner>);
+
 impl Service<AppendRecord> for MemoryCollection {
     type Output = RecordId;
     type Error = BoxError;
@@ -83,6 +90,7 @@ impl Service<AppendRecord> for MemoryCollection {
         Ok(id)
     }
 }
+
 impl Service<ReadRecord> for MemoryCollection {
     type Output = Reader;
     type Error = BoxError;
@@ -105,6 +113,7 @@ impl Service<ReadRecord> for MemoryCollection {
         }))
     }
 }
+
 impl Service<ListRecords> for MemoryCollection {
     type Output = Vec<RecordId>;
     type Error = BoxError;

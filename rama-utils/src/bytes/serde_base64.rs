@@ -2,13 +2,16 @@
 //! Serialization borrows the bytes without allocating an intermediate string.
 //! Owned deserialization allocates only its decoded output. Large capture payloads
 //! should use a raw record stream instead of an owned Serde field.
-use crate::std::Vec;
-use base64::{Engine as _, display::Base64Display, engine::general_purpose::STANDARD};
+
 use core::{fmt, marker::PhantomData};
+
+use base64::{Engine as _, display::Base64Display, engine::general_purpose::STANDARD};
 use serde::{
     Deserializer, Serializer,
     de::{Error, Visitor},
 };
+
+use crate::std::Vec;
 
 pub fn serialize<S: Serializer, B: AsRef<[u8]> + ?Sized>(
     bytes: &B,
@@ -26,6 +29,7 @@ pub fn deserialize<'de, D: Deserializer<'de>, B: From<Vec<u8>>>(
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.write_str("a base64 string")
         }
+
         fn visit_str<E: Error>(self, value: &str) -> Result<B, E> {
             STANDARD.decode(value).map(B::from).map_err(E::custom)
         }

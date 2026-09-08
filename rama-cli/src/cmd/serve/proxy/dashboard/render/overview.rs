@@ -1,12 +1,15 @@
-use super::*;
+use rama::net::Protocol;
 
-pub(super) fn render_live_panel(
+use super::*;
+use crate::cmd::serve::proxy::har::HarStatus;
+
+pub(in crate::cmd::serve::proxy::dashboard) fn render_live_panel(
     session_id: &str,
     heartbeat_sequence: u64,
     snapshot: &CaptureSnapshot,
     session: &UiSession,
     details: &BTreeMap<u64, InspectorDetails>,
-    har: &crate::cmd::serve::proxy::har::HarStatus,
+    har: &HarStatus,
     live: &LiveStatus,
 ) -> String {
     match session.focus {
@@ -29,13 +32,13 @@ pub(super) fn render_live_panel(
     }
 }
 
-pub(super) fn render_overview_panel(
+pub(in crate::cmd::serve::proxy::dashboard) fn render_overview_panel(
     session_id: &str,
     heartbeat_sequence: u64,
     snapshot: &CaptureSnapshot,
     session: &UiSession,
     _details: &BTreeMap<u64, InspectorDetails>,
-    har: &crate::cmd::serve::proxy::har::HarStatus,
+    har: &HarStatus,
     live: &LiveStatus,
 ) -> impl IntoHtml {
     let inspection_enabled = live.recording;
@@ -188,18 +191,12 @@ pub(super) fn render_overview_panel(
             "select"
         };
         let select_label = if is_selected { "✓" } else { "+" };
-        let method = if matches!(
-            exchange.protocol,
-            rama::net::Protocol::WS | rama::net::Protocol::WSS
-        ) {
+        let method = if matches!(exchange.protocol, Protocol::WS | Protocol::WSS) {
             "WS"
         } else {
             exchange.method.as_str()
         };
-        let replay_action = if matches!(
-            exchange.protocol,
-            rama::net::Protocol::WS | rama::net::Protocol::WSS
-        ) {
+        let replay_action = if matches!(exchange.protocol, Protocol::WS | Protocol::WSS) {
             span!(class = "row-spacer").into_string()
         } else {
             button!(
@@ -254,11 +251,8 @@ pub(super) fn render_overview_panel(
         let actions = div!(
             class = "exchange-actions",
             PreEscaped(replay_action),
-            (!matches!(
-                exchange.protocol,
-                rama::net::Protocol::WS | rama::net::Protocol::WSS
-            ))
-            .then(|| PreEscaped(render_curl_button(exchange.id, "cURL"))),
+            (!matches!(exchange.protocol, Protocol::WS | Protocol::WSS))
+                .then(|| PreEscaped(render_curl_button(exchange.id, "cURL"))),
             button!(
                 class = "ghost",
                 "data-inspector-focus" = "request",

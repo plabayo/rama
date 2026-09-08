@@ -1,6 +1,12 @@
+use std::fmt;
+
+use rama::tls::{ProtocolVersion, client::ClientHello};
+
 use super::*;
 
-pub(super) fn render_connection_tls(details: &InspectorDetails) -> String {
+pub(in crate::cmd::serve::proxy::dashboard) fn render_connection_tls(
+    details: &InspectorDetails,
+) -> String {
     let tls = details.metadata.connection.get_ref::<TlsObservation>();
     let client_hello = tls.and_then(|tls| tls.client_hello.as_ref());
     let ingress_tls = tls.and_then(|tls| tls.parameters.as_ref());
@@ -31,9 +37,11 @@ pub(super) fn render_connection_tls(details: &InspectorDetails) -> String {
     .into_string()
 }
 
-pub(super) fn tls_version_label(version: rama::tls::ProtocolVersion) -> impl std::fmt::Display {
+pub(in crate::cmd::serve::proxy::dashboard) fn tls_version_label(
+    version: ProtocolVersion,
+) -> impl fmt::Display {
     use rama::tls::ProtocolVersion;
-    rama::utils::fmt::display_fn(move |f: &mut std::fmt::Formatter<'_>| {
+    rama::utils::fmt::display_fn(move |f: &mut fmt::Formatter<'_>| {
         f.write_str(match version {
             ProtocolVersion::SSLv2 => "SSL 2.0",
             ProtocolVersion::SSLv3 => "SSL 3.0",
@@ -49,7 +57,10 @@ pub(super) fn tls_version_label(version: rama::tls::ProtocolVersion) -> impl std
     })
 }
 
-pub(super) fn tls_fact(label: &'static str, value: impl std::fmt::Display) -> impl IntoHtml {
+pub(in crate::cmd::serve::proxy::dashboard) fn tls_fact(
+    label: &'static str,
+    value: impl fmt::Display,
+) -> impl IntoHtml {
     move |output: &mut String| {
         div!(
             class = "tls-fact",
@@ -60,9 +71,9 @@ pub(super) fn tls_fact(label: &'static str, value: impl std::fmt::Display) -> im
     }
 }
 
-pub(super) fn render_tls_offer_list(
+pub(in crate::cmd::serve::proxy::dashboard) fn render_tls_offer_list(
     label: &'static str,
-    values: impl ExactSizeIterator<Item = impl std::fmt::Display>,
+    values: impl ExactSizeIterator<Item = impl fmt::Display>,
 ) -> Option<String> {
     let count = values.len();
     (count != 0).then(|| {
@@ -84,8 +95,10 @@ pub(super) fn render_tls_offer_list(
     })
 }
 
-pub(super) fn render_client_hello_card(hello: &rama::tls::client::ClientHello) -> String {
-    let versions = rama::utils::fmt::display_fn(|f: &mut std::fmt::Formatter<'_>| {
+pub(in crate::cmd::serve::proxy::dashboard) fn render_client_hello_card(
+    hello: &ClientHello,
+) -> String {
+    let versions = rama::utils::fmt::display_fn(|f: &mut fmt::Formatter<'_>| {
         match hello.supported_versions() {
             Some(versions) => rama::utils::fmt::write_joined(
                 f,
@@ -95,7 +108,7 @@ pub(super) fn render_client_hello_card(hello: &rama::tls::client::ClientHello) -
             None => write!(f, "{}", tls_version_label(hello.protocol_version())),
         }
     });
-    let alpn = rama::utils::fmt::display_fn(|f: &mut std::fmt::Formatter<'_>| {
+    let alpn = rama::utils::fmt::display_fn(|f: &mut fmt::Formatter<'_>| {
         match hello.ext_alpn().filter(|protocols| !protocols.is_empty()) {
             Some(protocols) => rama::utils::fmt::write_joined(f, protocols, ", "),
             None => f.write_str("Not offered"),
@@ -151,7 +164,7 @@ pub(super) fn render_client_hello_card(hello: &rama::tls::client::ClientHello) -
     .into_string()
 }
 
-pub(super) fn render_negotiated_tls_card(
+pub(in crate::cmd::serve::proxy::dashboard) fn render_negotiated_tls_card(
     title: &'static str,
     parameters: &CapturedTlsParameters,
 ) -> String {
@@ -166,7 +179,7 @@ pub(super) fn render_negotiated_tls_card(
             ),
             tls_fact(
                 "Application protocol",
-                rama::utils::fmt::display_fn(|f: &mut std::fmt::Formatter<'_>| {
+                rama::utils::fmt::display_fn(|f: &mut fmt::Formatter<'_>| {
                     match &parameters.application_layer_protocol {
                         Some(protocol) => write!(f, "{protocol}"),
                         None => f.write_str("Not negotiated"),

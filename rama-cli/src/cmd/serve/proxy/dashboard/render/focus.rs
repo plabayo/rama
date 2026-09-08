@@ -1,6 +1,8 @@
+use rama::net::Protocol;
+
 use super::*;
 
-pub(super) fn render_focus_header(
+pub(in crate::cmd::serve::proxy::dashboard) fn render_focus_header(
     title: String,
     subtitle: impl IntoHtml,
     parent_connection: Option<(u64, u64)>,
@@ -54,7 +56,9 @@ pub(super) fn render_focus_header(
     )
 }
 
-pub(super) fn inspection_notice(enabled: bool) -> Option<impl IntoHtml> {
+pub(in crate::cmd::serve::proxy::dashboard) fn inspection_notice(
+    enabled: bool,
+) -> Option<impl IntoHtml> {
     (!enabled).then(|| {
         aside!(
             class = "inspection-notice",
@@ -67,7 +71,7 @@ pub(super) fn inspection_notice(enabled: bool) -> Option<impl IntoHtml> {
     })
 }
 
-pub(super) fn render_request_focus(
+pub(in crate::cmd::serve::proxy::dashboard) fn render_request_focus(
     heartbeat_sequence: u64,
     id: u64,
     snapshot: &CaptureSnapshot,
@@ -107,10 +111,7 @@ pub(super) fn render_request_focus(
         )
         .into_string();
     };
-    let websocket = matches!(
-        detail.summary.protocol,
-        rama::net::Protocol::WS | rama::net::Protocol::WSS
-    );
+    let websocket = matches!(detail.summary.protocol, Protocol::WS | Protocol::WSS);
     let connection_display_id = snapshot
         .connections
         .iter()
@@ -165,7 +166,7 @@ pub(super) fn render_request_focus(
     .into_string()
 }
 
-pub(super) fn render_connection_focus(
+pub(in crate::cmd::serve::proxy::dashboard) fn render_connection_focus(
     heartbeat_sequence: u64,
     id: u64,
     snapshot: &CaptureSnapshot,
@@ -324,7 +325,7 @@ pub(super) fn render_connection_focus(
     .into_string()
 }
 
-pub(super) fn connection_route(
+pub(in crate::cmd::serve::proxy::dashboard) fn connection_route(
     connection: &HttpConnectionSummary,
     exchanges: &[HttpExchangeSummary],
 ) -> String {
@@ -348,15 +349,12 @@ pub(super) fn connection_route(
     }
 }
 
-pub(super) fn render_focused_request_row(
+pub(in crate::cmd::serve::proxy::dashboard) fn render_focused_request_row(
     exchange: &HttpExchangeSummary,
     live: &LiveStatus,
 ) -> impl IntoHtml {
     let pending = live.for_exchange(exchange.id).next();
-    let method = if matches!(
-        exchange.protocol,
-        rama::net::Protocol::WS | rama::net::Protocol::WSS
-    ) {
+    let method = if matches!(exchange.protocol, Protocol::WS | Protocol::WSS) {
         "WS"
     } else {
         exchange.method.as_str()

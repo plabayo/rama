@@ -1,4 +1,5 @@
 //! Encryption is layered over a caller-selected streaming storage service.
+
 use rama_core::{Layer, Service};
 use rama_crypto::inspect::EncryptStorageLayer;
 use rama_inspect::storage::{CreateCollection, FileStore, StorageLimits};

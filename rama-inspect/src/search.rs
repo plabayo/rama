@@ -1,5 +1,7 @@
 //! Match displayed values or streamed bytes without buffering their formatted content.
+
 use std::fmt::{self, Write};
+
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 struct Matcher {
@@ -8,6 +10,7 @@ struct Matcher {
     prefix: usize,
     matched: bool,
 }
+
 impl Matcher {
     fn new(needle: &str) -> Self {
         let needle: Vec<_> = needle.chars().flat_map(char::to_lowercase).collect();
@@ -29,6 +32,7 @@ impl Matcher {
             prefix: 0,
         }
     }
+
     fn push(&mut self, c: char) -> fmt::Result {
         if self.matched {
             return Err(fmt::Error);
@@ -48,6 +52,7 @@ impl Matcher {
         Ok(())
     }
 }
+
 impl Write for Matcher {
     fn write_str(&mut self, value: &str) -> fmt::Result {
         for c in value.chars() {
@@ -70,6 +75,7 @@ struct QuotedFragment<'a> {
     started: bool,
     last: Option<char>,
 }
+
 impl Write for QuotedFragment<'_> {
     fn write_str(&mut self, value: &str) -> fmt::Result {
         for c in value.chars() {
@@ -84,6 +90,7 @@ impl Write for QuotedFragment<'_> {
         Ok(())
     }
 }
+
 fn text_fragment(matcher: &mut Matcher, text: &str) {
     _ = write!(
         &mut QuotedFragment {

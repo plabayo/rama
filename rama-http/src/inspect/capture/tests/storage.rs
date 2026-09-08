@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn inspector_metadata_is_body_free_and_body_streams_with_a_limit() {
-    let store = test_store_with_limits(8, 8, 4096);
+    let store = test_store_with_limits(8, 8, rama_utils::octets::kib_u64(4));
     let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(
         rama_core::service::service_fn(async |request: Request| {
             assert_eq!(
@@ -77,7 +77,11 @@ async fn exhausted_total_budget_abandons_a_new_capture_without_failing_traffic()
 
 #[tokio::test]
 async fn total_budget_charges_committed_records_and_releases_evicted_entries() {
-    let store = test_store_with_total_limit(1, rama_utils::octets::kib_u64(1), 4096);
+    let store = test_store_with_total_limit(
+        1,
+        rama_utils::octets::kib_u64(1),
+        rama_utils::octets::kib_u64(4),
+    );
     let request = Request::builder()
         .uri("http://example.test/first")
         .body(Body::empty())
@@ -481,7 +485,7 @@ async fn concurrent_frames_use_atomic_metrics_and_serialized_storage_writes() {
     const TASKS: usize = 32;
     const PAYLOAD: &[u8] = b"data";
 
-    let store = test_store_with_limits(8, 8, 4096);
+    let store = test_store_with_limits(8, 8, rama_utils::octets::kib_u64(4));
     let connection_id = store.begin_connection(None, Protocol::HTTP);
     let request = Request::builder()
         .uri("http://example.test/concurrent")

@@ -1,19 +1,21 @@
+use std::{
+    collections::{HashMap, hash_map::RandomState},
+    convert::TryFrom,
+    fmt,
+    hash::{BuildHasher, Hash, Hasher},
+    iter::{FromIterator, FusedIterator},
+    marker::PhantomData,
+    mem, ops, ptr, vec,
+};
+
 use serde::ser::SerializeSeq as _;
-use std::collections::HashMap;
-use std::collections::hash_map::RandomState;
-use std::convert::TryFrom;
-use std::hash::{BuildHasher, Hash, Hasher};
-use std::iter::{FromIterator, FusedIterator};
-use std::marker::PhantomData;
-use std::{fmt, mem, ops, ptr, vec};
 
+pub use self::{as_header_name::AsHeaderName, into_header_name::IntoHeaderName};
+use super::{
+    HeaderValue,
+    name::{HdrName, HeaderName, InvalidHeaderName},
+};
 use crate::Error;
-
-use super::HeaderValue;
-use super::name::{HdrName, HeaderName, InvalidHeaderName};
-
-pub use self::as_header_name::AsHeaderName;
-pub use self::into_header_name::IntoHeaderName;
 
 /// A specialized [multimap](<https://en.wikipedia.org/wiki/Multimap>) for
 /// header names and values.
@@ -4117,6 +4119,7 @@ mod into_header_name {
         ) -> Result<Option<T>, MaxSizeReached> {
             map.try_insert2(self, val)
         }
+
         #[inline]
         fn try_append<T>(self, map: &mut HeaderMap<T>, val: T) -> Result<bool, MaxSizeReached> {
             map.try_append2(self, val)
@@ -4139,6 +4142,7 @@ mod into_header_name {
         ) -> Result<Option<T>, MaxSizeReached> {
             HdrName::from_static(self, move |hdr| map.try_insert2(hdr, val))
         }
+
         #[inline]
         fn try_append<T>(self, map: &mut HeaderMap<T>, val: T) -> Result<bool, MaxSizeReached> {
             HdrName::from_static(self, move |hdr| map.try_append2(hdr, val))
@@ -5001,8 +5005,7 @@ fn value_drain_size_hint_counts_remaining_values() {
 
 #[test]
 fn dropping_value_drain_drops_remaining_values() {
-    use std::cell::Cell;
-    use std::rc::Rc;
+    use std::{cell::Cell, rc::Rc};
 
     struct DropCounter(Rc<Cell<usize>>);
 
@@ -5125,8 +5128,7 @@ fn basic_map_api_contracts_cover_capacity_lookup_and_clear() {
 
 #[test]
 fn extend_try_from_equality_debug_and_serde_contracts() {
-    use std::collections::HashMap;
-    use std::convert::TryFrom;
+    use std::{collections::HashMap, convert::TryFrom};
 
     let mut raw = HashMap::new();
     raw.insert("x-one".to_owned(), "one".to_owned());

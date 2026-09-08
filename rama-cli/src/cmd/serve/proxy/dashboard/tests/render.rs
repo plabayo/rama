@@ -1,3 +1,12 @@
+use rama::{
+    http::{Version, ws::inspect::WebSocketMessagePreview},
+    net::{Protocol, stream::SocketInfo},
+    tls::{
+        ExtensionId, ProtocolVersion,
+        client::{ClientHello, ClientHelloExtension},
+    },
+};
+
 use super::*;
 
 #[test]
@@ -13,24 +22,24 @@ fn details_are_escaped_by_rama_html() {
 
 #[test]
 fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
-    let client_hello = rama::tls::client::ClientHello::new(
-        rama::tls::ProtocolVersion::TLSv1_2,
+    let client_hello = ClientHello::new(
+        ProtocolVersion::TLSv1_2,
         vec![
             rama::tls::CipherSuite::TLS13_AES_128_GCM_SHA256,
             rama::tls::CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
         ],
         Vec::new(),
         vec![
-            rama::tls::client::ClientHelloExtension::SupportedGroups(vec![
+            ClientHelloExtension::SupportedGroups(vec![
                 rama::tls::SupportedGroup::X25519,
                 rama::tls::SupportedGroup::SECP256R1,
             ]),
-            rama::tls::client::ClientHelloExtension::SignatureAlgorithms(vec![
+            ClientHelloExtension::SignatureAlgorithms(vec![
                 rama::tls::SignatureScheme::ECDSA_NISTP256_SHA256,
                 rama::tls::SignatureScheme::RSA_PSS_SHA256,
             ]),
-            rama::tls::client::ClientHelloExtension::Opaque {
-                id: rama::tls::ExtensionId::SESSION_TICKET,
+            ClientHelloExtension::Opaque {
+                id: ExtensionId::SESSION_TICKET,
                 data: Vec::new(),
             },
         ],
@@ -39,7 +48,7 @@ fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
         StoredRecord::RequestHead {
             method: Method::POST,
             url: "https://example.test/upload".parse().unwrap(),
-            version: rama::http::Version::HTTP_2,
+            version: Version::HTTP_2,
             headers: test_headers([
                 ("content-type".to_owned(), "application/json".to_owned()),
                 ("x-request".to_owned(), "yes".to_owned()),
@@ -47,22 +56,19 @@ fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
         },
         StoredRecord::ResponseHead {
             status: StatusCode::from_u16(201).unwrap(),
-            version: rama::http::Version::HTTP_2,
+            version: Version::HTTP_2,
             headers: test_headers([("content-type".to_owned(), "text/plain".to_owned())]),
         },
     ]);
     let ja3 = rama::tls::fingerprint::Ja3::compute_from_client_hello(&client_hello, None).unwrap();
-    details
-        .metadata
-        .upstream
-        .insert(rama::net::stream::SocketInfo::new(
-            None,
-            "[2606:4700:10::6814:17aa]:443".parse().unwrap(),
-        ));
+    details.metadata.upstream.insert(SocketInfo::new(
+        None,
+        "[2606:4700:10::6814:17aa]:443".parse().unwrap(),
+    ));
     details.metadata.connection.insert(TlsObservation {
         client_hello: Some(client_hello),
         parameters: Some(CapturedTlsParameters {
-            protocol_version: rama::tls::ProtocolVersion::TLSv1_3,
+            protocol_version: ProtocolVersion::TLSv1_3,
             application_layer_protocol: Some(rama::net::tls::ApplicationProtocol::HTTP_2),
             peer_certificate_count: Some(1),
         }),
@@ -73,7 +79,7 @@ fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
     details.metadata.upstream.insert(TlsObservation {
         client_hello: None,
         parameters: Some(CapturedTlsParameters {
-            protocol_version: rama::tls::ProtocolVersion::TLSv1_3,
+            protocol_version: ProtocolVersion::TLSv1_3,
             application_layer_protocol: Some(rama::net::tls::ApplicationProtocol::HTTP_2),
             peer_certificate_count: Some(2),
         }),
@@ -82,8 +88,8 @@ fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
         peetprint: None,
     });
     details.summary.method = Method::POST;
-    details.summary.protocol = rama::net::Protocol::HTTPS;
-    details.summary.http_version = rama::http::Version::HTTP_2;
+    details.summary.protocol = Protocol::HTTPS;
+    details.summary.http_version = Version::HTTP_2;
     details.summary.request_bytes = 128;
     details.summary.response_bytes = 64;
 
@@ -147,12 +153,12 @@ fn websocket_details_decode_directional_text_and_binary_cards() {
         StoredRecord::RequestHead {
             method: Method::GET,
             url: "https://example.test/socket".parse().unwrap(),
-            version: rama::http::Version::HTTP_11,
+            version: Version::HTTP_11,
             headers: test_headers([("upgrade".to_owned(), "websocket".to_owned())]),
         },
         StoredRecord::ResponseHead {
             status: StatusCode::from_u16(101).unwrap(),
-            version: rama::http::Version::HTTP_11,
+            version: Version::HTTP_11,
             headers: test_headers([("upgrade".to_owned(), "websocket".to_owned())]),
         },
     ]);
@@ -178,7 +184,7 @@ fn websocket_details_decode_directional_text_and_binary_cards() {
     .map(Into::into)
     .collect();
     details.websocket.total = details.websocket.messages.len();
-    details.summary.protocol = rama::net::Protocol::WSS;
+    details.summary.protocol = Protocol::WSS;
     details.websocket.replay_active = true;
 
     let rendered = render_details(&details).into_string();
@@ -276,8 +282,8 @@ fn websocket_previews_are_bounded_and_paginated() {
 fn presentation_helpers_cover_boundaries() {
     assert_eq!(format_bytes(0), "0 B");
     assert_eq!(format_bytes(1023), "1023 B");
-    assert_eq!(format_bytes(1024), "1.0 KiB");
-    assert_eq!(format_bytes(1_048_575), "1024.0 KiB");
+    assert_eq!(format_bytes(kib_u64(1)), "1.0 KiB");
+    assert_eq!(format_bytes(mib(1) as u64 - 1), "1024.0 KiB");
     assert_eq!(format_bytes(1_048_576), "1.0 MiB");
     assert_eq!(
         status_class(Some(StatusCode::from_u16(199).unwrap())),
@@ -303,7 +309,7 @@ fn presentation_helpers_cover_boundaries() {
     assert_eq!(StatusCode::OK.to_string(), "200 OK");
     assert_eq!(StatusCode::NOT_FOUND.to_string(), "404 Not Found");
     assert_eq!(
-        tls_version_label(rama::tls::ProtocolVersion::TLSv1_3).to_string(),
+        tls_version_label(ProtocolVersion::TLSv1_3).to_string(),
         "TLS 1.3"
     );
     assert_eq!(
@@ -312,7 +318,7 @@ fn presentation_helpers_cover_boundaries() {
     );
 
     let mut summary = test_details(Vec::new()).http.summary;
-    summary.protocol = rama::net::Protocol::HTTPS;
+    summary.protocol = Protocol::HTTPS;
     let protocol = render_protocol_badge(&summary);
     assert!(protocol.contains("protocol-lock"));
     assert!(protocol.contains("HTTPS"));
@@ -331,7 +337,7 @@ fn presentation_helpers_cover_boundaries() {
     assert!(streaming.contains("200 OK"));
     assert!(!streaming.contains("complete"));
 
-    summary.protocol = rama::net::Protocol::WSS;
+    summary.protocol = Protocol::WSS;
     summary.status = Some(StatusCode::from_u16(101).unwrap());
     let live_websocket = render_exchange_status(&summary);
     assert!(live_websocket.contains("data-response-state=\"live\""));
@@ -356,13 +362,12 @@ fn presentation_helpers_cover_boundaries() {
 
 #[test]
 fn websocket_preview_keeps_utf8_prefix_and_original_length() {
-    let mut preview: rama::http::ws::inspect::WebSocketMessagePreview =
-        CapturedWebSocketMessage::new(
-            WebSocketRelayDirection::Ingress,
-            WebSocketMessageKind::Text,
-            Bytes::from_static("hello 💖 tail".as_bytes()),
-        )
-        .into();
+    let mut preview: WebSocketMessagePreview = CapturedWebSocketMessage::new(
+        WebSocketRelayDirection::Ingress,
+        WebSocketMessageKind::Text,
+        Bytes::from_static("hello 💖 tail".as_bytes()),
+    )
+    .into();
     // Keep only the first byte of the final multi-byte character.
     preview.data.truncate(7);
     let mut details = test_details(Vec::new());

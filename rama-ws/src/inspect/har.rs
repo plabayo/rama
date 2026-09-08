@@ -1,8 +1,5 @@
 //! Streaming WebSocket HAR fields, owned by the WebSocket adapter.
-use crate::{
-    handshake::mitm::WebSocketRelayDirection,
-    inspect::{CapturedWebSocketMessage, WebSocketMessageKind, WebSocketMessageMetadata},
-};
+
 use rama_core::error::BoxError;
 use rama_http::{
     inspect::capture::{CapturedRecordStream, ExchangeCapture},
@@ -13,9 +10,15 @@ use rama_http::{
 };
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
+use crate::{
+    handshake::mitm::WebSocketRelayDirection,
+    inspect::{CapturedWebSocketMessage, WebSocketMessageKind, WebSocketMessageMetadata},
+};
+
 /// Adds captured WebSocket messages to an HTTP handshake's HAR entry.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WebSocketHarExtension;
+
 impl HarEntryExtension for WebSocketHarExtension {
     async fn write_fields<W: AsyncWrite + Unpin + Send>(
         &self,

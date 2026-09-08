@@ -11,16 +11,19 @@
 //! Available with both `inspect` and `boring`; enabling inspection does not select
 //! a cryptographic backend for the application.
 
-use crate::dep::boring::{rand::rand_bytes, symm};
+use std::{collections::BTreeMap, fmt, sync::Arc};
+
 use parking_lot::RwLock;
-use rama_core::{Layer, futures::async_stream::stream_fn, stream::io::StreamReader};
-use rama_core::{Service, bytes::Bytes, error::BoxError};
+use rama_core::{
+    Layer, Service, bytes::Bytes, error::BoxError, futures::async_stream::stream_fn,
+    stream::io::StreamReader,
+};
 use rama_inspect::storage::{
     AppendRecord, Collection, CreateCollection, ListRecords, ReadRecord, Reader, RecordId,
 };
-use std::collections::BTreeMap;
-use std::{fmt, sync::Arc};
 use tokio::io::AsyncReadExt;
+
+use crate::dep::boring::{rand::rand_bytes, symm};
 
 const CHUNK: usize = rama_utils::octets::kib(64);
 const MAGIC: &[u8; 8] = b"RMINSP\x01\0";
@@ -30,22 +33,26 @@ const MAGIC: &[u8; 8] = b"RMINSP\x01\0";
 pub struct EncryptStorageLayer {
     key: Arc<[u8; 32]>,
 }
+
 impl fmt::Debug for EncryptStorageLayer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EncryptStorageLayer")
             .finish_non_exhaustive()
     }
 }
+
 impl EncryptStorageLayer {
     pub fn new(key: [u8; 32]) -> Self {
         Self { key: Arc::new(key) }
     }
+
     pub fn random() -> Result<Self, BoxError> {
         let mut key = [0; 32];
         rand_bytes(&mut key)?;
         Ok(Self::new(key))
     }
 }
+
 impl<S> Layer<S> for EncryptStorageLayer {
     type Service = EncryptStore<S>;
     fn layer(&self, inner: S) -> Self::Service {
@@ -55,12 +62,14 @@ impl<S> Layer<S> for EncryptStorageLayer {
         }
     }
 }
+
 /// Storage service produced by [`EncryptStorageLayer`].
 #[derive(Clone)]
 pub struct EncryptStore<S> {
     inner: S,
     key: Arc<[u8; 32]>,
 }
+
 impl<S: fmt::Debug> fmt::Debug for EncryptStore<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EncryptStore")
@@ -68,6 +77,7 @@ impl<S: fmt::Debug> fmt::Debug for EncryptStore<S> {
             .finish_non_exhaustive()
     }
 }
+
 impl<S> Service<CreateCollection> for EncryptStore<S>
 where
     S: Service<CreateCollection, Output = Collection, Error = BoxError>,
@@ -84,6 +94,7 @@ where
         }))
     }
 }
+
 #[derive(Clone)]
 struct EncryptedCollection {
     inner: Collection,
@@ -93,6 +104,7 @@ struct EncryptedCollection {
     // different valid record in the same collection must fail authentication.
     records: Arc<RwLock<BTreeMap<RecordId, [u8; 16]>>>,
 }
+
 fn aad(collection: u64, stream: &[u8; 16], sequence: u64, end: bool) -> [u8; 41] {
     let mut value = [0; 41];
     value[..8].copy_from_slice(MAGIC);
@@ -102,9 +114,11 @@ fn aad(collection: u64, stream: &[u8; 16], sequence: u64, end: bool) -> [u8; 41]
     value[40] = u8::from(end);
     value
 }
+
 fn invalid(message: &'static str) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, message)
 }
+
 impl Service<AppendRecord> for EncryptedCollection {
     type Output = RecordId;
     type Error = BoxError;
@@ -181,6 +195,7 @@ impl Service<AppendRecord> for EncryptedCollection {
         Ok(id)
     }
 }
+
 impl Service<ReadRecord> for EncryptedCollection {
     type Output = Reader;
     type Error = BoxError;
@@ -247,6 +262,7 @@ impl Service<ReadRecord> for EncryptedCollection {
         .await
     }
 }
+
 impl Service<ListRecords> for EncryptedCollection {
     type Output = Vec<RecordId>;
     type Error = BoxError;

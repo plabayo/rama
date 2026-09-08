@@ -1,6 +1,9 @@
 //! Cache database-derived values independently of attacker-controlled request cardinality.
-use super::{KnownFingerprint, UserAgentDatabase};
-use crate::profile::UserAgentProfile;
+
+use std::collections::BTreeMap;
+#[cfg(feature = "tls")]
+use std::sync::OnceLock;
+
 use parking_lot::Mutex;
 use rama_http::{Method, Version, fingerprint::Ja4H, inspect::capture::CaptureMetadata};
 #[cfg(feature = "tls")]
@@ -8,9 +11,9 @@ use rama_tls::{
     fingerprint::{Ja3, Ja4, PeetPrint},
     inspect::TlsObservation,
 };
-use std::collections::BTreeMap;
-#[cfg(feature = "tls")]
-use std::sync::OnceLock;
+
+use super::{KnownFingerprint, UserAgentDatabase};
+use crate::profile::UserAgentProfile;
 
 #[derive(Debug)]
 pub(super) struct FingerprintCache(BTreeMap<String, Expected>);
@@ -21,6 +24,7 @@ struct Expected {
     // Nine standard methods, HTTP/1 and HTTP/2. Unknown methods are never retained.
     http: Mutex<BTreeMap<(bool, usize), [Option<Ja4H>; 4]>>,
 }
+
 impl FingerprintCache {
     pub(super) fn new(database: &UserAgentDatabase) -> Self {
         Self(
@@ -30,6 +34,7 @@ impl FingerprintCache {
                 .collect(),
         )
     }
+
     pub(super) fn match_request(
         &self,
         database: &UserAgentDatabase,
@@ -113,6 +118,7 @@ impl FingerprintCache {
         })
     }
 }
+
 fn http(profile: &UserAgentProfile, method: Method, h2: bool) -> [Option<Ja4H>; 4] {
     let method = Some(method);
     let values = if h2 {
@@ -162,6 +168,7 @@ mod tests {
         });
         assert!(cache.0[ua].http.lock().is_empty());
     }
+
     #[test]
     fn repeated_and_custom_methods_keep_the_expected_cache_bounded() {
         let database = UserAgentDatabase::try_embedded().unwrap();

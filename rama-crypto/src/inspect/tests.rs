@@ -1,8 +1,8 @@
-use super::*;
 use rama_core::Layer;
 use rama_inspect::storage::{FileStore, MemoryStore, StorageLimits};
-use tokio::io::AsyncSeekExt;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+use super::*;
 async fn content(collection: &Collection, id: RecordId) -> Vec<u8> {
     let mut bytes = Vec::new();
     collection
@@ -14,6 +14,7 @@ async fn content(collection: &Collection, id: RecordId) -> Vec<u8> {
         .unwrap();
     bytes
 }
+
 async fn exercise(store: impl Service<CreateCollection, Output = Collection, Error = BoxError>) {
     let collection = store.serve(CreateCollection { id: 1 }).await.unwrap();
     let first = collection
@@ -97,11 +98,13 @@ async fn exercise(store: impl Service<CreateCollection, Output = Collection, Err
     pinned.read_to_end(&mut bytes).await.unwrap();
     assert_eq!(bytes, b"original");
 }
+
 #[tokio::test]
 async fn encrypted_memory_streaming_cancel_concurrency_and_retention() {
     exercise(EncryptStorageLayer::new([42; 32]).layer(MemoryStore::new(StorageLimits::default())))
         .await;
 }
+
 #[tokio::test]
 async fn encrypted_file_streaming_cancel_concurrency_and_retention() {
     exercise(
@@ -110,6 +113,7 @@ async fn encrypted_file_streaming_cancel_concurrency_and_retention() {
     )
     .await;
 }
+
 #[tokio::test]
 async fn encryption_rejects_tampering_before_exposing_the_chunk() {
     let files = FileStore::temporary(StorageLimits::default()).unwrap();
@@ -140,6 +144,7 @@ async fn encryption_rejects_tampering_before_exposing_the_chunk() {
         .unwrap_err();
     assert!(plaintext.is_empty());
 }
+
 #[tokio::test]
 async fn encryption_rejects_substitution_reordered_chunks_and_missing_terminators() {
     let files = FileStore::temporary(StorageLimits::default()).unwrap();

@@ -1,21 +1,6 @@
 //! Runtime traffic decisions. Protocol adapters own streams; this bounded queue owns only
 //! editable messages and one-shot decisions. Capture admission never controls forwarding.
-use rama_core::futures::StreamExt;
 
-use crate::{Body, HeaderMap, HeaderName, Method, Response, StatusCode, Version, header};
-use arc_swap::ArcSwap;
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use parking_lot::Mutex;
-use rama_core::{
-    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
-    extensions::Extension,
-};
-use rama_inspect::InspectionState;
-use rama_inspect::intercept::{Interception, QueueLimits};
-use rama_net::address::{Host, HostPattern};
-use rama_net::{Protocol, uri::Uri};
-use rama_utils::thirdparty::wildcard::{Wildcard, WildcardBuilder};
-use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     sync::{
@@ -24,7 +9,29 @@ use std::{
     },
     time::Duration,
 };
+
+use arc_swap::ArcSwap;
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use parking_lot::Mutex;
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
+    extensions::Extension,
+    futures::StreamExt,
+};
+use rama_inspect::{
+    InspectionState,
+    intercept::{Interception, QueueLimits},
+};
+use rama_net::{
+    Protocol,
+    address::{Host, HostPattern},
+    uri::Uri,
+};
+use rama_utils::thirdparty::wildcard::{Wildcard, WildcardBuilder};
+use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
+
+use crate::{Body, HeaderMap, HeaderName, Method, Response, StatusCode, Version, header};
 
 const MAX_RULES: usize = 256;
 const MAX_HEADERS: usize = 256;
@@ -159,6 +166,7 @@ impl Decision {
             payload: None,
         }
     }
+
     fn validate(&self, message: &Message) -> Result<(), BoxError> {
         match self {
             Self::Forward {
@@ -300,6 +308,7 @@ struct CompiledRule {
     method: Option<Method>,
     direction: Option<HttpMessageDirection>,
 }
+
 #[derive(Clone)]
 struct Policy {
     revision: u64,
@@ -389,6 +398,7 @@ impl CompiledRule {
             direction,
         })
     }
+
     fn matches(&self, message: &Message) -> bool {
         let m = &self.rule.matcher;
         self.rule.enabled
@@ -404,7 +414,7 @@ impl CompiledRule {
                 .method
                 .as_ref()
                 .is_none_or(|method| method == message.method)
-            && (m.kind.is_empty() || m.kind == message.kind)
+            && (m.kind.is_empty() || message.kind.as_ref().is_some_and(|kind| kind == &m.kind))
             && m.port.is_none_or(|p| Some(p) == message.port)
             && m.status
                 .is_none_or(|s| message.status.is_some_and(|status| status.as_u16() == s))
@@ -417,7 +427,7 @@ impl CompiledRule {
             && self
                 .path
                 .as_ref()
-                .is_none_or(|p| p.is_match(message.path.as_bytes()))
+                .is_none_or(|p| p.is_match(message.path().as_encoded_str().as_bytes()))
             && self.headers.iter().all(|(name, pattern)| {
                 message
                     .headers
@@ -431,11 +441,13 @@ struct Pending {
     message: Arc<Message>,
     connection: ControlConnection,
 }
+
 #[derive(Default)]
 struct State {
     bypass: BTreeMap<u64, Weak<Connection>>,
     hosts: BTreeMap<Host, HostSummary>,
 }
+
 struct Inner {
     policy: ArcSwap<Policy>,
     queue: Interception<Pending, Decision>,
@@ -443,8 +455,10 @@ struct Inner {
     changes: watch::Sender<u64>,
     recording: InspectionState,
 }
+
 #[derive(Clone)]
 pub struct Control(Arc<Inner>);
+
 impl std::fmt::Debug for Control {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Control").finish_non_exhaustive()
@@ -493,10 +507,12 @@ impl Control {
             recording,
         }))
     }
+
     pub fn is_active(&self) -> bool {
         let policy = self.0.policy.load();
         self.0.recording.is_enabled() && (policy.config.enabled || !policy.rules.is_empty())
     }
+
     /// Subscribe to initial and updated control content from a native UI or API.
     pub fn subscribe(&self) -> impl rama_core::futures::Stream<Item = Snapshot> + Send + 'static {
         let control = self.clone();
@@ -513,12 +529,15 @@ impl Control {
             Err(never) => match never {},
         })
     }
+
     pub fn subscribe_changes(&self) -> watch::Receiver<u64> {
         self.0.changes.subscribe()
     }
+
     fn changed(&self) {
         self.0.changes.send_modify(|v| *v = v.wrapping_add(1));
     }
+
     pub fn pending_summaries(&self) -> Vec<PendingSummary> {
         self.0
             .queue
@@ -527,6 +546,7 @@ impl Control {
             .map(|(_, p)| PendingSummary::from(p.message.as_ref()))
             .collect()
     }
+
     pub fn snapshot(&self) -> Snapshot {
         let mut state = self.0.state.lock();
         let policy = self.0.policy.load();
@@ -549,6 +569,7 @@ impl Control {
             recording: self.0.recording.is_enabled(),
         }
     }
+
     pub fn configure(&self, revision: u64, config: Config) -> Result<(), BoxError> {
         if config.rules.len() > MAX_RULES
             || config.presets.len() > 32
@@ -591,6 +612,7 @@ impl Control {
         self.changed();
         Ok(())
     }
+
     pub fn observe(
         &self,
         connection: &ControlConnection,
@@ -648,6 +670,7 @@ impl Control {
         drop(state);
         self.changed();
     }
+
     pub fn stop_and_forward(&self) {
         let state = self.0.state.lock();
         let mut policy = self.0.policy.load().as_ref().clone();
@@ -658,6 +681,7 @@ impl Control {
         drop(state);
         self.changed();
     }
+
     pub fn apply_rule(&self, index: usize, revision: u64) -> Result<(), BoxError> {
         let policy = self.0.policy.load_full();
         if policy.revision != revision {
@@ -695,10 +719,12 @@ impl Control {
         }
         Ok(())
     }
+
     pub fn clear_hosts(&self) {
         self.0.state.lock().hosts.clear();
         self.changed();
     }
+
     pub fn resume_connection(&self, id: u64) {
         if let Some(connection) = self
             .0
@@ -712,9 +738,11 @@ impl Control {
         }
         self.changed();
     }
+
     pub fn pending(&self, id: u64) -> Option<Arc<Message>> {
         self.0.queue.get(id).map(|p| p.message.clone())
     }
+
     pub fn resolve(&self, id: u64, decision: Decision) -> Result<(), BoxError> {
         // This lock also serializes admission, policy updates, and connection release.
         let mut state = self.0.state.lock();
@@ -762,6 +790,7 @@ impl Control {
         self.changed();
         Ok(())
     }
+
     pub async fn decide(
         &self,
         connection: &ControlConnection,
@@ -930,11 +959,6 @@ pub fn http_message(parts: &crate::request::Parts) -> Message {
             .authority()
             .and_then(|a| a.port_u16())
             .or_else(|| protocol.default_port()),
-        path: parts
-            .uri
-            .path()
-            .map(|p| p.as_encoded_str().into())
-            .unwrap_or_else(|| "/".into()),
         headers: parts.headers.clone(),
         conditional: matches!(parts.method, Method::GET | Method::HEAD)
             && (parts.headers.contains_key(header::IF_NONE_MATCH)
@@ -964,6 +988,7 @@ pub struct PendingSummary {
     pub status: Option<StatusCode>,
     pub queued_at: Option<jiff::Timestamp>,
 }
+
 impl From<&Message> for PendingSummary {
     fn from(m: &Message) -> Self {
         Self {

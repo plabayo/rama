@@ -1,7 +1,7 @@
-use super::{Headers, IntoResponse};
-use crate::headers::ContentType;
-use crate::{Body, Response};
 use rama_utils::macros::impl_deref;
+
+use super::{Headers, IntoResponse};
+use crate::{Body, Response, headers::ContentType};
 
 /// An SVG image response.
 ///

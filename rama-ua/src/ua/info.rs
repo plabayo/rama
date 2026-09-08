@@ -1,9 +1,12 @@
-use super::parse_http_user_agent_header;
-use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorExt};
-use rama_core::extensions::Extension;
-use rama_utils::{macros::match_ignore_ascii_case_str, str::arcstr::ArcStr};
 use std::{convert::Infallible, fmt, str::FromStr};
+
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _, ErrorExt},
+    extensions::Extension,
+};
+use rama_utils::{macros::match_ignore_ascii_case_str, str::arcstr::ArcStr};
+
+use super::parse_http_user_agent_header;
 
 /// User Agent (UA) information.
 ///

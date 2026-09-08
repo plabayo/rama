@@ -1,13 +1,15 @@
 //! TLS observations belong to a transport connection, independently of its application protocol.
+
+use rama_core::extensions::{Extension, Extensions};
+use rama_inspect::search::matches_display;
+use rama_net::tls::ApplicationProtocol;
+use serde::{Deserialize, Serialize};
+
 use crate::{
     ProtocolVersion, SecureTransport,
     client::{ClientHello, NegotiatedTlsParameters},
     fingerprint::{Ja3, Ja4, PeetPrint},
 };
-use rama_core::extensions::{Extension, Extensions};
-use rama_inspect::search::matches_display;
-use rama_net::tls::ApplicationProtocol;
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CapturedTlsParameters {
@@ -15,6 +17,7 @@ pub struct CapturedTlsParameters {
     pub application_layer_protocol: Option<ApplicationProtocol>,
     pub peer_certificate_count: Option<usize>,
 }
+
 impl From<&NegotiatedTlsParameters> for CapturedTlsParameters {
     fn from(parameters: &NegotiatedTlsParameters) -> Self {
         Self {
@@ -33,6 +36,7 @@ pub struct TlsObservation {
     pub ja4: Option<Ja4>,
     pub peetprint: Option<PeetPrint>,
 }
+
 impl TlsObservation {
     /// Retain one typed observation per observed connection. Repeated HTTP streams
     /// share this value instead of copying TLS fingerprints into every exchange.

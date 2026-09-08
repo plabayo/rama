@@ -5,7 +5,6 @@
 //! previous record. A backend must recover before accepting the next append.
 //! These are visibility guarantees, not promises of crash durability.
 
-use rama_core::{Service, bytes::Bytes, error::BoxError, service::BoxService};
 use std::{
     fmt,
     ops::Range,
@@ -16,6 +15,8 @@ use std::{
     },
     task::{Context, Poll},
 };
+
+use rama_core::{Service, bytes::Bytes, error::BoxError, service::BoxService};
 use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 
 mod memory;
@@ -35,6 +36,7 @@ pub struct RecordId(pub u64);
 pub struct CreateCollection {
     pub id: u64,
 }
+
 /// Append an owned stream. Success publishes the record; cancellation aborts it.
 pub enum AppendRecord {
     /// An already owned record; memory storage retains these bytes without copying.
@@ -42,18 +44,22 @@ pub enum AppendRecord {
     /// A streaming source, read with backpressure and bounded scratch space.
     Stream(Reader),
 }
+
 impl fmt::Debug for AppendRecord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AppendRecord").finish_non_exhaustive()
     }
 }
+
 impl AppendRecord {
     pub fn new(source: impl AsyncRead + Send + 'static) -> Self {
         Self::Stream(Box::pin(source))
     }
+
     pub fn bytes(bytes: Bytes) -> Self {
         Self::Bytes(bytes)
     }
+
     pub fn into_reader(self) -> Reader {
         match self {
             Self::Bytes(bytes) => Box::pin(std::io::Cursor::new(bytes)),
@@ -61,6 +67,7 @@ impl AppendRecord {
         }
     }
 }
+
 /// Read a committed record or a range of its logical bytes. Bounds are exclusive.
 /// Memory and file storage address ranges directly. Streaming layers such as
 /// encryption may need to consume the preceding bytes; see the layer's contract.
@@ -69,11 +76,13 @@ pub struct ReadRecord {
     pub id: RecordId,
     pub range: Option<Range<u64>>,
 }
+
 impl ReadRecord {
     pub fn new(id: RecordId) -> Self {
         Self { id, range: None }
     }
 }
+
 /// Snapshot the identifiers of currently committed records.
 #[derive(Debug, Clone, Copy)]
 pub struct ListRecords;
@@ -105,6 +114,7 @@ pub struct Collection {
     read: BoxService<ReadRecord, Reader, BoxError>,
     list: BoxService<ListRecords, Vec<RecordId>, BoxError>,
 }
+
 impl Collection {
     /// Adapt a custom backend using Rama services. No filesystem or crypto required.
     pub fn new<S>(service: S) -> Self
@@ -120,19 +130,23 @@ impl Collection {
             list: BoxService::new(service),
         }
     }
+
     pub async fn append(
         &self,
         source: impl AsyncRead + Send + 'static,
     ) -> Result<RecordId, BoxError> {
         self.serve(AppendRecord::new(source)).await
     }
+
     pub async fn read(&self, id: RecordId) -> Result<Reader, BoxError> {
         self.serve(ReadRecord::new(id)).await
     }
+
     pub async fn snapshot(&self) -> Result<Vec<RecordId>, BoxError> {
         self.serve(ListRecords).await
     }
 }
+
 impl Service<AppendRecord> for Collection {
     type Output = RecordId;
     type Error = BoxError;
@@ -140,6 +154,7 @@ impl Service<AppendRecord> for Collection {
         self.append.serve(input).await
     }
 }
+
 impl Service<ReadRecord> for Collection {
     type Output = Reader;
     type Error = BoxError;
@@ -147,6 +162,7 @@ impl Service<ReadRecord> for Collection {
         self.read.serve(input).await
     }
 }
+
 impl Service<ListRecords> for Collection {
     type Output = Vec<RecordId>;
     type Error = BoxError;
@@ -163,6 +179,7 @@ struct Budget {
     limit: u64,
     used: AtomicU64,
 }
+
 impl Budget {
     fn new(limit: u64) -> Arc<Self> {
         Arc::new(Self {
@@ -170,6 +187,7 @@ impl Budget {
             used: AtomicU64::new(0),
         })
     }
+
     fn reserve(self: &Arc<Self>, amount: u64) -> Result<Reservation, BoxError> {
         self.add(amount)?;
         Ok(Reservation {
@@ -177,6 +195,7 @@ impl Budget {
             amount,
         })
     }
+
     fn add(&self, amount: u64) -> Result<(), BoxError> {
         self.used
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
@@ -187,26 +206,31 @@ impl Budget {
         Ok(())
     }
 }
+
 struct Reservation {
     budget: Arc<Budget>,
     amount: u64,
 }
+
 impl Reservation {
     fn grow(&mut self, amount: u64) -> Result<(), BoxError> {
         self.budget.add(amount)?;
         self.amount += amount;
         Ok(())
     }
+
     fn absorb(&mut self, other: &mut Self) {
         debug_assert!(Arc::ptr_eq(&self.budget, &other.budget));
         self.amount += std::mem::take(&mut other.amount);
     }
+
     fn clear(&mut self) {
         self.budget
             .used
             .fetch_sub(std::mem::take(&mut self.amount), Ordering::AcqRel);
     }
 }
+
 impl Drop for Reservation {
     fn drop(&mut self) {
         self.budget.used.fetch_sub(self.amount, Ordering::AcqRel);
@@ -217,6 +241,7 @@ struct OwnedReader<R, O> {
     reader: R,
     _owner: Arc<O>,
 }
+
 impl<R: AsyncRead + Unpin, O> AsyncRead for OwnedReader<R, O> {
     fn poll_read(
         self: Pin<&mut Self>,
@@ -260,6 +285,7 @@ pub async fn range_reader(
         .into()),
     }
 }
+
 fn check_record_limit(length: u64, limit: u64) -> Result<(), BoxError> {
     if limit != 0 && length > limit {
         return Err(std::io::Error::other("capture record limit exceeded").into());

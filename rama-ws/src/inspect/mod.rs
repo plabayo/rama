@@ -1,6 +1,7 @@
 //! WebSocket inspection layered onto an HTTP handshake capture.
 //! HTTP owns the handshake and generic upgrade lifetime; this module owns message
 //! records, replay, injection and relay decisions.
+
 mod capture;
 pub mod har;
 mod layer;

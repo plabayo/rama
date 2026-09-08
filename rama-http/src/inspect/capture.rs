@@ -1,21 +1,3 @@
-use crate::{
-    Body, BodyCaptureEvent, BodyCaptureSink, CaptureBody, CaptureOutcome, HeaderMap, Request,
-    Response, StreamingBody, fingerprint::AkamaiH2,
-};
-use crate::{Method, StatusCode, Version};
-use parking_lot::{Mutex as SyncMutex, RwLock};
-use rama_core::futures::StreamExt;
-use rama_core::{
-    Layer, Service,
-    bytes::Bytes,
-    error::{BoxError, ErrorContext as _},
-    extensions::{Extension, Extensions},
-    futures::Stream,
-};
-use rama_inspect::storage::{AppendRecord, Collection, CreateCollection, RecordId, Storage};
-use rama_net::{Protocol, stream::SocketInfo};
-
-use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
@@ -24,16 +6,33 @@ use std::{
         atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering},
     },
 };
+
+use parking_lot::{Mutex as SyncMutex, RwLock};
+use rama_core::{
+    Layer, Service,
+    bytes::Bytes,
+    error::{BoxError, ErrorContext as _},
+    extensions::{Extension, Extensions},
+    futures::{Stream, StreamExt},
+};
+use rama_inspect::{
+    InspectionState,
+    storage::{AppendRecord, Collection, CreateCollection, RecordId, Storage},
+};
+use rama_net::{Protocol, stream::SocketInfo};
+use serde::Serialize;
 use tokio::{
     io::AsyncReadExt as _,
     sync::{Mutex, watch},
 };
 
+use super::control::{Control, ControlConnection};
 #[cfg(test)]
 use crate::body::util::BodyExt as _;
-
-use super::control::{Control, ControlConnection};
-use rama_inspect::InspectionState;
+use crate::{
+    Body, BodyCaptureEvent, BodyCaptureSink, CaptureBody, CaptureOutcome, HeaderMap, Method,
+    Request, Response, StatusCode, StreamingBody, Version, fingerprint::AkamaiH2,
+};
 
 mod attachment;
 mod connection;
@@ -51,9 +50,6 @@ mod recording;
 mod search;
 pub use attachment::{CapturedRecord, CapturedRecordStream};
 pub use extension::ExchangeCapture;
-pub use observation::{CaptureMetadata, CaptureObserver, HttpCaptureProtocol};
-use search::{ExchangeSearches, SearchCaches, SearchQuery, SearchWarnings};
-
 #[cfg(test)]
 use filter::{matches_connection_id, matches_protocol, matches_status};
 use model::contains_folded;
@@ -61,6 +57,8 @@ pub use model::{
     CaptureDetails, CaptureSnapshot, CapturedBody, HttpConnectionSummary, HttpExchangeId,
     HttpExchangeSummary, ReplayRequest, StoredRecord,
 };
+pub use observation::{CaptureMetadata, CaptureObserver, HttpCaptureProtocol};
+use search::{ExchangeSearches, SearchCaches, SearchQuery, SearchWarnings};
 
 struct CapturedConnection {
     summary_template: HttpConnectionSummary,
@@ -444,6 +442,7 @@ impl CaptureSelection {
             entry,
         })
     }
+
     pub async fn next_details(&mut self) -> Result<Option<CaptureDetails>, BoxError> {
         let Some(entry) = self.entries.pop_front() else {
             return Ok(None);
@@ -478,6 +477,7 @@ pub struct CaptureConfig {
     pub total_limit: u64,
     pub observer: Arc<dyn CaptureObserver>,
 }
+
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
@@ -570,6 +570,7 @@ impl CaptureStore {
             },
         )
     }
+
     pub fn subscribe_changes(&self) -> watch::Receiver<u64> {
         self.0.changes.subscribe()
     }
@@ -779,6 +780,7 @@ pub struct CaptureQuery {
     pub connection_limit: usize,
     pub exchange_limit: usize,
 }
+
 impl Default for CaptureQuery {
     fn default() -> Self {
         Self {
@@ -790,6 +792,7 @@ impl Default for CaptureQuery {
         }
     }
 }
+
 impl Service<CaptureQuery> for CaptureStore {
     type Output = CaptureSnapshot;
     type Error = std::convert::Infallible;

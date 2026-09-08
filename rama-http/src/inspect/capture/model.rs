@@ -1,11 +1,12 @@
+use rama_core::{bytes::Bytes, extensions::Extension};
+use rama_net::{Protocol, address::Authority, uri::Uri};
+use serde::{Deserialize, Serialize};
+
 use super::CaptureMetadata;
 use crate::{
     CaptureOutcome, HeaderMap, HeaderValue, Method, StatusCode, Version,
     fingerprint::{AkamaiH2, Ja4H},
 };
-use rama_core::{bytes::Bytes, extensions::Extension};
-use rama_net::{Protocol, address::Authority, uri::Uri};
-use serde::{Deserialize, Serialize};
 
 /// Correlates an HTTP exchange with its upgraded protocol adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Extension, Serialize, Deserialize)]
@@ -20,12 +21,14 @@ pub struct HttpConnectionSummary {
     pub request_count: usize,
     pub akamai_h2: Option<AkamaiH2>,
 }
+
 impl std::ops::Deref for HttpConnectionSummary {
     type Target = rama_net::inspect::ConnectionSummary;
     fn deref(&self) -> &Self::Target {
         &self.transport
     }
 }
+
 impl std::ops::DerefMut for HttpConnectionSummary {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.transport

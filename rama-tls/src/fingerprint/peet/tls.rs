@@ -9,15 +9,17 @@
 //! > Licensed under GPLv3.
 //! > See <https://github.com/plabayo/rama/blob/main/docs/thirdparty/licenses/pagpeter-trackme> for license details.
 
-use crate::client::{ClientHello, ClientHelloExtension};
-use crate::{
-    CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SecureTransport,
-    SignatureScheme, SupportedGroup,
-};
+use std::fmt;
+
 use rama_core::extensions::Extensions;
 use rama_net::tls::ApplicationProtocol;
 use rama_utils::fmt::{write_joined, write_joined_with};
-use std::fmt;
+
+use crate::{
+    CertificateCompressionAlgorithm, CipherSuite, ExtensionId, ProtocolVersion, SecureTransport,
+    SignatureScheme, SupportedGroup,
+    client::{ClientHello, ClientHelloExtension},
+};
 
 #[derive(Clone, PartialEq)]
 /// Input data for a "peetprint" fingerprint.
@@ -285,9 +287,8 @@ rama_utils::macros::serde_str::impl_serde_str!(serialize display PeetPrint);
 
 #[cfg(test)]
 mod tests {
-    use crate::client::parse_client_hello;
-
     use super::*;
+    use crate::client::parse_client_hello;
 
     #[derive(Debug)]
     struct TestCase {

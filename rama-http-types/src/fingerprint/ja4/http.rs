@@ -16,10 +16,9 @@ use std::fmt::{self, Write};
 
 use crate::{
     Method, Version,
+    fingerprint::HttpRequestProvider,
     header::{ACCEPT_LANGUAGE, COOKIE, REFERER},
 };
-
-use crate::fingerprint::HttpRequestProvider;
 
 #[derive(Clone, PartialEq)]
 /// Input data for a "ja4h" hash.

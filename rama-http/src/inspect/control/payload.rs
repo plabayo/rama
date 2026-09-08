@@ -1,4 +1,5 @@
 //! Borrowed serialization for editable payloads on upgraded connections.
+
 use rama_core::bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
@@ -10,6 +11,7 @@ pub struct Payload {
     bytes: Bytes,
     binary: bool,
 }
+
 impl Payload {
     pub fn text(text: impl AsRef<str> + Into<Bytes>) -> Self {
         Self {
@@ -17,22 +19,27 @@ impl Payload {
             binary: false,
         }
     }
+
     pub fn binary(bytes: Bytes) -> Self {
         Self {
             bytes,
             binary: true,
         }
     }
+
     pub fn bytes(&self) -> &Bytes {
         &self.bytes
     }
+
     pub fn len(&self) -> usize {
         self.bytes.len()
     }
+
     pub fn is_empty(&self) -> bool {
         self.bytes.is_empty()
     }
 }
+
 impl std::fmt::Display for Payload {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.binary {
@@ -42,6 +49,7 @@ impl std::fmt::Display for Payload {
         }
     }
 }
+
 #[expect(
     clippy::ref_option,
     reason = "Serde serialize_with receives a reference to the field"

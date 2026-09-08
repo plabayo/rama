@@ -1,8 +1,10 @@
+use std::fmt;
+
 use super::*;
 
-pub(super) fn render_fingerprint_values(
+pub(in crate::cmd::serve::proxy::dashboard) fn render_fingerprint_values(
     title: &'static str,
-    values: &[(&'static str, Option<&dyn std::fmt::Display>)],
+    values: &[(&'static str, Option<&dyn fmt::Display>)],
 ) -> Option<String> {
     values.iter().any(|(_, value)| value.is_some()).then(|| {
         section!(
@@ -21,10 +23,12 @@ pub(super) fn render_fingerprint_values(
     })
 }
 
-pub(super) fn render_connection_fingerprint_card(summary: &HttpExchangeSummary) -> Option<String> {
+pub(in crate::cmd::serve::proxy::dashboard) fn render_connection_fingerprint_card(
+    summary: &HttpExchangeSummary,
+) -> Option<String> {
     let tls = summary.metadata.connection.get_ref::<TlsObservation>();
     let ja3 = tls.and_then(|tls| tls.ja3.as_ref()).map(|value| {
-        rama::utils::fmt::display_fn(move |f: &mut std::fmt::Formatter<'_>| write!(f, "{value:x}"))
+        rama::utils::fmt::display_fn(move |f: &mut fmt::Formatter<'_>| write!(f, "{value:x}"))
     });
     let user_agent = summary
         .user_agent
@@ -33,19 +37,16 @@ pub(super) fn render_connection_fingerprint_card(summary: &HttpExchangeSummary) 
     render_fingerprint_values(
         "Client identity & TLS fingerprints",
         &[
-            (
-                "JA3",
-                ja3.as_ref().map(|value| value as &dyn std::fmt::Display),
-            ),
+            ("JA3", ja3.as_ref().map(|value| value as &dyn fmt::Display)),
             (
                 "JA4",
                 tls.and_then(|tls| tls.ja4.as_ref())
-                    .map(|value| value as &dyn std::fmt::Display),
+                    .map(|value| value as &dyn fmt::Display),
             ),
             (
                 "PeetPrint",
                 tls.and_then(|tls| tls.peetprint.as_ref())
-                    .map(|value| value as &dyn std::fmt::Display),
+                    .map(|value| value as &dyn fmt::Display),
             ),
             (
                 "Known profile",
@@ -54,19 +55,19 @@ pub(super) fn render_connection_fingerprint_card(summary: &HttpExchangeSummary) 
                     .exchange
                     .get_ref::<UserAgentObservation>()
                     .and_then(|ua| ua.known_fingerprint.as_ref())
-                    .map(|value| value as &dyn std::fmt::Display),
+                    .map(|value| value as &dyn fmt::Display),
             ),
             (
                 "User agent",
-                user_agent
-                    .as_ref()
-                    .map(|value| value as &dyn std::fmt::Display),
+                user_agent.as_ref().map(|value| value as &dyn fmt::Display),
             ),
         ],
     )
 }
 
-pub(super) fn render_http_fingerprint_card(details: &InspectorDetails) -> Option<String> {
+pub(in crate::cmd::serve::proxy::dashboard) fn render_http_fingerprint_card(
+    details: &InspectorDetails,
+) -> Option<String> {
     render_fingerprint_values(
         "HTTP fingerprints",
         &[
@@ -76,7 +77,7 @@ pub(super) fn render_http_fingerprint_card(details: &InspectorDetails) -> Option
                     .summary
                     .ja4h
                     .as_ref()
-                    .map(|value| value as &dyn std::fmt::Display),
+                    .map(|value| value as &dyn fmt::Display),
             ),
             (
                 "Akamai HTTP/2",
@@ -84,13 +85,15 @@ pub(super) fn render_http_fingerprint_card(details: &InspectorDetails) -> Option
                     .connection
                     .as_ref()
                     .and_then(|connection| connection.akamai_h2.as_ref())
-                    .map(|value| value as &dyn std::fmt::Display),
+                    .map(|value| value as &dyn fmt::Display),
             ),
         ],
     )
 }
 
-pub(super) fn render_capture_outcomes(records: &[StoredRecord]) -> Option<String> {
+pub(in crate::cmd::serve::proxy::dashboard) fn render_capture_outcomes(
+    records: &[StoredRecord],
+) -> Option<String> {
     let outcomes = records
         .iter()
         .filter_map(|record| match record {

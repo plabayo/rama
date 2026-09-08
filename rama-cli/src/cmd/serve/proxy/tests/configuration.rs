@@ -1,3 +1,5 @@
+use rama::{http::Method, net::Protocol};
+
 use super::*;
 
 #[test]
@@ -112,7 +114,7 @@ fn dashboard_routing_accepts_its_absolute_uri_but_not_proxy_targets() {
     );
     assert!(!request_targets_dashboard(&proxied, dashboard));
     let connect = Request::builder()
-        .method(rama::http::Method::CONNECT)
+        .method(Method::CONNECT)
         .uri("https://127.0.0.1:8081/")
         .body(Body::empty())
         .unwrap();
@@ -180,7 +182,7 @@ fn mitm_portal_routing_matches_only_the_reserved_host() {
         assert!(request_targets_mitm_portal(&request), "{uri}");
     }
     let connect = Request::builder()
-        .method(rama::http::Method::CONNECT)
+        .method(Method::CONNECT)
         .uri(rama::net::uri::Uri::parse_authority_form("mitm.ramaproxy.org:443").unwrap())
         .body(Body::empty())
         .unwrap();
@@ -209,7 +211,7 @@ async fn mitm_portal_remains_available_while_recording_is_paused() {
         .body(Body::empty())
         .unwrap();
     let tunnel = Request::builder()
-        .method(rama::http::Method::CONNECT)
+        .method(Method::CONNECT)
         .uri(rama::net::uri::Uri::parse_authority_form("mitm.ramaproxy.org:443").unwrap())
         .body(Body::empty())
         .unwrap();
@@ -467,7 +469,7 @@ fn l4_socket_defaults_match_the_terminating_proxy_policy() {
     let options = tcp_socket_options(&tuned.proxy);
     let keep_alive = options.tcp_keep_alive.as_ref().unwrap();
     assert_eq!(keep_alive.time, Some(Duration::from_secs(41)));
-    assert_eq!(options.recv_buffer_size, Some(4096));
+    assert_eq!(options.recv_buffer_size, Some(kib(4)));
     assert_eq!(options.send_buffer_size, Some(8192));
 }
 
@@ -557,18 +559,22 @@ async fn mitm_certificate_portal_is_hijacked_over_http_and_https() {
 #[tokio::test]
 async fn shared_dashboard_request_discards_its_provisional_connection() {
     let ua_db = Arc::new(UserAgentDatabase::try_embedded().unwrap());
-    let capture = crate::cmd::serve::proxy::capture::test_store(8, 8, 1024, ua_db.clone()).unwrap();
+    let capture =
+        crate::cmd::serve::proxy::capture::test_store(8, 8, kib_u64(1), ua_db.clone()).unwrap();
     let connection_id = capture
-        .begin_connection_if_enabled(None, rama::net::Protocol::HTTP, None)
+        .begin_connection_if_enabled(None, Protocol::HTTP, None)
         .unwrap();
-    let dashboard = dashboard::service(DashboardState::new(
-        capture.clone(),
-        HarController::default(),
-        Vec::new(),
-        Arc::new(SocketOptions::default_tcp()),
-        UpstreamProxyConfig::new(None, false, &[]).unwrap(),
-        MitmPolicy::try_new(&[], &[]).unwrap(),
-    ));
+    let dashboard = dashboard::service(
+        DashboardState::new(
+            capture.clone(),
+            HarController::default(),
+            Vec::new(),
+            Arc::new(SocketOptions::default_tcp()),
+            &UpstreamProxyConfig::new(None, false, &[]).unwrap(),
+            MitmPolicy::try_new(&[], &[]).unwrap(),
+        )
+        .unwrap(),
+    );
     let dispatcher = proxy_request_dispatcher(
         service_fn(async |_request: Request| Ok::<_, Infallible>(Response::new(Body::empty()))),
         Some(dashboard),

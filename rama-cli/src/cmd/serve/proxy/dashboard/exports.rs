@@ -1,3 +1,7 @@
+use std::io::{Error as IoError, ErrorKind};
+
+use rama::http::headers::{RetryAfter, util::Seconds};
+
 use super::*;
 
 pub(super) async fn export_profiles(
@@ -56,14 +60,14 @@ pub(super) async fn export_har(
         Ok(download) => har_download_response(download),
         Err(error)
             if error
-                .downcast_ref::<std::io::Error>()
-                .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock) =>
+                .downcast_ref::<IoError>()
+                .is_some_and(|error| error.kind() == ErrorKind::WouldBlock) =>
         {
-            let mut response = error_response(StatusCode::TOO_MANY_REQUESTS, error);
-            response
-                .headers_mut()
-                .insert("retry-after", rama::http::HeaderValue::from_static("1"));
-            response
+            (
+                Headers::single(RetryAfter::delay(Seconds::new(1))),
+                error_response(StatusCode::TOO_MANY_REQUESTS, error),
+            )
+                .into_response()
         }
         Err(error) => error_response(StatusCode::BAD_REQUEST, error),
     }

@@ -1,9 +1,10 @@
 //! Bounded, typed interception waits. Protocol adapters choose messages, decisions,
 //! admission costs, and timeout behavior. This module knows no traffic protocol.
 
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
+
 use parking_lot::Mutex;
 use rama_core::futures::StreamExt;
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::sync::{oneshot, watch};
 
 /// Admission costs are supplied by the adapter that owns the message representation.
@@ -13,6 +14,7 @@ pub struct QueueLimits {
     pub bytes: usize,
     pub message_bytes: usize,
 }
+
 impl Default for QueueLimits {
     fn default() -> Self {
         Self {
@@ -22,19 +24,23 @@ impl Default for QueueLimits {
         }
     }
 }
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QueueFull;
+
 impl std::fmt::Display for QueueFull {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("interception queue is full")
     }
 }
+
 impl std::error::Error for QueueFull {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitError {
     Expired,
     Closed,
 }
+
 impl std::fmt::Display for WaitError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -43,6 +49,7 @@ impl std::fmt::Display for WaitError {
         })
     }
 }
+
 impl std::error::Error for WaitError {}
 
 struct Pending<M, D> {
@@ -50,22 +57,27 @@ struct Pending<M, D> {
     bytes: usize,
     reply: oneshot::Sender<D>,
 }
+
 struct State<M, D> {
     next: u64,
     bytes: usize,
     pending: BTreeMap<u64, Pending<M, D>>,
 }
+
 struct Inner<M, D> {
     state: Mutex<State<M, D>>,
     changes: watch::Sender<u64>,
 }
+
 /// Share this handle with protocol services and any GUI, TUI, or API controller.
 pub struct Interception<M, D>(Arc<Inner<M, D>>);
+
 impl<M, D> Clone for Interception<M, D> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
+
 impl<M, D> std::fmt::Debug for Interception<M, D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Interception")
@@ -73,11 +85,13 @@ impl<M, D> std::fmt::Debug for Interception<M, D> {
             .finish_non_exhaustive()
     }
 }
+
 impl<M, D> Default for Interception<M, D> {
     fn default() -> Self {
         Self::with_changes(watch::channel(0).0)
     }
 }
+
 impl<M, D> Interception<M, D> {
     /// Share invalidation with a larger controller while retaining typed content APIs.
     pub fn with_changes(changes: watch::Sender<u64>) -> Self {
@@ -90,12 +104,15 @@ impl<M, D> Interception<M, D> {
             changes,
         }))
     }
+
     pub fn subscribe_changes(&self) -> watch::Receiver<u64> {
         self.0.changes.subscribe()
     }
+
     fn changed(&self) {
         self.0.changes.send_modify(|v| *v = v.wrapping_add(1));
     }
+
     pub fn get(&self, id: u64) -> Option<Arc<M>> {
         self.0
             .state
@@ -104,6 +121,7 @@ impl<M, D> Interception<M, D> {
             .get(&id)
             .map(|p| p.message.clone())
     }
+
     pub fn entries(&self) -> Vec<(u64, Arc<M>)> {
         self.0
             .state
@@ -113,6 +131,7 @@ impl<M, D> Interception<M, D> {
             .map(|(id, p)| (*id, p.message.clone()))
             .collect()
     }
+
     /// Reserve admission and assign an ID atomically. The constructor runs only
     /// after admission succeeds, under the queue lock, and must not re-enter it.
     pub fn enqueue_with(
@@ -149,6 +168,7 @@ impl<M, D> Interception<M, D> {
             receive,
         })
     }
+
     pub fn enqueue(
         &self,
         message: M,
@@ -157,6 +177,7 @@ impl<M, D> Interception<M, D> {
     ) -> Result<Ticket<M, D>, QueueFull> {
         self.enqueue_with(bytes, limits, |_| message)
     }
+
     /// Validate and resolve under the same lock. Exactly one caller can win;
     /// failed validation leaves the message pending. The callback cannot re-enter.
     pub fn resolve_with<E>(
@@ -177,12 +198,14 @@ impl<M, D> Interception<M, D> {
         self.changed();
         Ok(true)
     }
+
     pub fn resolve(&self, id: u64, decision: D) -> bool {
         match self.resolve_with(id, |_| Ok::<D, std::convert::Infallible>(decision)) {
             Ok(resolved) => resolved,
             Err(never) => match never {},
         }
     }
+
     /// Release a group of related waits atomically, for example one connection.
     /// The callback runs under the queue lock and must not re-enter it.
     pub fn release_where(&self, mut decide: impl FnMut(&M) -> Option<D>) {
@@ -204,6 +227,7 @@ impl<M, D> Interception<M, D> {
         drop(state);
         self.changed();
     }
+
     fn cancel(&self, id: u64) {
         let mut state = self.0.state.lock();
         let removed = state.pending.remove(&id);
@@ -216,6 +240,7 @@ impl<M, D> Interception<M, D> {
         }
     }
 }
+
 /// Owns a pending wait. Dropping it removes the message and releases admission.
 #[must_use = "dropping a ticket cancels the interception wait"]
 pub struct Ticket<M, D> {
@@ -223,10 +248,12 @@ pub struct Ticket<M, D> {
     id: u64,
     receive: oneshot::Receiver<D>,
 }
+
 impl<M, D> Ticket<M, D> {
     pub fn id(&self) -> u64 {
         self.id
     }
+
     pub async fn wait(mut self, timeout: Duration) -> Result<D, WaitError> {
         match tokio::time::timeout(timeout, &mut self.receive).await {
             Ok(Ok(value)) => Ok(value),
@@ -235,6 +262,7 @@ impl<M, D> Ticket<M, D> {
         }
     }
 }
+
 impl<M, D> Drop for Ticket<M, D> {
     fn drop(&mut self) {
         self.queue.cancel(self.id);
@@ -293,6 +321,7 @@ mod tests {
         assert!(!queue.resolve(ticket.id(), false));
         assert_eq!(ticket.wait(Duration::from_secs(1)).await, Ok(true));
     }
+
     #[tokio::test]
     async fn typed_subscription_and_group_resolution() {
         let queue = Interception::<(u8, &'static str), bool>::default();

@@ -1,9 +1,12 @@
 //! Protocol-owned observations attach through typed extensions. The HTTP inspector
 //! never needs to import the observing protocol or know its metadata representation.
-use crate::fingerprint::Ja4H;
+
+use std::{fmt, sync::Arc};
+
 use rama_core::extensions::Extension;
 use rama_inspect::Observations;
-use std::{fmt, sync::Arc};
+
+use crate::fingerprint::Ja4H;
 
 /// Distinct ownership scopes for captured protocol observations.
 #[derive(Debug, Clone, Default)]
@@ -39,6 +42,7 @@ pub trait CaptureObserver: fmt::Debug + Send + Sync + 'static {
         false
     }
 }
+
 impl CaptureObserver for () {
     fn request(&self, _: &crate::request::Parts, _: &CaptureMetadata) {}
     fn response(&self, _: &crate::response::Parts, _: &CaptureMetadata) {}

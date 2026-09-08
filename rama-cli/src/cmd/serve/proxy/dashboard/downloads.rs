@@ -99,18 +99,18 @@ pub(super) async fn send_websocket_message(
     {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let direction = match signals.websocket_direction.as_str() {
-        "ingress" => WebSocketRelayDirection::Ingress,
-        "egress" => WebSocketRelayDirection::Egress,
-        _ => return error_response(StatusCode::BAD_REQUEST, "invalid WebSocket direction"),
+    let Some(direction) = signals.websocket_direction else {
+        return error_response(StatusCode::BAD_REQUEST, "missing WebSocket direction");
     };
-    let message = match signals.websocket_kind.as_str() {
-        "text" => WebSocketRelayMessage::Text(signals.websocket_payload.into()),
-        "binary" => match STANDARD.decode(&signals.websocket_payload) {
+    let Some(kind) = signals.websocket_kind else {
+        return error_response(StatusCode::BAD_REQUEST, "missing WebSocket message kind");
+    };
+    let message = match kind {
+        WebSocketSendKind::Text => WebSocketRelayMessage::Text(signals.websocket_payload.into()),
+        WebSocketSendKind::Binary => match STANDARD.decode(&signals.websocket_payload) {
             Ok(data) => WebSocketRelayMessage::Binary(data.into()),
             Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
         },
-        _ => return error_response(StatusCode::BAD_REQUEST, "invalid WebSocket message kind"),
     };
     match state
         .capture

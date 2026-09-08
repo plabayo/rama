@@ -1,5 +1,14 @@
-use super::*;
-use crate::handshake::mitm::{WebSocketBridge, WebSocketRelayDirection};
+use std::{
+    convert::Infallible,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll},
+    time::Duration,
+};
+
 use rama_core::{
     Layer, Service, ServiceInput, bytes::Bytes, error::BoxError, futures::StreamExt,
     service::service_fn,
@@ -12,29 +21,29 @@ use rama_http::{
         CaptureStore, ConnectionId, HttpExchangeId,
     },
 };
-use rama_inspect::storage::{
-    AppendRecord, Collection, CreateCollection, ListRecords, ReadRecord, Reader, RecordId,
-};
 use rama_inspect::{
     InspectionState,
-    storage::{MemoryStore, Storage, StorageLimits},
-};
-use std::{convert::Infallible, sync::Arc, time::Duration};
-use std::{
-    pin::Pin,
-    sync::atomic::{AtomicBool, Ordering},
-    task::{Context, Poll},
+    storage::{
+        AppendRecord, Collection, CreateCollection, ListRecords, MemoryStore, ReadRecord, Reader,
+        RecordId, Storage, StorageLimits,
+    },
 };
 use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 
+use super::*;
+use crate::handshake::mitm::{WebSocketBridge, WebSocketRelayDirection};
+
 #[derive(Debug)]
 struct Observer(WebSocketLimits);
+
 impl CaptureObserver for Observer {
     fn request(&self, parts: &rama_http::request::Parts, metadata: &CaptureMetadata) {
         observe_handshake(parts, metadata, self.0);
     }
+
     fn response(&self, _: &rama_http::response::Parts, _: &CaptureMetadata) {}
 }
+
 fn store(messages: usize, bytes: u64, total: u64) -> CaptureStore {
     CaptureStore::with_storage(
         Storage::new(MemoryStore::new(StorageLimits::default())),
@@ -47,6 +56,7 @@ fn store(messages: usize, bytes: u64, total: u64) -> CaptureStore {
         InspectionState::default(),
     )
 }
+
 async fn handshake(store: &CaptureStore, version: Version, status: StatusCode) -> Response {
     let connection = store
         .begin_connection_if_enabled(None, rama_net::Protocol::HTTPS, None)
@@ -82,6 +92,7 @@ async fn handshake(store: &CaptureStore, version: Version, status: StatusCode) -
         .await
         .unwrap()
 }
+
 fn message(kind: WebSocketMessageKind, data: &'static [u8]) -> CapturedWebSocketMessage {
     CapturedWebSocketMessage::new(
         WebSocketRelayDirection::Ingress,
@@ -324,6 +335,7 @@ async fn cancelled_message_append_preserves_committed_records_and_marks_a_gap() 
         entered: Arc<tokio::sync::Notify>,
         read: bool,
     }
+
     impl AsyncRead for StopAfterChunk {
         fn poll_read(
             mut self: Pin<&mut Self>,
@@ -345,12 +357,14 @@ async fn cancelled_message_append_preserves_committed_records_and_marks_a_gap() 
             result
         }
     }
+
     #[derive(Clone)]
     struct Backend {
         inner: Collection,
         stop: Arc<AtomicBool>,
         entered: Arc<tokio::sync::Notify>,
     }
+
     impl Service<AppendRecord> for Backend {
         type Output = RecordId;
         type Error = BoxError;
@@ -365,6 +379,7 @@ async fn cancelled_message_append_preserves_committed_records_and_marks_a_gap() 
             self.inner.serve(input).await
         }
     }
+
     impl Service<ReadRecord> for Backend {
         type Output = Reader;
         type Error = BoxError;
@@ -372,6 +387,7 @@ async fn cancelled_message_append_preserves_committed_records_and_marks_a_gap() 
             self.inner.serve(input).await
         }
     }
+
     impl Service<ListRecords> for Backend {
         type Output = Vec<RecordId>;
         type Error = BoxError;
@@ -506,6 +522,7 @@ async fn json_message_export_writes_before_reading_the_full_payload() {
 }
 
 struct PayloadReadGuard(usize);
+
 impl AsyncRead for PayloadReadGuard {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -532,6 +549,7 @@ async fn preview_pages_read_bounded_prefixes_and_preserve_full_downloads() {
         inner: Collection,
         guarded: Arc<AtomicBool>,
     }
+
     impl Service<AppendRecord> for Backend {
         type Output = RecordId;
         type Error = BoxError;
@@ -539,6 +557,7 @@ async fn preview_pages_read_bounded_prefixes_and_preserve_full_downloads() {
             self.inner.serve(input).await
         }
     }
+
     impl Service<ListRecords> for Backend {
         type Output = Vec<RecordId>;
         type Error = BoxError;
@@ -546,6 +565,7 @@ async fn preview_pages_read_bounded_prefixes_and_preserve_full_downloads() {
             self.inner.serve(input).await
         }
     }
+
     impl Service<ReadRecord> for Backend {
         type Output = Reader;
         type Error = BoxError;

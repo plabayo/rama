@@ -268,6 +268,7 @@ impl serde::Serialize for CloseCode {
         serializer.serialize_u16(self.into())
     }
 }
+
 impl<'de> serde::Deserialize<'de> for CloseCode {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         u16::deserialize(deserializer).map(Self::from)

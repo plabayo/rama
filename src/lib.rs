@@ -14,11 +14,9 @@ pub use ::rama_core::{
     BlockingService, Fork, Layer, Service, bytes, combinators, conversion, error, error_sink,
     extensions, futures, geo, layer, matcher, service, username,
 };
-
 #[cfg(feature = "std")]
 #[doc(inline)]
 pub use ::rama_core::{ServiceInput, graceful, io, rt, stream};
-
 #[cfg(feature = "std")]
 #[doc(inline)]
 pub use ::rama_json as json;
@@ -30,7 +28,6 @@ pub mod js {
 
     #[doc(inline)]
     pub use ::rama_js::*;
-
     #[cfg(feature = "pac")]
     #[cfg_attr(docsrs, doc(cfg(feature = "pac")))]
     #[doc(inline)]
@@ -41,21 +38,18 @@ pub mod js {
 #[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "crypto"))))]
 #[doc(inline)]
 pub use ::rama_crypto as crypto;
-
-#[cfg(all(target_family = "unix", feature = "unix"))]
-#[cfg_attr(docsrs, doc(cfg(all(target_family = "unix", feature = "unix"))))]
-#[doc(inline)]
-pub use ::rama_unix as unix;
-
 #[cfg(all(feature = "std", feature = "tcp"))]
 #[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "tcp"))))]
 #[doc(inline)]
 pub use ::rama_tcp as tcp;
-
 #[cfg(all(feature = "std", feature = "udp"))]
 #[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "udp"))))]
 #[doc(inline)]
 pub use ::rama_udp as udp;
+#[cfg(all(target_family = "unix", feature = "unix"))]
+#[cfg_attr(docsrs, doc(cfg(all(target_family = "unix", feature = "unix"))))]
+#[doc(inline)]
+pub use ::rama_unix as unix;
 
 #[cfg(feature = "std")]
 pub mod telemetry;
@@ -94,7 +88,6 @@ pub mod net {
         #[cfg_attr(docsrs, doc(cfg(feature = "net-apple-networkextension")))]
         #[doc(inline)]
         pub use ::rama_net_apple_networkextension as networkextension;
-
         #[cfg(feature = "net-apple-xpc")]
         #[cfg_attr(docsrs, doc(cfg(feature = "net-apple-xpc")))]
         #[doc(inline)]
@@ -119,16 +112,14 @@ pub use ::rama_icap as icap;
 pub mod proxy {
     //! rama proxy support
 
-    #[cfg(feature = "proxy")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "proxy")))]
-    #[doc(inline)]
-    pub use ::rama_proxy::*;
-
     #[cfg(feature = "haproxy")]
     #[cfg_attr(docsrs, doc(cfg(feature = "haproxy")))]
     #[doc(inline)]
     pub use ::rama_haproxy as haproxy;
-
+    #[cfg(feature = "proxy")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "proxy")))]
+    #[doc(inline)]
+    pub use ::rama_proxy::*;
     #[cfg(feature = "socks5")]
     #[cfg_attr(docsrs, doc(cfg(feature = "socks5")))]
     #[doc(inline)]
@@ -153,7 +144,6 @@ pub mod gateway {
 #[cfg_attr(docsrs, doc(cfg(feature = "ttrpc")))]
 #[doc(inline)]
 pub use ::rama_ttrpc as ttrpc;
-
 #[cfg(all(feature = "std", feature = "ua"))]
 #[cfg_attr(docsrs, doc(cfg(all(feature = "std", feature = "ua"))))]
 #[doc(inline)]
@@ -166,13 +156,12 @@ pub mod cli;
 pub mod utils {
     //! utilities for rama
 
-    #[doc(inline)]
-    pub use ::rama_utils::*;
-
     #[cfg(feature = "tower")]
     #[cfg_attr(docsrs, doc(cfg(feature = "tower")))]
     #[doc(inline)]
     pub use ::rama_tower as tower;
+    #[doc(inline)]
+    pub use ::rama_utils::*;
 }
 
 #[cfg(feature = "inspect")]

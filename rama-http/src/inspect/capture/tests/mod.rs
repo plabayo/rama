@@ -1,8 +1,10 @@
+use std::{convert::Infallible, time::Duration};
+
+use rama_core::extensions::ExtensionsRef as _;
+use tokio::task::JoinSet;
+
 use super::*;
 use crate::HeaderValue;
-use rama_core::extensions::ExtensionsRef as _;
-use std::{convert::Infallible, time::Duration};
-use tokio::task::JoinSet;
 
 fn test_store() -> CaptureStore {
     test_store_with_limits(8, 8, rama_utils::octets::kib_u64(1))
@@ -27,6 +29,7 @@ fn test_store_with_limits(
         InspectionState::default(),
     )
 }
+
 fn test_store_with_total_limit(
     max_exchanges: usize,
     body_limit: u64,
@@ -46,6 +49,7 @@ fn test_store_with_total_limit(
         InspectionState::default(),
     )
 }
+
 fn decoded_body(records: &[StoredRecord], request: bool) -> Vec<u8> {
     records
         .iter()
@@ -64,6 +68,7 @@ struct ApprovalBody {
     polls: Arc<AtomicUsize>,
     bytes: Option<Bytes>,
 }
+
 impl StreamingBody for ApprovalBody {
     type Data = Bytes;
     type Error = Infallible;
@@ -79,6 +84,7 @@ impl StreamingBody for ApprovalBody {
         )
     }
 }
+
 async fn approval_id(store: &CaptureStore, direction: &str) -> u64 {
     let control = store.control();
     let mut changes = control.subscribe_changes();
@@ -101,11 +107,7 @@ async fn approval_id(store: &CaptureStore, direction: &str) -> u64 {
 }
 
 mod connections;
-
-mod records;
-
-mod storage;
-
 mod interception;
-
 mod query;
+mod records;
+mod storage;

@@ -4,6 +4,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+
 use tokio::sync::{Mutex, Notify, watch};
 
 const PAUSED: usize = 1 << (usize::BITS - 1);
@@ -173,8 +174,9 @@ fn leave_capture(state: &InspectionStateInner) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
+
+    use super::*;
 
     #[tokio::test]
     async fn pause_cancels_idle_sessions_and_waits_for_their_drop() {

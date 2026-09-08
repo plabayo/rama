@@ -1,9 +1,12 @@
 //! Bounded typed metadata followed by an unencoded payload in one atomic record.
-use super::*;
+
+use std::{future::Future, io::Write};
+
 use rama_core::futures::future::BoxFuture;
 use rama_inspect::storage::Reader;
 use serde::de::DeserializeOwned;
-use std::{future::Future, io::Write};
+
+use super::*;
 
 const MAX_METADATA: usize = rama_utils::octets::kib(64);
 
@@ -28,6 +31,7 @@ pub struct CapturedRecordStream<M> {
     pub metadata: M,
     pub payload: Reader,
 }
+
 impl<M> CapturedRecordStream<M> {
     /// Explicitly materialize an owned record, for APIs such as message replay.
     /// Streaming consumers should read `payload` instead.
@@ -39,6 +43,7 @@ impl<M> CapturedRecordStream<M> {
 }
 
 struct MetadataWriter(Vec<u8>);
+
 impl Write for MetadataWriter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         if bytes.len() > (MAX_METADATA + 4).saturating_sub(self.0.len()) {
@@ -49,10 +54,12 @@ impl Write for MetadataWriter {
         self.0.extend_from_slice(bytes);
         Ok(bytes.len())
     }
+
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
+
 pub(super) fn encode<T: CapturedRecord>(record: &T) -> Result<(AppendRecord, u64), BoxError> {
     let mut header = MetadataWriter(vec![0; 4]);
     serde_json::to_writer(&mut header, &record.metadata())?;
@@ -69,6 +76,7 @@ pub(super) fn encode<T: CapturedRecord>(record: &T) -> Result<(AppendRecord, u64
         size,
     ))
 }
+
 pub(super) async fn read<M: DeserializeOwned>(
     mut reader: Reader,
 ) -> Result<CapturedRecordStream<M>, BoxError> {
