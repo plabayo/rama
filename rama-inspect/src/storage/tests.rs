@@ -220,7 +220,7 @@ async fn file_cleanup_waits_for_readers_and_preserves_existing_collections() {
 }
 
 #[tokio::test]
-async fn failed_file_tail_keeps_budget_until_recovery() {
+async fn failed_file_tail_recovers_without_another_append() {
     let files = FileStore::temporary(StorageLimits {
         total_bytes: 10,
         record_bytes: 0,
@@ -234,16 +234,109 @@ async fn failed_file_tail_keeps_budget_until_recovery() {
         .await
         .unwrap_err();
     let other = files.serve(CreateCollection { id: 2 }).await.unwrap();
-    other
-        .append(std::io::Cursor::new(b"123"))
-        .await
-        .unwrap_err();
+    // Recovery releases the failed tail independently, even if this exchange
+    // never receives another append. No storage budget is released before truncate.
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if other
+                .append(std::io::Cursor::new(b"123456789"))
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        tokio::fs::read(files.directory().join("collection-1.capture"))
+            .await
+            .unwrap(),
+        b"a"
+    );
     assert_eq!(content(&collection, first).await, b"a");
-    // Recovery discards the seven-byte tail before reserving replacement bytes.
-    collection.append(std::io::Cursor::new(b"b")).await.unwrap();
-    other
-        .append(std::io::Cursor::new(b"12345678"))
+    other.append(std::io::Cursor::new(b"x")).await.unwrap_err();
+}
+
+#[tokio::test]
+async fn owned_bytes_and_range_share_allocation_and_budget() {
+    let store = MemoryStore::new(StorageLimits {
+        total_bytes: 12,
+        record_bytes: 12,
+    });
+    let collection = store.serve(CreateCollection { id: 1 }).await.unwrap();
+    let bytes = Bytes::from(Vec::from(&b"hello world!"[..]));
+    assert!(bytes.is_unique());
+    let id = collection
+        .serve(AppendRecord::bytes(bytes.clone()))
         .await
         .unwrap();
-    assert_eq!(content(&collection, first).await, b"a");
+    assert!(
+        !bytes.is_unique(),
+        "memory storage must retain the original allocation"
+    );
+    let mut reader = collection
+        .serve(ReadRecord {
+            id,
+            range: Some(6..11),
+        })
+        .await
+        .unwrap();
+    drop(collection);
+    let mut output = Vec::new();
+    reader.read_to_end(&mut output).await.unwrap();
+    assert_eq!(output, b"world");
+    let other = store.serve(CreateCollection { id: 2 }).await.unwrap();
+    other
+        .serve(AppendRecord::bytes(bytes.clone()))
+        .await
+        .unwrap_err();
+    drop(reader);
+    assert!(bytes.is_unique());
+    other
+        .serve(AppendRecord::bytes(bytes.clone()))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn default_memory_limits_reject_oversized_records() {
+    let limits = StorageLimits::default();
+    assert!(limits.record_bytes > 0 && limits.total_bytes >= limits.record_bytes);
+    let store = MemoryStore::new(limits);
+    let collection = store.serve(CreateCollection { id: 1 }).await.unwrap();
+    let bytes = Bytes::from(vec![0; limits.record_bytes as usize + 1]);
+    collection
+        .serve(AppendRecord::bytes(bytes))
+        .await
+        .unwrap_err();
+    assert!(collection.snapshot().await.unwrap().is_empty());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn retained_file_collections_do_not_retain_descriptors() {
+    let descriptor_count = || std::fs::read_dir("/dev/fd").unwrap().count();
+    let before = descriptor_count();
+    let store = FileStore::temporary(StorageLimits::default()).unwrap();
+    let mut collections = Vec::new();
+    for id in 0..256 {
+        let collection = store.serve(CreateCollection { id }).await.unwrap();
+        collection
+            .serve(AppendRecord::bytes(Bytes::from_static(b"retained")))
+            .await
+            .unwrap();
+        let (signal, _) = oneshot::channel();
+        collection
+            .append(FailingReader(Some(signal)))
+            .await
+            .unwrap_err();
+        collections.push(collection);
+    }
+    // Allow descriptors used by other concurrently running tests; the old code
+    // retained at least 256 descriptors for these collections alone.
+    assert!(descriptor_count() < before + 128);
+    assert_eq!(content(&collections[255], RecordId(0)).await, b"retained");
 }

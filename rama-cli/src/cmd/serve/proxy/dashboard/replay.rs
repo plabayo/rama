@@ -9,7 +9,10 @@ pub(super) async fn request_curl(
         Ok(captured) => captured,
         Err(error) => return error_response(StatusCode::BAD_REQUEST, error),
     };
-    if matches!(captured.protocol.as_str(), "ws" | "wss") {
+    if matches!(
+        captured.protocol,
+        rama::net::Protocol::WS | rama::net::Protocol::WSS
+    ) {
         return error_response(
             StatusCode::BAD_REQUEST,
             "WebSocket handshakes cannot be represented as a replayable cURL command",

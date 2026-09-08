@@ -43,15 +43,9 @@ fn profile_export_does_not_guess_an_unobserved_request_initiator() {
         .body(())
         .unwrap()
         .into_parts();
-    let profile = captured_profile(
-        &parts,
-        Some("curl/8.7.1"),
-        #[cfg(feature = "tls")]
-        None,
-        None,
-        false,
-    )
-    .unwrap();
+    let initiator = captured_request_initiator(&parts, false);
+    let mut profile = UserAgentProfileInput::new("curl/8.7.1");
+    fill_profile(&mut profile, parts, initiator, None);
     assert!(profile.h1_settings.is_some());
     assert!(profile.h1_headers_navigate.is_none());
     assert!(profile.h1_headers_fetch.is_none());
@@ -73,16 +67,9 @@ fn h2_upgrade_initiator_belongs_to_the_supplied_protocol_observation() {
         .into_parts();
     let metadata = CaptureMetadata::default();
     ProfileInspector::new(Arc::new(UserAgentDatabase::default())).observe(&parts, &metadata);
-    let observed = metadata
-        .exchange
-        .get_ref::<UserAgentObservation>()
-        .unwrap()
-        .profile
-        .as_ref()
-        .unwrap();
-    assert!(observed.h2_headers_ws.is_some());
-    assert!(observed.h2_headers_navigate.is_none());
-    assert!(observed.h1_settings.is_none());
+    let observed = metadata.exchange.get_ref::<UserAgentObservation>().unwrap();
+    assert_eq!(observed.request_initiator, Some(RequestInitiator::Ws));
+    assert!(observed.h2_settings.is_some());
 }
 
 #[tokio::test]
@@ -203,10 +190,21 @@ async fn captured_tls_and_native_fingerprints_are_shared_per_connection() {
         .get_ref::<UserAgentObservation>()
         .unwrap();
     assert!(observed.known_fingerprint.is_some());
-    let profile = observed.profile.as_ref().unwrap();
+    let profiles = export_profiles(&store, &[1, 2].into(), &BTreeSet::new())
+        .await
+        .unwrap();
+    let profile = &profiles[0];
     assert!(profile.tls_client_hello.is_some());
     assert!(profile.h1_headers_navigate.is_some());
     assert!(profile.h2_settings.is_none());
+    let fingerprint = first
+        .metadata
+        .request_fingerprint(&Request::new(()).into_parts().0)
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        first.summary.ja4h.as_ref().unwrap(),
+        &fingerprint
+    ));
     let json = serde_json::to_value(&first.summary).unwrap();
     assert!(json.get("ja3").is_none());
     assert!(json.get("ingress_tls").is_none());

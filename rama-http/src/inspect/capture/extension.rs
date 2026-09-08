@@ -1,27 +1,20 @@
 //! Typed attachment records for protocols carried by an HTTP upgrade.
 use super::*;
-use serde::de::DeserializeOwned;
 use std::{any::TypeId, ops::Range};
 
 /// A protocol-owned record stored alongside an HTTP exchange. Each Rust type has
 /// an independent index; HTTP never decodes another protocol's record as its own.
 pub(super) struct RecordIndex {
     pub ids: Vec<RecordId>,
-    pub matches: fn(&[u8], &str) -> bool,
+    pub matches: super::attachment::SearchRecord,
 }
 impl RecordIndex {
     fn new<T: CapturedRecord>() -> Self {
         Self {
             ids: Vec::new(),
-            matches: |data, needle| {
-                serde_json::from_slice::<T>(data).is_ok_and(|record| record.matches_search(needle))
-            },
+            matches: super::attachment::search::<T>,
         }
     }
-}
-
-pub trait CapturedRecord: Serialize + DeserializeOwned + Send + Sync + 'static {
-    fn matches_search(&self, needle: &str) -> bool;
 }
 
 /// Pins an exchange, its observations and storage while an adapter or reader uses it.
@@ -46,6 +39,19 @@ impl CaptureStore {
     }
 }
 impl ExchangeCapture {
+    /// Snapshot summary and observations without reading stored metadata records.
+    pub fn summary_details(&self) -> CaptureDetails {
+        CaptureDetails {
+            summary: self.entry.snapshot(),
+            records: Vec::new(),
+            metadata: self.entry.metadata.clone(),
+            connection: self
+                .entry
+                .connection
+                .as_ref()
+                .map(|connection| connection.snapshot()),
+        }
+    }
     /// Read HTTP metadata without loading bodies, retaining this exchange across clears.
     pub async fn inspector_details(&self) -> Result<CaptureDetails, BoxError> {
         self.store.inspector_details_for_entry(&self.entry).await
@@ -116,16 +122,12 @@ impl ExchangeCapture {
             .map_or(0, |index| index.ids.len())
     }
     pub async fn append<T: CapturedRecord>(&self, record: &T) -> Result<bool, BoxError> {
-        let data = serde_json::to_vec(record)?;
-        let Some(mut budget) = self.store.0.budget.try_reserve(data.len() as u64) else {
+        let (source, length) = super::attachment::encode(record)?;
+        let Some(mut budget) = self.store.0.budget.try_reserve(length) else {
             return Ok(false);
         };
         let _append = self.entry.append_lock.lock().await;
-        let id = self
-            .entry
-            .collection
-            .serve(AppendRecord::bytes(Bytes::from(data)))
-            .await?;
+        let id = self.entry.collection.serve(source).await?;
         self.entry
             .extension_records
             .write()
@@ -134,12 +136,14 @@ impl ExchangeCapture {
             .ids
             .push(id);
         budget.commit(&self.entry);
-        self.entry.search_revision.fetch_add(1, Ordering::Release);
         self.changed();
         Ok(true)
     }
-    /// Read one protocol-owned record without allocating an index or result vector.
-    pub async fn record<T: CapturedRecord>(&self, index: usize) -> Result<Option<T>, BoxError> {
+    /// Read typed metadata and stream the payload without materializing it.
+    pub async fn record_stream<T: CapturedRecord>(
+        &self,
+        index: usize,
+    ) -> Result<Option<CapturedRecordStream<T::Metadata>>, BoxError> {
         let id = self
             .entry
             .extension_records
@@ -150,31 +154,27 @@ impl ExchangeCapture {
         let Some(id) = id else {
             return Ok(None);
         };
-        let mut reader = self.entry.collection.read(id).await?;
-        let mut data = Vec::new();
-        reader.read_to_end(&mut data).await?;
-        Ok(Some(serde_json::from_slice(&data)?))
+        super::attachment::read(self.entry.collection.read(id).await?)
+            .await
+            .map(Some)
+    }
+    /// Explicitly read one owned record. Prefer `record_stream` for large payloads.
+    pub async fn record<T: CapturedRecord>(&self, index: usize) -> Result<Option<T>, BoxError> {
+        match self.record_stream::<T>(index).await? {
+            Some(record) => record.into_record::<T>().await.map(Some),
+            None => Ok(None),
+        }
     }
     pub async fn records<T: CapturedRecord>(
         &self,
         range: Range<usize>,
     ) -> Result<Vec<T>, BoxError> {
-        let ids = {
-            let indexes = self.entry.extension_records.read();
-            let Some(index) = indexes.get(&TypeId::of::<T>()) else {
-                return Ok(Vec::new());
-            };
-            let index = &index.ids;
-            index[range.start.min(index.len())
-                ..range.end.min(index.len()).max(range.start.min(index.len()))]
-                .to_vec()
-        };
-        let mut records = Vec::with_capacity(ids.len());
-        for id in ids {
-            let mut reader = self.entry.collection.read(id).await?;
-            let mut data = Vec::new();
-            reader.read_to_end(&mut data).await?;
-            records.push(serde_json::from_slice(&data)?);
+        let end = range.end.min(self.count::<T>());
+        let mut records = Vec::new();
+        for index in range.start.min(end)..end {
+            if let Some(record) = self.record::<T>(index).await? {
+                records.push(record);
+            }
         }
         Ok(records)
     }

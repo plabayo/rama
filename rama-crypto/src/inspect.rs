@@ -3,7 +3,13 @@
 //! Records are encoded as independently authenticated 64 KiB chunks followed by
 //! an authenticated terminator. Readers authenticate each chunk before exposing
 //! plaintext. Neither direction buffers the whole record. Range reads address
-//! plaintext and currently scan/authenticate the preceding chunks.
+//! plaintext and currently scan/authenticate the preceding chunks. Partial reads
+//! authenticate the chunks they expose; detection of a missing terminator or
+//! trailing data requires consuming the record to EOF. A preview is not proof of
+//! whole-record integrity.
+//!
+//! Available with both `inspect` and `boring`; enabling inspection does not select
+//! a cryptographic backend for the application.
 
 use crate::dep::boring::{rand::rand_bytes, symm};
 use parking_lot::RwLock;
@@ -102,7 +108,8 @@ fn invalid(message: &'static str) -> std::io::Error {
 impl Service<AppendRecord> for EncryptedCollection {
     type Output = RecordId;
     type Error = BoxError;
-    async fn serve(&self, mut input: AppendRecord) -> Result<RecordId, BoxError> {
+    async fn serve(&self, input: AppendRecord) -> Result<RecordId, BoxError> {
+        let mut source = input.into_reader();
         let mut identity = [0; 16];
         rand_bytes(&mut identity)?;
         let key = self.key.clone();
@@ -116,7 +123,7 @@ impl Service<AppendRecord> for EncryptedCollection {
             let mut buffer = vec![0; CHUNK];
             let mut sequence = 0u64;
             loop {
-                let count = match input.source.read(&mut buffer).await {
+                let count = match source.read(&mut buffer).await {
                     Ok(count) => count,
                     Err(error) => {
                         output.yield_item(Err(error)).await;

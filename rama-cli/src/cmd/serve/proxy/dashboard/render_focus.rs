@@ -107,7 +107,10 @@ pub(super) fn render_request_focus(
         )
         .into_string();
     };
-    let websocket = matches!(detail.summary.protocol.as_str(), "ws" | "wss");
+    let websocket = matches!(
+        detail.summary.protocol,
+        rama::net::Protocol::WS | rama::net::Protocol::WSS
+    );
     let connection_display_id = snapshot
         .connections
         .iter()
@@ -350,7 +353,10 @@ pub(super) fn render_focused_request_row(
     live: &LiveStatus,
 ) -> impl IntoHtml {
     let pending = live.for_exchange(exchange.id).next();
-    let method = if matches!(exchange.protocol.as_str(), "ws" | "wss") {
+    let method = if matches!(
+        exchange.protocol,
+        rama::net::Protocol::WS | rama::net::Protocol::WSS
+    ) {
         "WS"
     } else {
         exchange.method.as_str()

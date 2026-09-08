@@ -13,7 +13,8 @@ use crate::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rama_core::bytes::Bytes;
 use rama_http::inspect::capture::{CaptureStore, HttpExchangeId};
-use rama_http::inspect::control::{Decision, HttpUpgradeContext, Payload};
+use rama_http::inspect::control::{Decision, HttpMessageDirection, HttpUpgradeContext, Payload};
+use rama_utils::str::arcstr::arcstr;
 use std::convert::Infallible;
 
 fn close_intercepted_websocket(
@@ -52,13 +53,18 @@ pub async fn inspect_websocket_event(
             rama_net::Protocol::WS
         };
         message.direction = match direction {
-            crate::handshake::mitm::WebSocketRelayDirection::Ingress => "ingress",
-            crate::handshake::mitm::WebSocketRelayDirection::Egress => "egress",
-        }
-        .into();
+            crate::handshake::mitm::WebSocketRelayDirection::Ingress => {
+                HttpMessageDirection::Ingress
+            }
+            crate::handshake::mitm::WebSocketRelayDirection::Egress => HttpMessageDirection::Egress,
+        };
         message.exchange = extensions.get_ref::<HttpExchangeId>().map(|id| id.0);
         message.binary = matches!(data, WebSocketRelayMessage::Binary(_));
-        message.kind = if message.binary { "binary" } else { "text" }.into();
+        message.kind = if message.binary {
+            arcstr!("binary")
+        } else {
+            arcstr!("text")
+        };
         let size = match data {
             WebSocketRelayMessage::Text(t) => t.len(),
             WebSocketRelayMessage::Binary(b) => b.len().saturating_mul(4).div_ceil(3),

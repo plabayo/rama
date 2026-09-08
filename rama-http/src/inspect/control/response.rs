@@ -107,7 +107,11 @@ impl ResponseSpec {
                 .insert(header::CONTENT_LENGTH, spec.body.len().into());
         }
         // Unread request bodies cannot be reused as the next HTTP/1 request.
-        if message.direction == "request" && message.version() != Version::HTTP_2 {
+        if matches!(
+            message.direction,
+            crate::inspect::control::HttpMessageDirection::Request
+        ) && message.version() != Version::HTTP_2
+        {
             response
                 .headers_mut()
                 .insert(header::CONNECTION, crate::HeaderValue::from_static("close"));

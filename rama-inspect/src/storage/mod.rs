@@ -36,8 +36,11 @@ pub struct CreateCollection {
     pub id: u64,
 }
 /// Append an owned stream. Success publishes the record; cancellation aborts it.
-pub struct AppendRecord {
-    pub source: Reader,
+pub enum AppendRecord {
+    /// An already owned record; memory storage retains these bytes without copying.
+    Bytes(Bytes),
+    /// A streaming source, read with backpressure and bounded scratch space.
+    Stream(Reader),
 }
 impl fmt::Debug for AppendRecord {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -46,15 +49,21 @@ impl fmt::Debug for AppendRecord {
 }
 impl AppendRecord {
     pub fn new(source: impl AsyncRead + Send + 'static) -> Self {
-        Self {
-            source: Box::pin(source),
-        }
+        Self::Stream(Box::pin(source))
     }
     pub fn bytes(bytes: Bytes) -> Self {
-        Self::new(std::io::Cursor::new(bytes))
+        Self::Bytes(bytes)
+    }
+    pub fn into_reader(self) -> Reader {
+        match self {
+            Self::Bytes(bytes) => Box::pin(std::io::Cursor::new(bytes)),
+            Self::Stream(reader) => reader,
+        }
     }
 }
 /// Read a committed record or a range of its logical bytes. Bounds are exclusive.
+/// Memory and file storage address ranges directly. Streaming layers such as
+/// encryption may need to consume the preceding bytes; see the layer's contract.
 #[derive(Debug, Clone)]
 pub struct ReadRecord {
     pub id: RecordId,
@@ -68,12 +77,25 @@ impl ReadRecord {
 /// Snapshot the identifiers of currently committed records.
 #[derive(Debug, Clone, Copy)]
 pub struct ListRecords;
-/// Storage admission limits, shared across collections. Zero means unlimited.
-#[derive(Debug, Clone, Copy, Default)]
+/// Storage admission limits, shared across collections. Defaults bound retained
+/// bytes to 64 MiB and each record to 8 MiB. Explicit zero fields mean unlimited.
+#[derive(Debug, Clone, Copy)]
 pub struct StorageLimits {
     pub total_bytes: u64,
     pub record_bytes: u64,
 }
+
+impl Default for StorageLimits {
+    fn default() -> Self {
+        Self {
+            total_bytes: rama_utils::octets::mib_u64(64),
+            record_bytes: rama_utils::octets::mib_u64(8),
+        }
+    }
+}
+
+// Bound aggregate scratch and descriptor use without serializing unrelated I/O.
+const MAX_CONCURRENT_APPENDS: usize = 64;
 
 /// An owned collection. Dropping the last collection/reader releases its storage.
 /// Read handles pin their underlying data independently of registry eviction.
@@ -149,21 +171,41 @@ impl Budget {
         })
     }
     fn reserve(self: &Arc<Self>, amount: u64) -> Result<Reservation, BoxError> {
+        self.add(amount)?;
+        Ok(Reservation {
+            budget: self.clone(),
+            amount,
+        })
+    }
+    fn add(&self, amount: u64) -> Result<(), BoxError> {
         self.used
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 let next = used.checked_add(amount)?;
                 (self.limit == 0 || next <= self.limit).then_some(next)
             })
             .map_err(|_used| std::io::Error::other("capture storage budget exhausted"))?;
-        Ok(Reservation {
-            budget: self.clone(),
-            amount,
-        })
+        Ok(())
     }
 }
 struct Reservation {
     budget: Arc<Budget>,
     amount: u64,
+}
+impl Reservation {
+    fn grow(&mut self, amount: u64) -> Result<(), BoxError> {
+        self.budget.add(amount)?;
+        self.amount += amount;
+        Ok(())
+    }
+    fn absorb(&mut self, other: &mut Self) {
+        debug_assert!(Arc::ptr_eq(&self.budget, &other.budget));
+        self.amount += std::mem::take(&mut other.amount);
+    }
+    fn clear(&mut self) {
+        self.budget
+            .used
+            .fetch_sub(std::mem::take(&mut self.amount), Ordering::AcqRel);
+    }
 }
 impl Drop for Reservation {
     fn drop(&mut self) {
@@ -185,7 +227,22 @@ impl<R: AsyncRead + Unpin, O> AsyncRead for OwnedReader<R, O> {
     }
 }
 
+fn record_range(range: Option<Range<u64>>, length: u64) -> Result<Range<u64>, BoxError> {
+    match range {
+        None => Ok(0..length),
+        Some(range) if range.start <= range.end => {
+            Ok(range.start.min(length)..range.end.min(length))
+        }
+        Some(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid record range",
+        )
+        .into()),
+    }
+}
+
 /// Select a range from a streaming reader without buffering its contents.
+/// A non-zero start consumes the prefix; seekable backends should address it directly.
 pub async fn range_reader(
     mut reader: Reader,
     range: Option<Range<u64>>,

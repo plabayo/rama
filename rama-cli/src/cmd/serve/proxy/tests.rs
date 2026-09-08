@@ -470,6 +470,7 @@ async fn wait_interception(
 }
 
 async fn approval_id(store: &CaptureStore, direction: &str) -> u64 {
+    let direction = rama::http::inspect::control::HttpMessageDirection::from(direction);
     let control = store.control();
     let mut changes = control.subscribe_changes();
     tokio::time::timeout(Duration::from_secs(5), async {

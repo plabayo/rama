@@ -4866,6 +4866,7 @@ version = "0.5.0"
 dependencies = [
  "ahash",
  "itertools 0.15.0",
+ "parking_lot",
  "rama-core",
  "rama-http",
  "rama-inspect",
@@ -4910,6 +4911,7 @@ name = "rama-utils"
 version = "0.5.0"
 dependencies = [
  "ahash",
+ "base64 0.23.1",
  "const_format",
  "loom",
  "memchr",

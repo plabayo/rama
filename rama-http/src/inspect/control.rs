@@ -7,7 +7,7 @@ use arc_swap::ArcSwap;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use parking_lot::Mutex;
 use rama_core::{
-    error::{BoxError, BoxErrorExt as _, ErrorContext as _},
+    error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     extensions::Extension,
 };
 use rama_inspect::InspectionState;
@@ -122,7 +122,7 @@ mod response;
 pub use response::ResponseSpec;
 
 mod message;
-pub use message::Message;
+pub use message::{HttpMessageDirection, Message};
 
 mod payload;
 pub use payload::Payload;
@@ -204,15 +204,15 @@ impl Decision {
                             .iter()
                             .ne(edited.get_all(name).iter())
                         {
-                            return Err(format!(
-                                "{name} is managed by the transport and cannot be changed here"
+                            return Err(BoxError::from_static_str(
+                                "header is managed by the transport and cannot be changed here",
                             )
-                            .into());
+                            .context_str_field("header", name));
                         }
                     }
                 }
                 if let Some(status) = status
-                    && (message.direction != "response"
+                    && (!matches!(message.direction, HttpMessageDirection::Response)
                         || !(200..=599).contains(&status.as_u16())
                         || matches!(status.as_u16(), 204 | 205 | 304)
                         || matches!(
@@ -294,6 +294,9 @@ struct CompiledRule {
     host: Option<HostPattern>,
     path: Option<Wildcard<'static>>,
     headers: Vec<(HeaderName, Wildcard<'static>)>,
+    protocol: Option<Protocol>,
+    method: Option<Method>,
+    direction: Option<HttpMessageDirection>,
 }
 #[derive(Clone)]
 struct Policy {
@@ -344,19 +347,39 @@ impl CompiledRule {
             Action::Close { code, reason } => validate_close(*code, reason)?,
             _ => (),
         }
+        let protocol = (!m.protocol.is_empty())
+            .then(|| m.protocol.parse())
+            .transpose()?;
+        let method = (!m.method.is_empty())
+            .then(|| m.method.parse())
+            .transpose()?;
+        let direction =
+            (!m.direction.is_empty()).then(|| HttpMessageDirection::from(m.direction.as_str()));
         Ok(Self {
             rule,
             host,
             path,
             headers,
+            protocol,
+            method,
+            direction,
         })
     }
     fn matches(&self, message: &Message) -> bool {
         let m = &self.rule.matcher;
         self.rule.enabled
-            && (m.protocol.is_empty() || m.protocol.eq_ignore_ascii_case(message.protocol.as_str()))
-            && (m.direction.is_empty() || m.direction == message.direction)
-            && (m.method.is_empty() || m.method.eq_ignore_ascii_case(message.method.as_str()))
+            && self
+                .protocol
+                .as_ref()
+                .is_none_or(|protocol| protocol == &message.protocol)
+            && self
+                .direction
+                .as_ref()
+                .is_none_or(|direction| direction == &message.direction)
+            && self
+                .method
+                .as_ref()
+                .is_none_or(|method| method == message.method)
             && (m.kind.is_empty() || m.kind == message.kind)
             && m.port.is_none_or(|p| Some(p) == message.port)
             && m.status
@@ -594,6 +617,7 @@ impl Control {
             item.connections += 1;
         }
         item.bypassed += u64::from(newly_bypassed);
+        item.eligible = inspected;
         item.last_seen = jiff::Timestamp::now();
         item.source = source.into();
         item.reason = reason.into();
@@ -751,6 +775,7 @@ impl Control {
         {
             return (Decision::forward(), Some(rule.rule.name.clone()));
         }
+        let is_http = message.is_http();
         let ticket = {
             let _state = self.0.state.lock();
             // Serialize admission with the connection-wide decision so a concurrent
@@ -760,8 +785,9 @@ impl Control {
             {
                 return (Decision::forward(), None);
             }
+            let size = message.size();
             let queued = self.0.queue.enqueue_with(
-                message.size(),
+                size,
                 QueueLimits {
                     messages: policy.config.queue_limit,
                     message_bytes: MAX_MESSAGE_BYTES,
@@ -772,31 +798,51 @@ impl Control {
                     message.connection = connection.0.id;
                     message.queued_at = Some(jiff::Timestamp::now());
                     Pending {
-                        message: Arc::new(message.clone()),
+                        message: Arc::new(message),
                         connection: connection.clone(),
                     }
                 },
             );
-            match queued {
-                Ok(ticket) => ticket,
-                Err(_) => {
-                    return (
-                        if message.is_http() {
-                            Decision::Respond {
-                                response: ResponseSpec::error(
-                                    StatusCode::SERVICE_UNAVAILABLE,
-                                    "Rama interception queue is full.",
-                                ),
+            if let Ok(ticket) = queued {
+                ticket
+            } else {
+                let oversized = size > MAX_MESSAGE_BYTES;
+                return (
+                    if is_http {
+                        Decision::Respond {
+                            response: ResponseSpec::error(
+                                if oversized {
+                                    StatusCode::PAYLOAD_TOO_LARGE
+                                } else {
+                                    StatusCode::SERVICE_UNAVAILABLE
+                                },
+                                if oversized {
+                                    "Message exceeds the interception editor limit."
+                                } else {
+                                    "Rama interception queue is full."
+                                },
+                            ),
+                        }
+                    } else {
+                        Decision::Close {
+                            code: if oversized { 1009 } else { 1013 },
+                            reason: if oversized {
+                                "Message exceeds the interception editor limit"
+                            } else {
+                                "Interception queue is full"
                             }
+                            .into(),
+                        }
+                    },
+                    Some(
+                        if oversized {
+                            "message limit"
                         } else {
-                            Decision::Close {
-                                code: 1013,
-                                reason: "Interception queue is full".into(),
-                            }
-                        },
-                        Some("queue limit".into()),
-                    );
-                }
+                            "queue limit"
+                        }
+                        .into(),
+                    ),
+                );
             }
         };
         // A hold must never keep pause waiting on a capture-write permit.
@@ -806,7 +852,7 @@ impl Control {
             .await;
         let decision = match decision {
             Ok(Decision::Block) => {
-                if message.is_http() {
+                if is_http {
                     Decision::Respond {
                         response: policy.config.default_response.clone(),
                     }
@@ -816,7 +862,7 @@ impl Control {
             }
             Ok(decision) => decision,
             _ => {
-                if message.is_http() {
+                if is_http {
                     Decision::Respond {
                         response: ResponseSpec::error(
                             StatusCode::GATEWAY_TIMEOUT,
@@ -851,7 +897,7 @@ pub fn http_message(parts: &crate::request::Parts) -> Message {
     let protocol = rama_http_types::protocol_from_uri_or_extensions(&parts.extensions, &parts.uri);
     Message {
         protocol: protocol.clone(),
-        direction: "request".into(),
+        direction: HttpMessageDirection::Request,
         method: parts.method.clone(),
         url: parts.uri.clone(),
         host,
@@ -888,7 +934,7 @@ pub struct PendingSummary {
     pub connection_display_id: Option<u64>,
     pub exchange: Option<u64>,
     pub protocol: Protocol,
-    pub direction: String,
+    pub direction: HttpMessageDirection,
     pub method: Method,
     pub url: Uri,
     pub status: Option<StatusCode>,

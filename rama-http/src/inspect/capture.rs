@@ -1,7 +1,6 @@
 use crate::{
     Body, BodyCaptureEvent, BodyCaptureSink, CaptureBody, CaptureOutcome, HeaderMap, Request,
-    Response, StreamingBody,
-    fingerprint::{AkamaiH2, Ja4H},
+    Response, StreamingBody, fingerprint::AkamaiH2,
 };
 use crate::{Method, StatusCode, Version};
 use parking_lot::{Mutex as SyncMutex, RwLock};
@@ -38,6 +37,7 @@ use rama_inspect::InspectionState;
 
 const MAX_CACHED_SEARCHES: usize = 16;
 
+mod attachment;
 mod connection;
 mod extension;
 mod filter;
@@ -51,7 +51,8 @@ mod reading;
 pub use body::CapturedBodySource;
 mod recording;
 mod search;
-pub use extension::{CapturedRecord, ExchangeCapture};
+pub use attachment::{CapturedRecord, CapturedRecordStream};
+pub use extension::ExchangeCapture;
 pub use observation::{CaptureMetadata, CaptureObserver, HttpCaptureProtocol};
 
 #[cfg(test)]
@@ -149,7 +150,6 @@ struct CapturedExchange {
     response_stored: AtomicU64,
     budget: Arc<CaptureBudget>,
     stored_bytes: AtomicU64,
-    search_revision: AtomicU64,
 }
 
 impl Drop for CapturedExchange {
@@ -267,9 +267,14 @@ struct SearchCaches {
 
 struct SearchCache {
     needle: String,
-    matches: BTreeMap<u64, (u64, bool)>,
+    progress: BTreeMap<u64, Arc<Mutex<SearchProgress>>>,
 }
-
+#[derive(Default)]
+struct SearchProgress {
+    records: usize,
+    extensions: BTreeMap<std::any::TypeId, usize>,
+    matched: bool,
+}
 impl SearchCaches {
     fn new(max_results_per_query: usize) -> Self {
         Self {
@@ -277,38 +282,23 @@ impl SearchCaches {
             max_results_per_query,
         }
     }
-
-    fn get(&self, needle: &str, exchange_id: u64, revision: u64) -> Option<bool> {
-        self.entries
-            .iter()
-            .find(|cache| cache.needle == needle)
-            .and_then(|cache| cache.matches.get(&exchange_id))
-            .and_then(|(cached_revision, matched)| {
-                (*cached_revision == revision).then_some(*matched)
-            })
-    }
-
-    fn insert(&mut self, needle: &str, exchange_id: u64, revision: u64, matched: bool) {
+    fn get_or_insert(&mut self, needle: &str, exchange: u64) -> Arc<Mutex<SearchProgress>> {
         let index = self.entries.iter().position(|cache| cache.needle == needle);
-        let new_cache = || SearchCache {
-            needle: needle.to_owned(),
-            matches: BTreeMap::new(),
-        };
-        let mut cache = match index {
-            Some(index) => self.entries.remove(index).unwrap_or_else(new_cache),
-            None => SearchCache {
+        let mut cache = index
+            .and_then(|index| self.entries.remove(index))
+            .unwrap_or_else(|| SearchCache {
                 needle: needle.to_owned(),
-                matches: BTreeMap::new(),
-            },
-        };
-        cache.matches.insert(exchange_id, (revision, matched));
-        while cache.matches.len() > self.max_results_per_query {
-            cache.matches.pop_first();
+                progress: BTreeMap::new(),
+            });
+        let progress = cache.progress.entry(exchange).or_default().clone();
+        while cache.progress.len() > self.max_results_per_query {
+            cache.progress.pop_first();
         }
         self.entries.push_back(cache);
         if self.entries.len() > MAX_CACHED_SEARCHES {
             self.entries.pop_front();
         }
+        progress
     }
 }
 
@@ -518,6 +508,9 @@ impl fmt::Debug for CaptureStore {
 
 /// Capture admission and optional metadata enrichment. Limits count logical
 /// serialized record bytes; a storage backend can independently limit physical bytes.
+/// These are storage limits, not a process RSS limit. Summaries and typed observations
+/// are retained separately, bounded in count by connection/exchange admission; custom
+/// observers must bound any variable-sized metadata they attach. Payloads belong in storage.
 #[derive(Debug, Clone)]
 pub struct CaptureConfig {
     pub max_connections: usize,

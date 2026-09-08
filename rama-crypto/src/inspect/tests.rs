@@ -198,3 +198,40 @@ async fn encryption_rejects_substitution_reordered_chunks_and_missing_terminator
         .await
         .unwrap_err();
 }
+
+#[tokio::test]
+async fn authenticated_prefix_does_not_claim_complete_record_integrity() {
+    let files = FileStore::temporary(StorageLimits::default()).unwrap();
+    let store = EncryptStorageLayer::new([42; 32]).layer(files.clone());
+    let collection = store.serve(CreateCollection { id: 1 }).await.unwrap();
+    let id = collection
+        .append(std::io::Cursor::new(b"authenticated prefix"))
+        .await
+        .unwrap();
+    let path = files.directory().join("collection-1.capture");
+    let file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(&path)
+        .await
+        .unwrap();
+    let length = file.metadata().await.unwrap().len();
+    file.set_len(length - 1).await.unwrap();
+    let mut prefix = collection
+        .serve(ReadRecord {
+            id,
+            range: Some(0..5),
+        })
+        .await
+        .unwrap();
+    let mut bytes = Vec::new();
+    prefix.read_to_end(&mut bytes).await.unwrap();
+    assert_eq!(bytes, b"authe");
+    bytes.clear();
+    collection
+        .read(id)
+        .await
+        .unwrap()
+        .read_to_end(&mut bytes)
+        .await
+        .unwrap_err();
+}

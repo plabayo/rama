@@ -1,3 +1,4 @@
+use serde::ser::SerializeSeq as _;
 use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
 use std::convert::TryFrom;
@@ -2418,7 +2419,6 @@ impl serde::Serialize for HeaderMap<HeaderValue> {
     where
         S: serde::Serializer,
     {
-        use serde::ser::SerializeSeq as _;
         let mut sequence = serializer.serialize_seq(Some(self.len()))?;
         for header in self.ordered_iter() {
             sequence.serialize_element(&header)?;

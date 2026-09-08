@@ -8,11 +8,12 @@ use rama_core::{
     bytes::Bytes,
     error::{BoxError, ErrorContext as _},
     extensions::Extension,
-    futures::{Stream, stream},
+    futures::{Stream, StreamExt, async_stream::stream_fn},
+    stream::io::ReaderStream,
 };
 use rama_http::inspect::capture::{
-    CaptureMetadata, CaptureStore, CapturedBody, CapturedRecord, ExchangeCapture,
-    HttpCaptureProtocol,
+    CaptureMetadata, CaptureStore, CapturedBody, CapturedRecord, CapturedRecordStream,
+    ExchangeCapture, HttpCaptureProtocol,
 };
 use rama_net::Protocol;
 use serde::{Deserialize, Serialize};
@@ -58,6 +59,7 @@ pub struct CapturedWebSocketMessage {
     pub at: jiff::Timestamp,
     pub direction: WebSocketRelayDirection,
     pub kind: WebSocketMessageKind,
+    #[serde(with = "rama_utils::bytes::serde_base64")]
     pub data: Bytes,
     pub close_code: Option<CloseCode>,
     pub origin: WebSocketMessageOrigin,
@@ -78,12 +80,48 @@ impl CapturedWebSocketMessage {
         }
     }
 }
+/// Small serializable message head, independent of its raw payload reader.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct WebSocketMessageMetadata {
+    pub at: jiff::Timestamp,
+    pub direction: WebSocketRelayDirection,
+    pub kind: WebSocketMessageKind,
+    pub close_code: Option<CloseCode>,
+    pub origin: WebSocketMessageOrigin,
+}
 impl CapturedRecord for CapturedWebSocketMessage {
-    fn matches_search(&self, needle: &str) -> bool {
-        rama_inspect::search::matches_display(&rama_utils::fmt::utf8_or_hex(&self.data), needle)
+    type Metadata = WebSocketMessageMetadata;
+    fn metadata(&self) -> Self::Metadata {
+        WebSocketMessageMetadata {
+            at: self.at,
+            direction: self.direction,
+            kind: self.kind,
+            close_code: self.close_code,
+            origin: self.origin,
+        }
+    }
+    fn payload(&self) -> Bytes {
+        self.data.clone()
+    }
+    fn from_parts(metadata: Self::Metadata, data: Bytes) -> Self {
+        Self {
+            at: metadata.at,
+            direction: metadata.direction,
+            kind: metadata.kind,
+            close_code: metadata.close_code,
+            origin: metadata.origin,
+            data,
+        }
+    }
+    async fn matches_stream(
+        record: CapturedRecordStream<Self::Metadata>,
+        needle: &str,
+    ) -> Result<bool, BoxError> {
+        Ok(rama_inspect::search::matches_reader(record.payload, needle).await?)
     }
 }
 
+/// Per-exchange limit on retained WebSocket messages.
 #[derive(Debug, Clone, Copy, Extension)]
 pub struct WebSocketLimits {
     pub messages: usize,
@@ -364,13 +402,22 @@ impl CaptureWebSocketExt for CaptureStore {
         if index >= exchange.count::<CapturedWebSocketMessage>() {
             return Err("WebSocket message not found".into());
         }
-        Ok(stream::once(async move {
-            exchange
-                .records::<CapturedWebSocketMessage>(index..index.saturating_add(1))
-                .await?
-                .pop()
-                .map(|message| message.data)
-                .context("WebSocket message not found")
+        Ok(stream_fn(move |mut output| async move {
+            let result = async {
+                let record = exchange
+                    .record_stream::<CapturedWebSocketMessage>(index)
+                    .await?
+                    .context("WebSocket message not found")?;
+                let mut chunks = ReaderStream::new(record.payload);
+                while let Some(chunk) = chunks.next().await {
+                    output.yield_item(Ok(chunk?)).await;
+                }
+                Ok::<(), BoxError>(())
+            }
+            .await;
+            if let Err(error) = result {
+                output.yield_item(Err(error)).await;
+            }
         }))
     }
 }

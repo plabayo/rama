@@ -13,6 +13,7 @@ use crate::*;
 /// a warning. Malformed data and bundles with no usable profiles remain errors.
 /// This function is only available if the `embed-profiles` feature is enabled.
 #[cfg(feature = "embed-profiles")]
+#[cfg_attr(docsrs, doc(cfg(feature = "embed-profiles")))]
 pub fn try_load_embedded_profiles() -> Result<impl Iterator<Item = UserAgentProfile>, BoxError> {
     Ok(load_embedded_profiles(include_bytes!("embed_profiles.json"))?.into_iter())
 }

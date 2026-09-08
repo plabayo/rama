@@ -2,7 +2,7 @@
 use super::streaming::escaped;
 use rama_core::error::BoxError;
 use rama_utils::octets::kib;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
 const CHUNK: usize = kib(8);
 
@@ -134,14 +134,27 @@ async fn write_part<W: AsyncWrite + Unpin>(
         pending: 0,
     };
     let delimiter = loop {
-        if reader.fill_buf().await?.is_empty() {
+        let bytes = reader.fill_buf().await?;
+        if bytes.is_empty() {
             break None;
         }
-        let byte = reader.read_u8().await?;
-        if byte == b'&' || (name && byte == b'=') {
-            break Some(byte);
+        let mut consumed = 0;
+        let mut delimiter = None;
+        for &byte in bytes {
+            consumed += 1;
+            if byte == b'&' || (name && byte == b'=') {
+                delimiter = Some(byte);
+                break;
+            }
+            decoder.raw(byte);
+            if decoder.len >= CHUNK {
+                break;
+            }
         }
-        decoder.raw(byte);
+        reader.consume(consumed);
+        if delimiter.is_some() {
+            break delimiter;
+        }
         if decoder.len >= CHUNK {
             decoder.flush(writer, false).await?;
         }
@@ -150,4 +163,61 @@ async fn write_part<W: AsyncWrite + Unpin>(
     decoder.flush(writer, true).await?;
     writer.write_all(b"\"").await?;
     Ok(delimiter)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
+    use tokio::io::{AsyncRead, ReadBuf};
+
+    struct Counted<'a> {
+        bytes: &'a [u8],
+        fills: usize,
+    }
+    impl AsyncRead for Counted<'_> {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            _: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            panic!("buffered form parser must consume filled slices");
+        }
+    }
+    impl AsyncBufRead for Counted<'_> {
+        fn poll_fill_buf(
+            self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<std::io::Result<&[u8]>> {
+            let this = self.get_mut();
+            this.fills += 1;
+            Poll::Ready(Ok(this.bytes))
+        }
+        fn consume(self: Pin<&mut Self>, amount: usize) {
+            let this = self.get_mut();
+            this.bytes = &this.bytes[amount..];
+        }
+    }
+    #[tokio::test]
+    async fn form_parser_polls_per_buffer_instead_of_per_byte() {
+        let source = "a=%F0%9F%99%82".to_owned() + &"x".repeat(CHUNK * 8);
+        let mut reader = Counted {
+            bytes: source.as_bytes(),
+            fills: 0,
+        };
+        let mut output = Vec::new();
+        write_params(&mut output, &mut reader).await.unwrap();
+        assert!(reader.fills < 20, "{} buffer polls", reader.fills);
+        #[derive(serde::Deserialize)]
+        struct Param {
+            name: String,
+            value: String,
+        }
+        let params: Vec<Param> = serde_json::from_slice(&output).unwrap();
+        assert_eq!(params[0].name, "a");
+        assert_eq!(params[0].value, "🙂".to_owned() + &"x".repeat(CHUNK * 8));
+    }
 }

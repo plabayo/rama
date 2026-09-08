@@ -209,59 +209,73 @@ impl CaptureStore {
         exchange: &CapturedExchange,
         needle: &str,
     ) -> bool {
-        let revision = exchange.search_revision.load(Ordering::Acquire);
-        if let Some(matched) =
-            self.0
-                .search_caches
-                .lock()
-                .get(needle, exchange.summary_template.id, revision)
-        {
-            return matched;
+        let progress = self
+            .0
+            .search_caches
+            .lock()
+            .get_or_insert(needle, exchange.summary_template.id);
+        // Coalesce simultaneous readers of the same query/exchange. Committed
+        // records are immutable, so only the newly appended suffix needs scanning.
+        let mut progress = progress.lock().await;
+        if progress.matched || self.0.observer.matches_search(&exchange.metadata, needle) {
+            return true;
         }
-
-        #[cfg(test)]
-        self.0.record_reads.fetch_add(1, Ordering::Relaxed);
-        let mut matched = self.0.observer.matches_search(&exchange.metadata, needle);
-        let record_count = exchange.records.read().len();
-        for index in 0..record_count {
-            if matched {
-                break;
-            }
-            let location = exchange.records.read()[index];
-            let Ok(record) = read_record_at(&exchange.collection, location).await else {
-                continue;
+        let count = exchange.records.read().len();
+        while progress.records < count {
+            let location = exchange.records.read()[progress.records];
+            #[cfg(test)]
+            self.0.record_reads.fetch_add(1, Ordering::Relaxed);
+            let matched = if location.body.is_some() {
+                match exchange.collection.read(location.id).await {
+                    Ok(reader) => rama_inspect::search::matches_reader(reader, needle)
+                        .await
+                        .map_err(BoxError::from),
+                    Err(error) => Err(error),
+                }
+            } else {
+                read_record_at(&exchange.collection, location)
+                    .await
+                    .map(|record| records_match_search(std::slice::from_ref(&record), needle))
             };
-            matched = records_match_search(std::slice::from_ref(&record), needle);
+            let Ok(matched) = matched else {
+                return false;
+            };
+            progress.records += 1;
+            if matched {
+                progress.matched = true;
+                return true;
+            }
         }
-        if !matched {
-            let indices: Vec<_> = exchange
+        let kinds: Vec<_> = exchange.extension_records.read().keys().copied().collect();
+        for kind in kinds {
+            let mut index = progress.extensions.get(&kind).copied().unwrap_or_default();
+            let count = exchange
                 .extension_records
                 .read()
-                .values()
-                .map(|index| (index.ids.clone(), index.matches))
-                .collect();
-            'records: for (ids, matches) in indices {
-                for id in ids {
-                    let Ok(mut reader) = exchange.collection.read(id).await else {
-                        continue;
-                    };
-                    let mut data = Vec::new();
-                    if reader.read_to_end(&mut data).await.is_ok() && matches(&data, needle) {
-                        matched = true;
-                        break 'records;
-                    }
+                .get(&kind)
+                .map_or(0, |records| records.ids.len());
+            while index < count {
+                let (id, matches) = {
+                    let indices = exchange.extension_records.read();
+                    let records = &indices[&kind];
+                    (records.ids[index], records.matches)
+                };
+                #[cfg(test)]
+                self.0.record_reads.fetch_add(1, Ordering::Relaxed);
+                let Ok(reader) = exchange.collection.read(id).await else {
+                    return false;
+                };
+                let Ok(matched) = matches(reader, needle).await else {
+                    return false;
+                };
+                index += 1;
+                progress.extensions.insert(kind, index);
+                if matched {
+                    progress.matched = true;
+                    return true;
                 }
             }
         }
-        let current_revision = exchange.search_revision.load(Ordering::Acquire);
-        if current_revision == revision {
-            self.0.search_caches.lock().insert(
-                needle,
-                exchange.summary_template.id,
-                revision,
-                matched,
-            );
-        }
-        matched
+        false
     }
 }

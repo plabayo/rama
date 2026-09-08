@@ -49,12 +49,12 @@ pub async fn write_captured_har_entry<W: AsyncWrite + Unpin + Send>(
         .iter()
         .rev()
         .find_map(|record| match record {
-            StoredRecord::RequestHead { headers, .. } => Some(headers),
-            StoredRecord::Interception {
-                direction,
+            StoredRecord::RequestHead { headers, .. }
+            | StoredRecord::Interception {
+                direction: crate::inspect::control::HttpMessageDirection::Request,
                 forwarded_headers: Some(headers),
                 ..
-            } if direction == "request" => Some(headers),
+            } => Some(headers),
             _ => None,
         });
     let mime = request_headers

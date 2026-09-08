@@ -54,7 +54,7 @@ pub struct HttpExchangeSummary {
     pub response_bytes: u64,
     pub request_truncated: bool,
     pub response_truncated: bool,
-    pub ja4h: Option<Ja4H>,
+    pub ja4h: Option<std::sync::Arc<Ja4H>>,
     #[serde(skip)]
     pub metadata: CaptureMetadata,
 }
@@ -80,7 +80,7 @@ pub struct CaptureSnapshot {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StoredRecord {
     Interception {
-        direction: String,
+        direction: crate::inspect::control::HttpMessageDirection,
         outcome: String,
         original_headers: HeaderMap,
         original_status: Option<StatusCode>,
@@ -94,6 +94,7 @@ pub enum StoredRecord {
         headers: HeaderMap,
     },
     RequestBody {
+        #[serde(with = "rama_utils::bytes::serde_base64")]
         data: Bytes,
     },
     RequestTrailers {
@@ -108,6 +109,7 @@ pub enum StoredRecord {
         headers: HeaderMap,
     },
     ResponseBody {
+        #[serde(with = "rama_utils::bytes::serde_base64")]
         data: Bytes,
     },
     ResponseTrailers {

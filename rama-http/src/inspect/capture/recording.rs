@@ -88,7 +88,7 @@ impl CaptureStore {
             .unwrap_or(protocol)
             .clone();
         let user_agent = parts.headers.get(crate::header::USER_AGENT).cloned();
-        let ja4h = Ja4H::compute(parts).ok();
+        let ja4h = metadata.request_fingerprint(parts);
         if let Some(connection) = &connection
             && let Ok(fingerprint) = AkamaiH2::compute(&parts.extensions)
         {
@@ -164,7 +164,6 @@ impl CaptureStore {
             response_stored: AtomicU64::new(0),
             budget: self.0.budget.clone(),
             stored_bytes: AtomicU64::new(0),
-            search_revision: AtomicU64::new(0),
         });
         let request_head = self
             .append(
@@ -349,7 +348,6 @@ impl CaptureStore {
             _ => entry.metadata_records.write().push(record_location),
         }
         budget.commit(entry);
-        entry.search_revision.fetch_add(1, Ordering::Release);
         Ok(true)
     }
 

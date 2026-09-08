@@ -47,6 +47,7 @@ pub(super) async fn events(
             heartbeat.tick().await;
             let mut render_dashboard = true;
             let mut heartbeat_sequence = 0_u64;
+            let mut capture_refresh = tokio::time::Instant::now();
             loop {
                 if !state.has_session(&session) {
                     break;
@@ -71,6 +72,9 @@ pub(super) async fn events(
                         if result.is_err() {
                             break;
                         }
+                        tokio::time::sleep_until(capture_refresh).await;
+                        capture_changes.borrow_and_update();
+                        capture_refresh = tokio::time::Instant::now() + Duration::from_millis(100);
                         render_dashboard = true;
                     }
                     result = control_changes.changed() => {

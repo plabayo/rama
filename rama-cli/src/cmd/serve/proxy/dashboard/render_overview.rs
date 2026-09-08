@@ -188,12 +188,18 @@ pub(super) fn render_overview_panel(
             "select"
         };
         let select_label = if is_selected { "✓" } else { "+" };
-        let method = if matches!(exchange.protocol.as_str(), "ws" | "wss") {
+        let method = if matches!(
+            exchange.protocol,
+            rama::net::Protocol::WS | rama::net::Protocol::WSS
+        ) {
             "WS"
         } else {
             exchange.method.as_str()
         };
-        let replay_action = if matches!(exchange.protocol.as_str(), "ws" | "wss") {
+        let replay_action = if matches!(
+            exchange.protocol,
+            rama::net::Protocol::WS | rama::net::Protocol::WSS
+        ) {
             span!(class = "row-spacer").into_string()
         } else {
             button!(
@@ -248,8 +254,11 @@ pub(super) fn render_overview_panel(
         let actions = div!(
             class = "exchange-actions",
             PreEscaped(replay_action),
-            (!matches!(exchange.protocol.as_str(), "ws" | "wss"))
-                .then(|| PreEscaped(render_curl_button(exchange.id, "cURL"))),
+            (!matches!(
+                exchange.protocol,
+                rama::net::Protocol::WS | rama::net::Protocol::WSS
+            ))
+            .then(|| PreEscaped(render_curl_button(exchange.id, "cURL"))),
             button!(
                 class = "ghost",
                 "data-inspector-focus" = "request",

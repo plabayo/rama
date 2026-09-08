@@ -286,3 +286,53 @@ async fn search_reads_headers_and_payload_from_storage() {
     assert!(snapshot.exchanges.is_empty());
     assert_eq!(store.0.record_reads.load(Ordering::Relaxed), reads);
 }
+
+#[tokio::test]
+async fn active_search_reads_each_committed_record_once() {
+    let store = test_store();
+    let (parts, _) = Request::builder()
+        .uri("http://example.test/")
+        .body(())
+        .unwrap()
+        .into_parts();
+    let id = store.begin_exchange(&parts).await.unwrap().unwrap();
+    let filter = CaptureFilter {
+        search: "needle".into(),
+        ..Default::default()
+    };
+    assert_eq!(store.snapshot(&filter).await.total_requests, 0);
+    let initial = store.0.record_reads.load(Ordering::Relaxed);
+    for index in 0..32 {
+        store
+            .body_event(
+                id,
+                BodyDirection::Request,
+                BodyCaptureEvent::Frame(crate::body::Frame::data(Bytes::from_static(b"absent"))),
+            )
+            .await;
+        let (a, b) = tokio::join!(store.snapshot(&filter), store.snapshot(&filter));
+        assert_eq!(a.total_requests + b.total_requests, 0);
+        assert_eq!(
+            store.0.record_reads.load(Ordering::Relaxed),
+            initial + index + 1
+        );
+    }
+    store
+        .body_event(
+            id,
+            BodyDirection::Request,
+            BodyCaptureEvent::Frame(crate::body::Frame::data(Bytes::from_static(b"needle"))),
+        )
+        .await;
+    assert_eq!(store.snapshot(&filter).await.total_requests, 1);
+    let reads = store.0.record_reads.load(Ordering::Relaxed);
+    store
+        .body_event(
+            id,
+            BodyDirection::Request,
+            BodyCaptureEvent::Frame(crate::body::Frame::data(Bytes::from_static(b"later"))),
+        )
+        .await;
+    assert_eq!(store.snapshot(&filter).await.total_requests, 1);
+    assert_eq!(store.0.record_reads.load(Ordering::Relaxed), reads);
+}

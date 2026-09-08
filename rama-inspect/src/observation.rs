@@ -1,6 +1,6 @@
 //! Shared, typed observations attached to a captured connection or operation.
 use rama_core::extensions::{Extension, Extensions};
-use std::{ops::Deref, sync::Arc};
+use std::sync::Arc;
 
 /// An append-only observation scope. Clones share observations; independent
 /// scopes keep connection, exchange and upstream data separate.
@@ -12,6 +12,17 @@ struct Inner {
     insertion: parking_lot::Mutex<()>,
 }
 impl Observations {
+    pub fn get_ref<T: Extension>(&self) -> Option<&T> {
+        self.0.values.get_ref()
+    }
+    pub fn contains<T: Extension>(&self) -> bool {
+        self.0.values.contains::<T>()
+    }
+    /// Retain the first value for this type. Existing observations are never replaced.
+    pub fn insert<T: Extension>(&self, value: T) -> &T {
+        self.get_or_insert(|| value)
+    }
+
     /// Initialize an observation once, including when concurrent streams first
     /// encounter the same connection. The initializer must not insert recursively.
     pub fn get_or_insert<T: Extension>(&self, create: impl FnOnce() -> T) -> &T {
@@ -20,12 +31,6 @@ impl Observations {
         }
         let _insertion = self.0.insertion.lock();
         self.0.values.get_ref_or_insert(create)
-    }
-}
-impl Deref for Observations {
-    type Target = Extensions;
-    fn deref(&self) -> &Self::Target {
-        &self.0.values
     }
 }
 #[cfg(test)]

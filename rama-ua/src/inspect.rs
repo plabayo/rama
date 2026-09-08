@@ -9,12 +9,12 @@ use rama_core::{error::BoxError, extensions::Extension};
 use rama_http::{
     HeaderMap,
     headers::{ContentType, HeaderMapExt},
-    inspect::capture::{CaptureMetadata, CaptureStore},
+    inspect::capture::{CaptureMetadata, CaptureStore, StoredRecord},
     proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture},
 };
 use rama_inspect::search::matches_display;
 #[cfg(feature = "tls")]
-use rama_tls::{client::ClientHello, inspect::TlsObservation};
+use rama_tls::inspect::TlsObservation;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -23,17 +23,25 @@ use std::{
 #[derive(Debug, Clone, Extension, serde::Serialize)]
 pub struct UserAgentObservation {
     pub user_agent: Option<UserAgent>,
-    pub profile: Option<UserAgentProfileInput>,
+    /// Only protocol settings are retained here; profile headers are read from storage at export.
+    #[serde(skip)]
+    pub request_initiator: Option<RequestInitiator>,
+    #[serde(skip)]
+    pub h2_settings: Option<Http2Settings>,
     pub known_fingerprint: Option<KnownFingerprint>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ProfileInspector {
     database: Arc<UserAgentDatabase>,
+    fingerprints: Arc<fingerprint::FingerprintCache>,
 }
 impl ProfileInspector {
     pub fn new(database: Arc<UserAgentDatabase>) -> Self {
-        Self { database }
+        Self {
+            fingerprints: Arc::new(fingerprint::FingerprintCache::new(&database)),
+            database,
+        }
     }
     pub fn observe(&self, parts: &rama_http::request::Parts, metadata: &CaptureMetadata) {
         if metadata.exchange.contains::<UserAgentObservation>() {
@@ -43,11 +51,6 @@ impl ProfileInspector {
             .headers
             .get(rama_http::header::USER_AGENT)
             .and_then(|value| value.to_str().ok());
-        #[cfg(feature = "tls")]
-        let hello = metadata
-            .connection
-            .get_ref::<TlsObservation>()
-            .and_then(|tls| tls.client_hello.clone());
         let settings = (parts.version == rama_http::Version::HTTP_2).then(|| Http2Settings {
             http_pseudo_headers: parts.extensions.get_ref::<PseudoHeaderOrder>().cloned(),
             early_frames: parts.extensions.get_ref::<EarlyFrameCapture>().cloned(),
@@ -56,16 +59,15 @@ impl ProfileInspector {
         let websocket =
             parts.extensions.get_ref::<RequestInitiator>() == Some(&RequestInitiator::Ws);
         metadata.exchange.insert(UserAgentObservation {
-            known_fingerprint: known_fingerprint(&self.database, user_agent, parts, metadata),
-            user_agent: user_agent.map(UserAgent::new),
-            profile: captured_profile(
-                parts,
+            known_fingerprint: self.fingerprints.match_request(
+                &self.database,
                 user_agent,
-                #[cfg(feature = "tls")]
-                hello,
-                settings,
-                websocket,
+                parts,
+                metadata,
             ),
+            user_agent: user_agent.map(UserAgent::new),
+            request_initiator: captured_request_initiator(parts, websocket),
+            h2_settings: settings,
         });
     }
     pub fn database(&self) -> &UserAgentDatabase {
@@ -82,44 +84,72 @@ pub async fn export_profiles(
     let mut profiles = BTreeMap::<String, UserAgentProfileInput>::new();
     while let Some(capture) = selected.next_capture() {
         let metadata = capture.metadata();
-        let Some(profile) = metadata
-            .exchange
-            .get_ref::<UserAgentObservation>()
-            .and_then(|observation| observation.profile.as_ref())
+        let Some(observed) = metadata.exchange.get_ref::<UserAgentObservation>() else {
+            continue;
+        };
+        let Some(StoredRecord::RequestHead {
+            method,
+            url,
+            version,
+            headers,
+        }) = capture.request_head().await?
         else {
             continue;
         };
+        let Some(user_agent) = headers
+            .get(rama_http::header::USER_AGENT)
+            .and_then(|value| value.to_str().ok())
+        else {
+            continue;
+        };
+        // Construct profile data only on explicit export. Capture retains neither
+        // a second HeaderMap nor a ClientHello per request.
+        let mut profile = UserAgentProfileInput::new(user_agent);
+        #[cfg(feature = "tls")]
+        if profiles
+            .get(user_agent)
+            .is_none_or(|profile| profile.tls_client_hello.is_none())
+        {
+            profile.tls_client_hello = metadata
+                .connection
+                .get_ref::<TlsObservation>()
+                .and_then(|tls| tls.client_hello.clone());
+        }
+        let (mut parts, ()) = rama_http::Request::builder()
+            .method(method)
+            .uri(url)
+            .version(version)
+            .body(())?
+            .into_parts();
+        parts.headers = headers;
+        fill_profile(
+            &mut profile,
+            parts,
+            observed.request_initiator,
+            observed.h2_settings.clone(),
+        );
         if let Some(existing) = profiles.get_mut(&profile.uastr) {
-            existing.merge_missing(profile.clone())?;
+            existing.merge_missing(profile)?;
         } else {
-            profiles.insert(profile.uastr.clone(), profile.clone());
+            profiles.insert(profile.uastr.clone(), profile);
         }
     }
     Ok(profiles.into_values().collect())
 }
-fn captured_profile(
-    parts: &rama_http::request::Parts,
-    user_agent: Option<&str>,
-    #[cfg(feature = "tls")] tls_client_hello: Option<ClientHello>,
+fn fill_profile(
+    profile: &mut UserAgentProfileInput,
+    parts: rama_http::request::Parts,
+    request_initiator: Option<RequestInitiator>,
     h2_settings: Option<Http2Settings>,
-    websocket: bool,
-) -> Option<UserAgentProfileInput> {
-    let mut profile = UserAgentProfileInput::new(user_agent?);
-    #[cfg(feature = "tls")]
-    {
-        profile.tls_client_hello = tls_client_hello;
-    }
-    let request_initiator = captured_request_initiator(parts, websocket);
+) {
     if parts.version == rama_http::Version::HTTP_2 {
         profile.h2_settings = h2_settings;
         match request_initiator {
-            Some(RequestInitiator::Navigate) => {
-                profile.h2_headers_navigate = Some(parts.headers.clone())
-            }
-            Some(RequestInitiator::Fetch) => profile.h2_headers_fetch = Some(parts.headers.clone()),
-            Some(RequestInitiator::Xhr) => profile.h2_headers_xhr = Some(parts.headers.clone()),
-            Some(RequestInitiator::Form) => profile.h2_headers_form = Some(parts.headers.clone()),
-            Some(RequestInitiator::Ws) => profile.h2_headers_ws = Some(parts.headers.clone()),
+            Some(RequestInitiator::Navigate) => profile.h2_headers_navigate = Some(parts.headers),
+            Some(RequestInitiator::Fetch) => profile.h2_headers_fetch = Some(parts.headers),
+            Some(RequestInitiator::Xhr) => profile.h2_headers_xhr = Some(parts.headers),
+            Some(RequestInitiator::Form) => profile.h2_headers_form = Some(parts.headers),
+            Some(RequestInitiator::Ws) => profile.h2_headers_ws = Some(parts.headers),
             None => {}
         }
     } else {
@@ -127,17 +157,14 @@ fn captured_profile(
             title_case_headers: headers_are_title_case(&parts.headers),
         });
         match request_initiator {
-            Some(RequestInitiator::Navigate) => {
-                profile.h1_headers_navigate = Some(parts.headers.clone())
-            }
-            Some(RequestInitiator::Fetch) => profile.h1_headers_fetch = Some(parts.headers.clone()),
-            Some(RequestInitiator::Xhr) => profile.h1_headers_xhr = Some(parts.headers.clone()),
-            Some(RequestInitiator::Form) => profile.h1_headers_form = Some(parts.headers.clone()),
-            Some(RequestInitiator::Ws) => profile.h1_headers_ws = Some(parts.headers.clone()),
+            Some(RequestInitiator::Navigate) => profile.h1_headers_navigate = Some(parts.headers),
+            Some(RequestInitiator::Fetch) => profile.h1_headers_fetch = Some(parts.headers),
+            Some(RequestInitiator::Xhr) => profile.h1_headers_xhr = Some(parts.headers),
+            Some(RequestInitiator::Form) => profile.h1_headers_form = Some(parts.headers),
+            Some(RequestInitiator::Ws) => profile.h1_headers_ws = Some(parts.headers),
             None => {}
         }
     }
-    Some(profile)
 }
 
 fn captured_request_initiator(
@@ -219,67 +246,7 @@ impl UserAgentObservation {
                 .is_some_and(|value| matches_display(value, query))
     }
 }
-fn known_fingerprint(
-    database: &UserAgentDatabase,
-    user_agent: Option<&str>,
-    parts: &rama_http::request::Parts,
-    metadata: &CaptureMetadata,
-) -> Option<KnownFingerprint> {
-    let profile = database.get_exact_header_str(user_agent?)?;
-    #[cfg(feature = "tls")]
-    let tls_matches = metadata
-        .connection
-        .get_ref::<TlsObservation>()
-        .is_some_and(|tls| {
-            tls.ja3.as_ref().is_some_and(|actual| {
-                profile
-                    .tls
-                    .compute_ja3(None)
-                    .is_ok_and(|expected| &expected == actual)
-            }) || tls.ja4.as_ref().is_some_and(|actual| {
-                profile
-                    .tls
-                    .compute_ja4(None)
-                    .is_ok_and(|expected| &expected == actual)
-            }) || tls.peetprint.as_ref().is_some_and(|actual| {
-                profile
-                    .tls
-                    .compute_peet()
-                    .is_ok_and(|expected| &expected == actual)
-            })
-        });
-    #[cfg(not(feature = "tls"))]
-    let tls_matches = {
-        let _ = metadata;
-        false
-    };
-    let method = Some(parts.method.clone());
-    let http_matches = rama_http::fingerprint::Ja4H::compute(parts).is_ok_and(|actual| {
-        let fingerprints = if parts.version == rama_http::Version::HTTP_2 {
-            [
-                Some(profile.http.ja4h_h2_navigate(method.clone())),
-                profile.http.ja4h_h2_fetch(method.clone()),
-                profile.http.ja4h_h2_xhr(method.clone()),
-                profile.http.ja4h_h2_form(method),
-            ]
-        } else {
-            [
-                Some(profile.http.ja4h_h1_navigate(method.clone())),
-                profile.http.ja4h_h1_fetch(method.clone()),
-                profile.http.ja4h_h1_xhr(method.clone()),
-                profile.http.ja4h_h1_form(method),
-            ]
-        };
-        fingerprints
-            .into_iter()
-            .flatten()
-            .any(|expected| expected.is_ok_and(|expected| expected == actual))
-    });
-    (tls_matches || http_matches).then_some(KnownFingerprint {
-        kind: profile.ua_kind,
-        version: profile.ua_version,
-    })
-}
+mod fingerprint;
 
 #[cfg(test)]
 mod tests;

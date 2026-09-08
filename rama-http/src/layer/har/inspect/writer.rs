@@ -10,7 +10,7 @@ pub struct HarObjectWriter<'a, W> {
     buffer: Vec<u8>,
 }
 impl<W: AsyncWrite + Unpin> HarObjectWriter<'_, W> {
-    pub(super) async fn begin(writer: &mut W) -> Result<HarObjectWriter<'_, W>, BoxError> {
+    pub async fn begin(writer: &mut W) -> Result<HarObjectWriter<'_, W>, BoxError> {
         writer.write_all(b"{").await?;
         Ok(HarObjectWriter {
             writer,
@@ -66,7 +66,7 @@ impl<W: AsyncWrite + Unpin> HarObjectWriter<'_, W> {
         self.name(name).await?;
         Ok(self.writer)
     }
-    pub(super) async fn finish(self) -> Result<(), BoxError> {
+    pub async fn finish(self) -> Result<(), BoxError> {
         self.writer.write_all(b"}").await?;
         Ok(())
     }

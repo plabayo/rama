@@ -408,7 +408,7 @@ async fn capture_body_handler_streams_only_the_requested_bounded_direction() {
         State(state.clone()),
         Path(BodyPath {
             id: 1,
-            direction: "request".to_owned(),
+            direction: "request".into(),
         }),
         Query(BodyQuery {
             limit: Some(4),
@@ -427,7 +427,7 @@ async fn capture_body_handler_streams_only_the_requested_bounded_direction() {
         State(state),
         Path(BodyPath {
             id: 1,
-            direction: "response".to_owned(),
+            direction: "response".into(),
         }),
         Query(BodyQuery {
             limit: None,

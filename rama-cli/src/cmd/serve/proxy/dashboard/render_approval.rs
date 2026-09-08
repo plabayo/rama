@@ -1,11 +1,12 @@
 use super::*;
+use rama::http::inspect::control::HttpMessageDirection;
 
 pub(super) fn approval_badge(message: &PendingSummary) -> String {
     span!(
         class = "approval-badge",
-        match message.direction.as_str() {
-            "request" => "Awaiting request approval",
-            "response" => "Awaiting response approval",
+        match message.direction {
+            HttpMessageDirection::Request => "Awaiting request approval",
+            HttpMessageDirection::Response => "Awaiting response approval",
             _ => "Awaiting message approval",
         }
     )
@@ -76,7 +77,10 @@ pub(super) fn render_pending_fallbacks(
             .exchange
             .map(|id| format!("request-{id}"))
             .unwrap_or_else(|| {
-                if matches!(message.direction.as_str(), "request" | "response") {
+                if matches!(
+                    message.direction,
+                    HttpMessageDirection::Request | HttpMessageDirection::Response
+                ) {
                     format!("unrecorded-{}", message.id)
                 } else {
                     format!("unrecorded-connection-{}", message.connection)

@@ -26,10 +26,10 @@ fn entry_metadata(
                 ..
             } => request_head = Some((method, url, version, headers)),
             StoredRecord::Interception {
-                direction,
+                direction: crate::inspect::control::HttpMessageDirection::Request,
                 forwarded_headers: Some(headers),
                 ..
-            } if direction == "request" => {
+            } => {
                 if let Some((_, _, _, current)) = &mut request_head {
                     *current = headers;
                 }

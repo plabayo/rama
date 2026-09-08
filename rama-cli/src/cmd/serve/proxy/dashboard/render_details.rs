@@ -26,10 +26,10 @@ pub(super) fn render_details(details: &InspectorDetails) -> impl IntoHtml {
         .rev()
         .find_map(|record| match record {
             StoredRecord::Interception {
-                direction,
+                direction: rama::http::inspect::control::HttpMessageDirection::Request,
                 forwarded_headers: Some(headers),
                 ..
-            } if direction == "request" => Some(headers),
+            } => Some(headers),
             _ => None,
         })
         .or_else(|| request_head.map(|(_, _, _, headers)| headers));
@@ -134,9 +134,16 @@ pub(super) fn render_details(details: &InspectorDetails) -> impl IntoHtml {
                     "data-create-traffic-rule" = display(details.summary.id),
                     "Create traffic rule…"
                 ),
-                (!matches!(details.summary.protocol.as_str(), "ws" | "wss"))
-                    .then(|| PreEscaped(render_curl_button(details.summary.id, "Copy as cURL"))),
-                (!matches!(details.summary.protocol.as_str(), "ws" | "wss")).then(|| button!(
+                (!matches!(
+                    details.summary.protocol,
+                    rama::net::Protocol::WS | rama::net::Protocol::WSS
+                ))
+                .then(|| PreEscaped(render_curl_button(details.summary.id, "Copy as cURL"))),
+                (!matches!(
+                    details.summary.protocol,
+                    rama::net::Protocol::WS | rama::net::Protocol::WSS
+                ))
+                .then(|| button!(
                     r#type = "button",
                     class = "ghost compact replay-focus",
                     "data-on:click" = format!("@post('/api/replay/{}')", details.summary.id),

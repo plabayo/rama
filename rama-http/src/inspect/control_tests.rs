@@ -618,7 +618,7 @@ async fn oversized_items_fail_closed_without_retaining_queue_memory() {
         result,
         Decision::Respond {
             response: ResponseSpec {
-                status: StatusCode::SERVICE_UNAVAILABLE,
+                status: StatusCode::PAYLOAD_TOO_LARGE,
                 ..
             }
         }
@@ -635,7 +635,9 @@ async fn oversized_items_fail_closed_without_retaining_queue_memory() {
         )
         .await
         .0;
-    assert!(matches!(result, Decision::Close { code: 1013, .. }));
+    assert!(
+        matches!(result, Decision::Close { code: 1009, reason } if reason.contains("editor limit"))
+    );
     assert!(control.snapshot().pending.is_empty());
 }
 
@@ -758,4 +760,37 @@ async fn pause_bypasses_rules_and_holds_without_waiting_for_pending_approval() {
         Decision::Respond { .. }
     ));
     assert!(!control.snapshot().config.enabled);
+}
+
+#[test]
+fn host_eligibility_tracks_the_latest_observation() {
+    let control = control();
+    let connection = ControlConnection::new(1);
+    let host = "example.test".parse().unwrap();
+    control.observe(&connection, &host, false, "scope", "excluded");
+    assert!(!control.snapshot().hosts[0].eligible);
+    control.observe(&connection, &host, true, "scope", "included");
+    assert!(control.snapshot().hosts[0].eligible);
+}
+
+#[test]
+fn rule_selectors_are_parsed_once_and_canonicalize_known_directions() {
+    let rule = CompiledRule::new(Rule {
+        name: "typed rule".into(),
+        enabled: true,
+        action: Action::Intercept,
+        matcher: Matcher {
+            direction: "ReQuEsT".into(),
+            protocol: "HTTP".into(),
+            method: "GET".into(),
+            ..Matcher::default()
+        },
+    })
+    .unwrap();
+    assert!(rule.matches(&Message::default()));
+    let mut invalid = rule.rule;
+    invalid.matcher.method = "invalid method".into();
+    CompiledRule::new(invalid).err().unwrap();
+    let custom: HttpMessageDirection = "custom-adapter-direction".parse().unwrap();
+    assert_eq!(custom.as_str(), "custom-adapter-direction");
 }

@@ -143,9 +143,10 @@ impl CaptureStore {
             let mut registry = self.0.connections.write();
             std::mem::take(&mut *registry)
         };
-        drop(exchanges);
-        drop(connections);
+        self.0.search_caches.lock().entries.clear();
         self.changed();
+        // Destruction may release thousands of captures and their metadata.
+        _ = tokio::task::spawn_blocking(move || drop((exchanges, connections))).await;
     }
 
     /// Publish a provisionally accepted socket once it is known to carry

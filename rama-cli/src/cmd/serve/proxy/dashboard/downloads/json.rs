@@ -1,5 +1,9 @@
 use super::*;
-use rama::futures::StreamExt;
+use rama::{
+    futures::StreamExt, http::ws::inspect::har::write_captured_websocket_json,
+    stream::io::ReaderStream,
+};
+use tokio::io::AsyncWriteExt as _;
 
 pub(in crate::cmd::serve::proxy::dashboard) async fn capture_json(
     State(state): State<DashboardState>,
@@ -9,11 +13,7 @@ pub(in crate::cmd::serve::proxy::dashboard) async fn capture_json(
         Ok(selected) => selected,
         Err(error) => return error_response(StatusCode::NOT_FOUND, error),
     };
-    let mut details = match selected.inspector_details().await {
-        Ok(details) => details,
-        Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
-    };
-    details.records.clear();
+    let details = selected.summary_details();
     let metadata = match capture_metadata(&details) {
         Ok(metadata) => metadata,
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
@@ -36,18 +36,31 @@ pub(in crate::cmd::serve::proxy::dashboard) async fn capture_json(
             output
                 .yield_item(Ok(Bytes::from_static(b"],\"websocket\":[")))
                 .await;
-            for index in 0..message_count {
-                let Some(message) = selected.record::<CapturedWebSocketMessage>(index).await?
-                else {
-                    break;
-                };
-                if index != 0 {
-                    output.yield_item(Ok(Bytes::from_static(b","))).await;
+            let (mut writer, reader) = tokio::io::duplex(rama::utils::octets::kib(16));
+            let produce = async {
+                for index in 0..message_count {
+                    let Some(message) = selected
+                        .record_stream::<CapturedWebSocketMessage>(index)
+                        .await?
+                    else {
+                        break;
+                    };
+                    if index != 0 {
+                        writer.write_all(b",").await?;
+                    }
+                    write_captured_websocket_json(&mut writer, message).await?;
                 }
-                output
-                    .yield_item(Ok(Bytes::from(serde_json::to_vec(&message)?)))
-                    .await;
-            }
+                writer.shutdown().await?;
+                Ok::<(), BoxError>(())
+            };
+            let consume = async {
+                let mut chunks = ReaderStream::new(reader);
+                while let Some(chunk) = chunks.next().await {
+                    output.yield_item(Ok(chunk?)).await;
+                }
+                Ok::<(), BoxError>(())
+            };
+            tokio::try_join!(produce, consume)?;
             output.yield_item(Ok(Bytes::from_static(b"]}"))).await;
             Ok::<(), BoxError>(())
         }

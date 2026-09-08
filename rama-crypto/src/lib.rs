@@ -96,4 +96,5 @@ pub mod dep {
 }
 
 #[cfg(all(feature = "inspect", feature = "boring"))]
+#[cfg_attr(docsrs, doc(cfg(all(feature = "inspect", feature = "boring"))))]
 pub mod inspect;

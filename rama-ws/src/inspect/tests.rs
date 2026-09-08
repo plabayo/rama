@@ -25,7 +25,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll},
 };
-use tokio::io::{AsyncRead, ReadBuf};
+use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 
 #[derive(Debug)]
 struct Observer(WebSocketLimits);
@@ -356,8 +356,8 @@ async fn cancelled_message_append_preserves_committed_records_and_marks_a_gap() 
         type Error = BoxError;
         async fn serve(&self, mut input: AppendRecord) -> Result<RecordId, BoxError> {
             if self.stop.load(Ordering::Acquire) {
-                input.source = Box::pin(StopAfterChunk {
-                    reader: input.source,
+                input = AppendRecord::new(StopAfterChunk {
+                    reader: input.into_reader(),
                     entered: self.entered.clone(),
                     read: false,
                 });
@@ -434,4 +434,93 @@ async fn cancelled_message_append_preserves_committed_records_and_marks_a_gap() 
             .summary
             .request_truncated
     );
+}
+
+#[tokio::test]
+async fn binary_capture_stores_raw_bytes_with_compact_wire_serde() {
+    let store = store(
+        16,
+        rama_utils::octets::kib_u64(128),
+        rama_utils::octets::kib_u64(66),
+    );
+    let _response = handshake(&store, Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS).await;
+    let payload = Bytes::from(vec![0xaa; rama_utils::octets::kib(64)]);
+    store
+        .record_websocket_message(
+            1,
+            CapturedWebSocketMessage::new(
+                WebSocketRelayDirection::Ingress,
+                WebSocketMessageKind::Binary,
+                payload.clone(),
+            ),
+        )
+        .await;
+    let details = store.websocket_details(1, 0, 1).await.unwrap();
+    assert_eq!(details.total, 1);
+    assert_eq!(details.messages[0].data, payload);
+    let encoded = serde_json::to_vec(&details.messages[0]).unwrap();
+    assert!(encoded.len() < rama_utils::octets::kib(90));
+    #[derive(serde::Deserialize)]
+    struct WireMessage {
+        data: String,
+    }
+    let wire: WireMessage = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, wire.data).unwrap(),
+        payload
+    );
+}
+
+#[tokio::test]
+async fn json_message_export_writes_before_reading_the_full_payload() {
+    let message = CapturedWebSocketMessage::new(
+        WebSocketRelayDirection::Ingress,
+        WebSocketMessageKind::Binary,
+        Bytes::new(),
+    );
+    let (mut output, mut reader) = tokio::io::duplex(64);
+    let producer = har::write_captured_websocket_json(
+        &mut output,
+        rama_http::inspect::capture::CapturedRecordStream {
+            metadata: rama_http::inspect::capture::CapturedRecord::metadata(&message),
+            // A generated source errors if drained. Export must make payload
+            // progress before reading beyond a bounded prefix.
+            payload: Box::pin(PayloadReadGuard(0)),
+        },
+    );
+    tokio::pin!(producer);
+    let prefix = async {
+        let mut prefix = vec![0; rama_utils::octets::kib(16)];
+        reader.read_exact(&mut prefix).await.unwrap();
+        assert!(prefix.starts_with(b"{\"at\":"));
+    };
+    tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::select! {
+            result = &mut producer => panic!("unexpected early export completion: {result:?}"),
+            () = prefix => {},
+        }
+    })
+    .await
+    .unwrap();
+    // Dropping producer cancels only this read/export.
+}
+
+struct PayloadReadGuard(usize);
+impl AsyncRead for PayloadReadGuard {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if self.0 >= rama_utils::octets::kib(64) {
+            return Poll::Ready(Err(std::io::Error::other(
+                "export drained the payload before yielding",
+            )));
+        }
+        let count = output.remaining().min(rama_utils::octets::kib(8));
+        output.initialize_unfilled_to(count).fill(0xaa);
+        output.advance(count);
+        self.0 += count;
+        Poll::Ready(Ok(()))
+    }
 }

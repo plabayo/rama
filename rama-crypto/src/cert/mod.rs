@@ -5,7 +5,7 @@
 //!
 //! - `boring`: generate using BoringSSL (via `rama-boring`), for stacks that
 //!   already link boringssl and do not want a second crypto provider.
-//! - `aws-lc` / `ring`: generate using [`rcgen`].
+//! - `aws-lc` / `ring`: generate using `rcgen`.
 //!
 //! When several providers are enabled, `boring` is preferred. With none
 //! enabled, certificate-generation functions return an error.

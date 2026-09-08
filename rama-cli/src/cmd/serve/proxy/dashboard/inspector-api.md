@@ -68,3 +68,17 @@ belong to the connection; HTTP/2 fingerprints are connection metadata.
 HTTP bodies stream for HAR, JSON downloads and replay. Inline cURL export is
 limited to 64 KiB of request body; larger bodies remain available through the body
 download and replay endpoints. A supplied browser session must be nonempty.
+
+The interception editor admits messages up to 256 KiB including metadata; binary
+payloads count their base64 editor representation. Oversized intercepted messages
+fail closed with HTTP 413 or WebSocket close 1009 and an explicit editor-limit
+reason. Queue exhaustion uses HTTP 503 or WebSocket close 1013 instead.
+
+Capture byte limits apply to stored records. Summaries and protocol observations
+also use memory, bounded by retained connection/exchange counts and protocol limits.
+User-agent profile headers are read from the stored request head on export; TLS
+ClientHello data is shared per connection, rather than copied into each exchange.
+Recorded body/message `data` fields in JSON downloads are base64 strings; storage
+keeps payloads raw and exports them as streams. Request/response direction selectors
+accept canonical names case-insensitively; HTTP methods follow native case-sensitive
+method semantics. Custom upgraded-protocol direction and kind tags remain supported.

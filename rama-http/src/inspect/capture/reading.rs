@@ -1,4 +1,5 @@
 use super::*;
+use rama_core::error::{BoxErrorExt as _, ErrorExt as _};
 use rama_core::{
     futures::{StreamExt, async_stream::stream_fn},
     stream::io::ReaderStream,
@@ -108,10 +109,10 @@ impl CaptureStore {
                     ..
                 } => head = Some((method, url, version, headers)),
                 StoredRecord::Interception {
-                    direction,
+                    direction: crate::inspect::control::HttpMessageDirection::Request,
                     forwarded_headers: Some(headers),
                     ..
-                } if direction == "request" => {
+                } => {
                     if let Some((_, _, _, current)) = &mut head {
                         *current = headers;
                     }
@@ -129,10 +130,10 @@ impl CaptureStore {
         match request_end {
             Some(CaptureOutcome::Complete) => {}
             Some(outcome) => {
-                return Err(std::io::Error::other(format!(
-                    "captured request ended with {outcome} and cannot be replayed safely"
-                ))
-                .into());
+                return Err(BoxError::from_static_str(
+                    "captured request cannot be replayed safely",
+                )
+                .context_field("outcome", outcome));
             }
             None => {
                 return Err(
@@ -170,6 +171,17 @@ impl CaptureStore {
 }
 
 impl ExchangeCapture {
+    /// Read only the original request head; body and subsequent decision records are untouched.
+    pub async fn request_head(&self) -> Result<Option<StoredRecord>, BoxError> {
+        let first = self.entry.metadata_records.read().first().copied();
+        match first {
+            Some(location) => Ok(Some(
+                read_record_at(&self.entry.collection, location).await?,
+            )),
+            None => Ok(None),
+        }
+    }
+
     /// Stream a pinned record prefix. Body records may be split into smaller
     /// chunks; metadata ordering and the concatenated body bytes are preserved.
     pub fn records_stream(

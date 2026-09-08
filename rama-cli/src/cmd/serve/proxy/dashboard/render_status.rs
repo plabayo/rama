@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn render_protocol_badge(exchange: &HttpExchangeSummary) -> String {
-    let secure = matches!(exchange.protocol.as_str(), "https" | "wss");
+    let secure = exchange.protocol.is_secure();
     span!(
         class = match secure {
             true => "tag protocol secure",
@@ -37,7 +37,10 @@ pub(super) fn render_exchange_status(exchange: &HttpExchangeSummary) -> String {
         )
         .into_string();
     }
-    let websocket = matches!(exchange.protocol.as_str(), "ws" | "wss");
+    let websocket = matches!(
+        exchange.protocol,
+        rama::net::Protocol::WS | rama::net::Protocol::WSS
+    );
     let (fallback, suffix, class, state, indicator) = match (exchange.status, exchange.active) {
         (None, true) => (
             "Waiting for response",

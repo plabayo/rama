@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 /// temporary UTF-8 or base64 string. Text is supplied through a string type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Payload {
+    #[serde(with = "rama_utils::bytes::serde_base64")]
     bytes: Bytes,
     binary: bool,
 }

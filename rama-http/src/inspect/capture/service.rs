@@ -223,7 +223,7 @@ where
                 Ok(response) => {
                     let (mut parts, body) = response.into_parts();
                     let mut original = message.clone();
-                    original.direction = "response".into();
+                    original.direction = crate::inspect::control::HttpMessageDirection::Response;
                     original.status = Some(parts.status);
                     original.headers = parts.headers.clone();
                     let (decision, reason) = control.decide(&connection, original.clone()).await;
@@ -264,7 +264,7 @@ where
                                         "Responded locally"
                                     }
                                 ),
-                                Some(response.headers()),
+                                forwarded.then(|| response.headers()),
                             )
                             .await;
                     }
@@ -362,7 +362,7 @@ where
             && let Some(store) = &self.store
         {
             store.set_connection_protocol_if_enabled(id.0, self.protocol.clone());
-            if self.protocol != "http" {
+            if self.protocol != Protocol::HTTP {
                 store.confirm_connection_if_enabled(id.0);
             }
         }

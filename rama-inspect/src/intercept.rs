@@ -2,6 +2,7 @@
 //! admission costs, and timeout behavior. This module knows no traffic protocol.
 
 use parking_lot::Mutex;
+use rama_core::futures::StreamExt;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tokio::sync::{oneshot, watch};
 
@@ -191,6 +192,9 @@ impl<M, D> Interception<M, D> {
             .iter()
             .filter_map(|(id, p)| decide(&p.message).map(|d| (*id, d)))
             .collect::<Vec<_>>();
+        if decisions.is_empty() {
+            return;
+        }
         for (id, decision) in decisions {
             if let Some(pending) = state.pending.remove(&id) {
                 state.bytes -= pending.bytes;
@@ -242,7 +246,6 @@ impl<M: Send + Sync + 'static, D: Send + 'static> Interception<M, D> {
     pub fn subscribe(
         &self,
     ) -> impl rama_core::futures::Stream<Item = Vec<(u64, Arc<M>)>> + Send + 'static {
-        use rama_core::futures::StreamExt;
         let queue = self.clone();
         crate::subscription::subscribe(
             self.subscribe_changes(),
@@ -292,7 +295,6 @@ mod tests {
     }
     #[tokio::test]
     async fn typed_subscription_and_group_resolution() {
-        use rama_core::futures::StreamExt;
         let queue = Interception::<(u8, &'static str), bool>::default();
         let mut stream = Box::pin(queue.subscribe());
         assert!(stream.next().await.unwrap().is_empty());
