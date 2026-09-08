@@ -88,24 +88,29 @@ impl FingerprintCache {
         ]
         .iter()
         .position(|method| method == parts.method);
-        let mut cache = expected.http.lock();
-        let uncached;
-        let fingerprints = if let Some(index) = method_index {
-            cache
-                .entry((h2, index))
-                .or_insert_with(|| http(profile, parts.method.clone(), h2))
-        } else {
-            uncached = http(profile, parts.method.clone(), h2);
-            &uncached
+        let matches = |fingerprints: &[Option<Ja4H>; 4]| {
+            fingerprints
+                .iter()
+                .flatten()
+                .any(|expected| expected == actual.as_ref())
         };
-        fingerprints
-            .iter()
-            .flatten()
-            .any(|expected| expected == actual.as_ref())
-            .then_some(KnownFingerprint {
-                kind: profile.ua_kind,
-                version: profile.ua_version,
-            })
+        let matched = if let Some(index) = method_index {
+            matches(
+                expected
+                    .http
+                    .lock()
+                    .entry((h2, index))
+                    .or_insert_with(|| http(profile, parts.method.clone(), h2)),
+            )
+        } else {
+            // Custom methods are intentionally uncached; computing them needs no
+            // access to the shared cache and must not serialize unrelated requests.
+            matches(&http(profile, parts.method.clone(), h2))
+        };
+        matched.then_some(KnownFingerprint {
+            kind: profile.ua_kind,
+            version: profile.ua_version,
+        })
     }
 }
 fn http(profile: &UserAgentProfile, method: Method, h2: bool) -> [Option<Ja4H>; 4] {
@@ -131,6 +136,32 @@ fn http(profile: &UserAgentProfile, method: Method, h2: bool) -> [Option<Ja4H>; 
 #[cfg(all(test, feature = "embed-profiles"))]
 mod tests {
     use super::*;
+    #[test]
+    fn custom_methods_do_not_wait_for_the_shared_cache_lock() {
+        let database = UserAgentDatabase::try_embedded().unwrap();
+        let cache = FingerprintCache::new(&database);
+        let ua = database.iter_ua_str().next().unwrap();
+        let (parts, ()) = rama_http::Request::builder()
+            .method("Custom-Method")
+            .header("user-agent", ua)
+            .body(())
+            .unwrap()
+            .into_parts();
+        let guard = cache.0[ua].http.lock();
+        let (send, receive) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| {
+                cache.match_request(&database, Some(ua), &parts, &CaptureMetadata::default());
+                send.send(()).unwrap();
+            });
+            let result = receive.recv_timeout(std::time::Duration::from_secs(2));
+            // Release before joining even on failure, so a regression cannot hang.
+            drop(guard);
+            worker.join().unwrap();
+            result.unwrap();
+        });
+        assert!(cache.0[ua].http.lock().is_empty());
+    }
     #[test]
     fn repeated_and_custom_methods_keep_the_expected_cache_bounded() {
         let database = UserAgentDatabase::try_embedded().unwrap();

@@ -1,4 +1,6 @@
 use super::*;
+use rama_core::error::BoxErrorExt as _;
+use rama_inspect::storage::{ListRecords, MemoryStore, ReadRecord, Reader};
 
 #[tokio::test]
 async fn limited_snapshot_keeps_full_totals_without_cloning_every_row() {
@@ -335,4 +337,123 @@ async fn active_search_reads_each_committed_record_once() {
         .await;
     assert_eq!(store.snapshot(&filter).await.total_requests, 1);
     assert_eq!(store.0.record_reads.load(Ordering::Relaxed), reads);
+}
+
+#[tokio::test]
+async fn search_resolves_the_needle_once_and_progress_dies_with_its_exchange() {
+    let store = test_store_with_limits(8, 2, rama_utils::octets::kib_u64(1));
+    let (parts, ()) = Request::new(()).into_parts();
+    let first = store.begin_exchange(&parts).await.unwrap().unwrap();
+    let second = store.begin_exchange(&parts).await.unwrap().unwrap();
+    let filter = CaptureFilter {
+        search: "absent-needle".into(),
+        ..CaptureFilter::default()
+    };
+    for lookup in 1..=3 {
+        assert_eq!(store.snapshot(&filter).await.total_requests, 0);
+        assert_eq!(store.0.search_caches.lock().lookups, lookup);
+    }
+    let query = store.0.search_caches.lock().entries.back().unwrap().clone();
+    let entry = store.exchange(first).unwrap();
+    let progress = Arc::downgrade(&entry.searches.lock().get_or_insert(&query));
+    drop(entry);
+    assert!(progress.upgrade().is_some());
+    store
+        .body_event(
+            first,
+            BodyDirection::Response,
+            BodyCaptureEvent::End(CaptureOutcome::Complete),
+        )
+        .await;
+    store.begin_exchange(&parts).await.unwrap().unwrap();
+    store.exchange(first).err().unwrap();
+    store.exchange(second).unwrap();
+    assert!(progress.upgrade().is_none());
+}
+
+#[derive(Clone)]
+struct ReadFailureStore {
+    memory: MemoryStore,
+    blocked: Arc<AtomicU64>,
+}
+impl Service<CreateCollection> for ReadFailureStore {
+    type Output = Collection;
+    type Error = BoxError;
+    async fn serve(&self, input: CreateCollection) -> Result<Collection, BoxError> {
+        Ok(Collection::new(ReadFailureCollection {
+            inner: self.memory.serve(input).await?,
+            blocked: self.blocked.clone(),
+        }))
+    }
+}
+#[derive(Clone)]
+struct ReadFailureCollection {
+    inner: Collection,
+    blocked: Arc<AtomicU64>,
+}
+impl Service<AppendRecord> for ReadFailureCollection {
+    type Output = RecordId;
+    type Error = BoxError;
+    async fn serve(&self, input: AppendRecord) -> Result<RecordId, BoxError> {
+        self.inner.serve(input).await
+    }
+}
+impl Service<ListRecords> for ReadFailureCollection {
+    type Output = Vec<RecordId>;
+    type Error = BoxError;
+    async fn serve(&self, input: ListRecords) -> Result<Self::Output, BoxError> {
+        self.inner.serve(input).await
+    }
+}
+impl Service<ReadRecord> for ReadFailureCollection {
+    type Output = Reader;
+    type Error = BoxError;
+    async fn serve(&self, input: ReadRecord) -> Result<Reader, BoxError> {
+        if input.id.0 == self.blocked.load(Ordering::Relaxed) {
+            return Err(BoxError::from_static_str("injected read failure"));
+        }
+        self.inner.serve(input).await
+    }
+}
+#[tokio::test]
+async fn search_skips_failed_records_and_retries_them_without_rescanning_successes() {
+    let blocked = Arc::new(AtomicU64::new(1));
+    let store = CaptureStore::with_storage(
+        Storage::new(ReadFailureStore {
+            memory: MemoryStore::new(Default::default()),
+            blocked: blocked.clone(),
+        }),
+        CaptureConfig::default(),
+        InspectionState::default(),
+    );
+    let (parts, ()) = Request::new(()).into_parts();
+    let id = store.begin_exchange(&parts).await.unwrap().unwrap();
+    for bytes in [
+        Bytes::from_static(b"early-needle"),
+        Bytes::from_static(b"late-needle"),
+    ] {
+        store
+            .body_event(
+                id,
+                BodyDirection::Request,
+                BodyCaptureEvent::Frame(crate::body::Frame::data(bytes)),
+            )
+            .await;
+    }
+    let early = CaptureFilter {
+        search: "early-needle".into(),
+        ..CaptureFilter::default()
+    };
+    let late = CaptureFilter {
+        search: "late-needle".into(),
+        ..CaptureFilter::default()
+    };
+    assert_eq!(store.snapshot(&late).await.total_requests, 1);
+    assert_eq!(store.snapshot(&early).await.total_requests, 0);
+    let reads = store.0.record_reads.load(Ordering::Relaxed);
+    assert_eq!(store.snapshot(&early).await.total_requests, 0);
+    assert_eq!(store.0.record_reads.load(Ordering::Relaxed), reads + 1);
+    blocked.store(u64::MAX, Ordering::Relaxed);
+    assert_eq!(store.snapshot(&early).await.total_requests, 1);
+    assert_eq!(store.0.record_reads.load(Ordering::Relaxed), reads + 2);
 }

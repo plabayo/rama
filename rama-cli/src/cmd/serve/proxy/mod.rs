@@ -1029,11 +1029,13 @@ pub struct CliCommandProxy {
     #[arg(long, default_value_t = DEFAULT_CAPTURE_TOTAL_LIMIT)]
     capture_total_limit: u64,
 
-    /// Maximum connections kept in the live inspector.
+    /// Maximum connections kept in the live inspector. Connection summaries and
+    /// TLS observations use memory in addition to the capture storage byte limit.
     #[arg(long, default_value_t = 10_000)]
     capture_connections: usize,
 
-    /// Maximum HTTP exchanges retained in the live inspector.
+    /// Maximum HTTP exchanges retained in the live inspector. Exchange summaries
+    /// use memory in addition to the capture storage byte limit.
     #[arg(long, default_value_t = 10_000)]
     capture_exchanges: usize,
 

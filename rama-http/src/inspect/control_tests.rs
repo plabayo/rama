@@ -794,3 +794,29 @@ fn rule_selectors_are_parsed_once_and_canonicalize_known_directions() {
     let custom: HttpMessageDirection = "custom-adapter-direction".parse().unwrap();
     assert_eq!(custom.as_str(), "custom-adapter-direction");
 }
+
+#[test]
+fn rules_reject_misspelled_standard_methods_and_preserve_custom_case() {
+    let make_rule = |method: &str| Rule {
+        name: "method rule".into(),
+        enabled: true,
+        action: Action::Intercept,
+        matcher: Matcher {
+            method: method.into(),
+            ..Matcher::default()
+        },
+    };
+    for method in ["get", "pOsT", "Head", "connect"] {
+        let error = CompiledRule::new(make_rule(method)).err().unwrap();
+        assert!(error.to_string().contains("canonical HTTP rule method"));
+    }
+    let rule = CompiledRule::new(make_rule("Custom-Method")).unwrap();
+    assert!(rule.matches(&Message {
+        method: "Custom-Method".parse().unwrap(),
+        ..Message::default()
+    }));
+    assert!(!rule.matches(&Message {
+        method: "CUSTOM-METHOD".parse().unwrap(),
+        ..Message::default()
+    }));
+}

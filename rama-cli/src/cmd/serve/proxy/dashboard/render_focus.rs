@@ -328,7 +328,7 @@ pub(super) fn connection_route(
     connection: &HttpConnectionSummary,
     exchanges: &[HttpExchangeSummary],
 ) -> String {
-    if connection.ingress_protocol.as_str() == "replay" {
+    if connection.ingress_protocol == REPLAY_PROTOCOL {
         exchanges
             .iter()
             .find(|exchange| exchange.connection_id == connection.id)

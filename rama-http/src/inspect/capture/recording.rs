@@ -156,6 +156,7 @@ impl CaptureStore {
             extension_records: RwLock::new(BTreeMap::new()),
             collection,
             append_lock: Mutex::new(()),
+            searches: SyncMutex::default(),
             records: RwLock::new(Vec::new()),
             metadata_records: RwLock::new(Vec::new()),
             request_body_records: RwLock::new(Vec::new()),

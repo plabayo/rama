@@ -219,7 +219,7 @@ impl Decision {
                             message.status.map(|status| status.as_u16()),
                             Some(101 | 204 | 205 | 304)
                         )
-                        || message.method == "CONNECT")
+                        || message.method == Method::CONNECT)
                 {
                     return Err(BoxError::from_static_str(
                         "use Respond locally to change body or upgrade semantics",
@@ -243,7 +243,9 @@ impl Decision {
                     ));
                 }
                 response.validate()?;
-                if message.method == "CONNECT" && (200..300).contains(&response.status.as_u16()) {
+                if message.method == Method::CONNECT
+                    && (200..300).contains(&response.status.as_u16())
+                {
                     return Err(BoxError::from_static_str(
                         "a local response cannot establish a CONNECT tunnel",
                     ));
@@ -350,6 +352,28 @@ impl CompiledRule {
         let protocol = (!m.protocol.is_empty())
             .then(|| m.protocol.parse())
             .transpose()?;
+        // Standard method misspellings must not silently become extension methods.
+        // Genuine custom methods retain their case-sensitive wire spelling.
+        if let Some(method) = [
+            Method::GET,
+            Method::HEAD,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::CONNECT,
+            Method::OPTIONS,
+            Method::TRACE,
+            Method::PATCH,
+        ]
+        .into_iter()
+        .find(|method| {
+            method.as_str().eq_ignore_ascii_case(&m.method) && method.as_str() != m.method
+        }) {
+            return Err(
+                BoxError::from_static_str("use the canonical HTTP rule method spelling")
+                    .context_field("expected", method),
+            );
+        }
         let method = (!m.method.is_empty())
             .then(|| m.method.parse())
             .transpose()?;

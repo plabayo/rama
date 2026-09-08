@@ -682,3 +682,52 @@ async fn dashboard_request_bodies_have_an_application_limit() {
 
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
+
+#[tokio::test]
+async fn events_coalesce_capture_control_and_ui_changes_before_full_render() {
+    let state = test_state();
+    state.ensure_session("rate-session");
+    let response = service(state.clone())
+        .serve(
+            Request::builder()
+                .uri("/events?datastar=%7B%22session%22%3A%22rate-session%22%7D")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mut body = response.into_body();
+    body.frame().await.unwrap().unwrap();
+    let connection = crate::cmd::serve::proxy::control::ControlConnection::new(1);
+    let host = "example.test".parse().unwrap();
+    let mut previous = tokio::time::Instant::now();
+    for source in 0..6 {
+        for _ in 0..32 {
+            match source % 3 {
+                0 => state
+                    .capture
+                    .control()
+                    .observe(&connection, &host, true, "scope", "included"),
+                1 => {
+                    state.ui_changes.send_modify(|revision| *revision += 1);
+                }
+                _ => state.capture.clear().await,
+            }
+        }
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let data = body.frame().await.unwrap().unwrap().into_data().unwrap();
+                if String::from_utf8_lossy(&data).contains("id=\"live\"") {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            previous.elapsed() >= Duration::from_millis(90),
+            "full render bypassed the shared deadline"
+        );
+        previous = tokio::time::Instant::now();
+    }
+}

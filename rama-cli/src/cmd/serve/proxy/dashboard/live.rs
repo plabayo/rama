@@ -47,12 +47,22 @@ pub(super) async fn events(
             heartbeat.tick().await;
             let mut render_dashboard = true;
             let mut heartbeat_sequence = 0_u64;
-            let mut capture_refresh = tokio::time::Instant::now();
+            let mut next_render = tokio::time::Instant::now();
             loop {
                 if !state.has_session(&session) {
                     break;
                 }
                 let html = if render_dashboard {
+                    // All sources share one render deadline. Host observations
+                    // are as frequent as capture events during inspected traffic.
+                    tokio::time::sleep_until(next_render).await;
+                    if !state.has_session(&session) {
+                        break;
+                    }
+                    capture_changes.borrow_and_update();
+                    control_changes.borrow_and_update();
+                    ui_changes.borrow_and_update();
+                    next_render = tokio::time::Instant::now() + Duration::from_millis(100);
                     state.render_live(&session, heartbeat_sequence).await
                 } else {
                     render_live_heartbeat(heartbeat_sequence).into_string()
@@ -72,9 +82,6 @@ pub(super) async fn events(
                         if result.is_err() {
                             break;
                         }
-                        tokio::time::sleep_until(capture_refresh).await;
-                        capture_changes.borrow_and_update();
-                        capture_refresh = tokio::time::Instant::now() + Duration::from_millis(100);
                         render_dashboard = true;
                     }
                     result = control_changes.changed() => {

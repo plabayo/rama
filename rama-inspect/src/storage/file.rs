@@ -2,6 +2,7 @@ use super::*;
 use rama_utils::fs::{
     CreatedFilePermissions, OpenOptions, OpenOptionsSync, TempDir, TempPath, TempPathCleanup,
 };
+use std::collections::VecDeque;
 use tokio::{
     fs::File,
     io::{AsyncSeekExt, AsyncWriteExt},
@@ -9,9 +10,10 @@ use tokio::{
 };
 
 /// Temporary filesystem storage, using Rama's private-directory and cleanup helpers.
-/// Each collection has its own file and append lock. Idle committed collections
-/// keep no file descriptor. At most 64 appends perform I/O concurrently; reads pin
-/// independent descriptors. Cancelled appends settle and release their descriptor
+/// Each collection has its own file and append lock. A store-wide LRU retains at
+/// most 32 idle writers, avoiding repeated opens during a burst of appends without
+/// tying descriptor use to retention. At most 64 appends perform I/O concurrently;
+/// reads pin independent descriptors. Cancelled appends settle and release their descriptor
 /// in a background recovery task, retaining their admission permit until then.
 #[derive(Debug, Clone)]
 pub struct FileStore {
@@ -24,6 +26,9 @@ struct Factory {
     cleanup: TempPathCleanup,
     directory: TempDir,
     appends: Arc<Semaphore>,
+    writers: parking_lot::Mutex<WriterCache>,
+    #[cfg(test)]
+    writer_opens: AtomicU64,
 }
 impl FileStore {
     pub fn temporary(limits: StorageLimits) -> Result<Self, BoxError> {
@@ -37,6 +42,9 @@ impl FileStore {
                 cleanup,
                 directory,
                 appends: Arc::new(Semaphore::new(MAX_CONCURRENT_APPENDS)),
+                writers: parking_lot::Mutex::new(WriterCache::new()),
+                #[cfg(test)]
+                writer_opens: AtomicU64::new(0),
             }),
         })
     }
@@ -72,6 +80,7 @@ impl Service<CreateCollection> for FileStore {
                     reservation: factory.budget.reserve(0)?,
                     pending_reservation: factory.budget.reserve(0)?,
                 })),
+                id: input.id,
                 records: parking_lot::RwLock::new(Vec::new()),
                 path,
                 factory,
@@ -80,6 +89,29 @@ impl Service<CreateCollection> for FileStore {
         .await?
     }
 }
+// Only fully flushed, committed writers enter this cache. Taking a writer transfers
+// exclusive ownership to the collection's append guard, with its cursor already at
+// the committed end. Cached handles never own collections or extend their retention.
+const MAX_IDLE_WRITERS: usize = 32;
+#[derive(Debug)]
+struct WriterCache(VecDeque<(u64, File)>);
+impl WriterCache {
+    fn new() -> Self {
+        Self(VecDeque::with_capacity(MAX_IDLE_WRITERS))
+    }
+    fn take(&mut self, id: u64) -> Option<File> {
+        let index = self.0.iter().position(|(key, _)| *key == id)?;
+        self.0.remove(index).map(|(_, file)| file)
+    }
+    fn insert(&mut self, id: u64, file: File) -> Option<File> {
+        let evicted = (self.0.len() == MAX_IDLE_WRITERS)
+            .then(|| self.0.pop_front())
+            .flatten();
+        self.0.push_back((id, file));
+        evicted.map(|(_, file)| file)
+    }
+}
+
 struct State {
     // Only active or unsettled appends retain a descriptor. A cancelled Tokio
     // operation must be settled on this same handle before recovery can truncate.
@@ -98,10 +130,18 @@ impl State {
     }
 }
 struct FileInner {
+    id: u64,
     state: Arc<Mutex<State>>,
     records: parking_lot::RwLock<Vec<(u64, u64)>>,
     path: TempPath,
     factory: Arc<Factory>,
+}
+impl Drop for FileInner {
+    fn drop(&mut self) {
+        // Close cached handles before TempPath queues deletion (also on Windows).
+        let cached = self.factory.writers.lock().take(self.id);
+        drop(cached);
+    }
 }
 // Own the lock and admission permit across recovery even if the append future is
 // dropped. The next append cannot race a Tokio filesystem operation left in flight.
@@ -163,6 +203,9 @@ impl Service<AppendRecord> for FileCollection {
             .ok_or_else(|| std::io::Error::other("capture append state missing"))?;
         let start = state.committed;
         if state.file.is_none() {
+            state.file = self.0.factory.writers.lock().take(self.0.id);
+        }
+        if state.file.is_none() {
             let mut file = OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -175,6 +218,8 @@ impl Service<AppendRecord> for FileCollection {
                         .ok_or_else(|| std::io::Error::other("invalid capture filename"))?,
                 )
                 .await?;
+            #[cfg(test)]
+            self.0.factory.writer_opens.fetch_add(1, Ordering::Relaxed);
             file.seek(std::io::SeekFrom::Start(start)).await?;
             state.file = Some(file);
         }
@@ -232,7 +277,11 @@ impl Service<AppendRecord> for FileCollection {
         } = &mut *state;
         reservation.absorb(pending_reservation);
         state.recovery = false;
-        state.file = None;
+        if let Some(file) = state.file.take() {
+            let evicted = self.0.factory.writers.lock().insert(self.0.id, file);
+            // Close outside the cache lock; this occurs only under cache pressure.
+            drop(evicted);
+        }
         Ok(id)
     }
 }
@@ -276,5 +325,61 @@ impl Service<ListRecords> for FileCollection {
         Ok((0..self.0.records.read().len() as u64)
             .map(RecordId)
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn writer_cache_reuses_handles_bounds_retention_and_closes_on_drop() {
+        let store = FileStore::temporary(StorageLimits::default()).unwrap();
+        let first = store.serve(CreateCollection { id: 0 }).await.unwrap();
+        for _ in 0..128 {
+            first
+                .serve(AppendRecord::bytes(Bytes::from_static(b"first")))
+                .await
+                .unwrap();
+        }
+        assert_eq!(store.inner.writer_opens.load(Ordering::Relaxed), 1);
+        let mut retained = Vec::new();
+        for id in 1..=MAX_IDLE_WRITERS as u64 * 2 {
+            let collection = store.serve(CreateCollection { id }).await.unwrap();
+            collection
+                .serve(AppendRecord::bytes(Bytes::from_static(b"other")))
+                .await
+                .unwrap();
+            retained.push(collection);
+            assert!(store.inner.writers.lock().0.len() <= MAX_IDLE_WRITERS);
+        }
+        // An evicted writer reopens at the committed offset; independent readers
+        // must neither move the cached writer's cursor nor observe overwritten data.
+        let mut reader = first.read(RecordId(0)).await.unwrap();
+        let id = first
+            .serve(AppendRecord::bytes(Bytes::from_static(b"last")))
+            .await
+            .unwrap();
+        assert_eq!(id, RecordId(128));
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await.unwrap();
+        assert_eq!(bytes, b"first");
+        drop(reader);
+        let mut bytes = Vec::new();
+        first
+            .read(id)
+            .await
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .await
+            .unwrap();
+        assert_eq!(bytes, b"last");
+        assert_eq!(
+            store.inner.writer_opens.load(Ordering::Relaxed),
+            MAX_IDLE_WRITERS as u64 * 2 + 2
+        );
+        drop(first);
+        drop(retained);
+        assert!(store.inner.writers.lock().0.is_empty());
     }
 }

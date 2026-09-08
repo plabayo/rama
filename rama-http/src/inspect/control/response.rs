@@ -80,20 +80,21 @@ impl ResponseSpec {
 
     pub fn build(&self, message: &Message) -> Response {
         // Stored configuration and manual decisions are validated before publication.
-        let spec = if message.method == "CONNECT" && (200..300).contains(&self.status.as_u16()) {
-            std::borrow::Cow::Owned(Self::error(
-                StatusCode::BAD_GATEWAY,
-                "A local response cannot establish a CONNECT tunnel.",
-            ))
-        } else if self.status == StatusCode::NOT_MODIFIED && !message.conditional {
-            std::borrow::Cow::Owned(Self::error(
-                StatusCode::PRECONDITION_FAILED,
-                "Not Modified requires a conditional GET or HEAD request.",
-            ))
-        } else {
-            std::borrow::Cow::Borrowed(self)
-        };
-        let mut response = Response::new(if message.method == "HEAD" {
+        let spec =
+            if message.method == Method::CONNECT && (200..300).contains(&self.status.as_u16()) {
+                std::borrow::Cow::Owned(Self::error(
+                    StatusCode::BAD_GATEWAY,
+                    "A local response cannot establish a CONNECT tunnel.",
+                ))
+            } else if self.status == StatusCode::NOT_MODIFIED && !message.conditional {
+                std::borrow::Cow::Owned(Self::error(
+                    StatusCode::PRECONDITION_FAILED,
+                    "Not Modified requires a conditional GET or HEAD request.",
+                ))
+            } else {
+                std::borrow::Cow::Borrowed(self)
+            };
+        let mut response = Response::new(if message.method == Method::HEAD {
             Body::empty()
         } else {
             Body::from(spec.body.clone())

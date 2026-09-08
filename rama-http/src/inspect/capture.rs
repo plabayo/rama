@@ -35,8 +35,6 @@ use crate::body::util::BodyExt as _;
 use super::control::{Control, ControlConnection};
 use rama_inspect::InspectionState;
 
-const MAX_CACHED_SEARCHES: usize = 16;
-
 mod attachment;
 mod connection;
 mod extension;
@@ -54,6 +52,7 @@ mod search;
 pub use attachment::{CapturedRecord, CapturedRecordStream};
 pub use extension::ExchangeCapture;
 pub use observation::{CaptureMetadata, CaptureObserver, HttpCaptureProtocol};
+use search::{ExchangeSearches, SearchCaches, SearchQuery};
 
 #[cfg(test)]
 use filter::{matches_connection_id, matches_protocol, matches_status};
@@ -142,6 +141,7 @@ struct CapturedExchange {
     extension_records: RwLock<BTreeMap<std::any::TypeId, extension::RecordIndex>>,
     collection: Collection,
     append_lock: Mutex<()>,
+    searches: SyncMutex<ExchangeSearches>,
     records: RwLock<Vec<RecordLocation>>,
     metadata_records: RwLock<Vec<RecordLocation>>,
     request_body_records: RwLock<Vec<RecordId>>,
@@ -258,48 +258,6 @@ struct CaptureStoreInner {
     append_test_hook: Mutex<Option<Arc<AppendTestHook>>>,
     #[cfg(test)]
     record_reads: AtomicUsize,
-}
-
-struct SearchCaches {
-    entries: VecDeque<SearchCache>,
-    max_results_per_query: usize,
-}
-
-struct SearchCache {
-    needle: String,
-    progress: BTreeMap<u64, Arc<Mutex<SearchProgress>>>,
-}
-#[derive(Default)]
-struct SearchProgress {
-    records: usize,
-    extensions: BTreeMap<std::any::TypeId, usize>,
-    matched: bool,
-}
-impl SearchCaches {
-    fn new(max_results_per_query: usize) -> Self {
-        Self {
-            entries: VecDeque::new(),
-            max_results_per_query,
-        }
-    }
-    fn get_or_insert(&mut self, needle: &str, exchange: u64) -> Arc<Mutex<SearchProgress>> {
-        let index = self.entries.iter().position(|cache| cache.needle == needle);
-        let mut cache = index
-            .and_then(|index| self.entries.remove(index))
-            .unwrap_or_else(|| SearchCache {
-                needle: needle.to_owned(),
-                progress: BTreeMap::new(),
-            });
-        let progress = cache.progress.entry(exchange).or_default().clone();
-        while cache.progress.len() > self.max_results_per_query {
-            cache.progress.pop_first();
-        }
-        self.entries.push_back(cache);
-        if self.entries.len() > MAX_CACHED_SEARCHES {
-            self.entries.pop_front();
-        }
-        progress
-    }
 }
 
 struct CaptureBudget {
@@ -566,7 +524,7 @@ impl CaptureStore {
                 used: AtomicU64::new(0),
             }),
             changes,
-            search_caches: SyncMutex::new(SearchCaches::new(max_exchanges.max(1))),
+            search_caches: SyncMutex::new(SearchCaches::default()),
             observer,
             #[cfg(test)]
             append_test_hook: Mutex::new(None),

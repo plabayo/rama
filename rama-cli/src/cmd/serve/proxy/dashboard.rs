@@ -88,6 +88,8 @@ const MAX_UI_EVENT_STREAMS: usize = MAX_UI_SESSIONS;
 const MAX_VISIBLE_CONNECTIONS: usize = 100;
 const MAX_VISIBLE_EXCHANGES: usize = 250;
 const MAX_DASHBOARD_REQUEST_BODY: usize = mib(1);
+const REPLAY_PROTOCOL: rama::net::Protocol = rama::net::Protocol::from_static("replay");
+
 #[cfg(not(test))]
 const LIVE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 #[cfg(test)]
@@ -293,8 +295,7 @@ impl DashboardState {
                 .exchanges
                 .iter()
                 .find(|exchange| {
-                    exchange.connection_id == connection_id
-                        && matches!(exchange.protocol.as_str(), "https" | "wss")
+                    exchange.connection_id == connection_id && exchange.protocol.is_secure()
                 })
                 .map(|exchange| exchange.id),
             UiFocus::Overview => None,

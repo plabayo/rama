@@ -80,5 +80,5 @@ User-agent profile headers are read from the stored request head on export; TLS
 ClientHello data is shared per connection, rather than copied into each exchange.
 Recorded body/message `data` fields in JSON downloads are base64 strings; storage
 keeps payloads raw and exports them as streams. Request/response direction selectors
-accept canonical names case-insensitively; HTTP methods follow native case-sensitive
-method semantics. Custom upgraded-protocol direction and kind tags remain supported.
+accept canonical names case-insensitively; standard HTTP methods require their canonical uppercase spelling (for example
+`GET`; `get` is rejected). Custom methods retain case-sensitive wire semantics. Custom upgraded-protocol direction and kind tags remain supported.

@@ -52,7 +52,7 @@ pub(super) fn render_overview_panel(
         let selected = session.selected_connections.contains(&connection.id);
         let select_label = if selected { "✓" } else { "+" };
         let state_label = if connection.active { "alive" } else { "closed" };
-        let route = if connection.ingress_protocol.as_str() == "replay" {
+        let route = if connection.ingress_protocol == REPLAY_PROTOCOL {
             snapshot
                 .exchanges
                 .iter()

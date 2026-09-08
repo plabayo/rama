@@ -108,7 +108,7 @@ pub(super) async fn replay_captured(
     }
     let replay_connection = state.capture.begin_connection_if_enabled(
         None,
-        rama::net::Protocol::from_static("replay"),
+        REPLAY_PROTOCOL,
         Some(format!("Replay of request #{id}")),
     );
     if let Some(replay_connection) = replay_connection {
