@@ -138,6 +138,8 @@ impl LiveStatus {
 
 #[derive(Debug, Clone)]
 pub(super) struct DashboardState {
+    #[cfg(test)]
+    render_delay: Duration,
     capture: CaptureStore,
     inspection: InspectionState,
     recording_transition: Arc<tokio::sync::Mutex<()>>,
@@ -164,6 +166,8 @@ impl DashboardState {
         let (ui_changes, _) = watch::channel(0);
         let inspection = capture.inspection_state();
         Self {
+            #[cfg(test)]
+            render_delay: Duration::ZERO,
             capture,
             inspection,
             recording_transition: Arc::new(tokio::sync::Mutex::new(())),
@@ -221,6 +225,8 @@ impl DashboardState {
     }
 
     async fn render_live(&self, session_id: &str, heartbeat_sequence: u64) -> String {
+        #[cfg(test)]
+        tokio::time::sleep(self.render_delay).await;
         let mut session = self.session(session_id);
         let focused_connections = match session.focus {
             UiFocus::Connection(id) => BTreeSet::from([id]),

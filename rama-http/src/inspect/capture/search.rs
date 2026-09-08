@@ -2,12 +2,13 @@ use rama_core::{error::BoxError, telemetry::tracing};
 pub(super) use rama_inspect::search::matches_display;
 use std::{
     any::TypeId,
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, VecDeque},
     future::Future,
     ops::Bound::{Excluded, Unbounded},
     sync::{Arc, Weak},
+    time::Duration,
 };
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, time::Instant};
 
 const MAX_CACHED_SEARCHES: usize = 16;
 
@@ -82,7 +83,11 @@ pub(super) struct SearchCursor {
     next: usize,
     // Only errors need retry bookkeeping. Successful immutable records are never
     // reread, even when an earlier record remains unavailable across snapshots.
-    failed: BTreeSet<usize>,
+    failed: BTreeMap<usize, ReadRetry>,
+}
+struct ReadRetry {
+    attempts: u8,
+    after: Instant,
 }
 impl SearchCursor {
     pub(super) async fn matches<F, Fut>(&mut self, count: usize, mut read: F) -> bool
@@ -91,8 +96,16 @@ impl SearchCursor {
         Fut: Future<Output = Result<bool, BoxError>>,
     {
         let mut after = Unbounded;
-        while let Some(index) = self.failed.range((after, Unbounded)).next().copied() {
+        while let Some((index, retry_at)) = self
+            .failed
+            .range((after, Unbounded))
+            .next()
+            .map(|(&index, retry)| (index, retry.after))
+        {
             after = Excluded(index);
+            if Instant::now() < retry_at {
+                continue;
+            }
             let result = read(index).await;
             if self.complete(index, result) {
                 return true;
@@ -116,8 +129,22 @@ impl SearchCursor {
                 matched
             }
             Err(error) => {
-                self.failed.insert(index);
-                tracing::debug!(record_index = index, %error, "capture search record unavailable; retrying next snapshot");
+                let retry = self.failed.entry(index).or_insert(ReadRetry {
+                    attempts: 0,
+                    after: Instant::now(),
+                });
+                retry.attempts = retry.attempts.saturating_add(1);
+                let delay = Duration::from_millis(250)
+                    .saturating_mul(1 << (retry.attempts - 1).min(7))
+                    .min(Duration::from_secs(30));
+                retry.after = Instant::now() + delay;
+                if retry.attempts == 3 {
+                    tracing::warn!(record_index = index, %error,
+                        "capture search is incomplete after repeated read failures; backing off retries");
+                } else {
+                    tracing::debug!(record_index = index, %error, retry_delay = ?delay,
+                        "capture search record unavailable");
+                }
                 false
             }
         }

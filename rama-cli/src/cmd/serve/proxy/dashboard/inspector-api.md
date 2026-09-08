@@ -82,3 +82,8 @@ Recorded body/message `data` fields in JSON downloads are base64 strings; storag
 keeps payloads raw and exports them as streams. Request/response direction selectors
 accept canonical names case-insensitively; standard HTTP methods require their canonical uppercase spelling (for example
 `GET`; `get` is rejected). Custom methods retain case-sensitive wire semantics. Custom upgraded-protocol direction and kind tags remain supported.
+
+Search scans readable records even when another record fails. Failed reads retry
+with exponential backoff from 250 ms up to 30 seconds; three consecutive failures
+emit a warning that results are incomplete. Successful records are not rescanned,
+and a later successful retry can restore a match after a storage outage.

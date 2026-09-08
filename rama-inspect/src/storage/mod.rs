@@ -94,7 +94,7 @@ impl Default for StorageLimits {
     }
 }
 
-// Bound aggregate scratch and descriptor use without serializing unrelated I/O.
+// Bound admitted I/O and scratch use without serializing unrelated operations.
 const MAX_CONCURRENT_APPENDS: usize = 64;
 
 /// An owned collection. Dropping the last collection/reader releases its storage.

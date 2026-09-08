@@ -731,3 +731,39 @@ async fn events_coalesce_capture_control_and_ui_changes_before_full_render() {
         previous = tokio::time::Instant::now();
     }
 }
+
+#[tokio::test]
+async fn slow_dashboard_renders_still_have_a_quiet_interval() {
+    let mut state = test_state();
+    state.render_delay = Duration::from_millis(150);
+    state.ensure_session("slow-session");
+    let mut body = service(state.clone())
+        .serve(
+            Request::builder()
+                .uri("/events?datastar=%7B%22session%22%3A%22slow-session%22%7D")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .into_body();
+    body.frame().await.unwrap().unwrap();
+    for _ in 0..2 {
+        let previous = tokio::time::Instant::now();
+        state.ui_changes.send_modify(|revision| *revision += 1);
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let data = body.frame().await.unwrap().unwrap().into_data().unwrap();
+                if String::from_utf8_lossy(&data).contains("id=\"live\"") {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            previous.elapsed() >= Duration::from_millis(240),
+            "slow renders must still leave time before beginning the next render"
+        );
+    }
+}

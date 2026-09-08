@@ -415,7 +415,7 @@ impl Service<ReadRecord> for ReadFailureCollection {
         self.inner.serve(input).await
     }
 }
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn search_skips_failed_records_and_retries_them_without_rescanning_successes() {
     let blocked = Arc::new(AtomicU64::new(1));
     let store = CaptureStore::with_storage(
@@ -450,10 +450,21 @@ async fn search_skips_failed_records_and_retries_them_without_rescanning_success
     };
     assert_eq!(store.snapshot(&late).await.total_requests, 1);
     assert_eq!(store.snapshot(&early).await.total_requests, 0);
-    let reads = store.0.record_reads.load(Ordering::Relaxed);
-    assert_eq!(store.snapshot(&early).await.total_requests, 0);
-    assert_eq!(store.0.record_reads.load(Ordering::Relaxed), reads + 1);
+    let mut reads = store.0.record_reads.load(Ordering::Relaxed);
+    for delay in [250, 500, 1000, 2000, 4000, 8000, 16000, 30000] {
+        // Arbitrarily frequent snapshots must not amplify a failing storage read.
+        for _ in 0..32 {
+            assert_eq!(store.snapshot(&early).await.total_requests, 0);
+        }
+        assert_eq!(store.0.record_reads.load(Ordering::Relaxed), reads);
+        tokio::time::advance(Duration::from_millis(delay)).await;
+        assert_eq!(store.snapshot(&early).await.total_requests, 0);
+        reads += 1;
+        assert_eq!(store.0.record_reads.load(Ordering::Relaxed), reads);
+    }
     blocked.store(u64::MAX, Ordering::Relaxed);
+    // A long-lived outage can still recover; failures are never silently abandoned.
+    tokio::time::advance(Duration::from_secs(30)).await;
     assert_eq!(store.snapshot(&early).await.total_requests, 1);
-    assert_eq!(store.0.record_reads.load(Ordering::Relaxed), reads + 2);
+    assert_eq!(store.0.record_reads.load(Ordering::Relaxed), reads + 1);
 }

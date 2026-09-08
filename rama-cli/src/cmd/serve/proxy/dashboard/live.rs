@@ -62,8 +62,10 @@ pub(super) async fn events(
                     capture_changes.borrow_and_update();
                     control_changes.borrow_and_update();
                     ui_changes.borrow_and_update();
+                    let html = state.render_live(&session, heartbeat_sequence).await;
+                    // Keep a quiet interval even when rendering itself is slow.
                     next_render = tokio::time::Instant::now() + Duration::from_millis(100);
-                    state.render_live(&session, heartbeat_sequence).await
+                    html
                 } else {
                     render_live_heartbeat(heartbeat_sequence).into_string()
                 };

@@ -215,6 +215,16 @@ async fn file_cleanup_waits_for_readers_and_preserves_existing_collections() {
     drop(reader);
     files.flush_cleanup().await;
     assert!(!directory.join("collection-1.capture").exists());
+    let replacement = files.serve(CreateCollection { id: 1 }).await.unwrap();
+    assert!(replacement.snapshot().await.unwrap().is_empty());
+    let id = replacement
+        .append(std::io::Cursor::new(b"replacement"))
+        .await
+        .unwrap();
+    assert_eq!(id, RecordId(0));
+    assert_eq!(content(&replacement, id).await, b"replacement");
+    drop(replacement);
+    files.flush_cleanup().await;
     drop(files);
     assert!(!directory.exists());
 }
