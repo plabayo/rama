@@ -37,7 +37,10 @@ fn websocket_control_events_are_visible_but_not_replayable() {
         data: Bytes::from("going away"),
         close_code: Some(1001.into()),
         origin: WebSocketMessageOrigin::Peer,
-    }];
+    }]
+    .into_iter()
+    .map(Into::into)
+    .collect();
     details.websocket.total = details.websocket.messages.len();
     details.summary.protocol = rama::net::Protocol::WSS;
     details.websocket.replay_active = true;

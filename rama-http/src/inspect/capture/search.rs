@@ -10,7 +10,34 @@ use std::{
 };
 use tokio::{sync::Mutex, time::Instant};
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 const MAX_CACHED_SEARCHES: usize = 16;
+
+/// Limit outage reporting across queries, exchanges and protocol record kinds.
+/// Successful reads do not reset the gate: partial outages must not fan out either.
+#[derive(Default)]
+pub(super) struct SearchWarnings {
+    next: parking_lot::Mutex<Option<Instant>>,
+    #[cfg(test)]
+    pub(super) emitted: AtomicUsize,
+}
+impl SearchWarnings {
+    fn warn(&self, error: &BoxError) {
+        let now = Instant::now();
+        {
+            let mut next = self.next.lock();
+            if next.is_some_and(|deadline| now < deadline) {
+                return;
+            }
+            *next = Some(now + Duration::from_secs(30));
+        }
+        #[cfg(test)]
+        self.emitted.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(%error, "capture search results are incomplete; backing off failed reads");
+    }
+}
 
 /// Resolve the textual needle once per snapshot. Exchanges use its identity only.
 #[derive(Default)]
@@ -90,7 +117,12 @@ struct ReadRetry {
     after: Instant,
 }
 impl SearchCursor {
-    pub(super) async fn matches<F, Fut>(&mut self, count: usize, mut read: F) -> bool
+    pub(super) async fn matches<F, Fut>(
+        &mut self,
+        count: usize,
+        warnings: &SearchWarnings,
+        mut read: F,
+    ) -> bool
     where
         F: FnMut(usize) -> Fut,
         Fut: Future<Output = Result<bool, BoxError>>,
@@ -107,7 +139,7 @@ impl SearchCursor {
                 continue;
             }
             let result = read(index).await;
-            if self.complete(index, result) {
+            if self.complete(index, result, warnings) {
                 return true;
             }
         }
@@ -116,13 +148,18 @@ impl SearchCursor {
             let result = read(index).await;
             // Nothing advances before a read finishes, so cancellation retries it.
             self.next += 1;
-            if self.complete(index, result) {
+            if self.complete(index, result, warnings) {
                 return true;
             }
         }
         false
     }
-    fn complete(&mut self, index: usize, result: Result<bool, BoxError>) -> bool {
+    fn complete(
+        &mut self,
+        index: usize,
+        result: Result<bool, BoxError>,
+        warnings: &SearchWarnings,
+    ) -> bool {
         match result {
             Ok(matched) => {
                 self.failed.remove(&index);
@@ -138,12 +175,10 @@ impl SearchCursor {
                     .saturating_mul(1 << (retry.attempts - 1).min(7))
                     .min(Duration::from_secs(30));
                 retry.after = Instant::now() + delay;
-                if retry.attempts == 3 {
-                    tracing::warn!(record_index = index, %error,
-                        "capture search is incomplete after repeated read failures; backing off retries");
-                } else {
-                    tracing::debug!(record_index = index, %error, retry_delay = ?delay,
-                        "capture search record unavailable");
+                tracing::debug!(record_index = index, %error, retry_delay = ?delay,
+                    "capture search record unavailable");
+                if retry.attempts >= 3 {
+                    warnings.warn(&error);
                 }
                 false
             }

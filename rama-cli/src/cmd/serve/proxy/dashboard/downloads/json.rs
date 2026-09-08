@@ -1,6 +1,7 @@
 use super::*;
 use rama::{
-    futures::StreamExt, http::ws::inspect::har::write_captured_websocket_json,
+    futures::StreamExt,
+    http::ws::inspect::{CapturedWebSocketMessage, har::write_captured_websocket_json},
     stream::io::ReaderStream,
 };
 use tokio::io::AsyncWriteExt as _;

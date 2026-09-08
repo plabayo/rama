@@ -85,5 +85,17 @@ accept canonical names case-insensitively; standard HTTP methods require their c
 
 Search scans readable records even when another record fails. Failed reads retry
 with exponential backoff from 250 ms up to 30 seconds; three consecutive failures
-emit a warning that results are incomplete. Successful records are not rescanned,
+trigger a warning that results are incomplete. Warnings are coalesced per inspector
+store to at most one every 30 seconds, including during partial backend outages.
+Successful records are not rescanned,
 and a later successful retry can restore a match after a storage outage.
+
+With ICAP enabled, inspector captures and exports show the client-facing view:
+requests before ICAP adaptation and responses after it. ICAP can still change a
+request after interception approval. The separate HAR recording layer sits inside
+ICAP and records the server-facing view, so its output can differ.
+
+WebSocket message cards read only bounded prefixes (16 KiB for text and 256 bytes
+for binary). Expanded body/message previews stop after 64 KiB in the browser;
+full WebSocket downloads stream the payload. Replay remains an explicit
+whole-message operation.

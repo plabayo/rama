@@ -59,10 +59,7 @@ use rama::{
 use rama::{
     http::ws::{
         handshake::mitm::{WebSocketRelayDirection, WebSocketRelayMessage},
-        inspect::{
-            CapturedWebSocketMessage, WebSocketDetails, WebSocketMessageKind,
-            WebSocketMessageOrigin,
-        },
+        inspect::{WebSocketDetails, WebSocketMessageKind, WebSocketMessageOrigin},
     },
     tls::inspect::{CapturedTlsParameters, TlsObservation},
     ua::inspect::UserAgentObservation,
@@ -586,7 +583,7 @@ mod tests;
 
 struct InspectorDetails {
     http: CaptureDetails,
-    websocket: WebSocketDetails,
+    websocket: WebSocketDetails<rama::http::ws::inspect::WebSocketMessagePreview>,
 }
 impl std::ops::Deref for InspectorDetails {
     type Target = CaptureDetails;
@@ -618,7 +615,22 @@ impl InspectorView for CaptureStore {
         let exchange = self.exchange_capture(id)?;
         Ok(InspectorDetails {
             http: exchange.inspector_details().await?,
-            websocket: rama::http::ws::inspect::read_details(&exchange, page, page_size).await?,
+            websocket: rama::http::ws::inspect::read_preview_details(
+                &exchange,
+                page,
+                page_size,
+                |metadata| {
+                    if matches!(
+                        metadata.kind,
+                        WebSocketMessageKind::Text | WebSocketMessageKind::Close
+                    ) {
+                        WS_TEXT_PREVIEW_LIMIT
+                    } else {
+                        WS_BINARY_PREVIEW_LIMIT
+                    }
+                },
+            )
+            .await?,
         })
     }
 }

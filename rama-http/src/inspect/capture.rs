@@ -52,7 +52,7 @@ mod search;
 pub use attachment::{CapturedRecord, CapturedRecordStream};
 pub use extension::ExchangeCapture;
 pub use observation::{CaptureMetadata, CaptureObserver, HttpCaptureProtocol};
-use search::{ExchangeSearches, SearchCaches, SearchQuery};
+use search::{ExchangeSearches, SearchCaches, SearchQuery, SearchWarnings};
 
 #[cfg(test)]
 use filter::{matches_connection_id, matches_protocol, matches_status};
@@ -253,6 +253,7 @@ struct CaptureStoreInner {
     budget: Arc<CaptureBudget>,
     changes: watch::Sender<u64>,
     search_caches: SyncMutex<SearchCaches>,
+    search_warnings: SearchWarnings,
     observer: Arc<dyn CaptureObserver>,
     #[cfg(test)]
     append_test_hook: Mutex<Option<Arc<AppendTestHook>>>,
@@ -525,6 +526,7 @@ impl CaptureStore {
             }),
             changes,
             search_caches: SyncMutex::new(SearchCaches::default()),
+            search_warnings: SearchWarnings::default(),
             observer,
             #[cfg(test)]
             append_test_hook: Mutex::new(None),

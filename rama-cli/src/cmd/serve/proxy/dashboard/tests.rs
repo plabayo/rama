@@ -1,7 +1,7 @@
 use super::*;
 use crate::cmd::serve::proxy::capture::{CaptureHttpLayer, StoredRecord};
 use base64::engine::general_purpose::STANDARD as BASE64;
-use rama::http::Method;
+use rama::http::{Method, ws::inspect::CapturedWebSocketMessage};
 use rama::ua::profile::UserAgentDatabase;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};

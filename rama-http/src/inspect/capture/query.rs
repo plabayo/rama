@@ -219,7 +219,7 @@ impl CaptureStore {
         let count = exchange.records.read().len();
         if progress
             .records
-            .matches(count, |index| async move {
+            .matches(count, &self.0.search_warnings, |index| async move {
                 let location = exchange.records.read()[index];
                 #[cfg(test)]
                 self.0.record_reads.fetch_add(1, Ordering::Relaxed);
@@ -250,7 +250,7 @@ impl CaptureStore {
                 .extensions
                 .entry(kind)
                 .or_default()
-                .matches(count, |index| async move {
+                .matches(count, &self.0.search_warnings, |index| async move {
                     let (id, matches) = {
                         let indices = exchange.extension_records.read();
                         let records = &indices[&kind];

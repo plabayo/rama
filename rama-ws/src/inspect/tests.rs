@@ -524,3 +524,121 @@ impl AsyncRead for PayloadReadGuard {
         Poll::Ready(Ok(()))
     }
 }
+
+#[tokio::test]
+async fn preview_pages_read_bounded_prefixes_and_preserve_full_downloads() {
+    #[derive(Clone)]
+    struct Backend {
+        inner: Collection,
+        guarded: Arc<AtomicBool>,
+    }
+    impl Service<AppendRecord> for Backend {
+        type Output = RecordId;
+        type Error = BoxError;
+        async fn serve(&self, input: AppendRecord) -> Result<RecordId, BoxError> {
+            self.inner.serve(input).await
+        }
+    }
+    impl Service<ListRecords> for Backend {
+        type Output = Vec<RecordId>;
+        type Error = BoxError;
+        async fn serve(&self, input: ListRecords) -> Result<Vec<RecordId>, BoxError> {
+            self.inner.serve(input).await
+        }
+    }
+    impl Service<ReadRecord> for Backend {
+        type Output = Reader;
+        type Error = BoxError;
+        async fn serve(&self, input: ReadRecord) -> Result<Reader, BoxError> {
+            let reader = self.inner.serve(input).await?;
+            if self.guarded.load(Ordering::Relaxed) {
+                // Include space for typed metadata, then fail if a consumer
+                // drains a message instead of stopping at its preview bound.
+                Ok(Box::pin(
+                    reader
+                        .take(rama_utils::octets::kib_u64(1))
+                        .chain(PayloadReadGuard(rama_utils::octets::kib(64))),
+                ))
+            } else {
+                Ok(reader)
+            }
+        }
+    }
+    let guarded = Arc::new(AtomicBool::new(true));
+    let storage = Storage::new(service_fn({
+        let memory = MemoryStore::new(StorageLimits::default());
+        let guarded = guarded.clone();
+        move |input: CreateCollection| {
+            let memory = memory.clone();
+            let guarded = guarded.clone();
+            async move {
+                Ok::<_, BoxError>(Collection::new(Backend {
+                    inner: memory.serve(input).await?,
+                    guarded,
+                }))
+            }
+        }
+    }));
+    let store = CaptureStore::with_storage(
+        storage,
+        CaptureConfig {
+            observer: Arc::new(Observer(WebSocketLimits { messages: 16 })),
+            body_limit: rama_utils::octets::mib_u64(4),
+            ..CaptureConfig::default()
+        },
+        InspectionState::default(),
+    );
+    let _response = handshake(&store, Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS).await;
+    let payload = Bytes::from(vec![b'a'; rama_utils::octets::mib(1)]);
+    for kind in [WebSocketMessageKind::Text, WebSocketMessageKind::Binary] {
+        store
+            .record_websocket_message(
+                1,
+                CapturedWebSocketMessage::new(
+                    WebSocketRelayDirection::Ingress,
+                    kind,
+                    payload.clone(),
+                ),
+            )
+            .await;
+    }
+    let exchange = store.exchange_capture(1).unwrap();
+    let preview = read_preview_details(&exchange, 0, 2, |metadata| match metadata.kind {
+        WebSocketMessageKind::Text => 128,
+        _ => 256,
+    })
+    .await
+    .unwrap();
+    assert_eq!(preview.total, 2);
+    assert_eq!(preview.messages.len(), 2);
+    for (message, length) in preview.messages.iter().zip([128, 256]) {
+        assert_eq!(message.metadata.payload_length, payload.len() as u64);
+        assert_eq!(message.data, payload.slice(..length));
+    }
+    let older = read_preview_details(&exchange, usize::MAX, 1, |_| 0)
+        .await
+        .unwrap();
+    assert_eq!(older.page, 1);
+    assert_eq!(older.messages.len(), 1);
+    assert_eq!(older.messages[0].metadata.kind, WebSocketMessageKind::Text);
+    assert!(older.messages[0].data.is_empty());
+    assert!(
+        read_preview_details(&exchange, 0, 0, |_| 256)
+            .await
+            .unwrap()
+            .messages
+            .is_empty()
+    );
+    // The guard really rejects eager materialization, rather than returning EOF.
+    read_details(&exchange, 0, 1).await.unwrap_err();
+    guarded.store(false, Ordering::Relaxed);
+    let mut reader = exchange
+        .record_stream::<CapturedWebSocketMessage>(0)
+        .await
+        .unwrap()
+        .unwrap()
+        .payload;
+    let mut downloaded = Vec::new();
+    reader.read_to_end(&mut downloaded).await.unwrap();
+    assert_eq!(downloaded, payload);
+}

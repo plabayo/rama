@@ -24,6 +24,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
+use tokio::io::AsyncReadExt as _;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -83,6 +84,8 @@ impl CapturedWebSocketMessage {
 /// Small serializable message head, independent of its raw payload reader.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct WebSocketMessageMetadata {
+    /// Logical payload length, available without reading the payload.
+    pub payload_length: u64,
     pub at: jiff::Timestamp,
     pub direction: WebSocketRelayDirection,
     pub kind: WebSocketMessageKind,
@@ -93,6 +96,7 @@ impl CapturedRecord for CapturedWebSocketMessage {
     type Metadata = WebSocketMessageMetadata;
     fn metadata(&self) -> Self::Metadata {
         WebSocketMessageMetadata {
+            payload_length: self.data.len() as u64,
             at: self.at,
             direction: self.direction,
             kind: self.kind,
@@ -188,11 +192,27 @@ impl Drop for AppendGuard {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct WebSocketDetails {
-    pub messages: Vec<CapturedWebSocketMessage>,
+pub struct WebSocketDetails<M = CapturedWebSocketMessage> {
+    pub messages: Vec<M>,
     pub page: usize,
     pub total: usize,
     pub replay_active: bool,
+}
+
+/// Bounded raw payload prefix with the original message metadata and full length.
+#[derive(Debug, Clone, Serialize)]
+pub struct WebSocketMessagePreview {
+    pub metadata: WebSocketMessageMetadata,
+    #[serde(with = "rama_utils::bytes::serde_base64")]
+    pub data: Bytes,
+}
+impl From<CapturedWebSocketMessage> for WebSocketMessagePreview {
+    fn from(message: CapturedWebSocketMessage) -> Self {
+        Self {
+            metadata: message.metadata(),
+            data: message.data,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -460,6 +480,54 @@ pub async fn read_details(
     let end = total.saturating_sub(page.saturating_mul(page_size));
     let start = end.saturating_sub(page_size);
     let messages = exchange.records(start..end).await?;
+    let replay_active = exchange
+        .state::<State>()
+        .injector
+        .read()
+        .as_ref()
+        .is_some_and(WebSocketRelayInjector::is_open);
+    Ok(WebSocketDetails {
+        messages,
+        page,
+        total,
+        replay_active,
+    })
+}
+
+/// Read a page of bounded prefixes for a GUI or TUI without materializing messages.
+/// The interface chooses its per-message limit from the metadata. Full payloads
+/// remain available through record streams and the explicit owned details API.
+pub async fn read_preview_details(
+    exchange: &ExchangeCapture,
+    page: usize,
+    page_size: usize,
+    payload_limit: impl Fn(&WebSocketMessageMetadata) -> usize + Send + Sync,
+) -> Result<WebSocketDetails<WebSocketMessagePreview>, BoxError> {
+    let total = exchange.count::<CapturedWebSocketMessage>();
+    let page = if total == 0 || page_size == 0 {
+        0
+    } else {
+        page.min((total - 1) / page_size)
+    };
+    let end = total.saturating_sub(page.saturating_mul(page_size));
+    let start = end.saturating_sub(page_size);
+    let mut messages = Vec::with_capacity(end - start);
+    for index in start..end {
+        let record = exchange
+            .record_stream::<CapturedWebSocketMessage>(index)
+            .await?
+            .context("WebSocket message not found")?;
+        let mut data = Vec::new();
+        record
+            .payload
+            .take(payload_limit(&record.metadata) as u64)
+            .read_to_end(&mut data)
+            .await?;
+        messages.push(WebSocketMessagePreview {
+            metadata: record.metadata,
+            data: data.into(),
+        });
+    }
     let replay_active = exchange
         .state::<State>()
         .injector

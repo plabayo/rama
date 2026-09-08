@@ -121,6 +121,7 @@ test("an in-flight preview survives a Datastar element morph", async () => {
         handlers[type] = handler;
       },
       body: { append() {} },
+      createTextNode: (data) => ({ data }),
       documentElement: {},
       getElementById: () => null,
       querySelectorAll: () => [current.button],
@@ -134,6 +135,8 @@ test("an in-flight preview survives a Datastar element morph", async () => {
       observe() {}
     },
     queueMicrotask,
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame() {},
     setImmediate,
     setTimeout: () => 0,
     TextDecoder,
@@ -176,16 +179,19 @@ function previewFixture() {
   const label = { textContent: "Preview first 64 KiB" };
   const output = {
     hidden: true,
-    textContent: "",
-    replaceChildren() {
-      this.textContent = "";
-    },
+    childNodes: [],
+    get lastChild() { return this.childNodes.at(-1) ?? null; },
+    get textContent() { return this.childNodes.map((node) => node.data).join(""); },
+    replacements: 0,
+    replaceChildren() { this.childNodes = []; this.replacements += 1; },
+    append(node) { this.childNodes.push(node); },
   };
   const container = { querySelector: () => output };
   const button = {
     dataset: {
       label: "Preview first 64 KiB",
       payloadFormat: "text",
+      byteLimit: "65536",
       url: "/api/body",
     },
     closest(selector) {
@@ -226,4 +232,87 @@ test("header editing preserves ordered duplicates, opaque bytes and literal pref
   assert.equal(Buffer.from(result[2][1]).toString(), headers[2][1]);
   const patterns = [["x-test", "rama-capture-base64:é*"]];
   assert.deepEqual(JSON.parse(JSON.stringify(context.readHeaders(context.formatHeaders(patterns, true), true))), patterns);
+});
+
+test("binary previews append deltas, survive morphs and stop at the byte limit", async () => {
+  let current = previewFixture();
+  current.button.dataset.payloadFormat = "binary";
+  const frames = [];
+  let mutations;
+  let reads = 0;
+  let cancelled = false;
+  const priorNodes = [];
+  const context = vm.createContext({
+    AbortController, TextDecoder, console,
+    document: {
+      addEventListener() {}, documentElement: {},
+      createTextNode: (data) => ({ data }),
+      querySelectorAll: () => [current.button],
+    },
+    MutationObserver: class { constructor(callback) { mutations = callback; } observe() {} },
+    requestAnimationFrame: (callback) => { frames.push(callback); return frames.length; },
+    cancelAnimationFrame() {},
+    fetch: async () => ({ ok: true, body: { getReader: () => ({
+      async read() {
+        drainFrames(frames);
+        if (reads > 0) {
+          assert.equal(current.output.childNodes.length, reads);
+          if (reads > 1) assert.equal(current.output.childNodes[0], priorNodes[0]);
+          else priorNodes.push(current.output.childNodes[0]);
+          mutations();
+          assert.equal(current.output.replacements, 1);
+        }
+        reads += 1;
+        // More data exists than the preview budget: reading it all would be a bug.
+        assert.ok(reads <= 64);
+        return { done: false, value: new Uint8Array(1024).fill(reads % 256) };
+      },
+      cancel: async () => { cancelled = true; },
+    }) } }),
+  });
+  vm.runInContext(detailsScript, context);
+  await context.streamPreview(current.button);
+  assert.equal(reads, 64);
+  assert.equal(cancelled, true);
+  assert.equal(current.output.textContent.length, 65536 * 3);
+  const fullText = current.output.textContent;
+  assert.ok(fullText.startsWith("01 01 "));
+  assert.ok(fullText.endsWith("40 40 "));
+  assert.equal(current.output.replacements, 1);
+  current = previewFixture();
+  current.button.dataset.payloadFormat = "binary";
+  mutations();
+  assert.equal(current.output.textContent, fullText);
+  assert.equal(current.output.replacements, 1);
+});
+
+
+test("text preview caps an oversized chunk without a partial UTF-8 character", async () => {
+  const current = previewFixture();
+  current.button.dataset.byteLimit = "7";
+  let cancelled = false;
+  let reads = 0;
+  const context = vm.createContext({
+    AbortController, TextDecoder,
+    document: {
+      addEventListener() {}, documentElement: {},
+      createTextNode: (data) => ({ data }),
+      querySelectorAll: () => [current.button],
+    },
+    MutationObserver: class { observe() {} },
+    requestAnimationFrame: () => 1,
+    cancelAnimationFrame() {},
+    fetch: async () => ({ ok: true, body: { getReader: () => ({
+      async read() {
+        assert.equal(++reads, 1);
+        return { done: false, value: Buffer.from("hello 💖 tail") };
+      },
+      cancel: async () => { cancelled = true; },
+    }) } }),
+  });
+  vm.runInContext(detailsScript, context);
+  await context.streamPreview(current.button);
+  assert.equal(cancelled, true);
+  assert.equal(current.output.textContent, "hello ");
+  assert.equal(current.label.textContent, "Hide preview");
 });

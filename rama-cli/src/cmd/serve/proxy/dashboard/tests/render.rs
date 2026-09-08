@@ -173,7 +173,10 @@ fn websocket_details_decode_directional_text_and_binary_cards() {
             close_code: None,
             origin: WebSocketMessageOrigin::Replay,
         },
-    ];
+    ]
+    .into_iter()
+    .map(Into::into)
+    .collect();
     details.websocket.total = details.websocket.messages.len();
     details.summary.protocol = rama::net::Protocol::WSS;
     details.websocket.replay_active = true;
@@ -240,14 +243,14 @@ fn websocket_previews_are_bounded_and_paginated() {
         origin: WebSocketMessageOrigin::Peer,
     };
     let mut details = test_details(Vec::new());
-    details.websocket.messages = vec![record; MAX_VISIBLE_WS_MESSAGES];
+    details.websocket.messages = vec![record.into(); MAX_VISIBLE_WS_MESSAGES];
     details.websocket.total = MAX_VISIBLE_WS_MESSAGES + 1;
     let rendered =
         render_websocket_messages(&details).expect("messages render a WebSocket section");
     assert!(rendered.contains("messages 2–101 of 101"));
     assert!(rendered.contains("Older"));
     assert!(!rendered.contains("Newer"));
-    assert!(rendered.contains("Show full message"));
+    assert!(rendered.contains("Preview first 64 KiB"));
     assert!(rendered.contains("/api/capture/1/websocket/1"));
     assert_eq!(
         rendered.matches("class=\"ws-message ingress\"").count(),
@@ -349,4 +352,26 @@ fn presentation_helpers_cover_boundaries() {
     assert!(is_textual_content_type("application/problem+json"));
     assert!(is_textual_content_type("text/event-stream; charset=utf-8"));
     assert!(!is_textual_content_type("application/octet-stream"));
+}
+
+#[test]
+fn websocket_preview_keeps_utf8_prefix_and_original_length() {
+    let mut preview: rama::http::ws::inspect::WebSocketMessagePreview =
+        CapturedWebSocketMessage::new(
+            WebSocketRelayDirection::Ingress,
+            WebSocketMessageKind::Text,
+            Bytes::from_static("hello 💖 tail".as_bytes()),
+        )
+        .into();
+    // Keep only the first byte of the final multi-byte character.
+    preview.data.truncate(7);
+    let mut details = test_details(Vec::new());
+    details.websocket.total = 1;
+    details.websocket.messages.push(preview);
+    let rendered = render_websocket_messages(&details).unwrap();
+    assert!(rendered.contains("hello …"));
+    assert!(!rendered.contains('�'));
+    assert!(rendered.contains("15 B"));
+    assert!(rendered.contains("Download full message"));
+    assert!(rendered.contains("data-byte-limit=\"65536\""));
 }

@@ -468,3 +468,69 @@ async fn search_skips_failed_records_and_retries_them_without_rescanning_success
     assert_eq!(store.snapshot(&early).await.total_requests, 1);
     assert_eq!(store.0.record_reads.load(Ordering::Relaxed), reads + 1);
 }
+
+#[tokio::test(start_paused = true)]
+async fn search_warnings_are_bounded_across_queries_exchanges_and_partial_failures() {
+    let store = CaptureStore::with_storage(
+        Storage::new(ReadFailureStore {
+            memory: MemoryStore::new(Default::default()),
+            blocked: Arc::new(AtomicU64::new(1)),
+        }),
+        CaptureConfig::default(),
+        InspectionState::default(),
+    );
+    let (parts, ()) = Request::new(()).into_parts();
+    let mut ids = Vec::new();
+    for _ in 0..32 {
+        let id = store.begin_exchange(&parts).await.unwrap().unwrap();
+        ids.push(id);
+        store
+            .body_event(
+                id,
+                BodyDirection::Request,
+                BodyCaptureEvent::Frame(crate::body::Frame::data(Bytes::from_static(
+                    b"unreadable",
+                ))),
+            )
+            .await;
+    }
+    // Append readable bodies between retry rounds, so new successful reads are
+    // interleaved with third failures. Resetting the gate on success would still
+    // emit one warning per exchange here.
+    let filters: Vec<_> = (0..8)
+        .map(|n| CaptureFilter {
+            search: format!("absent-{n}").into(),
+            ..CaptureFilter::default()
+        })
+        .collect();
+    for delay in [0, 250, 500] {
+        tokio::time::advance(Duration::from_millis(delay)).await;
+        for &id in &ids {
+            store
+                .body_event(
+                    id,
+                    BodyDirection::Request,
+                    BodyCaptureEvent::Frame(crate::body::Frame::data(Bytes::from_static(
+                        b"readable",
+                    ))),
+                )
+                .await;
+        }
+        for filter in &filters {
+            assert_eq!(store.snapshot(filter).await.total_requests, 0);
+        }
+    }
+    assert_eq!(store.0.search_warnings.emitted.load(Ordering::Relaxed), 1);
+    tokio::time::advance(Duration::from_secs(1)).await;
+    for filter in &filters {
+        store.snapshot(filter).await;
+    }
+    assert_eq!(store.0.search_warnings.emitted.load(Ordering::Relaxed), 1);
+    // Persistent outages remain observable, with at most one reminder per store
+    // per interval even when thousands of record/query retries become due together.
+    tokio::time::advance(Duration::from_secs(30)).await;
+    for filter in &filters {
+        store.snapshot(filter).await;
+    }
+    assert_eq!(store.0.search_warnings.emitted.load(Ordering::Relaxed), 2);
+}

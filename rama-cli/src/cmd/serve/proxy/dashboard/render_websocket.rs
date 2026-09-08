@@ -1,4 +1,5 @@
 use super::*;
+use rama::http::ws::inspect::{WebSocketMessageMetadata, WebSocketMessagePreview};
 
 pub(super) fn render_websocket_messages(details: &InspectorDetails) -> Option<String> {
     let messages = &details.websocket.messages;
@@ -13,17 +14,36 @@ pub(super) fn render_websocket_messages(details: &InspectorDetails) -> Option<St
     let cards = messages.iter().enumerate().map(
         |(
             page_index,
-            CapturedWebSocketMessage {
-                at,
-                direction,
-                kind,
+            WebSocketMessagePreview {
+                metadata:
+                    WebSocketMessageMetadata {
+                        at,
+                        direction,
+                        kind,
+                        close_code,
+                        origin,
+                        payload_length,
+                    },
                 data,
-                close_code,
-                origin,
             },
         )| {
             let message_index = start + page_index;
-            let (payload, bytes, preview_truncated) = websocket_payload(*kind, data);
+            let prefix = match std::str::from_utf8(data) {
+                Err(error)
+                    if error.error_len().is_none()
+                        && *payload_length > data.len() as u64
+                        && matches!(
+                            kind,
+                            WebSocketMessageKind::Text | WebSocketMessageKind::Close
+                        ) =>
+                {
+                    &data[..error.valid_up_to()]
+                }
+                _ => data.as_ref(),
+            };
+            let (payload, _, inline_truncated) = websocket_payload(*kind, prefix);
+            let prefix_truncated = *payload_length > prefix.len() as u64;
+            let preview_truncated = inline_truncated || prefix_truncated;
             let ingress = *direction == WebSocketRelayDirection::Ingress;
             let is_control = matches!(
                 kind,
@@ -63,7 +83,7 @@ pub(super) fn render_websocket_messages(details: &InspectorDetails) -> Option<St
                     strong!(direction_label),
                     span!(display(kind)),
                     close_code.map(|code| span!("code ", u16::from(code))),
-                    span!(format_bytes(bytes as u64)),
+                    span!(format_bytes(*payload_length)),
                     (*origin == WebSocketMessageOrigin::Replay)
                         .then(|| span!(class = "ws-replayed", "replayed")),
                     (*origin == WebSocketMessageOrigin::Injected)
@@ -84,7 +104,10 @@ pub(super) fn render_websocket_messages(details: &InspectorDetails) -> Option<St
                     )),
                     time!(display(at)),
                 ),
-                (!data.is_empty()).then(|| pre!(display(payload))),
+                (!data.is_empty()).then(|| pre!(
+                    display(payload),
+                    (prefix_truncated && !inline_truncated).then_some("…")
+                )),
                 preview_truncated.then(|| div!(
                     class = "ws-full-message",
                     small!("Preview truncated."),
@@ -92,7 +115,8 @@ pub(super) fn render_websocket_messages(details: &InspectorDetails) -> Option<St
                         r#type = "button",
                         class = "ghost compact",
                         "data-capture-preview" = "",
-                        "data-label" = "Show full message",
+                        "data-byte-limit" = MAX_BODY_PREVIEW_LIMIT,
+                        "data-label" = "Preview first 64 KiB",
                         "data-url" = format!(
                             "/api/capture/{}/websocket/{}",
                             details.summary.id, message_index
@@ -103,7 +127,16 @@ pub(super) fn render_websocket_messages(details: &InspectorDetails) -> Option<St
                             "binary"
                         },
                         span!(class = "capture-spinner", "aria-hidden" = "true"),
-                        span!("data-capture-label" = "", "Show full message")
+                        span!("data-capture-label" = "", "Preview first 64 KiB")
+                    ),
+                    a!(
+                        class = "ghost link",
+                        href = format!(
+                            "/api/capture/{}/websocket/{}",
+                            details.summary.id, message_index
+                        ),
+                        download = format!("websocket-{}-{message_index}.bin", details.summary.id),
+                        "Download full message"
                     ),
                     pre!("data-capture-output" = "", hidden = "")
                 ))

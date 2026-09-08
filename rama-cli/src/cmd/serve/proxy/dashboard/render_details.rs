@@ -324,6 +324,7 @@ pub(super) fn render_payload_card(
                     r#type = "button",
                     class = "ghost",
                     "data-capture-preview" = "",
+                    "data-byte-limit" = MAX_BODY_PREVIEW_LIMIT,
                     "data-label" = "Preview first 64 KiB",
                     "data-url" = preview_url,
                     "data-payload-format" = payload_format,
