@@ -77,6 +77,8 @@ pub(super) async fn replay_websocket_message(
         Err(error @ WebSocketReplayError::InvalidMessage(_)) => {
             error_response(StatusCode::BAD_REQUEST, error)
         }
+        Err(WebSocketReplayError::TooLarge) => StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+        Err(WebSocketReplayError::Busy) => StatusCode::TOO_MANY_REQUESTS.into_response(),
         Err(WebSocketReplayError::ConnectionClosed) => StatusCode::CONFLICT.into_response(),
         Err(error @ WebSocketReplayError::SendFailed(_)) => {
             error_response(StatusCode::BAD_GATEWAY, error)
@@ -124,6 +126,8 @@ pub(super) async fn send_websocket_message(
         Err(error @ WebSocketReplayError::InvalidMessage(_)) => {
             error_response(StatusCode::BAD_REQUEST, error)
         }
+        Err(WebSocketReplayError::TooLarge) => StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+        Err(WebSocketReplayError::Busy) => StatusCode::TOO_MANY_REQUESTS.into_response(),
         Err(WebSocketReplayError::ConnectionClosed) => StatusCode::CONFLICT.into_response(),
         Err(error @ WebSocketReplayError::SendFailed(_)) => {
             error_response(StatusCode::BAD_GATEWAY, error)

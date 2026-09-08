@@ -1,0 +1,138 @@
+use std::{
+    fs::File as StdFile,
+    io::{BufWriter, Seek as _, SeekFrom, Write as _},
+    pin::Pin,
+    sync::{Arc, LazyLock},
+    task::{Context, Poll},
+};
+
+use rama::{
+    stream::io::ReaderStream,
+    ua::{inspect::ProfileExport, profile::UserAgentProfileInput},
+    utils::{fs::TempDir, octets::kib},
+};
+use tokio::{
+    fs::File,
+    io::{AsyncRead, ReadBuf},
+    sync::{OwnedSemaphorePermit, Semaphore},
+};
+
+use super::*;
+
+static EXPORTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(2)));
+
+// The blocking writer owns its staging directory and admission. If its caller
+// cancels during serialization, both survive until the blocking operation ends.
+struct StagedProfiles {
+    file: BufWriter<StdFile>,
+    staging: TempDir,
+    permit: OwnedSemaphorePermit,
+}
+
+pub(super) struct ProfileDownload {
+    file: File,
+    _staging: TempDir,
+    _permit: OwnedSemaphorePermit,
+    length: u64,
+}
+
+impl AsyncRead for ProfileDownload {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.file).poll_read(cx, buffer)
+    }
+}
+
+impl IntoResponse for ProfileDownload {
+    fn into_response(self) -> Response {
+        (
+            Headers((
+                ContentType::json(),
+                ContentLength(self.length),
+                ContentDisposition::attachment("rama-emulation-profiles.json"),
+                CacheControl::new().with_no_store(),
+            )),
+            Body::from_stream(ReaderStream::new(self)),
+        )
+            .into_response()
+    }
+}
+
+pub(super) async fn download(
+    capture: &CaptureStore,
+    requests: &BTreeSet<u64>,
+    connections: &BTreeSet<u64>,
+) -> Result<ProfileDownload, BoxError> {
+    let permit = EXPORTS.clone().try_acquire_owned().map_err(|_full| {
+        IoError::new(
+            ErrorKind::WouldBlock,
+            "too many profile exports are already in progress",
+        )
+    })?;
+    let mut export = ProfileExport::new(capture, requests, connections);
+    if export.is_empty() {
+        return Err(IoError::new(
+            ErrorKind::InvalidInput,
+            "the selection has no captured user-agent profile observations",
+        )
+        .into());
+    }
+    let staging = TempDir::with_prefix("rama-proxy-profiles-")?;
+    let file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(staging.path().join("profiles.json"))
+        .await?
+        .into_std()
+        .await;
+    let mut staged = StagedProfiles {
+        file: BufWriter::with_capacity(kib(16), file),
+        staging,
+        permit,
+    };
+    let mut first = true;
+    while let Some(profile) = export.next_profile().await? {
+        staged = tokio::task::spawn_blocking(move || staged.write(profile, first)).await??;
+        first = false;
+    }
+    tokio::task::spawn_blocking(move || staged.finish()).await?
+}
+
+impl StagedProfiles {
+    fn write(mut self, profile: UserAgentProfileInput, first: bool) -> Result<Self, BoxError> {
+        self.file.write_all(if first { b"[" } else { b"," })?;
+        serde_json::to_writer(&mut self.file, &profile)?;
+        // Do not publish partially valid output. The typed conversion moves its
+        // headers; no second decoded input or complete JSON buffer is created.
+        profile.try_into_profile().map_err(|error| {
+            IoError::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "the selected observations do not form a complete emulation profile: {error}"
+                ),
+            )
+        })?;
+        Ok(self)
+    }
+
+    fn finish(mut self) -> Result<ProfileDownload, BoxError> {
+        self.file.write_all(b"]")?;
+        self.file.flush()?;
+        let length = self.file.get_ref().metadata()?.len();
+        self.file.seek(SeekFrom::Start(0))?;
+        let file = self.file.into_inner().map_err(|error| error.into_error())?;
+        Ok(ProfileDownload {
+            file: File::from_std(file),
+            _staging: self.staging,
+            _permit: self.permit,
+            length,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests;

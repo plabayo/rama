@@ -83,10 +83,7 @@ use rama::{
         boring::client::EmulateTlsProfileLayer,
         inspect::{CapturedTlsParameters, TlsObservation},
     },
-    ua::{
-        inspect::UserAgentObservation,
-        profile::{TlsProfile, UserAgentDatabase},
-    },
+    ua::{inspect::UserAgentObservation, profile::TlsProfile},
     utils::{
         octets::{kib, kib_u64, mib},
         str::{NonEmptyStr, arcstr::ArcStr},
@@ -621,8 +618,11 @@ impl InspectorView for CaptureStore {
         page_size: usize,
     ) -> Result<InspectorDetails, BoxError> {
         let exchange = self.exchange_capture(id)?;
+        let mut http = exchange.inspector_details().await?;
+        http.records
+            .extend(exchange.message_interceptions(page).await?);
         Ok(InspectorDetails {
-            http: exchange.inspector_details().await?,
+            http,
             websocket: rama::http::ws::inspect::read_preview_details(
                 &exchange,
                 page,

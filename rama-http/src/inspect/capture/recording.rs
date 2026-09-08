@@ -159,18 +159,21 @@ impl CaptureStore {
             searches: SyncMutex::default(),
             records: RwLock::new(Vec::new()),
             metadata_records: RwLock::new(Vec::new()),
+            message_decisions: RwLock::new(Vec::new()),
+            replay_record: RwLock::new(None),
             request_body_records: RwLock::new(Vec::new()),
             response_body_records: RwLock::new(Vec::new()),
             request_stored: AtomicU64::new(0),
             response_stored: AtomicU64::new(0),
             budget: self.0.budget.clone(),
             stored_bytes: AtomicU64::new(0),
+            stored_records: AtomicU64::new(0),
         });
         let request_head = self
             .append(
                 id,
                 &entry,
-                &StoredRecord::RequestHead {
+                StoredRecord::RequestHead {
                     method: parts.method.clone(),
                     url: parts.uri.clone(),
                     version: parts.version,
@@ -257,7 +260,7 @@ impl CaptureStore {
                 .append(
                     id,
                     &entry,
-                    &StoredRecord::ResponseHead {
+                    StoredRecord::ResponseHead {
                         status: parts.status,
                         version: parts.version,
                         headers: parts.headers.clone(),
@@ -300,12 +303,17 @@ impl CaptureStore {
                 original_headers: original.headers.clone(),
                 original_status: original.status,
                 original_payload: original.payload.clone(),
+                original_payload_length: original
+                    .payload
+                    .as_ref()
+                    .map(|payload| payload.len() as u64),
                 forwarded_headers: headers.cloned(),
             };
-            if let Err(error) = self.append(id, &entry, &record).await {
-                rama_core::telemetry::tracing::debug!(
-                    "failed to capture interception decision: {error}"
-                );
+            if !matches!(self.append(id, &entry, record).await, Ok(true)) {
+                // Forwarding may have used edited data. Do not present an older
+                // stored head/body as a complete replayable capture.
+                entry.request_truncated.store(true, Ordering::Release);
+                entry.response_truncated.store(true, Ordering::Release);
             }
             self.changed();
         }
@@ -315,36 +323,61 @@ impl CaptureStore {
         &self,
         _id: u64,
         entry: &CapturedExchange,
-        record: &StoredRecord,
+        mut record: StoredRecord,
     ) -> Result<bool, BoxError> {
-        let (plaintext, body) = match record {
-            StoredRecord::RequestBody { data } => (data.clone(), Some(CapturedBody::Request)),
-            StoredRecord::ResponseBody { data } => (data.clone(), Some(CapturedBody::Response)),
-            _ => (
-                Bytes::from(serde_json::to_vec(record).context("serialize MITM capture record")?),
-                None,
+        let (source, length, body) = match &mut record {
+            StoredRecord::RequestBody { data } => (
+                AppendRecord::bytes(data.clone()),
+                data.len() as u64,
+                Some(CapturedBody::Request),
             ),
+            StoredRecord::ResponseBody { data } => (
+                AppendRecord::bytes(data.clone()),
+                data.len() as u64,
+                Some(CapturedBody::Response),
+            ),
+            _ => {
+                let payload = match &mut record {
+                    StoredRecord::Interception {
+                        original_payload: Some(payload),
+                        ..
+                    } => payload.replace_bytes(Bytes::new()),
+                    _ => Bytes::new(),
+                };
+                let (source, length) = attachment::encode_parts(&record, payload)?;
+                (source, length, None)
+            }
         };
-        let Some(mut budget) = self.0.budget.try_reserve(plaintext.len() as u64) else {
+        let Some(mut budget) = self.0.budget.try_reserve(length) else {
             return Ok(false);
         };
         let _append = entry.append_lock.lock().await;
+        // HTTP has a small fixed set of heads/trailers/end records. Upgraded
+        // message decisions and replay history use separate indexes.
+        if metadata::is_http(&record)
+            && entry.metadata_records.read().len() >= metadata::MAX_HTTP_RECORDS
+        {
+            return Ok(false);
+        }
         #[cfg(test)]
         if let Some(hook) = self.0.append_test_hook.lock().await.take() {
             hook.reached.notify_one();
             hook.resume.notified().await;
         }
-        let location = entry
-            .collection
-            .serve(AppendRecord::bytes(plaintext))
-            .await?;
+        let location = entry.collection.serve(source).await?;
         // Publish all indexes together, without an await after storage commits.
         let record_location = RecordLocation { id: location, body };
         entry.records.write().push(record_location);
-        match record {
+        match &record {
             StoredRecord::RequestBody { .. } => entry.request_body_records.write().push(location),
             StoredRecord::ResponseBody { .. } => {
                 entry.response_body_records.write().push(location);
+            }
+            StoredRecord::Interception { .. } if !metadata::is_http(&record) => {
+                entry.message_decisions.write().push(record_location)
+            }
+            StoredRecord::ReplayResult { .. } => {
+                *entry.replay_record.write() = Some(record_location)
             }
             _ => entry.metadata_records.write().push(record_location),
         }
@@ -410,7 +443,7 @@ impl CaptureStore {
                             },
                         };
                         let mut append_guard = CaptureAppendGuard::new(entry.clone(), direction);
-                        match self.append(id, &entry, &record).await {
+                        match self.append(id, &entry, record).await {
                             Ok(true) => append_guard.commit(),
                             Ok(false) => {}
                             Err(error) => rama_core::telemetry::tracing::debug!(
@@ -450,7 +483,7 @@ impl CaptureStore {
                             },
                         };
                         let mut append_guard = CaptureAppendGuard::new(entry.clone(), direction);
-                        match self.append(id, &entry, &record).await {
+                        match self.append(id, &entry, record).await {
                             Ok(true) => append_guard.commit(),
                             Ok(false) => {}
                             Err(error) => rama_core::telemetry::tracing::debug!(
@@ -466,7 +499,7 @@ impl CaptureStore {
                     BodyDirection::Response => StoredRecord::ResponseEnd { outcome },
                 };
                 let mut append_guard = CaptureAppendGuard::new(entry.clone(), direction);
-                match self.append(id, &entry, &record).await {
+                match self.append(id, &entry, record).await {
                     Ok(true) => append_guard.commit(),
                     Ok(false) => {}
                     Err(error) => rama_core::telemetry::tracing::debug!(
@@ -522,7 +555,7 @@ impl CaptureStore {
                 error: Some(error),
             },
         };
-        if let Err(error) = self.append(id, &entry, &record).await {
+        if let Err(error) = self.append(id, &entry, record).await {
             rama_core::telemetry::tracing::debug!("failed to append replay result: {error}");
         }
         self.changed();

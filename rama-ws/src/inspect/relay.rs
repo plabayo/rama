@@ -3,17 +3,19 @@
 use std::convert::Infallible;
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use rama_core::bytes::Bytes;
+use rama_core::{bytes::Bytes, extensions::Extensions};
 use rama_http::inspect::{
     capture::{CaptureStore, HttpExchangeId},
     control::{Decision, HttpMessageDirection, HttpUpgradeContext, Payload},
 };
+use rama_net::Protocol;
 use rama_utils::str::non_empty_str;
 
 use crate::{
     handshake::mitm::{
-        WebSocketRelayClose, WebSocketRelayEvent, WebSocketRelayEventInput,
-        WebSocketRelayEventOutput, WebSocketRelayInjector, WebSocketRelayMessage,
+        WebSocketRelayClose, WebSocketRelayDirection, WebSocketRelayEvent,
+        WebSocketRelayEventInput, WebSocketRelayEventOutput, WebSocketRelayInjector,
+        WebSocketRelayMessage,
     },
     inspect::{
         CaptureWebSocketExt, CapturedWebSocketMessage, WebSocketMessageKind, WebSocketMessageOrigin,
@@ -22,7 +24,7 @@ use crate::{
 };
 
 fn close_intercepted_websocket(
-    extensions: rama_core::extensions::Extensions,
+    extensions: Extensions,
     code: u16,
     reason: String,
 ) -> WebSocketRelayEventOutput {
@@ -52,15 +54,13 @@ pub async fn inspect_websocket_event(
     ) {
         let mut message = context.request.clone();
         message.protocol = if message.protocol.is_secure() {
-            rama_net::Protocol::WSS
+            Protocol::WSS
         } else {
-            rama_net::Protocol::WS
+            Protocol::WS
         };
         message.direction = match direction {
-            crate::handshake::mitm::WebSocketRelayDirection::Ingress => {
-                HttpMessageDirection::Ingress
-            }
-            crate::handshake::mitm::WebSocketRelayDirection::Egress => HttpMessageDirection::Egress,
+            WebSocketRelayDirection::Ingress => HttpMessageDirection::Ingress,
+            WebSocketRelayDirection::Egress => HttpMessageDirection::Egress,
         };
         message.exchange = extensions.get_ref::<HttpExchangeId>().map(|id| id.0);
         message.binary = matches!(data, WebSocketRelayMessage::Binary(_));

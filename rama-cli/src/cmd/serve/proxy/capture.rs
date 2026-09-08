@@ -89,6 +89,7 @@ pub(super) fn test_store(
             body_limit,
             total_limit: 0,
             observer: Arc::new(ProxyCaptureObserver::new(profiles, max_exchanges)),
+            ..CaptureConfig::default()
         },
         InspectionState::default(),
     ))

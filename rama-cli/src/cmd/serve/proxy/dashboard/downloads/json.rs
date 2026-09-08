@@ -1,9 +1,13 @@
 use rama::{
     futures::StreamExt,
-    http::ws::inspect::{CapturedWebSocketMessage, har::write_captured_websocket_json},
+    http::{
+        inspect::capture::CapturedRecordStream,
+        layer::har::inspect::{HarObjectWriter, write_json_string},
+        ws::inspect::{CapturedWebSocketMessage, har::write_captured_websocket_json},
+    },
     stream::io::ReaderStream,
 };
-use tokio::io::AsyncWriteExt as _;
+use tokio::io::{AsyncWrite, AsyncWriteExt as _};
 
 use super::*;
 
@@ -20,26 +24,22 @@ pub(in crate::cmd::serve::proxy::dashboard) async fn capture_json(
         Ok(metadata) => metadata,
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     };
-    let mut records = Box::pin(selected.records_stream());
+    let mut records = Box::pin(selected.http_records());
     let message_count = selected.count::<CapturedWebSocketMessage>();
     let stream = stream_fn(move |mut output| async move {
         let result = async {
             output.yield_item(Ok(Bytes::from(metadata))).await;
-            let mut first = true;
-            while let Some(record) = records.next().await {
-                if !first {
-                    output.yield_item(Ok(Bytes::from_static(b","))).await;
-                }
-                first = false;
-                output
-                    .yield_item(Ok(Bytes::from(serde_json::to_vec(&record?)?)))
-                    .await;
-            }
-            output
-                .yield_item(Ok(Bytes::from_static(b"],\"websocket\":[")))
-                .await;
             let (mut writer, reader) = tokio::io::duplex(rama::utils::octets::kib(16));
             let produce = async {
+                let mut first = true;
+                while let Some(record) = records.next().await {
+                    if !first {
+                        writer.write_all(b",").await?;
+                    }
+                    first = false;
+                    write_http_record(&mut writer, record?).await?;
+                }
+                writer.write_all(b"],\"websocket\":[").await?;
                 for index in 0..message_count {
                     let Some(message) = selected
                         .record_stream::<CapturedWebSocketMessage>(index)
@@ -118,3 +118,72 @@ fn field<T: serde::Serialize>(
     bytes.push(b':');
     serde_json::to_writer(bytes, value)
 }
+
+// Match typed records so payload encoding never requires a JSON value tree or
+// an owned body. The scalar/header metadata is bounded when capture commits it.
+async fn write_http_record<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    record: CapturedRecordStream<StoredRecord>,
+) -> Result<(), BoxError> {
+    match record.metadata {
+        StoredRecord::RequestBody { .. } => {
+            writer
+                .write_all(b"{\"type\":\"request_body\",\"data\":")
+                .await?;
+            write_json_string(writer, record.payload, false).await?;
+            writer.write_all(b"}").await?;
+        }
+        StoredRecord::ResponseBody { .. } => {
+            writer
+                .write_all(b"{\"type\":\"response_body\",\"data\":")
+                .await?;
+            write_json_string(writer, record.payload, false).await?;
+            writer.write_all(b"}").await?;
+        }
+        StoredRecord::Interception {
+            direction,
+            outcome,
+            original_headers,
+            original_status,
+            original_payload,
+            original_payload_length,
+            forwarded_headers,
+        } => {
+            let mut fields = HarObjectWriter::begin(writer).await?;
+            fields.field("type", "interception").await?;
+            fields.field("direction", &direction).await?;
+            fields.field("outcome", &outcome).await?;
+            fields.field("original_headers", &original_headers).await?;
+            fields.field("original_status", &original_status).await?;
+            fields
+                .field("original_payload_length", &original_payload_length)
+                .await?;
+            fields
+                .field("forwarded_headers", &forwarded_headers)
+                .await?;
+            if let Some(payload) = original_payload {
+                let mut payload_fields =
+                    HarObjectWriter::begin(fields.streamed_field("original_payload").await?)
+                        .await?;
+                payload_fields.field("binary", &payload.is_binary()).await?;
+                write_json_string(
+                    payload_fields.streamed_field("bytes").await?,
+                    record.payload,
+                    false,
+                )
+                .await?;
+                payload_fields.finish().await?;
+            } else {
+                fields
+                    .field("original_payload", &Option::<()>::None)
+                    .await?;
+            }
+            fields.finish().await?;
+        }
+        metadata => writer.write_all(&serde_json::to_vec(&metadata)?).await?,
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

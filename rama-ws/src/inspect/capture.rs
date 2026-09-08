@@ -1,7 +1,7 @@
 use std::{
     fmt,
     sync::{
-        Arc,
+        Arc, LazyLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
@@ -19,14 +19,35 @@ use rama_http::inspect::capture::{
     ExchangeCapture, HttpCaptureProtocol,
 };
 use rama_net::Protocol;
+use rama_utils::octets::mib;
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncReadExt as _;
+use tokio::{
+    io::AsyncReadExt as _,
+    sync::{OwnedSemaphorePermit, Semaphore},
+};
 
 use crate::{
     Utf8Bytes,
     handshake::mitm::{WebSocketRelayDirection, WebSocketRelayInjector, WebSocketRelayMessage},
     protocol::frame::coding::CloseCode,
 };
+
+// The relay accepts owned messages. Bound their aggregate allocation, including
+// concurrent replay operations, until the relay has consumed each message.
+const MAX_REPLAY_BYTES: usize = mib(8);
+static REPLAY_BYTES: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(MAX_REPLAY_BYTES)));
+
+struct ReplayPayload {
+    bytes: Vec<u8>,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl AsRef<[u8]> for ReplayPayload {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -236,6 +257,8 @@ pub enum WebSocketReplayError {
     ControlFrame,
     Truncated,
     ConnectionClosed,
+    TooLarge,
+    Busy,
     SendFailed(BoxError),
     InvalidCapture(BoxError),
     InvalidMessage(BoxError),
@@ -249,6 +272,10 @@ impl fmt::Display for WebSocketReplayError {
             Self::ControlFrame => f.write_str("WebSocket control frames cannot be replayed"),
             Self::Truncated => f.write_str("truncated WebSocket data cannot be replayed safely"),
             Self::ConnectionClosed => f.write_str("the original WebSocket connection is closed"),
+            Self::TooLarge => {
+                f.write_str("WebSocket payload exceeds the replay or relay size limit")
+            }
+            Self::Busy => f.write_str("WebSocket replay memory budget is in use"),
             Self::SendFailed(error) => write!(f, "failed to send WebSocket message: {error}"),
             Self::InvalidCapture(error) => write!(f, "read captured WebSocket message: {error}"),
             Self::InvalidMessage(error) => write!(f, "invalid WebSocket message: {error}"),
@@ -382,20 +409,66 @@ impl CaptureWebSocketExt for CaptureStore {
         let exchange = self
             .exchange_capture(id)
             .map_err(|_missing| WebSocketReplayError::CaptureNotFound)?;
-        let mut message = exchange
-            .records::<CapturedWebSocketMessage>(index..index.saturating_add(1))
+        let record = exchange
+            .record_stream::<CapturedWebSocketMessage>(index)
             .await
             .map_err(WebSocketReplayError::InvalidCapture)?
-            .pop()
             .ok_or(WebSocketReplayError::MessageNotFound)?;
         let summary = exchange.snapshot();
-        let truncated = match message.direction {
+        let truncated = match record.metadata.direction {
             WebSocketRelayDirection::Ingress => summary.request_truncated,
             WebSocketRelayDirection::Egress => summary.response_truncated,
         };
         if truncated {
             return Err(WebSocketReplayError::Truncated);
         }
+        if !matches!(
+            record.metadata.kind,
+            WebSocketMessageKind::Text | WebSocketMessageKind::Binary
+        ) {
+            return Err(WebSocketReplayError::ControlFrame);
+        }
+        let injector = injector(&exchange)?;
+        let length = record.metadata.payload_length;
+        let limit = injector
+            .max_message_size()
+            .unwrap_or(MAX_REPLAY_BYTES)
+            .min(MAX_REPLAY_BYTES);
+        if length > limit as u64 {
+            return Err(WebSocketReplayError::TooLarge);
+        }
+        let budget = REPLAY_BYTES
+            .clone()
+            .try_acquire_many_owned(length.max(1) as u32)
+            .map_err(|_full| WebSocketReplayError::Busy)?;
+        // Fixed capacity avoids geometric growth beyond the admitted payload.
+        let mut payload = vec![0; length as usize];
+        let mut reader = record.payload;
+        reader
+            .read_exact(&mut payload)
+            .await
+            .context("read captured WebSocket payload")
+            .map_err(WebSocketReplayError::InvalidCapture)?;
+        let mut trailing = [0];
+        if reader
+            .read(&mut trailing)
+            .await
+            .context("finish captured WebSocket payload")
+            .map_err(WebSocketReplayError::InvalidCapture)?
+            != 0
+        {
+            return Err(WebSocketReplayError::InvalidCapture(
+                std::io::Error::other("captured WebSocket payload exceeds its recorded length")
+                    .into(),
+            ));
+        }
+        // The writer queue may outlive a cancelled replay request. Keeping the
+        // permit in the shared bytes prevents cancellation from bypassing admission.
+        let payload = Bytes::from_owner(ReplayPayload {
+            bytes: payload,
+            _permit: budget,
+        });
+        let mut message = CapturedWebSocketMessage::from_parts(record.metadata, payload);
         let relay = match message.kind {
             WebSocketMessageKind::Text => WebSocketRelayMessage::Text(
                 Utf8Bytes::try_from(message.data.clone())
@@ -405,7 +478,10 @@ impl CaptureWebSocketExt for CaptureStore {
             WebSocketMessageKind::Binary => WebSocketRelayMessage::Binary(message.data.clone()),
             _ => return Err(WebSocketReplayError::ControlFrame),
         };
-        send(&exchange, message.direction, relay).await?;
+        injector
+            .send(message.direction, relay)
+            .await
+            .map_err(|error| WebSocketReplayError::SendFailed(error.into()))?;
         message.at = jiff::Timestamp::now();
         message.origin = WebSocketMessageOrigin::Replay;
         self.record_websocket_message(id, message).await;
@@ -475,17 +551,21 @@ async fn send(
     direction: WebSocketRelayDirection,
     message: WebSocketRelayMessage,
 ) -> Result<(), WebSocketReplayError> {
-    let injector = exchange
+    let injector = injector(exchange)?;
+    injector
+        .send(direction, message)
+        .await
+        .map_err(|error| WebSocketReplayError::SendFailed(error.into()))
+}
+
+fn injector(exchange: &ExchangeCapture) -> Result<WebSocketRelayInjector, WebSocketReplayError> {
+    exchange
         .state::<State>()
         .injector
         .read()
         .clone()
         .filter(WebSocketRelayInjector::is_open)
-        .ok_or(WebSocketReplayError::ConnectionClosed)?;
-    injector
-        .send(direction, message)
-        .await
-        .map_err(|error| WebSocketReplayError::SendFailed(error.into()))
+        .ok_or(WebSocketReplayError::ConnectionClosed)
 }
 
 /// Read a page from a retained exchange, including after it leaves the live capture list.
@@ -564,3 +644,6 @@ pub async fn read_preview_details(
         replay_active,
     })
 }
+
+#[cfg(test)]
+mod replay_tests;

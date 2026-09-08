@@ -88,6 +88,9 @@ pub enum StoredRecord {
         original_headers: HeaderMap,
         original_status: Option<StatusCode>,
         original_payload: Option<crate::inspect::control::Payload>,
+        /// Full stored length, even when a view omits the payload or reads a prefix.
+        #[serde(default)]
+        original_payload_length: Option<u64>,
         forwarded_headers: Option<HeaderMap>,
     },
     RequestHead {

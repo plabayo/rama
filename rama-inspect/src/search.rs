@@ -164,6 +164,29 @@ pub async fn matches_reader(
     }
 }
 
+/// Search the hex display of bytes, including when the payload is valid UTF-8.
+/// This is useful when a protocol explicitly classifies a payload as binary.
+pub async fn matches_hex_reader(
+    mut reader: impl AsyncRead + Unpin,
+    needle: &str,
+) -> std::io::Result<bool> {
+    let mut matcher = Matcher::new(needle);
+    _ = matcher.write_str("0x");
+    let mut buffer = vec![0; rama_utils::octets::kib(16)];
+    while !matcher.matched {
+        let count = reader.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        for &byte in &buffer[..count] {
+            let encoded = rama_utils::hex::encode_byte_upper(byte);
+            _ = matcher.write_char(char::from(encoded[0]));
+            _ = matcher.write_char(char::from(encoded[1]));
+        }
+    }
+    Ok(matcher.matched)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

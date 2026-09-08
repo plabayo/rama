@@ -59,7 +59,8 @@ impl ExchangeCapture {
         }
     }
 
-    /// Read HTTP metadata without loading bodies, retaining this exchange across clears.
+    /// Read bounded HTTP metadata without body or interception payload bytes.
+    /// Upgraded message history is paged separately with `message_interceptions`.
     pub async fn inspector_details(&self) -> Result<CaptureDetails, BoxError> {
         self.store.inspector_details_for_entry(&self.entry).await
     }
@@ -174,9 +175,12 @@ impl ExchangeCapture {
         let Some(id) = id else {
             return Ok(None);
         };
-        super::attachment::read(self.entry.collection.read(id).await?)
-            .await
-            .map(Some)
+        super::attachment::read(Box::pin(attachment::PinnedRecordReader {
+            reader: self.entry.collection.read(id).await?,
+            _entry: self.entry.clone(),
+        }))
+        .await
+        .map(Some)
     }
 
     /// Explicitly read one owned record. Prefer `record_stream` for large payloads.

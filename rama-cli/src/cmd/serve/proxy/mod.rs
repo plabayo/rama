@@ -1424,6 +1424,7 @@ async fn run_with_dashboard_token(
                         ua_db.clone(),
                         cfg.capture_websocket_messages,
                     )),
+                    ..capture::CaptureConfig::default()
                 },
                 inspection.clone(),
             ))

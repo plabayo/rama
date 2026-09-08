@@ -220,6 +220,7 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_details(
                     original_headers,
                     original_status,
                     original_payload,
+                    original_payload_length,
                     ..
                 } => Some(section!(
                     class = "detail-card",
@@ -230,7 +231,10 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_details(
                         pre!(serde_json::to_string_pretty(original_headers).unwrap_or_default()),
                         original_payload
                             .as_ref()
-                            .map(|payload| pre!(display(payload)))
+                            .map(|payload| div!(
+                                pre!(display(payload)),
+                                original_payload_length.filter(|length| *length > payload.len() as u64).map(|length| p!(format!("Showing {} of {length} bytes; download capture JSON for the full payload.", payload.len())))
+                            ))
                     )
                 )),
                 _ => None,

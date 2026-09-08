@@ -106,6 +106,7 @@ async fn approval_id(store: &CaptureStore, direction: &str) -> u64 {
     .expect("approval did not arrive")
 }
 
+mod bounds;
 mod connections;
 mod interception;
 mod query;

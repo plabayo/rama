@@ -4,6 +4,8 @@ use rama::http::headers::{RetryAfter, util::Seconds};
 
 use super::*;
 
+mod profiles;
+
 pub(super) async fn export_profiles(
     State(state): State<DashboardState>,
     Query(query): Query<ExportQuery>,
@@ -12,39 +14,16 @@ pub(super) async fn export_profiles(
         Ok(selection) => selection,
         Err(status) => return status.into_response(),
     };
-    match rama::ua::inspect::export_profiles(&state.capture, &request_ids, &connection_ids).await {
-        Ok(profiles) => {
-            let Ok(bytes) = serde_json::to_vec(&profiles) else {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "failed to encode captured user-agent profiles",
-                );
+    match profiles::download(&state.capture, &request_ids, &connection_ids).await {
+        Ok(download) => download.into_response(),
+        Err(error) => {
+            let status = match error.downcast_ref::<IoError>().map(IoError::kind) {
+                Some(ErrorKind::WouldBlock) => StatusCode::TOO_MANY_REQUESTS,
+                Some(ErrorKind::InvalidInput) => StatusCode::UNPROCESSABLE_ENTITY,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
-            if profiles.is_empty() {
-                return error_response(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "the selection has no captured user-agent profile observations",
-                );
-            }
-            if let Err(error) = UserAgentDatabase::try_from_json_slice(&bytes) {
-                return error_response(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    format!(
-                        "the selected observations do not form a complete emulation profile: {error}"
-                    ),
-                );
-            }
-            (
-                Headers((
-                    ContentType::json(),
-                    ContentDisposition::attachment("rama-emulation-profiles.json"),
-                    CacheControl::new().with_no_store(),
-                )),
-                Body::from(bytes),
-            )
-                .into_response()
+            error_response(status, error)
         }
-        Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
 

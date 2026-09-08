@@ -213,3 +213,43 @@ async fn captured_tls_and_native_fingerprints_are_shared_per_connection() {
     assert!(json.get("ja3").is_none());
     assert!(json.get("ingress_tls").is_none());
 }
+
+#[tokio::test]
+async fn profile_cursor_pins_groups_and_keeps_the_first_observed_headers() {
+    let store = store(UserAgentDatabase::default());
+    let service =
+        CaptureHttpLayer::new(Some(store.clone())).layer(service_fn(async |request: Request| {
+            request.into_body().collect().await.unwrap();
+            Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
+        }));
+    for (ua, choice) in [
+        ("z-agent", "first"),
+        ("a-agent", "first"),
+        ("z-agent", "later"),
+    ] {
+        service
+            .serve(
+                Request::builder()
+                    .uri("http://example.test/")
+                    .header("user-agent", ua)
+                    .header("sec-fetch-mode", "navigate")
+                    .header("x-choice", choice)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_body()
+            .collect()
+            .await
+            .unwrap();
+    }
+    let mut export = ProfileExport::new(&store, &[1, 2, 3].into(), &BTreeSet::new());
+    store.clear().await;
+    for ua in ["a-agent", "z-agent"] {
+        let profile = export.next_profile().await.unwrap().unwrap();
+        assert_eq!(profile.uastr, ua);
+        assert_eq!(profile.h1_headers_navigate.unwrap()["x-choice"], "first");
+    }
+    assert!(export.next_profile().await.unwrap().is_none());
+}

@@ -229,9 +229,31 @@ impl CaptureStore {
                         .await
                         .map_err(BoxError::from)
                 } else {
-                    read_record_at(&exchange.collection, location)
-                        .await
-                        .map(|record| records_match_search(std::slice::from_ref(&record), needle))
+                    let mut record = attachment::read::<StoredRecord>(
+                        exchange.collection.read(location.id).await?,
+                    )
+                    .await?;
+                    let payload_kind = if let StoredRecord::Interception {
+                        original_payload, ..
+                    } = &mut record.metadata
+                    {
+                        original_payload.take().map(|payload| payload.is_binary())
+                    } else {
+                        None
+                    };
+                    if records_match_search(std::slice::from_ref(&record.metadata), needle) {
+                        Ok(true)
+                    } else if payload_kind == Some(true) {
+                        rama_inspect::search::matches_hex_reader(record.payload, needle)
+                            .await
+                            .map_err(BoxError::from)
+                    } else if payload_kind == Some(false) {
+                        rama_inspect::search::matches_reader(record.payload, needle)
+                            .await
+                            .map_err(BoxError::from)
+                    } else {
+                        Ok(false)
+                    }
                 }
             })
             .await

@@ -1,6 +1,12 @@
 //! Bounded typed metadata followed by an unencoded payload in one atomic record.
 
-use std::{future::Future, io::Write};
+use std::{
+    future::Future,
+    io::Write,
+    pin::Pin,
+    task::{Context, Poll},
+};
+use tokio::io::{AsyncRead, ReadBuf};
 
 use rama_core::futures::future::BoxFuture;
 use rama_inspect::storage::Reader;
@@ -61,11 +67,17 @@ impl Write for MetadataWriter {
 }
 
 pub(super) fn encode<T: CapturedRecord>(record: &T) -> Result<(AppendRecord, u64), BoxError> {
+    encode_parts(&record.metadata(), record.payload())
+}
+
+pub(super) fn encode_parts(
+    metadata: &impl Serialize,
+    payload: Bytes,
+) -> Result<(AppendRecord, u64), BoxError> {
     let mut header = MetadataWriter(vec![0; 4]);
-    serde_json::to_writer(&mut header, &record.metadata())?;
+    serde_json::to_writer(&mut header, metadata)?;
     let length = (header.0.len() - 4) as u32;
     header.0[..4].copy_from_slice(&length.to_be_bytes());
-    let payload = record.payload();
     let size = (header.0.len() as u64)
         .checked_add(payload.len() as u64)
         .context("capture attachment length overflow")?;
@@ -91,10 +103,28 @@ pub(super) async fn read<M: DeserializeOwned>(
         payload: reader,
     })
 }
+
 pub(super) type SearchRecord = for<'a> fn(Reader, &'a str) -> BoxFuture<'a, Result<bool, BoxError>>;
+
 pub(super) fn search<T: CapturedRecord>(
     reader: Reader,
     needle: &str,
 ) -> BoxFuture<'_, Result<bool, BoxError>> {
     Box::pin(async move { T::matches_stream(read(reader).await?, needle).await })
+}
+
+// Keep capture budgets charged while an adapter payload reader pins storage.
+pub(super) struct PinnedRecordReader {
+    pub reader: Reader,
+    pub _entry: Arc<CapturedExchange>,
+}
+
+impl AsyncRead for PinnedRecordReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        self.reader.as_mut().poll_read(cx, buffer)
+    }
 }

@@ -34,10 +34,11 @@ impl CaptureStore {
         &self,
         entry: &CapturedExchange,
     ) -> Result<CaptureDetails, BoxError> {
-        let locations = entry.metadata_records.read().clone();
+        let mut locations = entry.metadata_records.read().clone();
+        locations.extend(*entry.replay_record.read());
         let mut records = Vec::with_capacity(locations.len());
         for location in locations {
-            records.push(read_record_at(&entry.collection, location).await?);
+            records.push(metadata::read(&entry.collection, location, Some(0)).await?);
         }
         Ok(CaptureDetails {
             summary: entry.snapshot(),
@@ -181,6 +182,45 @@ impl ExchangeCapture {
             )),
             None => Ok(None),
         }
+    }
+
+    /// Stream a pinned prefix of HTTP record metadata and independent raw payload
+    /// readers. Body data and interception payload bytes in the metadata are empty;
+    /// their original bytes are available through each item's `payload` reader.
+    pub fn http_records(
+        &self,
+    ) -> impl Stream<Item = Result<CapturedRecordStream<StoredRecord>, BoxError>> + Send + 'static + use<>
+    {
+        let capture = self.clone();
+        let count = capture.entry.records.read().len();
+        stream_fn(move |mut output| async move {
+            let result = async {
+                for index in 0..count {
+                    let location = capture.entry.records.read()[index];
+                    let reader = Box::pin(attachment::PinnedRecordReader {
+                        reader: capture.entry.collection.read(location.id).await?,
+                        _entry: capture.entry.clone(),
+                    });
+                    let record = match location.body {
+                        Some(CapturedBody::Request) => CapturedRecordStream {
+                            metadata: StoredRecord::RequestBody { data: Bytes::new() },
+                            payload: reader,
+                        },
+                        Some(CapturedBody::Response) => CapturedRecordStream {
+                            metadata: StoredRecord::ResponseBody { data: Bytes::new() },
+                            payload: reader,
+                        },
+                        None => attachment::read(reader).await?,
+                    };
+                    output.yield_item(Ok(record)).await;
+                }
+                Ok::<(), BoxError>(())
+            }
+            .await;
+            if let Err(error) = result {
+                output.yield_item(Err(error)).await;
+            }
+        })
     }
 
     /// Stream a pinned record prefix. Body records may be split into smaller

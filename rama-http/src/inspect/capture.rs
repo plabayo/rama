@@ -38,6 +38,7 @@ mod attachment;
 mod connection;
 mod extension;
 mod filter;
+mod metadata;
 mod model;
 pub use filter::{CaptureFilter, ConnectionQuery, FilterValue, ProtocolQuery, StatusQuery};
 pub use rama_net::inspect::ConnectionId;
@@ -142,18 +143,23 @@ struct CapturedExchange {
     searches: SyncMutex<ExchangeSearches>,
     records: RwLock<Vec<RecordLocation>>,
     metadata_records: RwLock<Vec<RecordLocation>>,
+    message_decisions: RwLock<Vec<RecordLocation>>,
+    replay_record: RwLock<Option<RecordLocation>>,
     request_body_records: RwLock<Vec<RecordId>>,
     response_body_records: RwLock<Vec<RecordId>>,
     request_stored: AtomicU64,
     response_stored: AtomicU64,
     budget: Arc<CaptureBudget>,
     stored_bytes: AtomicU64,
+    stored_records: AtomicU64,
 }
 
 impl Drop for CapturedExchange {
     fn drop(&mut self) {
-        self.budget
-            .release(self.stored_bytes.load(Ordering::Acquire));
+        self.budget.release(
+            self.stored_bytes.load(Ordering::Acquire),
+            self.stored_records.load(Ordering::Acquire),
+        );
     }
 }
 
@@ -264,10 +270,20 @@ struct CaptureBudget {
     /// escape hatch is useful for deliberate offline captures.
     limit: u64,
     used: AtomicU64,
+    record_limit: u64,
+    records: AtomicU64,
 }
 
 impl CaptureBudget {
     fn try_reserve(self: &Arc<Self>, amount: u64) -> Option<CaptureBudgetReservation> {
+        if !reserve_capture_bytes(&self.records, self.record_limit, 1) {
+            return None;
+        }
+        let mut reservation = CaptureBudgetReservation {
+            budget: self.clone(),
+            amount: 0,
+            committed: false,
+        };
         let mut used = self.used.load(Ordering::Acquire);
         loop {
             let next = used.checked_add(amount)?;
@@ -279,18 +295,20 @@ impl CaptureBudget {
                 .compare_exchange_weak(used, next, Ordering::AcqRel, Ordering::Acquire)
             {
                 Ok(_) => {
-                    return Some(CaptureBudgetReservation {
-                        budget: self.clone(),
-                        amount,
-                        committed: false,
-                    });
+                    reservation.amount = amount;
+                    return Some(reservation);
                 }
                 Err(observed) => used = observed,
             }
         }
     }
 
-    fn release(&self, amount: u64) {
+    fn release(&self, amount: u64, records: u64) {
+        let previous_records = self.records.fetch_sub(records, Ordering::AcqRel);
+        debug_assert!(
+            previous_records >= records,
+            "capture record budget underflow"
+        );
         let previous = self.used.fetch_sub(amount, Ordering::AcqRel);
         debug_assert!(previous >= amount, "capture storage budget underflow");
     }
@@ -305,6 +323,7 @@ struct CaptureBudgetReservation {
 impl CaptureBudgetReservation {
     fn commit(&mut self, entry: &CapturedExchange) {
         entry.stored_bytes.fetch_add(self.amount, Ordering::Release);
+        entry.stored_records.fetch_add(1, Ordering::Release);
         self.committed = true;
     }
 }
@@ -312,7 +331,7 @@ impl CaptureBudgetReservation {
 impl Drop for CaptureBudgetReservation {
     fn drop(&mut self) {
         if !self.committed {
-            self.budget.release(self.amount);
+            self.budget.release(self.amount, 1);
         }
     }
 }
@@ -466,6 +485,7 @@ impl fmt::Debug for CaptureStore {
 
 /// Capture admission and optional metadata enrichment. Limits count logical
 /// serialized record bytes; a storage backend can independently limit physical bytes.
+/// HTTP record metadata must fit within 64 KiB; payload bytes stream separately.
 /// These are storage limits, not a process RSS limit. Summaries and typed observations
 /// are retained separately, bounded in count by connection/exchange admission; custom
 /// observers must bound any variable-sized metadata they attach. Payloads belong in storage.
@@ -475,6 +495,9 @@ pub struct CaptureConfig {
     pub max_exchanges: usize,
     pub body_limit: u64,
     pub total_limit: u64,
+    /// Maximum retained records across exchanges, including pinned evicted exchanges.
+    /// This also bounds indexes when traffic arrives in very small body frames.
+    pub max_records: u64,
     pub observer: Arc<dyn CaptureObserver>,
 }
 
@@ -485,6 +508,7 @@ impl Default for CaptureConfig {
             max_exchanges: 4096,
             body_limit: rama_utils::octets::mib_u64(1),
             total_limit: rama_utils::octets::mib_u64(256),
+            max_records: 65_536,
             observer: Arc::new(()),
         }
     }
@@ -502,6 +526,7 @@ impl CaptureStore {
             max_exchanges,
             body_limit,
             total_limit,
+            max_records,
             observer,
         } = config;
         let (changes, _) = watch::channel(0);
@@ -523,6 +548,8 @@ impl CaptureStore {
             budget: Arc::new(CaptureBudget {
                 limit: total_limit,
                 used: AtomicU64::new(0),
+                record_limit: max_records,
+                records: AtomicU64::new(0),
             }),
             changes,
             search_caches: SyncMutex::new(SearchCaches::default()),
@@ -677,17 +704,19 @@ async fn read_record_at(
     collection: &Collection,
     location: RecordLocation,
 ) -> Result<StoredRecord, BoxError> {
+    let Some(body) = location.body else {
+        return metadata::read(collection, location, None).await;
+    };
     let mut reader = collection.read(location.id).await?;
     let mut bytes = Vec::new();
     reader
         .read_to_end(&mut bytes)
         .await
         .context("read capture record")?;
-    match location.body {
-        Some(CapturedBody::Request) => Ok(StoredRecord::RequestBody { data: bytes.into() }),
-        Some(CapturedBody::Response) => Ok(StoredRecord::ResponseBody { data: bytes.into() }),
-        None => serde_json::from_slice(&bytes).context("decode capture record"),
-    }
+    Ok(match body {
+        CapturedBody::Request => StoredRecord::RequestBody { data: bytes.into() },
+        CapturedBody::Response => StoredRecord::ResponseBody { data: bytes.into() },
+    })
 }
 
 fn is_upgrade_request(parts: &crate::request::Parts) -> bool {

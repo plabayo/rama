@@ -556,6 +556,13 @@ impl WebSocketRelayInjector {
         *self.liveness.borrow() && !self.ingress.is_closed() && !self.egress.is_closed()
     }
 
+    /// Maximum accepted payload size, or `None` if the relay has no size limit.
+    /// Inspectors can check recorded lengths before loading message bytes.
+    #[must_use]
+    pub fn max_message_size(&self) -> Option<usize> {
+        self.max_message_size
+    }
+
     /// Wait until the relay has stopped accepting injected messages.
     pub async fn closed(&self) {
         let mut liveness = self.liveness.clone();

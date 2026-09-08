@@ -1,9 +1,6 @@
 //! Observed user-agent profiles for HTTP inspectors.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{collections::BTreeSet, sync::Arc};
 
 use rama_core::{error::BoxError, extensions::Extension};
 use rama_http::{
@@ -81,67 +78,8 @@ impl ProfileInspector {
     }
 }
 
-pub async fn export_profiles(
-    store: &CaptureStore,
-    requests: &BTreeSet<u64>,
-    connections: &BTreeSet<u64>,
-) -> Result<Vec<UserAgentProfileInput>, BoxError> {
-    let mut selected = store.selected_exchanges(requests, connections);
-    let mut profiles = BTreeMap::<String, UserAgentProfileInput>::new();
-    while let Some(capture) = selected.next_capture() {
-        let metadata = capture.metadata();
-        let Some(observed) = metadata.exchange.get_ref::<UserAgentObservation>() else {
-            continue;
-        };
-        let Some(StoredRecord::RequestHead {
-            method,
-            url,
-            version,
-            headers,
-        }) = capture.request_head().await?
-        else {
-            continue;
-        };
-        let Some(user_agent) = headers
-            .get(rama_http::header::USER_AGENT)
-            .and_then(|value| value.to_str().ok())
-        else {
-            continue;
-        };
-        // Construct profile data only on explicit export. Capture retains neither
-        // a second HeaderMap nor a ClientHello per request.
-        let mut profile = UserAgentProfileInput::new(user_agent);
-        #[cfg(feature = "tls")]
-        if profiles
-            .get(user_agent)
-            .is_none_or(|profile| profile.tls_client_hello.is_none())
-        {
-            profile.tls_client_hello = metadata
-                .connection
-                .get_ref::<TlsObservation>()
-                .and_then(|tls| tls.client_hello.clone());
-        }
-        let (mut parts, ()) = rama_http::Request::builder()
-            .method(method)
-            .uri(url)
-            .version(version)
-            .body(())?
-            .into_parts();
-        parts.headers = headers;
-        fill_profile(
-            &mut profile,
-            parts,
-            observed.request_initiator,
-            observed.h2_settings.clone(),
-        );
-        if let Some(existing) = profiles.get_mut(&profile.uastr) {
-            existing.merge_missing(profile)?;
-        } else {
-            profiles.insert(profile.uastr.clone(), profile);
-        }
-    }
-    Ok(profiles.into_values().collect())
-}
+mod export;
+pub use export::{ProfileExport, export_profiles};
 
 fn fill_profile(
     profile: &mut UserAgentProfileInput,
@@ -149,28 +87,33 @@ fn fill_profile(
     request_initiator: Option<RequestInitiator>,
     h2_settings: Option<Http2Settings>,
 ) {
-    if parts.version == rama_http::Version::HTTP_2 {
-        profile.h2_settings = h2_settings;
+    let destination = if parts.version == rama_http::Version::HTTP_2 {
+        if profile.h2_settings.is_none() {
+            profile.h2_settings = h2_settings;
+        }
         match request_initiator {
-            Some(RequestInitiator::Navigate) => profile.h2_headers_navigate = Some(parts.headers),
-            Some(RequestInitiator::Fetch) => profile.h2_headers_fetch = Some(parts.headers),
-            Some(RequestInitiator::Xhr) => profile.h2_headers_xhr = Some(parts.headers),
-            Some(RequestInitiator::Form) => profile.h2_headers_form = Some(parts.headers),
-            Some(RequestInitiator::Ws) => profile.h2_headers_ws = Some(parts.headers),
-            None => {}
+            Some(RequestInitiator::Navigate) => &mut profile.h2_headers_navigate,
+            Some(RequestInitiator::Fetch) => &mut profile.h2_headers_fetch,
+            Some(RequestInitiator::Xhr) => &mut profile.h2_headers_xhr,
+            Some(RequestInitiator::Form) => &mut profile.h2_headers_form,
+            Some(RequestInitiator::Ws) => &mut profile.h2_headers_ws,
+            None => return,
         }
     } else {
-        profile.h1_settings = Some(Http1Settings {
+        profile.h1_settings.get_or_insert_with(|| Http1Settings {
             title_case_headers: headers_are_title_case(&parts.headers),
         });
         match request_initiator {
-            Some(RequestInitiator::Navigate) => profile.h1_headers_navigate = Some(parts.headers),
-            Some(RequestInitiator::Fetch) => profile.h1_headers_fetch = Some(parts.headers),
-            Some(RequestInitiator::Xhr) => profile.h1_headers_xhr = Some(parts.headers),
-            Some(RequestInitiator::Form) => profile.h1_headers_form = Some(parts.headers),
-            Some(RequestInitiator::Ws) => profile.h1_headers_ws = Some(parts.headers),
-            None => {}
+            Some(RequestInitiator::Navigate) => &mut profile.h1_headers_navigate,
+            Some(RequestInitiator::Fetch) => &mut profile.h1_headers_fetch,
+            Some(RequestInitiator::Xhr) => &mut profile.h1_headers_xhr,
+            Some(RequestInitiator::Form) => &mut profile.h1_headers_form,
+            Some(RequestInitiator::Ws) => &mut profile.h1_headers_ws,
+            None => return,
         }
+    };
+    if destination.is_none() {
+        *destination = Some(parts.headers);
     }
 }
 

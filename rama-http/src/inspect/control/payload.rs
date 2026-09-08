@@ -27,8 +27,16 @@ impl Payload {
         }
     }
 
+    pub(crate) fn replace_bytes(&mut self, bytes: Bytes) -> Bytes {
+        std::mem::replace(&mut self.bytes, bytes)
+    }
+
     pub fn bytes(&self) -> &Bytes {
         &self.bytes
+    }
+
+    pub fn is_binary(&self) -> bool {
+        self.binary
     }
 
     pub fn len(&self) -> usize {

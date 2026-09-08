@@ -381,7 +381,7 @@ async fn cancelled_append_is_not_published_in_capture_indexes() {
             error: Some("must-not-be-published".to_owned()),
         };
         appending_store
-            .append(exchange_id, &appending_entry, &record)
+            .append(exchange_id, &appending_entry, record)
             .await
     });
     tokio::time::timeout(Duration::from_secs(1), hook.reached.notified())
@@ -404,6 +404,7 @@ async fn cancelled_append_is_not_published_in_capture_indexes() {
         .collect::<Vec<_>>();
     assert_eq!(replay_results, vec![(Some(StatusCode::NO_CONTENT), None)]);
     assert_eq!(entry.records.read().len(), 2);
+    assert_eq!(store.0.budget.records.load(Ordering::Acquire), 2);
 }
 
 #[tokio::test]

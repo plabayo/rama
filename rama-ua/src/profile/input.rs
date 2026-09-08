@@ -174,7 +174,10 @@ impl UserAgentProfileInput {
         Ok(())
     }
 
-    fn try_into_profile(self) -> Result<UserAgentProfile, BoxError> {
+    /// Validate captured fields and move them into a complete emulation profile.
+    /// This uses the same validation as JSON database loading, without encoding
+    /// or parsing JSON and without cloning the captured header maps.
+    pub fn try_into_profile(self) -> Result<UserAgentProfile, BoxError> {
         let ua = UserAgent::new(self.uastr);
         let missing = |field| IncompleteProfile {
             user_agent: ua.header_str().to_owned(),

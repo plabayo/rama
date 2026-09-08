@@ -649,6 +649,11 @@ async fn preview_pages_read_bounded_prefixes_and_preserve_full_downloads() {
             .messages
             .is_empty()
     );
+    // Closed replay must reject from metadata, without reaching the guarded payload.
+    assert!(matches!(
+        store.replay_websocket_message(1, 0).await,
+        Err(WebSocketReplayError::ConnectionClosed)
+    ));
     // The guard really rejects eager materialization, rather than returning EOF.
     read_details(&exchange, 0, 1).await.unwrap_err();
     guarded.store(false, Ordering::Relaxed);
