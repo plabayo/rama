@@ -276,6 +276,9 @@ qa-dial9:
     cargo check -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
     cargo clippy -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-tls-rustls -p rama-tls-boring -p rama-socks5 -p rama --features dial9 --all-targets
     cargo nextest run -p rama-core -p rama-http -p rama-ws -p rama-net -p rama-net-apple-networkextension -p rama-dns -p rama-socks5 --features dial9
+    # rama-quic joins the all-targets lines once its public facade lets the integration tests build.
+    cargo clippy -p rama-quic --features dial9,rustls,ring --lib
+    cargo nextest run -p rama-quic --features dial9,rustls,ring --lib
 
 # `qa-dial9` under `--cfg tokio_unstable`, where dial9 gets its full task coverage.
 qa-dial9-tokio-unstable:

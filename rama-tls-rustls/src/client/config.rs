@@ -26,6 +26,20 @@ pub struct RustlsTlsConnectorConfig<'a> {
     pub modify: Option<&'a ModifyRustlsClientConfig>,
 }
 
+impl RustlsTlsConnectorConfig<'_> {
+    /// Build a native TLS client configuration using the supplied cryptographic provider.
+    ///
+    /// This does not read or install the process-wide default provider. Certificate
+    /// verification uses the same provider. The modify hook runs last and may replace
+    /// the configuration, including its provider.
+    pub fn try_into_client_config_with_provider(
+        self,
+        provider: Arc<crate::dep::rustls::crypto::CryptoProvider>,
+    ) -> Result<ClientConfig, BoxError> {
+        super::connector_data::build_client_config(&self, Some(provider))
+    }
+}
+
 /// Rustls specific setters for [`TlsClientConfig`].
 pub trait RustlsClientConfigExt: Sized {
     rama_utils::macros::generate_set_and_with! {

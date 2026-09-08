@@ -1731,6 +1731,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fastbloom"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef975e30683b2d965054bb0a836f8973857c4ebf6acf274fe46617cd285060d8"
+dependencies = [
+ "foldhash 0.2.0",
+ "libm",
+ "portable-atomic",
+ "siphasher",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2782,6 +2794,12 @@ checksum = "ff9840bcc50b71349309900da0ce7279aa336ae71d73250b07998932c7d97c25"
 dependencies = [
  "hashbrown 0.17.1",
 ]
+
+[[package]]
+name = "lru-slab"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
 name = "mac_address"
@@ -3887,6 +3905,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "qlog"
+version = "0.15.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0f15b83c59e6b945f2261c95a1dd9faf239187f32ff0a96af1d1d28c4557f919"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_with",
+ "smallvec",
+]
+
+[[package]]
 name = "quanta"
 version = "0.12.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4007,6 +4037,7 @@ dependencies = [
  "rama-net-apple-xpc",
  "rama-pac",
  "rama-proxy",
+ "rama-quic",
  "rama-socks5",
  "rama-tcp",
  "rama-tls",
@@ -4140,6 +4171,7 @@ dependencies = [
  "rama-net",
  "rama-utils",
  "rcgen",
+ "ring",
  "rustls-pki-types",
  "schannel",
  "security-framework",
@@ -4228,11 +4260,13 @@ dependencies = [
 name = "rama-fuzz"
 version = "0.5.0"
 dependencies = [
+ "arbitrary",
  "h2-support",
  "libfuzzer-sys",
  "rama",
  "rama-http-core",
  "rama-js",
+ "rama-quic",
  "serde_json",
  "tokio",
 ]
@@ -4676,6 +4710,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "rama-quic"
+version = "0.5.0"
+dependencies = [
+ "ahash",
+ "arbitrary",
+ "fastbloom",
+ "lru-slab",
+ "parking_lot",
+ "pin-project-lite",
+ "qlog",
+ "rama-core",
+ "rama-crypto",
+ "rama-net",
+ "rama-tls",
+ "rama-tls-rustls",
+ "rama-udp",
+ "rama-utils",
+ "rand 0.10.2",
+ "rand_pcg",
+ "rustc-hash",
+ "slab",
+ "tokio",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "rama-socks5"
 version = "0.5.0"
 dependencies = [
@@ -4993,6 +5053,15 @@ checksum = "6a8615d50dcf34fa31f7ab52692afec947c4dd0ab803cc87cb3b0b4570ff7463"
 dependencies = [
  "num-traits",
  "rand 0.9.5",
+]
+
+[[package]]
+name = "rand_pcg"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
+dependencies = [
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -5458,6 +5527,7 @@ version = "1.0.151"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -5481,6 +5551,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f901ee573cab6b3060453d2d5f0bae4e6d628c23c0a962ff9b5f1d7c8d4f1ed"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "serde_with"
+version = "3.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee78f1fbe43ac4a0e47aadb3dbd357b69eb0d3793e948624cd03dd2750ab1c0a"
+dependencies = [
+ "serde_core",
+ "serde_with_macros",
+]
+
+[[package]]
+name = "serde_with_macros"
+version = "3.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8705578779c2b6bd90d84d66eb2e206b708b1a4d7b9f17641b293545bf1c7e46"
+dependencies = [
+ "darling 0.23.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

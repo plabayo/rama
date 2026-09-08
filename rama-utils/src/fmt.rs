@@ -50,19 +50,74 @@ pub fn display_fn<F>(formatter: F) -> DisplayFn<F> {
     DisplayFn(formatter)
 }
 
-/// Display bytes as contiguous uppercase hexadecimal prefixed with `0x`.
+/// Format bytes as contiguous hexadecimal without an intermediate allocation.
 ///
-/// Formatting is deferred and does not allocate.
-pub fn hex(bytes: &[u8]) -> impl fmt::Display + '_ {
-    display_fn(move |formatter: &mut fmt::Formatter<'_>| {
-        formatter.write_str("0x")?;
-        for &byte in bytes {
-            let encoded = crate::hex::encode_byte_upper(byte);
-            formatter.write_char(char::from(encoded[0]))?;
-            formatter.write_char(char::from(encoded[1]))?;
+/// Display (`{}`) uses uppercase digits with a `0x` prefix. Lower hex (`{:x}`)
+/// and upper hex (`{:X}`) omit the prefix unless alternate formatting (`#`)
+/// is requested. Each input byte always produces two digits.
+///
+/// Use `write!` to append directly to a reusable `String` (`core::fmt::Write`)
+/// or a byte buffer or I/O writer (`std::io::Write`). Only the destination may
+/// allocate; the formatter uses a small stack buffer. A failed write can leave
+/// a partially written prefix, following the destination's usual semantics.
+///
+/// Supported format options are the case (`{:x}` / `{:X}`) and the alternate
+/// `0x` prefix (`#`). Width, fill, alignment, precision and zero padding are
+/// accepted but not interpreted.
+///
+/// ```
+/// use core::fmt::Write as _;
+/// use rama_utils::fmt::hex;
+///
+/// let mut output = String::with_capacity(64);
+/// output.push_str("key=");
+/// write!(&mut output, "{:x}", hex(&[0xCA, 0xFE])).unwrap();
+/// assert_eq!(output, "key=cafe");
+/// assert_eq!(format!("{:#X}", hex(&[0xCA, 0xFE])), "0xCAFE");
+/// ```
+pub fn hex(bytes: &[u8]) -> impl fmt::Display + fmt::LowerHex + fmt::UpperHex + '_ {
+    Hex(bytes)
+}
+
+struct Hex<'a>(&'a [u8]);
+
+impl Hex<'_> {
+    fn format(&self, formatter: &mut fmt::Formatter<'_>, upper: bool, prefix: bool) -> fmt::Result {
+        if prefix {
+            formatter.write_str("0x")?;
+        }
+        let mut buffer = [0u8; 128];
+        for chunk in self.0.chunks(buffer.len() / 2) {
+            let written = if upper {
+                crate::hex::encode_upper_into(chunk, &mut buffer)
+            } else {
+                crate::hex::encode_into(chunk, &mut buffer)
+            }
+            .map_err(|_capacity| fmt::Error)?;
+            // The encoders write only ASCII digits into the initialized prefix.
+            let text = core::str::from_utf8(&buffer[..written]).map_err(|_ascii| fmt::Error)?;
+            formatter.write_str(text)?;
         }
         Ok(())
-    })
+    }
+}
+
+impl fmt::Display for Hex<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.format(formatter, true, true)
+    }
+}
+
+impl fmt::LowerHex for Hex<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.format(formatter, false, formatter.alternate())
+    }
+}
+
+impl fmt::UpperHex for Hex<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.format(formatter, true, formatter.alternate())
+    }
 }
 
 /// Display valid UTF-8 as a quoted debug string, or other bytes as [`hex`].
@@ -133,6 +188,70 @@ mod tests {
     use core::fmt;
 
     use super::*;
+
+    #[test]
+    fn hex_appends_to_reused_string_with_both_cases() {
+        let bytes: crate::std::vec::Vec<_> = (0u8..=255).collect();
+        let mut output = String::with_capacity(1100);
+        output.push_str("key=");
+        let allocation = output.as_ptr();
+        write!(&mut output, "{:x}/{:X}", hex(&bytes), hex(&bytes)).unwrap();
+        assert_eq!(output.as_ptr(), allocation);
+        assert_eq!(
+            output,
+            format!(
+                "key={}/{}",
+                crate::hex::encode(&bytes),
+                crate::hex::encode_upper(&bytes)
+            )
+        );
+        assert_eq!(
+            format!("{:#x}/{:#X}/{}", hex(&[0xAB]), hex(&[0xAB]), hex(&[0xAB])),
+            "0xab/0xAB/0xAB"
+        );
+        assert_eq!(
+            format!("{:x}/{:X}/{:#x}", hex(&[]), hex(&[]), hex(&[])),
+            "//0x"
+        );
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn hex_appends_to_reused_byte_buffer() {
+        use std::io::Write as _;
+        let mut output = Vec::with_capacity(32);
+        output.extend_from_slice(b"key=");
+        let allocation = output.as_ptr();
+        write!(&mut output, "{:x}", hex(&[0xCA, 0xFE])).unwrap();
+        assert_eq!(output, b"key=cafe");
+        assert_eq!(output.as_ptr(), allocation);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn hex_preserves_writer_errors_after_partial_output() {
+        use std::io::{self, Write as _};
+        struct FailsAfterPrefix(Vec<u8>);
+        impl io::Write for FailsAfterPrefix {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                let remaining = 3 - self.0.len();
+                if remaining == 0 {
+                    return Err(io::Error::new(io::ErrorKind::BrokenPipe, "writer closed"));
+                }
+                let written = remaining.min(bytes.len());
+                self.0.extend_from_slice(&bytes[..written]);
+                Ok(written)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut output = FailsAfterPrefix(Vec::new());
+        let error = write!(&mut output, "{:x}", hex(&[0xCA, 0xFE])).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(error.to_string(), "writer closed");
+        assert_eq!(output.0, b"caf");
+    }
 
     #[test]
     fn formats_with_requested_capacity() {

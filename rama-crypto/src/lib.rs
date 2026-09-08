@@ -63,6 +63,17 @@ pub mod dep {
         pub use aws_lc_rs::*;
     }
 
+    #[cfg(feature = "ring")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "ring")))]
+    pub mod ring {
+        //! Re-export of the [`ring`] crate.
+        //!
+        //! [`ring`]: https://docs.rs/ring
+
+        #[doc(inline)]
+        pub use ring::*;
+    }
+
     #[cfg(feature = "boring")]
     #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
     pub mod boring {

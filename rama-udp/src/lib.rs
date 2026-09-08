@@ -34,7 +34,7 @@ pub use batch::{DatagramSender, DatagramSenderExt, DatagramSocket, DatagramSocke
 mod meta;
 pub use meta::{
     DatagramCapabilities, DatagramError, DatagramFeature, DatagramMetadata, EcnCodepoint,
-    MAX_UDP_PAYLOAD_IPV4, MAX_UDP_PAYLOAD_IPV6, ReceiveTimestamp,
+    MAX_UDP_PAYLOAD_IPV4, MAX_UDP_PAYLOAD_IPV6, ReceiveTimestamp, SendFailure,
 };
 
 #[cfg(any(test, feature = "test-utils"))]

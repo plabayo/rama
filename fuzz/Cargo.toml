@@ -162,10 +162,40 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "quic_packet"
+path = "fuzz_targets/quic_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "quic_params"
+path = "fuzz_targets/quic_params.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "quic_streamid"
+path = "fuzz_targets/quic_streamid.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "quic_streams"
+path = "fuzz_targets/quic_streams.rs"
+test = false
+doc = false
+bench = false
+
 [dependencies]
+arbitrary = { workspace = true }
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
 rama = { path = "../", features = ["dns", "ua", "http", "net", "html", "icap"] }
 rama-js = { path = "../rama-js" }
+rama-quic = { path = "../rama-quic", features = ["arbitrary", "ring"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 

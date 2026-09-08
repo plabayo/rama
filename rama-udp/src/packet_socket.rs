@@ -227,6 +227,13 @@ impl DatagramSender for UdpPacketSender {
             match result {
                 Ok(()) => return Poll::Ready(Ok(())),
                 Err(error) if is_would_block(&error) => {}
+                Err(error)
+                    if datagram.segment_size().is_some()
+                        && self.state.max_gso_segments() == 1
+                        && is_segmentation_rejection(&error) =>
+                {
+                    return Poll::Ready(Err(DatagramError::SegmentationRejected(error)));
+                }
                 Err(error) => return Poll::Ready(Err(error.into())),
             }
         }
@@ -254,6 +261,28 @@ fn receive_segment_size(metadata: sys::RecvMeta) -> Option<NonZeroUsize> {
     (metadata.stride < metadata.original_len)
         .then(|| NonZeroUsize::new(metadata.stride))
         .flatten()
+}
+
+// Keep platform error classification in the socket backend. A shared capability decrease
+// alone is insufficient: a different sender may have triggered that decrease concurrently.
+fn is_segmentation_rejection(error: &io::Error) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        matches!(error.raw_os_error(), Some(libc::EIO | libc::EINVAL))
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Networking::WinSock::{WSAEINVAL, WSAENOPROTOOPT, WSAEOPNOTSUPP};
+        matches!(
+            error.raw_os_error(),
+            Some(WSAEINVAL | WSAENOPROTOOPT | WSAEOPNOTSUPP)
+        )
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android", windows)))]
+    {
+        let _ = error;
+        false
+    }
 }
 
 fn is_would_block(error: &io::Error) -> bool {

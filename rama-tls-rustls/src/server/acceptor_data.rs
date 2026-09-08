@@ -100,94 +100,111 @@ impl RamaTryFrom<&rama_tls::server::TlsServerConfig, RamaTlsRustlsCrateMarker>
 
 impl TryFrom<super::config::RustlsTlsAcceptorConfig<'_>> for rustls::ServerConfig {
     type Error = BoxError;
+
     fn try_from(value: super::config::RustlsTlsAcceptorConfig<'_>) -> Result<Self, Self::Error> {
         crate::ensure_default_crypto_provider();
-        if value.dynamic.is_some() {
-            tracing::debug!(
-                "ignoring dynamic field when converting RustlsTlsAcceptorConfig into rustls::ServerConfig directly",
-            )
-        }
-
-        // Versions: rustls only models TLS 1.2/1.3; anything else (incl. GREASE)
-        // is dropped. Empty = all supported versions.
-        let versions: Vec<&'static rustls::SupportedProtocolVersion> = value
-            .versions
-            .map(|v| {
-                v.0.iter()
-                    .filter_map(|pv| (*pv).rama_try_into().ok())
-                    .collect()
-            })
-            .unwrap_or_default();
-        let builder = if versions.is_empty() {
-            Self::builder_with_protocol_versions(ALL_VERSIONS)
-        } else {
-            Self::builder_with_protocol_versions(&versions)
-        };
-
-        let builder = match value.client_verify.map(|v| &v.0) {
-            None | Some(ClientVerifyMode::Auto | ClientVerifyMode::Disable) => {
-                builder.with_no_client_auth()
-            }
-            Some(ClientVerifyMode::ClientAuth(certs)) => {
-                let mut roots = rustls::RootCertStore::empty();
-                for cert in certs {
-                    roots
-                        .add(cert.to_owned())
-                        .context("rustls server: add client CA cert to root store")?;
-                }
-                let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-                    .build()
-                    .context("rustls server: build client cert verifier")?;
-                builder.with_client_cert_verifier(verifier)
-            }
-        };
-
-        let (cert_chain, key, ocsp) = match value.server_auth.map(|a| a.0.clone()) {
-            Some(ServerAuthData {
-                cert_chain,
-                ocsp,
-                private_key,
-            }) => (cert_chain, private_key, ocsp),
-            // No server identity configured. If a modify hook is present, build a
-            // self-signed scaffold so the hook can install its own cert source.
-            // Without a modify hook there is nothing to serve, so this is an error.
-            None if value.modify.is_some() => {
-                let (chain, key) =
-                    rama_crypto::cert::generate_server_auth(GeneratedServerAuthConfig::default())?;
-                (chain, key, None)
-            }
-            None => {
-                return Err(BoxError::from_static_str(
-                    "rustls server: no server auth configured (set TlsServerConfig::with_server_auth)",
-                ));
-            }
-        };
-
-        let mut server_config = match ocsp {
-            Some(ocsp) => builder
-                .with_single_cert_with_ocsp(cert_chain, key, ocsp)
-                .context("rustls server: set single cert with ocsp")?,
-            None => builder
-                .with_single_cert(cert_chain, key)
-                .context("rustls server: set single cert")?,
-        };
-
-        if let Some(alpn) = value.alpn {
-            server_config.alpn_protocols = alpn.0.iter().map(|p| p.as_bytes().to_vec()).collect();
-        }
-
-        if let Some(keylog) = value.keylog
-            && let Some(sink) = open_intent_sink(&keylog.0)?
-        {
-            server_config.key_log = Arc::new(RamaKeyLog::new(sink));
-        }
-
-        if let Some(modify) = value.modify {
-            server_config = modify.apply(server_config)?;
-        }
-
-        Ok(server_config)
+        build_server_config(&value, None)
     }
+}
+
+pub(super) fn build_server_config(
+    value: &super::config::RustlsTlsAcceptorConfig<'_>,
+    provider: Option<Arc<rustls::crypto::CryptoProvider>>,
+) -> Result<rustls::ServerConfig, BoxError> {
+    if value.dynamic.is_some() {
+        tracing::debug!(
+            "ignoring dynamic field when converting RustlsTlsAcceptorConfig into rustls::ServerConfig directly",
+        )
+    }
+
+    // Versions: rustls only models TLS 1.2/1.3; anything else (incl. GREASE)
+    // is dropped. Empty = all supported versions.
+    let versions: Vec<&'static rustls::SupportedProtocolVersion> = value
+        .versions
+        .map(|v| {
+            v.0.iter()
+                .filter_map(|pv| (*pv).rama_try_into().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    let versions = if versions.is_empty() {
+        ALL_VERSIONS
+    } else {
+        &versions
+    };
+    let builder = match provider {
+        Some(provider) => rustls::ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(versions)?,
+        None => rustls::ServerConfig::builder_with_protocol_versions(versions),
+    };
+    let provider = builder.crypto_provider().clone();
+
+    let builder = match value.client_verify.map(|v| &v.0) {
+        None | Some(ClientVerifyMode::Auto | ClientVerifyMode::Disable) => {
+            builder.with_no_client_auth()
+        }
+        Some(ClientVerifyMode::ClientAuth(certs)) => {
+            let mut roots = rustls::RootCertStore::empty();
+            for cert in certs {
+                roots
+                    .add(cert.to_owned())
+                    .context("rustls server: add client CA cert to root store")?;
+            }
+            let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+                Arc::new(roots),
+                provider,
+            )
+            .build()
+            .context("rustls server: build client cert verifier")?;
+            builder.with_client_cert_verifier(verifier)
+        }
+    };
+
+    let (cert_chain, key, ocsp) = match value.server_auth.map(|a| a.0.clone()) {
+        Some(ServerAuthData {
+            cert_chain,
+            ocsp,
+            private_key,
+        }) => (cert_chain, private_key, ocsp),
+        // No server identity configured. If a modify hook is present, build a
+        // self-signed scaffold so the hook can install its own cert source.
+        // Without a modify hook there is nothing to serve, so this is an error.
+        None if value.modify.is_some() => {
+            let (chain, key) =
+                rama_crypto::cert::generate_server_auth(GeneratedServerAuthConfig::default())?;
+            (chain, key, None)
+        }
+        None => {
+            return Err(BoxError::from_static_str(
+                "rustls server: no server auth configured (set TlsServerConfig::with_server_auth)",
+            ));
+        }
+    };
+
+    let mut server_config = match ocsp {
+        Some(ocsp) => builder
+            .with_single_cert_with_ocsp(cert_chain, key, ocsp)
+            .context("rustls server: set single cert with ocsp")?,
+        None => builder
+            .with_single_cert(cert_chain, key)
+            .context("rustls server: set single cert")?,
+    };
+
+    if let Some(alpn) = value.alpn {
+        server_config.alpn_protocols = alpn.0.iter().map(|p| p.as_bytes().to_vec()).collect();
+    }
+
+    if let Some(keylog) = value.keylog
+        && let Some(sink) = open_intent_sink(&keylog.0)?
+    {
+        server_config.key_log = Arc::new(RamaKeyLog::new(sink));
+    }
+
+    if let Some(modify) = value.modify {
+        server_config = modify.apply(server_config)?;
+    }
+
+    Ok(server_config)
 }
 
 impl From<rustls::ServerConfig> for TlsAcceptorData {
