@@ -1,6 +1,6 @@
 use core::{fmt::Display, str::FromStr};
 
-use crate::std::{self as std, string::String};
+use crate::std::string::String;
 
 use super::Authority;
 use crate::{

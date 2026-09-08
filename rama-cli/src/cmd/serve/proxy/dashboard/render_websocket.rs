@@ -13,7 +13,7 @@ pub(super) fn render_websocket_messages(details: &InspectorDetails) -> Option<St
     let cards = messages.iter().enumerate().map(
         |(
             page_index,
-            CapturedMessage {
+            CapturedWebSocketMessage {
                 at,
                 direction,
                 kind,
@@ -27,7 +27,9 @@ pub(super) fn render_websocket_messages(details: &InspectorDetails) -> Option<St
             let ingress = *direction == WebSocketRelayDirection::Ingress;
             let is_control = matches!(
                 kind,
-                MessageKind::Ping | MessageKind::Pong | MessageKind::Close
+                WebSocketMessageKind::Ping
+                    | WebSocketMessageKind::Pong
+                    | WebSocketMessageKind::Close
             );
             let capture_truncated = if ingress {
                 details.summary.request_truncated
@@ -47,10 +49,10 @@ pub(super) fn render_websocket_messages(details: &InspectorDetails) -> Option<St
                 (false, false) => "ws-message egress",
             }
             .to_owned();
-            if *origin == MessageOrigin::Replay {
+            if *origin == WebSocketMessageOrigin::Replay {
                 class.push_str(" replayed");
             }
-            if *origin == MessageOrigin::Injected {
+            if *origin == WebSocketMessageOrigin::Injected {
                 class.push_str(" injected");
             }
             article!(
@@ -62,9 +64,9 @@ pub(super) fn render_websocket_messages(details: &InspectorDetails) -> Option<St
                     span!(display(kind)),
                     close_code.map(|code| span!("code ", u16::from(code))),
                     span!(format_bytes(bytes as u64)),
-                    (*origin == MessageOrigin::Replay)
+                    (*origin == WebSocketMessageOrigin::Replay)
                         .then(|| span!(class = "ws-replayed", "replayed")),
-                    (*origin == MessageOrigin::Injected)
+                    (*origin == WebSocketMessageOrigin::Injected)
                         .then(|| span!(class = "ws-injected", "custom")),
                     is_control.then(|| span!("control · observation only")),
                     can_replay.then(|| button!(
@@ -95,7 +97,7 @@ pub(super) fn render_websocket_messages(details: &InspectorDetails) -> Option<St
                             "/api/capture/{}/websocket/{}",
                             details.summary.id, message_index
                         ),
-                        "data-payload-format" = if *kind == MessageKind::Text {
+                        "data-payload-format" = if *kind == WebSocketMessageKind::Text {
                             "text"
                         } else {
                             "binary"
@@ -228,10 +230,13 @@ pub(super) fn is_textual_content_type(content_type: &str) -> bool {
 }
 
 pub(super) fn websocket_payload(
-    kind: MessageKind,
+    kind: WebSocketMessageKind,
     bytes: &[u8],
 ) -> (impl std::fmt::Display + '_, usize, bool) {
-    let text = matches!(kind, MessageKind::Text | MessageKind::Close);
+    let text = matches!(
+        kind,
+        WebSocketMessageKind::Text | WebSocketMessageKind::Close
+    );
     let limit = if text {
         WS_TEXT_PREVIEW_LIMIT
     } else {

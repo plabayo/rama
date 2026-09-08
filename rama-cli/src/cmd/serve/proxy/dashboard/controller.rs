@@ -4,7 +4,11 @@ pub(super) async fn update_mitm_policy(
     State(state): State<DashboardState>,
     Json(update): Json<MitmPolicyUpdate>,
 ) -> Response {
-    if !update.session.is_empty() && !state.has_session(&update.session) {
+    if update
+        .session
+        .as_deref()
+        .is_some_and(|session| !state.has_session(session))
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
     if let Err(error) = state
@@ -26,7 +30,11 @@ pub(super) async fn control_state(
     State(state): State<DashboardState>,
     Query(query): Query<ControlQuery>,
 ) -> Response {
-    if !query.session.is_empty() && !state.has_session(&query.session) {
+    if query
+        .session
+        .as_deref()
+        .is_some_and(|session| !state.has_session(session))
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
     let mut snapshot = state.capture.control().snapshot();
@@ -49,7 +57,11 @@ pub(super) async fn control_pending(
     Path(id): Path<u64>,
     Query(query): Query<ControlQuery>,
 ) -> Response {
-    if !query.session.is_empty() && !state.has_session(&query.session) {
+    if query
+        .session
+        .as_deref()
+        .is_some_and(|session| !state.has_session(session))
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
     match state.capture.control().pending(id) {
@@ -67,7 +79,11 @@ pub(super) async fn control_from_capture(
     Path(id): Path<u64>,
     Query(query): Query<ControlQuery>,
 ) -> Response {
-    if !query.session.is_empty() && !state.has_session(&query.session) {
+    if query
+        .session
+        .as_deref()
+        .is_some_and(|session| !state.has_session(session))
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
     let Ok(details) = state.capture.inspector_view(id, 0, 0).await else {
@@ -87,7 +103,11 @@ pub(super) async fn control_config(
     State(state): State<DashboardState>,
     Json(update): Json<ControlConfigUpdate>,
 ) -> Response {
-    if !update.session.is_empty() && !state.has_session(&update.session) {
+    if update
+        .session
+        .as_deref()
+        .is_some_and(|session| !state.has_session(session))
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
     if update
@@ -121,7 +141,11 @@ pub(super) async fn control_decision(
     State(state): State<DashboardState>,
     Json(update): Json<ControlDecision>,
 ) -> Response {
-    if !update.session.is_empty() && !state.has_session(&update.session) {
+    if update
+        .session
+        .as_deref()
+        .is_some_and(|session| !state.has_session(session))
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
     if update.ids.is_empty() || update.ids.len() > 256 {
@@ -142,7 +166,11 @@ pub(super) async fn control_forward_all(
     State(state): State<DashboardState>,
     Json(query): Json<ControlQuery>,
 ) -> Response {
-    if !query.session.is_empty() && !state.has_session(&query.session) {
+    if query
+        .session
+        .as_deref()
+        .is_some_and(|session| !state.has_session(session))
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
     state.capture.control().stop_and_forward();
@@ -154,7 +182,11 @@ pub(super) async fn control_resume(
     Path(id): Path<u64>,
     Json(query): Json<ControlQuery>,
 ) -> Response {
-    if !query.session.is_empty() && !state.has_session(&query.session) {
+    if query
+        .session
+        .as_deref()
+        .is_some_and(|session| !state.has_session(session))
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
     state.capture.control().resume_connection(id);
@@ -165,7 +197,11 @@ pub(super) async fn control_clear_hosts(
     State(state): State<DashboardState>,
     Json(query): Json<ControlQuery>,
 ) -> Response {
-    if !query.session.is_empty() && !state.has_session(&query.session) {
+    if query
+        .session
+        .as_deref()
+        .is_some_and(|session| !state.has_session(session))
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
     state.capture.control().clear_hosts();

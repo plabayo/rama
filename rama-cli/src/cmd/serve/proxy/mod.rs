@@ -2,7 +2,7 @@
 
 mod capture;
 #[cfg(test)]
-use capture::ExchangeId;
+use capture::HttpExchangeId;
 use rama::http::inspect::control;
 use rama::http::ws::inspect::inspect_websocket_event;
 mod dashboard;
@@ -1712,15 +1712,12 @@ async fn run_with_dashboard_token(
         let socks5 = Socks5Acceptor::new(exec.clone())
             .with_connector(Socks5Connector::new(socks_connector, socks_bridge));
 
-        let http =
-            MarkProtocolLayer::new(capture.clone(), rama::net::Protocol::from_static("http"))
-                .into_layer(plain_http);
-        let https =
-            MarkProtocolLayer::new(capture.clone(), rama::net::Protocol::from_static("https"))
-                .into_layer(tls_acceptor);
+        let http = MarkProtocolLayer::new(capture.clone(), rama::net::Protocol::HTTP)
+            .into_layer(plain_http);
+        let https = MarkProtocolLayer::new(capture.clone(), rama::net::Protocol::HTTPS)
+            .into_layer(tls_acceptor);
         let socks5 =
-            MarkProtocolLayer::new(capture.clone(), rama::net::Protocol::from_static("socks5"))
-                .into_layer(socks5);
+            MarkProtocolLayer::new(capture.clone(), rama::net::Protocol::SOCKS5).into_layer(socks5);
         let tcp_layers = (
             TcpStreamOptionsLayer::new(tcp_options.clone()),
             BodyLimitLayer::request_only(cfg.body_limit),

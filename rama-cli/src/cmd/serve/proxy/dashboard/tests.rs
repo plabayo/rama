@@ -85,7 +85,7 @@ fn test_details(records: Vec<StoredRecord>) -> InspectorDetails {
     let metadata = rama::http::inspect::capture::CaptureMetadata::default();
     InspectorDetails {
         http: CaptureDetails {
-            summary: ExchangeSummary {
+            summary: HttpExchangeSummary {
                 decision: None,
                 id: 1,
                 connection_id: 1,

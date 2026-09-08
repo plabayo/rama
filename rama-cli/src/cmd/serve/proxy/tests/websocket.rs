@@ -163,7 +163,7 @@ async fn websocket_inspector_records_and_relays_messages() {
         .await
         .unwrap();
     let extensions = rama::extensions::Extensions::new();
-    extensions.insert(ExchangeId(1));
+    extensions.insert(HttpExchangeId(1));
     let output = inspect_websocket_event(
         Some(store.clone()),
         WebSocketRelayEventInput {
@@ -182,7 +182,7 @@ async fn websocket_inspector_records_and_relays_messages() {
         [WebSocketRelayMessage::Text(message)] if message.as_str() == "websocket-payload"
     ));
     let extensions = rama::extensions::Extensions::new();
-    extensions.insert(ExchangeId(1));
+    extensions.insert(HttpExchangeId(1));
     let ping = inspect_websocket_event(
         Some(store.clone()),
         WebSocketRelayEventInput {
@@ -533,8 +533,8 @@ async fn websocket_inspector_replays_live_text_and_binary_in_original_direction(
     let (relay_egress_io, peer_egress_io) = duplex(rama::utils::octets::kib(16));
     let relay_ingress = MockSocket::new(relay_ingress_io);
     let relay_egress = MockSocket::new(relay_egress_io);
-    relay_ingress.extensions().insert(ExchangeId(1));
-    relay_egress.extensions().insert(ExchangeId(1));
+    relay_ingress.extensions().insert(HttpExchangeId(1));
+    relay_egress.extensions().insert(HttpExchangeId(1));
     let relay_store = store.clone();
     let relay_service = WebSocketRelayEventService::new(service_fn(move |input| {
         inspect_websocket_event(Some(relay_store.clone()), input)
@@ -624,9 +624,9 @@ async fn websocket_inspector_replays_live_text_and_binary_in_original_direction(
     store
         .record_websocket_message(
             1,
-            CapturedMessage::new(
+            CapturedWebSocketMessage::new(
                 WebSocketRelayDirection::Ingress,
-                MessageKind::Ping,
+                WebSocketMessageKind::Ping,
                 Bytes::from(b"control".to_vec()),
             ),
         )
@@ -643,8 +643,8 @@ async fn websocket_inspector_replays_live_text_and_binary_in_original_direction(
             .iter()
             .filter(|record| matches!(
                 record,
-                CapturedMessage {
-                    origin: MessageOrigin::Replay,
+                CapturedWebSocketMessage {
+                    origin: WebSocketMessageOrigin::Replay,
                     ..
                 }
             ))
@@ -657,8 +657,8 @@ async fn websocket_inspector_replays_live_text_and_binary_in_original_direction(
             .iter()
             .filter(|record| matches!(
                 record,
-                CapturedMessage {
-                    origin: MessageOrigin::Injected,
+                CapturedWebSocketMessage {
+                    origin: WebSocketMessageOrigin::Injected,
                     ..
                 }
             ))

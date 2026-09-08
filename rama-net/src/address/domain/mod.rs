@@ -1,6 +1,6 @@
 use core::{cmp::Ordering, fmt};
 
-use crate::std::{self as std, string::String, vec::Vec};
+use crate::std::{string::String, vec::Vec};
 
 use super::Host;
 

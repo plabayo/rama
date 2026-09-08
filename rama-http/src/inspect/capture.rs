@@ -5,12 +5,13 @@ use crate::{
 };
 use crate::{Method, StatusCode, Version};
 use parking_lot::{Mutex as SyncMutex, RwLock};
+use rama_core::futures::StreamExt;
 use rama_core::{
     Layer, Service,
     bytes::Bytes,
     error::{BoxError, ErrorContext as _},
     extensions::{Extension, Extensions},
-    futures::{Stream, async_stream::stream_fn},
+    futures::Stream,
 };
 use rama_inspect::storage::{AppendRecord, Collection, CreateCollection, RecordId, Storage};
 use rama_net::{Protocol, stream::SocketInfo};
@@ -39,25 +40,30 @@ const MAX_CACHED_SEARCHES: usize = 16;
 
 mod connection;
 mod extension;
+mod filter;
 mod model;
+pub use filter::{CaptureFilter, ConnectionQuery, FilterValue, ProtocolQuery, StatusQuery};
+pub use rama_net::inspect::ConnectionId;
+mod body;
 mod observation;
 mod query;
 mod reading;
+pub use body::CapturedBodySource;
 mod recording;
 mod search;
 pub use extension::{CapturedRecord, ExchangeCapture};
-pub use observation::{CaptureMetadata, CaptureObserver, CaptureProtocol};
+pub use observation::{CaptureMetadata, CaptureObserver, HttpCaptureProtocol};
 
+#[cfg(test)]
+use filter::{matches_connection_id, matches_protocol, matches_status};
 use model::contains_folded;
 pub use model::{
-    CaptureDetails, CaptureFilter, CaptureSnapshot, CapturedBody, ConnectionId, ConnectionSummary,
-    ExchangeId, ExchangeSummary, IngressProtocol, ReplayRequest, StoredRecord,
+    CaptureDetails, CaptureSnapshot, CapturedBody, HttpConnectionSummary, HttpExchangeId,
+    HttpExchangeSummary, ReplayRequest, StoredRecord,
 };
-#[cfg(test)]
-use model::{matches_connection_id, matches_protocol, matches_status};
 
 struct CapturedConnection {
-    summary_template: ConnectionSummary,
+    summary_template: HttpConnectionSummary,
     metadata: rama_inspect::Observations,
     akamai_h2: OnceLock<AkamaiH2>,
     display_id: OnceLock<u64>,
@@ -78,7 +84,7 @@ struct ConnectionExchangeState {
 }
 
 fn reconcile_connection_summary(
-    summary: &mut ConnectionSummary,
+    summary: &mut HttpConnectionSummary,
     exchange_state: Option<&ConnectionExchangeState>,
 ) {
     let Some(exchange_state) = exchange_state else {
@@ -98,7 +104,7 @@ fn reconcile_connection_summary(
 }
 
 impl CapturedConnection {
-    fn snapshot(&self) -> ConnectionSummary {
+    fn snapshot(&self) -> HttpConnectionSummary {
         let mut summary = self.summary_template.clone();
         summary.display_id = self.display_id.get().copied().unwrap_or_default();
         summary
@@ -118,7 +124,7 @@ impl CapturedConnection {
 struct CapturedExchange {
     decision: RwLock<Option<String>>,
     decision_count: AtomicUsize,
-    summary_template: ExchangeSummary,
+    summary_template: HttpExchangeSummary,
     connection: Option<Arc<CapturedConnection>>,
     status: AtomicU16,
     active: AtomicBool,
@@ -154,7 +160,7 @@ impl Drop for CapturedExchange {
 }
 
 impl CapturedExchange {
-    fn snapshot(&self) -> ExchangeSummary {
+    fn snapshot(&self) -> HttpExchangeSummary {
         let mut summary = self.summary_template.clone();
         summary.decision = self.decision.read().clone();
         if let Some(connection) = &self.connection {
@@ -386,21 +392,21 @@ impl Drop for CaptureConnectionGuard {
 
 #[derive(Extension)]
 #[extension(tags(http))]
-pub struct CaptureUpgradeGuard {
+pub struct HttpUpgradeCaptureGuard {
     store: CaptureStore,
     id: u64,
 }
 
-impl fmt::Debug for CaptureUpgradeGuard {
+impl fmt::Debug for HttpUpgradeCaptureGuard {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("CaptureUpgradeGuard")
+            .debug_struct("HttpUpgradeCaptureGuard")
             .field("id", &self.id)
             .finish_non_exhaustive()
     }
 }
 
-pub struct CaptureHttpExchangeGuard {
+struct CaptureHttpExchangeGuard {
     store: CaptureStore,
     id: u64,
     armed: bool,
@@ -465,7 +471,7 @@ struct AppendTestHook {
     resume: tokio::sync::Notify,
 }
 
-impl Drop for CaptureUpgradeGuard {
+impl Drop for HttpUpgradeCaptureGuard {
     fn drop(&mut self) {
         self.store.finish_upgrade(self.id);
     }
@@ -604,7 +610,6 @@ impl CaptureStore {
         &self,
         query: CaptureQuery,
     ) -> impl Stream<Item = CaptureSnapshot> + Send + 'static {
-        use rama_core::futures::StreamExt;
         rama_inspect::subscription::subscribe(self.subscribe_changes(), self.clone(), query).map(
             |result| match result {
                 Ok(value) => value,
@@ -633,7 +638,7 @@ impl CaptureStore {
             .copied()
     }
 
-    pub fn connection_summary(&self, id: u64) -> Option<ConnectionSummary> {
+    pub fn connection_summary(&self, id: u64) -> Option<HttpConnectionSummary> {
         let mut summary = self
             .0
             .connections

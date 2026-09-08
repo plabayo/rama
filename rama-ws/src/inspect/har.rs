@@ -1,37 +1,72 @@
-//! WebSocket's HAR extension, separate from HTTP entry conversion.
+//! Streaming WebSocket HAR fields, owned by the WebSocket adapter.
 use crate::{
-    Utf8Bytes,
     handshake::mitm::WebSocketRelayDirection,
-    inspect::{CapturedMessage, MessageKind},
+    inspect::{CapturedWebSocketMessage, WebSocketMessageKind},
 };
 use rama_core::error::BoxError;
-use rama_http::layer::har::spec;
+use rama_http::{
+    inspect::capture::ExchangeCapture,
+    layer::har::{
+        inspect::{HarEntryExtension, HarObjectWriter, write_json_string},
+        spec,
+    },
+};
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-pub fn append_messages(
-    entry: &mut spec::Entry,
-    messages: impl IntoIterator<Item = CapturedMessage>,
-) -> Result<(), BoxError> {
-    entry.resource_type = Some("websocket".into());
-    let records = entry.web_socket_messages.get_or_insert_default();
-    for message in messages {
-        let direction = match message.direction {
-            WebSocketRelayDirection::Ingress => spec::WebSocketMessageType::Send,
-            WebSocketRelayDirection::Egress => spec::WebSocketMessageType::Receive,
-        };
-        let time = message.at.as_millisecond() as f64 / 1_000.0;
-        match message.kind {
-            MessageKind::Text => records.push(spec::WebSocketMessage::text(
-                direction,
-                time,
-                Utf8Bytes::try_from(message.data)?.as_str(),
-            )),
-            MessageKind::Binary => records.push(spec::WebSocketMessage::binary(
-                direction,
-                time,
-                message.data,
-            )),
-            _ => {}
+/// Adds captured WebSocket messages to an HTTP handshake's HAR entry.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WebSocketHarExtension;
+impl HarEntryExtension for WebSocketHarExtension {
+    async fn write_fields<W: AsyncWrite + Unpin + Send>(
+        &self,
+        fields: &mut HarObjectWriter<'_, W>,
+        capture: &ExchangeCapture,
+    ) -> Result<(), BoxError> {
+        if !matches!(capture.snapshot().protocol.as_str(), "ws" | "wss") {
+            return Ok(());
         }
+        fields.field("_resourceType", "websocket").await?;
+        let writer = fields.streamed_field("_webSocketMessages").await?;
+        writer.write_all(b"[").await?;
+        let count = capture.count::<CapturedWebSocketMessage>();
+        let mut first = true;
+        for index in 0..count {
+            let Some(message) = capture.record::<CapturedWebSocketMessage>(index).await? else {
+                break;
+            };
+            let opcode = match message.kind {
+                WebSocketMessageKind::Text => spec::WebSocketMessageOpcode::TEXT,
+                WebSocketMessageKind::Binary => spec::WebSocketMessageOpcode::BINARY,
+                _ => continue,
+            };
+            let direction = match message.direction {
+                WebSocketRelayDirection::Ingress => spec::WebSocketMessageType::Send,
+                WebSocketRelayDirection::Egress => spec::WebSocketMessageType::Receive,
+            };
+            if !first {
+                writer.write_all(b",").await?;
+            }
+            first = false;
+            writer.write_all(b"{\"type\":").await?;
+            writer.write_all(&serde_json::to_vec(&direction)?).await?;
+            writer.write_all(b",\"time\":").await?;
+            writer
+                .write_all(&serde_json::to_vec(
+                    &(message.at.as_millisecond() as f64 / 1_000.0),
+                )?)
+                .await?;
+            writer.write_all(b",\"opcode\":").await?;
+            writer.write_all(&serde_json::to_vec(&opcode)?).await?;
+            writer.write_all(b",\"data\":").await?;
+            write_json_string(
+                writer,
+                message.data.as_ref(),
+                message.kind == WebSocketMessageKind::Text,
+            )
+            .await?;
+            writer.write_all(b"}").await?;
+        }
+        writer.write_all(b"]").await?;
+        Ok(())
     }
-    Ok(())
 }

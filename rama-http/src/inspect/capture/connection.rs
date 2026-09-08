@@ -42,21 +42,23 @@ impl CaptureStore {
         let connection = Arc::new(CapturedConnection {
             metadata: rama_inspect::Observations::default(),
             akamai_h2: OnceLock::new(),
-            summary_template: ConnectionSummary {
-                id,
-                display_id: 0,
-                label,
-                started_at: jiff::Timestamp::now(),
-                local_address,
-                peer_address,
-                ingress_protocol: ingress.clone(),
-                active: true,
-                ended_at: None,
+            summary_template: HttpConnectionSummary {
                 request_count: 0,
-                bytes_in: 0,
-                bytes_out: 0,
                 akamai_h2: None,
-                metadata: rama_inspect::Observations::default(),
+                transport: rama_net::inspect::ConnectionSummary {
+                    id,
+                    display_id: 0,
+                    label,
+                    started_at: jiff::Timestamp::now(),
+                    local_address,
+                    peer_address,
+                    ingress_protocol: ingress.clone(),
+                    active: true,
+                    ended_at: None,
+                    bytes_in: 0,
+                    bytes_out: 0,
+                    metadata: rama_inspect::Observations::default(),
+                },
             },
             display_id: OnceLock::new(),
             ingress_protocol: RwLock::new(ingress),
@@ -101,14 +103,18 @@ impl CaptureStore {
         }
     }
 
-    pub fn upgrade_guard(&self, id: u64) -> CaptureUpgradeGuard {
-        CaptureUpgradeGuard {
+    pub fn upgrade_guard(&self, id: u64) -> HttpUpgradeCaptureGuard {
+        HttpUpgradeCaptureGuard {
             store: self.clone(),
             id,
         }
     }
 
-    pub fn upgrade_guard_for_response(&self, id: u64, status: u16) -> Option<CaptureUpgradeGuard> {
+    pub fn upgrade_guard_for_response(
+        &self,
+        id: u64,
+        status: u16,
+    ) -> Option<HttpUpgradeCaptureGuard> {
         let entry = self.0.exchanges.read().entries.get(&id).cloned()?;
         if !successful_upgrade_response(&entry, status) {
             return None;

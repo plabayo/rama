@@ -1,17 +1,23 @@
 //! Shared `serde` glue for string-like types.
 
+#[doc(hidden)]
+pub use crate::std::Cow;
+
 /// Implement [`serde::Serialize`] + [`serde::Deserialize`] for a type whose
 /// canonical wire form is a single string.
 ///
-/// Both arms deserialize by parsing a borrowed-or-owned string through the
-/// type's [`FromStr`](std::str::FromStr) impl. They differ only in how the
+/// The paired serialization/deserialization forms parse a borrowed-or-owned string through the
+/// type's [`FromStr`](core::str::FromStr) impl. They differ only in how the
 /// value is serialized:
 ///
-/// - `display $t` serializes via [`Display`](std::fmt::Display)
+/// - `display $t` serializes via [`Display`](core::fmt::Display)
 ///   (`serializer.collect_str`) — use when the canonical string is the
 ///   `Display` output.
 /// - `as_str $t` serializes the borrowed `self.as_str()` slice directly — use
 ///   when the type already holds its canonical string.
+///
+/// - `serialize display $t` implements only serialization for displayable
+///   observations that cannot be reconstructed from their textual fingerprint.
 ///
 /// The macro relies on `serde` being importable as `serde::` at the call site.
 ///
@@ -40,6 +46,10 @@
 #[macro_export]
 macro_rules! __impl_serde_str {
     (display $t:ty) => {
+        $crate::__impl_serde_str!(serialize display $t);
+        $crate::__impl_serde_str!(@de $t);
+    };
+    (serialize display $t:ty) => {
         impl serde::Serialize for $t {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
@@ -48,7 +58,6 @@ macro_rules! __impl_serde_str {
                 serializer.collect_str(self)
             }
         }
-        $crate::__impl_serde_str!(@de $t);
     };
     (as_str $t:ty) => {
         impl serde::Serialize for $t {
@@ -67,7 +76,7 @@ macro_rules! __impl_serde_str {
             where
                 D: serde::Deserializer<'de>,
             {
-                let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+                let s = <$crate::macros::serde_str::Cow<'de, str>>::deserialize(deserializer)?;
                 s.parse().map_err(serde::de::Error::custom)
             }
         }

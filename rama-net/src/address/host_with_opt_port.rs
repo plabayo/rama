@@ -3,7 +3,7 @@ use core::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
 };
 
-use crate::std::{self as std, borrow::Cow, string::String, vec::Vec};
+use crate::std::{borrow::Cow, string::String, vec::Vec};
 
 use super::{Domain, DomainAddress, Host, OptPort, SocketAddress, parse_utils};
 use crate::Protocol;

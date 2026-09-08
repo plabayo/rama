@@ -1,7 +1,6 @@
 use super::*;
 use crate::HeaderValue;
 use rama_core::extensions::ExtensionsRef as _;
-use rama_core::futures::StreamExt as _;
 use std::{convert::Infallible, time::Duration};
 use tokio::task::JoinSet;
 

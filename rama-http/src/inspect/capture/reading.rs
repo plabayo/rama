@@ -1,4 +1,8 @@
 use super::*;
+use rama_core::{
+    futures::{StreamExt, async_stream::stream_fn},
+    stream::io::ReaderStream,
+};
 
 impl CaptureStore {
     pub async fn details(&self, id: u64) -> Result<CaptureDetails, BoxError> {
@@ -49,47 +53,7 @@ impl CaptureStore {
         body: CapturedBody,
         limit: Option<u64>,
     ) -> Result<impl Stream<Item = Result<Bytes, BoxError>> + Send + 'static, BoxError> {
-        use rama_core::futures::StreamExt as _;
-        let entry = self.exchange(id)?;
-        let locations = match body {
-            CapturedBody::Request => entry.request_body_records.read().clone(),
-            CapturedBody::Response => entry.response_body_records.read().clone(),
-        };
-        Ok(stream_fn(move |mut yielder| async move {
-            let mut remaining = limit.unwrap_or(u64::MAX);
-            for id in locations {
-                if remaining == 0 {
-                    break;
-                }
-                let reader = match entry
-                    .collection
-                    .serve(rama_inspect::storage::ReadRecord {
-                        id,
-                        range: limit.map(|_| 0..remaining),
-                    })
-                    .await
-                {
-                    Ok(reader) => reader,
-                    Err(error) => {
-                        yielder.yield_item(Err(error)).await;
-                        break;
-                    }
-                };
-                let mut stream = rama_core::stream::io::ReaderStream::new(reader);
-                while let Some(chunk) = stream.next().await {
-                    match chunk {
-                        Ok(chunk) => {
-                            remaining = remaining.saturating_sub(chunk.len() as u64);
-                            yielder.yield_item(Ok(chunk)).await;
-                        }
-                        Err(error) => {
-                            yielder.yield_item(Err(error.into())).await;
-                            return;
-                        }
-                    }
-                }
-            }
-        }))
+        Ok(self.exchange_capture(id)?.body_source(body).stream(limit))
     }
 
     pub(super) fn exchange(&self, id: u64) -> Result<Arc<CapturedExchange>, BoxError> {
@@ -117,7 +81,8 @@ impl CaptureStore {
     }
 
     pub async fn replay_request(&self, id: u64) -> Result<ReplayRequest, BoxError> {
-        let details = self.details(id).await?;
+        let capture = self.exchange_capture(id)?;
+        let details = capture.inspector_details().await?;
         if details.summary.active {
             return Err(std::io::Error::other(
                 "active captures cannot be replayed before the exchange completes",
@@ -131,7 +96,6 @@ impl CaptureStore {
             .into());
         }
         let mut head = None;
-        let mut body = Vec::new();
         let mut request_end = None;
         let mut request_trailers = false;
         for record in details.records {
@@ -152,7 +116,6 @@ impl CaptureStore {
                         *current = headers;
                     }
                 }
-                StoredRecord::RequestBody { data } => body.extend_from_slice(&data),
                 StoredRecord::RequestTrailers { .. } => request_trailers = true,
                 StoredRecord::RequestEnd { outcome } if request_end.replace(outcome).is_some() => {
                     return Err(std::io::Error::other(
@@ -200,8 +163,56 @@ impl CaptureStore {
             version,
             protocol: details.summary.protocol,
             headers,
-            body: Bytes::from(body),
+            body: capture.body_source(CapturedBody::Request),
             metadata: details.metadata,
+        })
+    }
+}
+
+impl ExchangeCapture {
+    /// Stream a pinned record prefix. Body records may be split into smaller
+    /// chunks; metadata ordering and the concatenated body bytes are preserved.
+    pub fn records_stream(
+        &self,
+    ) -> impl Stream<Item = Result<StoredRecord, BoxError>> + Send + 'static + use<> {
+        let capture = self.clone();
+        let count = capture.entry.records.read().len();
+        stream_fn(move |mut output| async move {
+            let result = async {
+                for index in 0..count {
+                    let location = capture.entry.records.read()[index];
+                    match location.body {
+                        Some(body) => {
+                            let mut stream = ReaderStream::new(
+                                capture.entry.collection.read(location.id).await?,
+                            );
+                            while let Some(data) = stream.next().await {
+                                let data = data?;
+                                output
+                                    .yield_item(Ok(match body {
+                                        CapturedBody::Request => StoredRecord::RequestBody { data },
+                                        CapturedBody::Response => {
+                                            StoredRecord::ResponseBody { data }
+                                        }
+                                    }))
+                                    .await;
+                            }
+                        }
+                        None => {
+                            output
+                                .yield_item(Ok(
+                                    read_record_at(&capture.entry.collection, location).await?
+                                ))
+                                .await
+                        }
+                    }
+                }
+                Ok::<(), BoxError>(())
+            }
+            .await;
+            if let Err(error) = result {
+                output.yield_item(Err(error)).await;
+            }
         })
     }
 }

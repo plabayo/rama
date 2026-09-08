@@ -63,7 +63,7 @@ impl ExchangeCapture {
     pub fn inspection_state(&self) -> InspectionState {
         self.store.inspection_state()
     }
-    pub fn snapshot(&self) -> ExchangeSummary {
+    pub fn snapshot(&self) -> HttpExchangeSummary {
         self.entry.snapshot()
     }
     pub fn state<T: Extension + Default>(&self) -> Arc<T> {
@@ -137,6 +137,23 @@ impl ExchangeCapture {
         self.entry.search_revision.fetch_add(1, Ordering::Release);
         self.changed();
         Ok(true)
+    }
+    /// Read one protocol-owned record without allocating an index or result vector.
+    pub async fn record<T: CapturedRecord>(&self, index: usize) -> Result<Option<T>, BoxError> {
+        let id = self
+            .entry
+            .extension_records
+            .read()
+            .get(&TypeId::of::<T>())
+            .and_then(|records| records.ids.get(index))
+            .copied();
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        let mut reader = self.entry.collection.read(id).await?;
+        let mut data = Vec::new();
+        reader.read_to_end(&mut data).await?;
+        Ok(Some(serde_json::from_slice(&data)?))
     }
     pub async fn records<T: CapturedRecord>(
         &self,

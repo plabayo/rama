@@ -1,4 +1,5 @@
 use super::*;
+use tokio::io::AsyncReadExt as _;
 
 pub(super) async fn request_curl(
     State(state): State<DashboardState>,
@@ -18,6 +19,23 @@ pub(super) async fn request_curl(
         Ok(request) => request,
         Err(error) => return error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     };
+    // A cURL command embeds its payload as one shell argument. Bound this
+    // convenience representation; replay and body downloads stream without it.
+    let mut payload = Vec::new();
+    if let Err(error) = body
+        .reader()
+        .take(MAX_BODY_PREVIEW_LIMIT + 1)
+        .read_to_end(&mut payload)
+        .await
+    {
+        return error_response(StatusCode::INTERNAL_SERVER_ERROR, error);
+    }
+    if payload.len() as u64 > MAX_BODY_PREVIEW_LIMIT {
+        return error_response(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Request body exceeds the inline cURL limit; use replay or download the body",
+        );
+    }
     let (mut parts, ()) = request.into_parts();
     remove_hop_by_hop_request_headers(&mut parts.headers);
     remove_proxy_auth_request_headers(&mut parts.headers);
@@ -28,15 +46,15 @@ pub(super) async fn request_curl(
     };
     match curl::try_cmd_string_for_request_parts_and_payload_with_options(
         &parts,
-        &body,
+        &Bytes::from(payload),
         curl::CurlExportOptions::default().with_script_compatibility(compatibility),
         &curl::CurlScriptPayloadMode::Inline,
     ) {
-        Ok(command) => Response::builder()
-            .header("content-type", "text/plain; charset=utf-8")
-            .header("cache-control", "no-store")
-            .body(Body::from(command))
-            .unwrap_or_else(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error)),
+        Ok(command) => (
+            Headers::single(CacheControl::new().with_no_store()),
+            command,
+        )
+            .into_response(),
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
 }
@@ -46,7 +64,11 @@ pub(super) async fn replay(
     Path(IdPath { id }): Path<IdPath>,
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> Response {
-    if !signals.session.is_empty() && !state.has_session(&signals.session) {
+    if signals
+        .session
+        .as_deref()
+        .is_some_and(|session| !state.has_session(session))
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
     let result = replay_captured(&state, id).await;
@@ -74,7 +96,7 @@ pub(super) async fn replay_captured(
     let captured = state.capture.replay_request(id).await?;
     let (request, body, tls_client_hello) = build_captured_request(captured, true)?;
     let (parts, ()) = request.into_parts();
-    let mut request = Request::from_parts(parts, Body::from(body));
+    let mut request = Request::from_parts(parts, Body::from_stream(body.stream(None)));
     if let Some(client_hello) = tls_client_hello {
         request.extensions().insert_arc(Arc::new(TlsProfile {
             client_hello,
@@ -125,10 +147,10 @@ pub(super) async fn replay_captured(
     Ok(status)
 }
 
-pub(super) fn build_captured_request(
-    captured: ReplayRequest,
+pub(super) fn build_captured_request<B>(
+    captured: ReplayRequest<B>,
     strip_transport_headers: bool,
-) -> Result<(Request<()>, Bytes, Option<rama::tls::client::ClientHello>), BoxError> {
+) -> Result<(Request<()>, B, Option<rama::tls::client::ClientHello>), BoxError> {
     let mut request = Request::builder()
         .method(captured.method)
         .version(captured.version)

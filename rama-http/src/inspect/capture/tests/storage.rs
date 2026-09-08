@@ -246,7 +246,7 @@ async fn body_capture_limit_does_not_limit_forwarded_traffic() {
 #[tokio::test]
 async fn pause_preserves_existing_data_and_resumes_an_existing_exchange() {
     let store = test_store();
-    let connection_id = store.begin_connection(None, Protocol::from_static("http"));
+    let connection_id = store.begin_connection(None, Protocol::HTTP);
     let request = Request::builder()
         .uri("http://example.test/stream")
         .extension(ConnectionId(connection_id))
@@ -450,7 +450,7 @@ async fn active_exchange_limit_forwards_the_next_request_uncaptured() {
         rama_core::service::service_fn(move |request: Request| {
             let observing = observing.clone();
             async move {
-                assert!(request.extensions().get_ref::<ExchangeId>().is_none());
+                assert!(request.extensions().get_ref::<HttpExchangeId>().is_none());
                 assert_eq!(
                     request.into_body().collect().await.unwrap().to_bytes(),
                     "forwarded"
@@ -482,7 +482,7 @@ async fn concurrent_frames_use_atomic_metrics_and_serialized_storage_writes() {
     const PAYLOAD: &[u8] = b"data";
 
     let store = test_store_with_limits(8, 8, 4096);
-    let connection_id = store.begin_connection(None, Protocol::from_static("http"));
+    let connection_id = store.begin_connection(None, Protocol::HTTP);
     let request = Request::builder()
         .uri("http://example.test/concurrent")
         .body(Body::empty())

@@ -5,6 +5,7 @@ use crate::{
     fingerprint::{Ja3, Ja4, PeetPrint},
 };
 use rama_core::extensions::{Extension, Extensions};
+use rama_inspect::search::matches_display;
 use rama_net::tls::ApplicationProtocol;
 use serde::{Deserialize, Serialize};
 
@@ -56,7 +57,6 @@ impl TlsObservation {
 
 impl TlsObservation {
     pub fn matches_search(&self, query: &str) -> bool {
-        use rama_inspect::search::matches_display;
         self.ja3
             .as_ref()
             .is_some_and(|value| matches_display(&format_args!("{value:x}"), query))

@@ -22,7 +22,7 @@ targets = ["x86_64-unknown-linux-gnu"]
 
 [features]
 default = []
-inspect = ["dep:rama-inspect", "dep:arc-swap"]
+inspect = ["dep:rama-inspect", "dep:arc-swap", "rama-net/inspect"]
 dial9 = ["rama-core/dial9"]
 opentelemetry = ["rama-core/opentelemetry", "rama-net/opentelemetry"]
 compression = [

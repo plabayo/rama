@@ -323,11 +323,7 @@ impl fmt::Display for HttpVersion {
     }
 }
 
-impl serde::Serialize for Ja4H {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
-    }
-}
+rama_utils::macros::serde_str::impl_serde_str!(serialize display Ja4H);
 
 #[cfg(test)]
 mod tests {

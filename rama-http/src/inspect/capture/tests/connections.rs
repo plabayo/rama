@@ -22,8 +22,8 @@ async fn confirming_a_connection_assigns_one_visible_number() {
 #[tokio::test]
 async fn completing_oldest_connection_enforces_retention_limit() {
     let store = test_store_with_limits(1, 8, rama_utils::octets::kib_u64(1));
-    let first = store.begin_connection(None, Protocol::from_static("http"));
-    let second = store.begin_connection(None, Protocol::from_static("socks5"));
+    let first = store.begin_connection(None, Protocol::HTTP);
+    let second = store.begin_connection(None, Protocol::SOCKS5);
     store.confirm_connection(first);
     store.confirm_connection(second);
     assert_eq!(
@@ -45,7 +45,7 @@ async fn completing_oldest_connection_enforces_retention_limit() {
 #[tokio::test]
 async fn finishing_an_unused_connection_removes_it_from_the_inspector() {
     let store = test_store();
-    let id = store.begin_connection(None, Protocol::from_static("http"));
+    let id = store.begin_connection(None, Protocol::HTTP);
     store.finish_connection(id);
     assert!(store.0.connections.read().order.is_empty());
     assert_eq!(
@@ -56,7 +56,7 @@ async fn finishing_an_unused_connection_removes_it_from_the_inspector() {
         0
     );
 
-    let socks = store.begin_connection(None, Protocol::from_static("socks5"));
+    let socks = store.begin_connection(None, Protocol::SOCKS5);
     store.confirm_connection(socks);
     store.finish_connection(socks);
     let snapshot = store.snapshot(&CaptureFilter::default()).await;
@@ -71,12 +71,12 @@ async fn provisional_inspector_connections_do_not_emit_visible_changes() {
     let mut changes = store.subscribe_changes();
 
     let discarded = store.begin_connection(None, Protocol::from_static("classifying"));
-    store.set_connection_protocol(discarded, Protocol::from_static("http"));
+    store.set_connection_protocol(discarded, Protocol::HTTP);
     assert!(store.discard_connection_if_empty(discarded));
     assert!(!changes.has_changed().unwrap());
 
     let closed = store.begin_connection(None, Protocol::from_static("classifying"));
-    store.set_connection_protocol(closed, Protocol::from_static("http"));
+    store.set_connection_protocol(closed, Protocol::HTTP);
     store.finish_connection(closed);
     assert!(!changes.has_changed().unwrap());
 
@@ -92,11 +92,11 @@ async fn visible_connection_numbers_ignore_discarded_inspector_sockets() {
     let dashboard = store.begin_connection(None, Protocol::from_static("classifying"));
     assert!(store.discard_connection_if_empty(dashboard));
 
-    let first_proxy = store.begin_connection(None, Protocol::from_static("http"));
+    let first_proxy = store.begin_connection(None, Protocol::HTTP);
     store.confirm_connection(first_proxy);
     let second_dashboard = store.begin_connection(None, Protocol::from_static("classifying"));
     store.finish_connection(second_dashboard);
-    let second_proxy = store.begin_connection(None, Protocol::from_static("https"));
+    let second_proxy = store.begin_connection(None, Protocol::HTTPS);
     store.confirm_connection(second_proxy);
 
     let snapshot = store.snapshot(&CaptureFilter::default()).await;
@@ -140,7 +140,7 @@ async fn cancelled_connection_service_is_finalized_by_lifecycle_guard() {
 #[tokio::test]
 async fn completed_exchange_does_not_end_an_alive_transport_connection() {
     let store = test_store();
-    let connection_id = store.begin_connection(None, Protocol::from_static("http"));
+    let connection_id = store.begin_connection(None, Protocol::HTTP);
     store.confirm_connection(connection_id);
     let request = Request::builder()
         .uri("http://example.test/complete")
@@ -168,12 +168,12 @@ async fn completed_exchange_does_not_end_an_alive_transport_connection() {
 #[tokio::test]
 async fn active_oldest_connection_does_not_block_retiring_a_newer_one() {
     let store = test_store_with_limits(2, 8, rama_utils::octets::kib_u64(1));
-    let first = store.begin_connection(None, Protocol::from_static("http"));
-    let second = store.begin_connection(None, Protocol::from_static("https"));
+    let first = store.begin_connection(None, Protocol::HTTP);
+    let second = store.begin_connection(None, Protocol::HTTPS);
     store.confirm_connection(first);
     store.confirm_connection(second);
     store.finish_connection(second);
-    let third = store.begin_connection(None, Protocol::from_static("socks5"));
+    let third = store.begin_connection(None, Protocol::SOCKS5);
     store.confirm_connection(third);
 
     let snapshot = store.snapshot(&CaptureFilter::default()).await;
@@ -186,7 +186,7 @@ async fn active_oldest_connection_does_not_block_retiring_a_newer_one() {
 #[tokio::test]
 async fn provisional_dashboard_connections_can_only_be_discarded_while_empty() {
     let store = test_store_with_limits(8, 8, rama_utils::octets::kib_u64(1));
-    let dashboard = store.begin_connection(None, Protocol::from_static("http"));
+    let dashboard = store.begin_connection(None, Protocol::HTTP);
     assert_eq!(
         store
             .snapshot(&CaptureFilter::default())
@@ -207,7 +207,7 @@ async fn provisional_dashboard_connections_can_only_be_discarded_while_empty() {
         0
     );
 
-    let proxied = store.begin_connection(None, Protocol::from_static("http"));
+    let proxied = store.begin_connection(None, Protocol::HTTP);
     let request = Request::builder()
         .uri("http://example.test/proxied")
         .body(Body::empty())

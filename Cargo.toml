@@ -459,6 +459,7 @@ unix = ["std", "net", "dep:rama-unix"]
 inspect = [
     "std",
     "dep:rama-inspect",
+    "rama-net?/inspect",
     "rama-http?/inspect",
     "rama-ws?/inspect",
     "rama-tls?/inspect",

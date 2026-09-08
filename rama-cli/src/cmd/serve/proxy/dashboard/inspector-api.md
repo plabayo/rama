@@ -64,3 +64,7 @@ forms can be sent back in header edits. The GUI's `rama-capture-base64:` notatio
 is only an editor representation. Captured HTTP fields retain their native wire
 forms (method/URI/version strings and numeric status codes). TLS observations
 belong to the connection; HTTP/2 fingerprints are connection metadata.
+
+HTTP bodies stream for HAR, JSON downloads and replay. Inline cURL export is
+limited to 64 KiB of request body; larger bodies remain available through the body
+download and replay endpoints. A supplied browser session must be nonempty.

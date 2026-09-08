@@ -263,13 +263,11 @@ impl From<u16> for CloseCode {
     }
 }
 
-#[cfg(feature = "inspect")]
 impl serde::Serialize for CloseCode {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_u16(self.into())
     }
 }
-#[cfg(feature = "inspect")]
 impl<'de> serde::Deserialize<'de> for CloseCode {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         u16::deserialize(deserializer).map(Self::from)

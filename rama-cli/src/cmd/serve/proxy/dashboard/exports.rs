@@ -30,15 +30,15 @@ pub(super) async fn export_profiles(
                     ),
                 );
             }
-            Response::builder()
-                .header("content-type", "application/json")
-                .header(
-                    "content-disposition",
-                    "attachment; filename=\"rama-emulation-profiles.json\"",
-                )
-                .header("cache-control", "no-store")
-                .body(Body::from(bytes))
-                .unwrap_or_else(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error))
+            (
+                Headers((
+                    ContentType::json(),
+                    ContentDisposition::attachment("rama-emulation-profiles.json"),
+                    CacheControl::new().with_no_store(),
+                )),
+                Body::from(bytes),
+            )
+                .into_response()
         }
         Err(error) => error_response(StatusCode::INTERNAL_SERVER_ERROR, error),
     }
@@ -100,7 +100,11 @@ pub(super) async fn start_har(
     State(state): State<DashboardState>,
     Query(query): Query<StartHarQuery>,
 ) -> Response {
-    if !query.session.is_empty() && !state.has_session(&query.session) {
+    if query
+        .session
+        .as_deref()
+        .is_some_and(|session| !state.has_session(session))
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
     let _transition = state.recording_transition.lock().await;
@@ -123,7 +127,11 @@ pub(super) async fn stop_har(
     State(state): State<DashboardState>,
     Query(query): Query<HarSessionQuery>,
 ) -> Response {
-    if !query.session.is_empty() && !state.has_session(&query.session) {
+    if query
+        .session
+        .as_deref()
+        .is_some_and(|session| !state.has_session(session))
+    {
         return StatusCode::NOT_FOUND.into_response();
     }
     let result = state.har.stop_browser().await;
@@ -135,14 +143,14 @@ pub(super) async fn stop_har(
 }
 
 pub(super) fn har_download_response(download: HarDownload) -> Response {
-    Response::builder()
-        .header("content-type", "application/json")
-        .header("content-length", download.content_length)
-        .header("cache-control", "no-store")
-        .header(
-            "content-disposition",
-            format!("attachment; filename=\"{}\"", download.file_name),
-        )
-        .body(Body::from_stream(ReaderStream::new(download.reader)))
-        .unwrap_or_else(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error))
+    (
+        Headers((
+            ContentType::json(),
+            ContentLength(download.content_length),
+            CacheControl::new().with_no_store(),
+            ContentDisposition::attachment(&download.file_name),
+        )),
+        Body::from_stream(ReaderStream::new(download.reader)),
+    )
+        .into_response()
 }

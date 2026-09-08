@@ -6,6 +6,8 @@ use rama_http::{
     inspect::capture::{CaptureConfig, CaptureHttpLayer, CaptureObserver, ConnectionId},
 };
 use rama_inspect::storage::{MemoryStore, Storage, StorageLimits};
+#[cfg(all(feature = "embed-profiles", feature = "tls"))]
+use rama_tls::{ProtocolVersion, SecureTransport, client::NegotiatedTlsParameters};
 
 #[derive(Debug)]
 struct Observer(ProfileInspector);
@@ -41,7 +43,15 @@ fn profile_export_does_not_guess_an_unobserved_request_initiator() {
         .body(())
         .unwrap()
         .into_parts();
-    let profile = captured_profile(&parts, Some("curl/8.7.1"), None, None, false).unwrap();
+    let profile = captured_profile(
+        &parts,
+        Some("curl/8.7.1"),
+        #[cfg(feature = "tls")]
+        None,
+        None,
+        false,
+    )
+    .unwrap();
     assert!(profile.h1_settings.is_some());
     assert!(profile.h1_headers_navigate.is_none());
     assert!(profile.h1_headers_fetch.is_none());
@@ -131,7 +141,6 @@ async fn exports_merge_only_observed_fields_and_respect_selected_connections() {
 #[cfg(all(feature = "embed-profiles", feature = "tls"))]
 #[tokio::test]
 async fn captured_tls_and_native_fingerprints_are_shared_per_connection() {
-    use rama_tls::{ProtocolVersion, SecureTransport, client::NegotiatedTlsParameters};
     const UA: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1";
     let database = UserAgentDatabase::try_embedded().unwrap();
     let hello = database

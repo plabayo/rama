@@ -23,7 +23,7 @@ pub(super) async fn discovery() -> Response {
             "GET /api/capture/{id}.json": "Capture details and recorded events.",
             "GET /api/capture/{id}/body/{request|response}": "Stream captured body; optional limit in bytes.",
             "GET /api/capture/{id}/websocket/{index}": "Stream one captured WebSocket message.",
-            "GET /api/capture/{id}/curl": "Export a completed replayable HTTP request as cURL.",
+            "GET /api/capture/{id}/curl": "Export a completed replayable HTTP request as cURL (inline body up to 64 KiB).",
             "POST /api/replay/{id}": {},
             "POST /api/websocket/{id}/replay/{index}": {},
             "POST /api/websocket/{id}/send": {"websocket_direction":"ingress", "websocket_kind":"text", "websocket_payload":"hello"},
@@ -43,23 +43,23 @@ pub(super) async fn discovery() -> Response {
     })).into_response()
 }
 
-pub(super) async fn help() -> Response {
-    Response::builder()
-        .header("content-type", "text/markdown; charset=utf-8")
-        .body(Body::from(include_str!("inspector-api.md")))
-        .unwrap_or_else(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error))
+pub(super) async fn help() -> impl IntoResponse {
+    (
+        Headers::single(ContentType::markdown_utf8()),
+        include_str!("inspector-api.md"),
+    )
 }
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub(super) struct CapturesQuery {
-    search: String,
-    connection_id: String,
-    user_agent: String,
-    endpoint: String,
-    method: String,
-    status: String,
-    protocol: String,
+    search: ArcStr,
+    connection_id: FilterValue<ConnectionQuery>,
+    user_agent: ArcStr,
+    endpoint: ArcStr,
+    method: FilterValue<rama::http::Method>,
+    status: FilterValue<StatusQuery>,
+    protocol: FilterValue<ProtocolQuery>,
     before: Option<u64>,
     connections: Option<usize>,
     exchanges: Option<usize>,
@@ -118,11 +118,11 @@ pub(super) async fn capture_events(
             }
         }
     });
-    Response::builder()
-        .header("content-type", "application/x-ndjson")
-        .header("cache-control", "no-store")
-        .body(Body::from_stream(stream))
-        .unwrap_or_else(|error| error_response(StatusCode::INTERNAL_SERVER_ERROR, error))
+    (
+        Headers((ContentType::ndjson(), CacheControl::new().with_no_store())),
+        Body::from_stream(stream),
+    )
+        .into_response()
 }
 
 #[cfg(test)]

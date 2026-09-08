@@ -1,6 +1,6 @@
 //! CLI storage composition for the reusable inspector.
 
-use rama::crypto::inspect::EncryptLayer;
+use rama::crypto::inspect::EncryptStorageLayer;
 pub(super) use rama::http::ws::inspect::{
     CaptureWebSocketExt, CaptureWebSocketLayer, WebSocketReplayError,
 };
@@ -61,7 +61,7 @@ pub(super) fn storage(total_bytes: u64) -> Result<Storage, BoxError> {
         total_bytes,
         record_bytes: 0,
     })?;
-    Ok(Storage::new(EncryptLayer::random()?.layer(files)))
+    Ok(Storage::new(EncryptStorageLayer::random()?.layer(files)))
 }
 
 #[cfg(test)]

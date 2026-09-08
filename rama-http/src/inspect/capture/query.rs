@@ -219,11 +219,20 @@ impl CaptureStore {
             return matched;
         }
 
-        let Ok(records) = self.read_records(exchange).await else {
-            return false;
-        };
-        let mut matched = records_match_search(&records, needle)
-            || self.0.observer.matches_search(&exchange.metadata, needle);
+        #[cfg(test)]
+        self.0.record_reads.fetch_add(1, Ordering::Relaxed);
+        let mut matched = self.0.observer.matches_search(&exchange.metadata, needle);
+        let record_count = exchange.records.read().len();
+        for index in 0..record_count {
+            if matched {
+                break;
+            }
+            let location = exchange.records.read()[index];
+            let Ok(record) = read_record_at(&exchange.collection, location).await else {
+                continue;
+            };
+            matched = records_match_search(std::slice::from_ref(&record), needle);
+        }
         if !matched {
             let indices: Vec<_> = exchange
                 .extension_records

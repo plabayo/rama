@@ -77,7 +77,7 @@ async fn connection_history_is_windowed_to_one_hundred_rows() {
     for _ in 0..105 {
         let id = state
             .capture
-            .begin_connection_if_enabled(None, rama::net::Protocol::from_static("http"), None)
+            .begin_connection_if_enabled(None, rama::net::Protocol::HTTP, None)
             .unwrap();
         state.capture.confirm_connection(id);
     }
@@ -96,7 +96,7 @@ async fn connection_history_is_windowed_to_one_hundred_rows() {
         older_connections(
             State(state.clone()),
             ReadSignals(UiSignals {
-                session: "known".to_owned(),
+                session: NonEmptyStr::try_from("known").ok(),
                 ..Default::default()
             }),
         )
@@ -128,7 +128,7 @@ async fn connection_history_is_windowed_to_one_hundred_rows() {
         .collect::<Vec<_>>();
     let new_id = state
         .capture
-        .begin_connection_if_enabled(None, rama::net::Protocol::from_static("http"), None)
+        .begin_connection_if_enabled(None, rama::net::Protocol::HTTP, None)
         .unwrap();
     state.capture.confirm_connection(new_id);
     let after_insert = state
@@ -158,7 +158,7 @@ async fn connection_history_is_windowed_to_one_hundred_rows() {
         newer_connections(
             State(state.clone()),
             ReadSignals(UiSignals {
-                session: "known".to_owned(),
+                session: NonEmptyStr::try_from("known").ok(),
                 ..Default::default()
             }),
         )
@@ -173,11 +173,11 @@ async fn connection_rows_support_session_local_multi_selection() {
     let state = test_state();
     let first = state
         .capture
-        .begin_connection_if_enabled(None, rama::net::Protocol::from_static("http"), None)
+        .begin_connection_if_enabled(None, rama::net::Protocol::HTTP, None)
         .unwrap();
     let second = state
         .capture
-        .begin_connection_if_enabled(None, rama::net::Protocol::from_static("https"), None)
+        .begin_connection_if_enabled(None, rama::net::Protocol::HTTPS, None)
         .unwrap();
     state.capture.confirm_connection(first);
     state.capture.confirm_connection(second);
@@ -215,7 +215,7 @@ async fn overview_numbers_only_confirmed_proxy_connections() {
     assert!(state.capture.discard_connection_if_empty(dashboard));
     let proxy = state
         .capture
-        .begin_connection_if_enabled(None, rama::net::Protocol::from_static("http"), None)
+        .begin_connection_if_enabled(None, rama::net::Protocol::HTTP, None)
         .unwrap();
     state.capture.confirm_connection(proxy);
     state.ensure_session("known");
@@ -250,7 +250,7 @@ async fn focused_connection_and_request_views_are_session_local_and_live() {
     let state = test_state();
     let connection_id = state
         .capture
-        .begin_connection_if_enabled(None, rama::net::Protocol::from_static("https"), None)
+        .begin_connection_if_enabled(None, rama::net::Protocol::HTTPS, None)
         .unwrap();
     state.capture.confirm_connection(connection_id);
     state.ensure_session("known");
@@ -275,7 +275,7 @@ async fn focused_connection_and_request_views_are_session_local_and_live() {
         .unwrap();
     let signals = || {
         ReadSignals(UiSignals {
-            session: "known".to_owned(),
+            session: NonEmptyStr::try_from("known").ok(),
             ..Default::default()
         })
     };
@@ -357,13 +357,13 @@ async fn focused_connection_is_not_retired_by_the_overview_display_limit() {
     let state = test_state_with_limits(MAX_VISIBLE_CONNECTIONS + 1, 8);
     let oldest = state
         .capture
-        .begin_connection_if_enabled(None, rama::net::Protocol::from_static("http"), None)
+        .begin_connection_if_enabled(None, rama::net::Protocol::HTTP, None)
         .unwrap();
     state.capture.confirm_connection(oldest);
     for _ in 0..MAX_VISIBLE_CONNECTIONS {
         let id = state
             .capture
-            .begin_connection_if_enabled(None, rama::net::Protocol::from_static("http"), None)
+            .begin_connection_if_enabled(None, rama::net::Protocol::HTTP, None)
             .unwrap();
         state.capture.confirm_connection(id);
     }
@@ -373,7 +373,7 @@ async fn focused_connection_is_not_retired_by_the_overview_display_limit() {
             State(state.clone()),
             Path(IdPath { id: oldest }),
             ReadSignals(UiSignals {
-                session: "known".to_owned(),
+                session: NonEmptyStr::try_from("known").ok(),
                 ..Default::default()
             }),
         )
@@ -452,8 +452,8 @@ async fn dashboard_state_isolated_by_server_issued_session() {
     let mut ui_changes = state.ui_changes.subscribe();
 
     let unknown = UiSignals {
-        session: "unknown".to_owned(),
-        search: "must-not-be-stored".to_owned(),
+        session: NonEmptyStr::try_from("unknown").ok(),
+        search: "must-not-be-stored".into(),
         ..Default::default()
     };
     assert_eq!(
@@ -463,10 +463,10 @@ async fn dashboard_state_isolated_by_server_issued_session() {
     assert_eq!(state.sessions.read().len(), 1);
 
     let known = UiSignals {
-        session: "known".to_owned(),
-        search: "payload".to_owned(),
+        session: NonEmptyStr::try_from("known").ok(),
+        search: "payload".into(),
         method: "POST".parse().unwrap(),
-        status: "2xx".to_owned(),
+        status: "2xx".into(),
         ..Default::default()
     };
     assert_eq!(
@@ -475,8 +475,14 @@ async fn dashboard_state_isolated_by_server_issued_session() {
     );
     let session = state.session("known");
     assert_eq!(session.filter.search, "payload");
-    assert_eq!(session.filter.method, "POST");
-    assert_eq!(session.filter.status, "2xx");
+    assert_eq!(
+        session.filter.method,
+        FilterValue::Value(rama::http::Method::POST)
+    );
+    assert_eq!(
+        session.filter.status,
+        FilterValue::Value(StatusQuery::Success)
+    );
     tokio::time::timeout(Duration::from_secs(1), ui_changes.changed())
         .await
         .expect("dashboard change notification timed out")
@@ -484,7 +490,7 @@ async fn dashboard_state_isolated_by_server_issued_session() {
 
     let signals = || {
         ReadSignals(UiSignals {
-            session: "known".to_owned(),
+            session: NonEmptyStr::try_from("known").ok(),
             ..Default::default()
         })
     };
@@ -549,7 +555,7 @@ async fn dashboard_state_isolated_by_server_issued_session() {
         State(state),
         Path(IdPath { id: 1 }),
         ReadSignals(UiSignals {
-            session: "unknown".to_owned(),
+            session: NonEmptyStr::try_from("unknown").ok(),
             ..Default::default()
         }),
     )

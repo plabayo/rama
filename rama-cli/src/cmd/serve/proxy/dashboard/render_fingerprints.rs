@@ -21,7 +21,7 @@ pub(super) fn render_fingerprint_values(
     })
 }
 
-pub(super) fn render_connection_fingerprint_card(summary: &ExchangeSummary) -> Option<String> {
+pub(super) fn render_connection_fingerprint_card(summary: &HttpExchangeSummary) -> Option<String> {
     let tls = summary.metadata.connection.get_ref::<TlsObservation>();
     let ja3 = tls.and_then(|tls| tls.ja3.as_ref()).map(|value| {
         rama::utils::fmt::display_fn(move |f: &mut std::fmt::Formatter<'_>| write!(f, "{value:x}"))

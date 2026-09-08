@@ -82,7 +82,7 @@ fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
         peetprint: None,
     });
     details.summary.method = Method::POST;
-    details.summary.protocol = rama::net::Protocol::from_static("https");
+    details.summary.protocol = rama::net::Protocol::HTTPS;
     details.summary.http_version = rama::http::Version::HTTP_2;
     details.summary.request_bytes = 128;
     details.summary.response_bytes = 64;
@@ -157,25 +157,25 @@ fn websocket_details_decode_directional_text_and_binary_cards() {
         },
     ]);
     details.websocket.messages = vec![
-        CapturedMessage {
+        CapturedWebSocketMessage {
             at: "2026-08-22T20:00:00Z".parse().unwrap(),
             direction: WebSocketRelayDirection::Ingress,
-            kind: MessageKind::Text,
+            kind: WebSocketMessageKind::Text,
             data: Bytes::from("hello over websocket"),
             close_code: None,
-            origin: MessageOrigin::Peer,
+            origin: WebSocketMessageOrigin::Peer,
         },
-        CapturedMessage {
+        CapturedWebSocketMessage {
             at: "2026-08-22T20:00:01Z".parse().unwrap(),
             direction: WebSocketRelayDirection::Egress,
-            kind: MessageKind::Binary,
+            kind: WebSocketMessageKind::Binary,
             data: Bytes::from_static(&[0, 1, 254, 255]),
             close_code: None,
-            origin: MessageOrigin::Replay,
+            origin: WebSocketMessageOrigin::Replay,
         },
     ];
     details.websocket.total = details.websocket.messages.len();
-    details.summary.protocol = rama::net::Protocol::from_static("wss");
+    details.summary.protocol = rama::net::Protocol::WSS;
     details.websocket.replay_active = true;
 
     let rendered = render_details(&details).into_string();
@@ -211,29 +211,33 @@ fn websocket_previews_are_bounded_and_paginated() {
     assert!(render_websocket_messages(&test_details(Vec::new())).is_none());
 
     let text_limit = vec![b'a'; WS_TEXT_PREVIEW_LIMIT];
-    let exact_text = websocket_payload(MessageKind::Text, &text_limit);
+    let exact_text = websocket_payload(WebSocketMessageKind::Text, &text_limit);
     assert_eq!(exact_text.1, WS_TEXT_PREVIEW_LIMIT);
     assert!(!exact_text.2);
     drop(exact_text);
     let long_data = [text_limit, vec![b'b']].concat();
-    let long_text = websocket_payload(MessageKind::Text, &long_data);
+    let long_text = websocket_payload(WebSocketMessageKind::Text, &long_data);
     assert_eq!(long_text.1, WS_TEXT_PREVIEW_LIMIT + 1);
     assert!(long_text.2);
     assert!(long_text.0.to_string().ends_with('…'));
 
-    let exact_binary = websocket_payload(MessageKind::Binary, &[0; WS_BINARY_PREVIEW_LIMIT]);
+    let exact_binary =
+        websocket_payload(WebSocketMessageKind::Binary, &[0; WS_BINARY_PREVIEW_LIMIT]);
     assert!(!exact_binary.2);
-    let long_binary = websocket_payload(MessageKind::Binary, &[0; WS_BINARY_PREVIEW_LIMIT + 1]);
+    let long_binary = websocket_payload(
+        WebSocketMessageKind::Binary,
+        &[0; WS_BINARY_PREVIEW_LIMIT + 1],
+    );
     assert_eq!(long_binary.1, WS_BINARY_PREVIEW_LIMIT + 1);
     assert!(long_binary.2);
 
-    let record = CapturedMessage {
+    let record = CapturedWebSocketMessage {
         at: jiff::Timestamp::now(),
         direction: WebSocketRelayDirection::Ingress,
-        kind: MessageKind::Text,
+        kind: WebSocketMessageKind::Text,
         data: Bytes::from(vec![b'm'; WS_TEXT_PREVIEW_LIMIT + 1]),
         close_code: None,
-        origin: MessageOrigin::Peer,
+        origin: WebSocketMessageOrigin::Peer,
     };
     let mut details = test_details(Vec::new());
     details.websocket.messages = vec![record; MAX_VISIBLE_WS_MESSAGES];
@@ -305,7 +309,7 @@ fn presentation_helpers_cover_boundaries() {
     );
 
     let mut summary = test_details(Vec::new()).http.summary;
-    summary.protocol = rama::net::Protocol::from_static("https");
+    summary.protocol = rama::net::Protocol::HTTPS;
     let protocol = render_protocol_badge(&summary);
     assert!(protocol.contains("protocol-lock"));
     assert!(protocol.contains("HTTPS"));
@@ -324,7 +328,7 @@ fn presentation_helpers_cover_boundaries() {
     assert!(streaming.contains("200 OK"));
     assert!(!streaming.contains("complete"));
 
-    summary.protocol = rama::net::Protocol::from_static("wss");
+    summary.protocol = rama::net::Protocol::WSS;
     summary.status = Some(StatusCode::from_u16(101).unwrap());
     let live_websocket = render_exchange_status(&summary);
     assert!(live_websocket.contains("data-response-state=\"live\""));

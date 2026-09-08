@@ -24,8 +24,8 @@ targets = ["x86_64-unknown-linux-gnu"]
 default = []
 inspect = [
     "dep:rama-inspect",
+    "dep:serde_json",
     "rama-http/inspect",
-    "dep:serde",
     "dep:jiff",
     "dep:parking_lot",
     "dep:base64",
@@ -44,7 +44,8 @@ rama-inspect = { workspace = true, optional = true }
 rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
 rand = { workspace = true }
-serde = { workspace = true, features = ["derive"], optional = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["time", "macros", "sync"] }
 
 [dev-dependencies]

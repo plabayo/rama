@@ -6,8 +6,9 @@ pub mod har;
 mod layer;
 mod relay;
 pub use capture::{
-    CaptureWebSocketExt, CapturedMessage, MessageKind, MessageOrigin, WebSocketDetails,
-    WebSocketLimits, WebSocketReplayError, observe_handshake, read_details,
+    CaptureWebSocketExt, CapturedWebSocketMessage, WebSocketDetails, WebSocketLimits,
+    WebSocketMessageKind, WebSocketMessageOrigin, WebSocketReplayError, observe_handshake,
+    read_details,
 };
 pub use layer::{CaptureWebSocketLayer, CaptureWebSocketService};
 pub use relay::inspect_websocket_event;

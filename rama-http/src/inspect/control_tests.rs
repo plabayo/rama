@@ -1,4 +1,5 @@
 use super::*;
+use crate::body::util::BodyExt as _;
 
 fn headers(values: &[(&str, &str)]) -> HeaderMap {
     let mut headers = HeaderMap::new();
@@ -438,7 +439,6 @@ fn headers_preserve_duplicates_and_reject_framing_and_routing_edits() {
 
 #[tokio::test]
 async fn synthetic_responses_have_correct_framing_and_conditional_semantics() {
-    use crate::body::util::BodyExt as _;
     for status in [
         StatusCode::NO_CONTENT,
         StatusCode::RESET_CONTENT,

@@ -4,7 +4,7 @@ use core::{
 };
 
 use crate::std::borrow::ToOwned;
-use crate::std::{self as std, string::String, vec::Vec};
+use crate::std::{string::String, vec::Vec};
 
 use super::{ObfNode, ObfPort};
 use crate::address::{Domain, Host, HostWithOptPort, HostWithPort, SocketAddress};

@@ -59,7 +59,9 @@ async fn replay_reconstructs_relative_url_headers_and_captured_body() {
         replay.url,
         "http://example.test:8080/resource".parse().unwrap()
     );
-    assert_eq!(replay.body.as_ref(), b"patch-body");
+    let mut body = Vec::new();
+    replay.body.reader().read_to_end(&mut body).await.unwrap();
+    assert_eq!(body, b"patch-body");
     assert!(
         replay
             .headers
@@ -149,5 +151,41 @@ async fn replay_requires_one_complete_request_end_on_an_inactive_exchange() {
             .unwrap_err()
             .to_string()
             .contains("completion record missing")
+    );
+}
+
+#[tokio::test]
+async fn capture_derives_protocol_from_request_extensions() {
+    let store = test_store();
+    let service = CaptureHttpLayer::new(Some(store.clone())).layer(rama_core::service::service_fn(
+        async |_request: Request| Ok::<_, Infallible>(Response::new(Body::empty())),
+    ));
+    service
+        .serve(
+            Request::builder()
+                .uri("/custom")
+                .extension(Protocol::from_static("custom"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .into_body()
+        .collect()
+        .await
+        .unwrap();
+    let parts = Request::builder()
+        .uri("/custom")
+        .extension(Protocol::from_static("custom"))
+        .body(())
+        .unwrap()
+        .into_parts()
+        .0;
+    let message = crate::inspect::control::http_message(&parts);
+    assert_eq!(message.protocol, Protocol::from_static("custom"));
+    assert_eq!(message.port, None);
+    assert_eq!(
+        store.details(1).await.unwrap().summary.protocol,
+        Protocol::from_static("custom")
     );
 }

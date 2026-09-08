@@ -1,6 +1,6 @@
 use crate::handshake::mitm::WebSocketBridge;
 use rama_core::{Layer, Service};
-use rama_http::inspect::capture::{CaptureStore, CaptureUpgradeGuard, ExchangeId};
+use rama_http::inspect::capture::{CaptureStore, HttpExchangeId, HttpUpgradeCaptureGuard};
 
 /// Bind an inspector exchange to the lifetime of the actual WebSocket relay.
 ///
@@ -53,7 +53,7 @@ where
         if let Some(context) = bridge
             .egress
             .extensions()
-            .get_ref::<rama_http::inspect::control::UpgradeContext>()
+            .get_ref::<rama_http::inspect::control::HttpUpgradeContext>()
             .cloned()
         {
             bridge.ingress.extensions().insert(context);
@@ -67,12 +67,19 @@ where
             bridge.ingress.extensions().insert(limits);
             bridge.egress.extensions().insert(limits);
         }
-        let exchange_id = bridge.egress.extensions().get_ref::<ExchangeId>().copied();
+        let exchange_id = bridge
+            .egress
+            .extensions()
+            .get_ref::<HttpExchangeId>()
+            .copied();
         if let Some(exchange_id) = exchange_id {
             bridge.ingress.extensions().insert(exchange_id);
         }
 
-        let response_guard = bridge.egress.extensions().get_arc::<CaptureUpgradeGuard>();
+        let response_guard = bridge
+            .egress
+            .extensions()
+            .get_arc::<HttpUpgradeCaptureGuard>();
         let fallback_guard = if response_guard.is_none() {
             self.store
                 .as_ref()

@@ -3,9 +3,17 @@ use crate::handshake::mitm::{
     WebSocketRelayEvent, WebSocketRelayEventInput, WebSocketRelayEventOutput,
     WebSocketRelayInjector, WebSocketRelayMessage,
 };
-use crate::inspect::{CaptureWebSocketExt, CapturedMessage, MessageKind, MessageOrigin};
+use crate::inspect::{
+    CaptureWebSocketExt, CapturedWebSocketMessage, WebSocketMessageKind, WebSocketMessageOrigin,
+};
+use crate::{
+    handshake::mitm::WebSocketRelayClose,
+    protocol::{CloseFrame, frame::coding::CloseCode},
+};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rama_core::bytes::Bytes;
-use rama_http::inspect::capture::{CaptureStore, ExchangeId};
+use rama_http::inspect::capture::{CaptureStore, HttpExchangeId};
+use rama_http::inspect::control::{Decision, HttpUpgradeContext, Payload};
 use std::convert::Infallible;
 
 fn close_intercepted_websocket(
@@ -13,10 +21,6 @@ fn close_intercepted_websocket(
     code: u16,
     reason: String,
 ) -> WebSocketRelayEventOutput {
-    use crate::{
-        handshake::mitm::WebSocketRelayClose,
-        protocol::{CloseFrame, frame::coding::CloseCode},
-    };
     WebSocketRelayEventOutput {
         messages: vec![],
         close: Some(WebSocketRelayClose::WithFrame(CloseFrame {
@@ -31,8 +35,6 @@ pub async fn inspect_websocket_event(
     capture: Option<CaptureStore>,
     input: WebSocketRelayEventInput,
 ) -> Result<WebSocketRelayEventOutput, Infallible> {
-    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-    use rama_http::inspect::control::{Decision, Payload, UpgradeContext};
     let WebSocketRelayEventInput {
         direction,
         mut event,
@@ -40,7 +42,7 @@ pub async fn inspect_websocket_event(
     } = input;
     if let (Some(store), Some(context), WebSocketRelayEvent::Data(data)) = (
         capture.as_ref().filter(|s| s.control().is_active()),
-        extensions.get_ref::<UpgradeContext>(),
+        extensions.get_ref::<HttpUpgradeContext>(),
         &event,
     ) {
         let mut message = context.request.clone();
@@ -54,7 +56,7 @@ pub async fn inspect_websocket_event(
             crate::handshake::mitm::WebSocketRelayDirection::Egress => "egress",
         }
         .into();
-        message.exchange = extensions.get_ref::<ExchangeId>().map(|id| id.0);
+        message.exchange = extensions.get_ref::<HttpExchangeId>().map(|id| id.0);
         message.binary = matches!(data, WebSocketRelayMessage::Binary(_));
         message.kind = if message.binary { "binary" } else { "text" }.into();
         let size = match data {
@@ -112,7 +114,7 @@ pub async fn inspect_websocket_event(
         }
     }
     if let (Some(capture), Some(exchange_id)) =
-        (capture, extensions.get_ref::<ExchangeId>().copied())
+        (capture, extensions.get_ref::<HttpExchangeId>().copied())
     {
         if let Some(injector) = extensions.get_ref::<WebSocketRelayInjector>() {
             capture.register_websocket_injector(exchange_id.0, injector.clone());
@@ -127,15 +129,15 @@ pub async fn inspect_websocket_event(
                 .into());
             }
             WebSocketRelayEvent::Data(WebSocketRelayMessage::Text(text)) => {
-                (MessageKind::Text, Bytes::from(text.clone()), None)
+                (WebSocketMessageKind::Text, Bytes::from(text.clone()), None)
             }
             WebSocketRelayEvent::Data(WebSocketRelayMessage::Binary(data)) => {
-                (MessageKind::Binary, data.clone(), None)
+                (WebSocketMessageKind::Binary, data.clone(), None)
             }
-            WebSocketRelayEvent::Ping(data) => (MessageKind::Ping, data.clone(), None),
-            WebSocketRelayEvent::Pong(data) => (MessageKind::Pong, data.clone(), None),
+            WebSocketRelayEvent::Ping(data) => (WebSocketMessageKind::Ping, data.clone(), None),
+            WebSocketRelayEvent::Pong(data) => (WebSocketMessageKind::Pong, data.clone(), None),
             WebSocketRelayEvent::Close(frame) => (
-                MessageKind::Close,
+                WebSocketMessageKind::Close,
                 frame
                     .as_ref()
                     .map(|frame| Bytes::from(frame.reason.clone()))
@@ -146,13 +148,13 @@ pub async fn inspect_websocket_event(
         capture
             .record_websocket_message(
                 exchange_id.0,
-                CapturedMessage {
+                CapturedWebSocketMessage {
                     at: jiff::Timestamp::now(),
                     direction,
                     kind,
                     data,
                     close_code,
-                    origin: MessageOrigin::Peer,
+                    origin: WebSocketMessageOrigin::Peer,
                 },
             )
             .await;

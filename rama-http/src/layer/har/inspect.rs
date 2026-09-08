@@ -3,14 +3,19 @@ use crate::inspect::capture::{CaptureDetails, StoredRecord};
 use crate::layer::har::spec;
 use rama_core::error::{BoxError, ErrorContext as _};
 use rama_net::stream::SocketInfo;
+mod form;
+mod streaming;
+mod writer;
+pub use streaming::{HarEntryExtension, write_captured_har_entry, write_json_string};
+pub use writer::HarObjectWriter;
 
-/// Reconstruct a HAR entry from recorded traffic, preserving observed timings,
-/// byte counters. Protocol adapters can attach their own HAR extensions. No filesystem or GUI state is required.
-pub fn captured_har_entry(details: CaptureDetails) -> Result<spec::Entry, BoxError> {
+fn entry_metadata(
+    details: CaptureDetails,
+    request_size: u64,
+    response_size: u64,
+) -> Result<spec::Entry, BoxError> {
     let mut request_head = None;
     let mut response_head = None;
-    let mut request_body = Vec::new();
-    let mut response_body = Vec::new();
     for record in details.records {
         match record {
             StoredRecord::RequestHead {
@@ -29,14 +34,12 @@ pub fn captured_har_entry(details: CaptureDetails) -> Result<spec::Entry, BoxErr
                     *current = headers;
                 }
             }
-            StoredRecord::RequestBody { data } => request_body.extend_from_slice(&data),
             StoredRecord::ResponseHead {
                 status,
                 version,
                 headers,
                 ..
             } => response_head = Some((status, version, headers)),
-            StoredRecord::ResponseBody { data } => response_body.extend_from_slice(&data),
             _ => {}
         }
     }
@@ -54,14 +57,12 @@ pub fn captured_har_entry(details: CaptureDetails) -> Result<spec::Entry, BoxErr
                     .context("captured request authority missing")?,
             );
     }
-    let mut captured_request = crate::Request::builder()
-        .method(method)
-        .uri(url)
-        .version(request_version)
-        .body(())?;
-    *captured_request.headers_mut() = request_headers;
-    let (request_parts, ()) = captured_request.into_parts();
-    let mut request = spec::Request::from_http_request_parts(&request_parts, &request_body, false)?;
+    let mut request_parts = crate::request::Parts::default();
+    request_parts.method = method;
+    request_parts.uri = url;
+    request_parts.version = request_version;
+    request_parts.headers = request_headers;
+    let mut request = spec::Request::from_http_request_parts(&request_parts, &[], false)?;
 
     let upgraded = response_head.as_ref().is_some_and(|(status, _, _)| {
         *status == crate::StatusCode::SWITCHING_PROTOCOLS
@@ -70,7 +71,7 @@ pub fn captured_har_entry(details: CaptureDetails) -> Result<spec::Entry, BoxErr
                 && status.is_success())
     });
     let request_size = if upgraded {
-        request_body.len() as u64
+        request_size
     } else {
         details.summary.request_bytes
     };
@@ -81,16 +82,14 @@ pub fn captured_har_entry(details: CaptureDetails) -> Result<spec::Entry, BoxErr
 
     let response = match response_head {
         Some((status, version, headers)) => {
-            let mut captured_response = crate::Response::builder()
-                .status(status)
-                .version(version)
-                .body(())?;
-            *captured_response.headers_mut() = headers;
-            let (response_parts, ()) = captured_response.into_parts();
+            let mut response_parts = crate::response::Parts::default();
+            response_parts.status = status;
+            response_parts.version = version;
+            response_parts.headers = headers;
             let mut response =
-                spec::Response::from_http_response_parts(&response_parts, &response_body, false)?;
+                spec::Response::from_http_response_parts(&response_parts, &[], false)?;
             let response_size = if upgraded {
-                response_body.len() as u64
+                response_size
             } else {
                 details.summary.response_bytes
             };
@@ -174,7 +173,14 @@ fn byte_count(value: u64) -> i64 {
 }
 
 #[cfg(test)]
-mod tests {
+mod tests;
+
+#[cfg(test)]
+mod metadata_tests {
+    use crate::inspect::capture::{CaptureConfig, CaptureHttpLayer, CaptureStore};
+    use crate::{Body, Request, Response, body::util::BodyExt};
+    use rama_core::{Layer, Service, service::service_fn};
+
     use super::*;
     #[test]
     fn captured_har_time_and_size_conversions_are_bounded() {
@@ -189,9 +195,6 @@ mod tests {
 
     #[tokio::test]
     async fn captured_har_entry_preserves_observed_timing_and_byte_totals() {
-        use crate::inspect::capture::{CaptureConfig, CaptureHttpLayer, CaptureStore};
-        use crate::{Body, Request, Response, body::util::BodyExt};
-        use rama_core::{Layer, Service, service::service_fn};
         let store = CaptureStore::with_storage(
             rama_inspect::storage::Storage::new(rama_inspect::storage::MemoryStore::new(
                 Default::default(),
@@ -228,19 +231,13 @@ mod tests {
         details.summary.completed_at = Some("2026-08-23T12:00:00.375Z".parse().unwrap());
         details.summary.request_bytes = 42;
         details.summary.response_bytes = 84;
-        let entry = captured_har_entry(details).unwrap();
+        let entry = entry_metadata(details, 17, 0).unwrap();
 
         assert_eq!(entry.time, 375);
         assert_eq!(entry.timings.send, 0);
         assert_eq!(entry.timings.wait, 125);
         assert_eq!(entry.timings.receive, 250);
         assert_eq!(entry.request.body_size, 42);
-        let params = entry.request.post_data.unwrap().params.unwrap();
-        assert_eq!(params.len(), 2);
-        assert_eq!(params[0].name, "a");
-        assert_eq!(params[0].value.as_deref(), Some("b"));
-        assert_eq!(params[1].name, "c");
-        assert_eq!(params[1].value.as_deref(), Some("hello world"));
         assert_eq!(entry.response.body_size, 84);
         assert_eq!(entry.response.content.size, 84);
     }

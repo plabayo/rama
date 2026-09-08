@@ -6,7 +6,7 @@ fn captured_request_transport_header_policy_is_explicit() {
         method: Method::POST,
         url: "https://example.test/upload".parse().unwrap(),
         version: rama::http::Version::HTTP_2,
-        protocol: rama::net::Protocol::from_static("https"),
+        protocol: rama::net::Protocol::HTTPS,
         headers: test_headers([
             ("host".to_owned(), "example.test".to_owned()),
             ("content-length".to_owned(), "4".to_owned()),
@@ -30,16 +30,16 @@ fn captured_request_transport_header_policy_is_explicit() {
 #[test]
 fn websocket_control_events_are_visible_but_not_replayable() {
     let mut details = test_details(vec![]);
-    details.websocket.messages = vec![CapturedMessage {
+    details.websocket.messages = vec![CapturedWebSocketMessage {
         at: jiff::Timestamp::now(),
         direction: WebSocketRelayDirection::Egress,
-        kind: MessageKind::Close,
+        kind: WebSocketMessageKind::Close,
         data: Bytes::from("going away"),
         close_code: Some(1001.into()),
-        origin: MessageOrigin::Peer,
+        origin: WebSocketMessageOrigin::Peer,
     }];
     details.websocket.total = details.websocket.messages.len();
-    details.summary.protocol = rama::net::Protocol::from_static("wss");
+    details.summary.protocol = rama::net::Protocol::WSS;
     details.websocket.replay_active = true;
 
     let rendered = render_details(&details).into_string();
@@ -56,7 +56,7 @@ async fn request_rows_distinguish_response_lifecycle_and_offer_inline_replay() {
     let state = test_state();
     let connection_id = state
         .capture
-        .begin_connection_if_enabled(None, rama::net::Protocol::from_static("http"), None)
+        .begin_connection_if_enabled(None, rama::net::Protocol::HTTP, None)
         .unwrap();
     state.capture.confirm_connection(connection_id);
     state.ensure_session("known");
@@ -111,12 +111,12 @@ async fn selected_connections_and_requests_export_har_and_copy_as_curl() {
     state.ensure_session("known");
     let first_connection = state
         .capture
-        .begin_connection_if_enabled(None, rama::net::Protocol::from_static("http"), None)
+        .begin_connection_if_enabled(None, rama::net::Protocol::HTTP, None)
         .unwrap();
     state.capture.confirm_connection(first_connection);
     let second_connection = state
         .capture
-        .begin_connection_if_enabled(None, rama::net::Protocol::from_static("http"), None)
+        .begin_connection_if_enabled(None, rama::net::Protocol::HTTP, None)
         .unwrap();
     state.capture.confirm_connection(second_connection);
     let service = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
@@ -165,7 +165,7 @@ async fn selected_connections_and_requests_export_har_and_copy_as_curl() {
     }
     let web_socket_connection = state
         .capture
-        .begin_connection_if_enabled(None, rama::net::Protocol::from_static("http"), None)
+        .begin_connection_if_enabled(None, rama::net::Protocol::HTTP, None)
         .unwrap();
     state.capture.confirm_connection(web_socket_connection);
     let web_socket_service = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(
@@ -200,9 +200,9 @@ async fn selected_connections_and_requests_export_har_and_copy_as_curl() {
         .capture
         .record_websocket_message(
             3,
-            CapturedMessage::new(
+            CapturedWebSocketMessage::new(
                 WebSocketRelayDirection::Ingress,
-                MessageKind::Text,
+                WebSocketMessageKind::Text,
                 Bytes::from(b"hello websocket".to_vec()),
             ),
         )
@@ -211,9 +211,9 @@ async fn selected_connections_and_requests_export_har_and_copy_as_curl() {
         .capture
         .record_websocket_message(
             3,
-            CapturedMessage::new(
+            CapturedWebSocketMessage::new(
                 WebSocketRelayDirection::Egress,
-                MessageKind::Binary,
+                WebSocketMessageKind::Binary,
                 Bytes::from(vec![0, 1, 255]),
             ),
         )
@@ -222,9 +222,9 @@ async fn selected_connections_and_requests_export_har_and_copy_as_curl() {
         .capture
         .record_websocket_message(
             3,
-            CapturedMessage::new(
+            CapturedWebSocketMessage::new(
                 WebSocketRelayDirection::Ingress,
-                MessageKind::Ping,
+                WebSocketMessageKind::Ping,
                 Bytes::from(b"control".to_vec()),
             ),
         )
@@ -245,7 +245,7 @@ async fn selected_connections_and_requests_export_har_and_copy_as_curl() {
     let response = export_har(
         State(state.clone()),
         Query(ExportQuery {
-            session: Some("known".to_owned()),
+            session: Some(NonEmptyStr::try_from("known").unwrap()),
             ids: None,
             connection_ids: None,
         }),
@@ -376,9 +376,9 @@ async fn websocket_replay_handler_enforces_session_and_maps_capture_state() {
         .capture
         .record_websocket_message(
             exchange_id,
-            CapturedMessage::new(
+            CapturedWebSocketMessage::new(
                 WebSocketRelayDirection::Ingress,
-                MessageKind::Text,
+                WebSocketMessageKind::Text,
                 Bytes::from(b"replay me".to_vec()),
             ),
         )
@@ -387,16 +387,16 @@ async fn websocket_replay_handler_enforces_session_and_maps_capture_state() {
         .capture
         .record_websocket_message(
             exchange_id,
-            CapturedMessage::new(
+            CapturedWebSocketMessage::new(
                 WebSocketRelayDirection::Ingress,
-                MessageKind::Ping,
+                WebSocketMessageKind::Ping,
                 Bytes::from(b"control".to_vec()),
             ),
         )
         .await;
     let signals = |session: &str| {
         ReadSignals(UiSignals {
-            session: session.to_owned(),
+            session: NonEmptyStr::try_from(session).ok(),
             ..Default::default()
         })
     };

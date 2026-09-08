@@ -1,6 +1,6 @@
 use core::{fmt, str::FromStr};
 
-use crate::std::{self as std, string::String, vec::Vec};
+use crate::std::{string::String, vec::Vec};
 
 use crate::Protocol;
 use crate::address::{Domain, parse_utils};

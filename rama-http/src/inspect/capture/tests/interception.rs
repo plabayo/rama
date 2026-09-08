@@ -1,14 +1,15 @@
 use super::*;
+use crate::inspect::control::{Config, Decision};
 
 #[tokio::test]
 async fn active_connection_limit_declines_capture_without_blocking_the_connection() {
     let store = test_store_with_limits(1, 8, rama_utils::octets::kib_u64(1));
     let first = store
-        .begin_connection_if_enabled(None, Protocol::from_static("http"), None)
+        .begin_connection_if_enabled(None, Protocol::HTTP, None)
         .expect("first connection should be captured");
     assert!(
         store
-            .begin_connection_if_enabled(None, Protocol::from_static("http"), None)
+            .begin_connection_if_enabled(None, Protocol::HTTP, None)
             .is_none(),
         "an active capture must make the next connection uncaptured"
     );
@@ -17,7 +18,7 @@ async fn active_connection_limit_declines_capture_without_blocking_the_connectio
     store.finish_connection(first);
     assert!(
         store
-            .begin_connection_if_enabled(None, Protocol::from_static("http"), None)
+            .begin_connection_if_enabled(None, Protocol::HTTP, None)
             .is_some(),
         "finishing the active connection must release capture capacity"
     );
@@ -25,7 +26,6 @@ async fn active_connection_limit_declines_capture_without_blocking_the_connectio
 
 #[tokio::test]
 async fn approval_holds_heads_without_polling_bodies_and_preserves_header_edits() {
-    use crate::inspect::control::{Config, Decision};
     let store = test_store();
     store
         .control()
@@ -148,7 +148,6 @@ async fn approval_holds_heads_without_polling_bodies_and_preserves_header_edits(
 
 #[tokio::test]
 async fn blocking_without_capture_admission_never_calls_origin_or_polls_upload() {
-    use crate::inspect::control::{Config, Decision};
     let store = test_store_with_total_limit(1, 1, 1);
     store
         .control()
@@ -207,7 +206,6 @@ async fn blocking_without_capture_admission_never_calls_origin_or_polls_upload()
 
 #[tokio::test]
 async fn paused_inspector_forwards_without_capturing_or_holding() {
-    use crate::inspect::control::Config;
     let store = test_store();
     store
         .control()

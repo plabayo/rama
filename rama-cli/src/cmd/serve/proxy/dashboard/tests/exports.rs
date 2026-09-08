@@ -28,7 +28,7 @@ async fn har_control_is_compact_and_streams_a_cross_browser_download() {
     let response = start_har(
         State(state.clone()),
         Query(StartHarQuery {
-            session: "known".to_owned(),
+            session: NonEmptyStr::try_from("known").ok(),
             file_name: "picked.har".to_owned(),
         }),
     )
@@ -44,7 +44,7 @@ async fn har_control_is_compact_and_streams_a_cross_browser_download() {
     let response = stop_har(
         State(state.clone()),
         Query(HarSessionQuery {
-            session: "known".to_owned(),
+            session: NonEmptyStr::try_from("known").ok(),
         }),
     )
     .await;
@@ -62,7 +62,7 @@ async fn har_control_is_compact_and_streams_a_cross_browser_download() {
     let response = start_har(
         State(state),
         Query(StartHarQuery {
-            session: "unknown".to_owned(),
+            session: NonEmptyStr::try_from("unknown").ok(),
             file_name: "ignored.har".to_owned(),
         }),
     )

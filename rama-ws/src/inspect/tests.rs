@@ -9,14 +9,23 @@ use rama_http::{
     body::util::BodyExt,
     inspect::capture::{
         CaptureConfig, CaptureFilter, CaptureHttpLayer, CaptureMetadata, CaptureObserver,
-        CaptureStore, ConnectionId, ExchangeId,
+        CaptureStore, ConnectionId, HttpExchangeId,
     },
+};
+use rama_inspect::storage::{
+    AppendRecord, Collection, CreateCollection, ListRecords, ReadRecord, Reader, RecordId,
 };
 use rama_inspect::{
     InspectionState,
     storage::{MemoryStore, Storage, StorageLimits},
 };
 use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{
+    pin::Pin,
+    sync::atomic::{AtomicBool, Ordering},
+    task::{Context, Poll},
+};
+use tokio::io::{AsyncRead, ReadBuf};
 
 #[derive(Debug)]
 struct Observer(WebSocketLimits);
@@ -73,8 +82,8 @@ async fn handshake(store: &CaptureStore, version: Version, status: StatusCode) -
         .await
         .unwrap()
 }
-fn message(kind: MessageKind, data: &'static [u8]) -> CapturedMessage {
-    CapturedMessage::new(
+fn message(kind: WebSocketMessageKind, data: &'static [u8]) -> CapturedWebSocketMessage {
+    CapturedWebSocketMessage::new(
         WebSocketRelayDirection::Ingress,
         kind,
         Bytes::from_static(data),
@@ -86,11 +95,11 @@ async fn pages_streams_and_search_keep_protocol_records_separate() {
     let store = store(16, rama_utils::octets::kib_u64(1), 0);
     let _response = handshake(&store, Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS).await;
     for kind in [
-        MessageKind::Text,
-        MessageKind::Binary,
-        MessageKind::Ping,
-        MessageKind::Pong,
-        MessageKind::Close,
+        WebSocketMessageKind::Text,
+        WebSocketMessageKind::Binary,
+        WebSocketMessageKind::Ping,
+        WebSocketMessageKind::Pong,
+        WebSocketMessageKind::Close,
     ] {
         store
             .record_websocket_message(1, message(kind, b"needle"))
@@ -98,12 +107,12 @@ async fn pages_streams_and_search_keep_protocol_records_separate() {
     }
     let first = store.websocket_details(1, 0, 2).await.unwrap();
     assert_eq!(first.total, 5);
-    assert_eq!(first.messages[0].kind, MessageKind::Pong);
-    assert_eq!(first.messages[1].kind, MessageKind::Close);
+    assert_eq!(first.messages[0].kind, WebSocketMessageKind::Pong);
+    assert_eq!(first.messages[1].kind, WebSocketMessageKind::Close);
     let last = store.websocket_details(1, usize::MAX, 2).await.unwrap();
     assert_eq!(last.page, 2);
     assert_eq!(last.messages.len(), 1);
-    assert_eq!(last.messages[0].kind, MessageKind::Text);
+    assert_eq!(last.messages[0].kind, WebSocketMessageKind::Text);
     assert!(
         store
             .websocket_details(1, 0, 0)
@@ -138,10 +147,10 @@ async fn message_and_byte_limits_never_publish_partial_messages() {
         let store = store(count, bytes, 0);
         let _response = handshake(&store, Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS).await;
         store
-            .record_websocket_message(1, message(MessageKind::Text, b"first"))
+            .record_websocket_message(1, message(WebSocketMessageKind::Text, b"first"))
             .await;
         store
-            .record_websocket_message(1, message(MessageKind::Text, b"second"))
+            .record_websocket_message(1, message(WebSocketMessageKind::Text, b"second"))
             .await;
         let details = store.details(1).await.unwrap();
         assert_eq!(details.summary.request_bytes, 11);
@@ -158,15 +167,15 @@ async fn a_paused_gap_preserves_data_and_disables_replay() {
     let store = store(16, rama_utils::octets::kib_u64(1), 0);
     let _response = handshake(&store, Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS).await;
     store
-        .record_websocket_message(1, message(MessageKind::Text, b"before"))
+        .record_websocket_message(1, message(WebSocketMessageKind::Text, b"before"))
         .await;
     store.inspection_state().pause().await;
     store
-        .record_websocket_message(1, message(MessageKind::Text, b"during"))
+        .record_websocket_message(1, message(WebSocketMessageKind::Text, b"during"))
         .await;
     store.inspection_state().resume().await;
     store
-        .record_websocket_message(1, message(MessageKind::Text, b"after"))
+        .record_websocket_message(1, message(WebSocketMessageKind::Text, b"after"))
         .await;
     assert_eq!(store.websocket_details(1, 0, 10).await.unwrap().total, 2);
     assert!(matches!(
@@ -180,20 +189,26 @@ async fn typed_records_stay_readable_after_clearing_and_do_not_pollute_http_har(
     let store = store(16, rama_utils::octets::kib_u64(1), 0);
     let _response = handshake(&store, Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS).await;
     store
-        .record_websocket_message(1, message(MessageKind::Binary, &[0, 255]))
+        .record_websocket_message(1, message(WebSocketMessageKind::Binary, &[0, 255]))
         .await;
     let mut selected = store.selected_exchanges(&[1].into(), &Default::default());
     let selected = selected.next_capture().unwrap();
     store.clear().await;
-    let messages = selected
-        .records::<CapturedMessage>(0..usize::MAX)
+    let mut output = Vec::new();
+    rama_http::layer::har::inspect::write_captured_har_entry(&mut output, &selected, &())
         .await
         .unwrap();
-    let mut entry =
-        rama_http::layer::har::inspect::captured_har_entry(selected.details().await.unwrap())
-            .unwrap();
+    let entry: rama_http::layer::har::spec::Entry = serde_json::from_slice(&output).unwrap();
     assert!(entry.web_socket_messages.is_none());
-    har::append_messages(&mut entry, messages).unwrap();
+    output.clear();
+    rama_http::layer::har::inspect::write_captured_har_entry(
+        &mut output,
+        &selected,
+        &har::WebSocketHarExtension,
+    )
+    .await
+    .unwrap();
+    let entry: rama_http::layer::har::spec::Entry = serde_json::from_slice(&output).unwrap();
     assert_eq!(entry.web_socket_messages.unwrap()[0].data, "AP8=");
 }
 
@@ -230,7 +245,7 @@ async fn relay_completion_and_cancellation_finish_the_upgrade() {
         store.finish_connection(1);
         let ingress = ServiceInput::new(());
         let egress = ServiceInput::new(());
-        egress.extensions.insert(ExchangeId(1));
+        egress.extensions.insert(HttpExchangeId(1));
         let entered = Arc::new(tokio::sync::Notify::new());
         let notify = entered.clone();
         let service = CaptureWebSocketLayer::new(Some(store.clone())).layer(service_fn(
@@ -238,8 +253,8 @@ async fn relay_completion_and_cancellation_finish_the_upgrade() {
                 let entered = entered.clone();
                 async move {
                     assert_eq!(
-                        bridge.ingress.extensions.get_ref::<ExchangeId>(),
-                        Some(&ExchangeId(1))
+                        bridge.ingress.extensions.get_ref::<HttpExchangeId>(),
+                        Some(&HttpExchangeId(1))
                     );
                     entered.notify_one();
                     if cancel {
@@ -276,9 +291,9 @@ async fn concurrent_messages_publish_each_complete_record_once() {
             store
                 .record_websocket_message(
                     1,
-                    CapturedMessage::new(
+                    CapturedWebSocketMessage::new(
                         WebSocketRelayDirection::Ingress,
-                        MessageKind::Binary,
+                        WebSocketMessageKind::Binary,
                         Bytes::copy_from_slice(&[index; 16]),
                     ),
                 )
@@ -304,16 +319,6 @@ async fn concurrent_messages_publish_each_complete_record_once() {
 
 #[tokio::test]
 async fn cancelled_message_append_preserves_committed_records_and_marks_a_gap() {
-    use rama_inspect::storage::{
-        AppendRecord, Collection, CreateCollection, ListRecords, ReadRecord, Reader, RecordId,
-    };
-    use std::{
-        pin::Pin,
-        sync::atomic::{AtomicBool, Ordering},
-        task::{Context, Poll},
-    };
-    use tokio::io::{AsyncRead, ReadBuf};
-
     struct StopAfterChunk {
         reader: Reader,
         entered: Arc<tokio::sync::Notify>,
@@ -400,7 +405,7 @@ async fn cancelled_message_append_preserves_committed_records_and_marks_a_gap() 
     );
     let _response = handshake(&store, Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS).await;
     store
-        .record_websocket_message(1, message(MessageKind::Text, b"committed"))
+        .record_websocket_message(1, message(WebSocketMessageKind::Text, b"committed"))
         .await;
     let retained = store.exchange_capture(1).unwrap();
     stop.store(true, Ordering::Release);
@@ -408,7 +413,7 @@ async fn cancelled_message_append_preserves_committed_records_and_marks_a_gap() 
         let store = store.clone();
         async move {
             store
-                .record_websocket_message(1, message(MessageKind::Text, b"interrupted"))
+                .record_websocket_message(1, message(WebSocketMessageKind::Text, b"interrupted"))
                 .await;
         }
     });

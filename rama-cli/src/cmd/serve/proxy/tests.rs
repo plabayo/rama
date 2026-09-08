@@ -3,7 +3,10 @@ use rama::{
     bytes::Bytes,
     http::ws::{
         handshake::mitm::WebSocketRelayMessage,
-        inspect::{CaptureWebSocketExt, CapturedMessage, MessageKind, MessageOrigin},
+        inspect::{
+            CaptureWebSocketExt, CapturedWebSocketMessage, WebSocketMessageKind,
+            WebSocketMessageOrigin,
+        },
     },
 };
 use rama::{

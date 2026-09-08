@@ -3,9 +3,9 @@ use super::*;
 #[tokio::test]
 async fn limited_snapshot_keeps_full_totals_without_cloning_every_row() {
     let store = test_store_with_limits(8, 8, rama_utils::octets::kib_u64(1));
-    let first = store.begin_connection(None, Protocol::from_static("http"));
-    let second = store.begin_connection(None, Protocol::from_static("https"));
-    let third = store.begin_connection(None, Protocol::from_static("socks5"));
+    let first = store.begin_connection(None, Protocol::HTTP);
+    let second = store.begin_connection(None, Protocol::HTTPS);
+    let third = store.begin_connection(None, Protocol::SOCKS5);
     store.confirm_connection(first);
     store.confirm_connection(second);
     store.confirm_connection(third);
@@ -23,9 +23,9 @@ async fn limited_snapshot_keeps_full_totals_without_cloning_every_row() {
 #[tokio::test]
 async fn filtered_limits_keep_exact_full_totals_and_connection_membership() {
     let store = test_store_with_limits(8, 8, rama_utils::octets::kib_u64(1));
-    let first = store.begin_connection(None, Protocol::from_static("http"));
-    let second = store.begin_connection(None, Protocol::from_static("http"));
-    let unrelated = store.begin_connection(None, Protocol::from_static("socks5"));
+    let first = store.begin_connection(None, Protocol::HTTP);
+    let second = store.begin_connection(None, Protocol::HTTP);
+    let unrelated = store.begin_connection(None, Protocol::SOCKS5);
 
     for (connection_id, path) in [(first, "matched-one"), (second, "matched-two")] {
         let request = Request::builder()
@@ -43,7 +43,7 @@ async fn filtered_limits_keep_exact_full_totals_and_connection_membership() {
     let snapshot = store
         .snapshot_limited(
             &CaptureFilter {
-                search: "matched".to_owned(),
+                search: "matched".into(),
                 ..Default::default()
             },
             1,
@@ -65,8 +65,8 @@ async fn filtered_limits_keep_exact_full_totals_and_connection_membership() {
 #[tokio::test]
 async fn selected_connections_filter_exchanges_without_hiding_other_connections() {
     let store = test_store_with_limits(8, 8, rama_utils::octets::kib_u64(1));
-    let first = store.begin_connection(None, Protocol::from_static("http"));
-    let second = store.begin_connection(None, Protocol::from_static("socks5"));
+    let first = store.begin_connection(None, Protocol::HTTP);
+    let second = store.begin_connection(None, Protocol::SOCKS5);
 
     for connection_id in [first, second] {
         let request = Request::builder()
@@ -118,7 +118,7 @@ async fn selected_connections_filter_exchanges_without_hiding_other_connections(
     let structurally_filtered = store
         .snapshot_limited_for_connections(
             &CaptureFilter {
-                connection_id: first.to_string(),
+                connection_id: FilterValue::Value(ConnectionQuery(first)),
                 ..Default::default()
             },
             &BTreeSet::from([first]),
@@ -135,7 +135,7 @@ async fn selected_connections_filter_exchanges_without_hiding_other_connections(
 
 #[test]
 fn filter_is_case_insensitive_across_summary_fields() {
-    let summary = ExchangeSummary {
+    let summary = HttpExchangeSummary {
         decision: None,
         id: 1,
         connection_id: 1,
@@ -145,7 +145,7 @@ fn filter_is_case_insensitive_across_summary_fields() {
         http_version: Version::HTTP_11,
         url: "https://Example.Test/widgets".parse().unwrap(),
         endpoint: Some("Example.Test".parse().unwrap()),
-        protocol: Protocol::from_static("HTTPS"),
+        protocol: Protocol::HTTPS,
 
         user_agent: Some(HeaderValue::from_static("Rama Browser")),
 
@@ -164,29 +164,29 @@ fn filter_is_case_insensitive_across_summary_fields() {
     };
     assert!(
         CaptureFilter {
-            search: "widgets".to_owned(),
-            connection_id: "#1".to_owned(),
-            user_agent: "rama".to_owned(),
-            endpoint: "example".to_owned(),
+            search: "widgets".into(),
+            connection_id: "#1".into(),
+            user_agent: "rama".into(),
+            endpoint: "example".into(),
             method: "get".into(),
-            status: "2xx".to_owned(),
-            protocol: "https".to_owned(),
+            status: "2xx".into(),
+            protocol: "https".into(),
         }
         .matches_dimensions(&summary)
     );
     assert!(
         CaptureFilter {
-            protocol: "http".to_owned(),
+            protocol: "http".into(),
             ..Default::default()
         }
-        .matches_dimensions(&ExchangeSummary {
-            protocol: Protocol::from_static("http"),
+        .matches_dimensions(&HttpExchangeSummary {
+            protocol: Protocol::HTTP,
             ..summary.clone()
         })
     );
     assert!(
         !CaptureFilter {
-            protocol: "http".to_owned(),
+            protocol: "http".into(),
             ..Default::default()
         }
         .matches_dimensions(&summary),
@@ -194,17 +194,17 @@ fn filter_is_case_insensitive_across_summary_fields() {
     );
     assert!(
         CaptureFilter {
-            protocol: "wss".to_owned(),
+            protocol: "wss".into(),
             ..Default::default()
         }
-        .matches_dimensions(&ExchangeSummary {
-            protocol: Protocol::from_static("wss"),
+        .matches_dimensions(&HttpExchangeSummary {
+            protocol: Protocol::WSS,
             ..summary.clone()
         })
     );
     assert!(
         CaptureFilter {
-            search: "widgets".to_owned(),
+            search: "widgets".into(),
             ..Default::default()
         }
         .search_matches_summary(&summary)
@@ -217,7 +217,7 @@ fn filter_is_case_insensitive_across_summary_fields() {
         assert!(!matches_status(&summary, status), "status filter {status}");
     }
     assert!(matches_status(
-        &ExchangeSummary {
+        &HttpExchangeSummary {
             status: None,
             active: true,
             ..summary
@@ -260,7 +260,7 @@ async fn search_reads_headers_and_payload_from_storage() {
     for search in ["HEADER-NEEDLE", "payload-needle"] {
         let snapshot = store
             .snapshot(&CaptureFilter {
-                search: search.to_owned(),
+                search: search.into(),
                 ..Default::default()
             })
             .await;
@@ -268,7 +268,7 @@ async fn search_reads_headers_and_payload_from_storage() {
     }
     let snapshot = store
         .snapshot(&CaptureFilter {
-            search: "absent-private-value".to_owned(),
+            search: "absent-private-value".into(),
             ..Default::default()
         })
         .await;
@@ -279,7 +279,7 @@ async fn search_reads_headers_and_payload_from_storage() {
     let reads = store.0.record_reads.load(Ordering::Relaxed);
     let snapshot = store
         .snapshot(&CaptureFilter {
-            search: "absent-private-value".to_owned(),
+            search: "absent-private-value".into(),
             ..Default::default()
         })
         .await;

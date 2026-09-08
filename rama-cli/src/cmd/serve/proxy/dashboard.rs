@@ -1,8 +1,8 @@
 use super::{
     capture::{
         CaptureDetails, CaptureFilter, CaptureHttpLayer, CaptureSnapshot, CaptureStore,
-        CaptureWebSocketExt, CapturedBody, ConnectionId, ConnectionSummary, ExchangeSummary,
-        ReplayRequest, StoredRecord, WebSocketReplayError,
+        CaptureWebSocketExt, CapturedBody, ConnectionId, HttpConnectionSummary,
+        HttpExchangeSummary, ReplayRequest, StoredRecord, WebSocketReplayError,
     },
     control::PendingSummary,
     har::{HarController, HarDownload, export_selected},
@@ -12,6 +12,8 @@ use super::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use parking_lot::RwLock;
+use rama::http::inspect::capture::{ConnectionQuery, FilterValue, ProtocolQuery, StatusQuery};
+use rama::utils::str::arcstr::ArcStr;
 use rama::{
     Layer, Service,
     bytes::Bytes,
@@ -22,7 +24,10 @@ use rama::{
         Body, Request, Response, StatusCode,
         body::util::BodyExt as _,
         convert::curl,
-        headers::SourceList,
+        headers::{
+            CacheControl, ContentDisposition, ContentLength, ContentType, SourceList,
+            XContentTypeOptions,
+        },
         layer::remove_header::{
             RemoveRequestHeaderLayer, remove_hop_by_hop_request_headers,
             remove_proxy_auth_request_headers,
@@ -32,7 +37,8 @@ use rama::{
             Router,
             extract::{Path, Query, State, datastar::ReadSignals},
             response::{
-                Css, DatastarScript, DatastarSourceMap, Html, IntoResponse, Json, Script, Sse,
+                Css, DatastarScript, DatastarSourceMap, Headers, Html, IntoResponse, Json,
+                OctetStream, Script, Sse, Svg,
             },
         },
         sse::{
@@ -53,7 +59,10 @@ use rama::{
 use rama::{
     http::ws::{
         handshake::mitm::{WebSocketRelayDirection, WebSocketRelayMessage},
-        inspect::{CapturedMessage, MessageKind, MessageOrigin, WebSocketDetails},
+        inspect::{
+            CapturedWebSocketMessage, WebSocketDetails, WebSocketMessageKind,
+            WebSocketMessageOrigin,
+        },
     },
     tls::inspect::{CapturedTlsParameters, TlsObservation},
     ua::inspect::UserAgentObservation,
@@ -206,7 +215,7 @@ impl DashboardState {
     }
 
     fn has_session(&self, id: &str) -> bool {
-        !id.is_empty() && self.sessions.read().contains_key(id)
+        self.sessions.read().contains_key(id)
     }
 
     async fn render_live(&self, session_id: &str, heartbeat_sequence: u64) -> String {
@@ -425,14 +434,14 @@ pub(super) fn service(state: DashboardState) -> DashboardService {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 struct UiSignals {
-    session: String,
-    search: String,
-    connection_id: String,
-    user_agent: String,
-    endpoint: String,
-    method: String,
-    status: String,
-    protocol: String,
+    session: Option<NonEmptyStr>,
+    search: ArcStr,
+    connection_id: FilterValue<ConnectionQuery>,
+    user_agent: ArcStr,
+    endpoint: ArcStr,
+    method: FilterValue<rama::http::Method>,
+    status: FilterValue<StatusQuery>,
+    protocol: FilterValue<ProtocolQuery>,
     websocket_direction: String,
     websocket_kind: String,
     websocket_payload: String,
@@ -441,7 +450,7 @@ struct UiSignals {
 #[derive(Debug, Deserialize)]
 struct MitmPolicyUpdate {
     #[serde(default)]
-    session: String,
+    session: Option<NonEmptyStr>,
     allow: Vec<String>,
     deny: Vec<String>,
     #[serde(default)]
@@ -451,14 +460,14 @@ struct MitmPolicyUpdate {
 #[derive(Debug, Deserialize)]
 struct StartHarQuery {
     #[serde(default)]
-    session: String,
+    session: Option<NonEmptyStr>,
     file_name: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct HarSessionQuery {
     #[serde(default)]
-    session: String,
+    session: Option<NonEmptyStr>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -487,7 +496,7 @@ struct BodyQuery {
 
 #[derive(Debug, Deserialize)]
 struct ExportQuery {
-    session: Option<String>,
+    session: Option<NonEmptyStr>,
     ids: Option<String>,
     connection_ids: Option<String>,
 }
@@ -502,12 +511,12 @@ struct FocusQuery {
 #[derive(Deserialize)]
 struct ControlQuery {
     #[serde(default)]
-    session: String,
+    session: Option<NonEmptyStr>,
 }
 #[derive(Deserialize)]
 struct ControlConfigUpdate {
     #[serde(default)]
-    session: String,
+    session: Option<NonEmptyStr>,
     revision: u64,
     config: crate::cmd::serve::proxy::control::Config,
     apply_rule: Option<usize>,
@@ -515,19 +524,9 @@ struct ControlConfigUpdate {
 #[derive(Deserialize)]
 struct ControlDecision {
     #[serde(default)]
-    session: String,
+    session: Option<NonEmptyStr>,
     ids: Vec<u64>,
     decision: crate::cmd::serve::proxy::control::Decision,
-}
-
-#[derive(serde::Serialize)]
-struct CaptureJson<'a> {
-    #[serde(flatten)]
-    http: &'a CaptureDetails,
-    connection_tls: Option<&'a TlsObservation>,
-    upstream_tls: Option<&'a TlsObservation>,
-    user_agent: Option<&'a UserAgentObservation>,
-    websocket: &'a [CapturedMessage],
 }
 
 fn render_approval_slots<'a>(pending: impl Iterator<Item = &'a PendingSummary>) -> String {

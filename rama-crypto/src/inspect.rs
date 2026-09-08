@@ -21,15 +21,16 @@ const MAGIC: &[u8; 8] = b"RMINSP\x01\0";
 
 /// Per-instance AES-256-GCM key. Debug output never reveals the key.
 #[derive(Clone)]
-pub struct EncryptLayer {
+pub struct EncryptStorageLayer {
     key: Arc<[u8; 32]>,
 }
-impl fmt::Debug for EncryptLayer {
+impl fmt::Debug for EncryptStorageLayer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("EncryptLayer").finish_non_exhaustive()
+        f.debug_struct("EncryptStorageLayer")
+            .finish_non_exhaustive()
     }
 }
-impl EncryptLayer {
+impl EncryptStorageLayer {
     pub fn new(key: [u8; 32]) -> Self {
         Self { key: Arc::new(key) }
     }
@@ -39,7 +40,7 @@ impl EncryptLayer {
         Ok(Self::new(key))
     }
 }
-impl<S> Layer<S> for EncryptLayer {
+impl<S> Layer<S> for EncryptStorageLayer {
     type Service = EncryptStore<S>;
     fn layer(&self, inner: S) -> Self::Service {
         EncryptStore {
@@ -48,7 +49,7 @@ impl<S> Layer<S> for EncryptLayer {
         }
     }
 }
-/// Storage service produced by [`EncryptLayer`].
+/// Storage service produced by [`EncryptStorageLayer`].
 #[derive(Clone)]
 pub struct EncryptStore<S> {
     inner: S,
@@ -86,13 +87,13 @@ struct EncryptedCollection {
     // different valid record in the same collection must fail authentication.
     records: Arc<RwLock<BTreeMap<RecordId, [u8; 16]>>>,
 }
-fn aad(collection: u64, stream: &[u8; 16], sequence: u64, end: bool) -> Vec<u8> {
-    let mut value = Vec::with_capacity(41);
-    value.extend_from_slice(MAGIC);
-    value.extend_from_slice(&collection.to_be_bytes());
-    value.extend_from_slice(stream);
-    value.extend_from_slice(&sequence.to_be_bytes());
-    value.push(u8::from(end));
+fn aad(collection: u64, stream: &[u8; 16], sequence: u64, end: bool) -> [u8; 41] {
+    let mut value = [0; 41];
+    value[..8].copy_from_slice(MAGIC);
+    value[8..16].copy_from_slice(&collection.to_be_bytes());
+    value[16..32].copy_from_slice(stream);
+    value[32..40].copy_from_slice(&sequence.to_be_bytes());
+    value[40] = u8::from(end);
     value
 }
 fn invalid(message: &'static str) -> std::io::Error {
@@ -125,21 +126,28 @@ impl Service<AppendRecord> for EncryptedCollection {
                 let result = (|| -> Result<Bytes, std::io::Error> {
                     let mut nonce = [0; 12];
                     rand_bytes(&mut nonce).map_err(std::io::Error::other)?;
-                    let mut tag = [0; 16];
-                    let ciphertext = symm::encrypt_aead(
-                        symm::Cipher::aes_256_gcm(),
-                        key.as_ref(),
-                        Some(&nonce),
-                        &aad(collection, &identity, sequence, count == 0),
-                        &buffer[..count],
-                        &mut tag,
-                    )
-                    .map_err(std::io::Error::other)?;
-                    let mut frame = Vec::with_capacity(32 + ciphertext.len());
-                    frame.extend_from_slice(&(count as u32).to_be_bytes());
-                    frame.extend_from_slice(&nonce);
-                    frame.extend_from_slice(&tag);
-                    frame.extend_from_slice(&ciphertext);
+                    // Encrypt directly into the published frame, avoiding a second
+                    // ciphertext allocation and copy. GCM has no padding.
+                    let cipher = symm::Cipher::aes_256_gcm();
+                    let mut frame = vec![0; 32 + count + cipher.block_size()];
+                    frame[..4].copy_from_slice(&(count as u32).to_be_bytes());
+                    frame[4..16].copy_from_slice(&nonce);
+                    let mut crypter =
+                        symm::Crypter::new(cipher, symm::Mode::Encrypt, key.as_ref(), Some(&nonce))
+                            .map_err(std::io::Error::other)?;
+                    crypter
+                        .aad_update(&aad(collection, &identity, sequence, count == 0))
+                        .map_err(std::io::Error::other)?;
+                    let written = crypter
+                        .update(&buffer[..count], &mut frame[32..])
+                        .map_err(std::io::Error::other)?;
+                    let tail = crypter
+                        .finalize(&mut frame[32 + written..])
+                        .map_err(std::io::Error::other)?;
+                    crypter
+                        .get_tag(&mut frame[16..32])
+                        .map_err(std::io::Error::other)?;
+                    frame.truncate(32 + written + tail);
                     Ok(Bytes::from(frame))
                 })();
                 let failed = result.is_err();
@@ -187,6 +195,7 @@ impl Service<ReadRecord> for EncryptedCollection {
                     return Err(invalid("encrypted record identity mismatch"));
                 }
                 let mut sequence = 0u64;
+                let mut ciphertext = vec![0; CHUNK];
                 loop {
                     let length = reader.read_u32().await? as usize;
                     if length > CHUNK {
@@ -194,16 +203,15 @@ impl Service<ReadRecord> for EncryptedCollection {
                     }
                     let mut nonce = [0; 12];
                     let mut tag = [0; 16];
-                    let mut ciphertext = vec![0; length];
                     reader.read_exact(&mut nonce).await?;
                     reader.read_exact(&mut tag).await?;
-                    reader.read_exact(&mut ciphertext).await?;
+                    reader.read_exact(&mut ciphertext[..length]).await?;
                     let plaintext = symm::decrypt_aead(
                         symm::Cipher::aes_256_gcm(),
                         key.as_ref(),
                         Some(&nonce),
                         &aad(collection, &expected, sequence, length == 0),
-                        &ciphertext,
+                        &ciphertext[..length],
                         &tag,
                     )
                     .map_err(std::io::Error::other)?;

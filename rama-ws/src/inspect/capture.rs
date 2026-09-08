@@ -11,7 +11,8 @@ use rama_core::{
     futures::{Stream, stream},
 };
 use rama_http::inspect::capture::{
-    CaptureMetadata, CaptureProtocol, CaptureStore, CapturedBody, CapturedRecord, ExchangeCapture,
+    CaptureMetadata, CaptureStore, CapturedBody, CapturedRecord, ExchangeCapture,
+    HttpCaptureProtocol,
 };
 use rama_net::Protocol;
 use serde::{Deserialize, Serialize};
@@ -25,14 +26,14 @@ use std::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MessageKind {
+pub enum WebSocketMessageKind {
     Text,
     Binary,
     Ping,
     Pong,
     Close,
 }
-impl fmt::Display for MessageKind {
+impl fmt::Display for WebSocketMessageKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Text => "text",
@@ -45,7 +46,7 @@ impl fmt::Display for MessageKind {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum MessageOrigin {
+pub enum WebSocketMessageOrigin {
     #[default]
     Peer,
     Replay,
@@ -53,27 +54,31 @@ pub enum MessageOrigin {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CapturedMessage {
+pub struct CapturedWebSocketMessage {
     pub at: jiff::Timestamp,
     pub direction: WebSocketRelayDirection,
-    pub kind: MessageKind,
+    pub kind: WebSocketMessageKind,
     pub data: Bytes,
     pub close_code: Option<CloseCode>,
-    pub origin: MessageOrigin,
+    pub origin: WebSocketMessageOrigin,
 }
-impl CapturedMessage {
-    pub fn new(direction: WebSocketRelayDirection, kind: MessageKind, data: Bytes) -> Self {
+impl CapturedWebSocketMessage {
+    pub fn new(
+        direction: WebSocketRelayDirection,
+        kind: WebSocketMessageKind,
+        data: Bytes,
+    ) -> Self {
         Self {
             at: jiff::Timestamp::now(),
             direction,
             kind,
             data,
             close_code: None,
-            origin: MessageOrigin::Peer,
+            origin: WebSocketMessageOrigin::Peer,
         }
     }
 }
-impl CapturedRecord for CapturedMessage {
+impl CapturedRecord for CapturedWebSocketMessage {
     fn matches_search(&self, needle: &str) -> bool {
         rama_inspect::search::matches_display(&rama_utils::fmt::utf8_or_hex(&self.data), needle)
     }
@@ -114,7 +119,7 @@ pub fn observe_handshake(
     if websocket {
         let secure =
             rama_http::protocol_from_uri_or_extensions(&parts.extensions, &parts.uri).is_secure();
-        metadata.exchange.insert(CaptureProtocol(if secure {
+        metadata.exchange.insert(HttpCaptureProtocol(if secure {
             Protocol::WSS
         } else {
             Protocol::WS
@@ -146,7 +151,7 @@ impl Drop for AppendGuard {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WebSocketDetails {
-    pub messages: Vec<CapturedMessage>,
+    pub messages: Vec<CapturedWebSocketMessage>,
     pub page: usize,
     pub total: usize,
     pub replay_active: bool,
@@ -192,7 +197,7 @@ pub trait CaptureWebSocketExt {
     fn record_websocket_message(
         &self,
         id: u64,
-        message: CapturedMessage,
+        message: CapturedWebSocketMessage,
     ) -> impl Future<Output = ()> + Send;
     fn register_websocket_injector(&self, id: u64, injector: WebSocketRelayInjector);
     fn websocket_details(
@@ -219,7 +224,7 @@ pub trait CaptureWebSocketExt {
     ) -> Result<impl Stream<Item = Result<Bytes, BoxError>> + Send + 'static, BoxError>;
 }
 impl CaptureWebSocketExt for CaptureStore {
-    async fn record_websocket_message(&self, id: u64, message: CapturedMessage) {
+    async fn record_websocket_message(&self, id: u64, message: CapturedWebSocketMessage) {
         let Ok(exchange) = self.exchange_capture(id) else {
             return;
         };
@@ -301,7 +306,7 @@ impl CaptureWebSocketExt for CaptureStore {
             .exchange_capture(id)
             .map_err(|_missing| WebSocketReplayError::CaptureNotFound)?;
         let mut message = exchange
-            .records::<CapturedMessage>(index..index.saturating_add(1))
+            .records::<CapturedWebSocketMessage>(index..index.saturating_add(1))
             .await
             .map_err(WebSocketReplayError::InvalidCapture)?
             .pop()
@@ -315,17 +320,17 @@ impl CaptureWebSocketExt for CaptureStore {
             return Err(WebSocketReplayError::Truncated);
         }
         let relay = match message.kind {
-            MessageKind::Text => WebSocketRelayMessage::Text(
+            WebSocketMessageKind::Text => WebSocketRelayMessage::Text(
                 Utf8Bytes::try_from(message.data.clone())
                     .context("decode captured WebSocket UTF-8")
                     .map_err(WebSocketReplayError::InvalidCapture)?,
             ),
-            MessageKind::Binary => WebSocketRelayMessage::Binary(message.data.clone()),
+            WebSocketMessageKind::Binary => WebSocketRelayMessage::Binary(message.data.clone()),
             _ => return Err(WebSocketReplayError::ControlFrame),
         };
         send(&exchange, message.direction, relay).await?;
         message.at = jiff::Timestamp::now();
-        message.origin = MessageOrigin::Replay;
+        message.origin = WebSocketMessageOrigin::Replay;
         self.record_websocket_message(id, message).await;
         Ok(())
     }
@@ -339,12 +344,14 @@ impl CaptureWebSocketExt for CaptureStore {
             .exchange_capture(id)
             .map_err(|_missing| WebSocketReplayError::CaptureNotFound)?;
         let (kind, data) = match &message {
-            WebSocketRelayMessage::Text(text) => (MessageKind::Text, Bytes::from(text.clone())),
-            WebSocketRelayMessage::Binary(data) => (MessageKind::Binary, data.clone()),
+            WebSocketRelayMessage::Text(text) => {
+                (WebSocketMessageKind::Text, Bytes::from(text.clone()))
+            }
+            WebSocketRelayMessage::Binary(data) => (WebSocketMessageKind::Binary, data.clone()),
         };
         send(&exchange, direction, message).await?;
-        let mut captured = CapturedMessage::new(direction, kind, data);
-        captured.origin = MessageOrigin::Injected;
+        let mut captured = CapturedWebSocketMessage::new(direction, kind, data);
+        captured.origin = WebSocketMessageOrigin::Injected;
         self.record_websocket_message(id, captured).await;
         Ok(())
     }
@@ -354,12 +361,12 @@ impl CaptureWebSocketExt for CaptureStore {
         index: usize,
     ) -> Result<impl Stream<Item = Result<Bytes, BoxError>> + Send + 'static, BoxError> {
         let exchange = self.exchange_capture(id)?;
-        if index >= exchange.count::<CapturedMessage>() {
+        if index >= exchange.count::<CapturedWebSocketMessage>() {
             return Err("WebSocket message not found".into());
         }
         Ok(stream::once(async move {
             exchange
-                .records::<CapturedMessage>(index..index.saturating_add(1))
+                .records::<CapturedWebSocketMessage>(index..index.saturating_add(1))
                 .await?
                 .pop()
                 .map(|message| message.data)
@@ -397,7 +404,7 @@ pub async fn read_details(
     page: usize,
     page_size: usize,
 ) -> Result<WebSocketDetails, BoxError> {
-    let total = exchange.count::<CapturedMessage>();
+    let total = exchange.count::<CapturedWebSocketMessage>();
     let page = if total == 0 || page_size == 0 {
         0
     } else {

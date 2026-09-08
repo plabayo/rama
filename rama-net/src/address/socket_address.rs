@@ -2,7 +2,7 @@ use core::fmt;
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use core::str::FromStr;
 
-use crate::std::{self as std, string::String, vec::Vec};
+use crate::std::{string::String, vec::Vec};
 
 use crate::address::ip::{
     IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,

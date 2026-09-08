@@ -1,5 +1,7 @@
 use super::*;
+use rama_core::Layer;
 use rama_inspect::storage::{FileStore, MemoryStore, StorageLimits};
+use tokio::io::AsyncSeekExt;
 use tokio::io::AsyncWriteExt;
 async fn content(collection: &Collection, id: RecordId) -> Vec<u8> {
     let mut bytes = Vec::new();
@@ -97,23 +99,21 @@ async fn exercise(store: impl Service<CreateCollection, Output = Collection, Err
 }
 #[tokio::test]
 async fn encrypted_memory_streaming_cancel_concurrency_and_retention() {
-    use rama_core::Layer;
-    exercise(EncryptLayer::new([42; 32]).layer(MemoryStore::new(StorageLimits::default()))).await;
+    exercise(EncryptStorageLayer::new([42; 32]).layer(MemoryStore::new(StorageLimits::default())))
+        .await;
 }
 #[tokio::test]
 async fn encrypted_file_streaming_cancel_concurrency_and_retention() {
-    use rama_core::Layer;
     exercise(
-        EncryptLayer::new([42; 32]).layer(FileStore::temporary(StorageLimits::default()).unwrap()),
+        EncryptStorageLayer::new([42; 32])
+            .layer(FileStore::temporary(StorageLimits::default()).unwrap()),
     )
     .await;
 }
 #[tokio::test]
 async fn encryption_rejects_tampering_before_exposing_the_chunk() {
-    use rama_core::Layer;
-    use tokio::io::AsyncSeekExt;
     let files = FileStore::temporary(StorageLimits::default()).unwrap();
-    let store = EncryptLayer::new([42; 32]).layer(files.clone());
+    let store = EncryptStorageLayer::new([42; 32]).layer(files.clone());
     let collection = store.serve(CreateCollection { id: 1 }).await.unwrap();
     let id = collection
         .append(std::io::Cursor::new(b"secret content"))
@@ -142,9 +142,8 @@ async fn encryption_rejects_tampering_before_exposing_the_chunk() {
 }
 #[tokio::test]
 async fn encryption_rejects_substitution_reordered_chunks_and_missing_terminators() {
-    use rama_core::Layer;
     let files = FileStore::temporary(StorageLimits::default()).unwrap();
-    let store = EncryptLayer::new([42; 32]).layer(files.clone());
+    let store = EncryptStorageLayer::new([42; 32]).layer(files.clone());
     let collection = store.serve(CreateCollection { id: 1 }).await.unwrap();
     let first = collection
         .append(std::io::Cursor::new(vec![

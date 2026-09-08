@@ -8,17 +8,17 @@ use crate::{
 use rama_core::{error::BoxError, extensions::Extension};
 use rama_http::{
     HeaderMap,
+    headers::{ContentType, HeaderMapExt},
     inspect::capture::{CaptureMetadata, CaptureStore},
     proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture},
 };
+use rama_inspect::search::matches_display;
 #[cfg(feature = "tls")]
 use rama_tls::{client::ClientHello, inspect::TlsObservation};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
-#[cfg(not(feature = "tls"))]
-type ClientHello = ();
 
 #[derive(Debug, Clone, Extension, serde::Serialize)]
 pub struct UserAgentObservation {
@@ -48,8 +48,6 @@ impl ProfileInspector {
             .connection
             .get_ref::<TlsObservation>()
             .and_then(|tls| tls.client_hello.clone());
-        #[cfg(not(feature = "tls"))]
-        let hello = None;
         let settings = (parts.version == rama_http::Version::HTTP_2).then(|| Http2Settings {
             http_pseudo_headers: parts.extensions.get_ref::<PseudoHeaderOrder>().cloned(),
             early_frames: parts.extensions.get_ref::<EarlyFrameCapture>().cloned(),
@@ -60,7 +58,14 @@ impl ProfileInspector {
         metadata.exchange.insert(UserAgentObservation {
             known_fingerprint: known_fingerprint(&self.database, user_agent, parts, metadata),
             user_agent: user_agent.map(UserAgent::new),
-            profile: captured_profile(parts, user_agent, hello, settings, websocket),
+            profile: captured_profile(
+                parts,
+                user_agent,
+                #[cfg(feature = "tls")]
+                hello,
+                settings,
+                websocket,
+            ),
         });
     }
     pub fn database(&self) -> &UserAgentDatabase {
@@ -75,9 +80,9 @@ pub async fn export_profiles(
 ) -> Result<Vec<UserAgentProfileInput>, BoxError> {
     let mut selected = store.selected_exchanges(requests, connections);
     let mut profiles = BTreeMap::<String, UserAgentProfileInput>::new();
-    while let Some(details) = selected.next_details().await? {
-        let Some(profile) = details
-            .metadata
+    while let Some(capture) = selected.next_capture() {
+        let metadata = capture.metadata();
+        let Some(profile) = metadata
             .exchange
             .get_ref::<UserAgentObservation>()
             .and_then(|observation| observation.profile.as_ref())
@@ -95,12 +100,10 @@ pub async fn export_profiles(
 fn captured_profile(
     parts: &rama_http::request::Parts,
     user_agent: Option<&str>,
-    tls_client_hello: Option<ClientHello>,
+    #[cfg(feature = "tls")] tls_client_hello: Option<ClientHello>,
     h2_settings: Option<Http2Settings>,
     websocket: bool,
 ) -> Option<UserAgentProfileInput> {
-    #[cfg(not(feature = "tls"))]
-    let _ = tls_client_hello;
     let mut profile = UserAgentProfileInput::new(user_agent?);
     #[cfg(feature = "tls")]
     {
@@ -165,15 +168,13 @@ fn captured_request_initiator(
     }
     let is_form = parts
         .headers
-        .get("content-type")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value.split(';').next().is_some_and(|mime| {
-                matches!(
-                    mime.trim().to_ascii_lowercase().as_str(),
-                    "application/x-www-form-urlencoded" | "multipart/form-data"
-                )
-            })
+        .typed_get::<ContentType>()
+        .is_some_and(|content_type| {
+            let mime = content_type.mime();
+            (mime.type_() == rama_http::mime::APPLICATION
+                && mime.subtype() == rama_http::mime::WWW_FORM_URLENCODED)
+                || (mime.type_() == rama_http::mime::MULTIPART
+                    && mime.subtype() == rama_http::mime::FORM_DATA)
         });
     Some(if is_form {
         RequestInitiator::Form
@@ -209,7 +210,6 @@ impl std::fmt::Display for KnownFingerprint {
 }
 impl UserAgentObservation {
     pub fn matches_search(&self, query: &str) -> bool {
-        use rama_inspect::search::matches_display;
         self.user_agent
             .as_ref()
             .is_some_and(|value| matches_display(value, query))

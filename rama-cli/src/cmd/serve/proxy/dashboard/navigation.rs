@@ -5,7 +5,11 @@ pub(super) async fn update_filter(
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> StatusCode {
     let mut sessions = state.sessions.write();
-    let Some(session) = sessions.get_mut(&signals.session) else {
+    let Some(session) = signals
+        .session
+        .as_deref()
+        .and_then(|id| sessions.get_mut(id))
+    else {
         return StatusCode::NOT_FOUND;
     };
     session.filter = CaptureFilter {
@@ -30,7 +34,11 @@ pub(super) async fn reset_filters(
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> StatusCode {
     let mut sessions = state.sessions.write();
-    let Some(session) = sessions.get_mut(&signals.session) else {
+    let Some(session) = signals
+        .session
+        .as_deref()
+        .and_then(|id| sessions.get_mut(id))
+    else {
         return StatusCode::NOT_FOUND;
     };
     session.filter = CaptureFilter::default();
@@ -49,7 +57,11 @@ pub(super) async fn toggle_connection(
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> StatusCode {
     let mut sessions = state.sessions.write();
-    let Some(session) = sessions.get_mut(&signals.session) else {
+    let Some(session) = signals
+        .session
+        .as_deref()
+        .and_then(|id| sessions.get_mut(id))
+    else {
         return StatusCode::NOT_FOUND;
     };
     if !session.selected_connections.remove(&id) {
@@ -65,7 +77,11 @@ pub(super) async fn clear_connections(
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> StatusCode {
     let mut sessions = state.sessions.write();
-    let Some(session) = sessions.get_mut(&signals.session) else {
+    let Some(session) = signals
+        .session
+        .as_deref()
+        .and_then(|id| sessions.get_mut(id))
+    else {
         return StatusCode::NOT_FOUND;
     };
     session.selected_connections.clear();
@@ -78,23 +94,23 @@ pub(super) async fn older_connections(
     State(state): State<DashboardState>,
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> StatusCode {
-    update_connection_page(&state, &signals.session, true)
+    update_connection_page(&state, signals.session.as_deref(), true)
 }
 
 pub(super) async fn newer_connections(
     State(state): State<DashboardState>,
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> StatusCode {
-    update_connection_page(&state, &signals.session, false)
+    update_connection_page(&state, signals.session.as_deref(), false)
 }
 
 pub(super) fn update_connection_page(
     state: &DashboardState,
-    session_id: &str,
+    session_id: Option<&str>,
     older: bool,
 ) -> StatusCode {
     let mut sessions = state.sessions.write();
-    let Some(session) = sessions.get_mut(session_id) else {
+    let Some(session) = session_id.and_then(|id| sessions.get_mut(id)) else {
         return StatusCode::NOT_FOUND;
     };
     if session.focus != UiFocus::Overview {
@@ -123,7 +139,11 @@ pub(super) fn update_connection_page(
 
 pub(super) fn set_focus(state: &DashboardState, signals: &UiSignals, focus: UiFocus) -> StatusCode {
     let mut sessions = state.sessions.write();
-    let Some(session) = sessions.get_mut(&signals.session) else {
+    let Some(session) = signals
+        .session
+        .as_deref()
+        .and_then(|id| sessions.get_mut(id))
+    else {
         return StatusCode::NOT_FOUND;
     };
     session.focus = focus;
@@ -160,7 +180,7 @@ pub(super) async fn older_websocket_messages(
     Path(IdPath { id }): Path<IdPath>,
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> StatusCode {
-    update_websocket_page(&state, &signals.session, id, true)
+    update_websocket_page(&state, signals.session.as_deref(), id, true)
 }
 
 pub(super) async fn newer_websocket_messages(
@@ -168,17 +188,17 @@ pub(super) async fn newer_websocket_messages(
     Path(IdPath { id }): Path<IdPath>,
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> StatusCode {
-    update_websocket_page(&state, &signals.session, id, false)
+    update_websocket_page(&state, signals.session.as_deref(), id, false)
 }
 
 pub(super) fn update_websocket_page(
     state: &DashboardState,
-    session_id: &str,
+    session_id: Option<&str>,
     exchange_id: u64,
     older: bool,
 ) -> StatusCode {
     let mut sessions = state.sessions.write();
-    let Some(session) = sessions.get_mut(session_id) else {
+    let Some(session) = session_id.and_then(|id| sessions.get_mut(id)) else {
         return StatusCode::NOT_FOUND;
     };
     if session.focus != UiFocus::Request(exchange_id) {
@@ -201,7 +221,11 @@ pub(super) async fn toggle_selected(
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> StatusCode {
     let mut sessions = state.sessions.write();
-    let Some(session) = sessions.get_mut(&signals.session) else {
+    let Some(session) = signals
+        .session
+        .as_deref()
+        .and_then(|id| sessions.get_mut(id))
+    else {
         return StatusCode::NOT_FOUND;
     };
     let selected = &mut session.selected;

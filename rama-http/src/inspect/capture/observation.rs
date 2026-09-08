@@ -29,5 +29,8 @@ impl CaptureObserver for () {
     fn response(&self, _: &crate::response::Parts, _: &CaptureMetadata) {}
 }
 
+/// A protocol adapter can identify its HTTP handshake (for example, WS/WSS).
+/// Without this observation capture derives the protocol from the request URI
+/// and transport extensions using the ordinary HTTP resolution rules.
 #[derive(Debug, Clone, rama_core::extensions::Extension)]
-pub struct CaptureProtocol(pub rama_net::Protocol);
+pub struct HttpCaptureProtocol(pub rama_net::Protocol);

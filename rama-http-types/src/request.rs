@@ -840,6 +840,12 @@ impl<B> ClientIp for Request<B> {
     }
 }
 
+impl Default for Parts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Parts {
     /// Creates a new default instance of `Parts`
     fn new() -> Self {

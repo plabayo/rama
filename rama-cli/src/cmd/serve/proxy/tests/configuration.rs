@@ -559,7 +559,7 @@ async fn shared_dashboard_request_discards_its_provisional_connection() {
     let ua_db = Arc::new(UserAgentDatabase::try_embedded().unwrap());
     let capture = crate::cmd::serve::proxy::capture::test_store(8, 8, 1024, ua_db.clone()).unwrap();
     let connection_id = capture
-        .begin_connection_if_enabled(None, rama::net::Protocol::from_static("http"), None)
+        .begin_connection_if_enabled(None, rama::net::Protocol::HTTP, None)
         .unwrap();
     let dashboard = dashboard::service(DashboardState::new(
         capture.clone(),

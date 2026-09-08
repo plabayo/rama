@@ -322,8 +322,8 @@ pub(super) fn render_connection_focus(
 }
 
 pub(super) fn connection_route(
-    connection: &ConnectionSummary,
-    exchanges: &[ExchangeSummary],
+    connection: &HttpConnectionSummary,
+    exchanges: &[HttpExchangeSummary],
 ) -> String {
     if connection.ingress_protocol.as_str() == "replay" {
         exchanges
@@ -346,7 +346,7 @@ pub(super) fn connection_route(
 }
 
 pub(super) fn render_focused_request_row(
-    exchange: &ExchangeSummary,
+    exchange: &HttpExchangeSummary,
     live: &LiveStatus,
 ) -> impl IntoHtml {
     let pending = live.for_exchange(exchange.id).next();

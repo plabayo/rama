@@ -24,7 +24,9 @@ pub(super) async fn events(
     State(state): State<DashboardState>,
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> Response {
-    let session = signals.session;
+    let Some(session) = signals.session else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     if !state.has_session(&session) {
         return StatusCode::NOT_FOUND.into_response();
     }

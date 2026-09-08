@@ -240,11 +240,7 @@ impl fmt::Display for AkamaiH2ComputeError {
 
 impl std::error::Error for AkamaiH2ComputeError {}
 
-impl serde::Serialize for AkamaiH2 {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
-    }
-}
+rama_utils::macros::serde_str::impl_serde_str!(serialize display AkamaiH2);
 
 #[cfg(test)]
 mod tests {

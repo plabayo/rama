@@ -60,7 +60,7 @@ pub(super) fn render_approval_toolbar() -> impl IntoHtml {
 
 pub(super) fn render_pending_fallbacks(
     pending: &[PendingSummary],
-    exchanges: &[ExchangeSummary],
+    exchanges: &[HttpExchangeSummary],
     connection: Option<u64>,
 ) -> String {
     let retained = exchanges

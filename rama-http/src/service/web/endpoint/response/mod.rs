@@ -75,6 +75,10 @@ mod datastar;
 #[doc(inline)]
 pub use datastar::{DatastarScript, DatastarSourceMap};
 
+mod svg;
+#[doc(inline)]
+pub use svg::Svg;
+
 mod css;
 #[doc(inline)]
 pub use css::Css;

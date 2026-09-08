@@ -91,3 +91,7 @@ pub mod dial9;
 pub mod __private {
     pub use ::rama_utils as utils;
 }
+
+#[cfg(feature = "inspect")]
+#[cfg_attr(docsrs, doc(cfg(feature = "inspect")))]
+pub mod inspect;

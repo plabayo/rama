@@ -4,7 +4,11 @@ pub(super) async fn pause_inspection(
     State(state): State<DashboardState>,
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> StatusCode {
-    if !signals.session.is_empty() && !state.has_session(&signals.session) {
+    if signals
+        .session
+        .as_deref()
+        .is_some_and(|session| !state.has_session(session))
+    {
         return StatusCode::NOT_FOUND;
     }
     let _transition = state.recording_transition.lock().await;
@@ -23,7 +27,11 @@ pub(super) async fn resume_inspection(
     State(state): State<DashboardState>,
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> StatusCode {
-    if !signals.session.is_empty() && !state.has_session(&signals.session) {
+    if signals
+        .session
+        .as_deref()
+        .is_some_and(|session| !state.has_session(session))
+    {
         return StatusCode::NOT_FOUND;
     }
     let _transition = state.recording_transition.lock().await;
@@ -38,7 +46,11 @@ pub(super) async fn clear_captures(
     State(state): State<DashboardState>,
     ReadSignals(signals): ReadSignals<UiSignals>,
 ) -> StatusCode {
-    if !signals.session.is_empty() && !state.has_session(&signals.session) {
+    if signals
+        .session
+        .as_deref()
+        .is_some_and(|session| !state.has_session(session))
+    {
         return StatusCode::NOT_FOUND;
     }
     state.capture.clear().await;

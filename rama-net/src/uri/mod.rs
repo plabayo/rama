@@ -59,7 +59,6 @@
 //! [`Host`](crate::address::Host) — `Uri` doesn't re-export these.
 
 use crate::std::{
-    self as std,
     borrow::Cow,
     string::{String, ToString},
     sync::Arc,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::inspect::control::{ControlConnection, Decision, HttpUpgradeContext, http_message};
 use rama_core::extensions::ExtensionsRef as _;
 
 #[derive(Clone)]
@@ -87,7 +88,6 @@ where
     type Error = S::Error;
 
     async fn serve(&self, request: Request<ReqBody>) -> Result<Self::Output, Self::Error> {
-        use crate::inspect::control::{ControlConnection, Decision, UpgradeContext, http_message};
         let (mut parts, body) = request.into_parts();
         let Some(store) = &self.store else {
             return self
@@ -148,7 +148,7 @@ where
         message.exchange = id;
         message.connection = connection.0.id;
         if let Some(id) = id {
-            parts.extensions.insert(ExchangeId(id));
+            parts.extensions.insert(HttpExchangeId(id));
         }
         let mut exchange_guard = id.map(|id| store.http_exchange_guard(id));
         let control = store.control();
@@ -185,7 +185,7 @@ where
         message.conditional = matches!(parts.method, crate::Method::GET | crate::Method::HEAD)
             && (parts.headers.contains_key(crate::header::IF_NONE_MATCH)
                 || parts.headers.contains_key(crate::header::IF_MODIFIED_SINCE));
-        let upgrade_context = is_upgrade_request(&parts).then(|| UpgradeContext {
+        let upgrade_context = is_upgrade_request(&parts).then(|| HttpUpgradeContext {
             connection: connection.clone(),
             request: http_message(&parts),
         });
@@ -292,7 +292,7 @@ where
         }
         if let Some(id) = id {
             let (parts, body) = response.into_parts();
-            parts.extensions.insert(ExchangeId(id));
+            parts.extensions.insert(HttpExchangeId(id));
             if let Err(error) = store.response_head(id, &parts).await {
                 rama_core::telemetry::tracing::debug!("failed to capture response head: {error}");
             }
@@ -358,9 +358,6 @@ where
     type Error = S::Error;
 
     async fn serve(&self, input: IO) -> Result<Self::Output, Self::Error> {
-        input
-            .extensions()
-            .insert(IngressProtocol(self.protocol.clone()));
         if let Some(id) = input.extensions().get_ref::<ConnectionId>()
             && let Some(store) = &self.store
         {

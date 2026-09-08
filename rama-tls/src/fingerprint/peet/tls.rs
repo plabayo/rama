@@ -281,11 +281,7 @@ impl fmt::Display for PeetComputeError {
 
 impl std::error::Error for PeetComputeError {}
 
-impl serde::Serialize for PeetPrint {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_str(self)
-    }
-}
+rama_utils::macros::serde_str::impl_serde_str!(serialize display PeetPrint);
 
 #[cfg(test)]
 mod tests {

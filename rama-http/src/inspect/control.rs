@@ -1,5 +1,6 @@
 //! Runtime traffic decisions. Protocol adapters own streams; this bounded queue owns only
 //! editable messages and one-shot decisions. Capture admission never controls forwarding.
+use rama_core::futures::StreamExt;
 
 use crate::{Body, HeaderMap, HeaderName, Method, Response, StatusCode, Version, header};
 use arc_swap::ArcSwap;
@@ -451,7 +452,6 @@ impl Control {
     }
     /// Subscribe to initial and updated control content from a native UI or API.
     pub fn subscribe(&self) -> impl rama_core::futures::Stream<Item = Snapshot> + Send + 'static {
-        use rama_core::futures::StreamExt;
         let control = self.clone();
         rama_inspect::subscription::subscribe(
             self.subscribe_changes(),
@@ -848,13 +848,9 @@ pub fn http_message(parts: &crate::request::Parts) -> Message {
                 .and_then(|h| h.parse::<rama_net::address::Authority>().ok())
                 .map(|a| a.address.host)
         });
-    let secure = is_secure(parts);
+    let protocol = rama_http_types::protocol_from_uri_or_extensions(&parts.extensions, &parts.uri);
     Message {
-        protocol: if secure {
-            Protocol::HTTPS
-        } else {
-            Protocol::HTTP
-        },
+        protocol: protocol.clone(),
         direction: "request".into(),
         method: parts.method.clone(),
         url: parts.uri.clone(),
@@ -863,7 +859,7 @@ pub fn http_message(parts: &crate::request::Parts) -> Message {
             .uri
             .authority()
             .and_then(|a| a.port_u16())
-            .or(Some(if secure { 443 } else { 80 })),
+            .or_else(|| protocol.default_port()),
         path: parts
             .uri
             .path()
@@ -880,7 +876,7 @@ pub fn http_message(parts: &crate::request::Parts) -> Message {
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(proxy))]
-pub struct UpgradeContext {
+pub struct HttpUpgradeContext {
     pub connection: ControlConnection,
     pub request: Message,
 }
@@ -918,7 +914,3 @@ impl From<&Message> for PendingSummary {
 #[cfg(test)]
 #[path = "control_tests.rs"]
 mod tests;
-
-pub(super) fn is_secure(parts: &crate::request::Parts) -> bool {
-    rama_http_types::protocol_from_uri_or_extensions(&parts.extensions, &parts.uri).is_secure()
-}

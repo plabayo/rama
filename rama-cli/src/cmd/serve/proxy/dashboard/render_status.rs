@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn render_protocol_badge(exchange: &ExchangeSummary) -> String {
+pub(super) fn render_protocol_badge(exchange: &HttpExchangeSummary) -> String {
     let secure = matches!(exchange.protocol.as_str(), "https" | "wss");
     span!(
         class = match secure {
@@ -26,7 +26,7 @@ pub(super) fn status_class(status: Option<StatusCode>) -> &'static str {
     }
 }
 
-pub(super) fn render_exchange_status(exchange: &ExchangeSummary) -> String {
+pub(super) fn render_exchange_status(exchange: &HttpExchangeSummary) -> String {
     if let Some(decision) = &exchange.decision {
         return span!(
             class = "status",

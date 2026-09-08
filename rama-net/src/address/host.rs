@@ -4,7 +4,6 @@ use core::{
 };
 
 use crate::std::{
-    self as std,
     borrow::ToOwned,
     string::{String, ToString},
     vec::Vec,

@@ -74,12 +74,8 @@ impl CaptureStore {
                     .cloned()
             })
             .flatten();
-        let secure = crate::inspect::control::is_secure(parts);
-        let protocol = if secure {
-            Protocol::HTTPS
-        } else {
-            Protocol::HTTP
-        };
+        let protocol =
+            rama_http_types::protocol_from_uri_or_extensions(&parts.extensions, &parts.uri);
         let mut metadata = CaptureMetadata::default();
         if let Some(connection) = &connection {
             metadata.connection.clone_from(&connection.metadata);
@@ -87,9 +83,10 @@ impl CaptureStore {
         self.0.observer.request(parts, &metadata);
         let protocol = metadata
             .exchange
-            .get_ref::<CaptureProtocol>()
-            .map(|p| p.0.clone())
-            .unwrap_or(protocol);
+            .get_ref::<HttpCaptureProtocol>()
+            .map(|p| &p.0)
+            .unwrap_or(protocol)
+            .clone();
         let user_agent = parts.headers.get(crate::header::USER_AGENT).cloned();
         let ja4h = Ja4H::compute(parts).ok();
         if let Some(connection) = &connection
@@ -117,7 +114,7 @@ impl CaptureStore {
         let entry = Arc::new(CapturedExchange {
             decision: RwLock::new(None),
             decision_count: AtomicUsize::new(0),
-            summary_template: ExchangeSummary {
+            summary_template: HttpExchangeSummary {
                 decision: None,
                 id,
                 connection_id,

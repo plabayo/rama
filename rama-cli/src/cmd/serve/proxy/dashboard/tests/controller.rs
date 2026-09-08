@@ -77,7 +77,7 @@ async fn inspection_pause_and_resume_are_global_but_session_authenticated() {
     state.ensure_session("known");
     let signals = |session: &str| {
         ReadSignals(UiSignals {
-            session: session.to_owned(),
+            session: NonEmptyStr::try_from(session).ok(),
             ..Default::default()
         })
     };
@@ -111,7 +111,7 @@ async fn dashboard_mitm_policy_is_session_authenticated_and_deny_wins() {
     state.ensure_session("known");
     let update = |session: &str| {
         Json(MitmPolicyUpdate {
-            session: session.to_owned(),
+            session: NonEmptyStr::try_from(session).ok(),
             allow: vec!["example.test".to_owned()],
             deny: vec!["private.example.test".to_owned()],
             mode: crate::cmd::serve::proxy::mitm_policy::ScopeMode::All,
@@ -156,7 +156,7 @@ async fn traffic_policy_requires_a_live_dashboard_session_and_rejects_stale_writ
     };
     let request = |session: &str, revision| {
         Json(ControlConfigUpdate {
-            session: session.into(),
+            session: NonEmptyStr::try_from(session).ok(),
             revision,
             config: config(),
             apply_rule: None,
@@ -182,4 +182,22 @@ async fn traffic_policy_requires_a_live_dashboard_session_and_rejects_stale_writ
         StatusCode::BAD_REQUEST
     );
     assert_eq!(state.capture.control().snapshot().revision, 1);
+}
+
+#[test]
+fn optional_sessions_reject_explicit_empty_values() {
+    serde_json::from_str::<UiSignals>(r#"{"session":""}"#).unwrap_err();
+    assert!(
+        serde_json::from_str::<UiSignals>("{}")
+            .unwrap()
+            .session
+            .is_none()
+    );
+    assert_eq!(
+        serde_json::from_str::<UiSignals>(r#"{"session":"known"}"#)
+            .unwrap()
+            .session
+            .as_deref(),
+        Some("known")
+    );
 }
