@@ -44,6 +44,6 @@ mod tests {
         let json = serde_json::to_string(&bytes).unwrap();
         assert_eq!(json, "\"aGVsbG8A/w==\"");
         assert_eq!(serde_json::from_str::<Payload>(&json).unwrap(), bytes);
-        assert!(serde_json::from_str::<Payload>("\"invalid!\"").is_err());
+        serde_json::from_str::<Payload>("\"invalid!\"").unwrap_err();
     }
 }
