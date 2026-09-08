@@ -73,12 +73,15 @@ jobs:
         include:
           - profile: debug
             cargo_profile_args: ""
+            cargo_build_args: ""
           - profile: release
             cargo_profile_args: --release
+            # Match regular Release CI's cap on concurrent rustc processes.
+            cargo_build_args: --build-jobs 2
     runs-on: ${{ matrix.os }}
-    # Cold Windows and macOS release builds plus their ignored compiletests can
-    # exceed 150 minutes. Keep the wider bound scoped to those combinations.
-    timeout-minutes: ${{ matrix.profile == 'release' && (matrix.os == 'windows-latest' || matrix.os == 'macos-latest') && 210 || 150 }}
+    # Cover all three step budgets plus at least 20m for setup and cleanup.
+    # Windows debug also needs room for its ~80m ignored compiletest suite.
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && matrix.profile == 'release' && 270 || matrix.os == 'windows-latest' && 240 || 210 }}
     env:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
       RUSTFLAGS: -D warnings
@@ -96,16 +99,59 @@ jobs:
         with:
           env-vars: "RUST_TOOLCHAIN=${{ matrix.toolchain }}"
           key: ${{ matrix.os }}-${{ matrix.toolchain }}-test-${{ matrix.profile }}
+      - name: Build tests (${{ matrix.profile }})
+        # A cold macOS release build already took 108m on a successful run.
+        timeout-minutes: ${{ matrix.os == 'macos-latest' && matrix.profile == 'release' && 150 || 90 }}
+        shell: bash
+        run: |
+          # Keep resource evidence in the log even if compilation times out.
+          df -h "$GITHUB_WORKSPACE"
+          case "$RUNNER_OS" in
+            Linux)
+              free -m
+              stdbuf -oL vmstat -w -t 30 &
+              ;;
+            macOS)
+              sysctl hw.ncpu hw.memsize vm.swapusage
+              top -l 0 -s 30 -n 10 -o mem -stats pid,command,cpu,mem &
+              ;;
+            Windows)
+              # PowerShell expands its own variables.
+              # shellcheck disable=SC2016
+              pwsh -NoProfile -Command '
+                while ($true) {
+                  Get-Date -Format o
+                  Get-CimInstance Win32_OperatingSystem |
+                    Select-Object TotalVisibleMemorySize, FreePhysicalMemory,
+                      TotalVirtualMemorySize, FreeVirtualMemory |
+                    Format-List
+                  Get-CimInstance Win32_Processor |
+                    Select-Object LoadPercentage | Format-Table
+                  Get-Process cargo, rustc, lld, link -ErrorAction SilentlyContinue |
+                    Sort-Object WorkingSet64 -Descending |
+                    Select-Object -First 10 Name, Id, CPU, WorkingSet64 |
+                    Format-Table -AutoSize
+                  Start-Sleep -Seconds 30
+                }
+              ' &
+              ;;
+          esac
+          resource_monitor=$!
+          trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
+          time cargo nextest run --no-run --all-features --workspace \
+            ${{ matrix.cargo_profile_args }} ${{ matrix.cargo_build_args }}
       - name: Run tests (${{ matrix.profile }})
-        timeout-minutes: ${{ matrix.os == 'macos-latest' && matrix.profile == 'release' && 120 || 90 }}
+        # Compilation has its own budget; ordinary tests typically take <10m.
+        timeout-minutes: 20
         run: >-
           cargo nextest run --all-features ${{ matrix.cargo_profile_args }}
-          --workspace
+          ${{ matrix.cargo_build_args }} --workspace
       - name: Run ignored tests (${{ matrix.profile }})
-        timeout-minutes: ${{ matrix.os == 'windows-latest' && matrix.profile == 'release' && 100 || 80 }}
+        timeout-minutes: ${{ matrix.os == 'windows-latest' && 100 || 80 }}
         run: >-
           cargo nextest run --profile ci --all-features
-          ${{ matrix.cargo_profile_args }} --workspace --run-ignored=only
+          ${{ matrix.cargo_profile_args }} ${{ matrix.cargo_build_args }}
+          --workspace --run-ignored=only
 
   clippy-autofix:
     # If check-rust fails (typically because clippy fires new lints on
