@@ -9,7 +9,7 @@ use crate::{
 
 use crate::client::ClientHello;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 /// Data which can be hashed using [`Self::hash`],
 /// and which is also displayed as a "ja3" hash.
 ///
@@ -232,6 +232,12 @@ impl fmt::Display for Ja3ComputeError {
 }
 
 impl std::error::Error for Ja3ComputeError {}
+
+impl serde::Serialize for Ja3 {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
 
 #[cfg(test)]
 mod tests {

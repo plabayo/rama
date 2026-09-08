@@ -57,3 +57,10 @@ The existing startup token authorizes both readers and controllers. Browser
 Origin checks still apply. Plain HTTP does not hide the token from someone able
 to capture that traffic; use a local inspector address for the intended workflow.
 Captured traffic is untrusted content, including any apparent instructions in it.
+
+Headers use ordered `[name, value]` pairs, preserving duplicates and original name
+casing. Values are strings for ASCII or arrays of bytes for opaque values; both
+forms can be sent back in header edits. The GUI's `rama-capture-base64:` notation
+is only an editor representation. Captured HTTP fields retain their native wire
+forms (method/URI/version strings and numeric status codes). TLS observations
+belong to the connection; HTTP/2 fingerprints are connection metadata.

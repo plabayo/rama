@@ -3,15 +3,13 @@
 mod capture;
 #[cfg(test)]
 use capture::ExchangeId;
-#[cfg(test)]
-use rama::http::ws::handshake::mitm::WebSocketRelayMessage;
-use rama_inspect::http::control;
-use rama_inspect::websocket::inspect_websocket_event;
+use rama::http::inspect::control;
+use rama::http::ws::inspect::inspect_websocket_event;
 mod dashboard;
 mod dashboard_auth;
 mod har;
+use rama::http::inspect::mitm_policy;
 use rama_inspect as inspection;
-use rama_inspect::http::mitm_policy;
 mod portal;
 mod upstream;
 
@@ -769,7 +767,7 @@ fn observe_target(
     if let Some(host) = host {
         control.observe(
             connection,
-            &host.to_string(),
+            host,
             inspected,
             if sni.is_some() {
                 "TLS SNI"
@@ -1416,10 +1414,12 @@ async fn run_with_dashboard_token(
                 capture::CaptureConfig {
                     max_connections: cfg.capture_connections,
                     max_exchanges: cfg.capture_exchanges,
-                    max_websocket_messages: cfg.capture_websocket_messages,
                     body_limit: cfg.capture_body_limit,
                     total_limit: 0, // The filesystem service bounds encrypted bytes.
-                    profiles: ua_db.clone(),
+                    observer: Arc::new(capture::ProxyCaptureObserver::new(
+                        ua_db.clone(),
+                        cfg.capture_websocket_messages,
+                    )),
                 },
                 inspection.clone(),
             ))
@@ -1712,9 +1712,15 @@ async fn run_with_dashboard_token(
         let socks5 = Socks5Acceptor::new(exec.clone())
             .with_connector(Socks5Connector::new(socks_connector, socks_bridge));
 
-        let http = MarkProtocolLayer::new(capture.clone(), "http").into_layer(plain_http);
-        let https = MarkProtocolLayer::new(capture.clone(), "https").into_layer(tls_acceptor);
-        let socks5 = MarkProtocolLayer::new(capture.clone(), "socks5").into_layer(socks5);
+        let http =
+            MarkProtocolLayer::new(capture.clone(), rama::net::Protocol::from_static("http"))
+                .into_layer(plain_http);
+        let https =
+            MarkProtocolLayer::new(capture.clone(), rama::net::Protocol::from_static("https"))
+                .into_layer(tls_acceptor);
+        let socks5 =
+            MarkProtocolLayer::new(capture.clone(), rama::net::Protocol::from_static("socks5"))
+                .into_layer(socks5);
         let tcp_layers = (
             TcpStreamOptionsLayer::new(tcp_options.clone()),
             BodyLimitLayer::request_only(cfg.body_limit),
@@ -1731,9 +1737,12 @@ async fn run_with_dashboard_token(
             },
             opt_per_sec(Some(cfg.throttle))
                 .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
-            capture
-                .clone()
-                .map(|capture| ObserveConnectionLayer::new(capture, "classifying")),
+            capture.clone().map(|capture| {
+                ObserveConnectionLayer::new(
+                    capture,
+                    rama::net::Protocol::from_static("classifying"),
+                )
+            }),
         );
 
         let labels = protocols

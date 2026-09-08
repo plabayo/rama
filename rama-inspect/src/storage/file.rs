@@ -107,7 +107,7 @@ impl Service<AppendRecord> for FileCollection {
         }
         state.recovery = true;
         let mut length = 0u64;
-        let mut buffer = [0u8; 16 * 1024];
+        let mut buffer = [0u8; rama_utils::octets::kib(16)];
         loop {
             let count = input.source.read(&mut buffer).await?;
             if count == 0 {
@@ -166,7 +166,7 @@ impl Service<ReadRecord> for FileCollection {
             reader: file.take(length),
             _owner: self.0.clone(),
         };
-        ranged(Box::pin(reader), input.range).await
+        range_reader(Box::pin(reader), input.range).await
     }
 }
 impl Service<ListRecords> for FileCollection {

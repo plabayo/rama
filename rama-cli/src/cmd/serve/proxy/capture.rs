@@ -1,8 +1,60 @@
 //! CLI storage composition for the reusable inspector.
 
+use rama::crypto::inspect::EncryptLayer;
+pub(super) use rama::http::ws::inspect::{
+    CaptureWebSocketExt, CaptureWebSocketLayer, WebSocketReplayError,
+};
 use rama::{Layer, error::BoxError};
-pub(super) use rama_inspect::http::capture::*;
-use rama_inspect::storage::{FileStore, Storage, StorageLimits, encrypt::EncryptLayer};
+use rama::{http, tls::inspect::TlsObservation, ua::inspect::ProfileInspector};
+use std::sync::Arc;
+
+#[derive(Debug)]
+pub(super) struct ProxyCaptureObserver {
+    profiles: ProfileInspector,
+    websocket_limits: http::ws::inspect::WebSocketLimits,
+}
+impl ProxyCaptureObserver {
+    pub(super) fn new(
+        profiles: Arc<rama::ua::profile::UserAgentDatabase>,
+        messages: usize,
+    ) -> Self {
+        Self {
+            profiles: ProfileInspector::new(profiles),
+            websocket_limits: http::ws::inspect::WebSocketLimits { messages },
+        }
+    }
+}
+impl CaptureObserver for ProxyCaptureObserver {
+    fn request(&self, parts: &http::request::Parts, metadata: &CaptureMetadata) {
+        TlsObservation::capture(&parts.extensions, &metadata.connection);
+        if http::ws::inspect::observe_handshake(parts, metadata, self.websocket_limits) {
+            parts
+                .extensions
+                .insert(rama::ua::profile::RequestInitiator::Ws);
+        }
+        self.profiles.observe(parts, metadata);
+    }
+    fn matches_search(&self, metadata: &CaptureMetadata, query: &str) -> bool {
+        metadata
+            .connection
+            .get_ref::<TlsObservation>()
+            .is_some_and(|tls| tls.matches_search(query))
+            || metadata
+                .upstream
+                .get_ref::<TlsObservation>()
+                .is_some_and(|tls| tls.matches_search(query))
+            || metadata
+                .exchange
+                .get_ref::<rama::ua::inspect::UserAgentObservation>()
+                .is_some_and(|ua| ua.matches_search(query))
+    }
+    fn response(&self, parts: &http::response::Parts, metadata: &CaptureMetadata) {
+        TlsObservation::capture(&parts.extensions, &metadata.upstream);
+    }
+}
+
+pub(super) use rama::http::inspect::capture::*;
+use rama_inspect::storage::{FileStore, Storage, StorageLimits};
 
 pub(super) fn storage(total_bytes: u64) -> Result<Storage, BoxError> {
     let files = FileStore::temporary(StorageLimits {
@@ -24,10 +76,9 @@ pub(super) fn test_store(
         CaptureConfig {
             max_connections,
             max_exchanges,
-            max_websocket_messages: max_exchanges,
             body_limit,
             total_limit: 0,
-            profiles,
+            observer: Arc::new(ProxyCaptureObserver::new(profiles, max_exchanges)),
         },
         rama_inspect::InspectionState::default(),
     ))

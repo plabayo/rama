@@ -513,6 +513,8 @@ impl From<WebSocketRelayMessage> for crate::protocol::Message {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "inspect", serde(rename_all = "snake_case"))]
 /// Direction data used as part of [`WebSocketRelayInput`],
 /// most typically for users of [`WebSocketRelayService`].
 pub enum WebSocketRelayDirection {

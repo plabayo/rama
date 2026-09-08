@@ -627,6 +627,8 @@ const SCHEME_CHARS: [u8; 256] = [
         0,     0,     0,     0,     0,     0                              // 25x
 ];
 
+rama_utils::macros::serde_str::impl_serde_str!(as_str Protocol);
+
 #[cfg(test)]
 mod tests {
     use super::*;

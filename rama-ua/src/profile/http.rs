@@ -248,7 +248,7 @@ pub struct Http1Profile {
     pub settings: Http1Settings,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 /// The settings for the HTTP/1.1 profile.
 pub struct Http1Settings {
     /// Whether to enforce title case the headers.

@@ -22,7 +22,6 @@ name = "rama"
 path = "src/main.rs"
 
 [dependencies]
-rama-inspect = { workspace = true, features = ["http", "websocket", "profiles", "encryption", "fs"] }
 arc-swap = { workspace = true }
 base64 = { workspace = true }
 bb8 = { workspace = true }
@@ -40,7 +39,7 @@ rama = { version = "0.5.0", path = "..", features = [
     "dns-hickory",
     "tcp",
     "udp",
-    "http-full",
+    "http-full", "inspect",
     "icap",
     "grpc",
     "js-disk-cache",
@@ -49,6 +48,7 @@ rama = { version = "0.5.0", path = "..", features = [
     "opentelemetry",
     "mmap",
 ] }
+rama-inspect = { workspace = true }
 ratatui = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

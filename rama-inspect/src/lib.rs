@@ -2,7 +2,7 @@
 //!
 //! Applications share lifecycle and controller handles with their protocol adapters,
 //! GUI, or API. Storage accepts streaming sources and returns streaming readers.
-//! Filesystem storage and encryption are independently optional features.
+//! Protocol and encryption adapters live in their owning crates.
 
 pub mod intercept;
 pub mod lifecycle;
@@ -11,8 +11,7 @@ pub mod subscription;
 
 pub use lifecycle::{InspectionGate, InspectionPermit, InspectionSession, InspectionState};
 
-#[cfg(feature = "http")]
-pub mod http;
+mod observation;
+pub use observation::Observations;
 
-#[cfg(feature = "websocket")]
-pub mod websocket;
+pub mod search;

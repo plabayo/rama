@@ -204,8 +204,8 @@ rama-http-headers = { version = "0.5.0", path = "./rama-http-headers", default-f
 rama-http-hyperium = { version = "0.5.0", path = "./rama-http-hyperium", default-features = false }
 rama-http-macros = { version = "0.5.0", path = "./rama-http-macros", default-features = false }
 rama-http-types = { version = "0.5.0", path = "./rama-http-types", default-features = false }
-rama-inspect = { version = "0.5.0", path = "./rama-inspect", default-features = false }
 rama-icap = { version = "0.5.0", path = "./rama-icap", default-features = false }
+rama-inspect = { version = "0.5.0", path = "./rama-inspect", default-features = false }
 rama-js = { version = "0.5.0", path = "./rama-js", default-features = false }
 rama-json = { version = "0.5.0", path = "./rama-json", default-features = false }
 rama-macros = { version = "0.5.0", path = "./rama-macros", default-features = false }
@@ -432,7 +432,6 @@ tls = [
     "crypto",
     "dep:rama-tls",
     "rama-http?/tls",
-    "rama-inspect?/tls",
     "rama-http-backend?/tls",
     "rama-ua?/tls",
     "dep:base64",
@@ -457,10 +456,15 @@ net = ["dep:rama-net"]
 net-apple-networkextension = ["std", "net", "dep:rama-net-apple-networkextension"]
 net-apple-xpc = ["std", "net", "dep:rama-net-apple-xpc"]
 unix = ["std", "net", "dep:rama-unix"]
-inspect = ["std", "dep:rama-inspect"]
-inspect-fs = ["inspect", "rama-inspect/fs"]
-inspect-encryption = ["inspect", "rama-inspect/encryption"]
-inspect-profiles = ["inspect", "http", "tls", "rama-inspect/profiles"]
+inspect = [
+    "std",
+    "dep:rama-inspect",
+    "rama-http?/inspect",
+    "rama-ws?/inspect",
+    "rama-tls?/inspect",
+    "rama-ua?/inspect",
+    "rama-crypto?/inspect",
+]
 idna = ["net", "rama-net?/idna"]
 # memory-map IP geolocation databases (only takes effect when rama-net is enabled)
 mmap = ["std", "rama-net?/mmap"]
@@ -468,7 +472,7 @@ dns = ["std", "net", "dep:rama-dns", "rama-socks5?/dns"]
 dns-hickory = ["dns", "rama-dns/hickory"]
 tcp = ["std", "net", "dep:rama-tcp"]
 udp = ["std", "net", "dep:rama-udp"]
-ws = ["std", "dep:rama-ws", "http", "rama-inspect?/websocket"]
+ws = ["std", "dep:rama-ws", "http"]
 js = ["std", "dep:rama-js"]
 js-disk-cache = ["js", "rama-js/disk-cache", "rama-pac?/js-disk-cache"]
 pac = ["js", "dns", "http", "dep:rama-pac", "rama-pac/http"]
@@ -480,7 +484,6 @@ ttrpc = ["dep:rama-ttrpc"]
 http = [
     "std",
     "dep:rama-http",
-    "rama-inspect?/http",
     "ua",
     "rama-icap?/http",
     "rama-tls?/http",

@@ -47,7 +47,7 @@ impl Service<AppendRecord> for MemoryCollection {
         let _append = self.0.append_lock.lock().await;
         let mut data = Vec::new();
         let mut reservations = Vec::new();
-        let mut buffer = [0u8; 16 * 1024];
+        let mut buffer = [0u8; rama_utils::octets::kib(16)];
         loop {
             let count = input.source.read(&mut buffer).await?;
             if count == 0 {
@@ -83,7 +83,7 @@ impl Service<ReadRecord> for MemoryCollection {
             reader: std::io::Cursor::new(record.bytes.clone()),
             _owner: record,
         };
-        ranged(Box::pin(reader), input.range).await
+        range_reader(Box::pin(reader), input.range).await
     }
 }
 impl Service<ListRecords> for MemoryCollection {

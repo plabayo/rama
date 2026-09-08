@@ -8,47 +8,15 @@ repository = { workspace = true }
 authors = { workspace = true }
 rust-version = { workspace = true }
 
-[features]
-default = []
-fs = ["dep:rama-utils", "tokio/fs"]
-encryption = ["dep:rama-crypto", "rama-crypto/boring"]
-
-http = ["dep:rama-http", "dep:rama-net", "dep:rama-utils", "dep:base64", "dep:arc-swap", "dep:jiff", "dep:serde_json"]
-websocket = ["http", "dep:rama-ws"]
-tls = ["dep:rama-tls", "rama-http?/tls", "rama-ua?/tls"]
-profiles = ["http", "tls", "dep:rama-ua", "rama-ua/embed-profiles"]
-
 [dependencies]
-arc-swap = { workspace = true, optional = true }
-base64 = { workspace = true, optional = true }
-jiff = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
-rama-http = { workspace = true, optional = true }
-rama-net = { workspace = true, features = ["std"], optional = true }
-rama-ws = { workspace = true, optional = true }
-rama-tls = { workspace = true, features = ["http"], optional = true }
-rama-ua = { workspace = true, optional = true }
-
 parking_lot = { workspace = true }
 rama-core = { workspace = true, features = ["std"] }
-rama-crypto = { workspace = true, optional = true }
-rama-utils = { workspace = true, features = ["std"], optional = true }
+rama-utils = { workspace = true, features = ["std"] }
 serde = { workspace = true, features = ["derive"] }
-tokio = { workspace = true, features = ["io-util", "sync", "time", "macros"] }
+tokio = { workspace = true, features = ["fs", "io-util", "sync", "time", "macros"] }
 
 [dev-dependencies]
-rama-http-backend = { workspace = true }
-rama-http-core = { workspace = true }
-rama-net = { workspace = true, features = ["test-utils"] }
 tokio = { workspace = true, features = ["full", "test-util"] }
 
 [lints]
 workspace = true
-
-[[example]]
-name = "http_memory"
-required-features = ["http"]
-
-[[example]]
-name = "encrypted_storage"
-required-features = ["fs", "encryption"]

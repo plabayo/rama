@@ -62,8 +62,9 @@ These proxies are often referred to as transparent proxies, and you may notice n
 ## Reusable inspection and programmatic control
 
 `rama-inspect` provides protocol-independent lifecycle, typed interception waits,
-streamed record storage, and subscriptions for custom interfaces. Its HTTP, TLS,
-profile, and WebSocket adapters are optional features. See the
+streamed record storage, and subscriptions for custom interfaces. HTTP, TLS,
+profile, WebSocket, and encryption adapters live in their owning crates. Combine
+`inspect` with the protocol and crypto features you use. See the
 [`rama-inspect` guide](https://github.com/plabayo/rama/tree/main/rama-inspect).
 
 The CLI inspector also exposes a machine API on the same authenticated web server.

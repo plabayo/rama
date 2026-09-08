@@ -21,7 +21,7 @@ use crate::{
 
 use crate::fingerprint::HttpRequestProvider;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 /// Input data for a "ja4h" hash.
 /// or displaying it.
 ///
@@ -320,6 +320,12 @@ impl fmt::Display for HttpVersion {
             Self::Http3 => "30",
         };
         f.write_str(code)
+    }
+}
+
+impl serde::Serialize for Ja4H {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
     }
 }
 

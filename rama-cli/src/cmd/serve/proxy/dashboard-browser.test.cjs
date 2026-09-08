@@ -215,3 +215,15 @@ test("activating a pending request opens its inline editor instead of navigating
   assert.equal(events[0].type, "rama-edit-approval");
   assert.equal(events[0].detail.id, 17);
 });
+
+test("header editing preserves ordered duplicates, opaque bytes and literal prefixes", () => {
+  const source = fs.readFileSync(path.join(__dirname, "dashboard-control.js"), "utf8");
+  const context = vm.createContext({ btoa, atob });
+  vm.runInContext(source.slice(source.indexOf("const binaryHeaderPrefix"), source.indexOf("async function refresh()")), context);
+  const headers = [["x-test", "first"], ["x-test", [0x80, 0xff]], ["x-literal", "rama-capture-base64:ordinary text"]];
+  const result = JSON.parse(JSON.stringify(context.readHeaders(context.formatHeaders(headers))));
+  assert.deepEqual(result.slice(0, 2), headers.slice(0, 2));
+  assert.equal(Buffer.from(result[2][1]).toString(), headers[2][1]);
+  const patterns = [["x-test", "rama-capture-base64:é*"]];
+  assert.deepEqual(JSON.parse(JSON.stringify(context.readHeaders(context.formatHeaders(patterns, true), true))), patterns);
+});

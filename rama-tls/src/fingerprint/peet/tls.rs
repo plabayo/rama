@@ -19,7 +19,7 @@ use rama_net::tls::ApplicationProtocol;
 use rama_utils::fmt::{write_joined, write_joined_with};
 use std::fmt;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 /// Input data for a "peetprint" fingerprint.
 ///
 /// Computed using [`PeetPrint::compute`].
@@ -280,6 +280,12 @@ impl fmt::Display for PeetComputeError {
 }
 
 impl std::error::Error for PeetComputeError {}
+
+impl serde::Serialize for PeetPrint {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
 
 #[cfg(test)]
 mod tests {

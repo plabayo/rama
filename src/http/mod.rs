@@ -70,3 +70,7 @@ pub mod tls;
 #[cfg_attr(docsrs, doc(cfg(feature = "grpc")))]
 #[doc(inline)]
 pub use ::rama_grpc as grpc;
+
+#[cfg(feature = "inspect")]
+#[doc(inline)]
+pub use ::rama_http::inspect;

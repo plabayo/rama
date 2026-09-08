@@ -1,6 +1,7 @@
 use super::capture::CaptureStore;
 use arc_swap::ArcSwapOption;
 use parking_lot::Mutex as SyncMutex;
+use rama::http::layer::har::inspect::captured_har_entry;
 use rama::{
     error::{BoxError, ErrorContext as _},
     extensions::Extensions,
@@ -13,7 +14,6 @@ use rama::{
     },
     utils::fs::TempDir,
 };
-use rama_inspect::http::har::captured_har_entry;
 use serde::Serialize;
 use std::{
     collections::BTreeSet,
@@ -105,14 +105,22 @@ pub(super) async fn export_selected(
     );
     write_log_prefix(&mut writer).await?;
     let mut wrote_entry = false;
-    while let Some(details) = selection.next_details().await? {
+    while let Some(selected) = selection.next_capture() {
+        let details = selected.details().await?;
         if wrote_entry {
             writer
                 .write_all(b",")
                 .await
                 .context("separate selected HAR entries")?;
         }
-        let entry = captured_har_entry(details)?;
+        let messages = selected
+            .records::<rama::http::ws::inspect::CapturedMessage>(0..usize::MAX)
+            .await?;
+        let websocket = matches!(details.summary.protocol.as_str(), "ws" | "wss");
+        let mut entry = captured_har_entry(details)?;
+        if websocket {
+            rama::http::ws::inspect::har::append_messages(&mut entry, messages)?;
+        }
         let encoded = serde_json::to_vec(&entry).context("serialize selected HAR entry")?;
         writer
             .write_all(&encoded)

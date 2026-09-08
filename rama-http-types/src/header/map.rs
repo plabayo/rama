@@ -2418,9 +2418,12 @@ impl serde::Serialize for HeaderMap<HeaderValue> {
     where
         S: serde::Serializer,
     {
-        self.ordered_iter()
-            .collect::<Vec<_>>()
-            .serialize(serializer)
+        use serde::ser::SerializeSeq as _;
+        let mut sequence = serializer.serialize_seq(Some(self.len()))?;
+        for header in self.ordered_iter() {
+            sequence.serialize_element(&header)?;
+        }
+        sequence.end()
     }
 }
 

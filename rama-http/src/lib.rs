@@ -25,7 +25,7 @@ pub use ::rama_http_types::{
     CaptureHandle, CaptureLimit, CaptureOutcome, CapturedBody, Error as HttpError, HeaderMap,
     HeaderName, HeaderValue, InfiniteReader, Method, Request, Response, Result as HttpResult,
     StatusCode, StreamingBody, Version, conn, fingerprint, header, method, mime, opentelemetry,
-    proto, proxy, request, response, sse, status, version,
+    proto, protocol_from_uri_or_extensions, proxy, request, response, sse, status, version,
 };
 
 #[doc(inline)]
@@ -51,3 +51,6 @@ pub mod __macro_dep {
     #[doc(hidden)]
     pub use rama_core as __core;
 }
+
+#[cfg(feature = "inspect")]
+pub mod inspect;

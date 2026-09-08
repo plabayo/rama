@@ -25,7 +25,7 @@ where
     Ok(())
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 /// Input data for a "ja4" hash.
 ///
 /// Computed using [`Ja4::compute`].
@@ -326,6 +326,12 @@ impl fmt::Display for Ja4ComputeError {
 }
 
 impl std::error::Error for Ja4ComputeError {}
+
+impl serde::Serialize for Ja4 {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
 
 #[cfg(test)]
 mod tests {

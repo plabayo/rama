@@ -16,8 +16,8 @@ impl Default for QueueLimits {
     fn default() -> Self {
         Self {
             messages: 128,
-            bytes: 8 * 1024 * 1024,
-            message_bytes: 256 * 1024,
+            bytes: rama_utils::octets::mib(8),
+            message_bytes: rama_utils::octets::kib(256),
         }
     }
 }

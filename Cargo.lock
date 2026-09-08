@@ -4137,8 +4137,10 @@ dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
  "openssl-probe",
+ "parking_lot",
  "rama-boring",
  "rama-core",
+ "rama-inspect",
  "rama-net",
  "rama-utils",
  "rcgen",
@@ -4149,6 +4151,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "time",
+ "tokio",
  "tokio-test",
  "webpki-root-certs",
  "x509-parser",
@@ -4325,6 +4328,7 @@ name = "rama-http"
 version = "0.5.0"
 dependencies = [
  "ahash",
+ "arc-swap",
  "async-compression",
  "base64 0.23.1",
  "bitflags 2.13.1",
@@ -4353,6 +4357,7 @@ dependencies = [
  "rama-http-hyperium",
  "rama-http-macros",
  "rama-http-types",
+ "rama-inspect",
  "rama-json",
  "rama-net",
  "rama-utils",
@@ -4521,22 +4526,10 @@ dependencies = [
 name = "rama-inspect"
 version = "0.5.0"
 dependencies = [
- "arc-swap",
- "base64 0.23.1",
- "jiff",
  "parking_lot",
  "rama-core",
- "rama-crypto",
- "rama-http",
- "rama-http-backend",
- "rama-http-core",
- "rama-net",
- "rama-tls",
- "rama-ua",
  "rama-utils",
- "rama-ws",
  "serde",
- "serde_json",
  "tokio",
 ]
 
@@ -4749,6 +4742,7 @@ dependencies = [
  "pin-project-lite",
  "rama-core",
  "rama-crypto",
+ "rama-inspect",
  "rama-net",
  "rama-utils",
  "serde",
@@ -4872,6 +4866,7 @@ dependencies = [
  "itertools 0.15.0",
  "rama-core",
  "rama-http",
+ "rama-inspect",
  "rama-net",
  "rama-tls",
  "rama-utils",
@@ -4936,14 +4931,18 @@ dependencies = [
 name = "rama-ws"
 version = "0.5.0"
 dependencies = [
+ "base64 0.23.1",
  "flate2",
+ "jiff",
  "parking_lot",
  "pin-project-lite",
  "rama-core",
  "rama-http",
+ "rama-inspect",
  "rama-net",
  "rama-utils",
  "rand 0.10.2",
+ "serde",
  "serde_json",
  "tokio",
  "tracing-test",

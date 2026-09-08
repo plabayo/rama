@@ -1,0 +1,270 @@
+use super::*;
+
+pub(super) fn render_websocket_messages(details: &InspectorDetails) -> Option<String> {
+    let messages = &details.websocket.messages;
+    if details.websocket.total == 0 && !details.websocket.replay_active {
+        return None;
+    }
+    let end = details
+        .websocket
+        .total
+        .saturating_sub(details.websocket.page * MAX_VISIBLE_WS_MESSAGES);
+    let start = end.saturating_sub(messages.len());
+    let cards = messages.iter().enumerate().map(
+        |(
+            page_index,
+            CapturedMessage {
+                at,
+                direction,
+                kind,
+                data,
+                close_code,
+                origin,
+            },
+        )| {
+            let message_index = start + page_index;
+            let (payload, bytes, preview_truncated) = websocket_payload(*kind, data);
+            let ingress = *direction == WebSocketRelayDirection::Ingress;
+            let is_control = matches!(
+                kind,
+                MessageKind::Ping | MessageKind::Pong | MessageKind::Close
+            );
+            let capture_truncated = if ingress {
+                details.summary.request_truncated
+            } else {
+                details.summary.response_truncated
+            };
+            let can_replay = !is_control && !capture_truncated && details.websocket.replay_active;
+            let direction_label = if ingress {
+                "Client → Server"
+            } else {
+                "Server → Client"
+            };
+            let mut class = match (ingress, is_control) {
+                (true, true) => "ws-message ingress control",
+                (true, false) => "ws-message ingress",
+                (false, true) => "ws-message egress control",
+                (false, false) => "ws-message egress",
+            }
+            .to_owned();
+            if *origin == MessageOrigin::Replay {
+                class.push_str(" replayed");
+            }
+            if *origin == MessageOrigin::Injected {
+                class.push_str(" injected");
+            }
+            article!(
+                class = class,
+                "data-capture-container" = "",
+                div!(
+                    class = "ws-message-head",
+                    strong!(direction_label),
+                    span!(display(kind)),
+                    close_code.map(|code| span!("code ", u16::from(code))),
+                    span!(format_bytes(bytes as u64)),
+                    (*origin == MessageOrigin::Replay)
+                        .then(|| span!(class = "ws-replayed", "replayed")),
+                    (*origin == MessageOrigin::Injected)
+                        .then(|| span!(class = "ws-injected", "custom")),
+                    is_control.then(|| span!("control · observation only")),
+                    can_replay.then(|| button!(
+                        r#type = "button",
+                        class = "ghost compact ws-replay",
+                        "data-on:click" = format!(
+                            "@post('/api/websocket/{}/replay/{message_index}')",
+                            details.summary.id
+                        ),
+                        if ingress {
+                            "Replay to server"
+                        } else {
+                            "Replay to client"
+                        }
+                    )),
+                    time!(display(at)),
+                ),
+                (!data.is_empty()).then(|| pre!(display(payload))),
+                preview_truncated.then(|| div!(
+                    class = "ws-full-message",
+                    small!("Preview truncated."),
+                    button!(
+                        r#type = "button",
+                        class = "ghost compact",
+                        "data-capture-preview" = "",
+                        "data-label" = "Show full message",
+                        "data-url" = format!(
+                            "/api/capture/{}/websocket/{}",
+                            details.summary.id, message_index
+                        ),
+                        "data-payload-format" = if *kind == MessageKind::Text {
+                            "text"
+                        } else {
+                            "binary"
+                        },
+                        span!(class = "capture-spinner", "aria-hidden" = "true"),
+                        span!("data-capture-label" = "", "Show full message")
+                    ),
+                    pre!("data-capture-output" = "", hidden = "")
+                ))
+            )
+        },
+    );
+    let range = if details.websocket.total == 0 {
+        "No messages yet".to_owned()
+    } else {
+        format!(
+            "messages {}–{} of {}",
+            start + 1,
+            end,
+            details.websocket.total
+        )
+    };
+    let replay_state = (!details.websocket.replay_active).then(|| {
+        span!(
+            class = "ws-replay-state",
+            title = "Replay is unavailable because this WebSocket connection is closed",
+            "Replay off"
+        )
+    });
+    let truncation_state =
+        (details.summary.request_truncated || details.summary.response_truncated).then(|| {
+            span!(
+                class = "ws-capture-state",
+                title = "Replay is unavailable for messages in a truncated capture direction",
+                "Capture truncated"
+            )
+        });
+    let composer = details.websocket.replay_active.then(|| {
+        div!(
+            class = "ws-composer",
+            div!(
+                class = "ws-composer-fields",
+                label!(
+                    span!("Destination"),
+                    select!(
+                        "data-bind:websocket_direction" = "",
+                        option!(value = "ingress", "Upstream server"),
+                        option!(value = "egress", "Downstream client")
+                    )
+                ),
+                label!(
+                    span!("Message type"),
+                    select!(
+                        "data-bind:websocket_kind" = "",
+                        option!(value = "text", "Text"),
+                        option!(value = "binary", "Binary (base64)")
+                    )
+                )
+            ),
+            label!(
+                class = "ws-composer-payload",
+                span!("Message payload"),
+                textarea!(
+                    rows = "3",
+                    placeholder = "Text message, or base64 when Binary is selected",
+                    "data-bind:websocket_payload" = ""
+                )
+            ),
+            div!(
+                class = "ws-composer-actions",
+                small!(
+                    "Injected application messages are captured and cannot create control frames."
+                ),
+                button!(
+                    r#type = "button",
+                    class = "primary compact",
+                    "data-on:click" =
+                        format!("@post('/api/websocket/{}/send')", details.summary.id),
+                    "Send message"
+                )
+            )
+        )
+    });
+    Some(
+        section!(
+            class = "ws-messages",
+            div!(
+                class = "ws-messages-title",
+                div!(
+                    h3!("WebSocket traffic"),
+                    span!(range),
+                    replay_state,
+                    truncation_state
+                ),
+                div!(
+                    class = "ws-page-actions",
+                    (start > 0).then(|| button!(
+                        class = "ghost compact",
+                        "data-on:click" =
+                            format!("@post('/api/websocket/{}/older')", details.summary.id),
+                        "Older"
+                    )),
+                    (details.websocket.page > 0).then(|| button!(
+                        class = "ghost compact",
+                        "data-on:click" =
+                            format!("@post('/api/websocket/{}/newer')", details.summary.id),
+                        "Newer"
+                    ))
+                )
+            ),
+            composer,
+            cards.collect::<Vec<_>>()
+        )
+        .into_string(),
+    )
+}
+
+pub(super) fn is_textual_content_type(content_type: &str) -> bool {
+    let content_type = content_type.to_ascii_lowercase();
+    content_type.starts_with("text/")
+        || [
+            "json",
+            "xml",
+            "javascript",
+            "graphql",
+            "x-www-form-urlencoded",
+        ]
+        .iter()
+        .any(|needle| content_type.contains(needle))
+}
+
+pub(super) fn websocket_payload(
+    kind: MessageKind,
+    bytes: &[u8],
+) -> (impl std::fmt::Display + '_, usize, bool) {
+    let text = matches!(kind, MessageKind::Text | MessageKind::Close);
+    let limit = if text {
+        WS_TEXT_PREVIEW_LIMIT
+    } else {
+        WS_BINARY_PREVIEW_LIMIT
+    };
+    let preview = rama::utils::fmt::display_fn(move |f: &mut std::fmt::Formatter<'_>| {
+        let end = bytes.len().min(limit);
+        if text {
+            match std::str::from_utf8(bytes) {
+                Ok(value) => f.write_str(&value[..value.floor_char_boundary(end)])?,
+                Err(_) => write!(f, "{}", rama::utils::fmt::hex(&bytes[..end]))?,
+            }
+        } else {
+            write!(f, "{}", rama::utils::fmt::hex(&bytes[..end]))?;
+        }
+        if bytes.len() > limit {
+            f.write_str("…")?;
+        }
+        Ok(())
+    });
+    (preview, bytes.len(), bytes.len() > limit)
+}
+
+pub(super) fn format_bytes(bytes: u64) -> String {
+    const KIB: f64 = kib(1) as f64;
+    const MIB: f64 = mib(1) as f64;
+    match bytes {
+        0..=1023 => format!("{bytes} B"),
+        1024..=1_048_575 => format!("{:.1} KiB", bytes as f64 / KIB),
+        _ => format!("{:.1} MiB", bytes as f64 / MIB),
+    }
+}
+
+pub(super) fn display_timestamp(timestamp: &jiff::Timestamp) -> impl std::fmt::Display + '_ {
+    timestamp.strftime("%F %T%.3f UTC")
+}

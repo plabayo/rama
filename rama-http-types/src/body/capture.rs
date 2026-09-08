@@ -14,7 +14,8 @@ use super::{Body, Frame, SizeHint, StreamingBody};
 use crate::HeaderMap;
 
 /// How an observed body stream terminated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CaptureOutcome {
     /// The body returned its normal end-of-stream marker.
     Complete,
@@ -552,6 +553,16 @@ impl fmt::Debug for BufferedBodyCapture {
             .field("total_bytes", &state.total_bytes)
             .field("truncated", &state.truncated)
             .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for CaptureOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Complete => "complete",
+            Self::Error => "error",
+            Self::Aborted => "aborted",
+        })
     }
 }
 

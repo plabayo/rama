@@ -1,0 +1,432 @@
+use super::*;
+use crate::handshake::mitm::{WebSocketBridge, WebSocketRelayDirection};
+use rama_core::{
+    Layer, Service, ServiceInput, bytes::Bytes, error::BoxError, futures::StreamExt,
+    service::service_fn,
+};
+use rama_http::{
+    Body, Request, Response, StatusCode, Version,
+    body::util::BodyExt,
+    inspect::capture::{
+        CaptureConfig, CaptureFilter, CaptureHttpLayer, CaptureMetadata, CaptureObserver,
+        CaptureStore, ConnectionId, ExchangeId,
+    },
+};
+use rama_inspect::{
+    InspectionState,
+    storage::{MemoryStore, Storage, StorageLimits},
+};
+use std::{convert::Infallible, sync::Arc, time::Duration};
+
+#[derive(Debug)]
+struct Observer(WebSocketLimits);
+impl CaptureObserver for Observer {
+    fn request(&self, parts: &rama_http::request::Parts, metadata: &CaptureMetadata) {
+        observe_handshake(parts, metadata, self.0);
+    }
+    fn response(&self, _: &rama_http::response::Parts, _: &CaptureMetadata) {}
+}
+fn store(messages: usize, bytes: u64, total: u64) -> CaptureStore {
+    CaptureStore::with_storage(
+        Storage::new(MemoryStore::new(StorageLimits::default())),
+        CaptureConfig {
+            body_limit: bytes,
+            total_limit: total,
+            observer: Arc::new(Observer(WebSocketLimits { messages })),
+            ..CaptureConfig::default()
+        },
+        InspectionState::default(),
+    )
+}
+async fn handshake(store: &CaptureStore, version: Version, status: StatusCode) -> Response {
+    let connection = store
+        .begin_connection_if_enabled(None, rama_net::Protocol::HTTPS, None)
+        .unwrap();
+    store.confirm_connection_if_enabled(connection);
+    let request = Request::builder()
+        .uri("https://example.test/socket")
+        .version(version)
+        .extension(ConnectionId(connection));
+    let request = if version == Version::HTTP_2 {
+        request
+            .method("CONNECT")
+            .extension(rama_http::proto::h2::ext::Protocol::from_static(
+                "websocket",
+            ))
+    } else {
+        request
+            .header("upgrade", "websocket")
+            .header("connection", "upgrade")
+    };
+    CaptureHttpLayer::new(Some(store.clone()))
+        .layer(service_fn(move |request: Request| async move {
+            request.into_body().collect().await.unwrap();
+            Ok::<_, Infallible>(
+                Response::builder()
+                    .status(status)
+                    .version(version)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        }))
+        .serve(request.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+fn message(kind: MessageKind, data: &'static [u8]) -> CapturedMessage {
+    CapturedMessage::new(
+        WebSocketRelayDirection::Ingress,
+        kind,
+        Bytes::from_static(data),
+    )
+}
+
+#[tokio::test]
+async fn pages_streams_and_search_keep_protocol_records_separate() {
+    let store = store(16, rama_utils::octets::kib_u64(1), 0);
+    let _response = handshake(&store, Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS).await;
+    for kind in [
+        MessageKind::Text,
+        MessageKind::Binary,
+        MessageKind::Ping,
+        MessageKind::Pong,
+        MessageKind::Close,
+    ] {
+        store
+            .record_websocket_message(1, message(kind, b"needle"))
+            .await;
+    }
+    let first = store.websocket_details(1, 0, 2).await.unwrap();
+    assert_eq!(first.total, 5);
+    assert_eq!(first.messages[0].kind, MessageKind::Pong);
+    assert_eq!(first.messages[1].kind, MessageKind::Close);
+    let last = store.websocket_details(1, usize::MAX, 2).await.unwrap();
+    assert_eq!(last.page, 2);
+    assert_eq!(last.messages.len(), 1);
+    assert_eq!(last.messages[0].kind, MessageKind::Text);
+    assert!(
+        store
+            .websocket_details(1, 0, 0)
+            .await
+            .unwrap()
+            .messages
+            .is_empty()
+    );
+    let chunks = store
+        .websocket_message_stream(1, 0)
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert_eq!(chunks[0].as_ref().unwrap(), b"needle".as_slice());
+    assert!(store.websocket_message_stream(1, 5).is_err());
+    assert_eq!(store.inspector_details(1).await.unwrap().records.len(), 3);
+    assert_eq!(
+        store
+            .snapshot(&CaptureFilter {
+                search: "NEEDLE".into(),
+                ..Default::default()
+            })
+            .await
+            .total_requests,
+        1
+    );
+}
+
+#[tokio::test]
+async fn message_and_byte_limits_never_publish_partial_messages() {
+    for (count, bytes) in [(1, rama_utils::octets::kib_u64(1)), (8, 3)] {
+        let store = store(count, bytes, 0);
+        let _response = handshake(&store, Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS).await;
+        store
+            .record_websocket_message(1, message(MessageKind::Text, b"first"))
+            .await;
+        store
+            .record_websocket_message(1, message(MessageKind::Text, b"second"))
+            .await;
+        let details = store.details(1).await.unwrap();
+        assert_eq!(details.summary.request_bytes, 11);
+        assert!(details.summary.request_truncated && details.summary.response_truncated);
+        assert_eq!(
+            store.websocket_details(1, 0, 10).await.unwrap().total,
+            usize::from(bytes > 3)
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_paused_gap_preserves_data_and_disables_replay() {
+    let store = store(16, rama_utils::octets::kib_u64(1), 0);
+    let _response = handshake(&store, Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS).await;
+    store
+        .record_websocket_message(1, message(MessageKind::Text, b"before"))
+        .await;
+    store.inspection_state().pause().await;
+    store
+        .record_websocket_message(1, message(MessageKind::Text, b"during"))
+        .await;
+    store.inspection_state().resume().await;
+    store
+        .record_websocket_message(1, message(MessageKind::Text, b"after"))
+        .await;
+    assert_eq!(store.websocket_details(1, 0, 10).await.unwrap().total, 2);
+    assert!(matches!(
+        store.replay_websocket_message(1, 0).await,
+        Err(WebSocketReplayError::Truncated)
+    ));
+}
+
+#[tokio::test]
+async fn typed_records_stay_readable_after_clearing_and_do_not_pollute_http_har() {
+    let store = store(16, rama_utils::octets::kib_u64(1), 0);
+    let _response = handshake(&store, Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS).await;
+    store
+        .record_websocket_message(1, message(MessageKind::Binary, &[0, 255]))
+        .await;
+    let mut selected = store.selected_exchanges(&[1].into(), &Default::default());
+    let selected = selected.next_capture().unwrap();
+    store.clear().await;
+    let messages = selected
+        .records::<CapturedMessage>(0..usize::MAX)
+        .await
+        .unwrap();
+    let mut entry =
+        rama_http::layer::har::inspect::captured_har_entry(selected.details().await.unwrap())
+            .unwrap();
+    assert!(entry.web_socket_messages.is_none());
+    har::append_messages(&mut entry, messages).unwrap();
+    assert_eq!(entry.web_socket_messages.unwrap()[0].data, "AP8=");
+}
+
+#[tokio::test]
+async fn only_successful_upgrades_hold_the_connection_open() {
+    for (version, status, upgraded) in [
+        (Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS, true),
+        (Version::HTTP_11, StatusCode::OK, false),
+        (Version::HTTP_2, StatusCode::OK, true),
+        (Version::HTTP_2, StatusCode::FORBIDDEN, false),
+    ] {
+        let store = store(16, rama_utils::octets::kib_u64(1), 0);
+        let response = handshake(&store, version, status).await;
+        let (parts, body) = response.into_parts();
+        body.collect().await.unwrap();
+        store.finish_connection(1);
+        assert_eq!(store.details(1).await.unwrap().summary.active, upgraded);
+        assert_eq!(
+            store.details(1).await.unwrap().summary.protocol,
+            rama_net::Protocol::WSS
+        );
+        drop(parts);
+        assert!(!store.details(1).await.unwrap().summary.active);
+    }
+}
+
+#[tokio::test]
+async fn relay_completion_and_cancellation_finish_the_upgrade() {
+    for cancel in [false, true] {
+        let store = store(16, rama_utils::octets::kib_u64(1), 0);
+        let response = handshake(&store, Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS).await;
+        let (parts, body) = response.into_parts();
+        body.collect().await.unwrap();
+        store.finish_connection(1);
+        let ingress = ServiceInput::new(());
+        let egress = ServiceInput::new(());
+        egress.extensions.insert(ExchangeId(1));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let notify = entered.clone();
+        let service = CaptureWebSocketLayer::new(Some(store.clone())).layer(service_fn(
+            move |bridge: WebSocketBridge<ServiceInput<()>, ServiceInput<()>>| {
+                let entered = entered.clone();
+                async move {
+                    assert_eq!(
+                        bridge.ingress.extensions.get_ref::<ExchangeId>(),
+                        Some(&ExchangeId(1))
+                    );
+                    entered.notify_one();
+                    if cancel {
+                        std::future::pending::<()>().await;
+                    }
+                    Ok::<_, Infallible>(())
+                }
+            },
+        ));
+        let task =
+            tokio::spawn(async move { service.serve(WebSocketBridge { ingress, egress }).await });
+        tokio::time::timeout(Duration::from_secs(1), notify.notified())
+            .await
+            .unwrap();
+        if cancel {
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+        } else {
+            task.await.unwrap().unwrap();
+        }
+        assert!(!store.details(1).await.unwrap().summary.active);
+        drop(parts);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_messages_publish_each_complete_record_once() {
+    let store = store(64, rama_utils::octets::kib_u64(8), 0);
+    let _response = handshake(&store, Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS).await;
+    let mut tasks = tokio::task::JoinSet::new();
+    for index in 0..32u8 {
+        let store = store.clone();
+        tasks.spawn(async move {
+            store
+                .record_websocket_message(
+                    1,
+                    CapturedMessage::new(
+                        WebSocketRelayDirection::Ingress,
+                        MessageKind::Binary,
+                        Bytes::copy_from_slice(&[index; 16]),
+                    ),
+                )
+                .await;
+        });
+    }
+    while let Some(result) = tasks.join_next().await {
+        result.unwrap();
+    }
+    let details = store.websocket_details(1, 0, 64).await.unwrap();
+    assert_eq!(details.total, 32);
+    let mut indexes = std::collections::BTreeSet::new();
+    for message in details.messages {
+        assert_eq!(message.data.len(), 16);
+        assert!(message.data.iter().all(|byte| *byte == message.data[0]));
+        assert!(indexes.insert(message.data[0]));
+    }
+    assert_eq!(
+        store.details(1).await.unwrap().summary.request_bytes,
+        32 * 16
+    );
+}
+
+#[tokio::test]
+async fn cancelled_message_append_preserves_committed_records_and_marks_a_gap() {
+    use rama_inspect::storage::{
+        AppendRecord, Collection, CreateCollection, ListRecords, ReadRecord, Reader, RecordId,
+    };
+    use std::{
+        pin::Pin,
+        sync::atomic::{AtomicBool, Ordering},
+        task::{Context, Poll},
+    };
+    use tokio::io::{AsyncRead, ReadBuf};
+
+    struct StopAfterChunk {
+        reader: Reader,
+        entered: Arc<tokio::sync::Notify>,
+        read: bool,
+    }
+    impl AsyncRead for StopAfterChunk {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            if self.read {
+                self.entered.notify_one();
+                return Poll::Pending;
+            }
+            let mut bytes = [0u8; 8];
+            let mut chunk = ReadBuf::new(&mut bytes[..buf.remaining().min(8)]);
+            let result = self.reader.as_mut().poll_read(cx, &mut chunk);
+            let count = chunk.filled().len();
+            if matches!(result, Poll::Ready(Ok(()))) {
+                self.read = true;
+                buf.put_slice(&bytes[..count]);
+            }
+            result
+        }
+    }
+    #[derive(Clone)]
+    struct Backend {
+        inner: Collection,
+        stop: Arc<AtomicBool>,
+        entered: Arc<tokio::sync::Notify>,
+    }
+    impl Service<AppendRecord> for Backend {
+        type Output = RecordId;
+        type Error = BoxError;
+        async fn serve(&self, mut input: AppendRecord) -> Result<RecordId, BoxError> {
+            if self.stop.load(Ordering::Acquire) {
+                input.source = Box::pin(StopAfterChunk {
+                    reader: input.source,
+                    entered: self.entered.clone(),
+                    read: false,
+                });
+            }
+            self.inner.serve(input).await
+        }
+    }
+    impl Service<ReadRecord> for Backend {
+        type Output = Reader;
+        type Error = BoxError;
+        async fn serve(&self, input: ReadRecord) -> Result<Reader, BoxError> {
+            self.inner.serve(input).await
+        }
+    }
+    impl Service<ListRecords> for Backend {
+        type Output = Vec<RecordId>;
+        type Error = BoxError;
+        async fn serve(&self, input: ListRecords) -> Result<Vec<RecordId>, BoxError> {
+            self.inner.serve(input).await
+        }
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let storage = Storage::new(service_fn({
+        let stop = stop.clone();
+        let entered = entered.clone();
+        move |input: CreateCollection| {
+            let stop = stop.clone();
+            let entered = entered.clone();
+            async move {
+                Ok::<_, BoxError>(Collection::new(Backend {
+                    inner: MemoryStore::new(StorageLimits::default())
+                        .serve(input)
+                        .await?,
+                    stop,
+                    entered,
+                }))
+            }
+        }
+    }));
+    let store = CaptureStore::with_storage(
+        storage,
+        CaptureConfig::default(),
+        InspectionState::default(),
+    );
+    let _response = handshake(&store, Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS).await;
+    store
+        .record_websocket_message(1, message(MessageKind::Text, b"committed"))
+        .await;
+    let retained = store.exchange_capture(1).unwrap();
+    stop.store(true, Ordering::Release);
+    let task = tokio::spawn({
+        let store = store.clone();
+        async move {
+            store
+                .record_websocket_message(1, message(MessageKind::Text, b"interrupted"))
+                .await;
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(1), entered.notified())
+        .await
+        .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    store.clear().await;
+    let details = read_details(&retained, 0, 10).await.unwrap();
+    assert_eq!(details.total, 1);
+    assert_eq!(details.messages[0].data, "committed");
+    assert!(
+        retained
+            .inspector_details()
+            .await
+            .unwrap()
+            .summary
+            .request_truncated
+    );
+}

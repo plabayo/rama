@@ -20,12 +20,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 
 mod memory;
 pub use memory::MemoryStore;
-#[cfg(feature = "fs")]
 mod file;
-#[cfg(feature = "fs")]
 pub use file::FileStore;
-#[cfg(feature = "encryption")]
-pub mod encrypt;
 
 /// An owned reader, suitable for streaming to a response, file, or native UI.
 pub type Reader = Pin<Box<dyn AsyncRead + Send + 'static>>;
@@ -189,7 +185,11 @@ impl<R: AsyncRead + Unpin, O> AsyncRead for OwnedReader<R, O> {
     }
 }
 
-async fn ranged(mut reader: Reader, range: Option<Range<u64>>) -> Result<Reader, BoxError> {
+/// Select a range from a streaming reader without buffering its contents.
+pub async fn range_reader(
+    mut reader: Reader,
+    range: Option<Range<u64>>,
+) -> Result<Reader, BoxError> {
     match range {
         None => Ok(reader),
         Some(range) if range.start <= range.end => {

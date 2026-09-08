@@ -17,6 +17,12 @@ pub struct UserAgent {
     pub(super) tls_agent_overwrite: Option<TlsAgent>,
 }
 
+impl serde::Serialize for UserAgent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
 impl fmt::Display for UserAgent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.header)
