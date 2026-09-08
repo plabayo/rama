@@ -5566,12 +5566,13 @@ fn an_identifier_the_peer_retires_between_probes_takes_its_probe_with_it() {
     );
 }
 
-/// RFC 9000 §10.3.1: once we stop using an identifier, its token resets nothing, even when the
-/// datagram carrying it is addressed to an identifier that routes straight to this connection.
-/// The same datagram against an identifier still in use does reset us, so what the connection
-/// rejects is the retirement and not the shape of the packet.
+/// RFC 9000 §10.3.1 binds recognition to the identifier *and* the address it was sent to. The
+/// probe's identifier went to the preferred address and nowhere else, so a reset carrying its
+/// token is ours from there and is not ours from the address the connection is on — even though
+/// both datagrams are addressed to one of our own identifiers, so the endpoint hands both straight
+/// to this connection. Once the attempt is given up and the identifier retired, neither is ours.
 #[test]
-fn the_token_of_a_retired_identifier_resets_nothing_even_when_the_datagram_reaches_us() {
+fn the_token_of_a_probed_identifier_is_recognised_only_from_where_it_was_sent() {
     let _guard = subscribe();
     let probed_pair = || {
         let (mut pair, key, preferred) = pair_preferring_with_key();
@@ -5590,59 +5591,85 @@ fn the_token_of_a_retired_identifier_resets_nothing_even_when_the_datagram_reach
             .find_map(|s| (s.to == preferred).then_some(s.cid))
             .expect("the client probed the preferred address")
             .expect("a probe names the identifier it went out with");
-        (pair, key, ch, server_ch, probed, probed_seq)
+        assert!(
+            pair.client_conn_mut(ch).cid_confirmed(probed_seq),
+            "the probe left, so the identifier has been used"
+        );
+        (pair, key, ch, server_ch, probed, probed_seq, preferred)
+    };
+    let deliver = |pair: &mut Pair, packet: &[u8], from: SocketAddr| {
+        pair.client.inbound.push_back(Inbound {
+            at: pair.time,
+            ecn: None,
+            packet: packet.into(),
+            from: Some(from),
+            to: Some(pair.client.addr),
+        });
+        pair.client.drive(pair.time, pair.server.addr);
     };
 
-    // While the probe is outstanding, a datagram addressed to one of our own identifiers and
-    // ending in the probed identifier's token resets us.
-    let (mut pair, key, ch, _server_ch, probed, _) = probed_pair();
-    let packet = routed_reset_for(&pair, ch, &key, probed);
-    pair.client.inbound.push_back(Inbound {
-        at: pair.time,
-        ecn: None,
-        packet: packet.as_slice().into(),
-        from: Some(pair.server.addr),
-        to: Some(pair.client.addr),
-    });
-    pair.client.drive(pair.time, pair.server.addr);
+    // From the address the probe went to: ours.
+    let (mut pair, key, ch, _server_ch, probed, _, preferred) = probed_pair();
+    let packet = routed_reset_for(&pair.client, ch, &key, probed);
+    deliver(&mut pair, &packet, preferred);
     assert!(
         was_reset(pair.client_conn_mut(ch)),
-        "an identifier we are using, in a datagram that reaches us"
+        "an identifier we sent to that address, in a datagram that reaches us"
     );
 
-    // Retire it, and the very same datagram is nothing to us.
-    let (mut pair, key, ch, server_ch, probed, probed_seq) = probed_pair();
-    let packet = routed_reset_for(&pair, ch, &key, probed);
-    let now = pair.time;
-    pair.server_conn_mut(server_ch)
-        .rotate_local_cid(probed_seq + 1, now);
-    pair.drive_server();
-    pair.drive_client();
+    // The same datagram from the address the connection is on, where that identifier was never
+    // sent: not ours, and the connection carries on.
+    let (mut pair, key, ch, server_ch, probed, _, _) = probed_pair();
+    let server_addr = pair.server.addr;
+    let packet = routed_reset_for(&pair.client, ch, &key, probed);
+    deliver(&mut pair, &packet, server_addr);
     assert!(
-        pair.client_conn_mut(ch).active_rem_cid_seq() > probed_seq,
-        "the retirement covered the probed identifier"
+        !was_reset(pair.client_conn_mut(ch)),
+        "a token for an identifier never sent to that address is not ours"
     );
-    pair.client.inbound.push_back(Inbound {
-        at: pair.time,
-        ecn: None,
-        packet: packet.as_slice().into(),
-        from: Some(pair.server.addr),
-        to: Some(pair.client.addr),
-    });
-    pair.client.drive(pair.time, pair.server.addr);
-    assert!(!was_reset(pair.client_conn_mut(ch)));
     assert!(!pair.client_conn_mut(ch).is_closed());
-    assert_eq!(
-        sent_with(&pair, probed_seq),
-        1,
-        "and the retired identifier carried nothing after its one probe"
-    );
-
-    // The connection still carries data.
     let s = pair.client_streams(ch).open(Dir::Uni).unwrap();
     pair.client_send(ch, s).write(b"still here").unwrap();
     drive_settled(&mut pair);
     assert!(saw_uni_stream(pair.server_conn_mut(server_ch)));
+
+    // Once the attempt is given up the identifier is retired, and neither route is ours.
+    for from in [preferred, server_addr] {
+        let (mut pair, key, ch, server_ch, probed, probed_seq, _) = probed_pair();
+        let packet = routed_reset_for(&pair.client, ch, &key, probed);
+        drive_settled(&mut pair);
+        assert_eq!(
+            pair.client_conn_mut(ch).preferred_address_state(),
+            PreferredAddressState::Failed,
+            "the attempt is over"
+        );
+        assert!(
+            !pair.client_conn_mut(ch).cid_confirmed(probed_seq),
+            "a retired identifier has no history left"
+        );
+        let from = if from == preferred {
+            preferred
+        } else {
+            pair.server.addr
+        };
+        let probes = sent_with(&pair, probed_seq);
+        assert!(probes >= 1, "the probes went out");
+        deliver(&mut pair, &packet, from);
+        assert!(
+            !was_reset(pair.client_conn_mut(ch)),
+            "a retired identifier resets nothing, from {from}"
+        );
+        assert!(!pair.client_conn_mut(ch).is_closed());
+        let s = pair.client_streams(ch).open(Dir::Uni).unwrap();
+        pair.client_send(ch, s).write(b"still here").unwrap();
+        drive_settled(&mut pair);
+        assert!(saw_uni_stream(pair.server_conn_mut(server_ch)));
+        assert_eq!(
+            sent_with(&pair, probed_seq),
+            probes,
+            "and the retired identifier carried nothing after the attempt ended"
+        );
+    }
 }
 
 /// A client whose own connection IDs are zero length is routed by its address, so it stays where
@@ -6331,21 +6358,125 @@ fn deliver_to_client(pair: &mut Pair, datagrams: Vec<(Transmit, Bytes)>) {
 /// A datagram addressed to an identifier that routes to `ch`, so the endpoint hands it to that
 /// connection rather than matching it by token alone, ending in the token `key` derives for `cid`.
 fn routed_reset_for(
-    pair: &Pair,
+    endpoint: &TestEndpoint,
     ch: ConnectionHandle,
     key: &hmac::Key,
     cid: ConnectionId,
 ) -> Vec<u8> {
-    let dcid = *pair
-        .client
+    let dcid = *endpoint
         .cids_routing_to(ch)
         .first()
-        .expect("the client is routed by its connection IDs");
+        .expect("the endpoint is routed by its connection IDs");
     let mut reset = vec![0x40; 1];
     reset.extend_from_slice(&dcid);
     reset.extend_from_slice(&[0xab; 32]);
     reset.extend_from_slice(&ResetToken::new(key, cid));
     reset
+}
+
+/// RFC 9000 §10.3.1 through a change of role: a NAT rebinding keeps the identifier the connection
+/// was already sending, so its history is still ours and a reset for it still resets us without
+/// waiting for another datagram to leave. The reset is addressed to one of our own identifiers, so
+/// the endpoint hands it straight to the connection and what is under test is recognition alone,
+/// not how quickly the token association for the new address is installed.
+#[test]
+fn a_rebinding_keeps_the_history_of_the_identifier_it_keeps() {
+    let _guard = subscribe();
+    let (mut pair, key) = pair_with_known_reset_key();
+    let (client_ch, server_ch) = pair.connect();
+    pair.drive();
+    let cid = pair.server_conn_mut(server_ch).active_rem_cid();
+    let seq = pair.server_conn_mut(server_ch).active_rem_cid_seq();
+    assert!(
+        pair.server_conn_mut(server_ch).cid_confirmed(seq),
+        "the connection has been sending with it"
+    );
+
+    // The peer rebinds: same identifier, new address.
+    let rebound = SocketAddr::new(
+        Ipv4Addr::new(127, 0, 0, 7).into(),
+        CLIENT_PORTS.lock().next().unwrap(),
+    );
+    pair.client.addr = rebound;
+    pair.client_conn_mut(client_ch).ping();
+    pair.drive_client();
+    pair.server.drive(pair.time, rebound);
+    assert_eq!(pair.server_conn_mut(server_ch).remote_address(), rebound);
+    assert_eq!(
+        pair.server_conn_mut(server_ch).active_rem_cid(),
+        cid,
+        "a rebinding keeps the identifier"
+    );
+    assert!(
+        pair.server_conn_mut(server_ch).cid_confirmed(seq),
+        "and keeps what that identifier has sent: a change of address is not a new identifier"
+    );
+
+    let packet = routed_reset_for(&pair.server, server_ch, &key, cid);
+    pair.server.inbound.push_back(Inbound {
+        at: pair.time,
+        ecn: None,
+        packet: packet.as_slice().into(),
+        from: Some(rebound),
+        to: Some(pair.server.addr),
+    });
+    pair.server.drive(pair.time, rebound);
+    assert!(
+        was_reset(pair.server_conn_mut(server_ch)),
+        "an identifier we have sent is still one we have sent after it changes address"
+    );
+}
+
+/// A protocol error raised where the caller cannot return one is told to the application as
+/// itself, at the next transmit, and only once: the peer gets the frame the error names, and the
+/// connection reports the same code rather than an engine that drained without a reason.
+#[test]
+fn a_deferred_protocol_error_is_reported_as_itself() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client_ch, _server_ch) = pair.connect();
+    pair.drive();
+    assert!(!pair.client_conn_mut(client_ch).is_closed());
+
+    // A retirement too wide to queue is refused, and the refusal is deferred exactly as the
+    // migration, timer and give-up paths defer theirs.
+    pair.client_conn_mut(client_ch).overflow_retirement_queue();
+    assert!(
+        !pair.client_conn_mut(client_ch).is_closed(),
+        "nothing has closed yet: the error is carried to the next transmit"
+    );
+
+    // One transmit is all it takes; no close timeout is involved.
+    let mut buf = Vec::new();
+    let now = pair.time;
+    let _ = pair
+        .client_conn_mut(client_ch)
+        .poll_transmit(now, 1, &mut buf);
+    assert!(pair.client_conn_mut(client_ch).is_closed());
+
+    let mut reasons = Vec::new();
+    while let Some(event) = pair.client_conn_mut(client_ch).poll() {
+        if let Event::ConnectionLost { reason } = event {
+            reasons.push(reason);
+        }
+    }
+    assert_eq!(reasons.len(), 1, "reported once: {reasons:?}");
+    match &reasons[0] {
+        ConnectionError::TransportError(error) => assert_eq!(
+            error.code,
+            crate::proto::TransportErrorCode::CONNECTION_ID_LIMIT_ERROR,
+            "the code the failure carried, not a substitute"
+        ),
+        other => panic!("expected the original transport error, got {other:?}"),
+    }
+    // Draining is quiet: the error is not reported again.
+    drive_settled(&mut pair);
+    while let Some(event) = pair.client_conn_mut(client_ch).poll() {
+        assert!(
+            !matches!(event, Event::ConnectionLost { .. }),
+            "reported twice: {event:?}"
+        );
+    }
 }
 
 /// A stateless reset datagram carrying the token `key` derives for `cid`.

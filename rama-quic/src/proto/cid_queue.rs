@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::ops::Range;
 
 use crate::proto::{ConnectionId, ResetToken, frame::NewConnectionId};
@@ -9,6 +10,53 @@ pub(crate) struct RemCid {
     pub(crate) seq: u64,
     pub(crate) id: ConnectionId,
     pub(crate) reset_token: Option<ResetToken>,
+    /// The addresses a datagram carrying this identifier has actually reached the network for.
+    ///
+    /// RFC 9000 §10.3.1 ties recognition to the identifier *and* the address it was sent to, so
+    /// this is a set rather than a flag. It lives here so that it travels with the identifier:
+    /// moving one between the active, held, reserved, bound and unused sets cannot grant a
+    /// history it does not have, nor take one away, and only retirement — which drops the value —
+    /// ends it. Two addresses are kept, which is what a NAT rebinding needs: the address in use
+    /// and the one the previous path may still answer from. A third displaces the oldest.
+    sent_to: [Option<SocketAddr>; Self::REMOTES],
+}
+
+impl RemCid {
+    /// How many addresses one identifier can be recognised at: the current path and the previous
+    /// one it may still be sent to during a rebinding or a fallback.
+    pub(crate) const REMOTES: usize = 2;
+
+    /// The token a stateless reset from `remote` must carry to reset us with this identifier, or
+    /// `None` when nothing has gone out with it towards that address.
+    pub(crate) fn used_reset_token(&self, remote: SocketAddr) -> Option<ResetToken> {
+        self.reset_token.filter(|_| self.is_sent_to(remote))
+    }
+
+    /// Whether a datagram carrying this identifier has gone out at all.
+    pub(crate) fn is_sent(&self) -> bool {
+        self.sent_to.iter().any(Option::is_some)
+    }
+
+    /// Whether a datagram carrying this identifier has gone out towards `remote`.
+    pub(crate) fn is_sent_to(&self, remote: SocketAddr) -> bool {
+        self.sent_to.iter().flatten().any(|&sent| sent == remote)
+    }
+
+    /// Record that a datagram carrying this identifier reached the network for `remote`.
+    fn mark_sent_to(&mut self, remote: SocketAddr) {
+        if self.is_sent_to(remote) {
+            return;
+        }
+        if let Some(slot) = self.sent_to.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(remote);
+            return;
+        }
+        // Bounded: the oldest association gives way, so the table can never grow.
+        self.sent_to.rotate_left(1);
+        if let Some(slot) = self.sent_to.last_mut() {
+            *slot = Some(remote);
+        }
+    }
 }
 
 /// The identifiers a peer's retirement took out of the sets kept aside for paths.
@@ -77,8 +125,9 @@ impl Retired {
 /// Every identifier is bound to at most one path: the active one is sent on the current path,
 /// a held one stays with the previous path while the current one is validated, a reserved one is
 /// set aside for a candidate path, and the unused ones wait for their turn. All of them count
-/// towards the limit we advertised to the peer; the limit check treats every sequence number the
-/// peer issued and we did not retire as active, including the ones we never received.
+/// towards the limit we advertised to the peer, and only those: a sequence number we never
+/// received costs nothing, so a peer that leaves gaps as paths come and go does not shrink the
+/// window it may fill.
 #[derive(Debug)]
 pub(crate) struct CidQueue {
     active: RemCid,
@@ -100,6 +149,9 @@ impl CidQueue {
                 seq: 0,
                 id: cid,
                 reset_token: None,
+                // The handshake sends with this one before the peer has named a token for it, so
+                // its history begins when the first datagram is reported, like any other.
+                sent_to: [None; RemCid::REMOTES],
             },
             held: None,
             reserved: None,
@@ -117,6 +169,15 @@ impl CidQueue {
             .flatten()
     }
 
+    fn present_mut(&mut self) -> impl Iterator<Item = &mut RemCid> + '_ {
+        [&mut self.active]
+            .into_iter()
+            .chain(self.held.iter_mut())
+            .chain(self.reserved.iter_mut())
+            .chain(self.bound.iter_mut().flatten())
+            .chain(self.unused.iter_mut().flatten())
+    }
+
     fn lowest_unused(&self) -> Option<(usize, RemCid)> {
         self.unused
             .iter()
@@ -127,6 +188,7 @@ impl CidQueue {
 
     /// The never-received, not yet retired numbers between `previous` (exclusive) and `next`
     /// (exclusive): everything from the floor on, minus the identifiers kept aside.
+
     fn skipped_between(&self, previous: u64, next: u64) -> [Range<u64>; Self::SKIPPED_RUNS] {
         let mut runs = [const { 0..0 }; Self::SKIPPED_RUNS];
         let mut start = (previous + 1).max(self.floor);
@@ -204,6 +266,7 @@ impl CidQueue {
                 seq: cid.sequence,
                 id: cid.id,
                 reset_token: Some(cid.reset_token),
+                sent_to: [None; RemCid::REMOTES],
             };
             if let Some(slot) = self.unused.iter_mut().find(|slot| slot.is_none()) {
                 *slot = Some(new);
@@ -437,11 +500,57 @@ impl CidQueue {
     /// The reset tokens of the identifiers in use: the active one and the one held for the
     /// previous path. A reset carrying any of them is ours (RFC 9000 §10.3.1); the tokens of
     /// unused identifiers are not checked.
-    pub(crate) fn used_reset_tokens(&self) -> [Option<ResetToken>; 2] {
-        [
-            self.active.reset_token,
-            self.held.and_then(|c| c.reset_token),
-        ]
+    /// The tokens that can reset this connection: one for every identifier a datagram has
+    /// actually gone out with and that is not retired (RFC 9000 §10.3.1). An identifier that only
+    /// changed role, or one moved aside before anything was sent with it, is not among them.
+    pub(crate) fn used_reset_tokens(
+        &self,
+        remote: SocketAddr,
+    ) -> [Option<ResetToken>; Self::PRESENT] {
+        let mut tokens = [None; Self::PRESENT];
+        for (slot, cid) in tokens.iter_mut().zip(self.present()) {
+            *slot = cid.used_reset_token(remote);
+        }
+        tokens
+    }
+
+    /// Every (address, token) pair a reset could reach this connection by, for the endpoint's
+    /// routing table. Bounded by the identifiers present and the addresses each is recognised at.
+    pub(crate) fn used_associations(&self) -> Vec<(SocketAddr, u64, ResetToken)> {
+        let mut associations = Vec::with_capacity(Self::PRESENT);
+        for cid in self.present() {
+            if let Some(token) = cid.reset_token {
+                associations.extend(
+                    cid.sent_to
+                        .iter()
+                        .flatten()
+                        .map(|&remote| (remote, cid.seq, token)),
+                );
+            }
+        }
+        associations
+    }
+
+    /// Record that the sender has put a datagram carrying the identifier numbered `seq` on the
+    /// network towards `remote`, wherever that identifier currently sits.
+    pub(crate) fn mark_sent(&mut self, seq: u64, remote: SocketAddr) {
+        for cid in self.present_mut() {
+            if cid.seq == seq {
+                cid.mark_sent_to(remote);
+            }
+        }
+    }
+
+    /// Whether a datagram carrying the identifier numbered `seq` has gone out. An identifier we do
+    /// not hold has no history to report.
+    pub(crate) fn is_sent(&self, seq: u64) -> bool {
+        self.present().any(|cid| cid.seq == seq && cid.is_sent())
+    }
+
+    /// Whether a datagram carrying the identifier numbered `seq` has gone out towards `remote`.
+    pub(crate) fn is_sent_to(&self, seq: u64, remote: SocketAddr) -> bool {
+        self.present()
+            .any(|cid| cid.seq == seq && cid.is_sent_to(remote))
     }
 
     /// Return the sequence number of active remote CID
@@ -450,6 +559,10 @@ impl CidQueue {
     }
 
     pub(crate) const LEN: usize = 5;
+
+    /// Identifiers that can be present at once: the active one, one kept for a previous path, one
+    /// reserved for a candidate, the ones bound to a path of their own, and the unused ones.
+    pub(crate) const PRESENT: usize = 3 + Self::LEN + Self::LEN;
 
     /// Runs of retired numbers a switch can produce: one more than the identifiers it can hold.
     const SKIPPED_RUNS: usize = Self::LEN + 3;
@@ -478,6 +591,21 @@ mod tests {
 
     fn initial_cid() -> ConnectionId {
         ConnectionId::new(&[0xFF; 8])
+    }
+
+    /// A token distinguishable per identifier, so a test can say which one would reset us.
+    fn token(n: u8) -> ResetToken {
+        ResetToken::from([n; crate::proto::RESET_TOKEN_SIZE])
+    }
+
+    /// A `NEW_CONNECTION_ID` whose token names its sequence number.
+    fn cid_token(sequence: u64, retire_prior_to: u64) -> NewConnectionId {
+        NewConnectionId {
+            sequence,
+            id: ConnectionId::new(&[sequence as u8; 8]),
+            reset_token: token(sequence as u8),
+            retire_prior_to,
+        }
     }
 
     #[test]
@@ -825,6 +953,123 @@ mod tests {
             "the identifier at the bound stays"
         );
         assert_eq!(q.reserved().map(|c| c.seq), Some(2));
+    }
+
+    /// RFC 9000 §10.3.1 as an invariant of the identifier rather than of the connection: what a
+    /// datagram has gone out with stays sent through every change of role, what has not been sent
+    /// gains nothing by being moved, and retirement ends it.
+    #[test]
+    fn send_history_travels_with_the_identifier_and_no_role_change_invents_it() {
+        let mut q = CidQueue::new(initial_cid());
+        for i in 1..5 {
+            q.insert(cid_token(i, 0)).unwrap();
+        }
+        q.set_initial_reset_token(token(0));
+        let here: SocketAddr = "127.0.0.1:4433".parse().unwrap();
+        let there: SocketAddr = "127.0.0.1:4434".parse().unwrap();
+        let used = |q: &CidQueue, remote: SocketAddr| -> Vec<ResetToken> {
+            q.used_reset_tokens(remote)
+                .iter()
+                .flatten()
+                .copied()
+                .collect()
+        };
+        q.mark_sent(0, here);
+        assert_eq!(
+            used(&q, here),
+            vec![token(0)],
+            "only the identifier the handshake sent with"
+        );
+        assert!(
+            used(&q, there).is_empty(),
+            "and only towards the address it was sent to"
+        );
+
+        // Switching to an unused identifier is not sending with it.
+        q.next().expect("an unused identifier");
+        assert_eq!(q.active_seq(), 1);
+        assert!(!q.is_sent(1), "nothing has gone out with it yet");
+        assert!(used(&q, here).is_empty(), "so nothing can reset us");
+        q.mark_sent(1, here);
+        assert_eq!(used(&q, here), vec![token(1)]);
+
+        // Held: the one in use goes aside with its history, the replacement arrives without one.
+        // An unconditional `held` would invent a history here.
+        q.next_holding()
+            .expect("an unused identifier, keeping the current");
+        assert_eq!(q.held().map(|c| c.seq), Some(1));
+        assert_eq!(q.active_seq(), 2);
+        assert!(q.is_sent(1), "the one put aside had been sent");
+        assert!(!q.is_sent(2), "the replacement had not");
+        assert_eq!(
+            used(&q, here),
+            vec![token(1)],
+            "the replacement's token resets nothing until it is sent"
+        );
+
+        // Restoring keeps each side of that straight.
+        q.restore_held();
+        assert_eq!(q.active_seq(), 1);
+        assert!(q.is_sent(1));
+        assert!(!q.is_sent(2) || q.held().is_none(), "2 gained no history");
+
+        // Reserve then promote: a reservation is unsent when it becomes active.
+        let reserved = q.reserve().expect("an unused identifier");
+        assert!(!q.is_sent(reserved.seq));
+        q.promote_reserved();
+        assert_eq!(q.active_seq(), reserved.seq);
+        assert!(!q.is_sent(reserved.seq), "promotion is not sending");
+        assert!(!used(&q, here).contains(&token(reserved.seq as u8)));
+        q.mark_sent(reserved.seq, here);
+        assert!(used(&q, here).contains(&token(reserved.seq as u8)));
+
+        // Binding to a path of its own: same rule, and retirement ends it.
+        q.insert(cid_token(7, 0)).unwrap();
+        let bound = q.bind_unused(0).expect("an unused identifier");
+        assert!(!q.is_sent(bound.seq));
+        q.mark_sent(bound.seq, there);
+        assert!(q.is_sent(bound.seq));
+        assert!(
+            used(&q, there).contains(&token(bound.seq as u8)),
+            "the address it was bound to recognises it"
+        );
+        assert!(
+            !used(&q, here).contains(&token(bound.seq as u8)),
+            "the address it was never sent to does not"
+        );
+        let aside = q.retire_aside(bound.seq + 1);
+        assert!(
+            aside.bound.iter().flatten().any(|&seq| seq == bound.seq),
+            "the peer's retirement covered it"
+        );
+        assert!(!q.is_sent(bound.seq), "a retired identifier has no history");
+        assert!(
+            !used(&q, there).contains(&token(bound.seq as u8)),
+            "and its token is no longer ours"
+        );
+    }
+
+    /// The policy is that a switch retires the numbers it skipped, so a peer that jumps to the
+    /// highest legal sequence number really does name a 2^62-wide run. Nothing here clamps it: what
+    /// keeps that from becoming work is the retirement queue, which refuses an oversized range by
+    /// arithmetic (see `a_range_too_wide_to_walk_is_refused_without_touching_the_queue`).
+    #[test]
+    fn a_distant_sequence_number_is_skipped_as_a_whole() {
+        let mut q = CidQueue::new(initial_cid());
+        let far = (1u64 << 62) - 1;
+        q.insert(cid(far, 0)).expect("a distant number is legal");
+        let (_, retired) = q.next().expect("the connection switches to it");
+        assert_eq!(q.active_seq(), far);
+        let runs: Vec<_> = retired.iter().collect();
+        assert!(
+            runs.iter().any(|r| r.end - r.start > CidQueue::LEN as u64),
+            "the skipped numbers are named in full: {runs:?}"
+        );
+        // The numbers in between are refused from now on, which is the floor's work.
+        assert!(matches!(
+            q.insert(cid(far / 2, 0)),
+            Err(InsertError::Retired)
+        ));
     }
 
     /// Giving up a reservation at the highest sequence the peer has issued must not make a

@@ -216,9 +216,6 @@ struct PathCid {
     id: ConnectionId,
     seq: u64,
     reset_token: Option<ResetToken>,
-    /// Whether a datagram carrying it has actually gone out, which is what makes a reset from
-    /// `remote` carrying its token ours (RFC 9000 §10.3.1).
-    sent: bool,
 }
 
 /// A client's attempt at the server's preferred address (RFC 9000 §9.6.2): a path of its own,
@@ -293,9 +290,6 @@ pub(crate) struct Connection {
     /// A protocol error raised where the caller cannot return one, such as a retirement queue
     /// reaching its bound during a timer. The connection closes with it at the next transmit.
     deferred_error: Option<TransportError>,
-    /// Whether a datagram carrying the active connection ID has actually gone out. Until one has,
-    /// that identifier is not one this connection has used (RFC 9000 §10.3.1).
-    active_cid_sent: bool,
     /// Ack-eliciting packets sent and neither acknowledged, declared lost nor abandoned, across
     /// every packet number space and every path they were sent on, including paths since
     /// discarded. Loss recovery (RFC 9002 §6.2) is a connection-wide matter; the per-path
@@ -456,7 +450,6 @@ impl Connection {
             candidate: None,
             deferred_error: None,
             // The handshake goes out with the identifier the peer chose for it.
-            active_cid_sent: true,
             path_cids: [None; PATH_CIDS],
             in_flight_ack_eliciting: 0,
             state,
@@ -655,7 +648,14 @@ impl Connection {
         assert!(max_datagrams != 0);
         // A protocol error a timer could not report closes the connection here.
         if let Some(error) = self.deferred_error.take() {
+            // The peer is told with the frame this error names, and the application is told the
+            // cause: closing locally must not leave the connection to be reported later as an
+            // engine that drained without a reason.
+            let reason = ConnectionError::TransportError(error.clone());
             self.close_inner(now, Close::Connection(error.into()));
+            if self.error.is_none() {
+                self.error = Some(reason);
+            }
         }
         let max_datagrams = match self.config.enable_segmentation_offload {
             false => 1,
@@ -1375,7 +1375,6 @@ impl Connection {
             id: cid.id,
             seq: cid.seq,
             reset_token: cid.reset_token,
-            sent: false,
         });
         trace!(%remote, ?local, seq = cid.seq, "bound a connection ID to that path");
         Some((cid.id, cid.seq))
@@ -2658,7 +2657,8 @@ impl Connection {
             partial_decode,
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
-            &self.used_reset_tokens(),
+            // A reset is only ours when it comes from an address this identifier was sent to.
+            &self.used_reset_tokens(remote),
         ) {
             self.handle_packet(
                 now,
@@ -3843,20 +3843,9 @@ impl Connection {
     /// number to the network, so that identifier is one this connection has used and a stateless
     /// reset carrying its token belongs to us (RFC 9000 §10.3.1). A probe also counts here, and
     /// only here, against its attempt's bound.
-    pub(crate) fn cid_sent(&mut self, seq: u64) {
-        if seq == self.rem_cids.active_seq() {
-            self.active_cid_sent = true;
-            return;
-        }
-        if let Some(bound) = self
-            .path_cids
-            .iter_mut()
-            .flatten()
-            .find(|bound| bound.seq == seq)
-        {
-            bound.sent = true;
-            return;
-        }
+    pub(crate) fn cid_sent(&mut self, seq: u64, destination: SocketAddr) {
+        self.rem_cids.mark_sent(seq, destination);
+        self.publish_reset_associations();
         let Some(candidate) = self.candidate.as_mut().filter(|c| c.seq == seq) else {
             return;
         };
@@ -3963,22 +3952,20 @@ impl Connection {
     /// The reset tokens that can reset this connection: the identifiers it sends with, which are
     /// the active one, one kept for a previous path, and one a probe has already gone out with
     /// (RFC 9000 §10.3.1).
-    fn used_reset_tokens(&self) -> [Option<ResetToken>; PATH_CIDS + 3] {
-        let [active, held] = self.rem_cids.used_reset_tokens();
-        // Each identifier counts from the moment a datagram carrying it left, which is what
-        // `cid_sent` records; one still waiting for the sender does not make it used.
-        let mut tokens = [None; PATH_CIDS + 3];
-        tokens[0] = active.filter(|_| self.active_cid_sent);
-        tokens[1] = held;
-        tokens[2] = self
-            .candidate
-            .as_ref()
-            .filter(|c| c.transmitted > 0)
-            .and_then(|c| c.reset_token);
-        for (slot, bound) in tokens[3..].iter_mut().zip(self.path_cids.iter()) {
-            *slot = bound.and_then(|bound| bound.reset_token.filter(|_| bound.sent));
+    fn used_reset_tokens(&self, remote: SocketAddr) -> [Option<ResetToken>; CidQueue::PRESENT] {
+        // Every identifier carries its own history, per address it was sent to, so this is simply
+        // the ones a datagram has gone out with towards `remote`. A change of role neither grants
+        // nor erases that, and a token used only at another address is not ours here
+        // (RFC 9000 §10.3.1).
+        self.rem_cids.used_reset_tokens(remote)
+    }
+
+    /// Tell the endpoint every (address, token) pair a reset could reach this connection by, so
+    /// that a token used at more than one address keeps every association it has earned.
+    fn publish_reset_associations(&mut self) {
+        for (remote, seq, token) in self.rem_cids.used_associations() {
+            self.note_reset_token(remote, seq, token);
         }
-        tokens
     }
 
     /// Whether a datagram received at `local` belongs to the current path's local address. An
@@ -4017,6 +4004,17 @@ impl Connection {
             .retire_cids(seq..seq + 1)?;
         self.note_retired(seq..seq + 1);
         Ok(())
+    }
+
+    /// Tests: refuse a retirement too wide to queue and carry the error the way every production
+    /// site does, so the notification path can be exercised without arranging a full queue.
+    #[cfg(test)]
+    pub(crate) fn overflow_retirement_queue(&mut self) {
+        if let Err(error) = self.spaces[SpaceId::Data].pending.retire_cids(0..u64::MAX) {
+            self.defer_error(error);
+        } else {
+            panic!("a retirement of every sequence number should not be queued");
+        }
     }
 
     /// Carry a protocol error out of a path that cannot return one; the first one wins, and the
@@ -4132,11 +4130,23 @@ impl Connection {
         self.rem_cids.held().map(|c| c.id)
     }
 
-    /// Tests: whether a datagram carrying the active connection ID has gone out since the last
-    /// switch (RFC 9000 §10.3.1: until one has, that identifier is not one we have used).
+    /// Tests: whether a datagram carrying the active connection ID has gone out (RFC 9000
+    /// §10.3.1: until one has, that identifier is not one we have used).
     #[cfg(test)]
     pub(crate) fn active_cid_confirmed(&self) -> bool {
-        self.active_cid_sent
+        self.rem_cids.is_sent(self.rem_cids.active_seq())
+    }
+
+    /// Tests: the sequence number of the identifier kept for the previous path.
+    #[cfg(test)]
+    pub(crate) fn held_rem_cid_seq(&self) -> u64 {
+        self.rem_cids.held().expect("an identifier is held").seq
+    }
+
+    /// Tests: whether a datagram carrying the identifier numbered `seq` has gone out.
+    #[cfg(test)]
+    pub(crate) fn cid_confirmed(&self, seq: u64) -> bool {
+        self.rem_cids.is_sent(seq)
     }
 
     /// Tests: how far this client got with the server's preferred address.
@@ -4243,8 +4253,8 @@ impl Connection {
     fn set_reset_token(&mut self, remote: SocketAddr, reset_token: ResetToken) {
         let seq = self.rem_cids.active_seq();
         // The endpoint routes a reset carrying this token to us from now on; whether we treat it
-        // as ours waits for a datagram with this identifier to have gone out.
-        self.active_cid_sent = false;
+        // as ours waits for a datagram with this identifier to have gone out, which the identifier
+        // itself records.
         self.note_reset_token(remote, seq, reset_token);
         self.peer_params.stateless_reset_token = Some(reset_token);
     }
@@ -4785,7 +4795,7 @@ impl Connection {
             first_decode.clone(),
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
-            &self.used_reset_tokens(),
+            &self.used_reset_tokens(self.path.remote),
         )?;
 
         let mut packet = decrypted_header.packet?;

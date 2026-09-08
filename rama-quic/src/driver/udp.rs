@@ -117,6 +117,9 @@ pub(crate) struct Socket {
     response_sender: Sender,
     responses: VecDeque<(proto::Transmit, Box<[u8]>)>,
     response_bytes: usize,
+    /// Names the response currently being sent, so a partly accepted one cannot lend its offset
+    /// to the next.
+    response_transmits: u64,
     dropped_responses: u64,
     failed_responses: u64,
     failure_log: FailureLog,
@@ -136,6 +139,7 @@ impl Socket {
             response_sender,
             responses: VecDeque::new(),
             response_bytes: 0,
+            response_transmits: 0,
             dropped_responses: 0,
             failed_responses: 0,
             failure_log: FailureLog::default(),
@@ -256,7 +260,12 @@ impl Socket {
                 return Ok(ResponseProgress::Drained);
             };
             *budget -= 1;
-            match self.response_sender.poll_transmit(cx, transmit, payload) {
+            match self.response_sender.poll_transmit(
+                cx,
+                TransmitId(self.response_transmits),
+                transmit,
+                payload,
+            ) {
                 Poll::Pending => return Ok(ResponseProgress::Pending),
                 Poll::Ready(Ok(())) => {}
                 Poll::Ready(Err(error)) if error.class == SendFailure::Socket => {
@@ -269,6 +278,8 @@ impl Socket {
             }
             self.response_bytes -= payload.len();
             self.responses.pop_front();
+            // The next response is a descriptor of its own, so it starts its own attempt.
+            self.response_transmits = self.response_transmits.wrapping_add(1);
         }
         Ok(if self.responses.is_empty() {
             ResponseProgress::Drained
@@ -289,6 +300,23 @@ pub(crate) enum ResponseProgress {
     Exhausted,
 }
 
+/// Which descriptor an attempt at the wire belongs to. The caller mints one per descriptor, so
+/// bytes a backend accepted for one can never be spliced into another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TransmitId(pub(crate) u64);
+
+/// What a backend has taken of the descriptor in the sender's hands.
+#[derive(Debug, Clone, Copy)]
+struct InFlight {
+    id: TransmitId,
+    /// Bytes already accepted, which must never be offered again. Cleared when there is nothing
+    /// left to send, when the descriptor is rejected, and when it is abandoned.
+    offset: usize,
+    /// Whether the backend took anything at all for this descriptor. It outlives the offset,
+    /// because a prefix that left counts even when the rest never does.
+    accepted: bool,
+}
+
 /// A single independently wakeable sender. No Sync bound is required.
 #[derive(Debug)]
 pub(crate) struct Sender {
@@ -297,7 +325,7 @@ pub(crate) struct Sender {
     /// The hold on the registry socket this handle was created from; `None` for a socket's own
     /// response sender and for handles created outside a registry.
     lease: Option<Lease>,
-    offset: usize,
+    in_flight: Option<InFlight>,
 }
 
 impl Sender {
@@ -306,7 +334,43 @@ impl Sender {
             inner,
             local_addr,
             lease,
-            offset: 0,
+            in_flight: None,
+        }
+    }
+
+    /// Tests: the bytes of the descriptor in hand that the backend has taken and that must not be
+    /// offered again.
+    #[cfg(test)]
+    fn accepted_prefix(&self) -> usize {
+        self.in_flight.map_or(0, |held| held.offset)
+    }
+
+    /// Whether the backend has taken any part of the descriptor `id`.
+    pub(crate) fn accepted_any(&self, id: TransmitId) -> bool {
+        self.in_flight
+            .is_some_and(|held| held.id == id && held.accepted)
+    }
+
+    /// Give up the unsent remainder of the descriptor `id`. What was accepted stays accepted and
+    /// is never offered again; what was not is dropped with the descriptor.
+    pub(crate) fn abandon(&mut self, id: TransmitId) {
+        if let Some(held) = self.in_flight.as_mut().filter(|held| held.id == id) {
+            held.offset = 0;
+        }
+    }
+
+    /// The bytes of `id` still to send, starting a fresh attempt when the descriptor is new.
+    fn resume(&mut self, id: TransmitId) -> usize {
+        match self.in_flight {
+            Some(held) if held.id == id => held.offset,
+            _ => {
+                self.in_flight = Some(InFlight {
+                    id,
+                    offset: 0,
+                    accepted: false,
+                });
+                0
+            }
         }
     }
 
@@ -339,9 +403,11 @@ impl Sender {
     pub(crate) fn poll_transmit(
         &mut self,
         cx: &mut Context<'_>,
+        id: TransmitId,
         transmit: &proto::Transmit,
         buffer: &[u8],
     ) -> Poll<Result<(), SendError>> {
+        let mut offset = self.resume(id);
         let Some(payload) = buffer.get(..transmit.size) else {
             return self.fail(SendError::descriptor("QUIC transmit exceeds its buffer"));
         };
@@ -352,7 +418,12 @@ impl Sender {
         };
         for _ in 0..SEND_WORK_LIMIT {
             let caps = self.inner.capabilities();
-            let remaining = &payload[self.offset..];
+            let Some(remaining) = payload.get(offset..) else {
+                // The offset belongs to this descriptor, so it cannot exceed it; refuse rather
+                // than splice if that ever stops being true.
+                debug_assert!(false, "accepted prefix outside its own descriptor");
+                return self.fail(SendError::descriptor("QUIC transmit offset out of range"));
+            };
             let split = segment_size
                 .is_some_and(|size| remaining.len().div_ceil(size) > caps.max_send_segments.max(1));
             let len = if split {
@@ -397,9 +468,20 @@ impl Sender {
             let result = ready!(self.inner.poll_send(cx, &datagram));
             match result {
                 Ok(()) => {
-                    self.offset += len;
-                    if self.offset == payload.len() {
-                        self.offset = 0;
+                    offset += len;
+                    self.in_flight = Some(InFlight {
+                        id,
+                        offset,
+                        accepted: true,
+                    });
+                    if offset == payload.len() {
+                        // Nothing is left to send, so nothing may be offered again; that the
+                        // backend took this descriptor stays on record.
+                        self.in_flight = Some(InFlight {
+                            id,
+                            offset: 0,
+                            accepted: true,
+                        });
                         return Poll::Ready(Ok(()));
                     }
                 }
@@ -428,7 +510,10 @@ impl Sender {
 
     fn fail(&mut self, error: SendError) -> Poll<Result<(), SendError>> {
         // A stale offset would splice the next descriptor's bytes; every rejection ends this one.
-        self.offset = 0;
+        // What the backend already took is still on record: a prefix that left, left.
+        if let Some(held) = self.in_flight.as_mut() {
+            held.offset = 0;
+        }
         Poll::Ready(Err(error))
     }
 }
@@ -603,12 +688,16 @@ mod tests {
         let waker = Waker::from(wake.clone());
         let mut cx = Context::from_waker(&waker);
         let t = transmit(5, Some(2));
-        assert!(sender.poll_transmit(&mut cx, &t, b"abcde").is_pending());
+        assert!(
+            sender
+                .poll_transmit(&mut cx, TransmitId(1), &t, b"abcde")
+                .is_pending()
+        );
         assert_eq!(probe.lock().accepted.len(), 1);
         probe.lock().waker.take().unwrap().wake();
         assert_eq!(wake.0.load(Ordering::Relaxed), 1);
         assert!(matches!(
-            sender.poll_transmit(&mut cx, &t, b"abcde"),
+            sender.poll_transmit(&mut cx, TransmitId(1), &t, b"abcde"),
             Poll::Ready(Ok(()))
         ));
         let probe = probe.lock();
@@ -633,7 +722,7 @@ mod tests {
         let (mut sender, probe) = fixture([Action::Fail(io::ErrorKind::InvalidInput)], caps);
         let mut cx = Context::from_waker(Waker::noop());
         assert!(
-            matches!(sender.poll_transmit(&mut cx, &transmit(5, Some(2)), b"abcde"), Poll::Ready(Err(e)) if e.error.kind() == io::ErrorKind::InvalidInput && e.class == SendFailure::Descriptor)
+            matches!(sender.poll_transmit(&mut cx, TransmitId(1), &transmit(5, Some(2)), b"abcde"), Poll::Ready(Err(e)) if e.error.kind() == io::ErrorKind::InvalidInput && e.class == SendFailure::Descriptor)
         );
         assert!(probe.lock().accepted.is_empty());
     }
@@ -646,7 +735,7 @@ mod tests {
             let (mut sender, probe) = fixture([Action::FailAfterCapabilityDrop(kind)], caps);
             let mut cx = Context::from_waker(Waker::noop());
             assert!(
-                matches!(sender.poll_transmit(&mut cx, &transmit(5, Some(2)), b"abcde"), Poll::Ready(Err(error)) if error.error.kind() == kind)
+                matches!(sender.poll_transmit(&mut cx, TransmitId(1), &transmit(5, Some(2)), b"abcde"), Poll::Ready(Err(error)) if error.error.kind() == kind)
             );
             assert!(probe.lock().accepted.is_empty());
         }
@@ -658,18 +747,18 @@ mod tests {
         let mut cx = Context::from_waker(Waker::noop());
         let mut t = transmit(1, None);
         assert!(matches!(
-            sender.poll_transmit(&mut cx, &t, b"a"),
+            sender.poll_transmit(&mut cx, TransmitId(1), &t, b"a"),
             Poll::Ready(Ok(()))
         ));
         assert_eq!(probe.lock().accepted[0].1, None);
         t.local = Some(([127, 0, 0, 3], 0).into());
         assert!(
-            matches!(sender.poll_transmit(&mut cx, &t, b"a"), Poll::Ready(Err(e)) if e.error.kind() == io::ErrorKind::Unsupported && e.class == SendFailure::Descriptor)
+            matches!(sender.poll_transmit(&mut cx, TransmitId(1), &t, b"a"), Poll::Ready(Err(e)) if e.error.kind() == io::ErrorKind::Unsupported && e.class == SendFailure::Descriptor)
         );
         sender.local_addr = ([0, 0, 0, 0], 1234).into();
         t.local = Some(([127, 0, 0, 1], 0).into());
         assert!(
-            matches!(sender.poll_transmit(&mut cx, &t, b"a"), Poll::Ready(Err(e)) if e.error.kind() == io::ErrorKind::Unsupported)
+            matches!(sender.poll_transmit(&mut cx, TransmitId(1), &t, b"a"), Poll::Ready(Err(e)) if e.error.kind() == io::ErrorKind::Unsupported)
         );
         assert_eq!(probe.lock().accepted.len(), 1);
     }
@@ -681,17 +770,21 @@ mod tests {
         let waker = Waker::from(wake.clone());
         let mut cx = Context::from_waker(&waker);
         assert!(matches!(
-            sender.poll_transmit(&mut cx, &transmit(1, Some(1)), b"a"),
+            sender.poll_transmit(&mut cx, TransmitId(1), &transmit(1, Some(1)), b"a"),
             Poll::Ready(Ok(()))
         ));
         assert_eq!(probe.lock().accepted[0].3, None);
         let data = [42; SEND_WORK_LIMIT + 1];
         let t = transmit(data.len(), Some(1));
-        assert!(sender.poll_transmit(&mut cx, &t, &data).is_pending());
+        assert!(
+            sender
+                .poll_transmit(&mut cx, TransmitId(1), &t, &data)
+                .is_pending()
+        );
         assert_eq!(wake.0.load(Ordering::Relaxed), 1);
         assert_eq!(probe.lock().accepted.len(), SEND_WORK_LIMIT + 1);
         assert!(matches!(
-            sender.poll_transmit(&mut cx, &t, &data),
+            sender.poll_transmit(&mut cx, TransmitId(1), &t, &data),
             Poll::Ready(Ok(()))
         ));
         assert_eq!(probe.lock().accepted.len(), SEND_WORK_LIMIT + 2);
@@ -756,6 +849,7 @@ mod tests {
         assert!(
             a.poll_transmit(
                 &mut Context::from_waker(&wakers[1]),
+                TransmitId(1),
                 &transmit(1, None),
                 b"a"
             )
@@ -764,6 +858,7 @@ mod tests {
         assert!(
             b.poll_transmit(
                 &mut Context::from_waker(&wakers[2]),
+                TransmitId(1),
                 &transmit(1, None),
                 b"b"
             )
@@ -800,19 +895,20 @@ mod tests {
         );
         let mut cx = Context::from_waker(Waker::noop());
         let first = transmit(5, Some(2));
-        let error = match sender.poll_transmit(&mut cx, &first, b"abcde") {
+        let error = match sender.poll_transmit(&mut cx, TransmitId(1), &first, b"abcde") {
             Poll::Ready(Err(error)) => error,
             other => panic!("expected the second segment to fail, got {other:?}"),
         };
         assert_eq!(error.class, SendFailure::Datagram);
         assert_eq!(error.error.kind(), io::ErrorKind::HostUnreachable);
         assert_eq!(
-            sender.offset, 0,
+            sender.accepted_prefix(),
+            0,
             "a rejected descriptor must not leave a partial offset"
         );
         let second = transmit(3, None);
         assert!(matches!(
-            sender.poll_transmit(&mut cx, &second, b"xyz"),
+            sender.poll_transmit(&mut cx, TransmitId(2), &second, b"xyz"),
             Poll::Ready(Ok(()))
         ));
         let probe = probe.lock();
@@ -840,11 +936,11 @@ mod tests {
         ];
         for (action, class) in cases {
             let (mut sender, _) = fixture([action], DatagramCapabilities::portable());
-            match sender.poll_transmit(&mut cx, &transmit(1, None), b"a") {
+            match sender.poll_transmit(&mut cx, TransmitId(1), &transmit(1, None), b"a") {
                 Poll::Ready(Err(error)) => assert_eq!(error.class, class),
                 other => panic!("expected a failure, got {other:?}"),
             }
-            assert_eq!(sender.offset, 0);
+            assert_eq!(sender.accepted_prefix(), 0);
         }
     }
 
@@ -965,7 +1061,7 @@ mod tests {
         // Zero is an invalid descriptor.
         let (mut sender, probe) = fixture([], caps);
         assert!(matches!(
-            sender.poll_transmit(&mut cx, &transmit(4, Some(0)), b"abcd"),
+            sender.poll_transmit(&mut cx, TransmitId(1), &transmit(4, Some(0)), b"abcd"),
             Poll::Ready(Err(e)) if e.class == SendFailure::Descriptor
         ));
         assert!(probe.lock().accepted.is_empty());
@@ -973,7 +1069,7 @@ mod tests {
         for size in [4usize, 5] {
             let (mut sender, probe) = fixture([], caps);
             assert!(matches!(
-                sender.poll_transmit(&mut cx, &transmit(4, Some(size)), b"abcd"),
+                sender.poll_transmit(&mut cx, TransmitId(1), &transmit(4, Some(size)), b"abcd"),
                 Poll::Ready(Ok(()))
             ));
             let probe = probe.lock();
@@ -983,7 +1079,7 @@ mod tests {
         // Exactly the capability's segment count goes out as one segmented descriptor.
         let (mut sender, probe) = fixture([], caps);
         assert!(matches!(
-            sender.poll_transmit(&mut cx, &transmit(8, Some(2)), b"abcdefgh"),
+            sender.poll_transmit(&mut cx, TransmitId(1), &transmit(8, Some(2)), b"abcdefgh"),
             Poll::Ready(Ok(()))
         ));
         assert_eq!(probe.lock().accepted.len(), 1);
@@ -992,7 +1088,12 @@ mod tests {
         // datagram, then the remaining four fit one segmented descriptor.
         let (mut sender, probe) = fixture([], caps);
         assert!(matches!(
-            sender.poll_transmit(&mut cx, &transmit(10, Some(2)), b"abcdefghij"),
+            sender.poll_transmit(
+                &mut cx,
+                TransmitId(1),
+                &transmit(10, Some(2)),
+                b"abcdefghij"
+            ),
             Poll::Ready(Ok(()))
         ));
         let probe = probe.lock();
@@ -1012,7 +1113,12 @@ mod tests {
         let mut cx = Context::from_waker(Waker::noop());
         for payload in [b"a".as_slice(), b"bb", b"ccc"] {
             assert!(matches!(
-                sender.poll_transmit(&mut cx, &transmit(payload.len(), None), payload),
+                sender.poll_transmit(
+                    &mut cx,
+                    TransmitId(1),
+                    &transmit(payload.len(), None),
+                    payload
+                ),
                 Poll::Ready(Ok(()))
             ));
         }
@@ -1084,7 +1190,7 @@ mod tests {
         let (mut sender, probe) = fixture([Action::Descriptor], caps);
         let mut cx = Context::from_waker(Waker::noop());
         // Three segments exactly match the capability, and it does not fall: no retry.
-        match sender.poll_transmit(&mut cx, &transmit(6, Some(2)), b"abcdef") {
+        match sender.poll_transmit(&mut cx, TransmitId(1), &transmit(6, Some(2)), b"abcdef") {
             Poll::Ready(Err(error)) => assert_eq!(error.class, SendFailure::Descriptor),
             other => panic!("expected an immediate descriptor failure, got {other:?}"),
         }

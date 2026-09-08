@@ -1177,6 +1177,7 @@ impl ConnectionRef {
                 socket: Some(socket),
                 send_buffer: Vec::new(),
                 buffered_transmit: None,
+                transmits_offered: 0,
                 endpoint_drained: false,
                 pending_rebind: None,
                 released_senders: Vec::new(),
@@ -1370,8 +1371,11 @@ pub(crate) struct State {
     /// Datagrams dropped because the identifier they carried may no longer be sent.
     stale_transmits: u64,
     send_buffer: Vec<u8>,
-    /// We buffer a transmit when the underlying I/O would block
-    buffered_transmit: Option<crate::proto::Transmit>,
+    /// We buffer a transmit when the underlying I/O would block, with the name of the attempt it
+    /// belongs to, so the sender cannot apply what it accepted to a different descriptor.
+    buffered_transmit: Option<(crate::driver::udp::TransmitId, crate::proto::Transmit)>,
+    /// Names each descriptor handed to the sender.
+    transmits_offered: u64,
     endpoint_drained: bool,
     receive_queue: PacketBudget,
     failure_log: FailureLog,
@@ -1462,8 +1466,8 @@ impl State {
             };
             let max_datagrams = socket.max_transmit_segments().min(MAX_TRANSMIT_SEGMENTS);
             // Retry the last transmit, or get a new one.
-            let t = match self.buffered_transmit.take() {
-                Some(t) => t,
+            let (id, t) = match self.buffered_transmit.take() {
+                Some(pair) => pair,
                 None => {
                     self.send_buffer.clear();
                     self.send_buffer.reserve(self.inner.current_mtu() as usize);
@@ -1476,34 +1480,45 @@ impl State {
                                 None => 1,
                                 Some(s) => t.size.div_ceil(s), // round up
                             };
-                            t
+                            self.transmits_offered = self.transmits_offered.wrapping_add(1);
+                            (crate::driver::udp::TransmitId(self.transmits_offered), t)
                         }
                         None => break,
                     }
                 }
             };
 
-            // A datagram written with an identifier the connection may no longer send is
-            // dropped rather than put on the wire (RFC 9000 §9.5).
+            // A datagram written with an identifier the connection may no longer send is dropped
+            // rather than put on the wire (RFC 9000 §9.5). Only its unsent remainder is dropped:
+            // a prefix the sender already took has gone, so it counts and is never offered again.
             if let Some(seq) = t.cid_used
                 && !self.inner.may_send_cid(seq)
             {
+                socket.abandon(id);
+                if socket.accepted_any(id) {
+                    self.inner.cid_sent(seq, t.destination);
+                }
                 self.stale_transmits += 1;
+                if transmits >= MAX_TRANSMIT_DATAGRAMS {
+                    return Ok(true);
+                }
                 continue;
             }
 
-            match socket.poll_transmit(cx, &t, &self.send_buffer) {
+            let outcome = socket.poll_transmit(cx, id, &t, &self.send_buffer);
+            // An identifier is used from the first byte the sender accepted, whatever becomes of
+            // the rest: a prefix that left cannot be recalled, so its reset token is ours.
+            if let Some(seq) = t.cid_used
+                && socket.accepted_any(id)
+            {
+                self.inner.cid_sent(seq, t.destination);
+            }
+            match outcome {
                 Poll::Pending => {
-                    self.buffered_transmit = Some(t);
+                    self.buffered_transmit = Some((id, t));
                     return Ok(false);
                 }
-                // The engine counts an identifier as used from here, not from where the datagram
-                // was written: what the sender did not take never went out.
-                Poll::Ready(Ok(())) => {
-                    if let Some(seq) = t.cid_used {
-                        self.inner.cid_sent(seq);
-                    }
-                }
+                Poll::Ready(Ok(())) => {}
                 Poll::Ready(Err(error)) => match error.class {
                     // The engine already counts this datagram as in flight, so loss detection
                     // and MTU discovery recover from it like from any dropped packet.

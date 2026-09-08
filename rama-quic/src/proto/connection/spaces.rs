@@ -356,18 +356,28 @@ pub struct Retransmits {
 }
 
 impl Retransmits {
+    /// Queue `cids` for retirement, or refuse the lot.
+    ///
+    /// The peer chooses these sequence numbers, so the range can be astronomically wide: nothing
+    /// here may walk it. Its size is arithmetic, the duplicates come from walking the queue, which
+    /// is already capped, and a refusal leaves the queue untouched.
     pub(super) fn retire_cids(&mut self, cids: Range<u64>) -> Result<(), TransportError> {
-        // We don't bother counting in-flight frames because those are bounded by congestion control.
-        // A sequence number already queued costs nothing to see again, so a peer repeating
-        // retired identifiers cannot grow this queue.
-        let num = cids
-            .clone()
-            .filter(|seq| !self.retire_cids.contains(seq))
+        let limit_error =
+            || TransportError::CONNECTION_ID_LIMIT_ERROR("queued too many retired CIDs");
+        // In-flight frames are not counted because congestion control bounds them. A sequence
+        // number already queued costs nothing to see again, so a peer repeating retired
+        // identifiers cannot grow this queue.
+        let range_len = cids.end.saturating_sub(cids.start);
+        let overlap = self
+            .retire_cids
+            .iter()
+            .filter(|seq| cids.contains(seq))
             .count() as u64;
-        if (self.retire_cids.len() as u64).saturating_add(num) > Self::MAX_PENDING_RETIRED_CIDS {
-            return Err(TransportError::CONNECTION_ID_LIMIT_ERROR(
-                "queued too many retired CIDs",
-            ));
+        let new_count = range_len.saturating_sub(overlap);
+        let remaining =
+            Self::MAX_PENDING_RETIRED_CIDS.saturating_sub(self.retire_cids.len() as u64);
+        if new_count > remaining {
+            return Err(limit_error());
         }
         for seq in cids {
             if !self.retire_cids.contains(&seq) {
@@ -1142,6 +1152,70 @@ mod test {
     /// A peer that keeps naming identifiers we have already retired cannot make the pending
     /// queue grow: a sequence number already queued costs nothing to see again. Distinct ones
     /// are still capped, and the cap is a protocol error rather than a lost bound.
+    /// A range the peer's sequence numbers can make astronomically wide is refused by arithmetic:
+    /// the call returns rather than walking 2^62 numbers, and leaves the queue as it found it.
+    #[test]
+    fn a_range_too_wide_to_walk_is_refused_without_touching_the_queue() {
+        let mut pending = Retransmits::default();
+        pending.retire_cids(3..5).expect("two fit");
+        let before = pending.retire_cids.clone();
+        // The range `CidQueue` produces for a peer that jumps to the highest legal sequence
+        // number. Walking it is the defect; this call has to come straight back.
+        let huge = 1..(1u64 << 62) - 1;
+        let error = pending
+            .retire_cids(huge.clone())
+            .expect_err("a range that wide is a protocol error");
+        assert_eq!(
+            error.code,
+            crate::proto::TransportErrorCode::CONNECTION_ID_LIMIT_ERROR
+        );
+        assert_eq!(pending.retire_cids, before, "a refusal changes nothing");
+        // Neither does one that starts inside what is already queued.
+        assert!(pending.retire_cids(4..u64::MAX).is_err());
+        assert_eq!(pending.retire_cids, before);
+        // And the bound is on what the range would add, not on where it sits.
+        assert!(
+            pending
+                .retire_cids(0..Retransmits::MAX_PENDING_RETIRED_CIDS + 1)
+                .is_err()
+        );
+        assert_eq!(pending.retire_cids, before);
+
+        // The highest sequence number QUIC can carry, as the start and as the end.
+        let max = VarInt::MAX.into_inner();
+        assert!(pending.retire_cids(0..max).is_err());
+        assert!(pending.retire_cids(max - 1..max).is_ok(), "one number fits");
+        assert!(pending.retire_cids.contains(&(max - 1)));
+
+        // Empty and reversed ranges are nothing to do, and change nothing.
+        let now = pending.retire_cids.clone();
+        assert!(pending.retire_cids(7..7).is_ok(), "an empty range");
+        assert!(pending.retire_cids(9..4).is_ok(), "a reversed range");
+        assert_eq!(pending.retire_cids, now);
+
+        // A retransmission of a range already queued is free even at the cap: what it would add
+        // is what counts, and that is nothing.
+        let cap = Retransmits::MAX_PENDING_RETIRED_CIDS;
+        let mut full = Retransmits::default();
+        full.retire_cids(100..100 + cap).expect("exactly the cap");
+        assert_eq!(full.retire_cids.len() as u64, cap);
+        assert!(
+            full.retire_cids(100..100 + cap).is_ok(),
+            "the same range again adds nothing"
+        );
+        assert_eq!(full.retire_cids.len() as u64, cap);
+        assert!(
+            full.retire_cids(100..100 + cap + 1).is_err(),
+            "one number beyond it does not fit"
+        );
+        assert_eq!(full.retire_cids.len() as u64, cap);
+        assert!(
+            full.retire_cids(100 + cap / 2..100 + cap).is_ok(),
+            "an overlapping range that adds nothing is free at the cap"
+        );
+        assert_eq!(full.retire_cids.len() as u64, cap);
+    }
+
     #[test]
     fn repeated_retirements_cost_nothing_and_distinct_ones_are_capped() {
         let mut pending = Retransmits::default();

@@ -24,7 +24,7 @@ use crate::proto::{
     Duration, INITIAL_MTU, Instant, MAX_CID_SIZE, MIN_INITIAL_SIZE, RESET_TOKEN_SIZE, ResetToken,
     Side, Transmit, TransportConfig, TransportError,
     cid_generator::ConnectionIdGenerator,
-    cid_queue::CidQueue,
+    cid_queue::{CidQueue, RemCid},
     coding::BufMutExt,
     config::{ClientConfig, EndpointConfig, ServerConfig},
     connection::{Connection, ConnectionError, SideArgs},
@@ -129,14 +129,12 @@ impl Endpoint {
                 return Some(self.send_new_identifiers(now, ch, n));
             }
             ResetTokenUsed(remote, seq, token) => {
-                if let Some((old_remote, old_token)) =
-                    self.connections[ch].reset_tokens.insert(seq, remote, token)
+                // The same identifier can be recognised at more than one address — a rebinding
+                // keeps it while the previous path may still answer — so an association is keyed
+                // by both and installing one never deletes another (RFC 9000 §10.3.1).
+                if self.connections[ch].reset_tokens.insert(seq, remote, token)
+                    && self.index.connection_reset_tokens.insert(remote, token, ch)
                 {
-                    self.index
-                        .connection_reset_tokens
-                        .remove(old_remote, old_token);
-                }
-                if self.index.connection_reset_tokens.insert(remote, token, ch) {
                     warn!("duplicate reset token");
                 }
             }
@@ -1390,41 +1388,42 @@ pub(crate) struct ConnectionMeta {
     reset_tokens: UsedResetTokens,
 }
 
-/// The reset tokens a connection may be reset with (RFC 9000 §10.3.1): one for each remote
-/// connection ID it has used and not retired, keyed by that ID's sequence number and bound to the
-/// address the ID is sent to. Bounded by the connection ID limit we advertise plus the
-/// identifiers a connection keeps aside for its previous and its candidate path.
+/// The reset tokens a connection may be reset with (RFC 9000 §10.3.1): one entry for each
+/// (connection ID, address) pair a datagram has actually gone out for and that is not retired.
+///
+/// An identifier is recognised at more than one address while a rebinding or a fallback keeps the
+/// previous path relevant, so the sequence number alone does not identify an entry. The engine
+/// bounds both sides of that product — the identifiers it can hold at once, and the addresses it
+/// keeps per identifier — so this table is sized to hold every association the engine can report
+/// and never has to evict a live route.
 #[derive(Debug, Default)]
 struct UsedResetTokens {
-    entries: [Option<(u64, SocketAddr, ResetToken)>; CidQueue::LEN + 2],
+    entries: [Option<(u64, SocketAddr, ResetToken)>; CidQueue::PRESENT * RemCid::REMOTES],
 }
 
 impl UsedResetTokens {
-    /// Record that the ID with `seq` is sent to `remote`. Returns the association this replaces:
-    /// the same ID's earlier one, or, should every slot be taken, the lowest sequence's.
-    fn insert(
-        &mut self,
-        seq: u64,
-        remote: SocketAddr,
-        token: ResetToken,
-    ) -> Option<(SocketAddr, ResetToken)> {
-        let slot = self
-            .entries
-            .iter()
-            .position(|e| e.is_some_and(|(s, ..)| s == seq))
-            .or_else(|| self.entries.iter().position(Option::is_none))
-            .unwrap_or_else(|| {
-                debug_assert!(false, "more used reset tokens than connection IDs");
-                warn!("reset token set full; dropping the oldest association");
-                self.entries
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, e)| e.map(|(s, ..)| (s, i)))
-                    .min()
-                    .map_or(0, |(_, i)| i)
-            });
-        let old = self.entries[slot].replace((seq, remote, token));
-        old.map(|(_, r, t)| (r, t))
+    /// Record that the ID with `seq` is sent to `remote`. `true` when this is a new association;
+    /// a repetition of one already held changes nothing.
+    fn insert(&mut self, seq: u64, remote: SocketAddr, token: ResetToken) -> bool {
+        let known = |e: &Option<(u64, SocketAddr, ResetToken)>| {
+            e.is_some_and(|(s, r, t)| s == seq && r == remote && t == token)
+        };
+        if self.entries.iter().any(known) {
+            return false;
+        }
+        let Some(slot) = self.entries.iter().position(Option::is_none) else {
+            // The engine cannot report more associations than there are slots. Refusing to
+            // install rather than evicting keeps every route that is already live, and the
+            // connection is no worse off than before this token was known.
+            debug_assert!(
+                false,
+                "more used reset associations than the engine can hold"
+            );
+            warn!("reset association table full; the new association is not installed");
+            return false;
+        };
+        self.entries[slot] = Some((seq, remote, token));
+        true
     }
 
     /// Forget the associations of the IDs with sequence numbers in `seqs`.

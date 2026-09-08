@@ -531,6 +531,7 @@ impl TestEndpoint {
                     );
                     let size = transmit.size;
                     let cid_used = transmit.cid_used;
+                    let destination = transmit.destination;
                     // A datagram whose identifier may no longer be sent is dropped, as the
                     // driver drops it.
                     if cid_used.is_some_and(|seq| !conn.may_send_cid(seq)) {
@@ -541,7 +542,7 @@ impl TestEndpoint {
                     buf.clear();
                     // The datagram is on its way, which is the boundary the driver reports.
                     if let Some(seq) = cid_used {
-                        conn.cid_sent(seq);
+                        conn.cid_sent(seq, destination);
                     }
                 }
                 self.timeout = conn.poll_timeout();
