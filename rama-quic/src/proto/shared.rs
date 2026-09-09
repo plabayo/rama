@@ -14,6 +14,10 @@ pub(crate) enum ConnectionEventInner {
     Datagram(DatagramConnectionEvent),
     /// New connection identifiers have been issued for the Connection
     NewIdentifiers(Vec<IssuedCid>, Instant),
+    /// The route a stateless reset for this identifier at this address would arrive by is now
+    /// installed, so a datagram carrying that identifier may go to that address. The last field
+    /// names the installation, and an acknowledgement naming any other one is stale.
+    ResetRouteInstalled(SocketAddr, u64, u64),
 }
 
 /// Variant of [`ConnectionEventInner`].
@@ -56,7 +60,12 @@ pub(crate) enum EndpointEventInner {
     Drained,
     /// The connection now sends the remote connection ID with this sequence number to this
     /// address: a stateless reset from there carrying this token belongs to it.
-    ResetTokenUsed(SocketAddr, u64, ResetToken),
+    /// A datagram carrying this identifier reached the network for this address: install the
+    /// route a stateless reset would arrive by. The last field names the installation.
+    ResetTokenUsed(SocketAddr, u64, ResetToken, u64),
+    /// This identifier is no longer sent to this address: release that route. The last field names
+    /// the installation being released, so a newer one is left in place.
+    ResetTokenReleased(SocketAddr, u64, ResetToken, u64),
     /// The remote connection IDs with these sequence numbers were retired: their tokens no longer
     /// identify a reset for this connection.
     ResetTokensRetired(Range<u64>),

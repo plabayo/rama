@@ -1,6 +1,8 @@
 use std::net::SocketAddr;
 use std::ops::Range;
 
+use rama_core::telemetry::tracing::warn;
+
 use crate::proto::{ConnectionId, ResetToken, frame::NewConnectionId};
 
 /// A remote connection ID with its sequence number and, unless it is the initial one before the
@@ -10,21 +12,82 @@ pub(crate) struct RemCid {
     pub(crate) seq: u64,
     pub(crate) id: ConnectionId,
     pub(crate) reset_token: Option<ResetToken>,
-    /// The addresses a datagram carrying this identifier has actually reached the network for.
+    /// The addresses a datagram carrying this identifier has actually reached the network for,
+    /// least recently used first.
     ///
     /// RFC 9000 §10.3.1 ties recognition to the identifier *and* the address it was sent to, so
     /// this is a set rather than a flag. It lives here so that it travels with the identifier:
     /// moving one between the active, held, reserved, bound and unused sets cannot grant a
     /// history it does not have, nor take one away, and only retirement — which drops the value —
     /// ends it. Two addresses are kept, which is what a NAT rebinding needs: the address in use
-    /// and the one the previous path may still answer from. A third displaces the oldest.
-    sent_to: [Option<SocketAddr>; Self::REMOTES],
+    /// and the one the previous path may still answer from. A third displaces the one that
+    /// stopped being used, which is why the order is by recency and not by arrival.
+    sent_to: [Option<Association>; Self::REMOTES],
+}
+
+/// One route to this connection: an identifier at an address.
+///
+/// The generation names this installation, so an acknowledgement or a release that was in flight
+/// cannot be applied to a later installation that happens to reuse the same identifier and
+/// address.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) struct Association {
+    pub(crate) remote: SocketAddr,
+    pub(crate) generation: u64,
+    /// Whether a datagram carrying this identifier has actually reached the network for `remote`.
+    /// The route is installed before the first one does, so no reset can race it, but until it
+    /// has, a reset carrying this token is not ours (RFC 9000 §10.3.1).
+    sent: bool,
+    /// Whether the endpoint has been told about this route. A route recorded before the peer named
+    /// the identifier's token has nothing to install yet and is announced once it does, which is
+    /// how the identifier the handshake sends with keeps the history it earned.
+    announced: bool,
+    /// Whether the endpoint has confirmed the route exists. Until it has, a datagram carrying this
+    /// identifier must not go to this address, or a reset answering it could arrive before there
+    /// is anything to route it by.
+    installed: bool,
+}
+
+/// What the endpoint's routing has to be told after a route was touched. Both fields empty means
+/// nothing changed, which is the case for every ordinary send and every retry of one.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default)]
+pub(crate) struct RouteDelta {
+    /// A route the endpoint does not have yet.
+    pub(crate) added: Option<Association>,
+    /// A route displaced by `added`, whose address had gone longest without a send.
+    pub(crate) released: Option<Association>,
+}
+
+impl RouteDelta {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.added.is_none() && self.released.is_none()
+    }
+}
+
+/// The addresses a path role currently owns for an identifier: the address the current path sends
+/// to, and the one a retained previous or fallback path answers from.
+///
+/// Recency does not decide what is still live — moving off a path that was never validated keeps
+/// the *original* as the fallback, so the address in the middle is the one that stopped being
+/// relevant. A role's association is never displaced by transient history.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct OwnedRemotes {
+    pub(crate) current: Option<SocketAddr>,
+    pub(crate) fallback: Option<SocketAddr>,
+}
+
+impl OwnedRemotes {
+    pub(crate) fn owns(&self, remote: SocketAddr) -> bool {
+        self.current == Some(remote) || self.fallback == Some(remote)
+    }
 }
 
 impl RemCid {
-    /// How many addresses one identifier can be recognised at: the current path and the previous
-    /// one it may still be sent to during a rebinding or a fallback.
-    pub(crate) const REMOTES: usize = 2;
+    /// How many addresses one identifier can be recognised at, derived from the roles that can
+    /// own it at once: the current path, a retained previous or fallback path, and one address
+    /// that is neither but that a descriptor already accepted in part was sent to. A fourth would
+    /// mean a role we do not have.
+    pub(crate) const REMOTES: usize = 3;
 
     /// The token a stateless reset from `remote` must carry to reset us with this identifier, or
     /// `None` when nothing has gone out with it towards that address.
@@ -34,27 +97,122 @@ impl RemCid {
 
     /// Whether a datagram carrying this identifier has gone out at all.
     pub(crate) fn is_sent(&self) -> bool {
-        self.sent_to.iter().any(Option::is_some)
+        self.associations().any(|assoc| assoc.sent)
     }
 
     /// Whether a datagram carrying this identifier has gone out towards `remote`.
     pub(crate) fn is_sent_to(&self, remote: SocketAddr) -> bool {
-        self.sent_to.iter().flatten().any(|&sent| sent == remote)
+        self.associations()
+            .any(|assoc| assoc.remote == remote && assoc.sent)
     }
 
-    /// Record that a datagram carrying this identifier reached the network for `remote`.
-    fn mark_sent_to(&mut self, remote: SocketAddr) {
-        if self.is_sent_to(remote) {
-            return;
+    /// How many of the slots hold a route. They are kept packed from the front, so this is also
+    /// where the next one goes.
+    fn filled(&self) -> usize {
+        self.sent_to
+            .iter()
+            .position(Option::is_none)
+            .unwrap_or(Self::REMOTES)
+    }
+
+    /// Whether this identifier may be sent to `remote`: the route has to exist first, and an
+    /// identifier with no token has no route to wait for.
+    pub(crate) fn is_installed_for(&self, remote: SocketAddr) -> bool {
+        if self.reset_token.is_none() {
+            // The peer has not named a token for this identifier, so there is no route for a
+            // reset to arrive by and nothing to wait for. The handshake sends like this.
+            return true;
         }
-        if let Some(slot) = self.sent_to.iter_mut().find(|slot| slot.is_none()) {
-            *slot = Some(remote);
-            return;
+        self.associations()
+            .find(|assoc| assoc.remote == remote)
+            .is_some_and(|assoc| assoc.installed)
+    }
+
+    /// The addresses this identifier is recognised at, least recently used first.
+    pub(crate) fn associations(&self) -> impl Iterator<Item = Association> + '_ {
+        self.sent_to.iter().flatten().copied()
+    }
+
+    /// Make sure this identifier has a route to `remote`, and say what the endpoint has to be
+    /// told. `sent` records that a datagram has actually reached the network for it; installing a
+    /// route does not, and cannot un-send what already has.
+    ///
+    /// `generation` names a new installation and is only consumed by one.
+    fn route_to(
+        &mut self,
+        remote: SocketAddr,
+        generation: u64,
+        sent: bool,
+        token_known: bool,
+        owned: OwnedRemotes,
+    ) -> RouteDelta {
+        if let Some(at) = self
+            .sent_to
+            .iter()
+            .position(|slot| slot.is_some_and(|assoc| assoc.remote == remote))
+        {
+            // This address is in use, so it is the other one that is next to give way. Only the
+            // filled slots rotate: they are kept packed, oldest first.
+            let filled = self.filled();
+            self.sent_to[at..filled].rotate_left(1);
+            // The refreshed route is now the most recent of the filled slots.
+            let Some(assoc) = self.sent_to.get_mut(filled - 1).and_then(Option::as_mut) else {
+                return RouteDelta::default();
+            };
+            assoc.sent |= sent;
+            if token_known && !assoc.announced {
+                // Recorded before the peer named this identifier's token: what is new is the
+                // route, not the use, so it is installed now with the history it already has.
+                assoc.announced = true;
+                assoc.generation = generation;
+                return RouteDelta {
+                    added: Some(*assoc),
+                    released: None,
+                };
+            }
+            return RouteDelta::default();
         }
-        // Bounded: the oldest association gives way, so the table can never grow.
-        self.sent_to.rotate_left(1);
-        if let Some(slot) = self.sent_to.last_mut() {
-            *slot = Some(remote);
+        let added = Association {
+            remote,
+            generation,
+            sent,
+            announced: token_known,
+            // Nothing to wait for when there is no token to route by.
+            installed: !token_known,
+        };
+        let filled = self.filled();
+        if let Some(slot) = self.sent_to.get_mut(filled) {
+            *slot = Some(added);
+            return RouteDelta {
+                added: token_known.then_some(added),
+                released: None,
+            };
+        }
+        // Bounded: something has to give way, and it must not be an address a path role still
+        // owns. The oldest unowned one goes, which is the address that stopped being relevant.
+        let victim = self
+            .sent_to
+            .iter()
+            .position(|slot| slot.is_some_and(|assoc| !owned.owns(assoc.remote)))
+            .unwrap_or_else(|| {
+                // Every slot owned means more live roles than roles exist. Keeping the oldest
+                // route out of the record is still better than dropping a live one silently, and
+                // it is said out loud rather than assumed away.
+                warn!(
+                    %remote,
+                    "no unowned address to displace for a connection ID; keeping the oldest"
+                );
+                0
+            });
+        let released = self.sent_to[victim]
+            .replace(added)
+            // A route the endpoint was never told about has nothing to release.
+            .filter(|released| released.announced);
+        // The new one is the most recent, and the rest keep their order.
+        self.sent_to[victim..].rotate_left(1);
+        RouteDelta {
+            added: token_known.then_some(added),
+            released,
         }
     }
 }
@@ -514,31 +672,79 @@ impl CidQueue {
         tokens
     }
 
-    /// Every (address, token) pair a reset could reach this connection by, for the endpoint's
-    /// routing table. Bounded by the identifiers present and the addresses each is recognised at.
-    pub(crate) fn used_associations(&self) -> Vec<(SocketAddr, u64, ResetToken)> {
-        let mut associations = Vec::with_capacity(Self::PRESENT);
-        for cid in self.present() {
-            if let Some(token) = cid.reset_token {
-                associations.extend(
-                    cid.sent_to
-                        .iter()
-                        .flatten()
-                        .map(|&remote| (remote, cid.seq, token)),
-                );
+    /// How many associations this queue holds, which is what the endpoint's routing table has to
+    /// be able to hold at once.
+    #[cfg(test)]
+    pub(crate) fn live_associations(&self) -> usize {
+        self.present().map(|cid| cid.associations().count()).sum()
+    }
+
+    /// The endpoint has installed the route for `seq` at `remote`, when that is still the
+    /// installation `generation` names. An acknowledgement for anything else is stale and does
+    /// nothing: it cannot revive a retired identifier, nor open one a newer installation owns.
+    pub(crate) fn route_installed(&mut self, seq: u64, remote: SocketAddr, generation: u64) {
+        let Some(cid) = self.present_mut().find(|cid| cid.seq == seq) else {
+            return;
+        };
+        for assoc in cid.sent_to.iter_mut().flatten() {
+            if assoc.remote == remote && assoc.generation == generation {
+                assoc.installed = true;
             }
         }
-        associations
+    }
+
+    /// Whether a datagram carrying the identifier numbered `seq` may go to `remote` yet.
+    pub(crate) fn is_installed(&self, seq: u64, remote: SocketAddr) -> bool {
+        self.present()
+            .find(|cid| cid.seq == seq)
+            .is_some_and(|cid| cid.is_installed_for(remote))
     }
 
     /// Record that the sender has put a datagram carrying the identifier numbered `seq` on the
-    /// network towards `remote`, wherever that identifier currently sits.
-    pub(crate) fn mark_sent(&mut self, seq: u64, remote: SocketAddr) {
-        for cid in self.present_mut() {
-            if cid.seq == seq {
-                cid.mark_sent_to(remote);
-            }
+    /// network towards `remote`, wherever that identifier currently sits, and report what the
+    /// endpoint's routing has to be told. `generation` names this installation.
+    ///
+    /// Nothing is reported for a send that changes nothing, so an ordinary send and a retried one
+    /// publish nothing and allocate nothing.
+    pub(crate) fn mark_sent(
+        &mut self,
+        seq: u64,
+        remote: SocketAddr,
+        generation: u64,
+        owned: OwnedRemotes,
+    ) -> Option<(RouteDelta, ResetToken)> {
+        self.route(seq, remote, generation, true, owned)
+    }
+
+    /// Install a route to `remote` for the identifier numbered `seq` without claiming anything
+    /// has been sent with it, so that a reset cannot arrive before the endpoint can place it.
+    pub(crate) fn install_route(
+        &mut self,
+        seq: u64,
+        remote: SocketAddr,
+        generation: u64,
+        owned: OwnedRemotes,
+    ) -> Option<(RouteDelta, ResetToken)> {
+        self.route(seq, remote, generation, false, owned)
+    }
+
+    fn route(
+        &mut self,
+        seq: u64,
+        remote: SocketAddr,
+        generation: u64,
+        sent: bool,
+        owned: OwnedRemotes,
+    ) -> Option<(RouteDelta, ResetToken)> {
+        let cid = self.present_mut().find(|cid| cid.seq == seq)?;
+        let token = cid.reset_token;
+        // An identifier whose token the peer has not named yet has no route to install; the
+        // record is kept, so the route follows when the token arrives.
+        let delta = cid.route_to(remote, generation, sent, token.is_some(), owned);
+        if delta.is_empty() {
+            return None;
         }
+        Some((delta, token?))
     }
 
     /// Whether a datagram carrying the identifier numbered `seq` has gone out. An identifier we do
@@ -974,7 +1180,7 @@ mod tests {
                 .copied()
                 .collect()
         };
-        q.mark_sent(0, here);
+        q.mark_sent(0, here, 1, OwnedRemotes::default());
         assert_eq!(
             used(&q, here),
             vec![token(0)],
@@ -990,7 +1196,7 @@ mod tests {
         assert_eq!(q.active_seq(), 1);
         assert!(!q.is_sent(1), "nothing has gone out with it yet");
         assert!(used(&q, here).is_empty(), "so nothing can reset us");
-        q.mark_sent(1, here);
+        q.mark_sent(1, here, 2, OwnedRemotes::default());
         assert_eq!(used(&q, here), vec![token(1)]);
 
         // Held: the one in use goes aside with its history, the replacement arrives without one.
@@ -1020,14 +1226,14 @@ mod tests {
         assert_eq!(q.active_seq(), reserved.seq);
         assert!(!q.is_sent(reserved.seq), "promotion is not sending");
         assert!(!used(&q, here).contains(&token(reserved.seq as u8)));
-        q.mark_sent(reserved.seq, here);
+        q.mark_sent(reserved.seq, here, 3, OwnedRemotes::default());
         assert!(used(&q, here).contains(&token(reserved.seq as u8)));
 
         // Binding to a path of its own: same rule, and retirement ends it.
         q.insert(cid_token(7, 0)).unwrap();
         let bound = q.bind_unused(0).expect("an unused identifier");
         assert!(!q.is_sent(bound.seq));
-        q.mark_sent(bound.seq, there);
+        q.mark_sent(bound.seq, there, 4, OwnedRemotes::default());
         assert!(q.is_sent(bound.seq));
         assert!(
             used(&q, there).contains(&token(bound.seq as u8)),
@@ -1046,6 +1252,122 @@ mod tests {
         assert!(
             !used(&q, there).contains(&token(bound.seq as u8)),
             "and its token is no longer ours"
+        );
+    }
+
+    fn addr(last: u8) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, last], 4433))
+    }
+
+    /// The roles that own an address for an identifier at one moment.
+    fn roles(current: SocketAddr, fallback: Option<SocketAddr>) -> OwnedRemotes {
+        OwnedRemotes {
+            current: Some(current),
+            fallback,
+        }
+    }
+
+    /// One identifier sent to a sequence of addresses, keeping a route for each until something
+    /// has to give way. Returns the queue and the identifier's sequence number.
+    fn queue_with_one_used_cid() -> (CidQueue, u64) {
+        let mut q = CidQueue::new(initial_cid());
+        q.insert(cid_token(1, 0)).unwrap();
+        q.next().expect("an unused identifier");
+        (q, 1)
+    }
+
+    /// Recency is not proof that an address stopped being relevant. Moving off a path that was
+    /// never validated keeps the *original* as the fallback, so the address in the middle is the
+    /// one that goes — never the one a path role still owns.
+    #[test]
+    fn a_role_owned_address_is_never_displaced_by_transient_history() {
+        let (mut q, seq) = queue_with_one_used_cid();
+        let (a, b, c, d) = (addr(1), addr(2), addr(3), addr(4));
+
+        // A, then an unvalidated move to B, then on to C: A is still the fallback throughout.
+        q.mark_sent(seq, a, 1, roles(a, None));
+        q.mark_sent(seq, b, 2, roles(b, Some(a)));
+        q.mark_sent(seq, c, 3, roles(c, Some(a)));
+        for remote in [a, b, c] {
+            assert!(q.is_sent_to(seq, remote), "{remote} is recognised");
+        }
+
+        // A fourth address has to displace something. B is the one no role owns.
+        let (delta, _) = q
+            .mark_sent(seq, d, 4, roles(d, Some(a)))
+            .expect("a route to install");
+        assert_eq!(
+            delta.released.map(|r| r.remote),
+            Some(b),
+            "the address that stopped being relevant gives way"
+        );
+        assert!(
+            q.is_sent_to(seq, a),
+            "the fallback keeps its route: it is still live"
+        );
+        assert!(q.is_sent_to(seq, d), "and the address now in use has one");
+        assert!(!q.is_sent_to(seq, b), "the one in between does not");
+        assert_eq!(q.live_associations(), RemCid::REMOTES);
+    }
+
+    /// The small recency case: an address returned to is in use again, so the one that has gone
+    /// longest without a send is the one that gives way.
+    #[test]
+    fn a_returning_address_keeps_its_route_and_the_idle_one_goes() {
+        let (mut q, seq) = queue_with_one_used_cid();
+        let (a, b, c, d) = (addr(1), addr(2), addr(3), addr(4));
+        q.mark_sent(seq, a, 1, roles(a, None));
+        q.mark_sent(seq, b, 2, roles(b, Some(a)));
+        // Back to A: it is in use again, so B is now the idle one.
+        q.mark_sent(seq, a, 3, roles(a, Some(b)));
+        q.mark_sent(seq, c, 4, roles(c, Some(a)));
+        let (delta, _) = q
+            .mark_sent(seq, d, 5, roles(d, Some(a)))
+            .expect("a route to install");
+        assert_eq!(
+            delta.released.map(|r| r.remote),
+            Some(b),
+            "B went longest without a send and no role owns it"
+        );
+        assert!(
+            q.is_sent_to(seq, a),
+            "A was used after B and is the fallback"
+        );
+        assert!(q.is_sent_to(seq, c));
+        assert!(q.is_sent_to(seq, d));
+    }
+
+    /// However many times the peer moves, one identifier never holds more routes than the roles
+    /// that can own it, and every displacement is reported so the endpoint can follow.
+    #[test]
+    fn many_moves_never_leave_more_routes_than_the_roles_can_own() {
+        let (mut q, seq) = queue_with_one_used_cid();
+        let home = addr(1);
+        let mut installed = 0i64;
+        q.mark_sent(seq, home, 0, roles(home, None));
+        installed += 1;
+        for step in 0..40u8 {
+            let remote = addr(10 + step);
+            let owned = roles(remote, Some(home));
+            let Some((delta, _)) = q.mark_sent(seq, remote, step as u64 + 1, owned) else {
+                continue;
+            };
+            installed += i64::from(delta.added.is_some());
+            installed -= i64::from(delta.released.is_some());
+            assert!(
+                q.live_associations() <= RemCid::REMOTES,
+                "step {step} left {} routes",
+                q.live_associations()
+            );
+            assert!(
+                q.is_sent_to(seq, home),
+                "step {step} dropped the fallback nobody replaced"
+            );
+        }
+        assert_eq!(
+            installed,
+            q.live_associations() as i64,
+            "what was published matches what is held, so the endpoint cannot accumulate"
         );
     }
 

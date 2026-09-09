@@ -128,14 +128,30 @@ impl Endpoint {
             NeedIdentifiers(now, n) => {
                 return Some(self.send_new_identifiers(now, ch, n));
             }
-            ResetTokenUsed(remote, seq, token) => {
+            ResetTokenUsed(remote, seq, token, generation) => {
                 // The same identifier can be recognised at more than one address — a rebinding
                 // keeps it while the previous path may still answer — so an association is keyed
-                // by both and installing one never deletes another (RFC 9000 §10.3.1).
-                if self.connections[ch].reset_tokens.insert(seq, remote, token)
+                // by both and installing one never deletes another (RFC 9000 §10.3.1). The engine
+                // releases what it stops using, so this table holds no more than it does.
+                if self.connections[ch]
+                    .reset_tokens
+                    .insert(seq, remote, token, generation)
                     && self.index.connection_reset_tokens.insert(remote, token, ch)
                 {
                     warn!("duplicate reset token");
+                }
+                // The route exists now, which is what the connection is waiting for before it
+                // sends anything with this identifier to this address.
+                return Some(ConnectionEvent(ConnectionEventInner::ResetRouteInstalled(
+                    remote, seq, generation,
+                )));
+            }
+            ResetTokenReleased(remote, seq, token, generation) => {
+                if self.connections[ch]
+                    .reset_tokens
+                    .release(seq, remote, generation)
+                {
+                    self.index.connection_reset_tokens.remove(remote, token);
                 }
             }
             ResetTokensRetired(seqs) => {
@@ -1169,7 +1185,95 @@ fn cid_space_exhausted(cid_len: usize, in_use: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::cid_space_exhausted;
+    use std::net::SocketAddr;
+
+    use super::{RESET_TOKEN_SIZE, ResetToken, UsedResetTokens, cid_space_exhausted};
+
+    fn addr(last: u8) -> SocketAddr {
+        SocketAddr::from(([127, 0, 0, last], 4433))
+    }
+
+    fn token(n: u8) -> ResetToken {
+        ResetToken::from([n; RESET_TOKEN_SIZE])
+    }
+
+    /// The routing table follows the engine: a release frees the slot it took, an installation of
+    /// a pair already held is not a second route, and a release still naming an older
+    /// installation cannot take away the one that replaced it.
+    #[test]
+    fn a_route_is_released_only_by_the_installation_that_owns_it() {
+        let mut routes = UsedResetTokens::default();
+        assert!(routes.insert(1, addr(1), token(1), 10), "a new route");
+        assert!(
+            !routes.insert(1, addr(1), token(1), 11),
+            "the same pair again is not a second route"
+        );
+        assert!(
+            !routes.release(1, addr(1), 10),
+            "a release naming the installation that was replaced does nothing"
+        );
+        assert_eq!(routes.iter().count(), 1, "so the live route is still there");
+        assert!(
+            routes.release(1, addr(1), 11),
+            "the installation that owns it can release it"
+        );
+        assert_eq!(routes.iter().count(), 0);
+        assert!(
+            !routes.release(1, addr(1), 11),
+            "and releasing it twice is not a route"
+        );
+
+        // The same identifier at two addresses is two routes, and one does not remove the other.
+        assert!(routes.insert(2, addr(1), token(2), 20));
+        assert!(routes.insert(2, addr(2), token(2), 21));
+        assert_eq!(routes.iter().count(), 2);
+        assert!(routes.release(2, addr(1), 20));
+        assert_eq!(routes.iter().count(), 1);
+        assert!(
+            routes.iter().any(|(remote, _)| remote == addr(2)),
+            "the other address keeps its route"
+        );
+
+        // Retirement takes every route the identifier had, at every address.
+        assert!(routes.insert(3, addr(3), token(3), 30));
+        assert!(routes.insert(3, addr(4), token(3), 31));
+        let removed = routes.remove_range(3..4).count();
+        assert_eq!(removed, 2, "both of the retired identifier's routes go");
+        assert_eq!(routes.iter().count(), 1);
+    }
+
+    /// The engine releases what it displaces, so far more moves than this table has slots still
+    /// leave it holding only what is live. This is the endpoint half of the accumulation the
+    /// review reproduced: a queue invariant alone cannot show it.
+    #[test]
+    fn releasing_before_installing_keeps_the_table_from_filling() {
+        let mut routes = UsedResetTokens::default();
+        let slots = super::CidQueue::PRESENT * super::RemCid::REMOTES;
+        let home = addr(1);
+        assert!(routes.insert(1, home, token(1), 0));
+        // One identifier, forty different addresses, two of them always live.
+        let mut previous: Option<(SocketAddr, u64)> = None;
+        for step in 0..40u64 {
+            let remote = addr(10 + step as u8);
+            let generation = step + 1;
+            assert!(
+                routes.insert(1, remote, token(1), generation),
+                "step {step} installs"
+            );
+            if let Some((old, old_generation)) = previous.replace((remote, generation)) {
+                assert!(
+                    routes.release(1, old, old_generation),
+                    "step {step} releases the one it displaced"
+                );
+            }
+            assert!(
+                routes.iter().count() <= 3,
+                "step {step} left {} routes in a table of {slots}",
+                routes.iter().count()
+            );
+        }
+        assert!(routes.iter().any(|(remote, _)| remote == home));
+    }
 
     #[test]
     fn cid_space_exhaustion_thresholds() {
@@ -1396,41 +1500,81 @@ pub(crate) struct ConnectionMeta {
 /// bounds both sides of that product — the identifiers it can hold at once, and the addresses it
 /// keeps per identifier — so this table is sized to hold every association the engine can report
 /// and never has to evict a live route.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct UsedResetTokens {
-    entries: [Option<(u64, SocketAddr, ResetToken)>; CidQueue::PRESENT * RemCid::REMOTES],
+    entries: [Option<Association>; CidQueue::PRESENT * RemCid::REMOTES],
+}
+
+impl Default for UsedResetTokens {
+    fn default() -> Self {
+        Self {
+            entries: [None; CidQueue::PRESENT * RemCid::REMOTES],
+        }
+    }
+}
+
+/// One installed route: the identifier, the address it is sent to, the token a reset would carry,
+/// and the name of this installation.
+#[derive(Debug, Copy, Clone)]
+struct Association {
+    seq: u64,
+    remote: SocketAddr,
+    token: ResetToken,
+    generation: u64,
 }
 
 impl UsedResetTokens {
     /// Record that the ID with `seq` is sent to `remote`. `true` when this is a new association;
     /// a repetition of one already held changes nothing.
-    fn insert(&mut self, seq: u64, remote: SocketAddr, token: ResetToken) -> bool {
-        let known = |e: &Option<(u64, SocketAddr, ResetToken)>| {
-            e.is_some_and(|(s, r, t)| s == seq && r == remote && t == token)
-        };
-        if self.entries.iter().any(known) {
-            return false;
+    fn insert(&mut self, seq: u64, remote: SocketAddr, token: ResetToken, generation: u64) -> bool {
+        if let Some(held) = self
+            .entries
+            .iter_mut()
+            .flatten()
+            .find(|held| held.seq == seq && held.remote == remote)
+        {
+            // The same pair installed again: this installation's name replaces the older one, so
+            // a release still carrying that older name cannot take this route away.
+            let known = held.token == token;
+            held.generation = generation;
+            held.token = token;
+            return !known;
         }
         let Some(slot) = self.entries.iter().position(Option::is_none) else {
-            // The engine cannot report more associations than there are slots. Refusing to
-            // install rather than evicting keeps every route that is already live, and the
-            // connection is no worse off than before this token was known.
-            debug_assert!(
-                false,
-                "more used reset associations than the engine can hold"
-            );
-            warn!("reset association table full; the new association is not installed");
+            // The engine releases the association it stops using before installing the one that
+            // displaced it, so it cannot ask for more routes than there are slots. Refusing keeps
+            // every live route instead of dropping one, and says so rather than assuming.
+            warn!(seq, %remote, "reset association table full; route not installed");
             return false;
         };
-        self.entries[slot] = Some((seq, remote, token));
+        self.entries[slot] = Some(Association {
+            seq,
+            remote,
+            token,
+            generation,
+        });
+        true
+    }
+
+    /// Release the route for `seq` at `remote`, when it is still the installation `generation`
+    /// names. `true` when a route was removed.
+    fn release(&mut self, seq: u64, remote: SocketAddr, generation: u64) -> bool {
+        let Some(slot) = self.entries.iter().position(|e| {
+            e.is_some_and(|held| {
+                held.seq == seq && held.remote == remote && held.generation == generation
+            })
+        }) else {
+            return false;
+        };
+        self.entries[slot] = None;
         true
     }
 
     /// Forget the associations of the IDs with sequence numbers in `seqs`.
     fn remove_range(&mut self, seqs: Range<u64>) -> impl Iterator<Item = (SocketAddr, ResetToken)> {
         self.entries.iter_mut().filter_map(move |entry| {
-            if entry.is_some_and(|(s, ..)| seqs.contains(&s)) {
-                entry.take().map(|(_, r, t)| (r, t))
+            if entry.is_some_and(|held| seqs.contains(&held.seq)) {
+                entry.take().map(|held| (held.remote, held.token))
             } else {
                 None
             }
@@ -1438,7 +1582,10 @@ impl UsedResetTokens {
     }
 
     fn iter(&self) -> impl Iterator<Item = (SocketAddr, ResetToken)> {
-        self.entries.iter().flatten().map(|(_, r, t)| (*r, *t))
+        self.entries
+            .iter()
+            .flatten()
+            .map(|held| (held.remote, held.token))
     }
 }
 

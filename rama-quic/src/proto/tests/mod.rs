@@ -6479,6 +6479,75 @@ fn a_deferred_protocol_error_is_reported_as_itself() {
     }
 }
 
+/// A path the peer left before it was ever validated does not take the original's place: after
+/// A -> B -> C, where the move off B happened while B was still unvalidated, the connection still
+/// falls back to A, so a reset for that identifier from A is ours. An address it never sent to is
+/// not, which is what stops this from passing for the wrong reason.
+#[test]
+fn a_fallback_survives_repeated_unvalidated_moves_and_keeps_its_route() {
+    let _guard = subscribe();
+    let (mut pair, key) = pair_with_known_reset_key();
+    let (client_ch, server_ch) = pair.connect();
+    pair.drive();
+    let home = pair.client.addr;
+    let cid = pair.server_conn_mut(server_ch).active_rem_cid();
+    let seq = pair.server_conn_mut(server_ch).active_rem_cid_seq();
+    assert!(pair.server_conn_mut(server_ch).cid_confirmed(seq));
+
+    // Two rebindings in a row, the second while the first is still being validated. The
+    // identifier travels with the peer, so the same one is now sent to three addresses.
+    let mut moves = Vec::new();
+    for last in [7u8, 8] {
+        let moved = SocketAddr::new(
+            Ipv4Addr::new(127, 0, 0, last).into(),
+            CLIENT_PORTS.lock().next().unwrap(),
+        );
+        pair.client.addr = moved;
+        pair.client_conn_mut(client_ch).ping();
+        pair.drive_client();
+        pair.server.drive(pair.time, moved);
+        assert_eq!(pair.server_conn_mut(server_ch).remote_address(), moved);
+        assert_eq!(
+            pair.server_conn_mut(server_ch).active_rem_cid(),
+            cid,
+            "a rebinding keeps the identifier"
+        );
+        moves.push(moved);
+    }
+
+    // The original is still the address this connection would fall back to, so its route is live.
+    let packet = routed_reset_for(&pair.server, server_ch, &key, cid);
+    let unused = SocketAddr::new(
+        Ipv4Addr::new(127, 0, 0, 9).into(),
+        CLIENT_PORTS.lock().next().unwrap(),
+    );
+    pair.server.inbound.push_back(Inbound {
+        at: pair.time,
+        ecn: None,
+        packet: packet.as_slice().into(),
+        from: Some(unused),
+        to: Some(pair.server.addr),
+    });
+    pair.server.drive(pair.time, *moves.last().unwrap());
+    assert!(
+        !was_reset(pair.server_conn_mut(server_ch)),
+        "an address this identifier was never sent to cannot reset us"
+    );
+
+    pair.server.inbound.push_back(Inbound {
+        at: pair.time,
+        ecn: None,
+        packet: packet.as_slice().into(),
+        from: Some(home),
+        to: Some(pair.server.addr),
+    });
+    pair.server.drive(pair.time, *moves.last().unwrap());
+    assert!(
+        was_reset(pair.server_conn_mut(server_ch)),
+        "the address the connection still falls back to keeps its route"
+    );
+}
+
 /// A stateless reset datagram carrying the token `key` derives for `cid`.
 fn stateless_reset_for(key: &hmac::Key, cid: ConnectionId) -> Vec<u8> {
     let mut reset = vec![0x40; 1];

@@ -32,8 +32,8 @@ use crate::driver::{
     udp::{FailureLog, Sender},
 };
 use crate::proto::{
-    ConnectionError, ConnectionHandle, ConnectionStats, Dir, EndpointEvent, Side, StreamEvent,
-    StreamId, congestion::Controller,
+    ConnectionError, ConnectionHandle, ConnectionStats, Dir, EndpointEvent, SendPermit, Side,
+    StreamEvent, StreamId, congestion::Controller,
 };
 
 /// In-progress connection attempt future
@@ -1488,21 +1488,33 @@ impl State {
                 }
             };
 
-            // A datagram written with an identifier the connection may no longer send is dropped
-            // rather than put on the wire (RFC 9000 §9.5). Only its unsent remainder is dropped:
-            // a prefix the sender already took has gone, so it counts and is never offered again.
-            if let Some(seq) = t.cid_used
-                && !self.inner.may_send_cid(seq)
-            {
-                socket.abandon(id);
-                if socket.accepted_any(id) {
-                    self.inner.cid_sent(seq, t.destination);
+            match t.cid_used.map_or(SendPermit::Sendable, |seq| {
+                self.inner.may_send_cid(seq, t.destination)
+            }) {
+                SendPermit::Sendable => {}
+                // The route a reset would come back by is not installed yet. The descriptor is
+                // kept exactly as it is — its socket state and any prefix already accepted stay
+                // with it — and the endpoint's confirmation wakes this connection, so there is
+                // nothing to spin on. Receiving, timers and shutdown carry on meanwhile.
+                SendPermit::AwaitingInstallation => {
+                    self.buffered_transmit = Some((id, t));
+                    return Ok(false);
                 }
-                self.stale_transmits += 1;
-                if transmits >= MAX_TRANSMIT_DATAGRAMS {
-                    return Ok(true);
+                // The identifier may never be sent again. Only the unsent remainder goes: a
+                // prefix the sender already took has left, so it counts and is never offered
+                // again (RFC 9000 §9.5).
+                SendPermit::Obsolete => {
+                    let seq = t.cid_used.expect("only a named identifier can be obsolete");
+                    socket.abandon(id);
+                    if socket.accepted_any(id) {
+                        self.inner.cid_sent(seq, t.destination);
+                    }
+                    self.stale_transmits += 1;
+                    if transmits >= MAX_TRANSMIT_DATAGRAMS {
+                        return Ok(true);
+                    }
+                    continue;
                 }
-                continue;
             }
 
             let outcome = socket.poll_transmit(cx, id, &t, &self.send_buffer);

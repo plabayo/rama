@@ -532,11 +532,23 @@ impl TestEndpoint {
                     let size = transmit.size;
                     let cid_used = transmit.cid_used;
                     let destination = transmit.destination;
-                    // A datagram whose identifier may no longer be sent is dropped, as the
-                    // driver drops it.
-                    if cid_used.is_some_and(|seq| !conn.may_send_cid(seq)) {
-                        buf.clear();
-                        continue;
+                    // A datagram whose identifier may never be sent again is dropped, as the
+                    // driver drops it (RFC 9000 §9.5).
+                    //
+                    // Waiting for the endpoint to confirm a route is deliberately *not* modelled
+                    // here. It is a property of how the driver schedules the endpoint against the
+                    // connection, and this harness applies endpoint events within the same pass,
+                    // so nothing can arrive in the window the gate exists to close. Making it
+                    // wait here would only shift when identifiers are adopted, which is what
+                    // these tests measure. The gate itself is proved by the driver regressions.
+                    match cid_used.map_or(SendPermit::Sendable, |seq| {
+                        conn.may_send_cid(seq, destination)
+                    }) {
+                        SendPermit::Sendable | SendPermit::AwaitingInstallation => {}
+                        SendPermit::Obsolete => {
+                            buf.clear();
+                            continue;
+                        }
                     }
                     self.outbound.extend(split_transmit(transmit, &buf[..size]));
                     buf.clear();
@@ -546,6 +558,11 @@ impl TestEndpoint {
                     }
                 }
                 self.timeout = conn.poll_timeout();
+                // A route installed during this pass has to reach the endpoint before the pass
+                // gives up, or a datagram waiting for it would wait for a drive that never comes.
+                while let Some(event) = conn.poll_endpoint_events() {
+                    endpoint_events.push((*ch, event));
+                }
             }
 
             if endpoint_events.is_empty() {

@@ -51,6 +51,19 @@ pub(crate) mod crypto;
 
 mod frame;
 pub(crate) use crate::proto::frame::Datagram;
+
+/// Whether a datagram carrying a particular connection ID may go to a particular address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SendPermit {
+    /// It may go now.
+    Sendable,
+    /// The endpoint has not yet confirmed the route a stateless reset for it would arrive by.
+    /// The datagram is kept, exactly as it is, until the confirmation lands.
+    AwaitingInstallation,
+    /// The identifier may never be sent again: retired, or bound to another path. Only the part
+    /// of the datagram that has not already left is dropped.
+    Obsolete,
+}
 use crate::proto::frame::Frame;
 pub use crate::proto::frame::{ApplicationClose, ConnectionClose, FrameType};
 

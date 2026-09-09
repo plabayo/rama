@@ -16,10 +16,10 @@ use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 use crate::proto::{
     Dir, Duration, EndpointConfig, Frame, INITIAL_MTU, Instant, MAX_CID_SIZE, MAX_STREAM_COUNT,
-    MIN_INITIAL_SIZE, Side, StreamId, TIMER_GRANULARITY, TokenStore, Transmit, TransportError,
-    TransportErrorCode, VarInt,
+    MIN_INITIAL_SIZE, SendPermit, Side, StreamId, TIMER_GRANULARITY, TokenStore, Transmit,
+    TransportError, TransportErrorCode, VarInt,
     cid_generator::ConnectionIdGenerator,
-    cid_queue::{CidQueue, Retired},
+    cid_queue::{CidQueue, OwnedRemotes, Retired, RouteDelta},
     coding::BufMutExt,
     config::{PreferredAddressPolicy, ServerConfig, TransportConfig},
     crypto::{self, KeyPair, Keys, PacketKey},
@@ -290,6 +290,9 @@ pub(crate) struct Connection {
     /// A protocol error raised where the caller cannot return one, such as a retirement queue
     /// reaching its bound during a timer. The connection closes with it at the next transmit.
     deferred_error: Option<TransportError>,
+    /// Names each route installation, so a release or an acknowledgement in flight cannot be
+    /// applied to a later one that reuses the same identifier and address.
+    reset_generation: u64,
     /// Ack-eliciting packets sent and neither acknowledged, declared lost nor abandoned, across
     /// every packet number space and every path they were sent on, including paths since
     /// discarded. Loss recovery (RFC 9002 §6.2) is a connection-wide matter; the per-path
@@ -449,6 +452,7 @@ impl Connection {
             preferred_state: PreferredAddressState::Unused,
             candidate: None,
             deferred_error: None,
+            reset_generation: 0,
             // The handshake goes out with the identifier the peer chose for it.
             path_cids: [None; PATH_CIDS],
             in_flight_ack_eliciting: 0,
@@ -1364,11 +1368,10 @@ impl Connection {
         // One identifier stays unused whatever arrives: a path we do not send on cannot spend
         // what a move of our own needs.
         let cid = self.rem_cids.bind_unused(1)?;
-        // The endpoint routes a reset carrying this identifier's token to us from now on; whether
-        // we treat such a reset as ours waits for a datagram with it to have gone out.
-        if let Some(token) = cid.reset_token {
-            self.note_reset_token(remote, cid.seq, token);
-        }
+        // The endpoint routes a reset carrying this identifier's token to us from now on, so no
+        // reset can arrive before the route exists; whether we treat such a reset as ours waits
+        // for a datagram with it to have gone out.
+        self.install_reset_route(cid.seq, remote);
         self.path_cids[slot] = Some(PathCid {
             remote,
             local,
@@ -1493,6 +1496,11 @@ impl Connection {
                 if self.timers.get(Timer::PushNewCid).is_none_or(|x| x <= now) {
                     self.reset_cid_retirement();
                 }
+            }
+            ResetRouteInstalled(remote, seq, generation) => {
+                // An acknowledgement naming an installation this identifier no longer has — a
+                // retired one, or one a newer installation replaced — has nothing to open.
+                self.rem_cids.route_installed(seq, remote, generation);
             }
         }
     }
@@ -3764,9 +3772,7 @@ impl Connection {
         // The endpoint routes a reset carrying this identifier's token to us from now on, so no
         // answer can race the association; whether we treat such a reset as ours waits for a
         // probe carrying the identifier to have gone out (RFC 9000 §10.3.1).
-        if let Some(token) = cid.reset_token {
-            self.note_reset_token(remote, cid.seq, token);
-        }
+        self.install_reset_route(cid.seq, remote);
         self.candidate = Some(PreferredCandidate {
             remote,
             cid: cid.id,
@@ -3829,14 +3835,24 @@ impl Connection {
     /// Whether the peer's connection ID with this sequence number is still one this connection
     /// may put on the wire. A datagram written before the identifier was retired, or before the
     /// attempt it belonged to was given up, must not go out afterwards (RFC 9000 §9.5).
-    pub(crate) fn may_send_cid(&self, seq: u64) -> bool {
-        seq == self.rem_cids.active_seq()
+    pub(crate) fn may_send_cid(&self, seq: u64, destination: SocketAddr) -> SendPermit {
+        let known = seq == self.rem_cids.active_seq()
             || self.rem_cids.held().is_some_and(|held| held.seq == seq)
             || self.rem_cids.is_bound(seq)
             || self
                 .candidate
                 .as_ref()
-                .is_some_and(|candidate| candidate.seq == seq && candidate.in_flight.is_some())
+                .is_some_and(|candidate| candidate.seq == seq && candidate.in_flight.is_some());
+        if !known {
+            // Retired, or bound to a path this datagram is not for: there is nothing to wait for.
+            return SendPermit::Obsolete;
+        }
+        if self.rem_cids.is_installed(seq, destination) {
+            return SendPermit::Sendable;
+        }
+        // The route is on its way to the endpoint. The datagram waits rather than going out
+        // ahead of the way a reset answering it would come back (RFC 9000 §10.3.1).
+        SendPermit::AwaitingInstallation
     }
 
     /// The sender has handed a datagram carrying the peer's connection ID with this sequence
@@ -3844,8 +3860,13 @@ impl Connection {
     /// reset carrying its token belongs to us (RFC 9000 §10.3.1). A probe also counts here, and
     /// only here, against its attempt's bound.
     pub(crate) fn cid_sent(&mut self, seq: u64, destination: SocketAddr) {
-        self.rem_cids.mark_sent(seq, destination);
-        self.publish_reset_associations();
+        // Only what changed is published: an ordinary send, and a retry of one that was already
+        // recorded, tell the endpoint nothing and allocate nothing.
+        let generation = self.reset_generation;
+        let owned = self.owned_remotes();
+        if let Some((delta, token)) = self.rem_cids.mark_sent(seq, destination, generation, owned) {
+            self.apply_route_delta(seq, token, delta, generation);
+        }
         let Some(candidate) = self.candidate.as_mut().filter(|c| c.seq == seq) else {
             return;
         };
@@ -3958,14 +3979,6 @@ impl Connection {
         // nor erases that, and a token used only at another address is not ours here
         // (RFC 9000 §10.3.1).
         self.rem_cids.used_reset_tokens(remote)
-    }
-
-    /// Tell the endpoint every (address, token) pair a reset could reach this connection by, so
-    /// that a token used at more than one address keeps every association it has earned.
-    fn publish_reset_associations(&mut self) {
-        for (remote, seq, token) in self.rem_cids.used_associations() {
-            self.note_reset_token(remote, seq, token);
-        }
     }
 
     /// Whether a datagram received at `local` belongs to the current path's local address. An
@@ -4255,15 +4268,85 @@ impl Connection {
         // The endpoint routes a reset carrying this token to us from now on; whether we treat it
         // as ours waits for a datagram with this identifier to have gone out, which the identifier
         // itself records.
-        self.note_reset_token(remote, seq, reset_token);
+        self.install_reset_route(seq, remote);
         self.peer_params.stateless_reset_token = Some(reset_token);
     }
 
     /// Tell the endpoint that the identifier with this sequence number is being sent to `remote`,
     /// so a stateless reset from there carrying its token reaches this connection.
-    fn note_reset_token(&mut self, remote: SocketAddr, seq: u64, reset_token: ResetToken) {
+    /// Install the route a reset for the identifier numbered `seq` at `remote` would arrive by,
+    /// before anything is sent with it.
+    fn install_reset_route(&mut self, seq: u64, remote: SocketAddr) {
+        let generation = self.reset_generation;
+        let owned = self.owned_remotes();
+        if let Some((delta, token)) = self.rem_cids.install_route(seq, remote, generation, owned) {
+            self.apply_route_delta(seq, token, delta, generation);
+        }
+    }
+
+    /// The addresses a path role owns right now: where the current path sends, and where a
+    /// retained previous or fallback path answers from. Nothing else is protected from being
+    /// displaced by a newer address.
+    fn owned_remotes(&self) -> OwnedRemotes {
+        OwnedRemotes {
+            current: Some(self.path.remote),
+            fallback: self.prev_path.as_ref().map(|prev| prev.path.remote),
+        }
+    }
+
+    /// Tell the endpoint what changed about one identifier's routes: the route it stopped using
+    /// goes before the one that displaced it arrives, so the endpoint never holds more than the
+    /// engine does.
+    fn apply_route_delta(
+        &mut self,
+        seq: u64,
+        token: ResetToken,
+        delta: RouteDelta,
+        generation: u64,
+    ) {
+        if let Some(released) = delta.released {
+            self.release_reset_token(released.remote, seq, token, released.generation);
+        }
+        if let Some(added) = delta.added {
+            self.note_reset_token(added.remote, seq, token, added.generation);
+            if added.generation == generation {
+                self.reset_generation = generation.wrapping_add(1);
+            }
+        }
+    }
+
+    fn note_reset_token(
+        &mut self,
+        remote: SocketAddr,
+        seq: u64,
+        reset_token: ResetToken,
+        generation: u64,
+    ) {
         self.endpoint_events
-            .push_back(EndpointEventInner::ResetTokenUsed(remote, seq, reset_token));
+            .push_back(EndpointEventInner::ResetTokenUsed(
+                remote,
+                seq,
+                reset_token,
+                generation,
+            ));
+    }
+
+    /// Tell the endpoint an association is no longer ours, naming the installation it belongs to
+    /// so a newer one that reuses the same identifier and address is left alone.
+    fn release_reset_token(
+        &mut self,
+        remote: SocketAddr,
+        seq: u64,
+        reset_token: ResetToken,
+        generation: u64,
+    ) {
+        self.endpoint_events
+            .push_back(EndpointEventInner::ResetTokenReleased(
+                remote,
+                seq,
+                reset_token,
+                generation,
+            ));
     }
 
     /// Issue an initial set of connection IDs to the peer upon connection
