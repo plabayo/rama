@@ -12,14 +12,21 @@ import hashlib
 import json
 import socket
 import sys
+import threading
 
 from aioquic.asyncio import connect, serve
 from aioquic.asyncio.protocol import QuicConnectionProtocol
 from aioquic.quic.configuration import QuicConfiguration
-from aioquic.quic.events import ConnectionTerminated, HandshakeCompleted
+from aioquic.quic.events import (
+    ConnectionTerminated,
+    DatagramFrameReceived,
+    HandshakeCompleted,
+)
 
 # What a stream may carry. A peer that sends more is a fault, not a larger test.
 STREAM_LIMIT = 1 << 20
+# What one order on stdin may carry. Orders are single words.
+ORDER_LIMIT = 64
 
 
 def say(**fields):
@@ -49,6 +56,7 @@ def client_configuration(arguments):
         alpn_protocols=[arguments.alpn],
         idle_timeout=arguments.idle_timeout,
         server_name=arguments.server_name,
+        max_datagram_frame_size=arguments.datagram_frame or None,
     )
     configuration.load_verify_locations(cafile=arguments.ca)
     return configuration
@@ -59,6 +67,7 @@ def server_configuration(arguments):
         is_client=False,
         alpn_protocols=[arguments.alpn],
         idle_timeout=arguments.idle_timeout,
+        max_datagram_frame_size=arguments.datagram_frame or None,
     )
     configuration.load_cert_chain(arguments.cert, arguments.key)
     return configuration
@@ -87,6 +96,8 @@ async def run_server(arguments):
             nonlocal ended
             if isinstance(event, HandshakeCompleted):
                 say(event="handshake", alpn=event.alpn_protocol)
+            elif isinstance(event, DatagramFrameReceived):
+                report_datagram(self, event, echo=True)
             elif isinstance(event, ConnectionTerminated):
                 ended += 1
                 say(event="ended", code=event.error_code, reason=event.reason_phrase)
@@ -118,26 +129,51 @@ async def run_server(arguments):
     # aioquic offers no accessor for the address it bound, so the transport's socket answers it.
     _, port = server._transport.get_extra_info("socket").getsockname()[:2]
     say(event="listening", port=port)
+    if arguments.orders:
+        take_orders(loop, server, stop)
     try:
         await quiet
     finally:
         server.close()
 
 
-class Watched(QuicConnectionProtocol):
-    """A connection that reports what the handshake settled and how the connection ended."""
+def report_datagram(protocol, event, echo):
+    """Report a datagram by length and digest, and echo it back if this side answers."""
+    say(event="datagram", len=len(event.data), sha256=digest(event.data))
+    if echo:
+        send_datagram(protocol, event.data)
 
-    def quic_event_received(self, event):
-        if isinstance(event, HandshakeCompleted):
-            say(event="handshake", alpn=event.alpn_protocol)
-        elif isinstance(event, ConnectionTerminated):
-            say(event="ended", code=event.error_code, reason=event.reason_phrase)
-        super().quic_event_received(event)
+
+def send_datagram(protocol, data):
+    """aioquic offers no datagram method on the protocol, so this goes through the connection."""
+    protocol._quic.send_datagram_frame(data)
+    protocol.transmit()
 
 
 async def run_client(arguments):
-    """Connect, send the payloads the test asked for, and report what came back."""
+    """Connect, send what the test asked for, and report what came back."""
     payload = bytes((index % 251) ^ arguments.seed for index in range(arguments.length))
+    echoes = asyncio.Event()
+    counted = {"datagrams": 0}
+    if arguments.datagrams == 0:
+        echoes.set()
+
+    class Watched(QuicConnectionProtocol):
+        """A client connection: it reports what it sees and does not answer datagrams, so a
+        test that echoes on the other side sees one round trip rather than a loop."""
+
+        def quic_event_received(self, event):
+            if isinstance(event, HandshakeCompleted):
+                say(event="handshake", alpn=event.alpn_protocol)
+            elif isinstance(event, DatagramFrameReceived):
+                report_datagram(self, event, echo=False)
+                counted["datagrams"] += 1
+                if counted["datagrams"] >= arguments.datagrams:
+                    echoes.set()
+            elif isinstance(event, ConnectionTerminated):
+                say(event="ended", code=event.error_code, reason=event.reason_phrase)
+            super().quic_event_received(event)
+
     async with connect(
         arguments.host,
         arguments.port,
@@ -146,17 +182,28 @@ async def run_client(arguments):
     ) as client:
         say(event="connected")
 
-        uni_reader, uni_writer = await client.create_stream(is_unidirectional=True)
-        del uni_reader
-        uni_writer.write(payload)
-        uni_writer.write_eof()
+        if arguments.streams:
+            uni_reader, uni_writer = await client.create_stream(is_unidirectional=True)
+            del uni_reader
+            uni_writer.write(payload)
+            uni_writer.write_eof()
 
-        reader, writer = await client.create_stream()
-        writer.write(payload)
-        writer.write_eof()
-        answered = await read_stream(reader)
-        say(event="stream", id=writer.get_extra_info("stream_id"),
-            len=len(answered), sha256=digest(answered))
+            reader, writer = await client.create_stream()
+            writer.write(payload)
+            writer.write_eof()
+            answered = await read_stream(reader)
+            say(
+                event="stream",
+                id=writer.get_extra_info("stream_id"),
+                len=len(answered),
+                sha256=digest(answered),
+            )
+
+        for _ in range(arguments.datagrams):
+            send_datagram(client, payload)
+        # Every datagram sent is answered before the connection is closed, so a close cannot
+        # discard what this test is about.
+        await echoes.wait()
 
         client.close()
         await client.wait_closed()
@@ -172,6 +219,48 @@ async def run_silent(arguments):
         await asyncio.Event().wait()
     finally:
         held.close()
+
+
+def take_orders(loop, server, stop):
+    """Take one-word orders on stdin, so a test can steer the peer without relying on timing.
+
+    `deaf` drops every datagram at the socket, which stops acknowledgements and so stalls the
+    other side's transport rather than only its application reads. `hear` restores them. Each
+    order is acknowledged on stdout once it has taken effect. Orders are read one line at a
+    time, are refused past ORDER_LIMIT bytes, and the reader is a daemon thread, so it ends
+    with the process.
+    """
+    hearing = {"on": True}
+    delivering = server.datagram_received
+
+    def datagram_received(data, addr):
+        if hearing["on"]:
+            delivering(data, addr)
+
+    server.datagram_received = datagram_received
+
+    def apply(order):
+        if order == "deaf":
+            hearing["on"] = False
+        elif order == "hear":
+            hearing["on"] = True
+        else:
+            stop(RuntimeError(f"unknown order: {order}"))
+            return
+        say(event="ack", order=order)
+
+    def reading():
+        for line in sys.stdin:
+            if len(line) > ORDER_LIMIT:
+                loop.call_soon_threadsafe(
+                    stop, RuntimeError(f"an order ran past {ORDER_LIMIT} bytes")
+                )
+                return
+            order = line.strip()
+            if order:
+                loop.call_soon_threadsafe(apply, order)
+
+    threading.Thread(target=reading, daemon=True).start()
 
 
 ROLES = {"server": run_server, "client": run_client, "silent": run_silent}
@@ -191,6 +280,10 @@ def main():
     parser.add_argument("--length", type=int, default=0)
     parser.add_argument("--idle-timeout", type=float, default=20.0)
     parser.add_argument("--connections", type=int, default=1)
+    parser.add_argument("--datagram-frame", type=int, default=0)
+    parser.add_argument("--datagrams", type=int, default=0)
+    parser.add_argument("--streams", type=int, default=1)
+    parser.add_argument("--orders", action="store_true")
     arguments = parser.parse_args()
     try:
         asyncio.run(ROLES[arguments.role](arguments))

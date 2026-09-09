@@ -23,6 +23,14 @@ cargo test --locked
 These are the commands CI should invoke from this directory. No CI job is wired up yet. The
 project is not part of the workspace, so `cargo test` at the repository root does not reach it.
 
+## What is covered
+
+`tests/interop.rs` has the handshakes, streams and the two certificate-refusal controls.
+`tests/datagrams.rs` has DATAGRAM in both Rama roles. quiche advertises the recommended 65536
+as its `max_datagram_frame_size` whenever datagrams are enabled, so towards a quiche peer the
+binding limit is the path budget; the aioquic project covers the other case, where the peer's
+advertised size is small enough to be the binding one.
+
 ## What the driver does not do yet
 
 quiche owns neither sockets nor timers, so its side of each test is driven by hand. Two limits

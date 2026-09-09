@@ -8,6 +8,14 @@ The project is standalone: it is not a member of the rama workspace and has its 
 separate interpreter running `peer/interop_peer.py`, with its own TLS (aioquic on
 `cryptography`/OpenSSL), so the only thing the two stacks share is the wire.
 
+## What is covered
+
+`tests/interop.rs` has the handshakes, streams, the two certificate-refusal controls and the
+harness's own regressions. `tests/datagrams.rs` has DATAGRAM in both Rama roles: the peer
+advertises a small `max_datagram_frame_size`, so what limits a datagram is the value it
+advertised rather than the path, and the local outgoing buffer is set small so a test can fill
+it deliberately.
+
 ## Prerequisites
 
 - A Rust toolchain.

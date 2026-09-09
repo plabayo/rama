@@ -27,7 +27,7 @@ use parking_lot::Mutex;
 use rama::{
     crypto::{dep::rcgen, pki_types::PrivatePkcs8KeyDer},
     net::tls::ApplicationProtocol,
-    quic::{ClientConfig, Connection, Endpoint, ServerConfig, tls::TlsOptions},
+    quic::{ClientConfig, Connection, Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
     tls::{
         client::TlsClientConfig,
         server::{ServerAuthData, TlsServerConfig},
@@ -38,7 +38,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::{
-    io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader},
+    io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdout, Command},
     sync::OnceCell,
     time::Instant,
@@ -248,6 +248,13 @@ pub fn rama_server_config(identity: &Identity) -> ServerConfig {
         .expect("the server config is built")
 }
 
+/// A client that trusts `identity` and holds at most `buffer` bytes of outgoing datagrams, so
+/// a test can fill that buffer deliberately rather than by volume.
+pub fn rama_client_config_with_datagram_buffer(identity: &Identity, buffer: usize) -> ClientConfig {
+    let transport = TransportConfig::default().with_datagram_send_buffer_size(buffer);
+    rama_client_config(identity).with_transport_config(Arc::new(transport))
+}
+
 pub fn rama_client_config(identity: &Identity) -> ClientConfig {
     let anchor = identity.auth.cert_chain.last().expect("a chain").clone();
     let tls = TlsClientConfig::new()
@@ -440,6 +447,10 @@ impl Event {
         self.0["reason"].as_str().unwrap_or_default()
     }
 
+    pub fn order(&self) -> &str {
+        self.0["order"].as_str().expect("an order")
+    }
+
     pub fn alpn(&self) -> &str {
         self.0["alpn"].as_str().expect("a negotiated protocol")
     }
@@ -448,6 +459,7 @@ impl Event {
 /// The aioquic peer as a child process, with everything it says and everything it owns.
 pub struct AioQuic {
     child: Child,
+    orders: Option<tokio::process::ChildStdin>,
     output: BufReader<ChildStdout>,
     complaints: Arc<Mutex<String>>,
     draining: Option<tokio::task::JoinHandle<()>>,
@@ -464,11 +476,12 @@ impl AioQuic {
             .args(["--alpn", ALPN])
             .args(arguments)
             .current_dir(project())
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
         let mut child = command.spawn().expect("the peer starts");
+        let orders = child.stdin.take();
         let output = BufReader::new(child.stdout.take().expect("its output"));
         let complaints = Arc::new(Mutex::new(String::new()));
         let draining = tokio::spawn(drain(
@@ -477,10 +490,30 @@ impl AioQuic {
         ));
         Self {
             child,
+            orders,
             output,
             complaints,
             draining: Some(draining),
         }
+    }
+
+    /// Give the peer a one-word order and wait for it to say the order took effect. The peer
+    /// must have been started with `--orders`.
+    pub async fn tell(&mut self, order: &str, deadline: Deadline) {
+        let orders = self.orders.as_mut().expect("the peer takes orders");
+        deadline
+            .wait(
+                &format!("telling the peer to {order}"),
+                orders.write_all(format!("{order}\n").as_bytes()),
+            )
+            .await
+            .expect("the order is written");
+        deadline
+            .wait("flushing the order", orders.flush())
+            .await
+            .expect("it is flushed");
+        let seen = self.expect("ack", deadline).await;
+        assert_eq!(seen.order(), order, "the peer acknowledged this order");
     }
 
     /// The next line the peer wrote, or a failure naming what was being waited for.

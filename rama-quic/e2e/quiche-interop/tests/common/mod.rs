@@ -224,6 +224,18 @@ fn quiche_config() -> quiche::Config {
     config
 }
 
+/// How many datagrams each direction of a quiche connection will hold.
+pub const DGRAM_QUEUE: usize = 64;
+
+/// quiche always advertises 65536 as its `max_datagram_frame_size` when datagrams are enabled,
+/// so what limits a datagram towards a quiche peer is the path budget rather than the peer's
+/// advertisement. That is the complement of the aioquic project, where the peer's advertised
+/// size is set small enough to be the binding one.
+pub fn with_datagrams(mut config: quiche::Config) -> quiche::Config {
+    config.enable_dgram(true, DGRAM_QUEUE, DGRAM_QUEUE);
+    config
+}
+
 pub fn quiche_server_config(identity: &Identity) -> quiche::Config {
     let mut config = quiche_config();
     config
@@ -451,6 +463,37 @@ impl Quiche {
             deadline.expect(&format!("reading stream {stream}"));
             if let Some(stopped) = self.turn(deadline).await {
                 panic!("reading stream {stream}: the connection stopped ({stopped:?})");
+            }
+        }
+    }
+
+    /// Send one datagram and put it on the wire.
+    pub async fn send_datagram(&mut self, payload: &[u8], deadline: Deadline) {
+        self.connection
+            .dgram_send(payload)
+            .expect("the datagram is queued");
+        self.flush(deadline).await;
+    }
+
+    /// Take one datagram, driving the connection while it arrives. A datagram larger than
+    /// `limit` is a fault, not a larger test.
+    pub async fn read_datagram(&mut self, limit: usize, deadline: Deadline) -> Vec<u8> {
+        let mut buffer = vec![0u8; limit];
+        loop {
+            match self.connection.dgram_recv(&mut buffer) {
+                Ok(read) => {
+                    buffer.truncate(read);
+                    return buffer;
+                }
+                Err(quiche::Error::Done) => {}
+                Err(quiche::Error::BufferTooShort) => {
+                    panic!("a datagram carried more than {limit} bytes")
+                }
+                Err(error) => panic!("reading a datagram: {error}"),
+            }
+            deadline.expect("reading a datagram");
+            if let Some(stopped) = self.turn(deadline).await {
+                panic!("reading a datagram: the connection stopped ({stopped:?})");
             }
         }
     }
