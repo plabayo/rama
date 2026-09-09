@@ -18,6 +18,19 @@ pub(crate) enum ConnectionEventInner {
     /// installed, so a datagram carrying that identifier may go to that address. The last field
     /// names the installation, and an acknowledgement naming any other one is stale.
     ResetRouteInstalled(SocketAddr, u64, u64),
+    /// The endpoint has no room to route a reset for this identifier at this address, so the
+    /// route does not exist and the datagram waiting on it can never be sent.
+    ResetRouteRefused(SocketAddr, u64, u64),
+}
+
+impl ConnectionEvent {
+    /// Whether this event issues connection identifiers. Identifier issuance is the only thing
+    /// the test seam that withholds events should withhold, and it is reached from more than one
+    /// request — a connection asking for more, and a retirement that allows more.
+    #[cfg(test)]
+    pub(crate) fn is_new_identifiers(&self) -> bool {
+        matches!(self.0, ConnectionEventInner::NewIdentifiers(..))
+    }
 }
 
 /// Variant of [`ConnectionEventInner`].
@@ -44,6 +57,14 @@ impl EndpointEvent {
     /// usual state machine flow, e.g. when being dropped by the user.
     pub(crate) fn drained() -> Self {
         Self(EndpointEventInner::Drained)
+    }
+
+    /// Whether this event installs the route a stateless reset would arrive by. It is the only
+    /// endpoint event the send path waits on, so a synchronous test harness applies these before
+    /// offering a datagram and leaves the rest of its ordering alone.
+    #[cfg(test)]
+    pub(crate) fn is_reset_route(&self) -> bool {
+        matches!(self.0, EndpointEventInner::ResetTokenUsed(..))
     }
 
     /// Determine whether this is the last event a `Connection` will emit

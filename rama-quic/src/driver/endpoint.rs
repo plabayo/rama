@@ -687,6 +687,11 @@ impl EndpointInner {
         let mut state = self.state.lock();
         let mut retired = None;
         for event in events {
+            #[cfg(test)]
+            if state.hold_route_installs && event.is_reset_route() {
+                state.held_route_installs.push((handle, event));
+                continue;
+            }
             if event.is_drained() {
                 retired = state.recv_state.connections.channels.remove(&handle);
                 if state.recv_state.connections.is_empty() {
@@ -709,6 +714,29 @@ impl EndpointInner {
 }
 
 impl EndpointRef {
+    /// Tests: stop applying route installations, so a datagram that needs one can be observed
+    /// waiting instead of leaving.
+    #[cfg(test)]
+    pub(crate) fn hold_route_installs(&self) {
+        self.0.state.lock().hold_route_installs = true;
+    }
+
+    /// Tests: apply the route installations put aside, and hand each connection the
+    /// acknowledgement the endpoint answers with — exactly what it would have received anyway.
+    #[cfg(test)]
+    pub(crate) fn release_route_installs(&self) {
+        let mut state = self.0.state.lock();
+        state.hold_route_installs = false;
+        let held = std::mem::take(&mut state.held_route_installs);
+        for (handle, event) in held {
+            if let Some(control) = state.inner.handle_event(handle, event)
+                && let Some(channel) = state.recv_state.connections.channels.get(&handle)
+            {
+                channel.inner.control(Control::Proto(control));
+            }
+        }
+    }
+
     /// Accept an attempt that arrived on socket `received_on`: the connection sends from that
     /// socket, and a refusal response leaves from it too. The attempt's socket dependence is
     /// released here on every path.
@@ -907,6 +935,12 @@ pub(crate) struct State {
     stats: EndpointStats,
     /// Endpoint-wide budget shared by every queued packet and queued incoming attempt.
     packet_budget: PacketBudget,
+    /// Tests: while set, a route installation is put aside instead of applied, so a test can
+    /// attempt a send in the window before the connection learns its route exists.
+    #[cfg(test)]
+    hold_route_installs: bool,
+    #[cfg(test)]
+    held_route_installs: Vec<(ConnectionHandle, EndpointEvent)>,
 }
 
 #[derive(Debug)]
@@ -1286,6 +1320,10 @@ impl EndpointRef {
                 recv_state,
                 stats: EndpointStats::default(),
                 packet_budget,
+                #[cfg(test)]
+                hold_route_installs: false,
+                #[cfg(test)]
+                held_route_installs: Vec::new(),
             }),
         }))
     }
@@ -7254,6 +7292,132 @@ mod lifecycle_tests {
         drop((c, s));
         tokio::join!(client.shutdown(), server.shutdown());
     }
+    /// RFC 9000 §10.3.1 as an ordering rule: a datagram carrying a connection ID whose stateless
+    /// reset route the endpoint has not installed yet does not reach the socket — and is not
+    /// thrown away either. It leaves once the route is confirmed, and the connection keeps
+    /// receiving while it waits.
+    ///
+    /// What this can witness through the socket is: nothing carries the identifier while the
+    /// installation is held, nothing is counted as abandoned, the identifier is not treated as
+    /// used, a stream still arrives, and afterwards the identifier reaches the wire with no
+    /// datagram sent twice. Pinning "exactly one datagram" is not possible here, because ordinary
+    /// traffic resumes in the same instant.
+    #[tokio::test]
+    async fn a_datagram_waits_for_its_route_and_is_neither_dropped_nor_replayed() {
+        let (client_config, server_config) = configs();
+        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let (socket, log) = recording_socket();
+        let client = endpoint_with(EndpointConfig::default(), None, socket);
+        let connecting = client
+            .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+            .unwrap();
+        let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let (c, s) = handshake(connecting, incoming).await;
+        exchange(&c, &s, b"before").await;
+        let len = active_dcid(&c).len();
+        assert!(len > 0, "the server issues non-zero-length connection IDs");
+
+        // Nothing more may be installed from here on.
+        client.inner.hold_route_installs();
+        let before = active_dcid(&c);
+        let sent_before = log.lock().sent.len();
+
+        // Make the peer retire every identifier below the next one, so the connection has to
+        // switch to an unused one whose route is not installed.
+        // Retiring everything below the next sequence number is what forces the switch; the
+        // peer may only name one past what it has issued.
+        let mut after = before.clone();
+        for step in 1..=5u64 {
+            s.rotate_local_cid(step);
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            after = active_dcid(&c);
+            if after != before {
+                break;
+            }
+        }
+        assert_ne!(after, before, "the connection switched identifier");
+
+        // The datagram carrying it is waiting, not gone: nothing on the wire carries the new
+        // identifier, and nothing was given up either.
+        let carried = |sent: &[SentDatagram]| -> usize {
+            short_header_dcids(sent, len)
+                .into_iter()
+                .filter(|dcid| *dcid == after)
+                .count()
+        };
+        {
+            let log = log.lock();
+            assert_eq!(
+                carried(&log.sent),
+                0,
+                "a datagram left before its route was installed"
+            );
+        }
+        assert_eq!(
+            c.stale_transmits(),
+            0,
+            "a datagram waiting for a route must not be counted as abandoned"
+        );
+        assert!(
+            !c.active_cid_confirmed(),
+            "so the identifier is not used yet"
+        );
+
+        // Receiving still works while it waits: the peer's stream arrives.
+        exchange(&s, &c, b"while waiting").await;
+
+        // Now let the installation through. Exactly one datagram carries the identifier.
+        client.inner.release_route_installs();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let carried_now = loop {
+            let carried_now = carried(&log.lock().sent);
+            if carried_now > 0 {
+                break carried_now;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the datagram never left after its route was installed"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert!(carried_now >= 1, "the identifier reached the wire");
+        // Nothing was replayed: no two datagrams carrying this identifier are byte-identical, so
+        // the one that waited was sent rather than rebuilt alongside a copy of itself.
+        {
+            let log = log.lock();
+            let mut carrying: Vec<&Vec<u8>> = log
+                .sent
+                .iter()
+                .filter(|d| {
+                    d.bytes.first().is_some_and(|b| b & 0x80 == 0)
+                        && d.bytes
+                            .get(1..1 + len)
+                            .is_some_and(|dcid| dcid == &after[..])
+                })
+                .map(|d| &d.bytes)
+                .collect();
+            let total = carrying.len();
+            carrying.sort();
+            carrying.dedup();
+            assert_eq!(total, carrying.len(), "a datagram was sent twice");
+        }
+        assert!(
+            c.active_cid_confirmed(),
+            "and the identifier counts as used only now"
+        );
+        assert_eq!(c.stale_transmits(), 0, "nothing was abandoned");
+        assert!(
+            log.lock().sent.len() > sent_before,
+            "the wire moved on from where it was held"
+        );
+        exchange(&c, &s, b"after").await;
+        drop((c, s));
+        tokio::join!(client.shutdown(), server.shutdown());
+    }
+
     /// The emulated offload for short segmented descriptors keeps its place across `Pending`: a
     /// chunk accepted before the sender blocked is not sent again when the same descriptor is
     /// retried, and the descriptor completes once the sender is writable.

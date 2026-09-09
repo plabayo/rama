@@ -12,16 +12,14 @@ pub(crate) struct RemCid {
     pub(crate) seq: u64,
     pub(crate) id: ConnectionId,
     pub(crate) reset_token: Option<ResetToken>,
-    /// The addresses a datagram carrying this identifier has actually reached the network for,
-    /// least recently used first.
+    /// The addresses this identifier has a route to, least recently used first.
     ///
     /// RFC 9000 §10.3.1 ties recognition to the identifier *and* the address it was sent to, so
     /// this is a set rather than a flag. It lives here so that it travels with the identifier:
     /// moving one between the active, held, reserved, bound and unused sets cannot grant a
     /// history it does not have, nor take one away, and only retirement — which drops the value —
-    /// ends it. Two addresses are kept, which is what a NAT rebinding needs: the address in use
-    /// and the one the previous path may still answer from. A third displaces the one that
-    /// stopped being used, which is why the order is by recency and not by arrival.
+    /// ends it. [`REMOTES`](Self::REMOTES) of them are kept, and a further address displaces the
+    /// oldest one that no path role still owns.
     sent_to: [Option<Association>; Self::REMOTES],
 }
 
@@ -33,19 +31,44 @@ pub(crate) struct RemCid {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) struct Association {
     pub(crate) remote: SocketAddr,
-    pub(crate) generation: u64,
+    /// Where this route stands with the endpoint. One value, so that learning a token, being
+    /// confirmed and being replaced cannot disagree with each other.
+    state: RouteState,
     /// Whether a datagram carrying this identifier has actually reached the network for `remote`.
-    /// The route is installed before the first one does, so no reset can race it, but until it
-    /// has, a reset carrying this token is not ours (RFC 9000 §10.3.1).
+    /// Independent of the route's state, and never taken away except by retirement: what has been
+    /// sent has been sent, whatever happens to the route afterwards (RFC 9000 §10.3.1).
     sent: bool,
-    /// Whether the endpoint has been told about this route. A route recorded before the peer named
-    /// the identifier's token has nothing to install yet and is announced once it does, which is
-    /// how the identifier the handshake sends with keeps the history it earned.
-    announced: bool,
-    /// Whether the endpoint has confirmed the route exists. Until it has, a datagram carrying this
-    /// identifier must not go to this address, or a reset answering it could arrive before there
-    /// is anything to route it by.
-    installed: bool,
+}
+
+/// Where the route for one identifier at one address stands.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum RouteState {
+    /// The peer has named no token for this identifier, so there is no route for a reset to
+    /// arrive by and nothing to install or wait for. The handshake sends like this.
+    NoneRequired,
+    /// The endpoint has been asked to install this route and has not confirmed it. A datagram
+    /// carrying this identifier waits: a reset answering it must not be able to arrive before
+    /// there is anything to route it by.
+    Pending(u64),
+    /// The endpoint has confirmed this installation.
+    Installed(u64),
+}
+
+impl RouteState {
+    /// The installation this state names, if any.
+    fn generation(self) -> Option<u64> {
+        match self {
+            Self::NoneRequired => None,
+            Self::Pending(generation) | Self::Installed(generation) => Some(generation),
+        }
+    }
+}
+
+impl Association {
+    /// The installation this route names, if any.
+    pub(crate) fn generation(&self) -> Option<u64> {
+        self.state.generation()
+    }
 }
 
 /// What the endpoint's routing has to be told after a route was touched. Both fields empty means
@@ -119,13 +142,19 @@ impl RemCid {
     /// identifier with no token has no route to wait for.
     pub(crate) fn is_installed_for(&self, remote: SocketAddr) -> bool {
         if self.reset_token.is_none() {
-            // The peer has not named a token for this identifier, so there is no route for a
-            // reset to arrive by and nothing to wait for. The handshake sends like this.
+            // No token means no route for a reset to arrive by, so there is nothing to wait for.
             return true;
         }
-        self.associations()
+        self.sent_to
+            .iter()
+            .flatten()
             .find(|assoc| assoc.remote == remote)
-            .is_some_and(|assoc| assoc.installed)
+            .is_some_and(|assoc| {
+                matches!(
+                    assoc.state,
+                    RouteState::NoneRequired | RouteState::Installed(_)
+                )
+            })
     }
 
     /// The addresses this identifier is recognised at, least recently used first.
@@ -138,6 +167,8 @@ impl RemCid {
     /// route does not, and cannot un-send what already has.
     ///
     /// `generation` names a new installation and is only consumed by one.
+    /// `None` when there was nowhere to record it, which the caller has to treat as a failure
+    /// rather than as nothing to do.
     fn route_to(
         &mut self,
         remote: SocketAddr,
@@ -145,7 +176,7 @@ impl RemCid {
         sent: bool,
         token_known: bool,
         owned: OwnedRemotes,
-    ) -> RouteDelta {
+    ) -> Option<RouteDelta> {
         if let Some(at) = self
             .sent_to
             .iter()
@@ -157,63 +188,65 @@ impl RemCid {
             self.sent_to[at..filled].rotate_left(1);
             // The refreshed route is now the most recent of the filled slots.
             let Some(assoc) = self.sent_to.get_mut(filled - 1).and_then(Option::as_mut) else {
-                return RouteDelta::default();
+                return Some(RouteDelta::default());
             };
             assoc.sent |= sent;
-            if token_known && !assoc.announced {
-                // Recorded before the peer named this identifier's token: what is new is the
-                // route, not the use, so it is installed now with the history it already has.
-                assoc.announced = true;
-                assoc.generation = generation;
-                return RouteDelta {
+            if token_known && assoc.state == RouteState::NoneRequired {
+                // The peer has named this identifier's token since this route was recorded. What
+                // is new is the route, not the use: it goes to the endpoint now, it is *not*
+                // installed until that is confirmed, and the history it already earned stays.
+                assoc.state = RouteState::Pending(generation);
+                return Some(RouteDelta {
                     added: Some(*assoc),
                     released: None,
-                };
+                });
             }
-            return RouteDelta::default();
+            return Some(RouteDelta::default());
         }
         let added = Association {
             remote,
-            generation,
             sent,
-            announced: token_known,
-            // Nothing to wait for when there is no token to route by.
-            installed: !token_known,
+            state: if token_known {
+                RouteState::Pending(generation)
+            } else {
+                RouteState::NoneRequired
+            },
         };
         let filled = self.filled();
         if let Some(slot) = self.sent_to.get_mut(filled) {
             *slot = Some(added);
-            return RouteDelta {
+            return Some(RouteDelta {
                 added: token_known.then_some(added),
                 released: None,
-            };
+            });
         }
         // Bounded: something has to give way, and it must not be an address a path role still
         // owns. The oldest unowned one goes, which is the address that stopped being relevant.
-        let victim = self
+        //
+        // At most two roles own an address at once and there are three slots, so an unowned one
+        // always exists. If that ever stops holding, nothing is displaced and the caller is told,
+        // rather than this quietly dropping a route a live path depends on.
+        let Some(victim) = self
             .sent_to
             .iter()
             .position(|slot| slot.is_some_and(|assoc| !owned.owns(assoc.remote)))
-            .unwrap_or_else(|| {
-                // Every slot owned means more live roles than roles exist. Keeping the oldest
-                // route out of the record is still better than dropping a live one silently, and
-                // it is said out loud rather than assumed away.
-                warn!(
-                    %remote,
-                    "no unowned address to displace for a connection ID; keeping the oldest"
-                );
-                0
-            });
+        else {
+            warn!(
+                %remote,
+                "every address of a connection ID is owned by a path; no route recorded"
+            );
+            return None;
+        };
         let released = self.sent_to[victim]
             .replace(added)
             // A route the endpoint was never told about has nothing to release.
-            .filter(|released| released.announced);
+            .filter(|released| released.state != RouteState::NoneRequired);
         // The new one is the most recent, and the rest keep their order.
         self.sent_to[victim..].rotate_left(1);
-        RouteDelta {
+        Some(RouteDelta {
             added: token_known.then_some(added),
             released,
-        }
+        })
     }
 }
 
@@ -687,10 +720,26 @@ impl CidQueue {
             return;
         };
         for assoc in cid.sent_to.iter_mut().flatten() {
-            if assoc.remote == remote && assoc.generation == generation {
-                assoc.installed = true;
+            // Only the installation that was asked for: an acknowledgement naming an older one
+            // cannot open a route a newer installation owns, and one for an identifier that has
+            // since been retired finds nothing at all.
+            if assoc.remote == remote && assoc.state == RouteState::Pending(generation) {
+                assoc.state = RouteState::Installed(generation);
             }
         }
+    }
+
+    /// The endpoint could not install the route for `seq` at `remote`. `true` when that was the
+    /// installation still being waited on, which is a failure the connection has to act on; a
+    /// refusal naming anything else is stale and is ignored.
+    pub(crate) fn route_refused(&mut self, seq: u64, remote: SocketAddr, generation: u64) -> bool {
+        let Some(cid) = self.present_mut().find(|cid| cid.seq == seq) else {
+            return false;
+        };
+        cid.sent_to
+            .iter()
+            .flatten()
+            .any(|assoc| assoc.remote == remote && assoc.state == RouteState::Pending(generation))
     }
 
     /// Whether a datagram carrying the identifier numbered `seq` may go to `remote` yet.
@@ -740,7 +789,7 @@ impl CidQueue {
         let token = cid.reset_token;
         // An identifier whose token the peer has not named yet has no route to install; the
         // record is kept, so the route follows when the token arrives.
-        let delta = cid.route_to(remote, generation, sent, token.is_some(), owned);
+        let delta = cid.route_to(remote, generation, sent, token.is_some(), owned)?;
         if delta.is_empty() {
             return None;
         }
@@ -1274,6 +1323,89 @@ mod tests {
         q.insert(cid_token(1, 0)).unwrap();
         q.next().expect("an unused identifier");
         (q, 1)
+    }
+
+    /// The identifier the handshake sends with has no token, so nothing gates it and its sends
+    /// are recorded. When the peer finally names its token there *is* a route to install, and the
+    /// gate closes until the endpoint confirms it — while the history it already earned stays.
+    /// Learning a token must not leave the gate open on an unconfirmed route.
+    #[test]
+    fn learning_a_token_closes_the_gate_until_the_route_is_confirmed() {
+        let mut q = CidQueue::new(initial_cid());
+        let here: SocketAddr = "127.0.0.1:4433".parse().unwrap();
+
+        // No token yet: nothing to route, so the handshake sends freely.
+        assert!(
+            q.is_installed(0, here),
+            "no token means nothing to wait for"
+        );
+        assert!(q.mark_sent(0, here, 1, OwnedRemotes::default()).is_none());
+        assert!(q.is_sent(0), "and the send is on record");
+        assert!(q.is_installed(0, here));
+
+        // Installing a route for an identifier nothing has gone out with does not make it sent:
+        // the route is there so a reset can be placed, not because we used it.
+        q.insert(cid_token(1, 0)).unwrap();
+        let unused = q.reserve().expect("an unused identifier");
+        q.install_route(unused.seq, here, 2, OwnedRemotes::default())
+            .expect("a route to install");
+        assert!(
+            !q.is_sent(unused.seq),
+            "installing a route is not sending with the identifier"
+        );
+        assert!(
+            !q.used_reset_tokens(here)
+                .iter()
+                .flatten()
+                .any(|t| *t == token(1)),
+            "so a reset carrying its token is not ours"
+        );
+        q.route_installed(unused.seq, here, 2);
+        assert!(
+            !q.is_sent(unused.seq),
+            "and confirming the route is not sending either"
+        );
+        assert!(
+            !q.used_reset_tokens(here)
+                .iter()
+                .flatten()
+                .any(|t| *t == token(1))
+        );
+
+        // The peer names the token. Now a route exists to install, and until the endpoint says it
+        // is in place this identifier may not be sent to this address.
+        q.set_initial_reset_token(token(0));
+        let (delta, installed_token) = q
+            .install_route(0, here, 7, OwnedRemotes::default())
+            .expect("the route has to be installed now");
+        assert_eq!(installed_token, token(0));
+        assert_eq!(
+            delta.added.and_then(|a| a.generation()),
+            Some(7),
+            "installed under the generation that asked for it"
+        );
+        assert!(
+            !q.is_installed(0, here),
+            "the gate is shut until the endpoint confirms it"
+        );
+        assert!(q.is_sent(0), "and the history it earned is untouched");
+
+        // An acknowledgement for another installation, address or identifier opens nothing.
+        q.route_installed(0, here, 6);
+        assert!(!q.is_installed(0, here), "a stale generation opens nothing");
+        q.route_installed(0, "127.0.0.1:9999".parse().unwrap(), 7);
+        assert!(!q.is_installed(0, here), "another address opens nothing");
+        q.route_installed(9, here, 7);
+        assert!(!q.is_installed(0, here), "another identifier opens nothing");
+
+        // The one that was asked for does.
+        q.route_installed(0, here, 7);
+        assert!(q.is_installed(0, here));
+        assert_eq!(
+            q.used_reset_tokens(here).iter().flatten().count(),
+            1,
+            "and a reset from there is ours, because a datagram did go out with it"
+        );
     }
 
     /// Recency is not proof that an address stopped being relevant. Moving off a path that was

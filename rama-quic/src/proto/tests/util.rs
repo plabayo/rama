@@ -346,6 +346,10 @@ pub(super) struct TestEndpoint {
     accepted: Option<Result<ConnectionHandle, ConnectionError>>,
     pub(super) connections: HashMap<ConnectionHandle, Connection>,
     conn_events: HashMap<ConnectionHandle, VecDeque<ConnectionEvent>>,
+    /// A datagram that was built but may not be sent yet because the endpoint has not confirmed
+    /// the route its identifier needs. It is kept exactly as it is, as the driver keeps its
+    /// buffered transmit, so nothing is rebuilt and no protocol counter advances twice.
+    pending_transmit: HashMap<ConnectionHandle, (Transmit, Vec<u8>)>,
     pub(super) captured_packets: Vec<Vec<u8>>,
     pub(super) capture_inbound_packets: bool,
     pub(super) handle_incoming: Box<dyn FnMut(&Incoming) -> IncomingConnectionBehavior>,
@@ -421,6 +425,7 @@ impl TestEndpoint {
             accepted: None,
             connections: HashMap::default(),
             conn_events: HashMap::default(),
+            pending_transmit: HashMap::default(),
             captured_packets: Vec::new(),
             capture_inbound_packets: false,
             handle_incoming: Box::new(|_| IncomingConnectionBehavior::Accept),
@@ -505,21 +510,56 @@ impl TestEndpoint {
         let mut buf = Vec::with_capacity(buffer_size);
 
         loop {
+            // Arrivals and timers first, then the wire. Route installations are the exception:
+            // the send path waits on them, so they are applied and acknowledged before a datagram
+            // is offered, which is what a driver achieves by polling the endpoint and the
+            // connection independently. Every other endpoint event keeps its place after the
+            // wire, so nothing else about this harness's ordering moves.
             let mut endpoint_events: Vec<(ConnectionHandle, EndpointEvent)> = vec![];
             for (ch, conn) in self.connections.iter_mut() {
                 if self.timeout.is_some_and(|x| x <= now) {
                     self.timeout = None;
                     conn.handle_timeout(now);
                 }
-
-                for (_, mut events) in self.conn_events.drain() {
+                // Only this connection's events: draining every handle's here would hand one
+                // connection another's packets.
+                if let Some(events) = self.conn_events.get_mut(ch) {
                     for event in events.drain(..) {
                         conn.handle_event(event);
                     }
                 }
-
                 while let Some(event) = conn.poll_endpoint_events() {
                     endpoint_events.push((*ch, event));
+                }
+            }
+            let (routes, mut endpoint_events): (Vec<_>, Vec<_>) = endpoint_events
+                .into_iter()
+                .partition(|(_, event)| event.is_reset_route());
+            self.apply_endpoint_events(routes);
+
+            // Now the wire.
+            let mut waiting = false;
+            for (ch, conn) in self.connections.iter_mut() {
+                // Whatever was waiting for a route goes first, and is offered as it was built.
+                if let Some((transmit, bytes)) = self.pending_transmit.remove(ch) {
+                    match transmit.cid_used.map_or(SendPermit::Sendable, |seq| {
+                        conn.may_send_cid(seq, transmit.destination)
+                    }) {
+                        SendPermit::Sendable => {
+                            let (cid_used, destination) = (transmit.cid_used, transmit.destination);
+                            self.outbound.extend(split_transmit(transmit, &bytes));
+                            if let Some(seq) = cid_used {
+                                conn.cid_sent(seq, destination);
+                            }
+                        }
+                        SendPermit::AwaitingInstallation => {
+                            self.pending_transmit.insert(*ch, (transmit, bytes));
+                            waiting = true;
+                            continue;
+                        }
+                        // Never sendable again: only this datagram is given up.
+                        SendPermit::Obsolete => {}
+                    }
                 }
                 let mut transmits = 0;
                 while let Some(transmit) = conn.poll_transmit(now, MAX_DATAGRAMS, &mut buf) {
@@ -532,19 +572,20 @@ impl TestEndpoint {
                     let size = transmit.size;
                     let cid_used = transmit.cid_used;
                     let destination = transmit.destination;
-                    // A datagram whose identifier may never be sent again is dropped, as the
-                    // driver drops it (RFC 9000 §9.5).
-                    //
-                    // Waiting for the endpoint to confirm a route is deliberately *not* modelled
-                    // here. It is a property of how the driver schedules the endpoint against the
-                    // connection, and this harness applies endpoint events within the same pass,
-                    // so nothing can arrive in the window the gate exists to close. Making it
-                    // wait here would only shift when identifiers are adopted, which is what
-                    // these tests measure. The gate itself is proved by the driver regressions.
+                    // The driver holds a datagram whose route the endpoint has not confirmed and
+                    // drops one whose identifier may never be sent again (RFC 9000 §9.5); so does
+                    // this. A held one is kept as it is and offered again once the route is in.
                     match cid_used.map_or(SendPermit::Sendable, |seq| {
                         conn.may_send_cid(seq, destination)
                     }) {
-                        SendPermit::Sendable | SendPermit::AwaitingInstallation => {}
+                        SendPermit::Sendable => {}
+                        SendPermit::AwaitingInstallation => {
+                            self.pending_transmit
+                                .insert(*ch, (transmit, buf[..size].to_vec()));
+                            buf.clear();
+                            waiting = true;
+                            break;
+                        }
                         SendPermit::Obsolete => {
                             buf.clear();
                             continue;
@@ -558,24 +599,28 @@ impl TestEndpoint {
                     }
                 }
                 self.timeout = conn.poll_timeout();
-                // A route installed during this pass has to reach the endpoint before the pass
-                // gives up, or a datagram waiting for it would wait for a drive that never comes.
                 while let Some(event) = conn.poll_endpoint_events() {
                     endpoint_events.push((*ch, event));
                 }
             }
-
-            if endpoint_events.is_empty() {
+            let more = !endpoint_events.is_empty();
+            self.apply_endpoint_events(endpoint_events);
+            if !more && !waiting {
                 break;
             }
+        }
+    }
 
-            for (ch, event) in endpoint_events {
-                if let Some(event) = self.handle_event(ch, event) {
-                    if self.hold_identifiers {
-                        self.held_identifiers.push((ch, event));
-                    } else if let Some(conn) = self.connections.get_mut(&ch) {
-                        conn.handle_event(event);
-                    }
+    /// Hand each event to the endpoint and give the connection back whatever it answers.
+    fn apply_endpoint_events(&mut self, events: Vec<(ConnectionHandle, EndpointEvent)>) {
+        for (ch, event) in events {
+            if let Some(event) = self.handle_event(ch, event) {
+                // Only identifier issuance is held by that seam, however it was asked for; a
+                // route acknowledgement withheld here would stop the connection sending at all.
+                if self.hold_identifiers && event.is_new_identifiers() {
+                    self.held_identifiers.push((ch, event));
+                } else if let Some(conn) = self.connections.get_mut(&ch) {
+                    conn.handle_event(event);
                 }
             }
         }

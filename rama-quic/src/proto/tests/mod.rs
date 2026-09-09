@@ -7334,15 +7334,23 @@ fn a_failed_nat_rebinding_returns_to_the_previous_path_keeping_the_connection_id
 /// server ends up without spares on a validated path while the client keeps its own spares. The
 /// held replacements are released with `pair.client.release_held_identifiers()`.
 fn exhaust_server_cids(pair: &mut Pair, client_ch: ConnectionHandle, server_ch: ConnectionHandle) {
-    let spares = crate::proto::cid_queue::CidQueue::LEN - 1;
     pair.client.hold_identifiers = true;
-    for _ in 0..spares {
+    // One move per spare would do if every path validated at once, but a datagram that waits for
+    // its route to be installed can carry a challenge into the next step, so this drives to the
+    // state it is after — no spares left — within a budget rather than counting moves.
+    let mut moves = 0;
+    while pair.server_conn_mut(server_ch).can_migrate_locally() {
+        moves += 1;
+        assert!(
+            moves <= crate::proto::cid_queue::CidQueue::LEN * 4,
+            "the server still had a spare identifier after {moves} moves"
+        );
         pair.client.addr = SocketAddr::new(
             Ipv4Addr::new(127, 0, 0, 1).into(),
             CLIENT_PORTS.lock().next().unwrap(),
         );
         assert!(pair.client_conn_mut(client_ch).migrate_local_address());
-        pair.drive();
+        drive_settled(pair);
         assert_eq!(
             pair.server_conn_mut(server_ch).remote_address(),
             pair.client.addr
@@ -7354,6 +7362,7 @@ fn exhaust_server_cids(pair: &mut Pair, client_ch: ConnectionHandle, server_ch: 
         );
     }
     assert!(!pair.server_conn_mut(server_ch).can_migrate_locally());
+    assert!(moves >= 1, "the server started with spares to exhaust");
 }
 
 /// RFC 9000 §9.5 on the server: a peer that moves and keeps sending the same destination

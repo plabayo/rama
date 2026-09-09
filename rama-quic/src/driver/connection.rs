@@ -646,6 +646,19 @@ impl Connection {
         self.0.state.lock().inner.active_cid_confirmed()
     }
 
+    /// Tests: whether a datagram carrying the identifier numbered `seq` has gone out.
+    #[cfg(test)]
+    pub(crate) fn cid_confirmed(&self, seq: u64) -> bool {
+        self.0.state.lock().inner.cid_confirmed(seq)
+    }
+
+    /// Tests: how many datagrams were given up because their identifier may never be sent again.
+    /// A datagram merely waiting for its route is not one of them.
+    #[cfg(test)]
+    pub(crate) fn stale_transmits(&self) -> u64 {
+        self.0.state.lock().stale_transmits
+    }
+
     /// Tests: the sequence number of the connection ID this side is addressing its peer with.
     #[cfg(test)]
     pub(crate) fn active_dcid_seq(&self) -> u64 {
@@ -1488,32 +1501,31 @@ impl State {
                 }
             };
 
-            match t.cid_used.map_or(SendPermit::Sendable, |seq| {
-                self.inner.may_send_cid(seq, t.destination)
-            }) {
-                SendPermit::Sendable => {}
-                // The route a reset would come back by is not installed yet. The descriptor is
-                // kept exactly as it is — its socket state and any prefix already accepted stay
-                // with it — and the endpoint's confirmation wakes this connection, so there is
-                // nothing to spin on. Receiving, timers and shutdown carry on meanwhile.
-                SendPermit::AwaitingInstallation => {
-                    self.buffered_transmit = Some((id, t));
-                    return Ok(false);
-                }
-                // The identifier may never be sent again. Only the unsent remainder goes: a
-                // prefix the sender already took has left, so it counts and is never offered
-                // again (RFC 9000 §9.5).
-                SendPermit::Obsolete => {
-                    let seq = t.cid_used.expect("only a named identifier can be obsolete");
-                    socket.abandon(id);
-                    if socket.accepted_any(id) {
-                        self.inner.cid_sent(seq, t.destination);
+            if let Some(seq) = t.cid_used {
+                match self.inner.may_send_cid(seq, t.destination) {
+                    SendPermit::Sendable => {}
+                    // The route a reset would come back by is not installed yet. The descriptor
+                    // is kept exactly as it is — its socket state and any prefix already accepted
+                    // stay with it — and the endpoint's confirmation wakes this connection, so
+                    // there is nothing to spin on. Receiving, timers and shutdown carry on.
+                    SendPermit::AwaitingInstallation => {
+                        self.buffered_transmit = Some((id, t));
+                        return Ok(false);
                     }
-                    self.stale_transmits += 1;
-                    if transmits >= MAX_TRANSMIT_DATAGRAMS {
-                        return Ok(true);
+                    // The identifier may never be sent again. Only the unsent remainder goes: a
+                    // prefix the sender already took has left, so it counts and is never offered
+                    // again (RFC 9000 §9.5).
+                    SendPermit::Obsolete => {
+                        socket.abandon(id);
+                        if socket.accepted_any(id) {
+                            self.inner.cid_sent(seq, t.destination);
+                        }
+                        self.stale_transmits += 1;
+                        if transmits >= MAX_TRANSMIT_DATAGRAMS {
+                            return Ok(true);
+                        }
+                        continue;
                     }
-                    continue;
                 }
             }
 

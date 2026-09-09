@@ -1502,6 +1502,16 @@ impl Connection {
                 // retired one, or one a newer installation replaced — has nothing to open.
                 self.rem_cids.route_installed(seq, remote, generation);
             }
+            ResetRouteRefused(remote, seq, generation) => {
+                // There is nowhere to route a reset for this identifier, so the datagram waiting
+                // on it can never leave. That is a failure of ours, and it ends the connection
+                // with its cause rather than leaving it silently stuck (or opening the gate).
+                if self.rem_cids.route_refused(seq, remote, generation) {
+                    self.defer_error(TransportError::INTERNAL_ERROR(
+                        "no room to route a stateless reset for a connection ID",
+                    ));
+                }
+            }
         }
     }
 
@@ -4304,12 +4314,16 @@ impl Connection {
         delta: RouteDelta,
         generation: u64,
     ) {
-        if let Some(released) = delta.released {
-            self.release_reset_token(released.remote, seq, token, released.generation);
+        if let Some(released) = delta.released
+            && let Some(installed) = released.generation()
+        {
+            self.release_reset_token(released.remote, seq, token, installed);
         }
-        if let Some(added) = delta.added {
-            self.note_reset_token(added.remote, seq, token, added.generation);
-            if added.generation == generation {
+        if let Some(added) = delta.added
+            && let Some(installation) = added.generation()
+        {
+            self.note_reset_token(added.remote, seq, token, installation);
+            if installation == generation {
                 self.reset_generation = generation.wrapping_add(1);
             }
         }

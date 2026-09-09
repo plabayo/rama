@@ -133,12 +133,23 @@ impl Endpoint {
                 // keeps it while the previous path may still answer — so an association is keyed
                 // by both and installing one never deletes another (RFC 9000 §10.3.1). The engine
                 // releases what it stops using, so this table holds no more than it does.
-                if self.connections[ch]
+                match self.connections[ch]
                     .reset_tokens
                     .insert(seq, remote, token, generation)
-                    && self.index.connection_reset_tokens.insert(remote, token, ch)
                 {
-                    warn!("duplicate reset token");
+                    Installed::New => {
+                        if self.index.connection_reset_tokens.insert(remote, token, ch) {
+                            warn!("duplicate reset token");
+                        }
+                    }
+                    Installed::Refreshed => {}
+                    // No room, so there is no route. Saying so is the only honest answer: an
+                    // acknowledgement would open the gate onto a route that does not exist.
+                    Installed::Full => {
+                        return Some(ConnectionEvent(ConnectionEventInner::ResetRouteRefused(
+                            remote, seq, generation,
+                        )));
+                    }
                 }
                 // The route exists now, which is what the connection is waiting for before it
                 // sends anything with this identifier to this address.
@@ -1187,7 +1198,7 @@ fn cid_space_exhausted(cid_len: usize, in_use: usize) -> bool {
 mod tests {
     use std::net::SocketAddr;
 
-    use super::{RESET_TOKEN_SIZE, ResetToken, UsedResetTokens, cid_space_exhausted};
+    use super::{Installed, RESET_TOKEN_SIZE, ResetToken, UsedResetTokens, cid_space_exhausted};
 
     fn addr(last: u8) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, last], 4433))
@@ -1203,9 +1214,14 @@ mod tests {
     #[test]
     fn a_route_is_released_only_by_the_installation_that_owns_it() {
         let mut routes = UsedResetTokens::default();
-        assert!(routes.insert(1, addr(1), token(1), 10), "a new route");
-        assert!(
-            !routes.insert(1, addr(1), token(1), 11),
+        assert_eq!(
+            routes.insert(1, addr(1), token(1), 10),
+            Installed::New,
+            "a new route"
+        );
+        assert_eq!(
+            routes.insert(1, addr(1), token(1), 11),
+            Installed::Refreshed,
             "the same pair again is not a second route"
         );
         assert!(
@@ -1224,8 +1240,8 @@ mod tests {
         );
 
         // The same identifier at two addresses is two routes, and one does not remove the other.
-        assert!(routes.insert(2, addr(1), token(2), 20));
-        assert!(routes.insert(2, addr(2), token(2), 21));
+        assert_eq!(routes.insert(2, addr(1), token(2), 20), Installed::New);
+        assert_eq!(routes.insert(2, addr(2), token(2), 21), Installed::New);
         assert_eq!(routes.iter().count(), 2);
         assert!(routes.release(2, addr(1), 20));
         assert_eq!(routes.iter().count(), 1);
@@ -1235,8 +1251,8 @@ mod tests {
         );
 
         // Retirement takes every route the identifier had, at every address.
-        assert!(routes.insert(3, addr(3), token(3), 30));
-        assert!(routes.insert(3, addr(4), token(3), 31));
+        assert_eq!(routes.insert(3, addr(3), token(3), 30), Installed::New);
+        assert_eq!(routes.insert(3, addr(4), token(3), 31), Installed::New);
         let removed = routes.remove_range(3..4).count();
         assert_eq!(removed, 2, "both of the retired identifier's routes go");
         assert_eq!(routes.iter().count(), 1);
@@ -1250,14 +1266,15 @@ mod tests {
         let mut routes = UsedResetTokens::default();
         let slots = super::CidQueue::PRESENT * super::RemCid::REMOTES;
         let home = addr(1);
-        assert!(routes.insert(1, home, token(1), 0));
+        assert_eq!(routes.insert(1, home, token(1), 0), Installed::New);
         // One identifier, forty different addresses, two of them always live.
         let mut previous: Option<(SocketAddr, u64)> = None;
         for step in 0..40u64 {
             let remote = addr(10 + step as u8);
             let generation = step + 1;
-            assert!(
+            assert_eq!(
                 routes.insert(1, remote, token(1), generation),
+                Installed::New,
                 "step {step} installs"
             );
             if let Some((old, old_generation)) = previous.replace((remote, generation)) {
@@ -1513,6 +1530,17 @@ impl Default for UsedResetTokens {
     }
 }
 
+/// What installing a route did. Only `Full` means the route is absent.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum Installed {
+    /// The route is in the table under this installation, and the index needs it.
+    New,
+    /// The table already had this route with this token; its installation name is updated.
+    Refreshed,
+    /// There was no room, so the route is **not** installed.
+    Full,
+}
+
 /// One installed route: the identifier, the address it is sent to, the token a reset would carry,
 /// and the name of this installation.
 #[derive(Debug, Copy, Clone)]
@@ -1526,7 +1554,13 @@ struct Association {
 impl UsedResetTokens {
     /// Record that the ID with `seq` is sent to `remote`. `true` when this is a new association;
     /// a repetition of one already held changes nothing.
-    fn insert(&mut self, seq: u64, remote: SocketAddr, token: ResetToken, generation: u64) -> bool {
+    fn insert(
+        &mut self,
+        seq: u64,
+        remote: SocketAddr,
+        token: ResetToken,
+        generation: u64,
+    ) -> Installed {
         if let Some(held) = self
             .entries
             .iter_mut()
@@ -1538,14 +1572,19 @@ impl UsedResetTokens {
             let known = held.token == token;
             held.generation = generation;
             held.token = token;
-            return !known;
+            return if known {
+                Installed::Refreshed
+            } else {
+                Installed::New
+            };
         }
         let Some(slot) = self.entries.iter().position(Option::is_none) else {
             // The engine releases the association it stops using before installing the one that
             // displaced it, so it cannot ask for more routes than there are slots. Refusing keeps
-            // every live route instead of dropping one, and says so rather than assuming.
+            // every live route instead of dropping one, and is reported to the connection rather
+            // than logged and forgotten.
             warn!(seq, %remote, "reset association table full; route not installed");
-            return false;
+            return Installed::Full;
         };
         self.entries[slot] = Some(Association {
             seq,
@@ -1553,7 +1592,7 @@ impl UsedResetTokens {
             token,
             generation,
         });
-        true
+        Installed::New
     }
 
     /// Release the route for `seq` at `remote`, when it is still the installation `generation`
