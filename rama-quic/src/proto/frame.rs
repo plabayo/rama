@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     fmt::{self, Write},
     mem,
     ops::{Range, RangeInclusive},
@@ -275,7 +276,12 @@ impl From<TransportError> for ConnectionClose {
         Self {
             error_code: x.code,
             frame_type: x.frame,
-            reason: x.reason.into(),
+            // A borrowed reason lives for the program, so the frame points at it; an owned
+            // one moves in.
+            reason: match x.reason {
+                Cow::Borrowed(reason) => Bytes::from_static(reason.as_bytes()),
+                Cow::Owned(reason) => Bytes::from(reason),
+            },
         }
     }
 }

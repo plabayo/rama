@@ -1,149 +1,16 @@
 //! Rama's QUIC transport against the upstream Quinn stack, both directions, through the public
 //! API only: no engine internals, and no Rustls type on the Rama side of any call.
 
-use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
-use std::time::Duration;
+mod common;
 
+use std::{sync::Arc, time::Duration};
+
+use common::*;
 use rama::{
-    crypto::pki_types::CertificateDer,
-    net::tls::ApplicationProtocol,
-    quic::{ClientConfig, Endpoint, ServerConfig, tls::TlsOptions},
-    tls::{
-        client::TlsClientConfig,
-        server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
-    },
+    net::{address::Domain, tls::ApplicationProtocol},
+    quic::Endpoint,
     utils::octets,
 };
-use sha2::{Digest, Sha256};
-
-const ALPN: &[u8] = b"rama-quinn-interop";
-/// Every await in these tests is bounded: a hang has to fail the test, not stall it.
-const LIMIT: Duration = Duration::from_secs(20);
-
-/// Await one step of a scenario, naming it so a timeout says which step stalled.
-async fn step<F: std::future::Future>(what: &str, future: F) -> F::Output {
-    match tokio::time::timeout(LIMIT, future).await {
-        Ok(value) => value,
-        Err(_) => panic!("{what}: not within {LIMIT:?}"),
-    }
-}
-
-/// A spawned peer. The guard owns its handle for as long as it exists, including while a wait on
-/// it is in progress, so a wait that is itself cancelled leaves the task with the guard rather
-/// than detached; dropping the guard aborts the task without waiting for it to unwind.
-struct Peer(Option<tokio::task::JoinHandle<()>>);
-
-impl Peer {
-    fn spawn(task: impl std::future::Future<Output = ()> + Send + 'static) -> Self {
-        Self(Some(tokio::spawn(task)))
-    }
-
-    async fn join(mut self, what: &str) {
-        if let Err(reason) = self.try_join_within(LIMIT).await {
-            panic!("{what}: {reason}");
-        }
-    }
-
-    /// Wait for the task, with the handle staying in the guard throughout: awaiting it by value
-    /// would drop it on a timeout and leave the task running detached, and taking it out first
-    /// would do the same if this wait were itself cancelled.
-    async fn try_join_within(&mut self, limit: Duration) -> Result<(), String> {
-        let handle = self.0.as_mut().expect("waited on once");
-        let outcome = match tokio::time::timeout(limit, handle).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) if error.is_panic() => Err(format!("panicked: {error}")),
-            Ok(Err(error)) => Err(format!("ended: {error}")),
-            Err(_) => {
-                let handle = self.0.as_mut().expect("still here");
-                handle.abort();
-                let _ = handle.await;
-                Err(format!("not within {limit:?}"))
-            }
-        };
-        // Whatever happened, the task is finished and the guard has nothing left to abort.
-        self.0 = None;
-        outcome
-    }
-}
-
-impl Drop for Peer {
-    fn drop(&mut self) {
-        if let Some(handle) = self.0.take() {
-            handle.abort();
-        }
-    }
-}
-
-fn localhost() -> SocketAddr {
-    SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)
-}
-
-fn digest(payload: &[u8]) -> [u8; 32] {
-    Sha256::digest(payload).into()
-}
-
-fn payload(seed: u8, len: usize) -> Vec<u8> {
-    (0..len).map(|i| (i as u8) ^ seed).collect()
-}
-
-/// One generated identity, used by whichever side is the server and trusted by the other.
-fn identity() -> ServerAuthData {
-    ServerAuthData::new_generated(GeneratedServerAuthConfig::default())
-        .expect("an identity is generated")
-}
-
-fn alpn() -> impl IntoIterator<Item = ApplicationProtocol> {
-    [ApplicationProtocol::from(ALPN)]
-}
-
-fn rama_server_config(auth: &ServerAuthData) -> ServerConfig {
-    let tls = TlsServerConfig::new()
-        .with_alpn(alpn().into_iter().collect())
-        .with_server_auth(auth.clone());
-    ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())
-        .expect("the server config is built")
-}
-
-fn rama_client_config(anchor: CertificateDer<'static>) -> ClientConfig {
-    let tls = TlsClientConfig::new()
-        .with_alpn(alpn().into_iter().collect())
-        .try_with_server_trust_anchors([anchor])
-        .expect("the trust anchor is accepted");
-    ClientConfig::try_from_rama_tls(&tls, TlsOptions::default())
-        .expect("the client config is built")
-}
-
-fn quinn_server_config(auth: &ServerAuthData) -> quinn::ServerConfig {
-    let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_protocol_versions(&[&rustls::version::TLS13])
-    .expect("TLS 1.3 is supported")
-    .with_no_client_auth()
-    .with_single_cert(auth.cert_chain.clone(), auth.private_key.clone_key())
-    .expect("the identity is accepted");
-    tls.alpn_protocols = vec![ALPN.to_vec()];
-    quinn::ServerConfig::with_crypto(Arc::new(
-        quinn::crypto::rustls::QuicServerConfig::try_from(tls).expect("a QUIC server config"),
-    ))
-}
-
-fn quinn_client_config(anchor: CertificateDer<'static>) -> quinn::ClientConfig {
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(anchor).expect("the anchor is accepted");
-    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_protocol_versions(&[&rustls::version::TLS13])
-    .expect("TLS 1.3 is supported")
-    .with_root_certificates(roots)
-    .with_no_client_auth();
-    tls.alpn_protocols = vec![ALPN.to_vec()];
-    quinn::ClientConfig::new(Arc::new(
-        quinn::crypto::rustls::QuicClientConfig::try_from(tls).expect("a QUIC client config"),
-    ))
-}
 
 /// Rama opens the connection, Quinn answers it: a unidirectional stream up and a bidirectional
 /// exchange, both verified by digest, both ended with FIN, and a bounded shutdown on each side.
@@ -300,9 +167,9 @@ async fn quinn_client_to_rama_server() {
                 "the protocol both sides agreed on"
             );
             assert_eq!(
-                settled.server_name.as_ref().map(ToString::to_string),
-                Some("localhost".to_owned()),
-                "and the name the client asked for"
+                settled.server_name.as_ref().and_then(|name| name.domain()),
+                Some(&Domain::from_static("localhost")),
+                "and the name the client asked for, as a domain"
             );
 
             let mut uni = step("the rama server takes the uni stream", conn.accept_uni())
@@ -503,8 +370,8 @@ async fn a_quinn_client_refuses_a_rama_server_it_does_not_trust() {
     step("rama's shutdown", server.shutdown()).await;
 }
 
-/// A peer that never finishes is stopped by the guard rather than left running: the wait keeps
-/// the handle, so the timeout can abort it, and the task's own drop is observed.
+/// The guard stops a peer that never finishes. Its wait keeps the handle, so the timeout can
+/// abort the task; the task's own drop is observed here.
 #[tokio::test]
 async fn a_peer_that_never_finishes_is_stopped() {
     let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));

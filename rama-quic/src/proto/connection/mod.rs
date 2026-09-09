@@ -1642,21 +1642,28 @@ impl Connection {
         self.spaces[self.highest_space].ping_pending = true;
     }
 
-    /// Update traffic keys spontaneously
+    /// Update traffic keys now. Answers whether an update was started.
     ///
-    /// This can be useful for testing key updates, as they otherwise only happen infrequently.
-    pub(crate) fn force_key_update(&mut self) {
+    /// An update is initiated only once the handshake is confirmed (RFC 9001 §6.1) and only when
+    /// no update is in flight (§6). Answering the peer's update is a different path and is not
+    /// bound by the first of those.
+    pub(crate) fn force_key_update(&mut self) -> bool {
         if !self.state.is_established() {
             debug!("ignoring forced key update in illegal state");
-            return;
+            return false;
+        }
+        if !self.handshake_confirmed() {
+            debug!("ignoring forced key update before the handshake is confirmed");
+            return false;
         }
         if self.prev_crypto.is_some() {
             // We already just updated, or are currently updating, the keys. Concurrent key updates
             // are illegal.
             debug!("ignoring redundant forced key update");
-            return;
+            return false;
         }
         self.update_keys(None, false);
+        true
     }
 
     /// Get a session reference
@@ -4308,6 +4315,38 @@ impl Connection {
         self.rem_cids.is_sent_to(seq, remote)
     }
 
+    /// Tests: put the 1-RTT keys' packet count where the caller wants it, so the confidentiality
+    /// limit is reachable without sending as many packets as the AEAD allows.
+    #[cfg(test)]
+    pub(crate) fn set_packets_sent_with_keys(&mut self, sent: u64) {
+        self.spaces[SpaceId::Data].sent_with_keys = sent;
+    }
+
+    /// Tests: how many packets the 1-RTT keys in use have sent.
+    #[cfg(test)]
+    pub(crate) fn packets_sent_with_keys(&self) -> u64 {
+        self.spaces[SpaceId::Data].sent_with_keys
+    }
+
+    /// Tests: the confidentiality limit of the keys this connection sends 1-RTT packets with.
+    #[cfg(test)]
+    pub(crate) fn confidentiality_limit(&self) -> u64 {
+        self.spaces[SpaceId::Data]
+            .crypto
+            .as_ref()
+            .map_or_else(
+                || &self.zero_rtt_crypto.as_ref().unwrap().packet,
+                |keys| &keys.packet.local,
+            )
+            .confidentiality_limit()
+    }
+
+    /// Tests: keep the key phase from being retired, so the limit is met with the keys in use.
+    #[cfg(test)]
+    pub(crate) fn set_key_phase_size(&mut self, packets: u64) {
+        self.key_phase_size = packets;
+    }
+
     /// Tests: how far this client got with the server's preferred address.
     #[cfg(test)]
     pub(crate) fn preferred_address_state(&self) -> PreferredAddressState {
@@ -4986,6 +5025,7 @@ impl Connection {
 
     fn update_keys(&mut self, end_packet: Option<(u64, Instant)>, remote: bool) {
         trace!("executing key update");
+        self.stats.key_updates = self.stats.key_updates.saturating_add(1);
         // Generate keys for the key phase after the one we're switching to, store them in
         // `next_crypto`, make the contents of `next_crypto` current, and move the current keys into
         // `prev_crypto`.

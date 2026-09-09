@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{borrow::Cow, fmt};
 
 use rama_core::error::ArcError;
 
@@ -21,8 +21,11 @@ pub struct Error {
     pub(crate) code: Code,
     /// Frame type that triggered the error
     pub(crate) frame: Option<frame::FrameType>,
-    /// Human-readable explanation of the reason
-    pub(crate) reason: String,
+    /// Human-readable explanation of the reason, which is what goes on the wire in
+    /// CONNECTION_CLOSE. A literal is borrowed for the life of the program and costs nothing;
+    /// text built at the point of failure is owned. Local diagnostics live in `cause` and never
+    /// reach the peer.
+    pub(crate) reason: Cow<'static, str>,
     /// An underlying TLS or local runtime failure, shared: this error is cloned for every
     /// stream, waiter and close reason that reports it, and the cause is rarely cloneable.
     pub(crate) cause: Option<ArcError>,
@@ -39,11 +42,11 @@ impl Error {
     }
 
     /// Construct an error with a code and a reason
-    pub(crate) fn new(code: Code, reason: String) -> Self {
+    pub(crate) fn new(code: Code, reason: impl Into<Cow<'static, str>>) -> Self {
         Self {
             code,
             frame: None,
-            reason,
+            reason: reason.into(),
             cause: None,
         }
     }
@@ -83,7 +86,7 @@ impl From<Code> for Error {
         Self {
             code: x,
             frame: None,
-            reason: "".to_string(),
+            reason: Cow::Borrowed(""),
             cause: None,
         }
     }
@@ -120,7 +123,7 @@ macro_rules! errors {
         #[expect(non_snake_case, reason = "constructors are named after the RFC 9000 error codes")]
         impl Error {
             $(
-            pub(crate) fn $name<T>(reason: T) -> Self where T: Into<String> {
+            pub(crate) fn $name<T>(reason: T) -> Self where T: Into<Cow<'static, str>> {
                 Self {
                     code: Code::$name,
                     frame: None,
@@ -176,4 +179,58 @@ errors! {
     KEY_UPDATE_ERROR(0xE) "key update error";
     AEAD_LIMIT_REACHED(0xF) "the endpoint has reached the confidentiality or integrity limit for the AEAD algorithm";
     NO_VIABLE_PATH(0x10) "no viable network path exists";
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::frame::ConnectionClose;
+
+    /// A literal reason is borrowed all the way to the frame. The frame's bytes are the same
+    /// bytes as the literal, which a copy would not be.
+    #[test]
+    fn a_literal_reason_is_borrowed_to_the_wire() {
+        const REASON: &str = "frame in the wrong space";
+        let error = Error::PROTOCOL_VIOLATION(REASON);
+        assert!(matches!(error.reason, Cow::Borrowed(_)));
+        let close = ConnectionClose::from(error);
+        assert_eq!(&close.reason[..], REASON.as_bytes());
+        assert_eq!(
+            close.reason.as_ptr(),
+            REASON.as_ptr(),
+            "the frame points at the literal itself"
+        );
+    }
+
+    /// Text built where the failure happened is owned, and its buffer moves to the frame rather
+    /// than being copied into a new one.
+    #[test]
+    fn a_built_reason_is_owned_and_moves_to_the_wire() {
+        let built = format!("stream {} is not open", 7);
+        let address = built.as_ptr();
+        let error = Error::PROTOCOL_VIOLATION(built);
+        assert!(matches!(error.reason, Cow::Owned(_)));
+        let close = ConnectionClose::from(error);
+        assert_eq!(&close.reason[..], b"stream 7 is not open");
+        assert_eq!(
+            close.reason.as_ptr(),
+            address,
+            "the frame holds the buffer that was built, not a copy of it"
+        );
+    }
+
+    /// What the peer is told is the reason, never the local cause or the context around it.
+    #[test]
+    fn the_local_cause_stays_local() {
+        let error = Error::INTERNAL_ERROR("send failed").with_cause(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the socket said no",
+        ));
+        let close = ConnectionClose::from(error.clone());
+        assert_eq!(&close.reason[..], b"send failed");
+        assert!(
+            core::error::Error::source(&error).is_some(),
+            "while the cause is still there for this side"
+        );
+    }
 }

@@ -187,9 +187,9 @@ fn draft_version_compat() {
     // Draft versions are not advertised by default (v1 only); both endpoints opt in explicitly
     // for this compatibility fixture.
     let mut endpoint_config = EndpointConfig::default();
-    endpoint_config.supported_versions([DEFAULT_SUPPORTED_VERSIONS, DRAFT_VERSIONS].concat());
+    endpoint_config.set_supported_versions([DEFAULT_SUPPORTED_VERSIONS, DRAFT_VERSIONS].concat());
     let mut client_config = client_config();
-    client_config.version(0xff00_0020);
+    client_config.set_version(0xff00_0020);
 
     let mut pair = Pair::new(Arc::new(endpoint_config), server_config());
     let (client_ch, server_ch) = pair.connect_with(client_config);
@@ -747,7 +747,7 @@ fn full_initial_window() {
     // Keep `current_mtu` pinned to `INITIAL_MTU`, which the default initial window of 12000 bytes
     // is an exact multiple of, so that the window can be filled precisely.
     let mut transport = TransportConfig::default();
-    transport.mtu_discovery_config(None);
+    transport.maybe_set_mtu_discovery_config(None);
     let mut config = client_config();
     config.transport = Arc::new(transport);
 
@@ -989,14 +989,14 @@ fn test_zero_rtt_incoming_limit<F: FnOnce(&mut ServerConfig)>(configure_server: 
 
     let mut transport = TransportConfig::default();
     // Assume a low-latency connection so pacing doesn't interfere with the test
-    transport.initial_rtt(Duration::from_millis(10));
+    transport.set_initial_rtt(Duration::from_millis(10));
     let transport = Arc::new(transport);
 
     let mut server_config = server_config();
     configure_server(&mut server_config);
     let mut pair = Pair::new(Arc::new(EndpointConfig::default()), server_config);
     let mut config = client_config();
-    config.transport_config(transport);
+    config.set_transport_config(transport);
 
     // Establish normal connection
     let client_ch = pair.begin_connect(config.clone());
@@ -1090,7 +1090,7 @@ fn test_zero_rtt_incoming_limit<F: FnOnce(&mut ServerConfig)>(configure_server: 
 #[test]
 fn zero_rtt_incoming_buffer_size() {
     test_zero_rtt_incoming_limit(|config| {
-        config.incoming_buffer_size(4000);
+        config.set_incoming_buffer_size(4000);
     });
 }
 
@@ -1138,14 +1138,15 @@ fn alpn_success() {
         other => panic!("assertion failed: `{other:?}` does not match `Some(Event::Connected)`"),
     }
 
-    let hd = pair
+    let settled = pair
         .client_conn_mut(client_ch)
         .crypto_session()
-        .handshake_data()
-        .unwrap()
-        .downcast::<crate::proto::crypto::rustls::HandshakeData>()
+        .handshake_summary()
         .unwrap();
-    assert_eq!(hd.protocol.unwrap(), &b"bar"[..]);
+    assert_eq!(
+        settled.protocol,
+        Some(rama_net::tls::ApplicationProtocol::from(&b"bar"[..]))
+    );
 }
 
 #[test]
@@ -1569,6 +1570,164 @@ fn streams_blocked_cleared_by_max_streams() {
             .streams_blocked_uni,
         1
     );
+}
+
+/// RFC 9001 §6.6 at three points: one packet of budget left, none left, and past the limit. A
+/// key phase is usually retired long before its keys reach the limit, but an update is not always
+/// available, so the limit itself has to hold. The last packet of budget carries the close.
+#[test]
+fn one_rtt_keys_stop_at_their_confidentiality_limit_when_no_update_is_available() {
+    let _guard = subscribe();
+
+    // One packet of budget left: the close packet is sent, and it says why.
+    let mut pair = Pair::default();
+    let (client_ch, _server_ch) = pair.connect();
+    let limit = pair.client_conn_mut(client_ch).confidentiality_limit();
+    assert!(
+        pair.client_conn_mut(client_ch).force_key_update(),
+        "the first update starts"
+    );
+    assert!(
+        !pair.client_conn_mut(client_ch).force_key_update(),
+        "a second update cannot start while the first is unacknowledged"
+    );
+    pair.client_conn_mut(client_ch)
+        .set_packets_sent_with_keys(limit - 1);
+    let stream = pair
+        .client_streams(client_ch)
+        .open(Dir::Bi)
+        .expect("a stream opens");
+    pair.client_send(client_ch, stream)
+        .write(b"the last packet")
+        .expect("the write is queued");
+    let before = pair.client_sent.len();
+    pair.drive_client();
+    assert_eq!(
+        pair.client_sent.len() - before,
+        1,
+        "the remaining budget covers exactly one packet"
+    );
+    assert_eq!(
+        pair.client_conn_mut(client_ch).packets_sent_with_keys(),
+        limit,
+        "the budget is spent exactly"
+    );
+    match pair.client_conn_mut(client_ch).poll() {
+        Some(Event::ConnectionLost {
+            reason:
+                ConnectionError::TransportError(TransportError {
+                    code: TransportErrorCode::AEAD_LIMIT_REACHED,
+                    ref reason,
+                    ..
+                }),
+        }) if reason == "confidentiality limit reached" => {}
+        other => panic!("the connection ends naming the limit: {other:?}"),
+    }
+
+    // No budget left: nothing is encrypted, and the connection ends naming the limit.
+    let mut pair = Pair::default();
+    let (client_ch, _server_ch) = pair.connect();
+    let limit = pair.client_conn_mut(client_ch).confidentiality_limit();
+    assert!(pair.client_conn_mut(client_ch).force_key_update());
+    pair.client_conn_mut(client_ch)
+        .set_packets_sent_with_keys(limit);
+    let stream = pair
+        .client_streams(client_ch)
+        .open(Dir::Bi)
+        .expect("a stream opens");
+    pair.client_send(client_ch, stream)
+        .write(b"no budget remains")
+        .expect("the write is queued");
+    let before = pair.client_sent.len();
+    pair.drive_client();
+    assert_eq!(
+        pair.client_sent.len() - before,
+        0,
+        "nothing is encrypted with keys that have no budget"
+    );
+    assert_eq!(
+        pair.client_conn_mut(client_ch).packets_sent_with_keys(),
+        limit,
+        "the count does not move"
+    );
+    match pair.client_conn_mut(client_ch).poll() {
+        Some(Event::ConnectionLost {
+            reason:
+                ConnectionError::TransportError(TransportError {
+                    code: TransportErrorCode::AEAD_LIMIT_REACHED,
+                    ..
+                }),
+        }) => {}
+        other => panic!("the connection ends naming the limit: {other:?}"),
+    }
+
+    // Past the limit, the same: a connection that somehow got there sends nothing more.
+    let mut pair = Pair::default();
+    let (client_ch, _server_ch) = pair.connect();
+    let limit = pair.client_conn_mut(client_ch).confidentiality_limit();
+    assert!(pair.client_conn_mut(client_ch).force_key_update());
+    pair.client_conn_mut(client_ch)
+        .set_packets_sent_with_keys(limit + 1);
+    let stream = pair
+        .client_streams(client_ch)
+        .open(Dir::Bi)
+        .expect("a stream opens");
+    pair.client_send(client_ch, stream)
+        .write(b"well past it")
+        .expect("the write is queued");
+    let before = pair.client_sent.len();
+    pair.drive_client();
+    assert_eq!(
+        pair.client_sent.len() - before,
+        0,
+        "nothing is encrypted past the limit"
+    );
+}
+
+/// The count belongs to the keys. An update starts the new phase at zero, so a connection that
+/// rotates keeps sending, and its peer receives what it sends.
+#[test]
+fn a_key_update_starts_the_new_phase_count_at_zero() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client_ch, server_ch) = pair.connect();
+
+    let limit = pair.client_conn_mut(client_ch).confidentiality_limit();
+    pair.client_conn_mut(client_ch)
+        .set_packets_sent_with_keys(limit - 2);
+    assert!(
+        pair.client_conn_mut(client_ch).force_key_update(),
+        "the update starts"
+    );
+    assert_eq!(
+        pair.client_conn_mut(client_ch).packets_sent_with_keys(),
+        0,
+        "the new keys have sent nothing yet"
+    );
+
+    let stream = pair
+        .client_streams(client_ch)
+        .open(Dir::Bi)
+        .expect("a stream opens");
+    const MESSAGE: &[u8] = b"after the update";
+    pair.client_send(client_ch, stream)
+        .write(MESSAGE)
+        .expect("the write is queued");
+    pair.drive();
+
+    assert_eq!(
+        pair.server_streams(server_ch).accept(Dir::Bi),
+        Some(stream),
+        "the peer sees the stream"
+    );
+    let mut received = pair.server_recv(server_ch, stream);
+    let mut chunks = received.read(true).expect("the stream is readable");
+    let chunk = chunks
+        .next(MESSAGE.len())
+        .expect("a chunk arrives")
+        .expect("with the payload");
+    assert_eq!(&chunk.bytes[..], MESSAGE, "the payload arrives as sent");
+    let _ = chunks.finalize();
 }
 
 #[test]
@@ -2613,8 +2772,8 @@ fn tail_loss_respect_max_datagrams() {
         let mut c_config = client_config();
         let mut t_config = TransportConfig::default();
         //Disabling GSO, so only a single segment should be sent per iops
-        t_config.enable_segmentation_offload(false);
-        c_config.transport_config(t_config.into());
+        t_config.set_enable_segmentation_offload(false);
+        c_config.set_transport_config(t_config.into());
         c_config
     };
     let mut pair = Pair::default();
@@ -2753,8 +2912,8 @@ fn datagram_send_buffer_overflow() {
     let client_config = {
         let mut config = client_config();
         let mut transport = TransportConfig::default();
-        transport.datagram_send_buffer_size(WINDOW);
-        config.transport_config(transport.into());
+        transport.set_datagram_send_buffer_size(WINDOW);
+        config.set_transport_config(transport.into());
         config
     };
     let mut pair = Pair::default();
@@ -3104,12 +3263,12 @@ fn server_can_send_3_inital_packets() {
     let _guard = subscribe();
     let mut transport = TransportConfig::default();
     // Assume a low-latency connection so pacing doesn't interfere with the test
-    transport.initial_rtt(Duration::from_millis(10));
+    transport.set_initial_rtt(Duration::from_millis(10));
     let transport = Arc::new(transport);
 
     let (cert, key) = big_cert_and_key();
     let mut server = server_config_with_cert(cert.clone(), key);
-    server.transport_config(transport);
+    server.set_transport_config(transport);
     let client = client_config_with_certs(vec![cert]);
     let mut pair = Pair::new(Default::default(), server);
 
@@ -3322,10 +3481,10 @@ fn connect_runs_mtud_again_after_600_seconds() {
     // connection closing
     Arc::get_mut(&mut server_config.transport)
         .unwrap()
-        .max_idle_timeout(None);
+        .maybe_set_max_idle_timeout(None);
     Arc::get_mut(&mut client_config.transport)
         .unwrap()
-        .max_idle_timeout(None);
+        .maybe_set_max_idle_timeout(None);
 
     let mut pair = Pair::new(Default::default(), server_config);
     pair.mtu = 1400;
@@ -3639,13 +3798,13 @@ fn setup_ack_frequency_test(max_ack_delay: Duration) -> (Pair, ConnectionHandle,
     let mut client_config = client_config_with_deterministic_pns();
     let mut ack_freq_config = AckFrequencyConfig::default();
     ack_freq_config
-        .ack_eliciting_threshold(10u32.into())
-        .max_ack_delay(Some(max_ack_delay));
+        .set_ack_eliciting_threshold(10u32.into())
+        .set_max_ack_delay(max_ack_delay);
     Arc::get_mut(&mut client_config.transport)
         .unwrap()
-        .ack_frequency_config(Some(ack_freq_config))
-        .mtu_discovery_config(None) // To keep traffic cleaner
-        .initial_rtt(Duration::from_millis(10)); // To avoid delays from pacing
+        .set_ack_frequency_config(ack_freq_config)
+        .maybe_set_mtu_discovery_config(None) // To keep traffic cleaner
+        .set_initial_rtt(Duration::from_millis(10)); // To avoid delays from pacing
 
     let mut pair = Pair::default_with_deterministic_pns();
     pair.latency = Duration::from_millis(10); // Need latency to avoid an RTT = 0
@@ -4002,7 +4161,7 @@ fn pure_sender_voluntarily_acks() {
 fn silently_drop_rejected_initials() {
     let _guard = subscribe();
     let mut server_config = server_config();
-    server_config.max_incoming(0);
+    server_config.set_max_incoming(0);
     let mut pair = Pair::new(Arc::new(EndpointConfig::default()), server_config);
 
     let client_ch = pair.begin_connect(client_config());
@@ -4195,7 +4354,7 @@ fn pad_to_mtu() {
             pad_to_mtu: true,
             ..TransportConfig::default()
         };
-        c_config.transport_config(t_config.into());
+        c_config.set_transport_config(t_config.into());
         c_config
     };
     let mut pair = Pair::default();
@@ -4364,8 +4523,8 @@ fn oversized_datagrams_trigger_unblock() {
     let mut client_config = client_config();
     let mut transport_config = TransportConfig::default();
     let send_buffer_size = transport_config.datagram_send_buffer_size;
-    transport_config.initial_mtu(INITIAL_MTU as u16);
-    client_config.transport_config(transport_config.into());
+    transport_config.set_initial_mtu(INITIAL_MTU as u16);
+    client_config.set_transport_config(transport_config.into());
 
     let (client_ch, _) = pair.connect_with(client_config);
 
@@ -4463,7 +4622,7 @@ fn reject_short_idcid() {
 fn preferred_address() {
     let _guard = subscribe();
     let mut server_config = server_config();
-    server_config.preferred_address_v6(Some("[::1]:65535".parse().unwrap()));
+    server_config.set_preferred_address_v6("[::1]:65535".parse().unwrap());
 
     let mut pair = Pair::new(Arc::new(EndpointConfig::default()), server_config);
     pair.connect();
@@ -4823,8 +4982,8 @@ fn waiting_datagram_sends_respect_total_buffer_budget() {
     const ENTRY: usize = size_of::<Datagram>();
     let mut config = client_config();
     let mut transport = TransportConfig::default();
-    transport.datagram_send_buffer_size(3 * ENTRY);
-    config.transport_config(transport.into());
+    transport.set_datagram_send_buffer_size(3 * ENTRY);
+    config.set_transport_config(transport.into());
     let mut pair = Pair::default();
     let (client_ch, server_ch) = pair.connect_with(config);
 
@@ -4886,8 +5045,8 @@ fn tiny_waiting_datagrams_fill_exact_capacity() {
     const ENTRY: usize = size_of::<Datagram>();
     let mut config = client_config();
     let mut transport = TransportConfig::default();
-    transport.datagram_send_buffer_size(2 * (ENTRY + 1));
-    config.transport_config(transport.into());
+    transport.set_datagram_send_buffer_size(2 * (ENTRY + 1));
+    config.set_transport_config(transport.into());
     let mut pair = Pair::default();
     let (client_ch, _server_ch) = pair.connect_with(config);
 
@@ -4921,8 +5080,8 @@ fn large_persistent_congestion_threshold_recovers_losses() {
     let _guard = subscribe();
     let mut config = client_config();
     let mut transport = TransportConfig::default();
-    transport.persistent_congestion_threshold(u32::MAX);
-    config.transport_config(transport.into());
+    transport.set_persistent_congestion_threshold(u32::MAX);
+    config.set_transport_config(transport.into());
     let mut pair = Pair::default();
     let (client_ch, server_ch) = pair.connect_with(config);
 
@@ -5234,16 +5393,16 @@ fn lost_data_is_recovered_after_a_migration_that_discards_the_intermediate_path(
     // acknowledged packet number, declaring the lost data lost by packet number right away.
     let mut server_config = server_config();
     let mut transport = TransportConfig::default();
-    transport.mtu_discovery_config(None);
+    transport.maybe_set_mtu_discovery_config(None);
     // Loss thresholds above the recommended minimums (RFC 9002 §6.1.1 and §6.1.2 fix only those
     // minimums): with the default time threshold the acknowledgement of the newest path's
     // challenge, arriving at least a round trip after data sent before the move, declares that
     // data lost on arrival. With a time threshold of four round trips and no packet-number
     // detection it schedules the loss for later instead, so the newest path becomes quiet while
     // the data is still outstanding.
-    transport.packet_threshold(1_000);
-    transport.time_threshold(4.0);
-    server_config.transport_config(Arc::new(transport));
+    transport.set_packet_threshold(1_000);
+    transport.set_time_threshold(4.0);
+    server_config.set_transport_config(Arc::new(transport));
     let mut pair = Pair::new(Default::default(), server_config);
     // A real round trip: with zero latency the first RTT sample on a fresh path would be tiny and
     // the loss-time threshold would pass before the newest path is quiet.
@@ -5684,7 +5843,7 @@ fn a_client_with_zero_length_ids_does_not_move_to_a_preferred_address() {
         0,
         0,
     );
-    config.preferred_address_v6(Some(alt));
+    config.set_preferred_address_v6(alt);
     // The client's own identifiers are zero length; the server's are not.
     let mut client_config_endpoint = EndpointConfig::default();
     client_config_endpoint.cid_generator(|| Box::new(RandomConnectionIdGenerator::new(0)));
@@ -5738,7 +5897,7 @@ fn a_server_with_zero_length_ids_advertises_no_preferred_address() {
         0,
         0,
     );
-    config.preferred_address_v6(Some(alt));
+    config.set_preferred_address_v6(alt);
     let cid_generator_factory: fn() -> Box<dyn ConnectionIdGenerator> =
         || Box::new(RandomConnectionIdGenerator::new(0));
     let mut pair = Pair::new(
@@ -5807,7 +5966,7 @@ fn pair_preferring(alt_reachable: bool) -> (Pair, SocketAddr) {
         0,
         0,
     );
-    config.preferred_address_v6(Some(alt));
+    config.set_preferred_address_v6(alt);
     let mut pair = Pair::new(Arc::new(EndpointConfig::default()), config);
     if alt_reachable {
         pair.server.alt_addr = Some(alt.into());
@@ -5822,7 +5981,7 @@ fn pair_preferring(alt_reachable: bool) -> (Pair, SocketAddr) {
 fn a_server_that_forbids_migration_discards_traffic_from_a_new_peer_address() {
     let _guard = subscribe();
     let mut config = server_config();
-    config.migration(false);
+    config.set_migration(false);
     let mut pair = Pair::new(Arc::new(EndpointConfig::default()), config);
     let client_ch = pair.begin_connect(client_config());
     pair.step();
@@ -6055,8 +6214,8 @@ fn a_move_to_the_preferred_address_is_followed_though_active_migration_is_disabl
         0,
         0,
     );
-    config.preferred_address_v6(Some(alt));
-    config.migration(false);
+    config.set_preferred_address_v6(alt);
+    config.set_migration(false);
     let mut pair = Pair::new(Arc::new(EndpointConfig::default()), config);
     pair.server.alt_addr = Some(alt.into());
     let preferred: SocketAddr = alt.into();
@@ -6189,7 +6348,7 @@ fn pair_preferring_with_key() -> (Pair, hmac::Key, SocketAddr) {
         0,
         0,
     );
-    config.preferred_address_v6(Some(alt));
+    config.set_preferred_address_v6(alt);
     let endpoint_config = Arc::new(EndpointConfig::new(Arc::new(key)));
     let mut pair = Pair::new(endpoint_config, config);
     pair.server.hide_local = true;
@@ -6475,7 +6634,7 @@ fn a_preferred_address_that_is_the_one_in_use_is_not_probed() {
         0,
         0,
     );
-    config.preferred_address_v6(Some(own));
+    config.set_preferred_address_v6(own);
     let mut pair = Pair::new(Arc::new(EndpointConfig::default()), config);
     pair.server.addr = own.into();
     let ch = pair.begin_connect(client_config());
@@ -6678,7 +6837,7 @@ fn a_declined_preferred_address_is_never_probed() {
 fn a_preferred_address_of_another_family_is_not_probed() {
     let _guard = subscribe();
     let mut config = server_config();
-    config.preferred_address_v4(Some("127.0.0.1:65535".parse().unwrap()));
+    config.set_preferred_address_v4("127.0.0.1:65535".parse().unwrap());
     let mut pair = Pair::new(Arc::new(EndpointConfig::default()), config);
     let ch = pair.begin_connect(client_config());
     drive_settled(&mut pair);

@@ -61,9 +61,9 @@ fn handshake_timeout() {
     const IDLE_TIMEOUT: Duration = Duration::from_millis(500);
     let mut transport_config = crate::driver::TransportConfig::default();
     transport_config
-        .max_idle_timeout(Some(IDLE_TIMEOUT.try_into().unwrap()))
-        .initial_rtt(Duration::from_millis(10));
-    client_config.transport_config(Arc::new(transport_config));
+        .set_max_idle_timeout(IDLE_TIMEOUT.try_into().unwrap())
+        .set_initial_rtt(Duration::from_millis(10));
+    client_config.set_transport_config(Arc::new(transport_config));
 
     let start = Instant::now();
     runtime.block_on(async move {
@@ -304,7 +304,7 @@ impl EndpointFactory {
         let mut server_config =
             crate::driver::ServerConfig::with_single_cert(vec![self.cert.cert.der().clone()], key)
                 .unwrap();
-        server_config.transport_config(transport_config.clone());
+        server_config.set_transport_config(transport_config.clone());
 
         let mut roots = rama_tls_rustls::dep::rustls::RootCertStore::empty();
         roots.add(self.cert.cert.der().clone()).unwrap();
@@ -315,7 +315,7 @@ impl EndpointFactory {
         )
         .unwrap();
         let mut client_config = ClientConfig::with_root_certificates(Arc::new(roots)).unwrap();
-        client_config.transport_config(transport_config);
+        client_config.set_transport_config(transport_config);
         endpoint.set_default_client_config(client_config);
 
         endpoint
@@ -496,13 +496,13 @@ fn run_echo(args: EchoArgs) {
         // Use small receive windows
         let mut transport_config = TransportConfig::default();
         if let Some(receive_window) = args.receive_window {
-            transport_config.receive_window(receive_window.try_into().unwrap());
+            transport_config.set_receive_window(receive_window.try_into().unwrap());
         }
         if let Some(stream_receive_window) = args.stream_receive_window {
-            transport_config.stream_receive_window(stream_receive_window.try_into().unwrap());
+            transport_config.set_stream_receive_window(stream_receive_window.try_into().unwrap());
         }
-        transport_config.max_concurrent_bidi_streams(1_u8.into());
-        transport_config.max_concurrent_uni_streams(1_u8.into());
+        transport_config.set_max_concurrent_bidi_streams(1_u8.into());
+        transport_config.set_max_concurrent_uni_streams(1_u8.into());
         let transport_config = Arc::new(transport_config);
 
         // We don't use the `endpoint` helper here because we want two different endpoints with
@@ -542,7 +542,7 @@ fn run_echo(args: EchoArgs) {
         };
         let mut client_config =
             ClientConfig::new(Arc::new(QuicClientConfig::try_from(client_crypto).unwrap()));
-        client_config.transport_config(transport_config);
+        client_config.set_transport_config(transport_config);
         client.set_default_client_config(client_config);
 
         let handle = runtime.spawn(async move {
@@ -703,9 +703,9 @@ async fn rebind_recv() {
         .await
         .unwrap();
     let mut client_config = ClientConfig::with_root_certificates(Arc::new(roots)).unwrap();
-    client_config.transport_config(Arc::new({
+    client_config.set_transport_config(Arc::new({
         let mut cfg = TransportConfig::default();
-        cfg.max_concurrent_uni_streams(1u32.into());
+        cfg.set_max_concurrent_uni_streams(1u32.into());
         cfg
     }));
     client.set_default_client_config(client_config);
@@ -767,7 +767,7 @@ async fn rebind_recv() {
 async fn stream_id_flow_control() {
     let _guard = subscribe();
     let mut cfg = TransportConfig::default();
-    cfg.max_concurrent_uni_streams(1u32.into());
+    cfg.set_max_concurrent_uni_streams(1u32.into());
     let endpoint = endpoint_with_config(cfg);
 
     let (client, server) = tokio::join!(

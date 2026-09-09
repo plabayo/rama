@@ -62,247 +62,289 @@ pub struct TransportConfig {
 }
 
 impl TransportConfig {
-    /// Maximum number of incoming bidirectional streams that may be open concurrently
-    ///
-    /// Must be nonzero for the peer to open any bidirectional streams.
-    ///
-    /// Worst-case memory use is directly proportional to `max_concurrent_bidi_streams *
-    /// stream_receive_window`, with an upper bound proportional to `receive_window`.
-    pub fn max_concurrent_bidi_streams(&mut self, value: VarInt) -> &mut Self {
-        self.max_concurrent_bidi_streams = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum number of incoming bidirectional streams that may be open concurrently
+        ///
+        /// Must be nonzero for the peer to open any bidirectional streams.
+        ///
+        /// Worst-case memory use is directly proportional to `max_concurrent_bidi_streams *
+        /// stream_receive_window`, with an upper bound proportional to `receive_window`.
+        pub fn max_concurrent_bidi_streams(mut self, value: VarInt) -> Self {
+            self.max_concurrent_bidi_streams = value;
+            self
+        }
     }
 
-    /// Variant of `max_concurrent_bidi_streams` affecting unidirectional streams
-    pub fn max_concurrent_uni_streams(&mut self, value: VarInt) -> &mut Self {
-        self.max_concurrent_uni_streams = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Variant of `max_concurrent_bidi_streams` affecting unidirectional streams
+        pub fn max_concurrent_uni_streams(mut self, value: VarInt) -> Self {
+            self.max_concurrent_uni_streams = value;
+            self
+        }
     }
 
-    /// Maximum duration of inactivity to accept before timing out the connection.
-    ///
-    /// The true idle timeout is the minimum of this and the peer's own max idle timeout. `None`
-    /// represents an infinite timeout. Defaults to 30 seconds.
-    ///
-    /// **WARNING**: If a peer or its network path malfunctions or acts maliciously, an infinite
-    /// idle timeout can result in permanently hung futures!
-    ///
-    /// ```
-    /// # use std::{convert::TryInto, time::Duration};
-    /// # use rama_quic::{TransportConfig, VarInt, VarIntBoundsExceeded};
-    /// # fn main() -> Result<(), VarIntBoundsExceeded> {
-    /// let mut config = TransportConfig::default();
-    ///
-    /// // Set the idle timeout as `VarInt`-encoded milliseconds
-    /// config.max_idle_timeout(Some(VarInt::from_u32(10_000).into()));
-    ///
-    /// // Set the idle timeout as a `Duration`
-    /// config.max_idle_timeout(Some(Duration::from_secs(10).try_into()?));
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn max_idle_timeout(&mut self, value: Option<IdleTimeout>) -> &mut Self {
-        self.max_idle_timeout = value.map(|t| t.0);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum duration of inactivity to accept before timing out the connection.
+        ///
+        /// The true idle timeout is the minimum of this and the peer's own max idle timeout. `None`
+        /// represents an infinite timeout. Defaults to 30 seconds.
+        ///
+        /// **WARNING**: If a peer or its network path malfunctions or acts maliciously, an infinite
+        /// idle timeout can result in permanently hung futures!
+        ///
+        /// ```
+        /// # use std::{convert::TryInto, time::Duration};
+        /// # use rama_quic::{TransportConfig, VarInt, VarIntBoundsExceeded};
+        /// # fn main() -> Result<(), VarIntBoundsExceeded> {
+        /// let mut config = TransportConfig::default();
+        ///
+        /// // Set the idle timeout as `VarInt`-encoded milliseconds
+        /// config.set_max_idle_timeout(VarInt::from_u32(10_000).into());
+        ///
+        /// // Set the idle timeout as a `Duration`
+        /// config.set_max_idle_timeout(Duration::from_secs(10).try_into()?);
+        /// # Ok(())
+        /// # }
+        /// ```
+        pub fn max_idle_timeout(mut self, value: Option<IdleTimeout>) -> Self {
+            self.max_idle_timeout = value.map(|t| t.0);
+            self
+        }
     }
 
-    /// Maximum number of bytes the peer may transmit without acknowledgement on any one stream
-    /// before becoming blocked.
-    ///
-    /// This should be set to at least the expected connection latency multiplied by the maximum
-    /// desired throughput. Setting this smaller than `receive_window` helps ensure that a single
-    /// stream doesn't monopolize receive buffers, which may otherwise occur if the application
-    /// chooses not to read from a large stream for a time while still requiring data on other
-    /// streams.
-    pub fn stream_receive_window(&mut self, value: VarInt) -> &mut Self {
-        self.stream_receive_window = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum number of bytes the peer may transmit without acknowledgement on any one stream
+        /// before becoming blocked.
+        ///
+        /// This should be set to at least the expected connection latency multiplied by the maximum
+        /// desired throughput. Setting this smaller than `receive_window` helps ensure that a single
+        /// stream doesn't monopolize receive buffers, which may otherwise occur if the application
+        /// chooses not to read from a large stream for a time while still requiring data on other
+        /// streams.
+        pub fn stream_receive_window(mut self, value: VarInt) -> Self {
+            self.stream_receive_window = value;
+            self
+        }
     }
 
-    /// Maximum number of bytes the peer may transmit across all streams of a connection before
-    /// becoming blocked.
-    ///
-    /// This should be set to at least the expected connection latency multiplied by the maximum
-    /// desired throughput. Larger values can be useful to allow maximum throughput within a
-    /// stream while another is blocked.
-    pub fn receive_window(&mut self, value: VarInt) -> &mut Self {
-        self.receive_window = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum number of bytes the peer may transmit across all streams of a connection before
+        /// becoming blocked.
+        ///
+        /// This should be set to at least the expected connection latency multiplied by the maximum
+        /// desired throughput. Larger values can be useful to allow maximum throughput within a
+        /// stream while another is blocked.
+        pub fn receive_window(mut self, value: VarInt) -> Self {
+            self.receive_window = value;
+            self
+        }
     }
 
-    /// Maximum number of bytes to transmit to a peer without acknowledgment
-    ///
-    /// Provides an upper bound on memory when communicating with peers that issue large amounts of
-    /// flow control credit. Endpoints that wish to handle large numbers of connections robustly
-    /// should take care to set this low enough to guarantee memory exhaustion does not occur if
-    /// every connection uses the entire window.
-    pub fn send_window(&mut self, value: u64) -> &mut Self {
-        self.send_window = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum number of bytes to transmit to a peer without acknowledgment
+        ///
+        /// Provides an upper bound on memory when communicating with peers that issue large amounts of
+        /// flow control credit. Endpoints that wish to handle large numbers of connections robustly
+        /// should take care to set this low enough to guarantee memory exhaustion does not occur if
+        /// every connection uses the entire window.
+        pub fn send_window(mut self, value: u64) -> Self {
+            self.send_window = value;
+            self
+        }
     }
 
-    /// Whether to implement fair queuing for send streams having the same priority.
-    ///
-    /// When enabled, connections schedule data from outgoing streams having the same priority in a
-    /// round-robin fashion. When disabled, streams are scheduled in the order they are written to.
-    ///
-    /// Note that this only affects streams with the same priority. Higher priority streams always
-    /// take precedence over lower priority streams.
-    ///
-    /// Disabling fairness can reduce fragmentation and protocol overhead for workloads that use
-    /// many small streams.
-    pub fn send_fairness(&mut self, value: bool) -> &mut Self {
-        self.send_fairness = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Whether to implement fair queuing for send streams having the same priority.
+        ///
+        /// When enabled, connections schedule data from outgoing streams having the same priority in a
+        /// round-robin fashion. When disabled, streams are scheduled in the order they are written to.
+        ///
+        /// Note that this only affects streams with the same priority. Higher priority streams always
+        /// take precedence over lower priority streams.
+        ///
+        /// Disabling fairness can reduce fragmentation and protocol overhead for workloads that use
+        /// many small streams.
+        pub fn send_fairness(mut self, value: bool) -> Self {
+            self.send_fairness = value;
+            self
+        }
     }
 
-    /// Maximum reordering in packet number space before FACK style loss detection considers a
-    /// packet lost. Should not be less than 3, per RFC5681.
-    pub fn packet_threshold(&mut self, value: u32) -> &mut Self {
-        self.packet_threshold = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum reordering in packet number space before FACK style loss detection considers a
+        /// packet lost. Should not be less than 3, per RFC5681.
+        pub fn packet_threshold(mut self, value: u32) -> Self {
+            self.packet_threshold = value;
+            self
+        }
     }
 
-    /// Maximum reordering in time space before time based loss detection considers a packet lost,
-    /// as a factor of RTT
-    pub fn time_threshold(&mut self, value: f32) -> &mut Self {
-        self.time_threshold = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum reordering in time space before time based loss detection considers a packet lost,
+        /// as a factor of RTT
+        pub fn time_threshold(mut self, value: f32) -> Self {
+            self.time_threshold = value;
+            self
+        }
     }
 
-    /// The RTT used before an RTT sample is taken
-    pub fn initial_rtt(&mut self, value: Duration) -> &mut Self {
-        self.initial_rtt = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// The RTT used before an RTT sample is taken
+        pub fn initial_rtt(mut self, value: Duration) -> Self {
+            self.initial_rtt = value;
+            self
+        }
     }
 
-    /// The initial value to be used as the maximum UDP payload size before running MTU discovery
-    /// (see [`TransportConfig::mtu_discovery_config`]).
-    ///
-    /// Must be at least 1200, which is the default, and known to be safe for typical internet
-    /// applications. Larger values are more efficient, but increase the risk of packet loss due to
-    /// exceeding the network path's IP MTU. If the provided value is higher than what the network
-    /// path actually supports, packet loss will eventually trigger black hole detection and bring
-    /// it down to [`TransportConfig::min_mtu`].
-    pub fn initial_mtu(&mut self, value: u16) -> &mut Self {
-        self.initial_mtu = value.max(INITIAL_MTU);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// The initial value to be used as the maximum UDP payload size before running MTU discovery
+        /// (see [`TransportConfig::mtu_discovery_config`]).
+        ///
+        /// Must be at least 1200, which is the default, and known to be safe for typical internet
+        /// applications. Larger values are more efficient, but increase the risk of packet loss due to
+        /// exceeding the network path's IP MTU. If the provided value is higher than what the network
+        /// path actually supports, packet loss will eventually trigger black hole detection and bring
+        /// it down to [`TransportConfig::min_mtu`].
+        pub fn initial_mtu(mut self, value: u16) -> Self {
+            self.initial_mtu = value.max(INITIAL_MTU);
+            self
+        }
     }
 
     pub(crate) fn get_initial_mtu(&self) -> u16 {
         self.initial_mtu.max(self.min_mtu)
     }
 
-    /// The maximum UDP payload size guaranteed to be supported by the network.
-    ///
-    /// Must be at least 1200, which is the default, and lower than or equal to
-    /// [`TransportConfig::initial_mtu`].
-    ///
-    /// Real-world MTUs can vary according to ISP, VPN, and properties of intermediate network links
-    /// outside of either endpoint's control. Extreme care should be used when raising this value
-    /// outside of private networks where these factors are fully controlled. If the provided value
-    /// is higher than what the network path actually supports, the result will be unpredictable and
-    /// catastrophic packet loss, without a possibility of repair. Prefer
-    /// [`TransportConfig::initial_mtu`] together with
-    /// [`TransportConfig::mtu_discovery_config`] to set a maximum UDP payload size that robustly
-    /// adapts to the network.
-    pub fn min_mtu(&mut self, value: u16) -> &mut Self {
-        self.min_mtu = value.max(INITIAL_MTU);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// The maximum UDP payload size guaranteed to be supported by the network.
+        ///
+        /// Must be at least 1200, which is the default, and lower than or equal to
+        /// [`TransportConfig::initial_mtu`].
+        ///
+        /// Real-world MTUs can vary according to ISP, VPN, and properties of intermediate network links
+        /// outside of either endpoint's control. Extreme care should be used when raising this value
+        /// outside of private networks where these factors are fully controlled. If the provided value
+        /// is higher than what the network path actually supports, the result will be unpredictable and
+        /// catastrophic packet loss, without a possibility of repair. Prefer
+        /// [`TransportConfig::initial_mtu`] together with
+        /// [`TransportConfig::mtu_discovery_config`] to set a maximum UDP payload size that robustly
+        /// adapts to the network.
+        pub fn min_mtu(mut self, value: u16) -> Self {
+            self.min_mtu = value.max(INITIAL_MTU);
+            self
+        }
     }
 
-    /// Specifies the MTU discovery config (see [`MtuDiscoveryConfig`] for details).
-    ///
-    /// Enabled by default.
-    pub fn mtu_discovery_config(&mut self, value: Option<MtuDiscoveryConfig>) -> &mut Self {
-        self.mtu_discovery_config = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Specifies the MTU discovery config (see [`MtuDiscoveryConfig`] for details).
+        ///
+        /// Enabled by default.
+        pub fn mtu_discovery_config(mut self, value: Option<MtuDiscoveryConfig>) -> Self {
+            self.mtu_discovery_config = value;
+            self
+        }
     }
 
-    /// Pad UDP datagrams carrying application data to current maximum UDP payload size
-    ///
-    /// Disabled by default. UDP datagrams containing loss probes are exempt from padding.
-    ///
-    /// Enabling this helps mitigate traffic analysis by network observers, but it increases
-    /// bandwidth usage. Without this mitigation precise plain text size of application datagrams as
-    /// well as the total size of stream write bursts can be inferred by observers under certain
-    /// conditions. This analysis requires either an uncongested connection or application datagrams
-    /// too large to be coalesced.
-    pub fn pad_to_mtu(&mut self, value: bool) -> &mut Self {
-        self.pad_to_mtu = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Pad UDP datagrams carrying application data to current maximum UDP payload size
+        ///
+        /// Disabled by default. UDP datagrams containing loss probes are exempt from padding.
+        ///
+        /// Enabling this helps mitigate traffic analysis by network observers, but it increases
+        /// bandwidth usage. Without this mitigation precise plain text size of application datagrams as
+        /// well as the total size of stream write bursts can be inferred by observers under certain
+        /// conditions. This analysis requires either an uncongested connection or application datagrams
+        /// too large to be coalesced.
+        pub fn pad_to_mtu(mut self, value: bool) -> Self {
+            self.pad_to_mtu = value;
+            self
+        }
     }
 
-    /// Specifies the ACK frequency config (see [`AckFrequencyConfig`] for details)
-    ///
-    /// The provided configuration will be ignored if the peer does not support the acknowledgement
-    /// frequency QUIC extension.
-    ///
-    /// Defaults to `None`, which disables controlling the peer's acknowledgement frequency. Even
-    /// if set to `None`, the local side still supports the acknowledgement frequency QUIC
-    /// extension and may use it in other ways.
-    pub fn ack_frequency_config(&mut self, value: Option<AckFrequencyConfig>) -> &mut Self {
-        self.ack_frequency_config = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Specifies the ACK frequency config (see [`AckFrequencyConfig`] for details)
+        ///
+        /// The provided configuration will be ignored if the peer does not support the acknowledgement
+        /// frequency QUIC extension.
+        ///
+        /// Defaults to `None`, which disables controlling the peer's acknowledgement frequency. Even
+        /// if set to `None`, the local side still supports the acknowledgement frequency QUIC
+        /// extension and may use it in other ways.
+        pub fn ack_frequency_config(mut self, value: Option<AckFrequencyConfig>) -> Self {
+            self.ack_frequency_config = value;
+            self
+        }
     }
 
-    /// Number of consecutive PTOs after which network is considered to be experiencing persistent congestion.
-    pub fn persistent_congestion_threshold(&mut self, value: u32) -> &mut Self {
-        self.persistent_congestion_threshold = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Number of consecutive PTOs after which network is considered to be experiencing persistent congestion.
+        pub fn persistent_congestion_threshold(mut self, value: u32) -> Self {
+            self.persistent_congestion_threshold = value;
+            self
+        }
     }
 
-    /// Period of inactivity before sending a keep-alive packet
-    ///
-    /// Keep-alive packets prevent an inactive but otherwise healthy connection from timing out.
-    ///
-    /// `None` to disable, which is the default. Only one side of any given connection needs keep-alive
-    /// enabled for the connection to be preserved. Must be set lower than the idle_timeout of both
-    /// peers to be effective.
-    pub fn keep_alive_interval(&mut self, value: Option<Duration>) -> &mut Self {
-        self.keep_alive_interval = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Period of inactivity before sending a keep-alive packet
+        ///
+        /// Keep-alive packets prevent an inactive but otherwise healthy connection from timing out.
+        ///
+        /// `None` to disable, which is the default. Only one side of any given connection needs keep-alive
+        /// enabled for the connection to be preserved. Must be set lower than the idle_timeout of both
+        /// peers to be effective.
+        pub fn keep_alive_interval(mut self, value: Option<Duration>) -> Self {
+            self.keep_alive_interval = value;
+            self
+        }
     }
 
-    /// Maximum quantity of out-of-order crypto layer data to buffer
-    pub fn crypto_buffer_size(&mut self, value: usize) -> &mut Self {
-        self.crypto_buffer_size = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum quantity of out-of-order crypto layer data to buffer
+        pub fn crypto_buffer_size(mut self, value: usize) -> Self {
+            self.crypto_buffer_size = value;
+            self
+        }
     }
 
-    /// Whether the implementation is permitted to set the spin bit on this connection
-    ///
-    /// This allows passive observers to easily judge the round trip time of a connection, which can
-    /// be useful for network administration but sacrifices a small amount of privacy.
-    pub fn allow_spin(&mut self, value: bool) -> &mut Self {
-        self.allow_spin = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Whether the implementation is permitted to set the spin bit on this connection
+        ///
+        /// This allows passive observers to easily judge the round trip time of a connection, which can
+        /// be useful for network administration but sacrifices a small amount of privacy.
+        pub fn allow_spin(mut self, value: bool) -> Self {
+            self.allow_spin = value;
+            self
+        }
     }
 
-    /// Maximum number of incoming application datagram bytes to buffer, or None to disable
-    /// incoming datagrams
-    ///
-    /// The peer is forbidden to send single datagrams larger than this size. If the aggregate size
-    /// of all datagrams that have been received from the peer but not consumed by the application
-    /// exceeds this value, old datagrams are dropped until it is no longer exceeded.
-    ///
-    /// The amount of payload data buffered may be smaller than `value` due to overhead.
-    pub fn datagram_receive_buffer_size(&mut self, value: Option<usize>) -> &mut Self {
-        self.datagram_receive_buffer_size = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum number of incoming application datagram bytes to buffer, or None to disable
+        /// incoming datagrams
+        ///
+        /// The peer is forbidden to send single datagrams larger than this size. If the aggregate size
+        /// of all datagrams that have been received from the peer but not consumed by the application
+        /// exceeds this value, old datagrams are dropped until it is no longer exceeded.
+        ///
+        /// The amount of payload data buffered may be smaller than `value` due to overhead.
+        pub fn datagram_receive_buffer_size(mut self, value: Option<usize>) -> Self {
+            self.datagram_receive_buffer_size = value;
+            self
+        }
     }
 
-    /// Maximum number of outgoing application datagram bytes to buffer
-    ///
-    /// While datagrams are sent ASAP, it is possible for an application to generate data faster
-    /// than the link, or even the underlying hardware, can transmit them. This limits the amount of
-    /// memory that may be consumed in that case. When the send buffer is full and a new datagram is
-    /// sent, older datagrams are dropped until sufficient space is available.
-    ///
-    /// The amount of payload data buffered may be smaller than `value` due to overhead.
-    pub fn datagram_send_buffer_size(&mut self, value: usize) -> &mut Self {
-        self.datagram_send_buffer_size = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum number of outgoing application datagram bytes to buffer
+        ///
+        /// While datagrams are sent ASAP, it is possible for an application to generate data faster
+        /// than the link, or even the underlying hardware, can transmit them. This limits the amount of
+        /// memory that may be consumed in that case. When the send buffer is full and a new datagram is
+        /// sent, older datagrams are dropped until sufficient space is available.
+        ///
+        /// The amount of payload data buffered may be smaller than `value` due to overhead.
+        pub fn datagram_send_buffer_size(mut self, value: usize) -> Self {
+            self.datagram_send_buffer_size = value;
+            self
+        }
     }
 
     /// Whether to force every packet number to be used
@@ -334,26 +376,30 @@ impl TransportConfig {
         self
     }
 
-    /// Whether to use "Generic Segmentation Offload" to accelerate transmits, when supported by the
-    /// environment
-    ///
-    /// Defaults to `true`.
-    ///
-    /// GSO dramatically reduces CPU consumption when sending large numbers of packets with the same
-    /// headers, such as when transmitting bulk data on a connection. However, it is not supported
-    /// by all network interface drivers or packet inspection tools. The UDP layer will attempt to
-    /// disable GSO automatically when unavailable, but this can lead to spurious packet loss at
-    /// startup, temporarily degrading performance.
-    pub fn enable_segmentation_offload(&mut self, enabled: bool) -> &mut Self {
-        self.enable_segmentation_offload = enabled;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Whether to use "Generic Segmentation Offload" to accelerate transmits, when supported by the
+        /// environment
+        ///
+        /// Defaults to `true`.
+        ///
+        /// GSO dramatically reduces CPU consumption when sending large numbers of packets with the same
+        /// headers, such as when transmitting bulk data on a connection. However, it is not supported
+        /// by all network interface drivers or packet inspection tools. The UDP layer will attempt to
+        /// disable GSO automatically when unavailable, but this can lead to spurious packet loss at
+        /// startup, temporarily degrading performance.
+        pub fn enable_segmentation_offload(mut self, enabled: bool) -> Self {
+            self.enable_segmentation_offload = enabled;
+            self
+        }
     }
 
-    /// qlog capture configuration to use for a particular connection
-    #[cfg(feature = "qlog")]
-    pub fn qlog_stream(&mut self, stream: Option<QlogStream>) -> &mut Self {
-        self.qlog_sink = stream.into();
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// qlog capture configuration to use for a particular connection
+        #[cfg(feature = "qlog")]
+        pub fn qlog_stream(mut self, stream: Option<QlogStream>) -> Self {
+            self.qlog_sink = stream.into();
+            self
+        }
     }
 }
 
@@ -487,52 +533,58 @@ pub struct AckFrequencyConfig {
 }
 
 impl AckFrequencyConfig {
-    /// The ack-eliciting threshold we will request the peer to use
-    ///
-    /// This threshold represents the number of ack-eliciting packets an endpoint may receive
-    /// without immediately sending an ACK.
-    ///
-    /// The remote peer should send at least one ACK frame when more than this number of
-    /// ack-eliciting packets have been received. A value of 0 results in a receiver immediately
-    /// acknowledging every ack-eliciting packet.
-    ///
-    /// Defaults to 1, which sends ACK frames for every other ack-eliciting packet.
-    pub fn ack_eliciting_threshold(&mut self, value: VarInt) -> &mut Self {
-        self.ack_eliciting_threshold = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// The ack-eliciting threshold we will request the peer to use
+        ///
+        /// This threshold represents the number of ack-eliciting packets an endpoint may receive
+        /// without immediately sending an ACK.
+        ///
+        /// The remote peer should send at least one ACK frame when more than this number of
+        /// ack-eliciting packets have been received. A value of 0 results in a receiver immediately
+        /// acknowledging every ack-eliciting packet.
+        ///
+        /// Defaults to 1, which sends ACK frames for every other ack-eliciting packet.
+        pub fn ack_eliciting_threshold(mut self, value: VarInt) -> Self {
+            self.ack_eliciting_threshold = value;
+            self
+        }
     }
 
-    /// The `max_ack_delay` we will request the peer to use
-    ///
-    /// This parameter represents the maximum amount of time that an endpoint waits before sending
-    /// an ACK when the ack-eliciting threshold hasn't been reached.
-    ///
-    /// The effective `max_ack_delay` will be clamped to be at least the peer's `min_ack_delay`
-    /// transport parameter, and at most the greater of the current path RTT or 25ms.
-    ///
-    /// Defaults to `None`, in which case the peer's original `max_ack_delay` will be used, as
-    /// obtained from its transport parameters.
-    pub fn max_ack_delay(&mut self, value: Option<Duration>) -> &mut Self {
-        self.max_ack_delay = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// The `max_ack_delay` we will request the peer to use
+        ///
+        /// This parameter represents the maximum amount of time that an endpoint waits before sending
+        /// an ACK when the ack-eliciting threshold hasn't been reached.
+        ///
+        /// The effective `max_ack_delay` will be clamped to be at least the peer's `min_ack_delay`
+        /// transport parameter, and at most the greater of the current path RTT or 25ms.
+        ///
+        /// Defaults to `None`, in which case the peer's original `max_ack_delay` will be used, as
+        /// obtained from its transport parameters.
+        pub fn max_ack_delay(mut self, value: Option<Duration>) -> Self {
+            self.max_ack_delay = value;
+            self
+        }
     }
 
-    /// The reordering threshold we will request the peer to use
-    ///
-    /// This threshold represents the amount of out-of-order packets that will trigger an endpoint
-    /// to send an ACK, without waiting for `ack_eliciting_threshold` to be exceeded or for
-    /// `max_ack_delay` to be elapsed.
-    ///
-    /// A value of 0 indicates out-of-order packets do not elicit an immediate ACK. A value of 1
-    /// immediately acknowledges any packets that are received out of order (this is also the
-    /// behavior when the extension is disabled).
-    ///
-    /// It is recommended to set this value to [`TransportConfig::packet_threshold`] minus one.
-    /// Since the default value for [`TransportConfig::packet_threshold`] is 3, this value defaults
-    /// to 2.
-    pub fn reordering_threshold(&mut self, value: VarInt) -> &mut Self {
-        self.reordering_threshold = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// The reordering threshold we will request the peer to use
+        ///
+        /// This threshold represents the amount of out-of-order packets that will trigger an endpoint
+        /// to send an ACK, without waiting for `ack_eliciting_threshold` to be exceeded or for
+        /// `max_ack_delay` to be elapsed.
+        ///
+        /// A value of 0 indicates out-of-order packets do not elicit an immediate ACK. A value of 1
+        /// immediately acknowledges any packets that are received out of order (this is also the
+        /// behavior when the extension is disabled).
+        ///
+        /// It is recommended to set this value to [`TransportConfig::packet_threshold`] minus one.
+        /// Since the default value for [`TransportConfig::packet_threshold`] is 3, this value defaults
+        /// to 2.
+        pub fn reordering_threshold(mut self, value: VarInt) -> Self {
+            self.reordering_threshold = value;
+            self
+        }
     }
 }
 
@@ -557,28 +609,36 @@ pub(crate) struct QlogConfig {
 
 #[cfg(feature = "qlog")]
 impl QlogConfig {
-    /// Where to write a qlog `TraceSeq`
-    pub fn writer(&mut self, writer: Box<dyn io::Write + Send + Sync>) -> &mut Self {
-        self.writer = Some(writer);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Where to write a qlog `TraceSeq`
+        pub fn writer(mut self, writer: Box<dyn io::Write + Send + Sync>) -> Self {
+            self.writer = Some(writer);
+            self
+        }
     }
 
-    /// Title to record in the qlog capture
-    pub fn title(&mut self, title: Option<String>) -> &mut Self {
-        self.title = title;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Title to record in the qlog capture
+        pub fn title(mut self, title: Option<String>) -> Self {
+            self.title = title;
+            self
+        }
     }
 
-    /// Description to record in the qlog capture
-    pub fn description(&mut self, description: Option<String>) -> &mut Self {
-        self.description = description;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Description to record in the qlog capture
+        pub fn description(mut self, description: Option<String>) -> Self {
+            self.description = description;
+            self
+        }
     }
 
-    /// Epoch qlog event times are recorded relative to
-    pub fn start_time(&mut self, start_time: Instant) -> &mut Self {
-        self.start_time = start_time;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Epoch qlog event times are recorded relative to
+        pub fn start_time(mut self, start_time: Instant) -> Self {
+            self.start_time = start_time;
+            self
+        }
     }
 
     /// Construct the [`QlogStream`] described by this configuration
@@ -699,43 +759,51 @@ pub struct MtuDiscoveryConfig {
 }
 
 impl MtuDiscoveryConfig {
-    /// Specifies the time to wait after completing MTU discovery before starting a new MTU
-    /// discovery run.
-    ///
-    /// Defaults to 600 seconds, as recommended by [RFC
-    /// 8899](https://www.rfc-editor.org/rfc/rfc8899).
-    pub fn interval(&mut self, value: Duration) -> &mut Self {
-        self.interval = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Specifies the time to wait after completing MTU discovery before starting a new MTU
+        /// discovery run.
+        ///
+        /// Defaults to 600 seconds, as recommended by [RFC
+        /// 8899](https://www.rfc-editor.org/rfc/rfc8899).
+        pub fn interval(mut self, value: Duration) -> Self {
+            self.interval = value;
+            self
+        }
     }
 
-    /// Specifies the upper bound to the max UDP payload size that MTU discovery will search for.
-    ///
-    /// Defaults to 1452, to stay within Ethernet's MTU when using IPv4 and IPv6. The highest
-    /// allowed value is 65527, which corresponds to the maximum permitted UDP payload on IPv6.
-    ///
-    /// It is safe to use an arbitrarily high upper bound, regardless of the network path's MTU. The
-    /// only drawback is that MTU discovery might take more time to finish.
-    pub fn upper_bound(&mut self, value: u16) -> &mut Self {
-        self.upper_bound = value.min(MAX_UDP_PAYLOAD);
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Specifies the upper bound to the max UDP payload size that MTU discovery will search for.
+        ///
+        /// Defaults to 1452, to stay within Ethernet's MTU when using IPv4 and IPv6. The highest
+        /// allowed value is 65527, which corresponds to the maximum permitted UDP payload on IPv6.
+        ///
+        /// It is safe to use an arbitrarily high upper bound, regardless of the network path's MTU. The
+        /// only drawback is that MTU discovery might take more time to finish.
+        pub fn upper_bound(mut self, value: u16) -> Self {
+            self.upper_bound = value.min(MAX_UDP_PAYLOAD);
+            self
+        }
     }
 
-    /// Specifies the amount of time that MTU discovery should wait after a black hole was detected
-    /// before running again. Defaults to one minute.
-    ///
-    /// Black hole detection can be spuriously triggered in case of congestion, so it makes sense to
-    /// try MTU discovery again after a short period of time.
-    pub fn black_hole_cooldown(&mut self, value: Duration) -> &mut Self {
-        self.black_hole_cooldown = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Specifies the amount of time that MTU discovery should wait after a black hole was detected
+        /// before running again. Defaults to one minute.
+        ///
+        /// Black hole detection can be spuriously triggered in case of congestion, so it makes sense to
+        /// try MTU discovery again after a short period of time.
+        pub fn black_hole_cooldown(mut self, value: Duration) -> Self {
+            self.black_hole_cooldown = value;
+            self
+        }
     }
 
-    /// Specifies the minimum MTU change to stop the MTU discovery phase.
-    /// Defaults to 20.
-    pub fn minimum_change(&mut self, value: u16) -> &mut Self {
-        self.minimum_change = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Specifies the minimum MTU change to stop the MTU discovery phase.
+        /// Defaults to 20.
+        pub fn minimum_change(mut self, value: u16) -> Self {
+            self.minimum_change = value;
+            self
+        }
     }
 }
 

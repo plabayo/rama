@@ -43,8 +43,8 @@ fn retry_token_expired() {
 
     let mut config = server_config();
     config
-        .time_source(Arc::clone(&fake_time) as _)
-        .retry_token_lifetime(retry_token_lifetime);
+        .set_time_source(Arc::clone(&fake_time) as _)
+        .set_retry_token_lifetime(retry_token_lifetime);
     pair.server.set_server_config(Some(Arc::new(config)));
 
     let client_ch = pair.begin_connect(client_config());
@@ -216,7 +216,7 @@ fn use_same_token_twice() {
     let _guard = subscribe();
     let mut pair = Pair::default();
     let mut client_config = client_config();
-    client_config.token_store(Arc::new(EvilTokenStore::default()));
+    client_config.set_token_store(Arc::new(EvilTokenStore::default()));
     let (client_ch, _server_ch) = pair.connect_with(client_config.clone());
     pair.client
         .connections
@@ -271,9 +271,9 @@ fn use_token_expired() {
     let lifetime = Duration::from_secs(10000);
     let mut server_config = server_config();
     server_config
-        .time_source(Arc::clone(&fake_time) as _)
+        .set_time_source(Arc::clone(&fake_time) as _)
         .validation_token
-        .lifetime(lifetime);
+        .set_lifetime(lifetime);
     let mut pair = Pair::new(Default::default(), server_config);
     let client_config = client_config();
     let (client_ch, _server_ch) = pair.connect_with(client_config.clone());
@@ -504,8 +504,8 @@ fn none_token_log_refuses_presented_validation_tokens() {
     let mut config = server_config();
     config
         .validation_token
-        .log(Arc::new(crate::proto::NoneTokenLog))
-        .sent(1);
+        .set_log(Arc::new(crate::proto::NoneTokenLog))
+        .set_sent(1);
     pair.server.set_server_config(Some(Arc::new(config)));
     let client_config = client_config();
     let (client_ch, server_ch) = pair.connect_with(client_config.clone());
@@ -544,7 +544,7 @@ fn none_token_store_presents_no_token() {
     let _guard = subscribe();
     let mut pair = Pair::default();
     let mut client_config = client_config();
-    client_config.token_store(Arc::new(crate::proto::NoneTokenStore));
+    client_config.set_token_store(Arc::new(crate::proto::NoneTokenStore));
     let (client_ch, server_ch) = pair.connect_with(client_config.clone());
     pair.drive();
     assert!(pair.server_conn_mut(server_ch).stats().frame_tx.new_token > 0);
@@ -577,8 +577,8 @@ fn retry_token_lifetime_beyond_the_clock_rejects_the_token() {
     pair.server.handle_incoming = Box::new(validate_incoming);
     let mut config = server_config();
     config
-        .time_source(Arc::clone(&fake_time) as _)
-        .retry_token_lifetime(Duration::MAX);
+        .set_time_source(Arc::clone(&fake_time) as _)
+        .set_retry_token_lifetime(Duration::MAX);
     pair.server.set_server_config(Some(Arc::new(config)));
 
     let client_ch = pair.begin_connect(client_config());
@@ -614,8 +614,8 @@ fn retry_token_lifetime_boundary_is_inclusive() {
         pair.server.handle_incoming = Box::new(validate_incoming);
         let mut config = server_config();
         config
-            .time_source(Arc::clone(&fake_time) as _)
-            .retry_token_lifetime(lifetime);
+            .set_time_source(Arc::clone(&fake_time) as _)
+            .set_retry_token_lifetime(lifetime);
         pair.server.set_server_config(Some(Arc::new(config)));
 
         let client_ch = pair.begin_connect(client_config());
@@ -656,8 +656,8 @@ fn validation_token_lifetime_boundary_is_inclusive() {
         let fake_time = Arc::new(FakeTimeSource::at_whole_second());
         let mut pair = Pair::default();
         let mut config = server_config();
-        config.time_source(Arc::clone(&fake_time) as _);
-        config.validation_token.lifetime(lifetime).sent(1);
+        config.set_time_source(Arc::clone(&fake_time) as _);
+        config.validation_token.set_lifetime(lifetime).set_sent(1);
         pair.server.set_server_config(Some(Arc::new(config)));
         let client_config = client_config();
         let seen = Arc::new(Mutex::new(None));

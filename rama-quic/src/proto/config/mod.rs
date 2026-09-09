@@ -194,46 +194,54 @@ impl EndpointConfig {
         self.max_udp_payload_size.into()
     }
 
-    /// Override supported QUIC versions
-    pub fn supported_versions(&mut self, supported_versions: Vec<u32>) -> &mut Self {
-        self.supported_versions = supported_versions;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Override supported QUIC versions
+        pub fn supported_versions(mut self, supported_versions: Vec<u32>) -> Self {
+            self.supported_versions = supported_versions;
+            self
+        }
     }
 
-    /// Whether to accept QUIC packets containing any value for the fixed bit
-    ///
-    /// Enabled by default. Helps protect against protocol ossification and makes traffic less
-    /// identifiable to observers. Disable if helping observers identify this traffic as QUIC is
-    /// desired.
-    pub fn grease_quic_bit(&mut self, value: bool) -> &mut Self {
-        self.grease_quic_bit = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Whether to accept QUIC packets containing any value for the fixed bit
+        ///
+        /// Enabled by default. Helps protect against protocol ossification and makes traffic less
+        /// identifiable to observers. Disable if helping observers identify this traffic as QUIC is
+        /// desired.
+        pub fn grease_quic_bit(mut self, value: bool) -> Self {
+            self.grease_quic_bit = value;
+            self
+        }
     }
 
-    /// Minimum interval between outgoing stateless reset packets
-    ///
-    /// Defaults to 20ms. Limits the impact of attacks which flood an endpoint with garbage packets,
-    /// e.g. [ISAKMP/IKE amplification]. Larger values provide a stronger defense, but may delay
-    /// detection of some error conditions by clients. Using a [`ConnectionIdGenerator`] with a low
-    /// rate of false positives in [`validate`](ConnectionIdGenerator::validate) reduces the risk
-    /// incurred by a small minimum reset interval.
-    ///
-    /// [ISAKMP/IKE
-    /// amplification]: https://bughunters.google.com/blog/5960150648750080/preventing-cross-service-udp-loops-in-quic#isakmp-ike-amplification-vs-quic
-    pub fn min_reset_interval(&mut self, value: Duration) -> &mut Self {
-        self.min_reset_interval = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Minimum interval between outgoing stateless reset packets
+        ///
+        /// Defaults to 20ms. Limits the impact of attacks which flood an endpoint with garbage packets,
+        /// e.g. [ISAKMP/IKE amplification]. Larger values provide a stronger defense, but may delay
+        /// detection of some error conditions by clients. Using a [`ConnectionIdGenerator`] with a low
+        /// rate of false positives in [`validate`](ConnectionIdGenerator::validate) reduces the risk
+        /// incurred by a small minimum reset interval.
+        ///
+        /// [ISAKMP/IKE
+        /// amplification]: https://bughunters.google.com/blog/5960150648750080/preventing-cross-service-udp-loops-in-quic#isakmp-ike-amplification-vs-quic
+        pub fn min_reset_interval(mut self, value: Duration) -> Self {
+            self.min_reset_interval = value;
+            self
+        }
     }
 
-    /// Optional seed to be used internally for random number generation
-    ///
-    /// By default, an endpoint's rng is initialized using a platform entropy source.
-    /// However, you can seed the rng yourself through this method (e.g. if you need to run
-    /// deterministically or if you are running in an environment that doesn't have a source of
-    /// entropy available).
-    pub fn rng_seed(&mut self, seed: Option<[u8; 32]>) -> &mut Self {
-        self.rng_seed = seed;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Optional seed to be used internally for random number generation
+        ///
+        /// By default, an endpoint's rng is initialized using a platform entropy source.
+        /// However, you can seed the rng yourself through this method (e.g. if you need to run
+        /// deterministically or if you are running in an environment that doesn't have a source of
+        /// entropy available).
+        pub fn rng_seed(mut self, seed: Option<[u8; 32]>) -> Self {
+            self.rng_seed = seed;
+            self
+        }
     }
 }
 
@@ -335,10 +343,12 @@ impl ServerConfig {
         }
     }
 
-    /// Set a custom [`TransportConfig`]
-    pub fn transport_config(&mut self, transport: Arc<TransportConfig>) -> &mut Self {
-        self.transport = transport;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set a custom [`TransportConfig`]
+        pub fn transport_config(mut self, transport: Arc<TransportConfig>) -> Self {
+            self.transport = transport;
+            self
+        }
     }
 
     /// Set a custom [`ValidationTokenConfig`]
@@ -356,69 +366,81 @@ impl ServerConfig {
         self
     }
 
-    /// Duration after a retry token was issued for which it's considered valid
-    ///
-    /// Defaults to 15 seconds.
-    pub fn retry_token_lifetime(&mut self, value: Duration) -> &mut Self {
-        self.retry_token_lifetime = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Duration after a retry token was issued for which it's considered valid
+        ///
+        /// Defaults to 15 seconds.
+        pub fn retry_token_lifetime(mut self, value: Duration) -> Self {
+            self.retry_token_lifetime = value;
+            self
+        }
     }
 
-    /// Whether to allow clients to migrate to new addresses
-    ///
-    /// Improves behavior for clients that move between different internet connections or suffer NAT
-    /// rebinding. Enabled by default.
-    pub fn migration(&mut self, value: bool) -> &mut Self {
-        self.migration = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Whether to allow clients to migrate to new addresses
+        ///
+        /// Improves behavior for clients that move between different internet connections or suffer NAT
+        /// rebinding. Enabled by default.
+        pub fn migration(mut self, value: bool) -> Self {
+            self.migration = value;
+            self
+        }
     }
 
-    /// The preferred IPv4 address that will be communicated to clients during handshaking
-    ///
-    /// If the client is able to reach this address, it will switch to it.
-    pub fn preferred_address_v4(&mut self, address: Option<SocketAddrV4>) -> &mut Self {
-        self.preferred_address_v4 = address;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// The preferred IPv4 address that will be communicated to clients during handshaking
+        ///
+        /// If the client is able to reach this address, it will switch to it.
+        pub fn preferred_address_v4(mut self, address: Option<SocketAddrV4>) -> Self {
+            self.preferred_address_v4 = address;
+            self
+        }
     }
 
-    /// The preferred IPv6 address that will be communicated to clients during handshaking
-    ///
-    /// If the client is able to reach this address, it will switch to it.
-    pub fn preferred_address_v6(&mut self, address: Option<SocketAddrV6>) -> &mut Self {
-        self.preferred_address_v6 = address;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// The preferred IPv6 address that will be communicated to clients during handshaking
+        ///
+        /// If the client is able to reach this address, it will switch to it.
+        pub fn preferred_address_v6(mut self, address: Option<SocketAddrV6>) -> Self {
+            self.preferred_address_v6 = address;
+            self
+        }
     }
 
-    /// Maximum number of [`Incoming`][crate::proto::Incoming] to allow to exist at a time
-    ///
-    /// An [`Incoming`][crate::proto::Incoming] comes into existence when an incoming connection attempt
-    /// is received and stops existing when the application either accepts it or otherwise disposes
-    /// of it. While this limit is reached, new incoming connection attempts are immediately
-    /// refused. Larger values have greater worst-case memory consumption, but accommodate greater
-    /// application latency in handling incoming connection attempts.
-    ///
-    /// The default value is set to 65536. With a typical Ethernet MTU of 1500 bytes, this limits
-    /// memory consumption from this to under 100 MiB--a generous amount that still prevents memory
-    /// exhaustion in most contexts.
-    pub fn max_incoming(&mut self, max_incoming: usize) -> &mut Self {
-        self.max_incoming = max_incoming;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum number of [`Incoming`][crate::proto::Incoming] to allow to exist at a time
+        ///
+        /// An [`Incoming`][crate::proto::Incoming] comes into existence when an incoming connection attempt
+        /// is received and stops existing when the application either accepts it or otherwise disposes
+        /// of it. While this limit is reached, new incoming connection attempts are immediately
+        /// refused. Larger values have greater worst-case memory consumption, but accommodate greater
+        /// application latency in handling incoming connection attempts.
+        ///
+        /// The default value is set to 65536. With a typical Ethernet MTU of 1500 bytes, this limits
+        /// memory consumption from this to under 100 MiB--a generous amount that still prevents memory
+        /// exhaustion in most contexts.
+        pub fn max_incoming(mut self, max_incoming: usize) -> Self {
+            self.max_incoming = max_incoming;
+            self
+        }
     }
 
-    /// Maximum number of received bytes to buffer for each [`Incoming`][crate::proto::Incoming]
-    ///
-    /// An [`Incoming`][crate::proto::Incoming] comes into existence when an incoming connection attempt
-    /// is received and stops existing when the application either accepts it or otherwise disposes
-    /// of it. This limit governs only packets received within that period, and does not include
-    /// the first packet. Packets received in excess of this limit are dropped, which may cause
-    /// 0-RTT or handshake data to have to be retransmitted.
-    ///
-    /// The default value is set to 10 MiB--an amount such that in most situations a client would
-    /// not transmit that much 0-RTT data faster than the server handles the corresponding
-    /// [`Incoming`][crate::proto::Incoming].
-    pub fn incoming_buffer_size(&mut self, incoming_buffer_size: u64) -> &mut Self {
-        self.incoming_buffer_size = incoming_buffer_size;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Maximum number of received bytes to buffer for each [`Incoming`][crate::proto::Incoming]
+        ///
+        /// An [`Incoming`][crate::proto::Incoming] comes into existence when an incoming connection attempt
+        /// is received and stops existing when the application either accepts it or otherwise disposes
+        /// of it. This limit governs only packets received within that period, and does not include
+        /// the first packet. Packets received in excess of this limit are dropped, which may cause
+        /// 0-RTT or handshake data to have to be retransmitted.
+        ///
+        /// The default value is set to 10 MiB--an amount such that in most situations a client would
+        /// not transmit that much 0-RTT data faster than the server handles the corresponding
+        /// [`Incoming`][crate::proto::Incoming].
+        pub fn incoming_buffer_size(mut self, incoming_buffer_size: u64) -> Self {
+            self.incoming_buffer_size = incoming_buffer_size;
+            self
+        }
     }
 
     /// Maximum number of received bytes to buffer for all [`Incoming`][crate::proto::Incoming]
@@ -440,14 +462,16 @@ impl ServerConfig {
         self
     }
 
-    /// Object to get current [`SystemTime`]
-    ///
-    /// This exists to allow system time to be mocked in tests, or wherever else desired.
-    ///
-    /// Defaults to [`StdSystemTime`], which simply calls [`SystemTime::now()`](SystemTime::now).
-    pub fn time_source(&mut self, time_source: Arc<dyn TimeSource>) -> &mut Self {
-        self.time_source = time_source;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Object to get current [`SystemTime`]
+        ///
+        /// This exists to allow system time to be mocked in tests, or wherever else desired.
+        ///
+        /// Defaults to [`StdSystemTime`], which simply calls [`SystemTime::now()`](SystemTime::now).
+        pub fn time_source(mut self, time_source: Arc<dyn TimeSource>) -> Self {
+            self.time_source = time_source;
+            self
+        }
     }
 
     pub(crate) fn has_preferred_address(&self) -> bool {
@@ -579,34 +603,40 @@ pub struct ValidationTokenConfig {
 }
 
 impl ValidationTokenConfig {
-    /// Duration after an address validation token was issued for which it's considered valid
-    ///
-    /// This refers only to tokens sent in NEW_TOKEN frames, in contrast to retry tokens.
-    ///
-    /// Defaults to 2 weeks.
-    pub fn lifetime(&mut self, value: Duration) -> &mut Self {
-        self.lifetime = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Duration after an address validation token was issued for which it's considered valid
+        ///
+        /// This refers only to tokens sent in NEW_TOKEN frames, in contrast to retry tokens.
+        ///
+        /// Defaults to 2 weeks.
+        pub fn lifetime(mut self, value: Duration) -> Self {
+            self.lifetime = value;
+            self
+        }
     }
 
-    /// Set a custom [`TokenLog`]
-    ///
-    /// Defaults to a default [`BloomTokenLog`], which is suitable for most internet applications.
-    /// Use [`NoneTokenLog`] to make the server ignore all address validation tokens (that is,
-    /// tokens originating from NEW_TOKEN frames--retry tokens are not affected).
-    pub fn log(&mut self, log: Arc<dyn TokenLog>) -> &mut Self {
-        self.log = log;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set a custom [`TokenLog`]
+        ///
+        /// Defaults to a default [`BloomTokenLog`], which is suitable for most internet applications.
+        /// Use [`NoneTokenLog`] to make the server ignore all address validation tokens (that is,
+        /// tokens originating from NEW_TOKEN frames--retry tokens are not affected).
+        pub fn log(mut self, log: Arc<dyn TokenLog>) -> Self {
+            self.log = log;
+            self
+        }
     }
 
-    /// Number of address validation tokens sent to a client when its path is validated
-    ///
-    /// This refers only to tokens sent in NEW_TOKEN frames, in contrast to retry tokens.
-    ///
-    /// Defaults to 2.
-    pub fn sent(&mut self, value: u32) -> &mut Self {
-        self.sent = value;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Number of address validation tokens sent to a client when its path is validated
+        ///
+        /// This refers only to tokens sent in NEW_TOKEN frames, in contrast to retry tokens.
+        ///
+        /// Defaults to 2.
+        pub fn sent(mut self, value: u32) -> Self {
+            self.sent = value;
+            self
+        }
     }
 }
 
@@ -709,24 +739,30 @@ impl ClientConfig {
         self
     }
 
-    /// Set a custom [`TransportConfig`]
-    pub fn transport_config(&mut self, transport: Arc<TransportConfig>) -> &mut Self {
-        self.transport = transport;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set a custom [`TransportConfig`]
+        pub fn transport_config(mut self, transport: Arc<TransportConfig>) -> Self {
+            self.transport = transport;
+            self
+        }
     }
 
-    /// Set a custom [`TokenStore`]
-    ///
-    /// Defaults to [`TokenMemoryCache`], which is suitable for most internet applications.
-    pub fn token_store(&mut self, store: Arc<dyn TokenStore>) -> &mut Self {
-        self.token_store = store;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set a custom [`TokenStore`]
+        ///
+        /// Defaults to [`TokenMemoryCache`], which is suitable for most internet applications.
+        pub fn token_store(mut self, store: Arc<dyn TokenStore>) -> Self {
+            self.token_store = store;
+            self
+        }
     }
 
-    /// Set the QUIC version to use
-    pub fn version(&mut self, version: u32) -> &mut Self {
-        self.version = version;
-        self
+    rama_utils::macros::generate_set_and_with! {
+        /// Set the QUIC version to use
+        pub fn version(mut self, version: u32) -> Self {
+            self.version = version;
+            self
+        }
     }
 }
 

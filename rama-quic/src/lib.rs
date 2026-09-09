@@ -35,9 +35,10 @@ pub use proto::{
     EndpointConfig, ExportKeyingMaterialError, FrameStats, FrameType, HandshakeSummary,
     HashedConnectionIdGenerator, IdleTimeout, InvalidCid, MtuDiscoveryConfig, NoneTokenLog,
     NoneTokenStore, PathStats, PreferredAddressPolicy, RandomConnectionIdGenerator,
-    ReceiveQueueLimits, ServerConfig, ServerName, Side, StdSystemTime, StreamId, TimeSource,
-    TokenLog, TokenMemoryCache, TokenReuseError, TokenStore, TransportConfig, TransportError,
-    TransportErrorCode, UdpStats, ValidationTokenConfig, VarInt, VarIntBoundsExceeded, Written,
+    ReceiveQueueLimits, ReceivedServerName, ServerConfig, Side, StdSystemTime, StreamId,
+    TimeSource, TokenLog, TokenMemoryCache, TokenReuseError, TokenStore, TransportConfig,
+    TransportError, TransportErrorCode, UdpStats, ValidationTokenConfig, VarInt,
+    VarIntBoundsExceeded, Written,
 };
 
 /// TLS for QUIC: how a connection's identity and application protocol are configured.

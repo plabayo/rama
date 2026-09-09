@@ -1,10 +1,12 @@
 use std::{any::Any, io, str, sync::Arc};
 
 use rama_core::bytes::BytesMut;
+use rama_core::telemetry::tracing::debug;
 #[cfg(all(feature = "aws-lc", not(feature = "ring")))]
 use rama_crypto::dep::aws_lc_rs::aead;
 #[cfg(feature = "ring")]
 use rama_crypto::dep::ring::aead;
+use rama_net::{address::Domain, tls::ApplicationProtocol};
 pub(crate) use rama_tls_rustls::dep::rustls::Error;
 use rama_tls_rustls::dep::rustls::{
     self, CipherSuite,
@@ -16,10 +18,25 @@ use rama_tls_rustls::dep::rustls::{
 use crate::proto::{
     ConnectError, ConnectionId, Side, TransportError, TransportErrorCode,
     crypto::{
-        self, CryptoError, ExportKeyingMaterialError, HeaderKey, KeyPair, Keys, UnsupportedVersion,
+        self, CryptoError, ExportKeyingMaterialError, HeaderKey, KeyPair, Keys, ReceivedServerName,
+        UnsupportedVersion,
     },
     transport_parameters::TransportParameters,
 };
+
+/// A name the backend has already validated as a DNS name, as this crate reads it. A name that
+/// is not a domain keeps its text.
+fn received_server_name(name: &str) -> ReceivedServerName {
+    // Borrowed: validation happens before any allocation, so a name that is not a domain costs
+    // only the boxed text it keeps.
+    match Domain::try_from(name) {
+        Ok(domain) => ReceivedServerName::Domain(domain),
+        Err(error) => {
+            debug!(%error, %name, "a name the backend accepted is not a domain");
+            ReceivedServerName::Other(name.into())
+        }
+    }
+}
 
 impl From<Side> for rama_tls_rustls::dep::rustls::Side {
     fn from(s: Side) -> Self {
@@ -57,19 +74,6 @@ impl crypto::Session for TlsSession {
         initial_keys(self.version, *dst_cid, side, &self.suite)
     }
 
-    fn handshake_data(&self) -> Option<Box<dyn Any>> {
-        if !self.got_handshake_data {
-            return None;
-        }
-        Some(Box::new(HandshakeData {
-            protocol: self.inner.alpn_protocol().map(|x| x.into()),
-            server_name: match self.inner {
-                Connection::Client(_) => None,
-                Connection::Server(ref session) => session.server_name().map(|x| x.into()),
-            },
-        }))
-    }
-
     #[cfg(test)]
     fn negotiated_key_exchange_group(&self) -> Option<u16> {
         self.inner
@@ -86,17 +90,8 @@ impl crypto::Session for TlsSession {
             Connection::Server(ref session) => session.server_name(),
         };
         Some(crate::proto::crypto::HandshakeSummary {
-            protocol: self
-                .inner
-                .alpn_protocol()
-                .map(rama_net::tls::ApplicationProtocol::from),
-            // A name the peer sent that is not one this crate can represent is reported as
-            // unparsed rather than dropped: what the peer asked for is not this side's to
-            // silently correct.
-            server_name: server_name.map(|name| match name.parse() {
-                Ok(host) => crate::proto::crypto::ServerName::Known(host),
-                Err(_) => crate::proto::crypto::ServerName::Unparsed(name.to_owned()),
-            }),
+            protocol: self.inner.alpn_protocol().map(ApplicationProtocol::from),
+            server_name: server_name.map(received_server_name),
         })
     }
 
@@ -108,16 +103,6 @@ impl crypto::Session for TlsSession {
                 .map(|certificate| certificate.clone().into_owned())
                 .collect(),
         )
-    }
-
-    fn peer_identity(&self) -> Option<Box<dyn Any>> {
-        self.inner.peer_certificates().map(|v| -> Box<dyn Any> {
-            Box::new(
-                v.iter()
-                    .map(|v| v.clone().into_owned())
-                    .collect::<Vec<CertificateDer<'static>>>(),
-            )
-        })
     }
 
     fn early_crypto(&self) -> Option<(Box<dyn HeaderKey>, Box<dyn crypto::PacketKey>)> {
@@ -142,7 +127,7 @@ impl crypto::Session for TlsSession {
                 TransportError {
                     code: TransportErrorCode::crypto(alert.into()),
                     frame: None,
-                    reason: e.to_string(),
+                    reason: e.to_string().into(),
                     cause: Some(rama_core::error::ArcError::new(e)),
                 }
             } else {
@@ -155,7 +140,7 @@ impl crypto::Session for TlsSession {
         {
             return Err(TransportError::new(
                 TransportErrorCode::crypto(0x78),
-                "TLS handshake completed without an application protocol".into(),
+                "TLS handshake completed without an application protocol",
             ));
         }
         if !self.got_handshake_data {
@@ -760,4 +745,78 @@ fn interpret_version(version: u32) -> Result<Version, UnsupportedVersion> {
 
 fn session_error(error: rustls::Error) -> TransportError {
     TransportError::INTERNAL_ERROR("initialize TLS session").with_cause(error)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_tls_rustls::dep::rustls::pki_types::DnsName;
+
+    /// The contract the handshake summary rests on: a name this backend validated as a DNS name
+    /// reads as a domain. Rustls checks label shape, length and the 253-octet total, and a
+    /// domain's rules are no stricter. Each of these has to be accepted by both, so a backend
+    /// that started rejecting them would fail here rather than pass quietly.
+    #[test]
+    fn a_name_the_backend_accepts_is_a_domain() {
+        let long_label = "a".repeat(63);
+        let long_name = format!("{long_label}.{long_label}.{long_label}.{}", "a".repeat(61));
+        let accepted = [
+            "localhost",
+            "example.com",
+            "EXAMPLE.com",
+            "sub.example.com.",
+            "under_score.example.com",
+            "1.2.3.example.com",
+            "xn--bcher-kva.example",
+            "a",
+            "a-b.example",
+            long_label.as_str(),
+            long_name.as_str(),
+        ];
+        for name in accepted {
+            let validated = DnsName::try_from(name)
+                .unwrap_or_else(|error| panic!("the backend accepts {name:?}: {error}"));
+            let seen = received_server_name(validated.as_ref());
+            assert!(
+                matches!(seen, ReceivedServerName::Domain(_)),
+                "the backend accepts {name:?} but it did not read as a domain: {seen:?}"
+            );
+            assert_eq!(seen.as_str(), validated.as_ref(), "and it keeps its text");
+        }
+    }
+
+    /// The other side of that boundary: what the backend refuses never reaches the adapter, and
+    /// this says which shapes those are. An IP address is among them, which is why a client
+    /// connecting to one sends no SNI at all (RFC 6066 §3).
+    #[test]
+    fn the_backend_refuses_what_is_not_a_dns_name() {
+        let too_long = format!("{}.example", "a".repeat(250));
+        let refused = [
+            "",
+            // A label of digits alone is refused, which is how a bare number and an address are
+            // kept out of a name.
+            "9",
+            "127.0.0.1",
+            "::1",
+            "exa mple.com",
+            "example..com",
+            too_long.as_str(),
+        ];
+        for name in refused {
+            assert!(
+                DnsName::try_from(name).is_err(),
+                "the backend refuses {name:?}"
+            );
+        }
+    }
+
+    /// A name the backend would not accept is not this crate's problem, but if one ever reaches
+    /// the adapter it keeps its text rather than becoming no name at all.
+    #[test]
+    fn a_name_that_is_not_a_domain_keeps_its_text() {
+        let seen = received_server_name("");
+        assert_eq!(seen, ReceivedServerName::Other("".into()));
+        assert_eq!(seen.domain(), None);
+        assert_eq!(seen.as_str(), "");
+    }
 }

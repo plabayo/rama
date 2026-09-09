@@ -48,39 +48,42 @@ impl PacketBuilder {
         conn: &mut Connection,
     ) -> Option<Self> {
         let version = conn.version;
-        // Initiate key update if we're approaching the confidentiality limit
-        let sent_with_keys = conn.spaces[space_id].sent_with_keys;
-        if space_id == SpaceId::Data {
-            if sent_with_keys >= conn.key_phase_size {
-                debug!("routine key update due to phase exhaustion");
-                conn.force_key_update();
+        // A key phase is retired well before its keys reach their confidentiality limit, so the
+        // usual answer to exhaustion is an update. An update that cannot happen — before the
+        // handshake is confirmed, or while one is already in flight (RFC 9001 §6, §6.1) — leaves
+        // the keys in use, and RFC 9001 §6.6 says those keys must stop being used at the limit.
+        // So the limit is checked for every space, including this one.
+        let mut sent_with_keys = conn.spaces[space_id].sent_with_keys;
+        if space_id == SpaceId::Data && sent_with_keys >= conn.key_phase_size {
+            debug!("routine key update due to phase exhaustion");
+            if conn.force_key_update() {
+                // The count belongs to the keys, and these are new ones.
+                sent_with_keys = 0;
             }
-        } else {
-            let confidentiality_limit = conn.spaces[space_id]
-                .crypto
-                .as_ref()
-                .map_or_else(
-                    || &conn.zero_rtt_crypto.as_ref().unwrap().packet,
-                    |keys| &keys.packet.local,
-                )
-                .confidentiality_limit();
-            if sent_with_keys.saturating_add(1) == confidentiality_limit {
-                // We still have time to attempt a graceful close
-                conn.close_inner(
-                    now,
-                    Close::Connection(frame::ConnectionClose {
-                        error_code: TransportErrorCode::AEAD_LIMIT_REACHED,
-                        frame_type: None,
-                        reason: Bytes::from_static(b"confidentiality limit reached"),
-                    }),
-                )
-            } else if sent_with_keys > confidentiality_limit {
-                // Confidentiality limited violated and there's nothing we can do
-                conn.kill(
-                    TransportError::AEAD_LIMIT_REACHED("confidentiality limit reached").into(),
-                );
-                return None;
-            }
+        }
+        let confidentiality_limit = conn.spaces[space_id]
+            .crypto
+            .as_ref()
+            .map_or_else(
+                || &conn.zero_rtt_crypto.as_ref().unwrap().packet,
+                |keys| &keys.packet.local,
+            )
+            .confidentiality_limit();
+        if sent_with_keys.saturating_add(1) == confidentiality_limit {
+            // The budget covers one more packet, which is spent on saying why the connection is
+            // ending.
+            conn.close_inner(
+                now,
+                Close::Connection(frame::ConnectionClose {
+                    error_code: TransportErrorCode::AEAD_LIMIT_REACHED,
+                    frame_type: None,
+                    reason: Bytes::from_static(b"confidentiality limit reached"),
+                }),
+            )
+        } else if sent_with_keys >= confidentiality_limit {
+            // No budget remains, so nothing more is encrypted with these keys.
+            conn.kill(TransportError::AEAD_LIMIT_REACHED("confidentiality limit reached").into());
+            return None;
         }
 
         let space = &mut conn.spaces[space_id];

@@ -1184,21 +1184,30 @@ impl Connection {
         self.0.stable_id()
     }
 
-    /// Update traffic keys spontaneously
+    /// Update traffic keys now, without waiting for the usage limit that would force one.
     ///
-    /// This primarily exists for testing purposes.
-    pub(crate) fn force_key_update(&self) {
+    /// Answers whether an update was started. Nothing changes and the answer is `false` when the
+    /// connection is not established, when the handshake is not confirmed yet (RFC 9001 §6.1
+    /// forbids initiating an update before then, which for a client means after HANDSHAKE_DONE),
+    /// or when an update is already in flight (§6 allows one at a time).
+    /// [`ConnectionStats::key_updates`](crate::ConnectionStats::key_updates) counts the updates
+    /// this connection has made, whichever side asked for them.
+    pub fn force_key_update(&self) -> bool {
         self.0.state.lock().inner.force_key_update()
     }
 
     /// Derive keying material from this connection's TLS session secrets.
     ///
-    /// When both peers call this method with the same `label` and `context`
-    /// arguments and `output` buffers of equal length, they will get the
-    /// same sequence of bytes in `output`. These bytes are cryptographically
-    /// strong and pseudorandom, and are suitable for use as keying material.
+    /// Two peers calling this with the same `label`, the same `context` and `output` buffers of
+    /// equal length get the same bytes. The bytes are cryptographically strong and pseudorandom,
+    /// suitable as keying material. A different label or a different context gives different
+    /// bytes.
     ///
-    /// See [RFC5705](https://tools.ietf.org/html/rfc5705) for more information.
+    /// TLS 1.3 defines this exporter in [RFC 8446 §7.5]; [RFC 5705] defined the earlier one it
+    /// replaces.
+    ///
+    /// [RFC 8446 §7.5]: https://www.rfc-editor.org/rfc/rfc8446#section-7.5
+    /// [RFC 5705]: https://www.rfc-editor.org/rfc/rfc5705
     pub fn export_keying_material(
         &self,
         output: &mut [u8],

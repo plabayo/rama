@@ -12,7 +12,7 @@ use std::{any::Any, fmt, str, sync::Arc};
 
 use rama_core::bytes::BytesMut;
 use rama_crypto::pki_types::CertificateDer;
-use rama_net::{address::Host, tls::ApplicationProtocol};
+use rama_net::{address::Domain, tls::ApplicationProtocol};
 
 use crate::proto::{
     ConnectError, Side, TransportError, shared::ConnectionId,
@@ -31,30 +31,53 @@ pub(crate) mod rustls;
 ///
 /// A server sees the name it was asked for; a client sees none, having asked it itself. This is
 /// available as soon as the TLS session has that data, which is before the handshake is
-/// confirmed — waiting for confirmation is the caller's to do if it matters.
+/// confirmed. A caller that needs confirmation first waits for it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HandshakeSummary {
     /// The application protocol both sides agreed on (RFC 7301), when ALPN was used.
     pub protocol: Option<ApplicationProtocol>,
-    /// The server name the client asked for, when it sent one.
-    pub server_name: Option<ServerName>,
+    /// The name the client asked for in its SNI extension, when it sent one. This is what the
+    /// peer said, not an identity this side verified a certificate against. A client sending an
+    /// IP address has no SNI to send (RFC 6066 §3), so this is `None` for those connections.
+    pub server_name: Option<ReceivedServerName>,
 }
 
-/// A server name a client asked for.
+/// A name a client sent in its SNI extension.
+///
+/// Almost always a [`Domain`]. The Rustls backend hands over a name it has validated as a DNS
+/// name and lowercased, and a domain's rules are no stricter, so it reads as one. The second
+/// variant carries a name that did not, so a disagreement is reported with the text that caused
+/// it: a name that was sent and no name at all are different facts.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ServerName {
-    /// A name this crate could read.
-    Known(Host),
-    /// A name it could not: reported as it arrived rather than dropped.
-    Unparsed(String),
+pub enum ReceivedServerName {
+    /// The name, as a domain.
+    Domain(Domain),
+    /// A name the backend accepted that this crate could not read as a domain.
+    Other(Box<str>),
 }
 
-impl fmt::Display for ServerName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl ReceivedServerName {
+    /// The name as the backend reports it, which for Rustls is lowercased and so is not
+    /// necessarily byte-for-byte what the peer put on the wire.
+    pub fn as_str(&self) -> &str {
         match self {
-            Self::Known(host) => host.fmt(f),
-            Self::Unparsed(name) => f.write_str(name),
+            Self::Domain(domain) => domain.as_str(),
+            Self::Other(name) => name,
         }
+    }
+
+    /// The domain, when the name is one.
+    pub fn domain(&self) -> Option<&Domain> {
+        match self {
+            Self::Domain(domain) => Some(domain),
+            Self::Other(_) => None,
+        }
+    }
+}
+
+impl fmt::Display for ReceivedServerName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -63,12 +86,8 @@ pub(crate) trait Session: Send + Sync + 'static {
     /// Create the initial set of keys given the client's initial destination ConnectionId
     fn initial_keys(&self, dst_cid: &ConnectionId, side: Side) -> Keys;
 
-    /// Get data negotiated during the handshake, if available
-    ///
-    /// Returns `None` until the connection emits `HandshakeDataReady`.
-    fn handshake_data(&self) -> Option<Box<dyn Any>>;
-
-    /// What the handshake settled, in Rama's own terms.
+    /// What the handshake has settled, when the session has it. `None` until the connection
+    /// emits `HandshakeDataReady`.
     fn handshake_summary(&self) -> Option<HandshakeSummary> {
         None
     }
@@ -77,9 +96,6 @@ pub(crate) trait Session: Send + Sync + 'static {
     fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>> {
         None
     }
-
-    /// Get the peer's identity, if available
-    fn peer_identity(&self) -> Option<Box<dyn Any>>;
 
     /// The negotiated key exchange group as an IANA `NamedGroup` code (test observation point)
     #[cfg(test)]

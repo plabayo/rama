@@ -19,7 +19,7 @@ fn localhost_v4() -> SocketAddr {
 /// configuration to reach it.
 async fn preferring_server() -> (Endpoint, ClientConfig, SocketAddr, SocketAddr) {
     let (client_config, mut server_config) = configs();
-    server_config.preferred_address_v4(Some(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)));
+    server_config.set_preferred_address_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
     let server = Endpoint::server(server_config, localhost_v4())
         .await
         .expect("the server binds both addresses");
@@ -72,7 +72,7 @@ async fn a_client_moves_to_the_advertised_address_and_data_flows() {
 #[tokio::test]
 async fn a_wildcard_listener_and_a_concrete_advertised_socket_keep_their_own_tuples() {
     let (client_config, mut server_config) = configs();
-    server_config.preferred_address_v4(Some(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0)));
+    server_config.set_preferred_address_v4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
     let server = Endpoint::server(
         server_config,
         SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
@@ -184,7 +184,7 @@ async fn the_listener_still_admits_clients_after_a_move_and_paths_stay_apart() {
 #[tokio::test]
 async fn an_ipv6_server_advertises_an_ipv6_address() {
     let (client_config, mut server_config) = configs();
-    server_config.preferred_address_v6(Some(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0)));
+    server_config.set_preferred_address_v6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0));
     let server = Endpoint::server(
         server_config,
         SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0),
@@ -218,7 +218,7 @@ async fn an_ipv6_server_advertises_an_ipv6_address() {
 #[tokio::test]
 async fn a_wildcard_preferred_address_is_refused() {
     let (_client_config, mut server_config) = configs();
-    server_config.preferred_address_v4(Some(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
+    server_config.set_preferred_address_v4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0));
     let error = Endpoint::server(server_config, localhost_v4())
         .await
         .expect_err("a wildcard cannot be advertised");
@@ -309,7 +309,7 @@ async fn the_datagrams_of_each_path_leave_by_that_paths_socket() {
     let SocketAddr::V4(advertised_v4) = advertised_addr else {
         panic!("the fixture binds an IPv4 loopback socket");
     };
-    server_config.preferred_address_v4(Some(advertised_v4));
+    server_config.set_preferred_address_v4(advertised_v4);
     let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
     let initial = server.local_addr().unwrap();
     server
@@ -420,7 +420,7 @@ async fn a_failed_advertised_socket_stops_being_advertised() {
     let SocketAddr::V4(advertised_v4) = advertised_addr else {
         panic!("the fixture binds an IPv4 loopback socket");
     };
-    server_config.preferred_address_v4(Some(advertised_v4));
+    server_config.set_preferred_address_v4(advertised_v4);
     let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
     let initial = server.local_addr().unwrap();
     server.advertise_abstract(advertised).unwrap();
@@ -482,7 +482,7 @@ async fn a_socket_advertised_after_the_driver_parked_is_polled() {
     let SocketAddr::V4(advertised_v4) = advertised_addr else {
         panic!("bound on IPv4 loopback");
     };
-    server_config.preferred_address_v4(Some(advertised_v4));
+    server_config.set_preferred_address_v4(advertised_v4);
     let (listener, _listener_log) = recording_socket();
     let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
     let initial = server.local_addr().unwrap();
@@ -528,7 +528,7 @@ async fn preferring_server_with_a_stuck_candidate() -> (
     let SocketAddr::V4(advertised_v4) = advertised_addr else {
         panic!("the fixture binds an IPv4 loopback socket");
     };
-    server_config.preferred_address_v4(Some(advertised_v4));
+    server_config.set_preferred_address_v4(advertised_v4);
     let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
     let initial = server.local_addr().unwrap();
     server
@@ -672,7 +672,7 @@ async fn a_part_sent_descriptor_stays_with_its_handle_when_the_path_moves() {
     // Nothing reaches the endpoint through the advertised socket until this test opens it, so the
     // client's probes cannot be answered and the move waits. Its sender stays writable throughout.
     close_receive(&advertised_log);
-    server_config.preferred_address_v4(Some(advertised_v4));
+    server_config.set_preferred_address_v4(advertised_v4);
     let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
     let initial = server.local_addr().unwrap();
     server.advertise_abstract(advertised).unwrap();
@@ -804,7 +804,7 @@ async fn a_candidate_paths_answer_waits_for_its_route_with_nothing_on_the_wire()
     let SocketAddr::V4(advertised_v4) = advertised_addr else {
         panic!("the fixture binds an IPv4 loopback socket");
     };
-    server_config.preferred_address_v4(Some(advertised_v4));
+    server_config.set_preferred_address_v4(advertised_v4);
     // Nothing arrives through the advertised socket until the hold is in place, so the challenge
     // cannot be answered before the gate under test exists.
     close_receive(&advertised_log);
@@ -864,7 +864,7 @@ async fn a_candidate_paths_answer_is_given_up_when_its_route_is_refused() {
     let SocketAddr::V4(advertised_v4) = advertised_addr else {
         panic!("the fixture binds an IPv4 loopback socket");
     };
-    server_config.preferred_address_v4(Some(advertised_v4));
+    server_config.set_preferred_address_v4(advertised_v4);
     close_receive(&advertised_log);
     let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
     let initial = server.local_addr().unwrap();

@@ -181,4 +181,7 @@ pub struct ConnectionStats {
     pub(crate) frame_rx: FrameStats,
     /// Statistics related to the current transmission path
     pub(crate) path: PathStats,
+    /// How many times this connection's traffic keys were updated (RFC 9001 §6), whether the
+    /// update was asked for locally, forced by the usage limit, or started by the peer.
+    pub key_updates: u64,
 }

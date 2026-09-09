@@ -138,7 +138,7 @@ fn connector_config(anchor: rama_crypto::pki_types::CertificateDer<'static>) -> 
         .try_with_server_trust_anchors([anchor])
         .unwrap();
     let mut config = ClientConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
-    config.transport_config(Arc::new(transport()));
+    config.set_transport_config(Arc::new(transport()));
     config
 }
 
@@ -148,13 +148,13 @@ fn listener_config(auth: &ServerAuthData) -> ServerConfig {
         .with_alpn(alpn().into_iter().collect())
         .with_server_auth(auth.clone());
     let mut config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
-    config.transport_config(Arc::new(transport()));
+    config.set_transport_config(Arc::new(transport()));
     config
 }
 
 fn transport() -> TransportConfig {
     let mut transport = TransportConfig::default();
-    transport.max_idle_timeout(Some(Duration::from_secs(20).try_into().unwrap()));
+    transport.set_max_idle_timeout(Duration::from_secs(20).try_into().unwrap());
     transport
 }
 

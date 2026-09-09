@@ -730,8 +730,8 @@ async fn wait_until(mut condition: impl FnMut() -> bool) {
 async fn handshake_deadline_runs_without_polling_connecting() {
     let mut client_config = configs().0;
     let mut transport = crate::TransportConfig::default();
-    transport.max_idle_timeout(None);
-    client_config.transport_config(Arc::new(transport));
+    transport.maybe_set_max_idle_timeout(None);
+    client_config.set_transport_config(Arc::new(transport));
     let blackhole = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let endpoint = deadline_endpoint(None, Duration::from_millis(100));
     let connecting = endpoint
@@ -814,10 +814,10 @@ async fn shutdown_retires_held_incoming_before_reporting_completion() {
 async fn completed_handshake_cancels_deadline() {
     let (mut client_config, mut server_config) = configs();
     let mut transport = crate::TransportConfig::default();
-    transport.max_idle_timeout(None);
+    transport.maybe_set_max_idle_timeout(None);
     let transport = Arc::new(transport);
-    client_config.transport_config(transport.clone());
-    server_config.transport_config(transport);
+    client_config.set_transport_config(transport.clone());
+    server_config.set_transport_config(transport);
     let deadline = Duration::from_millis(300);
     let server = deadline_endpoint(Some(server_config), deadline);
     let client = deadline_endpoint(None, deadline);
@@ -901,8 +901,8 @@ async fn graceful_executor_joins_without_guard_cycles() {
 async fn forced_shutdown_joins_an_unpolled_connection_attempt() {
     let mut client_config = configs().0;
     let mut transport = crate::TransportConfig::default();
-    transport.max_idle_timeout(None);
-    client_config.transport_config(Arc::new(transport));
+    transport.maybe_set_max_idle_timeout(None);
+    client_config.set_transport_config(Arc::new(transport));
     let blackhole = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let endpoint = endpoint(None, Executor::new(), Duration::from_millis(1));
     let addr = endpoint.local_addr().unwrap();
@@ -2258,8 +2258,8 @@ async fn bulk_transmit_yields_at_the_quota_and_lets_another_connection_progress(
     cc.initial_window(octets::mib_u64(4));
     transport.congestion_controller_factory(Arc::new(cc));
     let transport = Arc::new(transport);
-    client_config.transport_config(transport.clone());
-    server_config.transport_config(transport);
+    client_config.set_transport_config(transport.clone());
+    server_config.set_transport_config(transport);
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     // The client socket counts datagrams and advertises a single send segment, so one send
     // is one datagram and the transmit bound is exactly `MAX_TRANSMIT_DATAGRAMS`.
@@ -2526,10 +2526,10 @@ async fn rejected_mtu_probes_settle_below_a_fixed_path_threshold() {
 async fn path_size_decrease_after_a_larger_mtu_was_learned() {
     let (mut client_config, mut server_config) = configs();
     let mut transport = crate::TransportConfig::default();
-    transport.max_idle_timeout(Some(Duration::from_secs(3).try_into().unwrap()));
+    transport.set_max_idle_timeout(Duration::from_secs(3).try_into().unwrap());
     let transport = Arc::new(transport);
-    client_config.transport_config(transport.clone());
-    server_config.transport_config(transport);
+    client_config.set_transport_config(transport.clone());
+    server_config.set_transport_config(transport);
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let threshold = Arc::new(AtomicUsize::new(usize::MAX));
     let client = faulty_endpoint_with_threshold(
@@ -2876,7 +2876,7 @@ mod dial9;
 async fn a_retry_sent_from_a_replaced_socket_is_answered_there_until_its_route_expires() {
     let (client_config, mut server_config) = configs();
     let lifetime = Duration::from_millis(1500);
-    server_config.retry_token_lifetime(lifetime);
+    server_config.set_retry_token_lifetime(lifetime);
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let addr_a = server.local_addr().unwrap();
     let client = endpoint(None, Executor::new(), Duration::from_secs(1));
@@ -2926,7 +2926,7 @@ async fn a_retry_sent_from_a_replaced_socket_is_answered_there_until_its_route_e
 async fn an_unanswered_retry_route_expires_on_its_own_and_shutdown_releases_it_early() {
     let (client_config, mut server_config) = configs();
     let lifetime = Duration::from_millis(700);
-    server_config.retry_token_lifetime(lifetime);
+    server_config.set_retry_token_lifetime(lifetime);
 
     // Expiry: the client is gone before the Retry leaves, so nothing ever comes back to A.
     let server = endpoint(
@@ -3297,7 +3297,7 @@ async fn a_client_defers_its_migration_until_the_handshake_is_confirmed() {
 #[tokio::test]
 async fn a_client_whose_peer_disables_migration_keeps_its_socket_and_ends_with_it() {
     let (client_config, mut server_config) = configs();
-    server_config.migration(false);
+    server_config.set_migration(false);
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket_a, _gate, fault_a, _) = breakable_socket(None);
     let client = endpoint_with(EndpointConfig::default(), None, socket_a);
@@ -3377,7 +3377,7 @@ async fn an_unconfirmed_client_whose_socket_fails_is_terminated() {
 #[tokio::test]
 async fn a_retry_lifetime_beyond_the_clock_is_refused_and_the_attempt_is_kept() {
     let (client_config, mut server_config) = configs();
-    server_config.retry_token_lifetime(Duration::MAX);
+    server_config.set_retry_token_lifetime(Duration::MAX);
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let addr_a = server.local_addr().unwrap();
     let client = endpoint(None, Executor::new(), Duration::from_secs(1));
@@ -4845,6 +4845,67 @@ async fn a_pass_that_spends_its_allowance_waiting_does_not_poll_in_a_loop() {
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
+/// RFC 9001 §6.1: an endpoint does not initiate a key update before the handshake is confirmed.
+/// A client is established once its own TLS handshake finishes, which is earlier: it is confirmed
+/// only once HANDSHAKE_DONE arrives. Between the two, asking for an update changes nothing; after
+/// it, the update happens and traffic keeps flowing.
+#[tokio::test]
+async fn a_client_updates_keys_only_once_its_handshake_is_confirmed() {
+    let (client_config, server_config) = configs();
+    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let client = endpoint(None, Executor::new(), Duration::from_secs(1));
+    let connecting = client
+        .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(5), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let server_connecting = incoming.accept().unwrap();
+    // The server holds HANDSHAKE_DONE, so the client finishes its own handshake and waits for
+    // the confirmation that would let it update keys.
+    server_connecting.hold_handshake_done(true);
+    let (c, s) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(connecting, server_connecting)
+    })
+    .await
+    .expect("both sides complete the handshake");
+    let (c, s) = (c.unwrap(), s.unwrap());
+
+    assert!(
+        !c.force_key_update(),
+        "an unconfirmed client does not initiate a key update"
+    );
+    assert_eq!(
+        c.stats().key_updates,
+        0,
+        "and its keys are the ones it started with"
+    );
+
+    s.hold_handshake_done(false);
+    tokio::time::timeout(Duration::from_secs(5), c.handshake_confirmed())
+        .await
+        .expect("the confirmation arrives")
+        .unwrap();
+
+    assert!(
+        c.force_key_update(),
+        "a confirmed client initiates the update"
+    );
+    assert_eq!(c.stats().key_updates, 1, "and counts it");
+    assert!(
+        !c.force_key_update(),
+        "a second one waits for the first to be acknowledged"
+    );
+    assert_eq!(c.stats().key_updates, 1, "so the count does not move");
+
+    // Traffic after the update arrives, which is what the update must not disturb.
+    exchange(&c, &s, b"after the key update").await;
+    exchange(&s, &c, b"and back").await;
+    drop((c, s));
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
 /// RFC 9000 §10.3.1 at the first acceptance: an identifier whose route is installed but which
 /// nothing has been sent with is not one this connection has used. The first datagram the socket
 /// accepts for it makes it used, for that datagram's address.
@@ -5540,7 +5601,7 @@ async fn preferring_pair(
         SocketAddr::V4(addr) => addr,
         SocketAddr::V6(addr) => panic!("expected an IPv4 loopback address, got {addr}"),
     };
-    server_config.preferred_address_v4(Some(preferred));
+    server_config.set_preferred_address_v4(preferred);
     let key = hmac::Key::new(hmac::HMAC_SHA256, &[0x55; 64]);
     let key_copy = hmac::Key::new(hmac::HMAC_SHA256, &[0x55; 64]);
     let server_socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap())
@@ -5826,7 +5887,7 @@ async fn a_client_probes_a_preferred_address_at_most_three_times() {
         SocketAddr::V4(addr) => addr,
         SocketAddr::V6(addr) => panic!("expected an IPv4 loopback address, got {addr}"),
     };
-    server_config.preferred_address_v4(Some(preferred));
+    server_config.set_preferred_address_v4(preferred);
     let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
     let (socket, log) = recording_socket();
     let client = endpoint_with(EndpointConfig::default(), None, socket);

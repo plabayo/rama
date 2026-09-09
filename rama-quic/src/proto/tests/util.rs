@@ -882,8 +882,8 @@ pub(super) fn server_config_with_cert(
     let mut config = ServerConfig::with_crypto(Arc::new(server_crypto_with_cert(cert, key)));
     config
         .validation_token
-        .sent(2)
-        .log(Arc::new(SimpleTokenLog::default()));
+        .set_sent(2)
+        .set_log(Arc::new(SimpleTokenLog::default()));
     config
 }
 
@@ -958,7 +958,7 @@ pub(super) fn client_config() -> ClientConfig {
 pub(super) fn client_config_with_keep_alive(interval: Duration) -> ClientConfig {
     let mut cfg = ClientConfig::new(Arc::new(client_crypto()));
     let mut transport = TransportConfig::default();
-    transport.keep_alive_interval(Some(interval));
+    transport.set_keep_alive_interval(interval);
     cfg.transport = Arc::new(transport);
     cfg
 }
