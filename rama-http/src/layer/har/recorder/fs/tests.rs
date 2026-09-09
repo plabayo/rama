@@ -375,15 +375,14 @@ async fn file_entry_distinguishes_an_empty_response_from_an_absent_response() {
         let entry = serialized_entry(b"", None, response, None).await;
         assert!(entry.request.post_data.is_none());
         assert_eq!(entry.response.content.size, 0);
+        assert!(entry.response.content.text.is_none());
         assert!(entry.response.content.encoding.is_none());
         if response.is_some() {
             assert_eq!(entry.response.status, 200);
             assert_eq!(entry.response.body_size, 0);
-            assert_eq!(entry.response.content.text.as_deref(), Some(""));
         } else {
             assert_eq!(entry.response.status, 0);
             assert_eq!(entry.response.body_size, -1);
-            assert!(entry.response.content.text.is_none());
         }
     }
 }

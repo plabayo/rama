@@ -79,7 +79,7 @@ pub(super) async fn build_entry_artifact(
         Some((mut response, body)) => {
             response.body_size = body.size;
             response.content.size = body.size;
-            response.content.text = (body.size == 0).then(|| "".into());
+            response.content.text = None;
             response.content.encoding = None;
             (response, Some(body))
         }
