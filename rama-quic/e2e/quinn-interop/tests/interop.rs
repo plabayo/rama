@@ -5,12 +5,16 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rama::crypto::pki_types::CertificateDer;
-use rama::quic::tls::TlsOptions;
-use rama::quic::{ClientConfig, Endpoint, ServerConfig};
-use rama::tls::client::TlsClientConfig;
-use rama::tls::server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig};
-use rama::utils::octets;
+use rama::{
+    crypto::pki_types::CertificateDer,
+    net::tls::ApplicationProtocol,
+    quic::{ClientConfig, Endpoint, ServerConfig, tls::TlsOptions},
+    tls::{
+        client::TlsClientConfig,
+        server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+    },
+    utils::octets,
+};
 use sha2::{Digest, Sha256};
 
 const ALPN: &[u8] = b"rama-quinn-interop";
@@ -89,8 +93,8 @@ fn identity() -> ServerAuthData {
         .expect("an identity is generated")
 }
 
-fn alpn() -> impl IntoIterator<Item = rama::net::tls::ApplicationProtocol> {
-    [rama::net::tls::ApplicationProtocol::from(ALPN)]
+fn alpn() -> impl IntoIterator<Item = ApplicationProtocol> {
+    [ApplicationProtocol::from(ALPN)]
 }
 
 fn rama_server_config(auth: &ServerAuthData) -> ServerConfig {
@@ -217,7 +221,7 @@ async fn rama_client_to_quinn_server() {
         .expect("the handshake settled something");
     assert_eq!(
         settled.protocol,
-        Some(rama::net::tls::ApplicationProtocol::from(ALPN)),
+        Some(ApplicationProtocol::from(ALPN)),
         "the protocol both sides agreed on"
     );
     let chain = conn
@@ -292,7 +296,7 @@ async fn quinn_client_to_rama_server() {
                 .expect("the handshake settled something");
             assert_eq!(
                 settled.protocol,
-                Some(rama::net::tls::ApplicationProtocol::from(ALPN)),
+                Some(ApplicationProtocol::from(ALPN)),
                 "the protocol both sides agreed on"
             );
             assert_eq!(

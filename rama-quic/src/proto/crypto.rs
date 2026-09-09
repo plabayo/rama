@@ -8,9 +8,11 @@
 //! Note that usage of any protocol (version) other than TLS 1.3 does not conform to any
 //! published versions of the specification, and will not be supported in QUIC v1.
 
-use std::{any::Any, str, sync::Arc};
+use std::{any::Any, fmt, str, sync::Arc};
 
 use rama_core::bytes::BytesMut;
+use rama_crypto::pki_types::CertificateDer;
+use rama_net::{address::Host, tls::ApplicationProtocol};
 
 use crate::proto::{
     ConnectError, Side, TransportError, shared::ConnectionId,
@@ -33,7 +35,7 @@ pub(crate) mod rustls;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HandshakeSummary {
     /// The application protocol both sides agreed on (RFC 7301), when ALPN was used.
-    pub protocol: Option<rama_net::tls::ApplicationProtocol>,
+    pub protocol: Option<ApplicationProtocol>,
     /// The server name the client asked for, when it sent one.
     pub server_name: Option<ServerName>,
 }
@@ -42,13 +44,13 @@ pub struct HandshakeSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerName {
     /// A name this crate could read.
-    Known(rama_net::address::Host),
+    Known(Host),
     /// A name it could not: reported as it arrived rather than dropped.
     Unparsed(String),
 }
 
-impl std::fmt::Display for ServerName {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ServerName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Known(host) => host.fmt(f),
             Self::Unparsed(name) => f.write_str(name),
@@ -72,7 +74,7 @@ pub(crate) trait Session: Send + Sync + 'static {
     }
 
     /// The certificate chain the peer presented, if it presented one.
-    fn peer_certificates(&self) -> Option<Vec<rama_crypto::pki_types::CertificateDer<'static>>> {
+    fn peer_certificates(&self) -> Option<Vec<CertificateDer<'static>>> {
         None
     }
 
