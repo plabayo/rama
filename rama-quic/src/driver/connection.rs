@@ -1862,7 +1862,7 @@ impl State {
         if !self.inner.handshake_confirmed() {
             return Switch::Later;
         }
-        if !self.inner.peer_allows_active_migration() {
+        if !self.inner.may_migrate_actively() {
             return Switch::Never;
         }
         if self.inner.can_migrate_locally() {

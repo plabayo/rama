@@ -262,6 +262,9 @@ pub(crate) struct RetiredAside {
     pub(crate) reserved: Option<u64>,
     /// The ones bound to a path of their own.
     pub(crate) bound: [Option<u64>; CidQueue::LEN],
+    /// Numbers the retirement covers that this connection never received. The peer holds them
+    /// until RETIRE_CONNECTION_ID names them (RFC 9000 §5.1.2).
+    pub(crate) skipped: [Range<u64>; CidQueue::SKIPPED_RUNS],
 }
 
 impl RetiredAside {
@@ -384,8 +387,25 @@ impl CidQueue {
     /// (exclusive): everything from the floor on, minus the identifiers kept aside.
 
     fn skipped_between(&self, previous: u64, next: u64) -> [Range<u64>; Self::SKIPPED_RUNS] {
+        self.skipped_from(previous, next, self.floor)
+    }
+
+    /// The same, from a floor the caller chooses. A frame that raises the floor still has to name
+    /// the numbers below the new one it retires.
+    fn skipped_from(
+        &self,
+        previous: u64,
+        next: u64,
+        floor: u64,
+    ) -> [Range<u64>; Self::SKIPPED_RUNS] {
+        self.absent_runs((previous + 1).max(floor), next)
+    }
+
+    /// The numbers in `start..end` this queue does not hold, in runs around the ones it does.
+    fn absent_runs(&self, start: u64, end: u64) -> [Range<u64>; Self::SKIPPED_RUNS] {
+        let next = end;
         let mut runs = [const { 0..0 }; Self::SKIPPED_RUNS];
-        let mut start = (previous + 1).max(self.floor);
+        let mut start = start;
         let mut kept = [0u64; Self::SKIPPED_RUNS];
         let mut count = 0;
         for cid in self.present() {
@@ -424,12 +444,10 @@ impl CidQueue {
     /// Returns a non-empty range of retired sequence numbers and the reset token of the new active
     /// CID iff the frame retired the active one. An ID kept aside whose sequence the frame retires
     /// must be let go by the caller before this call ([`retire_aside`](Self::retire_aside)).
-    pub(crate) fn insert(
-        &mut self,
-        cid: NewConnectionId,
-    ) -> Result<Option<(Range<u64>, ResetToken)>, InsertError> {
+    pub(crate) fn insert(&mut self, cid: NewConnectionId) -> Result<Inserted, InsertError> {
         // A retransmitted or reordered copy of an identifier we hold still carries its
         // `retire_prior_to`; one we let go of already is refused.
+        let floor_before = self.floor;
         let duplicate = self.present().any(|c| c.seq == cid.sequence);
         if !duplicate && cid.sequence < self.floor {
             return Err(InsertError::Retired);
@@ -448,10 +466,13 @@ impl CidQueue {
             return Err(InsertError::ExceedsLimit);
         }
 
-        // Discard retired unused CIDs, if any
-        for slot in &mut self.unused {
+        // Discard retired unused CIDs, if any. Which ones goes back to the caller: the peer
+        // holds them until RETIRE_CONNECTION_ID names them. One reporting slot per unused slot,
+        // paired, so no identifier can be taken without being named.
+        let mut dropped = [None; Self::LEN];
+        for (slot, reported) in self.unused.iter_mut().zip(dropped.iter_mut()) {
             if slot.is_some_and(|c| c.seq < retire_prior_to) {
-                *slot = None;
+                *reported = slot.take().map(|cid| cid.seq);
             }
         }
         // Record the new CID
@@ -472,7 +493,10 @@ impl CidQueue {
         self.floor = self.floor.max(retire_prior_to);
 
         if self.active.seq >= retire_prior_to {
-            return Ok(None);
+            return Ok(Inserted {
+                dropped,
+                switched: None,
+            });
         }
         // The active CID was retired: switch to the lowest identifier at or past
         // `retire_prior_to` (at least the one just recorded is), and tell the caller which
@@ -487,10 +511,19 @@ impl CidQueue {
         self.active = next;
         self.floor = self.floor.max(next.seq);
         let token = next.reset_token.ok_or(InsertError::ExceedsLimit)?;
-        Ok(Some((
-            previous..next.seq.min(previous + Self::LEN as u64),
-            token,
-        )))
+        // Numbers never received beyond `LEN` past the old active one are left alone; had the peer
+        // issued them the limit would have been reached, and a late arrival is refused as retired.
+        // Identifiers kept aside in that span are still ours and are not named as retired
+        // (RFC 9000 §5.1.2).
+        let end = next.seq.min(previous + Self::LEN as u64);
+        let retired = Retired {
+            previous: previous..previous + 1,
+            skipped: self.skipped_from(previous, end, floor_before),
+        };
+        Ok(Inserted {
+            dropped,
+            switched: Some((retired, token)),
+        })
     }
 
     /// Make the lowest unused identifier active; `keep_previous` puts the one that was active
@@ -612,6 +645,14 @@ impl CidQueue {
     /// Drop the aside IDs whose sequence a NEW_CONNECTION_ID frame retires (`retire_prior_to`),
     /// returning their sequence numbers for the caller to retire.
     pub(crate) fn retire_aside(&mut self, retire_prior_to: u64) -> RetiredAside {
+        // What the retirement covers and this connection never received, computed before anything
+        // is let go: the release below raises the floor over those numbers. Bounded like the
+        // switch in `insert`: a peer that jumps its sequence numbers far ahead has the numbers
+        // nearest the floor named, and a late arrival past that is refused as retired, which is
+        // what retires it then. Naming the whole span instead would exceed the connection's
+        // bounded retirement queue and close a connection over identifiers it never held.
+        let end = retire_prior_to.min(self.floor.saturating_add(Self::LEN as u64));
+        let skipped = self.absent_runs(self.floor, end);
         let held = self
             .held
             .take_if(|c| c.seq < retire_prior_to)
@@ -628,10 +669,14 @@ impl CidQueue {
             held,
             reserved,
             bound,
+            skipped,
         };
         for seq in aside.iter() {
             self.retired_up_to(seq);
         }
+        // Everything the frame retires is now present or retired, including the numbers never
+        // received, which are named above.
+        self.floor = self.floor.max(retire_prior_to);
         aside
     }
 
@@ -860,6 +905,18 @@ impl CidQueue {
     const SKIPPED_RUNS: usize = Self::LEN + 3;
 }
 
+/// What a NEW_CONNECTION_ID frame did to the queue.
+#[derive(Debug, Default, Eq, PartialEq)]
+pub(crate) struct Inserted {
+    /// Unused identifiers the frame's `retire_prior_to` retired, for the caller to retire with the
+    /// peer (RFC 9000 §5.1.2). A range cannot name them, since a promoted reservation leaves unused
+    /// identifiers below the active one and only some of those are retired.
+    pub(crate) dropped: [Option<u64>; CidQueue::LEN],
+    /// Set when the frame retired the active identifier: the sequence numbers that retires, and
+    /// the reset token of the identifier that took its place.
+    pub(crate) switched: Option<(Retired, ResetToken)>,
+}
+
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub(crate) enum InsertError {
     /// CID was already retired
@@ -871,6 +928,7 @@ pub(crate) enum InsertError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     fn cid(sequence: u64, retire_prior_to: u64) -> NewConnectionId {
         NewConnectionId {
@@ -879,6 +937,13 @@ mod tests {
             reset_token: ResetToken::from([0xCD; crate::proto::RESET_TOKEN_SIZE]),
             retire_prior_to,
         }
+    }
+
+    /// The sequence numbers a switch says to retire, in order.
+    fn retired_seqs(retired: &Retired) -> Vec<u64> {
+        let mut seqs: Vec<u64> = retired.iter().flatten().collect();
+        seqs.sort_unstable();
+        seqs
     }
 
     fn initial_cid() -> ConnectionId {
@@ -898,6 +963,328 @@ mod tests {
             reset_token: token(sequence as u8),
             retire_prior_to,
         }
+    }
+
+    /// One thing a connection does to the queue.
+    #[derive(Debug, Clone, Copy)]
+    enum Op {
+        /// A NEW_CONNECTION_ID for the next sequence number.
+        Issue,
+        /// One that leaves a gap, so a number is never received.
+        IssueSkipping,
+        /// One that retires everything below the highest number issued.
+        IssueRetiring,
+        /// Switch to the lowest unused identifier.
+        Switch,
+        /// Switch, keeping the one in use for the path it was used on.
+        SwitchHolding,
+        /// Let the identifier kept for the previous path go.
+        RetireHeld,
+        /// Take it back into use.
+        RestoreHeld,
+        /// Set the lowest unused identifier aside for a candidate path.
+        Reserve,
+        /// Give that reservation up.
+        ReleaseReserved,
+        /// Make the reservation the identifier in use.
+        PromoteReserved,
+        /// Bind an unused identifier to a path of its own.
+        Bind,
+    }
+
+    impl Op {
+        const ALL: [Self; 11] = [
+            Self::Issue,
+            Self::IssueSkipping,
+            Self::IssueRetiring,
+            Self::Switch,
+            Self::SwitchHolding,
+            Self::RetireHeld,
+            Self::RestoreHeld,
+            Self::Reserve,
+            Self::ReleaseReserved,
+            Self::PromoteReserved,
+            Self::Bind,
+        ];
+    }
+
+    /// A ledger of what the queue told the caller, not a second implementation of it: the
+    /// identifiers the caller received, the ones the queue named for retirement, and the next
+    /// number the peer would issue. It says whether identifiers are conserved between the two,
+    /// and predicts neither which operations succeed nor the exact retirement set; the scenario
+    /// tests above are the oracles for those.
+    #[derive(Debug)]
+    struct Model {
+        delivered: BTreeSet<u64>,
+        retired: BTreeSet<u64>,
+        next: u64,
+    }
+
+    impl Default for Model {
+        fn default() -> Self {
+            Self {
+                // The handshake identifier is in use from the start, so losing it silently is
+                // covered like any other.
+                delivered: BTreeSet::from([0]),
+                retired: BTreeSet::default(),
+                next: 0,
+            }
+        }
+    }
+
+    impl Model {
+        fn retire(&mut self, retired: &Retired) {
+            self.retired.extend(retired.previous.clone());
+            for run in retired.iter() {
+                self.retired.extend(run);
+            }
+        }
+    }
+
+    /// Apply `op`, recording in `model` what the queue reported retiring. An operation the queue
+    /// refuses changes nothing and is not an error; the model asks only for what a connection
+    /// asks for, in orders a connection may reach.
+    fn apply(q: &mut CidQueue, model: &mut Model, op: Op) {
+        match op {
+            Op::Issue | Op::IssueSkipping | Op::IssueRetiring => {
+                if matches!(op, Op::IssueSkipping) {
+                    // The skipped number is never received; the queue reports what becomes of it
+                    // when it is passed.
+                    model.next += 1;
+                }
+                let retire_prior_to = match op {
+                    Op::IssueRetiring => model.next,
+                    _ => 0,
+                };
+                model.next += 1;
+                let sequence = model.next;
+                // A connection lets identifiers kept aside go before the frame is applied.
+                let aside = q.retire_aside(retire_prior_to);
+                model.retired.extend(aside.iter());
+                for run in aside.skipped.iter().cloned() {
+                    model.retired.extend(run);
+                }
+                if let Ok(inserted) = q.insert(cid_token(sequence, retire_prior_to)) {
+                    model.delivered.insert(sequence);
+                    model.retired.extend(inserted.dropped.iter().flatten());
+                    if let Some((retired, _)) = &inserted.switched {
+                        model.retire(retired);
+                    }
+                }
+            }
+            Op::Switch => {
+                if let Some((_, retired)) = q.next() {
+                    model.retire(&retired);
+                }
+            }
+            Op::SwitchHolding => {
+                if let Some((_, retired)) = q.next_holding() {
+                    model.retire(&retired);
+                }
+            }
+            Op::RetireHeld => {
+                if let Some(seq) = q.retire_held() {
+                    model.retired.insert(seq);
+                }
+            }
+            Op::RestoreHeld => {
+                // The identifier that was in use is given up: its path is abandoned.
+                if let Some(seq) = q.restore_held() {
+                    model.retired.insert(seq);
+                }
+            }
+            Op::Reserve => {
+                q.reserve();
+            }
+            Op::ReleaseReserved => {
+                if let Some(seq) = q.release_reserved() {
+                    model.retired.insert(seq);
+                }
+            }
+            Op::PromoteReserved => {
+                if let Some((_, retired)) = q.promote_reserved() {
+                    model.retire(&retired);
+                }
+            }
+            Op::Bind => {
+                q.bind_unused(1);
+            }
+        }
+    }
+
+    /// What must hold of the queue after every operation, whatever the order.
+    fn check(q: &mut CidQueue, model: &Model, history: &[Op]) {
+        let present: Vec<u64> = q.present().map(|cid| cid.seq).collect();
+        let mut distinct = present.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            present.len(),
+            "one sequence number is held twice: {present:?} after {history:?}"
+        );
+        for seq in &present {
+            assert!(
+                !model.retired.contains(seq),
+                "{seq} was retired and is held again: {present:?} after {history:?}"
+            );
+        }
+        // Every identifier that reached this connection is either still held or named for
+        // retirement: one the queue threw away silently would stay counted by the peer for ever
+        // (RFC 9000 §5.1.2).
+        for seq in &model.delivered {
+            assert!(
+                present.contains(seq) || model.retired.contains(seq),
+                "{seq} was received and is now neither held nor retired: {present:?}, \
+                 retired {:?}, after {history:?}",
+                model.retired
+            );
+        }
+        // A number below the floor is one of those, or one that never arrived: such a number is
+        // refused if it arrives late, which is what retires it then (see the probe below).
+        for seq in 0..q.floor {
+            assert!(
+                present.contains(&seq)
+                    || model.retired.contains(&seq)
+                    || !model.delivered.contains(&seq),
+                "{seq} is below the floor {} yet neither held nor retired: {present:?}, \
+                 retired {:?}, after {history:?}",
+                q.floor,
+                model.retired
+            );
+        }
+        assert!(
+            present.len() <= CidQueue::LEN,
+            "more identifiers than the limit allows: {present:?} after {history:?}"
+        );
+        assert!(
+            present.contains(&q.active_seq()),
+            "the identifier in use is not held: {present:?} after {history:?}"
+        );
+        for cid in q.bound.iter().flatten() {
+            assert!(
+                q.is_bound(cid.seq),
+                "a bound identifier does not say so: {} after {history:?}",
+                cid.seq
+            );
+            assert!(
+                !q.unused().iter().any(|unused| unused.seq == cid.seq),
+                "a bound identifier is offered as unused: {} after {history:?}",
+                cid.seq
+            );
+        }
+        // Nothing below the floor becomes ours again, whatever the peer sends: a number retired
+        // here and one that never arrived are both refused, and the refusal is what retires a
+        // late arrival with the peer. Refusal changes nothing, so this probe leaves the queue as
+        // it was.
+        for seq in 0..q.floor {
+            if present.contains(&seq) {
+                continue;
+            }
+            assert_eq!(
+                q.insert(cid_token(seq, 0)),
+                Err(InsertError::Retired),
+                "{seq} is below the floor {} and was taken back after {history:?}",
+                q.floor
+            );
+        }
+    }
+
+    /// Every order of four operations, with the ledger checked after each one. The point is the
+    /// orders a single scenario does not reach: a reservation promoted over unused identifiers, a
+    /// held identifier restored after the frame that would have retired it, a binding taken while
+    /// a switch is pending. Deterministic and bounded: the same 14641 sequences every run.
+    #[test]
+    fn a_bounded_sequence_of_operations_keeps_the_queue_consistent() {
+        let ops = Op::ALL;
+        for a in ops {
+            for b in ops {
+                for c in ops {
+                    for d in ops {
+                        let history = [a, b, c, d];
+                        let mut q = CidQueue::new(initial_cid());
+                        let mut model = Model::default();
+                        check(&mut q, &model, &[]);
+                        for (i, op) in history.iter().enumerate() {
+                            apply(&mut q, &mut model, *op);
+                            check(&mut q, &model, &history[..=i]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A frame's `retire_prior_to` also covers numbers that never arrived. They are named for
+    /// retirement together with the identifiers the queue holds, so the peer's slots are freed
+    /// without waiting for an identifier that may never come (RFC 9000 §5.1.2). Between them, the
+    /// release and the frame name every number the frame retires exactly once.
+    #[test]
+    fn numbers_a_frame_retires_that_never_arrived_are_named() {
+        let mut q = CidQueue::new(initial_cid());
+        // 1 and 2 were issued by the peer and never reached us; 3 did.
+        q.insert(cid_token(3, 0)).unwrap();
+
+        let aside = q.retire_aside(3);
+        assert_eq!(
+            aside.skipped.iter().cloned().flatten().collect::<Vec<_>>(),
+            vec![1, 2],
+            "the numbers the frame retires that never arrived"
+        );
+        assert_eq!(aside.kept_aside(), [None, None], "nothing was set aside");
+
+        let (retired, _) = q
+            .insert(cid_token(4, 3))
+            .unwrap()
+            .switched
+            .expect("the identifier in use was retired");
+        assert_eq!(
+            retired_seqs(&retired),
+            vec![0],
+            "and the identifier that was in use, named once"
+        );
+        assert_eq!(q.active_seq(), 3);
+    }
+
+    /// A frame's `retire_prior_to` may retire identifiers this queue holds unused below the
+    /// active one, which a promoted reservation leaves behind. Retiring them without telling the
+    /// caller would leave the peer holding identifiers RETIRE_CONNECTION_ID never names
+    /// (RFC 9000 §5.1.2).
+    #[test]
+    fn unused_identifiers_a_frame_retires_are_reported_to_the_caller() {
+        let mut q = CidQueue::new(initial_cid());
+        for seq in [1, 2, 3] {
+            q.insert(cid_token(seq, 0)).unwrap();
+        }
+        // A candidate path takes the third identifier and becomes the current path, so the two
+        // below it stay unused.
+        assert!(q.reserve_seq(3).is_some());
+        let (_, retired) = q.promote_reserved().expect("the reservation is promoted");
+        assert_eq!(q.active_seq(), 3);
+        assert_eq!(retired.previous, 0..1);
+        assert_eq!(
+            q.unused().iter().map(|c| c.seq).collect::<Vec<_>>(),
+            vec![1, 2],
+            "the identifiers below the promoted one are still unused"
+        );
+
+        // The peer now retires everything below 3. The two unused ones go; the caller has to
+        // learn their sequence numbers to retire them.
+        let inserted = q.insert(cid_token(4, 3)).unwrap();
+        assert_eq!(q.active_seq(), 3, "the active identifier is not retired");
+        assert!(
+            q.unused().iter().all(|c| c.seq >= 3),
+            "the retired ones are gone from the queue: {:?}",
+            q.unused()
+        );
+        let mut reported: Vec<u64> = inserted.dropped.iter().flatten().copied().collect();
+        reported.sort_unstable();
+        assert_eq!(
+            reported,
+            vec![1, 2],
+            "both are reported for the caller to retire"
+        );
+        assert!(inserted.switched.is_none());
     }
 
     #[test]
@@ -963,14 +1350,17 @@ mod tests {
         }
         assert_eq!(q.active_seq(), 0);
 
-        assert_eq!(q.insert(cid(4, 2)).unwrap().unwrap().0, 0..2);
+        assert_eq!(
+            retired_seqs(&q.insert(cid(4, 2)).unwrap().switched.unwrap().0),
+            vec![0, 1]
+        );
         assert_eq!(q.active_seq(), 2);
-        assert_eq!(q.insert(cid(4, 2)), Ok(None));
+        assert_eq!(q.insert(cid(4, 2)), Ok(Inserted::default()));
 
         for i in 2..(CidQueue::LEN as u64 - 1) {
             let _ = q.next().unwrap();
             assert_eq!(q.active_seq(), i + 1);
-            assert_eq!(q.insert(cid(i + 1, i + 1)), Ok(None));
+            assert_eq!(q.insert(cid(i + 1, i + 1)), Ok(Inserted::default()));
         }
 
         assert!(q.next().is_none());
@@ -981,7 +1371,10 @@ mod tests {
         // Retiring CID 0 when CID 1 is not known should retire CID 1 as we move to CID 2
         let mut q = CidQueue::new(initial_cid());
         q.insert(cid(2, 0)).unwrap();
-        assert_eq!(q.insert(cid(3, 1)).unwrap().unwrap().0, 0..2,);
+        assert_eq!(
+            retired_seqs(&q.insert(cid(3, 1)).unwrap().switched.unwrap().0),
+            vec![0, 1]
+        );
         assert_eq!(q.active_seq(), 2);
     }
 
@@ -1034,7 +1427,10 @@ mod tests {
             "a sixth identifier is more than we advertised"
         );
         assert_eq!(q.retire_held(), Some(0));
-        assert_eq!(q.insert(cid(CidQueue::LEN as u64, 0)), Ok(None));
+        assert_eq!(
+            q.insert(cid(CidQueue::LEN as u64, 0)),
+            Ok(Inserted::default())
+        );
         assert!(q.next_holding().is_some(), "holding is possible again");
     }
 
@@ -1051,8 +1447,10 @@ mod tests {
         assert_eq!(q.retire_aside(2).kept_aside(), [Some(0), None]);
         assert_eq!(q.retire_aside(3).kept_aside(), [None, Some(2)]);
         assert!(q.held().is_none() && q.reserved().is_none());
-        let (retired, _) = q.insert(cid(4, 3)).unwrap().unwrap();
-        assert_eq!(retired, 1..3);
+        // 2 was retired by the release above, so the switch names only the identifier that was
+        // active: what the caller retires is named once.
+        let (retired, _) = q.insert(cid(4, 3)).unwrap().switched.unwrap();
+        assert_eq!(retired_seqs(&retired), vec![1]);
         assert_eq!(q.active_seq(), 3);
     }
 
@@ -1119,7 +1517,7 @@ mod tests {
         );
         assert_eq!(
             q.insert(cid(2, 0)),
-            Ok(None),
+            Ok(Inserted::default()),
             "its slot goes to the next one"
         );
         assert!(q.has_unused());
@@ -1650,7 +2048,7 @@ mod tests {
         assert_eq!(reserved.seq, 4);
         assert_eq!(q.release_reserved(), Some(4));
         // A retransmitted NEW_CONNECTION_ID for an identifier we still hold.
-        assert_eq!(q.insert(cid(1, 0)), Ok(None));
+        assert_eq!(q.insert(cid(1, 0)), Ok(Inserted::default()));
         assert_eq!(q.active_seq(), 0);
         assert!(q.has_unused());
         // And one we let go of stays gone.
@@ -1668,10 +2066,17 @@ mod tests {
         q.next_holding().unwrap(); // held 0, active 1
         assert_eq!(q.restore_held(), Some(1));
         assert_eq!(q.active_seq(), 0);
-        assert_eq!(q.insert(cid(2, 0)), Ok(None), "2 is still ours");
+        assert_eq!(
+            q.insert(cid(2, 0)),
+            Ok(Inserted::default()),
+            "2 is still ours"
+        );
         assert_eq!(q.insert(cid(1, 0)), Err(InsertError::Retired));
         // We hold 0, 2, 3 and 4: one more fits, a second does not.
-        assert_eq!(q.insert(cid(CidQueue::LEN as u64, 0)), Ok(None));
+        assert_eq!(
+            q.insert(cid(CidQueue::LEN as u64, 0)),
+            Ok(Inserted::default())
+        );
         assert_eq!(
             q.insert(cid(CidQueue::LEN as u64 + 1, 0)),
             Err(InsertError::ExceedsLimit)
@@ -1683,8 +2088,14 @@ mod tests {
         let mut q = CidQueue::new(initial_cid());
         q.insert(cid(2, 0)).unwrap();
         assert_eq!(
-            q.insert(cid(1_000_000, 1_000_000)).unwrap().unwrap().0,
-            0..CidQueue::LEN as u64,
+            retired_seqs(
+                &q.insert(cid(1_000_000, 1_000_000))
+                    .unwrap()
+                    .switched
+                    .unwrap()
+                    .0
+            ),
+            (0..CidQueue::LEN as u64).collect::<Vec<_>>(),
         );
         assert_eq!(q.active_seq(), 1_000_000);
     }
@@ -1693,7 +2104,7 @@ mod tests {
     fn insert_limit() {
         let mut q = CidQueue::new(initial_cid());
         for i in 1..CidQueue::LEN as u64 {
-            assert_eq!(q.insert(cid(i, 0)), Ok(None));
+            assert_eq!(q.insert(cid(i, 0)), Ok(Inserted::default()));
         }
         // The active one plus `LEN - 1` unused ones is the whole allowance.
         assert_eq!(
@@ -1702,7 +2113,10 @@ mod tests {
         );
         // Retiring one makes room again, and a frame that retires makes room for itself.
         q.next().unwrap();
-        assert_eq!(q.insert(cid(CidQueue::LEN as u64, 0)), Ok(None));
+        assert_eq!(
+            q.insert(cid(CidQueue::LEN as u64, 0)),
+            Ok(Inserted::default())
+        );
     }
 
     #[test]
@@ -1717,7 +2131,7 @@ mod tests {
         let mut q = CidQueue::new(initial_cid());
         assert_eq!(
             q.insert(cid(0, 0)),
-            Ok(None),
+            Ok(Inserted::default()),
             "reinserting active CID succeeds"
         );
         assert!(q.next().is_none(), "active CID isn't requeued");

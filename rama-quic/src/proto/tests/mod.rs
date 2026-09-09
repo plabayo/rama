@@ -1924,7 +1924,7 @@ fn connection_close_while_congestion_blocked() {
     // Step the simulation by hand so we can catch the exact moment the server hears about the
     // close: check for the event after each packet exchange, before the clock jumps ahead
     let mut result = None;
-    loop {
+    for _ in 0..500 {
         pair.drive_client();
         pair.drive_server();
         while let Some(event) = pair.server_conn_mut(server_ch).poll() {
@@ -4978,7 +4978,7 @@ fn loss_timer_rearmed_after_failed_path_validation() {
     // The new path is a black hole in both directions: the challenge and any retransmission are
     // lost, and nothing from the client reaches the server until validation gives up
     let mut challenge_lost = false;
-    loop {
+    for _ in 0..500 {
         if !pair.client.inbound.is_empty() {
             pair.client.inbound.clear();
             challenge_lost = true;
@@ -5815,6 +5815,272 @@ fn pair_preferring(alt_reachable: bool) -> (Pair, SocketAddr) {
     (pair, alt.into())
 }
 
+/// A server that forbids active migration discards non-probing traffic from a new peer address
+/// (RFC 9000 §9, §18.2). The discard is observed by the connection's received-datagram counter,
+/// which does not move, and the connection stays on the path it had.
+#[test]
+fn a_server_that_forbids_migration_discards_traffic_from_a_new_peer_address() {
+    let _guard = subscribe();
+    let mut config = server_config();
+    config.migration(false);
+    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), config);
+    let client_ch = pair.begin_connect(client_config());
+    pair.step();
+    let server_ch = pair.server.assert_accept();
+    drive_settled(&mut pair);
+    let home = pair.client.addr;
+    let seen = pair.server_conn_mut(server_ch).stats().udp_rx.datagrams;
+
+    // The peer's address changes and it sends ordinary traffic from there.
+    let moved = SocketAddr::new(
+        Ipv4Addr::new(127, 0, 0, 7).into(),
+        CLIENT_PORTS.lock().next().unwrap(),
+    );
+    pair.client.addr = moved;
+    pair.client_conn_mut(client_ch).ping();
+    // The send queue is emptied first, so what is in it afterwards belongs to this window.
+    // `pair.server_sent` is written by `Pair::drive_server`, which this test does not call.
+    pair.server.outbound.clear();
+    pair.drive_client();
+    assert!(
+        !pair.server.inbound.is_empty(),
+        "the datagram from the new address reached the server's receive queue"
+    );
+    pair.server.drive(pair.time, moved);
+    assert!(pair.server.inbound.is_empty(), "and was taken from it");
+    assert_eq!(
+        pair.server_conn_mut(server_ch).stats().udp_rx.datagrams,
+        seen,
+        "the connection discarded it rather than processing it"
+    );
+    assert_eq!(
+        pair.server_conn_mut(server_ch).remote_address(),
+        home,
+        "the connection stays on the path it had"
+    );
+    let to_moved: Vec<_> = pair
+        .server
+        .outbound
+        .iter()
+        .map(|(transmit, _)| transmit.destination)
+        .filter(|destination| *destination == moved)
+        .collect();
+    assert!(
+        to_moved.is_empty(),
+        "and nothing was queued for the address it refused: {to_moved:?}"
+    );
+    assert!(!pair.server_conn_mut(server_ch).is_closed());
+
+    // The connection is unharmed: traffic from the address it knows is processed as before.
+    pair.client.addr = home;
+    pair.client_conn_mut(client_ch).ping();
+    pair.server.outbound.clear();
+    pair.drive_client();
+    pair.server.drive(pair.time, home);
+    assert!(
+        pair.server_conn_mut(server_ch).stats().udp_rx.datagrams > seen,
+        "traffic on the original path still arrives"
+    );
+    // The same queue holds the answer to that traffic, which is what makes the emptiness
+    // asserted above a refusal to answer.
+    assert!(
+        pair.server
+            .outbound
+            .iter()
+            .any(|(transmit, _)| transmit.destination == home),
+        "the server answered on the path it kept"
+    );
+    assert!(!pair.server_conn_mut(server_ch).is_closed());
+}
+
+/// A peer that jumps its sequence numbers far ahead, through the whole path a frame takes: the
+/// identifiers set aside, the unused ones, the switch and the numbers never received all reach the
+/// connection's bounded retirement queue. Every identifier the connection received is named, the
+/// numbers it never received are named up to `CidQueue::LEN` from the floor, and the connection
+/// stays open. Naming the whole span would overrun the queue and close the connection with
+/// CONNECTION_ID_LIMIT_ERROR over identifiers it never held.
+#[test]
+fn a_distant_retirement_names_a_bounded_set_of_numbers() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client_ch, _server_ch) = pair.connect();
+    drive_settled(&mut pair);
+    let in_use = pair.client_conn_mut(client_ch).active_rem_cid_seq();
+    let received: Vec<u64> = (0..=in_use).collect();
+    let unused: Vec<u64> = pair
+        .client_conn_mut(client_ch)
+        .unused_rem_cid_seqs()
+        .into_iter()
+        .collect();
+    let now = pair.time;
+
+    let far = 1u64 << 40;
+    pair.client_conn_mut(client_ch)
+        .apply_new_cid(
+            now,
+            frame::NewConnectionId {
+                sequence: far,
+                retire_prior_to: far,
+                id: ConnectionId::new(&[0x5A; 8]),
+                reset_token: ResetToken::from([0x5B; crate::proto::RESET_TOKEN_SIZE]),
+            },
+        )
+        .expect("a distant frame is applied rather than closing the connection");
+    let pending = pair.client_conn_mut(client_ch).pending_retirements();
+
+    assert_eq!(
+        pair.client_conn_mut(client_ch).active_rem_cid_seq(),
+        far,
+        "the identifier the frame carried is the one in use"
+    );
+    for seq in received.iter().chain(unused.iter()) {
+        assert!(
+            pending.contains(seq),
+            "the identifier {seq} this connection received is named for retirement: {pending:?}"
+        );
+    }
+    let limit = crate::proto::cid_queue::CidQueue::LEN;
+    assert!(
+        pending.len() <= limit * 10,
+        "the queue holds a bounded set: {} numbers",
+        pending.len()
+    );
+    assert!(
+        !pending.contains(&(far - 1)),
+        "the numbers nearest the distant one are not named: {pending:?}"
+    );
+    assert!(!pair.client_conn_mut(client_ch).is_closed());
+
+    // One of those numbers arriving late is refused as retired, which is what retires it then.
+    let late = *pending.last().expect("something is named") + 1;
+    let error = pair
+        .client_conn_mut(client_ch)
+        .apply_new_cid(
+            now,
+            frame::NewConnectionId {
+                sequence: late,
+                retire_prior_to: 0,
+                id: ConnectionId::new(&[0x5C; 8]),
+                reset_token: ResetToken::from([0x5D; crate::proto::RESET_TOKEN_SIZE]),
+            },
+        )
+        .err();
+    assert!(
+        error.is_none(),
+        "a refused frame is not a connection error: {error:?}"
+    );
+    assert!(
+        pair.client_conn_mut(client_ch)
+            .pending_retirements()
+            .contains(&late),
+        "the late arrival is named for retirement"
+    );
+    assert!(!pair.client_conn_mut(client_ch).is_closed());
+}
+
+/// RFC 9000 §18.2 and §9.6.3: `disable_active_migration` covers the address used during the
+/// handshake, and neither the client's move to the server's preferred address nor its later moves
+/// from there are prohibited. The server forbids active migration and advertises a preferred
+/// address. Checks: the client moves there, the server follows on its local side, data flows both
+/// ways, and the server follows a later rebinding of the client.
+#[test]
+fn a_move_to_the_preferred_address_is_followed_though_active_migration_is_disabled() {
+    let _guard = subscribe();
+    let mut config = server_config();
+    let alt = SocketAddrV6::new(
+        Ipv6Addr::LOCALHOST,
+        SERVER_PORTS.lock().next().unwrap(),
+        0,
+        0,
+    );
+    config.preferred_address_v6(Some(alt));
+    config.migration(false);
+    let mut pair = Pair::new(Arc::new(EndpointConfig::default()), config);
+    pair.server.alt_addr = Some(alt.into());
+    let preferred: SocketAddr = alt.into();
+
+    // The peer's parameter binds the client until it acts on the preferred address.
+    let (ch, server_ch) = connect_armed(&mut pair);
+    let client_addr = pair.client.addr;
+    assert!(
+        !pair.client_conn_mut(ch).may_migrate_actively(),
+        "the peer forbids active migration from the handshake address"
+    );
+
+    pair.server_conn_mut(server_ch).hold_handshake_done(false);
+    drive_settled(&mut pair);
+    assert_eq!(
+        pair.client_conn_mut(ch).preferred_address_state(),
+        PreferredAddressState::Validated
+    );
+    assert_eq!(pair.client_conn_mut(ch).remote_address(), preferred);
+    assert_eq!(
+        pair.server_conn_mut(server_ch).remote_address(),
+        client_addr,
+        "the peer's own address has not changed"
+    );
+    assert!(
+        pair.client_conn_mut(ch).may_migrate_actively(),
+        "and having moved there, the client may migrate from it"
+    );
+
+    // The server's datagrams now leave from the preferred address.
+    let sent_before = pair.server_sent.len();
+    const DOWN: &[u8] = b"from the preferred address";
+    let down = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
+    pair.server_send(server_ch, down).write(DOWN).unwrap();
+    pair.server_send(server_ch, down).finish().unwrap();
+    drive_settled(&mut pair);
+    let locals: Vec<_> = pair.server_sent[sent_before..]
+        .iter()
+        .map(|sent| sent.local)
+        .collect();
+    assert!(
+        !locals.is_empty() && locals.iter().all(|local| *local == Some(preferred)),
+        "every datagram left from the preferred address: {locals:?}"
+    );
+    assert!(saw_uni_stream(pair.client_conn_mut(ch)));
+    let mut recv = pair.client_recv(ch, down);
+    let mut chunks = recv.read(false).unwrap();
+    match chunks.next(usize::MAX) {
+        Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == DOWN => {}
+        other => panic!("the client received {other:?}"),
+    }
+    let _ = chunks.finalize();
+
+    // The client's own address changes from there, and the server follows it.
+    let rebound = SocketAddr::new(
+        Ipv4Addr::new(127, 0, 0, 7).into(),
+        CLIENT_PORTS.lock().next().unwrap(),
+    );
+    pair.client.addr = rebound;
+    assert!(pair.client_conn_mut(ch).migrate_local_address());
+    drive_settled(&mut pair);
+    assert_eq!(
+        pair.server_conn_mut(server_ch).remote_address(),
+        rebound,
+        "the server followed the client's move away from the handshake address"
+    );
+    assert_eq!(pair.client_conn_mut(ch).remote_address(), preferred);
+
+    // Data flows in both directions on the path both sides hold.
+    const UP: &[u8] = b"after the rebinding";
+    let up = pair.client_streams(ch).open(Dir::Uni).unwrap();
+    pair.client_send(ch, up).write(UP).unwrap();
+    pair.client_send(ch, up).finish().unwrap();
+    drive_settled(&mut pair);
+    assert!(saw_uni_stream(pair.server_conn_mut(server_ch)));
+    let mut recv = pair.server_recv(server_ch, up);
+    let mut chunks = recv.read(false).unwrap();
+    match chunks.next(usize::MAX) {
+        Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == UP => {}
+        other => panic!("the server received {other:?}"),
+    }
+    let _ = chunks.finalize();
+    assert!(!pair.client_conn_mut(ch).is_closed());
+    assert!(!pair.server_conn_mut(server_ch).is_closed());
+}
+
 /// The handshake-done fixture covers the phase before the frame has been sent: setting it again
 /// afterwards recalls nothing, and the connection stays confirmed and usable.
 #[test]
@@ -6552,27 +6818,30 @@ fn a_fallback_survives_repeated_unvalidated_moves_and_keeps_its_route() {
         Ipv4Addr::new(127, 0, 0, 9).into(),
         CLIENT_PORTS.lock().next().unwrap(),
     );
-    pair.server.inbound.push_back(Inbound {
-        at: pair.time,
+    let last = *moves.last().unwrap();
+    let at = pair.time;
+    let to = pair.server.addr;
+    let from_unused = Inbound {
+        at,
         ecn: None,
         packet: packet.as_slice().into(),
         from: Some(unused),
-        to: Some(pair.server.addr),
-    });
-    pair.server.drive(pair.time, *moves.last().unwrap());
+        to: Some(to),
+    };
+    processed_by_server(&mut pair, server_ch, from_unused, last);
     assert!(
         !was_reset(pair.server_conn_mut(server_ch)),
         "an address this identifier was never sent to cannot reset us"
     );
 
-    pair.server.inbound.push_back(Inbound {
-        at: pair.time,
+    let from_home = Inbound {
+        at,
         ecn: None,
         packet: packet.as_slice().into(),
         from: Some(home),
-        to: Some(pair.server.addr),
-    });
-    pair.server.drive(pair.time, *moves.last().unwrap());
+        to: Some(to),
+    };
+    processed_by_server(&mut pair, server_ch, from_home, last);
     assert!(
         was_reset(pair.server_conn_mut(server_ch)),
         "the address the connection still falls back to keeps its route"
@@ -6642,6 +6911,126 @@ fn one_connections_deadline_does_not_disturb_anothers() {
     );
     assert!(!pair.client_conn_mut(soon).is_closed());
     assert!(!pair.client_conn_mut(later).is_closed());
+}
+
+/// A datagram held back for its route, the timer of the connection it belongs to and that
+/// connection's stall count are all per connection. Two connections share the client endpoint;
+/// route installations are withheld for one, which rotates to an identifier whose stateless reset
+/// token it knows, so its next datagram waits (RFC 9000 §10.3.1). Checks: the other connection's
+/// sends leave the waiting datagram held and its count untouched, the waiting connection keeps a
+/// deadline of its own, and a datagram that waits after progress counts from one.
+#[test]
+fn a_datagram_waiting_for_a_route_keeps_its_connections_timer_and_count() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (stalled, stalled_server) = pair.connect();
+    let (sending, _sending_server) = pair.connect();
+    drive_settled(&mut pair);
+    let before = pair.client_conn_mut(stalled).active_rem_cid_seq();
+
+    pair.client.hold_route_installs.push(stalled);
+    let now = pair.time;
+    pair.server_conn_mut(stalled_server)
+        .rotate_local_cid(2, now);
+    pair.drive_server();
+    pair.client_conn_mut(stalled).ping();
+    pair.drive_client();
+
+    assert!(
+        pair.client_conn_mut(stalled).active_rem_cid_seq() > before,
+        "the connection moved to another identifier: {} then {}",
+        before,
+        pair.client_conn_mut(stalled).active_rem_cid_seq()
+    );
+    assert!(
+        pair.client.awaiting_route(stalled),
+        "its datagram is waiting for the route the endpoint has not installed"
+    );
+    assert_eq!(pair.client.waiting_drives_for(stalled), 1);
+    assert_eq!(
+        pair.client.waiting_drives_for(sending),
+        0,
+        "the other connection is not waiting for anything"
+    );
+
+    // The other connection sends. The waiting datagram stays held and stays counted.
+    let sent_before = pair.client_sent.len();
+    pair.client_conn_mut(sending).ping();
+    pair.drive_client();
+    assert!(
+        pair.client_sent.len() > sent_before,
+        "the other connection put a datagram on the wire"
+    );
+    assert!(pair.client.awaiting_route(stalled));
+    assert_eq!(
+        pair.client.waiting_drives_for(stalled),
+        2,
+        "the stall count belongs to the waiting connection"
+    );
+    assert_eq!(pair.client.waiting_drives_for(sending), 0);
+
+    // Advancing to the waiting connection's deadline fires its timer, and the deadline it sets
+    // next is kept.
+    let due = pair
+        .client
+        .deadline_for(stalled)
+        .expect("the waiting connection has a deadline");
+    pair.time = due;
+    pair.drive_client();
+    assert!(
+        pair.client.awaiting_route(stalled),
+        "and it is still waiting"
+    );
+    let renewed = pair
+        .client
+        .deadline_for(stalled)
+        .expect("a datagram waiting for its route does not cost the connection its timer");
+    assert!(
+        renewed > due,
+        "the deadline it set next is in the future: {renewed:?} after {due:?}"
+    );
+    assert_eq!(pair.client.waiting_drives_for(stalled), 3);
+    assert_eq!(pair.client.waiting_drives_for(sending), 0);
+
+    // Once the route is installed the datagram leaves with the identifier it was built with.
+    let seq = pair.client_conn_mut(stalled).active_rem_cid_seq();
+    pair.client.release_route_installs();
+    let sent_before = pair.client_sent.len();
+    pair.drive_client();
+    assert!(
+        !pair.client.awaiting_route(stalled),
+        "the datagram left once its route was installed"
+    );
+    assert_eq!(pair.client.waiting_drives_for(stalled), 0);
+    assert!(
+        pair.client_sent[sent_before..]
+            .iter()
+            .any(|sent| sent.cid == Some(seq)),
+        "it carried the identifier it was built with: {:?}",
+        &pair.client_sent[sent_before..]
+    );
+
+    // A datagram that waits after that one left counts from one; the earlier stall is over.
+    pair.client.hold_route_installs.push(stalled);
+    let now = pair.time;
+    pair.server_conn_mut(stalled_server)
+        .rotate_local_cid(4, now);
+    pair.drive_server();
+    pair.client_conn_mut(stalled).ping();
+    pair.drive_client();
+    assert!(
+        pair.client.awaiting_route(stalled),
+        "another datagram waits for the route the endpoint has not installed"
+    );
+    assert_eq!(pair.client.waiting_drives_for(stalled), 1);
+    assert_eq!(pair.client.waiting_drives_for(sending), 0);
+
+    pair.client.release_route_installs();
+    drive_settled(&mut pair);
+    assert!(!pair.client.awaiting_route(stalled));
+    assert_eq!(pair.client.waiting_drives_for(stalled), 0);
+    assert!(!pair.client_conn_mut(stalled).is_closed());
+    assert!(!pair.client_conn_mut(sending).is_closed());
 }
 
 /// Two connections on one endpoint each receive only their own arrivals and keep their own
@@ -6811,6 +7200,28 @@ fn stateless_reset_for(key: &hmac::Key, cid: ConnectionId) -> Vec<u8> {
     reset
 }
 
+/// Hand one packet to the server and require its connection to have processed it: the datagram
+/// left the receive queue and the connection counted it. What the connection decides afterwards
+/// is then a decision about a packet it received.
+fn processed_by_server(
+    pair: &mut Pair,
+    server_ch: ConnectionHandle,
+    inbound: Inbound,
+    remote: SocketAddr,
+) {
+    let before = pair.server_conn_mut(server_ch).stats().udp_rx.datagrams;
+    pair.server.inbound.push_back(inbound);
+    pair.server.drive(pair.time, remote);
+    assert!(
+        pair.server.inbound.is_empty(),
+        "the endpoint took the datagram from its receive queue"
+    );
+    assert!(
+        pair.server_conn_mut(server_ch).stats().udp_rx.datagrams > before,
+        "the connection processed the datagram"
+    );
+}
+
 /// Whether `conn` reported being reset by its peer.
 fn was_reset(conn: &mut Connection) -> bool {
     let mut lost = false;
@@ -6833,6 +7244,17 @@ fn pair_with_known_reset_key() -> (Pair, hmac::Key) {
     let key_copy = hmac::Key::new(hmac::HMAC_SHA256, &[0x33; 64]);
     let endpoint_config = Arc::new(EndpointConfig::new(Arc::new(key)));
     (Pair::new(endpoint_config, server_config()), key_copy)
+}
+
+/// Drive until both sides are idle, checking every server datagram's destination on the way.
+/// Bounded like `drive_settled`, so a pair that never settles is reported rather than hanging.
+fn settle_checking_server_destinations(pair: &mut Pair, allowed: &[SocketAddr]) {
+    for _ in 0..500 {
+        if !step_checking_server_destinations(pair, allowed) {
+            return;
+        }
+    }
+    panic!("the pair never became idle in 500 steps with its destinations checked");
 }
 
 /// One `Pair` step that hands every server datagram to the client after checking its
@@ -6877,8 +7299,15 @@ fn a_reset_token_counts_only_once_its_connection_id_is_used() {
         .first()
         .expect("the server issued spare connection IDs");
     let reset = stateless_reset_for(&key, next);
+    let token = ResetToken::new(&key, next);
+    let server_addr = pair.server.addr;
 
-    // Unused: the reset is not for us yet.
+    // Unused: the endpoint holds no route for that identifier at that address.
+    assert_eq!(
+        pair.client.endpoint.reset_route_for(server_addr, token),
+        None,
+        "an identifier the connection has not used has no route"
+    );
     pair.client
         .inbound
         .push_back(Inbound::plain(pair.time, None, reset.as_slice().into()));
@@ -6901,6 +7330,11 @@ fn a_reset_token_counts_only_once_its_connection_id_is_used() {
     assert!(pair.client_conn_mut(client_ch).migrate_local_address());
     assert_eq!(pair.client_conn_mut(client_ch).active_rem_cid(), next);
     pair.drive();
+    assert_eq!(
+        pair.client.endpoint.reset_route_for(server_addr, token),
+        Some(client_ch),
+        "sending with the identifier is what installs the route the reset arrives by"
+    );
     pair.client
         .inbound
         .push_back(Inbound::plain(pair.time, None, reset.as_slice().into()));
@@ -6944,9 +7378,16 @@ fn a_reset_for_the_previous_paths_connection_id_counts_until_that_id_is_retired(
         (pair, key, client_ch, server_ch, old_addr, old_cid)
     };
 
-    // During validation: the old identifier's token from the old address resets us.
+    // During validation: the endpoint holds the route, and the old identifier's token from the
+    // old address resets us.
     let (mut pair, key, _client_ch, server_ch, old_addr, old_cid) = setup();
     pair.server.outbound.clear();
+    let old_token = ResetToken::new(&key, old_cid);
+    assert_eq!(
+        pair.server.endpoint.reset_route_for(old_addr, old_token),
+        Some(server_ch),
+        "the identifier kept for the previous path is still routed from that address"
+    );
     pair.server.inbound.push_back(Inbound::plain(
         pair.time,
         None,
@@ -6960,6 +7401,13 @@ fn a_reset_for_the_previous_paths_connection_id_counts_until_that_id_is_retired(
     let (mut pair, key, client_ch, server_ch, old_addr, old_cid) = setup();
     pair.drive();
     assert_eq!(pair.server_conn_mut(server_ch).held_rem_cid(), None);
+    assert_eq!(
+        pair.server
+            .endpoint
+            .reset_route_for(old_addr, ResetToken::new(&key, old_cid)),
+        None,
+        "retiring the identifier released the route its token arrived by"
+    );
     pair.server.inbound.push_back(Inbound::plain(
         pair.time,
         None,
@@ -7060,13 +7508,13 @@ fn a_deferred_peer_move_is_dropped_when_the_peer_is_back_on_the_current_path() {
 
     // The delayed connection IDs arrive; the obsolete move is not revived, traffic recovers.
     pair.client.release_held_identifiers();
-    while step_checking_server_destinations(&mut pair, &[current]) {}
+    settle_checking_server_destinations(&mut pair, &[current]);
     assert_eq!(pair.server_conn_mut(server_ch).remote_address(), current);
     assert!(!pair.server_conn_mut(server_ch).deferred_move_pending());
     assert!(!pair.server_conn_mut(server_ch).is_closed());
     let s = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
     pair.server_send(server_ch, s).write(b"recovered").unwrap();
-    while step_checking_server_destinations(&mut pair, &[current]) {}
+    settle_checking_server_destinations(&mut pair, &[current]);
     assert!(matches!(
         pair.client_conn_mut(client_ch).poll(),
         Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni }))
@@ -7247,6 +7695,105 @@ fn an_off_path_challenge_is_answered_with_an_identifier_bound_to_that_path() {
     let _ = server_addr;
 }
 
+/// The identifier the server answered with on (`local`, `remote`), if it answered there.
+fn answer_on(pair: &Pair, local: SocketAddr, remote: SocketAddr, len: usize) -> Option<Vec<u8>> {
+    server_emitted(pair, len)
+        .into_iter()
+        .find(|&(l, r, _)| l == Some(local) && r == remote)
+        .map(|(_, _, cid)| cid)
+}
+
+/// Move the client to `from` and let it probe `preferred` again. The server's answer is left in
+/// its send queue and returned. Time advances to the client's own timer, which paces probing.
+fn probe_from(
+    pair: &mut Pair,
+    from: SocketAddr,
+    preferred: SocketAddr,
+    len: usize,
+) -> Option<Vec<u8>> {
+    pair.client.addr = from;
+    for _ in 0..32 {
+        pair.server.outbound.clear();
+        if let Some(at) = pair.client.next_wakeup() {
+            pair.time = pair.time.max(at);
+        }
+        pair.drive_client();
+        pair.server.drive(pair.time, from);
+        if let Some(answer) = answer_on(pair, preferred, from, len) {
+            return Some(answer);
+        }
+    }
+    None
+}
+
+/// RFC 9000 §9.5 for two paths at once: each path the connection does not send on gets an
+/// identifier of its own, and a further challenge on the first is answered with that path's
+/// identifier. Refusal once nothing is left to bind is covered by
+/// `an_off_path_challenge_with_no_identifier_to_bind_is_counted_and_dropped`.
+#[test]
+fn two_off_path_bindings_keep_their_own_identifiers() {
+    let _guard = subscribe();
+    let (mut pair, preferred) = pair_preferring(true);
+    let (ch, server_ch) = connect_armed(&mut pair);
+    let own = pair.server_conn_mut(server_ch).active_rem_cid();
+    let len = own.len();
+    let spares = pair.server_conn_mut(server_ch).unused_rem_cids().len();
+    assert!(spares > 2, "the server has identifiers to bind: {spares}");
+
+    // The first path: the client probes the preferred address from its own address.
+    let first_from = pair.client.addr;
+    probe_once(&mut pair, server_ch);
+    let first = answer_on(&pair, preferred, first_from, len).expect("an answer on the first path");
+    assert_ne!(&first[..], &own[..]);
+
+    // The second path: the client moves, so one local address of the server's sees a second peer
+    // address.
+    let second_from = SocketAddr::new(
+        Ipv4Addr::new(127, 0, 0, 9).into(),
+        CLIENT_PORTS.lock().next().unwrap(),
+    );
+    assert_eq!(
+        pair.client_conn_mut(ch).preferred_address_state(),
+        PreferredAddressState::Probing,
+        "the client is still probing, so a second challenge does arrive"
+    );
+    let second =
+        probe_from(&mut pair, second_from, preferred, len).expect("an answer on the second path");
+    assert_ne!(first, second, "the two paths hold different identifiers");
+    assert_ne!(&second[..], &own[..]);
+
+    // A further challenge on the first path is answered with the first path's identifier, not the
+    // second's: a lookup for one tuple never drifts to another tuple's binding.
+    assert_eq!(
+        pair.client_conn_mut(ch).preferred_address_state(),
+        PreferredAddressState::Probing,
+        "and still probing for the third challenge"
+    );
+    let again = probe_from(&mut pair, first_from, preferred, len)
+        .expect("the first path is answered again");
+    assert_eq!(again, first, "the first path kept its own identifier");
+
+    // Both bindings are held at once: two identifiers were spent, and neither went back to the
+    // unused ones for another path to take.
+    assert_eq!(
+        pair.server_conn_mut(server_ch).unused_rem_cids().len(),
+        spares - 2,
+        "exactly two identifiers were spent"
+    );
+    for bound in [&first, &second] {
+        assert!(
+            !pair
+                .server_conn_mut(server_ch)
+                .unused_rem_cids()
+                .iter()
+                .any(|cid| cid[..] == bound[..]),
+            "an identifier bound to a path is not one of the unused: {bound:?}"
+        );
+    }
+    assert!(!pair.client_conn_mut(ch).is_closed());
+    assert!(!pair.server_conn_mut(server_ch).is_closed());
+}
+
 /// The other side of that guard: with no identifier to bind, the answer is dropped and the
 /// connection says so rather than answering with one it sends from another local address. The
 /// peer here issues nothing beyond the handshake, so the server has none to spare.
@@ -7421,7 +7968,7 @@ fn a_second_move_before_validation_keeps_the_original_path() {
     assert!(!pair.server_conn_mut(server_ch).is_closed());
     let s = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
     pair.server_send(server_ch, s).write(b"back home").unwrap();
-    while step_checking_server_destinations(&mut pair, &[original]) {}
+    settle_checking_server_destinations(&mut pair, &[original]);
     assert!(saw_uni_stream(pair.client_conn_mut(client_ch)));
 }
 
@@ -7460,7 +8007,7 @@ fn a_deferred_peer_move_follows_the_latest_candidate() {
     pair.server.outbound.clear();
 
     pair.client.release_held_identifiers();
-    while step_checking_server_destinations(&mut pair, &[current, second]) {}
+    settle_checking_server_destinations(&mut pair, &[current, second]);
     assert_eq!(pair.server_conn_mut(server_ch).remote_address(), second);
     assert!(!pair.server_conn_mut(server_ch).deferred_move_pending());
     assert!(!pair.server_conn_mut(server_ch).is_closed());
@@ -7519,7 +8066,7 @@ fn a_failed_peer_migration_returns_to_the_previous_path_with_its_connection_id()
     let spares_before = pair.server_conn_mut(server_ch).unused_rem_cids().len();
     let s = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
     pair.server_send(server_ch, s).write(b"back").unwrap();
-    while step_checking_server_destinations(&mut pair, &[real]) {}
+    settle_checking_server_destinations(&mut pair, &[real]);
     assert!(matches!(
         pair.client_conn_mut(client_ch).poll(),
         Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni }))
@@ -7580,7 +8127,7 @@ fn a_failed_nat_rebinding_returns_to_the_previous_path_keeping_the_connection_id
     pair.server.outbound.clear();
     let s = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
     pair.server_send(server_ch, s).write(b"back").unwrap();
-    while step_checking_server_destinations(&mut pair, &[real]) {}
+    settle_checking_server_destinations(&mut pair, &[real]);
     assert!(matches!(
         pair.client_conn_mut(client_ch).poll(),
         Some(Event::Stream(StreamEvent::Opened { dir: Dir::Uni }))

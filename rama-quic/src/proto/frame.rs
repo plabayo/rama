@@ -981,6 +981,32 @@ mod test {
             .unwrap()
     }
 
+    /// RFC 9000 §19.15: a NEW_CONNECTION_ID that retires identifiers the peer never issued is a
+    /// FRAME_ENCODING_ERROR. The decoder refuses it, so the frame never reaches the connection.
+    #[test]
+    fn a_new_connection_id_retiring_unissued_identifiers_is_a_frame_encoding_error() {
+        let mut buf = Vec::new();
+        NewConnectionId {
+            sequence: 2,
+            retire_prior_to: 3,
+            id: ConnectionId::new(&[0xAB; 8]),
+            reset_token: ResetToken::from([0xCD; RESET_TOKEN_SIZE]),
+        }
+        .encode(&mut buf);
+        let invalid = Iter::new(Bytes::from(buf))
+            .unwrap()
+            .next()
+            .expect("one frame")
+            .expect_err("the frame is refused");
+        assert_eq!(invalid.ty, Some(FrameType::NEW_CONNECTION_ID));
+        let error = crate::proto::TransportError::from(invalid);
+        assert_eq!(
+            error.code,
+            crate::proto::TransportErrorCode::FRAME_ENCODING_ERROR
+        );
+        assert_eq!(error.frame, Some(FrameType::NEW_CONNECTION_ID));
+    }
+
     #[test]
     fn ack_coding() {
         const PACKETS: &[u64] = &[1, 2, 3, 5, 10, 11, 14];

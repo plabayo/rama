@@ -367,12 +367,11 @@ pub(super) struct TestEndpoint {
     accepted: Option<Result<ConnectionHandle, ConnectionError>>,
     pub(super) connections: HashMap<ConnectionHandle, Connection>,
     conn_events: HashMap<ConnectionHandle, VecDeque<ConnectionEvent>>,
-    /// Drives that ended with a datagram waiting for a route and nothing left to install, since
-    /// the last datagram actually left. A route that is never installed would otherwise be
-    /// invisible. The count is endpoint-wide, which suffices while these tests run one
-    /// connection each. Per-connection ownership is required for the multi-connection case and is
-    /// not implemented.
-    waiting_drives: u32,
+    /// Per connection, the drives that ended with one of its datagrams waiting for a route and
+    /// nothing left to install, since that connection last sent. A route that is never installed
+    /// would otherwise be invisible. The count belongs to the connection: one connection's
+    /// progress must not clear another's stall.
+    waiting_drives: HashMap<ConnectionHandle, u32>,
     /// A datagram that was built but may not be sent yet because the endpoint has not confirmed
     /// the route its identifier needs. It is kept exactly as it is, as the driver keeps its
     /// buffered transmit, so nothing is rebuilt and no protocol counter advances twice.
@@ -385,6 +384,12 @@ pub(super) struct TestEndpoint {
     /// no NEW_CONNECTION_ID) until `release_held_identifiers`: a peer slow to issue.
     pub(super) hold_identifiers: bool,
     held_identifiers: Vec<(ConnectionHandle, ConnectionEvent)>,
+    /// While a connection's handle is listed here, the endpoint is not asked to install the
+    /// route a stateless reset for one of its identifiers would arrive by, so a datagram of that
+    /// connection which needs the route keeps waiting instead of leaving. Naming the connection
+    /// is what lets one connection wait while another on the same endpoint keeps sending.
+    pub(super) hold_route_installs: Vec<ConnectionHandle>,
+    held_route_installs: Vec<(ConnectionHandle, EndpointEvent)>,
 }
 
 /// A datagram waiting for an endpoint's receive path.
@@ -470,13 +475,15 @@ impl TestEndpoint {
             connections: HashMap::default(),
             conn_events: HashMap::default(),
             pending_transmit: HashMap::default(),
-            waiting_drives: 0,
+            waiting_drives: HashMap::default(),
             captured_packets: Vec::new(),
             capture_inbound_packets: false,
             handle_incoming: Box::new(|_| IncomingConnectionBehavior::Accept),
             waiting_incoming: Vec::new(),
             hold_identifiers: false,
             held_identifiers: Vec::new(),
+            hold_route_installs: Vec::new(),
+            held_route_installs: Vec::new(),
         }
     }
 
@@ -566,6 +573,8 @@ impl TestEndpoint {
             let mut endpoint_events: Vec<(ConnectionHandle, EndpointEvent)> = vec![];
             self.timeouts
                 .retain(|ch, _| self.connections.contains_key(ch));
+            self.waiting_drives
+                .retain(|ch, _| self.connections.contains_key(ch));
             for (ch, conn) in self.connections.iter_mut() {
                 if self.timeouts.get(ch).is_some_and(|&at| at <= now) {
                     self.timeouts.remove(ch);
@@ -583,7 +592,7 @@ impl TestEndpoint {
                 }
             }
             // Now the wire.
-            let mut waiting = false;
+            let mut waiting: Vec<ConnectionHandle> = vec![];
             for (ch, conn) in self.connections.iter_mut() {
                 // Whatever was waiting for a route goes first, and is offered as it was built.
                 if let Some((transmit, bytes)) = self.pending_transmit.remove(ch) {
@@ -593,13 +602,16 @@ impl TestEndpoint {
                         SendPermit::Sendable => {
                             let (cid_used, destination) = (transmit.cid_used, transmit.destination);
                             self.outbound.extend(split_transmit(transmit, &bytes));
+                            // The datagram that was held has left, which is this connection's
+                            // progress: a datagram that waits after it starts its own count.
+                            self.waiting_drives.remove(ch);
                             if let Some(seq) = cid_used {
                                 conn.cid_sent(seq, destination);
                             }
                         }
                         SendPermit::AwaitingInstallation => {
                             self.pending_transmit.insert(*ch, (transmit, bytes));
-                            waiting = true;
+                            waiting.push(*ch);
                             // This connection's deadline still has to be refreshed: the expired
                             // one was consumed above, and arrivals may have set a new one.
                             refresh_timeout(&mut self.timeouts, ch, conn);
@@ -631,7 +643,7 @@ impl TestEndpoint {
                             self.pending_transmit
                                 .insert(*ch, (transmit, buf[..size].to_vec()));
                             buf.clear();
-                            waiting = true;
+                            waiting.push(*ch);
                             break;
                         }
                         SendPermit::Obsolete => {
@@ -641,9 +653,9 @@ impl TestEndpoint {
                     }
                     self.outbound.extend(split_transmit(transmit, &buf[..size]));
                     buf.clear();
-                    // Something left, so nothing is stuck: this is the progress the waiting
-                    // count below is measured against.
-                    self.waiting_drives = 0;
+                    // Something left for this connection, so it is not stuck: this is the
+                    // progress its waiting count below is measured against.
+                    self.waiting_drives.remove(ch);
                     // The datagram is on its way, which is the boundary the driver reports.
                     if let Some(seq) = cid_used {
                         conn.cid_sent(seq, destination);
@@ -661,16 +673,15 @@ impl TestEndpoint {
                 // waiting: another pass would only rebuild the same state. A held datagram stays
                 // held for the next drive, which is what the driver does when it returns to the
                 // scheduler. How long it may stay held is counted across drives, below.
-                if waiting {
-                    self.waiting_drives += 1;
+                self.waiting_drives.retain(|ch, _| waiting.contains(ch));
+                for ch in &waiting {
+                    let drives = self.waiting_drives.entry(*ch).or_default();
+                    *drives += 1;
                     assert!(
-                        self.waiting_drives <= Self::WAITING_DRIVES,
-                        "a datagram has waited for a route across {} drives with nothing left \
-                         to install: its installation was refused or never asked for",
-                        self.waiting_drives
+                        *drives <= Self::WAITING_DRIVES,
+                        "a datagram of {ch:?} has waited for a route across {drives} drives with \
+                         nothing left to install: its installation was refused or never asked for"
                     );
-                } else {
-                    self.waiting_drives = 0;
                 }
                 break;
             }
@@ -680,6 +691,10 @@ impl TestEndpoint {
     /// Hand each event to the endpoint and give the connection back whatever it answers.
     fn apply_endpoint_events(&mut self, events: Vec<(ConnectionHandle, EndpointEvent)>) {
         for (ch, event) in events {
+            if self.hold_route_installs.contains(&ch) && event.is_reset_route() {
+                self.held_route_installs.push((ch, event));
+                continue;
+            }
             if let Some(event) = self.handle_event(ch, event) {
                 // Only identifier issuance is held by that seam, however it was asked for; a
                 // route acknowledgement withheld here would stop the connection sending at all.
@@ -705,6 +720,29 @@ impl TestEndpoint {
                 conn.handle_event(event);
             }
         }
+    }
+
+    /// Hand the endpoint the route installations put aside, and give each connection the
+    /// acknowledgement the endpoint answers with.
+    pub(super) fn release_route_installs(&mut self) {
+        self.hold_route_installs.clear();
+        for (ch, event) in std::mem::take(&mut self.held_route_installs) {
+            if let Some(event) = self.handle_event(ch, event)
+                && let Some(conn) = self.connections.get_mut(&ch)
+            {
+                conn.handle_event(event);
+            }
+        }
+    }
+
+    /// Tests: how many drives in a row ended with a datagram of `ch` waiting for a route.
+    pub(super) fn waiting_drives_for(&self, ch: ConnectionHandle) -> u32 {
+        self.waiting_drives.get(&ch).copied().unwrap_or(0)
+    }
+
+    /// Tests: whether a datagram of `ch` is being kept until its route is installed.
+    pub(super) fn awaiting_route(&self, ch: ConnectionHandle) -> bool {
+        self.pending_transmit.contains_key(&ch)
     }
 
     pub(super) fn next_wakeup(&self) -> Option<Instant> {

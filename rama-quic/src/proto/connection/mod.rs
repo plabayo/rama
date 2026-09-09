@@ -1440,11 +1440,12 @@ impl Connection {
                 first_decode,
                 remaining,
             }) => {
-                // If this packet could initiate a migration and we're a client or a server that
-                // forbids migration, drop the datagram. This could be relaxed to heuristically
-                // permit NAT-rebinding-like migration.
+                // A datagram from an address other than the current path's could only initiate
+                // a migration; drop it when this connection may not follow one. The decision is
+                // by address alone: the packet is not decoded yet, so whether it is probing is
+                // not known here.
                 if remote != self.path.remote
-                    && !self.side.remote_may_migrate()
+                    && !self.may_follow_peer_move(local)
                     && !self.probing_address(remote)
                 {
                     trace!("discarding packet from unrecognized peer {}", remote);
@@ -1678,10 +1679,37 @@ impl Connection {
             && (self.side.is_server() || self.spaces[SpaceId::Handshake].crypto.is_none())
     }
 
-    /// Whether the peer's transport parameters allow this endpoint to migrate actively.
-    /// Meaningful once the handshake is confirmed.
-    pub(crate) fn peer_allows_active_migration(&self) -> bool {
+    /// Whether this endpoint may migrate actively now (RFC 9000 §9, §18.2). Meaningful once the
+    /// handshake is confirmed. The peer's `disable_active_migration` covers the address used
+    /// during the handshake; a client that has moved to the address the server advertised as
+    /// preferred is no longer on that address and may migrate from there (RFC 9000 §9.6.3).
+    pub(crate) fn may_migrate_actively(&self) -> bool {
         !self.peer_params.disable_active_migration
+            || self.preferred_state == PreferredAddressState::Validated
+    }
+
+    /// Whether a datagram arriving at our `local` address from an address other than the current
+    /// path's may be followed to a new path (RFC 9000 §9, §18.2). A client follows no move of the
+    /// peer's; a server that advertised no support for active migration follows none away from the
+    /// address used during the handshake, but the peer moving on the address it advertised as
+    /// preferred is not that move (RFC 9000 §9.6.3). Following it still validates the path and
+    /// takes an unused identifier for it, as any other move does.
+    fn may_follow_peer_move(&self, local: Option<SocketAddr>) -> bool {
+        match &self.side {
+            ConnectionSide::Server { server_config } => {
+                server_config.migration || Self::is_preferred_local(server_config, local)
+            }
+            ConnectionSide::Client { .. } => false,
+        }
+    }
+
+    /// Whether `local` is the address this server advertised as preferred for its family.
+    fn is_preferred_local(config: &ServerConfig, local: Option<SocketAddr>) -> bool {
+        match local {
+            Some(SocketAddr::V4(local)) => config.preferred_address_v4 == Some(local),
+            Some(SocketAddr::V6(local)) => config.preferred_address_v6 == Some(local),
+            None => false,
+        }
     }
 
     /// Whether the connection is closed
@@ -3207,6 +3235,115 @@ impl Connection {
         Ok(())
     }
 
+    /// Apply one NEW_CONNECTION_ID frame (RFC 9000 §5.1.1, §5.1.2, §9.5): give up the identifiers
+    /// the frame retires, record the new one, and retire with the peer every sequence number that
+    /// leaves this connection's hands.
+    fn handle_new_cid(
+        &mut self,
+        now: Instant,
+        frame: frame::NewConnectionId,
+    ) -> Result<(), TransportError> {
+        trace!(
+            sequence = frame.sequence,
+            id = %frame.id,
+            retire_prior_to = frame.retire_prior_to,
+        );
+        if self.rem_cids.active().is_empty() {
+            return Err(TransportError::PROTOCOL_VIOLATION(
+                "NEW_CONNECTION_ID when CIDs aren't in use",
+            ));
+        }
+        // RFC 9000 §19.15. The frame decoder refuses such a frame, so this covers
+        // the ones built inside this crate.
+        if frame.retire_prior_to > frame.sequence {
+            return Err(TransportError::FRAME_ENCODING_ERROR(
+                "NEW_CONNECTION_ID retiring unissued CIDs",
+            ));
+        }
+
+        use crate::proto::cid_queue::InsertError;
+        // Identifiers kept aside for a path (RFC 9000 §9.5) that the peer retires
+        // now are given up first: a previous path then has no identifier of its own,
+        // and a candidate path cannot go on with one it may not send.
+        let aside = self.rem_cids.retire_aside(frame.retire_prior_to);
+        for seq in aside.iter() {
+            self.retire_rem_cid(seq)?;
+        }
+        // The numbers this frame retires that never reached us are retired too; the
+        // peer holds them until RETIRE_CONNECTION_ID names them.
+        self.retire_rem_cids(&Retired {
+            previous: 0..0,
+            skipped: aside.skipped.clone(),
+        })?;
+        for seq in aside.bound.iter().flatten() {
+            self.drop_path_cid(*seq);
+        }
+        let (held_retired, reserved_retired) = (aside.held, aside.reserved);
+        if held_retired.is_some()
+            && let Some(prev) = self.prev_path.as_mut()
+            && prev.cid == PrevCid::Held
+        {
+            prev.cid = PrevCid::Gone;
+        }
+        if reserved_retired.is_some() {
+            self.restart_candidate();
+        }
+        match self.rem_cids.insert(frame) {
+            Ok(inserted) => {
+                // Unused identifiers this frame retired are ours no longer; the peer
+                // holds them until RETIRE_CONNECTION_ID names them.
+                for seq in inserted.dropped.iter().flatten() {
+                    self.retire_rem_cid(*seq)?;
+                }
+                if let Some((retired, reset_token)) = inserted.switched {
+                    self.retire_rem_cids(&retired)?;
+                    self.set_reset_token(self.path.remote, reset_token);
+                }
+            }
+            Err(InsertError::ExceedsLimit) => {
+                return Err(TransportError::CONNECTION_ID_LIMIT_ERROR(""));
+            }
+            Err(InsertError::Retired) => {
+                trace!("discarding already-retired");
+                // RETIRE_CONNECTION_ID might not have been previously sent if e.g. a
+                // range of connection IDs larger than the active connection ID limit
+                // was retired all at once via retire_prior_to. The bounded queue
+                // keeps a peer that repeats retired identifiers from growing it.
+                self.spaces[SpaceId::Data]
+                    .pending
+                    .retire_cids(frame.sequence..frame.sequence + 1)?;
+                return Ok(());
+            }
+        };
+        // A peer move that waited for an unused connection ID (RFC 9000 §9.5) is
+        // followed now, unless the path changed meanwhile or no ID is unused yet.
+        if let Some(deferred) = self.deferred_migration.take()
+            && deferred.generation == self.path_counter
+        {
+            trace!(
+                remote = %deferred.remote,
+                asked_by = deferred.number,
+                "following the deferred peer move"
+            );
+            if !self.follow_peer_move(
+                now,
+                deferred.remote,
+                deferred.local,
+                deferred.received_dcid,
+                false,
+            )? {
+                self.deferred_migration = Some(deferred);
+            }
+        }
+
+        if self.side.is_server() && self.rem_cids.active_seq() == 0 {
+            // We're a server still using the initial remote CID for the client, so
+            // let's switch immediately to enable clientside stateless resets.
+            self.update_rem_cid();
+        }
+        Ok(())
+    }
+
     fn process_payload(
         &mut self,
         now: Instant,
@@ -3376,95 +3513,7 @@ impl Connection {
                             allow_more_cids,
                         ));
                 }
-                Frame::NewConnectionId(frame) => {
-                    trace!(
-                        sequence = frame.sequence,
-                        id = %frame.id,
-                        retire_prior_to = frame.retire_prior_to,
-                    );
-                    if self.rem_cids.active().is_empty() {
-                        return Err(TransportError::PROTOCOL_VIOLATION(
-                            "NEW_CONNECTION_ID when CIDs aren't in use",
-                        ));
-                    }
-                    if frame.retire_prior_to > frame.sequence {
-                        return Err(TransportError::PROTOCOL_VIOLATION(
-                            "NEW_CONNECTION_ID retiring unissued CIDs",
-                        ));
-                    }
-
-                    use crate::proto::cid_queue::InsertError;
-                    // Identifiers kept aside for a path (RFC 9000 §9.5) that the peer retires
-                    // now are given up first: a previous path then has no identifier of its own,
-                    // and a candidate path cannot go on with one it may not send.
-                    let aside = self.rem_cids.retire_aside(frame.retire_prior_to);
-                    for seq in aside.iter() {
-                        self.retire_rem_cid(seq)?;
-                    }
-                    for seq in aside.bound.iter().flatten() {
-                        self.drop_path_cid(*seq);
-                    }
-                    let (held_retired, reserved_retired) = (aside.held, aside.reserved);
-                    if held_retired.is_some()
-                        && let Some(prev) = self.prev_path.as_mut()
-                        && prev.cid == PrevCid::Held
-                    {
-                        prev.cid = PrevCid::Gone;
-                    }
-                    if reserved_retired.is_some() {
-                        self.restart_candidate();
-                    }
-                    match self.rem_cids.insert(frame) {
-                        Ok(None) => {}
-                        Ok(Some((retired, reset_token))) => {
-                            self.spaces[SpaceId::Data]
-                                .pending
-                                .retire_cids(retired.clone())?;
-                            self.note_retired(retired);
-                            self.set_reset_token(self.path.remote, reset_token);
-                        }
-                        Err(InsertError::ExceedsLimit) => {
-                            return Err(TransportError::CONNECTION_ID_LIMIT_ERROR(""));
-                        }
-                        Err(InsertError::Retired) => {
-                            trace!("discarding already-retired");
-                            // RETIRE_CONNECTION_ID might not have been previously sent if e.g. a
-                            // range of connection IDs larger than the active connection ID limit
-                            // was retired all at once via retire_prior_to. The bounded queue
-                            // keeps a peer that repeats retired identifiers from growing it.
-                            self.spaces[SpaceId::Data]
-                                .pending
-                                .retire_cids(frame.sequence..frame.sequence + 1)?;
-                            continue;
-                        }
-                    };
-                    // A peer move that waited for an unused connection ID (RFC 9000 §9.5) is
-                    // followed now, unless the path changed meanwhile or no ID is unused yet.
-                    if let Some(deferred) = self.deferred_migration.take()
-                        && deferred.generation == self.path_counter
-                    {
-                        trace!(
-                            remote = %deferred.remote,
-                            asked_by = deferred.number,
-                            "following the deferred peer move"
-                        );
-                        if !self.follow_peer_move(
-                            now,
-                            deferred.remote,
-                            deferred.local,
-                            deferred.received_dcid,
-                            false,
-                        )? {
-                            self.deferred_migration = Some(deferred);
-                        }
-                    }
-
-                    if self.side.is_server() && self.rem_cids.active_seq() == 0 {
-                        // We're a server still using the initial remote CID for the client, so
-                        // let's switch immediately to enable clientside stateless resets.
-                        self.update_rem_cid();
-                    }
-                }
+                Frame::NewConnectionId(frame) => self.handle_new_cid(now, frame)?,
                 Frame::NewToken(NewToken { token }) => {
                     let ConnectionSide::Client {
                         token_store,
@@ -3574,13 +3623,20 @@ impl Connection {
         if !on_current_path && !is_probing_packet && number == self.spaces[SpaceId::Data].rx_packet
         {
             let migration_allowed = match &self.side {
-                ConnectionSide::Server { server_config } => Some(server_config.migration),
+                // The peer reaching another of our own addresses with its own address unchanged
+                // is not the active migration `disable_active_migration` forbids (RFC 9000
+                // §18.2); a change of its address is, unless it is on the address advertised as
+                // preferred (RFC 9000 §9.6.3).
+                ConnectionSide::Server { .. } => {
+                    Some(remote == self.path.remote || self.may_follow_peer_move(local))
+                }
                 ConnectionSide::Client { .. } => None,
             };
             if let Some(allowed) = migration_allowed {
                 debug_assert!(
                     allowed,
-                    "migration-initiating packets should have been dropped immediately"
+                    "a packet from a new peer address is dropped before it reaches here when \
+                     migration is disabled"
                 );
                 // RFC 9000 §9.5: a connection ID is never reused towards more than one destination.
                 // The one exception is a peer whose address changed without changing the connection
@@ -4170,6 +4226,23 @@ impl Connection {
         self.timers.get(Timer::LossDetection).is_some()
     }
 
+    /// Tests: apply one NEW_CONNECTION_ID as if it had arrived in a packet, so the path from the
+    /// frame through the identifiers it retires to the retirement queue runs as it does then.
+    #[cfg(test)]
+    pub(crate) fn apply_new_cid(
+        &mut self,
+        now: Instant,
+        frame: frame::NewConnectionId,
+    ) -> Result<(), TransportError> {
+        self.handle_new_cid(now, frame)
+    }
+
+    /// Tests: the sequence numbers waiting to be sent as RETIRE_CONNECTION_ID.
+    #[cfg(test)]
+    pub(crate) fn pending_retirements(&self) -> Vec<u64> {
+        self.spaces[SpaceId::Data].pending.retire_cids.clone()
+    }
+
     /// Tests: whether a peer move is waiting for an unused destination connection ID.
     #[cfg(test)]
     pub(crate) fn deferred_move_pending(&self) -> bool {
@@ -4230,6 +4303,12 @@ impl Connection {
     #[cfg(test)]
     pub(crate) fn unused_rem_cids(&self) -> Vec<ConnectionId> {
         self.rem_cids.unused().into_iter().map(|c| c.id).collect()
+    }
+
+    /// Tests: the sequence numbers of those identifiers.
+    #[cfg(test)]
+    pub(crate) fn unused_rem_cid_seqs(&self) -> Vec<u64> {
+        self.rem_cids.unused().into_iter().map(|c| c.seq).collect()
     }
 
     /// Ack-eliciting packets in flight on the current path only (tests): the congestion view that
@@ -5153,13 +5232,6 @@ enum ConnectionSide {
 }
 
 impl ConnectionSide {
-    fn remote_may_migrate(&self) -> bool {
-        match self {
-            Self::Server { server_config } => server_config.migration,
-            Self::Client { .. } => false,
-        }
-    }
-
     fn is_client(&self) -> bool {
         self.side().is_client()
     }

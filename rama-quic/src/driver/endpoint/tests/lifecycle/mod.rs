@@ -1,6 +1,6 @@
 //! Connection and endpoint lifecycle tests.
 
-use super::{Captured, TestSocket, pin_active_socket, release_lease};
+use super::{Captured, TestSocket, WakeCount, pin_active_socket, release_lease};
 use crate::driver::connection::MAX_TRANSMIT_DATAGRAMS;
 use crate::driver::endpoint::*;
 use crate::driver::lifecycle::ShutdownOutcome;
@@ -4280,6 +4280,19 @@ async fn shutdown_completes_while_a_descriptor_is_partly_accepted() {
         .await
         .unwrap();
 
+    // Register a reader before the shutdown and check its wakeup and close error.
+    let waker = Arc::new(WakeCount(AtomicUsize::new(0)));
+    let task: Waker = waker.clone().into();
+    let mut cx = Context::from_waker(&task);
+    let mut accept = Box::pin({
+        let c = c.clone();
+        async move { c.accept_uni().await }
+    });
+    assert!(
+        accept.as_mut().poll(&mut cx).is_pending(),
+        "no stream has arrived, so the reader waits"
+    );
+
     // Shut down with the remainder still in the sender's hands.
     drop(s);
     let (client_outcome, server_outcome) = tokio::time::timeout(Duration::from_secs(5), async {
@@ -4315,12 +4328,34 @@ async fn shutdown_completes_while_a_descriptor_is_partly_accepted() {
         "the held remainder was not sent by the shutdown"
     );
     assert_eq!(log.lock().partial_failures, 0);
+    assert!(
+        waker.0.load(Ordering::SeqCst) > 0,
+        "the waiting reader was woken by the shutdown, not left for someone else's poll"
+    );
+    match accept.as_mut().poll(&mut cx) {
+        Poll::Ready(Err(error)) => assert!(
+            matches!(error, ConnectionError::LocallyClosed),
+            "the reader is given the connection's own cause: {error:?}"
+        ),
+        other => panic!("the waiting reader resolves once the connection is gone: {other:?}"),
+    }
     assert_eq!(
         client.stats().retained_sockets,
         0,
-        "the endpoint's registry holds no socket. This is its bookkeeping, not an observation of \
-         the socket or sender being dropped"
+        "the endpoint's registry holds no socket"
     );
+
+    // The fixture Arc is owned by the socket and each sender, so one reference left is the
+    // test's own.
+    drop(accept);
+    drop(live);
+    drop(c);
+    wait_for(
+        "the socket and every sender made from it are destroyed",
+        Duration::from_secs(5),
+        || Arc::strong_count(&segments) == 1,
+    )
+    .await;
 }
 
 /// The connection counts an identifier as used from the first segment the socket accepted, not
