@@ -652,9 +652,13 @@ impl Connection {
         self.0.state.lock().inner.cid_confirmed(seq)
     }
 
-    /// Tests: the datagram being held back because the route its identifier needs is not
-    /// installed — its exact bytes, where it is addressed, and which identifier it carries. That
-    /// it is `Some` is also how a test knows the send gate has been reached.
+    /// Tests: the datagram this connection has buffered — its exact bytes, where it is addressed
+    /// and which identifier it carries.
+    ///
+    /// A descriptor is buffered either because the socket was not ready for it or because the
+    /// route its identifier needs is not installed; this does not distinguish the two. A test
+    /// that needs to know which must arrange one of them, as the route tests do by holding
+    /// installation on a socket that is otherwise writable.
     #[cfg(test)]
     pub(crate) fn held_transmit(&self) -> Option<(Vec<u8>, std::net::SocketAddr, Option<u64>)> {
         let state = self.0.state.lock();

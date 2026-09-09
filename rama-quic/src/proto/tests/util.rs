@@ -44,6 +44,9 @@ pub(super) struct Pair {
     /// Every address the client sent a datagram to, in order.
     /// Every datagram the client put on the wire, as the engine emitted it.
     pub(super) client_sent: Vec<Sent>,
+    /// What the server put on the wire, recorded as it is drained — the queue itself is emptied
+    /// by every drive, so an assertion made on it afterwards would be looking at nothing.
+    pub(super) server_sent: Vec<Sent>,
     last_spin: bool,
 }
 
@@ -87,6 +90,7 @@ impl Pair {
             latency: Duration::ZERO,
             spins: 0,
             client_sent: Vec::new(),
+            server_sent: Vec::new(),
             last_spin: false,
             congestion_experienced: false,
         }
@@ -185,6 +189,11 @@ impl Pair {
         let _guard = span.enter();
         self.server.drive(self.time, self.client.addr);
         for (packet, buffer) in self.server.outbound.drain(..) {
+            self.server_sent.push(Sent {
+                local: packet.local,
+                to: packet.destination,
+                cid: packet.cid_used,
+            });
             let packet_size = packet_size(&packet, &buffer);
             if packet_size > self.mtu {
                 info!(packet_size, "dropping packet (max size exceeded)");
@@ -346,6 +355,12 @@ pub(super) struct TestEndpoint {
     accepted: Option<Result<ConnectionHandle, ConnectionError>>,
     pub(super) connections: HashMap<ConnectionHandle, Connection>,
     conn_events: HashMap<ConnectionHandle, VecDeque<ConnectionEvent>>,
+    /// Drives that ended with a datagram waiting for a route and nothing left to install, since
+    /// the last datagram actually left. A route that is never installed would otherwise be
+    /// invisible. This counts for the endpoint as a whole, which is enough while these tests run
+    /// one connection each — the multi-connection case needs per-connection ownership, and is not
+    /// claimed here.
+    waiting_drives: u32,
     /// A datagram that was built but may not be sent yet because the endpoint has not confirmed
     /// the route its identifier needs. It is kept exactly as it is, as the driver keeps its
     /// buffered transmit, so nothing is rebuilt and no protocol counter advances twice.
@@ -426,6 +441,7 @@ impl TestEndpoint {
             connections: HashMap::default(),
             conn_events: HashMap::default(),
             pending_transmit: HashMap::default(),
+            waiting_drives: 0,
             captured_packets: Vec::new(),
             capture_inbound_packets: false,
             handle_incoming: Box::new(|_| IncomingConnectionBehavior::Accept),
@@ -505,13 +521,12 @@ impl TestEndpoint {
         }
     }
 
+    /// How many drives in a row a datagram may wait for a route that nothing is installing.
+    const WAITING_DRIVES: u32 = 8;
+
     pub(super) fn drive_outgoing(&mut self, now: Instant) {
         let buffer_size = self.endpoint.config().get_max_udp_payload_size() as usize;
         let mut buf = Vec::with_capacity(buffer_size);
-        /// How many passes a datagram may wait for a route with nothing left to install before
-        /// this is a stuck harness rather than an ordinary wait.
-        const WAITING_PASSES: u32 = 4;
-        let mut stalled = 0u32;
 
         loop {
             // Arrivals and timers, then the wire, then everything the connections asked the
@@ -592,6 +607,9 @@ impl TestEndpoint {
                     }
                     self.outbound.extend(split_transmit(transmit, &buf[..size]));
                     buf.clear();
+                    // Something left, so nothing is stuck: this is the progress the waiting
+                    // count below is measured against.
+                    self.waiting_drives = 0;
                     // The datagram is on its way, which is the boundary the driver reports.
                     if let Some(seq) = cid_used {
                         conn.cid_sent(seq, destination);
@@ -608,18 +626,20 @@ impl TestEndpoint {
                 // Nothing was asked of the endpoint, so nothing can change for a datagram that is
                 // waiting: another pass would only rebuild the same state. A held datagram stays
                 // held for the next drive, which is what the driver does when it returns to the
-                // scheduler.
+                // scheduler — and how long it may stay held is counted across drives, below.
                 if waiting {
-                    stalled += 1;
+                    self.waiting_drives += 1;
                     assert!(
-                        stalled <= WAITING_PASSES,
-                        "a datagram waited for a route through {stalled} passes with nothing \
-                         left to install: its installation was refused or never asked for"
+                        self.waiting_drives <= Self::WAITING_DRIVES,
+                        "a datagram has waited for a route across {} drives with nothing left \
+                         to install: its installation was refused or never asked for",
+                        self.waiting_drives
                     );
+                } else {
+                    self.waiting_drives = 0;
                 }
                 break;
             }
-            stalled = 0;
         }
     }
 

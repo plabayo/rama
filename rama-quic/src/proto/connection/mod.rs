@@ -4321,12 +4321,15 @@ impl Connection {
     /// The peer has named this identifier's token: every address it has already been sent to needs
     /// its route installed, and none of them counts as installed until the endpoint says so.
     fn announce_reset_routes(&mut self, seq: u64) {
-        let generation = self.reset_generation;
-        let announced = self.rem_cids.announce_routes(seq, generation);
-        for (assoc, token) in announced {
+        let (announced, token) = self.rem_cids.announce_routes(seq, self.reset_generation);
+        let Some(token) = token else {
+            return;
+        };
+        for assoc in announced.into_iter().flatten() {
             if let Some(installation) = assoc.generation() {
                 self.note_reset_token(assoc.remote, seq, token, installation);
-                self.reset_generation = self.reset_generation.max(installation + 1);
+                // One name per installation, counted the same way everywhere else.
+                self.reset_generation = self.reset_generation.wrapping_add(1);
             }
         }
     }

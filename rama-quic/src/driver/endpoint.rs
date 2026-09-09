@@ -7314,11 +7314,12 @@ mod lifecycle_tests {
     /// thrown away either. It leaves once the route is confirmed, and the connection keeps
     /// receiving while it waits.
     ///
-    /// What this can witness through the socket is: nothing carries the identifier while the
-    /// installation is held, nothing is counted as abandoned, the identifier is not treated as
-    /// used, a stream still arrives, and afterwards the identifier reaches the wire with no
-    /// datagram sent twice. Pinning "exactly one datagram" is not possible here, because ordinary
-    /// traffic resumes in the same instant.
+    /// What this witnesses: the descriptor is *built and held* (its bytes are captured from the
+    /// connection, so the gate is observed rather than inferred from an absence), nothing on the
+    /// wire carries the identifier while it waits, nothing is counted as abandoned, the
+    /// identifier is not treated as used, a stream still arrives — and afterwards **those exact
+    /// bytes appear once**. Further traffic legitimately carries the same identifier once it is
+    /// installed, which is why the count is of the retained bytes and not of the identifier.
     #[tokio::test]
     async fn a_datagram_waits_for_its_route_and_is_neither_dropped_nor_replayed() {
         let (client_config, server_config) = configs();
@@ -7484,11 +7485,15 @@ mod lifecycle_tests {
         let (c, s) = handshake(connecting, incoming).await;
         exchange(&c, &s, b"before").await;
 
-        // Something is waiting on this connection, so a failure has to reach it.
-        let reader = {
-            let c = c.clone();
-            tokio::spawn(async move { c.accept_uni().await.err() })
-        };
+        // Something is waiting on this connection, so a failure has to reach it — and it is
+        // polled to Pending here, so waking it later proves something happened.
+        let mut accept = std::pin::pin!(c.accept_uni());
+        let waiting =
+            std::future::poll_fn(|cx| Poll::Ready(accept.as_mut().poll(cx).is_pending())).await;
+        assert!(
+            waiting,
+            "the accept future is waiting, not already resolved"
+        );
 
         client.inner.hold_route_installs();
         for step in 1..=5u64 {
@@ -7514,32 +7519,210 @@ mod lifecycle_tests {
         let closed = tokio::time::timeout(Duration::from_secs(2), c.closed())
             .await
             .expect("a refused route closed the connection without waiting for a timeout");
+        // Equality on `TransportError` compares only the code, so a substituted INTERNAL_ERROR
+        // would pass a code check. The diagnostic is what tells them apart.
         match &closed {
-            ConnectionError::TransportError(error) => assert_eq!(
-                error.code,
-                crate::proto::TransportErrorCode::INTERNAL_ERROR,
-                "the cause it raised, not a substitute: {error:?}"
-            ),
+            ConnectionError::TransportError(error) => {
+                assert_eq!(
+                    error.code,
+                    crate::proto::TransportErrorCode::INTERNAL_ERROR,
+                    "{error:?}"
+                );
+                assert_eq!(
+                    error.reason, "no room to route a stateless reset for a connection ID",
+                    "the diagnostic the refusal raised"
+                );
+            }
             other => panic!("expected the original transport error, got {other:?}"),
         }
 
-        // The waiter learned the same thing, once, and the held bytes are gone.
-        let woken = tokio::time::timeout(Duration::from_secs(2), reader)
+        // The waiter learned the same thing — the reason, not merely that something failed.
+        let woken = tokio::time::timeout(Duration::from_secs(2), accept)
             .await
             .expect("the waiting reader was woken")
-            .expect("the reader task did not panic");
-        assert!(woken.is_some(), "it was woken with an error");
+            .expect_err("it was woken with an error, not with a stream");
+        match &woken {
+            ConnectionError::TransportError(error) => assert_eq!(
+                error.reason, "no room to route a stateless reset for a connection ID",
+                "the waiter was given the same diagnostic"
+            ),
+            other => panic!("the waiter was given {other:?}"),
+        }
         assert!(
             c.held_transmit().is_none(),
-            "the unsent bytes were released"
+            "the descriptor that was held is released; this says nothing about the sender's own \
+             buffers, which the partial-prefix composition covers"
         );
         assert_eq!(
-            c.closed().await,
-            closed,
-            "and the same reason is reported every time it is asked"
+            c.closed().await.to_string(),
+            closed.to_string(),
+            "the same reason every time it is asked"
         );
-        drop((c, s));
+        // `c` is already closed by the refusal and its accept future borrows it, so it goes out
+        // of scope here rather than being dropped early.
+        drop(s);
         tokio::join!(client.shutdown(), server.shutdown());
+    }
+
+    /// review04, the composition: a prefix the sender accepted has left the machine and is never
+    /// offered again. When the identifier that descriptor carries is retired while the remainder
+    /// is still held, only the unsent suffix is given up; the identifier still counts as used
+    /// from that first accepted segment; and a following descriptor shorter than the offset the
+    /// abandoned one reached is sent whole rather than spliced at it — which used to panic.
+    #[tokio::test]
+    async fn a_retirement_mid_descriptor_gives_up_only_the_unsent_suffix() {
+        let (client_config, server_config) = configs();
+        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+        let (socket, log, segments) = segmenting_socket(2);
+        let client = endpoint_with(EndpointConfig::default(), None, socket);
+        let connecting = client
+            .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+            .unwrap();
+        let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let (c, s) = handshake(connecting, incoming).await;
+        exchange(&c, &s, b"before").await;
+        let doomed = active_dcid(&c);
+        let doomed_seq = c.active_dcid_seq();
+        assert!(!doomed.is_empty(), "non-zero-length connection IDs");
+        assert!(
+            c.cid_confirmed(doomed_seq),
+            "it has been carrying traffic, so it counts as used before any of this"
+        );
+        segments.arm();
+
+        // A bulk write becomes a segmented descriptor, is downgraded to one datagram per segment,
+        // and is held after two of them.
+        let payload: Vec<u8> = (0..octets::kib(16)).map(|i| (i % 251) as u8).collect();
+        let mut stream = c.open_uni().await.unwrap();
+        stream.write_all(&payload).await.unwrap();
+        stream.finish().unwrap();
+        wait_for(
+            "the fallback is held after two segments",
+            Duration::from_secs(3),
+            || {
+                let log = log.lock();
+                log.rejected.is_some() && log.fallback().len() == 2
+            },
+        )
+        .await;
+        let (rejected, segment_size) = log.lock().rejected.clone().unwrap();
+        let total = rejected.bytes.len().div_ceil(segment_size);
+        assert!(total > 2, "the descriptor has a suffix left to abandon");
+        let accepted: Vec<Vec<u8>> = log
+            .lock()
+            .fallback()
+            .iter()
+            .map(|d| d.bytes.clone())
+            .collect();
+        assert_eq!(accepted.len(), 2);
+        let offset: usize = accepted.iter().map(Vec::len).sum();
+
+        // The peer retires that identifier while the remainder is still held.
+        for step in 1..=5u64 {
+            s.rotate_local_cid(step);
+            if tokio::time::timeout(Duration::from_millis(300), async {
+                while active_dcid(&c) == doomed {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .is_ok()
+            {
+                break;
+            }
+        }
+        assert_ne!(active_dcid(&c), doomed, "the identifier was retired");
+        assert!(
+            !c.cid_confirmed(doomed_seq),
+            "retirement ends its history: there is no route left to recognise a reset by"
+        );
+
+        // Let the socket go: the unsent suffix is given up, and only it.
+        open_segment_hold(&log);
+        wait_for(
+            "the abandoned descriptor is accounted for",
+            Duration::from_secs(3),
+            || c.stale_transmits() >= 1,
+        )
+        .await;
+        assert_eq!(
+            c.stale_transmits(),
+            1,
+            "exactly one descriptor was given up, not a stream of them"
+        );
+
+        // The stream survives: what the abandoned suffix carried is retransmitted under the
+        // identifier now in use, so the peer still receives every byte in order.
+        let mut incoming = tokio::time::timeout(Duration::from_secs(5), s.accept_uni())
+            .await
+            .expect("the bulk stream arrives")
+            .expect("the connection is alive");
+        let received = tokio::time::timeout(
+            Duration::from_secs(5),
+            incoming.read_to_end(payload.len() + 1),
+        )
+        .await
+        .expect("the bulk stream completes")
+        .expect("it is not truncated");
+        assert_eq!(received, payload, "every byte, in order");
+
+        let log = log.lock();
+        // Descriptors shorter than the offset the abandoned one reached did go out afterwards —
+        // acknowledgements and retransmissions — and none of them was spliced at that offset:
+        // that is what receiving the stream byte for byte above establishes.
+        let short_after = log
+            .sent
+            .iter()
+            .skip(log.rejected_at + accepted.len())
+            .filter(|d| d.bytes.len() < offset)
+            .count();
+        assert!(
+            short_after > 0,
+            "no datagram shorter than the abandoned offset followed it"
+        );
+        for bytes in &accepted {
+            assert_eq!(
+                log.sent.iter().filter(|d| &d.bytes == bytes).count(),
+                1,
+                "an accepted datagram was sent twice"
+            );
+        }
+        // The suffix is several datagrams, not one: each unsent segment has to be absent on its
+        // own, or a single forbidden segment could slip through a comparison against their
+        // concatenation.
+        let segments: Vec<&[u8]> = rejected.bytes.chunks(segment_size).collect();
+        assert_eq!(segments.len(), total, "the descriptor's own segmentation");
+        for (i, segment) in segments.iter().enumerate().take(accepted.len()) {
+            assert_eq!(
+                accepted[i], *segment,
+                "the accepted prefix is the descriptor's first segments, in order"
+            );
+        }
+        for (i, segment) in segments.iter().enumerate().skip(accepted.len()) {
+            assert!(
+                !log.sent.iter().any(|d| d.bytes == *segment),
+                "unsent segment {i} of the abandoned descriptor reached the wire"
+            );
+        }
+        // And nothing at all went out under the retired identifier after it was retired.
+        assert!(
+            !short_header_dcids(&log.sent[log.rejected_at + accepted.len()..], doomed.len())
+                .iter()
+                .any(|dcid| *dcid == doomed),
+            "a datagram used the retired identifier after it was retired"
+        );
+        assert_eq!(log.partial_failures, 0);
+        // The socket's record is locked above and the shutdown below writes to it.
+        drop(log);
+        drop((c, s));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(client.shutdown(), server.shutdown());
+        })
+        .await
+        .expect("both endpoints shut down after a descriptor was abandoned mid-send");
     }
 
     /// The emulated offload for short segmented descriptors keeps its place across `Pending`: a

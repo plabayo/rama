@@ -1258,6 +1258,38 @@ mod tests {
         assert_eq!(routes.iter().count(), 1);
     }
 
+    /// A table with no room reports it, so the caller can refuse rather than acknowledge a route
+    /// that is not there. This is the `Full` the endpoint turns into a refusal.
+    #[test]
+    fn a_full_table_reports_that_it_installed_nothing() {
+        let mut routes = UsedResetTokens::default();
+        let slots = super::CidQueue::PRESENT * super::RemCid::REMOTES;
+        for step in 0..slots {
+            assert_eq!(
+                routes.insert(step as u64, addr(1), token(step as u8), step as u64),
+                Installed::New,
+                "slot {step} of {slots}"
+            );
+        }
+        assert_eq!(routes.iter().count(), slots, "the table is full");
+        assert_eq!(
+            routes.insert(9_999, addr(2), token(7), 9_999),
+            Installed::Full,
+            "one more route is refused, not squeezed in"
+        );
+        assert_eq!(
+            routes.iter().count(),
+            slots,
+            "and nothing live was evicted to make room"
+        );
+        // Releasing one makes room again, so a refusal is about the moment, not the connection.
+        assert!(routes.release(0, addr(1), 0));
+        assert_eq!(
+            routes.insert(9_999, addr(2), token(7), 9_999),
+            Installed::New
+        );
+    }
+
     /// The engine releases what it displaces, so far more moves than this table has slots still
     /// leave it holding only what is live. This is the endpoint half of the accumulation the
     /// review reproduced: a queue invariant alone cannot show it.

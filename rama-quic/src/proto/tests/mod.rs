@@ -5968,16 +5968,47 @@ fn a_client_moves_to_the_servers_preferred_address_once_it_answers() {
     assert!(!pair.client_conn_mut(ch).is_closed());
     let before_move = pair.client_sent.len();
 
-    // The connection carries data both ways at the new address, and keeps doing so.
+    // The connection carries data both ways at the new address, and keeps doing so. What matters
+    // is the bytes and the end of the stream, not that a stream opened: opening proves delivery
+    // started, not that it arrived whole.
+    const UP: &[u8] = b"from the client";
+    const DOWN: &[u8] = b"from the server";
     let up = pair.client_streams(ch).open(Dir::Uni).unwrap();
-    pair.client_send(ch, up).write(b"from the client").unwrap();
+    pair.client_send(ch, up).write(UP).unwrap();
+    pair.client_send(ch, up).finish().unwrap();
     let down = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
-    pair.server_send(server_ch, down)
-        .write(b"from the server")
-        .unwrap();
+    pair.server_send(server_ch, down).write(DOWN).unwrap();
+    pair.server_send(server_ch, down).finish().unwrap();
     drive_settled(&mut pair);
     assert!(saw_uni_stream(pair.server_conn_mut(server_ch)), "upstream");
     assert!(saw_uni_stream(pair.client_conn_mut(ch)), "downstream");
+    // Exactly those bytes, at offset zero, and then the end of the stream — both directions.
+    {
+        let mut recv = pair.server_recv(server_ch, up);
+        let mut chunks = recv.read(false).unwrap();
+        match chunks.next(usize::MAX) {
+            Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == UP => {}
+            other => panic!("upstream bytes: {other:?}"),
+        }
+        assert!(
+            matches!(chunks.next(usize::MAX), Ok(None)),
+            "upstream did not end where the sender finished it"
+        );
+        let _ = chunks.finalize();
+    }
+    {
+        let mut recv = pair.client_recv(ch, down);
+        let mut chunks = recv.read(false).unwrap();
+        match chunks.next(usize::MAX) {
+            Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == DOWN => {}
+            other => panic!("downstream bytes: {other:?}"),
+        }
+        assert!(
+            matches!(chunks.next(usize::MAX), Ok(None)),
+            "downstream did not end where the sender finished it"
+        );
+        let _ = chunks.finalize();
+    }
     assert_eq!(pair.client_conn_mut(ch).remote_address(), preferred);
     assert!(!pair.client_conn_mut(ch).is_closed());
     assert!(!pair.server_conn_mut(server_ch).is_closed());
@@ -7383,6 +7414,14 @@ fn a_peer_move_needs_an_unused_cid_unless_it_is_a_nat_rebinding() {
         .path
         .deferred_migrations;
     let last_followed = pair.server_conn_mut(server_ch).remote_address();
+    let followed_seq = pair.server_conn_mut(server_ch).active_rem_cid_seq();
+    // The server has something to say during the deferral, so the record below cannot be empty
+    // and what it asserts about is where that traffic went.
+    let outgoing = pair.server_streams(server_ch).open(Dir::Uni).unwrap();
+    pair.server_send(server_ch, outgoing)
+        .write(b"still on the old path")
+        .unwrap();
+    let sent_before = pair.server_sent.len();
 
     // Port-only move with a changed destination connection ID: deferred.
     pair.client.addr = SocketAddr::new(
@@ -7405,13 +7444,26 @@ fn a_peer_move_needs_an_unused_cid_unless_it_is_a_nat_rebinding() {
             .deferred_migrations
             > before
     );
+    // The queue itself is drained by every drive, so this reads the transcript recorded as the
+    // datagrams left. It also has to be non-empty: an empty record would satisfy `all` trivially.
+    let emitted = &pair.server_sent[sent_before..];
     assert!(
-        pair.server
-            .outbound
-            .iter()
-            .all(|(transmit, _)| transmit.destination == last_followed),
-        "everything the server sent went to the path it may still use"
+        !emitted.is_empty(),
+        "the server sent nothing while the move was deferred, so this window says nothing about \
+         where its traffic went — it had a stream to send"
     );
+    for sent in emitted {
+        assert_eq!(
+            sent.to, last_followed,
+            "the server sent to {} while it may only use {last_followed}",
+            sent.to
+        );
+        assert_eq!(
+            sent.cid,
+            Some(followed_seq),
+            "and with the identifier that path owns"
+        );
+    }
     pair.server.outbound.clear();
     // The peer gets round to issuing replacement connection IDs: the deferred move completes
     // with a fresh ID.

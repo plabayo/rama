@@ -881,6 +881,86 @@ mod tests {
         assert!(!socket.queue_response(transmit(0, None), b""));
     }
 
+    /// A prefix the backend accepted has left the machine, so the identifier that descriptor
+    /// carried counts as used even though the rest of it failed. What must not survive is the
+    /// offset: the next descriptor is a descriptor of its own and starts at nothing.
+    #[test]
+    fn a_prefix_accepted_before_an_error_counts_and_leaves_no_offset() {
+        let mut caps = DatagramCapabilities::portable();
+        caps.max_send_segments = 1;
+        let (mut sender, _probe) = fixture(
+            [Action::Sent, Action::Fail(io::ErrorKind::HostUnreachable)],
+            caps,
+        );
+        let mut cx = Context::from_waker(Waker::noop());
+        let first = TransmitId(1);
+        let descriptor = transmit(6, Some(2));
+        let error = match sender.poll_transmit(&mut cx, first, &descriptor, b"aabbcc") {
+            Poll::Ready(Err(error)) => error,
+            other => panic!("expected the second segment to fail, got {other:?}"),
+        };
+        assert_eq!(error.class, SendFailure::Datagram);
+        assert!(
+            sender.accepted_any(first),
+            "the first segment left, so its identifier has been used"
+        );
+        assert_eq!(
+            sender.accepted_prefix(),
+            0,
+            "and nothing of it may be spliced into what comes next"
+        );
+
+        // A shorter descriptor, shorter than the accepted prefix, goes out whole.
+        let (mut sender, probe) = fixture([Action::Sent], DatagramCapabilities::portable());
+        let second = TransmitId(2);
+        assert!(matches!(
+            sender.poll_transmit(&mut cx, second, &transmit(1, None), b"z"),
+            Poll::Ready(Ok(()))
+        ));
+        assert_eq!(probe.lock().accepted.len(), 1);
+        assert_eq!(probe.lock().accepted[0].0, b"z");
+    }
+
+    /// The send work limit yields rather than finishing a long descriptor in one go. The
+    /// descriptor keeps its place: the same one continues where it stopped, nothing is offered
+    /// twice, and what has left already counts.
+    #[test]
+    fn a_work_budget_yield_keeps_the_descriptor_and_its_progress() {
+        let mut caps = DatagramCapabilities::portable();
+        caps.max_send_segments = 1;
+        // One more segment than a single pass may send.
+        let segments = SEND_WORK_LIMIT + 1;
+        let payload: Vec<u8> = (0..segments).map(|i| i as u8).collect();
+        let (mut sender, probe) = fixture((0..segments).map(|_| Action::Sent), caps);
+        let mut cx = Context::from_waker(Waker::noop());
+        let id = TransmitId(7);
+        let descriptor = transmit(payload.len(), Some(1));
+
+        assert!(
+            sender
+                .poll_transmit(&mut cx, id, &descriptor, &payload)
+                .is_pending(),
+            "the budget ran out before the descriptor did"
+        );
+        assert_eq!(probe.lock().accepted.len(), SEND_WORK_LIMIT);
+        assert_eq!(
+            sender.accepted_prefix(),
+            SEND_WORK_LIMIT,
+            "its place is kept, not lost"
+        );
+        assert!(sender.accepted_any(id), "and what left already counts");
+
+        // The same descriptor continues from there and completes.
+        assert!(matches!(
+            sender.poll_transmit(&mut cx, id, &descriptor, &payload),
+            Poll::Ready(Ok(()))
+        ));
+        let probe = probe.lock();
+        assert_eq!(probe.accepted.len(), segments, "every segment, once");
+        let sent: Vec<u8> = probe.accepted.iter().flat_map(|d| d.0.clone()).collect();
+        assert_eq!(sent, payload, "in order, with nothing sent twice");
+    }
+
     #[test]
     fn rejected_partial_batch_resets_the_offset_for_the_next_descriptor() {
         let mut caps = DatagramCapabilities::portable();
