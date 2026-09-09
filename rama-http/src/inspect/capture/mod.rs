@@ -58,7 +58,7 @@ pub use model::{
     CaptureDetails, CaptureSnapshot, CapturedBody, HttpConnectionSummary, HttpExchangeId,
     HttpExchangeSummary, ReplayRequest, StoredRecord,
 };
-pub use observation::{CaptureMetadata, CaptureObserver, HttpCaptureProtocol};
+pub use observation::{CaptureMetadata, CaptureObserver};
 use search::{ExchangeSearches, SearchCaches, SearchQuery, SearchWarnings};
 
 struct CapturedConnection {
@@ -797,7 +797,6 @@ mod service;
 pub use service::{CaptureHttpLayer, MarkProtocolLayer, ObserveConnectionLayer};
 
 #[cfg(test)]
-#[path = "capture/tests/mod.rs"]
 mod tests;
 
 /// A bounded view suitable for an API, native GUI, or TUI. A cursor pages older connections.
@@ -825,6 +824,7 @@ impl Default for CaptureQuery {
 impl Service<CaptureQuery> for CaptureStore {
     type Output = CaptureSnapshot;
     type Error = std::convert::Infallible;
+
     async fn serve(&self, query: CaptureQuery) -> Result<Self::Output, Self::Error> {
         Ok(self
             .snapshot_limited_before_connection(

@@ -68,7 +68,3 @@ tokio-test = { workspace = true }
 
 [lints]
 workspace = true
-
-[[example]]
-name = "inspect_storage"
-required-features = ["inspect", "boring"]

@@ -97,7 +97,3 @@ zstd = { workspace = true }
 
 [lints]
 workspace = true
-
-[[example]]
-name = "inspect_memory"
-required-features = ["inspect"]

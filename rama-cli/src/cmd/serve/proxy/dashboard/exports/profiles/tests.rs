@@ -16,21 +16,11 @@ fn profile() -> UserAgentProfileInput {
 }
 
 async fn staged(limit: Arc<Semaphore>) -> StagedProfiles {
-    let staging = TempDir::with_prefix("rama-profile-export-test-").unwrap();
-    let file = tokio::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(staging.path().join("profiles.json"))
-        .await
-        .unwrap()
-        .into_std()
-        .await;
-    StagedProfiles {
-        file: BufWriter::with_capacity(kib(16), file),
-        staging,
-        permit: Some(limit.try_acquire_owned().unwrap()),
-    }
+    tokio::task::spawn_blocking(move || {
+        StagedProfiles::create(Some(limit.try_acquire_owned().unwrap())).unwrap()
+    })
+    .await
+    .unwrap()
 }
 
 #[tokio::test]

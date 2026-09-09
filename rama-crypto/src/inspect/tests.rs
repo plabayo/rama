@@ -3,6 +3,7 @@ use rama_inspect::storage::{FileStore, MemoryStore, StorageLimits};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 use super::*;
+
 async fn content(collection: &Collection, id: RecordId) -> Vec<u8> {
     let mut bytes = Vec::new();
     collection

@@ -22,6 +22,7 @@ pub enum ScopeMode {
 
 impl std::str::FromStr for ScopeMode {
     type Err = BoxError;
+
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "all" => Ok(Self::All),

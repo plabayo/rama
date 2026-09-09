@@ -36,7 +36,9 @@ impl CaptureMetadata {
 /// observations through `CaptureMetadata`; no protocol-specific fields are required.
 pub trait CaptureObserver: fmt::Debug + Send + Sync + 'static {
     fn request(&self, parts: &crate::request::Parts, metadata: &CaptureMetadata);
+
     fn response(&self, parts: &crate::response::Parts, metadata: &CaptureMetadata);
+
     /// Match protocol-owned observations without serializing them to an intermediate string.
     fn matches_search(&self, _metadata: &CaptureMetadata, _query: &str) -> bool {
         false
@@ -47,9 +49,3 @@ impl CaptureObserver for () {
     fn request(&self, _: &crate::request::Parts, _: &CaptureMetadata) {}
     fn response(&self, _: &crate::response::Parts, _: &CaptureMetadata) {}
 }
-
-/// A protocol adapter can identify its HTTP handshake (for example, WS/WSS).
-/// Without this observation capture derives the protocol from the request URI
-/// and transport extensions using the ordinary HTTP resolution rules.
-#[derive(Debug, Clone, rama_core::extensions::Extension)]
-pub struct HttpCaptureProtocol(pub rama_net::Protocol);

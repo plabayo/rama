@@ -3,7 +3,7 @@ use std::cell::Cell;
 use rama::{
     http::{
         Version,
-        inspect::control::{HttpMessageDirection, PendingSummary},
+        inspect::control::{Direction, PendingSummary},
         ws::inspect::WebSocketMessagePreview,
     },
     net::{Protocol, stream::SocketInfo},
@@ -18,12 +18,13 @@ use super::*;
 #[test]
 fn approval_fragments_are_consumed_only_when_writing_the_parent() {
     let pending = PendingSummary {
+        kind: None,
         id: 42,
         connection: 1,
         connection_display_id: Some(1),
         exchange: Some(2),
         protocol: Protocol::HTTP,
-        direction: HttpMessageDirection::Request,
+        direction: Direction::Ingress,
         method: Method::GET,
         url: "/".parse().unwrap(),
         status: None,

@@ -402,7 +402,7 @@ async fn http2_blocking_and_connection_release_preserve_sibling_streams() {
     let first_conn = conn.clone();
     let first_request = request("blocked");
     let first = tokio::spawn(async move { first_conn.serve(first_request).await.unwrap() });
-    let first_id = approval_id(&store, "request").await;
+    let first_id = approval_id(&store, Direction::Ingress).await;
     let second_conn = conn.clone();
     let second_request = request("replacement");
     let second = tokio::spawn(async move { second_conn.serve(second_request).await.unwrap() });
@@ -421,10 +421,10 @@ async fn http2_blocking_and_connection_release_preserve_sibling_streams() {
     assert!(!response.headers().contains_key("connection"));
     response.into_body().collect().await.unwrap();
     assert!(!second.is_finished());
-    let second_id = approval_id(&store, "request").await;
+    let second_id = approval_id(&store, Direction::Ingress).await;
     assert_eq!(control.pending(second_id).unwrap().connection, id);
     control.resolve(second_id, Decision::forward()).unwrap();
-    let response_id = approval_id(&store, "response").await;
+    let response_id = approval_id(&store, Direction::Egress).await;
     control
         .resolve(
             response_id,
@@ -444,7 +444,7 @@ async fn http2_blocking_and_connection_release_preserve_sibling_streams() {
     let third_conn = conn.clone();
     let third_request = request("release");
     let third = tokio::spawn(async move { third_conn.serve(third_request).await.unwrap() });
-    let id = approval_id(&store, "request").await;
+    let id = approval_id(&store, Direction::Ingress).await;
     control
         .resolve(
             id,

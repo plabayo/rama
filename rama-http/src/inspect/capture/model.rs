@@ -24,6 +24,7 @@ pub struct HttpConnectionSummary {
 
 impl std::ops::Deref for HttpConnectionSummary {
     type Target = rama_net::inspect::ConnectionSummary;
+
     fn deref(&self) -> &Self::Target {
         &self.transport
     }
@@ -83,7 +84,9 @@ pub struct CaptureSnapshot {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StoredRecord {
     Interception {
-        direction: crate::inspect::control::HttpMessageDirection,
+        /// HTTP heads have no kind; upgraded messages retain their protocol's tag.
+        kind: Option<rama_utils::str::NonEmptyStr>,
+        direction: crate::inspect::control::Direction,
         outcome: String,
         original_headers: HeaderMap,
         original_status: Option<StatusCode>,

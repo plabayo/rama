@@ -110,7 +110,7 @@ impl ResponseSpec {
         // Unread request bodies cannot be reused as the next HTTP/1 request.
         if matches!(
             message.direction,
-            crate::inspect::control::HttpMessageDirection::Request
+            crate::inspect::control::Direction::Ingress
         ) && message.version() != Version::HTTP_2
         {
             response

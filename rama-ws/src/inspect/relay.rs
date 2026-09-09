@@ -6,7 +6,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use rama_core::{bytes::Bytes, extensions::Extensions};
 use rama_http::inspect::{
     capture::{CaptureStore, HttpExchangeId},
-    control::{Decision, HttpMessageDirection, HttpUpgradeContext, Payload},
+    control::{Decision, Direction, HttpUpgradeContext, Payload},
 };
 use rama_net::Protocol;
 use rama_utils::str::non_empty_str;
@@ -59,8 +59,8 @@ pub async fn inspect_websocket_event(
             Protocol::WS
         };
         message.direction = match direction {
-            WebSocketRelayDirection::Ingress => HttpMessageDirection::Ingress,
-            WebSocketRelayDirection::Egress => HttpMessageDirection::Egress,
+            WebSocketRelayDirection::Ingress => Direction::Ingress,
+            WebSocketRelayDirection::Egress => Direction::Egress,
         };
         message.exchange = extensions.get_ref::<HttpExchangeId>().map(|id| id.0);
         message.binary = matches!(data, WebSocketRelayMessage::Binary(_));

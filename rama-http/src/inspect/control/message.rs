@@ -1,19 +1,9 @@
-use rama_net::uri::PathRef;
+use rama_net::{ProtocolInputExt as _, uri::PathRef};
 use rama_utils::str::NonEmptyStr;
 
 use super::*;
 
-rama_utils::macros::enums::enum_builder! {
-    /// HTTP head direction or a direction supplied by an upgraded protocol.
-    /// Unknown adapter tags remain usable without importing that protocol here.
-    @String
-    pub enum HttpMessageDirection {
-        Request => "request",
-        Response => "response",
-        Ingress => "ingress",
-        Egress => "egress",
-    }
-}
+pub use rama_inspect::Direction;
 
 /// A captured HTTP head or an adapter-supplied message on an upgraded connection.
 /// Routing and HTTP values retain their types; upgraded protocols supply their own kind tags.
@@ -25,7 +15,7 @@ pub struct Message {
     pub connection_display_id: Option<u64>,
     pub exchange: Option<u64>,
     pub protocol: Protocol,
-    pub direction: HttpMessageDirection,
+    pub direction: Direction,
     pub method: Method,
     pub url: Uri,
     pub host: Option<Host>,
@@ -53,7 +43,7 @@ impl Default for Message {
             connection_display_id: None,
             exchange: None,
             protocol: Protocol::HTTP,
-            direction: HttpMessageDirection::Request,
+            direction: Direction::Ingress,
             method: Method::GET,
             url: Uri::default(),
             host: None,
@@ -107,10 +97,7 @@ impl Message {
     }
 
     pub fn is_http(&self) -> bool {
-        matches!(
-            self.direction,
-            HttpMessageDirection::Request | HttpMessageDirection::Response
-        )
+        self.kind.is_none()
     }
 
     pub(super) fn size(&self) -> usize {
@@ -128,5 +115,79 @@ impl Message {
             + self.direction.as_str().len()
             + self.kind.as_ref().map_or(0, |kind| kind.len())
             + 256
+    }
+}
+
+pub fn http_message(parts: &crate::request::Parts) -> Message {
+    let host = parts
+        .uri
+        .authority()
+        .map(|a| a.host().into_owned())
+        .or_else(|| {
+            parts
+                .headers
+                .get(header::HOST)
+                .and_then(|h| h.to_str().ok())
+                .and_then(|h| h.parse::<rama_net::address::Authority>().ok())
+                .map(|a| a.address.host)
+        });
+    let protocol = parts.protocol().unwrap_or(&Protocol::HTTP);
+    Message {
+        protocol: protocol.clone(),
+        direction: Direction::Ingress,
+        method: parts.method.clone(),
+        url: parts.uri.clone(),
+        host,
+        port: parts
+            .uri
+            .authority()
+            .and_then(|a| a.port_u16())
+            .or_else(|| protocol.default_port()),
+        headers: parts.headers.clone(),
+        conditional: matches!(parts.method, Method::GET | Method::HEAD)
+            && (parts.headers.contains_key(header::IF_NONE_MATCH)
+                || parts.headers.contains_key(header::IF_MODIFIED_SINCE)),
+        http_version: parts.version,
+        ..Message::default()
+    }
+}
+
+#[derive(Debug, Clone, Extension)]
+#[extension(tags(proxy))]
+pub struct HttpUpgradeContext {
+    pub connection: ControlConnection,
+    pub request: Message,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PendingSummary {
+    pub kind: Option<NonEmptyStr>,
+    pub id: u64,
+    pub connection: u64,
+    pub connection_display_id: Option<u64>,
+    pub exchange: Option<u64>,
+    pub protocol: Protocol,
+    pub direction: Direction,
+    pub method: Method,
+    pub url: Uri,
+    pub status: Option<StatusCode>,
+    pub queued_at: Option<jiff::Timestamp>,
+}
+
+impl From<&Message> for PendingSummary {
+    fn from(m: &Message) -> Self {
+        Self {
+            kind: m.kind.clone(),
+            id: m.id,
+            connection: m.connection,
+            connection_display_id: m.connection_display_id,
+            exchange: m.exchange,
+            protocol: m.protocol.clone(),
+            direction: m.direction,
+            method: m.method.clone(),
+            url: m.url.clone(),
+            status: m.status,
+            queued_at: m.queued_at,
+        }
     }
 }

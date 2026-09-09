@@ -3,20 +3,21 @@
 use rama_utils::octets::kib_u64;
 
 use super::*;
-use crate::inspect::control::HttpMessageDirection;
 
 pub(super) const MAX_HTTP_RECORDS: usize = 32;
 
-pub(super) fn is_http(record: &StoredRecord) -> bool {
+pub(super) fn is_http_metadata(record: &StoredRecord) -> bool {
     match record {
-        StoredRecord::Interception { direction, .. } => matches!(
-            direction,
-            HttpMessageDirection::Request | HttpMessageDirection::Response
-        ),
+        StoredRecord::Interception { kind, .. } => kind.is_none(),
         StoredRecord::RequestBody { .. }
         | StoredRecord::ResponseBody { .. }
         | StoredRecord::ReplayResult { .. } => false,
-        _ => true,
+        StoredRecord::RequestHead { .. }
+        | StoredRecord::RequestTrailers { .. }
+        | StoredRecord::RequestEnd { .. }
+        | StoredRecord::ResponseHead { .. }
+        | StoredRecord::ResponseTrailers { .. }
+        | StoredRecord::ResponseEnd { .. } => true,
     }
 }
 

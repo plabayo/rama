@@ -225,7 +225,7 @@ where
                 Ok(response) => {
                     let (mut parts, body) = response.into_parts();
                     let mut original = message.clone();
-                    original.direction = crate::inspect::control::HttpMessageDirection::Response;
+                    original.direction = crate::inspect::control::Direction::Egress;
                     original.status = Some(parts.status);
                     original.headers = parts.headers.clone();
                     let (decision, reason) = control.decide(&connection, original.clone()).await;

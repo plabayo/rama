@@ -27,7 +27,7 @@ async fn pending_traffic_uses_request_rows_without_creating_captures() {
                         exchange: Some(71),
                         connection: 91,
                         protocol: "https".parse().unwrap(),
-                        direction: "request".into(),
+                        direction: "ingress".parse().unwrap(),
                         method: "GET".parse().unwrap(),
                         url: "https://example.test/<script>".parse().unwrap(),
                         ..Default::default()

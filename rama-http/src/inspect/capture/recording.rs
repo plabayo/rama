@@ -1,3 +1,5 @@
+use rama_net::ProtocolInputExt as _;
+
 use super::*;
 
 impl CaptureStore {
@@ -74,17 +76,17 @@ impl CaptureStore {
                     .cloned()
             })
             .flatten();
-        let protocol =
-            rama_http_types::protocol_from_uri_or_extensions(&parts.extensions, &parts.uri);
+        let protocol = parts.protocol().unwrap_or(&Protocol::HTTP);
         let mut metadata = CaptureMetadata::default();
         if let Some(connection) = &connection {
             metadata.connection.clone_from(&connection.metadata);
         }
         self.0.observer.request(parts, &metadata);
+        // Protocol owners may label an application carried by an HTTP handshake
+        // (e.g. WebSocket). Transport resolution above uses the usual InputExt.
         let protocol = metadata
             .exchange
-            .get_ref::<HttpCaptureProtocol>()
-            .map(|p| &p.0)
+            .get_ref::<Protocol>()
             .unwrap_or(protocol)
             .clone();
         let user_agent = parts.headers.get(crate::header::USER_AGENT).cloned();
@@ -298,7 +300,8 @@ impl CaptureStore {
             }
             *entry.decision.write() = Some(outcome.into());
             let record = StoredRecord::Interception {
-                direction: original.direction.clone(),
+                kind: original.kind.clone(),
+                direction: original.direction,
                 outcome: outcome.into(),
                 original_headers: original.headers.clone(),
                 original_status: original.status,
@@ -354,11 +357,12 @@ impl CaptureStore {
         let _append = entry.append_lock.lock().await;
         // HTTP has a small fixed set of heads/trailers/end records. Upgraded
         // message decisions and replay history use separate indexes.
-        if metadata::is_http(&record)
+        if metadata::is_http_metadata(&record)
             && entry.metadata_records.read().len() >= metadata::MAX_HTTP_RECORDS
         {
             return Ok(false);
         }
+
         #[cfg(test)]
         if let Some(hook) = self.0.append_test_hook.lock().await.take() {
             hook.reached.notify_one();
@@ -373,13 +377,24 @@ impl CaptureStore {
             StoredRecord::ResponseBody { .. } => {
                 entry.response_body_records.write().push(location);
             }
-            StoredRecord::Interception { .. } if !metadata::is_http(&record) => {
-                entry.message_decisions.write().push(record_location)
+            StoredRecord::Interception { kind, .. } => {
+                if kind.is_some() {
+                    entry.message_decisions.write().push(record_location);
+                } else {
+                    entry.metadata_records.write().push(record_location);
+                }
             }
             StoredRecord::ReplayResult { .. } => {
                 *entry.replay_record.write() = Some(record_location)
             }
-            _ => entry.metadata_records.write().push(record_location),
+            StoredRecord::RequestHead { .. }
+            | StoredRecord::RequestTrailers { .. }
+            | StoredRecord::RequestEnd { .. }
+            | StoredRecord::ResponseHead { .. }
+            | StoredRecord::ResponseTrailers { .. }
+            | StoredRecord::ResponseEnd { .. } => {
+                entry.metadata_records.write().push(record_location)
+            }
         }
         budget.commit(entry);
         Ok(true)

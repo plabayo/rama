@@ -26,7 +26,7 @@ fn control() -> Control {
 fn request() -> Message {
     Message {
         protocol: "https".parse().unwrap(),
-        direction: "request".into(),
+        direction: "ingress".parse().unwrap(),
         method: "GET".parse().unwrap(),
         host: Some("example.test".parse().unwrap()),
         url: "https://example.test/api/data".parse().unwrap(),
@@ -89,7 +89,8 @@ async fn default_is_automatic_but_enabled_intercepts_future_protocols() {
         &connection,
         Message {
             protocol: "future-protocol".parse().unwrap(),
-            direction: "ingress".into(),
+            direction: "ingress".parse().unwrap(),
+            kind: Some(rama_utils::str::non_empty_str!("message")),
             ..Default::default()
         },
     );
@@ -135,7 +136,7 @@ async fn connection_release_edits_current_and_releases_both_directions() {
         &control,
         &connection,
         Message {
-            direction: "response".into(),
+            direction: "egress".parse().unwrap(),
             status: Some(StatusCode::OK),
             ..request()
         },
@@ -567,7 +568,7 @@ fn rule_conditions_combine_protocol_port_kind_and_header_patterns() {
             host: ".example.test".into(),
             path: "/api/*".into(),
             protocol: "ws".into(),
-            direction: "ingress".into(),
+            direction: "ingress".parse().unwrap(),
             port: Some(8080),
             kind: "binary".into(),
             headers: vec![("x-mode".into(), "test-*".into())],
@@ -578,7 +579,7 @@ fn rule_conditions_combine_protocol_port_kind_and_header_patterns() {
     let message = Message {
         host: Some("sub.example.test".parse().unwrap()),
         protocol: "ws".parse().unwrap(),
-        direction: "ingress".into(),
+        direction: "ingress".parse().unwrap(),
         port: Some(8080),
         kind: Some(rama_utils::str::non_empty_str!("binary")),
         headers: headers(&[("X-Mode", "test-one")]),
@@ -631,8 +632,9 @@ async fn oversized_items_fail_closed_without_retaining_queue_memory() {
             &connection,
             Message {
                 oversized: true,
-                direction: "ingress".into(),
+                direction: "ingress".parse().unwrap(),
                 protocol: "ws".parse().unwrap(),
+                kind: Some(rama_utils::str::non_empty_str!("text")),
                 ..Default::default()
             },
         )
@@ -783,7 +785,7 @@ fn rule_selectors_are_parsed_once_and_canonicalize_known_directions() {
         enabled: true,
         action: Action::Intercept,
         matcher: Matcher {
-            direction: "ReQuEsT".into(),
+            direction: "InGrEsS".into(),
             protocol: "HTTP".into(),
             method: "GET".into(),
             ..Matcher::default()
@@ -794,8 +796,8 @@ fn rule_selectors_are_parsed_once_and_canonicalize_known_directions() {
     let mut invalid = rule.rule;
     invalid.matcher.method = "invalid method".into();
     CompiledRule::new(invalid).err().unwrap();
-    let custom: HttpMessageDirection = "custom-adapter-direction".parse().unwrap();
-    assert_eq!(custom.as_str(), "custom-adapter-direction");
+    "custom-adapter-direction".parse::<Direction>().unwrap_err();
+    serde_json::from_str::<Direction>("\"unknown\"").unwrap_err();
 }
 
 #[test]

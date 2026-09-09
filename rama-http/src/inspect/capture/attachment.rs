@@ -1,7 +1,6 @@
 //! Bounded typed metadata followed by an unencoded payload in one atomic record.
 
 use std::{
-    future::Future,
     io::Write,
     pin::Pin,
     task::{Context, Poll},
@@ -21,9 +20,13 @@ const MAX_METADATA: usize = rama_utils::octets::kib(64);
 /// from `payload`, without allocating another payload buffer.
 pub trait CapturedRecord: Send + Sync + Sized + 'static {
     type Metadata: Serialize + DeserializeOwned + Send + Sync;
+
     fn metadata(&self) -> Self::Metadata;
+
     fn payload(&self) -> Bytes;
+
     fn from_parts(metadata: Self::Metadata, payload: Bytes) -> Self;
+
     /// Search typed metadata and streamed payload without materializing the record.
     fn matches_stream(
         record: CapturedRecordStream<Self::Metadata>,

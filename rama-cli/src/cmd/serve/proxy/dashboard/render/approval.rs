@@ -1,6 +1,6 @@
 use std::fmt;
 
-use rama::http::inspect::control::HttpMessageDirection;
+use rama::http::inspect::control::Direction;
 
 use super::*;
 
@@ -26,10 +26,13 @@ pub(in crate::cmd::serve::proxy::dashboard) fn approval_badge(
 ) -> impl IntoHtml {
     span!(
         class = "approval-badge",
-        match message.direction {
-            HttpMessageDirection::Request => "Awaiting request approval",
-            HttpMessageDirection::Response => "Awaiting response approval",
-            _ => "Awaiting message approval",
+        if message.kind.is_some() {
+            "Awaiting message approval"
+        } else {
+            match message.direction {
+                Direction::Ingress => "Awaiting request approval",
+                Direction::Egress => "Awaiting response approval",
+            }
         }
     )
 }
@@ -85,71 +88,65 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_pending_fallbacks(
     exchanges: &[HttpExchangeSummary],
     connection: Option<u64>,
 ) -> impl IntoHtml {
-    move |output: &mut String| {
-        let retained = exchanges
-            .iter()
-            .map(|exchange| exchange.id)
-            .collect::<BTreeSet<_>>();
-        let mut groups = BTreeMap::<ApprovalGroup, Vec<&PendingSummary>>::new();
-        for message in pending.iter().filter(|message| {
-            connection.is_none_or(|id| id == message.connection)
-                && message.exchange.is_none_or(|id| !retained.contains(&id))
-        }) {
-            let key = message
-                .exchange
-                .map(ApprovalGroup::Request)
-                .unwrap_or_else(|| {
-                    if matches!(
-                        message.direction,
-                        HttpMessageDirection::Request | HttpMessageDirection::Response
-                    ) {
-                        ApprovalGroup::Unrecorded(message.id)
-                    } else {
-                        ApprovalGroup::Connection(message.connection)
-                    }
-                });
-            groups.entry(key).or_default().push(message);
-        }
-        render_each(groups.into_iter().filter_map(|(key, messages)| {
-            let first = messages.first()?;
-            Some(article!(
-                id = display(key),
-                class = "exchange active temporary-request",
-                tabindex = "0",
-                "data-inspector-focus" = "request",
-                "data-approval-id" = display(first.id),
-                div!(
-                    class = "exchange-row",
-                    div!(
-                        class = "capture-ref",
-                        strong!(if let Some(id) = first.exchange {
-                            ("#", id)
-                        } else {
-                            "Unrecorded"
-                        }),
-                        span!(if let Some(id) = first.connection_display_id {
-                            ("conn #", id)
-                        } else {
-                            ("connection ", first.connection)
-                        })
-                    ),
-                    span!(class = "method", display(&first.method)),
-                    div!(
-                        class = "target",
-                        strong!(display(&first.url)),
-                        small!("Outside the current captured view")
-                    ),
-                    div!(
-                        class = "exchange-protocol-state",
-                        span!(display(uppercase(first.protocol.as_str()))),
-                        approval_badge(first)
-                    )
-                ),
-                render_approval_slots(messages.into_iter())
-            ))
-        }))
-        .escape_and_write(output);
+    let retained = exchanges
+        .iter()
+        .map(|exchange| exchange.id)
+        .collect::<BTreeSet<_>>();
+    let mut groups = BTreeMap::<ApprovalGroup, Vec<&PendingSummary>>::new();
+    for message in pending.iter().filter(|message| {
+        connection.is_none_or(|id| id == message.connection)
+            && message.exchange.is_none_or(|id| !retained.contains(&id))
+    }) {
+        let key = message
+            .exchange
+            .map(ApprovalGroup::Request)
+            .unwrap_or_else(|| {
+                if message.kind.is_none() {
+                    ApprovalGroup::Unrecorded(message.id)
+                } else {
+                    ApprovalGroup::Connection(message.connection)
+                }
+            });
+        groups.entry(key).or_default().push(message);
     }
+    render_each(groups.into_iter().filter_map(|(key, messages)| {
+        let first = messages.first()?;
+        Some(article!(
+            id = display(key),
+            class = "exchange active temporary-request",
+            tabindex = "0",
+            "data-inspector-focus" = "request",
+            "data-approval-id" = display(first.id),
+            div!(
+                class = "exchange-row",
+                div!(
+                    class = "capture-ref",
+                    strong!(if let Some(id) = first.exchange {
+                        ("#", id)
+                    } else {
+                        "Unrecorded"
+                    }),
+                    span!(if let Some(id) = first.connection_display_id {
+                        ("conn #", id)
+                    } else {
+                        ("connection ", first.connection)
+                    })
+                ),
+                span!(class = "method", display(&first.method)),
+                div!(
+                    class = "target",
+                    strong!(display(&first.url)),
+                    small!("Outside the current captured view")
+                ),
+                div!(
+                    class = "exchange-protocol-state",
+                    span!(display(uppercase(first.protocol.as_str()))),
+                    approval_badge(first)
+                )
+            ),
+            render_approval_slots(messages.into_iter())
+        ))
+    }))
 }
 
 pub(in crate::cmd::serve::proxy::dashboard) fn render_approval_slots<'a>(

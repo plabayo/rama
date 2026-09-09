@@ -61,6 +61,7 @@ impl FileStore {
 impl Service<CreateCollection> for FileStore {
     type Output = Collection;
     type Error = BoxError;
+
     async fn serve(&self, input: CreateCollection) -> Result<Collection, BoxError> {
         let factory = self.inner.clone();
         tokio::task::spawn_blocking(move || {
@@ -206,6 +207,7 @@ struct FileCollection(Arc<FileInner>);
 impl Service<AppendRecord> for FileCollection {
     type Output = RecordId;
     type Error = BoxError;
+
     async fn serve(&self, input: AppendRecord) -> Result<RecordId, BoxError> {
         let state = self.0.state.clone().lock_owned().await;
         let permit = self.0.factory.appends.clone().acquire_owned().await?;
@@ -287,6 +289,7 @@ impl Service<AppendRecord> for FileCollection {
 impl Service<ReadRecord> for FileCollection {
     type Output = Reader;
     type Error = BoxError;
+
     async fn serve(&self, input: ReadRecord) -> Result<Reader, BoxError> {
         let (offset, length) = self
             .0
@@ -309,6 +312,7 @@ impl Service<ReadRecord> for FileCollection {
 impl Service<ListRecords> for FileCollection {
     type Output = Vec<RecordId>;
     type Error = BoxError;
+
     async fn serve(&self, _: ListRecords) -> Result<Vec<RecordId>, BoxError> {
         Ok((0..self.0.records.read().len() as u64)
             .map(RecordId)

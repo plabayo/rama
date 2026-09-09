@@ -6,6 +6,7 @@ use std::{
 };
 
 use crate::ProtocolError;
+
 /// WebSocket message opcode as in RFC 6455.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum OpCode {

@@ -36,7 +36,7 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_connection_tls(
 
 pub(in crate::cmd::serve::proxy::dashboard) fn tls_version_label(
     version: ProtocolVersion,
-) -> impl fmt::Display {
+) -> impl fmt::Display + Clone {
     rama::utils::fmt::display_fn(move |f: &mut fmt::Formatter<'_>| {
         f.write_str(match version {
             ProtocolVersion::SSLv2 => "SSL 2.0",
@@ -55,21 +55,18 @@ pub(in crate::cmd::serve::proxy::dashboard) fn tls_version_label(
 
 pub(in crate::cmd::serve::proxy::dashboard) fn tls_fact(
     label: &'static str,
-    value: impl fmt::Display,
+    value: impl fmt::Display + Clone,
 ) -> impl IntoHtml {
-    move |output: &mut String| {
-        div!(
-            class = "tls-fact",
-            span!(label),
-            code!(title = display(&value), display(&value))
-        )
-        .escape_and_write(output);
-    }
+    div!(
+        class = "tls-fact",
+        span!(label),
+        code!(title = display(value.clone()), display(value))
+    )
 }
 
 pub(in crate::cmd::serve::proxy::dashboard) fn render_tls_offer_list(
     label: &'static str,
-    values: impl ExactSizeIterator<Item = impl fmt::Display>,
+    values: impl ExactSizeIterator<Item = impl fmt::Display + Clone>,
 ) -> Option<impl IntoHtml> {
     let count = values.len();
     (count != 0).then(|| {
@@ -82,9 +79,9 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_tls_offer_list(
             ),
             ol!(
                 class = "tls-offer-list",
-                render_each(values.map(|value| move |output: &mut String| {
-                    li!(code!(title = display(&value), display(&value))).escape_and_write(output);
-                }))
+                render_each(
+                    values.map(|value| li!(code!(title = display(value.clone()), display(value))))
+                )
             )
         )
     })

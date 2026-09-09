@@ -74,7 +74,7 @@
     <label>Host <input id="rule-host" placeholder="exact host, .domain or glob"></label>
     <label>Path <input id="rule-path" placeholder="/path or /prefix*"></label>
     <label>Protocol <input id="rule-protocol" placeholder="All protocols"></label>
-    <label>Direction <select id="rule-direction"><option value="">Both / any</option><option>request</option><option>response</option><option>ingress</option><option>egress</option></select></label>
+    <label>Direction <select id="rule-direction"><option value="">Both / any</option><option value="ingress">Client → server</option><option value="egress">Server → client</option></select></label>
     <label>Method <input id="rule-method" placeholder="Any method"></label>
     <label>Port <input id="rule-port" type="number" min="1" max="65535"></label>
     <label>Message kind <input id="rule-kind" placeholder="Any kind (text, binary, …)"></label>

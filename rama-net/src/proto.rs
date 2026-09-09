@@ -78,32 +78,41 @@ enum ProtocolKind {
 impl Protocol {
     /// `HTTP` protocol scheme
     pub const HTTP_SCHEME: &str = "http";
+
     /// `HTTP` protocol default port
     pub const HTTP_DEFAULT_PORT: u16 = 80;
+
     /// Common alternate `HTTP` protocol port.
     pub const HTTP_ALT_PORT: u16 = 8080;
+
     /// Common default port for an HTTP proxy address without an explicit port.
     ///
     /// This follows the long-standing curl proxy-address convention. It is
     /// distinct from [`HTTP_DEFAULT_PORT`][Self::HTTP_DEFAULT_PORT], which is
     /// the default port for an HTTP origin server.
     pub const HTTP_PROXY_DEFAULT_PORT: u16 = 1080;
+
     /// `HTTP` protocol.
     pub const HTTP: Self = Self(ProtocolKind::Http);
 
     /// `HTTPS` protocol scheme
     pub const HTTPS_SCHEME: &str = "https";
+
     /// `HTTPS` protocol default port
     pub const HTTPS_DEFAULT_PORT: u16 = 443;
+
     /// Common alternate `HTTPS` protocol port.
     pub const HTTPS_ALT_PORT: u16 = 8443;
+
     /// `HTTPS` protocol.
     pub const HTTPS: Self = Self(ProtocolKind::Https);
 
     /// `ICAP` protocol scheme.
     pub const ICAP_SCHEME: &str = "icap";
+
     /// `ICAP` protocol default port.
     pub const ICAP_DEFAULT_PORT: u16 = 1344;
+
     /// `ICAP` protocol.
     pub const ICAP: Self = Self(ProtocolKind::Icap);
 
@@ -111,43 +120,54 @@ impl Protocol {
     ///
     /// This is a deployed convention and is not registered by IANA.
     pub const ICAPS_SCHEME: &str = "icaps";
+
     /// Conventional direct TLS `ICAP` protocol default port.
     ///
     /// Port 11344 is widely deployed but is not assigned by RFC 3507.
     pub const ICAPS_DEFAULT_PORT: u16 = 11344;
+
     /// Direct TLS `ICAP` protocol.
     pub const ICAPS: Self = Self(ProtocolKind::Icaps);
 
     /// `WS` protocol scheme
     pub const WS_SCHEME: &str = "ws";
+
     /// `WS` protocol default port
     pub const WS_DEFAULT_PORT: u16 = Self::HTTP_DEFAULT_PORT;
+
     /// `WS` protocol.
     pub const WS: Self = Self(ProtocolKind::Ws);
 
     /// `WSS` protocol scheme
     pub const WSS_SCHEME: &str = "wss";
+
     /// `WSS` protocol default port
     pub const WSS_DEFAULT_PORT: u16 = Self::HTTPS_DEFAULT_PORT;
+
     /// `WSS` protocol.
     pub const WSS: Self = Self(ProtocolKind::Wss);
 
     /// `SOCKS5` protocol scheme
     pub const SOCKS5_SCHEME: &str = "socks5";
+
     /// `SOCKS5` protocol default port
     pub const SOCKS5_DEFAULT_PORT: u16 = 1080;
+
     /// `SOCKS5` protocol.
     pub const SOCKS5: Self = Self(ProtocolKind::Socks5);
 
     /// `SOCKS5H` protocol scheme
     pub const SOCKS5H_SCHEME: &str = "socks5h";
+
     /// `SOCKS5H` protocol default port
     pub const SOCKS5H_DEFAULT_PORT: u16 = Self::SOCKS5_DEFAULT_PORT;
+
     /// `SOCKS5H` protocol.
     pub const SOCKS5H: Self = Self(ProtocolKind::Socks5h);
 
     /// `FILE` protocol scheme. RFC 8089 — `file:///path/to/x`.
     pub const FILE_SCHEME: &str = "file";
+
     /// The `file` protocol. Local-filesystem URI scheme: the URI
     /// references a path on the host running the URI consumer.
     /// Consumers (CLI tools, file fetchers) open the path directly
@@ -156,6 +176,7 @@ impl Protocol {
 
     /// `DATA` protocol scheme. RFC 2397 — `data:[<mediatype>][;base64],<data>`.
     pub const DATA_SCHEME: &str = "data";
+
     /// The `data` protocol. Self-contained URI scheme: the URI itself
     /// carries the payload, which consumers decode in place rather
     /// than dialing a network endpoint or opening a file.

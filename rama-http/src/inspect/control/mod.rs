@@ -129,7 +129,7 @@ mod response;
 pub use response::ResponseSpec;
 
 mod message;
-pub use message::{HttpMessageDirection, Message};
+pub use message::{Direction, HttpUpgradeContext, Message, PendingSummary, http_message};
 
 mod payload;
 pub use payload::Payload;
@@ -220,7 +220,8 @@ impl Decision {
                     }
                 }
                 if let Some(status) = status
-                    && (!matches!(message.direction, HttpMessageDirection::Response)
+                    && (!message.is_http()
+                        || !matches!(message.direction, Direction::Egress)
                         || !(200..=599).contains(&status.as_u16())
                         || matches!(status.as_u16(), 204 | 205 | 304)
                         || matches!(
@@ -306,7 +307,7 @@ struct CompiledRule {
     headers: Vec<(HeaderName, Wildcard<'static>)>,
     protocol: Option<Protocol>,
     method: Option<Method>,
-    direction: Option<HttpMessageDirection>,
+    direction: Option<Direction>,
 }
 
 #[derive(Clone)]
@@ -386,8 +387,9 @@ impl CompiledRule {
         let method = (!m.method.is_empty())
             .then(|| m.method.parse())
             .transpose()?;
-        let direction =
-            (!m.direction.is_empty()).then(|| HttpMessageDirection::from(m.direction.as_str()));
+        let direction = (!m.direction.is_empty())
+            .then(|| m.direction.parse())
+            .transpose()?;
         Ok(Self {
             rule,
             host,
@@ -934,78 +936,5 @@ impl Control {
     }
 }
 
-pub fn http_message(parts: &crate::request::Parts) -> Message {
-    let host = parts
-        .uri
-        .authority()
-        .map(|a| a.host().into_owned())
-        .or_else(|| {
-            parts
-                .headers
-                .get(header::HOST)
-                .and_then(|h| h.to_str().ok())
-                .and_then(|h| h.parse::<rama_net::address::Authority>().ok())
-                .map(|a| a.address.host)
-        });
-    let protocol = rama_http_types::protocol_from_uri_or_extensions(&parts.extensions, &parts.uri);
-    Message {
-        protocol: protocol.clone(),
-        direction: HttpMessageDirection::Request,
-        method: parts.method.clone(),
-        url: parts.uri.clone(),
-        host,
-        port: parts
-            .uri
-            .authority()
-            .and_then(|a| a.port_u16())
-            .or_else(|| protocol.default_port()),
-        headers: parts.headers.clone(),
-        conditional: matches!(parts.method, Method::GET | Method::HEAD)
-            && (parts.headers.contains_key(header::IF_NONE_MATCH)
-                || parts.headers.contains_key(header::IF_MODIFIED_SINCE)),
-        http_version: parts.version,
-        ..Message::default()
-    }
-}
-
-#[derive(Debug, Clone, Extension)]
-#[extension(tags(proxy))]
-pub struct HttpUpgradeContext {
-    pub connection: ControlConnection,
-    pub request: Message,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PendingSummary {
-    pub id: u64,
-    pub connection: u64,
-    pub connection_display_id: Option<u64>,
-    pub exchange: Option<u64>,
-    pub protocol: Protocol,
-    pub direction: HttpMessageDirection,
-    pub method: Method,
-    pub url: Uri,
-    pub status: Option<StatusCode>,
-    pub queued_at: Option<jiff::Timestamp>,
-}
-
-impl From<&Message> for PendingSummary {
-    fn from(m: &Message) -> Self {
-        Self {
-            id: m.id,
-            connection: m.connection,
-            connection_display_id: m.connection_display_id,
-            exchange: m.exchange,
-            protocol: m.protocol.clone(),
-            direction: m.direction.clone(),
-            method: m.method.clone(),
-            url: m.url.clone(),
-            status: m.status,
-            queued_at: m.queued_at,
-        }
-    }
-}
-
 #[cfg(test)]
-#[path = "control_tests.rs"]
 mod tests;

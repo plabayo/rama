@@ -8,6 +8,38 @@ const vm = require("node:vm");
 
 const liveScript = fs.readFileSync(path.join(__dirname, "dashboard-live.js"), "utf8");
 const detailsScript = fs.readFileSync(path.join(__dirname, "dashboard-details.js"), "utf8");
+const controlScript = fs.readFileSync(path.join(__dirname, "dashboard-control.js"), "utf8");
+
+test("approval editor uses message kind independently of traffic direction", async () => {
+  const editor = controlScript.slice(controlScript.indexOf("async function editMessage("), controlScript.indexOf("function readResponse("));
+  for (const direction of ["ingress", "egress"]) {
+    for (const kind of [null, "text", "binary"]) {
+      const elements = new Map();
+      const element = (id) => {
+        if (!elements.has(id)) elements.set(id, { label: {}, closest() { return this.label; }, focus() {} });
+        return elements.get(id);
+      };
+      const context = vm.createContext({
+        $: element,
+        api: async () => ({ id: 1, direction, kind, method: "GET", url: "/", headers: [], status: 200 }),
+        editSequence: 0,
+        editing: undefined,
+        formatHeaders: () => "",
+        connectionLabel: () => "connection #1",
+        mountEditor() {},
+        inlineEditor: { scrollIntoView() {} },
+      });
+      vm.runInContext(editor, context);
+      await context.editMessage(1);
+      const http = kind === null;
+      assert.equal(element("http-edit-fields").hidden, !http);
+      assert.equal(element("ws-edit-fields").hidden, http);
+      assert.equal(element("intercept-status").label.hidden, !http || direction !== "egress");
+      assert.equal(element("block-message").textContent, http ? "Block" : "Drop message");
+      assert.equal(element("respond-message").hidden, !http);
+    }
+  }
+});
 
 function liveContext(document, requestAnimationFrame = () => 0) {
   const handlers = {};

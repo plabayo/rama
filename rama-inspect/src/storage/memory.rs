@@ -23,6 +23,7 @@ impl MemoryStore {
 impl Service<CreateCollection> for MemoryStore {
     type Output = Collection;
     type Error = BoxError;
+
     async fn serve(&self, _: CreateCollection) -> Result<Collection, BoxError> {
         Ok(Collection::new(MemoryCollection(Arc::new(MemoryInner {
             records: parking_lot::RwLock::new(Vec::new()),
@@ -53,6 +54,7 @@ struct MemoryCollection(Arc<MemoryInner>);
 impl Service<AppendRecord> for MemoryCollection {
     type Output = RecordId;
     type Error = BoxError;
+
     async fn serve(&self, input: AppendRecord) -> Result<RecordId, BoxError> {
         let _append = self.0.append_lock.lock().await;
         let (bytes, reservation) = match input {
@@ -94,6 +96,7 @@ impl Service<AppendRecord> for MemoryCollection {
 impl Service<ReadRecord> for MemoryCollection {
     type Output = Reader;
     type Error = BoxError;
+
     async fn serve(&self, input: ReadRecord) -> Result<Reader, BoxError> {
         let record = self
             .0
@@ -117,6 +120,7 @@ impl Service<ReadRecord> for MemoryCollection {
 impl Service<ListRecords> for MemoryCollection {
     type Output = Vec<RecordId>;
     type Error = BoxError;
+
     async fn serve(&self, _: ListRecords) -> Result<Vec<RecordId>, BoxError> {
         Ok((0..self.0.records.read().len() as u64)
             .map(RecordId)

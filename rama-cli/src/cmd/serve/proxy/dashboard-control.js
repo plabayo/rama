@@ -166,13 +166,13 @@ async function editMessage(id) {
   // Reopening the current message must preserve the user's draft.
   if (editing?.id === id) { mountEditor(); return; }
   editing = message;
-  const m = editing, http = ["request", "response"].includes(m.direction);
+  const m = editing, http = m.kind == null;
   $("intercept-title").textContent = `Edit ${m.direction} · approval #${id}`;
   $("intercept-description").textContent = `${m.method} ${m.url} · ${connectionLabel(m)}${m.binary ? " · Binary payload uses base64" : ""}`;
   $("http-edit-fields").hidden = !http; $("ws-edit-fields").hidden = http;
   $("intercept-headers").value = formatHeaders(m.headers);
   $("intercept-status").value = m.status || "";
-  $("intercept-status").closest("label").hidden = m.direction !== "response";
+  $("intercept-status").closest("label").hidden = m.kind != null || m.direction !== "egress";
   $("intercept-payload").value = m.payload || "";
   $("block-message").textContent = http ? "Block" : "Drop message";
   $("respond-message").hidden = !http; $("close-websocket").hidden = http;
@@ -252,9 +252,9 @@ on("approval-filter", () => { approvalOnly = $("live")?.classList.contains("focu
 on("forward-all", async () => { await api("/api/control/forward-all", {}); await refresh(); });
 function editedDecision(action = "forward") {
   const decision = { action };
-  if (["request", "response"].includes(editing.direction)) {
+  if (editing.kind == null) {
     if ($("intercept-headers").value !== formatHeaders(editing.headers)) decision.headers = readHeaders($("intercept-headers").value);
-    if (editing.direction === "response" && Number($("intercept-status").value) !== editing.status) decision.status = Number($("intercept-status").value);
+    if (editing.kind == null && editing.direction === "egress" && Number($("intercept-status").value) !== editing.status) decision.status = Number($("intercept-status").value);
   } else decision.payload = $("intercept-payload").value;
   return decision;
 }
@@ -265,7 +265,7 @@ async function decideEditing(decision) {
 }
 on("forward-message", () => decideEditing(editedDecision()), "intercept-error");
 on("forward-connection", () => decideEditing(editedDecision("connection")), "intercept-error");
-on("block-message", () => decideEditing({ action: ["request", "response"].includes(editing.direction) ? "block" : "drop" }), "intercept-error");
+on("block-message", () => decideEditing({ action: editing.kind == null ? "block" : "drop" }), "intercept-error");
 on("close-websocket", async () => {
   const reason = window.prompt("Close reason", "Closed by Rama proxy"); if (reason === null) return;
   const code = window.prompt("WebSocket close code", "1008"); if (code === null) return;

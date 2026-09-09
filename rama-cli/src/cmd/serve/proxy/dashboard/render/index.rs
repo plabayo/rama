@@ -182,11 +182,16 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_index(session: &str) -> im
                                 "data-persist-filter" = "status",
                                 "data-on:change" = "@post('/api/filter')",
                                 option!(value = "", "All statuses"),
-                                option!(value = "pending", "Pending"),
-                                option!(value = "2xx", "2xx"),
-                                option!(value = "3xx", "3xx"),
-                                option!(value = "4xx", "4xx"),
-                                option!(value = "5xx", "5xx"),
+                                option!(value = display(StatusQuery::Pending), "Pending"),
+                                [
+                                    StatusQuery::Informational,
+                                    StatusQuery::Success,
+                                    StatusQuery::Redirection,
+                                    StatusQuery::ClientError,
+                                    StatusQuery::ServerError,
+                                ]
+                                .into_iter()
+                                .map(|status| option!(value = display(status), display(status))),
                             )
                         ),
                         label!(

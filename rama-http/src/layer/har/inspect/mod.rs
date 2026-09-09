@@ -1,17 +1,84 @@
 //! Convert captured observations into HAR entries, independently of the export destination.
 
 use rama_core::error::{BoxError, ErrorContext as _};
+use rama_inspect::Direction;
 use rama_net::stream::SocketInfo;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    inspect::capture::{CaptureDetails, StoredRecord},
-    layer::har::spec,
+    Method, StatusCode, Version,
+    headers::{ContentType, HeaderMapExt},
+    inspect::capture::{
+        CaptureDetails, CapturedBody, CapturedBodySource, ExchangeCapture, StoredRecord,
+    },
+    layer::har::{
+        spec,
+        stream::{HarBody, HarEntryExtension, scan, write_entry},
+    },
+    request::Parts as RequestParts,
+    response::Parts as ResponseParts,
 };
-mod form;
-mod streaming;
-mod writer;
-pub use streaming::{HarEntryExtension, write_captured_har_entry, write_json_string};
-pub use writer::HarObjectWriter;
+
+impl HarBody for CapturedBodySource {
+    fn reader(&self) -> impl AsyncRead + Unpin + Send {
+        self.reader()
+    }
+}
+
+/// Write one HAR entry directly to an asynchronous destination. Body memory is
+/// bounded independently of capture size. A first pass determines UTF-8 encoding;
+/// the second streams the same pinned record prefix. Cancellation may leave a
+/// partial entry in the destination; callers publishing files should stage them.
+pub async fn write_captured_har_entry<W: AsyncWrite + Unpin + Send>(
+    writer: &mut W,
+    capture: &ExchangeCapture,
+    extension: &impl HarEntryExtension,
+) -> Result<(), BoxError> {
+    let details = capture.inspector_details().await?;
+    let request = capture.body_source(CapturedBody::Request);
+    let response = capture.body_source(CapturedBody::Response);
+    let request_stats = scan(request.reader()).await?;
+    let response_stats = scan(response.reader()).await?;
+    let request_headers = details
+        .records
+        .iter()
+        .rev()
+        .find_map(|record| match record {
+            StoredRecord::RequestHead { headers, .. }
+            | StoredRecord::Interception {
+                kind: None,
+                direction: Direction::Ingress,
+                forwarded_headers: Some(headers),
+                ..
+            } => Some(headers),
+            _ => None,
+        });
+    let mime = request_headers
+        .and_then(|headers| headers.typed_get::<ContentType>())
+        .map(ContentType::into_mime);
+    let form = mime
+        .as_ref()
+        .is_some_and(|mime| mime.subtype() == crate::mime::WWW_FORM_URLENCODED);
+    let mut entry = entry_metadata(details, request_stats.size(), response_stats.size())?;
+    if request_stats.size() > 0 {
+        entry.request.post_data = Some(spec::PostData {
+            mime_type: mime,
+            params: form.then(Vec::new),
+            text: None,
+            comment: None,
+        });
+    }
+    write_entry(
+        writer,
+        &entry,
+        &request,
+        &request_stats,
+        &response,
+        &response_stats,
+        extension,
+    )
+    .await
+}
 
 fn entry_metadata(
     details: CaptureDetails,
@@ -30,7 +97,8 @@ fn entry_metadata(
                 ..
             } => request_head = Some((method, url, version, headers)),
             StoredRecord::Interception {
-                direction: crate::inspect::control::HttpMessageDirection::Request,
+                kind: None,
+                direction: Direction::Ingress,
                 forwarded_headers: Some(headers),
                 ..
             } => {
@@ -61,7 +129,7 @@ fn entry_metadata(
                     .context("captured request authority missing")?,
             );
     }
-    let mut request_parts = crate::request::Parts::default();
+    let mut request_parts = RequestParts::default();
     request_parts.method = method;
     request_parts.uri = url;
     request_parts.version = request_version;
@@ -69,9 +137,9 @@ fn entry_metadata(
     let mut request = spec::Request::from_http_request_parts(&request_parts, &[], false)?;
 
     let upgraded = response_head.as_ref().is_some_and(|(status, _, _)| {
-        *status == crate::StatusCode::SWITCHING_PROTOCOLS
-            || (request_version == crate::Version::HTTP_2
-                && request_parts.method == crate::Method::CONNECT
+        *status == StatusCode::SWITCHING_PROTOCOLS
+            || (request_version == Version::HTTP_2
+                && request_parts.method == Method::CONNECT
                 && status.is_success())
     });
     let request_size = if upgraded {
@@ -86,7 +154,7 @@ fn entry_metadata(
 
     let response = match response_head {
         Some((status, version, headers)) => {
-            let mut response_parts = crate::response::Parts::default();
+            let mut response_parts = ResponseParts::default();
             response_parts.status = status;
             response_parts.version = version;
             response_parts.headers = headers;

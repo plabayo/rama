@@ -32,6 +32,7 @@ impl<T> FilterValue<T> {
 
 impl<T: FromStr> FromStr for FilterValue<T> {
     type Err = Infallible;
+
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         Ok(if value.is_empty() {
             Self::Any
@@ -101,6 +102,7 @@ pub struct ConnectionQuery(pub u64);
 
 impl FromStr for ConnectionQuery {
     type Err = std::num::ParseIntError;
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         s.trim().trim_start_matches('#').parse().map(Self)
     }
@@ -120,6 +122,7 @@ pub enum ProtocolQuery {
 
 impl FromStr for ProtocolQuery {
     type Err = rama_core::error::BoxError;
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s == "other" {
             Ok(Self::Other)
@@ -163,6 +166,7 @@ pub enum StatusQuery {
 
 impl FromStr for StatusQuery {
     type Err = rama_core::error::BoxError;
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "pending" => Ok(Self::Pending),

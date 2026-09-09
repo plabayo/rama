@@ -55,6 +55,7 @@ impl EncryptStorageLayer {
 
 impl<S> Layer<S> for EncryptStorageLayer {
     type Service = EncryptStore<S>;
+
     fn layer(&self, inner: S) -> Self::Service {
         EncryptStore {
             inner,
@@ -84,6 +85,7 @@ where
 {
     type Output = Collection;
     type Error = BoxError;
+
     async fn serve(&self, input: CreateCollection) -> Result<Collection, BoxError> {
         let inner = self.inner.serve(input).await?;
         Ok(Collection::new(EncryptedCollection {
@@ -122,6 +124,7 @@ fn invalid(message: &'static str) -> std::io::Error {
 impl Service<AppendRecord> for EncryptedCollection {
     type Output = RecordId;
     type Error = BoxError;
+
     async fn serve(&self, input: AppendRecord) -> Result<RecordId, BoxError> {
         let mut source = input.into_reader();
         let mut identity = [0; 16];
@@ -199,6 +202,7 @@ impl Service<AppendRecord> for EncryptedCollection {
 impl Service<ReadRecord> for EncryptedCollection {
     type Output = Reader;
     type Error = BoxError;
+
     async fn serve(&self, input: ReadRecord) -> Result<Reader, BoxError> {
         let expected = self
             .records
@@ -266,6 +270,7 @@ impl Service<ReadRecord> for EncryptedCollection {
 impl Service<ListRecords> for EncryptedCollection {
     type Output = Vec<RecordId>;
     type Error = BoxError;
+
     async fn serve(&self, _: ListRecords) -> Result<Vec<RecordId>, BoxError> {
         Ok(self.records.read().keys().copied().collect())
     }

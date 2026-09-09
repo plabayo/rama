@@ -26,6 +26,7 @@ pub fn deserialize<'de, D: Deserializer<'de>, B: From<Vec<u8>>>(
     struct BytesVisitor<B>(PhantomData<B>);
     impl<'de, B: From<Vec<u8>>> Visitor<'de> for BytesVisitor<B> {
         type Value = B;
+
         fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             f.write_str("a base64 string")
         }

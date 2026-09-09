@@ -26,11 +26,13 @@ pub use file::FileStore;
 
 /// An owned reader, suitable for streaming to a response, file, or native UI.
 pub type Reader = Pin<Box<dyn AsyncRead + Send + 'static>>;
+
 /// Logical record identifier within a collection. Never a byte offset.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
 pub struct RecordId(pub u64);
+
 /// Create a collection with an application-assigned, instance-unique identifier.
 #[derive(Debug, Clone, Copy)]
 pub struct CreateCollection {
@@ -86,6 +88,7 @@ impl ReadRecord {
 /// Snapshot the identifiers of currently committed records.
 #[derive(Debug, Clone, Copy)]
 pub struct ListRecords;
+
 /// Storage admission limits, shared across collections. Defaults bound retained
 /// bytes to 64 MiB and each record to 8 MiB. Explicit zero fields mean unlimited.
 #[derive(Debug, Clone, Copy)]
@@ -150,6 +153,7 @@ impl Collection {
 impl Service<AppendRecord> for Collection {
     type Output = RecordId;
     type Error = BoxError;
+
     async fn serve(&self, input: AppendRecord) -> Result<Self::Output, Self::Error> {
         self.append.serve(input).await
     }
@@ -158,6 +162,7 @@ impl Service<AppendRecord> for Collection {
 impl Service<ReadRecord> for Collection {
     type Output = Reader;
     type Error = BoxError;
+
     async fn serve(&self, input: ReadRecord) -> Result<Self::Output, Self::Error> {
         self.read.serve(input).await
     }
@@ -166,6 +171,7 @@ impl Service<ReadRecord> for Collection {
 impl Service<ListRecords> for Collection {
     type Output = Vec<RecordId>;
     type Error = BoxError;
+
     async fn serve(&self, input: ListRecords) -> Result<Self::Output, Self::Error> {
         self.list.serve(input).await
     }

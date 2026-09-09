@@ -16,9 +16,9 @@ use rama_core::{
 };
 use rama_http::inspect::capture::{
     CaptureMetadata, CaptureStore, CapturedBody, CapturedRecord, CapturedRecordStream,
-    ExchangeCapture, HttpCaptureProtocol,
+    ExchangeCapture,
 };
-use rama_net::Protocol;
+use rama_net::{Protocol, ProtocolInputExt as _};
 use rama_utils::octets::mib;
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -122,6 +122,7 @@ pub struct WebSocketMessageMetadata {
 
 impl CapturedRecord for CapturedWebSocketMessage {
     type Metadata = WebSocketMessageMetadata;
+
     fn metadata(&self) -> Self::Metadata {
         WebSocketMessageMetadata {
             payload_length: self.data.len() as u64,
@@ -191,13 +192,10 @@ pub fn observe_handshake(
         _ => false,
     };
     if websocket {
-        let secure =
-            rama_http::protocol_from_uri_or_extensions(&parts.extensions, &parts.uri).is_secure();
-        metadata.exchange.insert(HttpCaptureProtocol(if secure {
-            Protocol::WSS
-        } else {
-            Protocol::WS
-        }));
+        let secure = parts.protocol().unwrap_or(&Protocol::HTTP).is_secure();
+        metadata
+            .exchange
+            .insert(if secure { Protocol::WSS } else { Protocol::WS });
         metadata.exchange.insert(limits);
     }
     websocket
@@ -300,24 +298,29 @@ pub trait CaptureWebSocketExt {
         id: u64,
         message: CapturedWebSocketMessage,
     ) -> impl Future<Output = ()> + Send;
+
     fn register_websocket_injector(&self, id: u64, injector: WebSocketRelayInjector);
+
     fn websocket_details(
         &self,
         id: u64,
         page: usize,
         page_size: usize,
     ) -> impl Future<Output = Result<WebSocketDetails, BoxError>> + Send;
+
     fn replay_websocket_message(
         &self,
         id: u64,
         index: usize,
     ) -> impl Future<Output = Result<(), WebSocketReplayError>> + Send;
+
     fn send_websocket_message(
         &self,
         id: u64,
         direction: WebSocketRelayDirection,
         message: WebSocketRelayMessage,
     ) -> impl Future<Output = Result<(), WebSocketReplayError>> + Send;
+
     fn websocket_message_stream(
         &self,
         id: u64,

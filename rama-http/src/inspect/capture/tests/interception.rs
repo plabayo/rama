@@ -78,7 +78,7 @@ async fn approval_holds_heads_without_polling_bodies_and_preserves_header_edits(
                 .unwrap()
         }
     });
-    let id = approval_id(&store, "request").await;
+    let id = approval_id(&store, rama_inspect::Direction::Ingress).await;
     assert_eq!(called.load(Ordering::Relaxed), 0);
     assert_eq!(request_polls.load(Ordering::Relaxed), 0);
     store
@@ -98,7 +98,7 @@ async fn approval_holds_heads_without_polling_bodies_and_preserves_header_edits(
             },
         )
         .unwrap();
-    let id = approval_id(&store, "response").await;
+    let id = approval_id(&store, rama_inspect::Direction::Egress).await;
     assert_eq!(called.load(Ordering::Relaxed), 1);
     assert_eq!(response_polls.load(Ordering::Relaxed), 0);
     assert!(!task.is_finished());
@@ -187,7 +187,7 @@ async fn blocking_without_capture_admission_never_calls_origin_or_polls_upload()
                 .unwrap()
         }
     });
-    let id = approval_id(&store, "request").await;
+    let id = approval_id(&store, rama_inspect::Direction::Ingress).await;
     assert!(
         store
             .snapshot(&CaptureFilter::default())

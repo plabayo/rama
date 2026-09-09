@@ -215,7 +215,7 @@ async fn typed_records_stay_readable_after_clearing_and_do_not_pollute_http_har(
     rama_http::layer::har::inspect::write_captured_har_entry(
         &mut output,
         &selected,
-        &har::WebSocketHarExtension,
+        &har::WebSocketHarExtension(&selected),
     )
     .await
     .unwrap();
@@ -368,6 +368,7 @@ async fn cancelled_message_append_preserves_committed_records_and_marks_a_gap() 
     impl Service<AppendRecord> for Backend {
         type Output = RecordId;
         type Error = BoxError;
+
         async fn serve(&self, mut input: AppendRecord) -> Result<RecordId, BoxError> {
             if self.stop.load(Ordering::Acquire) {
                 input = AppendRecord::new(StopAfterChunk {
@@ -383,6 +384,7 @@ async fn cancelled_message_append_preserves_committed_records_and_marks_a_gap() 
     impl Service<ReadRecord> for Backend {
         type Output = Reader;
         type Error = BoxError;
+
         async fn serve(&self, input: ReadRecord) -> Result<Reader, BoxError> {
             self.inner.serve(input).await
         }
@@ -391,6 +393,7 @@ async fn cancelled_message_append_preserves_committed_records_and_marks_a_gap() 
     impl Service<ListRecords> for Backend {
         type Output = Vec<RecordId>;
         type Error = BoxError;
+
         async fn serve(&self, input: ListRecords) -> Result<Vec<RecordId>, BoxError> {
             self.inner.serve(input).await
         }
@@ -519,6 +522,7 @@ async fn preview_pages_read_bounded_prefixes_and_preserve_full_downloads() {
     impl Service<AppendRecord> for Backend {
         type Output = RecordId;
         type Error = BoxError;
+
         async fn serve(&self, input: AppendRecord) -> Result<RecordId, BoxError> {
             self.inner.serve(input).await
         }
@@ -527,6 +531,7 @@ async fn preview_pages_read_bounded_prefixes_and_preserve_full_downloads() {
     impl Service<ListRecords> for Backend {
         type Output = Vec<RecordId>;
         type Error = BoxError;
+
         async fn serve(&self, input: ListRecords) -> Result<Vec<RecordId>, BoxError> {
             self.inner.serve(input).await
         }
@@ -535,6 +540,7 @@ async fn preview_pages_read_bounded_prefixes_and_preserve_full_downloads() {
     impl Service<ReadRecord> for Backend {
         type Output = Reader;
         type Error = BoxError;
+
         async fn serve(&self, input: ReadRecord) -> Result<Reader, BoxError> {
             let reader = self.inner.serve(input).await?;
             if self.guarded.load(Ordering::Relaxed) {

@@ -1216,8 +1216,11 @@ impl Default for Builder {
 /// [`HttpRequest`]: crate::Request
 pub trait HttpRequestParts: ExtensionsRef {
     fn method(&self) -> &Method;
+
     fn uri(&self) -> &Uri;
+
     fn version(&self) -> Version;
+
     fn headers(&self) -> &HeaderMap<HeaderValue>;
 }
 
@@ -1301,8 +1304,11 @@ impl HttpRequestParts for Parts {
 /// Same as [`HttpRequestParts`] but also adding mutable access
 pub trait HttpRequestPartsMut: HttpRequestParts + ExtensionsRef {
     fn method_mut(&mut self) -> &mut Method;
+
     fn uri_mut(&mut self) -> &mut Uri;
+
     fn version_mut(&mut self) -> &mut Version;
+
     fn headers_mut(&mut self) -> &mut HeaderMap<HeaderValue>;
 }
 

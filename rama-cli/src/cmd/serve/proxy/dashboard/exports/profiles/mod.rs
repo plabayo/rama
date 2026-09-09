@@ -8,7 +8,10 @@ use std::{
 use rama::{
     stream::io::ReaderStream,
     ua::{inspect::ProfileExport, profile::UserAgentProfileInput},
-    utils::{fs::TempDir, octets::kib},
+    utils::{
+        fs::{CreatedFilePermissions, OpenOptionsSync, TempDir},
+        octets::kib,
+    },
 };
 use tokio::{
     fs::File,
@@ -72,20 +75,7 @@ pub(super) async fn download(
         )
         .into());
     }
-    let staging = TempDir::with_prefix("rama-proxy-profiles-")?;
-    let file = tokio::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create_new(true)
-        .open(staging.path().join("profiles.json"))
-        .await?
-        .into_std()
-        .await;
-    let mut staged = StagedProfiles {
-        file: BufWriter::with_capacity(kib(16), file),
-        staging,
-        permit,
-    };
+    let mut staged = tokio::task::spawn_blocking(move || StagedProfiles::create(permit)).await??;
     let mut first = true;
     while let Some(profile) = export.next_profile().await? {
         staged = tokio::task::spawn_blocking(move || staged.write(profile, first)).await??;
@@ -95,6 +85,25 @@ pub(super) async fn download(
 }
 
 impl StagedProfiles {
+    // Serde's writer is synchronous. Write directly to a buffered file on the
+    // blocking pool instead of collecting a profile-sized JSON buffer or
+    // bouncing each write between synchronous and asynchronous file handles.
+    fn create(permit: Option<OwnedSemaphorePermit>) -> Result<Self, BoxError> {
+        let staging = TempDir::with_prefix("rama-proxy-profiles-")?;
+        let file = OpenOptionsSync::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
+            .jail(staging.path())
+            .open("profiles.json")?;
+        Ok(Self {
+            file: BufWriter::with_capacity(kib(16), file),
+            staging,
+            permit,
+        })
+    }
+
     fn write(mut self, profile: UserAgentProfileInput, first: bool) -> Result<Self, BoxError> {
         self.file.write_all(if first { b"[" } else { b"," })?;
         serde_json::to_writer(&mut self.file, &profile)?;

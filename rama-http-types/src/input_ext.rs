@@ -112,7 +112,10 @@ pub(crate) fn http_version_from_http_parts(parts: &impl HttpRequestParts) -> Ver
 /// then an inserted [`Protocol`] extension, then `Forwarded` client-proto, then a TLS
 /// `SecureTransport` marker. Exposed so layers that only hold `(&Extensions, &Uri)`
 /// (e.g. the HTTP/1 encoder) can make the same secure/insecure determination.
-pub fn protocol_from_uri_or_extensions<'a>(ext: &'a Extensions, uri: &'a Uri) -> &'a Protocol {
+pub(crate) fn protocol_from_uri_or_extensions<'a>(
+    ext: &'a Extensions,
+    uri: &'a Uri,
+) -> &'a Protocol {
     uri.scheme().or_else(|| {
         // Can be inserted by a server stack to notify the protocol that's being served.
         // This is especially useful for marking a HTTPS server as HTTPS,

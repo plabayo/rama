@@ -12,7 +12,7 @@ use rama_utils::octets::{kib, kib_u64};
 use tokio::io::{AsyncRead, ReadBuf};
 
 use super::*;
-use crate::inspect::control::{HttpMessageDirection, Message, Payload};
+use crate::inspect::control::{Direction, Message, Payload};
 
 struct CountedReader {
     inner: Reader,
@@ -94,7 +94,8 @@ async fn interception_history_is_separate_and_previews_do_not_read_full_payloads
     let (parts, _) = Request::new(Body::empty()).into_parts();
     let id = store.begin_exchange(&parts).await.unwrap().unwrap();
     let message = Message {
-        direction: HttpMessageDirection::Ingress,
+        direction: Direction::Ingress,
+        kind: Some("text".parse().unwrap()),
         payload: Some(Payload::text("x".repeat(kib(128)))),
         ..Message::default()
     };
@@ -194,7 +195,8 @@ async fn binary_interception_search_preserves_hex_even_for_utf8_payloads() {
         .unwrap()
         .unwrap();
     let message = Message {
-        direction: HttpMessageDirection::Ingress,
+        direction: Direction::Ingress,
+        kind: Some("text".parse().unwrap()),
         payload: Some(Payload::binary(Bytes::from_static(b"ab"))),
         ..Message::default()
     };

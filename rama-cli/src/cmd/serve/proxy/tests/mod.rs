@@ -8,7 +8,7 @@ use rama::{
     http::{
         Body, HeaderValue, Method,
         body::util::BodyExt as _,
-        inspect::control::HttpMessageDirection,
+        inspect::control::Direction,
         ws::{
             AsyncWebSocket, Message,
             handshake::{
@@ -466,8 +466,7 @@ async fn wait_interception(
     .expect("interception queue did not reach expected size")
 }
 
-async fn approval_id(store: &CaptureStore, direction: &str) -> u64 {
-    let direction = HttpMessageDirection::from(direction);
+async fn approval_id(store: &CaptureStore, direction: Direction) -> u64 {
     let control = store.control();
     let mut changes = control.subscribe_changes();
     tokio::time::timeout(Duration::from_secs(5), async {

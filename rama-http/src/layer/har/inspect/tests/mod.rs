@@ -10,7 +10,7 @@ use rama_inspect::storage::{MemoryStore, Storage};
 use rama_utils::octets::{kib, mib_u64};
 use tokio::io::{AsyncReadExt, AsyncWrite};
 
-use super::{streaming::write_json_string, *};
+use super::*;
 use crate::{
     Body, HeaderMap, Request, Response,
     body::util::BodyExt,
@@ -151,32 +151,6 @@ async fn cancelled_export_preserves_the_capture_and_replay_stream() {
         .unwrap();
     let entry: spec::Entry = serde_json::from_slice(&writer.0).unwrap();
     assert_eq!(entry.response.content.text.unwrap().as_bytes(), payload);
-}
-
-#[tokio::test]
-async fn json_strings_preserve_unicode_binary_and_escaping_at_read_boundaries() {
-    let text = format!(
-        "{}🙂é\\\"\n\t\u{0000}{}",
-        "x".repeat(kib(8) - 1),
-        "€".repeat(kib(9))
-    );
-    let mut writer = BoundedWrites(Vec::new());
-    write_json_string(&mut writer, text.as_bytes(), true)
-        .await
-        .unwrap();
-    assert_eq!(serde_json::from_slice::<String>(&writer.0).unwrap(), text);
-    for size in [0, 1, 2, 3, kib(8) - 1, kib(8), kib(8) + 1, kib(16) + 1] {
-        let data = vec![0xff; size];
-        writer.0.clear();
-        write_json_string(&mut writer, data.as_slice(), false)
-            .await
-            .unwrap();
-        let encoded: String = serde_json::from_slice(&writer.0).unwrap();
-        assert_eq!(
-            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded).unwrap(),
-            data
-        );
-    }
 }
 
 #[tokio::test]

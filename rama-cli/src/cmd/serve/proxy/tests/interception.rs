@@ -41,7 +41,7 @@ async fn live_interception_holds_upgrade_and_websocket_data_but_not_control_fram
             .await
             .unwrap()
     });
-    for direction in ["request", "response"] {
+    for direction in ["ingress", "egress"] {
         let state = wait_interception(address, &session, 1).await;
         let pending = &state["control"]["pending"][0];
         assert_eq!(pending["direction"], direction);

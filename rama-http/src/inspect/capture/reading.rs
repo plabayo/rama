@@ -111,7 +111,8 @@ impl CaptureStore {
                     ..
                 } => head = Some((method, url, version, headers)),
                 StoredRecord::Interception {
-                    direction: crate::inspect::control::HttpMessageDirection::Request,
+                    kind: None,
+                    direction: crate::inspect::control::Direction::Ingress,
                     forwarded_headers: Some(headers),
                     ..
                 } => {

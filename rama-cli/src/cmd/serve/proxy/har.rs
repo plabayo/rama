@@ -109,7 +109,7 @@ pub(super) async fn export_selected(
         write_captured_har_entry(
             &mut writer,
             &selected,
-            &rama::http::ws::inspect::har::WebSocketHarExtension,
+            &rama::http::ws::inspect::har::WebSocketHarExtension(&selected),
         )
         .await?;
         wrote_entry = true;

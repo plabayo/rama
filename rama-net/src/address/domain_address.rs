@@ -127,6 +127,7 @@ impl fmt::Display for DomainAddress {
 
 impl FromStr for DomainAddress {
     type Err = BoxError;
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::try_from(s)
     }

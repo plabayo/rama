@@ -27,7 +27,7 @@ pub use ::rama_http_types::{
     CaptureHandle, CaptureLimit, CaptureOutcome, CapturedBody, Error as HttpError, HeaderMap,
     HeaderName, HeaderValue, InfiniteReader, Method, Request, Response, Result as HttpResult,
     StatusCode, StreamingBody, Version, conn, fingerprint, header, method, mime, opentelemetry,
-    proto, protocol_from_uri_or_extensions, proxy, request, response, sse, status, version,
+    proto, proxy, request, response, sse, status, version,
 };
 
 pub mod body;

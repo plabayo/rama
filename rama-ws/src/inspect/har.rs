@@ -4,8 +4,8 @@ use rama_core::error::BoxError;
 use rama_http::{
     inspect::capture::ExchangeCapture,
     layer::har::{
-        inspect::{HarEntryExtension, HarObjectWriter, write_json_string},
         spec,
+        stream::{HarEntryExtension, HarObjectWriter, write_json_string},
     },
 };
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -16,15 +16,15 @@ use crate::{
 };
 
 /// Adds captured WebSocket messages to an HTTP handshake's HAR entry.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct WebSocketHarExtension;
+#[derive(Debug, Clone, Copy)]
+pub struct WebSocketHarExtension<'a>(pub &'a ExchangeCapture);
 
-impl HarEntryExtension for WebSocketHarExtension {
+impl HarEntryExtension for WebSocketHarExtension<'_> {
     async fn write_fields<W: AsyncWrite + Unpin + Send>(
         &self,
         fields: &mut HarObjectWriter<'_, W>,
-        capture: &ExchangeCapture,
     ) -> Result<(), BoxError> {
+        let capture = self.0;
         if !matches!(
             capture.snapshot().protocol,
             rama_net::Protocol::WS | rama_net::Protocol::WSS

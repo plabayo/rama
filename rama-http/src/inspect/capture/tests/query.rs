@@ -381,6 +381,7 @@ struct ReadFailureStore {
 impl Service<CreateCollection> for ReadFailureStore {
     type Output = Collection;
     type Error = BoxError;
+
     async fn serve(&self, input: CreateCollection) -> Result<Collection, BoxError> {
         Ok(Collection::new(ReadFailureCollection {
             inner: self.memory.serve(input).await?,
@@ -398,6 +399,7 @@ struct ReadFailureCollection {
 impl Service<AppendRecord> for ReadFailureCollection {
     type Output = RecordId;
     type Error = BoxError;
+
     async fn serve(&self, input: AppendRecord) -> Result<RecordId, BoxError> {
         self.inner.serve(input).await
     }
@@ -406,6 +408,7 @@ impl Service<AppendRecord> for ReadFailureCollection {
 impl Service<ListRecords> for ReadFailureCollection {
     type Output = Vec<RecordId>;
     type Error = BoxError;
+
     async fn serve(&self, input: ListRecords) -> Result<Self::Output, BoxError> {
         self.inner.serve(input).await
     }
@@ -414,6 +417,7 @@ impl Service<ListRecords> for ReadFailureCollection {
 impl Service<ReadRecord> for ReadFailureCollection {
     type Output = Reader;
     type Error = BoxError;
+
     async fn serve(&self, input: ReadRecord) -> Result<Reader, BoxError> {
         if input.id.0 == self.blocked.load(Ordering::Relaxed) {
             return Err(BoxError::from_static_str("injected read failure"));

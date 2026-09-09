@@ -72,6 +72,7 @@ struct ApprovalBody {
 impl StreamingBody for ApprovalBody {
     type Data = Bytes;
     type Error = Infallible;
+
     fn poll_frame(
         mut self: std::pin::Pin<&mut Self>,
         _: &mut std::task::Context<'_>,
@@ -85,19 +86,17 @@ impl StreamingBody for ApprovalBody {
     }
 }
 
-async fn approval_id(store: &CaptureStore, direction: &str) -> u64 {
+async fn approval_id(store: &CaptureStore, direction: rama_inspect::Direction) -> u64 {
     let control = store.control();
     let mut changes = control.subscribe_changes();
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let snapshot = serde_json::to_value(control.snapshot()).unwrap();
-            if let Some(message) = snapshot["pending"]
-                .as_array()
-                .unwrap()
+            if let Some(message) = control
+                .pending_summaries()
                 .iter()
-                .find(|m| m["direction"] == direction)
+                .find(|message| message.direction == direction)
             {
-                return message["id"].as_u64().unwrap();
+                return message.id;
             }
             changes.changed().await.unwrap();
         }

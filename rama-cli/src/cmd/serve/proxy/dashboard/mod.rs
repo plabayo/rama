@@ -8,6 +8,7 @@ mod navigation;
 mod recording;
 mod render;
 mod replay;
+
 #[cfg(test)]
 mod tests;
 
@@ -126,13 +127,13 @@ const REPLAY_PROTOCOL: Protocol = Protocol::from_static("replay");
 const LIVE_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
 #[cfg(test)]
 const LIVE_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(20);
-const RAMA_LOGO_SVG: &str = include_str!("../../../../../docs/img/rama_logo.svg");
-const HAR_JS: &str = include_str!("dashboard-har.js");
-const DETAILS_JS: &str = include_str!("dashboard-details.js");
-const LIVE_JS: &str = include_str!("dashboard-live.js");
-const CONTROL_JS: &str = include_str!("dashboard-control.js");
-const CONTROL_HTML: &str = include_str!("dashboard-control.html");
-const PREFERENCES_JS: &str = include_str!("dashboard-preferences.js");
+const RAMA_LOGO_SVG: &str = include_str!("../../../../../../docs/img/rama_logo.svg");
+const HAR_JS: &str = include_str!("../dashboard-har.js");
+const DETAILS_JS: &str = include_str!("../dashboard-details.js");
+const LIVE_JS: &str = include_str!("../dashboard-live.js");
+const CONTROL_JS: &str = include_str!("../dashboard-control.js");
+const CONTROL_HTML: &str = include_str!("../dashboard-control.html");
+const PREFERENCES_JS: &str = include_str!("../dashboard-preferences.js");
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum UiFocus {
@@ -592,7 +593,7 @@ fn header_value<'a>(headers: Option<&'a HeaderMap>, expected: &str) -> Option<&'
     headers?.get(expected)?.to_str().ok()
 }
 
-const STYLE_CSS: &str = include_str!("dashboard.css");
+const STYLE_CSS: &str = include_str!("../dashboard.css");
 
 struct InspectorDetails {
     http: CaptureDetails,

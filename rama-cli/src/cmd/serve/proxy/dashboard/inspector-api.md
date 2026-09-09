@@ -78,10 +78,12 @@ Capture byte limits apply to stored records. Summaries and protocol observations
 also use memory, bounded by retained connection/exchange counts and protocol limits.
 User-agent profile headers are read from the stored request head on export; TLS
 ClientHello data is shared per connection, rather than copied into each exchange.
-Recorded body/message `data` fields in JSON downloads are base64 strings; storage
-keeps payloads raw and exports them as streams. Request/response direction selectors
-accept canonical names case-insensitively; standard HTTP methods require their canonical uppercase spelling (for example
-`GET`; `get` is rejected). Custom methods retain case-sensitive wire semantics. Custom upgraded-protocol direction and kind tags remain supported.
+Body and message downloads stream raw bytes; HAR encodes binary content as base64.
+Traffic rules accept two directions: `ingress` (client to server) and `egress`
+(server to client), case-insensitively. A message's `kind` is null for HTTP heads;
+upgraded protocols supply their own nonempty kind tags. Standard HTTP methods
+require uppercase spelling (`GET`; `get` is rejected). Custom methods retain
+case-sensitive wire semantics.
 
 Search scans readable records even when another record fails. Failed reads retry
 with exponential backoff from 250 ms up to 30 seconds; three consecutive failures

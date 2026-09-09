@@ -4,6 +4,9 @@
 //! GUI, or API. Storage accepts streaming sources and returns streaming readers.
 //! Protocol and encryption adapters live in their owning crates.
 
+mod direction;
+pub use direction::Direction;
+
 pub mod intercept;
 pub mod lifecycle;
 pub mod storage;

@@ -3,7 +3,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{
     any::TypeId,
     collections::{BTreeMap, VecDeque},
-    future::Future,
     ops::Bound::{Excluded, Unbounded},
     sync::{Arc, Weak},
     time::Duration,
