@@ -14,6 +14,7 @@ pub(super) async fn write_params<W: AsyncWrite + Unpin>(
 ) -> Result<(), BoxError> {
     writer.write_all(b"[").await?;
     let mut first = true;
+    let mut encoded = Vec::new();
     loop {
         match reader.fill_buf().await?.first() {
             None => break,
@@ -28,10 +29,10 @@ pub(super) async fn write_params<W: AsyncWrite + Unpin>(
         }
         first = false;
         writer.write_all(b"{\"name\":").await?;
-        let delimiter = write_part(writer, &mut reader, true).await?;
+        let delimiter = write_part(writer, &mut reader, true, &mut encoded).await?;
         writer.write_all(b",\"value\":").await?;
         if delimiter == Some(b'=') {
-            write_part(writer, &mut reader, false).await?;
+            write_part(writer, &mut reader, false, &mut encoded).await?;
         } else {
             writer.write_all(b"\"\"").await?;
         }
@@ -93,22 +94,28 @@ impl Decoder {
         &mut self,
         writer: &mut W,
         end: bool,
+        encoded: &mut Vec<u8>,
     ) -> Result<(), BoxError> {
         let mut start = 0;
         while start < self.len {
             match std::str::from_utf8(&self.bytes[start..self.len]) {
                 Ok(text) => {
-                    escaped(writer, text).await?;
+                    escaped(writer, text, encoded).await?;
                     start = self.len;
                 }
                 Err(error) => {
                     let valid = start + error.valid_up_to();
-                    escaped(writer, std::str::from_utf8(&self.bytes[start..valid])?).await?;
+                    escaped(
+                        writer,
+                        std::str::from_utf8(&self.bytes[start..valid])?,
+                        encoded,
+                    )
+                    .await?;
                     if let Some(invalid) = error.error_len() {
-                        escaped(writer, "\u{fffd}").await?;
+                        escaped(writer, "\u{fffd}", encoded).await?;
                         start = valid + invalid;
                     } else if end {
-                        escaped(writer, "\u{fffd}").await?;
+                        escaped(writer, "\u{fffd}", encoded).await?;
                         start = self.len;
                     } else {
                         start = valid;
@@ -127,6 +134,7 @@ async fn write_part<W: AsyncWrite + Unpin>(
     writer: &mut W,
     reader: &mut (impl AsyncBufRead + Unpin),
     name: bool,
+    encoded: &mut Vec<u8>,
 ) -> Result<Option<u8>, BoxError> {
     writer.write_all(b"\"").await?;
     let mut decoder = Decoder {
@@ -158,11 +166,11 @@ async fn write_part<W: AsyncWrite + Unpin>(
             break delimiter;
         }
         if decoder.len >= CHUNK {
-            decoder.flush(writer, false).await?;
+            decoder.flush(writer, false, encoded).await?;
         }
     };
     decoder.finish_escape();
-    decoder.flush(writer, true).await?;
+    decoder.flush(writer, true, encoded).await?;
     writer.write_all(b"\"").await?;
     Ok(delimiter)
 }

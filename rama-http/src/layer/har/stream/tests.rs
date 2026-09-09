@@ -15,8 +15,8 @@ struct RepeatedBody {
 }
 
 impl HarBody for RepeatedBody {
-    fn reader(&self) -> impl AsyncRead + Unpin + Send {
-        tokio::io::repeat(self.byte).take(self.length)
+    async fn reader(&self) -> Result<impl AsyncRead + Unpin + Send, BoxError> {
+        Ok(tokio::io::repeat(self.byte).take(self.length))
     }
 }
 
@@ -71,7 +71,7 @@ fn entry() -> spec::Entry {
 async fn streamed_entry_matches_serde_without_an_inspector() {
     let entry = entry();
     let body = b"".as_slice();
-    let stats = scan(body.reader()).await.unwrap();
+    let stats = scan(body.reader().await.unwrap()).await.unwrap();
     let mut output = Vec::new();
     write_entry(&mut output, &entry, &body, &stats, &body, &stats, &())
         .await
@@ -86,9 +86,9 @@ async fn streamed_entry_matches_serde_without_an_inspector() {
 async fn streamed_post_data(post: spec::PostData, body: &[u8]) -> spec::PostData {
     let mut entry = entry();
     entry.request.post_data = Some(post);
-    let stats = scan(body.reader()).await.unwrap();
+    let stats = scan(body.reader().await.unwrap()).await.unwrap();
     let empty = b"".as_slice();
-    let empty_stats = scan(empty.reader()).await.unwrap();
+    let empty_stats = scan(empty.reader().await.unwrap()).await.unwrap();
     let mut output = Vec::new();
     write_entry(
         &mut output,
@@ -177,7 +177,7 @@ async fn generated_large_body_streams_without_an_owned_payload() {
         byte: b'x',
         length: mib_u64(16),
     };
-    let stats = scan(body.reader()).await.unwrap();
+    let stats = scan(body.reader().await.unwrap()).await.unwrap();
     assert_eq!(stats.size(), body.length);
     entry.request.post_data = Some(spec::PostData {
         mime_type: None,
@@ -217,4 +217,153 @@ async fn json_strings_preserve_split_unicode_and_binary() {
             data
         );
     }
+}
+
+#[tokio::test]
+async fn generated_large_form_parameter_streams_without_retaining_it() {
+    let mut entry = entry();
+    let body = RepeatedBody {
+        byte: b'x',
+        length: mib_u64(16),
+    };
+    let stats = scan(body.reader().await.unwrap()).await.unwrap();
+    let empty = b"".as_slice();
+    let empty_stats = scan(empty).await.unwrap();
+    entry.request.post_data = Some(spec::PostData {
+        mime_type: Some(crate::mime::APPLICATION_WWW_FORM_URLENCODED),
+        params: None,
+        text: None,
+        comment: None,
+    });
+    let mut output = CountWrites::default();
+    write_entry(
+        &mut output,
+        &entry,
+        &body,
+        &stats,
+        &empty,
+        &empty_stats,
+        &(),
+    )
+    .await
+    .unwrap();
+    // The parameter name and raw text each contain the same generated stream.
+    assert!(output.0 > body.length * 2);
+    assert!(output.0 < body.length * 2 + kib(4) as u64);
+}
+
+#[tokio::test]
+async fn escaping_expansion_stays_bounded() {
+    let mut output = CountWrites::default();
+    write_json_string(&mut output, tokio::io::repeat(0).take(mib_u64(1)), true)
+        .await
+        .unwrap();
+    assert_eq!(output.0, mib_u64(1) * 6 + 2);
+}
+
+#[tokio::test]
+async fn json_escaping_matches_serde_for_control_and_unicode_characters() {
+    let mut text: String = (0..=0x7f).map(char::from).collect();
+    text.push_str("é🙂\u{2028}\u{2029}");
+    let mut output = Vec::new();
+    write_json_string(&mut output, text.as_bytes(), true)
+        .await
+        .unwrap();
+    assert_eq!(output, serde_json::to_vec(&text).unwrap());
+}
+
+#[tokio::test]
+async fn reopening_errors_reach_the_har_caller() {
+    struct MissingBody;
+
+    impl HarBody for MissingBody {
+        async fn reader(&self) -> Result<impl AsyncRead + Unpin + Send, BoxError> {
+            Err::<tokio::io::Empty, _>(std::io::Error::from(std::io::ErrorKind::NotFound).into())
+        }
+    }
+
+    let entry = entry();
+    let stats = scan(b"body".as_slice()).await.unwrap();
+    let empty = b"".as_slice();
+    let empty_stats = scan(empty).await.unwrap();
+    let error = write_entry(
+        &mut tokio::io::sink(),
+        &entry,
+        &empty,
+        &empty_stats,
+        &MissingBody,
+        &stats,
+        &(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<std::io::Error>().unwrap().kind(),
+        std::io::ErrorKind::NotFound
+    );
+}
+
+#[tokio::test]
+async fn streamed_websocket_payloads_match_typed_har_messages() {
+    for (message, raw, utf8) in [
+        (
+            spec::WebSocketMessage::text(spec::WebSocketMessageType::Send, 1.5, "hello\n🙂"),
+            "hello\n🙂".as_bytes(),
+            true,
+        ),
+        (
+            spec::WebSocketMessage::binary(spec::WebSocketMessageType::Receive, 2.5, [0, 0xff]),
+            [0, 0xff].as_slice(),
+            false,
+        ),
+    ] {
+        let mut output = Vec::new();
+        write_web_socket_message(
+            &mut output,
+            message.r#type,
+            message.time,
+            message.opcode,
+            raw,
+            utf8,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<spec::WebSocketMessage>(&output).unwrap(),
+            message
+        );
+        // An imported HAR entry already contains encoded data. Preserve that
+        // string, including binary/error/future opcodes, without re-encoding it.
+        let mut entry = entry();
+        entry.web_socket_messages = Some(vec![message]);
+        let empty = b"".as_slice();
+        let stats = scan(empty).await.unwrap();
+        output.clear();
+        write_entry(&mut output, &entry, &empty, &stats, &empty, &stats, &())
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<spec::Entry>(&output)
+                .unwrap()
+                .web_socket_messages,
+            entry.web_socket_messages,
+        );
+    }
+}
+
+#[tokio::test]
+async fn large_websocket_messages_use_bounded_writes() {
+    let mut output = CountWrites::default();
+    write_web_socket_message(
+        &mut output,
+        spec::WebSocketMessageType::Send,
+        1.5,
+        spec::WebSocketMessageOpcode::TEXT,
+        tokio::io::repeat(0).take(mib_u64(16)),
+        true,
+    )
+    .await
+    .unwrap();
+    assert!(output.0 > mib_u64(16) * 6);
+    assert!(output.0 < mib_u64(16) * 6 + kib(1) as u64);
 }

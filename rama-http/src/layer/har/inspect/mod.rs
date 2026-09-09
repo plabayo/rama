@@ -20,8 +20,8 @@ use crate::{
 };
 
 impl HarBody for CapturedBodySource {
-    fn reader(&self) -> impl AsyncRead + Unpin + Send {
-        self.reader()
+    async fn reader(&self) -> Result<impl AsyncRead + Unpin + Send, BoxError> {
+        Ok(self.reader())
     }
 }
 

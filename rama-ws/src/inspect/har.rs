@@ -5,7 +5,7 @@ use rama_http::{
     inspect::capture::ExchangeCapture,
     layer::har::{
         spec,
-        stream::{HarEntryExtension, HarObjectWriter, write_json_string},
+        stream::{HarEntryExtension, HarObjectWriter, write_web_socket_message},
     },
 };
 use tokio::io::{AsyncWrite, AsyncWriteExt};
@@ -36,8 +36,6 @@ impl HarEntryExtension for WebSocketHarExtension<'_> {
         writer.write_all(b"[").await?;
         let count = capture.count::<CapturedWebSocketMessage>();
         let mut first = true;
-        // Fixed-shape scalar metadata only; reuse this small buffer across messages.
-        let mut header = Vec::with_capacity(128);
         for index in 0..count {
             let Some(message) = capture
                 .record_stream::<CapturedWebSocketMessage>(index)
@@ -59,27 +57,15 @@ impl HarEntryExtension for WebSocketHarExtension<'_> {
                 writer.write_all(b",").await?;
             }
             first = false;
-            header.clear();
-            header.extend_from_slice(b"{\"type\":");
-            serde_json::to_writer(&mut header, &direction)?;
-            header.extend_from_slice(b",\"time\":");
-            serde_json::to_writer(
-                &mut header,
-                &(metadata.at.as_millisecond() as f64 / 1_000.0),
-            )?;
-            header.extend_from_slice(b",\"opcode\":");
-            serde_json::to_writer(&mut header, &opcode)?;
-            header.extend_from_slice(b",\"data\":");
-            writer.write_all(&header).await?;
-            // HAR's WebSocket extension has no encoding field: the opcode
-            // distinguishes UTF-8 text from base64-encoded binary payloads.
-            write_json_string(
+            write_web_socket_message(
                 writer,
+                direction,
+                metadata.at.as_millisecond() as f64 / 1_000.0,
+                opcode,
                 message.payload,
                 metadata.kind == WebSocketMessageKind::Text,
             )
             .await?;
-            writer.write_all(b"}").await?;
         }
         writer.write_all(b"]").await?;
         Ok(())

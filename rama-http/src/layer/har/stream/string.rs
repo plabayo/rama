@@ -1,6 +1,5 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rama_core::error::BoxError;
-use rama_utils::hex::encode_byte_upper;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::CHUNK;
@@ -13,10 +12,9 @@ pub async fn write_json_string<W: AsyncWrite + Unpin>(
 ) -> Result<(), BoxError> {
     writer.write_all(b"\"").await?;
     let mut buffer = [0; CHUNK + 3];
-    // Allocate the reusable encoding buffer only for binary content. Keeping
-    // it off the future also avoids inflating every caller's async state.
+    // Reuse bounded scratch space for Serde escaping or base64 encoding.
     let mut encoded = if utf8 {
-        Vec::new()
+        Vec::with_capacity(CHUNK + 2)
     } else {
         vec![0; (CHUNK + 3).div_ceil(3) * 4]
     };
@@ -27,11 +25,16 @@ pub async fn write_json_string<W: AsyncWrite + Unpin>(
         if utf8 {
             let valid = match std::str::from_utf8(&buffer[..end]) {
                 Ok(fragment) => {
-                    escaped(writer, fragment).await?;
+                    escaped(writer, fragment, &mut encoded).await?;
                     end
                 }
                 Err(error) if error.error_len().is_none() && read != 0 => {
-                    escaped(writer, std::str::from_utf8(&buffer[..error.valid_up_to()])?).await?;
+                    escaped(
+                        writer,
+                        std::str::from_utf8(&buffer[..error.valid_up_to()])?,
+                        &mut encoded,
+                    )
+                    .await?;
                     error.valid_up_to()
                 }
                 Err(error) => return Err(error.into()),
@@ -53,27 +56,22 @@ pub async fn write_json_string<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
+/// Use Serde's JSON escaping on bounded fragments, retaining the outer string
+/// delimiter across reads. Scratch space is shared across the entire body/form.
 pub(super) async fn escaped<W: AsyncWrite + Unpin>(
     writer: &mut W,
-    text: &str,
+    mut text: &str,
+    buffer: &mut Vec<u8>,
 ) -> Result<(), BoxError> {
-    let mut start = 0;
-    for (index, byte) in text.bytes().enumerate() {
-        if byte < 0x20 || byte == b'"' || byte == b'\\' {
-            writer.write_all(&text.as_bytes()[start..index]).await?;
-            match byte {
-                b'"' => writer.write_all(b"\\\"").await?,
-                b'\\' => writer.write_all(b"\\\\").await?,
-                _ => {
-                    let hex = encode_byte_upper(byte);
-                    writer
-                        .write_all(&[b'\\', b'u', b'0', b'0', hex[0], hex[1]])
-                        .await?;
-                }
-            }
-            start = index + 1;
-        }
+    while !text.is_empty() {
+        // A control byte expands to at most six JSON bytes. Keep each encoded
+        // write within CHUNK even when every input byte needs escaping.
+        let end = text.floor_char_boundary(CHUNK / 6);
+        let (fragment, rest) = text.split_at(end);
+        buffer.clear();
+        serde_json::to_writer(&mut *buffer, fragment)?;
+        writer.write_all(&buffer[1..buffer.len() - 1]).await?;
+        text = rest;
     }
-    writer.write_all(&text.as_bytes()[start..]).await?;
     Ok(())
 }

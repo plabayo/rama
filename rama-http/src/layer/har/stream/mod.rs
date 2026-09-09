@@ -2,7 +2,7 @@
 
 use rama_core::error::BoxError;
 use rama_utils::octets::kib;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, BufReader};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 use super::spec;
 use form::write_params;
@@ -12,17 +12,21 @@ mod string;
 pub use string::write_json_string;
 mod writer;
 pub use writer::HarObjectWriter;
+mod websocket;
+pub use websocket::write_web_socket_message;
 
 /// A stable body that can be reopened for encoding detection and serialization.
 /// Each reader must yield the same bytes. Implementations can borrow memory or
 /// stream from files and other storage; no inspection dependency is required.
 pub trait HarBody: Sync {
-    fn reader(&self) -> impl AsyncRead + Unpin + Send;
+    fn reader(
+        &self,
+    ) -> impl Future<Output = Result<impl AsyncRead + Unpin + Send, BoxError>> + Send;
 }
 
 impl HarBody for &[u8] {
-    fn reader(&self) -> impl AsyncRead + Unpin + Send {
-        *self
+    async fn reader(&self) -> Result<impl AsyncRead + Unpin + Send, BoxError> {
+        Ok(*self)
     }
 }
 
@@ -101,7 +105,25 @@ pub async fn write_entry<W: AsyncWrite + Unpin + Send>(
         object.field("_resourceType", resource_type).await?;
     }
     if let Some(messages) = web_socket_messages {
-        object.array("_webSocketMessages", messages).await?;
+        let writer = object.streamed_field("_webSocketMessages").await?;
+        writer.write_all(b"[").await?;
+        for (
+            index,
+            spec::WebSocketMessage {
+                r#type,
+                time,
+                opcode,
+                data,
+            },
+        ) in messages.iter().enumerate()
+        {
+            if index != 0 {
+                writer.write_all(b",").await?;
+            }
+            write_web_socket_message(writer, *r#type, *time, *opcode, data.as_bytes(), true)
+                .await?;
+        }
+        writer.write_all(b"]").await?;
     }
     extension.write_fields(&mut object).await?;
     object.finish().await
@@ -177,7 +199,7 @@ async fn write_post_data<W: AsyncWrite + Unpin>(
     if stream_params {
         write_params(
             object.streamed_field("params").await?,
-            BufReader::new(body.reader()),
+            BufReader::new(body.reader().await?),
         )
         .await?;
     } else if let Some(params) = params {
@@ -188,7 +210,7 @@ async fn write_post_data<W: AsyncWrite + Unpin>(
     if stats.size > 0 {
         write_json_string(
             object.streamed_field("text").await?,
-            body.reader(),
+            body.reader().await?,
             stats.utf8,
         )
         .await?;
@@ -263,7 +285,7 @@ async fn write_content<W: AsyncWrite + Unpin>(
     if stats.size > 0 {
         write_json_string(
             object.streamed_field("text").await?,
-            body.reader(),
+            body.reader().await?,
             stats.utf8,
         )
         .await?;
