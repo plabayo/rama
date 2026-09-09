@@ -45,6 +45,14 @@ IPv6 literal sending no SNI and checking the address in the certificate, and two
 where a trusted certificate covers a different identity. The literal and the bind address are
 separate arguments, so the shape of the name and the family of the socket are not conflated.
 
+`tests/paths.rs` has moving a connection, in both roles, against the policy `Endpoint::rebind`
+documents: a Rama client follows the endpoint to its new socket only when it holds an unused
+destination identifier and the peer allows active migration, and otherwise keeps sending from
+the socket it is on. The other role is a quiche client that migrates its own source address,
+which a Rama server follows. quiche issues connection identifiers only when the application
+asks, and wants two of its own before it will move: one for the path it is on and one for the
+path being validated.
+
 ## What the driver does not do yet
 
 quiche owns neither sockets nor timers, so its side of each test is driven by hand. Two limits

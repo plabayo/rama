@@ -289,6 +289,14 @@ pub fn quiche_resuming_server_config(
     config
 }
 
+/// A server that tells the client not to migrate. RFC 9000 §9 forbids active migration when
+/// the peer set this, so the client keeps its socket however many identifiers it holds.
+pub fn quiche_server_config_without_migration(identity: &Identity) -> quiche::Config {
+    let mut config = quiche_server_config(identity);
+    config.set_disable_active_migration(true);
+    config
+}
+
 pub fn quiche_server_config(identity: &Identity) -> quiche::Config {
     let mut config = quiche_config();
     config
@@ -297,6 +305,14 @@ pub fn quiche_server_config(identity: &Identity) -> quiche::Config {
     config
         .load_priv_key_from_pem_file(Identity::path(&identity.key))
         .expect("the key is loaded");
+    config
+}
+
+/// A client that will move: it asks for room for more connection identifiers than the default
+/// two, so both sides have a spare when the move comes.
+pub fn quiche_client_config_that_moves(identity: &Identity) -> quiche::Config {
+    let mut config = quiche_client_config(identity);
+    config.set_active_connection_id_limit(4);
     config
 }
 
@@ -324,6 +340,7 @@ pub struct Quiche {
     connection: quiche::Connection,
     socket: UdpSocket,
     local: SocketAddr,
+    last_from: Option<SocketAddr>,
 }
 
 impl Quiche {
@@ -368,6 +385,7 @@ impl Quiche {
             connection,
             socket,
             local,
+            last_from: None,
         };
         peer.flush(deadline).await;
         peer
@@ -435,6 +453,7 @@ impl Quiche {
             connection,
             socket,
             local,
+            last_from: None,
         }
     }
 
@@ -474,6 +493,7 @@ impl Quiche {
         let wake = deadline.next_wake(self.connection.timeout());
         match tokio::time::timeout_at(wake, self.socket.recv_from(&mut buffer)).await {
             Ok(Ok((len, from))) => {
+                self.last_from = Some(from);
                 let info = quiche::RecvInfo {
                     from,
                     to: self.local,
@@ -622,6 +642,47 @@ impl Quiche {
                 panic!("reading a datagram: the connection stopped ({stopped:?})");
             }
         }
+    }
+
+    /// Offer the peer one more connection identifier to move to. quiche leaves this to the
+    /// application, so without it the peer has no spare identifier and cannot migrate.
+    pub async fn offer_another_identifier(&mut self, tag: u8, deadline: Deadline) {
+        let bytes = [tag; quiche::MAX_CONN_ID_LEN];
+        let scid = quiche::ConnectionId::from_ref(&bytes);
+        self.connection
+            .new_scid(&scid, u128::from(tag), false)
+            .expect("the identifier is accepted");
+        self.flush(deadline).await;
+    }
+
+    /// Move this side to a socket of its own choosing, the way a client whose network changed
+    /// would. Answers the address it moved to. Only a client may do this.
+    pub async fn move_to_a_new_socket(&mut self, deadline: Deadline) -> SocketAddr {
+        let socket = UdpSocket::bind(if self.local.is_ipv6() {
+            localhost_v6()
+        } else {
+            localhost()
+        })
+        .await
+        .expect("the socket binds");
+        let local = socket.local_addr().expect("its address");
+        self.connection
+            .migrate_source(local)
+            .expect("the move is accepted");
+        self.socket = socket;
+        self.local = local;
+        self.flush(deadline).await;
+        local
+    }
+
+    /// The address this side is sending from.
+    pub fn local_address(&self) -> SocketAddr {
+        self.local
+    }
+
+    /// Where the last datagram came from, which is how a peer's move shows up here.
+    pub fn last_seen_from(&self) -> Option<SocketAddr> {
+        self.last_from
     }
 
     /// Write a whole payload and finish the stream.
