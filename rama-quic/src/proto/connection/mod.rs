@@ -651,16 +651,7 @@ impl Connection {
     ) -> Option<Transmit> {
         assert!(max_datagrams != 0);
         // A protocol error a timer could not report closes the connection here.
-        if let Some(error) = self.deferred_error.take() {
-            // The peer is told with the frame this error names, and the application is told the
-            // cause: closing locally must not leave the connection to be reported later as an
-            // engine that drained without a reason.
-            let reason = ConnectionError::TransportError(error.clone());
-            self.close_inner(now, Close::Connection(error.into()));
-            if self.error.is_none() {
-                self.error = Some(reason);
-            }
-        }
+        self.settle_deferred_error(now);
         let max_datagrams = match self.config.enable_segmentation_offload {
             false => 1,
             true => max_datagrams,
@@ -3057,6 +3048,10 @@ impl Connection {
                     if let Some(token) = params.stateless_reset_token {
                         self.rem_cids.set_initial_reset_token(token);
                         self.set_reset_token(self.path.remote, token);
+                        // Every address this identifier has already been sent to needs a route
+                        // now, not just the one in use.
+                        let seq = self.rem_cids.active_seq();
+                        self.announce_reset_routes(seq);
                     }
                     self.handle_peer_params(params)?;
                     self.issue_first_cids(now);
@@ -3874,8 +3869,14 @@ impl Connection {
         // recorded, tell the endpoint nothing and allocate nothing.
         let generation = self.reset_generation;
         let owned = self.owned_remotes();
-        if let Some((delta, token)) = self.rem_cids.mark_sent(seq, destination, generation, owned) {
-            self.apply_route_delta(seq, token, delta, generation);
+        match self.rem_cids.mark_sent(seq, destination, generation, owned) {
+            Ok(Some((delta, token))) => self.apply_route_delta(seq, token, delta, generation),
+            Ok(None) => {}
+            // Nowhere to record where this datagram went, so a reset answering it could not be
+            // recognised. That is ours to fail on, not to ignore.
+            Err(_) => self.defer_error(TransportError::INTERNAL_ERROR(
+                "no room to record where a connection ID was sent",
+            )),
         }
         let Some(candidate) = self.candidate.as_mut().filter(|c| c.seq == seq) else {
             return;
@@ -4027,6 +4028,25 @@ impl Connection {
             .retire_cids(seq..seq + 1)?;
         self.note_retired(seq..seq + 1);
         Ok(())
+    }
+
+    /// Close with a protocol error raised where the caller could not return one.
+    ///
+    /// This does not depend on there being a datagram to build: a connection whose send is held
+    /// waiting for a route that will never exist has to close with its cause all the same, so the
+    /// driver calls this every time it runs, before it retries anything it has buffered.
+    pub(crate) fn settle_deferred_error(&mut self, now: Instant) {
+        let Some(error) = self.deferred_error.take() else {
+            return;
+        };
+        // The peer is told with the frame this error names, and the application is told the cause:
+        // closing locally must not leave the connection to be reported later as an engine that
+        // drained without a reason.
+        let reason = ConnectionError::TransportError(error.clone());
+        self.close_inner(now, Close::Connection(error.into()));
+        if self.error.is_none() {
+            self.error = Some(reason);
+        }
     }
 
     /// Tests: refuse a retirement too wide to queue and carry the error the way every production
@@ -4289,8 +4309,25 @@ impl Connection {
     fn install_reset_route(&mut self, seq: u64, remote: SocketAddr) {
         let generation = self.reset_generation;
         let owned = self.owned_remotes();
-        if let Some((delta, token)) = self.rem_cids.install_route(seq, remote, generation, owned) {
-            self.apply_route_delta(seq, token, delta, generation);
+        match self.rem_cids.install_route(seq, remote, generation, owned) {
+            Ok(Some((delta, token))) => self.apply_route_delta(seq, token, delta, generation),
+            Ok(None) => {}
+            Err(_) => self.defer_error(TransportError::INTERNAL_ERROR(
+                "no room to record a connection ID's route",
+            )),
+        }
+    }
+
+    /// The peer has named this identifier's token: every address it has already been sent to needs
+    /// its route installed, and none of them counts as installed until the endpoint says so.
+    fn announce_reset_routes(&mut self, seq: u64) {
+        let generation = self.reset_generation;
+        let announced = self.rem_cids.announce_routes(seq, generation);
+        for (assoc, token) in announced {
+            if let Some(installation) = assoc.generation() {
+                self.note_reset_token(assoc.remote, seq, token, installation);
+                self.reset_generation = self.reset_generation.max(installation + 1);
+            }
         }
     }
 

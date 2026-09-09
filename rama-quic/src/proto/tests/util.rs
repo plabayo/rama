@@ -508,13 +508,17 @@ impl TestEndpoint {
     pub(super) fn drive_outgoing(&mut self, now: Instant) {
         let buffer_size = self.endpoint.config().get_max_udp_payload_size() as usize;
         let mut buf = Vec::with_capacity(buffer_size);
+        /// How many passes a datagram may wait for a route with nothing left to install before
+        /// this is a stuck harness rather than an ordinary wait.
+        const WAITING_PASSES: u32 = 4;
+        let mut stalled = 0u32;
 
         loop {
-            // Arrivals and timers first, then the wire. Route installations are the exception:
-            // the send path waits on them, so they are applied and acknowledged before a datagram
-            // is offered, which is what a driver achieves by polling the endpoint and the
-            // connection independently. Every other endpoint event keeps its place after the
-            // wire, so nothing else about this harness's ordering moves.
+            // Arrivals and timers, then the wire, then everything the connections asked the
+            // endpoint for — in the order they asked. Nothing is applied early: a datagram that
+            // needs a route is *kept*, so the next pass sends it once the route is in, and the
+            // release of a displaced route can never be reordered behind the installation that
+            // displaced it.
             let mut endpoint_events: Vec<(ConnectionHandle, EndpointEvent)> = vec![];
             for (ch, conn) in self.connections.iter_mut() {
                 if self.timeout.is_some_and(|x| x <= now) {
@@ -532,11 +536,6 @@ impl TestEndpoint {
                     endpoint_events.push((*ch, event));
                 }
             }
-            let (routes, mut endpoint_events): (Vec<_>, Vec<_>) = endpoint_events
-                .into_iter()
-                .partition(|(_, event)| event.is_reset_route());
-            self.apply_endpoint_events(routes);
-
             // Now the wire.
             let mut waiting = false;
             for (ch, conn) in self.connections.iter_mut() {
@@ -605,9 +604,22 @@ impl TestEndpoint {
             }
             let more = !endpoint_events.is_empty();
             self.apply_endpoint_events(endpoint_events);
-            if !more && !waiting {
+            if !more {
+                // Nothing was asked of the endpoint, so nothing can change for a datagram that is
+                // waiting: another pass would only rebuild the same state. A held datagram stays
+                // held for the next drive, which is what the driver does when it returns to the
+                // scheduler.
+                if waiting {
+                    stalled += 1;
+                    assert!(
+                        stalled <= WAITING_PASSES,
+                        "a datagram waited for a route through {stalled} passes with nothing \
+                         left to install: its installation was refused or never asked for"
+                    );
+                }
                 break;
             }
+            stalled = 0;
         }
     }
 

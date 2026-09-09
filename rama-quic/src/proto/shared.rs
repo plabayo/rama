@@ -67,6 +67,19 @@ impl EndpointEvent {
         matches!(self.0, EndpointEventInner::ResetTokenUsed(..))
     }
 
+    /// The refusal a full routing table would answer this installation with, if it is one.
+    #[cfg(test)]
+    pub(crate) fn route_refusal(&self) -> Option<ConnectionEvent> {
+        match self.0 {
+            EndpointEventInner::ResetTokenUsed(remote, seq, _, generation) => {
+                Some(ConnectionEvent(ConnectionEventInner::ResetRouteRefused(
+                    remote, seq, generation,
+                )))
+            }
+            _ => None,
+        }
+    }
+
     /// Determine whether this is the last event a `Connection` will emit
     ///
     /// Useful for determining when connection-related event loop state can be freed.

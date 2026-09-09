@@ -721,6 +721,23 @@ impl EndpointRef {
         self.0.state.lock().hold_route_installs = true;
     }
 
+    /// Tests: answer the route installations put aside the way a full routing table does — with a
+    /// refusal — so the connection has to fail rather than wait for a route that cannot exist.
+    #[cfg(test)]
+    pub(crate) fn refuse_route_installs(&self) {
+        let mut state = self.0.state.lock();
+        state.hold_route_installs = false;
+        let held = std::mem::take(&mut state.held_route_installs);
+        for (handle, event) in held {
+            let Some(refusal) = event.route_refusal() else {
+                continue;
+            };
+            if let Some(channel) = state.recv_state.connections.channels.get(&handle) {
+                channel.inner.control(Control::Proto(refusal));
+            }
+        }
+    }
+
     /// Tests: apply the route installations put aside, and hand each connection the
     /// acknowledgement the endpoint answers with — exactly what it would have received anyway.
     #[cfg(test)]
@@ -7327,18 +7344,29 @@ mod lifecycle_tests {
 
         // Make the peer retire every identifier below the next one, so the connection has to
         // switch to an unused one whose route is not installed.
-        // Retiring everything below the next sequence number is what forces the switch; the
-        // peer may only name one past what it has issued.
-        let mut after = before.clone();
+        // Retiring everything below the next sequence number is what forces the switch; the peer
+        // may only name one past what it has issued.
         for step in 1..=5u64 {
             s.rotate_local_cid(step);
-            tokio::time::sleep(Duration::from_millis(60)).await;
-            after = active_dcid(&c);
-            if after != before {
+            if tokio::time::timeout(Duration::from_millis(200), async {
+                while c.held_transmit().is_none() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .is_ok()
+            {
                 break;
             }
         }
+        // The gate itself is the observation: a datagram is built and held, not merely absent.
+        let (held_bytes, held_to, held_seq) = c
+            .held_transmit()
+            .expect("a datagram is held back for its route");
+        let after = active_dcid(&c);
         assert_ne!(after, before, "the connection switched identifier");
+        assert_eq!(held_to, server.local_addr().unwrap());
+        assert!(held_seq.is_some(), "the held datagram names its identifier");
 
         // The datagram carrying it is waiting, not gone: nothing on the wire carries the new
         // identifier, and nothing was given up either.
@@ -7384,6 +7412,20 @@ mod lifecycle_tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
         assert!(carried_now >= 1, "the identifier reached the wire");
+        // The datagram that left is the one that was held: same bytes, not a rebuild.
+        assert_eq!(
+            log.lock()
+                .sent
+                .iter()
+                .filter(|d| d.bytes == held_bytes)
+                .count(),
+            1,
+            "the exact datagram that was held left, once"
+        );
+        assert!(
+            c.held_transmit().is_none(),
+            "and nothing is held back any more"
+        );
         // Nothing was replayed: no two datagrams carrying this identifier are byte-identical, so
         // the one that waited was sent rather than rebuilt alongside a copy of itself.
         {
@@ -7414,6 +7456,88 @@ mod lifecycle_tests {
             "the wire moved on from where it was held"
         );
         exchange(&c, &s, b"after").await;
+        drop((c, s));
+        tokio::join!(client.shutdown(), server.shutdown());
+    }
+
+    /// A route that can never be installed must not leave the connection waiting for it. When the
+    /// endpoint refuses, the connection closes with the cause it raised, tells the application
+    /// once, wakes whoever was waiting on a stream, and gives up the bytes it was holding — none
+    /// of which may depend on an idle timeout coming round.
+    #[tokio::test]
+    async fn a_refused_route_closes_the_connection_with_its_cause() {
+        let (client_config, server_config) = configs();
+        let server = endpoint(
+            Some(server_config),
+            Executor::new(),
+            Duration::from_secs(60),
+        );
+        let (socket, _log) = recording_socket();
+        let client = endpoint_with(EndpointConfig::default(), None, socket);
+        let connecting = client
+            .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+            .unwrap();
+        let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let (c, s) = handshake(connecting, incoming).await;
+        exchange(&c, &s, b"before").await;
+
+        // Something is waiting on this connection, so a failure has to reach it.
+        let reader = {
+            let c = c.clone();
+            tokio::spawn(async move { c.accept_uni().await.err() })
+        };
+
+        client.inner.hold_route_installs();
+        for step in 1..=5u64 {
+            s.rotate_local_cid(step);
+            if tokio::time::timeout(Duration::from_millis(200), async {
+                while c.held_transmit().is_none() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .is_ok()
+            {
+                break;
+            }
+        }
+        assert!(
+            c.held_transmit().is_some(),
+            "a datagram is held for a route"
+        );
+
+        // The endpoint has no room for it. The connection must fail, not wait.
+        client.inner.refuse_route_installs();
+        let closed = tokio::time::timeout(Duration::from_secs(2), c.closed())
+            .await
+            .expect("a refused route closed the connection without waiting for a timeout");
+        match &closed {
+            ConnectionError::TransportError(error) => assert_eq!(
+                error.code,
+                crate::proto::TransportErrorCode::INTERNAL_ERROR,
+                "the cause it raised, not a substitute: {error:?}"
+            ),
+            other => panic!("expected the original transport error, got {other:?}"),
+        }
+
+        // The waiter learned the same thing, once, and the held bytes are gone.
+        let woken = tokio::time::timeout(Duration::from_secs(2), reader)
+            .await
+            .expect("the waiting reader was woken")
+            .expect("the reader task did not panic");
+        assert!(woken.is_some(), "it was woken with an error");
+        assert!(
+            c.held_transmit().is_none(),
+            "the unsent bytes were released"
+        );
+        assert_eq!(
+            c.closed().await,
+            closed,
+            "and the same reason is reported every time it is asked"
+        );
         drop((c, s));
         tokio::join!(client.shutdown(), server.shutdown());
     }

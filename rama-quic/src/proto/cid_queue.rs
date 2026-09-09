@@ -1,8 +1,6 @@
 use std::net::SocketAddr;
 use std::ops::Range;
 
-use rama_core::telemetry::tracing::warn;
-
 use crate::proto::{ConnectionId, ResetToken, frame::NewConnectionId};
 
 /// A remote connection ID with its sequence number and, unless it is the initial one before the
@@ -53,6 +51,12 @@ enum RouteState {
     /// The endpoint has confirmed this installation.
     Installed(u64),
 }
+
+/// Every address of an identifier is owned by a live path role, so a further one cannot be
+/// recorded. Unreachable while at most two roles own an identifier and three addresses are kept —
+/// which is why it is an error and not an eviction.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) struct NoRoomForRoute;
 
 impl RouteState {
     /// The installation this state names, if any.
@@ -145,16 +149,14 @@ impl RemCid {
             // No token means no route for a reset to arrive by, so there is nothing to wait for.
             return true;
         }
+        // The token is known, so this address needs a route the endpoint has confirmed. Anything
+        // else — no record at all, one still pending, or one from before the token was known —
+        // is not something to send on.
         self.sent_to
             .iter()
             .flatten()
             .find(|assoc| assoc.remote == remote)
-            .is_some_and(|assoc| {
-                matches!(
-                    assoc.state,
-                    RouteState::NoneRequired | RouteState::Installed(_)
-                )
-            })
+            .is_some_and(|assoc| matches!(assoc.state, RouteState::Installed(_)))
     }
 
     /// The addresses this identifier is recognised at, least recently used first.
@@ -167,8 +169,8 @@ impl RemCid {
     /// route does not, and cannot un-send what already has.
     ///
     /// `generation` names a new installation and is only consumed by one.
-    /// `None` when there was nowhere to record it, which the caller has to treat as a failure
-    /// rather than as nothing to do.
+    /// `Err` when there was nowhere to record it, which the caller has to treat as a failure and
+    /// not as nothing to do.
     fn route_to(
         &mut self,
         remote: SocketAddr,
@@ -176,7 +178,7 @@ impl RemCid {
         sent: bool,
         token_known: bool,
         owned: OwnedRemotes,
-    ) -> Option<RouteDelta> {
+    ) -> Result<RouteDelta, NoRoomForRoute> {
         if let Some(at) = self
             .sent_to
             .iter()
@@ -188,7 +190,7 @@ impl RemCid {
             self.sent_to[at..filled].rotate_left(1);
             // The refreshed route is now the most recent of the filled slots.
             let Some(assoc) = self.sent_to.get_mut(filled - 1).and_then(Option::as_mut) else {
-                return Some(RouteDelta::default());
+                return Ok(RouteDelta::default());
             };
             assoc.sent |= sent;
             if token_known && assoc.state == RouteState::NoneRequired {
@@ -196,12 +198,12 @@ impl RemCid {
                 // is new is the route, not the use: it goes to the endpoint now, it is *not*
                 // installed until that is confirmed, and the history it already earned stays.
                 assoc.state = RouteState::Pending(generation);
-                return Some(RouteDelta {
+                return Ok(RouteDelta {
                     added: Some(*assoc),
                     released: None,
                 });
             }
-            return Some(RouteDelta::default());
+            return Ok(RouteDelta::default());
         }
         let added = Association {
             remote,
@@ -215,7 +217,7 @@ impl RemCid {
         let filled = self.filled();
         if let Some(slot) = self.sent_to.get_mut(filled) {
             *slot = Some(added);
-            return Some(RouteDelta {
+            return Ok(RouteDelta {
                 added: token_known.then_some(added),
                 released: None,
             });
@@ -231,11 +233,7 @@ impl RemCid {
             .iter()
             .position(|slot| slot.is_some_and(|assoc| !owned.owns(assoc.remote)))
         else {
-            warn!(
-                %remote,
-                "every address of a connection ID is owned by a path; no route recorded"
-            );
-            return None;
+            return Err(NoRoomForRoute);
         };
         let released = self.sent_to[victim]
             .replace(added)
@@ -243,7 +241,7 @@ impl RemCid {
             .filter(|released| released.state != RouteState::NoneRequired);
         // The new one is the most recent, and the rest keep their order.
         self.sent_to[victim..].rotate_left(1);
-        Some(RouteDelta {
+        Ok(RouteDelta {
             added: token_known.then_some(added),
             released,
         })
@@ -761,8 +759,35 @@ impl CidQueue {
         remote: SocketAddr,
         generation: u64,
         owned: OwnedRemotes,
-    ) -> Option<(RouteDelta, ResetToken)> {
+    ) -> Result<Option<(RouteDelta, ResetToken)>, NoRoomForRoute> {
         self.route(seq, remote, generation, true, owned)
+    }
+
+    /// Every address the identifier numbered `seq` has a route to that the endpoint has not been
+    /// told about, moved to pending under a generation of its own, starting at `generation`.
+    ///
+    /// This is what learning a token does: each address the identifier has already been sent to
+    /// needs its route installed, not only the one in use, and none of them may be treated as
+    /// installed until the endpoint says so.
+    pub(crate) fn announce_routes(
+        &mut self,
+        seq: u64,
+        generation: u64,
+    ) -> Vec<(Association, ResetToken)> {
+        let Some(cid) = self.present_mut().find(|cid| cid.seq == seq) else {
+            return Vec::new();
+        };
+        let Some(token) = cid.reset_token else {
+            return Vec::new();
+        };
+        let mut announced = Vec::with_capacity(RemCid::REMOTES);
+        for assoc in cid.sent_to.iter_mut().flatten() {
+            if assoc.state == RouteState::NoneRequired {
+                assoc.state = RouteState::Pending(generation + announced.len() as u64);
+                announced.push((*assoc, token));
+            }
+        }
+        announced
     }
 
     /// Install a route to `remote` for the identifier numbered `seq` without claiming anything
@@ -773,7 +798,7 @@ impl CidQueue {
         remote: SocketAddr,
         generation: u64,
         owned: OwnedRemotes,
-    ) -> Option<(RouteDelta, ResetToken)> {
+    ) -> Result<Option<(RouteDelta, ResetToken)>, NoRoomForRoute> {
         self.route(seq, remote, generation, false, owned)
     }
 
@@ -784,16 +809,22 @@ impl CidQueue {
         generation: u64,
         sent: bool,
         owned: OwnedRemotes,
-    ) -> Option<(RouteDelta, ResetToken)> {
-        let cid = self.present_mut().find(|cid| cid.seq == seq)?;
+    ) -> Result<Option<(RouteDelta, ResetToken)>, NoRoomForRoute> {
+        let Some(cid) = self.present_mut().find(|cid| cid.seq == seq) else {
+            // Not an identifier we hold: retired, or never received. Nothing to record.
+            return Ok(None);
+        };
         let token = cid.reset_token;
         // An identifier whose token the peer has not named yet has no route to install; the
         // record is kept, so the route follows when the token arrives.
         let delta = cid.route_to(remote, generation, sent, token.is_some(), owned)?;
-        if delta.is_empty() {
-            return None;
+        match token {
+            // Nothing for the endpoint to do, either because nothing changed or because there is
+            // no token to route by yet.
+            _ if delta.is_empty() => Ok(None),
+            None => Ok(None),
+            Some(token) => Ok(Some((delta, token))),
         }
-        Some((delta, token?))
     }
 
     /// Whether a datagram carrying the identifier numbered `seq` has gone out. An identifier we do
@@ -1229,7 +1260,7 @@ mod tests {
                 .copied()
                 .collect()
         };
-        q.mark_sent(0, here, 1, OwnedRemotes::default());
+        sent(&mut q, 0, here, 1, OwnedRemotes::default());
         assert_eq!(
             used(&q, here),
             vec![token(0)],
@@ -1245,7 +1276,7 @@ mod tests {
         assert_eq!(q.active_seq(), 1);
         assert!(!q.is_sent(1), "nothing has gone out with it yet");
         assert!(used(&q, here).is_empty(), "so nothing can reset us");
-        q.mark_sent(1, here, 2, OwnedRemotes::default());
+        sent(&mut q, 1, here, 2, OwnedRemotes::default());
         assert_eq!(used(&q, here), vec![token(1)]);
 
         // Held: the one in use goes aside with its history, the replacement arrives without one.
@@ -1275,14 +1306,14 @@ mod tests {
         assert_eq!(q.active_seq(), reserved.seq);
         assert!(!q.is_sent(reserved.seq), "promotion is not sending");
         assert!(!used(&q, here).contains(&token(reserved.seq as u8)));
-        q.mark_sent(reserved.seq, here, 3, OwnedRemotes::default());
+        sent(&mut q, reserved.seq, here, 3, OwnedRemotes::default());
         assert!(used(&q, here).contains(&token(reserved.seq as u8)));
 
         // Binding to a path of its own: same rule, and retirement ends it.
         q.insert(cid_token(7, 0)).unwrap();
         let bound = q.bind_unused(0).expect("an unused identifier");
         assert!(!q.is_sent(bound.seq));
-        q.mark_sent(bound.seq, there, 4, OwnedRemotes::default());
+        sent(&mut q, bound.seq, there, 4, OwnedRemotes::default());
         assert!(q.is_sent(bound.seq));
         assert!(
             used(&q, there).contains(&token(bound.seq as u8)),
@@ -1306,6 +1337,19 @@ mod tests {
 
     fn addr(last: u8) -> SocketAddr {
         SocketAddr::from(([127, 0, 0, last], 4433))
+    }
+
+    /// `mark_sent` in a test: every one of these scenarios has room to record the address, so a
+    /// refusal is a bug in the test rather than something to handle.
+    fn sent(
+        q: &mut CidQueue,
+        seq: u64,
+        remote: SocketAddr,
+        generation: u64,
+        owned: OwnedRemotes,
+    ) -> Option<(RouteDelta, ResetToken)> {
+        q.mark_sent(seq, remote, generation, owned)
+            .expect("there is room to record it")
     }
 
     /// The roles that own an address for an identifier at one moment.
@@ -1339,7 +1383,7 @@ mod tests {
             q.is_installed(0, here),
             "no token means nothing to wait for"
         );
-        assert!(q.mark_sent(0, here, 1, OwnedRemotes::default()).is_none());
+        assert!(sent(&mut q, 0, here, 1, OwnedRemotes::default()).is_none());
         assert!(q.is_sent(0), "and the send is on record");
         assert!(q.is_installed(0, here));
 
@@ -1348,6 +1392,7 @@ mod tests {
         q.insert(cid_token(1, 0)).unwrap();
         let unused = q.reserve().expect("an unused identifier");
         q.install_route(unused.seq, here, 2, OwnedRemotes::default())
+            .expect("there is room")
             .expect("a route to install");
         assert!(
             !q.is_sent(unused.seq),
@@ -1377,6 +1422,7 @@ mod tests {
         q.set_initial_reset_token(token(0));
         let (delta, installed_token) = q
             .install_route(0, here, 7, OwnedRemotes::default())
+            .expect("there is room")
             .expect("the route has to be installed now");
         assert_eq!(installed_token, token(0));
         assert_eq!(
@@ -1417,17 +1463,15 @@ mod tests {
         let (a, b, c, d) = (addr(1), addr(2), addr(3), addr(4));
 
         // A, then an unvalidated move to B, then on to C: A is still the fallback throughout.
-        q.mark_sent(seq, a, 1, roles(a, None));
-        q.mark_sent(seq, b, 2, roles(b, Some(a)));
-        q.mark_sent(seq, c, 3, roles(c, Some(a)));
+        sent(&mut q, seq, a, 1, roles(a, None));
+        sent(&mut q, seq, b, 2, roles(b, Some(a)));
+        sent(&mut q, seq, c, 3, roles(c, Some(a)));
         for remote in [a, b, c] {
             assert!(q.is_sent_to(seq, remote), "{remote} is recognised");
         }
 
         // A fourth address has to displace something. B is the one no role owns.
-        let (delta, _) = q
-            .mark_sent(seq, d, 4, roles(d, Some(a)))
-            .expect("a route to install");
+        let (delta, _) = sent(&mut q, seq, d, 4, roles(d, Some(a))).expect("a route to install");
         assert_eq!(
             delta.released.map(|r| r.remote),
             Some(b),
@@ -1448,14 +1492,12 @@ mod tests {
     fn a_returning_address_keeps_its_route_and_the_idle_one_goes() {
         let (mut q, seq) = queue_with_one_used_cid();
         let (a, b, c, d) = (addr(1), addr(2), addr(3), addr(4));
-        q.mark_sent(seq, a, 1, roles(a, None));
-        q.mark_sent(seq, b, 2, roles(b, Some(a)));
+        sent(&mut q, seq, a, 1, roles(a, None));
+        sent(&mut q, seq, b, 2, roles(b, Some(a)));
         // Back to A: it is in use again, so B is now the idle one.
-        q.mark_sent(seq, a, 3, roles(a, Some(b)));
-        q.mark_sent(seq, c, 4, roles(c, Some(a)));
-        let (delta, _) = q
-            .mark_sent(seq, d, 5, roles(d, Some(a)))
-            .expect("a route to install");
+        sent(&mut q, seq, a, 3, roles(a, Some(b)));
+        sent(&mut q, seq, c, 4, roles(c, Some(a)));
+        let (delta, _) = sent(&mut q, seq, d, 5, roles(d, Some(a))).expect("a route to install");
         assert_eq!(
             delta.released.map(|r| r.remote),
             Some(b),
@@ -1476,12 +1518,12 @@ mod tests {
         let (mut q, seq) = queue_with_one_used_cid();
         let home = addr(1);
         let mut installed = 0i64;
-        q.mark_sent(seq, home, 0, roles(home, None));
+        sent(&mut q, seq, home, 0, roles(home, None));
         installed += 1;
         for step in 0..40u8 {
             let remote = addr(10 + step);
             let owned = roles(remote, Some(home));
-            let Some((delta, _)) = q.mark_sent(seq, remote, step as u64 + 1, owned) else {
+            let Some((delta, _)) = sent(&mut q, seq, remote, step as u64 + 1, owned) else {
                 continue;
             };
             installed += i64::from(delta.added.is_some());

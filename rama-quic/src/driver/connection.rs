@@ -652,6 +652,17 @@ impl Connection {
         self.0.state.lock().inner.cid_confirmed(seq)
     }
 
+    /// Tests: the datagram being held back because the route its identifier needs is not
+    /// installed — its exact bytes, where it is addressed, and which identifier it carries. That
+    /// it is `Some` is also how a test knows the send gate has been reached.
+    #[cfg(test)]
+    pub(crate) fn held_transmit(&self) -> Option<(Vec<u8>, std::net::SocketAddr, Option<u64>)> {
+        let state = self.0.state.lock();
+        let (_, transmit) = state.buffered_transmit.as_ref()?;
+        let bytes = state.send_buffer.get(..transmit.size)?.to_vec();
+        Some((bytes, transmit.destination, transmit.cid_used))
+    }
+
     /// Tests: how many datagrams were given up because their identifier may never be sent again.
     /// A datagram merely waiting for its route is not one of them.
     #[cfg(test)]
@@ -1445,6 +1456,10 @@ impl State {
 
     fn drive_transmit(&mut self, cx: &mut Context) -> io::Result<bool> {
         let now = now();
+        // A failure raised where it could not be returned closes the connection here, before
+        // anything is retried: a datagram held for a route that will never exist must not keep
+        // the cause from reaching the application.
+        self.inner.settle_deferred_error(now);
         let mut transmits = 0;
 
         loop {
@@ -1741,6 +1756,9 @@ impl State {
     /// Used to wake up all blocked futures when the connection becomes closed for any reason
     fn terminate(&mut self, reason: ConnectionError, shared: &Shared) {
         let reason = self.error.get_or_insert(reason).clone();
+        // Whatever was waiting to be sent is never going out, and holding it would pin the
+        // sender's state for a descriptor nobody will offer again.
+        self.buffered_transmit = None;
         if let Some(x) = self.on_handshake_data.take() {
             let _ = x.send(());
         }
