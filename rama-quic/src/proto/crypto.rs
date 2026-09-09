@@ -24,16 +24,36 @@ pub(crate) mod ring_like;
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 pub(crate) mod rustls;
 
-/// What a completed handshake settled, in Rama's own types: the application protocol the two
-/// sides agreed on, and the name the client asked the server for.
+/// What the handshake has settled, in Rama's own types: the application protocol the two sides
+/// agreed on, and the name the client asked the server for.
 ///
-/// A server sees the name it was asked for; a client sees none, having asked it itself.
+/// A server sees the name it was asked for; a client sees none, having asked it itself. This is
+/// available as soon as the TLS session has that data, which is before the handshake is
+/// confirmed — waiting for confirmation is the caller's to do if it matters.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HandshakeSummary {
     /// The application protocol both sides agreed on (RFC 7301), when ALPN was used.
     pub protocol: Option<rama_net::tls::ApplicationProtocol>,
     /// The server name the client asked for, when it sent one.
-    pub server_name: Option<rama_net::address::Host>,
+    pub server_name: Option<ServerName>,
+}
+
+/// A server name a client asked for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerName {
+    /// A name this crate could read.
+    Known(rama_net::address::Host),
+    /// A name it could not: reported as it arrived rather than dropped.
+    Unparsed(String),
+}
+
+impl std::fmt::Display for ServerName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Known(host) => host.fmt(f),
+            Self::Unparsed(name) => f.write_str(name),
+        }
+    }
 }
 
 /// A cryptographic session (commonly TLS)

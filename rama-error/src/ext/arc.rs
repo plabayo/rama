@@ -15,9 +15,14 @@ use crate::{
 /// values at once — a terminal connection error that every stream on that connection reports,
 /// say — and their cause is often not [`Clone`]. This shares one cause between those owners.
 ///
-/// Displaying it, walking its sources and downcasting behave as they do for the error inside it:
-/// sharing adds no line to a message and no step to a chain. Adding context produces a new value;
-/// what other owners of the same cause already see never changes.
+/// It displays as the error it shares and downcasts to it, so a message reads the same either
+/// way. Its source is that error, which is one step a chain would not have without the sharing:
+/// that is what lets a cause be recovered by type after context is wrapped around it. A caller
+/// that would rather not show the step — an error that stores its cause this way but wants its
+/// own chain to lead straight to the failure — can use [`ArcError::as_error`].
+///
+/// Adding context produces a new value; what other owners of the same cause already see never
+/// changes.
 #[derive(Clone)]
 pub struct ArcError(Arc<dyn core::error::Error + Send + Sync + 'static>);
 
@@ -313,16 +318,112 @@ mod tests {
     }
 
     #[test]
-    fn context_on_a_shared_error_keeps_the_cause_reachable() {
+    fn a_typed_cause_survives_context_whether_shared_or_not() {
+        let sole = ArcError::new(cause())
+            .context(Note(7))
+            .context_field("k", "v");
+        assert!(
+            error_chain(&sole, 8).any(|error| error.downcast_ref::<Cause>().is_some()),
+            "the cause is recoverable by type through the only owner's context: {sole}"
+        );
+
         let shared = ArcError::new(cause());
         let kept = shared.clone();
         let annotated = shared.context(Note(7));
         assert!(annotated.to_string().contains("note 7"));
-        let found = error_chain(&annotated, 8).any(|error| {
-            error.downcast_ref::<Cause>().is_some() || error.to_string() == "the cause"
-        });
-        assert!(found, "the original cause is still in the chain");
-        drop(kept);
+        assert!(
+            error_chain(&annotated, 8).any(|error| error.downcast_ref::<Cause>().is_some()),
+            "and through a shared one's: {annotated}"
+        );
+        assert!(
+            error_chain(&kept, 8).any(|error| error.downcast_ref::<Cause>().is_some()),
+            "the clone made before the context still has it"
+        );
+        let after = annotated.clone();
+        assert!(
+            error_chain(&after, 8).any(|error| error.downcast_ref::<Cause>().is_some()),
+            "and so does one made after it"
+        );
+    }
+
+    /// What was beneath the cause is beneath it still.
+    #[test]
+    fn context_keeps_the_whole_chain_beneath_the_cause() {
+        #[derive(Debug)]
+        struct Deepest;
+        impl fmt::Display for Deepest {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("the bottom")
+            }
+        }
+        impl core::error::Error for Deepest {}
+
+        let deep = Cause {
+            source: Some(Box::new(Deepest)),
+        };
+        let annotated = ArcError::new(deep).context_field("stage", "one");
+        assert!(
+            error_chain(&annotated, 8).any(|error| error.downcast_ref::<Deepest>().is_some()),
+            "the error under the cause is still in the chain: {annotated}"
+        );
+    }
+
+    /// Every context method answers with a shared error. A method that fell through to the
+    /// blanket trait would return a `BoxError` and fail to compile here.
+    #[test]
+    fn the_context_methods_all_answer_with_a_shared_error() {
+        let shared = ArcError::new(cause());
+        let _: ArcError = shared.clone().context(Note(1));
+        let _: ArcError = shared.clone().context_field("k", Note(2));
+        let _: ArcError = shared.clone().context_str_field("k", "v");
+        let _: ArcError = shared.clone().context_debug(3u8);
+        let _: ArcError = shared.clone().context_hex(4u8);
+        let _: ArcError = shared.clone().context_debug_field("k", 5u8);
+        let _: ArcError = shared.clone().context_hex_field("k", 6u8);
+        let _: ArcError = shared.clone().with_context(|| Note(7));
+        let _: ArcError = shared.clone().with_context_debug(|| 8u8);
+        let _: ArcError = shared.clone().with_context_hex(|| 9u8);
+        let _: ArcError = shared.clone().with_context_field("k", || Note(10));
+        let _: ArcError = shared.clone().with_context_str_field("k", || "v");
+        let _: ArcError = shared.clone().with_context_debug_field("k", || 11u8);
+        let last: ArcError = shared.with_context_hex_field("k", || 12u8);
+        assert!(
+            error_chain(&last, 8).any(|error| error.downcast_ref::<Cause>().is_some()),
+            "and each of them keeps the cause"
+        );
+    }
+
+    /// A cycle in the chain still ends: the bound belongs to the walk, and sharing does not
+    /// lengthen the way out of it.
+    #[test]
+    fn a_cyclic_chain_still_ends() {
+        struct Loop;
+        impl fmt::Debug for Loop {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("Loop")
+            }
+        }
+        impl fmt::Display for Loop {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("round")
+            }
+        }
+        impl core::error::Error for Loop {
+            fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+                Some(self)
+            }
+        }
+
+        let shared = ArcError::new(Loop).context(Note(1));
+        assert_eq!(
+            error_chain(&shared, 4).count(),
+            4,
+            "the walk stops at the bound it was given"
+        );
+        assert!(
+            format!("{shared}").contains("note 1"),
+            "and the context still renders"
+        );
     }
 
     #[test]

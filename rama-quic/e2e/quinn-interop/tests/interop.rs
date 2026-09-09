@@ -5,12 +5,12 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use rama_crypto::pki_types::CertificateDer;
-use rama_quic::tls::TlsOptions;
-use rama_quic::{ClientConfig, Endpoint, ServerConfig};
-use rama_tls::client::TlsClientConfig;
-use rama_tls::server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig};
-use rama_utils::octets;
+use rama::crypto::pki_types::CertificateDer;
+use rama::quic::tls::TlsOptions;
+use rama::quic::{ClientConfig, Endpoint, ServerConfig};
+use rama::tls::client::TlsClientConfig;
+use rama::tls::server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig};
+use rama::utils::octets;
 use sha2::{Digest, Sha256};
 
 const ALPN: &[u8] = b"rama-quinn-interop";
@@ -25,7 +25,9 @@ async fn step<F: std::future::Future>(what: &str, future: F) -> F::Output {
     }
 }
 
-/// A spawned peer that is joined on success and aborted on the way out of a failure.
+/// A spawned peer. The guard owns its handle for as long as it exists, including while a wait on
+/// it is in progress, so a wait that is itself cancelled leaves the task with the guard rather
+/// than detached; dropping the guard aborts the task without waiting for it to unwind.
 struct Peer(Option<tokio::task::JoinHandle<()>>);
 
 impl Peer {
@@ -33,26 +35,31 @@ impl Peer {
         Self(Some(tokio::spawn(task)))
     }
 
-    async fn join(self, what: &str) {
+    async fn join(mut self, what: &str) {
         if let Err(reason) = self.try_join_within(LIMIT).await {
             panic!("{what}: {reason}");
         }
     }
 
-    /// Wait for the task, keeping the handle for the whole wait so a timeout can still stop it:
-    /// awaiting the handle by value would drop it and leave the task running detached.
-    async fn try_join_within(mut self, limit: Duration) -> Result<(), String> {
-        let mut handle = self.0.take().expect("joined once");
-        match tokio::time::timeout(limit, &mut handle).await {
+    /// Wait for the task, with the handle staying in the guard throughout: awaiting it by value
+    /// would drop it on a timeout and leave the task running detached, and taking it out first
+    /// would do the same if this wait were itself cancelled.
+    async fn try_join_within(&mut self, limit: Duration) -> Result<(), String> {
+        let handle = self.0.as_mut().expect("waited on once");
+        let outcome = match tokio::time::timeout(limit, handle).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(error)) if error.is_panic() => Err(format!("panicked: {error}")),
             Ok(Err(error)) => Err(format!("ended: {error}")),
             Err(_) => {
+                let handle = self.0.as_mut().expect("still here");
                 handle.abort();
                 let _ = handle.await;
                 Err(format!("not within {limit:?}"))
             }
-        }
+        };
+        // Whatever happened, the task is finished and the guard has nothing left to abort.
+        self.0 = None;
+        outcome
     }
 }
 
@@ -82,8 +89,8 @@ fn identity() -> ServerAuthData {
         .expect("an identity is generated")
 }
 
-fn alpn() -> impl IntoIterator<Item = rama_net::tls::ApplicationProtocol> {
-    [rama_net::tls::ApplicationProtocol::from(ALPN)]
+fn alpn() -> impl IntoIterator<Item = rama::net::tls::ApplicationProtocol> {
+    [rama::net::tls::ApplicationProtocol::from(ALPN)]
 }
 
 fn rama_server_config(auth: &ServerAuthData) -> ServerConfig {
@@ -210,7 +217,7 @@ async fn rama_client_to_quinn_server() {
         .expect("the handshake settled something");
     assert_eq!(
         settled.protocol,
-        Some(rama_net::tls::ApplicationProtocol::from(ALPN)),
+        Some(rama::net::tls::ApplicationProtocol::from(ALPN)),
         "the protocol both sides agreed on"
     );
     let chain = conn
@@ -285,7 +292,7 @@ async fn quinn_client_to_rama_server() {
                 .expect("the handshake settled something");
             assert_eq!(
                 settled.protocol,
-                Some(rama_net::tls::ApplicationProtocol::from(ALPN)),
+                Some(rama::net::tls::ApplicationProtocol::from(ALPN)),
                 "the protocol both sides agreed on"
             );
             assert_eq!(
@@ -511,6 +518,7 @@ async fn a_peer_that_never_finishes_is_stopped() {
             std::future::pending::<()>().await;
         }
     });
+    let mut peer = peer;
     let outcome = peer.try_join_within(Duration::from_millis(200)).await;
     assert!(
         outcome.is_err_and(|reason| reason.contains("not within")),

@@ -78,26 +78,36 @@ impl crypto::Session for TlsSession {
     }
 
     fn handshake_summary(&self) -> Option<crate::proto::crypto::HandshakeSummary> {
-        let data = self.handshake_data()?;
-        let data = data.downcast::<HandshakeData>().ok()?;
+        if !self.got_handshake_data {
+            return None;
+        }
+        let server_name = match self.inner {
+            Connection::Client(_) => None,
+            Connection::Server(ref session) => session.server_name(),
+        };
         Some(crate::proto::crypto::HandshakeSummary {
-            protocol: data
-                .protocol
-                .as_deref()
+            protocol: self
+                .inner
+                .alpn_protocol()
                 .map(rama_net::tls::ApplicationProtocol::from),
-            server_name: data
-                .server_name
-                .as_deref()
-                .and_then(|name| name.parse().ok()),
+            // A name the peer sent that is not one this crate can represent is reported as
+            // unparsed rather than dropped: what the peer asked for is not this side's to
+            // silently correct.
+            server_name: server_name.map(|name| match name.parse() {
+                Ok(host) => crate::proto::crypto::ServerName::Known(host),
+                Err(_) => crate::proto::crypto::ServerName::Unparsed(name.to_owned()),
+            }),
         })
     }
 
     fn peer_certificates(&self) -> Option<Vec<rama_crypto::pki_types::CertificateDer<'static>>> {
-        let identity = self.peer_identity()?;
-        identity
-            .downcast::<Vec<rama_crypto::pki_types::CertificateDer<'static>>>()
-            .ok()
-            .map(|chain| *chain)
+        Some(
+            self.inner
+                .peer_certificates()?
+                .iter()
+                .map(|certificate| certificate.clone().into_owned())
+                .collect(),
+        )
     }
 
     fn peer_identity(&self) -> Option<Box<dyn Any>> {

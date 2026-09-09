@@ -73,7 +73,7 @@ pub(crate) use crate::proto::endpoint::{
     AcceptError, ConnectionHandle, DatagramEvent, Endpoint, Incoming, RetryError, RetryRefused,
 };
 
-pub use crate::proto::crypto::{ExportKeyingMaterialError, HandshakeSummary};
+pub use crate::proto::crypto::{ExportKeyingMaterialError, HandshakeSummary, ServerName};
 
 mod packet;
 pub(crate) use packet::{
