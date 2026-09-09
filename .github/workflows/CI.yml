@@ -138,7 +138,8 @@ jobs:
           - windows-11-arm
     name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 240
+    # Intel macOS needs more time to compile both feature sets and examples.
+    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 360 || 240 }}
     needs:
       - precheck-rust
       - precheck-docs
