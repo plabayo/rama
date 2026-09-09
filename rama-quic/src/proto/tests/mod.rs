@@ -6579,6 +6579,71 @@ fn a_fallback_survives_repeated_unvalidated_moves_and_keeps_its_route() {
     );
 }
 
+/// Each connection's deadline is its own. Two connections are given different keep-alive
+/// intervals, so their deadlines differ; advancing to the earlier one fires that connection's
+/// timer and leaves the other's deadline where it was.
+#[test]
+fn one_connections_deadline_does_not_disturb_anothers() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (soon, _soon_server) =
+        pair.connect_with(client_config_with_keep_alive(Duration::from_secs(1)));
+    let (later, _later_server) =
+        pair.connect_with(client_config_with_keep_alive(Duration::from_secs(30)));
+    drive_settled(&mut pair);
+
+    let soon_at = pair
+        .client
+        .deadline_for(soon)
+        .expect("the first has a deadline");
+    let later_at = pair
+        .client
+        .deadline_for(later)
+        .expect("the second has a deadline");
+    assert!(
+        soon_at < later_at,
+        "the two deadlines differ: {soon_at:?} then {later_at:?}"
+    );
+
+    // Advance to the earlier deadline only, and drive once. The per-connection frame counters are
+    // what tell the two connections apart.
+    let pings = |pair: &mut Pair, ch| pair.client_conn_mut(ch).stats().frame_tx.ping;
+    let soon_pings = pings(&mut pair, soon);
+    let later_pings = pings(&mut pair, later);
+    pair.time = soon_at;
+    pair.drive_client();
+
+    // The due connection sent its keep-alive; the other sent none.
+    assert!(
+        pings(&mut pair, soon) > soon_pings,
+        "the connection whose deadline arrived pinged: {} then {}",
+        soon_pings,
+        pings(&mut pair, soon)
+    );
+    assert_eq!(
+        pings(&mut pair, later),
+        later_pings,
+        "and the other connection did not"
+    );
+
+    // Its deadline is renewed to a later time, not merely different, and the other's is untouched.
+    let renewed = pair
+        .client
+        .deadline_for(soon)
+        .expect("the due connection has a new deadline");
+    assert!(
+        renewed > soon_at,
+        "the renewed deadline is in the future: {renewed:?} after {soon_at:?}"
+    );
+    assert_eq!(
+        pair.client.deadline_for(later),
+        Some(later_at),
+        "the other connection's deadline is untouched"
+    );
+    assert!(!pair.client_conn_mut(soon).is_closed());
+    assert!(!pair.client_conn_mut(later).is_closed());
+}
+
 /// Two connections on one endpoint each receive only their own arrivals and keep their own
 /// deadline. A single shared deadline, or draining every handle's arrivals into whichever
 /// connection is visited first, is not observable with one connection per endpoint.
@@ -6592,7 +6657,7 @@ fn two_connections_on_one_endpoint_keep_their_own_arrivals_and_deadlines() {
     assert_ne!(client_a, client_b);
     assert_ne!(server_a, server_b);
 
-    // Distinguishable payloads in both directions at once.
+    // Distinguishable payloads, both written client to server.
     const TO_A: &[u8] = b"for the first";
     const TO_B: &[u8] = b"for the second";
     let up_a = pair.client_streams(client_a).open(Dir::Uni).unwrap();
@@ -6637,13 +6702,21 @@ fn two_connections_on_one_endpoint_keep_their_own_arrivals_and_deadlines() {
         !pair.server_conn_mut(server_b).is_closed(),
         "closing one connection did not disturb the other"
     );
-    // The one still open keeps working.
+    // The one still open keeps working, and its payload arrives whole.
+    const AFTER: &[u8] = b"still here";
     let after = pair.server_streams(server_b).open(Dir::Uni).unwrap();
-    pair.server_send(server_b, after)
-        .write(b"still here")
-        .unwrap();
+    pair.server_send(server_b, after).write(AFTER).unwrap();
+    pair.server_send(server_b, after).finish().unwrap();
     drive_settled(&mut pair);
     assert!(saw_uni_stream(pair.client_conn_mut(client_b)));
+    let mut recv = pair.client_recv(client_b, after);
+    let mut chunks = recv.read(false).unwrap();
+    match chunks.next(usize::MAX) {
+        Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == AFTER => {}
+        other => panic!("the survivor received {other:?}"),
+    }
+    assert!(matches!(chunks.next(usize::MAX), Ok(None)));
+    let _ = chunks.finalize();
 }
 
 /// The endpoint answers a route it cannot install with a refusal rather than an acknowledgement,
@@ -6665,6 +6738,8 @@ fn an_endpoint_with_no_room_refuses_the_route_and_indexes_nothing() {
     assert!(held_before > 0 && held_before < slots);
     let mut installed = 0;
     let mut refused = 0;
+    let mut accepted: Vec<(SocketAddr, TestResetToken)> = Vec::new();
+    let mut denied: Vec<(SocketAddr, TestResetToken)> = Vec::new();
     // One address per association, so every one is a distinct route.
     for step in 0..slots + 4 {
         let remote = SocketAddr::new(
@@ -6684,10 +6759,12 @@ fn an_endpoint_with_no_room_refuses_the_route_and_indexes_nothing() {
         match answer.map(|event| event.0) {
             Some(ConnectionEventInner::ResetRouteInstalled(at, seq, generation)) => {
                 assert_eq!((at, seq, generation), (remote, step as u64, step as u64));
+                accepted.push((remote, token));
                 installed += 1;
             }
             Some(ConnectionEventInner::ResetRouteRefused(at, seq, generation)) => {
                 assert_eq!((at, seq, generation), (remote, step as u64, step as u64));
+                denied.push((remote, token));
                 refused += 1;
             }
             other => panic!("step {step}: the endpoint answered {other:?}"),
@@ -6706,8 +6783,24 @@ fn an_endpoint_with_no_room_refuses_the_route_and_indexes_nothing() {
     assert_eq!(
         pair.client.endpoint.reset_route_count(),
         slots,
-        "the routing index holds the installed routes and nothing for the refused ones"
+        "the index holds exactly as many routes as the table has slots"
     );
+    // Cardinality alone would not say *which* routes are there. Every acknowledged pair has to
+    // route to this connection, and every refused pair has to route nowhere.
+    for (remote, token) in &accepted {
+        assert_eq!(
+            pair.client.endpoint.reset_route_for(*remote, *token),
+            Some(client_ch),
+            "an acknowledged route does not reach the connection: {remote}"
+        );
+    }
+    for (remote, token) in &denied {
+        assert_eq!(
+            pair.client.endpoint.reset_route_for(*remote, *token),
+            None,
+            "a refused route is in the index: {remote}"
+        );
+    }
 }
 
 /// A stateless reset datagram carrying the token `key` derives for `cid`.

@@ -293,6 +293,9 @@ pub(crate) struct Connection {
     /// Names each route installation, so a release or an acknowledgement in flight cannot be
     /// applied to a later one that reuses the same identifier and address.
     reset_generation: u64,
+    /// Tests: how many times the sender has reported a datagram as having reached the network.
+    #[cfg(test)]
+    cid_sent_calls: u64,
     /// Ack-eliciting packets sent and neither acknowledged, declared lost nor abandoned, across
     /// every packet number space and every path they were sent on, including paths since
     /// discarded. Loss recovery (RFC 9002 §6.2) is a connection-wide matter; the per-path
@@ -453,6 +456,8 @@ impl Connection {
             candidate: None,
             deferred_error: None,
             reset_generation: 0,
+            #[cfg(test)]
+            cid_sent_calls: 0,
             // The handshake goes out with the identifier the peer chose for it.
             path_cids: [None; PATH_CIDS],
             in_flight_ack_eliciting: 0,
@@ -3865,6 +3870,10 @@ impl Connection {
     /// reset carrying its token belongs to us (RFC 9000 §10.3.1). A probe also counts here, and
     /// only here, against its attempt's bound.
     pub(crate) fn cid_sent(&mut self, seq: u64, destination: SocketAddr) {
+        #[cfg(test)]
+        {
+            self.cid_sent_calls += 1;
+        }
         // Only what changed is published: an ordinary send, and a retry of one that was already
         // recorded, tell the endpoint nothing and allocate nothing.
         let generation = self.reset_generation;
@@ -4190,6 +4199,19 @@ impl Connection {
     #[cfg(test)]
     pub(crate) fn cid_confirmed(&self, seq: u64) -> bool {
         self.rem_cids.is_sent(seq)
+    }
+
+    /// Tests: how many times a datagram has been reported as having reached the network.
+    #[cfg(test)]
+    pub(crate) fn cid_sent_calls(&self) -> u64 {
+        self.cid_sent_calls
+    }
+
+    /// Tests: whether a datagram carrying the identifier numbered `seq` has gone out towards
+    /// `remote`.
+    #[cfg(test)]
+    pub(crate) fn cid_confirmed_to(&self, seq: u64, remote: SocketAddr) -> bool {
+        self.rem_cids.is_sent_to(seq, remote)
     }
 
     /// Tests: how far this client got with the server's preferred address.

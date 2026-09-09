@@ -115,9 +115,21 @@ impl Endpoint {
             .map(|config| config.retry_token_lifetime)
     }
 
-    /// Process `EndpointEvent`s emitted from related `Connection`s
-    ///
-    /// In turn, processing this event may return a `ConnectionEvent` for the same `Connection`.
+    /// Tests: which connection a reset carrying `token` from `remote` would reach.
+    #[cfg(test)]
+    pub(crate) fn reset_route_for(
+        &self,
+        remote: SocketAddr,
+        token: ResetToken,
+    ) -> Option<ConnectionHandle> {
+        self.index
+            .connection_reset_tokens
+            .0
+            .get(&remote)
+            .and_then(|tokens| tokens.get(&token))
+            .copied()
+    }
+
     /// Tests: how many stateless-reset routes the endpoint's index holds.
     #[cfg(test)]
     pub(crate) fn reset_route_count(&self) -> usize {
@@ -129,6 +141,9 @@ impl Endpoint {
             .sum()
     }
 
+    /// Process `EndpointEvent`s emitted from related `Connection`s
+    ///
+    /// In turn, processing this event may return a `ConnectionEvent` for the same `Connection`.
     pub(crate) fn handle_event(
         &mut self,
         ch: ConnectionHandle,

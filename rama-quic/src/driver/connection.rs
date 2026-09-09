@@ -38,14 +38,20 @@ use crate::proto::{
 
 /// Tests: one descriptor this connection offered to its sender, and what became of it.
 #[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Descriptor {
     pub(crate) id: u64,
     pub(crate) size: usize,
+    /// The bytes offered, so a test can compare what reached the socket with what was built.
+    pub(crate) bytes: Vec<u8>,
     pub(crate) segment_size: Option<usize>,
     pub(crate) destination: SocketAddr,
     pub(crate) cid_used: Option<u64>,
     pub(crate) outcome: Outcome,
+    /// Whether the connection was actually told this offer's identifier reached the network. It
+    /// is observed from the connection's own report count across this offer's processing, not
+    /// copied from the condition that should cause the call.
+    pub(crate) reported: bool,
 }
 
 /// Tests: what became of a descriptor that was offered.
@@ -702,7 +708,28 @@ impl Connection {
     /// Tests: the descriptors this connection offered to its sender, oldest first.
     #[cfg(test)]
     pub(crate) fn descriptors(&self) -> Vec<Descriptor> {
-        self.0.state.lock().descriptors.iter().copied().collect()
+        self.0.state.lock().descriptors.iter().cloned().collect()
+    }
+
+    /// Tests: how many times this connection has been told a datagram reached the network.
+    #[cfg(test)]
+    pub(crate) fn cid_sent_calls(&self) -> u64 {
+        self.0.state.lock().inner.cid_sent_calls()
+    }
+
+    /// Tests: whether the identifier numbered `seq` may be sent to `remote` — that is, whether
+    /// its route is installed, which is a different question from whether anything has been sent
+    /// with it.
+    #[cfg(test)]
+    pub(crate) fn send_permit(&self, seq: u64, remote: std::net::SocketAddr) -> SendPermit {
+        self.0.state.lock().inner.may_send_cid(seq, remote)
+    }
+
+    /// Tests: whether a datagram carrying the identifier numbered `seq` has gone out towards
+    /// `remote`, which is what RFC 9000 §10.3.1 ties recognition to.
+    #[cfg(test)]
+    pub(crate) fn cid_confirmed_to(&self, seq: u64, remote: std::net::SocketAddr) -> bool {
+        self.0.state.lock().inner.cid_confirmed_to(seq, remote)
     }
 
     /// Tests: how many datagrams were given up because their identifier may never be sent again.
@@ -1508,6 +1535,7 @@ impl State {
         id: crate::driver::udp::TransmitId,
         transmit: &crate::proto::Transmit,
         outcome: Outcome,
+        reported: bool,
     ) {
         while self.descriptors.len() >= DESCRIPTORS {
             self.descriptors.pop_front();
@@ -1515,10 +1543,16 @@ impl State {
         self.descriptors.push_back(Descriptor {
             id: id.0,
             size: transmit.size,
+            bytes: self
+                .send_buffer
+                .get(..transmit.size)
+                .expect("a descriptor's size is within the buffer it was written to")
+                .to_vec(),
             segment_size: transmit.segment_size,
             destination: transmit.destination,
             cid_used: transmit.cid_used,
             outcome,
+            reported,
         });
     }
 
@@ -1593,7 +1627,7 @@ impl State {
                     // timers and shutdown continue meanwhile.
                     SendPermit::AwaitingInstallation => {
                         #[cfg(test)]
-                        self.note_descriptor(id, &t, Outcome::Awaiting);
+                        self.note_descriptor(id, &t, Outcome::Awaiting, false);
                         self.buffered_transmit = Some((id, t));
                         return Ok(false);
                     }
@@ -1602,11 +1636,18 @@ impl State {
                     // again (RFC 9000 §9.5).
                     SendPermit::Obsolete => {
                         socket.abandon(id);
+                        #[cfg(test)]
+                        let reports_before = self.inner.cid_sent_calls();
                         if socket.accepted_any(id) {
                             self.inner.cid_sent(seq, t.destination);
                         }
                         #[cfg(test)]
-                        self.note_descriptor(id, &t, Outcome::Obsolete);
+                        self.note_descriptor(
+                            id,
+                            &t,
+                            Outcome::Obsolete,
+                            self.inner.cid_sent_calls() > reports_before,
+                        );
                         self.stale_transmits += 1;
                         if transmits >= MAX_TRANSMIT_DATAGRAMS {
                             return Ok(true);
@@ -1616,6 +1657,11 @@ impl State {
                 }
             }
 
+            // Observed before and after this offer's processing, so the record says whether the
+            // connection was told, not whether it should have been. No other connection can move
+            // this count while this state is locked.
+            #[cfg(test)]
+            let reports_before = self.inner.cid_sent_calls();
             let outcome = socket.poll_transmit(cx, id, &t, &self.send_buffer);
             // An identifier is used from the first byte the sender accepted, whatever becomes of
             // the rest: a prefix that left cannot be recalled, so its reset token is ours.
@@ -1624,16 +1670,18 @@ impl State {
             {
                 self.inner.cid_sent(seq, t.destination);
             }
+            #[cfg(test)]
+            let reported = self.inner.cid_sent_calls() > reports_before;
             match outcome {
                 Poll::Pending => {
                     #[cfg(test)]
-                    self.note_descriptor(id, &t, Outcome::Pending);
+                    self.note_descriptor(id, &t, Outcome::Pending, reported);
                     self.buffered_transmit = Some((id, t));
                     return Ok(false);
                 }
                 Poll::Ready(Ok(())) => {
                     #[cfg(test)]
-                    self.note_descriptor(id, &t, Outcome::Sent);
+                    self.note_descriptor(id, &t, Outcome::Sent, reported);
                 }
                 Poll::Ready(Err(error)) => match error.class {
                     // The engine already counts this datagram as in flight, so loss detection
@@ -1646,12 +1694,12 @@ impl State {
                         }
                         self.failure_log.record(now, "QUIC transmit", &error);
                         #[cfg(test)]
-                        self.note_descriptor(id, &t, Outcome::Failed);
+                        self.note_descriptor(id, &t, Outcome::Failed, reported);
                     }
                     // An invalid descriptor or an unusable socket cannot be retried.
                     SendFailure::Descriptor | SendFailure::Socket => {
                         #[cfg(test)]
-                        self.note_descriptor(id, &t, Outcome::Failed);
+                        self.note_descriptor(id, &t, Outcome::Failed, reported);
                         return Err(error.error);
                     }
                 },

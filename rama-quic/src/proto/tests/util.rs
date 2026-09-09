@@ -128,10 +128,20 @@ impl Pair {
         }
     }
 
-    /// Advance time until both connections are idle
+    /// Advance time until both endpoints are idle. Bounded: a pair that never settles is a stuck
+    /// test rather than one that needs longer, and an unbounded loop here would hang instead of
+    /// reporting.
     pub(super) fn drive(&mut self) {
-        while self.step() {}
+        for _ in 0..Self::DRIVE_STEPS {
+            if !self.step() {
+                return;
+            }
+        }
+        panic!("the pair never became idle in {} steps", Self::DRIVE_STEPS);
     }
+
+    /// How many steps `drive` allows before it treats the pair as stuck.
+    const DRIVE_STEPS: usize = 1_000;
 
     /// Advance time until both connections are idle, or after 100 steps have been executed
     ///
@@ -418,6 +428,23 @@ pub(super) fn validate_incoming(incoming: &Incoming) -> IncomingConnectionBehavi
     }
 }
 
+/// Store a connection's next deadline, or clear it when it has none. Every live connection has to
+/// pass through this on every drive, including one whose send is waiting for a route.
+fn refresh_timeout(
+    timeouts: &mut HashMap<ConnectionHandle, Instant>,
+    ch: &ConnectionHandle,
+    conn: &mut Connection,
+) {
+    match conn.poll_timeout() {
+        Some(at) => {
+            timeouts.insert(*ch, at);
+        }
+        None => {
+            timeouts.remove(ch);
+        }
+    }
+}
+
 impl TestEndpoint {
     fn new(endpoint: Endpoint, addr: SocketAddr) -> Self {
         let socket = if env::var_os("SSLKEYLOGFILE").is_some() {
@@ -573,6 +600,9 @@ impl TestEndpoint {
                         SendPermit::AwaitingInstallation => {
                             self.pending_transmit.insert(*ch, (transmit, bytes));
                             waiting = true;
+                            // This connection's deadline still has to be refreshed: the expired
+                            // one was consumed above, and arrivals may have set a new one.
+                            refresh_timeout(&mut self.timeouts, ch, conn);
                             continue;
                         }
                         // Never sendable again: only this datagram is given up.
@@ -619,14 +649,7 @@ impl TestEndpoint {
                         conn.cid_sent(seq, destination);
                     }
                 }
-                match conn.poll_timeout() {
-                    Some(at) => {
-                        self.timeouts.insert(*ch, at);
-                    }
-                    None => {
-                        self.timeouts.remove(ch);
-                    }
-                }
+                refresh_timeout(&mut self.timeouts, ch, conn);
                 while let Some(event) = conn.poll_endpoint_events() {
                     endpoint_events.push((*ch, event));
                 }
@@ -667,6 +690,11 @@ impl TestEndpoint {
                 }
             }
         }
+    }
+
+    /// Tests: the deadline stored for `ch`, if it has one.
+    pub(super) fn deadline_for(&self, ch: ConnectionHandle) -> Option<Instant> {
+        self.timeouts.get(&ch).copied()
     }
 
     /// Hand the connection the identifiers held back so far; the next drive sends them.
@@ -881,6 +909,15 @@ pub(super) fn test_provider() -> Arc<rama_tls_rustls::dep::rustls::crypto::Crypt
 
 pub(super) fn client_config() -> ClientConfig {
     ClientConfig::new(Arc::new(client_crypto()))
+}
+
+/// A client that pings after `interval` of quiet, which gives its connection a deadline of its own.
+pub(super) fn client_config_with_keep_alive(interval: Duration) -> ClientConfig {
+    let mut cfg = ClientConfig::new(Arc::new(client_crypto()));
+    let mut transport = TransportConfig::default();
+    transport.keep_alive_interval(Some(interval));
+    cfg.transport = Arc::new(transport);
+    cfg
 }
 
 pub(super) fn client_config_with_deterministic_pns() -> ClientConfig {
