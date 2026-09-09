@@ -172,7 +172,9 @@ impl DatagramSocket for TestSocket {
     }
     fn capabilities(&self) -> DatagramCapabilities {
         let mut caps = DatagramCapabilities::portable();
-        caps.send_source_ip = true;
+        // The same answer the senders this socket creates give, so a socket without per-datagram
+        // source selection reports that at both levels.
+        caps.send_source_ip = self.send_source_ip;
         caps.send_ecn = true;
         caps.max_receive_segments = 4;
         caps
@@ -351,6 +353,92 @@ impl Wake for WakeCount {
     fn wake_by_ref(self: &Arc<Self>) {
         self.0.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// Coverage is a property of one socket, and the record of it names that socket. A replacement
+/// bound elsewhere does not inherit it, so the same tuple is looked up again and this time nothing
+/// covers it. Comparing addresses alone would carry the old answer over to the new socket.
+#[test]
+fn a_coverage_record_belongs_to_the_socket_it_was_established_on() {
+    let wildcard = TestSocket {
+        local: ([0, 0, 0, 0], 4433).into(),
+        ..TestSocket::default()
+    };
+    let concrete_elsewhere = TestSocket {
+        local: ([127, 0, 0, 2], 5555).into(),
+        ..TestSocket::default()
+    };
+    let path = ([127, 0, 0, 1], 4433).into();
+
+    let mut registry = crate::driver::sockets::SocketRegistry::new(Socket::new(wildcard).unwrap());
+    let wildcard_id = registry.active_id();
+    assert!(
+        registry.covers_local(wildcard_id, path),
+        "the wildcard socket covers that tuple"
+    );
+    // Something depends on it, so the rebind below retains it rather than retiring it at once.
+    let lease = registry
+        .acquire_attempt(wildcard_id)
+        .expect("a lease on the wildcard socket");
+
+    // The replacement is bound to another address and port: it neither is nor covers that tuple.
+    let (concrete_id, _retired) = registry
+        .activate(Socket::new(concrete_elsewhere).unwrap(), now())
+        .expect("the rebind is accepted");
+    assert!(
+        !registry.covers_local(concrete_id, path),
+        "and the replacement does not"
+    );
+    assert_eq!(
+        registry.id_for_local(path),
+        None,
+        "nor is any socket bound to it"
+    );
+    // The wildcard socket is retained while its lease lives, so it remains the only cover: a
+    // delayed datagram for that path leaves from it rather than from the replacement.
+    assert_eq!(registry.only_cover_for(path), Some(wildcard_id));
+
+    // Once nothing depends on it, it is retired and nothing covers the tuple: such a datagram has
+    // no socket it may leave from.
+    let retired = registry.release(lease, now());
+    drop(retired);
+    assert_eq!(registry.only_cover_for(path), None);
+    assert!(!registry.covers_local(concrete_id, path));
+}
+
+/// A wildcard socket carries another local tuple only if it can put that address on the wire as
+/// the source: without per-datagram source selection its sender refuses such a datagram, so the
+/// registry does not offer it as cover.
+#[test]
+fn a_wildcard_socket_covers_a_tuple_only_with_source_selection() {
+    let wildcard = |source: bool| TestSocket {
+        local: ([0, 0, 0, 0], 4433).into(),
+        send_source_ip: source,
+        ..TestSocket::default()
+    };
+    let concrete = ([127, 0, 0, 1], 4433).into();
+    let other_port = ([127, 0, 0, 1], 4434).into();
+
+    let mut registry =
+        crate::driver::sockets::SocketRegistry::new(Socket::new(wildcard(true)).unwrap());
+    let id = registry.active_id();
+    assert!(
+        registry.covers_local(id, concrete),
+        "a wildcard of that port and family with source selection covers it"
+    );
+    assert!(
+        !registry.covers_local(id, other_port),
+        "another port is a different path"
+    );
+
+    let mut registry =
+        crate::driver::sockets::SocketRegistry::new(Socket::new(wildcard(false)).unwrap());
+    let id = registry.active_id();
+    assert!(
+        !registry.covers_local(id, concrete),
+        "without source selection the sender would refuse the datagram, so it is no cover"
+    );
+    assert_eq!(registry.only_cover_for(concrete), None);
 }
 
 #[test]

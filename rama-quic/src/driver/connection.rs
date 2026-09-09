@@ -482,9 +482,9 @@ impl Future for ConnectionDriver {
             // Our lock is released, so the endpoint may lock this connection back (lock order).
             self.conn.deliver_endpoint_events();
         }
-        if let Some(local) = wanted_local {
+        if let Some((local, descriptor)) = wanted_local {
             // Asked with our lock released, in endpoint-then-connection order.
-            self.conn.follow_local_address(local);
+            self.conn.follow_local_address(local, descriptor);
         }
         outcome
     }
@@ -1442,7 +1442,7 @@ impl ConnectionInner {
     /// endpoint, note that the current one already covers it, or, when neither is possible, give
     /// up the datagram that named it rather than send it from another address. Called with no
     /// connection lock held, so the endpoint's lock comes first.
-    fn follow_local_address(&self, local: SocketAddr) {
+    fn follow_local_address(&self, local: SocketAddr, descriptor: crate::driver::udp::TransmitId) {
         let (link, current) = {
             let conn = &*self.state.lock();
             (
@@ -1456,35 +1456,52 @@ impl ConnectionInner {
         let offered = link.socket_for_local(local, current);
         let released = {
             let conn = &mut *self.state.lock();
-            let released = match offered {
-                LocalSocket::Owned(sender) => {
-                    // The descriptor waiting for this address was offered to the socket this
-                    // connection is leaving. Whatever prefix that sender accepted has left from
-                    // the old address and is reported there; a descriptor nothing was taken from
-                    // is kept whole for the new sender.
-                    conn.release_buffered();
-                    conn.covered_local = None;
-                    conn.socket.replace(sender)
-                }
-                LocalSocket::Covered => {
-                    conn.covered_local = conn
-                        .socket
-                        .as_ref()
-                        .map(|socket| (socket.socket_id(), local));
-                    None
-                }
-                LocalSocket::Unowned => {
-                    // The path identity of that datagram cannot be honoured: sending it from
-                    // another address would put a different source on the path the peer is
-                    // validating. It is given up like any lost datagram, with the accounting its
-                    // sender needs, and loss recovery decides what follows.
-                    conn.give_up_buffered();
-                    conn.unowned_paths = conn.unowned_paths.saturating_add(1);
-                    None
-                }
-            };
-            conn.wake();
-            released
+            // The question was asked with this lock released, so what it was asked about may be
+            // gone: a concurrent path failure, rebind or shutdown changes the socket in use or
+            // ends the connection. An answer about a socket this connection no longer sends from
+            // is not applied, and a handle offered for it goes back the way any released handle
+            // does.
+            let stale = conn.error.is_some()
+                || conn.socket.as_ref().map(Sender::socket_id) != Some(current)
+                || conn.buffered_transmit.as_ref().map(|(id, _)| *id) != Some(descriptor);
+            if stale {
+                let offered = match offered {
+                    LocalSocket::Owned(sender) => Some(sender),
+                    LocalSocket::Covered | LocalSocket::Unowned => None,
+                };
+                conn.wake();
+                offered
+            } else {
+                let released = match offered {
+                    LocalSocket::Owned(sender) => {
+                        // The descriptor waiting for this address was offered to the socket this
+                        // connection is leaving. Whatever prefix that sender accepted has left from
+                        // the old address and is reported there; a descriptor nothing was taken from
+                        // is kept whole for the new sender.
+                        conn.release_buffered();
+                        conn.covered_local = None;
+                        conn.socket.replace(sender)
+                    }
+                    LocalSocket::Covered => {
+                        conn.covered_local = conn
+                            .socket
+                            .as_ref()
+                            .map(|socket| (socket.socket_id(), local));
+                        None
+                    }
+                    LocalSocket::Unowned => {
+                        // The path identity of that datagram cannot be honoured: sending it from
+                        // another address would put a different source on the path the peer is
+                        // validating. It is given up like any lost datagram, with the accounting its
+                        // sender needs, and loss recovery decides what follows.
+                        conn.give_up_buffered();
+                        conn.unowned_paths = conn.unowned_paths.saturating_add(1);
+                        None
+                    }
+                };
+                conn.wake();
+                released
+            }
         };
         if let Some(previous) = released {
             link.release_senders(vec![previous]);
@@ -1541,10 +1558,12 @@ pub(crate) struct State {
     /// Always set to Some before the connection becomes drained
     pub(crate) error: Option<ConnectionError>,
     socket: Option<Sender>,
-    /// A local address the engine has moved this connection to, for which a send handle has been
-    /// asked of the endpoint. The datagram that named it waits until the answer arrives, so it
-    /// leaves from that address rather than from the one this connection was sending from.
-    wanted_local: Option<SocketAddr>,
+    /// A local address the engine has moved this connection to, with the descriptor that named
+    /// it, for which a send handle has been asked of the endpoint. The datagram waits until the
+    /// answer arrives, so it leaves from that address rather than from the one this connection was
+    /// sending from. The descriptor is part of the request: an answer is applied only while the
+    /// work that motivated it is still the work in hand.
+    wanted_local: Option<(SocketAddr, crate::driver::udp::TransmitId)>,
     /// A local address the socket this connection sends from can carry, with the identity of that
     /// socket: a wildcard-bound listener reports the address a datagram arrived on and can put it
     /// on the wire as the source. The socket's identity is part of the record, so a replacement
@@ -1770,7 +1789,7 @@ impl State {
                 && socket.local_addr() != local
                 && self.covered_local != Some((socket.socket_id(), local))
             {
-                self.wanted_local = Some(local);
+                self.wanted_local = Some((local, id));
                 self.buffered_transmit = Some((id, t));
                 return Ok(false);
             }

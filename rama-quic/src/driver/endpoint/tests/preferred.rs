@@ -100,10 +100,12 @@ async fn a_wildcard_listener_and_a_concrete_advertised_socket_keep_their_own_tup
         .expect("the attempt arrives")
         .expect("the server is listening");
     let (c, s) = handshake(connecting, incoming).await;
+    // Connection state, not a wire capture: the wire observation for socket selection is
+    // `the_datagrams_of_each_path_leave_by_that_paths_socket`.
     assert_eq!(
         c.remote_address(),
         reachable,
-        "the wildcard listener answered from the address the client sent to"
+        "the connection's peer address is the one the client sent to"
     );
     exchange(&c, &s, b"through the wildcard listener").await;
 
@@ -351,11 +353,12 @@ async fn the_datagrams_of_each_path_leave_by_that_paths_socket() {
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
-/// Coverage of a path by a wildcard socket belongs to that socket. When the socket a connection
-/// sends from is replaced, the connection asks again rather than sending from a socket that
-/// cannot carry the path.
+/// A wildcard client keeps working across a replacement of the socket it sends from. What the
+/// coverage record is keyed on is checked where it can be observed exactly, at the registry, by
+/// `a_coverage_record_belongs_to_the_socket_it_was_established_on`; this case is the end-to-end
+/// one and does not discriminate the keying by itself.
 #[tokio::test]
-async fn coverage_does_not_survive_the_socket_it_was_established_on() {
+async fn a_wildcard_client_keeps_working_across_a_replacement() {
     let (client_config, server_config) = configs();
     let server = Endpoint::server(server_config, localhost_v4())
         .await
@@ -422,6 +425,16 @@ async fn a_failed_advertised_socket_stops_being_advertised() {
         initial,
         "the listener is untouched"
     );
+    wait_for(
+        "the failed socket is retired once nothing depends on it",
+        Duration::from_secs(5),
+        || server.stats().retained_sockets == 1,
+    )
+    .await;
+    assert!(
+        !server.local_addrs().contains(&advertised_addr),
+        "and the endpoint no longer owns it"
+    );
 
     // A client connecting now is never told about it, so it stays on the listener.
     let client = Endpoint::client(localhost_v4()).await.unwrap();
@@ -434,6 +447,46 @@ async fn a_failed_advertised_socket_stops_being_advertised() {
         sent_before,
         "nothing left by the failed socket"
     );
+    drop((c, s));
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
+/// A socket advertised after the endpoint has parked is polled: traffic that arrives only there
+/// wakes the driver, with nothing on the listener to rescue it.
+#[tokio::test]
+async fn a_socket_advertised_after_the_driver_parked_is_polled() {
+    let (client_config, mut server_config) = configs();
+    // The advertised socket is bound first, so its address can be advertised from the start while
+    // the endpoint takes it only later, once its driver has parked.
+    let advertised = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let advertised_addr = advertised.local_addr().unwrap();
+    let SocketAddr::V4(advertised_v4) = advertised_addr else {
+        panic!("bound on IPv4 loopback");
+    };
+    server_config.preferred_address_v4(Some(advertised_v4));
+    let (listener, _listener_log) = recording_socket();
+    let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
+    let initial = server.local_addr().unwrap();
+
+    // Let the endpoint settle with nothing to do, so its driver is parked before the socket
+    // arrives.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    server
+        .advertise_socket(Socket::from_std(advertised).unwrap())
+        .expect("the endpoint takes it");
+
+    // The client reaches the advertised address and nothing else: its handshake is answered only
+    // if that socket is being polled.
+    let client = Endpoint::client(localhost_v4()).await.unwrap();
+    let (c, s) = connect_through(&client, &server, client_config, advertised_addr).await;
+    exchange(&c, &s, b"only through the socket added late").await;
+    exchange(&s, &c, b"and back").await;
+    assert_eq!(
+        c.remote_address(),
+        advertised_addr,
+        "the connection was established through the socket added after the park"
+    );
+    let _ = initial;
     drop((c, s));
     tokio::join!(client.shutdown(), server.shutdown());
 }

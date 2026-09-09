@@ -111,6 +111,16 @@ impl Entry {
     }
 }
 
+/// Whether `entry` is a usable wildcard socket for the local address `local`.
+fn covers(entry: &Entry, local: std::net::SocketAddr) -> bool {
+    let bound = entry.socket.local_addr();
+    !entry.failed
+        && bound.ip().is_unspecified()
+        && bound.port() == local.port()
+        && bound.is_ipv4() == local.is_ipv4()
+        && entry.socket.capabilities().send_source_ip
+}
+
 /// A rebind the registry refused; the caller gets its socket back to drop outside any lock.
 #[derive(Debug)]
 pub(crate) struct RebindRefused {
@@ -182,6 +192,9 @@ pub(crate) struct SocketRegistry {
     next: u64,
     /// Rotation cursor so polling does not always start with the same socket.
     cursor: usize,
+    /// Addresses of advertised sockets that failed, for the caller to stop advertising. Recorded
+    /// when the failure is marked, before the entry can be retired and its address lost.
+    withdrawn: Vec<std::net::SocketAddr>,
     retired: Retired,
 }
 
@@ -202,6 +215,7 @@ impl SocketRegistry {
             retiring: Vec::new(),
             next: 2,
             cursor: 0,
+            withdrawn: Vec::new(),
             retired: Retired::default(),
         }
     }
@@ -282,14 +296,21 @@ impl SocketRegistry {
     /// (`DatagramError::Unsupported(SendSourceIp)`), so a wildcard bind alone does not make the
     /// socket usable for that path.
     pub(crate) fn covers_local(&self, id: SocketId, local: std::net::SocketAddr) -> bool {
-        self.entry(id).is_some_and(|entry| {
-            let bound = entry.socket.local_addr();
-            !entry.failed
-                && bound.ip().is_unspecified()
-                && bound.port() == local.port()
-                && bound.is_ipv4() == local.is_ipv4()
-                && entry.socket.capabilities().send_source_ip
-        })
+        self.entry(id).is_some_and(|entry| covers(entry, local))
+    }
+
+    /// The only retained socket that can carry the path whose local address is `local` by covering
+    /// it, if exactly one can. Where several could, none is chosen: picking one of several
+    /// overlapping wildcard sockets would put the datagram on an arbitrary one.
+    pub(crate) fn only_cover_for(&self, local: std::net::SocketAddr) -> Option<SocketId> {
+        let mut found = None;
+        for entry in self.entries().filter(|entry| covers(entry, local)) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(entry.id);
+        }
+        found
     }
 
     /// The addresses this endpoint advertises, in the order they were bound.
@@ -487,7 +508,22 @@ impl SocketRegistry {
             entry.route_until = None;
             self.retired.dropped_responses += entry.socket.discard_responses();
         }
+        // A failed advertised socket is on its way out: its address is recorded for withdrawal
+        // first, so the caller can stop advertising it whatever becomes of the entry, and it then
+        // moves in with the retiring ones to be retired once its dependents have left rather than
+        // holding a retained slot until the endpoint shuts down.
+        if let Some(pos) = self.advertised.iter().position(|entry| entry.id == id) {
+            let entry = self.advertised.remove(pos);
+            self.withdrawn.push(entry.socket.local_addr());
+            self.retiring.push(entry);
+        }
         self.retire_if_idle(id, now)
+    }
+
+    /// Addresses this endpoint advertised and no longer has a usable socket for. Each is reported
+    /// once, and the caller stops advertising it.
+    pub(crate) fn take_withdrawn(&mut self) -> Vec<std::net::SocketAddr> {
+        std::mem::take(&mut self.withdrawn)
     }
 
     /// Identities of the failed sockets whose dependents have not been told yet; each is

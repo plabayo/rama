@@ -114,19 +114,19 @@ impl Endpoint {
         // advertises the addresses the sockets actually have, ports the platform assigned
         // included.
         let (server_config, advertised) = bind_advertised(&factory, server_config).await?;
-        let endpoint = Self::with_packet_socket(config, server_config, listener)
-            .map_err(DatagramError::from)?;
-        endpoint.own_advertised(advertised)?;
-        Ok(endpoint)
-    }
-
-    /// Take ownership of sockets bound to the addresses this endpoint advertises. They receive
-    /// from now on and a rebind of the listener leaves them alone.
-    fn own_advertised(&self, sockets: Vec<UdpPacketSocket>) -> Result<(), DatagramError> {
-        for socket in sockets {
-            self.advertise_socket(Socket::new(socket)?)?;
-        }
-        Ok(())
+        let advertised = advertised
+            .into_iter()
+            .map(Socket::new)
+            .collect::<io::Result<Vec<_>>>()?;
+        Self::new_with_advertised(
+            config,
+            server_config,
+            Socket::new(listener)?,
+            advertised,
+            Executor::new(),
+            Duration::from_secs(5),
+        )
+        .map_err(DatagramError::from)
     }
 
     /// Take ownership of one socket bound to an address this endpoint advertises, given as our
@@ -139,7 +139,12 @@ impl Endpoint {
             return Err(DatagramError::Io(io::ErrorKind::NotConnected.into()));
         };
         match registry.advertise(socket) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                // A driver that has already parked has never polled this socket, so traffic
+                // arriving only there would wake nothing.
+                state.wake_driver();
+                Ok(())
+            }
             Err(refused) => {
                 // The refused socket is dropped outside the endpoint lock.
                 drop(state);
@@ -248,6 +253,27 @@ impl Endpoint {
         executor: Executor,
         shutdown_budget: Duration,
     ) -> io::Result<Self> {
+        Self::new_with_advertised(
+            config,
+            server_config,
+            socket,
+            Vec::new(),
+            executor,
+            shutdown_budget,
+        )
+    }
+
+    /// The same, with sockets bound to the addresses this endpoint advertises as preferred. They
+    /// are in the registry before the driver is spawned, so its first poll covers them and
+    /// traffic that arrives only there needs no wake to be seen.
+    pub(crate) fn new_with_advertised(
+        config: EndpointConfig,
+        server_config: Option<ServerConfig>,
+        socket: Socket,
+        advertised: Vec<Socket>,
+        executor: Executor,
+        shutdown_budget: Duration,
+    ) -> io::Result<Self> {
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(io::Error::other("no async runtime found"));
         }
@@ -285,6 +311,35 @@ impl Endpoint {
             ),
             addr.is_ipv6(),
         );
+        {
+            let mut state = rc.0.state.lock();
+            let mut refused = Vec::new();
+            let mut error = None;
+            match state.sockets.live_mut() {
+                Some(registry) => {
+                    for socket in advertised {
+                        match registry.advertise(socket) {
+                            Ok(_) => {}
+                            Err(rejected) => {
+                                refused.push(rejected.socket);
+                                error = Some(rejected.error);
+                            }
+                        }
+                    }
+                }
+                None => {
+                    refused.extend(advertised);
+                    error = Some(io::Error::from(io::ErrorKind::NotConnected));
+                }
+            }
+            drop(state);
+            // A refused socket is dropped outside the endpoint lock, and the endpoint is not
+            // built: it would otherwise advertise an address it does not own.
+            drop(refused);
+            if let Some(error) = error {
+                return Err(error);
+            }
+        }
         let driver = EndpointDriver(rc.0.clone());
         let driver_lifecycle = rc.shared.lifecycle.clone();
         rc.shared.lifecycle.spawn(Box::pin(
@@ -922,8 +977,16 @@ impl EndpointInner {
         {
             return LocalSocket::Owned(sender);
         }
+        // The socket in use may already cover the address, in which case nothing changes. A
+        // delayed datagram for a path this connection has left names an address another retained
+        // socket covers instead, and that socket is the one it must leave from.
         if registry.covers_local(current, local) {
             return LocalSocket::Covered;
+        }
+        if let Some(id) = registry.only_cover_for(local)
+            && let Some(sender) = registry.sender(id)
+        {
+            return LocalSocket::Owned(sender);
         }
         LocalSocket::Unowned
     }
@@ -1275,16 +1338,15 @@ impl State {
         let Some(sockets) = sockets.live_mut() else {
             return;
         };
+        // An address this endpoint advertised as preferred but no longer has a usable socket for
+        // is not offered to connections that have yet to handshake. Recorded when the failure was
+        // marked, so it holds whether or not the entry has been retired since.
+        for address in sockets.take_withdrawn() {
+            inner.stop_advertising(address);
+        }
         let failed = sockets.take_failed_to_announce();
         if failed.iter().next().is_none() {
             return;
-        }
-        // An address this endpoint advertised as preferred but no longer has a usable socket for
-        // is not offered to connections that have yet to handshake.
-        for id in failed.iter() {
-            if let Some(address) = sockets.local_addr(id) {
-                inner.stop_advertising(address);
-            }
         }
         for id in failed.iter() {
             for channel in recv_state.connections.channels.values() {

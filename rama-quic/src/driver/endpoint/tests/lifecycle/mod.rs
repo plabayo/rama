@@ -4741,6 +4741,9 @@ async fn the_first_accepted_datagram_grants_a_fresh_identifier_its_history() {
     // observable whichever datagram wins a slot. Before that one the identifier is not used
     // towards the address; the report follows it. The report is waited for separately: the socket
     // records a datagram inside its send call, before the driver reports the identifier.
+    // These waits are for a driver task to be scheduled after a socket-level event, so they are
+    // given a budget that survives a saturated host; the conditions themselves are unchanged.
+    const SCHEDULED: Duration = Duration::from_secs(20);
     let mut released = 0;
     loop {
         assert!(
@@ -4750,7 +4753,7 @@ async fn the_first_accepted_datagram_grants_a_fresh_identifier_its_history() {
         let accepted = log.lock().sent.len();
         credit_segments(&log, 1);
         unblock_segments(&log);
-        wait_for("one datagram is accepted", Duration::from_secs(5), || {
+        wait_for("one datagram is accepted", SCHEDULED, || {
             log.lock().sent.len() > accepted
         })
         .await;
@@ -4771,7 +4774,7 @@ async fn the_first_accepted_datagram_grants_a_fresh_identifier_its_history() {
     }
     wait_for(
         "the identifier is used towards that address",
-        Duration::from_secs(5),
+        SCHEDULED,
         || c.cid_confirmed_to(fresh_seq, server_addr),
     )
     .await;
