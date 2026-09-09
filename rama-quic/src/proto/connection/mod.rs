@@ -1489,8 +1489,8 @@ impl Connection {
                 }
             }
             ResetRouteInstalled(remote, seq, generation) => {
-                // An acknowledgement naming an installation this identifier no longer has — a
-                // retired one, or one a newer installation replaced — has nothing to open.
+                // An acknowledgement for an installation this identifier no longer has, whether
+                // retired or replaced by a newer one, opens nothing.
                 self.rem_cids.route_installed(seq, remote, generation);
             }
             ResetRouteRefused(remote, seq, generation) => {

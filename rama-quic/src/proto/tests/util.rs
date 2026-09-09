@@ -44,8 +44,8 @@ pub(super) struct Pair {
     /// Every address the client sent a datagram to, in order.
     /// Every datagram the client put on the wire, as the engine emitted it.
     pub(super) client_sent: Vec<Sent>,
-    /// What the server put on the wire, recorded as it is drained — the queue itself is emptied
-    /// by every drive, so an assertion made on it afterwards would be looking at nothing.
+    /// What the server put on the wire, recorded as it is drained. Every drive empties the
+    /// queue, so an assertion made on the queue afterwards would inspect nothing.
     pub(super) server_sent: Vec<Sent>,
     last_spin: bool,
 }
@@ -357,9 +357,9 @@ pub(super) struct TestEndpoint {
     conn_events: HashMap<ConnectionHandle, VecDeque<ConnectionEvent>>,
     /// Drives that ended with a datagram waiting for a route and nothing left to install, since
     /// the last datagram actually left. A route that is never installed would otherwise be
-    /// invisible. This counts for the endpoint as a whole, which is enough while these tests run
-    /// one connection each — the multi-connection case needs per-connection ownership, and is not
-    /// claimed here.
+    /// invisible. The count is endpoint-wide, which suffices while these tests run one
+    /// connection each. Per-connection ownership is required for the multi-connection case and is
+    /// not implemented.
     waiting_drives: u32,
     /// A datagram that was built but may not be sent yet because the endpoint has not confirmed
     /// the route its identifier needs. It is kept exactly as it is, as the driver keeps its
@@ -626,7 +626,7 @@ impl TestEndpoint {
                 // Nothing was asked of the endpoint, so nothing can change for a datagram that is
                 // waiting: another pass would only rebuild the same state. A held datagram stays
                 // held for the next drive, which is what the driver does when it returns to the
-                // scheduler — and how long it may stay held is counted across drives, below.
+                // scheduler. How long it may stay held is counted across drives, below.
                 if waiting {
                     self.waiting_drives += 1;
                     assert!(

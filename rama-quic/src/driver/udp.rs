@@ -888,8 +888,14 @@ mod tests {
     fn a_prefix_accepted_before_an_error_counts_and_leaves_no_offset() {
         let mut caps = DatagramCapabilities::portable();
         caps.max_send_segments = 1;
-        let (mut sender, _probe) = fixture(
-            [Action::Sent, Action::Fail(io::ErrorKind::HostUnreachable)],
+        // One sender throughout: a freshly built one could not have kept a stale offset, so
+        // recovery has to be observed on the very instance whose descriptor failed.
+        let (mut sender, probe) = fixture(
+            [
+                Action::Sent,
+                Action::Fail(io::ErrorKind::HostUnreachable),
+                Action::Sent,
+            ],
             caps,
         );
         let mut cx = Context::from_waker(Waker::noop());
@@ -909,16 +915,31 @@ mod tests {
             0,
             "and nothing of it may be spliced into what comes next"
         );
+        assert_eq!(
+            probe.lock().accepted.len(),
+            1,
+            "only the first segment was taken"
+        );
+        assert_eq!(probe.lock().accepted[0].0, b"aa", "and those are its bytes");
 
-        // A shorter descriptor, shorter than the accepted prefix, goes out whole.
-        let (mut sender, probe) = fixture([Action::Sent], DatagramCapabilities::portable());
+        // The same sender, a new descriptor shorter than the prefix it had accepted: it goes out
+        // whole, which is what a retained offset used to make impossible.
         let second = TransmitId(2);
         assert!(matches!(
             sender.poll_transmit(&mut cx, second, &transmit(1, None), b"z"),
             Poll::Ready(Ok(()))
         ));
-        assert_eq!(probe.lock().accepted.len(), 1);
-        assert_eq!(probe.lock().accepted[0].0, b"z");
+        let probe = probe.lock();
+        assert_eq!(
+            probe.accepted.len(),
+            2,
+            "one datagram each, nothing replayed"
+        );
+        assert_eq!(probe.accepted[1].0, b"z", "the whole of the new descriptor");
+        assert!(
+            sender.accepted_any(second),
+            "and the new descriptor's own acceptance is recorded against its own id"
+        );
     }
 
     /// The send work limit yields rather than finishing a long descriptor in one go. The
@@ -932,7 +953,11 @@ mod tests {
         let segments = SEND_WORK_LIMIT + 1;
         let payload: Vec<u8> = (0..segments).map(|i| i as u8).collect();
         let (mut sender, probe) = fixture((0..segments).map(|_| Action::Sent), caps);
-        let mut cx = Context::from_waker(Waker::noop());
+        // A waker that counts, so the yield can be shown to schedule another poll rather than
+        // leaving the caller to guess.
+        let waker = Arc::new(WakeCount::default());
+        let counted = std::task::Waker::from(waker.clone());
+        let mut cx = Context::from_waker(&counted);
         let id = TransmitId(7);
         let descriptor = transmit(payload.len(), Some(1));
 
@@ -949,6 +974,10 @@ mod tests {
             "its place is kept, not lost"
         );
         assert!(sender.accepted_any(id), "and what left already counts");
+        assert!(
+            waker.0.load(Ordering::Relaxed) >= 1,
+            "the budget yield scheduled another poll instead of waiting to be asked"
+        );
 
         // The same descriptor continues from there and completes.
         assert!(matches!(

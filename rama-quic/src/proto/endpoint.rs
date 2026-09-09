@@ -129,10 +129,11 @@ impl Endpoint {
                 return Some(self.send_new_identifiers(now, ch, n));
             }
             ResetTokenUsed(remote, seq, token, generation) => {
-                // The same identifier can be recognised at more than one address — a rebinding
-                // keeps it while the previous path may still answer — so an association is keyed
-                // by both and installing one never deletes another (RFC 9000 §10.3.1). The engine
-                // releases what it stops using, so this table holds no more than it does.
+                // An identifier can be recognised at more than one address, since a rebinding
+                // keeps it while the previous path may still answer. Associations are therefore
+                // keyed by identifier and address, and installing one does not delete another
+                // (RFC 9000 §10.3.1). The engine releases what it stops using, which bounds this
+                // table by what the engine holds.
                 match self.connections[ch]
                     .reset_tokens
                     .insert(seq, remote, token, generation)
@@ -1546,9 +1547,8 @@ pub(crate) struct ConnectionMeta {
 ///
 /// An identifier is recognised at more than one address while a rebinding or a fallback keeps the
 /// previous path relevant, so the sequence number alone does not identify an entry. The engine
-/// bounds both sides of that product — the identifiers it can hold at once, and the addresses it
-/// keeps per identifier — so this table is sized to hold every association the engine can report
-/// and never has to evict a live route.
+/// bounds the identifiers it holds at once and the addresses it keeps per identifier, so this
+/// table is sized for every association the engine can report and does not evict a live route.
 #[derive(Debug)]
 struct UsedResetTokens {
     entries: [Option<Association>; CidQueue::PRESENT * RemCid::REMOTES],

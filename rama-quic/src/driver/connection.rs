@@ -652,8 +652,8 @@ impl Connection {
         self.0.state.lock().inner.cid_confirmed(seq)
     }
 
-    /// Tests: the datagram this connection has buffered — its exact bytes, where it is addressed
-    /// and which identifier it carries.
+    /// Tests: the datagram this connection has buffered: its exact bytes, its destination and
+    /// the identifier it carries.
     ///
     /// A descriptor is buffered either because the socket was not ready for it or because the
     /// route its identifier needs is not installed; this does not distinguish the two. A test
@@ -1523,10 +1523,10 @@ impl State {
             if let Some(seq) = t.cid_used {
                 match self.inner.may_send_cid(seq, t.destination) {
                     SendPermit::Sendable => {}
-                    // The route a reset would come back by is not installed yet. The descriptor
-                    // is kept exactly as it is — its socket state and any prefix already accepted
-                    // stay with it — and the endpoint's confirmation wakes this connection, so
-                    // there is nothing to spin on. Receiving, timers and shutdown carry on.
+                    // The route a reset would arrive by is not installed yet. The descriptor is
+                    // retained with its socket state and any accepted prefix, and the endpoint's
+                    // confirmation wakes this connection, so no polling loop is needed. Receiving,
+                    // timers and shutdown continue meanwhile.
                     SendPermit::AwaitingInstallation => {
                         self.buffered_transmit = Some((id, t));
                         return Ok(false);

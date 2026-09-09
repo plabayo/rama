@@ -1947,7 +1947,7 @@ fn connection_close_while_congestion_blocked() {
         ),
     }
     // Close packets aren't congestion controlled and the test link has no latency, so the close
-    // should arrive the moment it was issued — any delay means a timer had to rescue it
+    // should arrive the moment it was issued; any delay means a timer had to rescue it
     assert_eq!(delivered_at, close_time);
 }
 
@@ -5568,9 +5568,9 @@ fn an_identifier_the_peer_retires_between_probes_takes_its_probe_with_it() {
 
 /// RFC 9000 §10.3.1 binds recognition to the identifier *and* the address it was sent to. The
 /// probe's identifier went to the preferred address and nowhere else, so a reset carrying its
-/// token is ours from there and is not ours from the address the connection is on — even though
-/// both datagrams are addressed to one of our own identifiers, so the endpoint hands both straight
-/// to this connection. Once the attempt is given up and the identifier retired, neither is ours.
+/// token is ours from there and is not ours from the address the connection is on. Both datagrams
+/// are addressed to one of our own identifiers, so the endpoint hands both to this connection.
+/// Once the attempt is given up and the identifier retired, neither is ours.
 #[test]
 fn the_token_of_a_probed_identifier_is_recognised_only_from_where_it_was_sent() {
     let _guard = subscribe();
@@ -5982,7 +5982,7 @@ fn a_client_moves_to_the_servers_preferred_address_once_it_answers() {
     drive_settled(&mut pair);
     assert!(saw_uni_stream(pair.server_conn_mut(server_ch)), "upstream");
     assert!(saw_uni_stream(pair.client_conn_mut(ch)), "downstream");
-    // Exactly those bytes, at offset zero, and then the end of the stream — both directions.
+    // Verify the exact bytes at offset zero and the end of stream, in both directions.
     {
         let mut recv = pair.server_recv(server_ch, up);
         let mut chunks = recv.read(false).unwrap();
@@ -6883,7 +6883,7 @@ fn server_emitted(pair: &Pair, len: usize) -> Vec<(Option<SocketAddr>, SocketAdd
 }
 
 /// RFC 9000 §8.2.2 and §9.5 in one datagram: the challenge that validates the path a peer move
-/// left behind goes out on that path — its own local address, its own remote address — and
+/// left behind goes out on that path, with that path's local and remote address, and
 /// carries the identifier kept for it, not the one the connection moved to.
 #[test]
 fn the_challenge_for_a_replaced_path_carries_that_paths_local_address_and_identifier() {
@@ -7041,6 +7041,7 @@ fn an_off_path_challenge_with_no_identifier_to_bind_is_counted_and_dropped() {
         "the server has nothing to bind"
     );
 
+    let sent_before = pair.server_sent.len();
     probe_once(&mut pair, server_ch);
     assert_eq!(addressed_to(&pair, preferred), 1);
     assert_eq!(
@@ -7051,13 +7052,16 @@ fn an_off_path_challenge_with_no_identifier_to_bind_is_counted_and_dropped() {
         1,
         "the answer was dropped for want of an identifier"
     );
-    // The counter above says the answer was dropped; the empty send queue says nothing went out
-    // in its place, on that path or any other.
-    let len = only.len();
+    // The counter says the answer was dropped. The transcript of what the server sent in this
+    // window says nothing went out towards the probed address in its place. Reading the live
+    // queue instead would depend on whether a drive had already emptied it.
+    let emitted: Vec<_> = pair.server_sent[sent_before..]
+        .iter()
+        .filter(|sent| sent.to == preferred)
+        .collect();
     assert!(
-        server_emitted(&pair, len).is_empty(),
-        "the dropped answer was not replaced: {:?}",
-        server_emitted(&pair, len)
+        emitted.is_empty(),
+        "the dropped answer was not replaced: {emitted:?}"
     );
     assert_eq!(
         pair.server_conn_mut(server_ch).active_rem_cid(),
@@ -7368,7 +7372,7 @@ fn exhaust_server_cids(pair: &mut Pair, client_ch: ConnectionHandle, server_ch: 
     pair.client.hold_identifiers = true;
     // One move per spare would do if every path validated at once, but a datagram that waits for
     // its route to be installed can carry a challenge into the next step, so this drives to the
-    // state it is after — no spares left — within a budget rather than counting moves.
+    // state it is after, no spares left, within a budget rather than counting moves.
     let mut moves = 0;
     while pair.server_conn_mut(server_ch).can_migrate_locally() {
         moves += 1;

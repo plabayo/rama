@@ -12,12 +12,11 @@ pub(crate) struct RemCid {
     pub(crate) reset_token: Option<ResetToken>,
     /// The addresses this identifier has a route to, least recently used first.
     ///
-    /// RFC 9000 §10.3.1 ties recognition to the identifier *and* the address it was sent to, so
-    /// this is a set rather than a flag. It lives here so that it travels with the identifier:
-    /// moving one between the active, held, reserved, bound and unused sets cannot grant a
-    /// history it does not have, nor take one away, and only retirement — which drops the value —
-    /// ends it. [`REMOTES`](Self::REMOTES) of them are kept, and a further address displaces the
-    /// oldest one that no path role still owns.
+    /// RFC 9000 §10.3.1 ties recognition to the identifier and the address it was sent to, so
+    /// this is a set rather than a flag. It lives with the identifier, so moving one between the
+    /// active, held, reserved, bound and unused sets neither grants nor removes history;
+    /// retirement drops the value and ends it. [`REMOTES`](Self::REMOTES) addresses are kept, and
+    /// a further address displaces the oldest one no path role owns.
     sent_to: [Option<Association>; Self::REMOTES],
 }
 
@@ -53,8 +52,8 @@ enum RouteState {
 }
 
 /// Why a route could not be recorded. Both are unreachable while at most two path roles own an
-/// identifier and three addresses are kept — which is why they are failures and not evictions or
-/// silent no-changes.
+/// identifier and three addresses are kept, so each is reported as a failure rather than handled
+/// by eviction or ignored.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(crate) enum RouteError {
     /// Every address is owned by a live path role, so there is nothing that may be displaced.
@@ -99,9 +98,9 @@ impl RouteDelta {
 /// The addresses a path role currently owns for an identifier: the address the current path sends
 /// to, and the one a retained previous or fallback path answers from.
 ///
-/// Recency does not decide what is still live — moving off a path that was never validated keeps
-/// the *original* as the fallback, so the address in the middle is the one that stopped being
-/// relevant. A role's association is never displaced by transient history.
+/// Recency does not decide what is still live: moving off a path that was never validated keeps
+/// the original as the fallback, so the intermediate address is the one no longer in use. An
+/// association a role owns is never displaced.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct OwnedRemotes {
     pub(crate) current: Option<SocketAddr>,
@@ -154,9 +153,8 @@ impl RemCid {
             // No token means no route for a reset to arrive by, so there is nothing to wait for.
             return true;
         }
-        // The token is known, so this address needs a route the endpoint has confirmed. Anything
-        // else — no record at all, one still pending, or one from before the token was known —
-        // is not something to send on.
+        // With the token known, this address requires a route the endpoint has confirmed. No
+        // record, a pending one, or one from before the token was known all fail this.
         self.sent_to
             .iter()
             .flatten()
@@ -1379,7 +1377,7 @@ mod tests {
 
     /// The identifier the handshake sends with has no token, so nothing gates it and its sends
     /// are recorded. When the peer finally names its token there *is* a route to install, and the
-    /// gate closes until the endpoint confirms it — while the history it already earned stays.
+    /// gate closes until the endpoint confirms it, and the recorded history is retained.
     /// Learning a token must not leave the gate open on an unconfirmed route.
     #[test]
     fn learning_a_token_closes_the_gate_until_the_route_is_confirmed() {
@@ -1470,7 +1468,7 @@ mod tests {
         let mut q = CidQueue::new(initial_cid());
         let (a, b) = (addr(1), addr(2));
 
-        // The handshake identifier has no token yet, so it sends freely — to two addresses.
+        // The handshake identifier has no token yet, so it sends to two addresses ungated.
         assert!(sent(&mut q, 0, a, 1, roles(a, None)).is_none());
         assert!(sent(&mut q, 0, b, 2, roles(b, Some(a))).is_none());
         assert!(q.is_sent_to(0, a) && q.is_sent_to(0, b));
@@ -1527,7 +1525,7 @@ mod tests {
 
     /// Recency is not proof that an address stopped being relevant. Moving off a path that was
     /// never validated keeps the *original* as the fallback, so the address in the middle is the
-    /// one that goes — never the one a path role still owns.
+    /// one displaced, and never one a path role owns.
     #[test]
     fn a_role_owned_address_is_never_displaced_by_transient_history() {
         let (mut q, seq) = queue_with_one_used_cid();
