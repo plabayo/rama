@@ -108,8 +108,45 @@ impl Endpoint {
         address: impl Into<SocketAddress>,
         socket: UdpSocketConfig,
     ) -> Result<Self, DatagramError> {
-        let socket = UdpSocketFactory::new(socket).bind(address.into()).await?;
-        Self::with_packet_socket(config, server_config, socket).map_err(DatagramError::from)
+        let factory = UdpSocketFactory::new(socket);
+        let listener = factory.bind(address.into()).await?;
+        // The addresses this server advertises as preferred are bound first, so the engine
+        // advertises the addresses the sockets actually have, ports the platform assigned
+        // included.
+        let (server_config, advertised) = bind_advertised(&factory, server_config).await?;
+        let endpoint = Self::with_packet_socket(config, server_config, listener)
+            .map_err(DatagramError::from)?;
+        endpoint.own_advertised(advertised)?;
+        Ok(endpoint)
+    }
+
+    /// Take ownership of sockets bound to the addresses this endpoint advertises. They receive
+    /// from now on and a rebind of the listener leaves them alone.
+    fn own_advertised(&self, sockets: Vec<UdpPacketSocket>) -> Result<(), DatagramError> {
+        for socket in sockets {
+            self.advertise_socket(Socket::new(socket)?)?;
+        }
+        Ok(())
+    }
+
+    /// Take ownership of one socket bound to an address this endpoint advertises, given as our
+    /// own abstraction: a socket with state of its own, or a test socket.
+    pub(crate) fn advertise_socket(&self, socket: Socket) -> Result<(), DatagramError> {
+        let mut state = self.inner.state.lock();
+        let Some(registry) = state.sockets.live_mut() else {
+            drop(state);
+            drop(socket);
+            return Err(DatagramError::Io(io::ErrorKind::NotConnected.into()));
+        };
+        match registry.advertise(socket) {
+            Ok(_) => Ok(()),
+            Err(refused) => {
+                // The refused socket is dropped outside the endpoint lock.
+                drop(state);
+                drop(refused.socket);
+                Err(DatagramError::Io(refused.error))
+            }
+        }
     }
 
     /// Construct an endpoint on a packet socket the caller prepared, for example through
@@ -121,6 +158,12 @@ impl Endpoint {
         socket: UdpPacketSocket,
     ) -> io::Result<Self> {
         Self::new_with_abstract_socket(config, server_config, Socket::new(socket)?)
+    }
+
+    /// Tests: the addresses this endpoint still advertises as preferred.
+    #[cfg(test)]
+    pub(crate) fn advertised_preferred(&self) -> Vec<SocketAddr> {
+        self.inner.state.lock().inner.advertised_preferred()
     }
 
     /// Returns relevant stats from this Endpoint
@@ -721,6 +764,83 @@ impl Drop for EndpointDriver {
     }
 }
 
+/// The address a bound packet socket has.
+fn bound_address(socket: &UdpPacketSocket) -> Result<SocketAddr, DatagramError> {
+    rama_net::stream::Socket::local_addr(socket)
+        .map(SocketAddr::from)
+        .map_err(DatagramError::Io)
+}
+
+/// Bind a socket for each preferred address this server configuration advertises, and return the
+/// configuration with those addresses replaced by the ones the sockets are bound to.
+///
+/// A configured address that cannot be bound fails: it is an explicit option, and advertising an
+/// address this endpoint does not own would send clients somewhere nothing answers.
+async fn bind_advertised(
+    factory: &UdpSocketFactory,
+    server_config: Option<ServerConfig>,
+) -> Result<(Option<ServerConfig>, Vec<UdpPacketSocket>), DatagramError> {
+    let Some(mut server_config) = server_config else {
+        return Ok((None, Vec::new()));
+    };
+    let mut sockets = Vec::new();
+    if let Some(address) = server_config.preferred_address_v4 {
+        // A wildcard address is not a destination a client can be sent to: resolving the port
+        // leaves the address unspecified, so it is refused rather than advertised.
+        if address.ip().is_unspecified() {
+            return Err(DatagramError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a preferred address must be a concrete address a peer can reach, not a wildcard",
+            )));
+        }
+        let socket = factory.bind(SocketAddr::from(address)).await?;
+        match bound_address(&socket)? {
+            SocketAddr::V4(bound) if !bound.ip().is_unspecified() => {
+                server_config.preferred_address_v4 = Some(bound);
+            }
+            SocketAddr::V4(bound) => {
+                return Err(DatagramError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("the preferred IPv4 address bound as the unspecified {bound}"),
+                )));
+            }
+            SocketAddr::V6(bound) => {
+                return Err(DatagramError::Io(io::Error::other(format!(
+                    "the preferred IPv4 address bound as {bound}"
+                ))));
+            }
+        }
+        sockets.push(socket);
+    }
+    if let Some(address) = server_config.preferred_address_v6 {
+        if address.ip().is_unspecified() {
+            return Err(DatagramError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a preferred address must be a concrete address a peer can reach, not a wildcard",
+            )));
+        }
+        let socket = factory.bind(SocketAddr::from(address)).await?;
+        match bound_address(&socket)? {
+            SocketAddr::V6(bound) if !bound.ip().is_unspecified() => {
+                server_config.preferred_address_v6 = Some(bound);
+            }
+            SocketAddr::V6(bound) => {
+                return Err(DatagramError::Io(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("the preferred IPv6 address bound as the unspecified {bound}"),
+                )));
+            }
+            SocketAddr::V4(bound) => {
+                return Err(DatagramError::Io(io::Error::other(format!(
+                    "the preferred IPv6 address bound as {bound}"
+                ))));
+            }
+        }
+        sockets.push(socket);
+    }
+    Ok((Some(server_config), sockets))
+}
+
 /// The socket configuration a client binds with: Rama's UDP defaults, plus a request for a
 /// dual-stack socket on an IPv6 address that the platform may refuse. A refusal leaves the
 /// platform's own `IPV6_V6ONLY` default in place and the socket bound.
@@ -773,6 +893,39 @@ impl EndpointInner {
         drop(state);
         // The retired connection's state is released outside the endpoint lock (lock order).
         drop(retired);
+    }
+}
+
+/// What this endpoint can offer a connection whose path has moved to a local address.
+#[derive(Debug)]
+pub(crate) enum LocalSocket {
+    /// A socket bound to exactly that address; the handle owns a lease on it.
+    Owned(crate::driver::udp::Sender),
+    /// No socket is bound to that address, but the one the connection already sends from is
+    /// bound to a wildcard of that port and family and can select a source address per datagram,
+    /// so it can carry that path.
+    Covered,
+    /// This endpoint owns no socket that can send from that address.
+    Unowned,
+}
+
+impl EndpointInner {
+    /// What this endpoint can offer for sending from `local`, given that the connection currently
+    /// sends from the socket named `current`.
+    pub(crate) fn socket_for_local(&self, local: SocketAddr, current: SocketId) -> LocalSocket {
+        let mut state = self.state.lock();
+        let Some(registry) = state.sockets.live_mut() else {
+            return LocalSocket::Unowned;
+        };
+        if let Some(id) = registry.id_for_local(local)
+            && let Some(sender) = registry.sender(id)
+        {
+            return LocalSocket::Owned(sender);
+        }
+        if registry.covers_local(current, local) {
+            return LocalSocket::Covered;
+        }
+        LocalSocket::Unowned
     }
 }
 
@@ -1125,6 +1278,13 @@ impl State {
         let failed = sockets.take_failed_to_announce();
         if failed.iter().next().is_none() {
             return;
+        }
+        // An address this endpoint advertised as preferred but no longer has a usable socket for
+        // is not offered to connections that have yet to handshake.
+        for id in failed.iter() {
+            if let Some(address) = sockets.local_addr(id) {
+                inner.stop_advertising(address);
+            }
         }
         for id in failed.iter() {
             for channel in recv_state.connections.channels.values() {

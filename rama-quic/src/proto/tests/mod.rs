@@ -7348,6 +7348,215 @@ fn step_checking_server_destinations(pair: &mut Pair, allowed: &[SocketAddr]) ->
     }
 }
 
+/// RFC 9000 §19.16: retiring a connection ID invalidates its stateless reset token. A datagram
+/// still in flight with an identifier the peer has just retired draws a stateless reset from the
+/// endpoint that issued it, and that reset is not ours: the connection survives it.
+///
+/// Roles: the issuer is the server, whose local identifiers the client uses as destinations; the
+/// retiring consumer is the client, which holds them in `rem_cids` and retires them.
+#[test]
+fn a_reset_for_an_identifier_the_peer_retired_is_not_ours() {
+    let _guard = subscribe();
+    let (mut pair, key) = pair_with_known_reset_key();
+    let (client_ch, server_ch) = pair.connect();
+    drive_settled(&mut pair);
+    let server_addr = pair.server.addr;
+    let retired = pair.client_conn_mut(client_ch).active_rem_cid();
+    let retired_seq = pair.client_conn_mut(client_ch).active_rem_cid_seq();
+    let retired_token = ResetToken::new(&key, retired);
+    assert!(
+        pair.server
+            .endpoint
+            .cids_routing_to(server_ch)
+            .contains(&retired),
+        "the issuer routes the identifier the consumer is using"
+    );
+
+    // The connection carries data both ways before anything is injected.
+    exchange_uni(&mut pair, client_ch, server_ch, b"up", Dir::Uni);
+    exchange_uni_back(&mut pair, server_ch, client_ch, b"down");
+
+    // One datagram of the consumer's is held back, carrying the identifier it is using.
+    pair.client_conn_mut(client_ch).ping();
+    pair.client.drive(pair.time, server_addr);
+    pair.client.delay_outbound();
+    assert_eq!(pair.client.delayed_len(), 1, "one datagram is held back");
+
+    // The issuer asks for retirement; the consumer switches and retires.
+    pair.server.capture_inbound_packets = true;
+    let now = pair.time;
+    pair.server_conn_mut(server_ch)
+        .rotate_local_cid(retired_seq + 1, now);
+    for _ in 0..6 {
+        pair.drive_server();
+        pair.drive_client();
+    }
+    assert!(
+        pair.client_conn_mut(client_ch).active_rem_cid_seq() > retired_seq,
+        "the consumer moved to another identifier"
+    );
+    let mut retirements = Vec::new();
+    for packet in pair.server.captured_packets.drain(..) {
+        if let Ok(frames) = frame::Iter::new(packet.into()) {
+            for frame in frames.flatten() {
+                if let Frame::RetireConnectionId { sequence } = frame {
+                    retirements.push(sequence);
+                }
+            }
+        }
+    }
+    assert!(
+        retirements.contains(&retired_seq),
+        "the issuer received RETIRE_CONNECTION_ID for that sequence: {retirements:?}"
+    );
+    assert!(
+        !pair
+            .server
+            .endpoint
+            .cids_routing_to(server_ch)
+            .contains(&retired),
+        "and stopped routing it"
+    );
+    assert_eq!(
+        pair.client
+            .endpoint
+            .reset_route_for(server_addr, retired_token),
+        None,
+        "the consumer's endpoint released the route for its token"
+    );
+
+    // The held datagram arrives, and the issuer answers it with a reset carrying that token.
+    pair.server.outbound.clear();
+    pair.client.finish_delay();
+    pair.drive_client();
+    pair.server.drive(pair.time, pair.client.addr);
+    let answers: Vec<&(Transmit, Bytes)> = pair.server.outbound.iter().collect();
+    assert_eq!(answers.len(), 1, "one answer: {answers:?}");
+    let reset = &answers[0].1;
+    assert_eq!(
+        &reset[reset.len() - RESET_TOKEN_SIZE..],
+        &retired_token[..],
+        "it carries the retired identifier's token"
+    );
+
+    // Delivered, that reset does not reach the connection: its destination identifier is padding,
+    // so the consumer's endpoint has nothing to route it by. This is the consumer's own lookup,
+    // separate from the issuer's lookup above that produced the reset, and it says nothing about
+    // what the engine would do with the token: that is the next leg.
+    let received = pair.client_conn_mut(client_ch).stats().udp_rx.datagrams;
+    pair.drive_server();
+    assert_eq!(
+        pair.client.inbound.len(),
+        1,
+        "the reset is queued for the consumer's endpoint"
+    );
+    pair.client.drive(pair.time, server_addr);
+    assert!(
+        pair.client.inbound.is_empty(),
+        "the consumer's endpoint took the datagram"
+    );
+    assert_eq!(
+        pair.client_conn_mut(client_ch).stats().udp_rx.datagrams,
+        received,
+        "and did not hand it to the connection"
+    );
+    assert!(!was_reset(pair.client_conn_mut(client_ch)));
+    assert!(!pair.client_conn_mut(client_ch).is_closed());
+
+    // The same token addressed to an identifier the consumer's endpoint does route: the datagram
+    // reaches the connection, which refuses the retired token.
+    let routed = routed_reset_for(&pair.client, client_ch, &key, retired);
+    let at = pair.time;
+    let to = pair.client.addr;
+    pair.client.inbound.push_back(Inbound {
+        at,
+        ecn: None,
+        packet: routed.as_slice().into(),
+        from: Some(server_addr),
+        to: Some(to),
+    });
+    let received = pair.client_conn_mut(client_ch).stats().udp_rx.datagrams;
+    pair.client.drive(at, server_addr);
+    assert!(
+        pair.client_conn_mut(client_ch).stats().udp_rx.datagrams > received,
+        "the connection processed it"
+    );
+    assert!(
+        !was_reset(pair.client_conn_mut(client_ch)),
+        "and did not accept the retired identifier's token"
+    );
+    assert!(!pair.client_conn_mut(client_ch).is_closed());
+
+    // Data still flows, both ways, on the identifier now in use.
+    exchange_uni(&mut pair, client_ch, server_ch, b"after", Dir::Uni);
+    exchange_uni_back(&mut pair, server_ch, client_ch, b"back");
+
+    // The control, last, because it closes the connection: the same dispatch carrying the token of
+    // the identifier in use is ours.
+    let current = pair.client_conn_mut(client_ch).active_rem_cid();
+    let routed = routed_reset_for(&pair.client, client_ch, &key, current);
+    let at = pair.time;
+    pair.client.inbound.push_back(Inbound {
+        at,
+        ecn: None,
+        packet: routed.as_slice().into(),
+        from: Some(server_addr),
+        to: Some(to),
+    });
+    pair.client.drive(at, server_addr);
+    assert!(
+        was_reset(pair.client_conn_mut(client_ch)),
+        "the token of the identifier in use resets us"
+    );
+    assert!(pair.client_conn_mut(client_ch).is_closed());
+}
+
+/// Write `payload` on a fresh unidirectional stream from the client and read it whole on the
+/// server, with the stream's end observed.
+fn exchange_uni(
+    pair: &mut Pair,
+    from: ConnectionHandle,
+    to: ConnectionHandle,
+    payload: &[u8],
+    dir: Dir,
+) {
+    let stream = pair.client_streams(from).open(dir).unwrap();
+    pair.client_send(from, stream).write(payload).unwrap();
+    pair.client_send(from, stream).finish().unwrap();
+    drive_settled(pair);
+    assert!(saw_uni_stream(pair.server_conn_mut(to)));
+    let mut recv = pair.server_recv(to, stream);
+    let mut chunks = recv.read(false).unwrap();
+    match chunks.next(usize::MAX) {
+        Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == payload => {}
+        other => panic!("the server received {other:?}"),
+    }
+    assert!(matches!(chunks.next(usize::MAX), Ok(None)), "and its end");
+    let _ = chunks.finalize();
+}
+
+/// The same from the server to the client.
+fn exchange_uni_back(
+    pair: &mut Pair,
+    from: ConnectionHandle,
+    to: ConnectionHandle,
+    payload: &[u8],
+) {
+    let stream = pair.server_streams(from).open(Dir::Uni).unwrap();
+    pair.server_send(from, stream).write(payload).unwrap();
+    pair.server_send(from, stream).finish().unwrap();
+    drive_settled(pair);
+    assert!(saw_uni_stream(pair.client_conn_mut(to)));
+    let mut recv = pair.client_recv(to, stream);
+    let mut chunks = recv.read(false).unwrap();
+    match chunks.next(usize::MAX) {
+        Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == payload => {}
+        other => panic!("the client received {other:?}"),
+    }
+    assert!(matches!(chunks.next(usize::MAX), Ok(None)), "and its end");
+    let _ = chunks.finalize();
+}
+
 /// RFC 9000 §10.3.1: a reset token belongs to the connection only once the connection ID it came
 /// with has been used. Before that, a reset carrying it is not recognised; afterwards it is.
 #[test]

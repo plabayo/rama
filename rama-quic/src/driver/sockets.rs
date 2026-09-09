@@ -173,6 +173,10 @@ impl Order {
 pub(crate) struct SocketRegistry {
     /// The socket new connections use; structurally always present.
     active: Entry,
+    /// Sockets bound to addresses this endpoint advertises as preferred (RFC 9000 §9.6). They
+    /// receive from the moment they are bound, a rebind of the active socket leaves them alone,
+    /// and they are released by endpoint shutdown or an explicit release.
+    advertised: Vec<Entry>,
     /// Earlier sockets something still depends on.
     retiring: Vec<Entry>,
     next: u64,
@@ -194,6 +198,7 @@ impl SocketRegistry {
     pub(crate) fn new(socket: Socket) -> Self {
         Self {
             active: Entry::new(SocketId(1), socket),
+            advertised: Vec::new(),
             retiring: Vec::new(),
             next: 2,
             cursor: 0,
@@ -210,11 +215,15 @@ impl SocketRegistry {
     }
 
     fn entries(&self) -> impl Iterator<Item = &Entry> {
-        std::iter::once(&self.active).chain(self.retiring.iter())
+        std::iter::once(&self.active)
+            .chain(self.advertised.iter())
+            .chain(self.retiring.iter())
     }
 
     fn entries_mut(&mut self) -> impl Iterator<Item = &mut Entry> {
-        std::iter::once(&mut self.active).chain(self.retiring.iter_mut())
+        std::iter::once(&mut self.active)
+            .chain(self.advertised.iter_mut())
+            .chain(self.retiring.iter_mut())
     }
 
     fn entry_mut(&mut self, id: SocketId) -> Option<&mut Entry> {
@@ -225,9 +234,69 @@ impl SocketRegistry {
         self.entries().find(|e| e.id == id)
     }
 
-    /// Sockets currently retained (active plus retiring).
+    /// Sockets currently retained (active, advertised and retiring).
     pub(crate) fn len(&self) -> usize {
-        1 + self.retiring.len()
+        1 + self.advertised.len() + self.retiring.len()
+    }
+
+    /// Bind `socket` as an address this endpoint advertises. It starts receiving at once and is
+    /// not retired by a rebind. Refused, handing `socket` back, when the retained set is already
+    /// at [`MAX_RETAINED_SOCKETS`] or the identity space is exhausted.
+    pub(crate) fn advertise(&mut self, socket: Socket) -> Result<SocketId, RebindRefused> {
+        if self.len() >= MAX_RETAINED_SOCKETS {
+            return Err(RebindRefused {
+                error: io::Error::new(
+                    io::ErrorKind::QuotaExceeded,
+                    "too many QUIC sockets retained to add an advertised address",
+                ),
+                socket,
+            });
+        }
+        let Some(next) = self.next.checked_add(1) else {
+            return Err(RebindRefused {
+                error: io::Error::new(
+                    io::ErrorKind::QuotaExceeded,
+                    "QUIC socket identity space exhausted",
+                ),
+                socket,
+            });
+        };
+        let id = SocketId(self.next);
+        self.next = next;
+        self.advertised.push(Entry::new(id, socket));
+        Ok(id)
+    }
+
+    /// The identity of the socket bound to exactly `local`, whichever role it has. A socket bound
+    /// to a wildcard address is not a match: it receives datagrams addressed to many local
+    /// addresses and its own is not one of them.
+    pub(crate) fn id_for_local(&self, local: std::net::SocketAddr) -> Option<SocketId> {
+        self.entries()
+            .find(|entry| !entry.failed && entry.socket.local_addr() == local)
+            .map(|entry| entry.id)
+    }
+
+    /// Whether the socket named `id` can carry the path whose local address is `local`: it is
+    /// bound to a wildcard of the same port and family, and it can select a source address per
+    /// datagram. Without that capability the sender refuses such a datagram
+    /// (`DatagramError::Unsupported(SendSourceIp)`), so a wildcard bind alone does not make the
+    /// socket usable for that path.
+    pub(crate) fn covers_local(&self, id: SocketId, local: std::net::SocketAddr) -> bool {
+        self.entry(id).is_some_and(|entry| {
+            let bound = entry.socket.local_addr();
+            !entry.failed
+                && bound.ip().is_unspecified()
+                && bound.port() == local.port()
+                && bound.is_ipv4() == local.is_ipv4()
+                && entry.socket.capabilities().send_source_ip
+        })
+    }
+
+    /// The addresses this endpoint advertises, in the order they were bound.
+    pub(crate) fn advertised_addrs(&self) -> impl Iterator<Item = std::net::SocketAddr> + '_ {
+        self.advertised
+            .iter()
+            .map(|entry| entry.socket.local_addr())
     }
 
     /// Identities of the retained sockets, active first.
@@ -429,6 +498,7 @@ impl SocketRegistry {
         for entry in self
             .retiring
             .iter_mut()
+            .chain(self.advertised.iter_mut())
             .filter(|e| e.failed && !e.failure_announced)
         {
             entry.failure_announced = true;
@@ -517,7 +587,12 @@ impl SocketRegistry {
     /// (including these).
     fn into_sockets(mut self) -> (Vec<Socket>, u64) {
         let retiring = std::mem::take(&mut self.retiring);
-        let mut sockets: Vec<Socket> = retiring.into_iter().map(|e| e.socket).collect();
+        let advertised = std::mem::take(&mut self.advertised);
+        let mut sockets: Vec<Socket> = retiring
+            .into_iter()
+            .chain(advertised)
+            .map(|e| e.socket)
+            .collect();
         sockets.push(self.active.socket);
         let retired = self.retired.sockets + sockets.len() as u64;
         (sockets, retired)

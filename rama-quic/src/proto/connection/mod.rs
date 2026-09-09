@@ -12,6 +12,7 @@ use frame::StreamMetaVec;
 use rama_core::bytes::{Bytes, BytesMut};
 
 use rama_core::telemetry::tracing::{debug, error, trace, trace_span, warn};
+use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr as _};
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 
 use crate::proto::{
@@ -3804,9 +3805,14 @@ impl Connection {
             trace!("zero-length connection IDs: this connection cannot move");
             return;
         }
-        let advertised = match self.path.remote {
-            SocketAddr::V4(_) => info.address_v4.map(SocketAddr::V4),
-            SocketAddr::V6(_) => info.address_v6.map(SocketAddr::V6),
+        // By the family of the address in use, canonically: an IPv4-mapped IPv6 address is an
+        // IPv4 peer, and the address advertised for IPv4 is the one it can reach. Whether the
+        // local socket can reach the chosen family is not knowable here; a family it cannot reach
+        // ends as a failed probe, which leaves the connection where it is.
+        let remote = SocketAddress::from(self.path.remote).into_canonical_ip_addr();
+        let advertised = match remote.ip_addr {
+            IpAddr::V4(_) => info.address_v4.map(SocketAddr::V4),
+            IpAddr::V6(_) => info.address_v6.map(SocketAddr::V6),
         };
         match advertised {
             Some(remote) if remote != self.path.remote => {

@@ -245,13 +245,11 @@ mod tests {
                 #[cfg(any(target_os = "android", target_os = "linux"))]
                 panic!("this platform sets the original-destination options when asked");
             }
-            Err(other) => {
-                // The platform has the option and refused to set it, which privileges can cause.
-                assert!(
-                    matches!(other, DatagramError::Io(_)),
-                    "the platform's own error is kept: {other:?}"
-                );
-            }
+            Err(other) => panic!(
+                "an unexpected error: the metadata setup turns a refused socket option into a \
+                 capability the socket does not have, so a required feature is refused by name \
+                 rather than as an error: {other:?}"
+            ),
         }
     }
 }

@@ -767,6 +767,11 @@ impl TestEndpoint {
         mem::swap(&mut self.delayed, &mut self.outbound);
     }
 
+    /// Tests: how many datagrams are held back.
+    pub(super) fn delayed_len(&self) -> usize {
+        self.delayed.len()
+    }
+
     pub(super) fn finish_delay(&mut self) {
         self.outbound.extend(self.delayed.drain(..));
     }

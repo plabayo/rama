@@ -137,14 +137,11 @@ async fn a_required_feature_is_refused_only_when_the_socket_lacks_it() {
                 "the refusal names the feature: {error:?}"
             );
         }
-        Err(setup) => {
-            // The platform has the option and would not set it up, which privileges can cause.
-            let error = bound.expect_err("the endpoint cannot be built either");
-            assert!(
-                matches!(error, DatagramError::Io(_)),
-                "the platform's own error is kept: {error:?} after {setup:?}"
-            );
-        }
+        Err(setup) => panic!(
+            "an unexpected error: the metadata setup turns a refused socket option into a \
+             capability the socket does not have, so this configuration either provides the \
+             feature or is refused by name: {setup:?}, and the endpoint gave {bound:?}"
+        ),
     }
 }
 
@@ -194,6 +191,17 @@ async fn an_occupied_address_fails_once_and_changes_nothing() {
     let client = Endpoint::client(localhost_v4())
         .await
         .expect("the client binds");
+    // A connection is open across the failed rebind, so what survives it is observable.
+    let connecting = client
+        .connect_with(client_config.clone(), occupied, "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(5), server.accept())
+        .await
+        .expect("the attempt arrives")
+        .expect("the server is listening");
+    let (open_client, open_server) = handshake(connecting, incoming).await;
+    exchange(&open_client, &open_server, b"before the failed rebind").await;
+
     let before = client.local_addr().unwrap();
     let error = client
         .rebind(occupied, UdpSocketConfig::default())
@@ -209,7 +217,11 @@ async fn an_occupied_address_fails_once_and_changes_nothing() {
         "the endpoint stays on the socket it had"
     );
 
-    // Both endpoints are still usable.
+    // The connection that was open across the failed rebind still carries data, and a new one can
+    // still be established.
+    exchange(&open_client, &open_server, b"after the failed rebind").await;
+    exchange(&open_server, &open_client, b"and back").await;
+    drop((open_client, open_server));
     exchange_both_ways(&client, &server, client_config).await;
     tokio::join!(client.shutdown(), server.shutdown());
 }

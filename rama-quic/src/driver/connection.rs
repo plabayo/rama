@@ -22,7 +22,7 @@ use tokio::sync::{Notify, futures::Notified, oneshot};
 
 use crate::driver::{
     Duration, IO_LOOP_BOUND, QueuedPacket, VarInt,
-    endpoint::EndpointInner,
+    endpoint::{EndpointInner, LocalSocket},
     now,
     queue::{BoundedReceiver, PacketBudget, PacketQueueStats},
     recv_stream::RecvStream,
@@ -339,6 +339,14 @@ impl EndpointLink {
         }
     }
 
+    /// What the endpoint can offer for sending from `local`, given the socket in use.
+    fn socket_for_local(&self, local: SocketAddr, current: SocketId) -> LocalSocket {
+        match self.endpoint.upgrade() {
+            Some(endpoint) => endpoint.socket_for_local(local, current),
+            None => LocalSocket::Unowned,
+        }
+    }
+
     /// Hand back send handles this connection no longer uses: the endpoint releases their socket
     /// leases and drops the handles outside every lock. Without an endpoint they are dropped here,
     /// outside the connection lock.
@@ -460,18 +468,23 @@ impl Future for ConnectionDriver {
         if rama_core::telemetry::dial9::Dial9Handle::current().is_enabled() {
             DRIVER_POLLED_WITH_DIAL9.store(true, Ordering::Relaxed);
         }
-        let (outcome, endpoint_work) = {
+        let (outcome, endpoint_work, wanted_local) = {
             let conn = &mut *self.conn.state.lock();
             let _guard = self.span.enter();
             let outcome = conn.drive(&self.conn.shared, cx);
             (
                 outcome,
                 !conn.pending_endpoint_events.is_empty() || !conn.released_senders.is_empty(),
+                conn.wanted_local.take(),
             )
         };
         if endpoint_work {
             // Our lock is released, so the endpoint may lock this connection back (lock order).
             self.conn.deliver_endpoint_events();
+        }
+        if let Some(local) = wanted_local {
+            // Asked with our lock released, in endpoint-then-connection order.
+            self.conn.follow_local_address(local);
         }
         outcome
     }
@@ -737,6 +750,19 @@ impl Connection {
     #[cfg(test)]
     pub(crate) fn stale_transmits(&self) -> u64 {
         self.0.state.lock().stale_transmits
+    }
+
+    /// Tests: how many datagrams were given up because this endpoint owns no socket that could
+    /// send from the local address their path names.
+    #[cfg(test)]
+    pub(crate) fn unowned_paths(&self) -> u64 {
+        self.0.state.lock().unowned_paths
+    }
+
+    /// Tests: the local address this connection sends from, as its send handle reports it.
+    #[cfg(test)]
+    pub(crate) fn sending_from(&self) -> Option<std::net::SocketAddr> {
+        self.0.state.lock().socket.as_ref().map(Sender::local_addr)
     }
 
     /// Tests: the sequence number of the connection ID this side is addressing its peer with.
@@ -1275,6 +1301,9 @@ impl ConnectionRef {
                 descriptors: std::collections::VecDeque::new(),
                 endpoint_drained: false,
                 pending_rebind: None,
+                wanted_local: None,
+                covered_local: None,
+                unowned_paths: 0,
                 released_senders: Vec::new(),
                 stale_transmits: 0,
                 receive_queue,
@@ -1409,6 +1438,59 @@ impl ConnectionInner {
         outcome
     }
 
+    /// Follow this connection's path to `local`: take a send handle for that address from the
+    /// endpoint, note that the current one already covers it, or, when neither is possible, give
+    /// up the datagram that named it rather than send it from another address. Called with no
+    /// connection lock held, so the endpoint's lock comes first.
+    fn follow_local_address(&self, local: SocketAddr) {
+        let (link, current) = {
+            let conn = &*self.state.lock();
+            (
+                conn.endpoint.clone(),
+                conn.socket.as_ref().map(Sender::socket_id),
+            )
+        };
+        let Some(current) = current else {
+            return;
+        };
+        let offered = link.socket_for_local(local, current);
+        let released = {
+            let conn = &mut *self.state.lock();
+            let released = match offered {
+                LocalSocket::Owned(sender) => {
+                    // The descriptor waiting for this address was offered to the socket this
+                    // connection is leaving. Whatever prefix that sender accepted has left from
+                    // the old address and is reported there; a descriptor nothing was taken from
+                    // is kept whole for the new sender.
+                    conn.release_buffered();
+                    conn.covered_local = None;
+                    conn.socket.replace(sender)
+                }
+                LocalSocket::Covered => {
+                    conn.covered_local = conn
+                        .socket
+                        .as_ref()
+                        .map(|socket| (socket.socket_id(), local));
+                    None
+                }
+                LocalSocket::Unowned => {
+                    // The path identity of that datagram cannot be honoured: sending it from
+                    // another address would put a different source on the path the peer is
+                    // validating. It is given up like any lost datagram, with the accounting its
+                    // sender needs, and loss recovery decides what follows.
+                    conn.give_up_buffered();
+                    conn.unowned_paths = conn.unowned_paths.saturating_add(1);
+                    None
+                }
+            };
+            conn.wake();
+            released
+        };
+        if let Some(previous) = released {
+            link.release_senders(vec![previous]);
+        }
+    }
+
     fn deliver_endpoint_events(&self) {
         let (link, events, released) = {
             let conn = &mut *self.state.lock();
@@ -1459,6 +1541,15 @@ pub(crate) struct State {
     /// Always set to Some before the connection becomes drained
     pub(crate) error: Option<ConnectionError>,
     socket: Option<Sender>,
+    /// A local address the engine has moved this connection to, for which a send handle has been
+    /// asked of the endpoint. The datagram that named it waits until the answer arrives, so it
+    /// leaves from that address rather than from the one this connection was sending from.
+    wanted_local: Option<SocketAddr>,
+    /// A local address the socket this connection sends from can carry, with the identity of that
+    /// socket: a wildcard-bound listener reports the address a datagram arrived on and can put it
+    /// on the wire as the source. The socket's identity is part of the record, so a replacement
+    /// that cannot carry the same path is asked about again.
+    covered_local: Option<(SocketId, SocketAddr)>,
     pending_rebind: Option<Sender>,
     /// Send handles this connection gave up; handed to the endpoint after the connection lock is
     /// released (lock order), which releases their socket leases and drops them outside its own.
@@ -1469,6 +1560,9 @@ pub(crate) struct State {
     /// We buffer a transmit when the underlying I/O would block, with the name of the attempt it
     /// belongs to, so the sender cannot apply what it accepted to a different descriptor.
     buffered_transmit: Option<(crate::driver::udp::TransmitId, crate::proto::Transmit)>,
+    /// Datagrams given up because this endpoint owns no socket that could send from the local
+    /// address their path names.
+    unowned_paths: u64,
     /// Names each descriptor handed to the sender.
     transmits_offered: u64,
     /// Tests: the last [`DESCRIPTORS`] descriptors offered, oldest first.
@@ -1556,6 +1650,54 @@ impl State {
         });
     }
 
+    /// Release the descriptor waiting on this connection's sender before that sender changes or
+    /// goes away.
+    ///
+    /// The sender's record of the descriptor is cancelled either way. A descriptor the sender had
+    /// already taken a prefix of cannot move: those bytes left from that socket's address, so the
+    /// identifier they carried is reported as used towards its destination (RFC 9000 §10.3.1) and
+    /// the unsent remainder is given up like any dropped datagram. One nothing was taken from is
+    /// kept, whole, for whichever sender comes next.
+    fn release_buffered(&mut self) {
+        let Some((id, transmit)) = self.buffered_transmit.take() else {
+            return;
+        };
+        let Some(socket) = self.socket.as_mut() else {
+            return;
+        };
+        let started = socket.accepted_any(id);
+        socket.abandon(id);
+        if !started {
+            self.buffered_transmit = Some((id, transmit));
+            return;
+        }
+        #[cfg(test)]
+        let reports_before = self.inner.cid_sent_calls();
+        if let Some(seq) = transmit.cid_used {
+            self.inner.cid_sent(seq, transmit.destination);
+        }
+        #[cfg(test)]
+        self.note_descriptor(
+            id,
+            &transmit,
+            Outcome::Obsolete,
+            self.inner.cid_sent_calls() > reports_before,
+        );
+        self.stale_transmits += 1;
+    }
+
+    /// Give up the descriptor waiting on this connection's sender: there is no socket it may
+    /// leave from, so it is released and, if it was kept whole by the release, dropped.
+    fn give_up_buffered(&mut self) {
+        self.release_buffered();
+        if let Some((id, transmit)) = self.buffered_transmit.take() {
+            #[cfg(test)]
+            self.note_descriptor(id, &transmit, Outcome::Obsolete, false);
+            let _ = (id, transmit);
+            self.stale_transmits += 1;
+        }
+    }
+
     fn drive_transmit(&mut self, cx: &mut Context) -> io::Result<bool> {
         let now = now();
         // A failure raised where it could not be returned closes the connection here, before
@@ -1617,6 +1759,21 @@ impl State {
                     }
                 }
             };
+
+            // The engine may have moved this connection to another of the endpoint's addresses
+            // (a client that took the server's preferred address makes the server's path local
+            // address that one, RFC 9000 §9.6). The datagram has to leave from there, so a send
+            // handle for it is asked of the endpoint and this datagram waits for the answer. An
+            // address the endpoint owns no socket for is answered once and not asked for again:
+            // a wildcard-bound listener reports the address a datagram arrived on.
+            if let Some(local) = t.local
+                && socket.local_addr() != local
+                && self.covered_local != Some((socket.socket_id(), local))
+            {
+                self.wanted_local = Some(local);
+                self.buffered_transmit = Some((id, t));
+                return Ok(false);
+            }
 
             if let Some(seq) = t.cid_used {
                 match self.inner.may_send_cid(seq, t.destination) {

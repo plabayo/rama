@@ -1710,3 +1710,5 @@ async fn receive_queue_limits_must_hold_one_datagram_and_one_attempt() {
 mod construction;
 #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
 mod lifecycle;
+#[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+mod preferred;

@@ -108,6 +108,42 @@ impl Endpoint {
         self.server_config = server_config;
     }
 
+    /// Stop advertising `address` as preferred: the endpoint no longer owns a usable socket there,
+    /// so connections that have not handshaked yet must not be sent to it. Connections already
+    /// established keep whatever path they have; their transport parameters are long since sent.
+    pub(crate) fn stop_advertising(&mut self, address: SocketAddr) {
+        let Some(config) = self.server_config.as_ref() else {
+            return;
+        };
+        let advertises = match address {
+            SocketAddr::V4(address) => config.preferred_address_v4 == Some(address),
+            SocketAddr::V6(address) => config.preferred_address_v6 == Some(address),
+        };
+        if !advertises {
+            return;
+        }
+        let mut updated = ServerConfig::clone(config);
+        match address {
+            SocketAddr::V4(_) => updated.preferred_address_v4 = None,
+            SocketAddr::V6(_) => updated.preferred_address_v6 = None,
+        }
+        self.server_config = Some(Arc::new(updated));
+    }
+
+    /// Tests: the addresses this endpoint advertises as preferred.
+    #[cfg(test)]
+    pub(crate) fn advertised_preferred(&self) -> Vec<SocketAddr> {
+        let Some(config) = self.server_config.as_ref() else {
+            return Vec::new();
+        };
+        config
+            .preferred_address_v4
+            .map(SocketAddr::V4)
+            .into_iter()
+            .chain(config.preferred_address_v6.map(SocketAddr::V6))
+            .collect()
+    }
+
     /// How long a Retry token issued now stays valid, when configured to serve.
     pub(crate) fn retry_token_lifetime(&self) -> Option<Duration> {
         self.server_config

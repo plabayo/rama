@@ -88,7 +88,11 @@ fn small_limits() -> (ReceiveQueueLimits, ReceiveQueueLimits) {
     )
 }
 
-fn endpoint_with(config: EndpointConfig, server: Option<ServerConfig>, socket: Socket) -> Endpoint {
+pub(super) fn endpoint_with(
+    config: EndpointConfig,
+    server: Option<ServerConfig>,
+    socket: Socket,
+) -> Endpoint {
     Endpoint::new_with_executor(
         config,
         server,
@@ -150,7 +154,7 @@ struct FaultySocket {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RecvFault {
+pub(super) enum RecvFault {
     Now,
     AfterNextBatch,
 }
@@ -159,7 +163,7 @@ enum RecvFault {
 /// connection lock was held: such a destructor would block a real socket's teardown. The
 /// check is nonblocking, so a violation fails the test instead of wedging it.
 #[derive(Debug, Default)]
-struct SenderProbe {
+pub(super) struct SenderProbe {
     endpoint: std::sync::OnceLock<std::sync::Weak<EndpointInner>>,
     drops: AtomicUsize,
     under_lock: AtomicUsize,
@@ -192,7 +196,7 @@ impl SenderProbe {
 
 /// Holds a socket's sends pending until opened; deterministic "socket not ready" state.
 #[derive(Debug, Default)]
-struct SendGate {
+pub(super) struct SendGate {
     closed: AtomicBool,
     /// While set, only datagrams for this address are held; the rest go through.
     only: Mutex<Option<SocketAddress>>,
@@ -393,7 +397,7 @@ fn gated_socket() -> (Socket, Arc<SendGate>) {
 /// A real loopback socket, one datagram per send, whose sends can be held pending through
 /// the gate, whose receive path can be failed on demand, and whose send handles report
 /// their destruction to `probe`.
-fn breakable_socket(
+pub(super) fn breakable_socket(
     probe: Option<Arc<SenderProbe>>,
 ) -> (
     Socket,
@@ -425,7 +429,7 @@ fn breakable_socket(
 }
 
 /// Fail `socket`'s receive path and make sure the endpoint driver looks at it.
-fn fail_receiver(endpoint: &Endpoint, fault: &Mutex<Option<RecvFault>>) {
+pub(super) fn fail_receiver(endpoint: &Endpoint, fault: &Mutex<Option<RecvFault>>) {
     *fault.lock() = Some(RecvFault::Now);
     endpoint.inner.state.lock().wake_driver();
 }
@@ -535,7 +539,11 @@ impl std::task::Wake for WakeFlag {
 }
 
 /// Wait until `condition` holds; returns how long it took.
-async fn wait_for(what: &str, limit: Duration, mut condition: impl FnMut() -> bool) -> Duration {
+pub(super) async fn wait_for(
+    what: &str,
+    limit: Duration,
+    mut condition: impl FnMut() -> bool,
+) -> Duration {
     let started = Instant::now();
     tokio::time::timeout(limit, async {
         while !condition() {
@@ -3521,11 +3529,11 @@ async fn an_attempt_admitted_before_a_receive_fault_in_the_same_pass_is_released
 }
 /// One datagram handed to the network by a [`SegmentingSocket`], with its metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SentDatagram {
-    bytes: Vec<u8>,
-    ecn: Option<rama_udp::EcnCodepoint>,
-    source: Option<IpAddr>,
-    destination: SocketAddress,
+pub(super) struct SentDatagram {
+    pub(super) bytes: Vec<u8>,
+    pub(super) ecn: Option<rama_udp::EcnCodepoint>,
+    pub(super) source: Option<IpAddr>,
+    pub(super) destination: SocketAddress,
 }
 
 impl SentDatagram {
@@ -3542,12 +3550,12 @@ impl SentDatagram {
 /// What a [`SegmentingSocket`] saw: the one segmented descriptor it rejected and every
 /// datagram it sent, plus a count-based hold on the fallback datagrams.
 #[derive(Debug, Default)]
-struct SegmentLog {
+pub(super) struct SegmentLog {
     /// The rejected segmented descriptor and its segment size.
-    rejected: Option<(SentDatagram, usize)>,
+    pub(super) rejected: Option<(SentDatagram, usize)>,
     /// Index into `sent` at which the rejection happened.
     rejected_at: usize,
-    sent: Vec<SentDatagram>,
+    pub(super) sent: Vec<SentDatagram>,
     /// Sends stay pending once this many fallback datagrams were accepted, until `open`.
     hold_after: usize,
     open: bool,
@@ -3577,7 +3585,7 @@ impl SegmentLog {
         }
     }
 
-    fn fallback(&self) -> &[SentDatagram] {
+    pub(super) fn fallback(&self) -> &[SentDatagram] {
         &self.sent[self.rejected_at..]
     }
 }
@@ -3598,13 +3606,13 @@ struct SegmentingSocket {
 /// Whether a [`SegmentingSocket`] offers segmentation: not before it is armed, never after
 /// the downgrade.
 #[derive(Debug, Default)]
-struct Segments {
+pub(super) struct Segments {
     armed: AtomicBool,
     downgraded: AtomicBool,
 }
 
 impl Segments {
-    fn arm(&self) {
+    pub(super) fn arm(&self) {
         self.armed.store(true, Ordering::SeqCst);
     }
 
@@ -3770,7 +3778,7 @@ impl<S: DatagramSender> DatagramSender for SegmentingSender<S> {
 }
 
 /// A real loopback socket that never offers segmentation and records every datagram it sends.
-fn recording_socket() -> (Socket, Arc<Mutex<SegmentLog>>) {
+pub(super) fn recording_socket() -> (Socket, Arc<Mutex<SegmentLog>>) {
     let std_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     recording_socket_from(std_socket)
 }
@@ -3780,7 +3788,9 @@ fn recording_socket_from(std_socket: std::net::UdpSocket) -> (Socket, Arc<Mutex<
     (socket, log)
 }
 
-fn segmenting_socket(hold_after: usize) -> (Socket, Arc<Mutex<SegmentLog>>, Arc<Segments>) {
+pub(super) fn segmenting_socket(
+    hold_after: usize,
+) -> (Socket, Arc<Mutex<SegmentLog>>, Arc<Segments>) {
     let std_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     segmenting_socket_from(std_socket, hold_after)
 }
@@ -3809,17 +3819,17 @@ fn segmenting_socket_from(
 }
 
 /// Stop accepting datagrams for `destination`; the sender is told to wait.
-fn block_segments_for(log: &Mutex<SegmentLog>, destination: SocketAddress) {
+pub(super) fn block_segments_for(log: &Mutex<SegmentLog>, destination: SocketAddress) {
     log.lock().blocked = Some(destination);
 }
 
 /// Accept `datagrams` more datagrams, then wait.
-fn credit_segments(log: &Mutex<SegmentLog>, datagrams: usize) {
+pub(super) fn credit_segments(log: &Mutex<SegmentLog>, datagrams: usize) {
     log.lock().credit = Some(datagrams);
 }
 
 /// Accept datagrams without counting them.
-fn uncredit_segments(log: &Mutex<SegmentLog>) {
+pub(super) fn uncredit_segments(log: &Mutex<SegmentLog>) {
     let wakers = {
         let mut log = log.lock();
         log.credit = None;
@@ -3831,7 +3841,7 @@ fn uncredit_segments(log: &Mutex<SegmentLog>) {
 }
 
 /// Accept datagrams for every destination again.
-fn unblock_segments(log: &Mutex<SegmentLog>) {
+pub(super) fn unblock_segments(log: &Mutex<SegmentLog>) {
     let wakers = {
         let mut log = log.lock();
         log.blocked = None;
@@ -3842,7 +3852,7 @@ fn unblock_segments(log: &Mutex<SegmentLog>) {
     }
 }
 
-fn open_segment_hold(log: &Mutex<SegmentLog>) {
+pub(super) fn open_segment_hold(log: &Mutex<SegmentLog>) {
     let wakers = {
         let mut log = log.lock();
         log.open = true;
