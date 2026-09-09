@@ -8,6 +8,10 @@
 //! - P = PRIORITY frames (stream_id:exclusive:depends_on:weight, comma-separated, or "0" if not present)
 //! - PS = Pseudo-header order (m=method, p=path, a=authority, s=scheme, comma-separated)
 
+use std::{fmt, io};
+
+use rama_core::extensions::Extensions;
+
 use crate::proto::h2::{
     PseudoHeader, PseudoHeaderOrder,
     frame::{
@@ -19,8 +23,6 @@ use crate::proto::h2::{
         StreamId,
     },
 };
-use rama_core::extensions::Extensions;
-use std::{fmt, io};
 
 #[derive(Clone)]
 pub struct AkamaiH2 {
@@ -239,6 +241,8 @@ impl fmt::Display for AkamaiH2ComputeError {
 }
 
 impl std::error::Error for AkamaiH2ComputeError {}
+
+rama_utils::macros::serde_str::impl_serde_str!(serialize display AkamaiH2);
 
 #[cfg(test)]
 mod tests {

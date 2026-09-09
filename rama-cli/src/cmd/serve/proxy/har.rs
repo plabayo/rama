@@ -1,39 +1,35 @@
-use super::capture::{
-    CaptureDetails, CaptureStore, StoredRecord, captured_header_value, captured_http_version,
+use std::{
+    collections::BTreeSet,
+    fmt,
+    path::{Path, PathBuf},
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
 };
+
 use arc_swap::ArcSwapOption;
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use parking_lot::Mutex as SyncMutex;
 use rama::{
     error::{BoxError, ErrorContext as _},
     extensions::Extensions,
     http::layer::har::{
+        inspect::write_captured_har_entry,
         recorder::{
             FileRecorder, FileRecorderSession, HttpRequestCapture, Recorder, StreamingRecorder,
         },
         spec,
+        stream::HarObjectWriter,
         toggle::Toggle,
     },
-    utils::fs::TempDir,
+    utils::fs::{CreatedFilePermissions, OpenOptions, TempDir},
 };
 use serde::Serialize;
-use std::{
-    collections::BTreeSet,
-    fmt,
-    net::SocketAddr,
-    path::{Path, PathBuf},
-    pin::Pin,
-    sync::{Arc, LazyLock},
-    task::{Context, Poll},
-};
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, BufWriter, ReadBuf},
-    sync::{OwnedSemaphorePermit, RwLock, Semaphore},
+    io::{AsyncRead, AsyncSeekExt as _, AsyncWriteExt as _, BufWriter, ReadBuf},
+    sync::{OwnedSemaphorePermit, RwLock},
 };
 
-const MAX_CONCURRENT_SELECTED_EXPORTS: usize = 2;
-static SELECTED_EXPORT_LIMIT: LazyLock<Arc<Semaphore>> =
-    LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_SELECTED_EXPORTS)));
+use super::capture::CaptureStore;
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct HarStatus {
@@ -83,6 +79,7 @@ pub(super) async fn export_selected(
     capture: &CaptureStore,
     request_ids: &BTreeSet<u64>,
     connection_ids: &BTreeSet<u64>,
+    selected_export_permit: Option<OwnedSemaphorePermit>,
 ) -> Result<HarDownload, BoxError> {
     let mut selection = capture.selected_exchanges(request_ids, connection_ids);
     if selection.is_empty() {
@@ -93,46 +90,52 @@ pub(super) async fn export_selected(
         .into());
     }
 
-    // Retain the permit until the response body is dropped so slow or abandoned
-    // downloads cannot accumulate an unbounded number of staged HAR files.
-    let selected_export_permit =
-        acquire_selected_export_permit(Arc::clone(&SELECTED_EXPORT_LIMIT))?;
-
     let staging = TempDir::with_prefix("rama-proxy-selected-har-")
         .context("create private selected HAR staging directory")?;
-    let path = staging.path().join("selected.har");
     let mut writer = BufWriter::new(
-        tokio::fs::File::create(&path)
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
+            .jail(staging.path())
+            .open("selected.har")
             .await
             .context("create selected HAR file")?,
     );
-    write_log_prefix(&mut writer).await?;
+    let mut root = HarObjectWriter::begin(&mut writer).await?;
+    let mut log = HarObjectWriter::begin(root.streamed_field("log").await?).await?;
+    let defaults = spec::Log::default();
+    log.field("version", &defaults.version).await?;
+    log.field("creator", &defaults.creator).await?;
+    log.field("browser", &defaults.browser).await?;
+    let entries = log.streamed_field("entries").await?;
+    entries.write_all(b"[").await?;
     let mut wrote_entry = false;
-    while let Some(details) = selection.next_details().await? {
+    while let Some(selected) = selection.next_capture() {
         if wrote_entry {
-            writer
+            entries
                 .write_all(b",")
                 .await
                 .context("separate selected HAR entries")?;
         }
-        let entry = captured_har_entry(details)?;
-        let encoded = serde_json::to_vec(&entry).context("serialize selected HAR entry")?;
-        writer
-            .write_all(&encoded)
-            .await
-            .context("write selected HAR entry")?;
+        write_captured_har_entry(
+            entries,
+            &selected,
+            &rama::http::ws::inspect::har::WebSocketHarExtension(&selected),
+        )
+        .await?;
         wrote_entry = true;
     }
-    writer
-        .write_all(b"],\"comment\":null}}")
-        .await
-        .context("finish selected HAR")?;
+    entries.write_all(b"]").await?;
+    log.field("comment", &defaults.comment).await?;
+    log.finish().await?;
+    root.finish().await?;
     writer.flush().await.context("flush selected HAR")?;
-    drop(writer);
-
-    let file = tokio::fs::File::open(&path)
+    let mut file = writer.into_inner();
+    file.rewind()
         .await
-        .context("open selected HAR for download")?;
+        .context("rewind selected HAR for download")?;
     let content_length = file
         .metadata()
         .await
@@ -147,259 +150,9 @@ pub(super) async fn export_selected(
         reader: HarDownloadReader {
             file,
             _staging: staging,
-            _selected_export_permit: Some(selected_export_permit),
+            _selected_export_permit: selected_export_permit,
         },
     })
-}
-
-fn acquire_selected_export_permit(limit: Arc<Semaphore>) -> std::io::Result<OwnedSemaphorePermit> {
-    limit.try_acquire_owned().map_err(|_error| {
-        std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            "too many selected HAR exports are already in progress",
-        )
-    })
-}
-
-async fn write_log_prefix(writer: &mut (impl AsyncWrite + Unpin)) -> Result<(), BoxError> {
-    let log = spec::Log::default();
-    writer.write_all(b"{\"log\":{\"version\":").await?;
-    write_json(writer, &log.version).await?;
-    writer.write_all(b",\"creator\":").await?;
-    write_json(writer, &log.creator).await?;
-    writer.write_all(b",\"browser\":").await?;
-    write_json(writer, &log.browser).await?;
-    writer.write_all(b",\"entries\":[").await?;
-    Ok(())
-}
-
-async fn write_json(
-    writer: &mut (impl AsyncWrite + Unpin),
-    value: &impl Serialize,
-) -> Result<(), BoxError> {
-    let encoded = serde_json::to_vec(value).context("serialize selected HAR metadata")?;
-    writer
-        .write_all(&encoded)
-        .await
-        .context("write selected HAR metadata")?;
-    Ok(())
-}
-
-fn captured_har_entry(details: CaptureDetails) -> Result<spec::Entry, BoxError> {
-    let mut request_head = None;
-    let mut response_head = None;
-    let mut request_body = Vec::new();
-    let mut response_body = Vec::new();
-    let mut web_socket_messages = Vec::new();
-    for record in details.records {
-        match record {
-            StoredRecord::RequestHead {
-                method,
-                url,
-                version,
-                headers,
-                ..
-            } => request_head = Some((method, url, version, headers)),
-            StoredRecord::Interception {
-                direction,
-                forwarded_headers: Some(headers),
-                ..
-            } if direction == "request" => {
-                if let Some((_, _, _, current)) = &mut request_head {
-                    *current = headers;
-                }
-            }
-            StoredRecord::RequestBody { data } => request_body.extend(
-                BASE64
-                    .decode(data)
-                    .context("decode selected HAR request body")?,
-            ),
-            StoredRecord::ResponseHead {
-                status,
-                version,
-                headers,
-                ..
-            } => response_head = Some((status, version, headers)),
-            StoredRecord::ResponseBody { data } => response_body.extend(
-                BASE64
-                    .decode(data)
-                    .context("decode selected HAR response body")?,
-            ),
-            StoredRecord::WebSocketMessage {
-                at,
-                direction,
-                kind,
-                data,
-                ..
-            } => {
-                let message_type = if direction.eq_ignore_ascii_case("ingress") {
-                    spec::WebSocketMessageType::Send
-                } else {
-                    spec::WebSocketMessageType::Receive
-                };
-                let timestamp = at
-                    .parse::<jiff::Timestamp>()
-                    .context("parse captured WebSocket message timestamp")?;
-                let seconds = timestamp.as_millisecond() as f64 / 1_000.0;
-                let message = match kind.as_str() {
-                    "text" => Some(spec::WebSocketMessage::text(
-                        message_type,
-                        seconds,
-                        String::from_utf8(
-                            BASE64
-                                .decode(data)
-                                .context("decode selected HAR WebSocket text")?,
-                        )
-                        .context("decode selected HAR WebSocket UTF-8")?,
-                    )),
-                    "binary" => Some(spec::WebSocketMessage::new(
-                        message_type,
-                        seconds,
-                        spec::WebSocketMessageOpcode::BINARY,
-                        data,
-                    )),
-                    _ => None,
-                };
-                web_socket_messages.extend(message);
-            }
-            _ => {}
-        }
-    }
-
-    let (method, mut url, request_version, request_headers) =
-        request_head.context("captured request head missing for HAR export")?;
-    if url.starts_with('/') {
-        url = format!(
-            "{}://{}{}",
-            details.summary.protocol, details.summary.endpoint, url
-        );
-    }
-    let request_version = captured_http_version(&request_version)?;
-    let mut request_builder = rama::http::Request::builder()
-        .method(
-            method
-                .parse::<rama::http::Method>()
-                .context("parse selected HAR request method")?,
-        )
-        .uri(url)
-        .version(request_version);
-    for (name, value) in request_headers {
-        request_builder = request_builder.header(name, captured_header_value(&value)?);
-    }
-    let (request_parts, ()) = request_builder
-        .body(())
-        .context("build selected HAR request")?
-        .into_parts();
-    let mut request = spec::Request::from_http_request_parts(&request_parts, &request_body, false)?;
-
-    let web_socket = matches!(details.summary.protocol.as_str(), "ws" | "wss");
-    let request_size = if web_socket {
-        request_body.len() as u64
-    } else {
-        details.summary.request_bytes
-    };
-    request.body_size = byte_count(request_size);
-    if details.summary.request_truncated && !web_socket {
-        request.comment = Some("Body truncated by the inspector capture limit".into());
-    }
-
-    let response = match response_head {
-        Some((status, version, headers)) => {
-            let mut response_builder = rama::http::Response::builder()
-                .status(status)
-                .version(captured_http_version(&version)?);
-            for (name, value) in headers {
-                response_builder = response_builder.header(name, captured_header_value(&value)?);
-            }
-            let (response_parts, ()) = response_builder
-                .body(())
-                .context("build selected HAR response")?
-                .into_parts();
-            let mut response =
-                spec::Response::from_http_response_parts(&response_parts, &response_body, false)?;
-            let response_size = if web_socket {
-                response_body.len() as u64
-            } else {
-                details.summary.response_bytes
-            };
-            response.body_size = byte_count(response_size);
-            response.content.size = byte_count(response_size);
-            if details.summary.response_truncated && !web_socket {
-                response.comment = Some("Body truncated by the inspector capture limit".into());
-            }
-            response
-        }
-        None => spec::Response {
-            status: 0,
-            status_text: None,
-            http_version: request_version.into(),
-            cookies: Vec::new(),
-            headers: Vec::new(),
-            content: spec::Content {
-                size: 0,
-                compression: None,
-                mime_type: None,
-                text: None,
-                encoding: None,
-                comment: None,
-            },
-            redirect_url: None,
-            headers_size: -1,
-            body_size: -1,
-            comment: Some("No response had been captured when this HAR was exported".into()),
-        },
-    };
-
-    let started = details.summary.started_at;
-    let response_started = details.summary.response_started_at;
-    let completed = details.summary.completed_at.unwrap_or_else(|| {
-        if details.summary.active {
-            jiff::Timestamp::now()
-        } else {
-            response_started.unwrap_or(started)
-        }
-    });
-    let wait = response_started
-        .map(|response_started| elapsed_millis(started, response_started))
-        .unwrap_or_else(|| elapsed_millis(started, completed));
-    let receive = response_started
-        .map(|response_started| elapsed_millis(response_started, completed))
-        .unwrap_or_default();
-
-    Ok(spec::Entry {
-        page_ref: None,
-        started_date_time: started,
-        time: wait.saturating_add(receive),
-        request,
-        response,
-        cache: spec::Cache::default(),
-        timings: spec::Timings {
-            wait,
-            receive,
-            ..Default::default()
-        },
-        server_ip_address: details
-            .summary
-            .egress_peer_address
-            .as_deref()
-            .and_then(|address| address.parse::<SocketAddr>().ok())
-            .map(|address| address.ip()),
-        connection: (details.summary.connection_display_id != 0)
-            .then(|| details.summary.connection_display_id.to_string().into()),
-        comment: Some(format!("Rama Proxy Inspector request #{}", details.summary.id).into()),
-        resource_type: web_socket.then(|| "websocket".into()),
-        web_socket_messages: web_socket.then_some(web_socket_messages),
-    })
-}
-
-fn elapsed_millis(start: jiff::Timestamp, end: jiff::Timestamp) -> i64 {
-    end.as_millisecond()
-        .saturating_sub(start.as_millisecond())
-        .max(0)
-}
-
-fn byte_count(value: u64) -> i64 {
-    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 #[derive(Clone)]
@@ -673,96 +426,9 @@ impl StreamingRecorder for HarController {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use tokio::io::AsyncReadExt as _;
 
-    #[test]
-    fn captured_har_time_and_size_conversions_are_bounded() {
-        let start = "2026-08-23T12:00:00Z".parse().unwrap();
-        let end = "2026-08-23T12:00:00.125Z".parse().unwrap();
-
-        assert_eq!(elapsed_millis(start, end), 125);
-        assert_eq!(elapsed_millis(end, start), 0);
-        assert_eq!(byte_count(42), 42);
-        assert_eq!(byte_count(u64::MAX), i64::MAX);
-    }
-
-    #[test]
-    fn captured_har_entry_preserves_observed_timing_and_byte_totals() {
-        let entry = captured_har_entry(CaptureDetails {
-            summary: super::super::capture::ExchangeSummary {
-                decision: None,
-                id: 7,
-                connection_id: 11,
-                connection_display_id: 3,
-                started_at: "2026-08-23T12:00:00Z".parse().unwrap(),
-                method: "POST".to_owned(),
-                http_version: "HTTP/1.1".to_owned(),
-                url: "https://example.test/upload".to_owned(),
-                endpoint: "example.test".to_owned(),
-                protocol: "https".to_owned(),
-                ingress_local_address: None,
-                ingress_peer_address: None,
-                user_agent: None,
-                user_agent_kind: None,
-                status: Some(201),
-                active: false,
-                response_started_at: Some("2026-08-23T12:00:00.125Z".parse().unwrap()),
-                completed_at: Some("2026-08-23T12:00:00.375Z".parse().unwrap()),
-                egress_local_address: None,
-                egress_peer_address: None,
-                request_bytes: 42,
-                response_bytes: 84,
-                request_truncated: false,
-                response_truncated: false,
-                ja3: None,
-                ja4: None,
-                peetprint: None,
-                ja4h: None,
-                akamai_h2: None,
-                known_fingerprint: None,
-                has_emulation_profile: false,
-            },
-            records: vec![
-                StoredRecord::RequestHead {
-                    method: "POST".to_owned(),
-                    url: "https://example.test/upload".to_owned(),
-                    version: "HTTP/1.1".to_owned(),
-                    headers: vec![(
-                        "content-type".to_owned(),
-                        "application/x-www-form-urlencoded".to_owned(),
-                    )],
-                    emulation_profile: None,
-                    tls_client_hello: None,
-                    ingress_tls: None,
-                },
-                StoredRecord::RequestBody {
-                    data: BASE64.encode(b"a=b&c=hello+world"),
-                },
-                StoredRecord::ResponseHead {
-                    status: 201,
-                    version: "HTTP/1.1".to_owned(),
-                    headers: Vec::new(),
-                    egress_tls: None,
-                },
-            ],
-        })
-        .unwrap();
-
-        assert_eq!(entry.time, 375);
-        assert_eq!(entry.timings.send, 0);
-        assert_eq!(entry.timings.wait, 125);
-        assert_eq!(entry.timings.receive, 250);
-        assert_eq!(entry.request.body_size, 42);
-        let params = entry.request.post_data.unwrap().params.unwrap();
-        assert_eq!(params.len(), 2);
-        assert_eq!(params[0].name, "a");
-        assert_eq!(params[0].value.as_deref(), Some("b"));
-        assert_eq!(params[1].name, "c");
-        assert_eq!(params[1].value.as_deref(), Some("hello world"));
-        assert_eq!(entry.response.body_size, 84);
-        assert_eq!(entry.response.content.size, 84);
-    }
+    use super::*;
 
     #[tokio::test]
     async fn requires_a_fresh_har_path_and_reports_active_state() {
@@ -867,8 +533,8 @@ mod tests {
 
     #[tokio::test]
     async fn selected_export_limit_is_held_until_the_download_reader_is_dropped() {
-        let limit = Arc::new(Semaphore::new(1));
-        let permit = acquire_selected_export_permit(Arc::clone(&limit)).unwrap();
+        let limit = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = limit.clone().try_acquire_owned().unwrap();
         let staging = TempDir::with_prefix("rama-proxy-selected-har-limit-test-").unwrap();
         let path = staging.path().join("selected.har");
         tokio::fs::write(&path, b"{}" as &[u8]).await.unwrap();
@@ -878,12 +544,13 @@ mod tests {
             _selected_export_permit: Some(permit),
         };
 
-        let error = acquire_selected_export_permit(Arc::clone(&limit))
-            .expect_err("a live download reader must retain its export permit");
-        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        assert!(
+            limit.clone().try_acquire_owned().is_err(),
+            "a live download reader must retain its export permit"
+        );
 
         drop(reader);
-        let _permit = acquire_selected_export_permit(limit).unwrap();
+        let _permit = limit.try_acquire_owned().unwrap();
     }
 
     #[tokio::test]
@@ -932,6 +599,7 @@ mod tests {
         drop(reader);
         assert!(!staging.exists());
     }
+
     #[tokio::test]
     async fn paused_har_stays_frozen_and_downloadable_while_traffic_continues() {
         use rama::{

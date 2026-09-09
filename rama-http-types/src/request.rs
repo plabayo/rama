@@ -1,10 +1,10 @@
 use std::fmt;
 
-use crate::Result;
-use crate::{HeaderMap, HeaderName, HeaderValue, Method, Uri, Version, body::Body};
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use rama_net::ClientIp;
 use rama_utils::macros::generate_set_and_with;
+
+use crate::{HeaderMap, HeaderName, HeaderValue, Method, Result, Uri, Version, body::Body};
 
 /// Represents an HTTP request.
 ///
@@ -840,6 +840,12 @@ impl<B> ClientIp for Request<B> {
     }
 }
 
+impl Default for Parts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Parts {
     /// Creates a new default instance of `Parts`
     fn new() -> Self {
@@ -1210,8 +1216,11 @@ impl Default for Builder {
 /// [`HttpRequest`]: crate::Request
 pub trait HttpRequestParts: ExtensionsRef {
     fn method(&self) -> &Method;
+
     fn uri(&self) -> &Uri;
+
     fn version(&self) -> Version;
+
     fn headers(&self) -> &HeaderMap<HeaderValue>;
 }
 
@@ -1295,8 +1304,11 @@ impl HttpRequestParts for Parts {
 /// Same as [`HttpRequestParts`] but also adding mutable access
 pub trait HttpRequestPartsMut: HttpRequestParts + ExtensionsRef {
     fn method_mut(&mut self) -> &mut Method;
+
     fn uri_mut(&mut self) -> &mut Uri;
+
     fn version_mut(&mut self) -> &mut Version;
+
     fn headers_mut(&mut self) -> &mut HeaderMap<HeaderValue>;
 }
 
@@ -1399,11 +1411,12 @@ mod tests {
 
     #[test]
     fn test_request_uri() {
-        use crate::header::HOST;
         use rama_net::{
             address::Domain,
             forwarded::{Forwarded, ForwardedElement},
         };
+
+        use crate::header::HOST;
 
         for (request, expected_uri_str) in [
             (Request::builder().uri("/foo").body(()).unwrap(), "/foo"),

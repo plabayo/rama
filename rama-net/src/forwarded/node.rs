@@ -3,15 +3,14 @@ use core::{
     net::{IpAddr, Ipv6Addr, SocketAddr},
 };
 
-use crate::std::borrow::ToOwned;
-use crate::std::{self as std, string::String, vec::Vec};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
+use rama_utils::str::smol_str::SmolStr;
 
 use super::{ObfNode, ObfPort};
-use crate::address::{Domain, Host, HostWithOptPort, HostWithPort, SocketAddress};
-
-use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorContext};
-use rama_utils::str::smol_str::SmolStr;
+use crate::{
+    address::{Domain, Host, HostWithOptPort, HostWithPort, SocketAddress},
+    std::{borrow::ToOwned, string::String, vec::Vec},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Node Identifier

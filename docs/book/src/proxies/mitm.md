@@ -58,3 +58,18 @@ An MITM proxy is typically set up as [an HTTP Proxy](./http.md), but it can alte
 MITM proxies that only wish to inspect traffic without destructive modification can attempt to mirror the incoming client across various network layers (TCP, TLS, and HTTP). This approach is a form of User-Agent emulation, but it operates based on the original User-Agent rather than emulating a popular one with significant market share.
 
 These proxies are often referred to as transparent proxies, and you may notice network inspection software offering options labeled as "transparent mode" or "hidden." If such software can still inspect your HTTPS traffic, it's likely operating as a "transparent proxy."
+
+## Reusable inspection and programmatic control
+
+`rama-inspect` provides protocol-independent lifecycle, typed interception waits,
+streamed record storage, and subscriptions for custom interfaces. HTTP, TLS,
+profile, WebSocket, and encryption adapters live in their owning crates. Combine
+`inspect` with the protocol and crypto features you use. See the
+[`rama-inspect` guide](https://github.com/plabayo/rama/tree/main/rama-inspect).
+
+The CLI inspector also exposes a machine API on the same authenticated web server.
+Start `rama serve proxy --mitm --inspect-json` for JSON readiness information, or
+use the token in the normal startup link. Send `Authorization: Bearer <token>` to
+`GET /api` for operation discovery and `/api/help` for the observe → select hosts →
+intercept → export workflow. No browser session or MCP server is required. A human
+can continue using the GUI while an agent queries traffic or operates the controls.

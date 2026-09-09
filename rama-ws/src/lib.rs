@@ -37,5 +37,9 @@ pub mod layer;
 pub mod protocol;
 pub mod runtime;
 
-pub use crate::protocol::{Message, ProtocolError, frame::Utf8Bytes};
 pub use runtime::{AsyncWebSocket, WebSocketIo};
+
+pub use crate::protocol::{Message, ProtocolError, frame::Utf8Bytes};
+
+#[cfg(feature = "inspect")]
+pub mod inspect;

@@ -58,15 +58,14 @@
 //! [`Authority`](crate::address::Authority); host is
 //! [`Host`](crate::address::Host) — `Uri` doesn't re-export these.
 
+use rama_core::bytes::BytesMut;
+
 use crate::std::{
-    self as std,
     borrow::Cow,
     string::{String, ToString},
     sync::Arc,
     vec::Vec,
 };
-
-use rama_core::bytes::BytesMut;
 
 mod error;
 #[doc(inline)]
@@ -89,7 +88,6 @@ mod component_input;
 pub use component_input::IntoUriComponent;
 
 mod encode;
-
 mod input;
 #[doc(inline)]
 pub use input::IntoUriInput;
@@ -131,7 +129,6 @@ mod query_mut;
 pub use query_mut::{Drain as QueryDrain, QueryMut};
 
 mod canonicalize;
-
 mod resolve;
 #[doc(inline)]
 pub use resolve::ResolveError;
@@ -148,10 +145,11 @@ mod lazy;
 mod owned;
 pub(crate) mod parser;
 
-use crate::address::{AuthorityRef, DomainRef, HostRef, UninterpretedHostRef, UserInfoRef};
 use lazy::{LazyAuthority, LazyUriRef};
 use owned::OwnedUriRef;
 use parser::ParserMode;
+
+use crate::address::{AuthorityRef, DomainRef, HostRef, UninterpretedHostRef, UserInfoRef};
 
 /// Preserved utility submodule (re-exports the `percent_encoding` crate).
 ///
@@ -2293,8 +2291,10 @@ mod from_authority_tests {
     use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     use super::*;
-    use crate::Protocol;
-    use crate::address::{Authority, Domain, Host};
+    use crate::{
+        Protocol,
+        address::{Authority, Domain, Host},
+    };
 
     /// `from_authority(scheme, auth)` must be byte-identical to parsing the
     /// equivalent `scheme://authority` absolute form — same wire output and

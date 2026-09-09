@@ -46,12 +46,21 @@ async function api(path, body) {
   if (!response.ok) throw new Error((await response.text()).trim() || `HTTP ${response.status}`);
   return response.status === 204 ? null : response.json();
 }
-function formatHeaders(headers) { return headers.map(([name, value]) => `${name}: ${value}`).join("\n"); }
-function readHeaders(text) {
+const binaryHeaderPrefix = "rama-capture-base64:";
+function formatHeaders(headers, patterns = false) {
+  return headers.map(([name, value]) => {
+    if (Array.isArray(value)) value = binaryHeaderPrefix + btoa(value.map((byte) => String.fromCharCode(byte)).join(""));
+    else if (!patterns && value.startsWith(binaryHeaderPrefix)) value = binaryHeaderPrefix + btoa(Array.from(new TextEncoder().encode(value), (byte) => String.fromCharCode(byte)).join(""));
+    return `${name}: ${value}`;
+  }).join("\n");
+}
+function readHeaders(text, patterns = false) {
   return text.split(/\r?\n/u).filter((line) => line.trim()).map((line) => {
     const colon = line.indexOf(":");
     if (colon <= 0) throw new Error("Each header needs a name followed by a colon.");
-    return [line.slice(0, colon).trim(), line.slice(colon + 1).trim()];
+    let value = line.slice(colon + 1).trim();
+    if (!patterns && value.startsWith(binaryHeaderPrefix)) value = Array.from(atob(value.slice(binaryHeaderPrefix.length)), (character) => character.charCodeAt(0));
+    return [line.slice(0, colon).trim(), value];
   });
 }
 async function refresh() {
@@ -157,13 +166,13 @@ async function editMessage(id) {
   // Reopening the current message must preserve the user's draft.
   if (editing?.id === id) { mountEditor(); return; }
   editing = message;
-  const m = editing, http = ["request", "response"].includes(m.direction);
+  const m = editing, http = m.kind == null;
   $("intercept-title").textContent = `Edit ${m.direction} · approval #${id}`;
   $("intercept-description").textContent = `${m.method} ${m.url} · ${connectionLabel(m)}${m.binary ? " · Binary payload uses base64" : ""}`;
   $("http-edit-fields").hidden = !http; $("ws-edit-fields").hidden = http;
   $("intercept-headers").value = formatHeaders(m.headers);
   $("intercept-status").value = m.status || "";
-  $("intercept-status").closest("label").hidden = m.direction !== "response";
+  $("intercept-status").closest("label").hidden = m.kind != null || m.direction !== "egress";
   $("intercept-payload").value = m.payload || "";
   $("block-message").textContent = http ? "Block" : "Drop message";
   $("respond-message").hidden = !http; $("close-websocket").hidden = http;
@@ -188,7 +197,7 @@ function editRule(index = -1, message) {
   const rule = index >= 0 ? current.control.config.rules[index] : { name: message ? `Rule for ${message.host}` : "", matcher: message ? { host: message.host, path: message.path } : {}, action: "intercept" };
   $("rule-name").value = rule.name;
   for (const key of ["host", "path", "protocol", "direction", "method", "status", "port", "kind"]) $(`rule-${key}`).value = rule.matcher[key] || "";
-  $("rule-headers").value = formatHeaders(rule.matcher.headers || []); $("rule-action").value = rule.action;
+  $("rule-headers").value = formatHeaders(rule.matcher.headers || [], true); $("rule-action").value = rule.action;
   ruleResponse = rule.response || current.control.config.default_response;
   $("apply-rule-pending").checked = false; $("rule-error").textContent = "";
   $("rule-editor").showModal();
@@ -199,7 +208,7 @@ function renderRules() {
     const row = node("div", undefined, "control-row");
     const enabled = node("input"); enabled.type = "checkbox"; enabled.checked = rule.enabled; enabled.setAttribute("aria-label", `Enable ${rule.name}`);
     enabled.addEventListener("change", () => run(async () => { const config = structuredClone(current.control.config); config.rules[index].enabled = enabled.checked; await configure(config); }));
-    const summary = Object.entries(rule.matcher).filter(([,v]) => Array.isArray(v) ? v.length : v).map(([k,v]) => `${k}: ${Array.isArray(v) ? formatHeaders(v) : v}`).join(" · ") || "All traffic";
+    const summary = Object.entries(rule.matcher).filter(([,v]) => Array.isArray(v) ? v.length : v).map(([k,v]) => `${k}: ${Array.isArray(v) ? formatHeaders(v, true) : v}`).join(" · ") || "All traffic";
     row.classList.add("rule-row");
     const detail = node("div"), actions = node("div", undefined, "control-actions"), open = button(`${rule.name} · ${rule.action}`, () => editRule(index));
     open.className = "control-primary"; detail.append(open, node("span", summary, "control-meta"));
@@ -243,9 +252,9 @@ on("approval-filter", () => { approvalOnly = $("live")?.classList.contains("focu
 on("forward-all", async () => { await api("/api/control/forward-all", {}); await refresh(); });
 function editedDecision(action = "forward") {
   const decision = { action };
-  if (["request", "response"].includes(editing.direction)) {
+  if (editing.kind == null) {
     if ($("intercept-headers").value !== formatHeaders(editing.headers)) decision.headers = readHeaders($("intercept-headers").value);
-    if (editing.direction === "response" && Number($("intercept-status").value) !== editing.status) decision.status = Number($("intercept-status").value);
+    if (editing.kind == null && editing.direction === "egress" && Number($("intercept-status").value) !== editing.status) decision.status = Number($("intercept-status").value);
   } else decision.payload = $("intercept-payload").value;
   return decision;
 }
@@ -256,7 +265,7 @@ async function decideEditing(decision) {
 }
 on("forward-message", () => decideEditing(editedDecision()), "intercept-error");
 on("forward-connection", () => decideEditing(editedDecision("connection")), "intercept-error");
-on("block-message", () => decideEditing({ action: ["request", "response"].includes(editing.direction) ? "block" : "drop" }), "intercept-error");
+on("block-message", () => decideEditing({ action: editing.kind == null ? "block" : "drop" }), "intercept-error");
 on("close-websocket", async () => {
   const reason = window.prompt("Close reason", "Closed by Rama proxy"); if (reason === null) return;
   const code = window.prompt("WebSocket close code", "1008"); if (code === null) return;
@@ -274,7 +283,7 @@ on("save-rule", async () => {
   if (revision !== current.control.revision) throw new Error("Settings changed while editing. Reopen the rule before saving.");
   const matcher = {}; for (const key of ["host", "path", "protocol", "direction", "method", "kind"]) matcher[key] = $(`rule-${key}`).value.trim();
   matcher.port = $("rule-port").value ? Number($("rule-port").value) : null;
-  matcher.status = $("rule-status").value ? Number($("rule-status").value) : null; matcher.headers = readHeaders($("rule-headers").value);
+  matcher.status = $("rule-status").value ? Number($("rule-status").value) : null; matcher.headers = readHeaders($("rule-headers").value, true);
   const previous = ruleIndex < 0 ? null : current.control.config.rules[ruleIndex];
   const rule = { name: $("rule-name").value.trim() || "Traffic rule", enabled: previous?.enabled ?? true, matcher, action: $("rule-action").value };
   if (rule.action === "respond") rule.response = ruleResponse;

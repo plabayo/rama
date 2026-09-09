@@ -1,7 +1,7 @@
 //! WebSocket matcher utilities
 
 use rama_core::{
-    extensions::{Extensions, ExtensionsRef},
+    extensions::Extensions,
     matcher::Matcher,
     telemetry::tracing::{self},
 };
@@ -9,6 +9,7 @@ use rama_http::{
     Method, Request, Version,
     headers::{self, HeaderMapExt},
     proto::h2::ext::Protocol,
+    request::HttpRequestParts,
 };
 
 mod service;
@@ -37,7 +38,7 @@ impl WebSocketMatcher {
     }
 }
 
-pub fn is_http_req_websocket_handshake<Body>(req: &Request<Body>) -> bool {
+pub fn is_http_req_websocket_handshake(req: &impl HttpRequestParts) -> bool {
     match req.version() {
         version @ (Version::HTTP_10 | Version::HTTP_11) => {
             match req.method() {
@@ -55,7 +56,7 @@ pub fn is_http_req_websocket_handshake<Body>(req: &Request<Body>) -> bool {
             if !req
                 .headers()
                 .typed_get::<headers::Upgrade>()
-                .map(|u| u.is_websocket())
+                .map(|u| u.contains_websocket())
                 .unwrap_or_default()
             {
                 tracing::trace!(

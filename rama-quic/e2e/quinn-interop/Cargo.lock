@@ -1665,6 +1665,7 @@ dependencies = [
  "rand",
  "serde",
  "serde_html_form",
+ "serde_json",
 ]
 
 [[package]]
@@ -1696,6 +1697,7 @@ dependencies = [
 name = "rama-utils"
 version = "0.5.0"
 dependencies = [
+ "base64",
  "const_format",
  "memchr",
  "parking_lot",

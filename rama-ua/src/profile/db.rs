@@ -43,8 +43,6 @@ impl UserAgentDatabase {
     ///
     /// Complementary rows with the same User-Agent are merged, but missing
     /// HTTP/1, HTTP/2 or TLS components are never synthesized.
-    #[cfg(feature = "embed-profiles")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "embed-profiles")))]
     pub fn try_from_json_slice(bytes: &[u8]) -> Result<Self, rama_core::error::BoxError> {
         let profiles = crate::profile::try_load_profiles_json(bytes)?;
         Ok(Self::from_iter(profiles))

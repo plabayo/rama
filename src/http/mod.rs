@@ -17,7 +17,6 @@ pub use ::rama_http::{
 pub mod proxy {
     #[doc(inline)]
     pub use ::rama_http::proxy::*;
-
     #[cfg(feature = "http-full")]
     #[cfg_attr(docsrs, doc(cfg(feature = "http-full")))]
     #[doc(inline)]
@@ -42,7 +41,6 @@ pub mod client;
 #[cfg_attr(docsrs, doc(cfg(feature = "http-full")))]
 #[doc(inline)]
 pub use ::rama_http_backend::server;
-
 #[cfg(feature = "ws")]
 #[cfg_attr(docsrs, doc(cfg(feature = "ws")))]
 #[doc(inline)]
@@ -70,3 +68,6 @@ pub mod tls;
 #[cfg_attr(docsrs, doc(cfg(feature = "grpc")))]
 #[doc(inline)]
 pub use ::rama_grpc as grpc;
+#[cfg(feature = "inspect")]
+#[doc(inline)]
+pub use ::rama_http::inspect;

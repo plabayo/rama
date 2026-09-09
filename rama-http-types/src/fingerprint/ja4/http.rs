@@ -16,12 +16,11 @@ use std::fmt::{self, Write};
 
 use crate::{
     Method, Version,
+    fingerprint::HttpRequestProvider,
     header::{ACCEPT_LANGUAGE, COOKIE, REFERER},
 };
 
-use crate::fingerprint::HttpRequestProvider;
-
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 /// Input data for a "ja4h" hash.
 /// or displaying it.
 ///
@@ -322,6 +321,8 @@ impl fmt::Display for HttpVersion {
         f.write_str(code)
     }
 }
+
+rama_utils::macros::serde_str::impl_serde_str!(serialize display Ja4H);
 
 #[cfg(test)]
 mod tests {

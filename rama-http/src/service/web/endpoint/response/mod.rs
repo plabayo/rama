@@ -2,10 +2,11 @@
 //!
 //! See [`crate::response`] for more details.
 
-use crate::Response;
-use crate::StatusCode;
-use rama_core::extensions::Extension;
 use std::convert::Infallible;
+
+use rama_core::extensions::Extension;
+
+use crate::{Response, StatusCode};
 
 mod append_headers;
 mod headers;
@@ -75,19 +76,23 @@ mod datastar;
 #[doc(inline)]
 pub use datastar::{DatastarScript, DatastarSourceMap};
 
+mod svg;
+#[doc(inline)]
+pub use svg::Svg;
+
 mod css;
 #[doc(inline)]
 pub use css::Css;
 
 mod json;
 #[doc(inline)]
-pub use crate::protocols::json_ld::JsonLd;
-#[doc(inline)]
 pub use json::Json;
 
-mod json_lines;
+#[doc(inline)]
+pub use crate::protocols::json_ld::JsonLd;
 
 mod csv;
+mod json_lines;
 #[doc(inline)]
 pub use csv::Csv;
 

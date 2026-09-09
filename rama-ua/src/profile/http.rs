@@ -1,7 +1,7 @@
 use rama_core::extensions::Extension;
-use rama_http::fingerprint::{HttpRequestInput, Ja4H, Ja4HComputeError};
 use rama_http::{
     HeaderMap, HeaderName, Method, Version,
+    fingerprint::{HttpRequestInput, Ja4H, Ja4HComputeError},
     proto::h2::{PseudoHeaderOrder, frame::EarlyFrameCapture},
 };
 use serde::{Deserialize, Serialize};
@@ -248,7 +248,7 @@ pub struct Http1Profile {
     pub settings: Http1Settings,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 /// The settings for the HTTP/1.1 profile.
 pub struct Http1Settings {
     /// Whether to enforce title case the headers.

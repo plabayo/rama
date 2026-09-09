@@ -100,8 +100,9 @@ pub fn resolve_tls_tunnel<'a>(
 
 #[cfg(test)]
 mod tunnel_tests {
-    use super::*;
     use rama_net::address::Host;
+
+    use super::*;
 
     #[test]
     fn hardcoded_identity_enables_tls_without_context() {
@@ -216,3 +217,6 @@ impl KeyLogIntent {
         }
     }
 }
+
+#[cfg(feature = "inspect")]
+pub mod inspect;

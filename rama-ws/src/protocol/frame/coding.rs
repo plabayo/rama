@@ -6,6 +6,7 @@ use std::{
 };
 
 use crate::ProtocolError;
+
 /// WebSocket message opcode as in RFC 6455.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum OpCode {
@@ -260,6 +261,18 @@ impl From<u16> for CloseCode {
             4000..=4999 => Self::Library(code),
             _ => Self::Bad(code),
         }
+    }
+}
+
+impl serde::Serialize for CloseCode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u16(self.into())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CloseCode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        u16::deserialize(deserializer).map(Self::from)
     }
 }
 

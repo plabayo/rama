@@ -32,8 +32,5 @@ pub use db::*;
 mod runtime_hints;
 pub use runtime_hints::*;
 
-#[cfg(feature = "embed-profiles")]
-mod embedded_profiles;
-#[cfg(feature = "embed-profiles")]
-#[cfg_attr(docsrs, doc(cfg(feature = "embed-profiles")))]
-pub use embedded_profiles::*;
+mod input;
+pub use input::*;

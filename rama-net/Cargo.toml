@@ -29,6 +29,7 @@ targets = [
 ]
 
 [features]
+inspect = ["std", "dep:rama-inspect", "dep:jiff"]
 default = ["std"]
 std = [
     "dep:arc-swap",
@@ -87,6 +88,7 @@ ipnet = { workspace = true, features = ["serde"] }
 # no workspace inherit: default features (std) must stay off for no_std builds
 itertools = { version = "0.15", default-features = false, features = ["use_alloc"] }
 itoa = { workspace = true }
+jiff = { workspace = true, optional = true }
 # no workspace inherit: default features (std) must stay off for no_std builds
 memchr = { version = "2.8", default-features = false }
 memmap2 = { workspace = true, optional = true }
@@ -98,6 +100,7 @@ pin-project-lite = { workspace = true }
 psl = { workspace = true }
 radix_trie = { workspace = true, optional = true }
 rama-core = { workspace = true }
+rama-inspect = { workspace = true, optional = true }
 rama-macros = { workspace = true }
 rama-utils = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

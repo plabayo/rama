@@ -40,6 +40,7 @@ rama = { version = "0.5.0", path = "..", features = [
     "tcp",
     "udp",
     "http-full",
+    "inspect",
     "icap",
     "grpc",
     "js-disk-cache",
@@ -68,6 +69,7 @@ windows-sys = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+rama = { path = "..", features = ["test-utils"] }
 
 [lints]
 workspace = true

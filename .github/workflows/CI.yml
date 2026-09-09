@@ -126,6 +126,7 @@ jobs:
 
   test-rust-base:
     strategy:
+      fail-fast: false
       matrix:
         toolchain:
           - stable
@@ -138,7 +139,8 @@ jobs:
           - windows-11-arm
     name: test-rust-base-${{ matrix.toolchain }}-${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 240
+    # Intel macOS needs more time to compile both feature sets and examples.
+    timeout-minutes: ${{ matrix.os == 'macos-15-intel' && 360 || 240 }}
     needs:
       - precheck-rust
       - precheck-docs
@@ -172,8 +174,23 @@ jobs:
           cargo nextest run --all-features --bins --package rama-examples --no-tests=pass
       - name: Run ignored tests
         if: matrix.os == 'ubuntu-latest' || matrix.os == 'macos-15'
-        timeout-minutes: 60
-        run: cargo nextest run --profile ci --all-features --workspace --run-ignored=only
+        timeout-minutes: ${{ matrix.os == 'macos-15' && 90 || 60 }}
+        shell: bash
+        run: |
+          df -h "$GITHUB_WORKSPACE"
+          case "$RUNNER_OS" in
+            Linux)
+              free -m
+              stdbuf -oL vmstat -w -t 30 &
+              ;;
+            macOS)
+              sysctl hw.ncpu hw.memsize vm.swapusage
+              top -l 0 -s 30 -n 10 -o mem -stats pid,command,cpu,mem &
+              ;;
+          esac
+          resource_monitor=$!
+          trap 'kill "$resource_monitor" 2>/dev/null || true; wait "$resource_monitor" 2>/dev/null || true' EXIT
+          time cargo nextest run --profile ci --all-features --workspace --run-ignored=only
       # MITM revocation gate. Linux: hermetic staple matrix (curl --cert-status,
       # incl. the no-staple negative) + proxy-hosted CRL (openssl -crl_check) and
       # OCSP (openssl ocsp) endpoint acceptance + a real-crates.io curl/cargo leg.
@@ -994,7 +1011,8 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
       - run: |
           cd rama-fp/infra/deployments/fp
-          flyctl deploy --verbose --remote-only
+          flyctl scale count app_secure=1 app_insecure=1 --yes
+          flyctl deploy --verbose --remote-only --ha=false
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
@@ -1006,7 +1024,8 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
       - run: |
           cd rama-fp/infra/deployments/fp-h1
-          flyctl deploy --verbose --remote-only
+          flyctl scale count app_secure=1 app_insecure=1 --yes
+          flyctl deploy --verbose --remote-only --ha=false
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
@@ -1018,7 +1037,8 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
       - run: |
           cd rama-fp/infra/deployments/ipv4
-          flyctl deploy --verbose --remote-only
+          flyctl scale count app_secure=1 app_insecure=1 --yes
+          flyctl deploy --verbose --remote-only --ha=false
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
@@ -1030,7 +1050,8 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
       - run: |
           cd rama-fp/infra/deployments/ipv6
-          flyctl deploy --verbose --remote-only
+          flyctl scale count app_secure=1 app_insecure=1 --yes
+          flyctl deploy --verbose --remote-only --ha=false
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
@@ -1042,7 +1063,8 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
       - run: |
           cd rama-fp/infra/deployments/echo
-          flyctl deploy --verbose --remote-only
+          flyctl scale count app_secure=1 app_insecure=1 --yes
+          flyctl deploy --verbose --remote-only --ha=false
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
 
@@ -1054,6 +1076,7 @@ jobs:
       - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
       - run: |
           cd rama-fp/infra/deployments/http-test
-          flyctl deploy --verbose --remote-only
+          flyctl scale count app_secure=1 app_insecure=1 --yes
+          flyctl deploy --verbose --remote-only --ha=false
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

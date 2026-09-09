@@ -1,9 +1,12 @@
-use super::parse_http_user_agent_header;
-use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorExt};
-use rama_core::extensions::Extension;
-use rama_utils::{macros::match_ignore_ascii_case_str, str::arcstr::ArcStr};
 use std::{convert::Infallible, fmt, str::FromStr};
+
+use rama_core::{
+    error::{BoxError, BoxErrorExt as _, ErrorExt},
+    extensions::Extension,
+};
+use rama_utils::{macros::match_ignore_ascii_case_str, str::arcstr::ArcStr};
+
+use super::parse_http_user_agent_header;
 
 /// User Agent (UA) information.
 ///
@@ -16,6 +19,8 @@ pub struct UserAgent {
     pub(super) http_agent_overwrite: Option<HttpAgent>,
     pub(super) tls_agent_overwrite: Option<TlsAgent>,
 }
+
+rama_utils::macros::serde_str::impl_serde_str!(serialize display UserAgent);
 
 impl fmt::Display for UserAgent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

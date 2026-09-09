@@ -117,6 +117,20 @@ impl ContentType {
         Self(ContentTypeValue::Static(value))
     }
 
+    /// Markdown encoded as UTF-8.
+    #[must_use]
+    pub const fn markdown_utf8() -> Self {
+        static MARKDOWN: StaticContentType = StaticContentType::new("text/markdown; charset=utf-8");
+        Self::from_static(&MARKDOWN)
+    }
+
+    /// PEM-encoded certificates and keys.
+    #[must_use]
+    pub const fn pem() -> Self {
+        static PEM: StaticContentType = StaticContentType::new("application/x-pem-file");
+        Self::from_static(&PEM)
+    }
+
     /// A constructor to easily create a `Content-Type: application/json` header.
     #[inline]
     #[must_use]
@@ -226,6 +240,7 @@ impl ContentType {
     pub fn form_url_encoded() -> Self {
         Self::new(mime::APPLICATION_WWW_FORM_URLENCODED)
     }
+
     /// A constructor to easily create a `Content-Type: image/jpeg` header.
     #[inline]
     #[must_use]
@@ -529,8 +544,7 @@ impl std::str::FromStr for ContentType {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_decode;
-    use super::ContentType;
+    use super::{super::test_decode, ContentType};
 
     #[test]
     fn jose_json_is_valid() {

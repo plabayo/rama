@@ -25,9 +25,7 @@
 
 use crate::Protocol;
 
-#[cfg(feature = "std")]
-use crate::address::HostWithPort;
-use crate::address::{Domain, Host, HostWithOptPort};
+use crate::address::{Domain, Host, HostWithOptPort, HostWithPort};
 
 #[cfg(feature = "std")]
 use crate::client::{ConnectorTarget, ConnectorTransportProtocol};
@@ -116,6 +114,21 @@ pub trait AuthorityInputExt {
     /// The authority port, if one is set explicitly.
     fn port(&self) -> Option<u16> {
         self.authority().and_then(|a| a.port_u16())
+    }
+
+    /// Resolve the logical authority with its explicit port, the application
+    /// protocol's default port, or finally `fallback`.
+    ///
+    /// This does not apply a connector target override. `None` means the host or port could
+    /// not be resolved. Use [`Self::authority`] when retaining a portless
+    /// authority is useful.
+    fn authority_with_default_port(&self, fallback: Option<u16>) -> Option<HostWithPort>
+    where
+        Self: ProtocolInputExt,
+    {
+        self.authority().and_then(|authority| {
+            authority.into_host_with_port(self.protocol_default_port().or(fallback))
+        })
     }
 }
 
@@ -268,8 +281,7 @@ pub trait ConnectorTargetInputExt:
             return Some(target.clone());
         }
 
-        self.authority()
-            .and_then(|a| a.into_host_with_port(self.protocol_default_port()))
+        self.authority_with_default_port(None)
     }
 
     /// Like [`connector_target`](Self::connector_target) but with `default_port` as
@@ -283,8 +295,7 @@ pub trait ConnectorTargetInputExt:
             return Some(target.clone());
         }
 
-        self.authority()
-            .map(|a| a.into_host_with_port_or(self.protocol_default_port().unwrap_or(default_port)))
+        self.authority_with_default_port(Some(default_port))
     }
 }
 

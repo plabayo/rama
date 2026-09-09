@@ -112,7 +112,10 @@ pub(crate) fn http_version_from_http_parts(parts: &impl HttpRequestParts) -> Ver
 /// then an inserted [`Protocol`] extension, then `Forwarded` client-proto, then a TLS
 /// `SecureTransport` marker. Exposed so layers that only hold `(&Extensions, &Uri)`
 /// (e.g. the HTTP/1 encoder) can make the same secure/insecure determination.
-pub fn protocol_from_uri_or_extensions<'a>(ext: &'a Extensions, uri: &'a Uri) -> &'a Protocol {
+pub(crate) fn protocol_from_uri_or_extensions<'a>(
+    ext: &'a Extensions,
+    uri: &'a Uri,
+) -> &'a Protocol {
     uri.scheme().or_else(|| {
         // Can be inserted by a server stack to notify the protocol that's being served.
         // This is especially useful for marking a HTTPS server as HTTPS,
@@ -251,7 +254,55 @@ mod tests {
     use super::*;
     use crate::{Request, header::FORWARDED};
     use rama_core::extensions::ExtensionsRef;
-    use rama_net::forwarded::{Forwarded, ForwardedElement, ForwardedVersion, NodeId};
+    use rama_net::{
+        ConnectorTargetInputExt,
+        client::ConnectorTarget,
+        forwarded::{Forwarded, ForwardedElement, ForwardedVersion, NodeId},
+    };
+
+    #[test]
+    fn logical_authority_defaults_and_connector_overrides_work_on_parts() {
+        for (host, protocol, expected) in [
+            (
+                "example.test:8443",
+                Protocol::HTTPS,
+                Some("example.test:8443"),
+            ),
+            ("example.test", Protocol::HTTPS, Some("example.test:443")),
+            ("example.test", Protocol::from_static("custom"), None),
+        ] {
+            let req = Request::builder()
+                .uri("/path")
+                .header(crate::header::HOST, host)
+                .extension(protocol)
+                .body(())
+                .unwrap();
+            let expected = expected.map(|authority| authority.parse().unwrap());
+            assert_eq!(req.authority_with_default_port(None), expected);
+            assert_eq!(req.connector_target(), expected);
+            let fallback = expected
+                .clone()
+                .unwrap_or_else(|| "example.test:9000".parse().unwrap());
+            assert_eq!(
+                req.authority_with_default_port(Some(9000)),
+                Some(fallback.clone())
+            );
+            assert_eq!(req.connector_target_with_default_port(9000), Some(fallback));
+
+            let physical = "127.0.0.1:3128".parse().unwrap();
+            req.extensions().insert(ConnectorTarget(physical));
+            let (parts, ()) = req.into_parts();
+            assert_eq!(parts.authority_with_default_port(None), expected);
+            assert_eq!(
+                parts.connector_target(),
+                Some("127.0.0.1:3128".parse().unwrap())
+            );
+            assert_eq!(
+                parts.connector_target_with_default_port(9000),
+                parts.connector_target()
+            );
+        }
+    }
 
     #[test]
     fn accessors_from_request() {

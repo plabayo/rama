@@ -1,4 +1,5 @@
 const previewStates = new Map();
+const previewOutputs = new WeakMap();
 
 function formatHex(bytes) {
   let text = "";
@@ -49,9 +50,38 @@ function renderPreviewState(key) {
         ? "Retry preview"
         : "Loading preview…");
     output.hidden = !state.visible;
-    const text = state.visible ? state.preview : "";
-    if (output.textContent !== text) output.textContent = text;
+    let rendered = previewOutputs.get(output);
+    if (rendered?.chunks !== state.chunks || output.lastChild !== rendered.lastNode
+        || output.childNodes.length !== rendered.index) {
+      output.replaceChildren();
+      rendered = { chunks: state.chunks, index: 0, lastNode: null };
+      previewOutputs.set(output, rendered);
+    }
+    while (rendered.index < state.chunks.length) {
+      const node = document.createTextNode(state.chunks[rendered.index++]);
+      output.append(node);
+      rendered.lastNode = node;
+    }
   }
+}
+
+function flushPreview(state) {
+  if (state.pending.length === 0) return;
+  const delta = state.pending.join("");
+  state.pending.length = 0;
+  if (delta) state.chunks.push(delta);
+}
+
+function appendPreview(key, state, delta) {
+  if (!delta) return;
+  state.pending.push(delta);
+  if (state.frame !== undefined) return;
+  state.frame = requestAnimationFrame(() => {
+    state.frame = undefined;
+    if (previewStates.get(key) !== state) return;
+    flushPreview(state);
+    renderPreviewState(key);
+  });
 }
 
 async function copyText(text, button) {
@@ -120,7 +150,9 @@ async function streamPreview(button) {
   const state = {
     controller,
     phase: "loading",
-    preview: "",
+    chunks: [],
+    pending: [],
+    frame: undefined,
     visible: true,
   };
   previewStates.get(key)?.controller?.abort();
@@ -140,28 +172,41 @@ async function streamPreview(button) {
     const reader = response.body.getReader();
     const textual = button.dataset.payloadFormat === "text";
     const decoder = textual ? new TextDecoder("utf-8", { fatal: false }) : null;
-    while (true) {
+    let remaining = Number(button.dataset.byteLimit);
+    if (!Number.isSafeInteger(remaining) || remaining <= 0) {
+      throw new Error("missing preview byte limit");
+    }
+    while (remaining > 0) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (textual) {
-        state.preview += decoder.decode(value, { stream: true });
-      } else {
-        state.preview += formatHex(value);
-      }
-      renderPreviewState(key);
+      const bytes = value.subarray(0, remaining);
+      remaining -= bytes.byteLength;
+      appendPreview(key, state, textual
+        ? decoder.decode(bytes, { stream: true })
+        : formatHex(bytes));
     }
-    if (decoder) {
-      state.preview += decoder.decode();
+    if (remaining === 0) {
+      // The full payload remains available through its download endpoint. Do not
+      // drain an arbitrarily large message merely to display a bounded prefix.
+      await reader.cancel();
+    } else if (decoder) {
+      appendPreview(key, state, decoder.decode());
     }
     state.phase = "loaded";
   } catch (error) {
+    controller.abort();
     if (error.name !== "AbortError") {
       state.phase = "error";
-      state.preview = `Unable to load payload: ${error.message}`;
+      state.pending.length = 0;
+      state.chunks = [`Unable to load payload: ${error.message}`];
     }
   } finally {
+    if (state.frame !== undefined) cancelAnimationFrame(state.frame);
     state.controller = undefined;
-    if (previewStates.get(key) === state) renderPreviewState(key);
+    if (previewStates.get(key) === state) {
+      flushPreview(state);
+      renderPreviewState(key);
+    }
   }
 }
 
@@ -227,6 +272,7 @@ document.addEventListener("click", (event) => {
   if (state?.phase === "loaded" && state.visible) {
     previewStates.delete(key);
     output.hidden = true;
+    previewOutputs.delete(output);
     output.replaceChildren();
     button.dataset.loaded = "false";
     setButtonLabel(button, button.dataset.label);

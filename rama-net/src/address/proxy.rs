@@ -1,18 +1,17 @@
 use core::{fmt::Display, str::FromStr};
 
-use crate::std::{self as std, string::String};
+use rama_core::{
+    error::{BoxError, ErrorContext},
+    telemetry::tracing,
+};
 
 use super::Authority;
 use crate::{
     Protocol,
     address::{HostWithOptPort, HostWithPort},
     proto::try_to_extract_protocol_from_uri_scheme,
+    std::string::String,
     user::ProxyCredential,
-};
-
-use rama_core::{
-    error::{BoxError, ErrorContext},
-    telemetry::tracing,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,14 +121,13 @@ impl_serde_str!(display ProxyAddress);
 
 #[cfg(test)]
 mod tests {
+    use rama_utils::str::non_empty_str;
+
     use super::*;
-    use crate::user::credentials::basic;
     use crate::{
         address::{Domain, Host},
-        user::Basic,
+        user::{Basic, credentials::basic},
     };
-
-    use rama_utils::str::non_empty_str;
 
     #[test]
     fn test_valid_proxy() {

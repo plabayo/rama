@@ -200,6 +200,14 @@ machine_ids() {
     | grep -o '"id":[[:space:]]*"[^"]*"' | sed 's/.*"\([^"]*\)"$/\1/'
 }
 
+# Public demos use one Machine for each of their HTTP and HTTPS processes.
+scale_app() {
+  local app="$1"
+  log "[$app] keeping one Machine per process group"
+  retry fly scale count app_secure=1 app_insecure=1 -a "$app" --yes \
+    || { warn "[$app] scale failed after $RETRY_MAX attempts"; return 1; }
+}
+
 # ensure there is one geoip volume per machine of app $1 (create the deficit)
 provision_app() {
   local app="$1" want have need
@@ -223,7 +231,7 @@ deploy_app() {
   local app="$1" cfg="$DEPLOY_DIR/${1#rama-}/fly.toml"
   [ -f "$cfg" ] || { warn "[$app] no fly.toml at $cfg"; return 1; }
   log "[$app] deploying"
-  retry fly deploy -c "$cfg" -a "$app" --yes \
+  retry fly deploy -c "$cfg" -a "$app" --ha=false --yes \
     || { warn "[$app] deploy failed after $RETRY_MAX attempts"; return 1; }
 }
 
@@ -291,6 +299,8 @@ cmd_rollout() {
   # word-splitting of the app / "app:machine" lists into items is intentional
   # shellcheck disable=SC2046,SC2086
   {
+    log "scaling public demos: $FLY_APPS"
+    parallel_map "$DEPLOY_CONCURRENCY" scale_app $FLY_APPS;       check_phase scale
     log "provisioning volumes: $FLY_APPS"
     parallel_map 8 provision_app $FLY_APPS;                       check_phase provision
     log "deploying mounts (cap $DEPLOY_CONCURRENCY): $FLY_APPS"

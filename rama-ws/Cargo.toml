@@ -22,16 +22,30 @@ targets = ["x86_64-unknown-linux-gnu"]
 
 [features]
 default = []
+inspect = [
+    "dep:rama-inspect",
+    "dep:serde_json",
+    "rama-http/inspect",
+    "dep:jiff",
+    "dep:parking_lot",
+    "dep:base64",
+]
 compression = ["dep:flate2"]
 dial9 = ["rama-core/dial9", "rama-http/dial9"]
 
 [dependencies]
+base64 = { workspace = true, optional = true }
 flate2 = { workspace = true, features = ["zlib"], optional = true }
+jiff = { workspace = true, optional = true }
+parking_lot = { workspace = true, optional = true }
 rama-core = { workspace = true, features = ["std"] }
 rama-http = { workspace = true }
+rama-inspect = { workspace = true, optional = true }
 rama-net = { workspace = true, features = ["std"] }
 rama-utils = { workspace = true, features = ["std"] }
 rand = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["time", "macros", "sync"] }
 
 [dev-dependencies]

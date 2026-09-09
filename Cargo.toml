@@ -56,6 +56,7 @@ members = [
     "rama-http-macros",
     "rama-http-types",
     "rama-icap",
+    "rama-inspect",
     "rama-js",
     "rama-json",
     "rama-macros",
@@ -209,6 +210,7 @@ rama-http-hyperium = { version = "0.5.0", path = "./rama-http-hyperium", default
 rama-http-macros = { version = "0.5.0", path = "./rama-http-macros", default-features = false }
 rama-http-types = { version = "0.5.0", path = "./rama-http-types", default-features = false }
 rama-icap = { version = "0.5.0", path = "./rama-icap", default-features = false }
+rama-inspect = { version = "0.5.0", path = "./rama-inspect", default-features = false }
 rama-js = { version = "0.5.0", path = "./rama-js", default-features = false }
 rama-json = { version = "0.5.0", path = "./rama-json", default-features = false }
 rama-macros = { version = "0.5.0", path = "./rama-macros", default-features = false }
@@ -463,6 +465,16 @@ net = ["dep:rama-net"]
 net-apple-networkextension = ["std", "net", "dep:rama-net-apple-networkextension"]
 net-apple-xpc = ["std", "net", "dep:rama-net-apple-xpc"]
 unix = ["std", "net", "dep:rama-unix"]
+inspect = [
+    "std",
+    "dep:rama-inspect",
+    "rama-net?/inspect",
+    "rama-http?/inspect",
+    "rama-ws?/inspect",
+    "rama-tls?/inspect",
+    "rama-ua?/inspect",
+    "rama-crypto?/inspect",
+]
 idna = ["net", "rama-net?/idna"]
 # memory-map IP geolocation databases (only takes effect when rama-net is enabled)
 mmap = ["std", "rama-net?/mmap"]
@@ -585,6 +597,7 @@ rama-http = { workspace = true, optional = true }
 rama-http-backend = { workspace = true, optional = true }
 rama-http-core = { workspace = true, optional = true }
 rama-icap = { workspace = true, optional = true }
+rama-inspect = { workspace = true, optional = true }
 rama-js = { workspace = true, optional = true }
 rama-json = { workspace = true, optional = true }
 rama-net = { workspace = true, optional = true }

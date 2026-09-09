@@ -3,23 +3,27 @@ use core::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
 
-use crate::std::{
-    self as std,
-    borrow::ToOwned,
-    string::{String, ToString},
-    vec::Vec,
+use rama_core::{
+    bytes::BytesMut,
+    error::{BoxError, BoxErrorExt as _, ErrorContext},
 };
 
-use super::domain::{DomainLabelIter, DomainLabels, Label};
-use super::{Domain, UninterpretedHost, UninterpretedHostRef, parse_utils};
-use crate::address::ip::{
-    IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,
-    IntoCanonicalIpAddr as _,
+use super::{
+    Domain, UninterpretedHost, UninterpretedHostRef,
+    domain::{DomainLabelIter, DomainLabels, Label},
+    parse_utils,
 };
-
-use rama_core::bytes::BytesMut;
-use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorContext};
+use crate::{
+    address::ip::{
+        IPV4_BROADCAST, IPV4_LOCALHOST, IPV4_UNSPECIFIED, IPV6_LOCALHOST, IPV6_UNSPECIFIED,
+        IntoCanonicalIpAddr as _,
+    },
+    std::{
+        borrow::ToOwned,
+        string::{String, ToString},
+        vec::Vec,
+    },
+};
 
 /// Either a [`Domain`], an [`IpAddr`], or [`UninterpretedHost`] bytes
 /// preserved verbatim from a URI authority.

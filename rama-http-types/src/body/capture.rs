@@ -1,12 +1,13 @@
-use parking_lot::Mutex;
-use pin_project_lite::pin_project;
-use rama_core::bytes::{Bytes, BytesMut};
 use std::{
     fmt,
-    future::{Future, ready},
+    future::ready,
     pin::Pin,
     task::{Context, Poll, ready},
 };
+
+use parking_lot::Mutex;
+use pin_project_lite::pin_project;
+use rama_core::bytes::{Bytes, BytesMut};
 use sync_wrapper::SyncWrapper;
 use tokio::sync::oneshot;
 
@@ -14,7 +15,8 @@ use super::{Body, Frame, SizeHint, StreamingBody};
 use crate::HeaderMap;
 
 /// How an observed body stream terminated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CaptureOutcome {
     /// The body returned its normal end-of-stream marker.
     Complete,
@@ -28,6 +30,17 @@ pub enum CaptureOutcome {
     /// even if cancellation prevents that frame from reaching the downstream
     /// consumer.
     Aborted,
+}
+
+impl CaptureOutcome {
+    /// Stable label for the observed completion state.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Error => "error",
+            Self::Aborted => "aborted",
+        }
+    }
 }
 
 /// An owned event emitted while a body streams.
@@ -552,6 +565,12 @@ impl fmt::Debug for BufferedBodyCapture {
             .field("total_bytes", &state.total_bytes)
             .field("truncated", &state.truncated)
             .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for CaptureOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 

@@ -8,4 +8,8 @@ pub mod layer;
 pub mod recorder;
 pub mod service;
 pub mod spec;
+pub mod stream;
 pub mod toggle;
+
+#[cfg(feature = "inspect")]
+pub mod inspect;

@@ -130,6 +130,17 @@ pub fn connection_header_names(headers: &HeaderMap) -> impl Iterator<Item = Head
     }
 }
 
+/// Return known hop-by-hop field names and valid `Connection` nominations.
+///
+/// Known names are included even when absent from the map. The iterator owns
+/// its nominations so callers may mutate the map while consuming it.
+pub fn hop_by_hop_header_names(headers: &HeaderMap) -> impl Iterator<Item = HeaderName> + use<> {
+    HOP_BY_HOP_HEADERS
+        .into_iter()
+        .cloned()
+        .chain(connection_header_names(headers))
+}
+
 fn remove_field(headers: &mut HeaderMap, name: &HeaderName) {
     if headers.remove(name).is_some() {
         tracing::trace!("removed hop-by-hop header for name: {name}");
@@ -156,8 +167,9 @@ fn remove_hop_by_hop_headers_with_nominations(
 /// upgrade, trailer, or `TE: trailers` metadata has to be restored for a newly
 /// originated hop.
 pub fn remove_hop_by_hop_headers(headers: &mut HeaderMap) {
-    let nominated = connection_header_names(headers);
-    remove_hop_by_hop_headers_with_nominations(headers, nominated, &HOP_BY_HOP_HEADERS);
+    for name in hop_by_hop_header_names(headers) {
+        remove_field(headers, &name);
+    }
 }
 
 /// Remove request-side hop-by-hop fields without forwarding capabilities.

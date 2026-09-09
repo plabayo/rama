@@ -1,10 +1,9 @@
 use core::{cmp::Ordering, fmt};
 
-use crate::std::{self as std, string::String, vec::Vec};
+use rama_core::bytes::Bytes;
 
 use super::Host;
-
-use rama_core::bytes::Bytes;
+use crate::std::{string::String, vec::Vec};
 
 mod label;
 #[doc(inline)]
@@ -676,6 +675,7 @@ fn idn_to_ascii(input: &str) -> Result<String, DomainParseError> {
     {
         idna::domain_to_ascii(input).map_err(|_e| DomainParseError::idna_processing())
     }
+
     #[cfg(not(feature = "idna"))]
     {
         let _ = input;
@@ -730,31 +730,38 @@ impl DomainParseError {
     const fn empty() -> Self {
         Self(DomainParseErrorKind::Empty)
     }
+
     #[inline]
     const fn too_long(len: usize) -> Self {
         Self(DomainParseErrorKind::TooLong { len })
     }
+
     #[inline]
     fn non_utf8(source: core::str::Utf8Error) -> Self {
         Self(DomainParseErrorKind::NonUtf8 { source })
     }
+
     #[inline]
     const fn label(at: usize, error: LabelError) -> Self {
         Self(DomainParseErrorKind::Label { at, error })
     }
+
     #[inline]
     const fn bad_wildcard(at: usize) -> Self {
         Self(DomainParseErrorKind::BadWildcard { at })
     }
+
     #[inline]
     pub(crate) const fn bracketed_ip_literal() -> Self {
         Self(DomainParseErrorKind::BracketedIpLiteral)
     }
+
     #[cfg(feature = "idna")]
     #[inline]
     fn idna_processing() -> Self {
         Self(DomainParseErrorKind::IdnaProcessing)
     }
+
     #[cfg(not(feature = "idna"))]
     #[inline]
     fn idna_not_enabled() -> Self {
@@ -771,6 +778,7 @@ impl DomainParseError {
         {
             matches!(self.0, DomainParseErrorKind::IdnaNotEnabled)
         }
+
         #[cfg(feature = "idna")]
         {
             false
@@ -798,10 +806,12 @@ impl fmt::Display for DomainParseError {
             DomainParseErrorKind::BracketedIpLiteral => {
                 f.write_str("bracketed IP-literal is not a domain")
             }
+
             #[cfg(feature = "idna")]
             DomainParseErrorKind::IdnaProcessing => {
                 f.write_str("IDN domain rejected by UTS #46 processing")
             }
+
             #[cfg(not(feature = "idna"))]
             DomainParseErrorKind::IdnaNotEnabled => {
                 f.write_str("non-ASCII domain requires the `idna` feature")

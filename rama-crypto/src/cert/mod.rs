@@ -5,16 +5,18 @@
 //!
 //! - `boring`: generate using BoringSSL (via `rama-boring`), for stacks that
 //!   already link boringssl and do not want a second crypto provider.
-//! - `aws-lc` / `ring`: generate using [`rcgen`].
+//! - `aws-lc` / `ring`: generate using `rcgen`.
 //!
 //! When several providers are enabled, `boring` is preferred. With none
 //! enabled, certificate-generation functions return an error.
 
-use crate::pki_types::{CertificateDer, PrivateKeyDer};
+use std::{net::IpAddr, time::Duration};
+
 use rama_core::error::{BoxError, BoxErrorExt as _};
 use rama_net::address::{Domain, Host};
 use serde::{Deserialize, Serialize};
-use std::{net::IpAddr, time::Duration};
+
+use crate::pki_types::{CertificateDer, PrivateKeyDer};
 
 #[cfg(feature = "boring")]
 #[cfg_attr(docsrs, doc(cfg(feature = "boring")))]
@@ -461,8 +463,9 @@ pub fn issue_certificate_authority_leaf(
 
 #[cfg(test)]
 mod spki_tests {
-    use super::*;
     use base64::{Engine as _, prelude::BASE64_STANDARD};
+
+    use super::*;
 
     const EXAMPLE_COM_CRT_B64: &str = "MIIE3DCCAsSgAwIBAgIJAN4TBpLFs4VhMA0GCSqGSIb3DQEBCwUAMBYxFDASBgNVBAMMC2V4YW1wbGUuY29tMB4XDTI0MTIwOTIwMDUxN1oXDTM0MTIwNzIwMDUxN1owFjEUMBIGA1UEAwwLZXhhbXBsZS5jb20wggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQC14A6yHqrF+5+VPljtBd9vgjTQxBCqQ7Af/7cNlFtZjOKmXz0bOCfZRjaxNNjjveztFH+VhRpH/JyM7Qd7R0FX84IyH4Z9a58jgKW/l/YM1Q4Y50WGpM9Sk5p9Q8xTWIoZPrjvh6zV4PKef87LxxqoO9QXv34d5g7dsQLbSwJ93SeggH0E5e1VvP1DW0kvu1BF6rsmF5eTyK/VNg/el9mGyMbcyhBKTpTyVT2FQYRFuZtHXHRnAocCdv887c/TsYVDffTwv7peVoOotO0twKn0SMdtybiNJyDEdcgw2bFbQu7oV/95cBurpxePzED31E64QI8emTvZ62L/c5QvP0OY3x2CSb5ctd6z7wWTJ8wkl7N8+y7Xgn1aAAfki4rWk5qfWAO3BNZo/TGyiWeoNttJ+NddfwI3+h6phK7X56vRhYSqwSnxWyQYlTJAnFQb7TMEP/k9ov2S9MzLTURLLeNiiXjvkOxi+12HzhlTNgk3X49y9f8PLxkNw37TghunAl4OvA+LdslSayFMmZbx9fm+6ZGkjcsDYnf1Mff+aoCkkUcAFg5DQFDkmvu08mJL2D+9I9OK/Yvn/qXWjhVdWLJ/k5hrQmLIs1KbQtlGvvYeC7kHY3yBK+3wt/Cnx9qwhOPJcufuEChiMcVcseGAZJhUT7gQM22v9jb9QZfhihGMpQIDAQABoy0wKzApBgNVHREEIjAgggtleGFtcGxlLmNvbYILZXhhbXBsZS5jb22HBAoAAAEwDQYJKoZIhvcNAQELBQADggIBAJBG9KcH0FG7xn2u4SA4nlwaP/v2ZWZlOwjVjHEQJF7AGaEZFVofzLoRncVnQs14Xr3SGstIBG/P30LC4zHO4Lhz0M+g/lbXhrDjTJLNX7ZNv2ZJj+6XBysJK2IuZX14YCtxhwFCuPBK1cxPDkP4nZm4u5tozLHPtZEHc4kGVQflurkTVmfhJMi5ndAOevXVgfAHRbHfh6x1kNZWDpybiPeeBvZOjRoxecsD7LA54knsSFCQe6zQRlfBUUD+RDI/ggDi3XnKdDHEkLZCH3/db4CcneyzzVkaNcvpOS6ZT6akDLmR8qAglTrADdsnNVzyWzNbBhXQEFoygY3F2rVQndTLoEFGMx7U2d3Fz8sVN/F2SzBYxtrwgj5rQC8tOhHZPVgQLXu6NRRZHEQgypDtGP0H4SUNcGb1Lw27E43KSIT9CpY8Z3SG34G4bYGfpdMN3wtoXG7BtrdmInNWiT+ygh+iJCSaSsAWtaPRnx/9uGLwUNVjzVxJhxGKBbf1hJ5g1x3zMeL73wrsiY6RBa6tWx9SHbRoq8htbkQAnP0tMOavGiTApFquBYDe2gYbuq5jh4yTbNyuxR4WW6m6Bvj7YhUREXQnTDonUwHzw2P29T95z52aPb5PaZYHgg4S26zRV+/Dc8E3oLkjgCyaDuQO4uUpmtT8ssTolIFNr2QUzD12";
 
@@ -500,8 +503,9 @@ mod spki_tests {
 
 #[cfg(all(test, any(feature = "boring", feature = "aws-lc", feature = "ring")))]
 mod tests {
-    use super::*;
     use x509_parser::prelude::*;
+
+    use super::*;
 
     #[expect(clippy::expect_used)]
     fn parse_certificate<'a>(der: &'a CertificateDer<'_>) -> X509Certificate<'a> {

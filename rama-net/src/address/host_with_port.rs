@@ -3,14 +3,14 @@ use core::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
 };
 
-use crate::std::{self as std, string::String, vec::Vec};
+use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
+use rama_utils::macros::generate_set_and_with;
 
 use super::{Domain, DomainAddress, Host, SocketAddress, parse_utils};
-use crate::Protocol;
-
-use rama_core::error::BoxErrorExt as _;
-use rama_core::error::{BoxError, ErrorContext};
-use rama_utils::macros::generate_set_and_with;
+use crate::{
+    Protocol,
+    std::{string::String, vec::Vec},
+};
 
 /// A [`Host`] with an associated port.
 ///

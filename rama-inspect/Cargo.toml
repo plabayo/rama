@@ -1,0 +1,22 @@
+[package]
+name = "rama-inspect"
+description = "Protocol-independent inspection, interception and streaming capture storage for Rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[dependencies]
+parking_lot = { workspace = true }
+rama-core = { workspace = true, features = ["std"] }
+rama-utils = { workspace = true, features = ["std"] }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["fs", "io-util", "sync", "time", "macros"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[lints]
+workspace = true

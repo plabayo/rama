@@ -13,13 +13,13 @@ use rama_core::{
     service::MirrorService,
     telemetry::tracing,
 };
+use tokio::sync::{mpsc as tokio_mpsc, watch};
 
 use crate::{
     AsyncWebSocket, ProtocolError, Utf8Bytes, WebSocketIo,
     handshake::matcher::RelayWebSocketConfig,
     protocol::{CloseFrame, Role, frame::coding::CloseCode},
 };
-use tokio::sync::{mpsc as tokio_mpsc, watch};
 
 const DEFAULT_CLOSE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const RELAY_WRITER_QUEUE_CAPACITY: usize = 8;
@@ -512,7 +512,8 @@ impl From<WebSocketRelayMessage> for crate::protocol::Message {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 /// Direction data used as part of [`WebSocketRelayInput`],
 /// most typically for users of [`WebSocketRelayService`].
 pub enum WebSocketRelayDirection {
@@ -553,6 +554,13 @@ impl WebSocketRelayInjector {
     #[must_use]
     pub fn is_open(&self) -> bool {
         *self.liveness.borrow() && !self.ingress.is_closed() && !self.egress.is_closed()
+    }
+
+    /// Maximum accepted payload size, or `None` if the relay has no size limit.
+    /// Inspectors can check recorded lengths before loading message bytes.
+    #[must_use]
+    pub fn max_message_size(&self) -> Option<usize> {
+        self.max_message_size
     }
 
     /// Wait until the relay has stopped accepting injected messages.
@@ -1633,7 +1641,6 @@ mod tests {
     //! The isolation test distinguishes a shared `clone()` (cross-direction
     //! marker leak) from per-direction `clone()` (live-socket pollution).
 
-    use parking_lot::Mutex;
     use std::{
         future::pending,
         num::NonZeroUsize,
@@ -1643,6 +1650,7 @@ mod tests {
         time::Duration,
     };
 
+    use parking_lot::Mutex;
     use rama_core::{
         Layer, Service,
         bytes::Bytes,
@@ -3354,6 +3362,7 @@ mod tests {
         assert_eq!(service.message_injection_queue_capacity.get(), 5);
         assert_eq!(service.max_injected_message_size, None);
     }
+
     #[tokio::test]
     async fn read_ahead_keeps_ping_and_same_side_close_live_during_a_hold() {
         let (relay_in, peer_in) = duplex(kib(16));

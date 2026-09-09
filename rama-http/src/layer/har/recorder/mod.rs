@@ -38,7 +38,6 @@ use rama_core::extensions::Extension;
 use rama_http_types::mime::Mime;
 use std::{
     fmt,
-    future::Future,
     pin::Pin,
     sync::{
         Arc,

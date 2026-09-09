@@ -1,14 +1,19 @@
-use std::borrow::Cow;
-use std::convert::TryInto;
-use std::fmt::{self, Display};
+use std::{
+    borrow::Cow,
+    convert::TryInto,
+    fmt::{self, Display},
+};
 
-use crate::header::{HeaderMap, HeaderName, HeaderValue};
-use crate::proto::h1::ext::ReasonPhrase;
-use crate::status::StatusCode;
-use crate::version::Version;
-use crate::{Body, Result};
 use rama_core::extensions::{Extension, Extensions, ExtensionsRef};
 use rama_utils::macros::generate_set_and_with;
+
+use crate::{
+    Body, Result,
+    header::{HeaderMap, HeaderName, HeaderValue},
+    proto::h1::ext::ReasonPhrase,
+    status::StatusCode,
+    version::Version,
+};
 
 /// Represents an HTTP response
 ///
@@ -656,6 +661,12 @@ impl Display for StatusCodeError {
 }
 
 impl std::error::Error for StatusCodeError {}
+
+impl Default for Parts {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Parts {
     /// Creates a new default instance of `Parts`

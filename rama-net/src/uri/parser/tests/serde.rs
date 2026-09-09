@@ -1,6 +1,21 @@
 //! Serde `Serialize` / `Deserialize` round-trip for [`Uri`].
 
-use crate::uri::Uri;
+use crate::uri::{PathRef, Uri};
+
+#[test]
+fn borrowed_path_serializes_its_encoded_representation() {
+    for (input, expected) in [
+        ("/a%2Fb", "/a%2Fb"),
+        ("/hello world/café", "/hello%20world/caf%C3%A9"),
+        ("/%zz/%", "/%25zz/%25"),
+    ] {
+        let path = PathRef::from_raw_str(input);
+        let json = serde_json::to_vec(&path).unwrap();
+        let decoded: String = serde_json::from_slice(&json).unwrap();
+        assert_eq!(decoded, expected);
+        assert_eq!(decoded, path.to_string());
+    }
+}
 
 #[test]
 fn serde_round_trip() {

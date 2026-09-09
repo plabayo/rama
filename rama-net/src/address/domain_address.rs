@@ -1,12 +1,13 @@
 use core::{fmt, str::FromStr};
 
-use crate::std::{self as std, string::String, vec::Vec};
-
-use crate::Protocol;
-use crate::address::{Domain, parse_utils};
-
 use rama_core::error::{BoxError, ErrorContext};
 use rama_utils::macros::generate_set_and_with;
+
+use crate::{
+    Protocol,
+    address::{Domain, parse_utils},
+    std::{string::String, vec::Vec},
+};
 
 /// A [`Domain`] with an associated port (u16)
 ///
@@ -126,6 +127,7 @@ impl fmt::Display for DomainAddress {
 
 impl FromStr for DomainAddress {
     type Err = BoxError;
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::try_from(s)
     }
@@ -150,6 +152,7 @@ impl TryFrom<String> for DomainAddress {
         Ok(Self::new(domain, port))
     }
 }
+
 impl TryFrom<Vec<u8>> for DomainAddress {
     type Error = BoxError;
 

@@ -1,9 +1,11 @@
 use rama::{
     Service,
     http::{
-        Body, Method, Request, Response, StatusCode, header,
-        service::web::response::IntoResponse as _,
+        Method, Request, Response, StatusCode, header,
+        headers::CacheControl,
+        service::web::response::{Headers, IntoResponse as _, Redirect},
     },
+    utils::bytes::ct::ct_eq_bytes,
 };
 use std::sync::Arc;
 
@@ -47,15 +49,12 @@ where
             return Ok(StatusCode::FORBIDDEN.into_response());
         }
         if !request_capability(&request)
-            .is_some_and(|token| capability_eq(token, self.token.as_bytes()))
+            .is_some_and(|token| ct_eq_bytes(token, self.token.as_bytes()))
         {
-            return Ok(Response::builder()
-                .status(StatusCode::UNAUTHORIZED)
-                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Body::from(
-                    "Rama Proxy Inspector authorization required. Open the inspector URL printed by rama.",
-                ))
-                .unwrap_or_else(|_| StatusCode::UNAUTHORIZED.into_response()));
+            return Ok((
+                StatusCode::UNAUTHORIZED,
+                "Rama Proxy Inspector authorization required. Open the inspector URL printed by rama.",
+            ).into_response());
         }
         self.inner.serve(request).await
     }
@@ -70,17 +69,12 @@ fn has_enrollment_token(request: &Request, expected: &[u8]) -> bool {
     {
         return false;
     }
-    request.uri().query().is_some_and(|query| {
-        query.as_encoded_str().split('&').any(|pair| {
-            pair.split_once('=').is_some_and(|(name, value)| {
-                name == "token" && capability_eq(value.as_bytes(), expected)
-            })
-        })
+    request.uri().query_pairs().any(|pair| {
+        pair.name_encoded() == "token"
+            && pair
+                .value_encoded()
+                .is_some_and(|value| ct_eq_bytes(value.as_bytes(), expected))
     })
-}
-
-fn capability_eq(candidate: &[u8], expected: &[u8]) -> bool {
-    candidate.len() == expected.len() && rama::tls::boring::core::memcmp::eq(candidate, expected)
 }
 
 fn request_capability(request: &Request) -> Option<&[u8]> {
@@ -126,16 +120,15 @@ fn same_origin_when_present(request: &Request) -> bool {
 }
 
 fn enrollment_response(token: &str) -> Response {
-    Response::builder()
-        .status(StatusCode::SEE_OTHER)
-        .header(header::LOCATION, "/")
-        .header(
+    (
+        Headers::single(CacheControl::new().with_no_store()),
+        [(
             header::SET_COOKIE,
             format!("{AUTH_COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict"),
-        )
-        .header(header::CACHE_CONTROL, "no-store")
-        .body(Body::from("Inspector authorization accepted"))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        )],
+        Redirect::to("/"),
+    )
+        .into_response()
 }
 
 #[cfg(test)]
@@ -173,7 +166,7 @@ mod tests {
         let response = service()
             .serve(
                 Request::builder()
-                    .uri("/api/capture/1.json")
+                    .uri("/api/captures")
                     .header(header::COOKIE, "rama-inspector=0123456789abcdef")
                     .body(Body::empty())
                     .unwrap(),
@@ -221,7 +214,7 @@ mod tests {
                 .body(Body::empty())
                 .unwrap(),
             Request::builder()
-                .uri("/api/capture/1.json?token=0123456789abcdef")
+                .uri("/api/captures?token=0123456789abcdef")
                 .body(Body::empty())
                 .unwrap(),
         ] {

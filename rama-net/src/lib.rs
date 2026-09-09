@@ -55,6 +55,7 @@ pub(crate) mod byte_sets;
 pub(crate) mod normalize;
 pub(crate) mod proto;
 pub(crate) mod std;
+
 #[cfg(test)]
 pub(crate) mod test_hash;
 #[doc(inline)]
@@ -91,3 +92,7 @@ pub mod dial9;
 pub mod __private {
     pub use ::rama_utils as utils;
 }
+
+#[cfg(feature = "inspect")]
+#[cfg_attr(docsrs, doc(cfg(feature = "inspect")))]
+pub mod inspect;

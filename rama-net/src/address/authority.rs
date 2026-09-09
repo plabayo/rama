@@ -3,18 +3,18 @@ use core::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
 };
 
-use crate::std::{
-    self as std,
-    borrow::{Cow, ToOwned},
-    string::String,
-    vec::Vec,
-};
-
-use super::{Domain, DomainAddress, Host, SocketAddress};
-use crate::address::{HostRef, HostWithOptPort, HostWithPort, OptPort, UserInfo, UserInfoRef};
-
 use rama_core::error::{BoxError, BoxErrorExt as _, ErrorContext};
 use rama_utils::macros::generate_set_and_with;
+
+use super::{Domain, DomainAddress, Host, SocketAddress};
+use crate::{
+    address::{HostRef, HostWithOptPort, HostWithPort, OptPort, UserInfo, UserInfoRef},
+    std::{
+        borrow::{Cow, ToOwned},
+        string::String,
+        vec::Vec,
+    },
+};
 
 /// A [`Host`] with optionally a port and/or user-info ([`UserInfo`]).
 ///

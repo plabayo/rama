@@ -25,8 +25,26 @@ const GLOBAL_FILL_FLOWS: usize = 64;
 const DATAGRAMS_PER_FILL_FLOW: usize = 4;
 const PER_FLOW_TAIL_BYTES: usize =
     DEFAULT_PER_FLOW_BYTES - DATAGRAMS_PER_FILL_FLOW * MAX_UDP_DATAGRAM;
-const ACK_TEST_PROBE_LEASE: Duration = Duration::from_millis(500);
+// The lease is only an expiry backstop here; every positive assertion proves
+// release happened before it. Keep it far above the whole test's wall time on a
+// loaded CI host so expiry can never masquerade as a contract violation.
+const ACK_TEST_PROBE_LEASE: Duration = Duration::from_secs(30);
 const ACK_TEST_NEGATIVE_WINDOW: Duration = Duration::from_millis(50);
+
+/// A negative window is only meaningful while every initial lease is still
+/// live; an expired lease releases capacity on its own.
+fn assert_leases_still_live(probes: &[(u64, Instant)]) {
+    let oldest = probes
+        .iter()
+        .map(|(_, observed_at)| *observed_at)
+        .min()
+        .expect("at least one leased probe");
+    assert!(
+        oldest.elapsed() + ACK_TEST_NEGATIVE_WINDOW < ACK_TEST_PROBE_LEASE,
+        "host too slow: initial probe leases expired before the negative window, \
+         so the observation below would be meaningless rather than a contract violation"
+    );
+}
 
 fn fill_default_global_budget(
     engine: &Arc<EngineHandle>,
@@ -100,10 +118,9 @@ async fn ffi_contract_udp_ingress_owns_borrowed_payload_and_peer_after_return() 
 #[serial]
 async fn ffi_contract_udp_global_budget_probe_ack_and_cleanup() {
     let env = setup_env().await;
-    // A 500 ms production-path lease leaves a 10x margin around the 50 ms
-    // negative observations below. The default remains 10 ms; this test uses
-    // the example's public JSON override so correctness does not depend on a
-    // 2/5 ms scheduler race on a loaded CI host.
+    // The default lease is 10 ms; this test uses the example's public JSON
+    // override so correctness does not depend on scheduler timing on a loaded
+    // CI host.
     let engine =
         engine_with_udp_ingress_probe_lease_ms(Some(ACK_TEST_PROBE_LEASE.as_millis() as u64));
     let remote = localhost(env.ports.udp);
@@ -200,6 +217,7 @@ async fn ffi_contract_udp_global_budget_probe_ack_and_cleanup() {
     // All four probe slots are leased. ACKing verifier 1's live ID through
     // verifier 0 is a wrong-session ACK and must not advance verifier 4.
     verifiers[0].acknowledge_client_read(initial_probes[1].0);
+    assert_leases_still_live(&initial_probes);
     assert!(
         verifiers[4]
             .wait_for_probe_read_demand_before(ACK_TEST_NEGATIVE_WINDOW)
@@ -213,6 +231,7 @@ async fn ffi_contract_udp_global_budget_probe_ack_and_cleanup() {
     // client manufacture unbounded uncharged ingress between callback and
     // delivery, so prove it cannot advance verifier 4 by itself.
     verifiers[0].acknowledge_client_read(initial_probes[0].0);
+    assert_leases_still_live(&initial_probes);
     assert!(
         verifiers[4]
             .wait_for_probe_read_demand_before(ACK_TEST_NEGATIVE_WINDOW)
@@ -225,7 +244,7 @@ async fn ffi_contract_udp_global_budget_probe_ack_and_cleanup() {
     // releases its retained charge. This ACK -> owner payload -> service drain
     // chain is the production contract that frees a slot for the next FIFO
     // waiter. Callback-entry time, not waiter wake time, proves the fifth probe
-    // was causally released before the 500 ms expiry backstop.
+    // was causally released before the lease-expiry backstop.
     verifiers[0].activate();
     let owner_payload = b"verifier zero owns this lease";
     assert_eq!(
@@ -243,6 +262,7 @@ async fn ffi_contract_udp_global_budget_probe_ack_and_cleanup() {
     // Verifier 0's ID is now stale. It cannot release another slot; a different
     // flow's still-live exact ACK plus owning payload must advance verifier 5.
     verifiers[0].acknowledge_client_read(initial_probes[0].0);
+    assert_leases_still_live(&initial_probes[1..]);
     assert!(
         verifiers[5]
             .wait_for_probe_read_demand_before(ACK_TEST_NEGATIVE_WINDOW)
@@ -299,15 +319,16 @@ async fn ffi_contract_udp_rejects_owner_payload_before_exact_ack() {
     fillers.remove(0).close_from_client_and_assert(1);
     let mut initial_probes = Vec::with_capacity(4);
     for verifier in verifiers.iter_mut().take(4) {
-        initial_probes.push(verifier.wait_for_probe_read_demand().await);
+        initial_probes.push(verifier.wait_for_probe_read_demand_observed().await);
     }
-    assert!(initial_probes.iter().all(|probe_id| *probe_id != 0));
+    assert!(initial_probes.iter().all(|(probe_id, _)| *probe_id != 0));
 
     verifiers[0].activate();
     assert_eq!(
         verifiers[0].send_client_datagram(b"must wait for exact ack", Some(remote)),
-        initial_probes[0]
+        initial_probes[0].0
     );
+    assert_leases_still_live(&initial_probes);
     assert!(
         tokio::time::timeout(
             ACK_TEST_NEGATIVE_WINDOW,

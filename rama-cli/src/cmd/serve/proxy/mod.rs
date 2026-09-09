@@ -1,18 +1,28 @@
 //! Multi-protocol forward proxy with optional Relay/Peek MITM inspection.
 
 mod capture;
-mod control;
 mod dashboard;
 mod dashboard_auth;
 mod har;
-mod inspection;
-mod mitm_policy;
 mod portal;
 mod upstream;
 
+use std::{
+    collections::BTreeSet,
+    convert::Infallible,
+    num::NonZeroU64,
+    path::{Path, PathBuf},
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
+};
+
+#[cfg(test)]
+use capture::HttpExchangeId;
 use capture::{
-    CaptureHttpLayer, CaptureStore, CaptureWebSocketLayer, ConnectionId, ExchangeId,
-    MarkProtocolLayer, ObserveConnectionLayer,
+    CaptureHttpLayer, CaptureStore, CaptureWebSocketLayer, ConnectionId, MarkProtocolLayer,
+    ObserveConnectionLayer,
 };
 use clap::{Args, ValueEnum};
 use control::{Control, ControlConnection};
@@ -29,8 +39,9 @@ use rama::{
     extensions::ExtensionsRef as _,
     graceful::ShutdownGuard,
     http::{
-        BodyLimitLayer, Request, Response, StatusCode,
+        BodyLimitLayer, Method, Request, Response, StatusCode,
         client::EasyHttpWebClient,
+        inspect::{control, mitm_policy},
         layer::{
             compression::{MirrorDecompressed, stream::StreamCompressionLayer},
             decompression::DecompressionLayer,
@@ -50,12 +61,9 @@ use rama::{
         ws::{
             handshake::{
                 matcher::HttpWebSocketRelayServiceRequestMatcher,
-                mitm::{
-                    WebSocketRelayEvent, WebSocketRelayEventInput, WebSocketRelayEventOutput,
-                    WebSocketRelayEventService, WebSocketRelayInjector, WebSocketRelayIoLayer,
-                    WebSocketRelayMessage,
-                },
+                mitm::{WebSocketRelayEventService, WebSocketRelayIoLayer},
             },
+            inspect::inspect_websocket_event,
             layer::har::HARWebSocketLayer,
         },
     },
@@ -70,12 +78,14 @@ use rama::{
         http::layer::{AdaptationLayer, ServiceEndpoint, UnsupportedMethodPolicy},
         proto::{MethodKind as IcapMethodKind, Preview},
     },
+    inspect as inspection,
     io::timeout::TimeoutIo,
     layer::{
         ArcLayer, ConsumeErrLayer, HijackLayer, LimitLayer, MapOutputLayer, TimeoutLayer,
         limit::policy::{ConcurrentPolicy, RatePolicy, UnlimitedPolicy},
     },
     net::{
+        Protocol,
         address::{Authority, AuthorityRef, Domain, ProxyAddress, SocketAddress},
         client::{
             ConnectRequest, ConnectionError, ConnectionErrorKind, ConnectorService,
@@ -85,7 +95,10 @@ use rama::{
         http::server::HttpPeekRouter,
         proxy::IoForwardService,
         socket::{SocketOptions, opts::TcpKeepAlive},
-        stream::layer::{TcpStreamOptionsLayer, ThrottleLayer, ThrottleMode},
+        stream::{
+            SocketInfo,
+            layer::{TcpStreamOptionsLayer, ThrottleLayer, ThrottleMode},
+        },
         uri::Uri,
     },
     proxy::socks5::{
@@ -94,7 +107,7 @@ use rama::{
     },
     rt::Executor,
     service::{BoxService, service_fn},
-    tcp::{proxy::IoToProxyBridgeIoLayer, server::TcpListener},
+    tcp::{client::service::TcpConnector, proxy::IoToProxyBridgeIoLayer, server::TcpListener},
     telemetry::tracing,
     tls::{
         boring::{
@@ -110,20 +123,13 @@ use rama::{
         },
     },
     ua::profile::UserAgentDatabase,
-    utils::octets::mib_u64,
-};
-use std::{
-    collections::BTreeSet,
-    convert::Infallible,
-    num::NonZeroU64,
-    path::PathBuf,
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
-    time::Duration,
+    utils::{
+        fs::OpenOptions,
+        octets::{kib_u64, mib_u64},
+    },
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, ReadBuf},
     sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore},
 };
 use upstream::UpstreamProxyConfig;
@@ -139,12 +145,12 @@ const TEST_DASHBOARD_TOKEN: &str =
 const DEFAULT_TCP_KEEPALIVE_IDLE_SECS: u64 = 15;
 const DEFAULT_TCP_KEEPALIVE_INTERVAL_SECS: u64 = 5;
 const DEFAULT_TCP_KEEPALIVE_PROBES: u32 = 3;
-const DEFAULT_ICAP_PREVIEW_BYTES: u64 = 1024;
+const DEFAULT_ICAP_PREVIEW_BYTES: u64 = kib_u64(1);
 const DEFAULT_ICAP_CONNECTIONS: usize = 64;
 const DEFAULT_ICAP_TIMEOUT_SECS: u64 = 30;
 const DEFAULT_ICAP_IDLE_TIMEOUT_SECS: u64 = 60;
 
-type IcapTcpConnector = rama::tcp::client::service::TcpConnector<Arc<SocketOptions>>;
+type IcapTcpConnector = TcpConnector<Arc<SocketOptions>>;
 type IcapDnsConnector = rama::dns::client::DnsConnector<IcapTcpConnector>;
 type IcapRawConnector = IcapTlsConnector<IcapDnsConnector>;
 type IcapConnectTimeoutConnector = rama::layer::timeout::DefaultTimeout<IcapRawConnector>;
@@ -768,7 +774,7 @@ fn observe_target(
     if let Some(host) = host {
         control.observe(
             connection,
-            &host.to_string(),
+            host,
             inspected,
             if sni.is_some() {
                 "TLS SNI"
@@ -838,7 +844,7 @@ impl<Body> rama::matcher::Matcher<Request<Body>> for MitmPortalMatcher {
         !self
             .policy
             .is_denied(&rama::net::address::Host::Name(MITM_PORTAL_DOMAIN))
-            && (!self.connect_only || request.method() == rama::http::Method::CONNECT)
+            && (!self.connect_only || request.method() == Method::CONNECT)
             && self.domain.matches(extensions, request)
     }
 }
@@ -1030,11 +1036,13 @@ pub struct CliCommandProxy {
     #[arg(long, default_value_t = DEFAULT_CAPTURE_TOTAL_LIMIT)]
     capture_total_limit: u64,
 
-    /// Maximum connections kept in the live inspector.
+    /// Maximum connections kept in the live inspector. Connection summaries and
+    /// TLS observations use memory in addition to the capture storage byte limit.
     #[arg(long, default_value_t = 10_000)]
     capture_connections: usize,
 
-    /// Maximum HTTP exchanges retained in the live inspector.
+    /// Maximum HTTP exchanges retained in the live inspector. Exchange summaries
+    /// use memory in addition to the capture storage byte limit.
     #[arg(long, default_value_t = 10_000)]
     capture_exchanges: usize,
 
@@ -1053,6 +1061,11 @@ pub struct CliCommandProxy {
     /// Number of concurrent connections to allow (0 = no limit).
     #[arg(long, short = 'c', default_value_t = 0)]
     concurrent: usize,
+
+    /// Maximum simultaneous inspector HAR/profile exports, including downloads
+    /// (0 = no limit). Shared across both export formats.
+    #[arg(long, default_value_t = 0)]
+    inspect_export_concurrency: usize,
 
     /// Maximum lifetime in seconds for each proxy connection (0 = no timeout).
     /// Disabled by default so long-lived WebSocket and inspector streams remain
@@ -1159,8 +1172,13 @@ pub struct CliCommandProxy {
     mitm_deny: Vec<String>,
 
     /// Initial MITM scope. Selected starts with no hosts until selected in the UI.
-    #[arg(long, value_enum, default_value_t = mitm_policy::ScopeMode::All, requires = "mitm")]
+    #[arg(long, default_value_t = mitm_policy::ScopeMode::All, requires = "mitm")]
     mitm_scope: mitm_policy::ScopeMode,
+
+    /// Print one JSON readiness record to stdout with the inspector link, API URL,
+    /// and bearer token. Diagnostics continue through the configured logger.
+    #[arg(long, requires = "mitm")]
+    inspect_json: bool,
 
     /// Require approval for all supported protocols (HTTP and WebSocket) from startup.
     #[arg(long, requires = "mitm")]
@@ -1286,9 +1304,7 @@ fn build_icap_adaptation(
             "--icap-allow-206 requires --icap-allow-204",
         ));
     }
-    if endpoint.service_protocol() == &rama::net::Protocol::ICAP
-        && endpoint.uri().userinfo().is_some()
-    {
+    if endpoint.service_protocol() == &Protocol::ICAP && endpoint.uri().userinfo().is_some() {
         tracing::warn!(
             service = ?endpoint.uri(),
             "ICAP URI credentials will be sent over a plaintext connection"
@@ -1302,7 +1318,7 @@ fn build_icap_adaptation(
     // This is intentionally a dedicated ICAP connector. In particular, it
     // does not inherit the HTTP egress client's default ALPN configuration.
     let connector = IcapTlsConnector::auto(rama::dns::client::DnsConnector::new(
-        rama::tcp::client::service::TcpConnector::new().with_connector(tcp_options),
+        TcpConnector::new().with_connector(tcp_options),
     ))
     .maybe_with_base_config(tls_config);
     let connector = connect_timeout
@@ -1405,15 +1421,21 @@ async fn run_with_dashboard_token(
     let capture = ua_db
         .as_ref()
         .map(|ua_db| {
-            CaptureStore::new_with_inspection(
-                cfg.capture_connections,
-                cfg.capture_exchanges,
-                cfg.capture_websocket_messages,
-                cfg.capture_body_limit,
-                cfg.capture_total_limit,
-                ua_db.clone(),
+            Ok::<_, BoxError>(CaptureStore::with_storage(
+                capture::storage(cfg.capture_total_limit)?,
+                capture::CaptureConfig {
+                    max_connections: cfg.capture_connections,
+                    max_exchanges: cfg.capture_exchanges,
+                    body_limit: cfg.capture_body_limit,
+                    total_limit: 0, // The filesystem service bounds encrypted bytes.
+                    observer: Arc::new(capture::ProxyCaptureObserver::new(
+                        ua_db.clone(),
+                        cfg.capture_websocket_messages,
+                    )),
+                    ..capture::CaptureConfig::default()
+                },
                 inspection.clone(),
-            )
+            ))
         })
         .transpose()?;
     if let Some(capture) = &capture {
@@ -1470,14 +1492,17 @@ async fn run_with_dashboard_token(
         .transpose()?;
     let dashboard = match (&capture, &ua_db, &dashboard_auth_token) {
         (Some(capture), Some(_), Some(token)) => Some(DashboardAuthService::new(
-            dashboard::service(DashboardState::new(
-                capture.clone(),
-                har.clone(),
-                ca_pem,
-                tcp_options.clone(),
-                upstream.clone(),
-                mitm_policy.clone(),
-            )),
+            dashboard::service(
+                DashboardState::new(
+                    capture.clone(),
+                    har.clone(),
+                    ca_pem,
+                    tcp_options.clone(),
+                    &upstream,
+                    mitm_policy.clone(),
+                )?
+                .with_export_limit(cfg.inspect_export_concurrency)?,
+            ),
             token.clone(),
         )),
         _ => None,
@@ -1538,6 +1563,7 @@ async fn run_with_dashboard_token(
             network.local.port = %local_address.port(),
             "MITM inspector ready: http://{local_address}/?token={auth_token}"
         );
+        print_inspector_ready(local_address, &auth_token, cfg.inspect_json);
         let dashboard = standalone_dashboard_service(dashboard, local_address.into());
         let ui_exec = exec.clone();
         let ui_tcp_options = tcp_options.clone();
@@ -1606,8 +1632,7 @@ async fn run_with_dashboard_token(
         let make_egress_connector = || {
             let connector = EasyHttpWebClient::connector_builder()
                 .with_custom_transport_connector(
-                    rama::tcp::client::service::TcpConnector::new()
-                        .with_connector(tcp_options.clone()),
+                    TcpConnector::new().with_connector(tcp_options.clone()),
                 )
                 .with_default_dns_connector()
                 .with_tls_proxy_support_using_boringssl()
@@ -1702,9 +1727,10 @@ async fn run_with_dashboard_token(
         let socks5 = Socks5Acceptor::new(exec.clone())
             .with_connector(Socks5Connector::new(socks_connector, socks_bridge));
 
-        let http = MarkProtocolLayer::new(capture.clone(), "http").into_layer(plain_http);
-        let https = MarkProtocolLayer::new(capture.clone(), "https").into_layer(tls_acceptor);
-        let socks5 = MarkProtocolLayer::new(capture.clone(), "socks5").into_layer(socks5);
+        let http = MarkProtocolLayer::new(capture.clone(), Protocol::HTTP).into_layer(plain_http);
+        let https =
+            MarkProtocolLayer::new(capture.clone(), Protocol::HTTPS).into_layer(tls_acceptor);
+        let socks5 = MarkProtocolLayer::new(capture.clone(), Protocol::SOCKS5).into_layer(socks5);
         let tcp_layers = (
             TcpStreamOptionsLayer::new(tcp_options.clone()),
             BodyLimitLayer::request_only(cfg.body_limit),
@@ -1721,9 +1747,9 @@ async fn run_with_dashboard_token(
             },
             opt_per_sec(Some(cfg.throttle))
                 .map(|rate| ThrottleLayer::symmetric(ThrottleMode::per_conn(rate))),
-            capture
-                .clone()
-                .map(|capture| ObserveConnectionLayer::new(capture, "classifying")),
+            capture.clone().map(|capture| {
+                ObserveConnectionLayer::new(capture, Protocol::from_static("classifying"))
+            }),
         );
 
         let labels = protocols
@@ -1739,6 +1765,7 @@ async fn run_with_dashboard_token(
         );
         if dashboard_here && let Some(auth_token) = dashboard_auth_token.as_ref() {
             tracing::info!("MITM inspector ready: http://{local_address}/?token={auth_token}");
+            print_inspector_ready(local_address, auth_token, cfg.inspect_json);
         }
 
         exec.clone().into_spawn_task(async move {
@@ -1966,13 +1993,13 @@ fn request_targets_mitm_portal(request: &Request) -> bool {
 }
 
 fn request_targets_dashboard(request: &Request, dashboard_address: SocketAddress) -> bool {
-    if request.method() == rama::http::Method::CONNECT {
+    if request.method() == Method::CONNECT {
         return false;
     }
     let dashboard_address: std::net::SocketAddr = dashboard_address.into();
     let local_address = request
         .extensions()
-        .get_ref::<rama::net::stream::SocketInfo>()
+        .get_ref::<SocketInfo>()
         .and_then(|socket| socket.local_addr())
         .map(Into::<std::net::SocketAddr>::into);
     if !dashboard_address.ip().is_unspecified()
@@ -2044,11 +2071,9 @@ fn new_proxy_client(
     } else {
         tracing::Level::DEBUG
     };
-    let tls_config = rama::tls::client::TlsClientConfig::default_http();
+    let tls_config = TlsClientConfig::default_http();
     let client = EasyHttpWebClient::connector_builder()
-        .with_custom_transport_connector(
-            rama::tcp::client::service::TcpConnector::new().with_connector(tcp_options),
-        )
+        .with_custom_transport_connector(TcpConnector::new().with_connector(tcp_options))
         .with_default_dns_connector()
         .with_tls_proxy_support_using_boringssl()
         .with_proxy_support()
@@ -2159,6 +2184,7 @@ fn tcp_socket_options(cfg: &CliCommandProxy) -> Arc<SocketOptions> {
     {
         keep_alive.interval = Some(Duration::from_secs(cfg.tcp_keepalive_interval));
     }
+
     #[cfg(not(any(
         target_os = "openbsd",
         target_os = "redox",
@@ -2190,158 +2216,8 @@ where
     service
 }
 
-fn close_intercepted_websocket(
-    extensions: rama::extensions::Extensions,
-    code: u16,
-    reason: String,
-) -> WebSocketRelayEventOutput {
-    use rama::http::ws::{
-        handshake::mitm::WebSocketRelayClose,
-        protocol::{CloseFrame, frame::coding::CloseCode},
-    };
-    WebSocketRelayEventOutput {
-        messages: vec![],
-        close: Some(WebSocketRelayClose::WithFrame(CloseFrame {
-            code: CloseCode::from(code),
-            reason: reason.into(),
-        })),
-        extensions,
-    }
-}
-
-async fn inspect_websocket_event(
-    capture: Option<CaptureStore>,
-    input: WebSocketRelayEventInput,
-) -> Result<WebSocketRelayEventOutput, Infallible> {
-    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-    use control::{Decision, WebSocketContext};
-    let WebSocketRelayEventInput {
-        direction,
-        mut event,
-        extensions,
-    } = input;
-    if let (Some(store), Some(context), WebSocketRelayEvent::Data(data)) = (
-        capture.as_ref().filter(|s| s.control().is_active()),
-        extensions.get_ref::<WebSocketContext>(),
-        &event,
-    ) {
-        let mut message = context.request.clone();
-        message.protocol = if message.protocol == "https" {
-            "wss"
-        } else {
-            "ws"
-        }
-        .into();
-        message.direction = format!("{direction:?}").to_ascii_lowercase();
-        message.exchange = extensions.get_ref::<ExchangeId>().map(|id| id.0);
-        message.binary = matches!(data, WebSocketRelayMessage::Binary(_));
-        message.kind = if message.binary { "binary" } else { "text" }.into();
-        let size = match data {
-            WebSocketRelayMessage::Text(t) => t.len(),
-            WebSocketRelayMessage::Binary(b) => b.len().saturating_mul(4).div_ceil(3),
-        };
-        message.oversized = size > 256 * 1024;
-        message.payload = (!message.oversized).then(|| match data {
-            WebSocketRelayMessage::Text(t) => t.to_string(),
-            WebSocketRelayMessage::Binary(b) => BASE64.encode(b),
-        });
-        let (decision, reason) = store
-            .control()
-            .decide(&context.connection, message.clone())
-            .await;
-        if let (Some(id), Some(reason)) = (message.exchange, reason) {
-            let outcome = match &decision {
-                Decision::Forward { .. } => "Forwarded",
-                Decision::Close { .. } => "Closed",
-                _ => "Dropped",
-            };
-            store
-                .record_decision(id, &message, &format!("{outcome} · {reason}"), None)
-                .await;
-        }
-        match decision {
-            Decision::Forward {
-                payload: Some(payload),
-                ..
-            } => {
-                event = WebSocketRelayEvent::Data(if message.binary {
-                    let Ok(bytes) = BASE64.decode(payload) else {
-                        return Ok(close_intercepted_websocket(
-                            extensions,
-                            1011,
-                            "Invalid approved payload".into(),
-                        ));
-                    };
-                    WebSocketRelayMessage::Binary(bytes.into())
-                } else {
-                    WebSocketRelayMessage::Text(payload.into())
-                });
-            }
-            Decision::Drop | Decision::Block => {
-                return Ok(WebSocketRelayEventOutput {
-                    messages: vec![],
-                    close: None,
-                    extensions,
-                });
-            }
-            Decision::Close { code, reason } => {
-                return Ok(close_intercepted_websocket(extensions, code, reason));
-            }
-            _ => (),
-        }
-    }
-    if let (Some(capture), Some(exchange_id)) =
-        (capture, extensions.get_ref::<ExchangeId>().copied())
-    {
-        if let Some(injector) = extensions.get_ref::<WebSocketRelayInjector>() {
-            capture.register_websocket_injector(exchange_id.0, injector.clone());
-        }
-        let (kind, data, close_code) = match &event {
-            WebSocketRelayEvent::Open => {
-                return Ok(WebSocketRelayEventInput {
-                    direction,
-                    event,
-                    extensions,
-                }
-                .into());
-            }
-            WebSocketRelayEvent::Data(WebSocketRelayMessage::Text(text)) => {
-                ("text", text.as_bytes().to_vec(), None)
-            }
-            WebSocketRelayEvent::Data(WebSocketRelayMessage::Binary(data)) => {
-                ("binary", data.to_vec(), None)
-            }
-            WebSocketRelayEvent::Ping(data) => ("ping", data.to_vec(), None),
-            WebSocketRelayEvent::Pong(data) => ("pong", data.to_vec(), None),
-            WebSocketRelayEvent::Close(frame) => (
-                "close",
-                frame
-                    .as_ref()
-                    .map(|frame| frame.reason.as_bytes().to_vec())
-                    .unwrap_or_default(),
-                frame.as_ref().map(|frame| u16::from(&frame.code)),
-            ),
-        };
-        capture
-            .record_websocket_message(
-                exchange_id.0,
-                format!("{direction:?}"),
-                kind.to_owned(),
-                data,
-                close_code,
-            )
-            .await;
-    }
-    Ok(WebSocketRelayEventOutput::from(WebSocketRelayEventInput {
-        direction,
-        event,
-        extensions,
-    }))
-}
-
-async fn write_new_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), BoxError> {
-    use tokio::io::AsyncWriteExt as _;
-    let mut file = tokio::fs::OpenOptions::new()
+async fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), BoxError> {
+    let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
@@ -2349,6 +2225,26 @@ async fn write_new_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), BoxE
     file.write_all(bytes).await?;
     file.flush().await?;
     Ok(())
+}
+
+fn inspector_ready(address: std::net::SocketAddr, token: &str) -> serde_json::Value {
+    serde_json::json!({
+        "event": "rama.inspector.ready", "version": 1,
+        "inspector_url": format!("http://{address}/?token={token}"),
+        "api_url": format!("http://{address}/api"),
+        "authorization": { "scheme": "Bearer", "token": token },
+        "help_url": format!("http://{address}/api/help"),
+    })
+}
+
+#[expect(
+    clippy::print_stdout,
+    reason = "Explicitly requested machine-readable CLI output"
+)]
+fn print_inspector_ready(address: std::net::SocketAddr, token: &str, enabled: bool) {
+    if enabled {
+        println!("{}", inspector_ready(address, token));
+    }
 }
 
 #[cfg(test)]
