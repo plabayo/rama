@@ -68,13 +68,9 @@ pub(super) async fn build_entry_artifact(
     temp_cleanup: TempPathCleanup,
 ) -> Result<TempPath, BoxError> {
     request.body_size = request_body.size;
-    let form_urlencoded = request_mime_type.as_ref().is_some_and(|mime| {
-        mime.type_() == crate::mime::APPLICATION
-            && mime.subtype() == crate::mime::WWW_FORM_URLENCODED
-    });
     request.post_data = (request_body.size > 0).then(|| spec::PostData {
         mime_type: request_mime_type,
-        params: form_urlencoded.then(Vec::new),
+        params: None,
         text: None,
         comment: None,
     });

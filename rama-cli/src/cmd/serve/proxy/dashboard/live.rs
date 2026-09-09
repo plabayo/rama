@@ -17,7 +17,7 @@ pub(super) async fn index(
             .or_else(|| query.connection.map(UiFocus::Connection))
             .unwrap_or_default();
     }
-    Html(render_index(&session).into_string()).into_response()
+    render_index(&session).into_response()
 }
 
 pub(super) async fn events(
@@ -117,6 +117,6 @@ pub(super) fn render_live_heartbeat(sequence: u64) -> impl IntoHtml {
     span!(
         id = "live-heartbeat",
         hidden = "",
-        "data-sequence" = sequence.to_string()
+        "data-sequence" = sequence
     )
 }

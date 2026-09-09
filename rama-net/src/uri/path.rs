@@ -347,6 +347,8 @@ impl core::fmt::Display for PathRef<'_> {
     }
 }
 
+rama_utils::macros::serde_str::impl_serde_str!(serialize display PathRef<'_>);
+
 /// One segment in a URI path — the bytes between two `/` separators
 /// (or between a `/` and the end of the path).
 ///

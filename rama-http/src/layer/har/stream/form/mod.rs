@@ -1,7 +1,11 @@
 //! Bounded form-to-JSON conversion, including percent escapes split across reads.
 
 use rama_core::error::BoxError;
-use rama_utils::{hex::decode_pair, octets::kib};
+use rama_utils::{
+    hex::decode_pair,
+    octets::kib,
+    str::utf8::{self, DecodeError, REPLACEMENT_CHARACTER},
+};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::string::escaped;
@@ -98,27 +102,27 @@ impl Decoder {
     ) -> Result<(), BoxError> {
         let mut start = 0;
         while start < self.len {
-            match std::str::from_utf8(&self.bytes[start..self.len]) {
+            match utf8::decode(&self.bytes[start..self.len]) {
                 Ok(text) => {
                     escaped(writer, text, encoded).await?;
                     start = self.len;
                 }
-                Err(error) => {
-                    let valid = start + error.valid_up_to();
-                    escaped(
-                        writer,
-                        std::str::from_utf8(&self.bytes[start..valid])?,
-                        encoded,
-                    )
-                    .await?;
-                    if let Some(invalid) = error.error_len() {
-                        escaped(writer, "\u{fffd}", encoded).await?;
-                        start = valid + invalid;
-                    } else if end {
-                        escaped(writer, "\u{fffd}", encoded).await?;
+                Err(DecodeError::Invalid {
+                    valid_prefix,
+                    remaining_input,
+                    ..
+                }) => {
+                    escaped(writer, valid_prefix, encoded).await?;
+                    escaped(writer, REPLACEMENT_CHARACTER, encoded).await?;
+                    start = self.len - remaining_input.len();
+                }
+                Err(DecodeError::Incomplete { valid_prefix, .. }) => {
+                    escaped(writer, valid_prefix, encoded).await?;
+                    if end {
+                        escaped(writer, REPLACEMENT_CHARACTER, encoded).await?;
                         start = self.len;
                     } else {
-                        start = valid;
+                        start += valid_prefix.len();
                         break;
                     }
                 }

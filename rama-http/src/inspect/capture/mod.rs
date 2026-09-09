@@ -55,7 +55,6 @@ pub use attachment::{CapturedRecord, CapturedRecordStream};
 pub use extension::ExchangeCapture;
 #[cfg(test)]
 use filter::{matches_connection_id, matches_protocol, matches_status};
-use model::contains_folded;
 pub use model::{
     CaptureDetails, CaptureSnapshot, CapturedBody, HttpConnectionSummary, HttpExchangeId,
     HttpExchangeSummary, ReplayRequest, StoredRecord,
@@ -780,7 +779,7 @@ fn records_match_search(records: &[StoredRecord], needle: &str) -> bool {
             original_payload,
             ..
         } => {
-            contains_folded(outcome, needle)
+            search::matches_display(outcome, needle)
                 || original_payload
                     .as_ref()
                     .is_some_and(|value| search::matches_display(value, needle))

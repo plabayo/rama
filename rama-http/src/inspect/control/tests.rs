@@ -1,3 +1,4 @@
+use rama_net::client::ConnectorTarget;
 use rama_utils::str::NonEmptyStr;
 
 use super::*;
@@ -666,6 +667,7 @@ fn http_message_rules_use_the_resolved_authority() {
             .uri(uri)
             .header(header::HOST, host_header)
             .extension(protocol)
+            .extension(ConnectorTarget("127.0.0.1:3128".parse().unwrap()))
             .body(())
             .unwrap()
             .into_parts();
@@ -686,6 +688,20 @@ fn http_message_rules_use_the_resolved_authority() {
             ..message
         }));
     }
+}
+
+#[test]
+fn http_message_retains_an_authority_without_a_known_protocol_port() {
+    let (parts, ()) = crate::Request::builder()
+        .uri("/path")
+        .header(header::HOST, "example.test")
+        .extension(Protocol::from_static("custom"))
+        .body(())
+        .unwrap()
+        .into_parts();
+    let message = http_message(&parts);
+    assert_eq!(message.host, Some("example.test".parse().unwrap()));
+    assert_eq!(message.port, None);
 }
 
 #[test]
@@ -710,7 +726,7 @@ fn rule_conditions_combine_protocol_port_kind_and_header_patterns() {
         direction: "ingress".parse().unwrap(),
         port: Some(8080),
         kind: Some(rama_utils::str::non_empty_str!("binary")),
-        headers: headers(&[("X-Mode", "test-one")]),
+        headers: headers(&[("X-Mode", "ignored"), ("X-Mode", "test-one")]),
         ..request()
     };
     assert!(compiled.matches(&message));

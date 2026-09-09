@@ -4,6 +4,7 @@ use rama_utils::fs::{CreatedFilePermissions, OpenOptionsSync, TempDir, TempPath,
 use tokio::{
     fs::File,
     io::{AsyncSeekExt, AsyncWriteExt},
+    runtime::Handle,
     sync::{Mutex, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore},
 };
 
@@ -174,14 +175,14 @@ impl Drop for ActiveAppend {
         if state.file.is_none() {
             return;
         }
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        if Handle::try_current().is_err() {
             // Outside a runtime retain the original handle for the next append to
             // settle; reopening another handle must never race an unfinished write.
             return;
-        };
+        }
         let permit = self.permit.take();
         let owner = self.owner.clone();
-        runtime.spawn(async move {
+        rama_core::rt::spawn(async move {
             let start = state.committed;
             let recovered: Result<(), std::io::Error> = async {
                 state.writer()?.flush().await?;

@@ -1,6 +1,7 @@
 use rama_net::ProtocolInputExt as _;
 
 use super::*;
+use crate::headers::{HeaderMapExt as _, Host as HostHeader};
 
 impl CaptureStore {
     pub(super) fn try_reserve_exchange(&self) -> Option<CaptureExchangeAdmission<'_>> {
@@ -103,9 +104,8 @@ impl CaptureStore {
             .or_else(|| {
                 parts
                     .headers
-                    .get(crate::header::HOST)
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.parse().ok())
+                    .typed_get::<HostHeader>()
+                    .map(|host| host.0.into())
             });
         let (collection, writer) = self
             .0

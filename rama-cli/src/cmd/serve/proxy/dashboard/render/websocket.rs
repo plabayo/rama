@@ -2,7 +2,10 @@ use std::fmt;
 
 use rama::{
     combinators::Either,
-    http::ws::inspect::{WebSocketMessageMetadata, WebSocketMessagePreview},
+    http::{
+        mime::{self, Mime},
+        ws::inspect::{WebSocketMessageMetadata, WebSocketMessagePreview},
+    },
 };
 
 use super::*;
@@ -253,28 +256,29 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_websocket_messages(
             )
         ),
         composer,
-        render_each(cards)
+        cards
     ))
 }
 
-pub(in crate::cmd::serve::proxy::dashboard) fn is_textual_content_type(content_type: &str) -> bool {
-    let content_type = content_type.as_bytes();
-    content_type
-        .get(..5)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"text/"))
-        || [
-            "json",
-            "xml",
-            "javascript",
-            "graphql",
-            "x-www-form-urlencoded",
-        ]
-        .iter()
-        .any(|needle| {
-            content_type
-                .windows(needle.len())
-                .any(|value| value.eq_ignore_ascii_case(needle.as_bytes()))
-        })
+pub(in crate::cmd::serve::proxy::dashboard) fn is_textual_content_type(
+    content_type: &Mime,
+) -> bool {
+    content_type.type_() == mime::TEXT
+        || matches!(
+            content_type.subtype().as_str(),
+            "json"
+                | "json-seq"
+                | "ndjson"
+                | "x-ndjson"
+                | "xml"
+                | "javascript"
+                | "x-javascript"
+                | "graphql"
+                | "x-www-form-urlencoded"
+        )
+        || content_type
+            .suffix()
+            .is_some_and(|suffix| matches!(suffix.as_str(), "json" | "xml"))
 }
 
 pub(in crate::cmd::serve::proxy::dashboard) fn websocket_payload(

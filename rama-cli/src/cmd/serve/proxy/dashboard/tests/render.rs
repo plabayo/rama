@@ -390,12 +390,25 @@ fn presentation_helpers_cover_boundaries() {
     assert!(no_response.contains("data-response-state=\"no-response\""));
     assert!(no_response.contains("No response"));
     assert_eq!(escape_js_string(r"a\b'c"), r"a\\b\'c");
-    assert!(is_textual_content_type("application/problem+json"));
-    assert!(is_textual_content_type("APPLICATION/PROBLEM+JSON"));
-    assert!(is_textual_content_type("TEXT/PLAIN"));
-    assert!(!is_textual_content_type("ééé"));
-    assert!(is_textual_content_type("text/event-stream; charset=utf-8"));
-    assert!(!is_textual_content_type("application/octet-stream"));
+    for value in [
+        "application/problem+json",
+        "APPLICATION/PROBLEM+JSON",
+        "TEXT/PLAIN",
+        "text/event-stream; charset=utf-8",
+        "application/atom+xml",
+        "application/x-www-form-urlencoded",
+        "application/x-ndjson",
+        "application/json-seq",
+    ] {
+        assert!(is_textual_content_type(&value.parse().unwrap()), "{value}");
+    }
+    for value in [
+        "application/octet-stream",
+        "application/octet-stream; filename=data.json",
+        "application/not-json",
+    ] {
+        assert!(!is_textual_content_type(&value.parse().unwrap()), "{value}");
+    }
 }
 
 #[test]

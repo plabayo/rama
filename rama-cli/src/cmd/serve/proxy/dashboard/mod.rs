@@ -41,7 +41,7 @@ use rama::{
     extensions::ExtensionsRef as _,
     futures::async_stream::stream_fn,
     http::{
-        Body, HeaderMap, Method, Request, Response, StatusCode,
+        Body, Method, Request, Response, StatusCode,
         body::util::BodyExt as _,
         convert::curl,
         headers::{
@@ -58,8 +58,8 @@ use rama::{
             Router,
             extract::{Path, Query, State, datastar::ReadSignals},
             response::{
-                Css, DatastarScript, DatastarSourceMap, Headers, Html, IntoResponse, Json,
-                OctetStream, Script, Sse, Svg,
+                Css, DatastarScript, DatastarSourceMap, Headers, IntoResponse, Json, OctetStream,
+                Script, Sse, Svg,
             },
         },
         sse::{
@@ -587,10 +587,6 @@ struct ControlDecision {
     session: Option<NonEmptyStr>,
     ids: Vec<u64>,
     decision: Decision,
-}
-
-fn header_value<'a>(headers: Option<&'a HeaderMap>, expected: &str) -> Option<&'a str> {
-    headers?.get(expected)?.to_str().ok()
 }
 
 const STYLE_CSS: &str = include_str!("../dashboard.css");

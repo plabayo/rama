@@ -1,6 +1,8 @@
 use super::*;
 
-pub(in crate::cmd::serve::proxy::dashboard) fn render_index(session: &str) -> impl IntoHtml {
+pub(in crate::cmd::serve::proxy::dashboard) fn render_index(
+    session: &str,
+) -> impl IntoHtml + IntoResponse {
     let session_signal = ("'", session, "'");
     html!(
         lang = "en",

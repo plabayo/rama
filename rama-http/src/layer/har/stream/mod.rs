@@ -1,7 +1,10 @@
 //! Streaming serialization of HAR entries and bodies, independent of inspection.
 
 use rama_core::error::BoxError;
-use rama_utils::octets::kib;
+use rama_utils::{
+    octets::kib,
+    str::utf8::{self, DecodeError, Incomplete},
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 use super::spec;
@@ -321,25 +324,36 @@ pub async fn scan(mut reader: impl AsyncRead + Unpin) -> Result<BodyStats, BoxEr
         size: 0,
         utf8: true,
     };
-    let mut buffer = [0; CHUNK + 3];
-    let mut pending = 0;
+    let mut buffer = [0; CHUNK];
+    let mut incomplete = Incomplete::empty();
     loop {
-        let read = reader.read(&mut buffer[pending..CHUNK]).await?;
+        let read = reader.read(&mut buffer).await?;
         if read == 0 {
-            stats.utf8 &= pending == 0;
+            stats.utf8 &= incomplete.is_empty();
             return Ok(stats);
         }
         stats.size = stats.size.saturating_add(read as u64);
-        let end = pending + read;
-        pending = 0;
-        if stats.utf8
-            && let Err(error) = std::str::from_utf8(&buffer[..end])
-        {
-            if error.error_len().is_some() {
-                stats.utf8 = false;
-            } else {
-                pending = end - error.valid_up_to();
-                buffer.copy_within(error.valid_up_to()..end, 0);
+        if !stats.utf8 {
+            continue;
+        }
+        let mut bytes = &buffer[..read];
+        if !incomplete.is_empty() {
+            match incomplete.try_complete(bytes) {
+                Some((Ok(_), remaining)) => bytes = remaining,
+                Some((Err(_), _)) => {
+                    stats.utf8 = false;
+                    continue;
+                }
+                None => continue,
+            }
+        }
+        match utf8::decode(bytes) {
+            Ok(_) => {}
+            Err(DecodeError::Invalid { .. }) => stats.utf8 = false,
+            Err(DecodeError::Incomplete {
+                incomplete_suffix, ..
+            }) => {
+                incomplete = incomplete_suffix;
             }
         }
     }

@@ -4,7 +4,7 @@ use std::{
 };
 
 use rama_utils::octets::{kib, mib_u64};
-use tokio::io::AsyncWrite;
+use tokio::io::{AsyncWrite, ReadBuf};
 
 use super::*;
 use crate::{Request, Response};
@@ -12,6 +12,24 @@ use crate::{Request, Response};
 struct RepeatedBody {
     byte: u8,
     length: u64,
+}
+
+struct Chunked<'a> {
+    bytes: &'a [u8],
+    size: usize,
+}
+
+impl AsyncRead for Chunked<'_> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+        output: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let count = self.bytes.len().min(self.size).min(output.remaining());
+        output.put_slice(&self.bytes[..count]);
+        self.bytes = &self.bytes[count..];
+        Poll::Ready(Ok(()))
+    }
 }
 
 impl HarBody for RepeatedBody {
@@ -81,6 +99,33 @@ async fn streamed_entry_matches_serde_without_an_inspector() {
         serde_json::to_vec(&decoded).unwrap(),
         serde_json::to_vec(&entry).unwrap()
     );
+}
+
+#[tokio::test]
+async fn shared_utf8_decoder_handles_short_reads_and_incomplete_text() {
+    for bytes in [
+        "é€🙂 x".as_bytes(),
+        b"a\xf0\x9f\x99\x82\xe2\x82",
+        b"\xf0\x9f!z",
+        b"\xffx",
+    ] {
+        for size in 1..=4 {
+            let stats = scan(Chunked { bytes, size }).await.unwrap();
+            assert_eq!(stats.size, bytes.len() as u64);
+            assert_eq!(stats.utf8, std::str::from_utf8(bytes).is_ok());
+            let mut output = Vec::new();
+            let result = write_json_string(&mut output, Chunked { bytes, size }, true).await;
+            match std::str::from_utf8(bytes) {
+                Ok(expected) => {
+                    result.unwrap();
+                    assert_eq!(serde_json::from_slice::<String>(&output).unwrap(), expected);
+                }
+                Err(_) => {
+                    result.unwrap_err();
+                }
+            }
+        }
+    }
 }
 
 async fn streamed_post_data(post: spec::PostData, body: &[u8]) -> spec::PostData {

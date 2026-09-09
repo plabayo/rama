@@ -1,4 +1,4 @@
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 
 use super::*;
 
@@ -27,7 +27,6 @@ impl Service<CreateCollection> for MemoryStore {
     async fn serve(&self, _: CreateCollection) -> Result<Collection, BoxError> {
         Ok(Collection::new(MemoryCollection(Arc::new(MemoryInner {
             records: parking_lot::RwLock::new(Vec::new()),
-            append_lock: Mutex::new(()),
             limit: self.limits.record_bytes,
             budget: self.budget.clone(),
             appends: self.appends.clone(),
@@ -42,7 +41,6 @@ struct Blob {
 
 struct MemoryInner {
     records: parking_lot::RwLock<Vec<Arc<Blob>>>,
-    append_lock: Mutex<()>,
     limit: u64,
     budget: Arc<Budget>,
     appends: Arc<Semaphore>,
@@ -56,7 +54,6 @@ impl Service<AppendRecord> for MemoryCollection {
     type Error = BoxError;
 
     async fn serve(&self, input: AppendRecord) -> Result<RecordId, BoxError> {
-        let _append = self.0.append_lock.lock().await;
         let (bytes, reservation) = match input {
             AppendRecord::Bytes(bytes) => {
                 check_record_limit(bytes.len() as u64, self.0.limit)?;

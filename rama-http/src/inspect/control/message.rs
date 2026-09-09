@@ -68,15 +68,7 @@ impl Serialize for Message {
         struct WithPath<'a> {
             #[serde(flatten, with = "Message")]
             message: &'a Message,
-            #[serde(serialize_with = "serialize_path")]
             path: PathRef<'a>,
-        }
-
-        fn serialize_path<S: serde::Serializer>(
-            path: &PathRef<'_>,
-            serializer: S,
-        ) -> Result<S::Ok, S::Error> {
-            serializer.collect_str(path)
         }
 
         WithPath {
@@ -120,18 +112,17 @@ impl Message {
 }
 
 pub fn http_message(parts: &Parts) -> Message {
-    let authority = parts.authority();
     let protocol = parts.protocol().unwrap_or(&Protocol::HTTP);
-    let port = authority
-        .as_ref()
-        .and_then(|authority| authority.port_u16())
-        .or_else(|| protocol.default_port());
+    let (host, port) = match parts.authority_with_default_port(None) {
+        Some(authority) => (Some(authority.host), Some(authority.port)),
+        None => (parts.host(), parts.protocol_default_port()),
+    };
     Message {
         protocol: protocol.clone(),
         direction: Direction::Ingress,
         method: parts.method.clone(),
         url: parts.uri.clone(),
-        host: authority.map(|authority| authority.host),
+        host,
         port,
         headers: parts.headers.clone(),
         conditional: matches!(parts.method, Method::GET | Method::HEAD)

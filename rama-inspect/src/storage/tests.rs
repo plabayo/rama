@@ -135,6 +135,37 @@ async fn memory_streaming_cancel_concurrency_and_retention() {
 }
 
 #[tokio::test]
+async fn memory_stalled_append_does_not_block_another_record() {
+    let store = MemoryStore::new(StorageLimits::default());
+    let collection = store.serve(CreateCollection { id: 1 }).await.unwrap();
+    let first = collection
+        .serve(AppendRecord::bytes(Bytes::from_static(b"first")))
+        .await
+        .unwrap();
+    let (mut source, stream) = tokio::io::duplex(1);
+    let stalled = tokio::spawn({
+        let collection = collection.clone();
+        async move { collection.append(stream).await }
+    });
+    source.write_all(b"pending").await.unwrap();
+
+    let next = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        collection.serve(AppendRecord::bytes(Bytes::from_static(b"next"))),
+    )
+    .await
+    .expect("a private in-flight buffer must not prevent another record from publishing")
+    .unwrap();
+    assert_eq!(collection.snapshot().await.unwrap(), vec![first, next]);
+    assert_eq!(content(&collection, next).await, b"next");
+
+    stalled.abort();
+    assert!(stalled.await.unwrap_err().is_cancelled());
+    assert_eq!(collection.snapshot().await.unwrap(), vec![first, next]);
+    assert_eq!(content(&collection, first).await, b"first");
+}
+
+#[tokio::test]
 async fn file_streaming_cancel_concurrency_and_retention() {
     exercise(FileStore::temporary(StorageLimits::default()).unwrap()).await;
 }

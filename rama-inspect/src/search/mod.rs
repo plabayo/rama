@@ -2,6 +2,12 @@
 
 use std::fmt::{self, Write};
 
+use rama_utils::{
+    hex::encode_byte_upper,
+    octets::kib,
+    str::utf8::{self, DecodeError, Incomplete},
+};
+
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 struct Matcher {
@@ -116,45 +122,49 @@ pub async fn matches_reader(
     let mut hex = Matcher::new(needle);
     _ = text.write_char('"');
     _ = hex.write_str("0x");
-    let mut buffer = vec![0; rama_utils::octets::kib(16) + 4];
-    let mut carry = 0;
+    let mut buffer = vec![0; kib(16)];
+    let mut incomplete = Incomplete::empty();
     let mut utf8 = true;
     loop {
-        let count = reader.read(&mut buffer[carry..]).await?;
+        let count = reader.read(&mut buffer).await?;
         if count == 0 {
-            if carry != 0 {
+            if !incomplete.is_empty() {
                 utf8 = false;
             }
             _ = text.write_char('"');
             return Ok(if utf8 { text.matched } else { hex.matched });
         }
         if !hex.matched {
-            for &byte in &buffer[carry..carry + count] {
-                let encoded = rama_utils::hex::encode_byte_upper(byte);
+            for &byte in &buffer[..count] {
+                let encoded = encode_byte_upper(byte);
                 _ = hex.write_char(char::from(encoded[0]));
                 _ = hex.write_char(char::from(encoded[1]));
             }
         }
-        let length = carry + count;
-        if utf8 {
-            match std::str::from_utf8(&buffer[..length]) {
-                Ok(value) => {
-                    text_fragment(&mut text, value);
-                    carry = 0;
+        let mut input = &buffer[..count];
+        if utf8 && !incomplete.is_empty() {
+            match incomplete.try_complete(input) {
+                Some((Ok(fragment), remaining)) => {
+                    text_fragment(&mut text, fragment);
+                    input = remaining;
                 }
-                Err(error) => {
-                    text_fragment(
-                        &mut text,
-                        std::str::from_utf8(&buffer[..error.valid_up_to()])
-                            .map_err(std::io::Error::other)?,
-                    );
-                    if error.error_len().is_some() {
-                        utf8 = false;
-                        carry = 0;
-                    } else {
-                        carry = length - error.valid_up_to();
-                        buffer.copy_within(error.valid_up_to()..length, 0);
-                    }
+                Some((Err(_), _)) => utf8 = false,
+                None => continue,
+            }
+        }
+        if utf8 {
+            match utf8::decode(input) {
+                Ok(fragment) => text_fragment(&mut text, fragment),
+                Err(DecodeError::Incomplete {
+                    valid_prefix,
+                    incomplete_suffix,
+                }) => {
+                    text_fragment(&mut text, valid_prefix);
+                    incomplete = incomplete_suffix;
+                }
+                Err(DecodeError::Invalid { valid_prefix, .. }) => {
+                    text_fragment(&mut text, valid_prefix);
+                    utf8 = false;
                 }
             }
         }
@@ -172,14 +182,14 @@ pub async fn matches_hex_reader(
 ) -> std::io::Result<bool> {
     let mut matcher = Matcher::new(needle);
     _ = matcher.write_str("0x");
-    let mut buffer = vec![0; rama_utils::octets::kib(16)];
+    let mut buffer = vec![0; kib(16)];
     while !matcher.matched {
         let count = reader.read(&mut buffer).await?;
         if count == 0 {
             break;
         }
         for &byte in &buffer[..count] {
-            let encoded = rama_utils::hex::encode_byte_upper(byte);
+            let encoded = encode_byte_upper(byte);
             _ = matcher.write_char(char::from(encoded[0]));
             _ = matcher.write_char(char::from(encoded[1]));
         }
@@ -188,34 +198,4 @@ pub async fn matches_hex_reader(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[tokio::test]
-    async fn streamed_search_matches_native_display_across_unicode_boundaries() {
-        let mut text = "x".repeat(rama_utils::octets::kib(16) - 1);
-        text.push_str("🙂\"\n\0'\u{200d}İΣabcabcabd");
-        let mut binary = text.as_bytes().to_vec();
-        binary.extend_from_slice(&[0xff, 0xaa]);
-        for data in [text.as_bytes(), binary.as_slice(), b"", b"a'b\nc"] {
-            for needle in [
-                "🙂",
-                "\\n",
-                "\\u{200d}",
-                "'",
-                "İΣ",
-                "abcabd",
-                "0x78",
-                "ffaa",
-                "missing",
-                "\"",
-                "",
-            ] {
-                assert_eq!(
-                    matches_reader(data, needle).await.unwrap(),
-                    matches_display(&rama_utils::fmt::utf8_or_hex(data), needle),
-                    "{needle:?}"
-                );
-            }
-        }
-    }
-}
+mod tests;

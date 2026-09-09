@@ -71,10 +71,6 @@ pub struct HttpExchangeSummary {
     pub metadata: CaptureMetadata,
 }
 
-pub(super) fn contains_folded(haystack: &str, needle: &str) -> bool {
-    super::search::matches_display(&haystack, needle)
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct CaptureSnapshot {
     pub connections: Vec<HttpConnectionSummary>,

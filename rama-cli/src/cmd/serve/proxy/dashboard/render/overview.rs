@@ -300,11 +300,7 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_overview_panel(
         ))
     };
     let fallback = render_pending_fallbacks(&live.pending, &snapshot.exchanges, None);
-    let requests = div!(
-        class = "exchange-list",
-        render_each(exchange_rows),
-        fallback,
-    );
+    let requests = div!(class = "exchange-list", exchange_rows, fallback,);
     let selection_exports = match (session.selected_connections.len(), session.selected.len()) {
         (0, 0) => Either::A(div!(
             class = "export",
@@ -381,7 +377,7 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_overview_panel(
                     "data-connection-page" = display(session.connection_page),
                     "data-has-newer" = display(has_newer_connections),
                     "data-has-older" = display(has_older_connections),
-                    render_each(connection_rows),
+                    connection_rows,
                     connection_pager
                 )
             ),

@@ -132,7 +132,8 @@ impl Service<AppendRecord> for EncryptedCollection {
         let key = self.key.clone();
         let collection = self.id;
         let stream = stream_fn(move |mut output| async move {
-            let mut header = MAGIC.to_vec();
+            let mut header = Vec::with_capacity(MAGIC.len() + identity.len());
+            header.extend_from_slice(MAGIC);
             header.extend_from_slice(&identity);
             output
                 .yield_item(Ok::<_, std::io::Error>(Bytes::from(header)))

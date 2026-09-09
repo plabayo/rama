@@ -250,9 +250,7 @@ impl Decision {
                     ));
                 }
                 response.validate()?;
-                if message.method == Method::CONNECT
-                    && (200..300).contains(&response.status.as_u16())
-                {
+                if message.method == Method::CONNECT && response.status.is_success() {
                     return Err(BoxError::from_static_str(
                         "a local response cannot establish a CONNECT tunnel",
                     ));
@@ -433,8 +431,9 @@ impl CompiledRule {
             && self.headers.iter().all(|(name, pattern)| {
                 message
                     .headers
+                    .get_all(name)
                     .iter()
-                    .any(|(k, v)| k == name && pattern.is_match(v.as_bytes()))
+                    .any(|value| pattern.is_match(value.as_bytes()))
             })
     }
 }

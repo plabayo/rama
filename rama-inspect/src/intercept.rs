@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use parking_lot::Mutex;
 use rama_core::futures::StreamExt;
+use rama_utils::macros::error::static_str_error;
 use tokio::sync::{oneshot, watch};
 
 /// Admission costs are supplied by the adapter that owns the message representation.
@@ -25,16 +26,12 @@ impl Default for QueueLimits {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct QueueFull;
-
-impl std::fmt::Display for QueueFull {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("interception queue is full")
-    }
+static_str_error! {
+    /// interception queue is full
+    #[derive(Copy)]
+    pub struct QueueFull;
 }
 
-impl std::error::Error for QueueFull {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaitError {
     Expired,

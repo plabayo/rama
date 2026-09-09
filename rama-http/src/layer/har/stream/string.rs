@@ -1,5 +1,6 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rama_core::error::BoxError;
+use rama_utils::str::utf8::{self, DecodeError, Incomplete};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::CHUNK;
@@ -19,28 +20,38 @@ pub async fn write_json_string<W: AsyncWrite + Unpin>(
         vec![0; (CHUNK + 3).div_ceil(3) * 4]
     };
     let mut pending = 0;
+    let mut incomplete = Incomplete::empty();
     loop {
         let read = reader.read(&mut buffer[pending..CHUNK]).await?;
         let end = pending + read;
         if utf8 {
-            let valid = match std::str::from_utf8(&buffer[..end]) {
+            let mut bytes = &buffer[..read];
+            if !incomplete.is_empty() {
+                match incomplete.try_complete(bytes) {
+                    Some((Ok(fragment), remaining)) => {
+                        escaped(writer, fragment, &mut encoded).await?;
+                        bytes = remaining;
+                    }
+                    Some((Err(_), _)) => return Err("invalid UTF-8 in a text HAR body".into()),
+                    None if read != 0 => continue,
+                    None => return Err("incomplete UTF-8 at the end of a text HAR body".into()),
+                }
+            }
+            match utf8::decode(bytes) {
                 Ok(fragment) => {
                     escaped(writer, fragment, &mut encoded).await?;
-                    end
                 }
-                Err(error) if error.error_len().is_none() && read != 0 => {
-                    escaped(
-                        writer,
-                        std::str::from_utf8(&buffer[..error.valid_up_to()])?,
-                        &mut encoded,
-                    )
-                    .await?;
-                    error.valid_up_to()
+                Err(DecodeError::Incomplete {
+                    valid_prefix,
+                    incomplete_suffix,
+                }) => {
+                    escaped(writer, valid_prefix, &mut encoded).await?;
+                    incomplete = incomplete_suffix;
                 }
-                Err(error) => return Err(error.into()),
-            };
-            pending = end - valid;
-            buffer.copy_within(valid..end, 0);
+                Err(DecodeError::Invalid { .. }) => {
+                    return Err("invalid UTF-8 in a text HAR body".into());
+                }
+            }
         } else {
             let complete = if read == 0 { end } else { end / 3 * 3 };
             let count = STANDARD.encode_slice(&buffer[..complete], &mut encoded)?;

@@ -18,13 +18,14 @@ use rama::{
             FileRecorder, FileRecorderSession, HttpRequestCapture, Recorder, StreamingRecorder,
         },
         spec,
+        stream::HarObjectWriter,
         toggle::Toggle,
     },
-    utils::fs::TempDir,
+    utils::fs::{CreatedFilePermissions, OpenOptions, TempDir},
 };
 use serde::Serialize;
 use tokio::{
-    io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, BufWriter, ReadBuf},
+    io::{AsyncRead, AsyncSeekExt as _, AsyncWriteExt as _, BufWriter, ReadBuf},
     sync::{OwnedSemaphorePermit, RwLock},
 };
 
@@ -91,39 +92,50 @@ pub(super) async fn export_selected(
 
     let staging = TempDir::with_prefix("rama-proxy-selected-har-")
         .context("create private selected HAR staging directory")?;
-    let path = staging.path().join("selected.har");
     let mut writer = BufWriter::new(
-        tokio::fs::File::create(&path)
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .created_file_permissions(CreatedFilePermissions::OwnerReadWrite)
+            .jail(staging.path())
+            .open("selected.har")
             .await
             .context("create selected HAR file")?,
     );
-    write_log_prefix(&mut writer).await?;
+    let mut root = HarObjectWriter::begin(&mut writer).await?;
+    let mut log = HarObjectWriter::begin(root.streamed_field("log").await?).await?;
+    let defaults = spec::Log::default();
+    log.field("version", &defaults.version).await?;
+    log.field("creator", &defaults.creator).await?;
+    log.field("browser", &defaults.browser).await?;
+    let entries = log.streamed_field("entries").await?;
+    entries.write_all(b"[").await?;
     let mut wrote_entry = false;
     while let Some(selected) = selection.next_capture() {
         if wrote_entry {
-            writer
+            entries
                 .write_all(b",")
                 .await
                 .context("separate selected HAR entries")?;
         }
         write_captured_har_entry(
-            &mut writer,
+            entries,
             &selected,
             &rama::http::ws::inspect::har::WebSocketHarExtension(&selected),
         )
         .await?;
         wrote_entry = true;
     }
-    writer
-        .write_all(b"],\"comment\":null}}")
-        .await
-        .context("finish selected HAR")?;
+    entries.write_all(b"]").await?;
+    log.field("comment", &defaults.comment).await?;
+    log.finish().await?;
+    root.finish().await?;
     writer.flush().await.context("flush selected HAR")?;
-    drop(writer);
-
-    let file = tokio::fs::File::open(&path)
+    let mut file = writer.into_inner();
+    file.rewind()
         .await
-        .context("open selected HAR for download")?;
+        .context("rewind selected HAR for download")?;
     let content_length = file
         .metadata()
         .await
@@ -141,30 +153,6 @@ pub(super) async fn export_selected(
             _selected_export_permit: selected_export_permit,
         },
     })
-}
-
-async fn write_log_prefix(writer: &mut (impl AsyncWrite + Unpin)) -> Result<(), BoxError> {
-    let log = spec::Log::default();
-    writer.write_all(b"{\"log\":{\"version\":").await?;
-    write_json(writer, &log.version).await?;
-    writer.write_all(b",\"creator\":").await?;
-    write_json(writer, &log.creator).await?;
-    writer.write_all(b",\"browser\":").await?;
-    write_json(writer, &log.browser).await?;
-    writer.write_all(b",\"entries\":[").await?;
-    Ok(())
-}
-
-async fn write_json(
-    writer: &mut (impl AsyncWrite + Unpin),
-    value: &impl Serialize,
-) -> Result<(), BoxError> {
-    let encoded = serde_json::to_vec(value).context("serialize selected HAR metadata")?;
-    writer
-        .write_all(&encoded)
-        .await
-        .context("write selected HAR metadata")?;
-    Ok(())
 }
 
 #[derive(Clone)]

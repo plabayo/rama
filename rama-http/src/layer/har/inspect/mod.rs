@@ -56,14 +56,11 @@ pub async fn write_captured_har_entry<W: AsyncWrite + Unpin + Send>(
     let mime = request_headers
         .and_then(|headers| headers.typed_get::<ContentType>())
         .map(ContentType::into_mime);
-    let form = mime
-        .as_ref()
-        .is_some_and(|mime| mime.subtype() == crate::mime::WWW_FORM_URLENCODED);
     let mut entry = entry_metadata(details, request_stats.size(), response_stats.size())?;
     if request_stats.size() > 0 {
         entry.request.post_data = Some(spec::PostData {
             mime_type: mime,
-            params: form.then(Vec::new),
+            params: None,
             text: None,
             comment: None,
         });

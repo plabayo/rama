@@ -11,7 +11,7 @@ use std::{
     collections::BTreeSet,
     convert::Infallible,
     num::NonZeroU64,
-    path::PathBuf,
+    path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -123,10 +123,13 @@ use rama::{
         },
     },
     ua::profile::UserAgentDatabase,
-    utils::octets::{kib_u64, mib_u64},
+    utils::{
+        fs::OpenOptions,
+        octets::{kib_u64, mib_u64},
+    },
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
+    io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, ReadBuf},
     sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore},
 };
 use upstream::UpstreamProxyConfig;
@@ -2213,9 +2216,8 @@ where
     service
 }
 
-async fn write_new_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), BoxError> {
-    use tokio::io::AsyncWriteExt as _;
-    let mut file = tokio::fs::OpenOptions::new()
+async fn write_new_file(path: &Path, bytes: &[u8]) -> Result<(), BoxError> {
+    let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)

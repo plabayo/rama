@@ -51,7 +51,7 @@ use rama::{
     utils::octets::{kib, kib_u64},
 };
 use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _, duplex},
+    io::{AsyncReadExt as _, duplex},
     time::timeout,
 };
 

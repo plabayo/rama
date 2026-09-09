@@ -79,9 +79,7 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_tls_offer_list(
             ),
             ol!(
                 class = "tls-offer-list",
-                render_each(
-                    values.map(|value| li!(code!(title = display(value.clone()), display(value))))
-                )
+                values.map(|value| li!(code!(title = display(value.clone()), display(value))))
             )
         )
     })

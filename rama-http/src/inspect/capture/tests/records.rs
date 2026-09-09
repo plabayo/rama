@@ -1,3 +1,8 @@
+use rama_net::{
+    address::HostWithOptPort,
+    forwarded::{Forwarded, ForwardedElement},
+};
+
 use super::*;
 
 #[tokio::test]
@@ -36,6 +41,9 @@ async fn replay_reconstructs_relative_url_headers_and_captured_body() {
         .uri("/resource")
         .header("host", "example.test:8080")
         .header("x-replay", "yes")
+        .extension(Forwarded::new(ForwardedElement::new_forwarded_host(
+            "routing.example:443".parse::<HostWithOptPort>().unwrap(),
+        )))
         .body(Body::from("patch-body"))
         .unwrap();
     let service = CaptureHttpLayer::new(Some(store.clone())).into_layer(

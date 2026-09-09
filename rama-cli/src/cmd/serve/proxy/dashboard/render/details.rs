@@ -1,7 +1,7 @@
 use std::fmt;
 
 use rama::{
-    http::{HeaderMap, inspect::control::Direction},
+    http::{HeaderMap, headers::HeaderMapExt as _, inspect::control::Direction},
     net::{Protocol, stream::SocketInfo},
     utils::fmt::display_fn,
 };
@@ -314,8 +314,10 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_payload_card(
     if bytes == 0 && !truncated {
         return None;
     }
-    let content_type = header_value(headers, "content-type").unwrap_or("application/octet-stream");
-    let textual = is_textual_content_type(content_type);
+    let content_type = headers
+        .and_then(|headers| headers.typed_get::<ContentType>())
+        .unwrap_or_else(ContentType::octet_stream);
+    let textual = is_textual_content_type(content_type.mime());
     let payload_format = if textual { "text" } else { "binary" };
     let title = if direction == "request" {
         "Request payload"
@@ -338,7 +340,7 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_payload_card(
             h3!(title),
             span!(display(format_bytes(bytes)))
         ),
-        code!(content_type),
+        code!(display(content_type)),
         truncated.then(|| p!(
             class = "capture-warning",
             "Capture limit reached; the stored body is incomplete."

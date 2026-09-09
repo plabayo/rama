@@ -4,7 +4,7 @@ use rama_net::Protocol;
 use rama_utils::str::{NonEmptyStr, arcstr::ArcStr};
 use serde::Deserialize;
 
-use super::{HttpExchangeSummary, model::contains_folded};
+use super::{HttpExchangeSummary, search::matches_display};
 use crate::{Method, StatusCode};
 
 /// A parsed selector. Unknown expressions remain visible without matching data.
@@ -232,8 +232,8 @@ impl CaptureFilter {
     pub(super) fn matches_dimensions(&self, summary: &HttpExchangeSummary) -> bool {
         self.connection_id
             .matches(|id| id.0 == summary.connection_display_id)
-            && contains_folded(
-                summary
+            && matches_display(
+                &summary
                     .user_agent
                     .as_ref()
                     .and_then(|v| v.to_str().ok())
@@ -244,7 +244,7 @@ impl CaptureFilter {
                 || summary
                     .endpoint
                     .as_ref()
-                    .is_some_and(|v| super::search::matches_display(v, &self.endpoint)))
+                    .is_some_and(|v| matches_display(v, &self.endpoint)))
             && (self.method.is_empty()
                 || self.method.matches(|method| {
                     summary
@@ -260,7 +260,7 @@ impl CaptureFilter {
 
     pub fn search_matches_summary(&self, summary: &HttpExchangeSummary) -> bool {
         self.search.is_empty()
-            || super::search::matches_display(
+            || matches_display(
                 &format_args!(
                     "{} {} {} {} {} {} {}",
                     summary.connection_display_id,
@@ -280,7 +280,7 @@ impl CaptureFilter {
             || summary
                 .endpoint
                 .as_ref()
-                .is_some_and(|value| super::search::matches_display(value, &self.search))
+                .is_some_and(|value| matches_display(value, &self.search))
     }
 
     pub fn is_empty(&self) -> bool {
