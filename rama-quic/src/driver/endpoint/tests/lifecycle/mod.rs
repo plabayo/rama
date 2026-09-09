@@ -22,7 +22,7 @@ use rama_udp::{DatagramCapabilities, DatagramError, DatagramSender, DatagramSock
 use std::collections::VecDeque;
 use std::{net::IpAddr, num::NonZeroUsize, sync::atomic::AtomicBool, task::Wake};
 
-fn configs() -> (ClientConfig, ServerConfig) {
+pub(super) fn configs() -> (ClientConfig, ServerConfig) {
     let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
     let alpn = || {
         [rama_net::tls::ApplicationProtocol::from(
@@ -449,7 +449,7 @@ async fn accept_validated_from(server: &Endpoint, port: u16) -> Incoming {
 /// Complete the handshake for `connecting` against `incoming` and wait until the client has
 /// confirmed it (HANDSHAKE_DONE received), all within a bounded time. Confirmation, not
 /// completion, is what active migration requires.
-async fn handshake(
+pub(super) async fn handshake(
     connecting: Connecting,
     incoming: Incoming,
 ) -> (
@@ -483,7 +483,7 @@ fn short_header_dcids(sent: &[SentDatagram], len: usize) -> Vec<Vec<u8>> {
 }
 
 /// Send `payload` on a fresh unidirectional stream from `from` and read it back on `to`.
-async fn exchange(
+pub(super) async fn exchange(
     from: &crate::driver::connection::Connection,
     to: &crate::driver::connection::Connection,
     payload: &[u8],
@@ -4727,17 +4727,44 @@ async fn the_first_accepted_datagram_grants_a_fresh_identifier_its_history() {
         "no datagram used the fresh identifier before the descriptor under test"
     );
 
-    // Exactly one datagram may leave, so the first acceptance for this identifier is observable.
-    credit_segments(&log, 1);
-    unblock_segments(&log);
-    wait_for("one datagram is accepted", Duration::from_secs(5), || {
-        log.lock().sent.len() == sent_before + 1
-    })
+    // Datagrams are released one at a time, so the first acceptance carrying this identifier is
+    // observable whichever datagram wins a slot. Before that one the identifier is not used
+    // towards the address; the report follows it. The report is waited for separately: the socket
+    // records a datagram inside its send call, before the driver reports the identifier.
+    let mut released = 0;
+    loop {
+        assert!(
+            released < 8,
+            "the identifier reached the wire within {released} datagrams"
+        );
+        let accepted = log.lock().sent.len();
+        credit_segments(&log, 1);
+        unblock_segments(&log);
+        wait_for("one datagram is accepted", Duration::from_secs(5), || {
+            log.lock().sent.len() > accepted
+        })
+        .await;
+        released += 1;
+        let carried = {
+            let log = log.lock();
+            short_header_dcids(&log.sent, fresh_dcid.len())
+                .iter()
+                .any(|dcid| *dcid == fresh_dcid)
+        };
+        if carried {
+            break;
+        }
+        assert!(
+            !c.cid_confirmed_to(fresh_seq, server_addr),
+            "nothing carrying the identifier has been accepted yet"
+        );
+    }
+    wait_for(
+        "the identifier is used towards that address",
+        Duration::from_secs(5),
+        || c.cid_confirmed_to(fresh_seq, server_addr),
+    )
     .await;
-    assert!(
-        c.cid_confirmed_to(fresh_seq, server_addr),
-        "the first accepted segment makes the identifier used towards that address"
-    );
     // That first acceptance is the prefix under test: the first datagram carrying the fresh
     // identifier is the one the socket took after unblocking, and nothing carried it before.
     let carrying: Vec<Vec<u8>> = {
@@ -4752,13 +4779,19 @@ async fn the_first_accepted_datagram_grants_a_fresh_identifier_its_history() {
         1,
         "exactly one datagram has carried the fresh identifier so far"
     );
+    let last = log
+        .lock()
+        .sent
+        .last()
+        .cloned()
+        .expect("a datagram was sent");
     assert_eq!(
-        log.lock().sent.len(),
-        sent_before + 1,
-        "and it is the datagram the socket took after unblocking"
+        short_header_dcids(std::slice::from_ref(&last), fresh_dcid.len()),
+        vec![fresh_dcid.clone()],
+        "and it is the datagram the socket last took"
     );
     assert_eq!(
-        log.lock().sent.last().unwrap().destination,
+        last.destination,
         SocketAddress::from(server_addr),
         "it went to the address the identifier is recognised at"
     );

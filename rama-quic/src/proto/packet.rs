@@ -1001,7 +1001,9 @@ mod tests {
         }
     }
 
-    #[cfg(any(feature = "aws-lc", feature = "ring"))]
+    // The vectors are checked against rustls's own initial keys, so this needs rustls and a
+    // provider; the rest of this module's coverage does not.
+    #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     #[test]
     #[expect(clippy::print_stdout, reason = "debug output of a test")]
     fn header_encoding() {

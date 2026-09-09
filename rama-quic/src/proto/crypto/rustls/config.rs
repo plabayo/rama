@@ -533,8 +533,15 @@ mod tests {
                 )
                 .unwrap(),
             ));
-            let server = Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
-            let client = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+            let server = Endpoint::server(
+                server_config,
+                "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap(),
+            )
+            .await
+            .unwrap();
+            let client = Endpoint::client("127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap())
+                .await
+                .unwrap();
             let connecting = client
                 .connect_with(client_config, server.local_addr().unwrap(), "localhost")
                 .unwrap();
@@ -634,9 +641,16 @@ mod tests {
                     QuicServerConfig::from_rama(&server_tls, configured_provider(), options)
                         .unwrap(),
                 ));
-                let server =
-                    Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
-                let client = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+                let server = Endpoint::server(
+                    server_config,
+                    "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap(),
+                )
+                .await
+                .unwrap();
+                let client =
+                    Endpoint::client("127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap())
+                        .await
+                        .unwrap();
                 let connecting = client
                     .connect_with(client_config, server.local_addr().unwrap(), "localhost")
                     .unwrap();

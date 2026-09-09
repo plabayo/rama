@@ -1705,5 +1705,8 @@ async fn receive_queue_limits_must_hold_one_datagram_and_one_attempt() {
     ReceiveQueueLimits::new(1, 0).unwrap_err();
 }
 
+// Both of these build a real TLS configuration, so they need rustls and a provider.
+#[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
+mod construction;
 #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]
 mod lifecycle;

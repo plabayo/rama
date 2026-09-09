@@ -385,7 +385,6 @@ impl CidQueue {
 
     /// The never-received, not yet retired numbers between `previous` (exclusive) and `next`
     /// (exclusive): everything from the floor on, minus the identifiers kept aside.
-
     fn skipped_between(&self, previous: u64, next: u64) -> [Range<u64>; Self::SKIPPED_RUNS] {
         self.skipped_from(previous, next, self.floor)
     }
@@ -399,6 +398,14 @@ impl CidQueue {
         floor: u64,
     ) -> [Range<u64>; Self::SKIPPED_RUNS] {
         self.absent_runs((previous + 1).max(floor), next)
+    }
+
+    /// How far past `previous` the never-received numbers are named. A peer may issue a sequence
+    /// number far beyond the last one, and naming every number in between would exceed any
+    /// bounded retirement queue; the numbers past the bound are refused if they arrive, which is
+    /// what retires them then.
+    fn bounded_end(&self, previous: u64, end: u64) -> u64 {
+        end.min(previous.saturating_add(Self::LEN as u64))
     }
 
     /// The numbers in `start..end` this queue does not hold, in runs around the ones it does.
@@ -515,7 +522,7 @@ impl CidQueue {
         // issued them the limit would have been reached, and a late arrival is refused as retired.
         // Identifiers kept aside in that span are still ours and are not named as retired
         // (RFC 9000 §5.1.2).
-        let end = next.seq.min(previous + Self::LEN as u64);
+        let end = self.bounded_end(previous, next.seq);
         let retired = Retired {
             previous: previous..previous + 1,
             skipped: self.skipped_from(previous, end, floor_before),
@@ -536,7 +543,11 @@ impl CidQueue {
         let token = next.reset_token?;
         self.unused[index] = None;
         let previous = std::mem::replace(&mut self.active, next);
-        let skipped = self.skipped_between(previous.seq, next.seq);
+        // Numbers never received are named up to `LEN` past the one that was active, as a frame's
+        // retirement is: a distant identifier would otherwise name a span no retirement queue can
+        // hold. Identifiers this connection holds are not in these runs at all, so nothing it
+        // received is left unnamed, and a late arrival past the bound is refused as retired.
+        let skipped = self.skipped_between(previous.seq, self.bounded_end(previous.seq, next.seq));
         let retired = Retired {
             previous: if keep_previous {
                 self.held = Some(previous);
@@ -631,8 +642,9 @@ impl CidQueue {
         let token = reserved.reset_token?;
         let previous = std::mem::replace(&mut self.active, reserved);
         // A reservation the ring has moved past leaves nothing in between, which the run
-        // computation says by itself.
-        let skipped = self.skipped_between(previous.seq, reserved.seq);
+        // computation says by itself. Bounded like a switch.
+        let skipped =
+            self.skipped_between(previous.seq, self.bounded_end(previous.seq, reserved.seq));
         let retired = Retired {
             previous: previous.seq..previous.seq + 1,
             skipped,
@@ -651,7 +663,7 @@ impl CidQueue {
         // nearest the floor named, and a late arrival past that is refused as retired, which is
         // what retires it then. Naming the whole span instead would exceed the connection's
         // bounded retirement queue and close a connection over identifiers it never held.
-        let end = retire_prior_to.min(self.floor.saturating_add(Self::LEN as u64));
+        let end = self.bounded_end(self.floor, retire_prior_to);
         let skipped = self.absent_runs(self.floor, end);
         let held = self
             .held
@@ -674,8 +686,8 @@ impl CidQueue {
         for seq in aside.iter() {
             self.retired_up_to(seq);
         }
-        // Everything the frame retires is now present or retired, including the numbers never
-        // received, which are named above.
+        // Everything the frame retires is now present, retired, or a number never received past
+        // the bound above, which is refused if it arrives.
         self.floor = self.floor.max(retire_prior_to);
         aside
     }
@@ -941,7 +953,14 @@ mod tests {
 
     /// The sequence numbers a switch says to retire, in order.
     fn retired_seqs(retired: &Retired) -> Vec<u64> {
-        let mut seqs: Vec<u64> = retired.iter().flatten().collect();
+        // One past the bound is collected and the bound is asserted, so an oversized report fails
+        // here instead of exhausting memory or being silently trimmed.
+        let bound = CidQueue::LEN * 4;
+        let mut seqs: Vec<u64> = retired.iter().flatten().take(bound + 1).collect();
+        assert!(
+            seqs.len() <= bound,
+            "more than {bound} sequence numbers were named for retirement"
+        );
         seqs.sort_unstable();
         seqs
     }
@@ -1034,8 +1053,16 @@ mod tests {
 
     impl Model {
         fn retire(&mut self, retired: &Retired) {
-            self.retired.extend(retired.previous.clone());
+            // Each run is checked before it is walked, so an oversized report fails here rather
+            // than exhausting memory or being trimmed into a ledger that looks correct.
+            let bound = CidQueue::LEN as u64 * 4;
             for run in retired.iter() {
+                let width = run.end.saturating_sub(run.start);
+                assert!(
+                    width <= bound,
+                    "a run of {width} numbers was named for retirement, past the bound {bound}: \
+                     {run:?}"
+                );
                 self.retired.extend(run);
             }
         }
@@ -2012,23 +2039,25 @@ mod tests {
         );
     }
 
-    /// The policy is that a switch retires the numbers it skipped, so a peer that jumps to the
-    /// highest legal sequence number really does name a 2^62-wide run. Nothing here clamps it: what
-    /// keeps that from becoming work is the retirement queue, which refuses an oversized range by
-    /// arithmetic (see `a_range_too_wide_to_walk_is_refused_without_touching_the_queue`).
+    /// A switch retires the numbers it skipped, up to `LEN` past the identifier that was active:
+    /// a peer that jumps to the highest legal sequence number would otherwise name a 2^62-wide
+    /// run, which no retirement queue can hold. The identifier that was active is still named, and
+    /// the numbers past the bound are refused if they arrive, which is what retires them then.
     #[test]
-    fn a_distant_sequence_number_is_skipped_as_a_whole() {
+    fn a_distant_sequence_number_is_skipped_up_to_the_bound() {
         let mut q = CidQueue::new(initial_cid());
         let far = (1u64 << 62) - 1;
         q.insert(cid(far, 0)).expect("a distant number is legal");
         let (_, retired) = q.next().expect("the connection switches to it");
         assert_eq!(q.active_seq(), far);
-        let runs: Vec<_> = retired.iter().collect();
-        assert!(
-            runs.iter().any(|r| r.end - r.start > CidQueue::LEN as u64),
-            "the skipped numbers are named in full: {runs:?}"
+        let named = retired_seqs(&retired);
+        assert_eq!(
+            named,
+            (0..CidQueue::LEN as u64).collect::<Vec<_>>(),
+            "the identifier that was active and the numbers up to the bound"
         );
-        // The numbers in between are refused from now on, which is the floor's work.
+        // Everything below the new active identifier is refused from now on, which is the floor's
+        // work, and that refusal is what retires a late arrival.
         assert!(matches!(
             q.insert(cid(far / 2, 0)),
             Err(InsertError::Retired)

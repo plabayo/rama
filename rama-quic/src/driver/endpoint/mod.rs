@@ -41,7 +41,9 @@ use rama_core::telemetry::tracing::{Instrument, Span};
 use rama_net::address::{SocketAddress, ip::IntoCanonicalIpAddr as _};
 #[cfg(any(feature = "aws-lc", feature = "ring"))]
 use rama_net::socket::core::{Domain, Protocol, Socket as CoreSocket, Type};
-use rama_udp::DatagramMetadata;
+use rama_udp::{
+    DatagramError, DatagramMetadata, UdpPacketSocket, UdpSocketConfig, UdpSocketFactory,
+};
 use rustc_hash::FxHashMap;
 use tokio::sync::{Notify, futures::Notified};
 
@@ -85,19 +87,40 @@ impl Endpoint {
     /// Some environments may not allow creation of dual-stack sockets, in which case an IPv6
     /// client will only be able to connect to IPv6 servers. An IPv4 client is never dual-stack.
     #[cfg(any(feature = "aws-lc", feature = "ring"))] // `EndpointConfig::default()` is only available with these
-    pub(crate) fn client(addr: SocketAddr) -> io::Result<Self> {
-        let socket = CoreSocket::new(Domain::for_address(addr), Type::DGRAM, Some(Protocol::UDP))?;
-        if addr.is_ipv6() {
-            if let Err(e) = socket.set_only_v6(false) {
-                rama_core::telemetry::tracing::debug!(%e, "unable to make socket dual-stack");
-            }
-        }
-        socket.bind(&addr.into())?;
-        Self::new_with_abstract_socket(
+    pub(crate) async fn client(address: impl Into<SocketAddress>) -> Result<Self, DatagramError> {
+        let address = address.into();
+        Self::bind(
             EndpointConfig::default(),
             None,
-            Socket::from_std(socket.into())?,
+            address,
+            client_socket_config(address),
         )
+        .await
+    }
+
+    /// Bind an endpoint through Rama's shared UDP construction.
+    ///
+    /// `socket` carries the socket options to bind with and the packet features this endpoint
+    /// requires; a feature the platform does not provide fails the call.
+    pub(crate) async fn bind(
+        config: EndpointConfig,
+        server_config: Option<ServerConfig>,
+        address: impl Into<SocketAddress>,
+        socket: UdpSocketConfig,
+    ) -> Result<Self, DatagramError> {
+        let socket = UdpSocketFactory::new(socket).bind(address.into()).await?;
+        Self::with_packet_socket(config, server_config, socket).map_err(DatagramError::from)
+    }
+
+    /// Construct an endpoint on a packet socket the caller prepared, for example through
+    /// [`UdpSocketConfig::wrap_std`](rama_udp::UdpSocketConfig::wrap_std), which is where the
+    /// packet metadata is set up and the required features are validated.
+    pub(crate) fn with_packet_socket(
+        config: EndpointConfig,
+        server_config: Option<ServerConfig>,
+        socket: UdpPacketSocket,
+    ) -> io::Result<Self> {
+        Self::new_with_abstract_socket(config, server_config, Socket::new(socket)?)
     }
 
     /// Returns relevant stats from this Endpoint
@@ -125,17 +148,27 @@ impl Endpoint {
     /// addresses. Portable applications should bind an address that matches the family they wish to
     /// communicate within.
     #[cfg(any(feature = "aws-lc", feature = "ring"))] // `EndpointConfig::default()` is only available with these
-    pub(crate) fn server(config: ServerConfig, addr: SocketAddr) -> io::Result<Self> {
-        let socket = std::net::UdpSocket::bind(addr)?;
-        Self::new_with_abstract_socket(
+    pub(crate) async fn server(
+        config: ServerConfig,
+        address: impl Into<SocketAddress>,
+    ) -> Result<Self, DatagramError> {
+        // The platform's own defaults: no dual-stack option is requested for a server, so an IPv6
+        // wildcard reaches IPv4 peers only where the platform says it does.
+        Self::bind(
             EndpointConfig::default(),
             Some(config),
-            Socket::from_std(socket)?,
+            address,
+            UdpSocketConfig::default(),
         )
+        .await
     }
 
-    /// Construct an endpoint with arbitrary configuration and socket
-    pub(crate) fn new(
+    /// Construct an endpoint on a bound standard socket.
+    ///
+    /// The packet metadata a [`UdpSocketConfig`](rama_udp::UdpSocketConfig) describes is not set
+    /// up here; a caller that needs it wraps the socket with that configuration first and uses
+    /// [`with_packet_socket`](Self::with_packet_socket).
+    pub(crate) fn with_std_socket(
         config: EndpointConfig,
         server_config: Option<ServerConfig>,
         socket: std::net::UdpSocket,
@@ -379,10 +412,27 @@ impl Endpoint {
         Ok(connecting)
     }
 
-    /// Switch to a new UDP socket
+    /// Bind a new socket through Rama's shared UDP construction and switch to it.
     ///
-    /// See [`Endpoint::rebind_abstract()`] for details.
-    pub(crate) fn rebind(&self, socket: std::net::UdpSocket) -> io::Result<()> {
+    /// See [`Endpoint::rebind_abstract()`] for what the switch means for existing connections. On
+    /// error nothing changes and the previous socket stays active.
+    pub(crate) async fn rebind(
+        &self,
+        address: impl Into<SocketAddress>,
+        socket: UdpSocketConfig,
+    ) -> Result<(), DatagramError> {
+        let socket = UdpSocketFactory::new(socket).bind(address.into()).await?;
+        self.rebind_packet_socket(socket)
+            .map_err(DatagramError::from)
+    }
+
+    /// Switch to a packet socket the caller prepared.
+    pub(crate) fn rebind_packet_socket(&self, socket: UdpPacketSocket) -> io::Result<()> {
+        self.rebind_abstract(Socket::new(socket)?)
+    }
+
+    /// Switch to a bound standard socket.
+    pub(crate) fn rebind_std_socket(&self, socket: std::net::UdpSocket) -> io::Result<()> {
         self.rebind_abstract(Socket::from_std(socket)?)
     }
 
@@ -669,6 +719,19 @@ impl Drop for EndpointDriver {
         drop(channels);
         drop(sockets);
     }
+}
+
+/// The socket configuration a client binds with: Rama's UDP defaults, plus a request for a
+/// dual-stack socket on an IPv6 address that the platform may refuse. A refusal leaves the
+/// platform's own `IPV6_V6ONLY` default in place and the socket bound.
+fn client_socket_config(address: SocketAddress) -> UdpSocketConfig {
+    let mut config = UdpSocketConfig::default();
+    if address.ip_addr.is_ipv6() {
+        let mut options = config.socket_options().clone();
+        options.only_v6_best_effort = Some(false);
+        config.set_socket_options(options);
+    }
+    config
 }
 
 #[derive(Debug)]

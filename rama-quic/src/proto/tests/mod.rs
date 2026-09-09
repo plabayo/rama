@@ -5893,6 +5893,68 @@ fn a_server_that_forbids_migration_discards_traffic_from_a_new_peer_address() {
     assert!(!pair.server_conn_mut(server_ch).is_closed());
 }
 
+/// A switch of our own to a distant identifier, through the connection: the identifier it was
+/// using is named for retirement, the numbers it never received are named up to the bound, the
+/// bounded retirement queue is not overrun and the connection stays open. Naming the whole span
+/// would defer a CONNECTION_ID_LIMIT_ERROR and end the connection over numbers it never held.
+#[test]
+fn a_distant_switch_names_a_bounded_set_of_numbers() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client_ch, _server_ch) = pair.connect();
+    drive_settled(&mut pair);
+
+    // Spend the identifiers the peer issued, so the distant one is the only unused one left.
+    let mut moves = 0;
+    while pair.client_conn_mut(client_ch).migrate_local_address() {
+        moves += 1;
+        assert!(
+            moves < 16,
+            "the peer's identifiers are spent in a bounded number of moves"
+        );
+    }
+    let now = pair.time;
+    let far = (1u64 << 40) + 7;
+    pair.client_conn_mut(client_ch)
+        .apply_new_cid(
+            now,
+            frame::NewConnectionId {
+                sequence: far,
+                retire_prior_to: 0,
+                id: ConnectionId::new(&[0x6A; 8]),
+                reset_token: ResetToken::from([0x6B; crate::proto::RESET_TOKEN_SIZE]),
+            },
+        )
+        .expect("a distant identifier is legal");
+
+    let in_use = pair.client_conn_mut(client_ch).active_rem_cid_seq();
+    assert!(
+        pair.client_conn_mut(client_ch).migrate_local_address(),
+        "the distant identifier is the one left to take"
+    );
+    assert_eq!(pair.client_conn_mut(client_ch).active_rem_cid_seq(), far);
+    let pending = pair.client_conn_mut(client_ch).pending_retirements();
+    assert!(
+        pending.contains(&in_use),
+        "the identifier the connection was using is named: {pending:?}"
+    );
+    assert!(
+        pending.len() <= crate::proto::cid_queue::CidQueue::LEN * 10,
+        "the queue holds a bounded set: {} numbers",
+        pending.len()
+    );
+    assert!(
+        !pending.contains(&(far - 1)),
+        "the numbers nearest the distant one are not named: {pending:?}"
+    );
+
+    // No retirement error was deferred: nothing closed the connection while the queue drained.
+    // The identifier itself came from this test, not from the peer's endpoint, so nothing here
+    // says data can be carried with it.
+    drive_settled(&mut pair);
+    assert!(!pair.client_conn_mut(client_ch).is_closed());
+}
+
 /// A peer that jumps its sequence numbers far ahead, through the whole path a frame takes: the
 /// identifiers set aside, the unused ones, the switch and the numbers never received all reach the
 /// connection's bounded retirement queue. Every identifier the connection received is named, the

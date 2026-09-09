@@ -740,6 +740,14 @@ pub struct SocketOptions {
     /// and receive packets from an IPv4-mapped IPv6 address.
     pub only_v6: Option<bool>,
 
+    /// The `IPV6_V6ONLY` value to request when the platform may refuse it, for an IPv6 domain.
+    ///
+    /// The value is the one requested, as [`only_v6`](Self::only_v6) is: `Some(false)` asks for a
+    /// dual-stack socket. A platform that refuses the option leaves the socket as it is and the
+    /// refusal is traced; socket creation continues. [`only_v6`](Self::only_v6) takes precedence
+    /// and stays strict, so a refusal there fails.
+    pub only_v6_best_effort: Option<bool>,
+
     #[cfg(not(any(
         target_os = "dragonfly",
         target_os = "fuchsia",
@@ -1198,6 +1206,15 @@ impl SocketOptions {
         }
         if let Some(only_v6) = self.only_v6 {
             socket.set_only_v6(only_v6)?;
+        } else if domain == Domain::IPv6
+            && let Some(only_v6) = self.only_v6_best_effort
+            && let Err(error) = set_only_v6(&socket, only_v6)
+        {
+            rama_core::telemetry::tracing::debug!(
+                %error,
+                only_v6,
+                "the platform refused the requested IPV6_V6ONLY value; keeping the socket as it is"
+            );
         }
 
         #[cfg(not(any(
@@ -1339,5 +1356,128 @@ impl SocketOptions {
         }
 
         Ok(socket)
+    }
+}
+
+/// Request `IPV6_V6ONLY`. A test may make this refuse, so the suppression of a platform's refusal
+/// can be exercised where no platform refuses it.
+fn set_only_v6(socket: &Socket, only_v6: bool) -> io::Result<()> {
+    #[cfg(test)]
+    if tests::refusing_only_v6() {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput));
+    }
+    socket.set_only_v6(only_v6)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        net::{Ipv4Addr, Ipv6Addr},
+        sync::atomic::{AtomicBool, Ordering},
+    };
+
+    /// While set, [`set_only_v6`] refuses. Tests that use it run one at a time under the lock
+    /// below, since the flag is process-wide.
+    static REFUSE_ONLY_V6: AtomicBool = AtomicBool::new(false);
+    static ONLY_V6: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    pub(super) fn refusing_only_v6() -> bool {
+        REFUSE_ONLY_V6.load(Ordering::SeqCst)
+    }
+
+    fn udp_options(address: SocketAddr) -> SocketOptions {
+        let mut options = SocketOptions::default_udp();
+        options.address = Some(address.into());
+        options
+    }
+
+    fn v6() -> SocketAddr {
+        SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0)
+    }
+
+    fn v4() -> SocketAddr {
+        SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)
+    }
+
+    /// The requested value is the one applied, whether it is asked for strictly or as best effort.
+    #[test]
+    fn the_requested_only_v6_value_is_applied() {
+        let _guard = ONLY_V6.lock().unwrap();
+        for requested in [true, false] {
+            let mut options = udp_options(v6());
+            options.only_v6 = Some(requested);
+            let socket = options.try_build_socket(Domain::IPv6).unwrap();
+            assert_eq!(socket.only_v6().unwrap(), requested, "strict {requested}");
+
+            let mut options = udp_options(v6());
+            options.only_v6_best_effort = Some(requested);
+            let socket = options.try_build_socket(Domain::IPv6).unwrap();
+            assert_eq!(
+                socket.only_v6().unwrap(),
+                requested,
+                "best effort {requested}"
+            );
+        }
+    }
+
+    /// The strict field wins when both are set, and its value is the one on the socket.
+    #[test]
+    fn a_strict_only_v6_takes_precedence_over_the_best_effort_one() {
+        let _guard = ONLY_V6.lock().unwrap();
+        let mut options = udp_options(v6());
+        options.only_v6 = Some(true);
+        options.only_v6_best_effort = Some(false);
+        let socket = options.try_build_socket(Domain::IPv6).unwrap();
+        assert!(socket.only_v6().unwrap());
+    }
+
+    /// A platform that refuses the best-effort request keeps the socket, and the strict request
+    /// fails with the platform's error. The refusal is provoked by the seam, since no platform
+    /// here refuses it.
+    #[test]
+    fn a_refused_best_effort_only_v6_keeps_the_socket_and_a_strict_one_does_not() {
+        let _guard = ONLY_V6.lock().unwrap();
+        REFUSE_ONLY_V6.store(true, Ordering::SeqCst);
+        let mut options = udp_options(v6());
+        options.only_v6_best_effort = Some(false);
+        let built = options.try_build_socket(Domain::IPv6);
+        REFUSE_ONLY_V6.store(false, Ordering::SeqCst);
+        let socket = built.expect("the refusal does not fail socket creation");
+        assert!(
+            socket.local_addr().unwrap().as_socket().unwrap().is_ipv6(),
+            "and the socket is bound"
+        );
+
+        let mut options = udp_options(v6());
+        options.only_v6 = Some(false);
+        // The seam only affects the best-effort call, so the strict path is checked for what it
+        // does with a real error: an IPv4 socket cannot carry this option at all.
+        let mut ipv4 = udp_options(v4());
+        ipv4.only_v6 = Some(true);
+        assert!(
+            ipv4.try_build_socket(Domain::IPv4).is_err(),
+            "a strict request the platform cannot satisfy fails"
+        );
+        assert!(
+            options.try_build_socket(Domain::IPv6).is_ok(),
+            "and one it can satisfy does not"
+        );
+    }
+
+    /// The best-effort request is for an IPv6 socket only: on an IPv4 one it is not attempted, so
+    /// it cannot fail there.
+    #[test]
+    fn the_best_effort_request_is_skipped_for_an_ipv4_socket() {
+        let _guard = ONLY_V6.lock().unwrap();
+        REFUSE_ONLY_V6.store(true, Ordering::SeqCst);
+        let mut options = udp_options(v4());
+        options.only_v6_best_effort = Some(true);
+        let built = options.try_build_socket(Domain::IPv4);
+        REFUSE_ONLY_V6.store(false, Ordering::SeqCst);
+        assert!(
+            built.is_ok(),
+            "the option is never asked for, so the seam cannot refuse it"
+        );
     }
 }

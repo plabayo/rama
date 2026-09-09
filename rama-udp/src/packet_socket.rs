@@ -39,10 +39,17 @@ impl UdpPacketSocket {
         crate::UdpSocketFactory::default().bind(address).await
     }
 
-    /// Wrap an existing Tokio UDP socket and enable best-effort packet metadata.
-    pub fn from_socket(socket: UdpSocket) -> Result<Self, DatagramError> {
+    /// Wrap a socket already registered with the runtime, with the metadata a configuration asks
+    /// for.
+    ///
+    /// Reached through [`UdpSocketConfig::wrap_tokio`](crate::UdpSocketConfig::wrap_tokio), which
+    /// also validates the features that configuration requires.
+    pub(crate) fn from_registered(
+        socket: UdpSocket,
+        receive_original_destination: bool,
+    ) -> Result<Self, DatagramError> {
         let socket_is_ipv6 = socket.local_addr()?.is_ipv6();
-        let state = sys::UdpSocketState::new((&socket).into(), false)?;
+        let state = sys::UdpSocketState::new((&socket).into(), receive_original_destination)?;
         Ok(Self {
             io: Arc::new(socket),
             state: Arc::new(state),
@@ -50,10 +57,26 @@ impl UdpPacketSocket {
         })
     }
 
+    /// Wrap an existing Tokio UDP socket and enable best-effort packet metadata.
+    pub fn from_socket(socket: UdpSocket) -> Result<Self, DatagramError> {
+        Self::from_registered(socket, false)
+    }
+
+    /// Wrap a bound socket with the metadata a configuration asks for.
+    ///
+    /// Reached through [`UdpSocketConfig::wrap_std`](crate::UdpSocketConfig::wrap_std), which
+    /// also validates the features that configuration requires.
     pub(crate) fn from_std(
         socket: std::net::UdpSocket,
         receive_original_destination: bool,
     ) -> Result<Self, DatagramError> {
+        // Registration needs a runtime. Reported here, before the socket is handed to Tokio,
+        // which panics instead.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return Err(DatagramError::Io(io::Error::other(
+                "no async runtime found",
+            )));
+        }
         socket.set_nonblocking(true)?;
         let socket_is_ipv6 = socket.local_addr()?.is_ipv6();
         let state = sys::UdpSocketState::new((&socket).into(), receive_original_destination)?;

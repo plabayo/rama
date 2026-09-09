@@ -1,0 +1,285 @@
+//! Construction of an endpoint's socket through Rama's shared UDP utilities.
+
+use super::super::*;
+use super::lifecycle::{configs, exchange, handshake};
+use rama_net::socket::SocketOptions;
+use rama_udp::{DatagramError, DatagramFeature, DatagramSocket as _, UdpSocketConfig};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+
+fn localhost_v4() -> SocketAddr {
+    SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)
+}
+
+/// Connect a client to a server and exchange a payload each way, so a binding is shown to carry
+/// data rather than merely to have succeeded.
+async fn exchange_both_ways(client: &Endpoint, server: &Endpoint, client_config: ClientConfig) {
+    let server_addr = server.local_addr().unwrap();
+    let connecting = client
+        .connect_with(client_config, server_addr, "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(5), server.accept())
+        .await
+        .expect("the attempt arrives")
+        .expect("the server is listening");
+    let (c, s) = handshake(connecting, incoming).await;
+    exchange(&c, &s, b"up").await;
+    exchange(&s, &c, b"down").await;
+    drop((c, s));
+}
+
+/// The default client and server bindings go through the shared factory and carry data.
+#[tokio::test]
+async fn default_bindings_carry_data() {
+    let (client_config, server_config) = configs();
+    let server = Endpoint::server(server_config, localhost_v4())
+        .await
+        .expect("the server binds");
+    let client = Endpoint::client(localhost_v4())
+        .await
+        .expect("the client binds");
+    assert!(server.local_addr().unwrap().port() != 0);
+    exchange_both_ways(&client, &server, client_config).await;
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
+/// A socket the caller prepared: the shared configuration wraps it, and the endpoint takes the
+/// packet socket that comes out.
+#[tokio::test]
+async fn a_caller_prepared_socket_carries_data() {
+    let (client_config, server_config) = configs();
+    let config = UdpSocketConfig::default();
+    let prepared = config
+        .wrap_std(std::net::UdpSocket::bind(localhost_v4()).unwrap())
+        .expect("the socket is wrapped");
+    let server =
+        Endpoint::with_packet_socket(EndpointConfig::default(), Some(server_config), prepared)
+            .expect("the server takes the prepared socket");
+
+    // A Tokio socket is registered with the runtime by its owner, which is what makes it
+    // non-blocking; the wrapping only sets up the metadata this configuration asks for.
+    let bound = std::net::UdpSocket::bind(localhost_v4()).unwrap();
+    bound.set_nonblocking(true).unwrap();
+    let prepared = config
+        .wrap_tokio(rama_udp::UdpSocket::from_std(bound).unwrap())
+        .expect("a registered socket is wrapped");
+    let client = Endpoint::with_packet_socket(EndpointConfig::default(), None, prepared)
+        .expect("the client takes the prepared socket");
+
+    exchange_both_ways(&client, &server, client_config).await;
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
+/// An option the caller set explicitly reaches the socket and its refusal is the caller's error:
+/// `IPV6_V6ONLY` cannot be set on an IPv4 socket, so the bind fails and no endpoint exists. The
+/// same value requested as best effort is left to the platform, and for an IPv4 address it is not
+/// requested at all, so that bind succeeds.
+#[tokio::test]
+async fn an_explicit_option_is_strict_and_a_best_effort_one_is_not() {
+    let mut options = SocketOptions::default_udp();
+    options.only_v6 = Some(true);
+    let strict = UdpSocketConfig::default().with_socket_options(options);
+    let error = Endpoint::bind(EndpointConfig::default(), None, localhost_v4(), strict)
+        .await
+        .expect_err("the option cannot be applied to an IPv4 socket");
+    assert!(
+        matches!(error, DatagramError::Io(_)),
+        "the platform's own error is kept: {error:?}"
+    );
+
+    let mut options = SocketOptions::default_udp();
+    options.only_v6_best_effort = Some(true);
+    let best_effort = UdpSocketConfig::default().with_socket_options(options);
+    let endpoint = Endpoint::bind(EndpointConfig::default(), None, localhost_v4(), best_effort)
+        .await
+        .expect("a best-effort option does not fail an IPv4 bind");
+    assert!(endpoint.local_addr().unwrap().is_ipv4());
+    endpoint.shutdown().await;
+}
+
+/// The client asks for a dual-stack socket only where that means something, and never as a strict
+/// option; a server asks for nothing beyond the platform's defaults.
+#[test]
+fn the_dual_stack_request_belongs_to_an_ipv6_client() {
+    let v6 = client_socket_config(SocketAddress::new(Ipv6Addr::LOCALHOST.into(), 0));
+    assert_eq!(v6.socket_options().only_v6_best_effort, Some(false));
+    assert_eq!(v6.socket_options().only_v6, None);
+
+    let v4 = client_socket_config(SocketAddress::new(Ipv4Addr::LOCALHOST.into(), 0));
+    assert_eq!(v4.socket_options().only_v6_best_effort, None);
+    assert_eq!(v4.socket_options().only_v6, None);
+
+    let server = UdpSocketConfig::default();
+    assert_eq!(server.socket_options().only_v6_best_effort, None);
+    assert_eq!(server.socket_options().only_v6, None);
+}
+
+/// A required feature is refused when the socket cannot provide it and accepted when it can. What
+/// a socket configured this way can do is asked of a socket built the same way, rather than
+/// inferred from a default one: on Linux the original-destination options are set when requested,
+/// so the feature can be available there.
+#[tokio::test]
+async fn a_required_feature_is_refused_only_when_the_socket_lacks_it() {
+    let feature = DatagramFeature::ReceiveOriginalDestination;
+    let probe = UdpSocketConfig::default().with_receive_original_destination(true);
+    let probed = probe.wrap_std(std::net::UdpSocket::bind(localhost_v4()).unwrap());
+
+    let config = UdpSocketConfig::default().with_required_feature(feature);
+    let bound = Endpoint::bind(EndpointConfig::default(), None, localhost_v4(), config).await;
+    match probed {
+        Ok(socket) if socket.capabilities().supports(feature) => {
+            let endpoint = bound.expect("the platform provides the feature when asked");
+            endpoint.shutdown().await;
+        }
+        Ok(_) => {
+            let error = bound.expect_err("the feature is not available on this socket");
+            assert!(
+                matches!(error, DatagramError::Unsupported(refused) if refused == feature),
+                "the refusal names the feature: {error:?}"
+            );
+        }
+        Err(setup) => {
+            // The platform has the option and would not set it up, which privileges can cause.
+            let error = bound.expect_err("the endpoint cannot be built either");
+            assert!(
+                matches!(error, DatagramError::Io(_)),
+                "the platform's own error is kept: {error:?} after {setup:?}"
+            );
+        }
+    }
+}
+
+/// An IPv6 client and server, bound through the same construction, carry data. The client's
+/// dual-stack request is best effort, so a platform that refuses it leaves an endpoint that still
+/// works over IPv6.
+#[tokio::test]
+async fn ipv6_bindings_carry_data() {
+    let (client_config, server_config) = configs();
+    let localhost_v6 = SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0);
+    let server = Endpoint::server(server_config, localhost_v6)
+        .await
+        .expect("the server binds");
+    let client = Endpoint::client(localhost_v6)
+        .await
+        .expect("the client binds");
+    assert!(client.local_addr().unwrap().is_ipv6());
+    assert!(server.local_addr().unwrap().is_ipv6());
+    exchange_both_ways(&client, &server, client_config).await;
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
+/// An address already in use fails the bind and the rebind with the platform's own error, once.
+/// The endpoint that holds the address keeps working, and a rebind that failed leaves the endpoint
+/// on the socket it had.
+#[tokio::test]
+async fn an_occupied_address_fails_once_and_changes_nothing() {
+    let (client_config, server_config) = configs();
+    let server = Endpoint::server(server_config, localhost_v4())
+        .await
+        .expect("the server binds");
+    let occupied = server.local_addr().unwrap();
+
+    let error = Endpoint::bind(
+        EndpointConfig::default(),
+        None,
+        occupied,
+        UdpSocketConfig::default(),
+    )
+    .await
+    .expect_err("the address is taken");
+    assert!(
+        matches!(&error, DatagramError::Io(error) if error.kind() == io::ErrorKind::AddrInUse),
+        "the platform's own error, not a retry's: {error:?}"
+    );
+
+    let client = Endpoint::client(localhost_v4())
+        .await
+        .expect("the client binds");
+    let before = client.local_addr().unwrap();
+    let error = client
+        .rebind(occupied, UdpSocketConfig::default())
+        .await
+        .expect_err("the rebind cannot take that address either");
+    assert!(
+        matches!(&error, DatagramError::Io(error) if error.kind() == io::ErrorKind::AddrInUse),
+        "the same error: {error:?}"
+    );
+    assert_eq!(
+        client.local_addr().unwrap(),
+        before,
+        "the endpoint stays on the socket it had"
+    );
+
+    // Both endpoints are still usable.
+    exchange_both_ways(&client, &server, client_config).await;
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
+/// A rebind through the shared construction moves the endpoint to the new address, and the
+/// connection that was already open keeps working.
+#[tokio::test]
+async fn a_rebind_through_the_shared_construction_keeps_the_connection() {
+    let (client_config, server_config) = configs();
+    let server = Endpoint::server(server_config, localhost_v4())
+        .await
+        .expect("the server binds");
+    let client = Endpoint::client(localhost_v4())
+        .await
+        .expect("the client binds");
+    let first = client.local_addr().unwrap();
+    let server_addr = server.local_addr().unwrap();
+    let connecting = client
+        .connect_with(client_config, server_addr, "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(5), server.accept())
+        .await
+        .expect("the attempt arrives")
+        .expect("the server is listening");
+    let (c, s) = handshake(connecting, incoming).await;
+    exchange(&c, &s, b"before").await;
+
+    client
+        .rebind(localhost_v4(), UdpSocketConfig::default())
+        .await
+        .expect("the rebind binds a new socket");
+    let second = client.local_addr().unwrap();
+    assert_ne!(first, second, "the endpoint sends from the new socket");
+    exchange(&c, &s, b"after").await;
+    exchange(&s, &c, b"back").await;
+
+    drop((c, s));
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
+/// Every path that registers a socket with the runtime reports the absence of one rather than
+/// panicking inside Tokio: the endpoint's own bound-socket entry, the shared wrapping, and the
+/// binding future when it is polled outside a runtime.
+#[test]
+fn registering_a_socket_outside_a_runtime_is_refused() {
+    let socket = std::net::UdpSocket::bind(localhost_v4()).unwrap();
+    let error = Endpoint::with_std_socket(EndpointConfig::default(), None, socket)
+        .expect_err("there is no runtime to register the socket with");
+    assert_eq!(error.kind(), io::ErrorKind::Other);
+
+    let socket = std::net::UdpSocket::bind(localhost_v4()).unwrap();
+    let error = UdpSocketConfig::default()
+        .wrap_std(socket)
+        .expect_err("the shared wrapping registers the socket too");
+    assert!(
+        matches!(&error, DatagramError::Io(error) if error.kind() == io::ErrorKind::Other),
+        "the error carries its cause: {error:?}"
+    );
+
+    let mut binding = std::pin::pin!(Endpoint::bind(
+        EndpointConfig::default(),
+        None,
+        localhost_v4(),
+        UdpSocketConfig::default(),
+    ));
+    let mut cx = Context::from_waker(Waker::noop());
+    match binding.as_mut().poll(&mut cx) {
+        Poll::Ready(Err(DatagramError::Io(error))) => {
+            assert_eq!(error.kind(), io::ErrorKind::Other);
+        }
+        other => panic!("the binding resolves with that error: {other:?}"),
+    }
+}

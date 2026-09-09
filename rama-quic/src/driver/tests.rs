@@ -43,10 +43,12 @@ use super::{ClientConfig, Endpoint, EndpointConfig, RecvStream, SendStream, Tran
 fn handshake_timeout() {
     let _guard = subscribe();
     let runtime = rt_threaded();
-    let client = {
-        let _guard = runtime.enter();
-        Endpoint::client(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).unwrap()
-    };
+    let client = runtime
+        .block_on(Endpoint::client(SocketAddr::new(
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            0,
+        )))
+        .unwrap();
 
     // Avoid NoRootAnchors error
     let cert =
@@ -93,8 +95,9 @@ async fn close_endpoint() {
     let mut roots = RootCertStore::empty();
     roots.add(cert.cert.into()).unwrap();
 
-    let mut endpoint =
-        Endpoint::client(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).unwrap();
+    let mut endpoint = Endpoint::client(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+        .await
+        .unwrap();
     endpoint
         .set_default_client_config(ClientConfig::with_root_certificates(Arc::new(roots)).unwrap());
 
@@ -132,7 +135,7 @@ fn local_addr() {
     let runtime = rt_basic();
     let ep = {
         let _guard = runtime.enter();
-        Endpoint::new(Default::default(), None, socket).unwrap()
+        Endpoint::with_std_socket(Default::default(), None, socket).unwrap()
     };
     assert_eq!(
         addr,
@@ -305,7 +308,7 @@ impl EndpointFactory {
 
         let mut roots = rama_tls_rustls::dep::rustls::RootCertStore::empty();
         roots.add(self.cert.cert.der().clone()).unwrap();
-        let mut endpoint = Endpoint::new(
+        let mut endpoint = Endpoint::with_std_socket(
             self.endpoint_config.clone(),
             Some(server_config),
             UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).unwrap(),
@@ -517,7 +520,7 @@ fn run_echo(args: EchoArgs) {
         let server = {
             let _guard = runtime.enter();
             let _guard = error_span!("server").entered();
-            Endpoint::new(Default::default(), Some(server_config), server_sock).unwrap()
+            Endpoint::with_std_socket(Default::default(), Some(server_config), server_sock).unwrap()
         };
 
         let mut roots = rama_tls_rustls::dep::rustls::RootCertStore::empty();
@@ -532,9 +535,10 @@ fn run_echo(args: EchoArgs) {
         client_crypto.key_log = Arc::new(rama_tls_rustls::dep::rustls::KeyLogFile::new());
 
         let mut client = {
-            let _guard = runtime.enter();
             let _guard = error_span!("client").entered();
-            Endpoint::client(args.client_addr).unwrap()
+            runtime
+                .block_on(Endpoint::client(args.client_addr))
+                .unwrap()
         };
         let mut client_config =
             ClientConfig::new(Arc::new(QuicClientConfig::try_from(client_crypto).unwrap()));
@@ -695,7 +699,9 @@ async fn rebind_recv() {
     let mut roots = rama_tls_rustls::dep::rustls::RootCertStore::empty();
     roots.add(cert.clone()).unwrap();
 
-    let mut client = Endpoint::client(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).unwrap();
+    let mut client = Endpoint::client(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+        .await
+        .unwrap();
     let mut client_config = ClientConfig::with_root_certificates(Arc::new(roots)).unwrap();
     client_config.transport_config(Arc::new({
         let mut cfg = TransportConfig::default();
@@ -712,6 +718,7 @@ async fn rebind_recv() {
             server_config,
             SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         )
+        .await
         .unwrap()
     };
     let server_addr = server.local_addr().unwrap();
@@ -745,7 +752,9 @@ async fn rebind_recv() {
     info!("connected");
     connected_recv.notified().await;
     client
-        .rebind(UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).unwrap())
+        .rebind_std_socket(
+            UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).unwrap(),
+        )
         .unwrap();
     info!("rebound");
     write_send.notify_one();
