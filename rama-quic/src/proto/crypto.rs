@@ -8,7 +8,7 @@
 //! Note that usage of any protocol (version) other than TLS 1.3 does not conform to any
 //! published versions of the specification, and will not be supported in QUIC v1.
 
-use std::{any::Any, fmt, str, sync::Arc};
+use std::{fmt, str, sync::Arc};
 
 use rama_core::bytes::BytesMut;
 use rama_crypto::pki_types::CertificateDer;
@@ -26,28 +26,26 @@ pub(crate) mod ring_like;
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 pub(crate) mod rustls;
 
-/// What the handshake has settled, in Rama's own types: the application protocol the two sides
-/// agreed on, and the name the client asked the server for.
+/// Negotiated ALPN and received server name reported by the TLS backend.
 ///
-/// A server sees the name it was asked for; a client sees none, having asked it itself. This is
-/// available as soon as the TLS session has that data, which is before the handshake is
-/// confirmed. A caller that needs confirmation first waits for it.
+/// Available once the session has the data, which is before the handshake is confirmed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HandshakeSummary {
     /// The application protocol both sides agreed on (RFC 7301), when ALPN was used.
     pub protocol: Option<ApplicationProtocol>,
-    /// The name the client asked for in its SNI extension, when it sent one. This is what the
-    /// peer said, not an identity this side verified a certificate against. A client sending an
-    /// IP address has no SNI to send (RFC 6066 §3), so this is `None` for those connections.
+    /// The name the client sent in its SNI extension, when it sent one. It is what the peer
+    /// said, not an identity a certificate was verified against. `None` on a client, and on a
+    /// server whose peer sent no SNI, which includes a client connecting to an IP address
+    /// (RFC 6066 §3).
     pub server_name: Option<ReceivedServerName>,
 }
 
 /// A name a client sent in its SNI extension.
 ///
-/// Almost always a [`Domain`]. The Rustls backend hands over a name it has validated as a DNS
-/// name and lowercased, and a domain's rules are no stricter, so it reads as one. The second
-/// variant carries a name that did not, so a disagreement is reported with the text that caused
-/// it: a name that was sent and no name at all are different facts.
+/// The Rustls backend reports a name it has validated as a DNS name and lowercased, which
+/// [`Domain`] accepts, so [`Self::Domain`] is the usual variant. [`Self::Other`] keeps the text
+/// of a name the backend accepted and this crate could not read as a domain, so a name that was
+/// sent is never reported as no name at all.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReceivedServerName {
     /// The name, as a domain.

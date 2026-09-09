@@ -1,4 +1,4 @@
-use std::{any::Any, io, str, sync::Arc};
+use std::{io, str, sync::Arc};
 
 use rama_core::bytes::BytesMut;
 use rama_core::telemetry::tracing::debug;

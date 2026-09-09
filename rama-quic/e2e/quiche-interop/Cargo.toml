@@ -1,0 +1,19 @@
+# Standalone: not a member of the rama workspace, with its own lockfile, so the upstream QUIC
+# peer never reaches the workspace resolution.
+[workspace]
+
+[package]
+name = "rama-quic-quiche-interop"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+rama = { path = "../../..", features = ["quic", "rustls", "ring"] }
+# Default features vendor and build BoringSSL, so quiche's TLS provider is its own.
+quiche = "0.24"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
+sha2 = "0.10"
+tempfile = "3"
