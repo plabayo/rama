@@ -63,16 +63,17 @@ pub(crate) use crate::proto::{
 pub(crate) use crate::proto::{QlogConfig, QlogStream};
 pub(crate) use std::time::{Duration, Instant};
 
-pub(crate) use crate::driver::connection::{
+pub use crate::driver::connection::{
     AcceptBi, AcceptUni, Connecting, Connection, OpenBi, OpenUni, ReadDatagram, SendDatagram,
     SendDatagramError, ZeroRttAccepted,
 };
-pub(crate) use crate::driver::endpoint::{Accept, Endpoint, EndpointStats};
-pub(crate) use crate::driver::incoming::{Incoming, IncomingFuture, RetryError};
-pub(crate) use crate::driver::recv_stream::{
+pub use crate::driver::endpoint::{Accept, Endpoint, EndpointStats};
+pub use crate::driver::incoming::{Incoming, IncomingFuture, RetryError};
+pub use crate::driver::lifecycle::ShutdownOutcome;
+pub use crate::driver::recv_stream::{
     ReadError, ReadExactError, ReadToEndError, RecvStream, ResetError,
 };
-pub(crate) use crate::driver::send_stream::{SendStream, StoppedError, WriteError};
+pub use crate::driver::send_stream::{SendStream, StoppedError, WriteError};
 
 #[cfg(test)]
 mod tests;

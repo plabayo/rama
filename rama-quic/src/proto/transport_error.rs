@@ -1,4 +1,6 @@
-use std::{fmt, sync::Arc};
+use std::fmt;
+
+use rama_core::error::ArcError;
 
 use rama_core::bytes::{Buf, BufMut};
 
@@ -21,8 +23,9 @@ pub struct Error {
     pub(crate) frame: Option<frame::FrameType>,
     /// Human-readable explanation of the reason
     pub(crate) reason: String,
-    /// An underlying TLS or local runtime error
-    pub(crate) crypto: Option<Arc<dyn std::error::Error + Send + Sync>>,
+    /// An underlying TLS or local runtime failure, shared: this error is cloned for every
+    /// stream, waiter and close reason that reports it, and the cause is rarely cloneable.
+    pub(crate) cause: Option<ArcError>,
 }
 
 impl Error {
@@ -31,7 +34,7 @@ impl Error {
         mut self,
         cause: impl std::error::Error + Send + Sync + 'static,
     ) -> Self {
-        self.crypto = Some(Arc::new(cause));
+        self.cause = Some(ArcError::new(cause));
         self
     }
 
@@ -41,7 +44,7 @@ impl Error {
             code,
             frame: None,
             reason,
-            crypto: None,
+            cause: None,
         }
     }
 }
@@ -69,9 +72,9 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.crypto
-            .as_deref()
-            .map(|cause| cause as &(dyn std::error::Error + 'static))
+        // The sharing is how this error keeps its cause, not a step in the chain: what follows
+        // the transport error is the failure itself, as it was before it was shared.
+        self.cause.as_ref().map(ArcError::as_error)
     }
 }
 
@@ -81,7 +84,7 @@ impl From<Code> for Error {
             code: x,
             frame: None,
             reason: "".to_string(),
-            crypto: None,
+            cause: None,
         }
     }
 }
@@ -122,7 +125,7 @@ macro_rules! errors {
                     code: Code::$name,
                     frame: None,
                     reason: reason.into(),
-                    crypto: None,
+                    cause: None,
                 }
             }
             )*

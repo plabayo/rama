@@ -32,8 +32,8 @@ use crate::driver::{
     udp::{FailureLog, Sender},
 };
 use crate::proto::{
-    ConnectionError, ConnectionHandle, ConnectionStats, Dir, EndpointEvent, SendPermit, Side,
-    StreamEvent, StreamId, congestion::Controller,
+    ConnectionError, ConnectionHandle, ConnectionStats, Dir, EndpointEvent, HandshakeSummary,
+    SendPermit, Side, StreamEvent, StreamId, congestion::Controller,
 };
 
 /// Tests: one descriptor this connection offered to its sender, and what became of it.
@@ -76,7 +76,7 @@ const DESCRIPTORS: usize = 64;
 
 /// In-progress connection attempt future
 #[derive(Debug)]
-pub(crate) struct Connecting {
+pub struct Connecting {
     conn: Option<ConnectionRef>,
     connected: oneshot::Receiver<Result<bool, ConnectionError>>,
     handshake_data_ready: Option<oneshot::Receiver<()>>,
@@ -196,7 +196,7 @@ impl Connecting {
     /// On incoming connections, this enables transmission of 0.5-RTT data, which may be sent
     /// before TLS client authentication has occurred, and should therefore not be used to send
     /// data for which client authentication is being used.
-    pub(crate) fn into_0rtt(mut self) -> Result<(Connection, ZeroRttAccepted), Self> {
+    pub fn into_0rtt(mut self) -> Result<(Connection, ZeroRttAccepted), Self> {
         // This lock borrows `self` and would normally be dropped at the end of this scope, so we'll
         // have to release it explicitly before returning `self` by value.
         let conn = self.connection_ref().state.lock();
@@ -218,7 +218,7 @@ impl Connecting {
     /// [`Session`](crate::proto::crypto::Session). For the default `rustls` session, the return value can
     /// be [`downcast`](Box::downcast) to a
     /// [`crypto::rustls::HandshakeData`](crate::driver::crypto::rustls::HandshakeData).
-    pub(crate) async fn handshake_data(&mut self) -> Result<Box<dyn Any>, ConnectionError> {
+    pub async fn handshake_data(&mut self) -> Result<HandshakeSummary, ConnectionError> {
         // Taking &mut self allows us to use a single oneshot channel rather than dealing with
         // potentially many tasks waiting on the same event. It's a bit of a hack, but keeps things
         // simple.
@@ -230,7 +230,7 @@ impl Connecting {
         inner
             .inner
             .crypto_session()
-            .handshake_data()
+            .handshake_summary()
             .ok_or_else(|| {
                 inner.error.clone().unwrap_or_else(|| {
                     crate::proto::TransportError::INTERNAL_ERROR(
@@ -252,7 +252,7 @@ impl Connecting {
     /// support.
     ///
     /// Will panic if called after `poll` has returned `Ready`.
-    pub(crate) fn local_ip(&self) -> Option<IpAddr> {
+    pub fn local_ip(&self) -> Option<IpAddr> {
         let conn = self.connection_ref();
         let inner = conn.state.lock();
 
@@ -262,7 +262,7 @@ impl Connecting {
     /// The peer's UDP address
     ///
     /// Will panic if called after `poll` has returned `Ready`.
-    pub(crate) fn remote_address(&self) -> SocketAddr {
+    pub fn remote_address(&self) -> SocketAddr {
         let conn_ref: &ConnectionRef = self.connection_ref();
         conn_ref.state.lock().inner.remote_address()
     }
@@ -291,7 +291,7 @@ impl Future for Connecting {
 ///
 /// On success, clients receive whether 0-RTT was accepted and servers receive `true`.
 /// A handshake failure returns the connection error, preserving its source.
-pub(crate) struct ZeroRttAccepted(oneshot::Receiver<Result<bool, ConnectionError>>);
+pub struct ZeroRttAccepted(oneshot::Receiver<Result<bool, ConnectionError>>);
 
 impl Future for ZeroRttAccepted {
     type Output = Result<bool, ConnectionError>;
@@ -689,7 +689,7 @@ impl Drop for ConnectionDriver {
 ///
 /// [`Connection::close()`]: Connection::close
 #[derive(Debug, Clone)]
-pub(crate) struct Connection(ConnectionRef);
+pub struct Connection(ConnectionRef);
 
 impl Connection {
     /// Initiate a new outgoing unidirectional stream.
@@ -697,7 +697,7 @@ impl Connection {
     /// Streams are cheap and instantaneous to open unless blocked by flow control. As a
     /// consequence, the peer won't be notified that a stream has been opened until the stream is
     /// actually used.
-    pub(crate) fn open_uni(&self) -> OpenUni<'_> {
+    pub fn open_uni(&self) -> OpenUni<'_> {
         OpenUni {
             conn: &self.0,
             notify: self.0.shared.stream_budget_available[Dir::Uni as usize].notified(),
@@ -714,7 +714,7 @@ impl Connection {
     /// [`open_bi()`]: crate::driver::Connection::open_bi
     /// [`SendStream`]: crate::driver::SendStream
     /// [`RecvStream`]: crate::driver::RecvStream
-    pub(crate) fn open_bi(&self) -> OpenBi<'_> {
+    pub fn open_bi(&self) -> OpenBi<'_> {
         OpenBi {
             conn: &self.0,
             notify: self.0.shared.stream_budget_available[Dir::Bi as usize].notified(),
@@ -722,7 +722,7 @@ impl Connection {
     }
 
     /// Accept the next incoming uni-directional stream
-    pub(crate) fn accept_uni(&self) -> AcceptUni<'_> {
+    pub fn accept_uni(&self) -> AcceptUni<'_> {
         AcceptUni {
             conn: &self.0,
             notify: self.0.shared.stream_incoming[Dir::Uni as usize].notified(),
@@ -739,7 +739,7 @@ impl Connection {
     /// [`open_bi()`]: crate::driver::Connection::open_bi
     /// [`SendStream`]: crate::driver::SendStream
     /// [`RecvStream`]: crate::driver::RecvStream
-    pub(crate) fn accept_bi(&self) -> AcceptBi<'_> {
+    pub fn accept_bi(&self) -> AcceptBi<'_> {
         AcceptBi {
             conn: &self.0,
             notify: self.0.shared.stream_incoming[Dir::Bi as usize].notified(),
@@ -747,7 +747,7 @@ impl Connection {
     }
 
     /// Receive an application datagram
-    pub(crate) fn read_datagram(&self) -> ReadDatagram<'_> {
+    pub fn read_datagram(&self) -> ReadDatagram<'_> {
         ReadDatagram {
             conn: &self.0,
             notify: self.0.shared.datagram_received.notified(),
@@ -759,7 +759,7 @@ impl Connection {
     /// Despite the return type's name, closed connections are often not an error condition at the
     /// application layer. Cases that might be routine include [`ConnectionError::LocallyClosed`]
     /// and [`ConnectionError::ApplicationClosed`].
-    pub(crate) async fn closed(&self) -> ConnectionError {
+    pub async fn closed(&self) -> ConnectionError {
         loop {
             {
                 let conn = self.0.state.lock();
@@ -775,7 +775,7 @@ impl Connection {
     /// If the connection is closed, the reason why.
     ///
     /// Returns `None` if the connection is still open.
-    pub(crate) fn close_reason(&self) -> Option<ConnectionError> {
+    pub fn close_reason(&self) -> Option<ConnectionError> {
         self.0.state.lock().error.clone()
     }
 
@@ -810,7 +810,7 @@ impl Connection {
     /// [`ConnectionError::LocallyClosed`]: crate::driver::ConnectionError::LocallyClosed
     /// [`Endpoint::wait_idle()`]: crate::driver::Endpoint::wait_idle
     /// [`close()`]: Connection::close
-    pub(crate) fn close(&self, error_code: VarInt, reason: &[u8]) {
+    pub fn close(&self, error_code: VarInt, reason: &[u8]) {
         let conn = &mut *self.0.state.lock();
         conn.close(error_code, Bytes::copy_from_slice(reason), &self.0.shared);
     }
@@ -825,7 +825,7 @@ impl Connection {
     /// As a client, this happens when receiving a HANDSHAKE_DONE frame.
     /// At this point, the server has either accepted our authentication,
     /// or, if client authentication is not required, accepted our lack of authentication.
-    pub(crate) async fn handshake_confirmed(&self) -> Result<(), ConnectionError> {
+    pub async fn handshake_confirmed(&self) -> Result<(), ConnectionError> {
         self.handshake_confirmed_inner().await
     }
 
@@ -1045,7 +1045,7 @@ impl Connection {
         clippy::unreachable,
         reason = "the engine never returns Blocked when its drop-oldest send policy is enabled"
     )]
-    pub(crate) fn send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
+    pub fn send_datagram(&self, data: Bytes) -> Result<(), SendDatagramError> {
         let conn = &mut *self.0.state.lock();
         if let Some(ref x) = conn.error {
             return Err(SendDatagramError::ConnectionLost(x.clone()));
@@ -1073,7 +1073,7 @@ impl Connection {
     /// See [`send_datagram()`] for details.
     ///
     /// [`send_datagram()`]: Connection::send_datagram
-    pub(crate) fn send_datagram_wait(&self, data: Bytes) -> SendDatagram<'_> {
+    pub fn send_datagram_wait(&self, data: Bytes) -> SendDatagram<'_> {
         SendDatagram {
             conn: &self.0,
             data: Some(data),
@@ -1092,7 +1092,7 @@ impl Connection {
     /// Not necessarily the maximum size of received datagrams.
     ///
     /// [`send_datagram()`]: Connection::send_datagram
-    pub(crate) fn max_datagram_size(&self) -> Option<usize> {
+    pub fn max_datagram_size(&self) -> Option<usize> {
         self.0.state.lock().inner.datagrams().max_size()
     }
 
@@ -1100,7 +1100,7 @@ impl Connection {
     ///
     /// When greater than zero, calling [`send_datagram()`](Self::send_datagram) with a datagram of
     /// at most this size is guaranteed not to cause older datagrams to be dropped.
-    pub(crate) fn datagram_send_buffer_space(&self) -> usize {
+    pub fn datagram_send_buffer_space(&self) -> usize {
         self.0.state.lock().inner.datagrams().send_buffer_space()
     }
 
@@ -1113,7 +1113,7 @@ impl Connection {
     ///
     /// If `ServerConfig::migration` is `true`, clients may change addresses at will, e.g. when
     /// switching to a cellular internet connection.
-    pub(crate) fn remote_address(&self) -> SocketAddr {
+    pub fn remote_address(&self) -> SocketAddr {
         self.0.state.lock().inner.remote_address()
     }
 
@@ -1126,12 +1126,12 @@ impl Connection {
     /// This will return `None` for clients, or when the platform does not expose this
     /// information. See `rama_udp::DatagramCapabilities::receive_local_ip` for platform
     /// support.
-    pub(crate) fn local_ip(&self) -> Option<IpAddr> {
+    pub fn local_ip(&self) -> Option<IpAddr> {
         self.0.state.lock().inner.local_ip()
     }
 
     /// Current best estimate of this connection's latency (round-trip-time)
-    pub(crate) fn rtt(&self) -> Duration {
+    pub fn rtt(&self) -> Duration {
         self.0.state.lock().inner.rtt()
     }
 
@@ -1141,7 +1141,7 @@ impl Connection {
     }
 
     /// Returns connection statistics
-    pub(crate) fn stats(&self) -> ConnectionStats {
+    pub fn stats(&self) -> ConnectionStats {
         self.0.state.lock().inner.stats()
     }
 
@@ -1157,24 +1157,30 @@ impl Connection {
     /// the returned value.
     ///
     /// [`Connection::handshake_data()`]: crate::driver::Connecting::handshake_data
-    pub(crate) fn handshake_data(&self) -> Option<Box<dyn Any>> {
-        self.0.state.lock().inner.crypto_session().handshake_data()
+    pub fn handshake_data(&self) -> Option<HandshakeSummary> {
+        self.0
+            .state
+            .lock()
+            .inner
+            .crypto_session()
+            .handshake_summary()
     }
 
-    /// Cryptographic identity of the peer
-    ///
-    /// The dynamic type returned is determined by the configured
-    /// [`Session`](crate::proto::crypto::Session). For the default `rustls` session, the return value can
-    /// be [`downcast`](Box::downcast) to a <code>Vec<[rama_crypto::pki_types::CertificateDer]></code>
-    pub(crate) fn peer_identity(&self) -> Option<Box<dyn Any>> {
-        self.0.state.lock().inner.crypto_session().peer_identity()
+    /// The certificate chain the peer presented, leaf first, if it presented one.
+    pub fn peer_identity(&self) -> Option<Vec<rama_crypto::pki_types::CertificateDer<'static>>> {
+        self.0
+            .state
+            .lock()
+            .inner
+            .crypto_session()
+            .peer_certificates()
     }
 
     /// A stable identifier for this connection
     ///
     /// Peer addresses and connection IDs can change, but this value will remain
     /// fixed for the lifetime of the connection.
-    pub(crate) fn stable_id(&self) -> usize {
+    pub fn stable_id(&self) -> usize {
         self.0.stable_id()
     }
 
@@ -1193,7 +1199,7 @@ impl Connection {
     /// strong and pseudorandom, and are suitable for use as keying material.
     ///
     /// See [RFC5705](https://tools.ietf.org/html/rfc5705) for more information.
-    pub(crate) fn export_keying_material(
+    pub fn export_keying_material(
         &self,
         output: &mut [u8],
         label: &[u8],
@@ -1222,7 +1228,7 @@ impl Connection {
     ///
     /// No streams may be opened by the peer unless fewer than `count` are already open. Large
     /// `count`s increase both minimum and worst-case memory consumption.
-    pub(crate) fn set_max_concurrent_uni_streams(&self, count: VarInt) {
+    pub fn set_max_concurrent_uni_streams(&self, count: VarInt) {
         let mut conn = self.0.state.lock();
         conn.inner.set_max_concurrent_streams(Dir::Uni, count);
         // May need to send MAX_STREAMS to make progress
@@ -1237,7 +1243,7 @@ impl Connection {
     }
 
     /// See [`crate::proto::TransportConfig::receive_window()`]
-    pub(crate) fn set_receive_window(&self, receive_window: VarInt) {
+    pub fn set_receive_window(&self, receive_window: VarInt) {
         let mut conn = self.0.state.lock();
         conn.inner.set_receive_window(receive_window);
         conn.wake();
@@ -1247,7 +1253,7 @@ impl Connection {
     ///
     /// No streams may be opened by the peer unless fewer than `count` are already open. Large
     /// `count`s increase both minimum and worst-case memory consumption.
-    pub(crate) fn set_max_concurrent_bi_streams(&self, count: VarInt) {
+    pub fn set_max_concurrent_bi_streams(&self, count: VarInt) {
         let mut conn = self.0.state.lock();
         conn.inner.set_max_concurrent_streams(Dir::Bi, count);
         // May need to send MAX_STREAMS to make progress
@@ -1257,7 +1263,7 @@ impl Connection {
 
 pin_project! {
     /// Future produced by [`Connection::open_uni`]
-    pub(crate) struct OpenUni<'a> {
+    pub struct OpenUni<'a> {
         conn: &'a ConnectionRef,
         #[pin]
         notify: Notified<'a>,
@@ -1275,7 +1281,7 @@ impl Future for OpenUni<'_> {
 
 pin_project! {
     /// Future produced by [`Connection::open_bi`]
-    pub(crate) struct OpenBi<'a> {
+    pub struct OpenBi<'a> {
         conn: &'a ConnectionRef,
         #[pin]
         notify: Notified<'a>,
@@ -1325,7 +1331,7 @@ fn poll_open<'a>(
 
 pin_project! {
     /// Future produced by [`Connection::accept_uni`]
-    pub(crate) struct AcceptUni<'a> {
+    pub struct AcceptUni<'a> {
         conn: &'a ConnectionRef,
         #[pin]
         notify: Notified<'a>,
@@ -1344,7 +1350,7 @@ impl Future for AcceptUni<'_> {
 
 pin_project! {
     /// Future produced by [`Connection::accept_bi`]
-    pub(crate) struct AcceptBi<'a> {
+    pub struct AcceptBi<'a> {
         conn: &'a ConnectionRef,
         #[pin]
         notify: Notified<'a>,
@@ -1393,7 +1399,7 @@ fn poll_accept<'a>(
 
 pin_project! {
     /// Future produced by [`Connection::read_datagram`]
-    pub(crate) struct ReadDatagram<'a> {
+    pub struct ReadDatagram<'a> {
         conn: &'a ConnectionRef,
         #[pin]
         notify: Notified<'a>,
@@ -1427,7 +1433,7 @@ impl Future for ReadDatagram<'_> {
 
 pin_project! {
     /// Future produced by [`Connection::send_datagram_wait`]
-    pub(crate) struct SendDatagram<'a> {
+    pub struct SendDatagram<'a> {
         conn: &'a ConnectionRef,
         data: Option<Bytes>,
         #[pin]
@@ -2734,7 +2740,7 @@ fn wake_all_notify(wakers: &mut FxHashMap<StreamId, Arc<Notify>>) {
 
 /// Errors that can arise when sending a datagram
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) enum SendDatagramError {
+pub enum SendDatagramError {
     /// The peer does not support receiving datagram frames
     UnsupportedByPeer,
     /// Datagram support is disabled locally

@@ -30,7 +30,7 @@ use crate::driver::{
 /// [`reset()`]: SendStream::reset
 /// [`finish()`]: SendStream::finish
 #[derive(Debug)]
-pub(crate) struct SendStream {
+pub struct SendStream {
     conn: ConnectionRef,
     stream: StreamId,
     is_0rtt: bool,
@@ -55,7 +55,7 @@ impl SendStream {
     /// # Cancel safety
     ///
     /// This method is cancellation safe. If this does not resolve, no bytes were written.
-    pub(crate) async fn write(&mut self, buf: &[u8]) -> Result<usize, WriteError> {
+    pub async fn write(&mut self, buf: &[u8]) -> Result<usize, WriteError> {
         poll_fn(|cx| self.execute_poll(cx, |s| s.write(buf))).await
     }
 
@@ -68,7 +68,7 @@ impl SendStream {
     ///
     /// This method is *not* cancellation safe. Even if this does not resolve, some prefix of `buf`
     /// may have been written when previously polled.
-    pub(crate) async fn write_all(&mut self, mut buf: &[u8]) -> Result<(), WriteError> {
+    pub async fn write_all(&mut self, mut buf: &[u8]) -> Result<(), WriteError> {
         while !buf.is_empty() {
             let written = self.write(buf).await?;
             buf = &buf[written..];
@@ -95,7 +95,7 @@ impl SendStream {
     /// # Cancel safety
     ///
     /// This method is cancellation safe. If this does not resolve, no bytes were written.
-    pub(crate) async fn write_chunks(&mut self, bufs: &mut [Bytes]) -> Result<Written, WriteError> {
+    pub async fn write_chunks(&mut self, bufs: &mut [Bytes]) -> Result<Written, WriteError> {
         poll_fn(|cx| self.execute_poll(cx, |s| s.write_chunks(bufs))).await
     }
 
@@ -109,7 +109,7 @@ impl SendStream {
     ///
     /// This method is *not* cancellation safe. Even if this does not resolve, some bytes may have
     /// been written when previously polled.
-    pub(crate) async fn write_chunk(&mut self, buf: Bytes) -> Result<(), WriteError> {
+    pub async fn write_chunk(&mut self, buf: Bytes) -> Result<(), WriteError> {
         self.write_all_chunks(&mut [buf]).await?;
         Ok(())
     }
@@ -125,10 +125,7 @@ impl SendStream {
     ///
     /// This method is *not* cancellation safe. Even if this does not resolve, some bytes may have
     /// been written when previously polled.
-    pub(crate) async fn write_all_chunks(
-        &mut self,
-        mut bufs: &mut [Bytes],
-    ) -> Result<(), WriteError> {
+    pub async fn write_all_chunks(&mut self, mut bufs: &mut [Bytes]) -> Result<(), WriteError> {
         while !bufs.is_empty() {
             let written = self.write_chunks(bufs).await?;
             bufs = &mut bufs[written.chunks..];
@@ -179,7 +176,7 @@ impl SendStream {
     /// May fail if [`finish()`](Self::finish) or [`reset()`](Self::reset) was previously
     /// called. This error is harmless and serves only to indicate that the caller may have
     /// incorrect assumptions about the stream's state.
-    pub(crate) fn finish(&mut self) -> Result<(), ClosedStream> {
+    pub fn finish(&mut self) -> Result<(), ClosedStream> {
         let mut conn = self.conn.state.lock();
         match conn.inner.send_stream(self.stream).finish() {
             Ok(()) => {
@@ -202,7 +199,7 @@ impl SendStream {
     /// May fail if [`finish()`](Self::finish) or [`reset()`](Self::reset) was previously
     /// called. This error is harmless and serves only to indicate that the caller may have
     /// incorrect assumptions about the stream's state.
-    pub(crate) fn reset(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
+    pub fn reset(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
         let mut conn = self.conn.state.lock();
         if self.is_0rtt && conn.check_0rtt().is_err() {
             return Ok(());
@@ -219,14 +216,14 @@ impl SendStream {
     /// the priority of a stream with pending data may only take effect after that data has been
     /// transmitted. Using many different priority levels per connection may have a negative
     /// impact on performance.
-    pub(crate) fn set_priority(&self, priority: i32) -> Result<(), ClosedStream> {
+    pub fn set_priority(&self, priority: i32) -> Result<(), ClosedStream> {
         let mut conn = self.conn.state.lock();
         conn.inner.send_stream(self.stream).set_priority(priority)?;
         Ok(())
     }
 
     /// Get the priority of the send stream
-    pub(crate) fn priority(&self) -> Result<i32, ClosedStream> {
+    pub fn priority(&self) -> Result<i32, ClosedStream> {
         let mut conn = self.conn.state.lock();
         conn.inner.send_stream(self.stream).priority()
     }
@@ -241,7 +238,7 @@ impl SendStream {
     /// For a variety of reasons, the peer may not send acknowledgements immediately upon receiving
     /// data. As such, relying on `stopped` to know when the peer has read a stream to completion
     /// may introduce more latency than using an application-level response of some sort.
-    pub(crate) fn stopped(
+    pub fn stopped(
         &self,
     ) -> impl Future<Output = Result<Option<VarInt>, StoppedError>> + Send + Sync + 'static {
         let conn = self.conn.clone();
@@ -271,7 +268,7 @@ impl SendStream {
     }
 
     /// Get the identity of this stream
-    pub(crate) fn id(&self) -> StreamId {
+    pub fn id(&self) -> StreamId {
         self.stream
     }
 
@@ -282,7 +279,7 @@ impl SendStream {
     /// If the stream is not ready for writing, the method returns Poll::Pending and arranges
     /// for the current task (via cx.waker().wake_by_ref()) to receive a notification when the
     /// stream becomes writable or is closed.
-    pub(crate) fn poll_write(
+    pub fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context,
         buf: &[u8],
@@ -353,7 +350,7 @@ impl Drop for SendStream {
 
 /// Errors that arise from writing to a stream
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum WriteError {
+pub enum WriteError {
     /// The peer is no longer accepting data on this stream
     ///
     /// Carries an application-defined error code.
@@ -426,7 +423,7 @@ impl From<WriteError> for io::Error {
 
 /// Errors that arise while monitoring for a send stream stop from the peer
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum StoppedError {
+pub enum StoppedError {
     /// The connection was lost
     ConnectionLost(ConnectionError),
     /// This was a 0-RTT stream and the server rejected it

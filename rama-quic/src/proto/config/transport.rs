@@ -68,13 +68,13 @@ impl TransportConfig {
     ///
     /// Worst-case memory use is directly proportional to `max_concurrent_bidi_streams *
     /// stream_receive_window`, with an upper bound proportional to `receive_window`.
-    pub(crate) fn max_concurrent_bidi_streams(&mut self, value: VarInt) -> &mut Self {
+    pub fn max_concurrent_bidi_streams(&mut self, value: VarInt) -> &mut Self {
         self.max_concurrent_bidi_streams = value;
         self
     }
 
     /// Variant of `max_concurrent_bidi_streams` affecting unidirectional streams
-    pub(crate) fn max_concurrent_uni_streams(&mut self, value: VarInt) -> &mut Self {
+    pub fn max_concurrent_uni_streams(&mut self, value: VarInt) -> &mut Self {
         self.max_concurrent_uni_streams = value;
         self
     }
@@ -101,7 +101,7 @@ impl TransportConfig {
     /// # Ok(())
     /// # }
     /// ```
-    pub(crate) fn max_idle_timeout(&mut self, value: Option<IdleTimeout>) -> &mut Self {
+    pub fn max_idle_timeout(&mut self, value: Option<IdleTimeout>) -> &mut Self {
         self.max_idle_timeout = value.map(|t| t.0);
         self
     }
@@ -114,7 +114,7 @@ impl TransportConfig {
     /// stream doesn't monopolize receive buffers, which may otherwise occur if the application
     /// chooses not to read from a large stream for a time while still requiring data on other
     /// streams.
-    pub(crate) fn stream_receive_window(&mut self, value: VarInt) -> &mut Self {
+    pub fn stream_receive_window(&mut self, value: VarInt) -> &mut Self {
         self.stream_receive_window = value;
         self
     }
@@ -125,7 +125,7 @@ impl TransportConfig {
     /// This should be set to at least the expected connection latency multiplied by the maximum
     /// desired throughput. Larger values can be useful to allow maximum throughput within a
     /// stream while another is blocked.
-    pub(crate) fn receive_window(&mut self, value: VarInt) -> &mut Self {
+    pub fn receive_window(&mut self, value: VarInt) -> &mut Self {
         self.receive_window = value;
         self
     }
@@ -136,7 +136,7 @@ impl TransportConfig {
     /// flow control credit. Endpoints that wish to handle large numbers of connections robustly
     /// should take care to set this low enough to guarantee memory exhaustion does not occur if
     /// every connection uses the entire window.
-    pub(crate) fn send_window(&mut self, value: u64) -> &mut Self {
+    pub fn send_window(&mut self, value: u64) -> &mut Self {
         self.send_window = value;
         self
     }
@@ -151,27 +151,27 @@ impl TransportConfig {
     ///
     /// Disabling fairness can reduce fragmentation and protocol overhead for workloads that use
     /// many small streams.
-    pub(crate) fn send_fairness(&mut self, value: bool) -> &mut Self {
+    pub fn send_fairness(&mut self, value: bool) -> &mut Self {
         self.send_fairness = value;
         self
     }
 
     /// Maximum reordering in packet number space before FACK style loss detection considers a
     /// packet lost. Should not be less than 3, per RFC5681.
-    pub(crate) fn packet_threshold(&mut self, value: u32) -> &mut Self {
+    pub fn packet_threshold(&mut self, value: u32) -> &mut Self {
         self.packet_threshold = value;
         self
     }
 
     /// Maximum reordering in time space before time based loss detection considers a packet lost,
     /// as a factor of RTT
-    pub(crate) fn time_threshold(&mut self, value: f32) -> &mut Self {
+    pub fn time_threshold(&mut self, value: f32) -> &mut Self {
         self.time_threshold = value;
         self
     }
 
     /// The RTT used before an RTT sample is taken
-    pub(crate) fn initial_rtt(&mut self, value: Duration) -> &mut Self {
+    pub fn initial_rtt(&mut self, value: Duration) -> &mut Self {
         self.initial_rtt = value;
         self
     }
@@ -184,7 +184,7 @@ impl TransportConfig {
     /// exceeding the network path's IP MTU. If the provided value is higher than what the network
     /// path actually supports, packet loss will eventually trigger black hole detection and bring
     /// it down to [`TransportConfig::min_mtu`].
-    pub(crate) fn initial_mtu(&mut self, value: u16) -> &mut Self {
+    pub fn initial_mtu(&mut self, value: u16) -> &mut Self {
         self.initial_mtu = value.max(INITIAL_MTU);
         self
     }
@@ -206,7 +206,7 @@ impl TransportConfig {
     /// [`TransportConfig::initial_mtu`] together with
     /// [`TransportConfig::mtu_discovery_config`] to set a maximum UDP payload size that robustly
     /// adapts to the network.
-    pub(crate) fn min_mtu(&mut self, value: u16) -> &mut Self {
+    pub fn min_mtu(&mut self, value: u16) -> &mut Self {
         self.min_mtu = value.max(INITIAL_MTU);
         self
     }
@@ -214,7 +214,7 @@ impl TransportConfig {
     /// Specifies the MTU discovery config (see [`MtuDiscoveryConfig`] for details).
     ///
     /// Enabled by default.
-    pub(crate) fn mtu_discovery_config(&mut self, value: Option<MtuDiscoveryConfig>) -> &mut Self {
+    pub fn mtu_discovery_config(&mut self, value: Option<MtuDiscoveryConfig>) -> &mut Self {
         self.mtu_discovery_config = value;
         self
     }
@@ -228,7 +228,7 @@ impl TransportConfig {
     /// well as the total size of stream write bursts can be inferred by observers under certain
     /// conditions. This analysis requires either an uncongested connection or application datagrams
     /// too large to be coalesced.
-    pub(crate) fn pad_to_mtu(&mut self, value: bool) -> &mut Self {
+    pub fn pad_to_mtu(&mut self, value: bool) -> &mut Self {
         self.pad_to_mtu = value;
         self
     }
@@ -241,13 +241,13 @@ impl TransportConfig {
     /// Defaults to `None`, which disables controlling the peer's acknowledgement frequency. Even
     /// if set to `None`, the local side still supports the acknowledgement frequency QUIC
     /// extension and may use it in other ways.
-    pub(crate) fn ack_frequency_config(&mut self, value: Option<AckFrequencyConfig>) -> &mut Self {
+    pub fn ack_frequency_config(&mut self, value: Option<AckFrequencyConfig>) -> &mut Self {
         self.ack_frequency_config = value;
         self
     }
 
     /// Number of consecutive PTOs after which network is considered to be experiencing persistent congestion.
-    pub(crate) fn persistent_congestion_threshold(&mut self, value: u32) -> &mut Self {
+    pub fn persistent_congestion_threshold(&mut self, value: u32) -> &mut Self {
         self.persistent_congestion_threshold = value;
         self
     }
@@ -259,13 +259,13 @@ impl TransportConfig {
     /// `None` to disable, which is the default. Only one side of any given connection needs keep-alive
     /// enabled for the connection to be preserved. Must be set lower than the idle_timeout of both
     /// peers to be effective.
-    pub(crate) fn keep_alive_interval(&mut self, value: Option<Duration>) -> &mut Self {
+    pub fn keep_alive_interval(&mut self, value: Option<Duration>) -> &mut Self {
         self.keep_alive_interval = value;
         self
     }
 
     /// Maximum quantity of out-of-order crypto layer data to buffer
-    pub(crate) fn crypto_buffer_size(&mut self, value: usize) -> &mut Self {
+    pub fn crypto_buffer_size(&mut self, value: usize) -> &mut Self {
         self.crypto_buffer_size = value;
         self
     }
@@ -274,7 +274,7 @@ impl TransportConfig {
     ///
     /// This allows passive observers to easily judge the round trip time of a connection, which can
     /// be useful for network administration but sacrifices a small amount of privacy.
-    pub(crate) fn allow_spin(&mut self, value: bool) -> &mut Self {
+    pub fn allow_spin(&mut self, value: bool) -> &mut Self {
         self.allow_spin = value;
         self
     }
@@ -287,7 +287,7 @@ impl TransportConfig {
     /// exceeds this value, old datagrams are dropped until it is no longer exceeded.
     ///
     /// The amount of payload data buffered may be smaller than `value` due to overhead.
-    pub(crate) fn datagram_receive_buffer_size(&mut self, value: Option<usize>) -> &mut Self {
+    pub fn datagram_receive_buffer_size(&mut self, value: Option<usize>) -> &mut Self {
         self.datagram_receive_buffer_size = value;
         self
     }
@@ -300,7 +300,7 @@ impl TransportConfig {
     /// sent, older datagrams are dropped until sufficient space is available.
     ///
     /// The amount of payload data buffered may be smaller than `value` due to overhead.
-    pub(crate) fn datagram_send_buffer_size(&mut self, value: usize) -> &mut Self {
+    pub fn datagram_send_buffer_size(&mut self, value: usize) -> &mut Self {
         self.datagram_send_buffer_size = value;
         self
     }
@@ -344,14 +344,14 @@ impl TransportConfig {
     /// by all network interface drivers or packet inspection tools. The UDP layer will attempt to
     /// disable GSO automatically when unavailable, but this can lead to spurious packet loss at
     /// startup, temporarily degrading performance.
-    pub(crate) fn enable_segmentation_offload(&mut self, enabled: bool) -> &mut Self {
+    pub fn enable_segmentation_offload(&mut self, enabled: bool) -> &mut Self {
         self.enable_segmentation_offload = enabled;
         self
     }
 
     /// qlog capture configuration to use for a particular connection
     #[cfg(feature = "qlog")]
-    pub(crate) fn qlog_stream(&mut self, stream: Option<QlogStream>) -> &mut Self {
+    pub fn qlog_stream(&mut self, stream: Option<QlogStream>) -> &mut Self {
         self.qlog_sink = stream.into();
         self
     }
@@ -497,7 +497,7 @@ impl AckFrequencyConfig {
     /// acknowledging every ack-eliciting packet.
     ///
     /// Defaults to 1, which sends ACK frames for every other ack-eliciting packet.
-    pub(crate) fn ack_eliciting_threshold(&mut self, value: VarInt) -> &mut Self {
+    pub fn ack_eliciting_threshold(&mut self, value: VarInt) -> &mut Self {
         self.ack_eliciting_threshold = value;
         self
     }
@@ -512,7 +512,7 @@ impl AckFrequencyConfig {
     ///
     /// Defaults to `None`, in which case the peer's original `max_ack_delay` will be used, as
     /// obtained from its transport parameters.
-    pub(crate) fn max_ack_delay(&mut self, value: Option<Duration>) -> &mut Self {
+    pub fn max_ack_delay(&mut self, value: Option<Duration>) -> &mut Self {
         self.max_ack_delay = value;
         self
     }
@@ -530,7 +530,7 @@ impl AckFrequencyConfig {
     /// It is recommended to set this value to [`TransportConfig::packet_threshold`] minus one.
     /// Since the default value for [`TransportConfig::packet_threshold`] is 3, this value defaults
     /// to 2.
-    pub(crate) fn reordering_threshold(&mut self, value: VarInt) -> &mut Self {
+    pub fn reordering_threshold(&mut self, value: VarInt) -> &mut Self {
         self.reordering_threshold = value;
         self
     }
@@ -558,25 +558,25 @@ pub(crate) struct QlogConfig {
 #[cfg(feature = "qlog")]
 impl QlogConfig {
     /// Where to write a qlog `TraceSeq`
-    pub(crate) fn writer(&mut self, writer: Box<dyn io::Write + Send + Sync>) -> &mut Self {
+    pub fn writer(&mut self, writer: Box<dyn io::Write + Send + Sync>) -> &mut Self {
         self.writer = Some(writer);
         self
     }
 
     /// Title to record in the qlog capture
-    pub(crate) fn title(&mut self, title: Option<String>) -> &mut Self {
+    pub fn title(&mut self, title: Option<String>) -> &mut Self {
         self.title = title;
         self
     }
 
     /// Description to record in the qlog capture
-    pub(crate) fn description(&mut self, description: Option<String>) -> &mut Self {
+    pub fn description(&mut self, description: Option<String>) -> &mut Self {
         self.description = description;
         self
     }
 
     /// Epoch qlog event times are recorded relative to
-    pub(crate) fn start_time(&mut self, start_time: Instant) -> &mut Self {
+    pub fn start_time(&mut self, start_time: Instant) -> &mut Self {
         self.start_time = start_time;
         self
     }
@@ -704,7 +704,7 @@ impl MtuDiscoveryConfig {
     ///
     /// Defaults to 600 seconds, as recommended by [RFC
     /// 8899](https://www.rfc-editor.org/rfc/rfc8899).
-    pub(crate) fn interval(&mut self, value: Duration) -> &mut Self {
+    pub fn interval(&mut self, value: Duration) -> &mut Self {
         self.interval = value;
         self
     }
@@ -716,7 +716,7 @@ impl MtuDiscoveryConfig {
     ///
     /// It is safe to use an arbitrarily high upper bound, regardless of the network path's MTU. The
     /// only drawback is that MTU discovery might take more time to finish.
-    pub(crate) fn upper_bound(&mut self, value: u16) -> &mut Self {
+    pub fn upper_bound(&mut self, value: u16) -> &mut Self {
         self.upper_bound = value.min(MAX_UDP_PAYLOAD);
         self
     }
@@ -726,14 +726,14 @@ impl MtuDiscoveryConfig {
     ///
     /// Black hole detection can be spuriously triggered in case of congestion, so it makes sense to
     /// try MTU discovery again after a short period of time.
-    pub(crate) fn black_hole_cooldown(&mut self, value: Duration) -> &mut Self {
+    pub fn black_hole_cooldown(&mut self, value: Duration) -> &mut Self {
         self.black_hole_cooldown = value;
         self
     }
 
     /// Specifies the minimum MTU change to stop the MTU discovery phase.
     /// Defaults to 20.
-    pub(crate) fn minimum_change(&mut self, value: u16) -> &mut Self {
+    pub fn minimum_change(&mut self, value: u16) -> &mut Self {
         self.minimum_change = value;
         self
     }

@@ -1851,7 +1851,7 @@ impl Drop for IncomingImproperDropWarner {
 ///
 /// These arise before any I/O has been performed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ConnectError {
+pub enum ConnectError {
     /// The endpoint can no longer create new connections
     ///
     /// Indicates that a necessary component of the endpoint has been dropped or otherwise disabled.

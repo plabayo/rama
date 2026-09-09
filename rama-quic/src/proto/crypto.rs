@@ -24,6 +24,18 @@ pub(crate) mod ring_like;
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 pub(crate) mod rustls;
 
+/// What a completed handshake settled, in Rama's own types: the application protocol the two
+/// sides agreed on, and the name the client asked the server for.
+///
+/// A server sees the name it was asked for; a client sees none, having asked it itself.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HandshakeSummary {
+    /// The application protocol both sides agreed on (RFC 7301), when ALPN was used.
+    pub protocol: Option<rama_net::tls::ApplicationProtocol>,
+    /// The server name the client asked for, when it sent one.
+    pub server_name: Option<rama_net::address::Host>,
+}
+
 /// A cryptographic session (commonly TLS)
 pub(crate) trait Session: Send + Sync + 'static {
     /// Create the initial set of keys given the client's initial destination ConnectionId
@@ -33,6 +45,16 @@ pub(crate) trait Session: Send + Sync + 'static {
     ///
     /// Returns `None` until the connection emits `HandshakeDataReady`.
     fn handshake_data(&self) -> Option<Box<dyn Any>>;
+
+    /// What the handshake settled, in Rama's own terms.
+    fn handshake_summary(&self) -> Option<HandshakeSummary> {
+        None
+    }
+
+    /// The certificate chain the peer presented, if it presented one.
+    fn peer_certificates(&self) -> Option<Vec<rama_crypto::pki_types::CertificateDer<'static>>> {
+        None
+    }
 
     /// Get the peer's identity, if available
     fn peer_identity(&self) -> Option<Box<dyn Any>>;
@@ -194,7 +216,7 @@ pub(crate) trait HmacKey: Send + Sync {
 ///
 /// This error occurs if the requested output length is too large.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct ExportKeyingMaterialError;
+pub struct ExportKeyingMaterialError;
 
 /// A pseudo random key for HKDF
 pub(crate) trait HandshakeTokenKey: Send + Sync {

@@ -1,0 +1,22 @@
+# Standalone: not a member of the rama workspace, with its own lockfile, so the upstream QUIC
+# peer never reaches the workspace resolution.
+[workspace]
+
+[package]
+name = "rama-quic-quinn-interop"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+rama-quic = { path = "../../../rama-quic", features = ["rustls", "ring"] }
+rama-tls = { path = "../../../rama-tls" }
+rama-crypto = { path = "../../../rama-crypto", features = ["ring", "rcgen"] }
+rama-net = { path = "../../../rama-net" }
+rama-utils = { path = "../../../rama-utils" }
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+sha2 = "0.10"

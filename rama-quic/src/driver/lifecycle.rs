@@ -12,7 +12,7 @@ use std::{
 use tokio::{sync::Notify, task::JoinHandle};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ShutdownOutcome {
+pub enum ShutdownOutcome {
     Drained,
     Forced,
     DriverFailed,

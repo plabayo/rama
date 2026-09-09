@@ -68,10 +68,12 @@ use crate::proto::frame::Frame;
 pub use crate::proto::frame::{ApplicationClose, ConnectionClose, FrameType};
 
 mod endpoint;
+pub use crate::proto::endpoint::ConnectError;
 pub(crate) use crate::proto::endpoint::{
-    AcceptError, ConnectError, ConnectionHandle, DatagramEvent, Endpoint, Incoming, RetryError,
-    RetryRefused,
+    AcceptError, ConnectionHandle, DatagramEvent, Endpoint, Incoming, RetryError, RetryRefused,
 };
+
+pub use crate::proto::crypto::{ExportKeyingMaterialError, HandshakeSummary};
 
 mod packet;
 pub(crate) use packet::{

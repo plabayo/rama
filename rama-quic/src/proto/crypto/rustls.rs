@@ -31,7 +31,7 @@ impl From<Side> for rama_tls_rustls::dep::rustls::Side {
 }
 
 mod config;
-pub(crate) use config::{AlpnPolicy, TlsConfigError, TlsOptions};
+pub use config::{AlpnPolicy, TlsConfigError, TlsOptions};
 
 /// A rustls TLS session
 pub(crate) struct TlsSession {
@@ -77,6 +77,29 @@ impl crypto::Session for TlsSession {
             .map(|group| u16::from(group.name()))
     }
 
+    fn handshake_summary(&self) -> Option<crate::proto::crypto::HandshakeSummary> {
+        let data = self.handshake_data()?;
+        let data = data.downcast::<HandshakeData>().ok()?;
+        Some(crate::proto::crypto::HandshakeSummary {
+            protocol: data
+                .protocol
+                .as_deref()
+                .map(rama_net::tls::ApplicationProtocol::from),
+            server_name: data
+                .server_name
+                .as_deref()
+                .and_then(|name| name.parse().ok()),
+        })
+    }
+
+    fn peer_certificates(&self) -> Option<Vec<rama_crypto::pki_types::CertificateDer<'static>>> {
+        let identity = self.peer_identity()?;
+        identity
+            .downcast::<Vec<rama_crypto::pki_types::CertificateDer<'static>>>()
+            .ok()
+            .map(|chain| *chain)
+    }
+
     fn peer_identity(&self) -> Option<Box<dyn Any>> {
         self.inner.peer_certificates().map(|v| -> Box<dyn Any> {
             Box::new(
@@ -110,7 +133,7 @@ impl crypto::Session for TlsSession {
                     code: TransportErrorCode::crypto(alert.into()),
                     frame: None,
                     reason: e.to_string(),
-                    crypto: Some(Arc::new(e)),
+                    cause: Some(rama_core::error::ArcError::new(e)),
                 }
             } else {
                 TransportError::PROTOCOL_VIOLATION(format!("TLS error: {e}"))
@@ -434,7 +457,7 @@ impl TryFrom<Arc<rama_tls_rustls::dep::rustls::ClientConfig>> for QuicClientConf
 ///
 /// [provider]: rama_tls_rustls::dep::rustls::crypto::CryptoProvider
 #[derive(Clone, Debug)]
-pub(crate) struct NoInitialCipherSuite {
+pub struct NoInitialCipherSuite {
     /// Whether the initial cipher suite was supplied by the caller
     specific: bool,
 }

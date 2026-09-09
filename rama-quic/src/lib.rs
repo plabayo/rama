@@ -30,16 +30,42 @@ mod proto;
 // (endpoints, connections, streams) is Rama-owned and lives in `driver`.
 pub use proto::{
     AckFrequencyConfig, ApplicationClose, BloomTokenLog, Chunk, ClientConfig, ClosedStream,
-    ConfigError, ConnectionClose, ConnectionError, ConnectionId, ConnectionIdGenerator,
-    ConnectionStats, DEFAULT_SUPPORTED_VERSIONS, Dir, EcnCodepoint, EndpointConfig, FrameStats,
-    FrameType, HashedConnectionIdGenerator, IdleTimeout, InvalidCid, MtuDiscoveryConfig,
-    NoneTokenLog, NoneTokenStore, PathStats, PreferredAddressPolicy, RandomConnectionIdGenerator,
+    ConfigError, ConnectError, ConnectionClose, ConnectionError, ConnectionId,
+    ConnectionIdGenerator, ConnectionStats, DEFAULT_SUPPORTED_VERSIONS, Dir, EcnCodepoint,
+    EndpointConfig, ExportKeyingMaterialError, FrameStats, FrameType, HandshakeSummary,
+    HashedConnectionIdGenerator, IdleTimeout, InvalidCid, MtuDiscoveryConfig, NoneTokenLog,
+    NoneTokenStore, PathStats, PreferredAddressPolicy, RandomConnectionIdGenerator,
     ReceiveQueueLimits, ServerConfig, Side, StdSystemTime, StreamId, TimeSource, TokenLog,
     TokenMemoryCache, TokenReuseError, TokenStore, TransportConfig, TransportError,
     TransportErrorCode, UdpStats, ValidationTokenConfig, VarInt, VarIntBoundsExceeded, Written,
 };
 
+/// TLS for QUIC: how a connection's identity and application protocol are configured.
+///
+/// The configuration itself is the common Rama TLS client and server configuration; this module
+/// carries only what QUIC adds to it. The provider behind it follows this crate's features, and
+/// no Rustls type appears in any signature here.
+#[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring"))))
+)]
+pub mod tls {
+    pub use crate::proto::crypto::rustls::{
+        AlpnPolicy, NoInitialCipherSuite, TlsConfigError, TlsOptions,
+    };
+}
+
 mod driver;
+
+// The runtime: endpoints, connections, streams and the errors they report. Rama owns these
+// types; the engine that drives them and the TLS provider behind them stay private.
+pub use driver::{
+    Accept, AcceptBi, AcceptUni, Connecting, Connection, Endpoint, EndpointStats, Incoming,
+    IncomingFuture, OpenBi, OpenUni, ReadDatagram, ReadError, ReadExactError, ReadToEndError,
+    RecvStream, ResetError, RetryError, SendDatagram, SendDatagramError, SendStream,
+    ShutdownOutcome, StoppedError, WriteError, ZeroRttAccepted,
+};
 
 #[cfg(fuzzing)]
 pub mod fuzzing {

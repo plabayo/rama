@@ -63,7 +63,7 @@ use crate::driver::{
 ///
 /// May be cloned to obtain another handle to the same endpoint.
 #[derive(Debug, Clone)]
-pub(crate) struct Endpoint {
+pub struct Endpoint {
     pub(crate) inner: EndpointRef,
     pub(crate) default_client_config: Option<ClientConfig>,
 }
@@ -87,7 +87,7 @@ impl Endpoint {
     /// Some environments may not allow creation of dual-stack sockets, in which case an IPv6
     /// client will only be able to connect to IPv6 servers. An IPv4 client is never dual-stack.
     #[cfg(any(feature = "aws-lc", feature = "ring"))] // `EndpointConfig::default()` is only available with these
-    pub(crate) async fn client(address: impl Into<SocketAddress>) -> Result<Self, DatagramError> {
+    pub async fn client(address: impl Into<SocketAddress>) -> Result<Self, DatagramError> {
         let address = address.into();
         Self::bind(
             EndpointConfig::default(),
@@ -102,7 +102,7 @@ impl Endpoint {
     ///
     /// `socket` carries the socket options to bind with and the packet features this endpoint
     /// requires; a feature the platform does not provide fails the call.
-    pub(crate) async fn bind(
+    pub async fn bind(
         config: EndpointConfig,
         server_config: Option<ServerConfig>,
         address: impl Into<SocketAddress>,
@@ -129,9 +129,16 @@ impl Endpoint {
         .map_err(DatagramError::from)
     }
 
+    /// Take ownership of a packet socket the caller prepared, bound to an address this endpoint
+    /// advertises as its preferred one (RFC 9000 §9.6). Datagrams for a connection that moved
+    /// there leave from this socket.
+    pub fn advertise_socket(&self, socket: UdpPacketSocket) -> Result<(), DatagramError> {
+        self.advertise_abstract(Socket::new(socket).map_err(DatagramError::from)?)
+    }
+
     /// Take ownership of one socket bound to an address this endpoint advertises, given as our
     /// own abstraction: a socket with state of its own, or a test socket.
-    pub(crate) fn advertise_socket(&self, socket: Socket) -> Result<(), DatagramError> {
+    pub(crate) fn advertise_abstract(&self, socket: Socket) -> Result<(), DatagramError> {
         let mut state = self.inner.state.lock();
         let Some(registry) = state.sockets.live_mut() else {
             drop(state);
@@ -157,7 +164,7 @@ impl Endpoint {
     /// Construct an endpoint on a packet socket the caller prepared, for example through
     /// [`UdpSocketConfig::wrap_std`](rama_udp::UdpSocketConfig::wrap_std), which is where the
     /// packet metadata is set up and the required features are validated.
-    pub(crate) fn with_packet_socket(
+    pub fn with_packet_socket(
         config: EndpointConfig,
         server_config: Option<ServerConfig>,
         socket: UdpPacketSocket,
@@ -172,7 +179,7 @@ impl Endpoint {
     }
 
     /// Returns relevant stats from this Endpoint
-    pub(crate) fn stats(&self) -> EndpointStats {
+    pub fn stats(&self) -> EndpointStats {
         let state = self.inner.state.lock();
         EndpointStats {
             received_datagrams: state.recv_state.received_datagrams,
@@ -196,7 +203,7 @@ impl Endpoint {
     /// addresses. Portable applications should bind an address that matches the family they wish to
     /// communicate within.
     #[cfg(any(feature = "aws-lc", feature = "ring"))] // `EndpointConfig::default()` is only available with these
-    pub(crate) async fn server(
+    pub async fn server(
         config: ServerConfig,
         address: impl Into<SocketAddress>,
     ) -> Result<Self, DatagramError> {
@@ -216,7 +223,7 @@ impl Endpoint {
     /// The packet metadata a [`UdpSocketConfig`](rama_udp::UdpSocketConfig) describes is not set
     /// up here; a caller that needs it wraps the socket with that configuration first and uses
     /// [`with_packet_socket`](Self::with_packet_socket).
-    pub(crate) fn with_std_socket(
+    pub fn with_std_socket(
         config: EndpointConfig,
         server_config: Option<ServerConfig>,
         socket: std::net::UdpSocket,
@@ -417,7 +424,7 @@ impl Endpoint {
     /// can be `await`ed to obtain the final [`Connection`](crate::driver::Connection), or used to e.g.
     /// filter connection attempts or force address validation, or converted into an intermediate
     /// `Connecting` future which can be used to e.g. send 0.5-RTT data.
-    pub(crate) fn accept(&self) -> Accept<'_> {
+    pub fn accept(&self) -> Accept<'_> {
         Accept {
             endpoint: self,
             notify: self.inner.shared.incoming.notified(),
@@ -425,7 +432,7 @@ impl Endpoint {
     }
 
     /// Set the client configuration used by `connect`
-    pub(crate) fn set_default_client_config(&mut self, config: ClientConfig) {
+    pub fn set_default_client_config(&mut self, config: ClientConfig) {
         self.default_client_config = Some(config);
     }
 
@@ -437,11 +444,7 @@ impl Endpoint {
     ///
     /// May fail immediately due to configuration errors, or in the future if the connection could
     /// not be established.
-    pub(crate) fn connect(
-        &self,
-        addr: SocketAddr,
-        server_name: &str,
-    ) -> Result<Connecting, ConnectError> {
+    pub fn connect(&self, addr: SocketAddr, server_name: &str) -> Result<Connecting, ConnectError> {
         let config = match &self.default_client_config {
             Some(config) => config.clone(),
             None => return Err(ConnectError::NoDefaultClientConfig),
@@ -455,7 +458,7 @@ impl Endpoint {
     /// See [`connect()`] for details.
     ///
     /// [`connect()`]: Endpoint::connect
-    pub(crate) fn connect_with(
+    pub fn connect_with(
         &self,
         config: ClientConfig,
         addr: SocketAddr,
@@ -514,7 +517,7 @@ impl Endpoint {
     ///
     /// See [`Endpoint::rebind_abstract()`] for what the switch means for existing connections. On
     /// error nothing changes and the previous socket stays active.
-    pub(crate) async fn rebind(
+    pub async fn rebind(
         &self,
         address: impl Into<SocketAddress>,
         socket: UdpSocketConfig,
@@ -525,12 +528,12 @@ impl Endpoint {
     }
 
     /// Switch to a packet socket the caller prepared.
-    pub(crate) fn rebind_packet_socket(&self, socket: UdpPacketSocket) -> io::Result<()> {
+    pub fn rebind_packet_socket(&self, socket: UdpPacketSocket) -> io::Result<()> {
         self.rebind_abstract(Socket::new(socket)?)
     }
 
     /// Switch to a bound standard socket.
-    pub(crate) fn rebind_std_socket(&self, socket: std::net::UdpSocket) -> io::Result<()> {
+    pub fn rebind_std_socket(&self, socket: std::net::UdpSocket) -> io::Result<()> {
         self.rebind_abstract(Socket::from_std(socket)?)
     }
 
@@ -605,7 +608,7 @@ impl Endpoint {
     /// Replace the server configuration, affecting new incoming connections only
     ///
     /// Useful for e.g. refreshing TLS certificates without disrupting existing connections.
-    pub(crate) fn set_server_config(&self, server_config: Option<ServerConfig>) {
+    pub fn set_server_config(&self, server_config: Option<ServerConfig>) {
         self.inner
             .state
             .lock()
@@ -614,7 +617,7 @@ impl Endpoint {
     }
 
     /// Get the local `SocketAddr` the underlying socket is bound to
-    pub(crate) fn local_addr(&self) -> io::Result<SocketAddr> {
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.inner
             .state
             .lock()
@@ -625,7 +628,7 @@ impl Endpoint {
     }
 
     /// Local addresses of every retained socket, the active one first.
-    pub(crate) fn local_addrs(&self) -> Vec<SocketAddr> {
+    pub fn local_addrs(&self) -> Vec<SocketAddr> {
         let state = self.inner.state.lock();
         state
             .sockets
@@ -640,7 +643,7 @@ impl Endpoint {
     }
 
     /// Get the number of connections that are currently open
-    pub(crate) fn open_connections(&self) -> usize {
+    pub fn open_connections(&self) -> usize {
         self.inner.state.lock().inner.open_connections()
     }
 
@@ -649,7 +652,7 @@ impl Endpoint {
     /// See [`Connection::close()`] for details.
     ///
     /// [`Connection::close()`]: crate::driver::Connection::close
-    pub(crate) fn close(&self, error_code: VarInt, reason: &[u8]) {
+    pub fn close(&self, error_code: VarInt, reason: &[u8]) {
         self.inner.state.lock().close(
             error_code,
             Bytes::copy_from_slice(reason),
@@ -658,7 +661,7 @@ impl Endpoint {
     }
 
     /// Stop the endpoint and join all drivers, releasing sockets even with retained handles.
-    pub(crate) async fn shutdown(&self) -> ShutdownOutcome {
+    pub async fn shutdown(&self) -> ShutdownOutcome {
         self.inner.shared.lifecycle.request();
         self.inner.shared.lifecycle.completed().await
     }
@@ -673,7 +676,7 @@ impl Endpoint {
     /// rejected. Consider calling [`close()`] if that is desired.
     ///
     /// [`close()`]: Endpoint::close
-    pub(crate) async fn wait_idle(&self) {
+    pub async fn wait_idle(&self) {
         loop {
             {
                 let endpoint = &mut *self.inner.state.lock();
@@ -691,7 +694,7 @@ impl Endpoint {
 /// Statistics on [Endpoint] activity
 #[non_exhaustive]
 #[derive(Debug, Default, Copy, Clone)]
-pub(crate) struct EndpointStats {
+pub struct EndpointStats {
     /// Cummulative number of Quic handshakes accepted by this [Endpoint]
     pub(crate) accepted_handshakes: u64,
     /// Cummulative number of Quic handshakees sent from this [Endpoint]
@@ -1548,7 +1551,7 @@ impl ConnectionSet {
 
 pin_project! {
     /// Future produced by [`Endpoint::accept`]
-    pub(crate) struct Accept<'a> {
+    pub struct Accept<'a> {
         endpoint: &'a Endpoint,
         #[pin]
         notify: Notified<'a>,

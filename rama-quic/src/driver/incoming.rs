@@ -16,7 +16,7 @@ use crate::driver::{
 
 /// An incoming connection for which the server has not yet begun its part of the handshake
 #[derive(Debug)]
-pub(crate) struct Incoming(Option<State>);
+pub struct Incoming(Option<State>);
 
 impl Incoming {
     #[expect(
@@ -44,7 +44,7 @@ impl Incoming {
     }
 
     /// Attempt to accept this incoming connection (an error may still occur)
-    pub(crate) fn accept(self) -> Result<Connecting, ConnectionError> {
+    pub fn accept(self) -> Result<Connecting, ConnectionError> {
         let state = self.into_state();
         state.endpoint.accept(state.inner, state.lease, None)
     }
@@ -52,7 +52,7 @@ impl Incoming {
     /// Accept this incoming connection using a custom configuration
     ///
     /// See [`accept()`][Incoming::accept] for more details.
-    pub(crate) fn accept_with(
+    pub fn accept_with(
         self,
         server_config: Arc<ServerConfig>,
     ) -> Result<Connecting, ConnectionError> {
@@ -63,7 +63,7 @@ impl Incoming {
     }
 
     /// Reject this incoming connection attempt
-    pub(crate) fn refuse(self) {
+    pub fn refuse(self) {
         let state = self.into_state();
         state.endpoint.refuse(state.inner, state.lease);
     }
@@ -71,7 +71,7 @@ impl Incoming {
     /// Respond with a retry packet, requiring the client to retry with address validation
     ///
     /// Errors if `may_retry()` is false.
-    pub(crate) fn retry(self) -> Result<(), RetryError> {
+    pub fn retry(self) -> Result<(), RetryError> {
         let state = self.into_state();
         state
             .endpoint
@@ -90,18 +90,18 @@ impl Incoming {
     }
 
     /// Ignore this incoming connection attempt, not sending any packet in response
-    pub(crate) fn ignore(self) {
+    pub fn ignore(self) {
         let state = self.into_state();
         state.endpoint.ignore(state.inner, state.lease);
     }
 
     /// The local IP address which was used when the peer established the connection
-    pub(crate) fn local_ip(&self) -> Option<IpAddr> {
+    pub fn local_ip(&self) -> Option<IpAddr> {
         self.state().inner.local_ip()
     }
 
     /// The peer's UDP address
-    pub(crate) fn remote_address(&self) -> SocketAddr {
+    pub fn remote_address(&self) -> SocketAddr {
         self.state().inner.remote_address()
     }
 
@@ -112,12 +112,12 @@ impl Incoming {
     ///
     /// Before expiry, if `self.remote_address_validated()` is false, `self.may_retry()` is true.
     /// The inverse is not guaranteed.
-    pub(crate) fn remote_address_validated(&self) -> bool {
+    pub fn remote_address_validated(&self) -> bool {
         self.state().inner.remote_address_validated()
     }
 
     /// Whether this pending attempt has expired or was retired by endpoint shutdown.
-    pub(crate) fn is_expired(&self) -> bool {
+    pub fn is_expired(&self) -> bool {
         self.state().inner.is_expired()
     }
 
@@ -125,12 +125,12 @@ impl Incoming {
     ///
     /// Before expiry, if `self.remote_address_validated()` is false, `self.may_retry()` is true.
     /// The inverse is not guaranteed.
-    pub(crate) fn may_retry(&self) -> bool {
+    pub fn may_retry(&self) -> bool {
         self.state().inner.may_retry()
     }
 
     /// The original destination CID when initiating the connection
-    pub(crate) fn orig_dst_cid(&self) -> ConnectionId {
+    pub fn orig_dst_cid(&self) -> ConnectionId {
         *self.state().inner.orig_dst_cid()
     }
 }
@@ -155,7 +155,7 @@ struct State {
 
 /// Error for a Retry that was not sent; the [`Incoming`] is handed back for another decision
 #[derive(Debug)]
-pub(crate) struct RetryError {
+pub struct RetryError {
     incoming: Box<Incoming>,
     reason: RetryRefused,
 }
@@ -191,7 +191,7 @@ impl RetryError {
 
 /// Basic adapter to let [`Incoming`] be `await`-ed like a [`Connecting`]
 #[derive(Debug)]
-pub(crate) struct IncomingFuture(Result<Connecting, ConnectionError>);
+pub struct IncomingFuture(Result<Connecting, ConnectionError>);
 
 impl Future for IncomingFuture {
     type Output = Result<Connection, ConnectionError>;

@@ -238,7 +238,7 @@ async fn shutdown_drops_the_advertised_socket() {
         .expect("the server binds");
     let observer = Arc::new(DropObserver::default());
     server
-        .advertise_socket(probe_socket(&observer, TestSocket::default()))
+        .advertise_abstract(probe_socket(&observer, TestSocket::default()))
         .expect("the endpoint takes the advertised socket");
     assert_eq!(server.local_addrs().len(), 2, "it owns both");
 
@@ -313,7 +313,7 @@ async fn the_datagrams_of_each_path_leave_by_that_paths_socket() {
     let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
     let initial = server.local_addr().unwrap();
     server
-        .advertise_socket(advertised)
+        .advertise_abstract(advertised)
         .expect("the endpoint takes the advertised socket");
 
     let client = Endpoint::client(localhost_v4())
@@ -423,7 +423,7 @@ async fn a_failed_advertised_socket_stops_being_advertised() {
     server_config.preferred_address_v4(Some(advertised_v4));
     let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
     let initial = server.local_addr().unwrap();
-    server.advertise_socket(advertised).unwrap();
+    server.advertise_abstract(advertised).unwrap();
     assert_eq!(
         server.advertised_preferred(),
         vec![advertised_addr],
@@ -491,7 +491,7 @@ async fn a_socket_advertised_after_the_driver_parked_is_polled() {
     // arrives.
     tokio::time::sleep(Duration::from_millis(50)).await;
     server
-        .advertise_socket(Socket::from_std(advertised).unwrap())
+        .advertise_abstract(Socket::from_std(advertised).unwrap())
         .expect("the endpoint takes it");
 
     // The client reaches the advertised address and nothing else: its handshake is answered only
@@ -532,7 +532,7 @@ async fn preferring_server_with_a_stuck_candidate() -> (
     let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
     let initial = server.local_addr().unwrap();
     server
-        .advertise_socket(advertised)
+        .advertise_abstract(advertised)
         .expect("the endpoint takes the advertised socket");
 
     let client = Endpoint::client(localhost_v4())
@@ -675,7 +675,7 @@ async fn a_part_sent_descriptor_stays_with_its_handle_when_the_path_moves() {
     server_config.preferred_address_v4(Some(advertised_v4));
     let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
     let initial = server.local_addr().unwrap();
-    server.advertise_socket(advertised).unwrap();
+    server.advertise_abstract(advertised).unwrap();
 
     let client = Endpoint::client(localhost_v4()).await.unwrap();
     let (c, s) = connect_through(&client, &server, client_config, initial).await;
@@ -810,7 +810,7 @@ async fn a_candidate_paths_answer_waits_for_its_route_with_nothing_on_the_wire()
     close_receive(&advertised_log);
     let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
     let initial = server.local_addr().unwrap();
-    server.advertise_socket(advertised).unwrap();
+    server.advertise_abstract(advertised).unwrap();
 
     let client = Endpoint::client(localhost_v4()).await.unwrap();
     let peer = client.local_addr().unwrap();
@@ -868,7 +868,7 @@ async fn a_candidate_paths_answer_is_given_up_when_its_route_is_refused() {
     close_receive(&advertised_log);
     let server = endpoint_with(EndpointConfig::default(), Some(server_config), listener);
     let initial = server.local_addr().unwrap();
-    server.advertise_socket(advertised).unwrap();
+    server.advertise_abstract(advertised).unwrap();
 
     let client = Endpoint::client(localhost_v4()).await.unwrap();
     let (c, s) = connect_through(&client, &server, client_config, initial).await;

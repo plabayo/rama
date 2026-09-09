@@ -112,7 +112,7 @@ impl EndpointConfig {
     /// Defaults to ten seconds. This local resource limit remains active when the
     /// negotiated idle timeout is disabled. The duration must be nonzero and fit
     /// the runtime clock when the endpoint is constructed.
-    pub(crate) fn handshake_timeout(&mut self, value: Duration) -> Result<&mut Self, ConfigError> {
+    pub fn handshake_timeout(&mut self, value: Duration) -> Result<&mut Self, ConfigError> {
         if value.is_zero() {
             return Err(ConfigError::OutOfBounds);
         }
@@ -173,7 +173,7 @@ impl EndpointConfig {
     /// 1500 byte Ethernet MTU. Deployments on links with larger MTUs (e.g. loopback or Ethernet
     /// with jumbo frames) can raise this to improve performance at the cost of a linear increase in
     /// datagram receive buffer size.
-    pub(crate) fn max_udp_payload_size(&mut self, value: u16) -> Result<&mut Self, ConfigError> {
+    pub fn max_udp_payload_size(&mut self, value: u16) -> Result<&mut Self, ConfigError> {
         if !(1200..=65_527).contains(&value) {
             return Err(ConfigError::OutOfBounds);
         }
@@ -195,7 +195,7 @@ impl EndpointConfig {
     }
 
     /// Override supported QUIC versions
-    pub(crate) fn supported_versions(&mut self, supported_versions: Vec<u32>) -> &mut Self {
+    pub fn supported_versions(&mut self, supported_versions: Vec<u32>) -> &mut Self {
         self.supported_versions = supported_versions;
         self
     }
@@ -205,7 +205,7 @@ impl EndpointConfig {
     /// Enabled by default. Helps protect against protocol ossification and makes traffic less
     /// identifiable to observers. Disable if helping observers identify this traffic as QUIC is
     /// desired.
-    pub(crate) fn grease_quic_bit(&mut self, value: bool) -> &mut Self {
+    pub fn grease_quic_bit(&mut self, value: bool) -> &mut Self {
         self.grease_quic_bit = value;
         self
     }
@@ -220,7 +220,7 @@ impl EndpointConfig {
     ///
     /// [ISAKMP/IKE
     /// amplification]: https://bughunters.google.com/blog/5960150648750080/preventing-cross-service-udp-loops-in-quic#isakmp-ike-amplification-vs-quic
-    pub(crate) fn min_reset_interval(&mut self, value: Duration) -> &mut Self {
+    pub fn min_reset_interval(&mut self, value: Duration) -> &mut Self {
         self.min_reset_interval = value;
         self
     }
@@ -231,7 +231,7 @@ impl EndpointConfig {
     /// However, you can seed the rng yourself through this method (e.g. if you need to run
     /// deterministically or if you are running in an environment that doesn't have a source of
     /// entropy available).
-    pub(crate) fn rng_seed(&mut self, seed: Option<[u8; 32]>) -> &mut Self {
+    pub fn rng_seed(&mut self, seed: Option<[u8; 32]>) -> &mut Self {
         self.rng_seed = seed;
         self
     }
@@ -336,7 +336,7 @@ impl ServerConfig {
     }
 
     /// Set a custom [`TransportConfig`]
-    pub(crate) fn transport_config(&mut self, transport: Arc<TransportConfig>) -> &mut Self {
+    pub fn transport_config(&mut self, transport: Arc<TransportConfig>) -> &mut Self {
         self.transport = transport;
         self
     }
@@ -359,7 +359,7 @@ impl ServerConfig {
     /// Duration after a retry token was issued for which it's considered valid
     ///
     /// Defaults to 15 seconds.
-    pub(crate) fn retry_token_lifetime(&mut self, value: Duration) -> &mut Self {
+    pub fn retry_token_lifetime(&mut self, value: Duration) -> &mut Self {
         self.retry_token_lifetime = value;
         self
     }
@@ -368,7 +368,7 @@ impl ServerConfig {
     ///
     /// Improves behavior for clients that move between different internet connections or suffer NAT
     /// rebinding. Enabled by default.
-    pub(crate) fn migration(&mut self, value: bool) -> &mut Self {
+    pub fn migration(&mut self, value: bool) -> &mut Self {
         self.migration = value;
         self
     }
@@ -376,7 +376,7 @@ impl ServerConfig {
     /// The preferred IPv4 address that will be communicated to clients during handshaking
     ///
     /// If the client is able to reach this address, it will switch to it.
-    pub(crate) fn preferred_address_v4(&mut self, address: Option<SocketAddrV4>) -> &mut Self {
+    pub fn preferred_address_v4(&mut self, address: Option<SocketAddrV4>) -> &mut Self {
         self.preferred_address_v4 = address;
         self
     }
@@ -384,7 +384,7 @@ impl ServerConfig {
     /// The preferred IPv6 address that will be communicated to clients during handshaking
     ///
     /// If the client is able to reach this address, it will switch to it.
-    pub(crate) fn preferred_address_v6(&mut self, address: Option<SocketAddrV6>) -> &mut Self {
+    pub fn preferred_address_v6(&mut self, address: Option<SocketAddrV6>) -> &mut Self {
         self.preferred_address_v6 = address;
         self
     }
@@ -400,7 +400,7 @@ impl ServerConfig {
     /// The default value is set to 65536. With a typical Ethernet MTU of 1500 bytes, this limits
     /// memory consumption from this to under 100 MiB--a generous amount that still prevents memory
     /// exhaustion in most contexts.
-    pub(crate) fn max_incoming(&mut self, max_incoming: usize) -> &mut Self {
+    pub fn max_incoming(&mut self, max_incoming: usize) -> &mut Self {
         self.max_incoming = max_incoming;
         self
     }
@@ -416,7 +416,7 @@ impl ServerConfig {
     /// The default value is set to 10 MiB--an amount such that in most situations a client would
     /// not transmit that much 0-RTT data faster than the server handles the corresponding
     /// [`Incoming`][crate::proto::Incoming].
-    pub(crate) fn incoming_buffer_size(&mut self, incoming_buffer_size: u64) -> &mut Self {
+    pub fn incoming_buffer_size(&mut self, incoming_buffer_size: u64) -> &mut Self {
         self.incoming_buffer_size = incoming_buffer_size;
         self
     }
@@ -445,7 +445,7 @@ impl ServerConfig {
     /// This exists to allow system time to be mocked in tests, or wherever else desired.
     ///
     /// Defaults to [`StdSystemTime`], which simply calls [`SystemTime::now()`](SystemTime::now).
-    pub(crate) fn time_source(&mut self, time_source: Arc<dyn TimeSource>) -> &mut Self {
+    pub fn time_source(&mut self, time_source: Arc<dyn TimeSource>) -> &mut Self {
         self.time_source = time_source;
         self
     }
@@ -457,6 +457,18 @@ impl ServerConfig {
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 impl ServerConfig {
+    /// Build a server configuration from the common Rama TLS server configuration: the identity
+    /// to present, the protocols to accept and everything else TLS decides, with the provider
+    /// chosen by this crate's features.
+    pub fn try_from_rama_tls(
+        config: &rama_tls::server::TlsServerConfig,
+        options: crypto::rustls::TlsOptions,
+    ) -> Result<Self, crypto::rustls::TlsConfigError> {
+        Ok(Self::with_crypto(Arc::new(
+            crypto::rustls::QuicServerConfig::from_rama(config, configured_provider(), options)?,
+        )))
+    }
+
     /// Create a server config with the given certificate chain to be presented to clients
     ///
     /// Uses a randomized handshake token key.
@@ -572,7 +584,7 @@ impl ValidationTokenConfig {
     /// This refers only to tokens sent in NEW_TOKEN frames, in contrast to retry tokens.
     ///
     /// Defaults to 2 weeks.
-    pub(crate) fn lifetime(&mut self, value: Duration) -> &mut Self {
+    pub fn lifetime(&mut self, value: Duration) -> &mut Self {
         self.lifetime = value;
         self
     }
@@ -582,7 +594,7 @@ impl ValidationTokenConfig {
     /// Defaults to a default [`BloomTokenLog`], which is suitable for most internet applications.
     /// Use [`NoneTokenLog`] to make the server ignore all address validation tokens (that is,
     /// tokens originating from NEW_TOKEN frames--retry tokens are not affected).
-    pub(crate) fn log(&mut self, log: Arc<dyn TokenLog>) -> &mut Self {
+    pub fn log(&mut self, log: Arc<dyn TokenLog>) -> &mut Self {
         self.log = log;
         self
     }
@@ -592,7 +604,7 @@ impl ValidationTokenConfig {
     /// This refers only to tokens sent in NEW_TOKEN frames, in contrast to retry tokens.
     ///
     /// Defaults to 2.
-    pub(crate) fn sent(&mut self, value: u32) -> &mut Self {
+    pub fn sent(&mut self, value: u32) -> &mut Self {
         self.sent = value;
         self
     }
@@ -675,7 +687,7 @@ impl ClientConfig {
         /// Defaults to [`PreferredAddressPolicy::Migrate`]: the address advertised for the family
         /// in use is probed once the handshake is confirmed, and the connection moves there with
         /// the connection ID the server bound to it as soon as a probe is answered.
-        pub(crate) fn preferred_address_policy(mut self, policy: PreferredAddressPolicy) -> Self {
+        pub fn preferred_address_policy(mut self, policy: PreferredAddressPolicy) -> Self {
             self.preferred_address_policy = policy;
             self
         }
@@ -698,7 +710,7 @@ impl ClientConfig {
     }
 
     /// Set a custom [`TransportConfig`]
-    pub(crate) fn transport_config(&mut self, transport: Arc<TransportConfig>) -> &mut Self {
+    pub fn transport_config(&mut self, transport: Arc<TransportConfig>) -> &mut Self {
         self.transport = transport;
         self
     }
@@ -706,13 +718,13 @@ impl ClientConfig {
     /// Set a custom [`TokenStore`]
     ///
     /// Defaults to [`TokenMemoryCache`], which is suitable for most internet applications.
-    pub(crate) fn token_store(&mut self, store: Arc<dyn TokenStore>) -> &mut Self {
+    pub fn token_store(&mut self, store: Arc<dyn TokenStore>) -> &mut Self {
         self.token_store = store;
         self
     }
 
     /// Set the QUIC version to use
-    pub(crate) fn version(&mut self, version: u32) -> &mut Self {
+    pub fn version(&mut self, version: u32) -> &mut Self {
         self.version = version;
         self
     }
@@ -720,6 +732,22 @@ impl ClientConfig {
 
 #[cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
 impl ClientConfig {
+    /// Build a client configuration from the common Rama TLS client configuration: the peer
+    /// identity to trust, the protocols to offer and everything else TLS decides, with the
+    /// provider chosen by this crate's features.
+    ///
+    /// The destination address is not part of it. A connection is made to an address with
+    /// [`Endpoint::connect_with`](crate::Endpoint::connect_with), and the identity it must prove
+    /// comes from here and from the server name given there.
+    pub fn try_from_rama_tls(
+        config: &rama_tls::client::TlsClientConfig,
+        options: crypto::rustls::TlsOptions,
+    ) -> Result<Self, crypto::rustls::TlsConfigError> {
+        Ok(Self::new(Arc::new(
+            crypto::rustls::QuicClientConfig::from_rama(config, configured_provider(), options)?,
+        )))
+    }
+
     /// Create a client configuration that trusts specified trust anchors
     pub(crate) fn with_root_certificates(
         roots: Arc<rama_tls_rustls::dep::rustls::RootCertStore>,

@@ -1,21 +1,36 @@
 #![cfg(all(feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
-use rama_utils::octets;
+//! Fifty connections at once, each carrying a megabyte, through the public API. Every payload is
+//! named by its connection and checked by digest on arrival, every task is joined, and the whole
+//! run is bounded: a transfer that is lost, corrupted or reset fails this test rather than
+//! leaving it to notice nothing.
+
 use std::{
     convert::TryInto,
     net::{IpAddr, Ipv4Addr, SocketAddr},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::Duration,
 };
 
-use crc::Crc;
-use rama_crypto::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
-use rama_quic::{ConnectionError, ReadError, StoppedError, TransportConfig, WriteError};
-use rand::{self, Rng};
+#[cfg(all(feature = "aws-lc", not(feature = "ring")))]
+use rama_crypto::dep::aws_lc_rs::digest;
+#[cfg(feature = "ring")]
+use rama_crypto::dep::ring::digest;
+use rama_quic::tls::TlsOptions;
+use rama_quic::{ClientConfig, Endpoint, ServerConfig, TransportConfig};
+use rama_tls::{
+    client::TlsClientConfig,
+    server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+};
+use rama_utils::octets;
 use tokio::runtime::Builder;
 
-struct Shared {
-    errors: Vec<ConnectionError>,
-}
+const ALPN: &[u8] = b"many-connections";
+/// The digest prefixed to every payload.
+const DIGEST: usize = 32;
+/// How many connections carry a payload at once.
+const CONNECTIONS: usize = 50;
+/// The whole run, including cleanup, has to fit in this.
+const LIMIT: Duration = Duration::from_secs(120);
 
 #[test]
 #[ignore]
@@ -26,168 +41,152 @@ fn connect_n_nodes_to_1_and_send_1mb_data() {
         .try_init();
 
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
-    let _guard = runtime.enter();
-    let shared = Arc::new(Mutex::new(Shared { errors: vec![] }));
+    runtime.block_on(async {
+        match tokio::time::timeout(LIMIT, run()).await {
+            Ok(()) => {}
+            Err(_) => panic!("the run did not finish within {LIMIT:?}"),
+        }
+    });
+}
 
-    let (cfg, listener_cert) = configure_listener();
-    let endpoint =
-        rama_quic::Endpoint::server(cfg, SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
-            .unwrap();
+async fn run() {
+    let auth = ServerAuthData::new_generated(GeneratedServerAuthConfig::default()).unwrap();
+    let anchor = auth.cert_chain.last().unwrap().clone();
+    let endpoint = Endpoint::server(
+        listener_config(&auth),
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+    )
+    .await
+    .unwrap();
     let listener_addr = endpoint.local_addr().unwrap();
 
-    let expected_messages = 50;
-
-    let crc = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
-    let shared2 = shared.clone();
-    let endpoint2 = endpoint.clone();
-    let read_incoming_data = async move {
-        for _ in 0..expected_messages {
-            let conn = endpoint2.accept().await.unwrap().await.unwrap();
-
-            let shared = shared2.clone();
-            let task = async move {
-                while let Ok(stream) = conn.accept_uni().await {
-                    read_from_peer(stream).await?;
-                    conn.close(0u32.into(), &[]);
-                }
-                Ok(())
-            };
-            tokio::spawn(async move {
-                if let Err(e) = task.await {
-                    shared.lock().unwrap().errors.push(e);
-                }
-            });
-        }
+    // The server reads one stream per connection and reports which payload it saw.
+    let listener = {
+        let endpoint = endpoint.clone();
+        tokio::spawn(async move {
+            let mut readers = Vec::with_capacity(CONNECTIONS);
+            for _ in 0..CONNECTIONS {
+                let incoming = endpoint.accept().await.expect("an attempt arrives");
+                readers.push(tokio::spawn(async move {
+                    let conn = incoming
+                        .accept()
+                        .expect("the attempt is accepted")
+                        .await
+                        .expect("the handshake completes");
+                    let mut stream = conn.accept_uni().await.expect("the stream arrives");
+                    let data = stream
+                        .read_to_end(octets::mib(2))
+                        .await
+                        .expect("the stream completes");
+                    let seen = check(&data);
+                    conn.close(0u32.into(), b"received");
+                    seen
+                }));
+            }
+            let mut seen = Vec::with_capacity(CONNECTIONS);
+            for reader in readers {
+                seen.push(reader.await.expect("a reader finished without panicking"));
+            }
+            seen
+        })
     };
-    runtime.spawn(read_incoming_data);
 
-    let client_cfg = configure_connector(listener_cert);
-
-    for _ in 0..expected_messages {
-        let data = random_data_with_hash(octets::mib(1), &crc);
-        let shared = shared.clone();
+    let client_cfg = connector_config(anchor);
+    let mut writers = Vec::with_capacity(CONNECTIONS);
+    for index in 0..CONNECTIONS {
         let connecting = endpoint
             .connect_with(client_cfg.clone(), listener_addr, "localhost")
             .unwrap();
-        let task = async move {
-            let conn = connecting.await.map_err(WriteError::ConnectionLost)?;
-            write_to_peer(conn, data).await?;
-            Ok(())
-        };
-        runtime.spawn(async move {
-            if let Err(e) = task.await {
-                use rama_quic::ConnectionError::*;
-                match e {
-                    WriteError::ConnectionLost(ApplicationClosed { .. })
-                    | WriteError::ConnectionLost(Reset) => {}
-                    WriteError::ConnectionLost(e) => shared.lock().unwrap().errors.push(e),
-                    _ => panic!("unexpected write error"),
-                }
-            }
-        });
+        writers.push(tokio::spawn(async move {
+            let conn = connecting.await.expect("the handshake completes");
+            let mut stream = conn.open_uni().await.expect("a stream");
+            stream
+                .write_all(&payload(index))
+                .await
+                .expect("the payload is written");
+            stream.finish().expect("the stream ends");
+            // The peer closes the connection once it has the whole payload; a stream reset or a
+            // connection lost before that is a lost transfer, and the reader will say so.
+            let _ = stream.stopped().await;
+        }));
+    }
+    for writer in writers {
+        writer.await.expect("a writer finished without panicking");
     }
 
-    runtime.block_on(endpoint.wait_idle());
-    let shared = shared.lock().unwrap();
-    if !shared.errors.is_empty() {
-        panic!("some connections failed: {:?}", shared.errors);
-    }
+    let mut seen = listener
+        .await
+        .expect("the listener finished without panicking");
+    seen.sort_unstable();
+    let expected: Vec<usize> = (0..CONNECTIONS).collect();
+    assert_eq!(
+        seen, expected,
+        "every connection's own payload arrived whole, exactly once"
+    );
+
+    endpoint.shutdown().await;
 }
 
-async fn read_from_peer(
-    mut stream: rama_quic::RecvStream,
-) -> Result<(), rama_quic::ConnectionError> {
-    let crc = crc::Crc::<u32>::new(&crc::CRC_32_ISO_HDLC);
-    match stream.read_to_end(octets::mib(5)).await {
-        Ok(data) => {
-            assert!(hash_correct(&data, &crc));
-            Ok(())
-        }
-        Err(e) => {
-            use ReadError::*;
-            use rama_quic::ReadToEndError::*;
-            match e {
-                TooLong | Read(ClosedStream) | Read(ZeroRttRejected) | Read(IllegalOrderedRead) => {
-                    unreachable!()
-                }
-                Read(Reset(error_code)) => panic!("unexpected stream reset: {error_code}"),
-                Read(ConnectionLost(e)) => Err(e),
-            }
-        }
-    }
+fn alpn() -> [rama_net::tls::ApplicationProtocol; 1] {
+    [rama_net::tls::ApplicationProtocol::from(ALPN)]
 }
 
-async fn write_to_peer(conn: rama_quic::Connection, data: Vec<u8>) -> Result<(), WriteError> {
-    let mut s = conn.open_uni().await.map_err(WriteError::ConnectionLost)?;
-    s.write_all(&data).await?;
-    s.finish().unwrap();
-    // Wait for the stream to be fully received
-    match s.stopped().await {
-        Ok(_) => Ok(()),
-        Err(StoppedError::ConnectionLost(ConnectionError::ApplicationClosed { .. })) => Ok(()),
-        Err(e) => Err(e.into()),
-    }
-}
-
-/// Builds client configuration. Trusts given node certificate.
-fn configure_connector(node_cert: CertificateDer<'static>) -> rama_quic::ClientConfig {
-    let mut roots = rama_tls_rustls::dep::rustls::RootCertStore::empty();
-    roots.add(node_cert).unwrap();
-
-    let mut transport_config = TransportConfig::default();
-    transport_config.max_idle_timeout(Some(Duration::from_secs(20).try_into().unwrap()));
-
-    let mut peer_cfg = rama_quic::ClientConfig::with_root_certificates(Arc::new(roots)).unwrap();
-    peer_cfg.transport_config(Arc::new(transport_config));
-    peer_cfg
-}
-
-/// Builds listener configuration along with its certificate.
-fn configure_listener() -> (rama_quic::ServerConfig, CertificateDer<'static>) {
-    let (our_cert, our_priv_key) = gen_cert();
-    let mut our_cfg =
-        rama_quic::ServerConfig::with_single_cert(vec![our_cert.clone()], our_priv_key.into())
-            .unwrap();
-
-    let transport_config = Arc::get_mut(&mut our_cfg.transport).unwrap();
-    transport_config.max_idle_timeout(Some(Duration::from_secs(20).try_into().unwrap()));
-
-    (our_cfg, our_cert)
-}
-
-fn gen_cert() -> (CertificateDer<'static>, PrivatePkcs8KeyDer<'static>) {
-    let cert = rama_crypto::dep::rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+/// Client configuration trusting the listener's identity, and nothing else.
+fn connector_config(anchor: rama_crypto::pki_types::CertificateDer<'static>) -> ClientConfig {
+    let tls = TlsClientConfig::new()
+        .with_alpn(alpn().into_iter().collect())
+        .try_with_server_trust_anchors([anchor])
         .unwrap();
-    (
-        cert.cert.into(),
-        PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()),
-    )
+    let mut config = ClientConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
+    config.transport_config(Arc::new(transport()));
+    config
 }
 
-/// Constructs a buffer with random bytes of given size prefixed with a hash of this data.
-fn random_data_with_hash(size: usize, crc: &Crc<u32>) -> Vec<u8> {
-    let mut data = random_vec(size + 4);
-    let hash = crc.checksum(&data[4..]);
-    // write hash in big endian
-    data[0] = (hash >> 24) as u8;
-    data[1] = ((hash >> 16) & 0xff) as u8;
-    data[2] = ((hash >> 8) & 0xff) as u8;
-    data[3] = (hash & 0xff) as u8;
+/// Listener configuration presenting the generated identity.
+fn listener_config(auth: &ServerAuthData) -> ServerConfig {
+    let tls = TlsServerConfig::new()
+        .with_alpn(alpn().into_iter().collect())
+        .with_server_auth(auth.clone());
+    let mut config = ServerConfig::try_from_rama_tls(&tls, TlsOptions::default()).unwrap();
+    config.transport_config(Arc::new(transport()));
+    config
+}
+
+fn transport() -> TransportConfig {
+    let mut transport = TransportConfig::default();
+    transport.max_idle_timeout(Some(Duration::from_secs(20).try_into().unwrap()));
+    transport
+}
+
+/// A megabyte that says which connection it belongs to, prefixed with its own digest. The bytes
+/// are derived from the index, so a payload that arrives on the wrong connection, or arrives
+/// changed, is caught by the digest and by the index it carries.
+fn payload(index: usize) -> Vec<u8> {
+    let mut data = vec![0u8; DIGEST + 8 + octets::mib(1)];
+    data[DIGEST..DIGEST + 8].copy_from_slice(&(index as u64).to_be_bytes());
+    let seed = index as u8;
+    for (offset, byte) in data[DIGEST + 8..].iter_mut().enumerate() {
+        *byte = (offset as u8) ^ seed;
+    }
+    let hash = digest::digest(&digest::SHA256, &data[DIGEST..]);
+    data[..DIGEST].copy_from_slice(hash.as_ref());
     data
 }
 
-/// Checks if given data buffer hash is correct. Hash itself is a 4 byte prefix in the data.
-fn hash_correct(data: &[u8], crc: &Crc<u32>) -> bool {
-    let encoded_hash = ((data[0] as u32) << 24)
-        | ((data[1] as u32) << 16)
-        | ((data[2] as u32) << 8)
-        | data[3] as u32;
-    let actual_hash = crc.checksum(&data[4..]);
-    encoded_hash == actual_hash
-}
-
-fn random_vec(size: usize) -> Vec<u8> {
-    let mut ret = vec![0; size];
-    rand::rng().fill_bytes(&mut ret[..]);
-    ret
+/// The index the payload names, once its digest is confirmed.
+fn check(data: &[u8]) -> usize {
+    let (carried, rest) = data.split_at_checked(DIGEST).expect("a digest prefix");
+    assert_eq!(
+        digest::digest(&digest::SHA256, rest).as_ref(),
+        carried,
+        "the payload arrived as it was sent"
+    );
+    let (index, _) = rest.split_at_checked(8).expect("an index");
+    let index = u64::from_be_bytes(index.try_into().expect("eight bytes")) as usize;
+    assert_eq!(
+        payload(index).len(),
+        data.len(),
+        "the payload is the whole of connection {index}'s"
+    );
+    index
 }

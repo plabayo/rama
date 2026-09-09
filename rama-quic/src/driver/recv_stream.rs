@@ -48,7 +48,7 @@ use crate::driver::{VarInt, connection::ConnectionRef};
 /// [`id`]: RecvStream::id
 /// [`Connection::accept_bi`]: crate::driver::Connection::accept_bi
 #[derive(Debug)]
-pub(crate) struct RecvStream {
+pub struct RecvStream {
     conn: ConnectionRef,
     stream: StreamId,
     is_0rtt: bool,
@@ -72,7 +72,7 @@ impl RecvStream {
     /// Yields the number of bytes read into `buf` on success, or `None` if the stream was finished.
     ///
     /// This operation is cancel-safe.
-    pub(crate) async fn read(&mut self, buf: &mut [u8]) -> Result<Option<usize>, ReadError> {
+    pub async fn read(&mut self, buf: &mut [u8]) -> Result<Option<usize>, ReadError> {
         Read {
             stream: self,
             buf: ReadBuf::new(buf),
@@ -85,7 +85,7 @@ impl RecvStream {
     /// See [`read()`] for details. This operation is *not* cancel-safe.
     ///
     /// [`read()`]: RecvStream::read
-    pub(crate) async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), ReadExactError> {
+    pub async fn read_exact(&mut self, buf: &mut [u8]) -> Result<(), ReadExactError> {
         ReadExact {
             stream: self,
             buf: ReadBuf::new(buf),
@@ -104,7 +104,7 @@ impl RecvStream {
     /// closed.
     ///
     /// [`finish`]: crate::driver::SendStream::finish
-    pub(crate) fn poll_read(
+    pub fn poll_read(
         &mut self,
         cx: &mut Context,
         buf: &mut [u8],
@@ -126,7 +126,7 @@ impl RecvStream {
     /// closed.
     ///
     /// [`finish`]: crate::driver::SendStream::finish
-    pub(crate) fn poll_read_buf(
+    pub fn poll_read_buf(
         &mut self,
         cx: &mut Context,
         buf: &mut ReadBuf<'_>,
@@ -168,7 +168,7 @@ impl RecvStream {
     /// to peer writes, and hence cannot be used as framing.
     ///
     /// This operation is cancel-safe.
-    pub(crate) async fn read_chunk(
+    pub async fn read_chunk(
         &mut self,
         max_length: usize,
         ordered: bool,
@@ -211,10 +211,7 @@ impl RecvStream {
     /// do not correspond to peer writes, and hence cannot be used as framing.
     ///
     /// This operation is cancel-safe.
-    pub(crate) async fn read_chunks(
-        &mut self,
-        bufs: &mut [Bytes],
-    ) -> Result<Option<usize>, ReadError> {
+    pub async fn read_chunks(&mut self, bufs: &mut [Bytes]) -> Result<Option<usize>, ReadError> {
         ReadChunks { stream: self, bufs }.await
     }
 
@@ -259,10 +256,7 @@ impl RecvStream {
     /// This operation is *not* cancel-safe.
     ///
     /// [`ReadToEndError::TooLong`]: crate::driver::ReadToEndError::TooLong
-    pub(crate) async fn read_to_end(
-        &mut self,
-        size_limit: usize,
-    ) -> Result<Vec<u8>, ReadToEndError> {
+    pub async fn read_to_end(&mut self, size_limit: usize) -> Result<Vec<u8>, ReadToEndError> {
         ReadToEnd {
             stream: self,
             size_limit,
@@ -277,7 +271,7 @@ impl RecvStream {
     ///
     /// Discards unread data and notifies the peer to stop transmitting. Once stopped, further
     /// attempts to operate on a stream will yield `ClosedStream` errors.
-    pub(crate) fn stop(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
+    pub fn stop(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
         let mut conn = self.conn.state.lock();
         if self.is_0rtt && conn.check_0rtt().is_err() {
             return Ok(());
@@ -295,12 +289,12 @@ impl RecvStream {
     ///
     /// In which case any non-idempotent request should be considered dangerous at the application
     /// level. Because read data is subject to replay attacks.
-    pub(crate) fn is_0rtt(&self) -> bool {
+    pub fn is_0rtt(&self) -> bool {
         self.is_0rtt
     }
 
     /// Get the identity of this stream
-    pub(crate) fn id(&self) -> StreamId {
+    pub fn id(&self) -> StreamId {
         self.stream
     }
 
@@ -312,7 +306,7 @@ impl RecvStream {
     /// which it is no longer meaningful for the stream to be reset.
     ///
     /// This operation is cancel-safe.
-    pub(crate) async fn received_reset(&mut self) -> Result<Option<VarInt>, ResetError> {
+    pub async fn received_reset(&mut self) -> Result<Option<VarInt>, ResetError> {
         poll_fn(|cx| {
             let mut conn = self.conn.state.lock();
             if self.is_0rtt && conn.check_0rtt().is_err() {
@@ -478,7 +472,7 @@ impl Future for ReadToEnd<'_> {
 
 /// Errors from [`RecvStream::read_to_end`]
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ReadToEndError {
+pub enum ReadToEndError {
     /// An error occurred during reading
     Read(ReadError),
     /// The stream is larger than the user-supplied limit
@@ -552,7 +546,7 @@ impl Drop for RecvStream {
 
 /// Errors that arise from reading from a stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ReadError {
+pub enum ReadError {
     /// The peer abandoned transmitting data on this stream
     ///
     /// Carries an application-defined error code.
@@ -634,7 +628,7 @@ impl From<ReadError> for io::Error {
 
 /// Errors that arise while waiting for a stream to be reset
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ResetError {
+pub enum ResetError {
     /// The connection was lost
     ConnectionLost(ConnectionError),
     /// This was a 0-RTT stream and the server rejected it
@@ -729,7 +723,7 @@ impl Future for ReadExact<'_> {
 
 /// Errors that arise from reading from a stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ReadExactError {
+pub enum ReadExactError {
     /// The stream finished before all bytes were read
     FinishedEarly(usize),
     /// A read error occurred

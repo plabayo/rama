@@ -8,7 +8,7 @@ use std::{fmt, sync::Arc};
 
 /// How the application protocol is agreed for a connection.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum AlpnPolicy {
+pub enum AlpnPolicy {
     /// Require a nonempty ALPN offer and a negotiated protocol on both peers.
     #[default]
     Require,
@@ -17,14 +17,32 @@ pub(crate) enum AlpnPolicy {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct TlsOptions {
+pub struct TlsOptions {
     pub(crate) alpn: AlpnPolicy,
     /// Enable replayable early application data. Applications must opt in deliberately.
     pub(crate) early_data: bool,
 }
 
+impl TlsOptions {
+    rama_utils::macros::generate_set_and_with! {
+        /// How the application protocol is agreed for connections built with this configuration.
+        pub fn alpn(mut self, policy: AlpnPolicy) -> Self {
+            self.alpn = policy;
+            self
+        }
+    }
+
+    rama_utils::macros::generate_set_and_with! {
+        /// Allow early application data, which a peer may replay. Off unless asked for.
+        pub fn early_data(mut self, allowed: bool) -> Self {
+            self.early_data = allowed;
+            self
+        }
+    }
+}
+
 #[derive(Debug)]
-pub(crate) enum TlsConfigError {
+pub enum TlsConfigError {
     Tls13Required,
     AlpnRequired,
     InvalidAlpn,
