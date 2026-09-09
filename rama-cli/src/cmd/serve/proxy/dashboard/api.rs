@@ -24,7 +24,6 @@ pub(super) async fn discovery() -> Response {
             "POST /api/control/hosts/clear": {},
             "GET /api/captures": "Filter with search, connection_id (display number), endpoint, method, status, protocol, user_agent. Page with before; bound with connections and exchanges; focus with connection_ids (internal IDs).",
             "GET /api/captures/events": "Same query; streamed NDJSON of initial and refreshed views. Slow readers coalesce changes.",
-            "GET /api/capture/{id}.json": "Capture details and recorded events.",
             "GET /api/capture/{id}/body/{request|response}": "Stream captured body; optional limit in bytes.",
             "GET /api/capture/{id}/websocket/{index}": "Stream one captured WebSocket message.",
             "GET /api/capture/{id}/curl": "Export a completed replayable HTTP request as cURL (inline body up to 64 KiB).",
@@ -286,18 +285,15 @@ mod tests {
         .await;
         assert_eq!(view["exchanges"].as_array().unwrap().len(), 1);
         let id = view["exchanges"][0]["id"].as_u64().unwrap();
-        let details = json(
-            service
-                .serve(request(
-                    Method::GET,
-                    &format!("/api/capture/{id}.json"),
-                    &serde_json::Value::Null,
-                ))
-                .await
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(details["summary"]["id"], id);
+        let removed = service
+            .serve(request(
+                Method::GET,
+                &format!("/api/capture/{id}.json"),
+                &serde_json::Value::Null,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(removed.status(), StatusCode::NOT_FOUND);
         let export = json(
             service
                 .serve(request(

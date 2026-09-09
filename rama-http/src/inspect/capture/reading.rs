@@ -184,45 +184,6 @@ impl ExchangeCapture {
         }
     }
 
-    /// Stream a pinned prefix of HTTP record metadata and independent raw payload
-    /// readers. Body data and interception payload bytes in the metadata are empty;
-    /// their original bytes are available through each item's `payload` reader.
-    pub fn http_records(
-        &self,
-    ) -> impl Stream<Item = Result<CapturedRecordStream<StoredRecord>, BoxError>> + Send + 'static + use<>
-    {
-        let capture = self.clone();
-        let count = capture.entry.records.read().len();
-        stream_fn(move |mut output| async move {
-            let result = async {
-                for index in 0..count {
-                    let location = capture.entry.records.read()[index];
-                    let reader = Box::pin(attachment::PinnedRecordReader {
-                        reader: capture.entry.collection.read(location.id).await?,
-                        _entry: capture.entry.clone(),
-                    });
-                    let record = match location.body {
-                        Some(CapturedBody::Request) => CapturedRecordStream {
-                            metadata: StoredRecord::RequestBody { data: Bytes::new() },
-                            payload: reader,
-                        },
-                        Some(CapturedBody::Response) => CapturedRecordStream {
-                            metadata: StoredRecord::ResponseBody { data: Bytes::new() },
-                            payload: reader,
-                        },
-                        None => attachment::read(reader).await?,
-                    };
-                    output.yield_item(Ok(record)).await;
-                }
-                Ok::<(), BoxError>(())
-            }
-            .await;
-            if let Err(error) = result {
-                output.yield_item(Err(error)).await;
-            }
-        })
-    }
-
     /// Stream a pinned record prefix. Body records may be split into smaller
     /// chunks; metadata ordering and the concatenated body bytes are preserved.
     pub fn records_stream(

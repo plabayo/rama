@@ -1,4 +1,4 @@
-use std::fmt;
+use std::fmt::{self, Write as _};
 
 use rama::http::HeaderValue;
 
@@ -6,6 +6,15 @@ use super::*;
 
 pub(super) fn display(value: impl fmt::Display) -> impl IntoHtml {
     join_display([value], "")
+}
+
+pub(super) fn uppercase(value: &str) -> impl fmt::Display + '_ {
+    rama::utils::fmt::display_fn(move |f: &mut fmt::Formatter<'_>| {
+        for ch in value.chars() {
+            f.write_char(ch.to_ascii_uppercase())?;
+        }
+        Ok(())
+    })
 }
 
 pub(super) fn render_each(values: impl IntoIterator<Item = impl IntoHtml>) -> impl IntoHtml {

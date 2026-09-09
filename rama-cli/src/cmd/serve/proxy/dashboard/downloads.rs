@@ -1,8 +1,5 @@
 use super::*;
 
-mod json;
-pub(super) use json::capture_json;
-
 pub(super) async fn capture_body(
     State(state): State<DashboardState>,
     Path(BodyPath { id, direction }): Path<BodyPath>,

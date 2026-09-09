@@ -1,4 +1,6 @@
-use rama::net::Protocol;
+use std::fmt;
+
+use rama::{combinators::Either, net::Protocol, utils::fmt::display_fn};
 
 use super::*;
 use crate::cmd::serve::proxy::har::HarStatus;
@@ -25,9 +27,10 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_live_panel(
         .into_string(),
         UiFocus::Connection(id) => {
             render_connection_focus(heartbeat_sequence, id, snapshot, session, details, live)
+                .into_string()
         }
         UiFocus::Request(id) => {
-            render_request_focus(heartbeat_sequence, id, snapshot, details, live)
+            render_request_focus(heartbeat_sequence, id, snapshot, details, live).into_string()
         }
     }
 }
@@ -55,25 +58,7 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_overview_panel(
         let selected = session.selected_connections.contains(&connection.id);
         let select_label = if selected { "✓" } else { "+" };
         let state_label = if connection.active { "alive" } else { "closed" };
-        let route = if connection.ingress_protocol == REPLAY_PROTOCOL {
-            snapshot
-                .exchanges
-                .iter()
-                .find(|exchange| exchange.connection_id == connection.id)
-                .map(|exchange| {
-                    format!(
-                        "Inspector replay → {}",
-                        optional_display(exchange.endpoint.as_ref())
-                    )
-                })
-                .unwrap_or_else(|| "Inspector replay".to_owned())
-        } else {
-            format!(
-                "{} → {}",
-                optional_display(connection.peer_address.as_ref()),
-                optional_display(connection.local_address.as_ref())
-            )
-        };
+        let route = connection_route(connection, &snapshot.exchanges);
         let class = match (connection.active, selected) {
             (true, true) => "connection active selected",
             (true, false) => "connection active",
@@ -83,7 +68,7 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_overview_panel(
         article!(
             class = class,
             div!(
-                span!(class = "mono", format!("#{}", connection.display_id)),
+                span!(class = "mono", "#", connection.display_id),
                 div!(
                     class = "connection-tags",
                     span!(class = "tag", display(&connection.ingress_protocol)),
@@ -103,56 +88,63 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_overview_panel(
                             "select connection-select"
                         },
                         title = "Include all requests on this connection in exports",
-                        "aria-label" = format!("Select connection #{}", connection.display_id),
+                        "aria-label" = ("Select connection #", connection.display_id),
                         "aria-pressed" = display(selected),
-                        "data-on:click" = format!("@post('/api/connection/{}')", connection.id),
+                        "data-on:click" = ("@post('/api/connection/", connection.id, "')"),
                         select_label
                     )
                 )
             ),
-            button!(
-                r#type = "button",
-                class = "connection-open",
-                title = format!("Inspect connection #{}", connection.display_id),
-                "data-inspector-focus" = "connection",
-                "data-focus-id" = display(connection.id),
-                strong!(route),
-                connection
-                    .label
-                    .as_ref()
-                    .map(|label| span!(class = "connection-label", label.clone())),
-                time!(
-                    datetime = display(connection.started_at),
-                    format!("started {}", display_timestamp(&connection.started_at))
-                ),
-                small!(format!(
-                    "{} req · {} ↓ · {} ↑",
-                    connection.request_count,
-                    format_bytes(connection.bytes_in),
-                    format_bytes(connection.bytes_out)
-                ))
-            )
+            {
+                button!(
+                    r#type = "button",
+                    class = "connection-open",
+                    title = ("Inspect connection #", connection.display_id),
+                    "data-inspector-focus" = "connection",
+                    "data-focus-id" = display(connection.id),
+                    strong!(display(route)),
+                    connection
+                        .label
+                        .as_ref()
+                        .map(|label| span!(class = "connection-label", label)),
+                    time!(
+                        datetime = display(connection.started_at),
+                        "started ",
+                        display(display_timestamp(&connection.started_at))
+                    ),
+                    small!(
+                        connection.request_count,
+                        " req · ",
+                        display(format_bytes(connection.bytes_in)),
+                        " ↓ · ",
+                        display(format_bytes(connection.bytes_out)),
+                        " ↑"
+                    )
+                )
+            }
         )
     });
-    let connection_window = format!(
-        "{connection_start}–{connection_end} of {}",
-        snapshot.total_connections
+    let connection_window = (
+        connection_start,
+        "–",
+        connection_end,
+        " of ",
+        snapshot.total_connections,
     );
     let connection_selection = if session.selected_connections.is_empty() {
-        small!(connection_window).into_string()
+        Either::A(small!(connection_window))
     } else {
-        div!(
+        Either::B(div!(
             class = "connection-selection",
             span!(connection_window),
-            span!(format!("{} selected", session.selected_connections.len())),
+            span!(session.selected_connections.len(), " selected"),
             button!(
                 r#type = "button",
                 class = "ghost compact",
                 "data-on:click" = "@post('/api/connections/clear')",
                 "Clear"
             )
-        )
-        .into_string()
+        ))
     };
     let connection_pager = div!(
         class = "connection-pager",
@@ -164,10 +156,7 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_overview_panel(
             "data-on:click" = "@post('/api/connections/newer')",
             "Newer"
         ),
-        span!(format!(
-            "Page {}",
-            session.connection_page.saturating_add(1)
-        )),
+        span!("Page ", session.connection_page.saturating_add(1)),
         button!(
             r#type = "button",
             class = "ghost compact",
@@ -197,98 +186,95 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_overview_panel(
             exchange.method.as_str()
         };
         let replay_action = if matches!(exchange.protocol, Protocol::WS | Protocol::WSS) {
-            span!(class = "row-spacer").into_string()
+            Either::A(span!(class = "row-spacer"))
         } else {
-            button!(
+            Either::B(button!(
                 class = "ghost compact replay-inline",
                 title = "Replay this request using only captured headers and TLS data",
-                "data-on:click" = format!("@post('/api/replay/{}')", exchange.id),
+                "data-on:click" = ("@post('/api/replay/", exchange.id, "')"),
                 "Replay"
-            )
-            .into_string()
+            ))
         };
         let identity = div!(
             class = "row-identity",
             button!(
                 class = select_class,
                 title = "Select this request for exports and approval actions",
-                "data-on:click" = format!("@post('/api/select/{}')", exchange.id),
+                "data-on:click" = ("@post('/api/select/", exchange.id, "')"),
                 select_label
             ),
             div!(
                 class = "capture-ref",
-                strong!(format!("#{}", exchange.id)),
-                span!(format!("conn #{}", exchange.connection_display_id))
+                strong!("#", exchange.id),
+                span!("conn #", exchange.connection_display_id)
             )
-        )
-        .into_string();
+        );
         let target = div!(
             class = "target",
             strong!(exchange.endpoint.as_ref().map(display)),
             small!(display(&exchange.url))
-        )
-        .into_string();
+        );
         let protocol_state = div!(
             class = "exchange-protocol-state",
-            PreEscaped(render_protocol_badge(exchange)),
-            PreEscaped(
-                pending
-                    .map(approval_badge)
-                    .unwrap_or_else(|| render_exchange_status(exchange))
-            )
-        )
-        .into_string();
+            render_protocol_badge(exchange),
+            if let Some(message) = pending {
+                approval_badge(message)
+            } else {
+                render_exchange_status(exchange)
+            }
+        );
         let metrics = div!(
             class = "exchange-metrics",
-            span!(class = "bytes", format_bytes(exchange.response_bytes)),
+            span!(
+                class = "bytes",
+                display(format_bytes(exchange.response_bytes))
+            ),
             time!(
                 class = "exchange-time",
                 datetime = display(exchange.started_at),
                 display(display_timestamp(&exchange.started_at))
             )
-        )
-        .into_string();
+        );
         let actions = div!(
             class = "exchange-actions",
-            PreEscaped(replay_action),
+            replay_action,
             (!matches!(exchange.protocol, Protocol::WS | Protocol::WSS))
-                .then(|| PreEscaped(render_curl_button(exchange.id, "cURL"))),
+                .then(|| render_curl_button(exchange.id, "cURL")),
             button!(
                 class = "ghost",
                 "data-inspector-focus" = "request",
                 "data-focus-id" = display(exchange.id),
-                "aria-label" = format!("Open request #{}", exchange.id),
+                "aria-label" = ("Open request #", exchange.id),
                 "Open"
             )
-        )
-        .into_string();
+        );
         article!(
-            id = format!("request-{}", exchange.id),
+            id = ("request-", exchange.id),
             "data-approval-id"? = pending.map(|message| display(message.id)),
             class = class,
             tabindex = "0",
-            "aria-label" = format!("Open request #{}", exchange.id),
+            "aria-label" = ("Open request #", exchange.id),
             "data-inspector-focus" = "request",
             "data-focus-id" = display(exchange.id),
             div!(
                 class = "exchange-row",
-                PreEscaped(identity),
+                identity,
                 span!(class = "method", method),
-                PreEscaped(target),
-                PreEscaped(protocol_state),
-                PreEscaped(metrics),
-                PreEscaped(actions)
+                target,
+                protocol_state,
+                metrics,
+                actions
             ),
-            PreEscaped(render_approval_slots(live.for_exchange(exchange.id)))
+            render_approval_slots(live.for_exchange(exchange.id))
         )
     });
     let har_control = if har.active {
-        form!(
+        Either::A(form!(
             class = "har-control recording",
             method = "post",
-            action = format!("/api/har/stop?session={session_id}"),
+            action = ("/api/har/stop?session=", session_id),
             target = "har-download",
-            title = har.path.clone().unwrap_or_default(),
+            title = har.path.as_deref().unwrap_or_default(),
             span!(class = "record-dot"),
             span!(
                 (if har.suspended {
@@ -296,35 +282,31 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_overview_panel(
                 } else {
                     "HAR recording"
                 })
-                .to_owned()
             ),
             button!(
                 r#type = "submit",
                 class = "danger compact",
                 "Stop & download"
             )
-        )
-        .into_string()
+        ))
     } else {
-        button!(
+        Either::B(button!(
             r#type = "button",
             class = "ghost compact har-start",
             "data-har-action" = "start",
             "data-session" = session_id,
             title = "Record now; your browser will choose the save location when you stop",
             "Record HAR"
-        )
-        .into_string()
+        ))
     };
     let fallback = render_pending_fallbacks(&live.pending, &snapshot.exchanges, None);
     let requests = div!(
         class = "exchange-list",
-        exchange_rows.collect::<Vec<_>>(),
-        PreEscaped(fallback),
-    )
-    .into_string();
+        render_each(exchange_rows),
+        fallback,
+    );
     let selection_exports = match (session.selected_connections.len(), session.selected.len()) {
-        (0, 0) => div!(
+        (0, 0) => Either::A(div!(
             class = "export",
             span!("Select connections or requests"),
             div!(
@@ -332,37 +314,38 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_overview_panel(
                 button!(class = "ghost compact", disabled = true, "Export HAR"),
                 button!(class = "ghost compact", disabled = true, "Export profiles")
             )
-        )
-        .into_string(),
+        )),
         (connections, requests) => {
-            let scope = match (connections, requests) {
-                (0, requests) => format!("{requests} request(s)"),
-                (connections, 0) => format!("{connections} connection(s)"),
-                (connections, requests) => {
-                    format!("{connections} connection(s) + {requests} request(s)")
-                }
-            };
-            div!(
+            let scope =
+                display_fn(
+                    move |f: &mut fmt::Formatter<'_>| match (connections, requests) {
+                        (0, requests) => write!(f, "{requests} request(s)"),
+                        (connections, 0) => write!(f, "{connections} connection(s)"),
+                        (connections, requests) => {
+                            write!(f, "{connections} connection(s) + {requests} request(s)")
+                        }
+                    },
+                );
+            Either::B(div!(
                 class = "export",
-                span!(scope),
+                span!(display(scope)),
                 div!(
                     class = "export-actions",
                     a!(
                         class = "ghost link",
-                        href = format!("/api/har/export?session={session_id}"),
+                        href = ("/api/har/export?session=", session_id),
                         target = "har-download",
                         "data-har-export" = "",
                         "Export HAR"
                     ),
                     a!(
                         class = "ghost link",
-                        href = format!("/api/profiles.json?session={session_id}"),
+                        href = ("/api/profiles.json?session=", session_id),
                         target = "har-download",
                         "Export profiles"
                     )
                 )
-            )
-            .into_string()
+            ))
         }
     };
     section!(
@@ -389,7 +372,7 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_overview_panel(
                 div!(
                     class = "section-title",
                     h2!("Connections"),
-                    PreEscaped(connection_selection)
+                    connection_selection
                 ),
                 div!(
                     class = "connections",
@@ -398,7 +381,7 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_overview_panel(
                     "data-connection-page" = display(session.connection_page),
                     "data-has-newer" = display(has_newer_connections),
                     "data-has-older" = display(has_older_connections),
-                    connection_rows.collect::<Vec<_>>(),
+                    render_each(connection_rows),
                     connection_pager
                 )
             ),
@@ -415,12 +398,12 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_overview_panel(
                             "data-open-clear" = "",
                             "Clear captures…"
                         ),
-                        PreEscaped(har_control),
-                        PreEscaped(selection_exports)
+                        har_control,
+                        selection_exports
                     )
                 ),
                 render_approval_toolbar(),
-                PreEscaped(requests),
+                requests,
                 p!(
                     "data-request-empty" = "",
                     hidden = "",

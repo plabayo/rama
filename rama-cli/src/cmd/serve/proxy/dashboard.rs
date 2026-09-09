@@ -179,6 +179,7 @@ pub(super) struct DashboardState {
     sessions: Arc<RwLock<BTreeMap<String, UiSession>>>,
     next_session_sequence: Arc<AtomicU64>,
     event_streams: Arc<Semaphore>,
+    export_limit: Option<Arc<Semaphore>>,
     ui_changes: watch::Sender<u64>,
     ca_pem: Arc<Vec<u8>>,
     replay_client: BoxService<Request, Response, BoxError>,
@@ -207,11 +208,24 @@ impl DashboardState {
             sessions: Arc::new(RwLock::new(BTreeMap::new())),
             next_session_sequence: Arc::new(AtomicU64::new(1)),
             event_streams: Arc::new(Semaphore::new(MAX_UI_EVENT_STREAMS)),
+            export_limit: None,
             ui_changes,
             ca_pem: Arc::new(ca_pem),
             replay_client,
             mitm_policy,
         })
+    }
+
+    pub(super) fn with_export_limit(mut self, limit: usize) -> Result<Self, BoxError> {
+        if limit > Semaphore::MAX_PERMITS {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "inspector export concurrency exceeds the semaphore capacity",
+            )
+            .into());
+        }
+        self.export_limit = (limit != 0).then(|| Arc::new(Semaphore::new(limit)));
+        Ok(self)
     }
 
     fn notify(&self) {
@@ -431,7 +445,6 @@ pub(super) fn service(state: DashboardState) -> DashboardService {
         .with_post("/api/websocket/{id}/send", send_websocket_message)
         .with_post("/api/select/{id}", toggle_selected)
         .with_post("/api/replay/{id}", replay)
-        .with_get("/api/capture/{id}.json", capture_json)
         .with_get("/api/capture/{id}/curl", request_curl)
         .with_get("/api/capture/{id}/body/{direction}", capture_body)
         .with_get(

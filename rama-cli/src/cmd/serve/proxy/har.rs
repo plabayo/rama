@@ -3,7 +3,7 @@ use std::{
     fmt,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::{Arc, LazyLock},
+    sync::Arc,
     task::{Context, Poll},
 };
 
@@ -25,14 +25,10 @@ use rama::{
 use serde::Serialize;
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt as _, BufWriter, ReadBuf},
-    sync::{OwnedSemaphorePermit, RwLock, Semaphore},
+    sync::{OwnedSemaphorePermit, RwLock},
 };
 
 use super::capture::CaptureStore;
-
-const MAX_CONCURRENT_SELECTED_EXPORTS: usize = 2;
-static SELECTED_EXPORT_LIMIT: LazyLock<Arc<Semaphore>> =
-    LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_SELECTED_EXPORTS)));
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct HarStatus {
@@ -82,6 +78,7 @@ pub(super) async fn export_selected(
     capture: &CaptureStore,
     request_ids: &BTreeSet<u64>,
     connection_ids: &BTreeSet<u64>,
+    selected_export_permit: Option<OwnedSemaphorePermit>,
 ) -> Result<HarDownload, BoxError> {
     let mut selection = capture.selected_exchanges(request_ids, connection_ids);
     if selection.is_empty() {
@@ -91,11 +88,6 @@ pub(super) async fn export_selected(
         )
         .into());
     }
-
-    // Retain the permit until the response body is dropped so slow or abandoned
-    // downloads cannot accumulate an unbounded number of staged HAR files.
-    let selected_export_permit =
-        acquire_selected_export_permit(Arc::clone(&SELECTED_EXPORT_LIMIT))?;
 
     let staging = TempDir::with_prefix("rama-proxy-selected-har-")
         .context("create private selected HAR staging directory")?;
@@ -146,17 +138,8 @@ pub(super) async fn export_selected(
         reader: HarDownloadReader {
             file,
             _staging: staging,
-            _selected_export_permit: Some(selected_export_permit),
+            _selected_export_permit: selected_export_permit,
         },
-    })
-}
-
-fn acquire_selected_export_permit(limit: Arc<Semaphore>) -> std::io::Result<OwnedSemaphorePermit> {
-    limit.try_acquire_owned().map_err(|_error| {
-        std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            "too many selected HAR exports are already in progress",
-        )
     })
 }
 
@@ -562,8 +545,8 @@ mod tests {
 
     #[tokio::test]
     async fn selected_export_limit_is_held_until_the_download_reader_is_dropped() {
-        let limit = Arc::new(Semaphore::new(1));
-        let permit = acquire_selected_export_permit(Arc::clone(&limit)).unwrap();
+        let limit = Arc::new(tokio::sync::Semaphore::new(1));
+        let permit = limit.clone().try_acquire_owned().unwrap();
         let staging = TempDir::with_prefix("rama-proxy-selected-har-limit-test-").unwrap();
         let path = staging.path().join("selected.har");
         tokio::fs::write(&path, b"{}" as &[u8]).await.unwrap();
@@ -573,12 +556,13 @@ mod tests {
             _selected_export_permit: Some(permit),
         };
 
-        let error = acquire_selected_export_permit(Arc::clone(&limit))
-            .expect_err("a live download reader must retain its export permit");
-        assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);
+        assert!(
+            limit.clone().try_acquire_owned().is_err(),
+            "a live download reader must retain its export permit"
+        );
 
         drop(reader);
-        let _permit = acquire_selected_export_permit(limit).unwrap();
+        let _permit = limit.try_acquire_owned().unwrap();
     }
 
     #[tokio::test]

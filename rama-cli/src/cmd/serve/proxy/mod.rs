@@ -1059,6 +1059,11 @@ pub struct CliCommandProxy {
     #[arg(long, short = 'c', default_value_t = 0)]
     concurrent: usize,
 
+    /// Maximum simultaneous inspector HAR/profile exports, including downloads
+    /// (0 = no limit). Shared across both export formats.
+    #[arg(long, default_value_t = 0)]
+    inspect_export_concurrency: usize,
+
     /// Maximum lifetime in seconds for each proxy connection (0 = no timeout).
     /// Disabled by default so long-lived WebSocket and inspector streams remain
     /// persistent.
@@ -1484,14 +1489,17 @@ async fn run_with_dashboard_token(
         .transpose()?;
     let dashboard = match (&capture, &ua_db, &dashboard_auth_token) {
         (Some(capture), Some(_), Some(token)) => Some(DashboardAuthService::new(
-            dashboard::service(DashboardState::new(
-                capture.clone(),
-                har.clone(),
-                ca_pem,
-                tcp_options.clone(),
-                &upstream,
-                mitm_policy.clone(),
-            )?),
+            dashboard::service(
+                DashboardState::new(
+                    capture.clone(),
+                    har.clone(),
+                    ca_pem,
+                    tcp_options.clone(),
+                    &upstream,
+                    mitm_policy.clone(),
+                )?
+                .with_export_limit(cfg.inspect_export_concurrency)?,
+            ),
             token.clone(),
         )),
         _ => None,

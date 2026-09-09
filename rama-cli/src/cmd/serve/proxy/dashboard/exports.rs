@@ -1,10 +1,36 @@
 use std::io::{Error as IoError, ErrorKind};
 
 use rama::http::headers::{RetryAfter, util::Seconds};
+use tokio::sync::OwnedSemaphorePermit;
 
 use super::*;
 
 mod profiles;
+
+impl DashboardState {
+    fn acquire_export_permit(&self) -> Result<Option<OwnedSemaphorePermit>, BoxError> {
+        self.export_limit
+            .as_ref()
+            .map(|limit| {
+                limit.clone().try_acquire_owned().map_err(|_full| {
+                    IoError::new(
+                        ErrorKind::WouldBlock,
+                        "too many inspector exports are already in progress",
+                    )
+                    .into()
+                })
+            })
+            .transpose()
+    }
+}
+
+fn export_busy(error: BoxError) -> Response {
+    (
+        Headers::single(RetryAfter::delay(Seconds::new(1))),
+        error_response(StatusCode::TOO_MANY_REQUESTS, error),
+    )
+        .into_response()
+}
 
 pub(super) async fn export_profiles(
     State(state): State<DashboardState>,
@@ -14,11 +40,14 @@ pub(super) async fn export_profiles(
         Ok(selection) => selection,
         Err(status) => return status.into_response(),
     };
-    match profiles::download(&state.capture, &request_ids, &connection_ids).await {
+    let permit = match state.acquire_export_permit() {
+        Ok(permit) => permit,
+        Err(error) => return export_busy(error),
+    };
+    match profiles::download(&state.capture, &request_ids, &connection_ids, permit).await {
         Ok(download) => download.into_response(),
         Err(error) => {
             let status = match error.downcast_ref::<IoError>().map(IoError::kind) {
-                Some(ErrorKind::WouldBlock) => StatusCode::TOO_MANY_REQUESTS,
                 Some(ErrorKind::InvalidInput) => StatusCode::UNPROCESSABLE_ENTITY,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             };
@@ -35,19 +64,12 @@ pub(super) async fn export_har(
         Ok(selection) => selection,
         Err(status) => return status.into_response(),
     };
-    match export_selected(&state.capture, &request_ids, &connection_ids).await {
+    let permit = match state.acquire_export_permit() {
+        Ok(permit) => permit,
+        Err(error) => return export_busy(error),
+    };
+    match export_selected(&state.capture, &request_ids, &connection_ids, permit).await {
         Ok(download) => har_download_response(download),
-        Err(error)
-            if error
-                .downcast_ref::<IoError>()
-                .is_some_and(|error| error.kind() == ErrorKind::WouldBlock) =>
-        {
-            (
-                Headers::single(RetryAfter::delay(Seconds::new(1))),
-                error_response(StatusCode::TOO_MANY_REQUESTS, error),
-            )
-                .into_response()
-        }
         Err(error) => error_response(StatusCode::BAD_REQUEST, error),
     }
 }

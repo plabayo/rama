@@ -1,5 +1,11 @@
+use std::cell::Cell;
+
 use rama::{
-    http::{Version, ws::inspect::WebSocketMessagePreview},
+    http::{
+        Version,
+        inspect::control::{HttpMessageDirection, PendingSummary},
+        ws::inspect::WebSocketMessagePreview,
+    },
     net::{Protocol, stream::SocketInfo},
     tls::{
         ExtensionId, ProtocolVersion,
@@ -8,6 +14,33 @@ use rama::{
 };
 
 use super::*;
+
+#[test]
+fn approval_fragments_are_consumed_only_when_writing_the_parent() {
+    let pending = PendingSummary {
+        id: 42,
+        connection: 1,
+        connection_display_id: Some(1),
+        exchange: Some(2),
+        protocol: Protocol::HTTP,
+        direction: HttpMessageDirection::Request,
+        method: Method::GET,
+        url: "/".parse().unwrap(),
+        status: None,
+        queued_at: None,
+    };
+    let visited = Cell::new(0);
+    let fragment = render_approval_slots(std::iter::repeat_n(&pending, 3).inspect(|_| {
+        visited.set(visited.get() + 1);
+    }));
+    let parent = div!(fragment);
+    assert_eq!(visited.get(), 0);
+    let mut output = String::with_capacity(kib(8));
+    parent.escape_and_write(&mut output);
+    assert_eq!(visited.get(), 3);
+    assert_eq!(output.matches("id=\"approval-slot-42\"").count(), 3);
+    assert_eq!(output.capacity(), kib(8));
+}
 
 #[test]
 fn details_are_escaped_by_rama_html() {
@@ -122,7 +155,7 @@ fn request_details_keep_tls_on_connection_and_render_lazy_http_data() {
     assert!(!rendered.contains("Client ↔ inspector"));
     assert!(!rendered.contains("ja3-value"));
 
-    let connection_tls = render_connection_tls(&details);
+    let connection_tls = render_connection_tls(&details).into_string();
     for expected in [
         "Client hello",
         "Client ↔ inspector",
@@ -251,8 +284,9 @@ fn websocket_previews_are_bounded_and_paginated() {
     let mut details = test_details(Vec::new());
     details.websocket.messages = vec![record.into(); MAX_VISIBLE_WS_MESSAGES];
     details.websocket.total = MAX_VISIBLE_WS_MESSAGES + 1;
-    let rendered =
-        render_websocket_messages(&details).expect("messages render a WebSocket section");
+    let rendered = render_websocket_messages(&details)
+        .expect("messages render a WebSocket section")
+        .into_string();
     assert!(rendered.contains("messages 2–101 of 101"));
     assert!(rendered.contains("Older"));
     assert!(!rendered.contains("Newer"));
@@ -266,13 +300,13 @@ fn websocket_previews_are_bounded_and_paginated() {
     assert!(!rendered.contains("connection closed · replay unavailable"));
 
     details.summary.request_truncated = true;
-    let rendered = render_websocket_messages(&details).unwrap();
+    let rendered = render_websocket_messages(&details).unwrap().into_string();
     assert_eq!(rendered.matches("Capture truncated").count(), 1);
     assert!(!rendered.contains("capture truncated · replay unavailable"));
 
     details.websocket.messages.truncate(1);
     details.websocket.page = 1;
-    let rendered = render_websocket_messages(&details).unwrap();
+    let rendered = render_websocket_messages(&details).unwrap().into_string();
     assert!(rendered.contains("messages 1–1 of 101"));
     assert!(!rendered.contains("Older"));
     assert!(rendered.contains("Newer"));
@@ -280,11 +314,11 @@ fn websocket_previews_are_bounded_and_paginated() {
 
 #[test]
 fn presentation_helpers_cover_boundaries() {
-    assert_eq!(format_bytes(0), "0 B");
-    assert_eq!(format_bytes(1023), "1023 B");
-    assert_eq!(format_bytes(kib_u64(1)), "1.0 KiB");
-    assert_eq!(format_bytes(mib(1) as u64 - 1), "1024.0 KiB");
-    assert_eq!(format_bytes(1_048_576), "1.0 MiB");
+    assert_eq!(format_bytes(0).to_string(), "0 B");
+    assert_eq!(format_bytes(1023).to_string(), "1023 B");
+    assert_eq!(format_bytes(kib_u64(1)).to_string(), "1.0 KiB");
+    assert_eq!(format_bytes(mib(1) as u64 - 1).to_string(), "1024.0 KiB");
+    assert_eq!(format_bytes(mib(1) as u64).to_string(), "1.0 MiB");
     assert_eq!(
         status_class(Some(StatusCode::from_u16(199).unwrap())),
         "status"
@@ -319,19 +353,19 @@ fn presentation_helpers_cover_boundaries() {
 
     let mut summary = test_details(Vec::new()).http.summary;
     summary.protocol = Protocol::HTTPS;
-    let protocol = render_protocol_badge(&summary);
+    let protocol = render_protocol_badge(&summary).into_string();
     assert!(protocol.contains("protocol-lock"));
     assert!(protocol.contains("HTTPS"));
     assert!(protocol.contains("HTTP/1.1"));
     summary.status = None;
     summary.active = true;
-    let waiting = render_exchange_status(&summary);
+    let waiting = render_exchange_status(&summary).into_string();
     assert!(waiting.contains("data-response-state=\"waiting\""));
     assert!(waiting.contains("response-spinner"));
     assert!(waiting.contains("Waiting for response"));
 
     summary.status = Some(StatusCode::from_u16(200).unwrap());
-    let streaming = render_exchange_status(&summary);
+    let streaming = render_exchange_status(&summary).into_string();
     assert!(streaming.contains("data-response-state=\"streaming\""));
     assert!(streaming.contains("response-spinner"));
     assert!(streaming.contains("200 OK"));
@@ -339,23 +373,26 @@ fn presentation_helpers_cover_boundaries() {
 
     summary.protocol = Protocol::WSS;
     summary.status = Some(StatusCode::from_u16(101).unwrap());
-    let live_websocket = render_exchange_status(&summary);
+    let live_websocket = render_exchange_status(&summary).into_string();
     assert!(live_websocket.contains("data-response-state=\"live\""));
     assert!(live_websocket.contains("response-live-dot"));
     assert!(live_websocket.contains("101 Switching Protocols"));
 
     summary.active = false;
-    let finished = render_exchange_status(&summary);
+    let finished = render_exchange_status(&summary).into_string();
     assert!(finished.contains("data-response-state=\"finished\""));
     assert!(!finished.contains("response-live-dot"));
     assert!(!finished.contains("complete"));
 
     summary.status = None;
-    let no_response = render_exchange_status(&summary);
+    let no_response = render_exchange_status(&summary).into_string();
     assert!(no_response.contains("data-response-state=\"no-response\""));
     assert!(no_response.contains("No response"));
     assert_eq!(escape_js_string(r"a\b'c"), r"a\\b\'c");
     assert!(is_textual_content_type("application/problem+json"));
+    assert!(is_textual_content_type("APPLICATION/PROBLEM+JSON"));
+    assert!(is_textual_content_type("TEXT/PLAIN"));
+    assert!(!is_textual_content_type("ééé"));
     assert!(is_textual_content_type("text/event-stream; charset=utf-8"));
     assert!(!is_textual_content_type("application/octet-stream"));
 }
@@ -373,7 +410,7 @@ fn websocket_preview_keeps_utf8_prefix_and_original_length() {
     let mut details = test_details(Vec::new());
     details.websocket.total = 1;
     details.websocket.messages.push(preview);
-    let rendered = render_websocket_messages(&details).unwrap();
+    let rendered = render_websocket_messages(&details).unwrap().into_string();
     assert!(rendered.contains("hello …"));
     assert!(!rendered.contains('�'));
     assert!(rendered.contains("15 B"));

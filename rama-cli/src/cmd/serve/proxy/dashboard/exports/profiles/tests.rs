@@ -1,5 +1,5 @@
 use rama::ua::profile::UserAgentDatabase;
-use tokio::io::AsyncReadExt as _;
+use tokio::{io::AsyncReadExt as _, sync::Semaphore};
 
 use super::*;
 
@@ -29,7 +29,7 @@ async fn staged(limit: Arc<Semaphore>) -> StagedProfiles {
     StagedProfiles {
         file: BufWriter::with_capacity(kib(16), file),
         staging,
-        permit: limit.try_acquire_owned().unwrap(),
+        permit: Some(limit.try_acquire_owned().unwrap()),
     }
 }
 

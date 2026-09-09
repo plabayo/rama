@@ -487,40 +487,6 @@ async fn binary_capture_stores_raw_bytes_with_compact_wire_serde() {
     );
 }
 
-#[tokio::test]
-async fn json_message_export_writes_before_reading_the_full_payload() {
-    let message = CapturedWebSocketMessage::new(
-        WebSocketRelayDirection::Ingress,
-        WebSocketMessageKind::Binary,
-        Bytes::new(),
-    );
-    let (mut output, mut reader) = tokio::io::duplex(64);
-    let producer = har::write_captured_websocket_json(
-        &mut output,
-        rama_http::inspect::capture::CapturedRecordStream {
-            metadata: rama_http::inspect::capture::CapturedRecord::metadata(&message),
-            // A generated source errors if drained. Export must make payload
-            // progress before reading beyond a bounded prefix.
-            payload: Box::pin(PayloadReadGuard(0)),
-        },
-    );
-    tokio::pin!(producer);
-    let prefix = async {
-        let mut prefix = vec![0; rama_utils::octets::kib(16)];
-        reader.read_exact(&mut prefix).await.unwrap();
-        assert!(prefix.starts_with(b"{\"at\":"));
-    };
-    tokio::time::timeout(Duration::from_secs(2), async {
-        tokio::select! {
-            result = &mut producer => panic!("unexpected early export completion: {result:?}"),
-            () = prefix => {},
-        }
-    })
-    .await
-    .unwrap();
-    // Dropping producer cancels only this read/export.
-}
-
 struct PayloadReadGuard(usize);
 
 impl AsyncRead for PayloadReadGuard {

@@ -6,7 +6,7 @@ use super::*;
 
 pub(in crate::cmd::serve::proxy::dashboard) fn render_connection_tls(
     details: &InspectorDetails,
-) -> String {
+) -> impl IntoHtml {
     let tls = details.metadata.connection.get_ref::<TlsObservation>();
     let client_hello = tls.and_then(|tls| tls.client_hello.as_ref());
     let ingress_tls = tls.and_then(|tls| tls.parameters.as_ref());
@@ -24,23 +24,19 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_connection_tls(
         ),
         div!(
             class = "tls-layout",
-            client_hello.map(render_client_hello_card).map(PreEscaped),
+            client_hello.map(render_client_hello_card),
             ingress_tls
-                .map(|parameters| render_negotiated_tls_card("Client ↔ inspector", parameters))
-                .map(PreEscaped),
+                .map(|parameters| render_negotiated_tls_card("Client ↔ inspector", parameters)),
             egress_tls
-                .map(|parameters| render_negotiated_tls_card("Inspector ↔ server", parameters))
-                .map(PreEscaped),
-            render_connection_fingerprint_card(&details.summary).map(PreEscaped),
+                .map(|parameters| render_negotiated_tls_card("Inspector ↔ server", parameters)),
+            render_connection_fingerprint_card(&details.summary),
         )
     )
-    .into_string()
 }
 
 pub(in crate::cmd::serve::proxy::dashboard) fn tls_version_label(
     version: ProtocolVersion,
 ) -> impl fmt::Display {
-    use rama::tls::ProtocolVersion;
     rama::utils::fmt::display_fn(move |f: &mut fmt::Formatter<'_>| {
         f.write_str(match version {
             ProtocolVersion::SSLv2 => "SSL 2.0",
@@ -74,7 +70,7 @@ pub(in crate::cmd::serve::proxy::dashboard) fn tls_fact(
 pub(in crate::cmd::serve::proxy::dashboard) fn render_tls_offer_list(
     label: &'static str,
     values: impl ExactSizeIterator<Item = impl fmt::Display>,
-) -> Option<String> {
+) -> Option<impl IntoHtml> {
     let count = values.len();
     (count != 0).then(|| {
         details!(
@@ -91,13 +87,12 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_tls_offer_list(
                 }))
             )
         )
-        .into_string()
     })
 }
 
 pub(in crate::cmd::serve::proxy::dashboard) fn render_client_hello_card(
     hello: &ClientHello,
-) -> String {
+) -> impl IntoHtml {
     let versions = rama::utils::fmt::display_fn(|f: &mut fmt::Formatter<'_>| {
         match hello.supported_versions() {
             Some(versions) => rama::utils::fmt::write_joined(
@@ -142,32 +137,28 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_client_hello_card(
         ),
         div!(
             class = "tls-offers",
-            render_tls_offer_list("Cipher suites", hello.cipher_suites().iter()).map(PreEscaped),
+            render_tls_offer_list("Cipher suites", hello.cipher_suites().iter()),
             render_tls_offer_list(
                 "Extensions",
                 hello.extensions().iter().map(|extension| extension.id())
-            )
-            .map(PreEscaped),
+            ),
             hello
                 .ext_supported_groups()
-                .and_then(|groups| render_tls_offer_list("Supported groups", groups.iter()))
-                .map(PreEscaped),
+                .and_then(|groups| render_tls_offer_list("Supported groups", groups.iter())),
             hello
                 .ext_signature_algorithms()
                 .and_then(|algorithms| render_tls_offer_list(
                     "Signature algorithms",
                     algorithms.iter()
-                ))
-                .map(PreEscaped),
+                )),
         )
     )
-    .into_string()
 }
 
 pub(in crate::cmd::serve::proxy::dashboard) fn render_negotiated_tls_card(
     title: &'static str,
     parameters: &CapturedTlsParameters,
-) -> String {
+) -> impl IntoHtml {
     section!(
         class = "detail-card tls-card negotiated-tls-card",
         div!(class = "card-title", h3!(title), span!("negotiated")),
@@ -191,5 +182,4 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_negotiated_tls_card(
                 .map(|count| tls_fact("Peer certificates", count)),
         )
     )
-    .into_string()
 }

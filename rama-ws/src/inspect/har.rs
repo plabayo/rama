@@ -2,7 +2,7 @@
 
 use rama_core::error::BoxError;
 use rama_http::{
-    inspect::capture::{CapturedRecordStream, ExchangeCapture},
+    inspect::capture::ExchangeCapture,
     layer::har::{
         inspect::{HarEntryExtension, HarObjectWriter, write_json_string},
         spec,
@@ -12,7 +12,7 @@ use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::{
     handshake::mitm::WebSocketRelayDirection,
-    inspect::{CapturedWebSocketMessage, WebSocketMessageKind, WebSocketMessageMetadata},
+    inspect::{CapturedWebSocketMessage, WebSocketMessageKind},
 };
 
 /// Adds captured WebSocket messages to an HTTP handshake's HAR entry.
@@ -84,21 +84,4 @@ impl HarEntryExtension for WebSocketHarExtension {
         writer.write_all(b"]").await?;
         Ok(())
     }
-}
-
-/// Stream a captured WebSocket message as JSON without materializing its payload
-/// or an encoded string. The JSON shape matches `CapturedWebSocketMessage`.
-pub async fn write_captured_websocket_json<W: AsyncWrite + Unpin>(
-    writer: &mut W,
-    message: CapturedRecordStream<WebSocketMessageMetadata>,
-) -> Result<(), BoxError> {
-    let metadata = message.metadata;
-    let mut object = HarObjectWriter::begin(writer).await?;
-    object.field("at", &metadata.at).await?;
-    object.field("direction", &metadata.direction).await?;
-    object.field("kind", &metadata.kind).await?;
-    write_json_string(object.streamed_field("data").await?, message.payload, false).await?;
-    object.field("close_code", &metadata.close_code).await?;
-    object.field("origin", &metadata.origin).await?;
-    object.finish().await
 }

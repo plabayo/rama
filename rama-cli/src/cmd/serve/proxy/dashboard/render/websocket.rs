@@ -1,12 +1,15 @@
 use std::fmt;
 
-use rama::http::ws::inspect::{WebSocketMessageMetadata, WebSocketMessagePreview};
+use rama::{
+    combinators::Either,
+    http::ws::inspect::{WebSocketMessageMetadata, WebSocketMessagePreview},
+};
 
 use super::*;
 
 pub(in crate::cmd::serve::proxy::dashboard) fn render_websocket_messages(
     details: &InspectorDetails,
-) -> Option<String> {
+) -> Option<impl IntoHtml> {
     let messages = &details.websocket.messages;
     if details.websocket.total == 0 && !details.websocket.replay_active {
         return None;
@@ -17,7 +20,7 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_websocket_messages(
         .saturating_sub(details.websocket.page * MAX_VISIBLE_WS_MESSAGES);
     let start = end.saturating_sub(messages.len());
     let cards = messages.iter().enumerate().map(
-        |(
+        move |(
             page_index,
             WebSocketMessagePreview {
                 metadata:
@@ -67,28 +70,26 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_websocket_messages(
             } else {
                 "Server → Client"
             };
-            let mut class = match (ingress, is_control) {
+            let class = match (ingress, is_control) {
                 (true, true) => "ws-message ingress control",
                 (true, false) => "ws-message ingress",
                 (false, true) => "ws-message egress control",
                 (false, false) => "ws-message egress",
-            }
-            .to_owned();
-            if *origin == WebSocketMessageOrigin::Replay {
-                class.push_str(" replayed");
-            }
-            if *origin == WebSocketMessageOrigin::Injected {
-                class.push_str(" injected");
-            }
+            };
+            let origin_class = match origin {
+                WebSocketMessageOrigin::Replay => " replayed",
+                WebSocketMessageOrigin::Injected => " injected",
+                WebSocketMessageOrigin::Peer => "",
+            };
             article!(
-                class = class,
+                class = (class, origin_class),
                 "data-capture-container" = "",
                 div!(
                     class = "ws-message-head",
                     strong!(direction_label),
                     span!(display(kind)),
                     close_code.map(|code| span!("code ", u16::from(code))),
-                    span!(format_bytes(*payload_length)),
+                    span!(display(format_bytes(*payload_length))),
                     (*origin == WebSocketMessageOrigin::Replay)
                         .then(|| span!(class = "ws-replayed", "replayed")),
                     (*origin == WebSocketMessageOrigin::Injected)
@@ -97,9 +98,12 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_websocket_messages(
                     can_replay.then(|| button!(
                         r#type = "button",
                         class = "ghost compact ws-replay",
-                        "data-on:click" = format!(
-                            "@post('/api/websocket/{}/replay/{message_index}')",
-                            details.summary.id
+                        "data-on:click" = (
+                            "@post('/api/websocket/",
+                            details.summary.id,
+                            "/replay/",
+                            message_index,
+                            "')"
                         ),
                         if ingress {
                             "Replay to server"
@@ -122,9 +126,11 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_websocket_messages(
                         "data-capture-preview" = "",
                         "data-byte-limit" = MAX_BODY_PREVIEW_LIMIT,
                         "data-label" = "Preview first 64 KiB",
-                        "data-url" = format!(
-                            "/api/capture/{}/websocket/{}",
-                            details.summary.id, message_index
+                        "data-url" = (
+                            "/api/capture/",
+                            details.summary.id,
+                            "/websocket/",
+                            message_index
                         ),
                         "data-payload-format" = if *kind == WebSocketMessageKind::Text {
                             "text"
@@ -136,11 +142,13 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_websocket_messages(
                     ),
                     a!(
                         class = "ghost link",
-                        href = format!(
-                            "/api/capture/{}/websocket/{}",
-                            details.summary.id, message_index
+                        href = (
+                            "/api/capture/",
+                            details.summary.id,
+                            "/websocket/",
+                            message_index
                         ),
-                        download = format!("websocket-{}-{message_index}.bin", details.summary.id),
+                        download = ("websocket-", details.summary.id, "-", message_index, ".bin"),
                         "Download full message"
                     ),
                     pre!("data-capture-output" = "", hidden = "")
@@ -149,14 +157,16 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_websocket_messages(
         },
     );
     let range = if details.websocket.total == 0 {
-        "No messages yet".to_owned()
+        Either::A("No messages yet")
     } else {
-        format!(
-            "messages {}–{} of {}",
+        Either::B((
+            "messages ",
             start + 1,
+            "–",
             end,
-            details.websocket.total
-        )
+            " of ",
+            details.websocket.total,
+        ))
     };
     let replay_state = (!details.websocket.replay_active).then(|| {
         span!(
@@ -212,50 +222,46 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_websocket_messages(
                 button!(
                     r#type = "button",
                     class = "primary compact",
-                    "data-on:click" =
-                        format!("@post('/api/websocket/{}/send')", details.summary.id),
+                    "data-on:click" = ("@post('/api/websocket/", details.summary.id, "/send')"),
                     "Send message"
                 )
             )
         )
     });
-    Some(
-        section!(
-            class = "ws-messages",
+    Some(section!(
+        class = "ws-messages",
+        div!(
+            class = "ws-messages-title",
             div!(
-                class = "ws-messages-title",
-                div!(
-                    h3!("WebSocket traffic"),
-                    span!(range),
-                    replay_state,
-                    truncation_state
-                ),
-                div!(
-                    class = "ws-page-actions",
-                    (start > 0).then(|| button!(
-                        class = "ghost compact",
-                        "data-on:click" =
-                            format!("@post('/api/websocket/{}/older')", details.summary.id),
-                        "Older"
-                    )),
-                    (details.websocket.page > 0).then(|| button!(
-                        class = "ghost compact",
-                        "data-on:click" =
-                            format!("@post('/api/websocket/{}/newer')", details.summary.id),
-                        "Newer"
-                    ))
-                )
+                h3!("WebSocket traffic"),
+                span!(range),
+                replay_state,
+                truncation_state
             ),
-            composer,
-            cards.collect::<Vec<_>>()
-        )
-        .into_string(),
-    )
+            div!(
+                class = "ws-page-actions",
+                (start > 0).then(|| button!(
+                    class = "ghost compact",
+                    "data-on:click" = ("@post('/api/websocket/", details.summary.id, "/older')"),
+                    "Older"
+                )),
+                (details.websocket.page > 0).then(|| button!(
+                    class = "ghost compact",
+                    "data-on:click" = ("@post('/api/websocket/", details.summary.id, "/newer')"),
+                    "Newer"
+                ))
+            )
+        ),
+        composer,
+        render_each(cards)
+    ))
 }
 
 pub(in crate::cmd::serve::proxy::dashboard) fn is_textual_content_type(content_type: &str) -> bool {
-    let content_type = content_type.to_ascii_lowercase();
-    content_type.starts_with("text/")
+    let content_type = content_type.as_bytes();
+    content_type
+        .get(..5)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"text/"))
         || [
             "json",
             "xml",
@@ -264,7 +270,11 @@ pub(in crate::cmd::serve::proxy::dashboard) fn is_textual_content_type(content_t
             "x-www-form-urlencoded",
         ]
         .iter()
-        .any(|needle| content_type.contains(needle))
+        .any(|needle| {
+            content_type
+                .windows(needle.len())
+                .any(|value| value.eq_ignore_ascii_case(needle.as_bytes()))
+        })
 }
 
 pub(in crate::cmd::serve::proxy::dashboard) fn websocket_payload(
@@ -298,14 +308,16 @@ pub(in crate::cmd::serve::proxy::dashboard) fn websocket_payload(
     (preview, bytes.len(), bytes.len() > limit)
 }
 
-pub(in crate::cmd::serve::proxy::dashboard) fn format_bytes(bytes: u64) -> String {
-    if bytes < kib_u64(1) {
-        format!("{bytes} B")
-    } else if bytes < mib(1) as u64 {
-        format!("{:.1} KiB", bytes as f64 / kib(1) as f64)
-    } else {
-        format!("{:.1} MiB", bytes as f64 / mib(1) as f64)
-    }
+pub(in crate::cmd::serve::proxy::dashboard) fn format_bytes(bytes: u64) -> impl fmt::Display {
+    rama::utils::fmt::display_fn(move |f: &mut fmt::Formatter<'_>| {
+        if bytes < kib_u64(1) {
+            write!(f, "{bytes} B")
+        } else if bytes < mib(1) as u64 {
+            write!(f, "{:.1} KiB", bytes as f64 / kib(1) as f64)
+        } else {
+            write!(f, "{:.1} MiB", bytes as f64 / mib(1) as f64)
+        }
+    })
 }
 
 pub(in crate::cmd::serve::proxy::dashboard) fn display_timestamp(

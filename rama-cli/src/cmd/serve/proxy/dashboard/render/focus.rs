@@ -1,59 +1,65 @@
-use rama::net::Protocol;
+use std::fmt;
+
+use rama::{net::Protocol, utils::fmt::display_fn};
 
 use super::*;
 
 pub(in crate::cmd::serve::proxy::dashboard) fn render_focus_header(
-    title: String,
+    title: impl fmt::Display,
     subtitle: impl IntoHtml,
     parent_connection: Option<(u64, u64)>,
     state: Option<(&'static str, bool)>,
 ) -> impl IntoHtml {
-    div!(
-        class = "focus-header",
+    move |output: &mut String| {
         div!(
-            class = "focus-heading",
-            button!(
-                r#type = "button",
-                class = "ghost focus-back",
-                "data-inspector-back" = "",
-                "← Back"
-            ),
+            class = "focus-header",
             div!(
-                class = "focus-title",
-                nav!(
-                    class = "breadcrumbs",
-                    "aria-label" = "Inspector location",
-                    button!(
-                        r#type = "button",
-                        "data-inspector-focus" = "overview",
-                        "Overview"
-                    ),
-                    parent_connection.map(|(id, display_id)| span!(
-                        class = "breadcrumb-parent",
-                        span!("aria-hidden" = "true", "›"),
+                class = "focus-heading",
+                button!(
+                    r#type = "button",
+                    class = "ghost focus-back",
+                    "data-inspector-back" = "",
+                    "← Back"
+                ),
+                div!(
+                    class = "focus-title",
+                    nav!(
+                        class = "breadcrumbs",
+                        "aria-label" = "Inspector location",
                         button!(
                             r#type = "button",
-                            "data-inspector-focus" = "connection",
-                            "data-focus-id" = display(id),
-                            format!("Connection #{display_id}")
-                        )
-                    )),
-                    span!("aria-hidden" = "true", "›"),
-                    span!("aria-current" = "page", title.clone()),
-                ),
-                h2!(title),
-                p!(subtitle),
-            )
-        ),
-        state.map(|(label, active)| span!(
-            class = if active {
-                "connection-state alive focus-state"
-            } else {
-                "connection-state closed focus-state"
-            },
-            label
-        ))
-    )
+                            "data-inspector-focus" = "overview",
+                            "Overview"
+                        ),
+                        parent_connection.map(|(id, display_id)| span!(
+                            class = "breadcrumb-parent",
+                            span!("aria-hidden" = "true", "›"),
+                            button!(
+                                r#type = "button",
+                                "data-inspector-focus" = "connection",
+                                "data-focus-id" = display(id),
+                                "Connection #",
+                                display_id
+                            )
+                        )),
+                        span!("aria-hidden" = "true", "›"),
+                        span!("aria-current" = "page", display(&title)),
+                    ),
+                    h2!(display(&title)),
+                    p!(subtitle),
+                )
+            ),
+            state.map(|(label, active)| span!(
+                class = if active {
+                    "connection-state alive focus-state"
+                } else {
+                    "connection-state closed focus-state"
+                },
+                label
+            ))
+        )
+        .escape_and_write(output);
+    }
 }
 
 pub(in crate::cmd::serve::proxy::dashboard) fn inspection_notice(
@@ -77,57 +83,60 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_request_focus(
     snapshot: &CaptureSnapshot,
     details: &BTreeMap<u64, InspectorDetails>,
     live: &LiveStatus,
-) -> String {
-    let inspection_enabled = live.recording;
-    let Some(detail) = details.get(&id) else {
-        return section!(
-            id = "live",
-            class = if inspection_enabled {
-                "live-shell focused inspector-focus"
-            } else {
-                "live-shell focused inspector-focus inspection-paused"
-            },
-            "data-inspection-paused" = display(!inspection_enabled),
-            render_live_heartbeat(heartbeat_sequence),
-            inspection_notice(inspection_enabled),
-            render_focus_header(
-                format!("Request #{id}"),
-                "This capture is no longer retained.".to_owned(),
-                None,
-                None,
-            ),
-            render_approval_toolbar(),
-            PreEscaped(render_approval_slots(live.for_exchange(id))),
-            div!(
-                class = "focus-empty",
-                strong!("Request unavailable"),
-                p!("It may have been cleared or retired by the capture limit.")
-            ),
-            render_approval_toolbar(),
-            div!(
-                class = "exchange-list",
-                PreEscaped(render_pending_fallbacks(&live.pending, &[], Some(id)))
+) -> impl IntoHtml {
+    move |output: &mut String| {
+        let inspection_enabled = live.recording;
+        let Some(detail) = details.get(&id) else {
+            return section!(
+                id = "live",
+                class = if inspection_enabled {
+                    "live-shell focused inspector-focus"
+                } else {
+                    "live-shell focused inspector-focus inspection-paused"
+                },
+                "data-inspection-paused" = display(!inspection_enabled),
+                render_live_heartbeat(heartbeat_sequence),
+                inspection_notice(inspection_enabled),
+                render_focus_header(
+                    display_fn(move |f: &mut fmt::Formatter<'_>| write!(f, "Request #{id}")),
+                    "This capture is no longer retained.",
+                    None,
+                    None,
+                ),
+                render_approval_toolbar(),
+                render_approval_slots(live.for_exchange(id)),
+                div!(
+                    class = "focus-empty",
+                    strong!("Request unavailable"),
+                    p!("It may have been cleared or retired by the capture limit.")
+                ),
+                render_approval_toolbar(),
+                div!(
+                    class = "exchange-list",
+                    render_pending_fallbacks(&live.pending, &[], Some(id))
+                )
             )
-        )
-        .into_string();
-    };
-    let websocket = matches!(detail.summary.protocol, Protocol::WS | Protocol::WSS);
-    let connection_display_id = snapshot
-        .connections
-        .iter()
-        .find(|connection| connection.id == detail.summary.connection_id)
-        .map(|connection| connection.display_id)
-        .unwrap_or(detail.summary.connection_display_id);
-    let title = if websocket {
-        format!(
-            "{} exchange #{}",
-            detail.summary.protocol.as_str().to_ascii_uppercase(),
-            id
-        )
-    } else {
-        format!("{} request #{}", detail.summary.method, id)
-    };
-    section!(
+            .escape_and_write(output);
+        };
+        let websocket = matches!(detail.summary.protocol, Protocol::WS | Protocol::WSS);
+        let connection_display_id = snapshot
+            .connections
+            .iter()
+            .find(|connection| connection.id == detail.summary.connection_id)
+            .map(|connection| connection.display_id)
+            .unwrap_or(detail.summary.connection_display_id);
+        let title = display_fn(move |f: &mut fmt::Formatter<'_>| {
+            if websocket {
+                write!(
+                    f,
+                    "{} exchange #{id}",
+                    uppercase(detail.summary.protocol.as_str())
+                )
+            } else {
+                write!(f, "{} request #{id}", detail.summary.method)
+            }
+        });
+        section!(
         id = "live",
         class = if websocket {
             if inspection_enabled {
@@ -159,11 +168,12 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_request_focus(
         render_approval_toolbar(),
         article!(
             class = "focus-surface",
-            PreEscaped(render_approval_slots(live.for_exchange(id))),
+            render_approval_slots(live.for_exchange(id)),
             render_details(detail)
         )
     )
-    .into_string()
+    .escape_and_write(output);
+    }
 }
 
 pub(in crate::cmd::serve::proxy::dashboard) fn render_connection_focus(
@@ -173,180 +183,184 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_connection_focus(
     session: &UiSession,
     details: &BTreeMap<u64, InspectorDetails>,
     live: &LiveStatus,
-) -> String {
-    let inspection_enabled = live.recording;
-    let Some(connection) = snapshot
-        .connections
-        .iter()
-        .find(|connection| connection.id == id)
-    else {
-        return section!(
+) -> impl IntoHtml {
+    move |output: &mut String| {
+        let inspection_enabled = live.recording;
+        let Some(connection) = snapshot
+            .connections
+            .iter()
+            .find(|connection| connection.id == id)
+        else {
+            return section!(
+                id = "live",
+                class = if inspection_enabled {
+                    "live-shell focused inspector-focus"
+                } else {
+                    "live-shell focused inspector-focus inspection-paused"
+                },
+                "data-inspection-paused" = display(!inspection_enabled),
+                render_live_heartbeat(heartbeat_sequence),
+                inspection_notice(inspection_enabled),
+                render_focus_header(
+                    display_fn(move |f: &mut fmt::Formatter<'_>| write!(f, "Connection #{id}")),
+                    "This connection is no longer retained.",
+                    None,
+                    None,
+                ),
+                div!(
+                    class = "focus-empty",
+                    strong!("Connection unavailable"),
+                    p!("It may have been cleared or retired by the capture limit.")
+                )
+            )
+            .escape_and_write(output);
+        };
+        let route = connection_route(connection, &snapshot.exchanges);
+        let selected = session.selected_connections.contains(&id);
+        let select_label = if selected { "✓ Selected" } else { "+ Select" };
+        let request_rows = snapshot
+            .exchanges
+            .iter()
+            .filter(|exchange| exchange.connection_id == id)
+            .map(|exchange| render_focused_request_row(exchange, live));
+        let request_count = snapshot
+            .exchanges
+            .iter()
+            .filter(|exchange| exchange.connection_id == id)
+            .count();
+        let tls_detail = details
+            .values()
+            .find(|detail| detail.summary.connection_id == id);
+        section!(
             id = "live",
             class = if inspection_enabled {
-                "live-shell focused inspector-focus"
+                "live-shell focused inspector-focus connection-focus"
             } else {
-                "live-shell focused inspector-focus inspection-paused"
+                "live-shell focused inspector-focus connection-focus inspection-paused"
             },
             "data-inspection-paused" = display(!inspection_enabled),
             render_live_heartbeat(heartbeat_sequence),
             inspection_notice(inspection_enabled),
             render_focus_header(
-                format!("Connection #{id}"),
-                "This connection is no longer retained.".to_owned(),
-                None,
-                None,
-            ),
-            div!(
-                class = "focus-empty",
-                strong!("Connection unavailable"),
-                p!("It may have been cleared or retired by the capture limit.")
-            )
-        )
-        .into_string();
-    };
-    let route = connection_route(connection, &snapshot.exchanges);
-    let selected = session.selected_connections.contains(&id);
-    let select_label = if selected { "✓ Selected" } else { "+ Select" };
-    let request_rows = snapshot
-        .exchanges
-        .iter()
-        .filter(|exchange| exchange.connection_id == id)
-        .map(|exchange| render_focused_request_row(exchange, live))
-        .collect::<Vec<_>>();
-    let tls_detail = details
-        .values()
-        .find(|detail| detail.summary.connection_id == id);
-    section!(
-        id = "live",
-        class = if inspection_enabled {
-            "live-shell focused inspector-focus connection-focus"
-        } else {
-            "live-shell focused inspector-focus connection-focus inspection-paused"
-        },
-        "data-inspection-paused" = display(!inspection_enabled),
-        render_live_heartbeat(heartbeat_sequence),
-        inspection_notice(inspection_enabled),
-        render_focus_header(
-            format!("Connection #{}", connection.display_id),
-            route,
-            None,
-            Some((
-                if connection.active { "alive" } else { "closed" },
-                connection.active,
-            )),
-        ),
-        article!(
-            class = "focus-surface connection-detail",
-            div!(
-                class = "focus-actions",
-                connection.label.as_ref().map(|label| span!(
-                    class = "connection-label focus-connection-label",
-                    label.clone()
+                display_fn(move |f: &mut fmt::Formatter<'_>| write!(
+                    f,
+                    "Connection #{}",
+                    connection.display_id
                 )),
-                button!(
-                    r#type = "button",
-                    class = if selected {
-                        "select selected"
-                    } else {
-                        "select"
-                    },
-                    title = "Include all requests on this connection in exports",
-                    "aria-pressed" = display(selected),
-                    "data-on:click" = format!("@post('/api/connection/{id}')"),
-                    select_label
-                ),
-                a!(
-                    class = "ghost link compact",
-                    href = format!("/api/har/export?connection_ids={id}"),
-                    target = "har-download",
-                    "data-har-export" = "",
-                    "Export HAR"
-                )
+                display(route),
+                None,
+                Some((
+                    if connection.active { "alive" } else { "closed" },
+                    connection.active,
+                )),
             ),
-            section!(
-                class = "detail-overview connection-overview",
-                overview_item("Protocol", &connection.ingress_protocol),
-                overview_item(
-                    "State",
-                    if connection.active { "Alive" } else { "Closed" }.to_owned()
-                ),
-                connection
-                    .peer_address
-                    .as_ref()
-                    .map(|address| overview_item("Client", address)),
-                connection
-                    .local_address
-                    .as_ref()
-                    .map(|address| overview_item("Proxy listener", address)),
-                overview_item("Requests", connection.request_count),
-                overview_item(
-                    "Traffic",
-                    format!(
-                        "{} ↓  {} ↑",
-                        format_bytes(connection.bytes_in),
-                        format_bytes(connection.bytes_out)
+            article!(
+                class = "focus-surface connection-detail",
+                div!(
+                    class = "focus-actions",
+                    connection.label.as_ref().map(|label| span!(
+                        class = "connection-label focus-connection-label",
+                        label
+                    )),
+                    button!(
+                        r#type = "button",
+                        class = if selected {
+                            "select selected"
+                        } else {
+                            "select"
+                        },
+                        title = "Include all requests on this connection in exports",
+                        "aria-pressed" = display(selected),
+                        "data-on:click" = ("@post('/api/connection/", id, "')"),
+                        select_label
+                    ),
+                    a!(
+                        class = "ghost link compact",
+                        href = ("/api/har/export?connection_ids=", id),
+                        target = "har-download",
+                        "data-har-export" = "",
+                        "Export HAR"
                     )
                 ),
-                overview_item("Started", display_timestamp(&connection.started_at)),
-                connection
-                    .ended_at
-                    .as_ref()
-                    .map(|ended| overview_item("Ended", display_timestamp(ended))),
-            ),
-            tls_detail.map(render_connection_tls).map(PreEscaped),
-            PreEscaped(
                 section!(
-                    class = "connection-requests",
-                    div!(
-                        class = "section-title",
-                        h2!(format!("Requests · {}", request_rows.len())),
-                        span!("Updates stream while this connection remains open")
-                    ),
-                    render_approval_toolbar(),
-                    div!(
-                        class = "exchange-list",
-                        request_rows,
-                        PreEscaped(render_pending_fallbacks(
-                            &live.pending,
-                            &snapshot.exchanges,
-                            Some(id)
+                    class = "detail-overview connection-overview",
+                    overview_item("Protocol", &connection.ingress_protocol),
+                    overview_item("State", if connection.active { "Alive" } else { "Closed" }),
+                    connection
+                        .peer_address
+                        .as_ref()
+                        .map(|address| overview_item("Client", address)),
+                    connection
+                        .local_address
+                        .as_ref()
+                        .map(|address| overview_item("Proxy listener", address)),
+                    overview_item("Requests", connection.request_count),
+                    overview_item(
+                        "Traffic",
+                        display_fn(move |f: &mut fmt::Formatter<'_>| write!(
+                            f,
+                            "{} ↓  {} ↑",
+                            format_bytes(connection.bytes_in),
+                            format_bytes(connection.bytes_out)
                         ))
                     ),
-                    p!(
-                        "data-request-empty" = "",
-                        hidden = "",
-                        "Waiting for matching traffic."
+                    overview_item("Started", display_timestamp(&connection.started_at)),
+                    connection
+                        .ended_at
+                        .as_ref()
+                        .map(|ended| overview_item("Ended", display_timestamp(ended))),
+                ),
+                tls_detail.map(render_connection_tls),
+                {
+                    section!(
+                        class = "connection-requests",
+                        div!(
+                            class = "section-title",
+                            h2!("Requests · ", request_count),
+                            span!("Updates stream while this connection remains open")
+                        ),
+                        render_approval_toolbar(),
+                        div!(
+                            class = "exchange-list",
+                            render_each(request_rows),
+                            render_pending_fallbacks(&live.pending, &snapshot.exchanges, Some(id))
+                        ),
+                        p!(
+                            "data-request-empty" = "",
+                            hidden = "",
+                            "Waiting for matching traffic."
+                        )
                     )
-                )
-                .into_string()
+                }
             )
         )
-    )
-    .into_string()
+        .escape_and_write(output);
+    }
 }
 
 pub(in crate::cmd::serve::proxy::dashboard) fn connection_route(
     connection: &HttpConnectionSummary,
     exchanges: &[HttpExchangeSummary],
-) -> String {
-    if connection.ingress_protocol == REPLAY_PROTOCOL {
-        exchanges
-            .iter()
-            .find(|exchange| exchange.connection_id == connection.id)
-            .map(|exchange| {
-                format!(
-                    "Inspector replay → {}",
-                    optional_display(exchange.endpoint.as_ref())
-                )
-            })
-            .unwrap_or_else(|| "Inspector replay".to_owned())
-    } else {
-        format!(
-            "{} → {}",
-            optional_display(connection.peer_address.as_ref()),
-            optional_display(connection.local_address.as_ref())
-        )
-    }
+) -> impl fmt::Display {
+    display_fn(move |f: &mut fmt::Formatter<'_>| {
+        if connection.ingress_protocol == REPLAY_PROTOCOL {
+            f.write_str("Inspector replay")?;
+            if let Some(exchange) = exchanges
+                .iter()
+                .find(|exchange| exchange.connection_id == connection.id)
+            {
+                write!(f, " → {}", optional_display(exchange.endpoint.as_ref()))?;
+            }
+            Ok(())
+        } else {
+            write!(
+                f,
+                "{} → {}",
+                optional_display(connection.peer_address.as_ref()),
+                optional_display(connection.local_address.as_ref())
+            )
+        }
+    })
 }
 
 pub(in crate::cmd::serve::proxy::dashboard) fn render_focused_request_row(
@@ -360,7 +374,7 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_focused_request_row(
         exchange.method.as_str()
     };
     article!(
-        id = format!("request-{}", exchange.id),
+        id = ("request-", exchange.id),
         "data-approval-id"? = pending.map(|message| display(message.id)),
         class = if exchange.active {
             "exchange active focus-request-row"
@@ -375,8 +389,8 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_focused_request_row(
             class = "exchange-row",
             div!(
                 class = "capture-ref",
-                strong!(format!("#{}", exchange.id)),
-                span!(format!("conn #{}", exchange.connection_display_id))
+                strong!("#", exchange.id),
+                span!("conn #", exchange.connection_display_id)
             ),
             span!(class = "method", method),
             div!(
@@ -384,13 +398,16 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_focused_request_row(
                 strong!(exchange.endpoint.as_ref().map(display)),
                 small!(display(&exchange.url))
             ),
-            PreEscaped(render_protocol_badge(exchange)),
-            PreEscaped(
-                pending
-                    .map(approval_badge)
-                    .unwrap_or_else(|| render_exchange_status(exchange))
+            render_protocol_badge(exchange),
+            if let Some(message) = pending {
+                approval_badge(message)
+            } else {
+                render_exchange_status(exchange)
+            },
+            span!(
+                class = "bytes",
+                display(format_bytes(exchange.response_bytes))
             ),
-            span!(class = "bytes", format_bytes(exchange.response_bytes)),
             time!(
                 class = "exchange-time",
                 datetime = display(exchange.started_at),
@@ -398,6 +415,6 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_focused_request_row(
             ),
             span!(class = "focus-open-hint", "Open →")
         ),
-        PreEscaped(render_approval_slots(live.for_exchange(exchange.id)))
+        render_approval_slots(live.for_exchange(exchange.id))
     )
 }

@@ -58,7 +58,11 @@ async fn pending_traffic_uses_request_rows_without_creating_captures() {
         recording: true,
         pending,
     };
-    assert!(render_pending_fallbacks(&live.pending, &[exchange.clone()], None).is_empty());
+    assert!(
+        render_pending_fallbacks(&live.pending, &[exchange.clone()], None)
+            .into_string()
+            .is_empty()
+    );
     let row = render_focused_request_row(&exchange, &live).into_string();
     assert!(row.contains("id=\"request-71\""));
     assert!(row.contains("id=\"approval-slot-1\""));

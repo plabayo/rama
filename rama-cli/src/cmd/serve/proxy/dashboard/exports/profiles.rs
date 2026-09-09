@@ -2,7 +2,6 @@ use std::{
     fs::File as StdFile,
     io::{BufWriter, Seek as _, SeekFrom, Write as _},
     pin::Pin,
-    sync::{Arc, LazyLock},
     task::{Context, Poll},
 };
 
@@ -14,25 +13,23 @@ use rama::{
 use tokio::{
     fs::File,
     io::{AsyncRead, ReadBuf},
-    sync::{OwnedSemaphorePermit, Semaphore},
+    sync::OwnedSemaphorePermit,
 };
 
 use super::*;
-
-static EXPORTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| Arc::new(Semaphore::new(2)));
 
 // The blocking writer owns its staging directory and admission. If its caller
 // cancels during serialization, both survive until the blocking operation ends.
 struct StagedProfiles {
     file: BufWriter<StdFile>,
     staging: TempDir,
-    permit: OwnedSemaphorePermit,
+    permit: Option<OwnedSemaphorePermit>,
 }
 
 pub(super) struct ProfileDownload {
     file: File,
     _staging: TempDir,
-    _permit: OwnedSemaphorePermit,
+    _permit: Option<OwnedSemaphorePermit>,
     length: u64,
 }
 
@@ -65,13 +62,8 @@ pub(super) async fn download(
     capture: &CaptureStore,
     requests: &BTreeSet<u64>,
     connections: &BTreeSet<u64>,
+    permit: Option<OwnedSemaphorePermit>,
 ) -> Result<ProfileDownload, BoxError> {
-    let permit = EXPORTS.clone().try_acquire_owned().map_err(|_full| {
-        IoError::new(
-            ErrorKind::WouldBlock,
-            "too many profile exports are already in progress",
-        )
-    })?;
     let mut export = ProfileExport::new(capture, requests, connections);
     if export.is_empty() {
         return Err(IoError::new(

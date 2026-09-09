@@ -3,6 +3,18 @@ use rama::{http::Method, net::Protocol};
 use super::*;
 
 #[test]
+fn inspector_export_concurrency_is_opt_in() {
+    assert_eq!(
+        TestCli::parse_from(["test"])
+            .proxy
+            .inspect_export_concurrency,
+        0
+    );
+    let cli = TestCli::parse_from(["test", "--inspect-export-concurrency", "3"]);
+    assert_eq!(cli.proxy.inspect_export_concurrency, 3);
+}
+
+#[test]
 fn ephemeral_mitm_ca_has_an_inspector_identity() {
     let config = mitm_ca_config();
     assert_eq!(

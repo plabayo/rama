@@ -1,7 +1,7 @@
 use super::*;
 
 pub(in crate::cmd::serve::proxy::dashboard) fn render_index(session: &str) -> impl IntoHtml {
-    let session_signal = format!("'{session}'");
+    let session_signal = ("'", session, "'");
     html!(
         lang = "en",
         head!(
@@ -25,7 +25,7 @@ pub(in crate::cmd::serve::proxy::dashboard) fn render_index(session: &str) -> im
             script!(r#type = "module", src = "/assets/control.js"),
         ),
         body!(
-            "data-inspector-session" = session.to_owned(),
+            "data-inspector-session" = session,
             "data-signals:session" = session_signal,
             "data-signals:search" = "''",
             "data-signals:connection_id" = "''",

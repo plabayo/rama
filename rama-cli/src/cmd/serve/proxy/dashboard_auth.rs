@@ -173,7 +173,7 @@ mod tests {
         let response = service()
             .serve(
                 Request::builder()
-                    .uri("/api/capture/1.json")
+                    .uri("/api/captures")
                     .header(header::COOKIE, "rama-inspector=0123456789abcdef")
                     .body(Body::empty())
                     .unwrap(),
@@ -221,7 +221,7 @@ mod tests {
                 .body(Body::empty())
                 .unwrap(),
             Request::builder()
-                .uri("/api/capture/1.json?token=0123456789abcdef")
+                .uri("/api/captures?token=0123456789abcdef")
                 .body(Body::empty())
                 .unwrap(),
         ] {
