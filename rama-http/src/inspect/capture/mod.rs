@@ -17,7 +17,9 @@ use rama_core::{
 };
 use rama_inspect::{
     InspectionState,
-    storage::{AppendRecord, Collection, CreateCollection, RecordId, Storage},
+    storage::{
+        AppendRecord, CollectionReader, CollectionWriter, CreateCollection, RecordId, Storage,
+    },
 };
 use rama_net::{Protocol, stream::SocketInfo};
 use serde::Serialize;
@@ -138,8 +140,9 @@ struct CapturedExchange {
     response_truncated: AtomicBool,
     extensions: Extensions,
     extension_records: RwLock<BTreeMap<std::any::TypeId, extension::RecordIndex>>,
-    collection: Collection,
-    append_lock: Mutex<()>,
+    collection: CollectionReader,
+    // Hold append access until the committed record reaches every capture index.
+    writer: Mutex<CollectionWriter>,
     searches: SyncMutex<ExchangeSearches>,
     records: RwLock<Vec<RecordLocation>>,
     metadata_records: RwLock<Vec<RecordLocation>>,
@@ -701,7 +704,7 @@ struct RecordLocation {
 }
 
 async fn read_record_at(
-    collection: &Collection,
+    collection: &CollectionReader,
     location: RecordLocation,
 ) -> Result<StoredRecord, BoxError> {
     let Some(body) = location.body else {

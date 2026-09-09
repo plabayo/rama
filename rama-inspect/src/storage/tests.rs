@@ -56,6 +56,37 @@ async fn exercise(store: impl Service<CreateCollection, Output = Collection, Err
     range.read_to_end(&mut bytes).await.unwrap();
     assert_eq!(bytes, b"place");
 
+    for (range, expected) in [
+        (9..20, b"nt".as_slice()),
+        (11..11, b""),
+        (20..30, b""),
+        (20..20, b""),
+    ] {
+        let mut reader = collection
+            .serve(ReadRecord {
+                id: next,
+                range: Some(range),
+            })
+            .await
+            .unwrap();
+        bytes.clear();
+        reader.read_to_end(&mut bytes).await.unwrap();
+        assert_eq!(bytes, expected);
+    }
+    match collection
+        .serve(ReadRecord {
+            id: next,
+            range: Some(Range { start: 2, end: 1 }),
+        })
+        .await
+    {
+        Ok(_) => panic!("reversed range accepted"),
+        Err(error) => assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::InvalidInput,
+        ),
+    }
+
     let mut tasks = Vec::new();
     for n in 0..32u8 {
         let collection = collection.clone();
@@ -106,6 +137,49 @@ async fn memory_streaming_cancel_concurrency_and_retention() {
 #[tokio::test]
 async fn file_streaming_cancel_concurrency_and_retention() {
     exercise(FileStore::temporary(StorageLimits::default()).unwrap()).await;
+}
+
+async fn split_capabilities(
+    store: impl Service<CreateCollection, Output = Collection, Error = BoxError>,
+) {
+    let (read, write) = store
+        .serve(CreateCollection { id: 1 })
+        .await
+        .unwrap()
+        .split();
+    let first = write
+        .append(std::io::Cursor::new(b"committed"))
+        .await
+        .unwrap();
+    let (mut source, stream) = tokio::io::duplex(1);
+    let append = tokio::spawn({
+        let write = write.clone();
+        async move { write.append(stream).await }
+    });
+    source.write_all(b"pending").await.unwrap();
+    let mut pinned = tokio::time::timeout(std::time::Duration::from_secs(2), read.read(first))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.snapshot().await.unwrap(), vec![first]);
+    append.abort();
+    assert!(append.await.unwrap_err().is_cancelled());
+    let second = write.append(std::io::Cursor::new(b"next")).await.unwrap();
+    assert_eq!(read.snapshot().await.unwrap(), vec![first, second]);
+    drop((write, read, store));
+    let mut bytes = Vec::new();
+    pinned.read_to_end(&mut bytes).await.unwrap();
+    assert_eq!(bytes, b"committed");
+}
+
+#[tokio::test]
+async fn memory_split_capabilities_preserve_concurrent_reads_and_retention() {
+    split_capabilities(MemoryStore::new(StorageLimits::default())).await;
+}
+
+#[tokio::test]
+async fn file_split_capabilities_preserve_concurrent_reads_and_retention() {
+    split_capabilities(FileStore::temporary(StorageLimits::default()).unwrap()).await;
 }
 
 async fn budget(store: impl Service<CreateCollection, Output = Collection, Error = BoxError>) {

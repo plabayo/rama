@@ -1,3 +1,5 @@
+use rama_core::futures::FutureExt as _;
+
 use super::*;
 
 #[tokio::test]
@@ -387,12 +389,28 @@ async fn cancelled_append_is_not_published_in_capture_indexes() {
     tokio::time::timeout(Duration::from_secs(1), hook.reached.notified())
         .await
         .expect("append did not reach the cancellation point");
+
+    // Reads retain their own capability while the writer is locked in an append.
+    let details =
+        tokio::time::timeout(Duration::from_secs(1), store.inspector_details(exchange_id))
+            .await
+            .expect("reading committed metadata waited for the blocked writer")
+            .unwrap();
+    assert_eq!(details.records.len(), 1);
+    assert!(matches!(
+        details.records[0],
+        StoredRecord::RequestHead { .. }
+    ));
+
+    // A second append must wait for that writer, then make progress when the
+    // cancelled operation releases it. Its reservation must survive the wait.
+    let next_append = store.record_replay_result(exchange_id, Ok(StatusCode::NO_CONTENT));
+    tokio::pin!(next_append);
+    assert!(next_append.as_mut().now_or_never().is_none());
     append_task.abort();
     assert!(append_task.await.unwrap_err().is_cancelled());
 
-    store
-        .record_replay_result(exchange_id, Ok(StatusCode::NO_CONTENT))
-        .await;
+    next_append.await;
     let details = store.details(exchange_id).await.unwrap();
     let replay_results = details
         .records

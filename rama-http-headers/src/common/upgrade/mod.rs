@@ -74,4 +74,17 @@ impl Upgrade {
             .trim_ascii()
             .eq_ignore_ascii_case(b"websocket")
     }
+
+    /// Return whether the offered protocol list includes WebSocket.
+    ///
+    /// Unlike [`Self::is_websocket`], other protocols may also be offered.
+    pub fn contains_websocket(&self) -> bool {
+        self.0
+            .as_bytes()
+            .split(|byte| *byte == b',')
+            .any(|protocol| protocol.trim_ascii().eq_ignore_ascii_case(b"websocket"))
+    }
 }
+
+#[cfg(test)]
+mod tests;

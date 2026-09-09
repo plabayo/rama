@@ -16,7 +16,7 @@ use parking_lot::Mutex;
 use rama_core::{
     error::{BoxError, BoxErrorExt as _, ErrorContext as _, ErrorExt as _},
     extensions::Extension,
-    futures::StreamExt,
+    futures::{Stream, StreamExt},
 };
 use rama_inspect::{
     InspectionState,
@@ -31,7 +31,10 @@ use rama_utils::thirdparty::wildcard::{Wildcard, WildcardBuilder};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
-use crate::{Body, HeaderMap, HeaderName, Method, Response, StatusCode, Version, header};
+use crate::{
+    Body, HeaderMap, HeaderName, Method, Response, StatusCode, Version, header,
+    layer::remove_header::hop_by_hop_header_names,
+};
 
 const MAX_RULES: usize = 256;
 const MAX_HEADERS: usize = 256;
@@ -187,35 +190,30 @@ impl Decision {
                     }
                     let original = &message.headers;
                     let edited = validate_headers(headers)?;
-                    // Body, routing and upgrade semantics cannot be changed by a header-only editor.
-                    for name in [
-                        "host",
-                        "content-length",
-                        "transfer-encoding",
-                        "content-encoding",
-                        "connection",
-                        "proxy-connection",
-                        "keep-alive",
-                        "trailer",
-                        "te",
-                        "upgrade",
-                        "proxy-authorization",
-                        "proxy-authenticate",
-                        "sec-websocket-version",
-                        "sec-websocket-key",
-                        "sec-websocket-accept",
-                        "sec-websocket-extensions",
-                        "sec-websocket-protocol",
-                    ] {
+                    // A head-only edit cannot reconfigure an already selected
+                    // route, body codec or upgrade handshake. Preserve those
+                    // fields alongside the shared hop-by-hop policy.
+                    for name in hop_by_hop_header_names(original).chain([
+                        header::HOST,
+                        header::CONTENT_LENGTH,
+                        header::CONTENT_ENCODING,
+                        header::PROXY_AUTHORIZATION,
+                        header::PROXY_AUTHENTICATE,
+                        header::SEC_WEBSOCKET_VERSION,
+                        header::SEC_WEBSOCKET_KEY,
+                        header::SEC_WEBSOCKET_ACCEPT,
+                        header::SEC_WEBSOCKET_EXTENSIONS,
+                        header::SEC_WEBSOCKET_PROTOCOL,
+                    ]) {
                         if original
-                            .get_all(name)
+                            .get_all(&name)
                             .iter()
-                            .ne(edited.get_all(name).iter())
+                            .ne(edited.get_all(&name).iter())
                         {
                             return Err(BoxError::from_static_str(
                                 "header is managed by the transport and cannot be changed here",
                             )
-                            .context_str_field("header", name));
+                            .context_field("header", name));
                         }
                     }
                 }
@@ -278,9 +276,11 @@ impl Decision {
 }
 
 fn validate_close(code: u16, reason: &str) -> Result<(), BoxError> {
-    if !matches!(code, 1000..=1003 | 1007..=1014 | 3000..=4999) || reason.len() > 123 {
+    // Match the codes supported by the WebSocket adapter. Its current engine
+    // does not support 1014; this is not a statement about IANA registration.
+    if !matches!(code, 1000..=1003 | 1007..=1013 | 3000..=4999) || reason.len() > 123 {
         return Err(BoxError::from_static_str(
-            "invalid WebSocket close code or reason",
+            "unsupported WebSocket close code or invalid reason",
         ));
     }
     Ok(())
@@ -516,7 +516,7 @@ impl Control {
     }
 
     /// Subscribe to initial and updated control content from a native UI or API.
-    pub fn subscribe(&self) -> impl rama_core::futures::Stream<Item = Snapshot> + Send + 'static {
+    pub fn subscribe(&self) -> impl Stream<Item = Snapshot> + Send + 'static {
         let control = self.clone();
         rama_inspect::subscription::subscribe(
             self.subscribe_changes(),

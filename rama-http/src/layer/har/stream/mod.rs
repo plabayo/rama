@@ -49,6 +49,8 @@ impl HarEntryExtension for () {
 /// Serialize a typed HAR entry with streamed bodies and protocol-owned extensions.
 /// Metadata is serialized with Serde; only body fields require incremental JSON
 /// escaping. A cancelled write may leave partial output, so stage published files.
+/// Existing post parameters are preserved. For `application/x-www-form-urlencoded`
+/// bodies, absent or empty parameters are derived from the nonempty body stream.
 pub async fn write_entry<W: AsyncWrite + Unpin + Send>(
     writer: &mut W,
     entry: &spec::Entry,
@@ -166,12 +168,20 @@ async fn write_post_data<W: AsyncWrite + Unpin>(
             &mime_type.as_ref().map(crate::mime::Mime::as_ref),
         )
         .await?;
-    if params.is_some() {
+    let stream_params = stats.size > 0
+        && params.as_ref().is_none_or(Vec::is_empty)
+        && mime_type.as_ref().is_some_and(|mime| {
+            mime.type_() == crate::mime::APPLICATION
+                && mime.subtype() == crate::mime::WWW_FORM_URLENCODED
+        });
+    if stream_params {
         write_params(
             object.streamed_field("params").await?,
             BufReader::new(body.reader()),
         )
         .await?;
+    } else if let Some(params) = params {
+        object.array("params", params).await?;
     } else {
         object.field("params", params).await?;
     }

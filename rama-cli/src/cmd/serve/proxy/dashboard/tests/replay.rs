@@ -1,5 +1,5 @@
 use rama::{
-    http::{Version, layer::har::spec::LogFile, server::HttpServer},
+    http::{Version, header, layer::har::spec::LogFile, server::HttpServer},
     net::{
         Protocol,
         address::{ProxyAddress, SocketAddress},
@@ -363,7 +363,8 @@ async fn websocket_replay_handler_enforces_session_and_maps_capture_state() {
     state.ensure_session("known");
     let request = Request::builder()
         .uri("http://example.test/socket")
-        .header("upgrade", "websocket")
+        .header(header::UPGRADE, "websocket")
+        .header(header::CONNECTION, "upgrade")
         .body(Body::empty())
         .unwrap();
     let capture_service = CaptureHttpLayer::new(Some(state.capture.clone())).into_layer(

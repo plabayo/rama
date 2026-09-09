@@ -107,12 +107,13 @@ impl CaptureStore {
                     .and_then(|value| value.to_str().ok())
                     .and_then(|value| value.parse().ok())
             });
-        let collection = self
+        let (collection, writer) = self
             .0
             .storage
             .serve(CreateCollection { id })
             .await
-            .context("create capture collection")?;
+            .context("create capture collection")?
+            .split();
         let entry = Arc::new(CapturedExchange {
             decision: RwLock::new(None),
             decision_count: AtomicUsize::new(0),
@@ -157,7 +158,7 @@ impl CaptureStore {
             extensions: Extensions::default(),
             extension_records: RwLock::new(BTreeMap::new()),
             collection,
-            append_lock: Mutex::new(()),
+            writer: Mutex::new(writer),
             searches: SyncMutex::default(),
             records: RwLock::new(Vec::new()),
             metadata_records: RwLock::new(Vec::new()),
@@ -354,7 +355,7 @@ impl CaptureStore {
         let Some(mut budget) = self.0.budget.try_reserve(length) else {
             return Ok(false);
         };
-        let _append = entry.append_lock.lock().await;
+        let writer = entry.writer.lock().await;
         // HTTP has a small fixed set of heads/trailers/end records. Upgraded
         // message decisions and replay history use separate indexes.
         if metadata::is_http_metadata(&record)
@@ -368,7 +369,7 @@ impl CaptureStore {
             hook.reached.notify_one();
             hook.resume.notified().await;
         }
-        let location = entry.collection.serve(source).await?;
+        let location = writer.serve(source).await?;
         // Publish all indexes together, without an await after storage commits.
         let record_location = RecordLocation { id: location, body };
         entry.records.write().push(record_location);

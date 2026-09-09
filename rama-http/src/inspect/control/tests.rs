@@ -1,3 +1,5 @@
+use rama_utils::str::NonEmptyStr;
+
 use super::*;
 use crate::body::util::BodyExt as _;
 
@@ -404,6 +406,43 @@ fn config_roundtrip_and_validation_do_not_replace_good_policy() {
 }
 
 #[test]
+fn close_decisions_and_rules_reject_codes_unsupported_by_the_adapter() {
+    let message = Message {
+        kind: Some("text".parse().unwrap()),
+        ..request()
+    };
+    Decision::Close {
+        code: 1013,
+        reason: String::new(),
+    }
+    .validate(&message)
+    .unwrap();
+    Decision::Close {
+        code: 1014,
+        reason: String::new(),
+    }
+    .validate(&message)
+    .unwrap_err();
+    let control = control();
+    control
+        .configure(
+            1,
+            Config {
+                rules: vec![rule(
+                    Action::Close {
+                        code: 1014,
+                        reason: String::new(),
+                    },
+                    Matcher::default(),
+                )],
+                ..Config::default()
+            },
+        )
+        .unwrap_err();
+    assert_eq!(control.snapshot().revision, 1);
+}
+
+#[test]
 fn headers_preserve_duplicates_and_reject_framing_and_routing_edits() {
     let original = Message {
         headers: headers(&[("content-length", "10"), ("host", "example.test")]),
@@ -439,6 +478,47 @@ fn headers_preserve_duplicates_and_reject_framing_and_routing_edits() {
     );
     serde_json::from_value::<HeaderMap>(serde_json::json!([["x-test", "ok\r\ninjected: bad"]]))
         .unwrap_err();
+}
+
+#[test]
+fn header_edits_preserve_connection_nominated_fields() {
+    let original = Message {
+        headers: headers(&[
+            ("connection", "upgrade, x-hop, invalid token"),
+            ("connection", "X-Other"),
+            ("upgrade", "websocket"),
+            ("x-hop", "one"),
+            ("x-hop", "two"),
+            ("x-other", "three"),
+        ]),
+        ..request()
+    };
+    for name in ["x-hop", "x-other"] {
+        for replacement in [Some("changed"), None] {
+            let mut edited = original.headers.clone();
+            if let Some(value) = replacement {
+                edited.insert(name, value.parse().unwrap());
+            } else {
+                edited.remove(name);
+            }
+            Decision::Forward {
+                headers: Some(edited),
+                status: None,
+                payload: None,
+            }
+            .validate(&original)
+            .unwrap_err();
+        }
+    }
+    let mut edited = original.headers.clone();
+    edited.insert("x-end-to-end", "allowed".parse().unwrap());
+    Decision::Forward {
+        headers: Some(edited),
+        status: None,
+        payload: None,
+    }
+    .validate(&original)
+    .unwrap();
 }
 
 #[tokio::test]
@@ -558,6 +638,54 @@ async fn apply_rule_resolves_only_matching_queued_messages() {
     let id = pending(&control, 1).await[0];
     control.resolve(id, Decision::forward()).unwrap();
     b.await.unwrap();
+}
+
+#[test]
+fn http_message_rules_use_the_resolved_authority() {
+    for (uri, host_header, protocol, host, port) in [
+        ("/api", "localhost:8080", Protocol::HTTP, "localhost", 8080),
+        (
+            "/api",
+            "example.test:8443",
+            Protocol::HTTPS,
+            "example.test",
+            8443,
+        ),
+        ("/api", "[::1]:8080", Protocol::HTTP, "::1", 8080),
+        ("/api", "example.test", Protocol::HTTP, "example.test", 80),
+        ("/api", "example.test", Protocol::HTTPS, "example.test", 443),
+        (
+            "https://origin.test:9443/api",
+            "other.test:8080",
+            Protocol::HTTP,
+            "origin.test",
+            9443,
+        ),
+    ] {
+        let (parts, ()) = crate::Request::builder()
+            .uri(uri)
+            .header(header::HOST, host_header)
+            .extension(protocol)
+            .body(())
+            .unwrap()
+            .into_parts();
+        let message = http_message(&parts);
+        assert_eq!(message.host, Some(host.parse().unwrap()));
+        assert_eq!(message.port, Some(port));
+        let compiled = CompiledRule::new(rule(
+            Action::Intercept,
+            Matcher {
+                port: Some(port),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+        assert!(compiled.matches(&message));
+        assert!(!compiled.matches(&Message {
+            port: Some(port + 1),
+            ..message
+        }));
+    }
 }
 
 #[test]
@@ -831,7 +959,7 @@ fn message_path_is_derived_from_uri_for_matching_and_serialization() {
     #[derive(Deserialize)]
     struct WireMessage {
         path: Uri,
-        kind: Option<rama_utils::str::NonEmptyStr>,
+        kind: Option<NonEmptyStr>,
     }
     for (url, expected) in [
         (

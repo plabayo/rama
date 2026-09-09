@@ -1,11 +1,19 @@
+use std::{
+    ops::{Deref, DerefMut},
+    sync::Arc,
+};
+
 use rama_core::{bytes::Bytes, extensions::Extension};
-use rama_net::{Protocol, address::Authority, uri::Uri};
+use rama_inspect::Direction;
+use rama_net::{Protocol, address::Authority, inspect::ConnectionSummary, uri::Uri};
+use rama_utils::str::NonEmptyStr;
 use serde::{Deserialize, Serialize};
 
 use super::CaptureMetadata;
 use crate::{
     CaptureOutcome, HeaderMap, HeaderValue, Method, StatusCode, Version,
     fingerprint::{AkamaiH2, Ja4H},
+    inspect::control::Payload,
 };
 
 /// Correlates an HTTP exchange with its upgraded protocol adapter.
@@ -17,20 +25,20 @@ pub struct HttpExchangeId(pub u64);
 #[derive(Debug, Clone, Serialize)]
 pub struct HttpConnectionSummary {
     #[serde(flatten)]
-    pub transport: rama_net::inspect::ConnectionSummary,
+    pub transport: ConnectionSummary,
     pub request_count: usize,
     pub akamai_h2: Option<AkamaiH2>,
 }
 
-impl std::ops::Deref for HttpConnectionSummary {
-    type Target = rama_net::inspect::ConnectionSummary;
+impl Deref for HttpConnectionSummary {
+    type Target = ConnectionSummary;
 
     fn deref(&self) -> &Self::Target {
         &self.transport
     }
 }
 
-impl std::ops::DerefMut for HttpConnectionSummary {
+impl DerefMut for HttpConnectionSummary {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.transport
     }
@@ -58,7 +66,7 @@ pub struct HttpExchangeSummary {
     pub response_bytes: u64,
     pub request_truncated: bool,
     pub response_truncated: bool,
-    pub ja4h: Option<std::sync::Arc<Ja4H>>,
+    pub ja4h: Option<Arc<Ja4H>>,
     #[serde(skip)]
     pub metadata: CaptureMetadata,
 }
@@ -85,12 +93,12 @@ pub struct CaptureSnapshot {
 pub enum StoredRecord {
     Interception {
         /// HTTP heads have no kind; upgraded messages retain their protocol's tag.
-        kind: Option<rama_utils::str::NonEmptyStr>,
-        direction: crate::inspect::control::Direction,
+        kind: Option<NonEmptyStr>,
+        direction: Direction,
         outcome: String,
         original_headers: HeaderMap,
         original_status: Option<StatusCode>,
-        original_payload: Option<crate::inspect::control::Payload>,
+        original_payload: Option<Payload>,
         /// Full stored length, even when a view omits the payload or reads a prefix.
         #[serde(default)]
         original_payload_length: Option<u64>,

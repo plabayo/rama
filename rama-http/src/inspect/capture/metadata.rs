@@ -22,7 +22,7 @@ pub(super) fn is_http_metadata(record: &StoredRecord) -> bool {
 }
 
 pub(super) async fn read(
-    collection: &Collection,
+    collection: &CollectionReader,
     location: RecordLocation,
     payload_limit: Option<u64>,
 ) -> Result<StoredRecord, BoxError> {

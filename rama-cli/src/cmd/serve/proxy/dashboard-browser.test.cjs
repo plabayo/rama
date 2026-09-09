@@ -256,12 +256,14 @@ test("activating a pending request opens its inline editor instead of navigating
 
 test("header editing preserves ordered duplicates, opaque bytes and literal prefixes", () => {
   const source = fs.readFileSync(path.join(__dirname, "dashboard-control.js"), "utf8");
-  const context = vm.createContext({ btoa, atob });
+  const context = vm.createContext({ btoa, atob, TextEncoder });
   vm.runInContext(source.slice(source.indexOf("const binaryHeaderPrefix"), source.indexOf("async function refresh()")), context);
-  const headers = [["x-test", "first"], ["x-test", [0x80, 0xff]], ["x-literal", "rama-capture-base64:ordinary text"]];
+  const headers = [["x-test", "first"], ["x-test", [0x80, 0xff]], ["x-literal", "rama-capture-base64:ordinary text"], ["x-latin", "rama-capture-base64:é"], ["x-unicode", "rama-capture-base64:€💖"]];
   const result = JSON.parse(JSON.stringify(context.readHeaders(context.formatHeaders(headers))));
   assert.deepEqual(result.slice(0, 2), headers.slice(0, 2));
-  assert.equal(Buffer.from(result[2][1]).toString(), headers[2][1]);
+  for (let index = 2; index < headers.length; index++) {
+    assert.deepEqual(result[index][1], [...Buffer.from(headers[index][1])]);
+  }
   const patterns = [["x-test", "rama-capture-base64:é*"]];
   assert.deepEqual(JSON.parse(JSON.stringify(context.readHeaders(context.formatHeaders(patterns, true), true))), patterns);
 });

@@ -1,5 +1,5 @@
 use rama_core::error::BoxErrorExt as _;
-use rama_inspect::storage::{ListRecords, MemoryStore, ReadRecord, Reader};
+use rama_inspect::storage::{Collection, ListRecords, MemoryStore, ReadRecord, Reader};
 
 use super::*;
 

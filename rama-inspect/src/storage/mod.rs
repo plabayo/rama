@@ -70,7 +70,8 @@ impl AppendRecord {
     }
 }
 
-/// Read a committed record or a range of its logical bytes. Bounds are exclusive.
+/// Read a committed record or a range of its logical bytes. The end is exclusive;
+/// bounds beyond EOF clamp to the record length, and reversed ranges are rejected.
 /// Memory and file storage address ranges directly. Streaming layers such as
 /// encryption may need to consume the preceding bytes; see the layer's contract.
 #[derive(Debug, Clone)]
@@ -91,6 +92,8 @@ pub struct ListRecords;
 
 /// Storage admission limits, shared across collections. Defaults bound retained
 /// bytes to 64 MiB and each record to 8 MiB. Explicit zero fields mean unlimited.
+/// Counts logical record bytes, not backing-allocation capacity or index memory;
+/// protocol adapters should also bound their retained record count.
 #[derive(Debug, Clone, Copy)]
 pub struct StorageLimits {
     pub total_bytes: u64,
@@ -109,13 +112,27 @@ impl Default for StorageLimits {
 // Bound admitted I/O and scratch use without serializing unrelated operations.
 const MAX_CONCURRENT_APPENDS: usize = 64;
 
-/// An owned collection. Dropping the last collection/reader releases its storage.
+/// An owned collection. Dropping its last capability or reader releases its storage.
 /// Read handles pin their underlying data independently of registry eviction.
 #[derive(Debug, Clone)]
 pub struct Collection {
-    append: BoxService<AppendRecord, RecordId, BoxError>,
+    reader: CollectionReader,
+    writer: CollectionWriter,
+}
+
+/// Read-only access to a collection, independent of append serialization.
+/// Both this handle and its readers retain the underlying storage.
+#[derive(Debug, Clone)]
+pub struct CollectionReader {
     read: BoxService<ReadRecord, Reader, BoxError>,
     list: BoxService<ListRecords, Vec<RecordId>, BoxError>,
+}
+
+/// Append access to a collection. Keep this capability behind a lock when
+/// publication of application indexes must remain ordered with storage writes.
+#[derive(Debug, Clone)]
+pub struct CollectionWriter {
+    append: BoxService<AppendRecord, RecordId, BoxError>,
 }
 
 impl Collection {
@@ -128,10 +145,19 @@ impl Collection {
             + Service<ListRecords, Output = Vec<RecordId>, Error = BoxError>,
     {
         Self {
-            append: BoxService::new(service.clone()),
-            read: BoxService::new(service.clone()),
-            list: BoxService::new(service),
+            writer: CollectionWriter {
+                append: BoxService::new(service.clone()),
+            },
+            reader: CollectionReader {
+                read: BoxService::new(service.clone()),
+                list: BoxService::new(service),
+            },
         }
+    }
+
+    /// Separate read and append capabilities without allocating or cloning services.
+    pub fn split(self) -> (CollectionReader, CollectionWriter) {
+        (self.reader, self.writer)
     }
 
     pub async fn append(
@@ -150,12 +176,31 @@ impl Collection {
     }
 }
 
+impl CollectionReader {
+    pub async fn read(&self, id: RecordId) -> Result<Reader, BoxError> {
+        self.serve(ReadRecord::new(id)).await
+    }
+
+    pub async fn snapshot(&self) -> Result<Vec<RecordId>, BoxError> {
+        self.serve(ListRecords).await
+    }
+}
+
+impl CollectionWriter {
+    pub async fn append(
+        &self,
+        source: impl AsyncRead + Send + 'static,
+    ) -> Result<RecordId, BoxError> {
+        self.serve(AppendRecord::new(source)).await
+    }
+}
+
 impl Service<AppendRecord> for Collection {
     type Output = RecordId;
     type Error = BoxError;
 
     async fn serve(&self, input: AppendRecord) -> Result<Self::Output, Self::Error> {
-        self.append.serve(input).await
+        self.writer.serve(input).await
     }
 }
 
@@ -164,11 +209,38 @@ impl Service<ReadRecord> for Collection {
     type Error = BoxError;
 
     async fn serve(&self, input: ReadRecord) -> Result<Self::Output, Self::Error> {
-        self.read.serve(input).await
+        self.reader.serve(input).await
     }
 }
 
 impl Service<ListRecords> for Collection {
+    type Output = Vec<RecordId>;
+    type Error = BoxError;
+
+    async fn serve(&self, input: ListRecords) -> Result<Self::Output, Self::Error> {
+        self.reader.serve(input).await
+    }
+}
+
+impl Service<AppendRecord> for CollectionWriter {
+    type Output = RecordId;
+    type Error = BoxError;
+
+    async fn serve(&self, input: AppendRecord) -> Result<Self::Output, Self::Error> {
+        self.append.serve(input).await
+    }
+}
+
+impl Service<ReadRecord> for CollectionReader {
+    type Output = Reader;
+    type Error = BoxError;
+
+    async fn serve(&self, input: ReadRecord) -> Result<Self::Output, Self::Error> {
+        self.read.serve(input).await
+    }
+}
+
+impl Service<ListRecords> for CollectionReader {
     type Output = Vec<RecordId>;
     type Error = BoxError;
 
@@ -274,6 +346,8 @@ fn record_range(range: Option<Range<u64>>, length: u64) -> Result<Range<u64>, Bo
 
 /// Select a range from a streaming reader without buffering its contents.
 /// A non-zero start consumes the prefix; seekable backends should address it directly.
+/// Bounds beyond EOF clamp to the content length; errors while reading the prefix
+/// still propagate, including errors from an authenticating storage layer.
 pub async fn range_reader(
     mut reader: Reader,
     range: Option<Range<u64>>,
@@ -281,7 +355,7 @@ pub async fn range_reader(
     match range {
         None => Ok(reader),
         Some(range) if range.start <= range.end => {
-            rama_core::io::discard(&mut reader, range.start).await?;
+            tokio::io::copy(&mut (&mut reader).take(range.start), &mut tokio::io::sink()).await?;
             Ok(Box::pin(reader.take(range.end - range.start)))
         }
         Some(_) => Err(std::io::Error::new(

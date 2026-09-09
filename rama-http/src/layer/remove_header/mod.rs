@@ -64,7 +64,7 @@ fn remove_headers_by_exact_name(headers: &mut HeaderMap, name: &HeaderName) {
 #[doc(inline)]
 pub use rama_http_types::header::hop_by_hop::{
     HopByHopHeaderContext, HopByHopResponseDisposition, connection_header_names,
-    remove_hop_by_hop_headers, remove_hop_by_hop_request_headers,
+    hop_by_hop_header_names, remove_hop_by_hop_headers, remove_hop_by_hop_request_headers,
     remove_hop_by_hop_response_headers, sanitize_hop_by_hop_request_headers,
     sanitize_hop_by_hop_response_headers,
 };

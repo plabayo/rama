@@ -14,9 +14,12 @@ use rama_core::{
     futures::{Stream, StreamExt, async_stream::stream_fn},
     stream::io::ReaderStream,
 };
-use rama_http::inspect::capture::{
-    CaptureMetadata, CaptureStore, CapturedBody, CapturedRecord, CapturedRecordStream,
-    ExchangeCapture,
+use rama_http::{
+    inspect::capture::{
+        CaptureMetadata, CaptureStore, CapturedBody, CapturedRecord, CapturedRecordStream,
+        ExchangeCapture,
+    },
+    request::Parts,
 };
 use rama_net::{Protocol, ProtocolInputExt as _};
 use rama_utils::octets::mib;
@@ -28,7 +31,10 @@ use tokio::{
 
 use crate::{
     Utf8Bytes,
-    handshake::mitm::{WebSocketRelayDirection, WebSocketRelayInjector, WebSocketRelayMessage},
+    handshake::{
+        matcher::is_http_req_websocket_handshake,
+        mitm::{WebSocketRelayDirection, WebSocketRelayInjector, WebSocketRelayMessage},
+    },
     protocol::frame::coding::CloseCode,
 };
 
@@ -172,25 +178,11 @@ impl Default for WebSocketLimits {
 /// Recognize an HTTP/1 upgrade or HTTP/2 extended CONNECT handshake. The marker
 /// and limits are owned here; HTTP capture doesn't import WebSocket definitions.
 pub fn observe_handshake(
-    parts: &rama_http::request::Parts,
+    parts: &Parts,
     metadata: &CaptureMetadata,
     limits: WebSocketLimits,
 ) -> bool {
-    let websocket = match parts.version {
-        rama_http::Version::HTTP_10 | rama_http::Version::HTTP_11 => parts
-            .headers
-            .get(rama_http::header::UPGRADE)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.eq_ignore_ascii_case("websocket")),
-        rama_http::Version::HTTP_2 => {
-            parts.method == rama_http::Method::CONNECT
-                && parts
-                    .extensions
-                    .get_ref::<rama_http::proto::h2::ext::Protocol>()
-                    .is_some_and(|value| value.as_str().eq_ignore_ascii_case("websocket"))
-        }
-        _ => false,
-    };
+    let websocket = is_http_req_websocket_handshake(parts);
     if websocket {
         let secure = parts.protocol().unwrap_or(&Protocol::HTTP).is_secure();
         metadata

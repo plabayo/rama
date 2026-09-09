@@ -1,7 +1,8 @@
-use rama_net::{ProtocolInputExt as _, uri::PathRef};
+use rama_net::{AuthorityInputExt as _, ProtocolInputExt as _, uri::PathRef};
 use rama_utils::str::NonEmptyStr;
 
 use super::*;
+use crate::request::Parts;
 
 pub use rama_inspect::Direction;
 
@@ -118,31 +119,20 @@ impl Message {
     }
 }
 
-pub fn http_message(parts: &crate::request::Parts) -> Message {
-    let host = parts
-        .uri
-        .authority()
-        .map(|a| a.host().into_owned())
-        .or_else(|| {
-            parts
-                .headers
-                .get(header::HOST)
-                .and_then(|h| h.to_str().ok())
-                .and_then(|h| h.parse::<rama_net::address::Authority>().ok())
-                .map(|a| a.address.host)
-        });
+pub fn http_message(parts: &Parts) -> Message {
+    let authority = parts.authority();
     let protocol = parts.protocol().unwrap_or(&Protocol::HTTP);
+    let port = authority
+        .as_ref()
+        .and_then(|authority| authority.port_u16())
+        .or_else(|| protocol.default_port());
     Message {
         protocol: protocol.clone(),
         direction: Direction::Ingress,
         method: parts.method.clone(),
         url: parts.uri.clone(),
-        host,
-        port: parts
-            .uri
-            .authority()
-            .and_then(|a| a.port_u16())
-            .or_else(|| protocol.default_port()),
+        host: authority.map(|authority| authority.host),
+        port,
         headers: parts.headers.clone(),
         conditional: matches!(parts.method, Method::GET | Method::HEAD)
             && (parts.headers.contains_key(header::IF_NONE_MATCH)

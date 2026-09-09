@@ -146,8 +146,8 @@ impl ExchangeCapture {
         let Some(mut budget) = self.store.0.budget.try_reserve(length) else {
             return Ok(false);
         };
-        let _append = self.entry.append_lock.lock().await;
-        let id = self.entry.collection.serve(source).await?;
+        let writer = self.entry.writer.lock().await;
+        let id = writer.serve(source).await?;
         self.entry
             .extension_records
             .write()

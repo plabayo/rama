@@ -50,7 +50,7 @@ const binaryHeaderPrefix = "rama-capture-base64:";
 function formatHeaders(headers, patterns = false) {
   return headers.map(([name, value]) => {
     if (Array.isArray(value)) value = binaryHeaderPrefix + btoa(value.map((byte) => String.fromCharCode(byte)).join(""));
-    else if (!patterns && value.startsWith(binaryHeaderPrefix)) value = binaryHeaderPrefix + btoa(value);
+    else if (!patterns && value.startsWith(binaryHeaderPrefix)) value = binaryHeaderPrefix + btoa(Array.from(new TextEncoder().encode(value), (byte) => String.fromCharCode(byte)).join(""));
     return `${name}: ${value}`;
   }).join("\n");
 }

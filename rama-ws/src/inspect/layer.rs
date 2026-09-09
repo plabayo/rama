@@ -1,7 +1,13 @@
-use rama_core::{Layer, Service};
-use rama_http::inspect::capture::{CaptureStore, HttpExchangeId, HttpUpgradeCaptureGuard};
+use std::num::NonZeroUsize;
 
-use crate::handshake::mitm::WebSocketBridge;
+use rama_core::{Layer, Service, extensions::ExtensionsRef};
+use rama_http::inspect::{
+    capture::{CaptureStore, HttpExchangeId, HttpUpgradeCaptureGuard},
+    control::HttpUpgradeContext,
+};
+use rama_utils::octets::kib;
+
+use crate::handshake::mitm::{WebSocketBridge, WebSocketRelayReadAhead};
 
 /// Bind an inspector exchange to the lifetime of the actual WebSocket relay.
 ///
@@ -41,8 +47,8 @@ pub struct CaptureWebSocketService<S> {
 impl<S, Ingress, Egress> Service<WebSocketBridge<Ingress, Egress>> for CaptureWebSocketService<S>
 where
     S: Service<WebSocketBridge<Ingress, Egress>>,
-    Ingress: rama_core::extensions::ExtensionsRef + Send + 'static,
-    Egress: rama_core::extensions::ExtensionsRef + Send + 'static,
+    Ingress: ExtensionsRef + Send + 'static,
+    Egress: ExtensionsRef + Send + 'static,
 {
     type Output = S::Output;
     type Error = S::Error;
@@ -54,16 +60,15 @@ where
         if let Some(context) = bridge
             .egress
             .extensions()
-            .get_ref::<rama_http::inspect::control::HttpUpgradeContext>()
+            .get_ref::<HttpUpgradeContext>()
             .cloned()
         {
             bridge.ingress.extensions().insert(context);
         }
         if self.store.is_some() {
-            let limits = crate::handshake::mitm::WebSocketRelayReadAhead {
-                max_messages: std::num::NonZeroUsize::MIN.saturating_add(15),
-                max_bytes: std::num::NonZeroUsize::MIN
-                    .saturating_add(rama_utils::octets::kib(256) - 1),
+            let limits = WebSocketRelayReadAhead {
+                max_messages: NonZeroUsize::MIN.saturating_add(15),
+                max_bytes: NonZeroUsize::MIN.saturating_add(kib(256) - 1),
             };
             bridge.ingress.extensions().insert(limits);
             bridge.egress.extensions().insert(limits);
@@ -77,28 +82,18 @@ where
             bridge.ingress.extensions().insert(exchange_id);
         }
 
-        let response_guard = bridge
+        let _response_guard = bridge
             .egress
             .extensions()
             .get_arc::<HttpUpgradeCaptureGuard>();
-        let fallback_guard = if response_guard.is_none() {
-            self.store
-                .as_ref()
-                .zip(exchange_id)
-                .map(|(store, exchange_id)| store.upgrade_guard(exchange_id.0))
-        } else {
-            None
-        };
-        let output = self.inner.serve(bridge).await;
-        if let Some((store, exchange_id)) = self.store.as_ref().zip(exchange_id) {
-            // Response extensions can have incidental owners beyond the
-            // upgraded streams. The relay future itself is the authoritative
-            // completion boundary once it starts, so finish eagerly here;
-            // guard Drop remains the pre-relay failure fallback.
-            store.finish_upgrade(exchange_id.0);
-        }
-        drop(response_guard);
-        drop(fallback_guard);
-        output
+        // Once the relay starts, its future owns completion independently of
+        // incidental response-extension owners. Drop also covers cancellation;
+        // the shared response guard still handles failures before relay startup.
+        let _relay_guard = self
+            .store
+            .as_ref()
+            .zip(exchange_id)
+            .map(|(store, exchange_id)| store.upgrade_guard(exchange_id.0));
+        self.inner.serve(bridge).await
     }
 }

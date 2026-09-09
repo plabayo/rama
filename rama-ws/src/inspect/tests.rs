@@ -14,11 +14,12 @@ use rama_core::{
     service::service_fn,
 };
 use rama_http::{
-    Body, Request, Response, StatusCode, Version,
+    Body, Method, Request, Response, StatusCode, Version,
     body::util::BodyExt,
+    header,
     inspect::capture::{
         CaptureConfig, CaptureFilter, CaptureHttpLayer, CaptureMetadata, CaptureObserver,
-        CaptureStore, ConnectionId, HttpExchangeId,
+        CaptureStore, ConnectionId, HttpExchangeId, HttpUpgradeCaptureGuard,
     },
 };
 use rama_inspect::{
@@ -28,6 +29,7 @@ use rama_inspect::{
         RecordId, Storage, StorageLimits,
     },
 };
+use rama_net::Protocol;
 use tokio::io::{AsyncRead, AsyncReadExt, ReadBuf};
 
 use super::*;
@@ -99,6 +101,50 @@ fn message(kind: WebSocketMessageKind, data: &'static [u8]) -> CapturedWebSocket
         kind,
         Bytes::from_static(data),
     )
+}
+
+#[test]
+fn handshake_capture_uses_the_shared_protocol_matcher() {
+    for (method, upgrade, connection, expected) in [
+        (Method::GET, "websocket", Some("upgrade"), true),
+        (Method::POST, "websocket", Some("upgrade"), false),
+        (Method::GET, "websocket", None, false),
+        (Method::GET, "websocket", Some("keep-alive"), false),
+        (
+            Method::GET,
+            "websocket",
+            Some("upgrade, invalid token"),
+            false,
+        ),
+        (
+            Method::GET,
+            "h2c, WebSocket",
+            Some("keep-alive, Upgrade"),
+            true,
+        ),
+        (Method::GET, "websocket/13", Some("upgrade"), false),
+    ] {
+        let request = Request::builder()
+            .method(method)
+            .uri("https://example.test/socket")
+            .header(header::UPGRADE, upgrade);
+        let request = if let Some(connection) = connection {
+            request.header(header::CONNECTION, connection)
+        } else {
+            request
+        };
+        let (parts, ()) = request.body(()).unwrap().into_parts();
+        let metadata = CaptureMetadata::default();
+        assert_eq!(
+            observe_handshake(&parts, &metadata, WebSocketLimits::default()),
+            expected,
+        );
+        assert_eq!(
+            metadata.exchange.get_ref::<Protocol>(),
+            expected.then_some(&Protocol::WSS),
+        );
+        assert_eq!(metadata.exchange.contains::<WebSocketLimits>(), expected);
+    }
 }
 
 #[tokio::test]
@@ -248,7 +294,9 @@ async fn only_successful_upgrades_hold_the_connection_open() {
 
 #[tokio::test]
 async fn relay_completion_and_cancellation_finish_the_upgrade() {
-    for cancel in [false, true] {
+    for (cancel, retain_response_guard) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
         let store = store(16, rama_utils::octets::kib_u64(1), 0);
         let response = handshake(&store, Version::HTTP_11, StatusCode::SWITCHING_PROTOCOLS).await;
         let (parts, body) = response.into_parts();
@@ -257,6 +305,14 @@ async fn relay_completion_and_cancellation_finish_the_upgrade() {
         let ingress = ServiceInput::new(());
         let egress = ServiceInput::new(());
         egress.extensions.insert(HttpExchangeId(1));
+        if retain_response_guard {
+            egress.extensions.insert_arc(
+                parts
+                    .extensions
+                    .get_arc::<HttpUpgradeCaptureGuard>()
+                    .unwrap(),
+            );
+        }
         let entered = Arc::new(tokio::sync::Notify::new());
         let notify = entered.clone();
         let service = CaptureWebSocketLayer::new(Some(store.clone())).layer(service_fn(
@@ -286,6 +342,8 @@ async fn relay_completion_and_cancellation_finish_the_upgrade() {
         } else {
             task.await.unwrap().unwrap();
         }
+        // Keep the original response parts alive: relay completion must not
+        // depend on the last shared owner of its extension guard going away.
         assert!(!store.details(1).await.unwrap().summary.active);
         drop(parts);
     }

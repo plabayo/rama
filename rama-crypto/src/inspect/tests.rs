@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use rama_core::Layer;
 use rama_inspect::storage::{FileStore, MemoryStore, StorageLimits};
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
@@ -57,6 +59,37 @@ async fn exercise(store: impl Service<CreateCollection, Output = Collection, Err
     let mut bytes = Vec::new();
     range.read_to_end(&mut bytes).await.unwrap();
     assert_eq!(bytes, b"place");
+
+    for (range, expected) in [
+        (9..20, b"nt".as_slice()),
+        (11..11, b""),
+        (20..30, b""),
+        (20..20, b""),
+    ] {
+        let mut reader = collection
+            .serve(ReadRecord {
+                id: next,
+                range: Some(range),
+            })
+            .await
+            .unwrap();
+        bytes.clear();
+        reader.read_to_end(&mut bytes).await.unwrap();
+        assert_eq!(bytes, expected);
+    }
+    match collection
+        .serve(ReadRecord {
+            id: next,
+            range: Some(Range { start: 2, end: 1 }),
+        })
+        .await
+    {
+        Ok(_) => panic!("reversed range accepted"),
+        Err(error) => assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::InvalidInput,
+        ),
+    }
 
     let mut tasks = Vec::new();
     for n in 0..32u8 {
@@ -232,6 +265,21 @@ async fn authenticated_prefix_does_not_claim_complete_record_integrity() {
     let mut bytes = Vec::new();
     prefix.read_to_end(&mut bytes).await.unwrap();
     assert_eq!(bytes, b"authe");
+    // A clean EOF clamps range bounds; a missing authenticated terminator must
+    // still fail while discarding the prefix of an out-of-bounds read.
+    match collection
+        .serve(ReadRecord {
+            id,
+            range: Some(100..200),
+        })
+        .await
+    {
+        Ok(_) => panic!("truncated ciphertext accepted as a clean EOF"),
+        Err(error) => assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::UnexpectedEof,
+        ),
+    }
     bytes.clear();
     collection
         .read(id)

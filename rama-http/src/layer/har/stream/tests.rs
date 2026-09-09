@@ -83,6 +83,93 @@ async fn streamed_entry_matches_serde_without_an_inspector() {
     );
 }
 
+async fn streamed_post_data(post: spec::PostData, body: &[u8]) -> spec::PostData {
+    let mut entry = entry();
+    entry.request.post_data = Some(post);
+    let stats = scan(body.reader()).await.unwrap();
+    let empty = b"".as_slice();
+    let empty_stats = scan(empty.reader()).await.unwrap();
+    let mut output = Vec::new();
+    write_entry(
+        &mut output,
+        &entry,
+        &body,
+        &stats,
+        &empty,
+        &empty_stats,
+        &(),
+    )
+    .await
+    .unwrap();
+    serde_json::from_slice::<spec::Entry>(&output)
+        .unwrap()
+        .request
+        .post_data
+        .unwrap()
+}
+
+#[tokio::test]
+async fn provided_post_parameters_preserve_their_typed_metadata() {
+    for mime in [
+        "multipart/form-data; boundary=upload",
+        "application/x-www-form-urlencoded",
+    ] {
+        for body in [b"".as_slice(), b"raw=body"] {
+            let post = spec::PostData {
+                mime_type: Some(mime.parse().unwrap()),
+                params: Some(vec![spec::PostParam {
+                    name: "upload".into(),
+                    value: Some("original".into()),
+                    file_name: Some("report.txt".into()),
+                    content_type: Some("text/plain".into()),
+                    comment: Some("captured parameter".into()),
+                }]),
+                text: None,
+                comment: None,
+            };
+            let params = streamed_post_data(post, body).await.params.unwrap();
+            assert_eq!(params.len(), 1);
+            assert_eq!(params[0].name, "upload");
+            assert_eq!(params[0].value.as_deref(), Some("original"));
+            assert_eq!(params[0].file_name.as_deref(), Some("report.txt"));
+            assert_eq!(params[0].content_type.as_deref(), Some("text/plain"));
+            assert_eq!(params[0].comment.as_deref(), Some("captured parameter"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn only_urlencoded_bodies_derive_missing_post_parameters() {
+    for mime in [
+        "application/x-www-form-urlencoded",
+        "multipart/form-data; boundary=upload",
+        "text/x-www-form-urlencoded",
+    ] {
+        for params in [None, Some(Vec::new())] {
+            let had_params = params.is_some();
+            let post = spec::PostData {
+                mime_type: Some(mime.parse().unwrap()),
+                params,
+                text: None,
+                comment: None,
+            };
+            let post = streamed_post_data(post, b"name=hello+world&name=again").await;
+            assert_eq!(post.text.as_deref(), Some("name=hello+world&name=again"));
+            if mime == "application/x-www-form-urlencoded" {
+                let params = post.params.unwrap();
+                assert_eq!(params.len(), 2);
+                assert_eq!(params[0].name, "name");
+                assert_eq!(params[0].value.as_deref(), Some("hello world"));
+                assert_eq!(params[1].name, "name");
+                assert_eq!(params[1].value.as_deref(), Some("again"));
+            } else {
+                assert_eq!(post.params.is_some(), had_params);
+                assert!(post.params.is_none_or(|params| params.is_empty()));
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn generated_large_body_streams_without_an_owned_payload() {
     let mut entry = entry();

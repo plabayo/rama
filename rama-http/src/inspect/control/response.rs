@@ -47,20 +47,13 @@ impl ResponseSpec {
             return Err(BoxError::from_static_str("response body is too large"));
         }
         let headers = validate_headers(&self.headers)?;
-        if [
-            "transfer-encoding",
-            "content-length",
-            "connection",
-            "trailer",
-            "upgrade",
-            "proxy-authenticate",
-            "proxy-authorization",
-            "proxy-connection",
-            "keep-alive",
-            "te",
-        ]
-        .iter()
-        .any(|name| headers.contains_key(*name))
+        if hop_by_hop_header_names(headers)
+            .chain([
+                header::CONTENT_LENGTH,
+                header::PROXY_AUTHENTICATE,
+                header::PROXY_AUTHORIZATION,
+            ])
+            .any(|name| headers.contains_key(name))
         {
             return Err(BoxError::from_static_str(
                 "Rama manages local-response framing and proxy headers",
@@ -108,11 +101,7 @@ impl ResponseSpec {
                 .insert(header::CONTENT_LENGTH, spec.body.len().into());
         }
         // Unread request bodies cannot be reused as the next HTTP/1 request.
-        if matches!(
-            message.direction,
-            crate::inspect::control::Direction::Ingress
-        ) && message.version() != Version::HTTP_2
-        {
+        if matches!(message.direction, Direction::Ingress) && message.version() != Version::HTTP_2 {
             response
                 .headers_mut()
                 .insert(header::CONNECTION, crate::HeaderValue::from_static("close"));

@@ -4,6 +4,8 @@ use rama_core::{
     stream::io::ReaderStream,
 };
 
+use rama_inspect::Direction;
+
 use super::*;
 
 impl CaptureStore {
@@ -112,7 +114,7 @@ impl CaptureStore {
                 } => head = Some((method, url, version, headers)),
                 StoredRecord::Interception {
                     kind: None,
-                    direction: crate::inspect::control::Direction::Ingress,
+                    direction: Direction::Ingress,
                     forwarded_headers: Some(headers),
                     ..
                 } => {
