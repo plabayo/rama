@@ -65,6 +65,47 @@ fn release_one(pair: &mut Pair, held: &mut VecDeque<Inbound>, from: Option<Socke
     pair.client_sent.len() > before
 }
 
+/// Read a QUIC variable-length integer, answering its value and its width.
+fn varint(bytes: &[u8], at: usize) -> Option<(u64, usize)> {
+    let first = *bytes.get(at)?;
+    let width = 1usize << (first >> 6);
+    let mut value = u64::from(first & 0x3f);
+    for step in 1..width {
+        value = (value << 8) | u64::from(*bytes.get(at + step)?);
+    }
+    Some((value, width))
+}
+
+/// How many packets a datagram carries, walking the long headers by the length each declares. A
+/// short header runs to the end of the datagram, so it is the last one.
+fn packets_in(datagram: &[u8]) -> usize {
+    let mut at = 0usize;
+    let mut packets = 0usize;
+    while at < datagram.len() {
+        packets += 1;
+        let first = datagram[at];
+        if first & 0x80 == 0 {
+            break;
+        }
+        let kind = (first & 0x30) >> 4;
+        let mut cursor = at + 1 + 4;
+        let dcid_len = usize::from(datagram[cursor]);
+        cursor += 1 + dcid_len;
+        let scid_len = usize::from(datagram[cursor]);
+        cursor += 1 + scid_len;
+        if kind == 0 {
+            let (token, width) = varint(datagram, cursor).expect("a token length");
+            cursor += width + usize::try_from(token).expect("a token that fits");
+        }
+        if kind == 3 {
+            break;
+        }
+        let (length, width) = varint(datagram, cursor).expect("a payload length");
+        at = cursor + width + usize::try_from(length).expect("a payload that fits");
+    }
+    packets
+}
+
 /// An address no connection in these tests is on, in the family the harness uses.
 fn elsewhere() -> SocketAddr {
     SocketAddr::new(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 9).into(), 4433)
@@ -252,10 +293,15 @@ fn the_close_deadline_is_fixed_and_expires() {
         .poll_timeout()
         .expect("a closed connection has a deadline to drain on");
 
+    // Time moves on between them, so a deadline reset to now plus three PTO on each input would
+    // show up as a later deadline rather than the same one.
     for _ in 0..4 {
+        pair.time += Duration::from_millis(1);
+        let now = pair.time;
+        pair.client_conn_mut(client_ch).handle_timeout(now);
         release_one(&mut pair, &mut held, None);
         pair.client.connections.get_mut(&client_ch).unwrap().close(
-            pair.time,
+            now,
             VarInt(7),
             Bytes::from_static(b"again"),
         );
@@ -396,6 +442,23 @@ fn a_protocol_error_close_answers_on_the_pass_that_decided_it() {
         answered_on_that_pass,
         "and answered on the pass that decided it, with no further input"
     );
+
+    // The peer receives that close and reports the same reason.
+    pair.drive_server();
+    let server_ch = pair.server.assert_accept();
+    let mut told = None;
+    while let Some(event) = pair.server_conn_mut(server_ch).poll() {
+        if let Event::ConnectionLost { reason } = event {
+            told = Some(reason);
+            break;
+        }
+    }
+    match told {
+        Some(ConnectionError::ConnectionClosed(ref close))
+            if close.error_code
+                == TransportErrorCode::crypto(AlertDescription::UnknownCA.into()) => {}
+        other => panic!("the peer was told why, not {other:?}"),
+    }
 }
 
 /// The keys' budget still governs. A closing connection whose 1-RTT keys have reached their
@@ -411,6 +474,7 @@ fn an_exhausted_key_budget_stops_the_answers() {
     pair.client_conn_mut(client_ch)
         .set_packets_sent_with_keys(limit);
 
+    let gap = pair.client_conn_mut(client_ch).close_response_gap();
     for _ in 0..8 {
         release_one(&mut pair, &mut held, None);
     }
@@ -419,17 +483,21 @@ fn an_exhausted_key_budget_stops_the_answers() {
         limit,
         "no further packet was encrypted with the spent keys"
     );
+    assert_eq!(
+        pair.client_conn_mut(client_ch).close_response_gap(),
+        gap,
+        "and no answer was counted for a pass that encoded none"
+    );
     assert!(
         pair.client_conn_mut(client_ch).is_drained(),
         "the connection died on the limit rather than answering past it"
     );
 }
 
-/// A close made before the handshake is confirmed goes into every space that has keys, which
-/// RFC 9000 §10.2.3 asks for, and still counts as one answer: the gap doubles once, not once
-/// per space.
+/// A close made before the handshake is confirmed is coalesced into one datagram, which RFC
+/// 9000 §10.2.3 asks for, and counts as one answer: the gap doubles once, not once per packet.
 #[test]
-fn a_close_across_two_spaces_counts_once() {
+fn a_coalesced_close_counts_once() {
     let _guard = subscribe();
     let mut pair = Pair::default();
     let client_ch = pair.begin_connect(client_config());
@@ -459,36 +527,65 @@ fn a_close_across_two_spaces_counts_once() {
     let before = pair.client_sent.len();
     pair.drive_client();
     assert!(pair.client_sent.len() > before, "the close went out");
+
+    // What went out, as it sits on the wire: more than one packet in the datagram, the first of
+    // them a long header, which is the coalescing RFC 9000 §10.2.3 asks for.
+    let datagram = pair
+        .server
+        .inbound
+        .back()
+        .expect("the close reached the peer's queue");
+    assert!(
+        datagram.packet[0] & 0x80 != 0,
+        "the first packet has a long header"
+    );
+    assert!(
+        packets_in(&datagram.packet) > 1,
+        "and the datagram carries more than one packet"
+    );
+
     assert_eq!(
         pair.client_conn_mut(client_ch).close_response_gap(),
         2,
-        "one logical answer, however many spaces carried it"
+        "one logical answer, however many packets carried it"
     );
 }
 
-/// A pass that encodes no close leaves the gap and the pending close alone. Here the keys are
-/// spent, so nothing can be encrypted, and the counter must not move.
+/// A close a server has not sent yet stays pending when a packet arrives from an address it has
+/// not validated. The server allows migration, so the packet is not discarded before the closing
+/// state sees it.
 #[test]
-fn a_pass_that_encodes_nothing_leaves_the_gap_alone() {
+fn a_pending_server_close_survives_input_from_elsewhere() {
     let _guard = subscribe();
     let mut pair = Pair::default();
     let (client_ch, server_ch) = pair.connect();
-    let mut held = gather_from_the_peer(&mut pair, server_ch, 4);
 
-    pair.client.connections.get_mut(&client_ch).unwrap().close(
+    pair.client_conn_mut(client_ch).ping();
+    pair.drive_client();
+    let mut held = mem::take(&mut pair.server.inbound);
+    assert_eq!(held.len(), 1, "the client put a datagram on the wire");
+
+    // Closed, and not yet driven, so the close is still waiting to be encoded.
+    pair.server.connections.get_mut(&server_ch).unwrap().close(
         pair.time,
         VarInt(42),
         Bytes::from_static(b"done"),
     );
-    let limit = pair.client_conn_mut(client_ch).confidentiality_limit();
-    pair.client_conn_mut(client_ch)
-        .set_packets_sent_with_keys(limit);
 
-    let before = pair.client_conn_mut(client_ch).close_response_gap();
-    release_one(&mut pair, &mut held, None);
-    assert_eq!(
-        pair.client_conn_mut(client_ch).close_response_gap(),
-        before,
-        "a pass that encoded no close did not spend an answer"
+    let datagram = held.pop_front().expect("a datagram was held for this");
+    let before = pair.server_sent.len();
+    hand_to_the_server(&mut pair, server_ch, datagram, elsewhere());
+    pair.drive_server();
+    assert!(
+        pair.server_sent.len() > before,
+        "the close that was waiting was not cleared by input from elsewhere"
     );
+
+    pair.drive_client();
+    match pair.client_conn_mut(client_ch).poll() {
+        Some(Event::ConnectionLost {
+            reason: ConnectionError::ApplicationClosed(ApplicationClose { error_code, .. }),
+        }) if error_code == VarInt(42) => {}
+        other => panic!("the peer received the close, not {other:?}"),
+    }
 }
