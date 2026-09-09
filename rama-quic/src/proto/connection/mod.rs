@@ -4,6 +4,7 @@ use std::{
     convert::TryFrom,
     fmt, io, mem,
     net::{IpAddr, SocketAddr},
+    num::NonZeroU32,
     ops::Range,
     sync::Arc,
 };
@@ -369,6 +370,8 @@ pub(crate) struct Connection {
     /// Responses to PATH_CHALLENGE frames
     path_responses: PathResponses,
     close: bool,
+    /// How often the closing state answers the peer.
+    close_responses: CloseResponses,
 
     //
     // ACK frequency
@@ -509,6 +512,7 @@ impl Connection {
 
             path_responses: PathResponses::default(),
             close: false,
+            close_responses: CloseResponses::new(),
 
             ack_frequency: AckFrequencyState::new(get_max_ack_delay(
                 &TransportParameters::default(),
@@ -687,6 +691,10 @@ impl Connection {
                 space == SpaceId::Data && self.peer_supports_ack_frequency();
             self.spaces[space].maybe_queue_probe(request_immediate_ack, &self.streams);
         }
+
+        // Whether a close frame actually made it into a packet on this pass, which is what
+        // counts as one response.
+        let mut encoded_close = false;
 
         // Check whether we need to send a close message
         let close = match self.state {
@@ -1025,6 +1033,7 @@ impl Connection {
                     "ACKs should leave space for ConnectionClose"
                 );
                 if buf.len() + frame::ConnectionClose::SIZE_BOUND < builder.max_size {
+                    encoded_close = true;
                     let max_frame_size = builder.max_size - buf.len();
                     match self.state {
                         State::Closed(state::Closed { ref reason }) => {
@@ -1055,8 +1064,6 @@ impl Connection {
                     }
                 }
                 if space_id == self.highest_space {
-                    // Don't send another close packet
-                    self.close = false;
                     // `CONNECTION_CLOSE` is the final packet
                     break;
                 } else {
@@ -1178,6 +1185,13 @@ impl Connection {
 
         if buf.is_empty() {
             return None;
+        }
+
+        // One logical close response, whichever spaces carried it. A pass that encoded none
+        // leaves the close pending for the next one.
+        if encoded_close {
+            self.close = false;
+            self.close_responses.answered();
         }
 
         trace!("sending {} bytes in {} datagrams", buf.len(), num_datagrams);
@@ -2900,9 +2914,15 @@ impl Connection {
             self.timers.stop(Timer::Close);
         }
 
-        // Transmit CONNECTION_CLOSE if necessary
-        if let State::Closed(_) = self.state {
-            self.close = remote == self.path.remote;
+        // Answer with CONNECTION_CLOSE if this packet has earned one. A close already waiting
+        // to be sent stays waiting, and only packets on this connection's own path count
+        // towards the next one.
+        if let State::Closed(_) = self.state
+            && remote == self.path.remote
+            && !self.close
+            && self.close_responses.arrived()
+        {
+            self.close = true;
         }
     }
 
@@ -4322,6 +4342,22 @@ impl Connection {
         self.spaces[SpaceId::Data].sent_with_keys = sent;
     }
 
+    /// Tests: how much input the next close response costs, which doubles with each one sent.
+    #[cfg(test)]
+    pub(crate) fn close_response_gap(&self) -> u32 {
+        self.close_responses.gap.get()
+    }
+
+    /// Tests: how many packet number spaces a close would be written into, which is more than
+    /// one before the handshake is confirmed.
+    #[cfg(test)]
+    pub(crate) fn spaces_with_close_keys(&self) -> usize {
+        SpaceId::iter()
+            .take_while(|&space| space <= self.highest_space)
+            .filter(|&space| self.spaces[space].crypto.is_some())
+            .count()
+    }
+
     /// Tests: how many packets the 1-RTT keys in use have sent.
     #[cfg(test)]
     pub(crate) fn packets_sent_with_keys(&self) -> u64 {
@@ -5584,6 +5620,46 @@ const MAX_HANDSHAKE_OR_0RTT_HEADER_SIZE: usize =
 /// Chosen arbitrarily, intended to be large enough to prevent spurious connection loss.
 const KEY_UPDATE_MARGIN: u64 = 10_000;
 
+/// How often a connection in the closing state answers what the peer keeps sending.
+///
+/// RFC 9000 §10.2.1 asks an endpoint in that state to answer progressively less often, so each
+/// answer doubles the input the next one needs. The unit is a received packet, which is what
+/// the RFC suggests counting; a coalesced datagram therefore carries several. `gap` is a
+/// `NonZeroU32`, so a response always costs at least one packet.
+#[derive(Debug, Clone, Copy)]
+struct CloseResponses {
+    gap: NonZeroU32,
+    seen: u32,
+}
+
+impl CloseResponses {
+    const fn new() -> Self {
+        Self {
+            gap: NonZeroU32::MIN,
+            seen: 0,
+        }
+    }
+
+    /// Count one packet attributed to this connection's own path. Answers whether it arms the
+    /// next response.
+    fn arrived(&mut self) -> bool {
+        self.seen = self.seen.saturating_add(1);
+        if self.seen >= self.gap.get() {
+            self.seen = 0;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A response was encoded, so the one after it costs twice as much. Doubling a non-zero
+    /// value keeps it non-zero, and saturating keeps it finite.
+    fn answered(&mut self) {
+        self.gap = self.gap.saturating_mul(NonZeroU32::MIN.saturating_add(1));
+        self.seen = 0;
+    }
+}
+
 #[derive(Default)]
 struct SentFrames {
     retransmits: ThinRetransmits,
@@ -5627,6 +5703,41 @@ fn persistent_congestion_period(pto: Duration, threshold: u32) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_close_response_costs_twice_the_last() {
+        // From a fresh counter, with an answer taken every time one is earned. The connection
+        // arms its first close itself, so its own sequence starts one answer further on; that
+        // is asserted at the connection level.
+        let mut responses = CloseResponses::new();
+        let mut earned_at = Vec::new();
+        for input in 1..=16u32 {
+            if responses.arrived() {
+                earned_at.push(input);
+                responses.answered();
+            }
+        }
+        assert_eq!(earned_at, vec![1, 3, 7, 15]);
+    }
+
+    #[test]
+    fn the_gap_between_close_responses_saturates() {
+        let mut responses = CloseResponses::new();
+        for _ in 0..64 {
+            responses.answered();
+        }
+        assert_eq!(
+            responses.gap.get(),
+            u32::MAX,
+            "it stops rather than wrapping"
+        );
+        // The count towards it saturates too, so a long run of input cannot wrap into an answer
+        // it did not earn.
+        responses.seen = u32::MAX - 2;
+        assert!(!responses.arrived(), "one short of the gap is still short");
+        assert!(responses.arrived(), "and the next one meets it exactly");
+        assert_eq!(responses.seen, 0, "which starts the count again");
+    }
 
     #[test]
     fn persistent_congestion_period_saturates() {
