@@ -36,6 +36,38 @@ use crate::proto::{
     StreamEvent, StreamId, congestion::Controller,
 };
 
+/// Tests: one descriptor this connection offered to its sender, and what became of it.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Descriptor {
+    pub(crate) id: u64,
+    pub(crate) size: usize,
+    pub(crate) segment_size: Option<usize>,
+    pub(crate) destination: SocketAddr,
+    pub(crate) cid_used: Option<u64>,
+    pub(crate) outcome: Outcome,
+}
+
+/// Tests: what became of a descriptor that was offered.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    /// Taken in full.
+    Sent,
+    /// The sender was not ready. The same descriptor is retained and offered again.
+    Pending,
+    /// Held because the route its identifier needs is not installed.
+    Awaiting,
+    /// Given up: its identifier may never be sent again.
+    Obsolete,
+    /// The sender refused it.
+    Failed,
+}
+
+/// Tests: how many descriptor records are kept.
+#[cfg(test)]
+const DESCRIPTORS: usize = 64;
+
 /// In-progress connection attempt future
 #[derive(Debug)]
 pub(crate) struct Connecting {
@@ -667,6 +699,12 @@ impl Connection {
         Some((bytes, transmit.destination, transmit.cid_used))
     }
 
+    /// Tests: the descriptors this connection offered to its sender, oldest first.
+    #[cfg(test)]
+    pub(crate) fn descriptors(&self) -> Vec<Descriptor> {
+        self.0.state.lock().descriptors.iter().copied().collect()
+    }
+
     /// Tests: how many datagrams were given up because their identifier may never be sent again.
     /// A datagram merely waiting for its route is not one of them.
     #[cfg(test)]
@@ -1206,6 +1244,8 @@ impl ConnectionRef {
                 send_buffer: Vec::new(),
                 buffered_transmit: None,
                 transmits_offered: 0,
+                #[cfg(test)]
+                descriptors: std::collections::VecDeque::new(),
                 endpoint_drained: false,
                 pending_rebind: None,
                 released_senders: Vec::new(),
@@ -1404,6 +1444,9 @@ pub(crate) struct State {
     buffered_transmit: Option<(crate::driver::udp::TransmitId, crate::proto::Transmit)>,
     /// Names each descriptor handed to the sender.
     transmits_offered: u64,
+    /// Tests: the last [`DESCRIPTORS`] descriptors offered, oldest first.
+    #[cfg(test)]
+    descriptors: std::collections::VecDeque<Descriptor>,
     endpoint_drained: bool,
     receive_queue: PacketBudget,
     failure_log: FailureLog,
@@ -1456,6 +1499,27 @@ impl State {
             );
         }
         Poll::Ready(Ok(()))
+    }
+
+    /// Tests: record what became of a descriptor that was offered.
+    #[cfg(test)]
+    fn note_descriptor(
+        &mut self,
+        id: crate::driver::udp::TransmitId,
+        transmit: &crate::proto::Transmit,
+        outcome: Outcome,
+    ) {
+        while self.descriptors.len() >= DESCRIPTORS {
+            self.descriptors.pop_front();
+        }
+        self.descriptors.push_back(Descriptor {
+            id: id.0,
+            size: transmit.size,
+            segment_size: transmit.segment_size,
+            destination: transmit.destination,
+            cid_used: transmit.cid_used,
+            outcome,
+        });
     }
 
     fn drive_transmit(&mut self, cx: &mut Context) -> io::Result<bool> {
@@ -1528,6 +1592,8 @@ impl State {
                     // confirmation wakes this connection, so no polling loop is needed. Receiving,
                     // timers and shutdown continue meanwhile.
                     SendPermit::AwaitingInstallation => {
+                        #[cfg(test)]
+                        self.note_descriptor(id, &t, Outcome::Awaiting);
                         self.buffered_transmit = Some((id, t));
                         return Ok(false);
                     }
@@ -1539,6 +1605,8 @@ impl State {
                         if socket.accepted_any(id) {
                             self.inner.cid_sent(seq, t.destination);
                         }
+                        #[cfg(test)]
+                        self.note_descriptor(id, &t, Outcome::Obsolete);
                         self.stale_transmits += 1;
                         if transmits >= MAX_TRANSMIT_DATAGRAMS {
                             return Ok(true);
@@ -1558,10 +1626,15 @@ impl State {
             }
             match outcome {
                 Poll::Pending => {
+                    #[cfg(test)]
+                    self.note_descriptor(id, &t, Outcome::Pending);
                     self.buffered_transmit = Some((id, t));
                     return Ok(false);
                 }
-                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Ok(())) => {
+                    #[cfg(test)]
+                    self.note_descriptor(id, &t, Outcome::Sent);
+                }
                 Poll::Ready(Err(error)) => match error.class {
                     // The engine already counts this datagram as in flight, so loss detection
                     // and MTU discovery recover from it like from any dropped packet.
@@ -1572,9 +1645,15 @@ impl State {
                             self.send_failures += 1;
                         }
                         self.failure_log.record(now, "QUIC transmit", &error);
+                        #[cfg(test)]
+                        self.note_descriptor(id, &t, Outcome::Failed);
                     }
                     // An invalid descriptor or an unusable socket cannot be retried.
-                    SendFailure::Descriptor | SendFailure::Socket => return Err(error.error),
+                    SendFailure::Descriptor | SendFailure::Socket => {
+                        #[cfg(test)]
+                        self.note_descriptor(id, &t, Outcome::Failed);
+                        return Err(error.error);
+                    }
                 },
             }
 

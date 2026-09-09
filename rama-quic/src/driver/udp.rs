@@ -920,7 +920,7 @@ mod tests {
             1,
             "only the first segment was taken"
         );
-        assert_eq!(probe.lock().accepted[0].0, b"aa", "and those are its bytes");
+        assert_eq!(probe.lock().accepted[0].0, b"aa");
 
         // The same sender, a new descriptor shorter than the prefix it had accepted: it goes out
         // whole, which is what a retained offset used to make impossible.
@@ -938,7 +938,7 @@ mod tests {
         assert_eq!(probe.accepted[1].0, b"z", "the whole of the new descriptor");
         assert!(
             sender.accepted_any(second),
-            "and the new descriptor's own acceptance is recorded against its own id"
+            "the new descriptor's acceptance is recorded against its own id"
         );
     }
 
@@ -953,8 +953,7 @@ mod tests {
         let segments = SEND_WORK_LIMIT + 1;
         let payload: Vec<u8> = (0..segments).map(|i| i as u8).collect();
         let (mut sender, probe) = fixture((0..segments).map(|_| Action::Sent), caps);
-        // A waker that counts, so the yield can be shown to schedule another poll rather than
-        // leaving the caller to guess.
+        // A counting waker, so the yield can be shown to schedule another poll.
         let waker = Arc::new(WakeCount::default());
         let counted = std::task::Waker::from(waker.clone());
         let mut cx = Context::from_waker(&counted);

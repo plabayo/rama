@@ -6579,6 +6579,137 @@ fn a_fallback_survives_repeated_unvalidated_moves_and_keeps_its_route() {
     );
 }
 
+/// Two connections on one endpoint each receive only their own arrivals and keep their own
+/// deadline. A single shared deadline, or draining every handle's arrivals into whichever
+/// connection is visited first, is not observable with one connection per endpoint.
+#[test]
+fn two_connections_on_one_endpoint_keep_their_own_arrivals_and_deadlines() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client_a, server_a) = pair.connect();
+    let (client_b, server_b) = pair.connect();
+    pair.drive();
+    assert_ne!(client_a, client_b);
+    assert_ne!(server_a, server_b);
+
+    // Distinguishable payloads in both directions at once.
+    const TO_A: &[u8] = b"for the first";
+    const TO_B: &[u8] = b"for the second";
+    let up_a = pair.client_streams(client_a).open(Dir::Uni).unwrap();
+    pair.client_send(client_a, up_a).write(TO_A).unwrap();
+    pair.client_send(client_a, up_a).finish().unwrap();
+    let up_b = pair.client_streams(client_b).open(Dir::Uni).unwrap();
+    pair.client_send(client_b, up_b).write(TO_B).unwrap();
+    pair.client_send(client_b, up_b).finish().unwrap();
+    drive_settled(&mut pair);
+
+    // Each server connection sees its own bytes, and neither is closed by the other's traffic.
+    for (ch, stream, expected) in [(server_a, up_a, TO_A), (server_b, up_b, TO_B)] {
+        assert!(saw_uni_stream(pair.server_conn_mut(ch)));
+        let mut recv = pair.server_recv(ch, stream);
+        let mut chunks = recv.read(false).unwrap();
+        match chunks.next(usize::MAX) {
+            Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == expected => {}
+            other => panic!("connection {ch:?} received {other:?}"),
+        }
+        assert!(matches!(chunks.next(usize::MAX), Ok(None)));
+        let _ = chunks.finalize();
+    }
+    assert!(!pair.server_conn_mut(server_a).is_closed());
+    assert!(!pair.server_conn_mut(server_b).is_closed());
+
+    // They hold different identifiers, so neither could have taken the other's packets.
+    assert_ne!(
+        pair.server_conn_mut(server_a).active_rem_cid(),
+        pair.server_conn_mut(server_b).active_rem_cid()
+    );
+
+    // Each keeps its own deadline: closing one leaves the other's timer alone and running.
+    let now = pair.time;
+    pair.server_conn_mut(server_a).close(
+        now,
+        crate::proto::VarInt::from_u32(0),
+        rama_core::bytes::Bytes::new(),
+    );
+    drive_settled(&mut pair);
+    assert!(pair.server_conn_mut(server_a).is_closed());
+    assert!(
+        !pair.server_conn_mut(server_b).is_closed(),
+        "closing one connection did not disturb the other"
+    );
+    // The one still open keeps working.
+    let after = pair.server_streams(server_b).open(Dir::Uni).unwrap();
+    pair.server_send(server_b, after)
+        .write(b"still here")
+        .unwrap();
+    drive_settled(&mut pair);
+    assert!(saw_uni_stream(pair.client_conn_mut(client_b)));
+}
+
+/// The endpoint answers a route it cannot install with a refusal rather than an acknowledgement,
+/// and its routing index gains nothing for the refused route. The engine cannot fill this table on
+/// its own, so the events are handed to the endpoint directly.
+#[test]
+fn an_endpoint_with_no_room_refuses_the_route_and_indexes_nothing() {
+    use crate::proto::shared::{ConnectionEventInner, EndpointEvent, EndpointEventInner};
+
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client_ch, _server_ch) = pair.connect();
+    pair.drive();
+
+    let slots =
+        crate::proto::cid_queue::CidQueue::PRESENT * crate::proto::cid_queue::RemCid::REMOTES;
+    // The handshake already installed a route for the identifier it used.
+    let held_before = pair.client.endpoint.reset_route_count();
+    assert!(held_before > 0 && held_before < slots);
+    let mut installed = 0;
+    let mut refused = 0;
+    // One address per association, so every one is a distinct route.
+    for step in 0..slots + 4 {
+        let remote = SocketAddr::new(
+            Ipv4Addr::new(127, 1, (step / 250) as u8, (step % 250) as u8).into(),
+            4433,
+        );
+        let token = TestResetToken::from([step as u8; crate::proto::RESET_TOKEN_SIZE]);
+        let answer = pair.client.endpoint.handle_event(
+            client_ch,
+            EndpointEvent(EndpointEventInner::ResetTokenUsed(
+                remote,
+                step as u64,
+                token,
+                step as u64,
+            )),
+        );
+        match answer.map(|event| event.0) {
+            Some(ConnectionEventInner::ResetRouteInstalled(at, seq, generation)) => {
+                assert_eq!((at, seq, generation), (remote, step as u64, step as u64));
+                installed += 1;
+            }
+            Some(ConnectionEventInner::ResetRouteRefused(at, seq, generation)) => {
+                assert_eq!((at, seq, generation), (remote, step as u64, step as u64));
+                refused += 1;
+            }
+            other => panic!("step {step}: the endpoint answered {other:?}"),
+        }
+    }
+    assert_eq!(
+        installed + held_before,
+        slots,
+        "every remaining slot was filled and acknowledged"
+    );
+    assert_eq!(
+        refused,
+        4 + held_before,
+        "and every route beyond the table's capacity was refused"
+    );
+    assert_eq!(
+        pair.client.endpoint.reset_route_count(),
+        slots,
+        "the routing index holds the installed routes and nothing for the refused ones"
+    );
+}
+
 /// A stateless reset datagram carrying the token `key` derives for `cid`.
 fn stateless_reset_for(key: &hmac::Key, cid: ConnectionId) -> Vec<u8> {
     let mut reset = vec![0x40; 1];

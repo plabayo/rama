@@ -343,7 +343,9 @@ pub(super) struct TestEndpoint {
     pub(super) endpoint: Endpoint,
     pub(super) addr: SocketAddr,
     socket: Option<UdpSocket>,
-    timeout: Option<Instant>,
+    /// Each connection's own next deadline. One shared cell would let one connection's timer fire
+    /// for another, and would overwrite one deadline with another's.
+    timeouts: HashMap<ConnectionHandle, Instant>,
     pub(super) outbound: VecDeque<(Transmit, Bytes)>,
     delayed: VecDeque<(Transmit, Bytes)>,
     pub(super) inbound: VecDeque<Inbound>,
@@ -431,7 +433,7 @@ impl TestEndpoint {
             endpoint,
             addr,
             socket,
-            timeout: None,
+            timeouts: HashMap::default(),
             outbound: VecDeque::new(),
             delayed: VecDeque::new(),
             inbound: VecDeque::new(),
@@ -535,9 +537,11 @@ impl TestEndpoint {
             // release of a displaced route can never be reordered behind the installation that
             // displaced it.
             let mut endpoint_events: Vec<(ConnectionHandle, EndpointEvent)> = vec![];
+            self.timeouts
+                .retain(|ch, _| self.connections.contains_key(ch));
             for (ch, conn) in self.connections.iter_mut() {
-                if self.timeout.is_some_and(|x| x <= now) {
-                    self.timeout = None;
+                if self.timeouts.get(ch).is_some_and(|&at| at <= now) {
+                    self.timeouts.remove(ch);
                     conn.handle_timeout(now);
                 }
                 // Only this connection's events: draining every handle's here would hand one
@@ -615,7 +619,14 @@ impl TestEndpoint {
                         conn.cid_sent(seq, destination);
                     }
                 }
-                self.timeout = conn.poll_timeout();
+                match conn.poll_timeout() {
+                    Some(at) => {
+                        self.timeouts.insert(*ch, at);
+                    }
+                    None => {
+                        self.timeouts.remove(ch);
+                    }
+                }
                 while let Some(event) = conn.poll_endpoint_events() {
                     endpoint_events.push((*ch, event));
                 }
@@ -670,7 +681,15 @@ impl TestEndpoint {
 
     pub(super) fn next_wakeup(&self) -> Option<Instant> {
         let next_inbound = self.inbound.front().map(|x| x.at);
-        min_opt(self.timeout, next_inbound)
+        // A connection removed from the map takes its deadline with it; a stale one would keep
+        // being reported as the next wakeup for ever.
+        let next_timeout = self
+            .timeouts
+            .iter()
+            .filter(|(ch, _)| self.connections.contains_key(ch))
+            .map(|(_, at)| *at)
+            .min();
+        min_opt(next_timeout, next_inbound)
     }
 
     pub(super) fn is_idle(&self) -> bool {

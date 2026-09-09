@@ -511,8 +511,14 @@ struct WakeFlag {
 
 impl WakeFlag {
     async fn fired(&self) {
-        while !self.woken.load(Ordering::SeqCst) {
-            self.notify.notified().await;
+        loop {
+            // Register before reading the flag, and use a notification that keeps a permit, so a
+            // wake between the two is not lost.
+            let notified = self.notify.notified();
+            if self.woken.load(Ordering::SeqCst) {
+                return;
+            }
+            notified.await;
         }
     }
 }
@@ -524,7 +530,7 @@ impl std::task::Wake for WakeFlag {
 
     fn wake_by_ref(self: &Arc<Self>) {
         self.woken.store(true, Ordering::SeqCst);
-        self.notify.notify_waiters();
+        self.notify.notify_one();
     }
 }
 
@@ -2833,88 +2839,7 @@ fn drained_incoming_container_gives_back_its_burst_capacity() {
 /// The shared spawn path is the only way driver tasks are created, so an attached dial9
 /// recorder sees them; without a recorder the same path stays a plain Tokio spawn.
 #[cfg(feature = "dial9")]
-mod dial9_tests {
-    use super::*;
-    use rama_core::rt::OwnedRuntime;
-    use rama_core::telemetry::dial9::{
-        Dial9Handle, Dial9HandleTokioExt as _, DiskBuffer, TokioAttachOptions, recorder_or_disabled,
-    };
-
-    /// Both tests read the process-wide driver observation, so they never overlap.
-    fn observation_slot() -> parking_lot::MutexGuard<'static, ()> {
-        static SLOT: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
-        SLOT.lock()
-    }
-
-    async fn handshake_and_shutdown() {
-        let (client_config, server_config) = configs();
-        let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
-        let client = endpoint(None, Executor::new(), Duration::from_secs(1));
-        let connecting = client
-            .connect_with(client_config, server.local_addr().unwrap(), "localhost")
-            .unwrap();
-        let (client_conn, server_conn) = tokio::time::timeout(Duration::from_secs(5), async {
-            tokio::join!(connecting, async { server.accept().await.unwrap().await })
-        })
-        .await
-        .unwrap();
-        client_conn.unwrap();
-        server_conn.unwrap();
-        assert_eq!(
-            tokio::join!(client.shutdown(), server.shutdown()),
-            (ShutdownOutcome::Drained, ShutdownOutcome::Drained)
-        );
-    }
-
-    #[tokio::test]
-    async fn without_a_recorder_the_drivers_run_with_a_disabled_handle() {
-        let _slot = observation_slot();
-        assert!(!Dial9Handle::current().is_enabled());
-        crate::driver::connection::DRIVER_POLLED_WITH_DIAL9.store(false, Ordering::Relaxed);
-        handshake_and_shutdown().await;
-        assert!(
-            !crate::driver::connection::DRIVER_POLLED_WITH_DIAL9.load(Ordering::Relaxed),
-            "no recorder is attached, so drivers must not see an enabled session"
-        );
-    }
-
-    #[test]
-    fn driver_tasks_run_inside_an_attached_dial9_session() {
-        let _slot = observation_slot();
-        let temp_dir = rama_utils::fs::tempdir().unwrap();
-        let writer = DiskBuffer::builder()
-            .base_path(temp_dir.path())
-            .max_file_size(rama_utils::octets::mib_u64(1))
-            .max_total_size(rama_utils::octets::mib_u64(4))
-            .build();
-        let recorder = recorder_or_disabled(writer).build();
-        assert!(
-            recorder.handle().is_enabled(),
-            "expected an enabled recorder; is another recorder alive in this process?"
-        );
-        let mut builder = tokio::runtime::Builder::new_multi_thread();
-        builder.worker_threads(2).enable_all();
-        let tokio_runtime = recorder
-            .handle()
-            .attach_tokio_runtime(builder, TokioAttachOptions::default())
-            .unwrap();
-        let runtime = OwnedRuntime::from_dial9((recorder, tokio_runtime));
-        crate::driver::connection::DRIVER_POLLED_WITH_DIAL9.store(false, Ordering::Relaxed);
-        runtime.block_on(async {
-            assert!(Dial9Handle::current().is_enabled());
-            handshake_and_shutdown().await;
-        });
-        assert!(
-            crate::driver::connection::DRIVER_POLLED_WITH_DIAL9.load(Ordering::Relaxed),
-            "connection drivers must run inside the recorder's session"
-        );
-        runtime.shutdown_bounded(Duration::from_secs(5));
-        assert!(
-            std::fs::read_dir(temp_dir.path()).unwrap().count() > 0,
-            "the recorder wrote trace data for the session"
-        );
-    }
-}
+mod dial9;
 /// One attempt on A and nothing else depending on A: the server rebinds A→B→C, then sends
 /// the Retry from A. The Retry route keeps A receiving so
 /// the client's token-bearing Initial is answered and the handshake completes on A. Once the
@@ -3634,6 +3559,8 @@ struct SegmentLog {
     partial_failures: usize,
     /// While set, plain datagrams are recorded as sent but never reach the network.
     blackhole: bool,
+    /// While set, datagrams for this destination are not accepted and the sender is told to wait.
+    blocked: Option<SocketAddress>,
 }
 
 impl SegmentLog {
@@ -3725,6 +3652,10 @@ impl<S: DatagramSender> DatagramSender for SegmentingSender<S> {
         datagram: &rama_udp::SendDatagram<'_>,
     ) -> Poll<Result<(), DatagramError>> {
         let mut log = self.log.lock();
+        if log.blocked == Some(datagram.destination()) {
+            log.wakers.push(cx.waker().clone());
+            return Poll::Pending;
+        }
         if let Some(size) = datagram.segment_size() {
             assert!(
                 log.rejected.is_none(),
@@ -3832,6 +3763,23 @@ fn segmenting_socket_from(
     })
     .unwrap();
     (socket, log, segments)
+}
+
+/// Stop accepting datagrams for `destination`; the sender is told to wait.
+fn block_segments_for(log: &Mutex<SegmentLog>, destination: SocketAddress) {
+    log.lock().blocked = Some(destination);
+}
+
+/// Accept datagrams for every destination again.
+fn unblock_segments(log: &Mutex<SegmentLog>) {
+    let wakers = {
+        let mut log = log.lock();
+        log.blocked = None;
+        std::mem::take(&mut log.wakers)
+    };
+    for waker in wakers {
+        waker.wake();
+    }
 }
 
 fn open_segment_hold(log: &Mutex<SegmentLog>) {
@@ -4224,6 +4172,148 @@ async fn a_refused_route_closes_the_connection_with_its_cause() {
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
+/// Shutting down while a descriptor is partly accepted completes rather than waiting for the
+/// remainder: one segment has been taken, the rest is still held by the sender, and both endpoints
+/// finish shutting down within their budget.
+#[tokio::test]
+async fn shutdown_completes_while_a_descriptor_is_partly_accepted() {
+    let (client_config, server_config) = configs();
+    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let (socket, log, segments) = segmenting_socket(1);
+    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let connecting = client
+        .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let (c, s) = handshake(connecting, incoming).await;
+    exchange(&c, &s, b"before").await;
+    segments.arm();
+
+    let payload: Vec<u8> = (0..octets::kib(16)).map(|i| (i % 251) as u8).collect();
+    let mut stream = c.open_uni().await.unwrap();
+    stream.write_all(&payload).await.unwrap();
+    stream.finish().unwrap();
+    wait_for(
+        "the descriptor is held after one accepted segment",
+        Duration::from_secs(5),
+        || {
+            let log = log.lock();
+            log.rejected.is_some() && log.fallback().len() == 1
+        },
+    )
+    .await;
+    let (rejected, segment_size) = log.lock().rejected.clone().unwrap();
+    assert!(
+        rejected.bytes.len() > segment_size,
+        "part of the descriptor is still unsent"
+    );
+    let accepted = log.lock().fallback().len();
+    assert_eq!(accepted, 1);
+
+    // Shut down with the remainder still in the sender's hands.
+    drop((c, s));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(client.shutdown(), server.shutdown());
+    })
+    .await
+    .expect("both endpoints shut down while a descriptor was partly accepted");
+    assert_eq!(
+        log.lock().fallback().len(),
+        accepted,
+        "the held remainder was not sent by the shutdown"
+    );
+    assert_eq!(log.lock().partial_failures, 0);
+}
+
+/// RFC 9000 §10.3.1 at the first accepted segment: an identifier whose route is installed but
+/// which nothing has been sent with is not one this connection has used. The first segment of a
+/// partially accepted descriptor makes it used, for the address that segment went to, while the
+/// rest of the descriptor is still waiting.
+#[tokio::test]
+async fn the_first_accepted_segment_grants_a_fresh_identifier_its_history() {
+    let (client_config, server_config) = configs();
+    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let (socket, log, segments) = segmenting_socket(1);
+    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let server_addr = server.local_addr().unwrap();
+    let connecting = client
+        .connect_with(client_config, server_addr, "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let (c, s) = handshake(connecting, incoming).await;
+    exchange(&c, &s, b"before").await;
+    let before_seq = c.active_dcid_seq();
+    segments.arm();
+
+    // Nothing can leave from here, so the identifier the connection switches to stays unused.
+    block_segments_for(&log, SocketAddress::from(server_addr));
+    let payload: Vec<u8> = (0..octets::kib(16)).map(|i| (i % 251) as u8).collect();
+    let mut stream = c.open_uni().await.unwrap();
+    stream.write_all(&payload).await.unwrap();
+    stream.finish().unwrap();
+    s.rotate_local_cid(before_seq + 1);
+    wait_for(
+        "the connection switches to an unused identifier",
+        Duration::from_secs(5),
+        || c.active_dcid_seq() != before_seq,
+    )
+    .await;
+    let fresh_seq = c.active_dcid_seq();
+    assert!(
+        !c.cid_confirmed(fresh_seq),
+        "nothing has been sent with the identifier the connection switched to"
+    );
+
+    // Let one segment through. The descriptor is held after it, so the rest is still waiting.
+    unblock_segments(&log);
+    wait_for(
+        "one segment of the descriptor is accepted",
+        Duration::from_secs(5),
+        || {
+            let log = log.lock();
+            log.rejected.is_some() && log.fallback().len() == 1
+        },
+    )
+    .await;
+    assert!(
+        c.cid_confirmed(fresh_seq),
+        "the first accepted segment makes the identifier one this connection has used"
+    );
+    let (rejected, segment_size) = log.lock().rejected.clone().unwrap();
+    assert!(
+        rejected.bytes.len() > segment_size,
+        "the descriptor still has segments to send"
+    );
+    assert_eq!(
+        log.lock().fallback()[0].destination,
+        SocketAddress::from(server_addr),
+        "and it went to the address the identifier is recognised at"
+    );
+
+    // The rest follows once the hold opens, and the peer receives every byte.
+    open_segment_hold(&log);
+    let mut incoming = tokio::time::timeout(Duration::from_secs(5), s.accept_uni())
+        .await
+        .expect("the stream arrives")
+        .expect("the connection is alive");
+    let received = tokio::time::timeout(
+        Duration::from_secs(5),
+        incoming.read_to_end(payload.len() + 1),
+    )
+    .await
+    .expect("the stream completes")
+    .expect("it is not truncated");
+    assert_eq!(received, payload);
+    drop((c, s));
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
 /// A prefix the sender accepted has been sent and is not offered again. When the identifier that
 /// descriptor carries is retired while the remainder is held, only the unsent suffix is given up,
 /// and a following descriptor shorter than the offset the abandoned one reached is sent whole
@@ -4322,20 +4412,47 @@ async fn a_retirement_mid_descriptor_gives_up_only_the_unsent_suffix() {
     .expect("it is not truncated");
     assert_eq!(received, payload, "every byte, in order");
 
-    let log = log.lock();
-    // Datagrams shorter than the offset the abandoned descriptor reached are sent afterwards
-    // (acknowledgements and retransmissions). Receiving the stream byte for byte above
-    // establishes that none was spliced at that offset.
-    let short_after = log
-        .sent
+    // The descriptor the driver offered after the abandoned one, named by its own id rather than
+    // inferred from datagram sizes. It has to be shorter than the offset the abandoned one
+    // reached, which is the case a retained offset used to corrupt, and it has to have been sent.
+    let offered = c.descriptors();
+    let abandoned = offered
         .iter()
-        .skip(log.rejected_at + accepted.len())
-        .filter(|d| d.bytes.len() < offset)
-        .count();
-    assert!(
-        short_after > 0,
-        "no datagram shorter than the abandoned offset followed it"
+        .rposition(|d| d.outcome == crate::driver::connection::Outcome::Obsolete)
+        .expect("the abandoned descriptor is on record");
+    assert_eq!(
+        offered[abandoned].cid_used,
+        Some(doomed_seq),
+        "the abandoned descriptor carried the retired identifier"
     );
+    let successor = offered[abandoned + 1..]
+        .iter()
+        .find(|d| d.id != offered[abandoned].id)
+        .expect("a descriptor followed it");
+    assert!(
+        successor.size < offset,
+        "the successor descriptor is {} bytes, not shorter than the abandoned offset {offset}",
+        successor.size
+    );
+    assert_ne!(
+        successor.cid_used,
+        Some(doomed_seq),
+        "the successor carries an identifier that is still usable"
+    );
+    // A descriptor may be held for its route before it is taken, so what matters is that this
+    // one was taken in the end, under its own id.
+    assert!(
+        offered
+            .iter()
+            .any(|d| d.id == successor.id && d.outcome == crate::driver::connection::Outcome::Sent),
+        "the successor descriptor was never taken: {:?}",
+        offered
+            .iter()
+            .filter(|d| d.id == successor.id)
+            .collect::<Vec<_>>()
+    );
+
+    let log = log.lock();
     for bytes in &accepted {
         assert_eq!(
             log.sent.iter().filter(|d| &d.bytes == bytes).count(),

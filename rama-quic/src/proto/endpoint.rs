@@ -118,6 +118,17 @@ impl Endpoint {
     /// Process `EndpointEvent`s emitted from related `Connection`s
     ///
     /// In turn, processing this event may return a `ConnectionEvent` for the same `Connection`.
+    /// Tests: how many stateless-reset routes the endpoint's index holds.
+    #[cfg(test)]
+    pub(crate) fn reset_route_count(&self) -> usize {
+        self.index
+            .connection_reset_tokens
+            .0
+            .values()
+            .map(|tokens| tokens.len())
+            .sum()
+    }
+
     pub(crate) fn handle_event(
         &mut self,
         ch: ConnectionHandle,
