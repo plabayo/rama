@@ -391,6 +391,12 @@ impl Sender {
         self.local_addr
     }
 
+    /// Whether this handle can put a source address other than its own bind on the wire, which
+    /// is what a wildcard-bound socket needs to serve a concrete path.
+    pub(crate) fn can_select_source(&self) -> bool {
+        self.inner.capabilities().send_source_ip
+    }
+
     pub(crate) fn max_transmit_segments(&self) -> usize {
         self.inner.capabilities().max_send_segments.max(1)
     }

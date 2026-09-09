@@ -408,6 +408,13 @@ impl PathResponses {
 
     /// The next response that must leave on a path other than (`remote`, `local`): its token and
     /// the path it must leave on.
+    /// Whether an answer is queued for a path other than the one in use, without taking it.
+    pub(crate) fn has_off_path(&self, remote: SocketAddr, local: Option<SocketAddr>) -> bool {
+        self.pending
+            .last()
+            .is_some_and(|response| !response.on_path(remote, local))
+    }
+
     pub(crate) fn pop_off_path(
         &mut self,
         remote: SocketAddr,

@@ -55,8 +55,8 @@ async fn a_caller_prepared_socket_carries_data() {
         Endpoint::with_packet_socket(EndpointConfig::default(), Some(server_config), prepared)
             .expect("the server takes the prepared socket");
 
-    // A Tokio socket is registered with the runtime by its owner, which is what makes it
-    // non-blocking; the wrapping only sets up the metadata this configuration asks for.
+    // The caller puts the socket in non-blocking mode and hands it to the runtime; registering
+    // it does not do that. The wrapping only sets up the metadata this configuration asks for.
     let bound = std::net::UdpSocket::bind(localhost_v4()).unwrap();
     bound.set_nonblocking(true).unwrap();
     let prepared = config

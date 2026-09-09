@@ -1767,6 +1767,21 @@ impl Connection {
     /// It is the local IP of the connection's current path, so it follows a migration between
     /// local sockets. `None` when no local address was passed to
     /// [`Endpoint::handle()`](crate::proto::Endpoint::handle) for this path's datagrams.
+    /// The local address of the path this connection is sending on, when it knows it. The driver
+    /// sends that path's datagrams from the socket bound there.
+    /// Whether this connection has something to send on a path other than the one it sends on:
+    /// an answer to a challenge that arrived elsewhere (RFC 9000 §8.2.2), or a path it has left
+    /// whose challenge may still be answered (§9.3).
+    pub(crate) fn serves_another_path(&self) -> bool {
+        self.path_responses
+            .has_off_path(self.path.remote, self.path.local)
+            || self.prev_path.is_some()
+    }
+
+    pub(crate) fn path_local(&self) -> Option<SocketAddr> {
+        self.path.local
+    }
+
     pub(crate) fn local_ip(&self) -> Option<IpAddr> {
         self.path
             .local

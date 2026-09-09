@@ -555,6 +555,25 @@ pub(super) async fn wait_for(
     started.elapsed()
 }
 
+/// Like [`wait_for`], but the failure carries what the caller can say about what it was waiting
+/// on, so a timeout says more than that time passed.
+pub(super) async fn wait_for_with(
+    what: &str,
+    limit: Duration,
+    mut condition: impl FnMut() -> bool,
+    state: impl Fn() -> String,
+) -> Duration {
+    let started = Instant::now();
+    tokio::time::timeout(limit, async {
+        while !condition() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{what}: not within {limit:?}; {}", state()));
+    started.elapsed()
+}
+
 /// A real loopback endpoint whose socket counts sent datagrams and sends one segment at a time.
 fn counting_endpoint(server: Option<ServerConfig>, sent: Arc<AtomicUsize>) -> Endpoint {
     let std_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -3560,11 +3579,7 @@ pub(super) struct SegmentLog {
     hold_after: usize,
     open: bool,
     wakers: Vec<Waker>,
-    /// A short segmented descriptor (payload length, accepted offset) whose emulated offload
-    /// returned Pending part-way; the next call resumes there.
-    short_in_progress: Option<(usize, usize)>,
     /// Errors reported after part of a short descriptor was already accepted.
-    partial_failures: usize,
     /// While set, plain datagrams are recorded as sent but never reach the network.
     blackhole: bool,
     /// While set, datagrams for this destination are not accepted and the sender is told to wait.
@@ -3575,6 +3590,11 @@ pub(super) struct SegmentLog {
     /// While set, the sender is refused once this many datagrams have been accepted, so a
     /// descriptor can fail after leaving a prefix.
     fail_after: Option<usize>,
+    /// While set, arrivals are not delivered to the endpoint and the receiving task's waker is
+    /// kept. The kernel keeps buffering meanwhile, so opening the gate delivers what arrived. It
+    /// lets a test order what the endpoint sees without touching any send path.
+    receive_closed: bool,
+    receive_wakers: Vec<Waker>,
 }
 
 impl SegmentLog {
@@ -3652,6 +3672,13 @@ impl DatagramSocket for SegmentingSocket {
         buffers: &mut [IoSliceMut<'_>],
         metadata: &mut [DatagramMetadata],
     ) -> Poll<Result<usize, DatagramError>> {
+        {
+            let mut log = self.log.lock();
+            if log.receive_closed {
+                log.receive_wakers.push(cx.waker().clone());
+                return Poll::Pending;
+            }
+        }
         self.inner.poll_recv(cx, buffers, metadata)
     }
     fn capabilities(&self) -> DatagramCapabilities {
@@ -3689,29 +3716,32 @@ impl<S: DatagramSender> DatagramSender for SegmentingSender<S> {
                 "segmentation is never advertised again after the downgrade"
             );
             if datagram.segment_count() < 3 {
-                // Too small to leave a suffix: emulate the offload segment by segment. The
-                // emulated offload keeps its place across Pending, so a chunk is never sent
-                // twice; an error after accepted chunks is recorded as a partial failure.
+                // Too small to leave a suffix: this stands in for an offload, and an offload is
+                // one call to the kernel. It takes every segment or none: `Pending` and `Err`
+                // both tell the sender its descriptor was untouched, so bytes that left under
+                // either answer would be on the wire with nothing accounting for them. Whatever
+                // could stop the batch is settled before its first segment goes — the credit and
+                // a scripted refusal that would fall inside it — and if the socket underneath
+                // stops part-way anyway, that is a state this fixture cannot report and it says
+                // so rather than hiding it.
                 let payload = datagram.payload();
-                let mut offset = match log.short_in_progress {
-                    Some((len, offset)) if len == payload.len() => offset,
-                    _ => 0,
-                };
+                let segments = payload.len().div_ceil(size.get());
+                if log.credit.is_some_and(|credit| credit < segments) {
+                    log.wakers.push(cx.waker().clone());
+                    return Poll::Pending;
+                }
+                if log
+                    .fail_after
+                    .is_some_and(|at| (log.sent.len()..log.sent.len() + segments).contains(&at))
+                {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        "scripted refusal of a batch",
+                    )
+                    .into()));
+                }
+                let mut offset = 0;
                 while offset < payload.len() {
-                    if log.fail_after == Some(log.sent.len()) {
-                        log.short_in_progress = None;
-                        log.partial_failures += usize::from(offset > 0);
-                        return Poll::Ready(Err(io::Error::new(
-                            io::ErrorKind::PermissionDenied,
-                            "scripted refusal after an accepted prefix",
-                        )
-                        .into()));
-                    }
-                    if log.credit == Some(0) {
-                        log.short_in_progress = Some((payload.len(), offset));
-                        log.wakers.push(cx.waker().clone());
-                        return Poll::Pending;
-                    }
                     let end = (offset + size.get()).min(payload.len());
                     let mut one =
                         rama_udp::SendDatagram::new(datagram.destination(), &payload[offset..end]);
@@ -3726,20 +3756,21 @@ impl<S: DatagramSender> DatagramSender for SegmentingSender<S> {
                             log.sent.push(SentDatagram::of(&one));
                             log.spend_credit();
                             offset = end;
-                            log.short_in_progress = Some((payload.len(), offset));
                         }
-                        Poll::Pending => {
-                            log.short_in_progress = Some((payload.len(), offset));
-                            return Poll::Pending;
-                        }
-                        Poll::Ready(Err(error)) => {
-                            log.short_in_progress = None;
-                            log.partial_failures += usize::from(offset > 0);
-                            return Poll::Ready(Err(error));
+                        stopped => {
+                            assert_eq!(
+                                offset, 0,
+                                "the socket under the fixture stopped after {offset} bytes of a \
+                                 batch: neither Pending nor Err can say a prefix left, so this \
+                                 batch cannot be reported to the sender"
+                            );
+                            return match stopped {
+                                Poll::Pending => Poll::Pending,
+                                other => other,
+                            };
                         }
                     }
                 }
-                log.short_in_progress = None;
                 return Poll::Ready(Ok(()));
             }
             log.rejected_at = log.sent.len();
@@ -3819,6 +3850,23 @@ fn segmenting_socket_from(
 }
 
 /// Stop accepting datagrams for `destination`; the sender is told to wait.
+/// Stop delivering arrivals to the endpoint; what arrives waits in the kernel.
+pub(super) fn close_receive(log: &Mutex<SegmentLog>) {
+    log.lock().receive_closed = true;
+}
+
+/// Deliver again, waking whatever was waiting to receive.
+pub(super) fn open_receive(log: &Mutex<SegmentLog>) {
+    let wakers = {
+        let mut log = log.lock();
+        log.receive_closed = false;
+        std::mem::take(&mut log.receive_wakers)
+    };
+    for waker in wakers {
+        waker.wake();
+    }
+}
+
 pub(super) fn block_segments_for(log: &Mutex<SegmentLog>, destination: SocketAddress) {
     log.lock().blocked = Some(destination);
 }
@@ -3986,7 +4034,6 @@ async fn a_partial_segmented_send_completes_on_its_socket_across_repeated_rebind
         segments,
         "nothing else ever left A"
     );
-    assert_eq!(log.lock().partial_failures, 0);
     drop((c, s));
     tokio::join!(client.shutdown(), server.shutdown());
 }
@@ -4337,7 +4384,6 @@ async fn shutdown_completes_while_a_descriptor_is_partly_accepted() {
         accepted,
         "the held remainder was not sent by the shutdown"
     );
-    assert_eq!(log.lock().partial_failures, 0);
     assert!(
         waker.0.load(Ordering::SeqCst) > 0,
         "the waiting reader was woken by the shutdown, not left for someone else's poll"
@@ -4538,8 +4584,7 @@ async fn an_accepted_prefix_is_reported_when_the_descriptor_then_fails() {
         failed.id, failed.size
     );
     assert!(c.cid_confirmed_to(seq, server_addr));
-    // One segment of this descriptor was accepted before the refusal, and no more. (The fixture's
-    // `partial_failures` counts only its emulated short-descriptor path, so it stays 0 here.)
+    // One segment of this descriptor was accepted before the refusal, and no more.
     assert_eq!(
         log.lock().fallback().len(),
         1,
@@ -4626,7 +4671,10 @@ fn the_segment_credit_charges_accepted_datagrams_only() {
     assert!(sender.poll_send(&mut cx, &plain(b"a")).is_pending());
     assert_eq!(log.lock().sent.len(), 1, "nothing more was sent");
 
-    // One credit permits exactly one datagram of an emulated segmented descriptor.
+    // A segmented descriptor is taken whole or not at all. `Pending` tells the sender its
+    // descriptor was untouched, and no backend can put part of a batch on the wire under that
+    // answer: one `sendmsg` accepts every segment or none. Bytes that left with the sender
+    // believing nothing had would never be accounted for.
     let log = Arc::new(Mutex::new(SegmentLog {
         credit: Some(1),
         ..SegmentLog::default()
@@ -4643,12 +4691,12 @@ fn the_segment_credit_charges_accepted_datagrams_only() {
     segmented.set_segment_size(NonZeroUsize::new(2).unwrap());
     assert!(
         sender.poll_send(&mut cx, &segmented).is_pending(),
-        "the second segment has no credit"
+        "one credit is not enough for a batch of two"
     );
-    assert_eq!(log.lock().sent.len(), 1, "one segment left");
-    assert_eq!(log.lock().credit, Some(0));
-    // Crediting one more completes it, resuming where it stopped rather than resending.
-    log.lock().credit = Some(1);
+    assert_eq!(log.lock().sent.len(), 0, "and nothing left the socket");
+    assert_eq!(log.lock().credit, Some(1), "the credit is untouched");
+    // With credit for the whole batch it goes, one datagram at a time as an offload would.
+    log.lock().credit = Some(2);
     assert!(matches!(
         sender.poll_send(&mut cx, &segmented),
         Poll::Ready(Ok(()))
@@ -4657,7 +4705,144 @@ fn the_segment_credit_charges_accepted_datagrams_only() {
     assert_eq!(log.sent.len(), 2);
     assert_eq!(log.sent[0].bytes, [1, 1]);
     assert_eq!(log.sent[1].bytes, [2, 2]);
-    assert_eq!(log.partial_failures, 0);
+    assert_eq!(log.credit, Some(0), "and each datagram was charged");
+}
+
+/// A pass that spends its allowance on a descriptor that was already waiting asks for another
+/// turn. Bytes that left leave no waker behind, so a pass that ends there without asking would
+/// leave the engine's remaining work until some unrelated event came along. The allowance is
+/// lowered for this test so the end of a pass is reachable with one datagram.
+#[tokio::test]
+async fn a_pass_that_spends_its_allowance_on_bytes_that_left_asks_for_another_turn() {
+    let (client_config, server_config) = configs();
+    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let (socket, log, _segments) = segmenting_socket(usize::MAX);
+    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let server_addr = server.local_addr().unwrap();
+    let connecting = client
+        .connect_with(client_config, server_addr, "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(5), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let (c, s) = handshake(connecting, incoming).await;
+    exchange(&c, &s, b"before").await;
+    c.set_pass_allowance(1);
+
+    // Nothing leaves until this test says so, so what follows is a descriptor already waiting on
+    // the handle rather than one the pass just produced.
+    credit_segments(&log, 0);
+    let payload = vec![0x5a; octets::kib(32)];
+    let mut stream = c.open_uni().await.unwrap();
+    stream.write_all(&payload).await.unwrap();
+    stream.finish().unwrap();
+    wait_for(
+        "a descriptor waits on the handle",
+        Duration::from_secs(5),
+        || c.held_transmit().is_some(),
+    )
+    .await;
+    assert_eq!(
+        c.retry_allowance_ends(),
+        (0, 0),
+        "no pass has spent its allowance on a waiting descriptor yet"
+    );
+
+    uncredit_segments(&log);
+    wait_for(
+        "a pass spends its allowance sending what waited, and asks for another turn",
+        Duration::from_secs(10),
+        || c.retry_allowance_ends().0 > 0,
+    )
+    .await;
+    assert_eq!(
+        c.retry_allowance_ends().1,
+        0,
+        "and no such pass parked instead"
+    );
+
+    // The peer gets every byte, in order.
+    let mut incoming = tokio::time::timeout(Duration::from_secs(10), s.accept_uni())
+        .await
+        .expect("the stream arrives")
+        .expect("the connection is alive");
+    let received = tokio::time::timeout(
+        Duration::from_secs(10),
+        incoming.read_to_end(payload.len() + 1),
+    )
+    .await
+    .expect("the stream completes")
+    .expect("it is not truncated");
+    assert_eq!(received, payload);
+    drop((c, s));
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
+/// The other half of that rule: a pass that spends its allowance waiting does not ask for another
+/// turn, because what it waits on holds this task's waker. With the socket taking nothing, the
+/// connection must not poll in a loop.
+#[tokio::test]
+async fn a_pass_that_spends_its_allowance_waiting_does_not_poll_in_a_loop() {
+    let (client_config, server_config) = configs();
+    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let (socket, log, _segments) = segmenting_socket(usize::MAX);
+    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let server_addr = server.local_addr().unwrap();
+    let connecting = client
+        .connect_with(client_config, server_addr, "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(5), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let (c, s) = handshake(connecting, incoming).await;
+    exchange(&c, &s, b"before").await;
+    c.set_pass_allowance(1);
+
+    credit_segments(&log, 0);
+    let payload = vec![0x5a; octets::kib(32)];
+    let mut stream = c.open_uni().await.unwrap();
+    stream.write_all(&payload).await.unwrap();
+    stream.finish().unwrap();
+    wait_for(
+        "a descriptor waits on the handle",
+        Duration::from_secs(5),
+        || c.held_transmit().is_some(),
+    )
+    .await;
+
+    // The socket keeps taking nothing. Every pass from here offers what waits, is told to wait,
+    // and gives the task back; the sender holds the waker, so nothing should schedule the
+    // connection again by itself.
+    let passes = c.send_passes();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let spun = c.send_passes() - passes;
+    assert!(
+        spun < 50,
+        "the connection ran {spun} send passes in 300ms while its socket took nothing"
+    );
+    assert_eq!(
+        c.retry_allowance_ends().1,
+        0,
+        "and no pass that only waited counted as one that sent"
+    );
+
+    uncredit_segments(&log);
+    let mut incoming = tokio::time::timeout(Duration::from_secs(10), s.accept_uni())
+        .await
+        .expect("the stream arrives")
+        .expect("the connection is alive");
+    let received = tokio::time::timeout(
+        Duration::from_secs(10),
+        incoming.read_to_end(payload.len() + 1),
+    )
+    .await
+    .expect("the stream completes")
+    .expect("it is not truncated");
+    assert_eq!(received, payload);
+    drop((c, s));
+    tokio::join!(client.shutdown(), server.shutdown());
 }
 
 /// RFC 9000 §10.3.1 at the first acceptance: an identifier whose route is installed but which
@@ -4687,8 +4872,10 @@ async fn the_first_accepted_datagram_grants_a_fresh_identifier_its_history() {
     let (c, s) = handshake(connecting, incoming).await;
     exchange(&c, &s, b"before").await;
     let before_seq = c.active_dcid_seq();
-    segments.arm();
 
+    // Segmentation stays off until the observation below is done: it counts datagrams one at a
+    // time, which is only the same thing as counting descriptors while a descriptor is one
+    // datagram. Under load the engine has enough to say to fill a batch.
     // Nothing can leave from here, so the identifier the connection switches to stays unused.
     block_segments_for(&log, SocketAddress::from(server_addr));
     let payload: Vec<u8> = (0..octets::kib(16)).map(|i| (i % 251) as u8).collect();
@@ -4772,10 +4959,33 @@ async fn the_first_accepted_datagram_grants_a_fresh_identifier_its_history() {
             "nothing carrying the identifier has been accepted yet"
         );
     }
-    wait_for(
+    wait_for_with(
         "the identifier is used towards that address",
         SCHEDULED,
         || c.cid_confirmed_to(fresh_seq, server_addr),
+        || {
+            let offered = c
+                .descriptors()
+                .iter()
+                .map(|d| {
+                    format!(
+                        "#{} size {} seg {:?} cid {:?} {:?} reported {}",
+                        d.id, d.size, d.segment_size, d.cid_used, d.outcome, d.reported
+                    )
+                })
+                .collect::<Vec<_>>();
+            format!(
+                "fresh_seq {fresh_seq}, active_seq {}, permit {:?}, used anywhere {}, \
+                 reports {}, released {released}, wire dcids {:?}, fresh dcid {:?}, \
+                 peer {server_addr}, offered {offered:?}",
+                c.active_dcid_seq(),
+                c.send_permit(fresh_seq, server_addr),
+                c.cid_confirmed(fresh_seq),
+                c.cid_sent_calls(),
+                short_header_dcids(&log.lock().sent, fresh_dcid.len()),
+                fresh_dcid,
+            )
+        },
     )
     .await;
     // That first acceptance is the prefix under test: the first datagram carrying the fresh
@@ -4809,7 +5019,9 @@ async fn the_first_accepted_datagram_grants_a_fresh_identifier_its_history() {
         "it went to the address the identifier is recognised at"
     );
 
-    // The rest follows once the credit and the hold are lifted, and the peer receives every byte.
+    // The rest follows once segmentation, the credit and the hold are lifted, and the peer
+    // receives every byte.
+    segments.arm();
     uncredit_segments(&log);
     open_segment_hold(&log);
     let mut incoming = tokio::time::timeout(Duration::from_secs(5), s.accept_uni())
@@ -5023,7 +5235,6 @@ async fn a_retirement_mid_descriptor_gives_up_only_the_unsent_suffix() {
             .any(|dcid| *dcid == doomed),
         "a datagram used the retired identifier after it was retired"
     );
-    assert_eq!(log.partial_failures, 0);
     // The socket's record is locked above and the shutdown below writes to it.
     drop(log);
     drop((c, s));
@@ -5034,11 +5245,10 @@ async fn a_retirement_mid_descriptor_gives_up_only_the_unsent_suffix() {
     .expect("both endpoints shut down after a descriptor was abandoned mid-send");
 }
 
-/// The emulated offload for short segmented descriptors keeps its place across `Pending`: a
-/// chunk accepted before the sender blocked is not sent again when the same descriptor is
-/// retried, and the descriptor completes once the sender is writable.
+/// The stand-in for an offload is one call to the socket underneath: it takes every segment of a
+/// batch or none. A socket that is not ready takes nothing, and the batch waits whole.
 #[test]
-fn the_segmentation_fixture_resumes_a_short_descriptor_after_pending() {
+fn the_segmentation_fixture_takes_a_batch_whole_or_not_at_all() {
     #[derive(Debug)]
     struct StepSender(VecDeque<Poll<Result<(), DatagramError>>>);
     impl DatagramSender for StepSender {
@@ -5057,7 +5267,7 @@ fn the_segmentation_fixture_resumes_a_short_descriptor_after_pending() {
     segments.arm();
     let log = Arc::new(Mutex::new(SegmentLog::default()));
     let mut sender = SegmentingSender {
-        inner: StepSender([Poll::Ready(Ok(())), Poll::Pending, Poll::Ready(Ok(()))].into()),
+        inner: StepSender([Poll::Pending, Poll::Ready(Ok(())), Poll::Ready(Ok(()))].into()),
         log: log.clone(),
         segments,
     };
@@ -5066,17 +5276,55 @@ fn the_segmentation_fixture_resumes_a_short_descriptor_after_pending() {
     descriptor.set_segment_size(NonZeroUsize::new(3).unwrap());
     let mut cx = Context::from_waker(Waker::noop());
     assert!(sender.poll_send(&mut cx, &descriptor).is_pending());
-    assert_eq!(log.lock().sent.len(), 1, "the first chunk was accepted");
-    assert_eq!(log.lock().sent[0].bytes, [1, 1, 1]);
+    assert_eq!(
+        log.lock().sent.len(),
+        0,
+        "nothing left while the socket was not ready"
+    );
     assert!(matches!(
         sender.poll_send(&mut cx, &descriptor),
         Poll::Ready(Ok(()))
     ));
     let log = log.lock();
-    assert_eq!(log.sent.len(), 2, "the retry resumed at the second chunk");
+    assert_eq!(log.sent.len(), 2, "the whole batch went on the retry");
+    assert_eq!(log.sent[0].bytes, [1, 1, 1]);
     assert_eq!(log.sent[1].bytes, [2, 2]);
-    assert_eq!(log.short_in_progress, None);
-    assert_eq!(log.partial_failures, 0);
+}
+
+/// A socket that stops after part of a batch is a state the fixture cannot report: `Pending` and
+/// `Err` both tell the sender its descriptor was untouched, so bytes already on the wire would
+/// have nothing accounting for them (RFC 9000 §10.3.1 counts an identifier from the first byte
+/// that left). The fixture fails loudly instead of hiding it.
+#[test]
+#[should_panic = "cannot be reported to the sender"]
+fn the_segmentation_fixture_refuses_to_hide_a_half_sent_batch() {
+    #[derive(Debug)]
+    struct StepSender(VecDeque<Poll<Result<(), DatagramError>>>);
+    impl DatagramSender for StepSender {
+        fn poll_send(
+            &mut self,
+            _: &mut Context<'_>,
+            _: &rama_udp::SendDatagram<'_>,
+        ) -> Poll<Result<(), DatagramError>> {
+            self.0.pop_front().expect("scripted response")
+        }
+        fn capabilities(&self) -> DatagramCapabilities {
+            DatagramCapabilities::portable()
+        }
+    }
+    let segments = Arc::new(Segments::default());
+    segments.arm();
+    let log = Arc::new(Mutex::new(SegmentLog::default()));
+    let mut sender = SegmentingSender {
+        inner: StepSender([Poll::Ready(Ok(())), Poll::Pending].into()),
+        log,
+        segments,
+    };
+    let payload = [1u8, 1, 1, 2, 2];
+    let mut descriptor = rama_udp::SendDatagram::new(([127, 0, 0, 2], 9), &payload[..]);
+    descriptor.set_segment_size(NonZeroUsize::new(3).unwrap());
+    let mut cx = Context::from_waker(Waker::noop());
+    let _ = sender.poll_send(&mut cx, &descriptor);
 }
 
 /// An address-changing migration commits an unused destination connection ID first: every
