@@ -1,7 +1,10 @@
-//! DATAGRAM against quiche, in both Rama roles. quiche advertises the recommended 65536 when
-//! datagrams are enabled, so here the binding limit is the path budget rather than anything the
-//! peer said; that is the other half of what the aioquic project shows, where the peer's
-//! advertised size is small enough to bind.
+//! DATAGRAM against quiche, in both Rama roles. quiche advertises 65536 when datagrams are
+//! enabled, from draft-ietf-quic-datagram-01 rather than RFC 9221's 65535, and either value is
+//! far above the path budget: here the binding limit is the path. That is the other half of
+//! what the aioquic project shows, where the peer's advertised size is small enough to bind.
+//!
+//! The size boundary and the unsupported-peer case are covered for the Rama client role here.
+//! The server-role test covers delivery and support, not the boundary.
 
 mod common;
 

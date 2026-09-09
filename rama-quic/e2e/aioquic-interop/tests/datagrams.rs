@@ -8,7 +8,7 @@ use std::{net::SocketAddr, time::Duration};
 
 use common::*;
 use rama::{
-    quic::{Connection, Endpoint, SendDatagramError},
+    quic::{ClientConfig, Connection, Endpoint, SendDatagramError},
     utils::octets,
 };
 
@@ -49,7 +49,7 @@ async fn aioquic_server(
 /// Connect and take the handshake line the peer writes for it.
 async fn connected(
     client: &Endpoint,
-    config: rama::quic::ClientConfig,
+    config: ClientConfig,
     addr: SocketAddr,
     peer: &mut AioQuic,
     deadline: Deadline,
@@ -350,11 +350,16 @@ async fn a_send_with_no_room_waits_and_can_be_cancelled() {
     peer.tell("deaf", deadline).await;
 
     // Every attempt carries a payload of its own, so the one that ends up waiting is
-    // identifiable and the ones that were taken are not confused with it.
+    // identifiable and the ones that were taken are not confused with it. The sequence is
+    // bounded, and running out of it fails the test rather than repeating a payload.
+    const ATTEMPTS: usize = 4096;
     let attempt = |number: usize| {
+        assert!(
+            number < ATTEMPTS,
+            "the buffer took {number} datagrams without filling"
+        );
         let mut bytes = payload(0x76, limit);
-        bytes[0] = u8::try_from(number % 251).expect("it fits");
-        bytes[1] = u8::try_from(number / 251 % 251).expect("it fits");
+        bytes[0..2].copy_from_slice(&u16::try_from(number).expect("it fits").to_be_bytes());
         bytes
     };
 
@@ -367,17 +372,24 @@ async fn a_send_with_no_room_waits_and_can_be_cancelled() {
                 match tokio::time::timeout(Duration::from_millis(200), &mut sending).await {
                     Ok(Ok(())) => queued += 1,
                     Ok(Err(error)) => panic!("the connection failed while filling: {error}"),
-                    // Still pending: dropping it here is the cancellation, and the buffer having
-                    // no room is why it was pending.
-                    Err(_) => return bytes,
+                    Err(_) => {
+                        // Still pending, and `sending` is still alive here: the buffer having no
+                        // room for this datagram is why. Returning drops it, which is the
+                        // cancellation.
+                        assert!(
+                            connection.datagram_send_buffer_space() < bytes.len(),
+                            "the send is waiting for room, not for a wakeup"
+                        );
+                        return bytes;
+                    }
                 }
             }
         })
         .await;
     assert!(queued > 0, "the buffer took datagrams before it filled");
     assert!(
-        connection.datagram_send_buffer_space() <= limit,
-        "the send waited because the buffer has no room for another datagram"
+        connection.datagram_send_buffer_space() < cancelled.len(),
+        "and there is still no room now the wait has been cancelled"
     );
 
     // Hearing again, the transport drains and the connection is usable in both shapes.

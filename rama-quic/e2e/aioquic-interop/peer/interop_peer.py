@@ -16,6 +16,7 @@ import threading
 
 from aioquic.asyncio import connect, serve
 from aioquic.asyncio.protocol import QuicConnectionProtocol
+from aioquic import tls as quic_tls
 from aioquic.quic.configuration import QuicConfiguration
 from aioquic.quic.events import (
     ConnectionTerminated,
@@ -25,7 +26,8 @@ from aioquic.quic.events import (
 
 # What a stream may carry. A peer that sends more is a fault, not a larger test.
 STREAM_LIMIT = 1 << 20
-# What one order on stdin may carry. Orders are single words.
+# What one order on stdin may carry, counted as `readline` counts a text stream. Orders are
+# single words.
 ORDER_LIMIT = 64
 
 
@@ -91,11 +93,22 @@ async def run_server(arguments):
         else:
             quiet.set_exception(reason)
 
+    serving = {}
+
     class Served(QuicConnectionProtocol):
+        def connection_made(self, transport):
+            serving["protocol"] = self
+            super().connection_made(transport)
+
         def quic_event_received(self, event):
             nonlocal ended
             if isinstance(event, HandshakeCompleted):
-                say(event="handshake", alpn=event.alpn_protocol)
+                say(
+                    event="handshake",
+                    alpn=event.alpn_protocol,
+                    resumed=event.session_resumed,
+                    early=event.early_data_accepted,
+                )
             elif isinstance(event, DatagramFrameReceived):
                 report_datagram(self, event, echo=True)
             elif isinstance(event, ConnectionTerminated):
@@ -119,18 +132,27 @@ async def run_server(arguments):
         task = loop.create_task(serve_stream())
         task.add_done_callback(lambda done: stop(done.exception()) if done.exception() else None)
 
+    # A ticket store of its own, so a second connection can resume against this process. It is
+    # in memory and lives as long as the peer does.
+    tickets = {}
     server = await serve(
         arguments.host,
         0,
         configuration=server_configuration(arguments),
         create_protocol=Served,
         stream_handler=handle,
+        session_ticket_fetcher=tickets.get if arguments.tickets else None,
+        session_ticket_handler=(
+            (lambda ticket: tickets.__setitem__(ticket.ticket, ticket))
+            if arguments.tickets
+            else None
+        ),
     )
     # aioquic offers no accessor for the address it bound, so the transport's socket answers it.
     _, port = server._transport.get_extra_info("socket").getsockname()[:2]
     say(event="listening", port=port)
     if arguments.orders:
-        take_orders(loop, server, stop)
+        take_orders(loop, server, stop, serving)
     try:
         await quiet
     finally:
@@ -221,14 +243,19 @@ async def run_silent(arguments):
         held.close()
 
 
-def take_orders(loop, server, stop):
+def take_orders(loop, server, stop, serving):
     """Take one-word orders on stdin, so a test can steer the peer without relying on timing.
 
     `deaf` drops every datagram at the socket, which stops acknowledgements and so stalls the
-    other side's transport rather than only its application reads. `hear` restores them. Each
-    order is acknowledged on stdout once it has taken effect. Orders are read one line at a
-    time, are refused past ORDER_LIMIT bytes, and the reader is a daemon thread, so it ends
-    with the process.
+    other side's transport rather than only its application reads. `hear` restores them.
+    `update-keys` asks for a key update, and `key-phase` answers the phase the 1-RTT keys are
+    in. Each order is acknowledged on stdout once it has taken effect.
+
+    The read itself is bounded: `readline` is given ORDER_LIMIT + 1 as its size, which for a
+    text stream counts characters, so a line longer than that is refused rather than buffered.
+    One order is outstanding at a time, since the reader waits for the acknowledgment before
+    reading again, so nothing queues up behind a slow one. The reader is a daemon thread and
+    ends with the process.
     """
     hearing = {"on": True}
     delivering = server.datagram_received
@@ -239,26 +266,53 @@ def take_orders(loop, server, stop):
 
     server.datagram_received = datagram_received
 
-    def apply(order):
+    def apply(order, done):
+        extra = {}
         if order == "deaf":
             hearing["on"] = False
         elif order == "hear":
             hearing["on"] = True
+        elif order == "key-phase":
+            served = serving.get("protocol")
+            if served is None:
+                stop(RuntimeError("no connection to read a key phase from"))
+                done.set()
+                return
+            # aioquic offers no accessor for the phase, so the crypto pair answers it. It rides
+            # back on the acknowledgment, so one order is still one line.
+            extra["phase"] = int(served._quic._cryptos[quic_tls.Epoch.ONE_RTT].key_phase)
+        elif order == "update-keys":
+            served = serving.get("protocol")
+            if served is None:
+                stop(RuntimeError("no connection to update keys on"))
+                done.set()
+                return
+            served._quic.request_key_update()
+            served.transmit()
         else:
             stop(RuntimeError(f"unknown order: {order}"))
+            done.set()
             return
-        say(event="ack", order=order)
+        say(event="ack", order=order, **extra)
+        done.set()
 
     def reading():
-        for line in sys.stdin:
+        while True:
+            line = sys.stdin.readline(ORDER_LIMIT + 1)
+            if not line:
+                return
             if len(line) > ORDER_LIMIT:
                 loop.call_soon_threadsafe(
-                    stop, RuntimeError(f"an order ran past {ORDER_LIMIT} bytes")
+                    stop, RuntimeError(f"an order ran past {ORDER_LIMIT} characters")
                 )
                 return
             order = line.strip()
-            if order:
-                loop.call_soon_threadsafe(apply, order)
+            if not order:
+                continue
+            done = threading.Event()
+            loop.call_soon_threadsafe(apply, order, done)
+            # One order at a time: the next line is not read until this one has taken effect.
+            done.wait()
 
     threading.Thread(target=reading, daemon=True).start()
 
@@ -284,6 +338,7 @@ def main():
     parser.add_argument("--datagrams", type=int, default=0)
     parser.add_argument("--streams", type=int, default=1)
     parser.add_argument("--orders", action="store_true")
+    parser.add_argument("--tickets", action="store_true")
     arguments = parser.parse_args()
     try:
         asyncio.run(ROLES[arguments.role](arguments))

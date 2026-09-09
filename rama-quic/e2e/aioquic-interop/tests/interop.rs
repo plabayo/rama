@@ -14,7 +14,7 @@ use std::{
 
 use common::*;
 use rama::{
-    quic::{ConnectionError, Endpoint},
+    quic::{ConnectionError, Endpoint, VarInt},
     utils::octets,
 };
 use std::process::Stdio;
@@ -520,6 +520,29 @@ fn a_child_that_sleeps(pid_file: &std::path::Path) -> Command {
     command
 }
 
+/// Drive a run in progress until its child says it started by writing its process identifier,
+/// within a bound of its own. A run that ends first is a child that never started.
+#[cfg(unix)]
+async fn acknowledged(
+    running: &mut (impl Future<Output = Result<Finished, String>> + Unpin),
+    pid_file: &std::path::Path,
+) -> String {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            tokio::select! {
+                outcome = &mut *running => panic!("the child ended before it started: {outcome:?}"),
+                () = tokio::time::sleep(Duration::from_millis(10)) => {
+                    if pid_file.is_file() {
+                        return read_pid(pid_file);
+                    }
+                }
+            }
+        }
+    })
+    .await
+    .expect("the child acknowledges that it started")
+}
+
 /// The bounded runner that builds the peer's environment stops a child that overruns, and a
 /// cancelled run leaves nothing behind either. Both are checked against a controlled child
 /// whose process identifier the test looks for afterwards, and in each case the child is given
@@ -533,8 +556,15 @@ async fn a_setup_command_that_hangs_is_stopped_and_reaped() {
     let scratch = tempfile::tempdir().expect("a directory of our own");
 
     let overran = scratch.path().join("overran.pid");
+    let mut running = Box::pin(bounded_command(
+        a_child_that_sleeps(&overran),
+        Duration::from_secs(2),
+    ));
+    // The child's own acknowledgment first, with a bound of its own, so what the bound below
+    // stops is a child known to be running rather than one assumed to have started.
+    let overrunning = acknowledged(&mut running, &overran).await;
     let started = Instant::now();
-    let outcome = bounded_command(a_child_that_sleeps(&overran), Duration::from_secs(2)).await;
+    let outcome = running.await;
     assert!(
         outcome.is_err_and(|reason| reason.contains("did not finish")),
         "the run ends at its bound"
@@ -544,15 +574,8 @@ async fn a_setup_command_that_hangs_is_stopped_and_reaped() {
         "and at the bound, not whenever the child felt like it"
     );
     assert!(
-        within(Duration::from_secs(5), || overran.is_file()).await,
-        "the child had started, so what stopped it was the bound"
-    );
-    assert!(
-        within(Duration::from_secs(5), || process_is_gone(&read_pid(
-            &overran
-        )))
-        .await,
-        "and it is reaped"
+        within(Duration::from_secs(5), || process_is_gone(&overrunning)).await,
+        "the child it stopped is reaped"
     );
 
     let cancelled = scratch.path().join("cancelled.pid");
@@ -562,22 +585,7 @@ async fn a_setup_command_that_hangs_is_stopped_and_reaped() {
         a_child_that_sleeps(&cancelled),
         Duration::from_secs(600),
     ));
-    // Wait for the child's own acknowledgment while the run is in progress, so the cancellation
-    // below happens to a child that is known to exist.
-    let acknowledged = tokio::time::timeout(Duration::from_secs(20), async {
-        loop {
-            tokio::select! {
-                outcome = &mut running => panic!("the child ended before it started: {outcome:?}"),
-                () = tokio::time::sleep(Duration::from_millis(10)) => {
-                    if cancelled.is_file() {
-                        return read_pid(&cancelled);
-                    }
-                }
-            }
-        }
-    })
-    .await
-    .expect("the child acknowledges that it started");
+    let acknowledged = acknowledged(&mut running, &cancelled).await;
 
     drop(running);
     assert!(
@@ -640,4 +648,45 @@ async fn a_line_is_read_only_up_to_its_cap() {
         read_one_line(b"a\xffb\n", 8, 64).await.expect("it reads"),
         Some("a\u{fffd}b".to_owned())
     );
+}
+
+/// A client that closes the instant its handshake future resolves. The close is then coalesced
+/// into the Handshake and 1-RTT spaces, as RFC 9000 §10.2.3 asks of an endpoint closing before
+/// the handshake is confirmed, and this peer acts on it: the code and the reason arrive
+/// unchanged. Not every stack does; that is the peer's affair, and this is the control that
+/// says Rama's datagram is one a peer can read.
+#[tokio::test]
+async fn a_close_right_after_the_handshake_reaches_the_peer() {
+    prepare().await;
+    let deadline = Deadline::new();
+    let identity = Identity::generate("localhost");
+    let mut peer = AioQuic::spawn(
+        "server",
+        &["--cert", identity.certificate(), "--key", identity.key()],
+    )
+    .await;
+    let server_addr = peer.listening(deadline).await;
+
+    let client = deadline
+        .wait("rama binds", Endpoint::client(localhost()))
+        .await
+        .expect("the client binds");
+    let connection = deadline
+        .wait(
+            "the rama client connects",
+            client
+                .connect_with(rama_client_config(&identity), server_addr, "localhost")
+                .expect("the attempt starts"),
+        )
+        .await
+        .expect("the handshake completes");
+    connection.close(VarInt::from(0x2au32), b"immediate");
+
+    peer.expect("handshake", deadline).await;
+    let ended = peer.expect("ended", deadline).await;
+    assert_eq!(ended.code(), 0x2a, "the code the client gave");
+    assert_eq!(ended.reason(), "immediate", "and its reason");
+
+    deadline.wait("rama's shutdown", client.wait_idle()).await;
+    peer.finished(deadline).await;
 }

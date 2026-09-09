@@ -10,6 +10,10 @@
 //! `uv.lock`; [`prepare`] runs the same command if the interpreter is missing. uv keeps its
 //! download cache and its managed interpreters outside this directory, so what is project-local
 //! is the environment and the resolution, not everything uv touches.
+#![allow(
+    dead_code,
+    reason = "shared support for several integration test binaries, each using part of it"
+)]
 
 use std::{
     io,
@@ -255,6 +259,18 @@ pub fn rama_client_config_with_datagram_buffer(identity: &Identity, buffer: usiz
     rama_client_config(identity).with_transport_config(Arc::new(transport))
 }
 
+/// A client that trusts `identity` and may offer early application data. Early data is opt-in
+/// in this crate: `TlsOptions::early_data` is off by default, so a test about 0-RTT asks for it.
+pub fn rama_client_config_with_early_data(identity: &Identity) -> ClientConfig {
+    let anchor = identity.auth.cert_chain.last().expect("a chain").clone();
+    let tls = TlsClientConfig::new()
+        .with_alpn(alpn().into_iter().collect())
+        .try_with_server_trust_anchors([anchor])
+        .expect("the trust anchor is accepted");
+    ClientConfig::try_from_rama_tls(&tls, TlsOptions::default().with_early_data(true))
+        .expect("the client config is built")
+}
+
 pub fn rama_client_config(identity: &Identity) -> ClientConfig {
     let anchor = identity.auth.cert_chain.last().expect("a chain").clone();
     let tls = TlsClientConfig::new()
@@ -318,8 +334,10 @@ pub async fn bounded_command(mut command: Command, limit: Duration) -> Result<Fi
     }
 }
 
-/// Read a pipe to its end, keeping at most `cap` bytes. Reading continues past the cap without
-/// keeping anything, so the child is never blocked on a pipe nobody is draining.
+/// Read a pipe to its end, keeping at most `cap` bytes of it and answering at most `cap` bytes
+/// of text. Reading continues past the cap without keeping anything, so the child is never
+/// blocked on a pipe nobody is draining. Invalid UTF-8 is rendered lossily, which can make the
+/// text longer than the bytes it came from, so the text is trimmed back to the same cap.
 async fn capped_read(stream: Option<impl AsyncRead + Unpin>, cap: usize) -> io::Result<String> {
     let Some(mut stream) = stream else {
         return Ok(String::new());
@@ -329,13 +347,26 @@ async fn capped_read(stream: Option<impl AsyncRead + Unpin>, cap: usize) -> io::
     loop {
         let read = stream.read(&mut scratch).await?;
         if read == 0 {
-            return Ok(String::from_utf8_lossy(&kept).into_owned());
+            return Ok(trimmed(String::from_utf8_lossy(&kept).into_owned(), cap));
         }
         if kept.len() < cap {
             let room = cap - kept.len();
             kept.extend_from_slice(&scratch[..read.min(room)]);
         }
     }
+}
+
+/// Cut a string down to at most `cap` bytes, on a character boundary.
+fn trimmed(mut text: String, cap: usize) -> String {
+    if text.len() <= cap {
+        return text;
+    }
+    let mut at = cap;
+    while at > 0 && !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    text.truncate(at);
+    text
 }
 
 /// Build the peer's environment and check it is the one this project pins, within
@@ -451,6 +482,18 @@ impl Event {
         self.0["order"].as_str().expect("an order")
     }
 
+    pub fn resumed(&self) -> bool {
+        self.0["resumed"].as_bool().expect("a resumption verdict")
+    }
+
+    pub fn early(&self) -> bool {
+        self.0["early"].as_bool().expect("an early data verdict")
+    }
+
+    pub fn phase(&self) -> u64 {
+        self.0["phase"].as_u64().expect("a key phase")
+    }
+
     pub fn alpn(&self) -> &str {
         self.0["alpn"].as_str().expect("a negotiated protocol")
     }
@@ -499,7 +542,7 @@ impl AioQuic {
 
     /// Give the peer a one-word order and wait for it to say the order took effect. The peer
     /// must have been started with `--orders`.
-    pub async fn tell(&mut self, order: &str, deadline: Deadline) {
+    pub async fn tell(&mut self, order: &str, deadline: Deadline) -> Event {
         let orders = self.orders.as_mut().expect("the peer takes orders");
         deadline
             .wait(
@@ -514,6 +557,7 @@ impl AioQuic {
             .expect("it is flushed");
         let seen = self.expect("ack", deadline).await;
         assert_eq!(seen.order(), order, "the peer acknowledged this order");
+        seen
     }
 
     /// The next line the peer wrote, or a failure naming what was being waited for.
@@ -662,10 +706,12 @@ async fn drain(stream: impl AsyncRead + Unpin, into: Arc<Mutex<String>>) {
             Ok(Some(line)) => line,
             Ok(None) => return,
             Err(reason) => {
+                // Trimmed to whatever room is left, so the total stays inside the cap even when
+                // the reason is long or the buffer is nearly full.
                 let mut held = into.lock();
-                if held.len() + MARKER.len() <= COMPLAINT_LIMIT {
-                    held.push_str(&format!("... error output unreadable: {reason}\n"));
-                }
+                let room = COMPLAINT_LIMIT.saturating_sub(held.len());
+                let note = trimmed(format!("... error output unreadable: {reason}\n"), room);
+                held.push_str(&note);
                 return;
             }
         };

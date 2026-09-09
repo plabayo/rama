@@ -6,10 +6,14 @@
 //! pacing and loss matrix: datagrams are read and written through a 1350-byte buffer, so a peer
 //! that raises its MTU needs that raised with it; and `SendInfo::at`, the moment quiche asks a
 //! datagram to leave, is ignored, so nothing here is paced.
+#![allow(
+    dead_code,
+    reason = "shared support for several integration test binaries, each using part of it"
+)]
 
 use std::{
     future::Future,
-    net::{Ipv4Addr, SocketAddr},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -137,6 +141,10 @@ pub fn localhost() -> SocketAddr {
     SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)
 }
 
+pub fn localhost_v6() -> SocketAddr {
+    SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0)
+}
+
 pub fn digest(payload: &[u8]) -> [u8; 32] {
     Sha256::digest(payload).into()
 }
@@ -199,6 +207,18 @@ pub fn rama_server_config(identity: &Identity) -> ServerConfig {
         .expect("the server config is built")
 }
 
+/// A client that trusts `identity` and may offer early application data. Early data is opt-in
+/// in this crate: `TlsOptions::early_data` is off by default, so a test about 0-RTT asks for it.
+pub fn rama_client_config_with_early_data(identity: &Identity) -> ClientConfig {
+    let anchor = identity.auth.cert_chain.last().expect("a chain").clone();
+    let tls = TlsClientConfig::new()
+        .with_alpn(alpn().into_iter().collect())
+        .try_with_server_trust_anchors([anchor])
+        .expect("the trust anchor is accepted");
+    ClientConfig::try_from_rama_tls(&tls, TlsOptions::default().with_early_data(true))
+        .expect("the client config is built")
+}
+
 pub fn rama_client_config(identity: &Identity) -> ClientConfig {
     let anchor = identity.auth.cert_chain.last().expect("a chain").clone();
     let tls = TlsClientConfig::new()
@@ -227,12 +247,45 @@ fn quiche_config() -> quiche::Config {
 /// How many datagrams each direction of a quiche connection will hold.
 pub const DGRAM_QUEUE: usize = 64;
 
-/// quiche always advertises 65536 as its `max_datagram_frame_size` when datagrams are enabled,
-/// so what limits a datagram towards a quiche peer is the path budget rather than the peer's
-/// advertisement. That is the complement of the aioquic project, where the peer's advertised
-/// size is set small enough to be the binding one.
+/// quiche advertises 65536 as its `max_datagram_frame_size` whenever datagrams are enabled,
+/// following draft-ietf-quic-datagram-01; RFC 9221 recommends 65535. Either way the value is
+/// far above the path budget, so what limits a datagram towards a quiche peer is the path. That
+/// is the complement of the aioquic project, where the peer's advertised size is set small
+/// enough to be the binding one.
 pub fn with_datagrams(mut config: quiche::Config) -> quiche::Config {
     config.enable_dgram(true, DGRAM_QUEUE, DGRAM_QUEUE);
+    config
+}
+
+/// The ticket key these tests pin, so a later server can be the same resumption authority as
+/// the first, or deliberately not be.
+pub const TICKET_KEY: [u8; 48] = [0x5a; 48];
+/// A different one, for refusing a resumption outright.
+pub const OTHER_TICKET_KEY: [u8; 48] = [0xa5; 48];
+
+/// BoringSSL's `ssl_early_data_reason_t`, as the vendored header in the pinned quiche defines
+/// it. quiche reports it through `Connection::early_data_reason`.
+pub mod early_data {
+    pub const ACCEPTED: u32 = 2;
+    pub const PEER_DECLINED: u32 = 4;
+    pub const SESSION_NOT_RESUMED: u32 = 6;
+    pub const UNSUPPORTED_FOR_SESSION: u32 = 7;
+}
+
+/// A server that issues resumption tickets under `key`. Whether it also accepts early data is
+/// what separates a server that resumes and takes 0-RTT from one that resumes and refuses it.
+pub fn quiche_resuming_server_config(
+    identity: &Identity,
+    key: &[u8; 48],
+    early_data: bool,
+) -> quiche::Config {
+    let mut config = quiche_server_config(identity);
+    config
+        .set_ticket_key(key)
+        .expect("the ticket key is accepted");
+    if early_data {
+        config.enable_early_data();
+    }
     config
 }
 
@@ -274,20 +327,43 @@ pub struct Quiche {
 }
 
 impl Quiche {
+    /// Start a client that asks for no name. RFC 6066 §3 has no SNI for an address literal, and
+    /// this is how that looks on the wire.
+    pub async fn connect_without_a_name(
+        server: SocketAddr,
+        config: quiche::Config,
+        deadline: Deadline,
+    ) -> Self {
+        Self::start(server, None, config, deadline).await
+    }
+
     /// Start a client and send its first flight.
     pub async fn connect(
         server: SocketAddr,
         name: &str,
+        config: quiche::Config,
+        deadline: Deadline,
+    ) -> Self {
+        Self::start(server, Some(name), config, deadline).await
+    }
+
+    async fn start(
+        server: SocketAddr,
+        name: Option<&str>,
         mut config: quiche::Config,
         deadline: Deadline,
     ) -> Self {
-        let socket = UdpSocket::bind(localhost())
-            .await
-            .expect("the socket binds");
+        // The client's own socket follows the family of the address it is dialling.
+        let here = if server.is_ipv6() {
+            localhost_v6()
+        } else {
+            localhost()
+        };
+        let socket = UdpSocket::bind(here).await.expect("the socket binds");
         let local = socket.local_addr().expect("its address");
         let scid = quiche::ConnectionId::from_ref(&[0x5a; quiche::MAX_CONN_ID_LEN]);
-        let connection = quiche::connect(Some(name), &scid, local, server, &mut config)
-            .expect("the attempt starts");
+        let connection =
+            quiche::connect(name, &scid, local, server, &mut config).expect("the attempt starts");
         let mut peer = Self {
             connection,
             socket,
@@ -297,14 +373,21 @@ impl Quiche {
         peer
     }
 
-    /// Bind a server socket, and hand back the work of accepting on it.
+    /// Bind a server socket on loopback, and hand back the work of accepting on it.
     pub async fn bind_server(
         config: quiche::Config,
         deadline: Deadline,
     ) -> (SocketAddr, impl Future<Output = Self>) {
-        let socket = UdpSocket::bind(localhost())
-            .await
-            .expect("the socket binds");
+        Self::bind_server_on(localhost(), config, deadline).await
+    }
+
+    /// The same, on an address of the caller's choosing, so a test can pick the family.
+    pub async fn bind_server_on(
+        where_to: SocketAddr,
+        config: quiche::Config,
+        deadline: Deadline,
+    ) -> (SocketAddr, impl Future<Output = Self>) {
+        let socket = UdpSocket::bind(where_to).await.expect("the socket binds");
         let local = socket.local_addr().expect("its address");
         let accepting = async move { Self::accept_on(socket, config, deadline).await };
         (local, accepting)
@@ -312,7 +395,15 @@ impl Quiche {
 
     /// Accept one connection on a socket that is already bound, so a server can take a further
     /// attempt after an earlier one has ended.
-    pub async fn accept_on(
+    pub async fn accept_on(socket: UdpSocket, config: quiche::Config, deadline: Deadline) -> Self {
+        let mut peer = Self::accept_on_silently(socket, config, deadline).await;
+        peer.flush(deadline).await;
+        peer
+    }
+
+    /// The same, but without answering. A server that has not answered cannot have finished a
+    /// handshake, so anything readable on it arrived on the early keys.
+    pub async fn accept_on_silently(
         socket: UdpSocket,
         mut config: quiche::Config,
         deadline: Deadline,
@@ -340,13 +431,11 @@ impl Quiche {
         connection
             .recv(&mut buffer[..len], quiche::RecvInfo { from, to: local })
             .expect("the first datagram is taken");
-        let mut peer = Self {
+        Self {
             connection,
             socket,
             local,
-        };
-        peer.flush(deadline).await;
-        peer
+        }
     }
 
     /// Give up the connection and keep the socket, for a server that takes another attempt.
@@ -405,6 +494,43 @@ impl Quiche {
         }
         self.flush(deadline).await;
         None
+    }
+
+    /// Take one datagram, or let a timer fire, without answering. Used to watch what a peer
+    /// sends while this side stays silent.
+    pub async fn receive(&mut self, deadline: Deadline) {
+        let mut buffer = [0u8; DATAGRAM];
+        let wake = deadline.next_wake(self.connection.timeout());
+        match tokio::time::timeout_at(wake, self.socket.recv_from(&mut buffer)).await {
+            Ok(Ok((len, from))) => {
+                let info = quiche::RecvInfo {
+                    from,
+                    to: self.local,
+                };
+                match self.connection.recv(&mut buffer[..len], info) {
+                    Ok(_) | Err(quiche::Error::Done) => {}
+                    Err(error) => panic!("the quiche side refused a datagram: {error}"),
+                }
+            }
+            Ok(Err(error)) => panic!("the quiche side's socket: {error}"),
+            Err(_) => {
+                deadline.expect("the quiche side waits");
+                self.connection.on_timeout();
+            }
+        }
+    }
+
+    /// Take datagrams without answering until `ready` says so.
+    pub async fn receive_until(
+        &mut self,
+        what: &str,
+        deadline: Deadline,
+        mut ready: impl FnMut(&mut quiche::Connection) -> bool,
+    ) {
+        while !ready(&mut self.connection) {
+            deadline.expect(what);
+            self.receive(deadline).await;
+        }
     }
 
     /// Turn until `ready` says so. Answers what stopped it, if something did first.

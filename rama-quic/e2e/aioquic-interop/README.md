@@ -16,6 +16,16 @@ advertises a small `max_datagram_frame_size`, so what limits a datagram is the v
 advertised rather than the path, and the local outgoing buffer is set small so a test can fill
 it deliberately.
 
+`tests/resumption.rs` has resumption and 0-RTT: a client that asked for early data offers it
+and the server accepts it, and a client that did not ask still resumes and offers none. Early
+data is opt-in in this crate, so the second is the default behaviour rather than a failure.
+
+`tests/keys.rs` has key updates, asked for from each side in turn, with the peer's key phase
+read back so the counter is not the only witness, and a control where no update is asked for.
+All three have Rama as the client: neither peer covers Rama as the server asking for or
+following an update, and quiche exposes no key update at all. Neither peer exposes a TLS
+keying-material exporter either, so exporters stay covered against Quinn.
+
 ## Prerequisites
 
 - A Rust toolchain.
