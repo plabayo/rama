@@ -33,24 +33,25 @@ impl RangeSet {
                     // Extend existing
                     self.0.remove(&start);
                     let mut new_end = x + 1;
-                    if let Some((next_start, next_end)) = self.succ(x) {
-                        if next_start == new_end {
-                            self.0.remove(&next_start);
-                            new_end = next_end;
-                        }
+                    if let Some((next_start, next_end)) = self.succ(x)
+                        && next_start == new_end
+                    {
+                        self.0.remove(&next_start);
+                        new_end = next_end;
                     }
                     self.0.insert(start, new_end);
                     return true;
                 }
-                _ => {}
+                // Below the value: nothing to extend here, so fall through to inserting.
+                cmp::Ordering::Less => {}
             }
         }
         let mut new_end = x + 1;
-        if let Some((next_start, next_end)) = self.succ(x) {
-            if next_start == new_end {
-                self.0.remove(&next_start);
-                new_end = next_end;
-            }
+        if let Some((next_start, next_end)) = self.succ(x)
+            && next_start == new_end
+        {
+            self.0.remove(&next_start);
+            new_end = next_end;
         }
         self.0.insert(x, new_end);
         true

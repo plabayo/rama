@@ -5,7 +5,10 @@ use std::{
     task::{Context, Poll, ready},
 };
 
-use crate::proto::{Chunk, Chunks, ClosedStream, ConnectionError, ReadableError, StreamId};
+use crate::proto::{
+    Chunk, Chunks, ClosedStream, ConnectionError, ReadError as ProtoReadError, ReadableError,
+    StreamId,
+};
 use rama_core::bytes::Bytes;
 use tokio::io::ReadBuf;
 
@@ -356,7 +359,6 @@ impl RecvStream {
     where
         T: FnMut(&mut Chunks) -> ReadStatus<U>,
     {
-        use crate::proto::ReadError::*;
         if self.all_data_read {
             return Poll::Ready(Ok(None));
         }
@@ -368,17 +370,16 @@ impl RecvStream {
 
         // If we stored an error during a previous call, return it now. This can happen if a
         // `read_fn` both wants to return data and also returns an error in its final stream status.
-        let status = match self.reset {
-            Some(code) => ReadStatus::Failed(None, Reset(code)),
-            None => {
-                let mut recv = conn.inner.recv_stream(self.stream);
-                let mut chunks = recv.read(ordered)?;
-                let status = read_fn(&mut chunks);
-                if chunks.finalize().should_transmit() {
-                    conn.wake();
-                }
-                status
+        let status = if let Some(code) = self.reset {
+            ReadStatus::Failed(None, ProtoReadError::Reset(code))
+        } else {
+            let mut recv = conn.inner.recv_stream(self.stream);
+            let mut chunks = recv.read(ordered)?;
+            let status = read_fn(&mut chunks);
+            if chunks.finalize().should_transmit() {
+                conn.wake();
             }
+            status
         };
 
         match status {
@@ -387,17 +388,18 @@ impl RecvStream {
                 self.all_data_read = true;
                 Poll::Ready(Ok(read))
             }
-            ReadStatus::Failed(read, Blocked) => match read {
-                Some(val) => Poll::Ready(Ok(Some(val))),
-                None => {
+            ReadStatus::Failed(read, ProtoReadError::Blocked) => {
+                if let Some(val) = read {
+                    Poll::Ready(Ok(Some(val)))
+                } else {
                     if let Some(ref x) = conn.error {
                         return Poll::Ready(Err(ReadError::ConnectionLost(x.clone())));
                     }
                     conn.blocked_readers.insert(self.stream, cx.waker().clone());
                     Poll::Pending
                 }
-            },
-            ReadStatus::Failed(read, Reset(error_code)) => match read {
+            }
+            ReadStatus::Failed(read, ProtoReadError::Reset(error_code)) => match read {
                 None => {
                     self.all_data_read = true;
                     self.reset = Some(error_code);
@@ -442,29 +444,26 @@ impl Future for ReadToEnd<'_> {
     type Output = Result<Vec<u8>, ReadToEndError>;
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         loop {
-            match ready!(self.stream.poll_read_chunk(cx, usize::MAX, false))? {
-                Some(chunk) => {
-                    self.start = self.start.min(chunk.offset);
-                    let end = chunk.bytes.len() as u64 + chunk.offset;
-                    if (end - self.start) > self.size_limit as u64 {
-                        return Poll::Ready(Err(ReadToEndError::TooLong));
-                    }
-                    self.end = self.end.max(end);
-                    self.read.push((chunk.bytes, chunk.offset));
+            if let Some(chunk) = ready!(self.stream.poll_read_chunk(cx, usize::MAX, false))? {
+                self.start = self.start.min(chunk.offset);
+                let end = chunk.bytes.len() as u64 + chunk.offset;
+                if (end - self.start) > self.size_limit as u64 {
+                    return Poll::Ready(Err(ReadToEndError::TooLong));
                 }
-                None => {
-                    if self.end == 0 {
-                        // Never received anything
-                        return Poll::Ready(Ok(Vec::new()));
-                    }
-                    let start = self.start;
-                    let mut buffer = vec![0; (self.end - start) as usize];
-                    for (data, offset) in self.read.drain(..) {
-                        let offset = (offset - start) as usize;
-                        buffer[offset..offset + data.len()].copy_from_slice(&data);
-                    }
-                    return Poll::Ready(Ok(buffer));
+                self.end = self.end.max(end);
+                self.read.push((chunk.bytes, chunk.offset));
+            } else {
+                if self.end == 0 {
+                    // Never received anything
+                    return Poll::Ready(Ok(Vec::new()));
                 }
+                let start = self.start;
+                let mut buffer = vec![0; (self.end - start) as usize];
+                for (data, offset) in self.read.drain(..) {
+                    let offset = (offset - start) as usize;
+                    buffer[offset..offset + data.len()].copy_from_slice(&data);
+                }
+                return Poll::Ready(Ok(buffer));
             }
         }
     }
@@ -492,7 +491,7 @@ impl std::error::Error for ReadToEndError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Read(inner) => Some(inner),
-            _ => None,
+            Self::TooLong => None,
         }
     }
 }
@@ -539,7 +538,7 @@ impl Drop for RecvStream {
         }
 
         // Ignore ClosedStream errors
-        let _ = conn.inner.recv_stream(self.stream).stop(0u32.into());
+        let _stopped = conn.inner.recv_stream(self.stream).stop(0u32.into());
         conn.wake();
     }
 }
@@ -616,11 +615,10 @@ impl From<ResetError> for ReadError {
 
 impl From<ReadError> for io::Error {
     fn from(x: ReadError) -> Self {
-        use ReadError::*;
         let kind = match x {
-            Reset { .. } | ZeroRttRejected => io::ErrorKind::ConnectionReset,
-            ConnectionLost(_) | ClosedStream => io::ErrorKind::NotConnected,
-            IllegalOrderedRead => io::ErrorKind::InvalidInput,
+            ReadError::Reset { .. } | ReadError::ZeroRttRejected => io::ErrorKind::ConnectionReset,
+            ReadError::ConnectionLost(_) | ReadError::ClosedStream => io::ErrorKind::NotConnected,
+            ReadError::IllegalOrderedRead => io::ErrorKind::InvalidInput,
         };
         Self::new(kind, x)
     }
@@ -653,7 +651,7 @@ impl std::error::Error for ResetError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::ConnectionLost(inner) => Some(inner),
-            _ => None,
+            Self::ZeroRttRejected => None,
         }
     }
 }
@@ -666,10 +664,9 @@ impl From<ConnectionError> for ResetError {
 
 impl From<ResetError> for io::Error {
     fn from(x: ResetError) -> Self {
-        use ResetError::*;
         let kind = match x {
-            ZeroRttRejected => io::ErrorKind::ConnectionReset,
-            ConnectionLost(_) => io::ErrorKind::NotConnected,
+            ResetError::ZeroRttRejected => io::ErrorKind::ConnectionReset,
+            ResetError::ConnectionLost(_) => io::ErrorKind::NotConnected,
         };
         Self::new(kind, x)
     }
@@ -743,7 +740,7 @@ impl std::error::Error for ReadExactError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::ReadError(inner) => Some(inner),
-            _ => None,
+            Self::FinishedEarly(_) => None,
         }
     }
 }

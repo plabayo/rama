@@ -171,7 +171,7 @@ pub(super) struct SenderProbe {
 
 impl SenderProbe {
     fn attach(&self, endpoint: &Endpoint) {
-        let _ = self.endpoint.set(Arc::downgrade(&endpoint.inner.0));
+        let _installed = self.endpoint.set(Arc::downgrade(&endpoint.inner.0));
     }
 
     fn record(&self) {
@@ -226,6 +226,10 @@ impl SendGate {
         }
     }
 
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the sender trait this stands in for takes the poll context by exclusive reference"
+    )]
     fn hold(&self, cx: &mut Context<'_>, destination: SocketAddress) -> bool {
         if !self.closed.load(Ordering::SeqCst) {
             return false;
@@ -691,7 +695,7 @@ where
         // A healthy scenario tears its runtime down here; a wedged one blocks this thread
         // forever while the outer deadline fails the test without touching it.
         drop(runtime);
-        let _ = result.send(output);
+        let _sent = result.send(output);
     });
     done.recv_timeout(Duration::from_secs(20))
         .unwrap_or_else(|_| panic!("{what} did not complete: a lock cycle or hang"))
@@ -708,7 +712,7 @@ async fn watchdog<T: Send + 'static>(
     let (result, done) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
         let _entered = handle.enter();
-        let _ = result.send(call());
+        let _sent = result.send(call());
     });
     tokio::time::timeout(Duration::from_secs(3), done)
         .await
@@ -840,7 +844,9 @@ async fn completed_handshake_cancels_deadline() {
 #[tokio::test]
 async fn invalid_handshake_deadlines_fail_before_spawning() {
     let mut config = EndpointConfig::default();
-    assert!(config.handshake_timeout(Duration::ZERO).is_err());
+    config
+        .handshake_timeout(Duration::ZERO)
+        .expect_err("a zero handshake timeout is refused");
     for duration in [Duration::ZERO, Duration::MAX] {
         config.handshake_timeout = duration;
         let socket = Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap();
@@ -943,7 +949,7 @@ async fn connected_shutdown_releases_sockets_with_retained_streams() {
         let (a, b) = tokio::join!(client.shutdown(), server.shutdown());
         assert_eq!((a, b), (ShutdownOutcome::Drained, ShutdownOutcome::Drained));
         send.write_all(b"closed").await.unwrap_err();
-        let _ = recv.read_to_end(32).await;
+        let _read = recv.read_to_end(32).await;
         assert!(client_conn.close_reason().is_some());
         assert!(server_conn.close_reason().is_some());
         assert_eq!(
@@ -2768,7 +2774,7 @@ fn forced_shutdown_waits_for_a_registered_driver_that_is_still_being_submitted()
                 let connecting = endpoint
                     .connect_with(client_config, ([127, 0, 0, 2], 443).into(), "localhost")
                     .unwrap();
-                let _ = submitted.send(connecting);
+                let _sent = submitted.send(connecting);
             }
         });
         wait_until(|| endpoint.inner.shared.lifecycle.pending_submissions() == 1).await;
@@ -3227,13 +3233,11 @@ async fn a_server_connection_keeps_its_socket_on_rebind_and_ends_with_it_when_it
         .expect("the connection ends when its only path fails")
         .unwrap();
     assert_local_path_error(&error);
-    assert!(
-        tokio::time::timeout(Duration::from_secs(3), accept)
-            .await
-            .expect("blocked work is woken")
-            .unwrap()
-            .is_err()
-    );
+    tokio::time::timeout(Duration::from_secs(3), accept)
+        .await
+        .expect("blocked work is woken")
+        .unwrap()
+        .expect_err("the blocked attempt is refused");
     wait_for(
         "A retires and the connection is gone",
         Duration::from_secs(5),
@@ -3765,10 +3769,7 @@ impl<S: DatagramSender> DatagramSender for SegmentingSender<S> {
                                  batch: neither Pending nor Err can say a prefix left, so this \
                                  batch cannot be reported to the sender"
                             );
-                            return match stopped {
-                                Poll::Pending => Poll::Pending,
-                                other => other,
-                            };
+                            return stopped;
                         }
                     }
                 }
@@ -5008,9 +5009,7 @@ async fn the_first_accepted_datagram_grants_a_fresh_identifier_its_history() {
         released += 1;
         let carried = {
             let log = log.lock();
-            short_header_dcids(&log.sent, fresh_dcid.len())
-                .iter()
-                .any(|dcid| *dcid == fresh_dcid)
+            short_header_dcids(&log.sent, fresh_dcid.len()).contains(&fresh_dcid)
         };
         if carried {
             break;
@@ -5295,8 +5294,7 @@ async fn a_retirement_mid_descriptor_gives_up_only_the_unsent_suffix() {
         // And nothing at all went out under the retired identifier after it was retired.
         assert!(
             !short_header_dcids(&log.sent[log.rejected_at + accepted.len()..], doomed.len())
-                .iter()
-                .any(|dcid| *dcid == doomed),
+                .contains(&doomed),
             "a datagram used the retired identifier after it was retired"
         );
     }
@@ -5387,7 +5385,7 @@ fn the_segmentation_fixture_refuses_to_hide_a_half_sent_batch() {
     let mut descriptor = rama_udp::SendDatagram::new(([127, 0, 0, 2], 9), &payload[..]);
     descriptor.set_segment_size(NonZeroUsize::new(3).unwrap());
     let mut cx = Context::from_waker(Waker::noop());
-    let _ = sender.poll_send(&mut cx, &descriptor);
+    let _polled = sender.poll_send(&mut cx, &descriptor);
 }
 
 /// An address-changing migration commits an unused destination connection ID first: every

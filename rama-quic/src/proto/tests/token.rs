@@ -432,7 +432,7 @@ fn retry_with_failing_key(failure: ProviderFailure) {
     assert!(incoming.may_retry());
     let server_ch = pair.server.try_accept(incoming, pair.time).unwrap();
     pair.drive();
-    assert!(pair.client_conn_mut(client_ch).is_handshaking() == false);
+    assert!(!pair.client_conn_mut(client_ch).is_handshaking());
     assert!(!pair.server_conn_mut(server_ch).is_closed());
     assert_eq!(pair.server.known_connections(), 1);
 }
@@ -724,7 +724,7 @@ fn a_retry_token_is_read_only_under_the_key_that_sealed_it() {
         .expect("a chunk arrives")
         .expect("with the payload");
     assert_eq!(&chunk.bytes[..], MESSAGE, "the payload arrives as sent");
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 
     // Other material: the token is unreadable, so it counts as no token (RFC 9000 §8.1.3) and
     // the server asks for validation again. The client discards a Retry once it has accepted

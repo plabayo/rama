@@ -60,7 +60,7 @@ impl WorkLimiter {
 
     /// Starts one work cycle
     pub(crate) fn start_cycle(&self, now: impl Fn() -> Instant) -> WorkCycle {
-        let kind = if self.cycle % SAMPLING_INTERVAL == 0 {
+        let kind = if self.cycle.is_multiple_of(SAMPLING_INTERVAL) {
             CycleKind::Measure {
                 started: now(),
                 budget: self.desired_cycle_time,
@@ -80,6 +80,14 @@ impl WorkLimiter {
     /// The estimate is updated using the same exponential averaging (smoothing)
     /// mechanism which is used for determining QUIC path rtts: The last value is
     /// weighted by 1/8, and the previous average by 7/8.
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "the 7/8 + 1/8 smoothing is written as the RTT estimator is; fusing it would change the estimate's rounding"
+    )]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "a cycle ends here, so it is taken rather than borrowed"
+    )]
     pub(crate) fn finish_cycle(&mut self, cycle: WorkCycle, now: impl Fn() -> Instant) {
         // If no work was done in the cycle drop the measurement, it won't be useful
         if cycle.completed == 0 {
@@ -149,6 +157,10 @@ mod tests {
     use std::cell::RefCell;
 
     #[test]
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "the expectation is written as the estimator computes it, so the two round alike"
+    )]
     fn limit_work() {
         const CYCLE_TIME: Duration = Duration::from_millis(500);
         const BATCH_WORK_ITEMS: usize = 12;

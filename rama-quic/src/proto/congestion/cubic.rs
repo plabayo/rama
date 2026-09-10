@@ -39,6 +39,10 @@ impl State {
     }
 
     // W_cubic(t) = C * (t - K)^3 - w_max (Eq. 1)
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "written as RFC 8312 states the equation; fusing the multiply and add rounds differently from the reference"
+    )]
     fn w_cubic(&self, t: Duration, max_datagram_size: u64) -> f64 {
         let w_max = self.w_max / max_datagram_size as f64;
 
@@ -47,6 +51,10 @@ impl State {
 
     // W_est(t) = w_max * beta_cubic + 3 * (1 - beta_cubic) / (1 + beta_cubic) *
     // (t / RTT) (Eq. 4)
+    #[expect(
+        clippy::suboptimal_flops,
+        reason = "written as RFC 8312 states the equation; fusing the multiply and add rounds differently from the reference"
+    )]
     fn w_est(&self, t: Duration, rtt: Duration, max_datagram_size: u64) -> f64 {
         let w_max = self.w_max / max_datagram_size as f64;
         (w_max * BETA_CUBIC
@@ -114,17 +122,16 @@ impl Controller for Cubic {
             // Congestion avoidance.
             let ca_start_time;
 
-            match self.recovery_start_time {
-                Some(t) => ca_start_time = t,
-                None => {
-                    // When we come here without congestion_event() triggered,
-                    // initialize congestion_recovery_start_time, w_max and k.
-                    ca_start_time = now;
-                    self.recovery_start_time = Some(now);
+            if let Some(t) = self.recovery_start_time {
+                ca_start_time = t
+            } else {
+                // When we come here without congestion_event() triggered,
+                // initialize congestion_recovery_start_time, w_max and k.
+                ca_start_time = now;
+                self.recovery_start_time = Some(now);
 
-                    self.cubic_state.w_max = self.window as f64;
-                    self.cubic_state.k = 0.0;
-                }
+                self.cubic_state.w_max = self.window as f64;
+                self.cubic_state.k = 0.0;
             }
 
             let t = now - ca_start_time;
@@ -292,10 +299,15 @@ mod tests {
 
         cubic.on_congestion_event(now, now + Duration::from_millis(1), false, 0);
 
-        assert_eq!(
-            cubic.cubic_state.w_max,
-            window as f64 * (1.0 + BETA_CUBIC) / 2.0
-        );
+        // The controller computes w_max with this very expression, so the two agree bit for
+        // bit; the comparison is of one calculation against itself, not of two estimates.
+        #[expect(clippy::float_cmp, reason = "the same expression on both sides")]
+        {
+            assert_eq!(
+                cubic.cubic_state.w_max,
+                window as f64 * (1.0 + BETA_CUBIC) / 2.0
+            );
+        }
         assert_eq!(cubic.ssthresh, (window as f64 * BETA_CUBIC) as u64);
         assert_eq!(cubic.window, cubic.ssthresh);
     }

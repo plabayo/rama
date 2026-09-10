@@ -314,8 +314,9 @@ enum TokenType {
 
 impl TokenType {
     fn from_byte(n: u8) -> Option<Self> {
-        use TokenType::*;
-        [Retry, Validation].into_iter().find(|ty| *ty as u8 == n)
+        [Self::Retry, Self::Validation]
+            .into_iter()
+            .find(|ty| *ty as u8 == n)
     }
 }
 

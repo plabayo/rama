@@ -31,8 +31,9 @@ use crate::driver::{
     udp::{FailureLog, Sender},
 };
 use crate::proto::{
-    ConnectionError, ConnectionHandle, ConnectionId, ConnectionStats, Dir, EndpointEvent,
-    HandshakeSummary, SendPermit, Side, StreamEvent, StreamId,
+    ConnectionError, ConnectionHandle, ConnectionId, ConnectionStats, Dir, EndpointEvent, Event,
+    HandshakeSummary, SendDatagramError as ProtoSendDatagramError, SendPermit, Side, StreamEvent,
+    StreamId,
 };
 
 /// Tests: one descriptor this connection offered to its sender, and what became of it.
@@ -218,7 +219,7 @@ impl Connecting {
         // potentially many tasks waiting on the same event. It's a bit of a hack, but keeps things
         // simple.
         if let Some(x) = self.handshake_data_ready.take() {
-            let _ = x.await;
+            let _handshake = x.await;
         }
         let conn = self.connection_ref();
         let inner = conn.state.lock();
@@ -1070,17 +1071,16 @@ impl Connection {
         if let Some(ref x) = conn.error {
             return Err(SendDatagramError::ConnectionLost(x.clone()));
         }
-        use crate::proto::SendDatagramError::*;
         match conn.inner.datagrams().send(data, true) {
             Ok(()) => {
                 conn.wake();
                 Ok(())
             }
             Err(e) => Err(match e {
-                Blocked(..) => unreachable!(),
-                UnsupportedByPeer => SendDatagramError::UnsupportedByPeer,
-                Disabled => SendDatagramError::Disabled,
-                TooLarge => SendDatagramError::TooLarge,
+                ProtoSendDatagramError::Blocked(..) => unreachable!(),
+                ProtoSendDatagramError::UnsupportedByPeer => SendDatagramError::UnsupportedByPeer,
+                ProtoSendDatagramError::Disabled => SendDatagramError::Disabled,
+                ProtoSendDatagramError::TooLarge => SendDatagramError::TooLarge,
             }),
         }
     }
@@ -1537,7 +1537,6 @@ impl Future for SendDatagram<'_> {
         if let Some(ref e) = state.error {
             return Poll::Ready(Err(SendDatagramError::ConnectionLost(e.clone())));
         }
-        use crate::proto::SendDatagramError::*;
         match state
             .inner
             .datagrams()
@@ -1548,7 +1547,7 @@ impl Future for SendDatagram<'_> {
                 Poll::Ready(Ok(()))
             }
             Err(e) => Poll::Ready(Err(match e {
-                Blocked(data) => {
+                ProtoSendDatagramError::Blocked(data) => {
                     this.data.replace(data);
                     loop {
                         match this.notify.as_mut().poll(ctx) {
@@ -1560,9 +1559,9 @@ impl Future for SendDatagram<'_> {
                         }
                     }
                 }
-                UnsupportedByPeer => SendDatagramError::UnsupportedByPeer,
-                Disabled => SendDatagramError::Disabled,
-                TooLarge => SendDatagramError::TooLarge,
+                ProtoSendDatagramError::UnsupportedByPeer => SendDatagramError::UnsupportedByPeer,
+                ProtoSendDatagramError::Disabled => SendDatagramError::Disabled,
+                ProtoSendDatagramError::TooLarge => SendDatagramError::TooLarge,
             })),
         }
     }
@@ -1748,8 +1747,8 @@ impl ConnectionInner {
         {
             let dead_addr = dead.local_addr();
             conn.released_senders.push(dead);
-            outcome = match conn.pending_rebind.take() {
-                Some(replacement) => match conn.switch_from(dead_addr, &replacement) {
+            outcome = if let Some(replacement) = conn.pending_rebind.take() {
+                match conn.switch_from(dead_addr, &replacement) {
                     Switch::SameAddress => {
                         conn.socket = Some(replacement);
                         PathFailure::Switched
@@ -1763,11 +1762,10 @@ impl ConnectionInner {
                         conn.lose_path(&self.shared);
                         PathFailure::Terminated
                     }
-                },
-                None => {
-                    conn.lose_path(&self.shared);
-                    PathFailure::Terminated
                 }
+            } else {
+                conn.lose_path(&self.shared);
+                PathFailure::Terminated
             };
         }
         conn.wake();
@@ -2334,6 +2332,13 @@ impl State {
     /// Tests can make one attempt find nothing there: the engine cannot produce that state, and
     /// the code has to retire the descriptor rather than leave it pointing at a buffer that is
     /// about to hold something else.
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::needless_pass_by_ref_mut,
+            reason = "the test build takes the one-shot failure flag out of `self` here"
+        )
+    )]
     fn ownership_source(&mut self) -> &[u8] {
         #[cfg(test)]
         if std::mem::take(&mut self.fail_ownership) {
@@ -2351,6 +2356,10 @@ impl State {
     }
 
     /// The same, where the caller is not running a send pass.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the descriptor is relinquished here, so it is taken rather than borrowed"
+    )]
     fn retire_quietly(&mut self, held: Held) {
         #[cfg(test)]
         self.note_descriptor(&held, Outcome::Obsolete, false);
@@ -2483,6 +2492,13 @@ impl State {
     }
 
     /// The datagrams one pass may offer before it gives the task back.
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "the test build reads a per-connection allowance from `self`"
+        )
+    )]
     fn pass_allowance(&self) -> usize {
         #[cfg(test)]
         if let Some(allowance) = self.pass_allowance {
@@ -2547,9 +2563,10 @@ impl State {
             // either way what it produced would have nowhere to wait.
             let held = match self.buffered_transmit.take_if(|_| !blocked) {
                 Some(held) => held,
-                None => match self.take_deferred() {
-                    Some(held) => held,
-                    None => {
+                None => {
+                    if let Some(held) = self.take_deferred() {
+                        held
+                    } else {
                         // The engine is asked only while some station could take what it
                         // produces. With the handle in use blocked that means a handle kept
                         // aside with nothing on it, or the room to ask the endpoint for one.
@@ -2571,7 +2588,7 @@ impl State {
                             None => break,
                         }
                     }
-                },
+                }
             };
             match self.place(cx, now, held, &mut work)? {
                 Placed::Done => {}
@@ -2635,7 +2652,7 @@ impl State {
                     return Err(ConnectionError::TransportError(
                         crate::proto::TransportError::new(
                             crate::proto::TransportErrorCode::INTERNAL_ERROR,
-                            "endpoint driver future was dropped".to_string(),
+                            "endpoint driver future was dropped".to_owned(),
                         ),
                     ));
                 }
@@ -2647,15 +2664,14 @@ impl State {
 
     fn forward_app_events(&mut self, shared: &Shared) {
         while let Some(event) = self.inner.poll() {
-            use crate::proto::Event::*;
             match event {
-                HandshakeDataReady => {
+                Event::HandshakeDataReady => {
                     if let Some(x) = self.on_handshake_data.take() {
                         // Nobody waiting for it is not an error: the receiver may be gone.
                         let _sent = x.send(());
                     }
                 }
-                Connected => {
+                Event::Connected => {
                     self.connected = true;
                     if let Some(x) = self.on_connected.take() {
                         // Nobody waiting for it is not an error: the receiver may be gone.
@@ -2671,33 +2687,39 @@ impl State {
                         wake_all_notify(&mut self.stopped);
                     }
                 }
-                HandshakeConfirmed => {
+                Event::HandshakeConfirmed => {
                     self.handshake_confirmed = true;
                     shared.handshake_confirmed.notify_waiters();
                 }
-                ConnectionLost { reason } => {
+                Event::ConnectionLost { reason } => {
                     self.terminate(reason, shared);
                 }
-                Stream(StreamEvent::Writable { id }) => wake_stream(id, &mut self.blocked_writers),
-                Stream(StreamEvent::Opened { dir: Dir::Uni }) => {
+                Event::Stream(StreamEvent::Writable { id }) => {
+                    wake_stream(id, &mut self.blocked_writers)
+                }
+                Event::Stream(StreamEvent::Opened { dir: Dir::Uni }) => {
                     shared.stream_incoming[Dir::Uni as usize].notify_waiters();
                 }
-                Stream(StreamEvent::Opened { dir: Dir::Bi }) => {
+                Event::Stream(StreamEvent::Opened { dir: Dir::Bi }) => {
                     shared.stream_incoming[Dir::Bi as usize].notify_waiters();
                 }
-                DatagramReceived => {
+                Event::DatagramReceived => {
                     shared.datagram_received.notify_waiters();
                 }
-                DatagramsUnblocked => {
+                Event::DatagramsUnblocked => {
                     shared.datagrams_unblocked.notify_waiters();
                 }
-                Stream(StreamEvent::Readable { id }) => wake_stream(id, &mut self.blocked_readers),
-                Stream(StreamEvent::Available { dir }) => {
+                Event::Stream(StreamEvent::Readable { id }) => {
+                    wake_stream(id, &mut self.blocked_readers)
+                }
+                Event::Stream(StreamEvent::Available { dir }) => {
                     // Might mean any number of streams are ready, so we wake up everyone
                     shared.stream_budget_available[dir as usize].notify_waiters();
                 }
-                Stream(StreamEvent::Finished { id }) => wake_stream_notify(id, &mut self.stopped),
-                Stream(StreamEvent::Stopped { id, .. }) => {
+                Event::Stream(StreamEvent::Finished { id }) => {
+                    wake_stream_notify(id, &mut self.stopped)
+                }
+                Event::Stream(StreamEvent::Stopped { id, .. }) => {
                     wake_stream_notify(id, &mut self.stopped);
                     wake_stream(id, &mut self.blocked_writers);
                 }
@@ -2783,7 +2805,7 @@ impl State {
         self.deferred = None;
         self.give_up_aside();
         if let Some(x) = self.on_handshake_data.take() {
-            let _ = x.send(());
+            let _sent = x.send(());
         }
         wake_all(&mut self.blocked_writers);
         wake_all(&mut self.blocked_readers);
@@ -2794,7 +2816,7 @@ impl State {
         shared.datagram_received.notify_waiters();
         shared.datagrams_unblocked.notify_waiters();
         if let Some(x) = self.on_connected.take() {
-            let _ = x.send(Err(reason));
+            let _sent = x.send(Err(reason));
         }
         shared.handshake_confirmed.notify_waiters();
         wake_all_notify(&mut self.stopped);

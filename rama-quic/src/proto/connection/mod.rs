@@ -569,7 +569,7 @@ impl Connection {
     /// - a call to `poll_transmit` returned `Some`
     /// - a call was made to `handle_timeout`
     #[must_use]
-    /// Expiry of the loss detection timer, if armed (test observation point)
+    ///   Expiry of the loss detection timer, if armed (test observation point)
     #[cfg(test)]
     pub(crate) fn loss_detection_timer(&self) -> Option<Instant> {
         self.timers.get(Timer::LossDetection)
@@ -581,7 +581,7 @@ impl Connection {
         self.crypto.negotiated_key_exchange_group()
     }
 
-    pub(crate) fn poll_timeout(&mut self) -> Option<Instant> {
+    pub(crate) fn poll_timeout(&self) -> Option<Instant> {
         self.timers.next_timeout()
     }
 
@@ -929,15 +929,14 @@ impl Connection {
                 }
 
                 // Allocate space for another datagram
-                let next_datagram_size_limit = match self.spaces[space_id].loss_probes {
-                    0 => segment_size,
-                    _ => {
-                        self.spaces[space_id].loss_probes -= 1;
-                        // Clamp the datagram to at most the minimum MTU to ensure that loss probes
-                        // can get through and enable recovery even if the path MTU has shrank
-                        // unexpectedly.
-                        std::cmp::min(segment_size, usize::from(INITIAL_MTU))
-                    }
+                let next_datagram_size_limit = if self.spaces[space_id].loss_probes == 0 {
+                    segment_size
+                } else {
+                    self.spaces[space_id].loss_probes -= 1;
+                    // Clamp the datagram to at most the minimum MTU to ensure that loss probes
+                    // can get through and enable recovery even if the path MTU has shrank
+                    // unexpectedly.
+                    std::cmp::min(segment_size, usize::from(INITIAL_MTU))
                 };
                 buf_capacity += next_datagram_size_limit;
                 if buf.capacity() < buf_capacity {
@@ -1020,7 +1019,7 @@ impl Connection {
                         now,
                         self.receiving_ecn,
                         &mut SentFrames::default(),
-                        &mut self.spaces[space_id],
+                        &self.spaces[space_id],
                         buf,
                         &mut self.stats,
                         buf_capacity,
@@ -1446,9 +1445,8 @@ impl Connection {
     /// (including application `Event`s, `EndpointEvent`s and outgoing datagrams) that should be
     /// extracted through the relevant methods.
     pub(crate) fn handle_event(&mut self, event: ConnectionEvent) {
-        use ConnectionEventInner::*;
         match event.0 {
-            Datagram(DatagramConnectionEvent {
+            ConnectionEventInner::Datagram(DatagramConnectionEvent {
                 now,
                 remote,
                 local,
@@ -1500,7 +1498,7 @@ impl Connection {
                     self.set_loss_detection_timer(now);
                 }
             }
-            NewIdentifiers(ids, now) => {
+            ConnectionEventInner::NewIdentifiers(ids, now) => {
                 self.local_cid_state.new_cids(&ids, now);
                 ids.into_iter().rev().for_each(|frame| {
                     self.spaces[SpaceId::Data].pending.new_cids.push(frame);
@@ -1510,12 +1508,12 @@ impl Connection {
                     self.reset_cid_retirement();
                 }
             }
-            ResetRouteInstalled(remote, seq, generation) => {
+            ConnectionEventInner::ResetRouteInstalled(remote, seq, generation) => {
                 // An acknowledgement for an installation this identifier no longer has, whether
                 // retired or replaced by a newer one, opens nothing.
                 self.rem_cids.route_installed(seq, remote, generation);
             }
-            ResetRouteRefused(remote, seq, generation) => {
+            ConnectionEventInner::ResetRouteRefused(remote, seq, generation) => {
                 // There is nowhere to route a reset for this identifier, so the datagram waiting
                 // on it can never leave. That is a failure of ours, and it ends the connection
                 // with its cause rather than leaving it silently stuck (or opening the gate).
@@ -1883,7 +1881,7 @@ impl Connection {
         &mut self,
         now: Instant,
         space: SpaceId,
-        ack: frame::Ack,
+        ack: &frame::Ack,
     ) -> Result<(), TransportError> {
         if ack.largest >= self.spaces[space].next_packet_number {
             return Err(TransportError::PROTOCOL_VIOLATION("unsent packet acked"));
@@ -2089,12 +2087,9 @@ impl Connection {
             self.set_loss_detection_timer(now);
             return;
         }
-        let (_, space) = match self.pto_time_and_space(now) {
-            Some(x) => x,
-            None => {
-                error!("PTO expired while unset");
-                return;
-            }
+        let Some((_, space)) = self.pto_time_and_space(now) else {
+            error!("PTO expired while unset");
+            return;
         };
         trace!(
             in_flight = self.path.in_flight.bytes,
@@ -2235,13 +2230,12 @@ impl Connection {
                 self.path
                     .congestion
                     .on_mtu_update(self.path.mtud.current_mtu());
-                if let Some(max_datagram_size) = self.datagrams().max_size() {
-                    if self.datagrams.drop_oversized(max_datagram_size)
-                        && self.datagrams.send_blocked
-                    {
-                        self.datagrams.send_blocked = false;
-                        self.events.push_back(Event::DatagramsUnblocked);
-                    }
+                if let Some(max_datagram_size) = self.datagrams().max_size()
+                    && self.datagrams.drop_oversized(max_datagram_size)
+                    && self.datagrams.send_blocked
+                {
+                    self.datagrams.send_blocked = false;
+                    self.events.push_back(Event::DatagramsUnblocked);
                 }
             }
 
@@ -2312,9 +2306,9 @@ impl Connection {
                 // Include max_ack_delay and backoff for ApplicationData.
                 duration += self.ack_frequency.max_ack_delay_for_pto() * backoff;
             }
-            let last_ack_eliciting = match self.spaces[space].time_of_last_ack_eliciting_packet {
-                Some(time) => time,
-                None => continue,
+            let Some(last_ack_eliciting) = self.spaces[space].time_of_last_ack_eliciting_packet
+            else {
+                continue;
             };
             let pto = last_ack_eliciting + duration;
             if result.is_none_or(|(earliest_pto, _)| pto < earliest_pto) {
@@ -2406,10 +2400,7 @@ impl Connection {
             }
         }
 
-        let packet = match packet {
-            Some(x) => x,
-            None => return,
-        };
+        let Some(packet) = packet else { return };
         if self.side.is_server() {
             if self.spaces[SpaceId::Initial].crypto.is_some() && space_id == SpaceId::Handshake {
                 // A server stops sending and processing Initial packets when it receives its first Handshake packet.
@@ -2434,9 +2425,8 @@ impl Connection {
     }
 
     fn reset_idle_timeout(&mut self, now: Instant, space: SpaceId) {
-        let timeout = match self.idle_timeout {
-            None => return,
-            Some(dur) => dur,
+        let Some(timeout) = self.idle_timeout else {
+            return;
         };
         if self.state.is_closed() {
             self.timers.stop(Timer::Idle);
@@ -2516,9 +2506,8 @@ impl Connection {
     }
 
     fn init_0rtt(&mut self) {
-        let (header, packet) = match self.crypto.early_crypto() {
-            Some(x) => x,
-            None => return,
+        let Some((header, packet)) = self.crypto.early_crypto() else {
+            return;
         };
         if self.side.is_client() {
             match self.crypto.transport_parameters() {
@@ -2628,7 +2617,7 @@ impl Connection {
                         clippy::unreachable,
                         reason = "`upgrade_crypto` is only called while `highest_space` is Initial or Handshake; 1-RTT key changes go through `update_keys`"
                     )]
-                    _ => unreachable!("got updated secrets during 1-RTT"),
+                    SpaceId::Data => unreachable!("got updated secrets during 1-RTT"),
                 }
             }
             if outgoing.is_empty() {
@@ -2641,10 +2630,12 @@ impl Connection {
             }
             let offset = self.spaces[space].crypto_offset;
             let outgoing = Bytes::from(outgoing);
-            if let State::Handshake(ref mut state) = self.state {
-                if space == SpaceId::Initial && offset == 0 && self.side.is_client() {
-                    state.client_hello = Some(outgoing.clone());
-                }
+            if let State::Handshake(ref mut state) = self.state
+                && space == SpaceId::Initial
+                && offset == 0
+                && self.side.is_client()
+            {
+                state.client_hello = Some(outgoing.clone());
             }
             self.spaces[space].crypto_offset += outgoing.len() as u64;
             trace!("wrote {} {:?} CRYPTO bytes", outgoing.len(), space);
@@ -2838,16 +2829,16 @@ impl Connection {
                     trace!("dropping short packet during handshake");
                     return;
                 } else {
-                    if let Header::Initial(InitialHeader { ref token, .. }) = packet.header {
-                        if let State::Handshake(ref hs) = self.state {
-                            if self.side.is_server() && token != &hs.expected_token {
-                                // Clients must send the same retry token in every Initial. Initial
-                                // packets can be spoofed, so we discard rather than killing the
-                                // connection.
-                                warn!("discarding Initial with invalid retry token");
-                                return;
-                            }
-                        }
+                    if let Header::Initial(InitialHeader { ref token, .. }) = packet.header
+                        && let State::Handshake(ref hs) = self.state
+                        && self.side.is_server()
+                        && token != &hs.expected_token
+                    {
+                        // Clients must send the same retry token in every Initial. Initial
+                        // packets can be spoofed, so we discard rather than killing the
+                        // connection.
+                        warn!("discarding Initial with invalid retry token");
+                        return;
                     }
 
                     if !self.state.is_closed() {
@@ -2974,7 +2965,7 @@ impl Connection {
                         }
                     };
 
-                    if let Frame::Padding = frame {
+                    if matches!(frame, Frame::Padding) {
                         continue;
                     };
 
@@ -3257,7 +3248,7 @@ impl Connection {
                     self.read_crypto(packet.header.space(), &frame, payload_len)?;
                 }
                 Frame::Ack(ack) => {
-                    self.on_ack_received(now, packet.header.space(), ack)?;
+                    self.on_ack_received(now, packet.header.space(), &ack)?;
                 }
                 // Per RFC 9000 §12.4 Table 3, only a CONNECTION_CLOSE frame of type 0x1c may
                 // appear in Initial or Handshake packets. An application close (0x1d) falls
@@ -3466,7 +3457,7 @@ impl Connection {
                     }
                 }
                 Frame::Ack(ack) => {
-                    self.on_ack_received(now, SpaceId::Data, ack)?;
+                    self.on_ack_received(now, SpaceId::Data, &ack)?;
                 }
                 Frame::Padding | Frame::Ping => {}
                 Frame::Close(reason) => {
@@ -3584,7 +3575,7 @@ impl Connection {
                 Frame::Datagram(datagram) => {
                     if self
                         .datagrams
-                        .received(datagram, &self.config.datagram_receive_buffer_size)?
+                        .received(datagram, self.config.datagram_receive_buffer_size)?
                     {
                         self.events.push_back(Event::DatagramReceived);
                     }
@@ -4634,11 +4625,11 @@ impl Connection {
 
         // Subtract 1 to account for the CID we supplied while handshaking
         let mut n = self.peer_params.issue_cids_limit() - 1;
-        if let ConnectionSide::Server { server_config } = &self.side {
-            if server_config.has_preferred_address() {
-                // We also sent a CID in the transport parameters
-                n -= 1;
-            }
+        if let ConnectionSide::Server { server_config } = &self.side
+            && server_config.has_preferred_address()
+        {
+            // We also sent a CID in the transport parameters
+            n -= 1;
         }
         self.endpoint_events
             .push_back(EndpointEventInner::NeedIdentifiers(now, n));
@@ -4747,25 +4738,24 @@ impl Connection {
         }
 
         // PATH_RESPONSE
-        if buf.len() + 9 < max_size && space_id == SpaceId::Data {
-            if let Some(token) = self
+        if buf.len() + 9 < max_size
+            && space_id == SpaceId::Data
+            && let Some(token) = self
                 .path_responses
                 .pop_on_path(self.path.remote, self.path.local)
-            {
-                sent.non_retransmits = true;
-                sent.requires_padding = true;
-                trace!("PATH_RESPONSE {:08x}", token);
-                buf.write(frame::FrameType::PATH_RESPONSE);
-                buf.write(token);
-                self.stats.frame_tx.path_response += 1;
-            }
+        {
+            sent.non_retransmits = true;
+            sent.requires_padding = true;
+            trace!("PATH_RESPONSE {:08x}", token);
+            buf.write(frame::FrameType::PATH_RESPONSE);
+            buf.write(token);
+            self.stats.frame_tx.path_response += 1;
         }
 
         // CRYPTO
         while buf.len() + frame::Crypto::SIZE_BOUND < max_size && !is_0rtt {
-            let mut frame = match space.pending.crypto.pop_front() {
-                Some(x) => x,
-                None => break,
+            let Some(mut frame) = space.pending.crypto.pop_front() else {
+                break;
             };
 
             // Calculate the maximum amount of crypto data we can store in the buffer.
@@ -4815,9 +4805,8 @@ impl Connection {
 
         // NEW_CONNECTION_ID
         while buf.len() + NewConnectionId::SIZE_BOUND < max_size {
-            let issued = match space.pending.new_cids.pop() {
-                Some(x) => x,
-                None => break,
+            let Some(issued) = space.pending.new_cids.pop() else {
+                break;
             };
             trace!(
                 sequence = issued.sequence,
@@ -4837,9 +4826,8 @@ impl Connection {
 
         // RETIRE_CONNECTION_ID
         while buf.len() + frame::RETIRE_CONNECTION_ID_SIZE_BOUND < max_size {
-            let seq = match space.pending.retire_cids.pop() {
-                Some(x) => x,
-                None => break,
+            let Some(seq) = space.pending.retire_cids.pop() else {
+                break;
             };
             trace!(sequence = seq, "RETIRE_CONNECTION_ID");
             buf.write(frame::FrameType::RETIRE_CONNECTION_ID);
@@ -4961,7 +4949,7 @@ impl Connection {
         now: Instant,
         receiving_ecn: bool,
         sent: &mut SentFrames,
-        space: &mut PacketSpace,
+        space: &PacketSpace,
         buf: &mut Vec<u8>,
         stats: &mut ConnectionStats,
         max_size: usize,
@@ -5064,16 +5052,15 @@ impl Connection {
             self.next_crypto.as_ref(),
         )?;
 
-        let result = match result {
-            Some(r) => r,
-            None => return Ok(None),
+        let Some(result) = result else {
+            return Ok(None);
         };
 
-        if result.outgoing_key_update_acked {
-            if let Some(prev) = self.prev_crypto.as_mut() {
-                prev.end_packet = Some((result.number, now));
-                self.set_key_discard_timer(now, packet.header.space());
-            }
+        if result.outgoing_key_update_acked
+            && let Some(prev) = self.prev_crypto.as_mut()
+        {
+            prev.end_packet = Some((result.number, now));
+            self.set_key_discard_timer(now, packet.header.space());
         }
 
         if result.incoming_key_update {
@@ -5139,13 +5126,13 @@ impl Connection {
     /// Decodes a packet, returning its decrypted payload, so it can be inspected in tests
     #[cfg(test)]
     pub(crate) fn decode_packet(&self, event: &ConnectionEvent) -> Option<Vec<u8>> {
-        let (first_decode, remaining) = match &event.0 {
-            ConnectionEventInner::Datagram(DatagramConnectionEvent {
-                first_decode,
-                remaining,
-                ..
-            }) => (first_decode, remaining),
-            _ => return None,
+        let ConnectionEventInner::Datagram(DatagramConnectionEvent {
+            first_decode,
+            remaining,
+            ..
+        }) = &event.0
+        else {
+            return None;
         };
 
         if remaining.is_some() {
@@ -5514,14 +5501,16 @@ impl From<Close> for ConnectionError {
 // For compatibility with API consumers
 impl From<ConnectionError> for io::Error {
     fn from(x: ConnectionError) -> Self {
-        use ConnectionError::*;
         let kind = match x {
-            TimedOut => io::ErrorKind::TimedOut,
-            Reset => io::ErrorKind::ConnectionReset,
-            ApplicationClosed(_) | ConnectionClosed(_) => io::ErrorKind::ConnectionAborted,
-            TransportError(_) | VersionMismatch | LocallyClosed | CidsExhausted => {
-                io::ErrorKind::Other
+            ConnectionError::TimedOut => io::ErrorKind::TimedOut,
+            ConnectionError::Reset => io::ErrorKind::ConnectionReset,
+            ConnectionError::ApplicationClosed(_) | ConnectionError::ConnectionClosed(_) => {
+                io::ErrorKind::ConnectionAborted
             }
+            ConnectionError::TransportError(_)
+            | ConnectionError::VersionMismatch
+            | ConnectionError::LocallyClosed
+            | ConnectionError::CidsExhausted => io::ErrorKind::Other,
         };
         Self::new(kind, x)
     }

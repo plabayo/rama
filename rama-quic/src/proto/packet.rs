@@ -87,18 +87,17 @@ impl PartialDecode {
     }
 
     pub(crate) fn space(&self) -> Option<SpaceId> {
-        use ProtectedHeader::*;
         match self.plain_header {
-            Initial { .. } => Some(SpaceId::Initial),
-            Long {
+            ProtectedHeader::Initial { .. } => Some(SpaceId::Initial),
+            ProtectedHeader::Long {
                 ty: LongType::Handshake,
                 ..
             } => Some(SpaceId::Handshake),
-            Long {
+            ProtectedHeader::Long {
                 ty: LongType::ZeroRtt,
                 ..
-            } => Some(SpaceId::Data),
-            Short { .. } => Some(SpaceId::Data),
+            }
+            | ProtectedHeader::Short { .. } => Some(SpaceId::Data),
             _ => None,
         }
     }
@@ -136,13 +135,12 @@ impl PartialDecode {
         self,
         header_crypto: Option<&dyn crypto::HeaderKey>,
     ) -> Result<Packet, PacketDecodeError> {
-        use ProtectedHeader::*;
         let Self {
             plain_header,
             mut buf,
         } = self;
 
-        if let Initial(ProtectedInitialHeader {
+        if let ProtectedHeader::Initial(ProtectedInitialHeader {
             dst_cid,
             src_cid,
             token_pos,
@@ -170,7 +168,7 @@ impl PartialDecode {
         }
 
         let header = match plain_header {
-            Long {
+            ProtectedHeader::Long {
                 ty,
                 dst_cid,
                 src_cid,
@@ -183,7 +181,7 @@ impl PartialDecode {
                 number: Self::decrypt_header(&mut buf, header_crypto.unwrap())?,
                 version,
             },
-            Retry {
+            ProtectedHeader::Retry {
                 dst_cid,
                 src_cid,
                 version,
@@ -192,7 +190,7 @@ impl PartialDecode {
                 src_cid,
                 version,
             },
-            Short { spin, dst_cid, .. } => {
+            ProtectedHeader::Short { spin, dst_cid, .. } => {
                 let number = Self::decrypt_header(&mut buf, header_crypto.unwrap())?;
                 let key_phase = buf.get_ref()[0] & KEY_PHASE_BIT != 0;
                 Header::Short {
@@ -202,7 +200,7 @@ impl PartialDecode {
                     number,
                 }
             }
-            VersionNegotiate {
+            ProtectedHeader::VersionNegotiate {
                 random,
                 dst_cid,
                 src_cid,
@@ -211,7 +209,7 @@ impl PartialDecode {
                 dst_cid,
                 src_cid,
             },
-            Initial { .. } => unreachable!(),
+            ProtectedHeader::Initial { .. } => unreachable!(),
         };
 
         let header_len = buf.position() as usize;
@@ -305,10 +303,9 @@ pub(crate) enum Header {
 
 impl Header {
     pub(crate) fn encode(&self, w: &mut Vec<u8>) -> PartialEncode {
-        use Header::*;
         let start = w.len();
         match *self {
-            Initial(InitialHeader {
+            Self::Initial(InitialHeader {
                 ref dst_cid,
                 ref src_cid,
                 ref token,
@@ -329,7 +326,7 @@ impl Header {
                     pn: Some((number.len(), true)),
                 }
             }
-            Long {
+            Self::Long {
                 ty,
                 ref dst_cid,
                 ref src_cid,
@@ -348,7 +345,7 @@ impl Header {
                     pn: Some((number.len(), true)),
                 }
             }
-            Retry {
+            Self::Retry {
                 ref dst_cid,
                 ref src_cid,
                 version,
@@ -363,7 +360,7 @@ impl Header {
                     pn: None,
                 }
             }
-            Short {
+            Self::Short {
                 spin,
                 key_phase,
                 ref dst_cid,
@@ -383,7 +380,7 @@ impl Header {
                     pn: Some((number.len(), false)),
                 }
             }
-            VersionNegotiate {
+            Self::VersionNegotiate {
                 ref random,
                 ref dst_cid,
                 ref src_cid,
@@ -407,11 +404,10 @@ impl Header {
     }
 
     pub(crate) fn number(&self) -> Option<PacketNumber> {
-        use Header::*;
         Some(match *self {
-            Initial(InitialHeader { number, .. }) => number,
-            Long { number, .. } => number,
-            Short { number, .. } => number,
+            Self::Initial(InitialHeader { number, .. })
+            | Self::Long { number, .. }
+            | Self::Short { number, .. } => number,
             _ => {
                 return None;
             }
@@ -419,14 +415,13 @@ impl Header {
     }
 
     pub(crate) fn space(&self) -> SpaceId {
-        use Header::*;
         match *self {
-            Short { .. } => SpaceId::Data,
-            Long {
+            Self::Short { .. }
+            | Self::Long {
                 ty: LongType::ZeroRtt,
                 ..
             } => SpaceId::Data,
-            Long {
+            Self::Long {
                 ty: LongType::Handshake,
                 ..
             } => SpaceId::Handshake,
@@ -460,25 +455,20 @@ impl Header {
     }
 
     pub(crate) fn dst_cid(&self) -> ConnectionId {
-        use Header::*;
         match *self {
-            Initial(InitialHeader { dst_cid, .. }) => dst_cid,
-            Long { dst_cid, .. } => dst_cid,
-            Retry { dst_cid, .. } => dst_cid,
-            Short { dst_cid, .. } => dst_cid,
-            VersionNegotiate { dst_cid, .. } => dst_cid,
+            Self::Initial(InitialHeader { dst_cid, .. })
+            | Self::Long { dst_cid, .. }
+            | Self::Retry { dst_cid, .. }
+            | Self::Short { dst_cid, .. }
+            | Self::VersionNegotiate { dst_cid, .. } => dst_cid,
         }
     }
 
     /// Whether the payload of this packet contains QUIC frames
     pub(crate) fn has_frames(&self) -> bool {
-        use Header::*;
         match *self {
-            Initial(_) => true,
-            Long { .. } => true,
-            Retry { .. } => false,
-            Short { .. } => true,
-            VersionNegotiate { .. } => false,
+            Self::Retry { .. } | Self::VersionNegotiate { .. } => false,
+            Self::Initial(_) | Self::Long { .. } | Self::Short { .. } => true,
         }
     }
 }
@@ -498,9 +488,8 @@ impl PartialEncode {
         crypto: Option<(u64, &dyn crypto::PacketKey)>,
     ) {
         let Self { header_len, pn, .. } = self;
-        let (pn_len, write_len) = match pn {
-            Some((pn_len, write_len)) => (pn_len, write_len),
-            None => return,
+        let Some((pn_len, write_len)) = pn else {
+            return;
         };
 
         let pn_pos = header_len - pn_len;
@@ -579,20 +568,20 @@ impl ProtectedHeader {
 
     /// The destination Connection ID of the packet
     pub(crate) fn dst_cid(&self) -> &ConnectionId {
-        use ProtectedHeader::*;
         match self {
-            Initial(header) => &header.dst_cid,
-            Long { dst_cid, .. } => dst_cid,
-            Retry { dst_cid, .. } => dst_cid,
-            Short { dst_cid, .. } => dst_cid,
-            VersionNegotiate { dst_cid, .. } => dst_cid,
+            Self::Initial(header) => &header.dst_cid,
+            Self::Long { dst_cid, .. }
+            | Self::Retry { dst_cid, .. }
+            | Self::Short { dst_cid, .. }
+            | Self::VersionNegotiate { dst_cid, .. } => dst_cid,
         }
     }
 
     fn payload_len(&self) -> Option<u64> {
-        use ProtectedHeader::*;
         match self {
-            Initial(ProtectedInitialHeader { len, .. }) | Long { len, .. } => Some(*len),
+            Self::Initial(ProtectedInitialHeader { len, .. }) | Self::Long { len, .. } => {
+                Some(*len)
+            }
             _ => None,
         }
     }
@@ -730,32 +719,29 @@ impl PacketNumber {
     }
 
     pub(crate) fn len(self) -> usize {
-        use PacketNumber::*;
         match self {
-            U8(_) => 1,
-            U16(_) => 2,
-            U24(_) => 3,
-            U32(_) => 4,
+            Self::U8(_) => 1,
+            Self::U16(_) => 2,
+            Self::U24(_) => 3,
+            Self::U32(_) => 4,
         }
     }
 
     pub(crate) fn encode<W: BufMut>(self, w: &mut W) {
-        use PacketNumber::*;
         match self {
-            U8(x) => w.write(x),
-            U16(x) => w.write(x),
-            U24(x) => w.put_uint(u64::from(x), 3),
-            U32(x) => w.write(x),
+            Self::U8(x) => w.write(x),
+            Self::U16(x) => w.write(x),
+            Self::U24(x) => w.put_uint(u64::from(x), 3),
+            Self::U32(x) => w.write(x),
         }
     }
 
     pub(crate) fn decode<R: Buf>(len: usize, r: &mut R) -> Result<Self, PacketDecodeError> {
-        use PacketNumber::*;
         let pn = match len {
-            1 => U8(r.get()?),
-            2 => U16(r.get()?),
-            3 => U24(r.get_uint(3) as u32),
-            4 => U32(r.get()?),
+            1 => Self::U8(r.get()?),
+            2 => Self::U16(r.get()?),
+            3 => Self::U24(r.get_uint(3) as u32),
+            4 => Self::U32(r.get()?),
             #[expect(
                 clippy::unreachable,
                 reason = "`len` is two bits plus one, so it is 1..=4"
@@ -770,23 +756,20 @@ impl PacketNumber {
     }
 
     fn tag(self) -> u8 {
-        use PacketNumber::*;
         match self {
-            U8(_) => 0b00,
-            U16(_) => 0b01,
-            U24(_) => 0b10,
-            U32(_) => 0b11,
+            Self::U8(_) => 0b00,
+            Self::U16(_) => 0b01,
+            Self::U24(_) => 0b10,
+            Self::U32(_) => 0b11,
         }
     }
 
     pub(crate) fn expand(self, expected: u64) -> u64 {
         // From Appendix A
-        use PacketNumber::*;
         let truncated = match self {
-            U8(x) => u64::from(x),
-            U16(x) => u64::from(x),
-            U24(x) => u64::from(x),
-            U32(x) => u64::from(x),
+            Self::U8(x) => u64::from(x),
+            Self::U16(x) => u64::from(x),
+            Self::U24(x) | Self::U32(x) => u64::from(x),
         };
         let nbits = self.len() * 8;
         let win = 1 << nbits;
@@ -861,13 +844,12 @@ pub(crate) enum LongHeaderType {
 
 impl LongHeaderType {
     fn from_byte(b: u8) -> Result<Self, PacketDecodeError> {
-        use {LongHeaderType::*, LongType::*};
         debug_assert!(b & LONG_HEADER_FORM != 0, "not a long packet");
         Ok(match (b & 0x30) >> 4 {
-            0x0 => Initial,
-            0x1 => Standard(ZeroRtt),
-            0x2 => Standard(Handshake),
-            0x3 => Retry,
+            0x0 => Self::Initial,
+            0x1 => Self::Standard(LongType::ZeroRtt),
+            0x2 => Self::Standard(LongType::Handshake),
+            0x3 => Self::Retry,
             #[expect(
                 clippy::unreachable,
                 reason = "two bits yield exactly the four listed values"
@@ -879,12 +861,15 @@ impl LongHeaderType {
 
 impl From<LongHeaderType> for u8 {
     fn from(ty: LongHeaderType) -> Self {
-        use {LongHeaderType::*, LongType::*};
         match ty {
-            Initial => LONG_HEADER_FORM | FIXED_BIT,
-            Standard(ZeroRtt) => LONG_HEADER_FORM | FIXED_BIT | (0x1 << 4),
-            Standard(Handshake) => LONG_HEADER_FORM | FIXED_BIT | (0x2 << 4),
-            Retry => LONG_HEADER_FORM | FIXED_BIT | (0x3 << 4),
+            LongHeaderType::Initial => LONG_HEADER_FORM | FIXED_BIT,
+            LongHeaderType::Standard(LongType::ZeroRtt) => {
+                LONG_HEADER_FORM | FIXED_BIT | (0x1 << 4)
+            }
+            LongHeaderType::Standard(LongType::Handshake) => {
+                LONG_HEADER_FORM | FIXED_BIT | (0x2 << 4)
+            }
+            LongHeaderType::Retry => LONG_HEADER_FORM | FIXED_BIT | (0x3 << 4),
         }
     }
 }

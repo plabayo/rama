@@ -150,7 +150,8 @@ impl Bbr {
                     self.recovery_state = RecoveryState::NotInRecovery;
                 }
             }
-            _ => {}
+            // Not in recovery: an acknowledgement without loss changes nothing here.
+            RecoveryState::NotInRecovery => {}
         }
     }
 
@@ -610,7 +611,7 @@ enum RecoveryState {
 }
 
 impl RecoveryState {
-    pub(super) fn in_recovery(&self) -> bool {
+    pub(super) fn in_recovery(self) -> bool {
         !matches!(self, Self::NotInRecovery)
     }
 }

@@ -440,15 +440,15 @@ pub(super) fn validate_incoming(incoming: &Incoming) -> IncomingConnectionBehavi
 /// pass through this on every drive, including one whose send is waiting for a route.
 fn refresh_timeout(
     timeouts: &mut HashMap<ConnectionHandle, Instant>,
-    ch: &ConnectionHandle,
-    conn: &mut Connection,
+    ch: ConnectionHandle,
+    conn: &Connection,
 ) {
     match conn.poll_timeout() {
         Some(at) => {
-            timeouts.insert(*ch, at);
+            timeouts.insert(ch, at);
         }
         None => {
-            timeouts.remove(ch);
+            timeouts.remove(&ch);
         }
     }
 }
@@ -530,7 +530,7 @@ impl TestEndpoint {
                     DatagramEvent::NewConnection(incoming) => {
                         match (self.handle_incoming)(&incoming) {
                             IncomingConnectionBehavior::Accept => {
-                                let _ = self.try_accept(incoming, now);
+                                let _accepted = self.try_accept(incoming, now);
                             }
                             IncomingConnectionBehavior::Reject => {
                                 self.reject(incoming);
@@ -618,7 +618,7 @@ impl TestEndpoint {
                             waiting.push(*ch);
                             // This connection's deadline still has to be refreshed: the expired
                             // one was consumed above, and arrivals may have set a new one.
-                            refresh_timeout(&mut self.timeouts, ch, conn);
+                            refresh_timeout(&mut self.timeouts, *ch, conn);
                             continue;
                         }
                         // Never sendable again: only this datagram is given up.
@@ -665,7 +665,7 @@ impl TestEndpoint {
                         conn.cid_sent(seq, destination);
                     }
                 }
-                refresh_timeout(&mut self.timeouts, ch, conn);
+                refresh_timeout(&mut self.timeouts, *ch, conn);
                 while let Some(event) = conn.poll_endpoint_events() {
                     endpoint_events.push((*ch, event));
                 }
@@ -1037,9 +1037,8 @@ const MAX_DATAGRAMS: usize = 10;
 
 fn split_transmit(transmit: Transmit, buffer: &[u8]) -> Vec<(Transmit, Bytes)> {
     let mut buffer = Bytes::copy_from_slice(buffer);
-    let segment_size = match transmit.segment_size {
-        Some(segment_size) => segment_size,
-        _ => return vec![(transmit, buffer)],
+    let Some(segment_size) = transmit.segment_size else {
+        return vec![(transmit, buffer)];
     };
 
     let mut transmits = Vec::new();

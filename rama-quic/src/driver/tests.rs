@@ -109,7 +109,7 @@ async fn close_endpoint() {
         .unwrap();
 
     tokio::spawn(async move {
-        let _ = conn.await;
+        let _handshake = conn.await;
     });
 
     let conn = endpoint
@@ -352,7 +352,7 @@ async fn zero_rtt() {
             let mut s = connection.open_uni().await.expect("open_uni");
             s.write_all(MSG1).await.expect("write");
             // The peer might close the connection before ACKing
-            let _ = s.finish();
+            let _finished = s.finish();
         }
     });
 
@@ -409,7 +409,7 @@ async fn zero_rtt() {
     ignore = "Fails on Solaris and Illumos"
 )]
 fn echo_v6() {
-    run_echo(EchoArgs {
+    run_echo(&EchoArgs {
         client_addr: SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
         server_addr: SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0),
         nr_streams: 1,
@@ -422,7 +422,7 @@ fn echo_v6() {
 #[test]
 #[cfg_attr(target_os = "solaris", ignore = "Sometimes hangs in poll() on Solaris")]
 fn echo_v4() {
-    run_echo(EchoArgs {
+    run_echo(&EchoArgs {
         client_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
         server_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         nr_streams: 1,
@@ -435,7 +435,7 @@ fn echo_v4() {
 #[test]
 #[cfg_attr(target_os = "solaris", ignore = "Hangs in poll() on Solaris")]
 fn echo_dualstack() {
-    run_echo(EchoArgs {
+    run_echo(&EchoArgs {
         client_addr: SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
         server_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         nr_streams: 1,
@@ -449,7 +449,7 @@ fn echo_dualstack() {
 #[ignore]
 #[cfg_attr(target_os = "solaris", ignore = "Hangs in poll() on Solaris")]
 fn stress_receive_window() {
-    run_echo(EchoArgs {
+    run_echo(&EchoArgs {
         client_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
         server_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         nr_streams: 50,
@@ -465,7 +465,7 @@ fn stress_receive_window() {
 fn stress_stream_receive_window() {
     // Note that there is no point in running this with too many streams,
     // since the window is only active within a stream.
-    run_echo(EchoArgs {
+    run_echo(&EchoArgs {
         client_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
         server_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         nr_streams: 2,
@@ -479,7 +479,7 @@ fn stress_stream_receive_window() {
 #[ignore]
 #[cfg_attr(target_os = "solaris", ignore = "Hangs in poll() on Solaris")]
 fn stress_both_windows() {
-    run_echo(EchoArgs {
+    run_echo(&EchoArgs {
         client_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
         server_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
         nr_streams: 50,
@@ -489,7 +489,7 @@ fn stress_both_windows() {
     });
 }
 
-fn run_echo(args: EchoArgs) {
+fn run_echo(args: &EchoArgs) {
     let _guard = subscribe();
     let runtime = rt_basic();
     let handle = {
@@ -646,7 +646,7 @@ async fn echo((mut send, mut recv): (SendStream, RecvStream)) {
         }
     }
 
-    let _ = send.finish();
+    let _finished = send.finish();
 }
 
 fn gen_data(size: usize, seed: u64) -> Vec<u8> {

@@ -257,8 +257,12 @@ fn a_pending_close_is_sent_on_the_next_pass() {
     pair.drive_server();
     match pair.server_conn_mut(server_ch).poll() {
         Some(Event::ConnectionLost {
-            reason: ConnectionError::ApplicationClosed(ApplicationClose { error_code, .. }),
-        }) if error_code == VarInt(42) => {}
+            reason:
+                ConnectionError::ApplicationClosed(ApplicationClose {
+                    error_code: VarInt(42),
+                    ..
+                }),
+        }) => {}
         other => panic!("the peer received the close, not {other:?}"),
     }
 }
@@ -602,8 +606,12 @@ fn a_pending_server_close_survives_input_from_elsewhere() {
     pair.drive_client();
     match pair.client_conn_mut(client_ch).poll() {
         Some(Event::ConnectionLost {
-            reason: ConnectionError::ApplicationClosed(ApplicationClose { error_code, .. }),
-        }) if error_code == VarInt(42) => {}
+            reason:
+                ConnectionError::ApplicationClosed(ApplicationClose {
+                    error_code: VarInt(42),
+                    ..
+                }),
+        }) => {}
         other => panic!("the peer received the close, not {other:?}"),
     }
 }

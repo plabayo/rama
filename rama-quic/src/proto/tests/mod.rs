@@ -15,8 +15,8 @@ use rama_tls_rustls::dep::rustls::{
 };
 use rama_utils::octets;
 use rand::Rng;
+use rustc_hash::FxHashMap;
 use std::{
-    collections::HashMap,
     convert::TryInto,
     mem,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6},
@@ -532,7 +532,7 @@ fn exchange_on_a_stream(
         .expect("a chunk arrives")
         .expect("with the payload");
     assert_eq!(&chunk.bytes[..], message, "the payload arrives as sent");
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 }
 
 /// The controllers a connection may be configured with.
@@ -759,7 +759,7 @@ fn finish_stream_simple() {
         Ok(None) => {}
         other => panic!("assertion failed: `{other:?}` does not match `Ok(None)`"),
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 }
 
 #[test]
@@ -799,7 +799,7 @@ fn reset_stream() {
             panic!("assertion failed: `{other:?}` does not match `Err(ReadError::Reset(ERROR))`")
         }
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
     match pair.client_conn_mut(client_ch).poll() {
         None => {}
         other => panic!("assertion failed: `{other:?}` does not match `None`"),
@@ -1099,7 +1099,7 @@ fn zero_rtt_happypath() {
             "assertion failed: `{other:?}` does not match `Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == MSG`"
         ),
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
     assert_eq!(pair.client_conn_mut(client_ch).stats().path.lost_packets, 0);
 }
 
@@ -1209,7 +1209,7 @@ fn zero_rtt_rejection() {
     let mut recv = pair.server_recv(server_ch, s2);
     let mut chunks = recv.read(false).unwrap();
     assert_eq!(chunks.next(usize::MAX), Err(ReadError::Blocked));
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
     assert_eq!(pair.client_conn_mut(client_ch).stats().path.lost_packets, 0);
 }
 
@@ -1262,7 +1262,7 @@ fn test_zero_rtt_incoming_limit<F: FnOnce(&mut ServerConfig)>(configure_server: 
     pair.drive();
     let incoming = pair.server.waiting_incoming.pop().unwrap();
     assert!(pair.server.waiting_incoming.is_empty());
-    let _ = pair.server.try_accept(incoming, pair.time);
+    let _accepted = pair.server.try_accept(incoming, pair.time);
     pair.drive();
 
     match pair.client_conn_mut(client_ch).poll() {
@@ -1318,7 +1318,7 @@ fn test_zero_rtt_incoming_limit<F: FnOnce(&mut ServerConfig)>(configure_server: 
         }
     }
     assert_eq!(offset, CLIENT_WRITES);
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
     assert_eq!(
         pair.client_conn_mut(client_ch).stats().path.lost_packets,
         EXPECTED_DROPPED
@@ -1517,7 +1517,7 @@ fn stream_id_limit() {
         ),
     }
     assert_eq!(chunks.next(usize::MAX), Ok(None));
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 
     // Server will only send MAX_STREAM_ID now that the application's been notified
     pair.drive();
@@ -1567,7 +1567,7 @@ fn stream_id_limit() {
         Ok(None) => {}
         other => panic!("assertion failed: `{other:?}` does not match `Ok(None)`"),
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 }
 
 fn streams_blocked_pair() -> Pair {
@@ -1771,7 +1771,7 @@ fn streams_blocked_cleared_by_max_streams() {
             "assertion failed: `{other:?}` does not match `Err(ReadError::Blocked) | Ok(None)`"
         ),
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
     pair.drive();
     assert!(
         pair.server_conn_mut(server_ch)
@@ -1959,6 +1959,11 @@ fn a_skipped_packet_number_does_not_spend_the_key_budget() {
             let (skipped, number_after) = pair.client_conn_mut(client_ch).packet_numbers();
             let counted = pair.client_conn_mut(client_ch).packets_sent_with_keys();
             assert_eq!(
+                sent as u64, from_the_end,
+                "the budget left is what the pass produced, so the counts below are not \
+                 comparing nothing"
+            );
+            assert_eq!(
                 counted - counted_before,
                 sent as u64,
                 "the budget is spent once per packet the keys protected ({skip}, \
@@ -2037,7 +2042,7 @@ fn a_key_update_starts_the_new_phase_count_at_zero() {
         .expect("a chunk arrives")
         .expect("with the payload");
     assert_eq!(&chunk.bytes[..], MESSAGE, "the payload arrives as sent");
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 }
 
 #[test]
@@ -2082,7 +2087,7 @@ fn key_update_simple() {
             "assertion failed: `{other:?}` does not match `Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == MSG1`"
         ),
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 
     info!("initiating key update");
     pair.client_conn_mut(client_ch).force_key_update();
@@ -2109,7 +2114,7 @@ fn key_update_simple() {
             "assertion failed: `{other:?}` does not match `Ok(Some(chunk)) if chunk.offset == 6 && chunk.bytes == MSG2`"
         ),
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 
     assert_eq!(pair.client_conn_mut(client_ch).stats().path.lost_packets, 0);
     assert_eq!(pair.server_conn_mut(server_ch).stats().path.lost_packets, 0);
@@ -2167,7 +2172,7 @@ fn key_update_reordered() {
     }
     let buf2 = chunks.next(usize::MAX).unwrap().unwrap();
     assert_eq!(buf2.bytes, MSG2);
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 
     assert_eq!(pair.client_conn_mut(client_ch).stats().path.lost_packets, 0);
     assert_eq!(pair.server_conn_mut(server_ch).stats().path.lost_packets, 0);
@@ -2312,10 +2317,10 @@ fn idle_timeout() {
     while !pair.client_conn_mut(client_ch).is_closed()
         || !pair.server_conn_mut(server_ch).is_closed()
     {
-        if !pair.step() {
-            if let Some(t) = min_opt(pair.client.next_wakeup(), pair.server.next_wakeup()) {
-                pair.time = t;
-            }
+        if !pair.step()
+            && let Some(t) = min_opt(pair.client.next_wakeup(), pair.server.next_wakeup())
+        {
+            pair.time = t;
         }
         pair.client.inbound.clear(); // Simulate total S->C packet loss
     }
@@ -2517,7 +2522,7 @@ fn test_flow_control(config: TransportConfig, window_size: usize) {
         chunks.next(usize::MAX).err(),
         Some(ReadError::Reset(VarInt(42)))
     );
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 
     // Happy path
     info!("writing");
@@ -2548,7 +2553,7 @@ fn test_flow_control(config: TransportConfig, window_size: usize) {
             }
         }
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 
     info!("finished reading");
     assert_eq!(cursor, window_size);
@@ -2581,7 +2586,7 @@ fn test_flow_control(config: TransportConfig, window_size: usize) {
         }
     }
     assert_eq!(cursor, window_size);
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
     info!("finished reading");
 }
 
@@ -2646,7 +2651,7 @@ fn stop_opens_bidi() {
         Err(ReadError::Blocked) => {}
         other => panic!("assertion failed: `{other:?}` does not match `Err(ReadError::Blocked)`"),
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 
     match pair.server_send(server_ch, s).write(b"foo") {
         Err(WriteError::Stopped(ERROR)) => {}
@@ -2735,10 +2740,10 @@ fn keep_alive() {
     // Run a good while longer than the idle timeout
     let end = pair.time + Duration::from_millis(20 * IDLE_TIMEOUT);
     while pair.time < end {
-        if !pair.step() {
-            if let Some(time) = min_opt(pair.client.next_wakeup(), pair.server.next_wakeup()) {
-                pair.time = time;
-            }
+        if !pair.step()
+            && let Some(time) = min_opt(pair.client.next_wakeup(), pair.server.next_wakeup())
+        {
+            pair.time = time;
         }
         assert!(!pair.client_conn_mut(client_ch).is_closed());
         assert!(!pair.server_conn_mut(server_ch).is_closed());
@@ -2785,10 +2790,10 @@ fn cid_rotation() {
         stop += CID_TIMEOUT;
         // Run a while until PushNewCID timer fires
         while pair.time < stop {
-            if !pair.step() {
-                if let Some(time) = min_opt(pair.client.next_wakeup(), pair.server.next_wakeup()) {
-                    pair.time = time;
-                }
+            if !pair.step()
+                && let Some(time) = min_opt(pair.client.next_wakeup(), pair.server.next_wakeup())
+            {
+                pair.time = time;
             }
         }
         info!(
@@ -2867,7 +2872,7 @@ fn finish_stream_flow_control_reordered() {
             "assertion failed: `{other:?}` does not match `Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == MSG`"
         ),
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 
     pair.server.drive(pair.time, pair.client.addr);
     pair.server.delay_outbound(); // Delay it
@@ -2907,7 +2912,7 @@ fn finish_stream_flow_control_reordered() {
         Ok(None) => {}
         other => panic!("assertion failed: `{other:?}` does not match `Ok(None)`"),
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 }
 
 #[test]
@@ -2944,7 +2949,7 @@ fn handshake_1rtt_handling() {
             "assertion failed: `{other:?}` does not match `Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == MSG`"
         ),
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 }
 
 #[test]
@@ -3383,7 +3388,7 @@ fn finish_acked() {
         Err(ReadError::Blocked) => {}
         other => panic!("assertion failed: `{other:?}` does not match `Err(ReadError::Blocked)`"),
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 
     // Finish before receiving data ack
     pair.client_send(client_ch, s).finish().unwrap();
@@ -3411,7 +3416,7 @@ fn finish_acked() {
         Ok(None) => {}
         other => panic!("assertion failed: `{other:?}` does not match `Ok(None)`"),
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 }
 
 #[test]
@@ -3475,7 +3480,7 @@ fn finish_retransmit() {
         Ok(None) => {}
         other => panic!("assertion failed: `{other:?}` does not match `Ok(None)`"),
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 }
 
 /// Ensures that exchanging data on a client-initiated bidirectional stream works past the initial
@@ -3516,7 +3521,7 @@ fn repeated_request_response() {
             Ok(None) => {}
             other => panic!("assertion failed: `{other:?}` does not match `Ok(None)`"),
         }
-        let _ = chunks.finalize();
+        let _transmit = chunks.finalize();
         pair.server_send(server_ch, s).write(RESPONSE).unwrap();
         pair.server_send(server_ch, s).finish().unwrap();
 
@@ -3534,7 +3539,7 @@ fn repeated_request_response() {
             Ok(None) => {}
             other => panic!("assertion failed: `{other:?}` does not match `Ok(None)`"),
         }
-        let _ = chunks.finalize();
+        let _transmit = chunks.finalize();
     }
 }
 
@@ -4441,7 +4446,7 @@ fn stream_chunks(mut recv: RecvStream) -> Vec<u8> {
         buf.extend(chunk.bytes);
     }
 
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 
     buf
 }
@@ -5249,7 +5254,7 @@ fn post_quantum_handshake_and_transfer() {
         Ok(None) => {}
         other => panic!("assertion failed: `{other:?}` does not match `Ok(None)`"),
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 }
 
 /// IANA `NamedGroup` codes used by the key-exchange assertions
@@ -5681,7 +5686,7 @@ fn server_pto_after_a_peer_migration_with_data_in_flight_on_the_old_path() {
     let mut chunks = recv.read(true).unwrap();
     let chunk = chunks.next(usize::MAX).unwrap().unwrap();
     assert_eq!(&chunk.bytes[..], b"in flight on the old path");
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 }
 
 /// The peer moves and sends an unreliable datagram from its new address, which gives the server
@@ -5802,7 +5807,7 @@ fn lost_data_is_recovered_after_a_migration_that_discards_the_intermediate_path(
             if let Ok(Some(chunk)) = chunks.next(usize::MAX) {
                 *received = Some(chunk.bytes);
             }
-            let _ = chunks.finalize();
+            let _transmit = chunks.finalize();
         }
         received.is_some()
     };
@@ -6584,7 +6589,7 @@ fn a_move_to_the_preferred_address_is_followed_though_active_migration_is_disabl
         Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == DOWN => {}
         other => panic!("the client received {other:?}"),
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 
     // The client's own address changes from there, and the server follows it.
     let rebound = SocketAddr::new(
@@ -6614,7 +6619,7 @@ fn a_move_to_the_preferred_address_is_followed_though_active_migration_is_disabl
         Ok(Some(chunk)) if chunk.offset == 0 && chunk.bytes == UP => {}
         other => panic!("the server received {other:?}"),
     }
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
     assert!(!pair.client_conn_mut(ch).is_closed());
     assert!(!pair.server_conn_mut(server_ch).is_closed());
 }
@@ -6798,7 +6803,7 @@ fn a_client_moves_to_the_servers_preferred_address_once_it_answers() {
             matches!(chunks.next(usize::MAX), Ok(None)),
             "upstream did not end where the sender finished it"
         );
-        let _ = chunks.finalize();
+        let _transmit = chunks.finalize();
     }
     {
         let mut recv = pair.client_recv(ch, down);
@@ -6811,7 +6816,7 @@ fn a_client_moves_to_the_servers_preferred_address_once_it_answers() {
             matches!(chunks.next(usize::MAX), Ok(None)),
             "downstream did not end where the sender finished it"
         );
-        let _ = chunks.finalize();
+        let _transmit = chunks.finalize();
     }
     assert_eq!(pair.client_conn_mut(ch).remote_address(), preferred);
     assert!(!pair.client_conn_mut(ch).is_closed());
@@ -7284,7 +7289,7 @@ fn a_deferred_protocol_error_is_reported_as_itself() {
     // One transmit is all it takes; no close timeout is involved.
     let mut buf = Vec::new();
     let now = pair.time;
-    let _ = pair
+    let _transmit = pair
         .client_conn_mut(client_ch)
         .poll_transmit(now, 1, &mut buf);
     assert!(pair.client_conn_mut(client_ch).is_closed());
@@ -7605,7 +7610,7 @@ fn two_connections_on_one_endpoint_keep_their_own_arrivals_and_deadlines() {
             other => panic!("connection {ch:?} received {other:?}"),
         }
         assert!(matches!(chunks.next(usize::MAX), Ok(None)));
-        let _ = chunks.finalize();
+        let _transmit = chunks.finalize();
     }
     assert!(!pair.server_conn_mut(server_a).is_closed());
     assert!(!pair.server_conn_mut(server_b).is_closed());
@@ -7643,7 +7648,7 @@ fn two_connections_on_one_endpoint_keep_their_own_arrivals_and_deadlines() {
         other => panic!("the survivor received {other:?}"),
     }
     assert!(matches!(chunks.next(usize::MAX), Ok(None)));
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 }
 
 /// The endpoint answers a route it cannot install with a refusal rather than an acknowledgement,
@@ -8008,7 +8013,7 @@ fn exchange_uni(
         other => panic!("the server received {other:?}"),
     }
     assert!(matches!(chunks.next(usize::MAX), Ok(None)), "and its end");
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 }
 
 /// The same from the server to the client.
@@ -8030,7 +8035,7 @@ fn exchange_uni_back(
         other => panic!("the client received {other:?}"),
     }
     assert!(matches!(chunks.next(usize::MAX), Ok(None)), "and its end");
-    let _ = chunks.finalize();
+    let _transmit = chunks.finalize();
 }
 
 /// RFC 9000 §10.3.1: a reset token belongs to the connection only once the connection ID it came
@@ -8269,8 +8274,8 @@ fn a_deferred_peer_move_is_dropped_when_the_peer_is_back_on_the_current_path() {
 }
 
 /// The destination connection IDs the server has sent, per address it sent them to.
-fn server_dcids_by_destination(pair: &Pair, len: usize) -> HashMap<SocketAddr, Vec<Vec<u8>>> {
-    let mut seen: HashMap<SocketAddr, Vec<Vec<u8>>> = HashMap::default();
+fn server_dcids_by_destination(pair: &Pair, len: usize) -> FxHashMap<SocketAddr, Vec<Vec<u8>>> {
+    let mut seen: FxHashMap<SocketAddr, Vec<Vec<u8>>> = FxHashMap::default();
     for (transmit, buffer) in pair.server.outbound.iter() {
         if buffer.first().is_some_and(|first| first & 0x80 != 0) {
             continue; // long header: handshake traffic

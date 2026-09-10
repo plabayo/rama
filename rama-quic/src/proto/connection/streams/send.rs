@@ -84,9 +84,8 @@ impl Send {
 
     /// Update stream state due to a reset sent by the local application
     pub(super) fn reset(&mut self) {
-        use SendState::*;
-        if let DataSent { .. } | Ready = self.state {
-            self.state = ResetSent;
+        if let SendState::DataSent { .. } | SendState::Ready = self.state {
+            self.state = SendState::ResetSent;
         }
     }
 

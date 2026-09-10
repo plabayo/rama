@@ -28,7 +28,7 @@ use crate::proto::{
     coding::BufMutExt,
     config::{ClientConfig, EndpointConfig, ServerConfig},
     connection::{Connection, ConnectionError, SideArgs},
-    crypto::{self, Keys, UnsupportedVersion},
+    crypto::{self, Keys},
     frame,
     packet::{
         FixedLengthConnectionIdParser, Header, InitialHeader, InitialPacket, PacketDecodeError,
@@ -38,7 +38,7 @@ use crate::proto::{
         ConnectionEvent, ConnectionEventInner, ConnectionId, DatagramConnectionEvent, EcnCodepoint,
         EndpointEvent, EndpointEventInner, IssuedCid,
     },
-    token::{IncomingToken, InvalidRetryTokenError, Token, TokenPayload},
+    token::{IncomingToken, Token, TokenPayload},
     transport_parameters::{PreferredAddress, TransportParameters},
 };
 
@@ -185,12 +185,11 @@ impl Endpoint {
         ch: ConnectionHandle,
         event: EndpointEvent,
     ) -> Option<ConnectionEvent> {
-        use EndpointEventInner::*;
         match event.0 {
-            NeedIdentifiers(now, n) => {
+            EndpointEventInner::NeedIdentifiers(now, n) => {
                 return Some(self.send_new_identifiers(now, ch, n));
             }
-            ResetTokenUsed(remote, seq, token, generation) => {
+            EndpointEventInner::ResetTokenUsed(remote, seq, token, generation) => {
                 // An identifier can be recognised at more than one address, since a rebinding
                 // keeps it while the previous path may still answer. Associations are therefore
                 // keyed by identifier and address, and installing one does not delete another
@@ -220,7 +219,7 @@ impl Endpoint {
                     remote, seq, generation,
                 )));
             }
-            ResetTokenReleased(remote, seq, token, generation) => {
+            EndpointEventInner::ResetTokenReleased(remote, seq, token, generation) => {
                 if self.connections[ch]
                     .reset_tokens
                     .release(seq, remote, generation)
@@ -228,12 +227,12 @@ impl Endpoint {
                     self.index.connection_reset_tokens.remove(remote, token);
                 }
             }
-            ResetTokensRetired(seqs) => {
+            EndpointEventInner::ResetTokensRetired(seqs) => {
                 for (remote, token) in self.connections[ch].reset_tokens.remove_range(seqs) {
                     self.index.connection_reset_tokens.remove(remote, token);
                 }
             }
-            RetireConnectionId(now, seq, allow_more_cids) => {
+            EndpointEventInner::RetireConnectionId(now, seq, allow_more_cids) => {
                 if let Some(cid) = self.connections[ch].loc_cids.remove(&seq) {
                     trace!("peer retired CID {}: {}", seq, cid);
                     self.index.retire(cid);
@@ -242,7 +241,7 @@ impl Endpoint {
                     }
                 }
             }
-            Drained => {
+            EndpointEventInner::Drained => {
                 if let Some(conn) = self.connections.try_remove(ch.0) {
                     self.index.remove(&conn);
                 } else {
@@ -592,17 +591,14 @@ impl Endpoint {
             return None;
         }
 
-        let crypto = match server_config.crypto.initial_keys(header.version, dst_cid) {
-            Ok(keys) => keys,
-            Err(UnsupportedVersion) => {
-                // This probably indicates that the user set supported_versions incorrectly in
-                // `EndpointConfig`.
-                debug!(
-                    "ignoring initial packet version {:#x} unsupported by cryptographic layer",
-                    header.version
-                );
-                return None;
-            }
+        let Ok(crypto) = server_config.crypto.initial_keys(header.version, dst_cid) else {
+            // This probably indicates that the user set supported_versions incorrectly in
+            // `EndpointConfig`.
+            debug!(
+                "ignoring initial packet version {:#x} unsupported by cryptographic layer",
+                header.version
+            );
+            return None;
         };
 
         if let Err(reason) = self.early_validate_first_packet(header) {
@@ -643,19 +639,17 @@ impl Endpoint {
         )]
         let server_config = self.server_config.as_ref().unwrap().clone();
 
-        let token = match IncomingToken::from_header(&header, &server_config, addresses.remote) {
-            Ok(token) => token,
-            Err(InvalidRetryTokenError) => {
-                debug!("rejecting invalid retry token");
-                return Some(DatagramEvent::Response(self.initial_close(
-                    header.version,
-                    addresses,
-                    &crypto,
-                    &header.src_cid,
-                    TransportError::INVALID_TOKEN(""),
-                    buf,
-                )));
-            }
+        let Ok(token) = IncomingToken::from_header(&header, &server_config, addresses.remote)
+        else {
+            debug!("rejecting invalid retry token");
+            return Some(DatagramEvent::Response(self.initial_close(
+                header.version,
+                addresses,
+                &crypto,
+                &header.src_cid,
+                TransportError::INVALID_TOKEN(""),
+                buf,
+            )));
         };
 
         let deadline = event.now.checked_add(self.config.handshake_timeout)?;
@@ -889,7 +883,7 @@ impl Endpoint {
 
     /// Check if we should refuse a connection attempt regardless of the packet's contents
     fn early_validate_first_packet(
-        &mut self,
+        &self,
         header: &ProtectedInitialHeader,
     ) -> Result<(), TransportError> {
         // RFC9000 §7.2 dictates that initial (client-chosen) destination CIDs must be at least 8
@@ -1561,15 +1555,15 @@ impl ConnectionIndex {
 
     /// Find the existing connection that `datagram` should be routed to, if any
     fn get(&self, addresses: &FourTuple, datagram: &PartialDecode) -> Option<RouteDatagramTo> {
-        if !datagram.dst_cid().is_empty() {
-            if let Some(&ch) = self.connection_ids.get(datagram.dst_cid()) {
-                return Some(RouteDatagramTo::Connection(ch));
-            }
+        if !datagram.dst_cid().is_empty()
+            && let Some(&ch) = self.connection_ids.get(datagram.dst_cid())
+        {
+            return Some(RouteDatagramTo::Connection(ch));
         }
-        if datagram.is_initial() || datagram.is_0rtt() {
-            if let Some(&ch) = self.connection_ids_initial.get(datagram.dst_cid()) {
-                return Some(ch);
-            }
+        if (datagram.is_initial() || datagram.is_0rtt())
+            && let Some(&ch) = self.connection_ids_initial.get(datagram.dst_cid())
+        {
+            return Some(ch);
         }
         if datagram.dst_cid().is_empty() {
             if let Some(&ch) = self.incoming_connection_remotes.get(addresses) {

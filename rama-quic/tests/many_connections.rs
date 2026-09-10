@@ -40,7 +40,7 @@ const LIMIT: Duration = Duration::from_secs(120);
 #[test]
 #[ignore]
 fn connect_n_nodes_to_1_and_send_1mb_data() {
-    let _ = tracing_subscriber::FmtSubscriber::builder()
+    let _initialised = tracing_subscriber::FmtSubscriber::builder()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_test_writer()
         .try_init();
@@ -112,7 +112,7 @@ async fn run() {
             stream.finish().expect("the stream ends");
             // The peer closes the connection once it has the whole payload; a stream reset or a
             // connection lost before that is a lost transfer, and the reader will say so.
-            let _ = stream.stopped().await;
+            let _stopped = stream.stopped().await;
         }));
     }
     for writer in writers {

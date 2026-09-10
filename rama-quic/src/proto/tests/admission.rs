@@ -61,7 +61,7 @@ fn expired_handles_cannot_remove_a_reused_admission_slot() {
                 pair.server.ignore(stale);
             }
             Action::Refuse => {
-                let _ = pair.server.refuse(stale, &mut Vec::new());
+                let _refused = pair.server.refuse(stale, &mut Vec::new());
             }
         }
         assert_eq!(pair.server.pending_incoming(), 1);

@@ -424,6 +424,10 @@ impl SocketRegistry {
     /// Release a lease; the socket is retired (and returned for dropping outside the lock)
     /// when nothing depends on it any more. A lease on an already retired socket (shutdown) is
     /// simply consumed.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the lease is spent here, so it is taken rather than borrowed"
+    )]
     pub(crate) fn release(&mut self, lease: Lease, now: Instant) -> Option<Socket> {
         let Lease { id, kind } = lease;
         let entry = self.entry_mut(id)?;
@@ -660,6 +664,10 @@ impl SocketRegistry {
 /// The endpoint's sockets: live while the endpoint driver runs, released afterwards so retained
 /// application handles cannot keep ports bound.
 #[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one of these exists per endpoint, and the live registry is on the receive path"
+)]
 pub(crate) enum Sockets {
     Live(SocketRegistry),
     /// Every socket was dropped with the endpoint driver; only its counters remain.
@@ -1013,11 +1021,9 @@ mod tests {
         assert_eq!(registry.len(), 1);
         // The active socket's failure is fatal for the caller.
         let active = registry.active_id();
-        assert!(
-            registry
-                .receive_failed(active, io::Error::other("fatal"), now())
-                .is_err()
-        );
+        registry
+            .receive_failed(active, io::Error::other("fatal"), now())
+            .expect_err("the active socket's failure reaches the caller");
     }
 
     #[test]

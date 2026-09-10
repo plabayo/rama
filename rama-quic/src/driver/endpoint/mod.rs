@@ -322,22 +322,19 @@ impl Endpoint {
             let mut state = rc.0.state.lock();
             let mut refused = Vec::new();
             let mut error = None;
-            match state.sockets.live_mut() {
-                Some(registry) => {
-                    for socket in advertised {
-                        match registry.advertise(socket) {
-                            Ok(_) => {}
-                            Err(rejected) => {
-                                refused.push(rejected.socket);
-                                error = Some(rejected.error);
-                            }
+            if let Some(registry) = state.sockets.live_mut() {
+                for socket in advertised {
+                    match registry.advertise(socket) {
+                        Ok(_) => {}
+                        Err(rejected) => {
+                            refused.push(rejected.socket);
+                            error = Some(rejected.error);
                         }
                     }
                 }
-                None => {
-                    refused.extend(advertised);
-                    error = Some(io::Error::from(io::ErrorKind::NotConnected));
-                }
+            } else {
+                refused.extend(advertised);
+                error = Some(io::Error::from(io::ErrorKind::NotConnected));
             }
             drop(state);
             // A refused socket is dropped outside the endpoint lock, and the endpoint is not
@@ -378,7 +375,7 @@ impl Endpoint {
                 {
                     let mut state = inner.state.lock();
                     state.shutdown = true;
-                    state.close(VarInt::from_u32(0), Bytes::new(), &inner.shared);
+                    state.close(VarInt::from_u32(0), &Bytes::new(), &inner.shared);
                 }
                 if tokio::time::timeout(shutdown_budget, lifecycle.join())
                     .await
@@ -666,7 +663,7 @@ impl Endpoint {
     pub fn close(&self, error_code: VarInt, reason: &[u8]) {
         self.inner.state.lock().close(
             error_code,
-            Bytes::copy_from_slice(reason),
+            &Bytes::copy_from_slice(reason),
             &self.inner.shared,
         );
     }
@@ -1264,7 +1261,7 @@ pub(crate) struct Shared {
 }
 
 impl State {
-    fn close(&mut self, error_code: VarInt, reason: Bytes, shared: &Shared) {
+    fn close(&mut self, error_code: VarInt, reason: &Bytes, shared: &Shared) {
         if self.recv_state.connections.close.is_none() {
             self.recv_state.connections.close = Some((error_code, reason.clone()));
             for channel in self.recv_state.connections.channels.values() {
@@ -1329,12 +1326,11 @@ impl State {
             return false;
         };
         retired.extend(sockets.expire_routes(now));
-        match sockets.next_route_expiry() {
-            Some(deadline) => self.route_timer.poll(deadline, now, cx) == Deadline::Elapsed,
-            None => {
-                self.route_timer.clear();
-                false
-            }
+        if let Some(deadline) = sockets.next_route_expiry() {
+            self.route_timer.poll(deadline, now, cx) == Deadline::Elapsed
+        } else {
+            self.route_timer.clear();
+            false
         }
     }
 
@@ -1344,7 +1340,7 @@ impl State {
     /// and are released here (engine state cleaned, lease returned); an attempt the application
     /// already holds is refused with `LocallyClosed` when it is accepted, its responses dropped.
     fn leave_failed_sockets(&mut self, now: Instant, retired: &mut Vec<Socket>) {
-        let State {
+        let Self {
             sockets,
             recv_state,
             inner,
@@ -1415,7 +1411,7 @@ impl State {
         now: Instant,
         retired: &mut Vec<Socket>,
     ) -> Result<bool, io::Error> {
-        let State {
+        let Self {
             sockets,
             recv_state,
             inner,

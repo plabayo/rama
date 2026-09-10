@@ -134,12 +134,10 @@ mod tests {
             AddressTokenKey::try_from_bytes(&short).unwrap_err(),
             ConfigError::KeyMaterialTooShort
         );
-        assert!(StatelessResetKey::try_from_bytes(&[0x5a; KEY_MATERIAL_SIZE]).is_ok());
-        assert!(AddressTokenKey::try_from_bytes(&[0x5a; KEY_MATERIAL_SIZE]).is_ok());
-        assert!(
-            StatelessResetKey::try_from_bytes(&[0x5a; KEY_MATERIAL_SIZE * 2]).is_ok(),
-            "longer material is taken as it is"
-        );
+        StatelessResetKey::try_from_bytes(&[0x5a; KEY_MATERIAL_SIZE]).expect("a seed is enough");
+        AddressTokenKey::try_from_bytes(&[0x5a; KEY_MATERIAL_SIZE]).expect("a seed is enough");
+        StatelessResetKey::try_from_bytes(&[0x5a; KEY_MATERIAL_SIZE * 2])
+            .expect("longer material is taken as it is");
     }
 
     /// The same material gives the same bytes whichever provider is compiled in, so endpoints

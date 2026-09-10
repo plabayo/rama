@@ -405,7 +405,7 @@ impl CidQueue {
     /// number far beyond the last one, and naming every number in between would exceed any
     /// bounded retirement queue; the numbers past the bound are refused if they arrive, which is
     /// what retires them then.
-    fn bounded_end(&self, previous: u64, end: u64) -> u64 {
+    fn bounded_end(previous: u64, end: u64) -> u64 {
         end.min(previous.saturating_add(Self::LEN as u64))
     }
 
@@ -523,7 +523,7 @@ impl CidQueue {
         // issued them the limit would have been reached, and a late arrival is refused as retired.
         // Identifiers kept aside in that span are still ours and are not named as retired
         // (RFC 9000 §5.1.2).
-        let end = self.bounded_end(previous, next.seq);
+        let end = Self::bounded_end(previous, next.seq);
         let retired = Retired {
             previous: previous..previous + 1,
             skipped: self.skipped_from(previous, end, floor_before),
@@ -548,7 +548,7 @@ impl CidQueue {
         // retirement is: a distant identifier would otherwise name a span no retirement queue can
         // hold. Identifiers this connection holds are not in these runs at all, so nothing it
         // received is left unnamed, and a late arrival past the bound is refused as retired.
-        let skipped = self.skipped_between(previous.seq, self.bounded_end(previous.seq, next.seq));
+        let skipped = self.skipped_between(previous.seq, Self::bounded_end(previous.seq, next.seq));
         let retired = Retired {
             previous: if keep_previous {
                 self.held = Some(previous);
@@ -645,7 +645,7 @@ impl CidQueue {
         // A reservation the ring has moved past leaves nothing in between, which the run
         // computation says by itself. Bounded like a switch.
         let skipped =
-            self.skipped_between(previous.seq, self.bounded_end(previous.seq, reserved.seq));
+            self.skipped_between(previous.seq, Self::bounded_end(previous.seq, reserved.seq));
         let retired = Retired {
             previous: previous.seq..previous.seq + 1,
             skipped,
@@ -664,7 +664,7 @@ impl CidQueue {
         // nearest the floor named, and a late arrival past that is refused as retired, which is
         // what retires it then. Naming the whole span instead would exceed the connection's
         // bounded retirement queue and close a connection over identifiers it never held.
-        let end = self.bounded_end(self.floor, retire_prior_to);
+        let end = Self::bounded_end(self.floor, retire_prior_to);
         let skipped = self.absent_runs(self.floor, end);
         let held = self
             .held

@@ -439,13 +439,12 @@ impl Sender {
                 remaining.len()
             };
             let mut datagram = SendDatagram::new(transmit.destination, &remaining[..len]);
-            if !split {
-                if let Some(size) = segment_size
+            if !split
+                && let Some(size) = segment_size
                     .filter(|&size| size < len)
                     .and_then(NonZeroUsize::new)
-                {
-                    datagram.set_segment_size(size);
-                }
+            {
+                datagram.set_segment_size(size);
             }
             // ECN is optional in QUIC. A backend without transmit ECN sends unmarked packets.
             // Source selection, in contrast, is required unless the bind already enforces it.

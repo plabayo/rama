@@ -348,30 +348,30 @@ mod test {
         assert!(accepted > 0);
     }
 
-    fn test_doesnt_panic(log: BloomTokenLog) {
+    fn test_doesnt_panic(log: &BloomTokenLog) {
         let mut rng = new_rng();
 
         let issued = SystemTime::now();
         let lifetime = Duration::from_secs(1_000_000);
 
         for _ in 0..200 {
-            let _ = log.check_and_insert(rng.random::<u128>(), issued, lifetime);
+            let _accepted = log.check_and_insert(rng.random::<u128>(), issued, lifetime);
         }
     }
 
     #[test]
     fn max_bytes_zero() {
         // "max bytes" is documented to be approximate. but make sure it doesn't panic.
-        test_doesnt_panic(BloomTokenLog::new_expected_items(0, 200));
+        test_doesnt_panic(&BloomTokenLog::new_expected_items(0, 200));
     }
 
     #[test]
     fn expected_hits_zero() {
-        test_doesnt_panic(BloomTokenLog::new_expected_items(100, 0));
+        test_doesnt_panic(&BloomTokenLog::new_expected_items(100, 0));
     }
 
     #[test]
     fn k_num_zero() {
-        test_doesnt_panic(BloomTokenLog::new(100, 0));
+        test_doesnt_panic(&BloomTokenLog::new(100, 0));
     }
 }

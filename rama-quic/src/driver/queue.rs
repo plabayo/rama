@@ -296,6 +296,10 @@ pub(crate) struct BoundedReceiver<T> {
 impl<T> BoundedReceiver<T> {
     /// `Ready(None)` once the sender is gone and the queue is drained, or once this receiver
     /// closed the queue (terminal: nothing is queued after a close).
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "one consumer at a time is the receiver's contract, and polling takes the context by exclusive reference"
+    )]
     pub(crate) fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<T>> {
         let mut state = self.shared.lock();
         if let Some(item) = state.items.pop_front() {
@@ -310,6 +314,10 @@ impl<T> BoundedReceiver<T> {
 
     /// Refuse further sends and drop everything queued, releasing its charges, storage and any
     /// stored waker. Dropping the receiver does the same.
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "closing is the consumer's decision, so it takes the receiver exclusively"
+    )]
     pub(crate) fn close(&mut self) {
         let mut state = self.shared.lock();
         state.closed = true;
@@ -541,7 +549,7 @@ mod tests {
         sender.send(1).unwrap();
         assert_eq!(receiver.capacity(), 2 * MIN_RETAINED);
         // Peak since the last drain is one item: the baseline term is what allows 32.
-        assert!(receiver.capacity() <= 256.min((2 * MIN_RETAINED).max(2 * 1)));
+        assert!(receiver.capacity() <= 256.min((2 * MIN_RETAINED).max(2)));
     }
 
     #[test]
@@ -678,7 +686,7 @@ mod tests {
     fn bounded_deque_keeps_small_storage_when_drained() {
         let mut queue = BoundedDeque::<u32>::new(1024);
         for i in 0..17 {
-            assert!(queue.push_back(i).is_ok());
+            queue.push_back(i).expect("the queue takes it");
         }
         assert_eq!(
             queue.capacity(),
@@ -691,11 +699,11 @@ mod tests {
             32,
             "storage at or below 2 × MIN_RETAINED is retained across a drain"
         );
-        assert!(queue.push_back(0).is_ok());
+        queue.push_back(0).expect("the queue takes it");
         assert_eq!(queue.capacity(), 32, "no growth while storage remains");
         queue.clear();
         for i in 0..33 {
-            assert!(queue.push_back(i).is_ok());
+            queue.push_back(i).expect("the queue takes it");
         }
         assert_eq!(queue.capacity(), 64);
         while queue.pop_front().is_some() {}
@@ -709,18 +717,18 @@ mod tests {
     #[test]
     fn bounded_deque_refuses_when_it_cannot_grow() {
         let mut small = BoundedDeque::<u8>::new(3);
-        assert!(small.push_back(1).is_ok());
+        small.push_back(1).expect("the queue takes it");
         assert_eq!(
             small.capacity(),
             3,
             "growth never exceeds a limit below the minimum"
         );
-        assert!(small.push_back(2).is_ok());
-        assert!(small.push_back(3).is_ok());
+        small.push_back(2).expect("the queue takes it");
+        small.push_back(3).expect("the queue takes it");
         assert_eq!(small.push_back(4), Err(4));
         // A limit whose storage cannot exist is refused by the allocator, not a panic.
         let mut huge = BoundedDeque::<[u8; 1024]>::new(usize::MAX);
-        assert!(huge.push_back([0; 1024]).is_ok(), "the first step is small");
+        huge.push_back([0; 1024]).expect("the first step is small");
         assert_eq!(huge.capacity(), MIN_RETAINED);
         let mut zero = BoundedDeque::<u8>::new(0);
         assert_eq!(zero.push_back(7), Err(7));

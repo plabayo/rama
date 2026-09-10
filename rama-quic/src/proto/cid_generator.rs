@@ -226,11 +226,9 @@ mod tests {
         let mut generator = HashedConnectionIdGenerator::from_key(KEY);
         let mine = generator.generate_cid();
         assert_eq!(mine.len(), generator.cid_len());
-        assert!(
-            HashedConnectionIdGenerator::from_key(KEY)
-                .validate(&mine)
-                .is_ok()
-        );
+        HashedConnectionIdGenerator::from_key(KEY)
+            .validate(&mine)
+            .expect("a generator holding the same key recognises it");
         assert!(
             HashedConnectionIdGenerator::from_key(OTHER_KEY)
                 .validate(&mine)
@@ -250,7 +248,7 @@ mod tests {
         }
 
         assert!(
-            ConnectionId::try_from_bytes(&vec![0x5a; MAX_CID_SIZE + 1]).is_err(),
+            ConnectionId::try_from_bytes(&[0x5a; MAX_CID_SIZE + 1]).is_err(),
             "and nothing longer than the maximum can be built at all"
         );
     }
@@ -266,7 +264,8 @@ mod tests {
             assert_eq!(generator.generate_cid().len(), length);
             assert_eq!(generator.cid_lifetime(), None);
         }
-        assert!(RandomConnectionIdGenerator::new(MAX_CID_SIZE + 1).is_err());
+        RandomConnectionIdGenerator::new(MAX_CID_SIZE + 1)
+            .expect_err("a length past the maximum is refused");
 
         let lived = RandomConnectionIdGenerator::new(8)
             .expect("eight bytes is a length")

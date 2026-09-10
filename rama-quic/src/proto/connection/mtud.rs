@@ -186,7 +186,7 @@ impl EnabledMtuDiscovery {
 
     /// Returns the amount of bytes that should be sent as an MTU probe, if any
     fn poll_transmit(&mut self, now: Instant, current_mtu: u16, next_pn: u64) -> Option<u16> {
-        if let Phase::Initial = &self.phase {
+        if matches!(&self.phase, Phase::Initial) {
             // Start the first search
             self.phase = Phase::Searching(SearchState::new(
                 current_mtu,

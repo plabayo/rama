@@ -641,7 +641,7 @@ impl SendableFrames {
     }
 
     /// Whether no data is sendable
-    pub(super) fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(self) -> bool {
         !self.acks && !self.other
     }
 }
@@ -1184,7 +1184,7 @@ mod test {
         // number. Walking it is the defect; this call has to come straight back.
         let huge = 1..(1u64 << 62) - 1;
         let error = pending
-            .retire_cids(huge.clone())
+            .retire_cids(huge)
             .expect_err("a range that wide is a protocol error");
         assert_eq!(
             error.code,

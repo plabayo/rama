@@ -234,10 +234,9 @@ impl Dir {
 
 impl fmt::Display for Dir {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use Dir::*;
         f.pad(match *self {
-            Bi => "bidirectional",
-            Uni => "unidirectional",
+            Self::Bi => "bidirectional",
+            Self::Uni => "unidirectional",
         })
     }
 }

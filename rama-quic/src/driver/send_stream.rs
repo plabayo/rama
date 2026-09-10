@@ -5,7 +5,9 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::proto::{ClosedStream, ConnectionError, FinishError, StreamId, Written};
+use crate::proto::{
+    ClosedStream, ConnectionError, FinishError, StreamId, WriteError as ProtoWriteError, Written,
+};
 use rama_core::bytes::Bytes;
 
 use crate::driver::{
@@ -133,11 +135,14 @@ impl SendStream {
         Ok(())
     }
 
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "polling takes the context by exclusive reference"
+    )]
     fn execute_poll<F, R>(&mut self, cx: &mut Context, write_fn: F) -> Poll<Result<R, WriteError>>
     where
         F: FnOnce(&mut crate::proto::SendStream) -> Result<R, crate::proto::WriteError>,
     {
-        use crate::proto::WriteError::*;
         let mut conn = self.conn.state.lock();
         if self.is_0rtt {
             conn.check_0rtt()
@@ -149,14 +154,14 @@ impl SendStream {
 
         let result = match write_fn(&mut conn.inner.send_stream(self.stream)) {
             Ok(result) => result,
-            Err(Blocked) => {
+            Err(ProtoWriteError::Blocked) => {
                 conn.blocked_writers.insert(self.stream, cx.waker().clone());
                 return Poll::Pending;
             }
-            Err(Stopped(error_code)) => {
+            Err(ProtoWriteError::Stopped(error_code)) => {
                 return Poll::Ready(Err(WriteError::Stopped(error_code)));
             }
-            Err(ClosedStream) => {
+            Err(ProtoWriteError::ClosedStream) => {
                 return Poll::Ready(Err(WriteError::ClosedStream));
             }
         };
@@ -412,10 +417,9 @@ impl From<StoppedError> for WriteError {
 
 impl From<WriteError> for io::Error {
     fn from(x: WriteError) -> Self {
-        use WriteError::*;
         let kind = match x {
-            Stopped(_) | ZeroRttRejected => io::ErrorKind::ConnectionReset,
-            ConnectionLost(_) | ClosedStream => io::ErrorKind::NotConnected,
+            WriteError::Stopped(_) | WriteError::ZeroRttRejected => io::ErrorKind::ConnectionReset,
+            WriteError::ConnectionLost(_) | WriteError::ClosedStream => io::ErrorKind::NotConnected,
         };
         Self::new(kind, x)
     }
@@ -448,7 +452,7 @@ impl std::error::Error for StoppedError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::ConnectionLost(inner) => Some(inner),
-            _ => None,
+            Self::ZeroRttRejected => None,
         }
     }
 }
@@ -461,10 +465,9 @@ impl From<ConnectionError> for StoppedError {
 
 impl From<StoppedError> for io::Error {
     fn from(x: StoppedError) -> Self {
-        use StoppedError::*;
         let kind = match x {
-            ZeroRttRejected => io::ErrorKind::ConnectionReset,
-            ConnectionLost(_) => io::ErrorKind::NotConnected,
+            StoppedError::ZeroRttRejected => io::ErrorKind::ConnectionReset,
+            StoppedError::ConnectionLost(_) => io::ErrorKind::NotConnected,
         };
         Self::new(kind, x)
     }

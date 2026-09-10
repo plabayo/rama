@@ -56,21 +56,22 @@ impl Recv {
             ));
         }
 
-        if let Some(final_offset) = self.final_offset() {
-            if end > final_offset || (frame.fin && end != final_offset) {
-                debug!(end, final_offset, "final size error");
-                return Err(TransportError::FINAL_SIZE_ERROR(""));
-            }
+        if let Some(final_offset) = self.final_offset()
+            && (end > final_offset || (frame.fin && end != final_offset))
+        {
+            debug!(end, final_offset, "final size error");
+            return Err(TransportError::FINAL_SIZE_ERROR(""));
         }
 
         let new_bytes = self.credit_consumed_by(end, received, max_data)?;
 
         // Stopped streams don't need to wait for the actual data, they just need to know
         // how much there was.
-        if frame.fin && !self.stopped {
-            if let RecvState::Recv { ref mut size } = self.state {
-                *size = Some(end);
-            }
+        if frame.fin
+            && !self.stopped
+            && let RecvState::Recv { ref mut size } = self.state
+        {
+            *size = Some(end);
         }
 
         self.end = self.end.max(end);
@@ -116,7 +117,7 @@ impl Recv {
     /// transmission of the value is recommended. If the boolean value is
     /// `false` the new window should only be transmitted if a previous transmission
     /// had failed.
-    pub(super) fn max_stream_data(&mut self, stream_receive_window: u64) -> (u64, ShouldTransmit) {
+    pub(super) fn max_stream_data(&self, stream_receive_window: u64) -> (u64, ShouldTransmit) {
         let max_stream_data = self.assembler.bytes_read() + stream_receive_window;
 
         // Only announce a window update if it's significant enough
@@ -210,7 +211,7 @@ impl Recv {
     pub(super) fn reset_code(&self) -> Option<VarInt> {
         match self.state {
             RecvState::ResetRecvd { error_code, .. } => Some(error_code),
-            _ => None,
+            RecvState::Recv { .. } => None,
         }
     }
 
@@ -373,7 +374,7 @@ impl<'a> Chunks<'a> {
 
     fn finalize_inner(&mut self) -> ShouldTransmit {
         let state = mem::replace(&mut self.state, ChunksState::Finalized);
-        if let ChunksState::Finalized = state {
+        if matches!(state, ChunksState::Finalized) {
             // Noop on repeated calls
             return ShouldTransmit(false);
         }
@@ -384,7 +385,7 @@ impl<'a> Chunks<'a> {
         let mut should_transmit = self.streams.queue_max_stream_id(self.pending);
 
         // If the stream hasn't finished, we may need to issue stream-level flow control credit
-        if let ChunksState::Readable(mut rs) = state {
+        if let ChunksState::Readable(rs) = state {
             let (_, max_stream_data) = rs.max_stream_data(self.streams.stream_receive_window);
             should_transmit |= max_stream_data.0;
             if max_stream_data.0 {

@@ -63,6 +63,13 @@ pub(crate) struct QlogSink {
     stream: Option<QlogStream>,
 }
 
+#[cfg_attr(
+    not(feature = "qlog"),
+    expect(
+        clippy::unused_self,
+        reason = "without the feature the bodies are empty, and the sink holds the stream in the qlog build"
+    )
+)]
 impl QlogSink {
     pub(crate) fn is_enabled(&self) -> bool {
         #[cfg(feature = "qlog")]
@@ -75,6 +82,13 @@ impl QlogSink {
         }
     }
 
+    #[cfg_attr(
+        not(feature = "qlog"),
+        expect(
+            clippy::needless_pass_by_ref_mut,
+            reason = "the qlog build takes the metrics through `&mut PathData`; without the feature the body is empty"
+        )
+    )]
     pub(super) fn emit_recovery_metrics(
         &self,
         pto_count: u32,

@@ -155,13 +155,11 @@ impl Tokens {
     /// Append the newest token, evicting the oldest when `max` tokens are already held.
     fn push_newest(&mut self, token: Bytes, max: NonZeroUsize) {
         if self.len() >= max.get() {
-            match self.newer.pop_front() {
-                Some(next) => self.oldest = next,
-                // a single-token limit: the newcomer replaces the only token
-                None => {
-                    self.oldest = token;
-                    return;
-                }
+            if let Some(next) = self.newer.pop_front() {
+                self.oldest = next
+            } else {
+                self.oldest = token;
+                return;
             }
         }
         self.newer.push_back(token);

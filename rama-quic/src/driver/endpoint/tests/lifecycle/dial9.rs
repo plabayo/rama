@@ -33,6 +33,10 @@ async fn handshake_and_shutdown() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "the slot is what keeps the other test out while this one drives the process-wide observation"
+)]
 async fn without_a_recorder_the_drivers_run_with_a_disabled_handle() {
     let _slot = observation_slot();
     assert!(!Dial9Handle::current().is_enabled());

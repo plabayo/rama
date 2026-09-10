@@ -41,7 +41,7 @@ pub(super) struct DropObserver {
 
 impl DropObserver {
     pub(super) fn attach(&self, endpoint: &Endpoint) {
-        let _ = self.endpoint.set(Arc::downgrade(&endpoint.inner.0));
+        let _installed = self.endpoint.set(Arc::downgrade(&endpoint.inner.0));
     }
 
     fn record(&self) {
@@ -1627,7 +1627,7 @@ async fn queued_responses_on_a_replaced_socket_finish_from_their_own_continuatio
 async fn a_failing_retiring_socket_is_isolated_and_the_active_socket_keeps_serving() {
     let old_captured = Captured::default();
     let endpoint = test_endpoint(TestSocket {
-        captured: old_captured.clone(),
+        captured: old_captured,
         recv_errors: [io::ErrorKind::PermissionDenied].into(),
         send_failure: Some(io::ErrorKind::HostUnreachable),
         ..TestSocket::default()
