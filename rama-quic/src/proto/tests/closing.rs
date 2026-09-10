@@ -4,15 +4,15 @@
 //! often. These tests drive each side by hand so the peer never learns of the close, and release
 //! the peer's packets one at a time, so what earns an answer is exactly what the test says it is.
 
-use std::{collections::VecDeque, mem, net::SocketAddr};
+use std::{collections::VecDeque, mem, net::SocketAddr, sync::Arc};
 
 use crate::proto::Duration;
 
 use rama_core::bytes::Bytes;
 
 use super::{
-    ApplicationClose, ConnectionError, ConnectionHandle, Event, Ipv6Addr, VarInt, subscribe,
-    util::*,
+    ApplicationClose, ConnectionError, ConnectionHandle, Event, Ipv6Addr, TransportConfig, VarInt,
+    big_cert_and_key, subscribe, util::*,
 };
 use rama_crypto::dep::rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
 use rama_tls_rustls::dep::rustls::AlertDescription;
@@ -574,17 +574,6 @@ fn a_close_before_the_handshake_is_confirmed_reaches_every_space() {
         last.packet[0] & 0x80 == 0,
         "the last of them is the 1-RTT close, in a short header"
     );
-    // A datagram carrying an Initial packet is padded to the minimum a client may send
-    // (RFC 9000 §14.1), which separating the spaces must not lose.
-    for datagram in sent.iter().skip(before) {
-        if datagram.packet[0] & 0xb0 == 0x80 {
-            assert!(
-                datagram.packet.len() >= usize::from(MIN_INITIAL_SIZE),
-                "an initial close is padded to {MIN_INITIAL_SIZE}, not {}",
-                datagram.packet.len()
-            );
-        }
-    }
 
     assert_eq!(
         pair.client_conn_mut(client_ch).close_response_gap(),
@@ -593,10 +582,15 @@ fn a_close_before_the_handshake_is_confirmed_reaches_every_space() {
     );
 }
 
-/// The space a close is due in moves on only when a pass actually writes one: each pass
-/// carries one space's close, the cursor follows it, and the close stays pending until the
-/// highest space has had one. A pass that writes nothing — here, one taken by a peer's
-/// address that has not been validated — leaves both where they were.
+/// The space a close is due in moves on only when a pass actually writes one, and a pass
+/// that writes nothing changes nothing.
+///
+/// A pass blocked while the close is still pending is not reachable here: a close is exempt
+/// from congestion control and pacing on purpose (see `poll_transmit`), and three close
+/// datagrams do not exhaust the amplification limit this fixture leaves. So the second half
+/// is shown where a pass writing nothing is reachable — once the close is complete — and the
+/// pending half rests on the source, which advances neither the cursor nor the budget unless
+/// a frame was encoded.
 #[test]
 fn the_close_cursor_follows_what_was_written() {
     let _guard = subscribe();
@@ -617,8 +611,8 @@ fn the_close_cursor_follows_what_was_written() {
     );
 
     // One pass, one space, and the cursor follows what went out.
-    let mut seen = 0;
     let mut buf = Vec::new();
+    let mut written = 0;
     let mut due = pair.client_conn_mut(client_ch).close_due_from();
     for step in 0..spaces {
         buf.clear();
@@ -627,7 +621,7 @@ fn the_close_cursor_follows_what_was_written() {
             .client_conn_mut(client_ch)
             .poll_transmit(now, 1, &mut buf);
         assert!(sent.is_some(), "the pass carried a datagram");
-        seen += 1;
+        written += 1;
         let moved = pair.client_conn_mut(client_ch).close_due_from();
         if step + 1 < spaces {
             assert!(
@@ -642,11 +636,71 @@ fn the_close_cursor_follows_what_was_written() {
         }
         due = moved;
     }
-    assert_eq!(seen, spaces, "one datagram for each space that had keys");
+    assert_eq!(written, spaces, "one datagram for each space that had keys");
+    let gap = pair.client_conn_mut(client_ch).close_response_gap();
+    assert_eq!(gap, 2, "one logical answer for the whole of it");
+
+    // A pass with nothing to write changes nothing.
+    let cursor = pair.client_conn_mut(client_ch).close_due_from();
+    for _ in 0..3 {
+        buf.clear();
+        let now = pair.time;
+        assert!(
+            pair.client_conn_mut(client_ch)
+                .poll_transmit(now, 1, &mut buf)
+                .is_none(),
+            "there is nothing left to send"
+        );
+        assert_eq!(
+            pair.client_conn_mut(client_ch).close_due_from(),
+            cursor,
+            "the cursor stays where it was"
+        );
+        assert_eq!(
+            pair.client_conn_mut(client_ch).close_response_gap(),
+            gap,
+            "and so does the budget"
+        );
+    }
+}
+
+/// A close in the Initial space rides in a datagram padded to the minimum a client may send
+/// (RFC 9000 §14.1). The close is made before the client has any other space, so there is an
+/// Initial close to look at rather than an assertion that passes because there is none.
+#[test]
+fn an_initial_close_is_padded() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let client_ch = pair.begin_connect(client_config());
+
+    // Only the first flight has gone out, so Initial is the one space with keys.
+    pair.drive_client();
     assert_eq!(
-        pair.client_conn_mut(client_ch).close_response_gap(),
-        2,
-        "and one logical answer once the highest space has had its close"
+        pair.client_conn_mut(client_ch).spaces_with_close_keys(),
+        1,
+        "the client holds Initial keys and no others"
+    );
+
+    pair.client.connections.get_mut(&client_ch).unwrap().close(
+        pair.time,
+        VarInt(42),
+        Bytes::from_static(b"done"),
+    );
+    let before = pair.server.inbound.len();
+    pair.drive_client();
+    let sent: Vec<_> = pair.server.inbound.iter().skip(before).collect();
+    assert_eq!(sent.len(), 1, "the close went out in one datagram");
+
+    let datagram = sent[0];
+    assert_eq!(
+        datagram.packet[0] & 0xb0,
+        0x80,
+        "it carries an Initial packet"
+    );
+    assert!(
+        datagram.packet.len() >= usize::from(MIN_INITIAL_SIZE),
+        "and is padded to {MIN_INITIAL_SIZE}, not {}",
+        datagram.packet.len()
     );
 }
 
@@ -678,7 +732,13 @@ fn a_draining_endpoint_answers_with_one_packet() {
     // The server takes the close, enters draining, and answers.
     let before = pair.client.inbound.len();
     pair.drive_server();
-    let answered = pair.client.inbound.len() - before;
+    let answered: usize = pair
+        .client
+        .inbound
+        .iter()
+        .skip(before)
+        .map(|datagram| packets_in(&datagram.packet))
+        .sum();
     assert!(
         answered <= 1,
         "a draining endpoint answers with at most one packet, not {answered}"
@@ -737,4 +797,232 @@ fn a_pending_server_close_survives_input_from_elsewhere() {
         }) => {}
         other => panic!("the peer received the close, not {other:?}"),
     }
+}
+
+/// Before an address is validated a server may send no more than three times what it has
+/// received from it (RFC 9000 §8.1). This counts the actual bytes both ways, on a path the
+/// peer has just moved to, where the credit is a fraction of a datagram.
+#[test]
+fn the_amplification_bound_holds_on_a_new_path() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client_ch, server_ch) = pair.connect();
+
+    // One datagram from somewhere else: the server has that many bytes of credit towards
+    // the new address, and nothing has validated it.
+    let received = move_the_client_to(&mut pair, client_ch, server_ch);
+
+    // Something worth sending, larger than the credit.
+    pair.server.connections.get_mut(&server_ch).unwrap().close(
+        pair.time,
+        VarInt(42),
+        Bytes::from(vec![b'x'; 1000]),
+    );
+    let sent = drive_the_server_towards_elsewhere(&mut pair);
+    assert!(
+        sent <= received * 3,
+        "the server sent {sent} bytes towards an address it has {} of credit for",
+        received * 3
+    );
+}
+
+/// Move the client to [`elsewhere`] with one small packet, and answer how many bytes of it the
+/// server received: three times that is all it may send back until the address is validated.
+fn move_the_client_to(
+    pair: &mut Pair,
+    client_ch: ConnectionHandle,
+    server_ch: ConnectionHandle,
+) -> usize {
+    pair.client_conn_mut(client_ch).ping();
+    pair.drive_client();
+    let mut held = mem::take(&mut pair.server.inbound);
+    let datagram = held.pop_front().expect("the client put one on the wire");
+    let received = datagram.packet.len();
+    hand_to_the_server(pair, server_ch, datagram, elsewhere());
+    received
+}
+
+/// Let the server transmit, and answer what it put on the wire towards [`elsewhere`].
+fn drive_the_server_towards_elsewhere(pair: &mut Pair) -> usize {
+    let before = pair.server_sent.len();
+    pair.drive_server();
+    pair.server_sent
+        .iter()
+        .skip(before)
+        .filter(|sent| sent.to == elsewhere())
+        .map(|sent| sent.bytes)
+        .sum()
+}
+
+#[test]
+fn a_close_within_the_credit_goes_out_on_a_new_path() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client_ch, server_ch) = pair.connect();
+    let received = move_the_client_to(&mut pair, client_ch, server_ch);
+
+    // A short reason: the whole close fits in what one small packet earned.
+    pair.server.connections.get_mut(&server_ch).unwrap().close(
+        pair.time,
+        VarInt(42),
+        Bytes::from_static(b"done"),
+    );
+    let sent = drive_the_server_towards_elsewhere(&mut pair);
+    assert!(sent > 0, "the close went out");
+    assert!(
+        sent <= received * 3,
+        "and fits the {} bytes of credit: {sent}",
+        received * 3
+    );
+    assert_eq!(
+        pair.server_conn_mut(server_ch)
+            .stats()
+            .frame_tx
+            .connection_close,
+        1,
+        "one close frame was written"
+    );
+}
+
+#[test]
+fn nothing_more_goes_out_once_the_credit_on_a_new_path_is_spent() {
+    let _guard = subscribe();
+    let mut pair = Pair::default();
+    let (client_ch, server_ch) = pair.connect();
+    let received = move_the_client_to(&mut pair, client_ch, server_ch);
+
+    // Nobody answers at that address, so the server validates nothing and spends the credit
+    // the one packet earned, then stops.
+    let mut spent = 0;
+    for _ in 0..10 {
+        spent += drive_the_server_towards_elsewhere(&mut pair);
+        pair.time += Duration::from_millis(10);
+    }
+    assert!(spent > 0, "the server answered the move");
+    assert!(
+        spent <= received * 3,
+        "within the {} bytes of credit: {spent}",
+        received * 3
+    );
+
+    // A close now has nothing left to go out in, and nothing about it moves while it waits.
+    pair.server.connections.get_mut(&server_ch).unwrap().close(
+        pair.time,
+        VarInt(42),
+        Bytes::from_static(b"done"),
+    );
+    let cursor = pair.server_conn_mut(server_ch).close_due_from();
+    let gap = pair.server_conn_mut(server_ch).close_response_gap();
+    for _ in 0..3 {
+        assert_eq!(
+            drive_the_server_towards_elsewhere(&mut pair),
+            0,
+            "there is no credit left for it"
+        );
+        assert_eq!(
+            pair.server_conn_mut(server_ch).close_due_from(),
+            cursor,
+            "the cursor stays where it was"
+        );
+        assert_eq!(
+            pair.server_conn_mut(server_ch).close_response_gap(),
+            gap,
+            "and so does the response budget"
+        );
+        assert_eq!(
+            pair.server_conn_mut(server_ch)
+                .stats()
+                .frame_tx
+                .connection_close,
+            0,
+            "no close frame was written"
+        );
+        pair.time += Duration::from_millis(10);
+    }
+
+    // More from that same address, and the close it was holding goes out within the credit.
+    let total = feed_the_server_from_elsewhere(&mut pair, client_ch, server_ch, 400);
+    let sent = drive_the_server_towards_elsewhere(&mut pair);
+    assert!(sent > 0, "the close went out once the credit covered it");
+    assert!(
+        spent + sent <= total * 3,
+        "and everything sent fits the {} bytes that address has earned: {}",
+        total * 3,
+        spent + sent
+    );
+    assert_eq!(
+        pair.server_conn_mut(server_ch)
+            .stats()
+            .frame_tx
+            .connection_close,
+        1,
+        "one close frame was written"
+    );
+}
+
+#[test]
+fn a_handshake_flight_fits_the_credit_the_client_earned() {
+    let _guard = subscribe();
+    let mut server_transport = TransportConfig::default();
+    // A low-latency estimate, so pacing does not decide how much of the flight goes out, and a
+    // segment that is not a whole fraction of what the client earns, so the last datagram the
+    // server would like to add is the one the bound has to refuse.
+    server_transport.set_initial_rtt(Duration::from_millis(10));
+    server_transport.set_initial_mtu(1400);
+    let (cert, key) = big_cert_and_key();
+    let mut server = server_config_with_cert(cert, key);
+    server.set_transport_config(Arc::new(server_transport));
+    let mut pair = Pair::new(Default::default(), server);
+
+    pair.begin_connect(client_config());
+    pair.drive_client();
+    let received: usize = pair.server.inbound.iter().map(|it| it.packet.len()).sum();
+    assert_ne!(
+        received * 3 % 1400,
+        0,
+        "the credit is not a whole number of the server's segments: {received}"
+    );
+    let before = pair.server_sent.len();
+    pair.drive_server();
+    let sent: usize = pair
+        .server_sent
+        .iter()
+        .skip(before)
+        .map(|sent| sent.bytes)
+        .sum();
+    assert!(
+        sent > usize::from(MIN_INITIAL_SIZE),
+        "the flight is more than one datagram: {sent}"
+    );
+    assert!(
+        sent <= received * 3,
+        "and the whole of it fits the {} bytes the client earned: {sent}",
+        received * 3
+    );
+}
+
+/// Send an unreliable datagram from the client, hand it to the server as coming from
+/// [`elsewhere`], and answer everything that address has sent so far.
+fn feed_the_server_from_elsewhere(
+    pair: &mut Pair,
+    client_ch: ConnectionHandle,
+    server_ch: ConnectionHandle,
+    want: usize,
+) -> usize {
+    let size = pair
+        .client_datagrams(client_ch)
+        .max_size()
+        .expect("the peer takes unreliable datagrams")
+        .min(want);
+    pair.client_datagrams(client_ch)
+        .send(Bytes::from(vec![0x42; size]), false)
+        .expect("the datagram is queued");
+    pair.drive_client();
+    let mut held = mem::take(&mut pair.server.inbound);
+    let mut received = pair.server_conn_mut(server_ch).total_recvd() as usize;
+    while let Some(datagram) = held.pop_front() {
+        received += datagram.packet.len();
+        hand_to_the_server(pair, server_ch, datagram, elsewhere());
+    }
+    received
 }

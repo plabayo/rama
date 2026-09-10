@@ -162,12 +162,13 @@ impl Pair {
         let _guard = span.enter();
         self.client.drive(self.time, self.server.addr);
         for (packet, buffer) in self.client.outbound.drain(..) {
+            let packet_size = packet_size(&packet, &buffer);
             self.client_sent.push(Sent {
                 local: packet.local,
                 to: packet.destination,
                 cid: packet.cid_used,
+                bytes: packet_size,
             });
-            let packet_size = packet_size(&packet, &buffer);
             if packet_size > self.mtu {
                 info!(packet_size, "dropping packet (max size exceeded)");
                 continue;
@@ -199,12 +200,13 @@ impl Pair {
         let _guard = span.enter();
         self.server.drive(self.time, self.client.addr);
         for (packet, buffer) in self.server.outbound.drain(..) {
+            let packet_size = packet_size(&packet, &buffer);
             self.server_sent.push(Sent {
                 local: packet.local,
                 to: packet.destination,
                 cid: packet.cid_used,
+                bytes: packet_size,
             });
-            let packet_size = packet_size(&packet, &buffer);
             if packet_size > self.mtu {
                 info!(packet_size, "dropping packet (max size exceeded)");
                 continue;
@@ -347,6 +349,8 @@ pub(super) struct Sent {
     pub(super) local: Option<SocketAddr>,
     pub(super) to: SocketAddr,
     pub(super) cid: Option<u64>,
+    /// The datagram's size on the wire, for a case counting bytes against a limit.
+    pub(super) bytes: usize,
 }
 
 pub(super) struct TestEndpoint {

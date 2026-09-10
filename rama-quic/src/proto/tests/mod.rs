@@ -1939,8 +1939,11 @@ fn a_skipped_packet_number_does_not_spend_the_key_budget() {
             assert!(pair.client_conn_mut(client_ch).force_key_update());
             pair.client_conn_mut(client_ch)
                 .set_packets_sent_with_keys(limit - from_the_end);
-            if skip {
-                pair.client_conn_mut(client_ch).skip_next_packet_number();
+            match skip {
+                true => pair.client_conn_mut(client_ch).skip_next_packet_number(),
+                // The filter's first skip is a random number in 0..64, which the handshake can
+                // leave just ahead of this pass; this case is about a pass that skips nothing.
+                false => pair.client_conn_mut(client_ch).skip_no_packet_number(),
             }
             let (skipped_before, number_before) = pair.client_conn_mut(client_ch).packet_numbers();
             let counted_before = pair.client_conn_mut(client_ch).packets_sent_with_keys();

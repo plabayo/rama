@@ -183,10 +183,13 @@ impl PacketBuilder {
         // The datagram might already have a larger minimum size than the caller is requesting, if
         // e.g. we're coalescing packets and have populated more than `min_size` bytes with packets
         // already.
+        // An anti-amplification limit can leave a datagram less room than the padding a frame
+        // asks for, and the limit wins (RFC 9000 §8.2.1).
         self.min_size = Ord::max(
             self.min_size,
             self.datagram_start + (min_size as usize) - self.tag_len,
-        );
+        )
+        .min(self.max_size);
     }
 
     pub(super) fn finish_and_track(

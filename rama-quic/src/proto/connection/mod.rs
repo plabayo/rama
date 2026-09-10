@@ -701,9 +701,9 @@ impl Connection {
 
         // Whether a close frame actually made it into a packet on this pass, which is what
         // counts as one response.
-        // Whether this pass carried the close all the way to the highest space, which is when
-        // the close is done with.
-        let mut closed_highest = false;
+        // Whether the close is done with: the highest space has had one, or the permitted
+        // response packet has gone out.
+        let mut close_finished = false;
 
         // Check whether we need to send a close message
         let close = match self.state {
@@ -730,6 +730,17 @@ impl Connection {
                 .should_send_ack_frequency(self.path.rtt.get(), config, &self.peer_params)
                 && self.highest_space == SpaceId::Data
                 && self.peer_supports_ack_frequency();
+        }
+
+        // What may go towards an unvalidated address is bounded in bytes, so plan against a
+        // segment that fits the allowance rather than a full one that would exceed it (RFC 9000
+        // §8), which keeps a small PATH_CHALLENGE or PATH_RESPONSE reachable. A datagram carrying
+        // an Initial is padded to `MIN_INITIAL_SIZE`, so the segment does not shrink past that
+        // while this side still has Initial keys (RFC 9000 §14.1); below `MIN_PACKET_SPACE` no
+        // packet can be built at all, and the floor leaves the admission check below to block.
+        if let Some(remaining) = self.path.anti_amplification_remaining() {
+            let remaining = usize::try_from(remaining).unwrap_or(usize::MAX);
+            segment_size = segment_size.min(remaining.max(self.min_datagram_size()));
         }
 
         // Reserving capacity can provide more capacity than we asked for. However, we are not
@@ -814,15 +825,19 @@ impl Connection {
                     break;
                 }
 
-                // Anti-amplification is only based on `total_sent`, which gets
-                // updated at the end of this method. Therefore we pass the amount
-                // of bytes for datagrams that are already created, as well as 1 byte
-                // for starting another datagram. If there is any anti-amplification
-                // budget left, we always allow a full MTU to be sent
-                if self
-                    .path
-                    .anti_amplification_blocked(segment_size as u64 * (num_datagrams as u64) + 1)
-                {
+                // Every datagram in a batch before the last occupies a full segment, and a loss
+                // probe is clamped to the minimum MTU so it can get through a shrunken path.
+                let admitting = match self.spaces[space_id].loss_probes {
+                    0 => segment_size,
+                    _ => cmp::min(segment_size, usize::from(INITIAL_MTU)),
+                };
+
+                // `total_sent` is updated at the end of this method, so what is already
+                // built has to be counted here, and the whole of the datagram this admits.
+                let planned = (segment_size as u64)
+                    .saturating_mul(num_datagrams as u64)
+                    .saturating_add(admitting as u64);
+                if self.path.anti_amplification_blocked(planned) {
                     trace!("blocked by anti-amplification");
                     break;
                 }
@@ -940,16 +955,16 @@ impl Connection {
                     }
                 }
 
-                // Allocate space for another datagram
+                // Allocate space for another datagram. `segment_size` may have been clipped to
+                // the first datagram of the batch since this one was admitted, so it can only
+                // have grown smaller than what the allowance was measured against.
                 let next_datagram_size_limit = if self.spaces[space_id].loss_probes == 0 {
                     segment_size
                 } else {
                     self.spaces[space_id].loss_probes -= 1;
-                    // Clamp the datagram to at most the minimum MTU to ensure that loss probes
-                    // can get through and enable recovery even if the path MTU has shrank
-                    // unexpectedly.
-                    std::cmp::min(segment_size, usize::from(INITIAL_MTU))
+                    cmp::min(segment_size, usize::from(INITIAL_MTU))
                 };
+
                 buf_capacity += next_datagram_size_limit;
                 if buf.capacity() < buf_capacity {
                     // We reserve the maximum space for sending `max_datagrams` upfront
@@ -1086,22 +1101,17 @@ impl Connection {
                     // again on the next pass and the close stays pending.
                     break;
                 }
-                // A draining endpoint may send one packet in response and nothing after it
-                // (RFC 9000 §10.2.2), so the cursor over spaces is for a close this side is
-                // making, not for an answer to one it received.
+                // One response packet is permitted before draining; no packets follow
+                // (RFC 9000 §10.2.2). This state carries that pending response, so the
+                // cursor over spaces is only for a close this side is making.
                 if space_id == self.highest_space || matches!(self.state, State::Draining) {
-                    // `CONNECTION_CLOSE` is the final packet
-                    closed_highest = true;
+                    close_finished = true;
                     break;
                 } else {
-                    // Send a close frame in every possible space for robustness, per RFC9000
-                    // "Immediate Close during the Handshake". Don't bother trying to send anything
-                    // else.
-                    //
-                    // One space's close per datagram: a receiver that cannot read the first
-                    // packet of a datagram need not look past it, so a coalesced 1-RTT close
-                    // can go unseen. The close stays pending until the highest space has had
-                    // one; the next pass starts at `close_from`.
+                    // A close goes in every space that has keys (RFC 9000 §10.2.3).
+                    // Send each close separately so it remains reachable when a peer
+                    // discards a preceding packet. The close stays pending until the highest
+                    // space has had one; the next pass starts at `close_from`.
                     self.close_from = spaces
                         .get(space_idx + 1)
                         .copied()
@@ -1173,8 +1183,10 @@ impl Connection {
 
         self.app_limited = buf.is_empty() && !congestion_blocked;
 
-        // Send MTU probe if necessary
-        if buf.is_empty() && self.state.is_established() {
+        // Send MTU probe if necessary. A probe is a full-size datagram, and what may go towards
+        // an address this side has not validated is bounded in bytes (RFC 9000 §8), so discovery
+        // waits until the path is confirmed.
+        if buf.is_empty() && self.state.is_established() && self.path.validated {
             let space_id = SpaceId::Data;
             let probe_size = self
                 .path
@@ -1222,10 +1234,9 @@ impl Connection {
             return None;
         }
 
-        // One logical close response, whichever spaces carried it. A pass that stopped short
-        // of the highest space leaves the close pending, and the next one carries on from the
-        // space it reached.
-        if closed_highest {
+        // A pass that stopped short leaves the close pending, and the next one carries on
+        // from the space it reached.
+        if close_finished {
             self.close = false;
             self.close_from = SpaceId::Initial;
             self.close_responses.answered();
@@ -1502,7 +1513,7 @@ impl Connection {
                     return;
                 }
 
-                let was_anti_amplification_blocked = self.path.anti_amplification_blocked(1);
+                let was_anti_amplification_blocked = self.amplification_stalled();
 
                 self.stats.udp_rx.datagrams += 1;
                 self.stats.udp_rx.bytes += first_decode.len() as u64;
@@ -2354,6 +2365,23 @@ impl Connection {
         result
     }
 
+    /// The smallest datagram this side would build towards the current path: one carrying an
+    /// Initial is padded to `MIN_INITIAL_SIZE` (RFC 9000 §14.1), and below `MIN_PACKET_SPACE` no
+    /// packet fits at all.
+    fn min_datagram_size(&self) -> usize {
+        match self.spaces[SpaceId::Initial].crypto.is_some() {
+            true => usize::from(MIN_INITIAL_SIZE),
+            false => MIN_PACKET_SPACE,
+        }
+    }
+
+    /// Whether an unvalidated address has left too little allowance for any datagram at all,
+    /// which is the point at which `poll_transmit` stops (RFC 9000 §8).
+    fn amplification_stalled(&self) -> bool {
+        self.path
+            .anti_amplification_blocked(self.min_datagram_size() as u64)
+    }
+
     fn peer_completed_address_validation(&self) -> bool {
         if self.side.is_server() || self.state.is_closed() {
             return true;
@@ -2382,7 +2410,7 @@ impl Connection {
             return;
         }
 
-        if self.path.anti_amplification_blocked(1) {
+        if self.amplification_stalled() {
             // We wouldn't be able to send anything, so don't bother.
             self.timers.stop(Timer::LossDetection);
             return;
@@ -2503,7 +2531,13 @@ impl Connection {
         let span = trace_span!("first recv");
         let _guard = span.enter();
         debug_assert!(self.side.is_server());
-        let len = packet.header_data.len() + packet.payload.len();
+        // What bounds the response is what arrived on the wire, and the decrypted payload is
+        // shorter than the ciphertext by the AEAD tag (RFC 9000 §8.1).
+        let tag_len = self.spaces[SpaceId::Initial]
+            .crypto
+            .as_ref()
+            .map_or(0, |crypto| crypto.packet.remote.tag_len());
+        let len = packet.header_data.len() + packet.payload.len() + tag_len;
         self.path.total_recvd = len as u64;
 
         match self.state {
@@ -4383,6 +4417,13 @@ impl Connection {
     pub(crate) fn skip_next_packet_number(&mut self) {
         let next = self.spaces[SpaceId::Data].next_packet_number;
         self.packet_number_filter.skip_next(next);
+    }
+
+    /// Tests: pass over no packet number, so a test about what one pass spends is not decided
+    /// by where the filter's first randomly chosen skip landed.
+    #[cfg(test)]
+    pub(crate) fn skip_no_packet_number(&mut self) {
+        self.packet_number_filter = PacketNumberFilter::disabled();
     }
 
     /// Tests: the packet number most recently passed over, and the number the next packet

@@ -10,7 +10,9 @@
 
 mod common;
 
-use common::{Identity, Quiche, quiche_client_config, quiche_server_config, rama_client_config};
+use common::{
+    Identity, Quiche, Read, quiche_client_config, quiche_server_config, rama_client_config,
+};
 use interop_common::{
     CloseObservation, Deadline, Received, Role,
     close::{close_cases, rama_client_closes, rama_server_side},
@@ -128,7 +130,8 @@ async fn close_cases_rama_server() {
     .await;
 }
 
-/// Rama's client closes as its first application act and this peer reads it.
+/// Rama's client closes as its first application act, this peer reads it, and nothing it
+/// received after the close began carried a packet behind another one.
 ///
 /// Both handshakes are settled first, so the close is not racing one. The closes of the
 /// spaces arrive in separate datagrams, which is what this peer needs: coalesced behind a
@@ -219,14 +222,9 @@ async fn an_immediate_close_reaches_this_peer_in_its_own_datagram() {
 
     let seen = observing.join("the quiche peer", deadline).await;
     println!(
-        "rama wrote {frames} close frame(s) in {sent} datagram(s); the peer took {} packet(s) \
-         carrying [{}], was told {:?}, established {}, closed {}, stopped {}",
-        seen.packets,
-        seen.datagrams.join("; "),
-        seen.told,
-        seen.established,
-        seen.closed,
-        seen.stopped
+        "rama wrote {frames} close frame(s) in {sent} datagram(s); the peer took {} packet(s), \
+         read {:?}, was told {:?}, established {}, closed {}, stopped {}",
+        seen.packets, seen.datagrams, seen.told, seen.established, seen.closed, seen.stopped
     );
     // What the peer says it did with the packets it read, in its own words.
     for line in qlog.lines() {
@@ -239,18 +237,22 @@ async fn an_immediate_close_reaches_this_peer_in_its_own_datagram() {
         Some((true, 0x2a, "immediate".to_owned())),
         "the peer reads the close rama sent as its first application act"
     );
-    // The shape that makes that possible: no datagram carries a close behind another packet.
-    for datagram in &seen.datagrams {
-        assert!(
-            !datagram.contains('+'),
-            "each datagram carries one packet: {datagram}"
-        );
+    // The shape that makes that possible: nothing this peer received after the close began
+    // carries a packet behind another one. Which packet is the close is not read here — a
+    // short header carries whatever frames it carries — so that is all this asserts.
+    let mut after_the_note = false;
+    for read in &seen.datagrams {
+        match read {
+            Read::Note(_) => after_the_note = true,
+            Read::Datagram(packets) if after_the_note => assert_eq!(
+                packets.len(),
+                1,
+                "each datagram carries one packet: {packets:?}"
+            ),
+            Read::Datagram(_) => {}
+        }
     }
-    assert!(
-        seen.datagrams.iter().any(|line| line.starts_with("Short(")),
-        "and one of them is the 1-RTT close: {:?}",
-        seen.datagrams
-    );
+    assert!(after_the_note, "the record says where the close began");
 }
 
 /// A sink the peer writes its qlog into and the case reads afterwards.
@@ -286,8 +288,9 @@ struct Seen {
     told: Option<(bool, u64, String)>,
     established: bool,
     closed: bool,
-    /// What each datagram carried, as its packet headers say.
-    datagrams: Vec<String>,
+    /// What was read after the close was asked for: the datagrams and their packets, and
+    /// the note that says where the close began.
+    datagrams: Vec<Read>,
     /// Why the driver stopped, in its own words.
     stopped: String,
 }

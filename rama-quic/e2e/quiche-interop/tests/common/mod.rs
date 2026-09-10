@@ -296,8 +296,8 @@ pub struct Quiche {
     connection: quiche::Connection,
     /// Whether each datagram's packet headers are recorded as it arrives.
     reading_headers: bool,
-    /// One line per datagram read while that was on.
-    headers: Vec<String>,
+    /// What was read while that was on, in order.
+    headers: Vec<Read>,
     socket: UdpSocket,
     local: SocketAddr,
     last_from: Option<SocketAddr>,
@@ -478,7 +478,8 @@ impl Quiche {
             Ok(Ok((len, from))) => {
                 self.last_from = Some(from);
                 if self.reading_headers {
-                    self.headers.push(packets_in(&buffer[..len]));
+                    self.headers
+                        .push(Read::Datagram(packets_in(&buffer[..len])));
                 }
                 let info = quiche::RecvInfo {
                     from,
@@ -718,11 +719,11 @@ impl Quiche {
 
     /// Note something in that record, so the datagrams either side of it can be told apart.
     pub fn note(&mut self, what: &str) {
-        self.headers.push(format!("-- {what} --"));
+        self.headers.push(Read::Note(what.to_owned()));
     }
 
-    /// What the datagrams read since then carried, one line each.
-    pub fn headers(&self) -> &[String] {
+    /// What was read since then, in order.
+    pub fn headers(&self) -> &[Read] {
         &self.headers
     }
 
@@ -822,28 +823,51 @@ pub async fn within(limit: Duration, mut holds: impl FnMut() -> bool) -> bool {
 /// What a datagram carries, packet by packet. The long header's Length field is unprotected
 /// (RFC 9000 §17.2), so coalesced packets can be walked without decrypting anything; a short
 /// header runs to the end of the datagram.
-fn packets_in(datagram: &[u8]) -> String {
-    let mut said = Vec::new();
+fn packets_in(datagram: &[u8]) -> Vec<Packet> {
+    let mut packets = Vec::new();
     let mut at = 0;
     while at < datagram.len() {
         let rest = &datagram[at..];
         let mut copy = rest.to_vec();
         let Ok(header) = quiche::Header::from_slice(&mut copy, quiche::MAX_CONN_ID_LEN) else {
-            said.push(format!("unreadable({})", rest.len()));
+            packets.push(Packet::Unreadable { bytes: rest.len() });
             break;
         };
         if header.ty == quiche::Type::Short {
-            said.push(format!("Short({})", rest.len()));
+            packets.push(Packet::Known {
+                kind: header.ty,
+                bytes: rest.len(),
+            });
             break;
         }
         let Some(taken) = long_packet_length(rest, header.ty) else {
-            said.push(format!("{:?}(rest {})", header.ty, rest.len()));
+            packets.push(Packet::Unreadable { bytes: rest.len() });
             break;
         };
-        said.push(format!("{:?}({taken})", header.ty));
+        packets.push(Packet::Known {
+            kind: header.ty,
+            bytes: taken,
+        });
         at += taken;
     }
-    said.join(" + ")
+    packets
+}
+
+/// One thing the driver read while it was recording.
+#[derive(Debug, Clone)]
+pub enum Read {
+    /// A datagram, and the packets in it.
+    Datagram(Vec<Packet>),
+    /// Something the case marked, so the datagrams either side of it can be told apart.
+    Note(String),
+}
+
+/// One packet in a datagram. What kind it is comes from quiche's own header parser; what a
+/// packet carries is not read, so a kind says nothing about its frames.
+#[derive(Debug, Clone)]
+pub enum Packet {
+    Known { kind: quiche::Type, bytes: usize },
+    Unreadable { bytes: usize },
 }
 
 /// How many bytes one long-header packet takes, from its own Length field.

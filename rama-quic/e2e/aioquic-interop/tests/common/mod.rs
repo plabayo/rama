@@ -93,7 +93,9 @@ pub const CERTIFICATE_ALERTS: [u64; 7] = [
 
 /// The deadline every peer project shares. This project's scenarios take longer than the
 /// shared default, so each says so with [`Deadline::of`].
-pub use interop_common::{Deadline, Received, identity::alpn as shared_alpn};
+pub use interop_common::{
+    Deadline, Received, identity::alpn as shared_alpn, support::same_endpoint,
+};
 
 /// A spawned Rama-side task. The guard owns its handle for as long as it exists, including
 /// while a wait on it is in progress, so a wait that is itself cancelled leaves the task with
@@ -525,6 +527,23 @@ impl Event {
     /// Whether the child was given a session ticket to offer.
     pub fn present(&self) -> bool {
         self.0["present"].as_bool().expect("a ticket verdict")
+    }
+
+    /// Whether the peer has validated the path it reported.
+    pub fn validated(&self) -> bool {
+        self.0["validated"].as_bool().expect("a validation verdict")
+    }
+
+    /// The address of the path the peer reported, as the same endpoint however it holds it:
+    /// a dual-stack socket reports an IPv4 peer v4-mapped.
+    pub fn endpoint(&self) -> SocketAddr {
+        same_endpoint(
+            self.0["addr"]
+                .as_str()
+                .expect("an address")
+                .parse()
+                .expect("an address that parses"),
+        )
     }
 
     pub fn phase(&self) -> u64 {

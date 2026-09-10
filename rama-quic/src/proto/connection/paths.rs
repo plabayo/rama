@@ -164,7 +164,18 @@ impl PathData {
     /// Indicates whether we're a server that hasn't validated the peer's address and hasn't
     /// received enough data from the peer to permit sending `bytes_to_send` additional bytes
     pub(super) fn anti_amplification_blocked(&self, bytes_to_send: u64) -> bool {
-        !self.validated && self.total_recvd * 3 < self.total_sent + bytes_to_send
+        self.anti_amplification_remaining()
+            .is_some_and(|remaining| remaining < bytes_to_send)
+    }
+
+    /// Bytes that may still go towards an address this side has not validated, or `None` when
+    /// the address is validated and nothing bounds what may be sent to it (RFC 9000 §8).
+    pub(super) fn anti_amplification_remaining(&self) -> Option<u64> {
+        (!self.validated).then(|| {
+            self.total_recvd
+                .saturating_mul(3)
+                .saturating_sub(self.total_sent)
+        })
     }
 
     /// Returns the path's current MTU
