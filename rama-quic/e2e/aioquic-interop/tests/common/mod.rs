@@ -94,7 +94,9 @@ pub const CERTIFICATE_ALERTS: [u64; 7] = [
 /// The deadline every peer project shares. This project's scenarios take longer than the
 /// shared default, so each says so with [`Deadline::of`].
 pub use interop_common::{
-    Deadline, Received, identity::alpn as shared_alpn, support::same_endpoint,
+    Deadline, Received,
+    identity::alpn as shared_alpn,
+    support::{parse_endpoint, same_endpoint},
 };
 
 /// A spawned Rama-side task. The guard owns its handle for as long as it exists, including
@@ -534,16 +536,26 @@ impl Event {
         self.0["validated"].as_bool().expect("a validation verdict")
     }
 
-    /// The address of the path the peer reported, as the same endpoint however it holds it:
-    /// a dual-stack socket reports an IPv4 peer v4-mapped.
+    /// The address the peer reported, as the same endpoint however it holds it: a dual-stack
+    /// socket reports an IPv4 peer v4-mapped.
     pub fn endpoint(&self) -> SocketAddr {
-        same_endpoint(
-            self.0["addr"]
-                .as_str()
-                .expect("an address")
-                .parse()
-                .expect("an address that parses"),
+        same_endpoint(parse_endpoint(self.0["addr"].as_str().expect("an address")))
+    }
+
+    /// Datagrams the peer put out of the socket it moved to.
+    pub fn sent(&self) -> usize {
+        usize::try_from(self.0["sent"].as_u64().expect("a count of datagrams sent"))
+            .expect("a count that fits")
+    }
+
+    /// Datagrams that arrived at the socket it moved to.
+    pub fn received(&self) -> usize {
+        usize::try_from(
+            self.0["received"]
+                .as_u64()
+                .expect("a count of datagrams received"),
         )
+        .expect("a count that fits")
     }
 
     pub fn phase(&self) -> u64 {

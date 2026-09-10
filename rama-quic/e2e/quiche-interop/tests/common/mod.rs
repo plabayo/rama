@@ -13,6 +13,7 @@
 
 use std::{
     future::Future,
+    mem,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     path::{Path, PathBuf},
     time::Duration,
@@ -301,6 +302,8 @@ pub struct Quiche {
     socket: UdpSocket,
     local: SocketAddr,
     last_from: Option<SocketAddr>,
+    /// The socket a move left behind, kept so the connection can be put back on it.
+    left_behind: Option<(UdpSocket, SocketAddr)>,
 }
 
 impl Quiche {
@@ -359,6 +362,7 @@ impl Quiche {
             socket,
             local,
             last_from: None,
+            left_behind: None,
             reading_headers: false,
             headers: Vec::new(),
         };
@@ -435,6 +439,7 @@ impl Quiche {
             socket,
             local,
             last_from: None,
+            left_behind: None,
             reading_headers: false,
             headers: Vec::new(),
         }
@@ -644,6 +649,11 @@ impl Quiche {
 
     /// Move this side to a socket of its own choosing, the way a client whose network changed
     /// would. Answers the address it moved to. Only a client may do this.
+    ///
+    /// quiche decides this on its own state alone: `migrate` refuses a server and a side with
+    /// no spare identifier, and never reads the peer's `disable_active_migration`. So a move
+    /// is accepted here whether or not the peer allows one, and what the peer does about it
+    /// is seen on the wire.
     pub async fn move_to_a_new_socket(&mut self, deadline: Deadline) -> SocketAddr {
         let socket = UdpSocket::bind(if self.local.is_ipv6() {
             localhost_v6()
@@ -656,10 +666,65 @@ impl Quiche {
         self.connection
             .migrate_source(local)
             .expect("the move is accepted");
+        let left = mem::replace(&mut self.socket, socket);
+        self.left_behind = Some((left, self.local));
+        self.local = local;
+        self.flush(deadline).await;
+        local
+    }
+
+    /// Put the connection back on the socket the last move left behind, which is the path the
+    /// peer has known all along. Answers the address it returned to.
+    pub async fn move_back(&mut self, deadline: Deadline) -> SocketAddr {
+        let (socket, local) = self.left_behind.take().expect("a socket was left behind");
+        self.connection
+            .migrate_source(local)
+            .expect("the move back is accepted");
         self.socket = socket;
         self.local = local;
         self.flush(deadline).await;
         local
+    }
+
+    /// Drive for a bounded time with the address left behind unreachable, for a peer that is
+    /// expected to answer nothing at the new one. Answers what stopped the connection, if
+    /// anything did, so an unexpected close is not read as silence.
+    ///
+    /// What lands on the socket left behind is discarded rather than buffered: a client whose
+    /// network changed never reads it, and delivering it later would time a round trip that
+    /// did not happen.
+    pub async fn quiet_for(&mut self, limit: Duration, deadline: Deadline) -> Option<Stopped> {
+        let mut stopped = None;
+        let _ = tokio::time::timeout(limit, async {
+            loop {
+                self.drop_what_the_old_address_gets();
+                stopped = self.turn(deadline).await;
+                if stopped.is_some() {
+                    return;
+                }
+            }
+        })
+        .await;
+        self.drop_what_the_old_address_gets();
+        stopped
+    }
+
+    /// Throw away whatever arrived at the address a move left behind.
+    fn drop_what_the_old_address_gets(&mut self) {
+        let Some((socket, _)) = &self.left_behind else {
+            return;
+        };
+        let mut gone = [0u8; DATAGRAM];
+        while socket.try_recv_from(&mut gone).is_ok() {}
+    }
+
+    /// What the path from `local` has done, which is how silence at an address is stated as a
+    /// count rather than as a wait that ran out.
+    pub fn path_from(&self, local: SocketAddr) -> quiche::PathStats {
+        self.connection
+            .path_stats()
+            .find(|stats| stats.local_addr == local)
+            .expect("a path from that address")
     }
 
     /// The address this side is sending from.

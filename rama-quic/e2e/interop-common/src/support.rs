@@ -2,7 +2,7 @@
 
 use std::{
     future::{Future, IntoFuture},
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV6},
     time::Duration,
 };
 
@@ -159,6 +159,34 @@ pub fn same_endpoint(addr: SocketAddr) -> SocketAddr {
         },
         IpAddr::V4(_) => addr,
     }
+}
+
+/// An endpoint as a peer spells it. `SocketAddr`'s own parser takes no `%scope`, so an IPv6
+/// address that carries one is put together here.
+///
+/// # Panics
+/// If `text` is not an endpoint this understands.
+#[must_use]
+pub fn parse_endpoint(text: &str) -> SocketAddr {
+    let Some((host, rest)) = text.strip_prefix('[').and_then(|it| it.split_once(']')) else {
+        return text.parse().expect("an address that parses");
+    };
+    let (host, scope) = match host.split_once('%') {
+        Some((host, scope)) => (host, scope.parse().expect("a scope that is a number")),
+        None => (host, 0),
+    };
+    let port = rest
+        .strip_prefix(':')
+        .expect("a port after the address")
+        .parse()
+        .expect("a port that is a number");
+    SocketAddrV6::new(
+        host.parse().expect("an ipv6 address that parses"),
+        port,
+        0,
+        scope,
+    )
+    .into()
 }
 
 #[must_use]

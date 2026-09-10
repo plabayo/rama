@@ -4,14 +4,24 @@
 //! connection is coming from, so those cases run. It issues connection identifiers itself,
 //! with nothing in its configuration to withhold them, so the case that withholds one is
 //! recorded rather than run as something else.
+//!
+//! Its client does not read the server's `disable_active_migration`, so the forbidden case in
+//! the rama-server role is a client that moves against the policy. The socket it was made on
+//! is held here as an `Arc<dyn AsyncUdpSocket>` and given back through `rebind_abstract`, so
+//! that client can return to the path the server still holds.
 
 mod common;
 
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use std::{
+    net::{Ipv4Addr, SocketAddr, UdpSocket},
+    sync::Arc,
+    time::Duration,
+};
 
-use common::{quinn_client_config, quinn_server_config};
+use common::{Counted, quinn_client_config, quinn_server_config};
 use interop_common::{
-    MigrationObservation, MigrationScenario, Received, Role, Unsupported, for_each_case,
+    MigrationObservation, MigrationScenario, Received, RefusedMove, Role, Unsupported,
+    for_each_case,
     identity::anchor_of,
     migration::{migration_cases, rama_client_side, rama_server_side},
     registry::CaseRun,
@@ -25,9 +35,10 @@ const READ_CAP: usize = octets::mib(1);
 /// Why the case that withholds an identifier does not run in the rama-server role.
 const RAMA_ISSUES_ITS_OWN: &str = "rama issues its own connection identifiers, so this side cannot withhold the one the peer \
      would move with";
-/// Why the forbidden case is not expressed in the rama-server role yet.
-const NOT_ANSWERED_AFTER_A_MOVE: &str = "a peer that moves while rama forbids migration is not answered at its new address, so \
-     this case needs an expectation of its own";
+/// How long a client that moved against the policy keeps trying before its new address is
+/// called unanswered. What settles the case is the count of datagrams that came back there,
+/// not this bound.
+const SILENCE: Duration = Duration::from_millis(500);
 /// Why the case that withholds an identifier does not run against this peer.
 const ISSUES_ITS_OWN: &str = "quinn issues connection identifiers itself, with nothing in its configuration to withhold \
      them";
@@ -96,28 +107,32 @@ async fn migration_cases_rama_server() {
         Role::RamaServer,
         migration_cases(),
         |run| async move {
-            if !run.scenario.moves {
+            if !run.scenario.spare_identifier {
                 // Visible with `cargo test -- --nocapture`.
                 println!(
                     "{}",
                     Unsupported {
-                        case: if run.scenario.spare_identifier {
-                            "migration-forbidden"
-                        } else {
-                            "migration-without-an-identifier"
-                        },
+                        case: "migration-without-an-identifier",
                         peer: PEER,
-                        reason: if run.scenario.spare_identifier {
-                            NOT_ANSWERED_AFTER_A_MOVE
-                        } else {
-                            RAMA_ISSUES_ITS_OWN
-                        },
+                        reason: RAMA_ISSUES_ITS_OWN,
                     }
                 );
                 return;
             }
             let (endpoint, addr, serving) = rama_server_side(&run).await;
-            let mut client = quinn::Endpoint::client(localhost()).expect("the quinn client binds");
+            // The socket the connection is made on is held here rather than left to
+            // `Endpoint::client`, so the connection can be put back on it after a move.
+            let runtime = quinn::default_runtime().expect("an async runtime");
+            let original = runtime
+                .wrap_udp_socket(bound_socket())
+                .expect("the first socket is wrapped");
+            let mut client = quinn::Endpoint::new_with_abstract_socket(
+                quinn::EndpointConfig::default(),
+                None,
+                original.clone(),
+                runtime.clone(),
+            )
+            .expect("the quinn client binds");
             client.set_default_client_config(quinn_client_config(anchor_of(&run.identity)));
             let first = client.local_addr().expect("its address");
             let connection = run
@@ -132,8 +147,13 @@ async fn migration_cases_rama_server() {
                 .expect("the handshake completes");
             exchange(&run.what, run.deadline, &connection, run.scenario.before).await;
 
+            let moved = Counted::around(
+                runtime
+                    .wrap_udp_socket(bound_socket())
+                    .expect("the second socket is wrapped"),
+            );
             client
-                .rebind(UdpSocket::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)).unwrap())
+                .rebind_abstract(moved.clone())
                 .expect("the endpoint rebinds");
             let second = client.local_addr().expect("its address");
             assert_ne!(
@@ -141,7 +161,11 @@ async fn migration_cases_rama_server() {
                 "{}: the client is on another socket",
                 run.what
             );
-            exchange(&run.what, run.deadline, &connection, run.scenario.after).await;
+            if run.scenario.migration_allowed {
+                exchange(&run.what, run.deadline, &connection, run.scenario.after).await;
+            } else {
+                refused_at_the_new_address(&run, &connection, &client, &original, &moved).await;
+            }
             connection.close(0u32.into(), b"done");
             run.deadline.wait(&run.what, client.wait_idle()).await;
 
@@ -223,4 +247,51 @@ async fn answer(what: &str, deadline: Deadline, connection: &quinn::Connection, 
         .await
         .expect("the answer is written");
     send.finish().expect("the answer ends");
+}
+
+/// A loopback socket for this side to hold, ready for quinn's runtime to wrap.
+fn bound_socket() -> UdpSocket {
+    UdpSocket::bind(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)).expect("the socket binds")
+}
+
+/// What a forbidden move looks like from the client that made it anyway: it sends the next
+/// exchange from the address it moved to, nothing comes back there, and the exchange is
+/// answered as soon as it is back on the path the server knows.
+///
+/// The datagrams counted at the new address are what say the move was refused. A bound that
+/// ran out would say only that this side waited.
+async fn refused_at_the_new_address(
+    run: &CaseRun<MigrationScenario>,
+    connection: &quinn::Connection,
+    client: &quinn::Endpoint,
+    original: &Arc<dyn quinn::AsyncUdpSocket>,
+    moved: &Arc<Counted>,
+) {
+    let (mut send, mut recv) = run
+        .deadline
+        .wait(&run.what, connection.open_bi())
+        .await
+        .expect("a bi stream");
+    run.deadline
+        .wait(&run.what, send.write_all(&run.scenario.after.bytes()))
+        .await
+        .expect("the payload is written");
+    send.finish().expect("the stream ends");
+    tokio::time::sleep(SILENCE).await;
+
+    RefusedMove {
+        sent: moved.sent(),
+        received: moved.received(),
+    }
+    .check(&run.what, &run.scenario);
+
+    client
+        .rebind_abstract(original.clone())
+        .expect("the endpoint returns to the socket it was made on");
+    let back = run
+        .deadline
+        .wait(&run.what, recv.read_to_end(READ_CAP))
+        .await
+        .expect("the answer completes once the client is back");
+    Received::Bytes(back).check(&run.what, "exchange", run.scenario.after);
 }

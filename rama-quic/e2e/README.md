@@ -12,10 +12,11 @@ resolution, and `cargo test` at the repository root does not reach these.
 | `quiche-interop/` | [quiche](https://github.com/cloudflare/quiche) | in-process, driven by hand, vendored BoringSSL |
 | `aioquic-interop/` | [aioquic](https://github.com/aiortc/aioquic) | a separate Python process over a real socket |
 
-`interop-common` holds the scenarios once. Each peer project owns only its adapter: how that
-implementation is configured, driven and observed. A case that an implementation cannot
-express is recorded with its reason rather than skipped silently, so the gaps are visible in
-the run output.
+`interop-common` holds the shared scenarios. A peer project holds its adapter — how that
+implementation is configured, driven and observed — and, for now, native cases of its own. A
+case that an implementation cannot express is recorded with its reason rather than skipped
+silently; that line comes from a passing test, so `cargo test -- --nocapture` is what shows
+it.
 
 ## Running
 
@@ -37,8 +38,9 @@ peers; `just test-quic-interop` runs everything in the order CI does.
   the first build is slow and a missing toolchain fails the build rather than skipping it.
 - **aioquic**: [`uv`](https://docs.astral.sh/uv/) on `PATH`. `uv.lock` pins the dependency
   graph and `.python-version` pins the interpreter (CPython 3.12). `just
-  test-quic-interop-aioquic` runs `uv sync --frozen` first; the harness also runs it itself if
-  the interpreter is missing, and fails with the command to fix it when `uv` is absent.
+  test-quic-interop-aioquic` runs `uv sync --frozen` first; the harness also runs it once per
+  test binary whether or not an environment exists, so one left from an older lockfile cannot
+  be used, and fails with the command to fix it when `uv` is absent.
 
 CI runs all of this in the `test-quic-interop-peers` job on Linux and macOS, on both the
 stable toolchain and the pinned MSRV.
@@ -50,20 +52,27 @@ The families are `scenario`, `datagram`, `names`, `trust`, `serving`, `resumptio
 
 Known gaps, as of this checkpoint:
 
-- **Migration is observed, not validated.** The migration cases establish that traffic moved
-  and kept working, by comparing where the peer saw the datagrams come from. They do not
-  establish that the new path was validated. Only the aioquic rama-client role reads a native
-  validation verdict for the moved tuple; the rama-server role compares ports rather than
-  whole endpoints.
-- **`migration-forbidden` and `migration-without-an-identifier`** do not run in every role.
-  quiche can withhold an identifier and refuse a move; aioquic can do neither, and Rama's own
-  server refusing a move needs an expectation of its own because a peer that moves anyway is
-  not answered at its new address. Each is recorded in the run output with its reason.
+- **Migration is mostly observed, not validated.** The migration cases establish that
+  traffic moved and kept working, by comparing the whole endpoints the peer saw the datagrams
+  come from. Only the aioquic rama-client role reads a native validation verdict for the
+  moved tuple, and it has a control of its own: the same move under a server that never acts
+  on a PATH_RESPONSE carries the traffic and reports the path unvalidated. Every other role
+  says nothing about validation, and an address that changed is not a validated path.
+- **`migration-without-an-identifier`** does not run in every role. quiche can withhold an
+  identifier; Quinn and aioquic issue their own, and so does Rama, so neither side can hold
+  one back in the roles where it would matter. Each is recorded with its reason, under
+  `--nocapture`.
+- **`migration-forbidden` is a violating client.** None of the three peers reads the server's
+  `disable_active_migration`, so in the rama-server role each moves against Rama's policy.
+  What the case asserts is that the peer sent from the address it moved to, that nothing came
+  back there, and that the exchange it was holding completes as soon as it returns to the
+  path Rama still holds — counts and traffic, not a wait that ran out.
 - **Key updates**: quiche exposes none. aioquic covers both roles through the shared family.
 - **TLS keying-material exporters**: neither quiche nor aioquic exposes one, so exporters are
   covered against Quinn only.
-- **Native cases still exist** alongside the shared ones where their assertions have no shared
-  equivalent yet; they are not duplicates and are not being removed until they do.
+- **Native cases still exist** alongside the shared ones. Some assert what no shared case
+  does yet; others already duplicate one and are waiting on an assertion mapping. None are
+  removed until a shared equivalent exists.
 
 ## These are peers, not dependencies
 

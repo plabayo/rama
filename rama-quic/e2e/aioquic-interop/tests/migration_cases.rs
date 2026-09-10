@@ -7,12 +7,14 @@
 //! its `is_validated` does refer to the client that moved.
 //!
 //! Neither role can withhold an identifier: aioquic issues its own and rama issues its own.
+//! It does not read rama's `disable_active_migration` either, so the forbidden case here is a
+//! client that moves against the policy and then comes back.
 
 mod common;
 
 use common::*;
 use interop_common::{
-    MigrationScenario, Role, Unsupported, for_each_case_within,
+    MigrationScenario, RefusedMove, Role, Unsupported, for_each_case_within,
     migration::{migration_cases, rama_client_side, rama_server_side},
     registry::CaseRun,
     scenario::SERVER_NAME,
@@ -25,11 +27,7 @@ const NO_VALIDATION_VERDICT: &str = "no validation verdict for the moved tuple: 
 /// Why the case that withholds an identifier does not run in the rama-server role.
 const RAMA_ISSUES_ITS_OWN: &str = "rama issues its own connection identifiers, so this side cannot withhold the one the peer \
      would move with";
-/// Why the forbidden case is not expressed in the rama-server role yet. Rama's server does
-/// decide this (`ServerConfig::with_migration`); what is missing is the expectation.
-const NOT_ANSWERED_AFTER_A_MOVE: &str = "a peer that moves while rama forbids migration is not answered at its new address, so \
-     this case needs an expectation of its own";
-/// Why neither of those cases runs in the rama-client role.
+/// Why neither of the two withholding cases runs in the rama-client role.
 const NOTHING_TO_WITHHOLD: &str = "this peer issues its own connection identifiers and its server configuration cannot \
      refuse a move";
 
@@ -118,17 +116,14 @@ async fn migration_cases_rama_server() {
         migration_cases(),
         LIMIT,
         |run| async move {
-            if !run.scenario.moves {
+            if !run.scenario.spare_identifier {
                 // Visible with `cargo test -- --nocapture`.
                 println!(
                     "{}",
                     Unsupported {
-                        case: withheld_case(&run),
+                        case: "migration-without-an-identifier",
                         peer: PEER,
-                        reason: match run.scenario.spare_identifier {
-                            true => NOT_ANSWERED_AFTER_A_MOVE,
-                            false => RAMA_ISSUES_ITS_OWN,
-                        },
+                        reason: RAMA_ISSUES_ITS_OWN,
                     }
                 );
                 return;
@@ -136,33 +131,59 @@ async fn migration_cases_rama_server() {
             let served = Identity::generate(SERVER_NAME);
             let run = run.with_identity(served.auth.clone());
             let (endpoint, addr, serving) = rama_server_side(&run).await;
+            let refused = ["--the-move-is-refused"];
             let mut peer = AioQuic::spawn(
                 "moving-client",
                 &[
-                    "--ca",
-                    served.certificate(),
-                    "--port",
-                    &addr.port().to_string(),
-                    "--before-seed",
-                    &run.scenario.before.seed.to_string(),
-                    "--before-length",
-                    &run.scenario.before.len.to_string(),
-                    "--after-seed",
-                    &run.scenario.after.seed.to_string(),
-                    "--after-length",
-                    &run.scenario.after.len.to_string(),
-                ],
+                    &[
+                        "--ca",
+                        served.certificate(),
+                        "--port",
+                        &addr.port().to_string(),
+                        "--before-seed",
+                        &run.scenario.before.seed.to_string(),
+                        "--before-length",
+                        &run.scenario.before.len.to_string(),
+                        "--after-seed",
+                        &run.scenario.after.seed.to_string(),
+                        "--after-length",
+                        &run.scenario.after.len.to_string(),
+                    ][..],
+                    match run.scenario.migration_allowed {
+                        true => &[][..],
+                        false => &refused[..],
+                    },
+                ]
+                .concat(),
             )
             .await;
             peer.expect("handshake", run.deadline).await;
-            let first = peer.expect("address", run.deadline).await.port();
+            let first = peer.expect("address", run.deadline).await.endpoint();
             peer.expect("stream", run.deadline).await.reported().check(
                 &run.what,
                 "first exchange",
                 run.scenario.before,
             );
-            let second = peer.expect("address", run.deadline).await.port();
-            assert_ne!(first, second, "{}: the child moved socket", run.what);
+            let second = peer.expect("address", run.deadline).await.endpoint();
+            assert_ne!(
+                first, second,
+                "{}: the child moved to another endpoint",
+                run.what
+            );
+            if !run.scenario.migration_allowed {
+                let refused = peer.expect("refused", run.deadline).await;
+                RefusedMove {
+                    sent: refused.sent(),
+                    received: refused.received(),
+                }
+                .check(&run.what, &run.scenario);
+                assert_eq!(
+                    peer.expect("address", run.deadline).await.endpoint(),
+                    first,
+                    "{}: the child returns to the path the server knows",
+                    run.what
+                );
+            }
             peer.expect("stream", run.deadline).await.reported().check(
                 &run.what,
                 "second exchange",
@@ -191,22 +212,92 @@ async fn migration_cases_rama_server() {
             peer.expect("done", run.deadline).await;
             peer.finished(run.deadline).await;
 
-            // The child's socket may be dual-stack, so what it calls its address is not what
-            // rama sees; the port is the same on both views.
+            // Both sides name the same two endpoints: the child binds each socket to the
+            // address it sends from, and `endpoint` reads a v4-mapped spelling as the IPv4
+            // address it maps.
             let observed = serving.join(&run.what, run.deadline).await;
-            assert_eq!(
-                observed.from_before.port(),
-                first,
-                "{}: rama saw the socket the connection was made on",
-                run.what
-            );
-            assert_eq!(
-                observed.from_after.port(),
-                second,
-                "{}: and afterwards the one it moved to",
-                run.what
-            );
+            observed.check(&run.what, &run.scenario, (first, second));
             run.deadline.wait(&run.what, endpoint.wait_idle()).await;
+        },
+    )
+    .await;
+}
+
+/// The control for the verdict the role above reads: the same move under a server that never
+/// acts on a PATH_RESPONSE.
+///
+/// Its path is still the client's, it still sees the client at the address it moved to, and
+/// it still carries that traffic — and its verdict on that path stays negative. An address
+/// that changed and bytes that crossed are not validation, which is what this separates.
+#[tokio::test]
+async fn a_moved_path_is_unvalidated_while_its_responses_go_unheard() {
+    prepare().await;
+    for_each_case_within(
+        PEER,
+        Role::RamaClient,
+        migration_cases(),
+        LIMIT,
+        |run| async move {
+            if !run.scenario.moves {
+                return;
+            }
+            let served = Identity::generate(SERVER_NAME);
+            let run = run.with_identity(served.auth.clone());
+            let mut peer = AioQuic::spawn(
+                "server",
+                &[
+                    "--cert",
+                    served.certificate(),
+                    "--key",
+                    served.key(),
+                    "--connections",
+                    "1",
+                    "--report-paths",
+                    "--never-act-on-path-responses",
+                    // Nothing will settle, so the report is taken after a short look rather
+                    // than after the wait an ordinary case gives a challenge.
+                    "--validation-wait",
+                    "0.5",
+                ],
+            )
+            .await;
+            let addr = peer.listening(run.deadline).await;
+
+            let (first, second) = rama_client_side(&run, addr).await;
+            peer.expect("handshake", run.deadline).await;
+            let mut seen = Vec::new();
+            for exchange in [run.scenario.before, run.scenario.after] {
+                peer.expect("stream", run.deadline)
+                    .await
+                    .reported()
+                    .check(&run.what, "exchange", exchange);
+                seen.push(peer.expect("path", run.deadline).await);
+            }
+            peer.expect("ended", run.deadline).await;
+            peer.finished(run.deadline).await;
+
+            assert_eq!(
+                seen[0].endpoint(),
+                same_endpoint(first),
+                "{}: the peer saw the socket the connection was made on",
+                run.what
+            );
+            assert!(
+                seen[0].validated(),
+                "{}: which the handshake settled, so only the moved path is in question",
+                run.what
+            );
+            assert_eq!(
+                seen[1].endpoint(),
+                same_endpoint(second),
+                "{}: and afterwards the one it rebound to",
+                run.what
+            );
+            assert!(
+                !seen[1].validated(),
+                "{}: whose traffic it carried without validating it",
+                run.what
+            );
         },
     )
     .await;

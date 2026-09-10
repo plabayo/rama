@@ -6,9 +6,20 @@
 )]
 
 use std::{
+    io::{self, IoSliceMut},
     net::{Ipv4Addr, SocketAddr},
-    sync::Arc,
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    task::{Context, Poll, ready},
     time::Duration,
+};
+
+use quinn::{
+    AsyncUdpSocket, UdpPoller,
+    udp::{RecvMeta, Transmit},
 };
 
 use rama::{
@@ -172,4 +183,81 @@ pub fn quinn_client_config(anchor: CertificateDer<'static>) -> quinn::ClientConf
     quinn::ClientConfig::new(Arc::new(
         quinn::crypto::rustls::QuicClientConfig::try_from(tls).expect("a QUIC client config"),
     ))
+}
+
+/// A socket that counts the datagrams through it, so what a peer did about a move is a pair
+/// of numbers rather than a wait that ran out. Everything else is the socket it wraps.
+#[derive(Debug)]
+pub struct Counted {
+    inner: Arc<dyn AsyncUdpSocket>,
+    sent: AtomicUsize,
+    received: AtomicUsize,
+}
+
+impl Counted {
+    #[must_use]
+    pub fn around(inner: Arc<dyn AsyncUdpSocket>) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            sent: AtomicUsize::new(0),
+            received: AtomicUsize::new(0),
+        })
+    }
+
+    /// Datagrams sent from this socket.
+    pub fn sent(&self) -> usize {
+        self.sent.load(Ordering::Relaxed)
+    }
+
+    /// Datagrams that arrived here.
+    pub fn received(&self) -> usize {
+        self.received.load(Ordering::Relaxed)
+    }
+}
+
+impl AsyncUdpSocket for Counted {
+    fn create_io_poller(self: Arc<Self>) -> Pin<Box<dyn UdpPoller>> {
+        self.inner.clone().create_io_poller()
+    }
+
+    fn try_send(&self, transmit: &Transmit) -> io::Result<()> {
+        self.inner.try_send(transmit)?;
+        // One `Transmit` carries several datagrams when the sender segments it.
+        let datagrams = transmit
+            .segment_size
+            .map_or(1, |size| transmit.contents.len().div_ceil(size));
+        self.sent.fetch_add(datagrams, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn poll_recv(
+        &self,
+        cx: &mut Context,
+        bufs: &mut [IoSliceMut<'_>],
+        meta: &mut [RecvMeta],
+    ) -> Poll<io::Result<usize>> {
+        let taken = ready!(self.inner.poll_recv(cx, bufs, meta))?;
+        let datagrams: usize = meta[..taken]
+            .iter()
+            .map(|it| it.len.div_ceil(it.stride.max(1)))
+            .sum();
+        self.received.fetch_add(datagrams, Ordering::Relaxed);
+        Poll::Ready(Ok(taken))
+    }
+
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.inner.local_addr()
+    }
+
+    fn max_transmit_segments(&self) -> usize {
+        self.inner.max_transmit_segments()
+    }
+
+    fn max_receive_segments(&self) -> usize {
+        self.inner.max_receive_segments()
+    }
+
+    fn may_fragment(&self) -> bool {
+        self.inner.may_fragment()
+    }
 }

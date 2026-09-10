@@ -10,9 +10,13 @@ use common::{
     Identity, Quiche, quiche_client_config_that_moves, quiche_server_config,
     quiche_server_config_without_migration,
 };
+use std::{net::SocketAddr, time::Duration};
+
 use interop_common::{
-    MigrationObservation, Received, Role, Unsupported, for_each_case,
+    MigrationObservation, MigrationScenario, Received, RefusedMove, Role, Unsupported,
+    for_each_case,
     migration::{migration_cases, rama_client_side, rama_server_side},
+    registry::CaseRun,
     scenario::SERVER_NAME,
     support::Peer,
 };
@@ -23,11 +27,10 @@ const READ_CAP: usize = octets::mib(1);
 const CLIENT_BI: u64 = 0;
 /// The next bidirectional stream a client opens.
 const NEXT_BI: u64 = 4;
-/// Why the forbidden case is not expressed in the rama-server role yet: a peer that moves
-/// while this side forbids it is not answered at its new address, so that case needs an
-/// expectation of its own rather than the shared exchange after the move.
-const NOT_ANSWERED_AFTER_A_MOVE: &str = "a peer that moves while rama forbids migration is not answered at its new address, so \
-     this case needs an expectation of its own";
+/// How long a client that moved against the policy keeps trying before its new address is
+/// called unanswered. What settles the case is the count of packets that came back there,
+/// not this bound.
+const SILENCE: Duration = Duration::from_millis(500);
 /// Why the case that withholds an identifier does not run in the rama-server role.
 const RAMA_ISSUES_ITS_OWN: &str = "rama issues its own connection identifiers, so this side cannot withhold the one the peer \
      would move with";
@@ -90,10 +93,10 @@ async fn migration_cases_rama_client() {
 
 /// A quiche client moves under Rama's server, which either follows it or does not.
 ///
-/// One of the three cases runs here. Withholding an identifier is not this side's to do:
-/// Rama issues its own. Forbidding a move is (`ServerConfig::with_migration`), but a peer
-/// that moves anyway is then not answered at its new address, so that case needs an
-/// expectation of its own. Both are recorded rather than skipped.
+/// Two of the three cases run here. Withholding an identifier is not this side's to do: Rama
+/// issues its own, so that one is recorded rather than skipped. Forbidding a move is Rama's
+/// (`ServerConfig::with_migration`), and quiche never reads that policy, so the forbidden
+/// case is a client that moves against it.
 #[tokio::test]
 async fn migration_cases_rama_server() {
     for_each_case(
@@ -101,18 +104,6 @@ async fn migration_cases_rama_server() {
         Role::RamaServer,
         migration_cases(),
         |run| async move {
-            if !run.scenario.migration_allowed {
-                // Visible with `cargo test -- --nocapture`.
-                println!(
-                    "{}",
-                    Unsupported {
-                        case: "migration-forbidden",
-                        peer: PEER,
-                        reason: NOT_ANSWERED_AFTER_A_MOVE,
-                    }
-                );
-                return;
-            }
             if !run.scenario.spare_identifier {
                 // Visible with `cargo test -- --nocapture`.
                 println!(
@@ -162,6 +153,9 @@ async fn migration_cases_rama_server() {
             client
                 .write_stream(NEXT_BI, &run.scenario.after.bytes(), run.deadline)
                 .await;
+            if !run.scenario.migration_allowed {
+                refused_at_the_new_address(&run, &mut client, first, second).await;
+            }
             let back = client.read_stream(NEXT_BI, READ_CAP, run.deadline).await;
             Received::Bytes(back).check(&run.what, "exchange", run.scenario.after);
             client.close(run.deadline).await;
@@ -172,4 +166,36 @@ async fn migration_cases_rama_server() {
         },
     )
     .await;
+}
+
+/// What a forbidden move looks like from the client that made it anyway: it sends from the
+/// address it moved to and nothing comes back there, and the exchange it was holding is
+/// answered as soon as it is back on the path the server knows.
+///
+/// The count of packets that arrived at the new address is what says the move was refused. A
+/// bound that ran out would say only that this side waited.
+async fn refused_at_the_new_address(
+    run: &CaseRun<MigrationScenario>,
+    client: &mut Quiche,
+    first: SocketAddr,
+    second: SocketAddr,
+) {
+    let stopped = client.quiet_for(SILENCE, run.deadline).await;
+    assert!(
+        stopped.is_none(),
+        "{}: the connection stopped while its move went unanswered ({stopped:?})",
+        run.what
+    );
+    let moved = client.path_from(second);
+    RefusedMove {
+        sent: moved.sent,
+        received: moved.recv,
+    }
+    .check(&run.what, &run.scenario);
+    assert_eq!(
+        client.move_back(run.deadline).await,
+        first,
+        "{}: the client returns to the path the server knows",
+        run.what
+    );
 }

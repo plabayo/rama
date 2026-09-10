@@ -102,6 +102,40 @@ impl MigrationObservation {
     }
 }
 
+/// What a client that moved while the peer forbade it saw at the address it moved to.
+///
+/// The peer's policy is a transport parameter it advertises; a client that ignores it still
+/// moves, and what settles the case is that nothing came back there.
+#[derive(Debug, Clone, Copy)]
+pub struct RefusedMove {
+    /// Packets the client sent from the address it moved to.
+    pub sent: usize,
+    /// Packets that arrived there, which a peer honouring its own policy leaves at zero.
+    pub received: usize,
+}
+
+impl RefusedMove {
+    /// A move the peer refused. The counts settle it: a bound that ran out would say only
+    /// that this side waited.
+    ///
+    /// # Panics
+    /// If the case allows migration, or the client did not try, or anything came back.
+    pub fn check(&self, what: &str, scenario: &MigrationScenario) {
+        assert!(
+            !scenario.migration_allowed,
+            "{what}: this case allows the move, so nothing refuses it"
+        );
+        assert!(
+            self.sent > 0,
+            "{what}: the client sent from the address it moved to"
+        );
+        assert_eq!(
+            self.received, 0,
+            "{what}: and the peer answered nothing there"
+        );
+    }
+}
+
 /// Rama's client for a migration case: an exchange, a rebind onto a socket of its own, and
 /// another exchange. Answers where its endpoint was bound before and after the rebind.
 pub async fn rama_client_side(

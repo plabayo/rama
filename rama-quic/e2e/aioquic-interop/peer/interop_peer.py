@@ -9,6 +9,7 @@ reported as a `failed` line and leaves a non-zero exit status.
 import argparse
 import asyncio
 import hashlib
+import ipaddress
 import json
 import socket
 import sys
@@ -18,6 +19,7 @@ from aioquic.asyncio import connect, serve
 from aioquic.asyncio.protocol import QuicConnectionProtocol
 from aioquic import tls as quic_tls
 from aioquic.quic.configuration import QuicConfiguration
+from aioquic.quic.connection import QuicConnection
 from aioquic.quic.events import (
     ConnectionTerminated,
     DatagramFrameReceived,
@@ -26,6 +28,8 @@ from aioquic.quic.events import (
 
 # What a stream may carry. A peer that sends more is a fault, not a larger test.
 STREAM_LIMIT = 1 << 20
+# PATH_RESPONSE, RFC 9000 §19.18.
+PATH_RESPONSE = 0x1B
 # What one order on stdin may carry, counted as `readline` counts a text stream. Orders are
 # single words.
 ORDER_LIMIT = 64
@@ -98,6 +102,8 @@ async def run_server(arguments):
     class Served(QuicConnectionProtocol):
         def connection_made(self, transport):
             serving["protocol"] = self
+            if arguments.never_act_on_path_responses:
+                ignore_path_responses(self._quic)
             super().connection_made(transport)
 
         def quic_event_received(self, event):
@@ -126,7 +132,12 @@ async def run_server(arguments):
             # Where this side is talking to now, for the cases about a peer that moves. Its own
             # verdict on that path is meaningful here: the path is the peer's.
             if arguments.report_paths:
-                say(event="path", **await settled_path(serving["protocol"]))
+                say(
+                    event="path",
+                    **await settled_path(
+                        serving["protocol"], timeout=arguments.validation_wait
+                    ),
+                )
             # Bidirectional streams have ids that are multiples of four here, so those are the
             # ones that can be answered. A shared scenario asks for an answer of its own rather
             # than an echo, named by the two numbers it follows from.
@@ -363,9 +374,21 @@ async def run_resuming_client(arguments):
 
 async def exchange(client, payload):
     """One bidirectional exchange, reported by length and digest of what came back."""
+    held = await send_half_of(client, payload)
+    await answer_half_of(held)
+
+
+async def send_half_of(client, payload):
+    """Put a whole payload on a new stream and end it, without waiting for the answer."""
     reader, writer = await client.create_stream()
     writer.write(payload)
     writer.write_eof()
+    return reader, writer
+
+
+async def answer_half_of(held):
+    """Wait for what comes back on that stream and report it by length and digest."""
+    reader, writer = held
     answered = await read_stream(reader)
     say(
         event="stream",
@@ -459,9 +482,23 @@ async def run_moving_client(arguments):
     aioquic keeps the transport it sends through on the protocol, so a second datagram
     endpoint handed to it moves the connection without touching the library. What arrives on
     the new socket is given to the same protocol, so the connection carries on.
+
+    Both sockets are bound to the concrete address they send from. `aioquic.asyncio.connect`
+    binds the wildcard, and a wildcard `getsockname` is this side's bind address rather than
+    the endpoint the server sees, so the connection is set up here instead.
     """
 
     class Watched(QuicConnectionProtocol):
+        """The connection, which stops hearing the address it moves off.
+
+        A client whose network changed never reads what still arrives there, and reading it
+        after the move back would time a round trip that did not happen.
+        """
+
+        def __init__(self, *arguments, **named):
+            super().__init__(*arguments, **named)
+            self.moved_away = False
+
         def quic_event_received(self, event):
             if isinstance(event, HandshakeCompleted):
                 say(event="handshake", alpn=event.alpn_protocol)
@@ -469,51 +506,147 @@ async def run_moving_client(arguments):
                 say(event="ended", code=event.error_code, reason=event.reason_phrase)
             super().quic_event_received(event)
 
+        def datagram_received(self, data, addr):
+            if not self.moved_away:
+                self.take(data, addr)
+
+        def take(self, data, addr):
+            super().datagram_received(data, addr)
+
     class Arriving(asyncio.DatagramProtocol):
-        """The new socket's reader: what it takes goes to the connection that moved."""
+        """The new socket's reader: what it takes goes to the connection that moved, and it
+        counts what arrived so a refused move is a number rather than a wait."""
 
         def __init__(self, client):
             self._client = client
+            self.received = 0
 
         def datagram_received(self, data, addr):
-            self._client.datagram_received(data, addr)
+            self.received += 1
+            self._client.take(data, addr)
 
-    async with connect(
-        arguments.host,
-        arguments.port,
-        configuration=client_configuration(arguments),
-        create_protocol=Watched,
-    ) as client:
-        say(event="address", port=local_port(client))
+    loop = asyncio.get_running_loop()
+    destination = mapped_destination(arguments.host, arguments.port)
+    first = concrete_socket(destination)
+    transports = []
+    try:
+        transport, client = await endpoint_on(
+            loop,
+            lambda: Watched(QuicConnection(configuration=client_configuration(arguments))),
+            first,
+        )
+        transports.append(transport)
+        client.connect(destination)
+        await client.wait_connected()
+        say(event="address", addr=concrete_endpoint(first))
         await exchange(client, shared_payload(arguments.before_seed, arguments.before_length))
 
-        loop = asyncio.get_running_loop()
-        # The same family as the socket being replaced: aioquic keeps the peer's address as
-        # it first saw it, and a v4-mapped address cannot be sent from an AF_INET socket.
-        old_socket = client._transport.get_extra_info("socket")
-        moved, _ = await loop.create_datagram_endpoint(
-            lambda: Arriving(client),
-            local_addr=("::" if old_socket.family == socket.AF_INET6 else arguments.host, 0),
-            family=old_socket.family,
-        )
-        old = client._transport
-        client._transport = moved
+        second = concrete_socket(destination)
+        moved, arriving = await endpoint_on(loop, lambda: Arriving(client), second)
+        transports.append(moved)
+        counted = Counted(moved)
+        client._transport = counted
         client.transmit()
-        say(event="address", port=local_port(client))
+        say(event="address", addr=concrete_endpoint(second))
 
-        await exchange(client, shared_payload(arguments.after_seed, arguments.after_length))
+        after = shared_payload(arguments.after_seed, arguments.after_length)
+        if arguments.the_move_is_refused:
+            # The counts are reported before the answer is waited for, so they say what the
+            # new address did whether or not the peer honoured its own policy.
+            client.moved_away = True
+            held = await send_half_of(client, after)
+            await asyncio.sleep(arguments.quiet_for)
+            say(event="refused", sent=counted.sent, received=arriving.received)
+            client.moved_away = False
+            client._transport = transport
+            client.transmit()
+            say(event="address", addr=concrete_endpoint(first))
+            await answer_half_of(held)
+        else:
+            await exchange(client, after)
         say(event="path", **await settled_path(client))
         client.close()
         await client.wait_closed()
-        old.close()
-        moved.close()
+    finally:
+        for transport in transports:
+            transport.close()
     say(event="done")
 
 
-def local_port(protocol):
-    """The port this side is sending from. The socket may be dual-stack, so its own address
-    is not the one the peer sees; the port is."""
-    return protocol._transport.get_extra_info("socket").getsockname()[1]
+def mapped_destination(host, port):
+    """The destination as a dual-stack socket addresses it: an IPv4 address v4-mapped, which
+    is what aioquic's own client does before it connects."""
+    resolved = socket.getaddrinfo(host, port, type=socket.SOCK_DGRAM)[0][4]
+    if len(resolved) == 2:
+        return ("::ffff:" + resolved[0], resolved[1], 0, 0)
+    return resolved
+
+
+def source_for(destination):
+    """The address this host sends to `destination` from, asked of the routing table. A
+    connected UDP socket puts nothing on the wire; it only settles the source."""
+    scratch = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+    try:
+        scratch.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        scratch.connect(destination)
+        chosen = scratch.getsockname()
+        return chosen[0], chosen[3]
+    finally:
+        scratch.close()
+
+
+def concrete_socket(destination):
+    """A dual-stack socket bound to the address it will send from, on a port of the kernel's
+    choosing."""
+    host, scope = source_for(destination)
+    sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+    try:
+        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        sock.bind((host, 0, 0, scope))
+    except BaseException:
+        sock.close()
+        raise
+    return sock
+
+
+class Counted:
+    """A transport that counts the datagrams put through it."""
+
+    def __init__(self, transport):
+        self._transport = transport
+        self.sent = 0
+
+    def sendto(self, data, addr=None):
+        self.sent += 1
+        self._transport.sendto(data, addr)
+
+    def get_extra_info(self, name, default=None):
+        return self._transport.get_extra_info(name, default)
+
+    def close(self):
+        self._transport.close()
+
+
+async def endpoint_on(loop, factory, sock):
+    """A datagram endpoint over a socket already bound, closing it if it cannot be made."""
+    try:
+        return await loop.create_datagram_endpoint(factory, sock=sock)
+    except BaseException:
+        sock.close()
+        raise
+
+
+def concrete_endpoint(sock):
+    """The endpoint this socket sends from, with its family in the spelling and its scope
+    when it has one. A wildcard is a bind address and not an answer, so it is refused."""
+    name = sock.getsockname()
+    host, port = name[0], name[1]
+    scope = name[3] if len(name) == 4 else 0
+    if ipaddress.ip_address(host).is_unspecified:
+        raise RuntimeError(f"the socket is bound to the wildcard {host}, not to a source")
+    if ":" not in host:
+        return f"{host}:{port}"
+    return f"[{host}%{scope}]:{port}" if scope else f"[{host}]:{port}"
 
 
 def current_path(protocol):
@@ -541,6 +674,21 @@ async def settled_path(protocol, timeout=5.0):
     while not path_is_validated(protocol) and loop.time() < deadline:
         await asyncio.sleep(0.01)
     return dict(validated=path_is_validated(protocol), addr=path_address(protocol))
+
+
+def ignore_path_responses(connection):
+    """Take the answer to this side's own PATH_CHALLENGE out of the connection, so a path it
+    challenges stays unvalidated while the rest of the connection carries on.
+
+    The frame is still consumed off the wire, so nothing else about parsing changes; only the
+    verdict it would have settled is withheld.
+    """
+    handlers = connection._QuicConnection__frame_handlers
+
+    def consume_without_believing(context, frame_type, buf):
+        buf.pull_bytes(8)
+
+    handlers[PATH_RESPONSE] = (consume_without_believing, handlers[PATH_RESPONSE][1])
 
 
 async def run_silent(arguments):
@@ -673,6 +821,8 @@ def main():
     parser.add_argument("--before-length", type=int, default=0)
     parser.add_argument("--after-seed", type=int, default=0)
     parser.add_argument("--after-length", type=int, default=0)
+    parser.add_argument("--the-move-is-refused", action="store_true")
+    parser.add_argument("--quiet-for", type=float, default=0.5)
     parser.add_argument("--ask-for-a-key-update", action="store_true")
     parser.add_argument("--close-code", type=int, default=0)
     parser.add_argument("--close-reason", default="")
@@ -691,6 +841,8 @@ def main():
     parser.add_argument("--tickets", action="store_true")
     # Report the path each stream was served over, for the cases about a peer that moves.
     parser.add_argument("--report-paths", action="store_true")
+    parser.add_argument("--never-act-on-path-responses", action="store_true")
+    parser.add_argument("--validation-wait", type=float, default=5.0)
     arguments = parser.parse_args()
     try:
         asyncio.run(ROLES[arguments.role](arguments))

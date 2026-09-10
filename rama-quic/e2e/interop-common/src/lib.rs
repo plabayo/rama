@@ -25,7 +25,7 @@ pub use identity::{
     rama_server_config, server_identity,
 };
 pub use keys::{Initiator, KeyObservation, KeyScenario, key_cases};
-pub use migration::{MigrationObservation, MigrationScenario, migration_cases};
+pub use migration::{MigrationObservation, MigrationScenario, RefusedMove, migration_cases};
 pub use names::{
     MISMATCH_PROBE, Mismatch, NameObservation, NameScenario, ReceivedName, identity_alert,
     mismatch_cases, name_cases,
