@@ -7,7 +7,7 @@ use super::lifecycle::{
     segmenting_socket, unblock_segments, uncredit_segments, wait_for,
 };
 use super::{DropObserver, TestSocket, probe_socket};
-use crate::driver::connection::Outcome;
+use crate::driver::connection::{MAX_TRANSMIT_SEGMENTS, Outcome, RETAINED_DESCRIPTORS};
 use rama_udp::UdpSocketConfig;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::atomic::Ordering;
@@ -521,9 +521,10 @@ async fn preferring_server_with_a_stuck_candidate() -> (
     SocketAddr,
     Arc<Mutex<SegmentLog>>,
     SocketAddr,
+    Arc<Mutex<SegmentLog>>,
 ) {
     let (client_config, mut server_config) = configs();
-    let (listener, _listener_log) = recording_socket();
+    let (listener, listener_log) = recording_socket();
     let (advertised, advertised_log) = recording_socket();
     let advertised_addr = advertised.local_addr();
     let SocketAddr::V4(advertised_v4) = advertised_addr else {
@@ -553,6 +554,7 @@ async fn preferring_server_with_a_stuck_candidate() -> (
         advertised_addr,
         advertised_log,
         client_addr,
+        listener_log,
     )
 }
 
@@ -570,7 +572,7 @@ fn sent_to(log: &Mutex<SegmentLog>, client: SocketAddr) -> usize {
 /// stream's end both ways, and shutdown stays bounded.
 #[tokio::test]
 async fn a_candidate_socket_that_never_takes_a_datagram_leaves_the_path_in_use_alone() {
-    let (client, server, c, s, advertised_addr, advertised_log, client_addr) =
+    let (client, server, c, s, advertised_addr, advertised_log, client_addr, _listener_log) =
         preferring_server_with_a_stuck_candidate().await;
     let initial = c.remote_address();
     assert_ne!(initial, advertised_addr);
@@ -619,7 +621,7 @@ async fn a_candidate_socket_that_never_takes_a_datagram_leaves_the_path_in_use_a
 /// leave, and the handle is free afterwards.
 #[tokio::test]
 async fn a_datagram_waiting_on_a_candidate_handle_leaves_when_that_socket_is_ready() {
-    let (client, server, c, s, advertised_addr, advertised_log, client_addr) =
+    let (client, server, c, s, advertised_addr, advertised_log, client_addr, _listener_log) =
         preferring_server_with_a_stuck_candidate().await;
 
     wait_for(
@@ -905,7 +907,7 @@ async fn a_candidate_paths_answer_is_given_up_when_its_route_is_refused() {
 /// throughout, and nothing of the candidate path's traffic reaches the wire.
 #[tokio::test]
 async fn a_path_that_takes_nothing_does_not_starve_the_one_that_does() {
-    let (client, server, c, s, advertised_addr, advertised_log, client_addr) =
+    let (client, server, c, s, advertised_addr, advertised_log, client_addr, _listener_log) =
         preferring_server_with_a_stuck_candidate().await;
 
     wait_for(
@@ -1042,4 +1044,220 @@ async fn a_descriptor_whose_bytes_are_gone_is_retired_rather_than_carried() {
     })
     .await
     .expect("shutdown stays bounded");
+}
+
+/// Both handles held at once, with the pass allowance spent. The candidate's socket never takes
+/// anything and the path in use stops taking anything either, so a pass that spends its
+/// allowance has placed nothing, given up nothing and produced nothing. It asks for no further
+/// turn: the wakers it left behind are what bring the connection back. When the path in use
+/// opens, the waiting bytes arrive and shutdown stays bounded.
+///
+/// While both are held, each descriptor's bytes are its own, so this is also where the retained
+/// storage of the waiting descriptors is measured and where its release is observed.
+#[tokio::test]
+async fn a_spent_allowance_with_both_handles_held_asks_for_no_further_turn() {
+    let (client, server, c, s, advertised_addr, advertised_log, client_addr, listener_log) =
+        preferring_server_with_a_stuck_candidate().await;
+
+    wait_for(
+        "the candidate path's datagram waits on that path's handle",
+        Duration::from_secs(5),
+        || s.aside_transmit().is_some(),
+    )
+    .await;
+    assert_eq!(
+        s.aside_address(),
+        Some(advertised_addr),
+        "the handle held aside is the candidate path's"
+    );
+
+    // One datagram spends the allowance, so a pass reaches the end of its budget on the first
+    // offer rather than after twenty.
+    s.set_pass_allowance(1);
+    block_segments_for(&listener_log, SocketAddress::from(client_addr));
+    let payload = b"held on both handles";
+    let mut stream = s.open_uni().await.unwrap();
+    stream.write_all(payload).await.unwrap();
+    stream.finish().unwrap();
+    wait_for(
+        "the path in use holds a datagram of its own",
+        Duration::from_secs(5),
+        || s.held_transmit().is_some(),
+    )
+    .await;
+
+    let (held, _, _) = s.held_transmit().expect("the path in use holds one");
+    assert!(!held.is_empty(), "and it is a datagram, not an empty offer");
+    assert!(
+        s.aside_transmit().is_some(),
+        "while the candidate's still waits"
+    );
+
+    // Arrivals are held back from here on, so what the connection does next is its own.
+    close_receive(&listener_log);
+    let parked_before = s.allowance_parked_without_progress();
+    let passes_before = s.send_passes();
+    let stale_before = s.stale_transmits();
+
+    // The branch under test: a pass spends its allowance with both handles held and asks for no
+    // further turn.
+    wait_for(
+        "a pass spent its allowance without advancing",
+        Duration::from_secs(5),
+        || s.allowance_parked_without_progress() > parked_before,
+    )
+    .await;
+    assert!(
+        s.held_transmit().is_some() && s.aside_transmit().is_some(),
+        "both handles are still held, so the pass had nowhere to place anything"
+    );
+    assert_eq!(
+        s.stale_transmits(),
+        stale_before,
+        "nothing was given up while waiting"
+    );
+
+    // Both waiting descriptors carry their own bytes; that storage is bounded and released.
+    let widest = s.max_datagram_payload();
+    let waiting = s.retained_send_bytes();
+    assert!(
+        waiting.slots > 0 && waiting.owned > 0,
+        "the waiting descriptors hold bytes of their own: {waiting:?}"
+    );
+    assert!(
+        waiting.slots < RETAINED_DESCRIPTORS,
+        "and fewer than the buffer's own share of the slots: {waiting:?}"
+    );
+    assert!(
+        waiting.owned <= (RETAINED_DESCRIPTORS - 1) * MAX_TRANSMIT_SEGMENTS * widest,
+        "owned {} over the bound for a payload of {widest}",
+        waiting.owned
+    );
+    assert!(
+        waiting.buffer <= 2 * MAX_TRANSMIT_SEGMENTS * widest,
+        "buffer {} over the bound for a payload of {widest}",
+        waiting.buffer
+    );
+
+    // A finite ceiling on the passes taken while nothing can be sent. Loss-recovery timers keep
+    // firing, so this is a sanity bound rather than the proof above.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        s.send_passes() - passes_before < 100,
+        "the passes taken while both handles were held stay finite: {}",
+        s.send_passes() - passes_before
+    );
+
+    // Opening the path in use releases its descriptor: the bytes arrive and the passes resume.
+    let passes_at_unblock = s.send_passes();
+    open_receive(&listener_log);
+    unblock_segments(&listener_log);
+    let mut incoming = tokio::time::timeout(Duration::from_secs(10), c.accept_uni())
+        .await
+        .expect("the stream arrives once the path in use opens")
+        .expect("the connection is alive");
+    let received = tokio::time::timeout(
+        Duration::from_secs(10),
+        incoming.read_to_end(payload.len() + 1),
+    )
+    .await
+    .expect("the stream completes")
+    .expect("it is not truncated");
+    assert_eq!(received, payload, "every byte the writer offered");
+    assert!(
+        s.send_passes() > passes_at_unblock,
+        "the connection ran again once a handle opened"
+    );
+    // Traffic keeps flowing on the path in use while the candidate takes nothing at all. The
+    // storage held for the waiting descriptors is bounded throughout rather than accumulating.
+    for round in 0..10u8 {
+        exchange(&s, &c, &[b'p', round]).await;
+        let held = s.retained_send_bytes();
+        assert!(
+            held.slots <= RETAINED_DESCRIPTORS
+                && held.owned <= (RETAINED_DESCRIPTORS - 1) * MAX_TRANSMIT_SEGMENTS * widest
+                && held.buffer <= 2 * MAX_TRANSMIT_SEGMENTS * widest,
+            "round {round} holds {held:?} for a payload of {widest}"
+        );
+    }
+    assert!(
+        s.aside_transmit().is_some(),
+        "the candidate's descriptor is still there, since its socket still takes nothing"
+    );
+
+    // Letting the candidate's socket take its datagram releases the last of that storage.
+    unblock_segments(&advertised_log);
+    wait_for(
+        "every waiting descriptor released its bytes",
+        Duration::from_secs(10),
+        || s.retained_send_bytes().slots == 0,
+    )
+    .await;
+    assert_eq!(
+        s.retained_send_bytes().owned,
+        0,
+        "and none of that storage is still held"
+    );
+
+    drop((c, s));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(client.shutdown(), server.shutdown())
+    })
+    .await
+    .expect("shutdown does not wait for the stuck candidate");
+}
+
+/// A wildcard listener does not own the concrete address the path names, so the connection
+/// records that this socket covers it, and the handle in use answers for it. The covered
+/// address is answered while another concrete address on the same port is not, and neither is
+/// the address the handle is bound to.
+///
+/// That the record stops answering once the socket it names is gone is
+/// `a_wildcard_listener_and_a_concrete_advertised_socket_keep_their_own_tuples`.
+#[tokio::test]
+async fn a_covered_address_is_answered_by_the_handle_that_covers_it() {
+    let (client_config, server_config) = configs();
+    let server = Endpoint::server(
+        server_config,
+        SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0),
+    )
+    .await
+    .expect("the wildcard listener binds");
+    let listener = server.local_addr().unwrap();
+    assert!(listener.ip().is_unspecified(), "the listener is a wildcard");
+
+    // The client sends to a concrete address of ours that the wildcard listener receives on, so
+    // that address, and not the bind, is what the server's path names.
+    let reachable = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), listener.port());
+    let elsewhere = SocketAddr::new(Ipv4Addr::new(127, 0, 0, 2).into(), listener.port());
+    let client = Endpoint::client(localhost_v4())
+        .await
+        .expect("the client binds");
+    let (c, s) = connect_through(&client, &server, client_config, reachable).await;
+    exchange(&c, &s, b"through the wildcard listener").await;
+    assert_eq!(
+        s.sending_from(),
+        Some(listener),
+        "the handle in use is the wildcard one"
+    );
+    assert_ne!(
+        reachable, listener,
+        "and the path's address is not the one it is bound to"
+    );
+
+    wait_for(
+        "the endpoint told the connection its socket covers the path's address",
+        Duration::from_secs(5),
+        || s.sends_from_for(reachable),
+    )
+    .await;
+    assert!(
+        !s.sends_from_for(elsewhere),
+        "another concrete address on the same port is not covered: {elsewhere}"
+    );
+    // Both directions keep working over the covered path.
+    exchange(&s, &c, b"and back over the covered path").await;
+
+    drop((c, s));
+    tokio::join!(client.shutdown(), server.shutdown());
 }

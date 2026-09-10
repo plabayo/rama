@@ -1960,8 +1960,7 @@ fn a_skipped_packet_number_does_not_spend_the_key_budget() {
             let counted = pair.client_conn_mut(client_ch).packets_sent_with_keys();
             assert_eq!(
                 sent as u64, from_the_end,
-                "the budget left is what the pass produced, so the counts below are not \
-                 comparing nothing"
+                "the pass sends the {from_the_end} packets the budget has left"
             );
             assert_eq!(
                 counted - counted_before,

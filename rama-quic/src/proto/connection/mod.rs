@@ -5272,6 +5272,14 @@ impl Connection {
         self.path.current_mtu()
     }
 
+    /// The largest UDP payload this connection may put on its current path. MTU discovery probes
+    /// deliberately search above [`Self::current_mtu`], so this, and not the confirmed MTU, is
+    /// what bounds a datagram now. It says nothing about what an earlier path allowed.
+    #[cfg(test)]
+    pub(crate) fn max_datagram_payload(&self) -> u16 {
+        self.path.max_payload()
+    }
+
     /// Size of non-frame data for a 1-RTT packet
     ///
     /// Quantifies space consumed by the QUIC header and AEAD tag. All other bytes in a packet are

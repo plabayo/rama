@@ -36,6 +36,18 @@ use crate::proto::{
     StreamId,
 };
 
+/// Tests: the bytes a connection keeps allocated for sending, split by where they are.
+#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RetainedSend {
+    /// The engine's write buffer, reused across descriptors.
+    pub(crate) buffer: usize,
+    /// The bytes of the descriptors that took a copy of their own.
+    pub(crate) owned: usize,
+    /// How many descriptors hold their own bytes.
+    pub(crate) slots: usize,
+}
+
 /// Tests: one descriptor this connection offered to its sender, and what became of it.
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -916,6 +928,13 @@ impl Connection {
         self.0.state.lock().passes
     }
 
+    /// Tests: passes that spent their allowance without advancing, and so asked for no further
+    /// turn.
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    pub(crate) fn allowance_parked_without_progress(&self) -> u64 {
+        self.0.state.lock().allowance_parked_without_progress
+    }
+
     /// Tests: passes that spent their allowance on descriptors that were already waiting and put
     /// bytes on the wire — those that asked for another turn, and those that parked instead.
     #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
@@ -973,6 +992,45 @@ impl Connection {
     #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
     pub(crate) fn cid_confirmed_to(&self, seq: u64, remote: std::net::SocketAddr) -> bool {
         self.0.state.lock().inner.cid_confirmed_to(seq, remote)
+    }
+
+    /// Tests: the bytes this connection keeps allocated for sending.
+    ///
+    /// `buffer` is the storage the engine writes the next descriptor into, which is reused and
+    /// so holds the largest it has ever written. `owned` is the bytes of the descriptors that
+    /// had to wait and took a copy of their own. `slots` is how many of those there are. The
+    /// bound they stay under is the one [`Held`] documents: a descriptor's worth is at most
+    /// [`MAX_TRANSMIT_SEGMENTS`] datagrams of at most the path's largest payload, and at most
+    /// four descriptors' worth is kept.
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    pub(crate) fn retained_send_bytes(&self) -> RetainedSend {
+        let state = self.0.state.lock();
+        let held = [
+            state.buffered_transmit.as_ref(),
+            state.deferred.as_ref(),
+            state.aside.as_ref().and_then(|slot| slot.held.as_ref()),
+        ];
+        let carried = held
+            .into_iter()
+            .flatten()
+            .filter_map(|held| held.bytes.as_ref());
+        RetainedSend {
+            buffer: state.send_buffer.capacity(),
+            owned: carried.clone().map(Vec::capacity).sum(),
+            slots: carried.count(),
+        }
+    }
+
+    /// Tests: the largest UDP payload this connection's *current* path may carry, which MTU
+    /// discovery searches up to and no datagram may exceed.
+    ///
+    /// This is not on its own a bound on what is retained. The buffer keeps capacity a former
+    /// path put there, and a `Vec` may allocate past what was asked of it, so a bound over a
+    /// connection's life takes the largest payload the test saw and allows for that growth.
+    /// [`RETAINED_DESCRIPTORS`] and [`MAX_TRANSMIT_SEGMENTS`] are the other two terms.
+    #[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+    pub(crate) fn max_datagram_payload(&self) -> usize {
+        self.0.state.lock().inner.max_datagram_payload() as usize
     }
 
     /// Tests: how many datagrams were given up because their identifier may never be sent again.
@@ -1620,6 +1678,8 @@ impl ConnectionRef {
                 #[cfg(test)]
                 passes: 0,
                 #[cfg(test)]
+                allowance_parked_without_progress: 0,
+                #[cfg(test)]
                 retry_allowance_asked: 0,
                 #[cfg(test)]
                 retry_allowance_parked: 0,
@@ -1953,6 +2013,10 @@ pub(crate) struct State {
     /// Tests: how many send passes this connection has run.
     #[cfg(test)]
     passes: u64,
+    /// Tests: passes that spent their allowance without advancing, and so asked for no further
+    /// turn.
+    #[cfg(test)]
+    allowance_parked_without_progress: u64,
     /// Tests: passes that spent their allowance offering descriptors that were already waiting,
     /// put bytes on the wire, and asked for another turn; and those that parked instead.
     #[cfg(test)]
@@ -2598,6 +2662,12 @@ impl State {
             if work.attempted >= self.pass_allowance() {
                 let another_turn = work.advanced;
                 #[cfg(test)]
+                if !another_turn {
+                    // A pass that spent its allowance without placing, giving up or producing
+                    // anything, and so asked for no further turn.
+                    self.allowance_parked_without_progress += 1;
+                }
+                #[cfg(test)]
                 if !work.pulled && work.sent {
                     // A pass that spent its allowance on descriptors that were already waiting,
                     // and put bytes on the wire doing it.
@@ -2652,7 +2722,7 @@ impl State {
                     return Err(ConnectionError::TransportError(
                         crate::proto::TransportError::new(
                             crate::proto::TransportErrorCode::INTERNAL_ERROR,
-                            "endpoint driver future was dropped".to_owned(),
+                            "endpoint driver future was dropped",
                         ),
                     ));
                 }
@@ -2933,12 +3003,18 @@ impl From<ConnectionError> for SendDatagramError {
 /// and allows other tasks (like receiving ACKs) to run in between.
 pub(crate) const MAX_TRANSMIT_DATAGRAMS: usize = 20;
 
+/// How many descriptors' worth of bytes a connection keeps at once: the one on the handle it
+/// sends from, the one on the handle kept aside, the one waiting for a station, and the buffer
+/// the engine writes the next one into. See [`Held`].
+#[cfg(all(test, feature = "rustls", any(feature = "aws-lc", feature = "ring")))]
+pub(crate) const RETAINED_DESCRIPTORS: usize = 4;
+
 /// The maximum amount of datagrams that are sent in a single transmit
 ///
 /// This can be lower than the maximum platform capabilities, to avoid excessive
 /// memory allocations when calling `poll_transmit()`. Benchmarks have shown
 /// that numbers around 10 are a good compromise.
-const MAX_TRANSMIT_SEGMENTS: usize = 10;
+pub(crate) const MAX_TRANSMIT_SEGMENTS: usize = 10;
 
 #[cfg(test)]
 #[cfg(all(feature = "rustls", any(feature = "ring", feature = "aws-lc")))]

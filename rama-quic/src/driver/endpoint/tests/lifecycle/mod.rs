@@ -1,7 +1,9 @@
 //! Connection and endpoint lifecycle tests.
 
 use super::{Captured, TestSocket, WakeCount, pin_active_socket, release_lease};
-use crate::driver::connection::MAX_TRANSMIT_DATAGRAMS;
+use crate::driver::connection::{
+    MAX_TRANSMIT_DATAGRAMS, MAX_TRANSMIT_SEGMENTS, RETAINED_DESCRIPTORS,
+};
 use crate::driver::endpoint::*;
 use crate::driver::lifecycle::ShutdownOutcome;
 use crate::driver::queue::MIN_RETAINED;
@@ -2606,6 +2608,147 @@ async fn path_size_decrease_after_a_larger_mtu_was_learned() {
     .unwrap();
     fresh_client.unwrap();
     fresh_server.unwrap();
+    drop((client_conn, server_conn));
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
+/// The engine's write buffer is reused after the confirmed MTU collapses. The path learns a
+/// larger MTU, then loses it to a black hole, and the buffer keeps the storage the larger
+/// datagrams needed instead of shrinking to what is now being sent.
+///
+/// The bound checked alongside is composed here rather than read off the connection: the buffer
+/// holds capacity a former, larger path put there, so the term is the largest payload observed
+/// rather than the current one, and a `Vec` grows by doubling. On this host the buffer settles
+/// at one datagram, so that bound is slack; storage near it is left to the segmented case.
+#[tokio::test]
+async fn the_write_buffer_is_reused_after_the_confirmed_mtu_collapses() {
+    // A descriptor is at most this many datagrams of at most the payload the path admits; a
+    // connection keeps at most `RETAINED_DESCRIPTORS` of those, one of which is the engine's
+    // write buffer. That buffer is grown by `Vec`, which doubles, hence the factor for it; the
+    // others are exact copies of a slice and carry no slack.
+    fn buffer_bound(payload: usize) -> usize {
+        2 * MAX_TRANSMIT_SEGMENTS * payload
+    }
+    fn owned_bound(payload: usize) -> usize {
+        (RETAINED_DESCRIPTORS - 1) * MAX_TRANSMIT_SEGMENTS * payload
+    }
+
+    let (mut client_config, mut server_config) = configs();
+    let mut transport = crate::TransportConfig::default();
+    transport.set_max_idle_timeout(Duration::from_secs(3).try_into().unwrap());
+    let transport = Arc::new(transport);
+    client_config.set_transport_config(transport.clone());
+    server_config.set_transport_config(transport);
+    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let threshold = Arc::new(AtomicUsize::new(usize::MAX));
+    let client = faulty_endpoint_with_threshold(
+        None,
+        Arc::new(Mutex::new(VecDeque::new())),
+        threshold.clone(),
+    );
+    let connecting = client
+        .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let (client_conn, server_conn) = tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::join!(connecting, async { server.accept().await.unwrap().await })
+    })
+    .await
+    .unwrap();
+    let client_conn = client_conn.unwrap();
+    let server_conn = server_conn.unwrap();
+    // Every payload this connection admits, so the bound follows the widest path it ever had
+    // rather than the one in force when it is checked.
+    let mut widest = client_conn.max_datagram_payload();
+
+    let learned = drive_until(&client_conn, &server_conn, Duration::from_secs(15), || {
+        client_conn.stats().path.current_mtu == 1452
+    })
+    .await;
+    assert!(learned, "the search must reach the upper bound on loopback");
+    widest = widest.max(client_conn.max_datagram_payload());
+
+    let payload = vec![0x42u8; octets::kib(64)];
+    let transfer = |conn: &crate::driver::connection::Connection,
+                    peer: &crate::driver::connection::Connection,
+                    payload: Vec<u8>| {
+        let conn = conn.clone();
+        let peer = peer.clone();
+        async move {
+            let mut send = conn.open_uni().await.unwrap();
+            send.write_all(&payload).await.unwrap();
+            send.finish().unwrap();
+            let mut recv = peer.accept_uni().await.unwrap();
+            let got = recv.read_to_end(payload.len()).await.unwrap();
+            assert_eq!(got, payload, "every byte, in order");
+        }
+    };
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        transfer(&client_conn, &server_conn, payload.clone()),
+    )
+    .await
+    .expect("the transfer completes at the learned MTU");
+    widest = widest.max(client_conn.max_datagram_payload());
+    let peak = client_conn.retained_send_bytes();
+    assert!(
+        peak.buffer >= 1452,
+        "the buffer held a datagram of the learned size, not just a handshake packet: {peak:?}"
+    );
+    assert!(
+        peak.buffer <= buffer_bound(widest),
+        "buffer {} over {} for a widest payload of {widest}",
+        peak.buffer,
+        buffer_bound(widest)
+    );
+
+    // The path now admits 1300 bytes at most, so the learned size black-holes and the MTU
+    // collapses under what the buffer already holds.
+    threshold.store(1300, Ordering::Relaxed);
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        transfer(&client_conn, &server_conn, payload),
+    )
+    .await
+    .expect("black-hole detection must restore progress");
+    let path = client_conn.stats().path;
+    assert!(path.black_holes_detected >= 1);
+    assert!(
+        path.current_mtu <= 1300,
+        "the MTU collapsed: {}",
+        path.current_mtu
+    );
+
+    // Let the transfer drain: nothing waits on a handle, so no descriptor keeps a copy.
+    wait_for_with(
+        "every descriptor was placed or given up",
+        Duration::from_secs(5),
+        || client_conn.retained_send_bytes().slots == 0,
+        || format!("{:?} still held", client_conn.retained_send_bytes()),
+    )
+    .await;
+    let after = client_conn.retained_send_bytes();
+    assert_eq!(
+        (after.owned, after.slots),
+        (0, 0),
+        "a drained connection holds no descriptor's bytes: {after:?}"
+    );
+    assert!(
+        after.buffer >= peak.buffer,
+        "the larger buffer is kept for reuse rather than shrunk on the drain: {after:?} was \
+         {peak:?}"
+    );
+    assert!(
+        after.buffer <= buffer_bound(widest) && after.owned <= owned_bound(widest),
+        "retained {after:?} over the bound for a widest payload of {widest}"
+    );
+    assert!(
+        after.buffer > usize::from(path.current_mtu),
+        "the buffer outlasts the MTU that now applies: {} against {}",
+        after.buffer,
+        path.current_mtu
+    );
+
+    assert!(client_conn.close_reason().is_none());
     drop((client_conn, server_conn));
     tokio::join!(client.shutdown(), server.shutdown());
 }

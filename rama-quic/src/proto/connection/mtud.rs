@@ -70,6 +70,22 @@ impl MtuDiscovery {
         self.current_mtu
     }
 
+    /// The largest UDP payload this path may carry. Discovery searches above the confirmed MTU,
+    /// up to the configured upper bound clamped by the peer's `max_udp_payload_size`; with
+    /// discovery off the confirmed MTU is all of it. It is a property of this path: another
+    /// path, or this one before the peer's limit arrived, may have allowed more.
+    #[cfg(test)]
+    pub(crate) fn max_payload(&self) -> u16 {
+        match &self.state {
+            Some(state) => state
+                .config
+                .upper_bound
+                .min(state.peer_max_udp_payload_size)
+                .max(self.current_mtu),
+            None => self.current_mtu,
+        }
+    }
+
     /// Returns the amount of bytes that should be sent as an MTU probe, if any
     pub(crate) fn poll_transmit(&mut self, now: Instant, next_pn: u64) -> Option<u16> {
         self.state

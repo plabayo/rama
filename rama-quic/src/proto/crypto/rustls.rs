@@ -26,8 +26,8 @@ use crate::proto::{
     transport_parameters::TransportParameters,
 };
 
-/// The name to ask a server for, as the backend spells it. What it refuses is the name itself,
-/// which the error carries back.
+/// Convert a server name into the backend's own type, returning the name in the error when the
+/// backend refuses it.
 fn server_name_of(server_name: &str) -> Result<ServerName<'static>, ConnectError> {
     match ServerName::try_from(server_name) {
         Ok(name) => Ok(name.to_owned()),
@@ -35,11 +35,9 @@ fn server_name_of(server_name: &str) -> Result<ServerName<'static>, ConnectError
     }
 }
 
-/// The name the backend reports, as a [`Domain`].
-///
-/// Every shape the backend accepts as a DNS name is one `Domain` accepts, so a name that
-/// reached here is not rejected. A disagreement would be between this crate and its backend, so
-/// it ends the connection locally rather than being reported as no name or blamed on the peer.
+/// Convert the name the backend reports into a [`Domain`]. A name it accepts that `Domain` does
+/// not is a disagreement between this crate and its backend, so it ends the connection locally
+/// rather than being reported as an absent name.
 fn received_server_name(name: &str) -> Result<Domain, TransportError> {
     Domain::try_from(name).map_err(|error| {
         TransportError::INTERNAL_ERROR("received server name is not a domain").with_cause(error)

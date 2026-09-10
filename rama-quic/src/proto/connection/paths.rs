@@ -172,6 +172,13 @@ impl PathData {
         self.mtud.current_mtu()
     }
 
+    /// The largest UDP payload this path may carry, which an MTU probe may reach and no
+    /// datagram may exceed.
+    #[cfg(test)]
+    pub(super) fn max_payload(&self) -> u16 {
+        self.mtud.max_payload()
+    }
+
     /// Account for transmission of `packet` with number `pn` in `space`
     pub(super) fn sent(&mut self, pn: u64, packet: SentPacket, space: &mut PacketSpace) {
         self.in_flight.insert(&packet);
