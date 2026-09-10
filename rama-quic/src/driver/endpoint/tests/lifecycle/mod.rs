@@ -2612,14 +2612,248 @@ async fn path_size_decrease_after_a_larger_mtu_was_learned() {
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
+/// A datagram carrying a PATH_CHALLENGE is expanded to the smallest allowed maximum datagram
+/// size (RFC 9000 §8.2.1) and no further: the frame is small and the rest is padding, so the
+/// applicable limit for this kind is that size, not the path's MTU. The probes are read off a
+/// socket that answers nothing and receives no other traffic, so every datagram on it is one of
+/// these; each is one UDP datagram, not a segmented descriptor.
+#[tokio::test]
+async fn a_path_validation_probe_is_expanded_to_the_smallest_allowed_datagram_and_no_further() {
+    let (mut client_config, mut server_config) = configs();
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    silent.set_nonblocking(true).unwrap();
+    let preferred = match silent.local_addr().unwrap() {
+        SocketAddr::V4(addr) => addr,
+        SocketAddr::V6(addr) => panic!("expected an IPv4 loopback address, got {addr}"),
+    };
+    server_config.set_preferred_address_v4(preferred);
+    // Without discovery, no datagram anywhere is an MTU probe, so the kind under test is the
+    // only one that pads.
+    let mut transport = crate::TransportConfig::default();
+    transport.maybe_set_mtu_discovery_config(None);
+    let transport = Arc::new(transport);
+    client_config.set_transport_config(transport.clone());
+    server_config.set_transport_config(transport);
+    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let (socket, _log) = recording_socket();
+    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let connecting = client
+        .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let (c, s) = handshake(connecting, incoming).await;
+
+    wait_for(
+        "probes towards the preferred address",
+        Duration::from_secs(5),
+        || c.stats().path.preferred_address_probes >= 1,
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let mut sizes = Vec::new();
+    let mut buffer = [0u8; 4096];
+    while let Ok((size, from)) = silent.recv_from(&mut buffer) {
+        assert_eq!(from, client.local_addr().unwrap());
+        sizes.push(size);
+    }
+    assert!(!sizes.is_empty(), "the probes arrived");
+    assert_eq!(
+        sizes.len() as u64,
+        c.stats().path.preferred_address_probes,
+        "one datagram per transmitted probe, so every size below is one of them"
+    );
+    for size in &sizes {
+        assert_eq!(
+            *size,
+            usize::from(crate::proto::MIN_INITIAL_SIZE),
+            "a path validation probe is padded to the smallest allowed datagram exactly"
+        );
+    }
+    assert_eq!(
+        c.stats().path.sent_plpmtud_probes,
+        0,
+        "and none of these is an MTU probe"
+    );
+
+    drop((c, s));
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
+/// Without MTU discovery, no datagram exceeds the confirmed MTU — including the probes loss
+/// recovery sends, which are ordinary packets. Datagrams are dropped for a while so recovery
+/// runs, and every datagram the socket was handed is measured on its own; the socket takes one
+/// segment at a time, so each record is one UDP datagram rather than a descriptor's aggregate.
+#[tokio::test]
+async fn ordinary_and_loss_probe_datagrams_stay_within_the_confirmed_mtu() {
+    let (mut client_config, mut server_config) = configs();
+    let mut transport = crate::TransportConfig::default();
+    transport.maybe_set_mtu_discovery_config(None);
+    transport.set_max_idle_timeout(Duration::from_secs(10).try_into().unwrap());
+    let transport = Arc::new(transport);
+    client_config.set_transport_config(transport.clone());
+    server_config.set_transport_config(transport);
+    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let (socket, log) = recording_socket();
+    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let connecting = client
+        .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let (c, s) = handshake(connecting, incoming).await;
+    let confirmed = usize::from(c.stats().path.current_mtu);
+
+    // Ordinary traffic first.
+    let payload = vec![0x37u8; octets::kib(32)];
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut send = c.open_uni().await.unwrap();
+        send.write_all(&payload).await.unwrap();
+        send.finish().unwrap();
+        let mut recv = s.accept_uni().await.unwrap();
+        assert_eq!(recv.read_to_end(payload.len()).await.unwrap(), payload);
+    })
+    .await
+    .expect("the transfer completes");
+
+    // Now what the socket is handed never reaches the network, so recovery declares loss and
+    // sends its own probes. Those are still recorded here.
+    log.lock().blackhole = true;
+    let dark_at = c.stats().path.sent_packets;
+    let mut send = c.open_uni().await.unwrap();
+    send.write_all(b"into the dark").await.unwrap();
+    // Nothing is acknowledged while the socket swallows everything, so recovery reaches its
+    // timeout and sends probes of its own; those are what grow the sent count here.
+    wait_for(
+        "recovery timed out and sent probes into the dark",
+        Duration::from_secs(10),
+        || c.stats().path.sent_packets > dark_at + 2,
+    )
+    .await;
+    log.lock().blackhole = false;
+    // Once acknowledgements flow again, what was swallowed is declared lost.
+    wait_for(
+        "the swallowed packets are declared lost",
+        Duration::from_secs(10),
+        || c.stats().path.lost_packets > 0,
+    )
+    .await;
+
+    let recorded = log.lock().sent.len();
+    let oversized: Vec<usize> = log
+        .lock()
+        .sent
+        .iter()
+        .map(|datagram| datagram.bytes.len())
+        .filter(|size| *size > confirmed)
+        .collect();
+    assert!(recorded > 8, "enough datagrams to judge: {recorded}");
+    assert_eq!(
+        c.stats().path.sent_plpmtud_probes,
+        0,
+        "MTU discovery is off, so nothing here may search above the confirmed size"
+    );
+    assert!(
+        oversized.is_empty(),
+        "no ordinary or loss-probe datagram exceeds the confirmed MTU of {confirmed}: {oversized:?}"
+    );
+
+    drop((c, s));
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
+/// MTU discovery searches above the confirmed MTU, so the confirmed size is not its limit. What
+/// bounds it is the configured search ceiling clamped by the peer's `max_udp_payload_size`, and
+/// only its own probes go above the confirmed size. Each recorded datagram is one UDP datagram.
+#[tokio::test]
+async fn mtu_discovery_probes_search_above_the_confirmed_mtu_within_the_configured_ceiling() {
+    const CEILING: u16 = 1400;
+    let (mut client_config, mut server_config) = configs();
+    let mut transport = crate::TransportConfig::default();
+    let mut discovery = crate::proto::MtuDiscoveryConfig::default();
+    discovery.set_upper_bound(CEILING);
+    transport.maybe_set_mtu_discovery_config(Some(discovery));
+    transport.set_max_idle_timeout(Duration::from_secs(10).try_into().unwrap());
+    let transport = Arc::new(transport);
+    client_config.set_transport_config(transport.clone());
+    server_config.set_transport_config(transport);
+    let server = endpoint(Some(server_config), Executor::new(), Duration::from_secs(1));
+    let (socket, log) = recording_socket();
+    let client = endpoint_with(EndpointConfig::default(), None, socket);
+    let connecting = client
+        .connect_with(client_config, server.local_addr().unwrap(), "localhost")
+        .unwrap();
+    let incoming = tokio::time::timeout(Duration::from_secs(2), server.accept())
+        .await
+        .unwrap()
+        .unwrap();
+    let (c, s) = handshake(connecting, incoming).await;
+    let at_first = usize::from(c.stats().path.current_mtu);
+    let ceiling = c.max_datagram_payload();
+    assert_eq!(
+        ceiling,
+        usize::from(CEILING),
+        "the ceiling is the configured one, the peer allowing at least that much"
+    );
+    assert!(ceiling > at_first, "and it is above the confirmed size");
+
+    wait_for("the search sends probes", Duration::from_secs(15), || {
+        c.stats().path.sent_plpmtud_probes >= 2
+    })
+    .await;
+    exchange(&c, &s, b"after the search started").await;
+
+    let sizes: Vec<usize> = log
+        .lock()
+        .sent
+        .iter()
+        .map(|datagram| datagram.bytes.len())
+        .collect();
+    let confirmed_now = usize::from(c.stats().path.current_mtu);
+    let above_first: Vec<usize> = sizes.iter().copied().filter(|s| *s > at_first).collect();
+    let above_now: Vec<usize> = sizes
+        .iter()
+        .copied()
+        .filter(|s| *s > confirmed_now)
+        .collect();
+
+    assert!(
+        !above_first.is_empty(),
+        "the search really went above the size confirmed at the start: {at_first}"
+    );
+    assert!(
+        sizes.iter().all(|size| *size <= ceiling),
+        "every datagram is within the configured ceiling of {ceiling}: {:?}",
+        sizes
+            .iter()
+            .filter(|size| **size > ceiling)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        above_now.len() as u64 <= c.stats().path.sent_plpmtud_probes,
+        "only the search's own probes are above the confirmed size {confirmed_now}: {} of them \
+         against {} probes",
+        above_now.len(),
+        c.stats().path.sent_plpmtud_probes
+    );
+
+    drop((c, s));
+    tokio::join!(client.shutdown(), server.shutdown());
+}
+
 /// The engine's write buffer is reused after the confirmed MTU collapses. The path learns a
 /// larger MTU, then loses it to a black hole, and the buffer keeps the storage the larger
 /// datagrams needed instead of shrinking to what is now being sent.
 ///
 /// The bound checked alongside is composed here rather than read off the connection: the buffer
 /// holds capacity a former, larger path put there, so the term is the largest payload observed
-/// rather than the current one, and a `Vec` grows by doubling. On this host the buffer settles
-/// at one datagram, so that bound is slack; storage near it is left to the segmented case.
+/// rather than the current one, and a `Vec` grows by doubling. This scenario need not fill a
+/// segmented buffer; storage near the bound is the segmented case.
 #[tokio::test]
 async fn the_write_buffer_is_reused_after_the_confirmed_mtu_collapses() {
     // A descriptor is at most this many datagrams of at most the payload the path admits; a
@@ -3769,6 +4003,9 @@ struct SegmentingSocket {
     inner: rama_udp::UdpPacketSocket,
     log: Arc<Mutex<SegmentLog>>,
     segments: Arc<Segments>,
+    /// Injected receive failure, as [`FaultySocket`] takes one, so [`fail_receiver`] can retire
+    /// a socket that is part-way through a descriptor.
+    recv_fault: Arc<Mutex<Option<RecvFault>>>,
 }
 
 /// Whether a [`SegmentingSocket`] offers segmentation: not before it is armed, never after
@@ -3820,6 +4057,14 @@ impl DatagramSocket for SegmentingSocket {
         buffers: &mut [IoSliceMut<'_>],
         metadata: &mut [DatagramMetadata],
     ) -> Poll<Result<usize, DatagramError>> {
+        let fault = *self.recv_fault.lock();
+        if fault == Some(RecvFault::Now) {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "injected receive fault",
+            )
+            .into()));
+        }
         {
             let mut log = self.log.lock();
             if log.receive_closed {
@@ -3827,7 +4072,11 @@ impl DatagramSocket for SegmentingSocket {
                 return Poll::Pending;
             }
         }
-        self.inner.poll_recv(cx, buffers, metadata)
+        let result = self.inner.poll_recv(cx, buffers, metadata);
+        if fault == Some(RecvFault::AfterNextBatch) && matches!(result, Poll::Ready(Ok(_))) {
+            *self.recv_fault.lock() = Some(RecvFault::Now);
+        }
+        result
     }
     fn capabilities(&self) -> DatagramCapabilities {
         self.segments.caps(self.inner.capabilities())
@@ -3975,6 +4224,33 @@ fn segmenting_socket_from(
     std_socket: std::net::UdpSocket,
     hold_after: usize,
 ) -> (Socket, Arc<Mutex<SegmentLog>>, Arc<Segments>) {
+    let (socket, log, segments, _fault) = breakable_segmenting_socket_from(std_socket, hold_after);
+    (socket, log, segments)
+}
+
+/// A segmenting socket whose receive side can be failed, so a socket can be retired while it
+/// holds part of a descriptor.
+pub(super) fn breakable_segmenting_socket(
+    hold_after: usize,
+) -> (
+    Socket,
+    Arc<Mutex<SegmentLog>>,
+    Arc<Segments>,
+    Arc<Mutex<Option<RecvFault>>>,
+) {
+    let std_socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    breakable_segmenting_socket_from(std_socket, hold_after)
+}
+
+fn breakable_segmenting_socket_from(
+    std_socket: std::net::UdpSocket,
+    hold_after: usize,
+) -> (
+    Socket,
+    Arc<Mutex<SegmentLog>>,
+    Arc<Segments>,
+    Arc<Mutex<Option<RecvFault>>>,
+) {
     std_socket.set_nonblocking(true).unwrap();
     let inner = rama_udp::UdpPacketSocket::from_socket(
         tokio::net::UdpSocket::from_std(std_socket).unwrap(),
@@ -3985,13 +4261,15 @@ fn segmenting_socket_from(
         ..SegmentLog::default()
     }));
     let segments = Arc::new(Segments::default());
+    let recv_fault = Arc::new(Mutex::new(None));
     let socket = Socket::new(SegmentingSocket {
         inner,
         log: log.clone(),
         segments: segments.clone(),
+        recv_fault: recv_fault.clone(),
     })
     .unwrap();
-    (socket, log, segments)
+    (socket, log, segments, recv_fault)
 }
 
 /// Stop accepting datagrams for `destination`; the sender is told to wait.

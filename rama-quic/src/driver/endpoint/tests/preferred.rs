@@ -2,9 +2,9 @@
 
 use super::super::*;
 use super::lifecycle::{
-    SegmentLog, block_segments_for, breakable_socket, close_receive, configs, endpoint_with,
-    exchange, fail_receiver, handshake, open_receive, open_segment_hold, recording_socket,
-    segmenting_socket, unblock_segments, uncredit_segments, wait_for,
+    SegmentLog, block_segments_for, breakable_segmenting_socket, breakable_socket, close_receive,
+    configs, endpoint_with, exchange, fail_receiver, handshake, open_receive, open_segment_hold,
+    recording_socket, segmenting_socket, unblock_segments, uncredit_segments, wait_for,
 };
 use super::{DropObserver, TestSocket, probe_socket};
 use crate::driver::connection::{MAX_TRANSMIT_SEGMENTS, Outcome, RETAINED_DESCRIPTORS};
@@ -1260,4 +1260,175 @@ async fn a_covered_address_is_answered_by_the_handle_that_covers_it() {
 
     drop((c, s));
     tokio::join!(client.shutdown(), server.shutdown());
+}
+
+/// A descriptor the socket took a prefix of, while that socket then fails for a reason of its
+/// own. The prefix that left carries this descriptor's identifier and is accounted once, at the
+/// moment it left. The failure retires the socket; the connection continues on the one that
+/// replaced it, the suffix is never offered to that replacement, and the stream arrives whole
+/// because loss recovery resends what the failed socket never delivered.
+#[tokio::test]
+async fn a_part_sent_descriptor_is_accounted_once_when_its_socket_then_fails() {
+    let (client_config, server_config) = configs();
+    let server = endpoint_with(
+        EndpointConfig::default(),
+        Some(server_config),
+        Socket::from_std(std::net::UdpSocket::bind("127.0.0.1:0").unwrap()).unwrap(),
+    );
+    let (socket_a, log_a, segments, fault_a) = breakable_segmenting_socket(1);
+    let client = endpoint_with(EndpointConfig::default(), None, socket_a);
+    let addr_a = client.local_addr().unwrap();
+    let (socket_b, log_b) = recording_socket();
+
+    let (c, s) = connect_through(
+        &client,
+        &server,
+        client_config,
+        server.local_addr().unwrap(),
+    )
+    .await;
+    exchange(&c, &s, b"before").await;
+    segments.arm();
+
+    // One segmented descriptor, held after a prefix of it was accepted.
+    let payload: Vec<u8> = (0..octets::kib(16)).map(|i| (i % 251) as u8).collect();
+    let mut stream = c.open_uni().await.unwrap();
+    stream.write_all(&payload).await.unwrap();
+    stream.finish().unwrap();
+    wait_for(
+        "a segment of the descriptor was accepted and the rest held",
+        Duration::from_secs(20),
+        || {
+            let log = log_a.lock();
+            log.rejected.is_some() && !log.fallback().is_empty()
+        },
+    )
+    .await;
+    let accepted_by_a: Vec<Vec<u8>> = log_a
+        .lock()
+        .sent
+        .iter()
+        .map(|datagram| datagram.bytes.clone())
+        .collect();
+    let peer = server.local_addr().unwrap();
+    let (held_bytes, _, held_cid) = c
+        .held_transmit()
+        .expect("the part-sent descriptor waits on the handle that took its prefix");
+    let carried = held_cid.expect("it carries an identifier");
+    assert!(
+        c.cid_confirmed_to(carried, peer),
+        "the prefix that left reported the identifier it carried"
+    );
+    let stale_before = c.stale_transmits();
+
+    // A replacement is bound, then the socket holding the suffix fails for its own reason.
+    client.rebind_abstract(socket_b).unwrap();
+    let addr_b = client.local_addr().unwrap();
+    assert_ne!(addr_b, addr_a, "the replacement is a different socket");
+    fail_receiver(&client, &fault_a);
+    wait_for("the failed socket retires", Duration::from_secs(10), || {
+        client.stats().retained_sockets == 1
+    })
+    .await;
+    assert_eq!(client.stats().retired_sockets, 1);
+    assert!(
+        c.close_reason().is_none(),
+        "a socket failing is not the connection failing"
+    );
+
+    // The stream still arrives whole: what the failed socket never delivered is resent.
+    let mut incoming = tokio::time::timeout(Duration::from_secs(20), s.accept_uni())
+        .await
+        .expect("the stream arrives")
+        .expect("the connection is alive");
+    let received = tokio::time::timeout(
+        Duration::from_secs(20),
+        incoming.read_to_end(payload.len() + 1),
+    )
+    .await
+    .expect("the stream completes")
+    .expect("it is not truncated");
+    assert_eq!(received, payload, "every byte, in order");
+
+    // Nothing the failed socket had already accepted is offered to the replacement.
+    let sent_on_b: Vec<Vec<u8>> = log_b
+        .lock()
+        .sent
+        .iter()
+        .map(|datagram| datagram.bytes.clone())
+        .collect();
+    for (i, datagram) in sent_on_b.iter().enumerate() {
+        assert!(
+            !accepted_by_a.contains(datagram),
+            "datagram {i} on the replacement repeats one the failed socket had accepted"
+        );
+        assert!(
+            !held_bytes
+                .windows(datagram.len().max(1))
+                .any(|window| window == datagram.as_slice()),
+            "datagram {i} on the replacement carries bytes of the suffix the failed socket held"
+        );
+    }
+    assert!(
+        log_b.lock().rejected.is_none(),
+        "and the replacement was never offered that segmented descriptor at all"
+    );
+    assert!(
+        !sent_on_b.is_empty(),
+        "and the replacement did carry the connection's traffic"
+    );
+    // The descriptor was offered again while its socket held it, and given up exactly once
+    // when that socket failed. Its identifier stays accounted as one that reached the network,
+    // because a prefix of it did.
+    let offers: Vec<_> = c
+        .descriptors()
+        .into_iter()
+        .filter(|descriptor| descriptor.segment_size.is_some())
+        .collect();
+    assert!(
+        offers.len() > 1,
+        "the held descriptor was offered again while its socket kept it: {}",
+        offers.len()
+    );
+    let given_up: Vec<_> = offers
+        .iter()
+        .filter(|descriptor| descriptor.outcome == Outcome::Obsolete)
+        .collect();
+    assert_eq!(given_up.len(), 1, "and given up once, not once per offer");
+    assert!(
+        given_up[0].reported,
+        "given up where the prefix it left behind is accounted, not quietly later"
+    );
+    assert_eq!(
+        c.stale_transmits(),
+        stale_before + 1,
+        "one datagram was given up: the suffix that socket still held"
+    );
+    // The identifier the prefix carried was reported when the prefix left, which is the
+    // observation that counts and is asserted above. Moving to the replacement retires it, and
+    // a retired identifier is gone from the queue, so asking again here says nothing about the
+    // report.
+    assert_eq!(
+        c.send_permit(carried, peer),
+        crate::proto::SendPermit::Obsolete,
+        "the identifier the prefix carried is retired with the socket that took it"
+    );
+    let now_active = c.active_dcid_seq();
+    assert!(
+        c.cid_confirmed_to(now_active, peer),
+        "and the identifier the connection sends with now is used towards the peer"
+    );
+    assert_eq!(
+        c.unowned_paths(),
+        0,
+        "no datagram wanted a socket the endpoint did not have"
+    );
+
+    exchange(&c, &s, b"after the failure").await;
+    drop((c, s));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(client.shutdown(), server.shutdown())
+    })
+    .await
+    .expect("shutdown stays bounded after the failure");
 }
