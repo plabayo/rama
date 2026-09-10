@@ -28,6 +28,11 @@ use rama_core::{
 /// transport and response selections reach the egress transport, after both
 /// upgrades succeed. Each upgraded transport otherwise retains its own
 /// connection or HTTP/2 stream state.
+///
+/// Response extensions are no longer copied wholesale onto the egress
+/// transport. Middleware that relied on this behavior must explicitly select
+/// the values it needs through [`HttpUpgradeMitmRelayExtensions`]; see that
+/// type's migration example.
 pub struct HttpUpgradeMitmRelay<M, S> {
     exec: Executor,
     nested_matcher_svc: M,

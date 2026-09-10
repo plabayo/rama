@@ -41,15 +41,23 @@ pub struct HttpWebSocketRelayServiceRequestMatcher<S = IoForwardService> {
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(ws))]
-/// Stored in the Ingress extensions
-/// by the [`HttpWebSocketRelayServiceRequestMatcher`] if configured to do so.
+/// Snapshot stored on the matched HTTP request by
+/// [`HttpWebSocketRelayServiceRequestMatcher`] if configured to do so.
+/// It is also selected for transfer to the upgraded ingress stream by
+/// [`HttpUpgradeMitmRelay`](rama_http::layer::upgrade::mitm::HttpUpgradeMitmRelay)
+/// after both relay upgrades succeed.
+///
 /// The snapshot contains HTTP fields only; its extensions are empty.
 pub struct HttpWebSocketRelayHandshakeRequest(pub Arc<request::Parts>);
 
 #[derive(Debug, Clone, Extension)]
 #[extension(tags(ws))]
-/// Stored in the Egress extensions
-/// by the [`HttpWebSocketRelayServiceResponseMatcher`] if configured to do so.
+/// Snapshot stored on the matched HTTP response by
+/// [`HttpWebSocketRelayServiceResponseMatcher`] if configured to do so.
+/// It is also selected for transfer to the upgraded egress stream by
+/// [`HttpUpgradeMitmRelay`](rama_http::layer::upgrade::mitm::HttpUpgradeMitmRelay)
+/// after both relay upgrades succeed.
+///
 /// The snapshot contains HTTP fields only; its extensions are empty.
 pub struct HttpWebSocketRelayHandshakeResponse(pub Arc<response::Parts>);
 
