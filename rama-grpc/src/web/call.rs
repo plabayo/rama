@@ -21,7 +21,6 @@ use rama_http_types::{
     header,
 };
 use rama_utils::octets::kib;
-use rama_utils::str::arcstr::arcstr;
 
 use crate::Status;
 
@@ -82,6 +81,7 @@ pin_project! {
         direction: Direction,
         encoding: Encoding,
         client: bool,
+        client_done: bool,
         trailers: Option<HeaderMap>,
     }
 }
@@ -95,6 +95,7 @@ impl<B: Default> Default for GrpcWebCall<B> {
             direction: Direction::Empty,
             encoding: Encoding::None,
             client: Default::default(),
+            client_done: false,
             trailers: Default::default(),
         }
     }
@@ -131,6 +132,7 @@ impl<B> GrpcWebCall<B> {
             direction,
             encoding,
             client: true,
+            client_done: false,
             trailers: None,
         }
     }
@@ -146,6 +148,7 @@ impl<B> GrpcWebCall<B> {
             direction,
             encoding,
             client: false,
+            client_done: false,
             trailers: None,
         }
     }
@@ -273,71 +276,65 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         if self.client && self.direction == Direction::Decode {
-            let mut me = self.as_mut();
-
             loop {
-                match ready!(me.as_mut().poll_decode(cx)) {
-                    Some(Ok(incoming_buf)) => {
-                        let me_mut = me.as_mut().project();
+                if self.client_done {
+                    return Poll::Ready(
+                        self.as_mut()
+                            .project()
+                            .trailers
+                            .take()
+                            .map(|trailers| Ok(Frame::trailers(trailers))),
+                    );
+                }
 
-                        match incoming_buf.into_data() {
-                            Ok(data) => {
-                                me_mut.decoded.put(data);
-                            }
-                            Err(incoming_buf) => match incoming_buf.into_trailers() {
-                                Ok(trailers) => {
-                                    match me.as_mut().project().trailers {
-                                        Some(current_trailers) => {
-                                            current_trailers.extend(trailers);
-                                        }
-                                        None => {
-                                            me.as_mut().project().trailers.replace(trailers);
-                                        }
-                                    }
-                                    continue;
-                                }
-                                Err(_) => {
-                                    return Poll::Ready(Some(Err(Status::internal(arcstr!(
-                                        "grpc web call: unexpected frame type"
-                                    )))));
-                                }
-                            },
-                        }
-                    }
-                    None => {} // No more data to decode, time to look for trailers
-                    Some(Err(e)) => return Poll::Ready(Some(Err(e))),
-                };
-
-                // Hold the incoming, decoded data until we have a full message
-                // or trailers to return.
-                let buf = me.as_mut().project().decoded;
-
-                return match find_trailers(&buf[..])? {
+                // Drain complete buffered frames before polling the transport again.
+                match find_trailers(&self.decoded)? {
                     FindTrailers::Trailer(len) => {
-                        // Extract up to len of where the trailers are at
-                        let msg_buf = buf.copy_to_bytes(len);
-                        match decode_trailers_frame(buf.split().freeze()) {
-                            Ok(Some(trailers)) => {
-                                me.as_mut().project().trailers.replace(trailers);
-                            }
-                            Err(e) => return Poll::Ready(Some(Err(e))),
-                            _ => {}
+                        let this = self.as_mut().project();
+                        let messages = this.decoded.split_to(len).freeze();
+                        *this.trailers = decode_trailers_frame(this.decoded.split().freeze())?;
+                        *this.client_done = true;
+                        if !messages.is_empty() {
+                            return Poll::Ready(Some(Ok(Frame::data(messages))));
                         }
+                        continue;
+                    }
+                    FindTrailers::Done(len) if len > 0 => {
+                        let messages = self.as_mut().project().decoded.split_to(len).freeze();
+                        return Poll::Ready(Some(Ok(Frame::data(messages))));
+                    }
+                    FindTrailers::IncompleteBuf | FindTrailers::Done(_) => {}
+                }
 
-                        if msg_buf.has_remaining() {
-                            Poll::Ready(Some(Ok(Frame::data(msg_buf))))
-                        } else if let Some(trailers) = me.as_mut().project().trailers.take() {
-                            Poll::Ready(Some(Ok(Frame::trailers(trailers))))
-                        } else {
-                            Poll::Ready(None)
+                // Empty DATA and incomplete headers are not EOF; only the inner
+                // body ending (or a complete trailers frame) ends this decoder.
+                match ready!(self.as_mut().poll_decode(cx)) {
+                    Some(Ok(frame)) => match frame.into_data() {
+                        Ok(data) => self.as_mut().project().decoded.put(data),
+                        Err(frame) => {
+                            let trailers = frame
+                                .into_trailers()
+                                .map_err(|_frame| internal_error("unexpected frame type"))?;
+                            let this = self.as_mut().project();
+                            *this.client_done = true;
+                            if !this.decoded.is_empty() {
+                                return Poll::Ready(Some(Err(internal_error(
+                                    "incomplete gRPC-Web frame before HTTP trailers",
+                                ))));
+                            }
+                            *this.trailers = Some(trailers);
+                        }
+                    },
+                    Some(Err(error)) => return Poll::Ready(Some(Err(error))),
+                    None => {
+                        *self.as_mut().project().client_done = true;
+                        if !self.decoded.is_empty() {
+                            return Poll::Ready(Some(Err(internal_error(
+                                "unexpected EOF in gRPC-Web frame",
+                            ))));
                         }
                     }
-                    FindTrailers::IncompleteBuf => continue,
-                    FindTrailers::Done(len) => Poll::Ready(match len {
-                        0 => None,
-                        _ => Some(Ok(Frame::data(buf.split_to(len).freeze()))),
-                    }),
-                };
+                }
             }
         }
 
@@ -349,11 +346,20 @@ where
     }
 
     fn is_end_stream(&self) -> bool {
-        self.inner.is_end_stream()
+        if self.client && self.direction == Direction::Decode {
+            self.client_done && self.trailers.is_none()
+        } else {
+            self.inner.is_end_stream()
+        }
     }
 
     fn size_hint(&self) -> SizeHint {
-        self.inner.size_hint()
+        if self.client && self.direction == Direction::Decode {
+            // Encoded trailer bytes disappear and message bytes may be buffered.
+            SizeHint::default()
+        } else {
+            self.inner.size_hint()
+        }
     }
 }
 
@@ -480,44 +486,42 @@ fn make_trailers_frame(trailers: HeaderMap) -> Bytes {
     frame.freeze()
 }
 
-/// Search some buffer for grpc-web trailers headers and return
-/// its location in the original buf. If `None` is returned we did
-/// not find a trailers in this buffer either because its incomplete
-/// or the buffer just contained grpc message frames.
+/// Locate a complete trailer frame or a prefix of complete message frames.
 fn find_trailers(buf: &[u8]) -> Result<FindTrailers, Status> {
     let mut len = 0;
-    let mut temp_buf = buf;
+    let mut remaining = buf;
 
     loop {
-        // To check each frame, there must be at least GRPC_HEADER_SIZE
-        // amount of bytes available otherwise the buffer is incomplete.
-        if temp_buf.is_empty() || temp_buf.len() < GRPC_HEADER_SIZE {
+        if remaining.is_empty() {
             return Ok(FindTrailers::Done(len));
         }
+        if remaining.len() < GRPC_HEADER_SIZE {
+            break;
+        }
 
-        let header = temp_buf.get_u8();
-
-        if header == GRPC_WEB_TRAILERS_BIT {
+        let flag = remaining.get_u8();
+        if !matches!(flag, 0 | 1 | GRPC_WEB_TRAILERS_BIT) {
+            return Err(internal_error(format!("invalid frame flag {flag}")));
+        }
+        let payload_len = remaining.get_u32() as usize;
+        if payload_len > remaining.len() {
+            break;
+        }
+        if flag == GRPC_WEB_TRAILERS_BIT {
+            if payload_len != remaining.len() {
+                return Err(internal_error("unexpected data after gRPC-Web trailers"));
+            }
             return Ok(FindTrailers::Trailer(len));
         }
 
-        if !(header == 0 || header == 1) {
-            return Err(Status::internal(format!(
-                "Invalid header bit {header} expected 0 or 1"
-            )));
-        }
+        len += GRPC_HEADER_SIZE + payload_len;
+        remaining = &buf[len..];
+    }
 
-        let msg_len = temp_buf.get_u32();
-
-        len += msg_len as usize + 4 + 1;
-
-        // If the msg len of a non-grpc-web trailer frame is larger than
-        // the overall buffer we know within that buffer there are no trailers.
-        if len > buf.len() {
-            return Ok(FindTrailers::IncompleteBuf);
-        }
-
-        temp_buf = &buf[len..];
+    if len == 0 {
+        Ok(FindTrailers::IncompleteBuf)
+    } else {
+        Ok(FindTrailers::Done(len))
     }
 }
 
@@ -673,5 +677,355 @@ mod tests {
         expected.insert(Status::GRPC_MESSAGE, "".parse().unwrap());
 
         assert_eq!(trailers, expected);
+    }
+}
+
+#[cfg(test)]
+mod client_response_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::convert::Infallible;
+
+    struct Frames(VecDeque<Frame<Bytes>>);
+    impl StreamingBody for Frames {
+        type Data = Bytes;
+        type Error = Infallible;
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+            Poll::Ready(self.0.pop_front().map(Ok))
+        }
+        fn is_end_stream(&self) -> bool {
+            self.0.is_empty()
+        }
+    }
+    fn poll(body: &mut GrpcWebCall<Frames>) -> Option<Frame<Bytes>> {
+        match Pin::new(body).poll_frame(&mut Context::from_waker(std::task::Waker::noop())) {
+            Poll::Ready(value) => value.map(Result::unwrap),
+            Poll::Pending => panic!("ready-only fixture unexpectedly pending"),
+        }
+    }
+    fn message() -> Bytes {
+        Bytes::from_static(&[0, 0, 0, 0, 1, b'a'])
+    }
+    fn trailers() -> HeaderMap {
+        let mut trailers = HeaderMap::new();
+        trailers.insert("grpc-status", "0".parse().unwrap());
+        trailers
+    }
+    fn combined() -> GrpcWebCall<Frames> {
+        let mut data = BytesMut::new();
+        data.extend_from_slice(&message());
+        data.extend_from_slice(&make_trailers_frame(trailers()));
+        GrpcWebCall::client_response(Frames(VecDeque::from([Frame::data(data.freeze())])))
+    }
+    #[test]
+    fn empty_data_must_not_end_client_response() {
+        let mut body = GrpcWebCall::client_response(Frames(VecDeque::from([
+            Frame::data(Bytes::new()),
+            Frame::data(message()),
+            Frame::data(make_trailers_frame(trailers())),
+        ])));
+        let first = poll(&mut body);
+        assert!(
+            first.is_some(),
+            "empty DATA became EOS although two frames remain"
+        );
+    }
+    #[test]
+    fn pending_trailers_must_prevent_eos_hint() {
+        let mut body = combined();
+        assert_eq!(poll(&mut body).unwrap().into_data().unwrap(), message());
+        assert!(
+            !body.is_end_stream(),
+            "is_end_stream=true while grpc-status trailers remain buffered"
+        );
+    }
+    #[test]
+    fn pending_trailers_must_be_emitted_on_next_poll() {
+        let mut body = combined();
+        assert_eq!(poll(&mut body).unwrap().into_data().unwrap(), message());
+        let next = poll(&mut body);
+        assert!(
+            next.is_some(),
+            "stored grpc-status trailers were discarded at inner EOF"
+        );
+        assert_eq!(next.unwrap().into_trailers().unwrap(), trailers());
+    }
+
+    #[test]
+    fn partial_message_header_must_not_end_client_response() {
+        let mut body = GrpcWebCall::client_response(Frames(VecDeque::from([
+            Frame::data(Bytes::from_static(&[0])),
+            Frame::data(Bytes::from_static(&[0, 0, 0, 1, b'a'])),
+            Frame::data(make_trailers_frame(trailers())),
+        ])));
+        assert!(
+            poll(&mut body).is_some(),
+            "a one-byte message header became EOS before the remaining header and payload"
+        );
+    }
+    #[tokio::test]
+    async fn collection_must_retain_coalesced_trailers() {
+        use rama_http_types::body::util::BodyExt;
+        let collected = combined().collect().await.unwrap();
+        assert_eq!(collected.trailers(), Some(&trailers()));
+    }
+
+    #[tokio::test]
+    async fn fused_decoder_preserves_every_split_and_empty_frame() {
+        use rama_http_types::body::util::BodyExt;
+
+        let mut messages = BytesMut::from(message().as_ref());
+        messages.extend_from_slice(&[0, 0, 0, 0, 0]); // A valid zero-length gRPC message.
+        messages.extend_from_slice(&message());
+        let mut wire = messages.clone();
+        wire.extend_from_slice(&make_trailers_frame(trailers()));
+        let wire = wire.freeze();
+        for split in 0..=wire.len() {
+            let frames = Frames(VecDeque::from([
+                Frame::data(Bytes::new()),
+                Frame::data(wire.slice(..split)),
+                Frame::data(Bytes::new()),
+                Frame::data(wire.slice(split..)),
+                Frame::data(Bytes::new()),
+            ]));
+            let mut body = GrpcWebCall::client_response(frames).fuse();
+            let collected = (&mut body).collect().await.unwrap();
+            assert_eq!(collected.trailers(), Some(&trailers()), "split={split}");
+            assert_eq!(collected.to_bytes(), messages, "split={split}");
+            assert!(body.is_end_stream());
+            assert!(body.frame().await.is_none());
+        }
+    }
+
+    struct Steps(VecDeque<Poll<Result<Frame<Bytes>, &'static str>>>);
+
+    impl StreamingBody for Steps {
+        type Data = Bytes;
+        type Error = &'static str;
+
+        fn poll_frame(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+        ) -> Poll<Option<Result<Frame<Bytes>, Self::Error>>> {
+            match self.0.pop_front() {
+                Some(Poll::Ready(frame)) => Poll::Ready(Some(frame)),
+                Some(Poll::Pending) => Poll::Pending,
+                None => Poll::Ready(None),
+            }
+        }
+    }
+
+    #[test]
+    fn pending_between_fragments_preserves_decoder_state() {
+        let mut wire = BytesMut::from(message().as_ref());
+        wire.extend_from_slice(&make_trailers_frame(trailers()));
+        let wire = wire.freeze();
+        for split in 1..wire.len() {
+            let source = Steps(VecDeque::from([
+                Poll::Ready(Ok(Frame::data(wire.slice(..split)))),
+                Poll::Pending,
+                Poll::Ready(Ok(Frame::data(Bytes::new()))),
+                Poll::Ready(Ok(Frame::data(wire.slice(split..)))),
+            ]));
+            let mut body = GrpcWebCall::client_response(source);
+            let mut cx = Context::from_waker(std::task::Waker::noop());
+            let mut data = BytesMut::new();
+            let mut received_trailers = None;
+            let mut pending_count = 0;
+            loop {
+                match Pin::new(&mut body).poll_frame(&mut cx) {
+                    Poll::Pending => {
+                        pending_count += 1;
+                        assert_eq!(pending_count, 1, "fixture only pends once");
+                        assert!(!body.is_end_stream());
+                    }
+                    Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
+                        Ok(bytes) => {
+                            assert!(received_trailers.is_none());
+                            data.extend_from_slice(&bytes);
+                            assert!(!body.is_end_stream(), "trailers remain");
+                        }
+                        Err(frame) => received_trailers = Some(frame.into_trailers().unwrap()),
+                    },
+                    Poll::Ready(Some(Err(err))) => panic!("split={split}: {err}"),
+                    Poll::Ready(None) => break,
+                }
+            }
+            assert_eq!(pending_count, 1);
+            assert_eq!(data, message());
+            assert_eq!(received_trailers, Some(trailers()));
+            assert!(body.is_end_stream());
+        }
+    }
+
+    #[test]
+    fn buffered_trailers_do_not_poll_the_transport_again() {
+        let mut wire = BytesMut::from(message().as_ref());
+        wire.extend_from_slice(&make_trailers_frame(trailers()));
+        let mut body = GrpcWebCall::client_response(Steps(VecDeque::from([
+            Poll::Ready(Ok(Frame::data(wire.freeze()))),
+            Poll::Pending,
+        ])));
+        let mut cx = Context::from_waker(std::task::Waker::noop());
+        let Poll::Ready(Some(Ok(first))) = Pin::new(&mut body).poll_frame(&mut cx) else {
+            panic!("buffered message not emitted");
+        };
+        assert_eq!(first.into_data().unwrap(), message());
+        assert!(!body.is_end_stream());
+        let Poll::Ready(Some(Ok(last))) = Pin::new(&mut body).poll_frame(&mut cx) else {
+            panic!("buffered trailers waited for the transport");
+        };
+        assert_eq!(last.into_trailers().unwrap(), trailers());
+        assert!(body.is_end_stream());
+        assert!(matches!(
+            Pin::new(&mut body).poll_frame(&mut cx),
+            Poll::Ready(None)
+        ));
+    }
+
+    #[tokio::test]
+    async fn truncated_frames_and_source_errors_remain_errors() {
+        use rama_http_types::body::util::BodyExt;
+
+        for frame in [message(), make_trailers_frame(trailers())] {
+            for end in 1..frame.len() {
+                let mut body = GrpcWebCall::client_response(Frames(VecDeque::from([
+                    Frame::data(frame.slice(..end)),
+                    Frame::data(Bytes::new()),
+                ])));
+                let error = body.frame().await.unwrap().unwrap_err();
+                assert!(error.message().contains("unexpected EOF"));
+                assert!(body.is_end_stream());
+                assert!(body.frame().await.is_none());
+            }
+        }
+        for partial in [Bytes::new(), message().slice(..1)] {
+            let mut body = GrpcWebCall::client_response(Steps(VecDeque::from([
+                Poll::Ready(Ok(Frame::data(partial))),
+                Poll::Ready(Err("upstream failed")),
+            ])));
+            let error = body.frame().await.unwrap().unwrap_err();
+            assert!(error.message().contains("upstream failed"));
+        }
+    }
+
+    #[tokio::test]
+    async fn clean_eof_and_native_http_trailers() {
+        use rama_http_types::body::util::BodyExt;
+
+        let mut empty = GrpcWebCall::client_response(Frames(VecDeque::from([
+            Frame::data(Bytes::new()),
+            Frame::data(Bytes::new()),
+        ])));
+        assert!(empty.frame().await.is_none());
+        assert!(empty.is_end_stream());
+        assert!(empty.frame().await.is_none());
+        let body = GrpcWebCall::client_response(Frames(VecDeque::from([
+            Frame::data(message()),
+            Frame::data(Bytes::new()),
+        ])));
+        assert_eq!(body.collect().await.unwrap().to_bytes(), message());
+        let body = GrpcWebCall::client_response(Frames(VecDeque::from([
+            Frame::data(message()),
+            Frame::data(Bytes::new()),
+            Frame::trailers(trailers()),
+        ])));
+        let collected = body.fuse().collect().await.unwrap();
+        assert_eq!(collected.trailers(), Some(&trailers()));
+        assert_eq!(collected.to_bytes(), message());
+    }
+
+    #[test]
+    fn malformed_flags_and_trailers_remain_errors() {
+        assert!(
+            find_trailers(&[2, 0, 0, 0, 0])
+                .unwrap_err()
+                .message()
+                .contains("invalid frame flag")
+        );
+        let mut wire = make_trailers_frame(trailers()).to_vec();
+        wire.extend_from_slice(&message());
+        assert!(
+            find_trailers(&wire)
+                .unwrap_err()
+                .message()
+                .contains("unexpected data after")
+        );
+        let mut body = GrpcWebCall::client_response(Frames(VecDeque::from([Frame::data(
+            Bytes::from_static(b"\x80\0\0\0\x07bad\r\n\r\n"),
+        )])));
+        assert!(matches!(
+            Pin::new(&mut body).poll_frame(&mut Context::from_waker(std::task::Waker::noop())),
+            Poll::Ready(Some(Err(_)))
+        ));
+    }
+
+    #[test]
+    fn size_hint_does_not_count_trailers_or_omit_buffered_messages() {
+        use rama_http_types::body::util::Full;
+        let mut wire = BytesMut::from(message().as_ref());
+        wire.extend_from_slice(&message()[..1]);
+        let mut body = GrpcWebCall::client_response(Full::new(wire.freeze()));
+        assert_eq!(StreamingBody::size_hint(&body).lower(), 0);
+        let Poll::Ready(Some(Ok(_))) =
+            Pin::new(&mut body).poll_frame(&mut Context::from_waker(std::task::Waker::noop()))
+        else {
+            panic!("complete prefix not emitted");
+        };
+        assert!(
+            !body.is_end_stream(),
+            "partial next header must still error"
+        );
+        assert_eq!(StreamingBody::size_hint(&body).lower(), 0);
+        assert_eq!(StreamingBody::size_hint(&body).upper(), None);
+    }
+
+    #[tokio::test]
+    async fn grpc_streaming_receives_coalesced_status_and_metadata() {
+        use crate::codec::{DecodeBuf, Decoder, Streaming};
+        use rama_http_types::body::util::BodyExt;
+
+        struct BytesDecoder;
+        impl Decoder for BytesDecoder {
+            type Item = Bytes;
+            type Error = Status;
+
+            fn decode(&mut self, buf: &mut DecodeBuf<'_>) -> Result<Option<Bytes>, Status> {
+                Ok(Some(buf.copy_to_bytes(buf.remaining())))
+            }
+        }
+
+        for status in ["0", "7"] {
+            let mut trailers = trailers();
+            trailers.insert("grpc-status", status.parse().unwrap());
+            trailers.insert("x-checksum", "abc123".parse().unwrap());
+            let mut wire = BytesMut::from(message().as_ref());
+            wire.extend_from_slice(&make_trailers_frame(trailers));
+            let body =
+                GrpcWebCall::client_response(Frames(VecDeque::from([Frame::data(wire.freeze())])))
+                    .fuse();
+            let mut stream = Streaming::new_response(
+                BytesDecoder,
+                body,
+                rama_http_types::StatusCode::OK,
+                None,
+                None,
+            );
+            assert_eq!(
+                stream.message().await.unwrap(),
+                Some(Bytes::from_static(b"a"))
+            );
+            if status == "0" {
+                assert!(stream.message().await.unwrap().is_none());
+                let metadata = stream.trailers().await.unwrap().unwrap();
+                assert_eq!(metadata.get("x-checksum").unwrap(), "abc123");
+            } else {
+                let error = stream.message().await.unwrap_err();
+                assert_eq!(error.code(), crate::Code::PermissionDenied);
+            }
+        }
     }
 }

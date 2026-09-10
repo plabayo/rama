@@ -488,17 +488,19 @@ final class WriterMemoryBudgetTests: XCTestCase {
                 tcpWaiterMaxBytes: 64 * 1024,
                 udpPressureReserveBytes: 64 * 1024,
                 udpPressureReserveItems: 255))
-        XCTAssertTrue(budget.tryReserve(bytes: 1, items: 1))
+        // Fill the TCP item share so its grant cannot race UDP admission.
+        XCTAssertTrue(budget.tryReserve(bytes: 1, items: 2))
         let tcpGranted = expectation(description: "TCP item progresses")
         let grantBox = Locked<WriterMemoryGrant?>(nil)
         let waiter = budget.waitForTcpCapacity(bytes: 1, items: 1) { grant in
             grantBox.withLock { $0 = grant }
             tcpGranted.fulfill()
         }
+        XCTAssertTrue(budget.snapshot().tcpWaiterGate)
         guard case .pressureUdp? = budget.tryReserveUdp(bytes: 0, items: 255) else {
             return XCTFail("UDP service reserve should accept its exact item cap")
         }
-        budget.release(bytes: 1, items: 1)
+        budget.release(bytes: 1, items: 2)
         wait(for: [tcpGranted], timeout: 3)
         withExtendedLifetime(waiter) {}
         XCTAssertEqual(budget.snapshot().retainedItems, 256)
