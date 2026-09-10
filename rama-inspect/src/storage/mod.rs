@@ -276,7 +276,7 @@ impl Budget {
 
     fn add(&self, amount: u64) -> Result<(), BoxError> {
         self.used
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 let next = used.checked_add(amount)?;
                 (self.limit == 0 || next <= self.limit).then_some(next)
             })
