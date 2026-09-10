@@ -6,6 +6,7 @@ mod common;
 use std::{net::SocketAddr, time::Duration};
 
 use common::*;
+use interop_common::keys::ask_when_ready;
 use rama::{
     quic::{Connection, Endpoint},
     utils::octets,
@@ -85,14 +86,17 @@ async fn rama_can_update_its_keys() {
         .await
         .expect("the handshake completes");
     peer.expect("handshake", deadline).await;
+    // A phase that will not change on its own: without this, the random number of packets
+    // before an automatic update can fall inside the case. See `interop_common::keys`. The
+    // exchange after it carries the new phase to the peer, so the phase read below is the
+    // settled one.
+    ask_when_ready("rama_can_update_its_keys", deadline, &connection).await;
+    exchange(&connection, &mut peer, 0xc0, deadline).await;
     exchange(&connection, &mut peer, 0xc1, deadline).await;
 
     let before = connection.stats().key_updates;
     let phase_before = phase(&mut peer, deadline).await;
-    assert!(
-        connection.force_key_update(),
-        "a confirmed handshake with no update in flight can start one"
-    );
+    ask_when_ready("rama_can_update_its_keys", deadline, &connection).await;
     exchange(&connection, &mut peer, 0xc2, deadline).await;
     assert_eq!(
         connection.stats().key_updates,
@@ -113,6 +117,11 @@ async fn rama_can_update_its_keys() {
 
 /// The peer asks for the update, and Rama follows it: the count rises on Rama's side too,
 /// because it counts updates whichever side asked.
+///
+/// This one is not settled first: the peer cannot start an update while a settling one is in
+/// flight and has no way to say when it can, so its ask is the connection's first. The window
+/// before it — the handshake and one exchange — could in principle hold an automatic update,
+/// which would fail the count rather than pass unnoticed.
 #[tokio::test]
 async fn rama_follows_a_key_update_the_peer_asks_for() {
     prepare().await;
@@ -189,6 +198,16 @@ async fn traffic_alone_does_not_update_any_keys() {
         .await
         .expect("the handshake completes");
     peer.expect("handshake", deadline).await;
+    // Settled first, so that "nothing moved" is a fact about this case and not about which
+    // random packet count this connection happened to start with; the exchange carries the
+    // new phase to the peer before anything is read.
+    ask_when_ready(
+        "traffic_alone_does_not_update_any_keys",
+        deadline,
+        &connection,
+    )
+    .await;
+    exchange(&connection, &mut peer, 0xc9, deadline).await;
 
     let before = connection.stats().key_updates;
     let phase_before = phase(&mut peer, deadline).await;

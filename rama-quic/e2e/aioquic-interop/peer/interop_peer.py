@@ -371,6 +371,83 @@ async def exchange(client, payload):
     )
 
 
+async def run_key_client(arguments):
+    """One connection with an exchange either side of a key update.
+
+    Whether this side asks for the update is a flag rather than an order, because the sequence
+    is this side's own: the server has already answered the first exchange and read its count
+    before this client can ask.
+    """
+
+    class Watched(QuicConnectionProtocol):
+        """A client connection, reporting what it is told about the handshake."""
+
+        def quic_event_received(self, event):
+            if isinstance(event, HandshakeCompleted):
+                say(event="handshake", alpn=event.alpn_protocol)
+            elif isinstance(event, ConnectionTerminated):
+                say(event="ended", code=event.error_code, reason=event.reason_phrase)
+            super().quic_event_received(event)
+
+    async with connect(
+        arguments.host,
+        arguments.port,
+        configuration=client_configuration(arguments),
+        create_protocol=Watched,
+    ) as client:
+        settling = shared_payload(arguments.settling_seed, arguments.settling_length)
+        if arguments.settling_length:
+            # Carries the other side's settling update over here, so the phases said below
+            # are either side of the case's own update.
+            await exchange(client, settling)
+        await exchange(client, shared_payload(arguments.before_seed, arguments.before_length))
+        say(event="phase", phase=key_phase(client))
+        if arguments.ask_for_a_key_update:
+            client._quic.request_key_update()
+            client.transmit()
+            # One exchange behind the request, so the new phase travels rather than waiting
+            # for something else to send.
+            await exchange(client, settling)
+        await exchange(client, shared_payload(arguments.after_seed, arguments.after_length))
+        say(event="phase", phase=key_phase(client))
+        client.close()
+        await client.wait_closed()
+    say(event="done")
+
+
+def key_phase(protocol):
+    """The phase the 1-RTT keys are in. aioquic offers no accessor, so the crypto pair
+    answers it."""
+    return int(protocol._quic._cryptos[quic_tls.Epoch.ONE_RTT].key_phase)
+
+
+async def run_close_client(arguments):
+    """Connect, exchange where the test asks for one, and close with a code and a reason."""
+
+    class Watched(QuicConnectionProtocol):
+        def quic_event_received(self, event):
+            if isinstance(event, HandshakeCompleted):
+                say(event="handshake", alpn=event.alpn_protocol)
+            super().quic_event_received(event)
+
+    async with connect(
+        arguments.host,
+        arguments.port,
+        configuration=client_configuration(arguments),
+        create_protocol=Watched,
+    ) as client:
+        if arguments.before_length:
+            await exchange(
+                client, shared_payload(arguments.before_seed, arguments.before_length)
+            )
+        client.close(
+            error_code=arguments.close_code,
+            reason_phrase=arguments.close_reason,
+        )
+        await client.wait_closed()
+    say(event="done")
+
+
 async def run_silent(arguments):
     """Hold a bound socket and answer nothing, for the tests about deadlines."""
     held = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -419,7 +496,7 @@ def take_orders(loop, server, stop, serving):
                 return
             # aioquic offers no accessor for the phase, so the crypto pair answers it. It rides
             # back on the acknowledgment, so one order is still one line.
-            extra["phase"] = int(served._quic._cryptos[quic_tls.Epoch.ONE_RTT].key_phase)
+            extra["phase"] = key_phase(served)
         elif order == "update-keys":
             served = serving.get("protocol")
             if served is None:
@@ -460,6 +537,8 @@ ROLES = {
     "server": run_server,
     "client": run_client,
     "resuming-client": run_resuming_client,
+    "key-client": run_key_client,
+    "close-client": run_close_client,
     "silent": run_silent,
 }
 
@@ -492,6 +571,15 @@ def main():
     parser.add_argument("--probe-seed", type=int, default=None)
     parser.add_argument("--probe-length", type=int, default=None)
     parser.add_argument("--second-port", type=int, default=0)
+    parser.add_argument("--settling-seed", type=int, default=0)
+    parser.add_argument("--settling-length", type=int, default=0)
+    parser.add_argument("--before-seed", type=int, default=0)
+    parser.add_argument("--before-length", type=int, default=0)
+    parser.add_argument("--after-seed", type=int, default=0)
+    parser.add_argument("--after-length", type=int, default=0)
+    parser.add_argument("--ask-for-a-key-update", action="store_true")
+    parser.add_argument("--close-code", type=int, default=0)
+    parser.add_argument("--close-reason", default="")
     parser.add_argument("--warm-seed", type=int, default=0)
     parser.add_argument("--warm-length", type=int, default=0)
     parser.add_argument("--early-seed", type=int, default=None)

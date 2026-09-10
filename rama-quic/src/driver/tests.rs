@@ -21,27 +21,14 @@ use std::{
 };
 
 use crate::driver::{Duration, Instant};
-use crate::proto::{
-    RandomConnectionIdGenerator,
-    crypto::rustls::{QuicClientConfig, TlsOptions},
-};
+use crate::proto::{RandomConnectionIdGenerator, crypto::rustls::QuicClientConfig};
 use rama_core::bytes::Bytes;
 use rama_core::telemetry::tracing::Instrument as _;
 use rama_core::telemetry::tracing::{error_span, info};
-use rama_net::tls::ApplicationProtocol;
-use rama_tls::{
-    client::TlsClientConfig,
-    server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
+use rama_tls_rustls::dep::rustls::{
+    RootCertStore,
+    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
 };
-use rama_tls_rustls::{
-    dep::rustls::{
-        RootCertStore,
-        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
-        server::{ServerSessionMemoryCache, StoresServerSessions},
-    },
-    server::RustlsServerConfigExt,
-};
-use rama_utils::collections::smallvec::smallvec;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use tokio::time::{sleep, timeout};
 use tokio::{
@@ -51,6 +38,13 @@ use tokio::{
 use tracing_subscriber::EnvFilter;
 
 use super::{ClientConfig, Endpoint, EndpointConfig, RecvStream, SendStream, TransportConfig};
+
+mod resumption;
+
+/// A loopback address to bind on, for a fixture that lets the endpoint make its own socket.
+fn localhost() -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)
+}
 
 #[test]
 fn handshake_timeout() {
@@ -1106,197 +1100,4 @@ impl Wake for WakeCounter {
 fn new_count_waker() -> (Waker, Arc<WakeCounter>) {
     let counter = Arc::new(WakeCounter::default());
     (Waker::from(counter.clone()), counter)
-}
-
-/// A session store the server was asked for, so a case can tell a lookup from a resumption.
-///
-/// `finds` is what it hands back for any key: real bytes resume, anything else does not.
-#[derive(Debug)]
-struct AskedStore {
-    finds: Option<Vec<u8>>,
-    inner: Arc<dyn StoresServerSessions>,
-    asked: AtomicUsize,
-}
-
-impl AskedStore {
-    /// A store that keeps what it is given and hands it back, which is what rustls does on its
-    /// own.
-    fn keeping() -> Arc<Self> {
-        Arc::new(Self {
-            finds: None,
-            inner: ServerSessionMemoryCache::new(4),
-            asked: AtomicUsize::new(0),
-        })
-    }
-
-    /// A store that answers every lookup with bytes that are not a session, so the lookup
-    /// succeeds and the handshake cannot resume.
-    fn finding(bytes: &[u8]) -> Arc<Self> {
-        Arc::new(Self {
-            finds: Some(bytes.to_vec()),
-            inner: ServerSessionMemoryCache::new(4),
-            asked: AtomicUsize::new(0),
-        })
-    }
-
-    fn asked(&self) -> usize {
-        self.asked.load(Ordering::SeqCst)
-    }
-}
-
-impl StoresServerSessions for AskedStore {
-    fn put(&self, key: Vec<u8>, value: Vec<u8>) -> bool {
-        self.inner.put(key, value)
-    }
-
-    fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.finds.clone().or_else(|| self.inner.get(key))
-    }
-
-    fn take(&self, key: &[u8]) -> Option<Vec<u8>> {
-        self.asked.fetch_add(1, Ordering::SeqCst);
-        self.finds.clone().or_else(|| self.inner.take(key))
-    }
-
-    fn can_cache(&self) -> bool {
-        true
-    }
-}
-
-/// An endpoint whose server keeps sessions in `store`, and whose client keeps whatever tickets
-/// it is given, so two attempts from it can resume.
-fn endpoint_remembering(store: Arc<AskedStore>) -> Endpoint {
-    let identity = ServerAuthData::new_generated(GeneratedServerAuthConfig::default())
-        .expect("an identity is generated");
-    let anchor = identity.cert_chain.last().expect("a chain").clone();
-    let tls = TlsServerConfig::new()
-        .with_alpn(smallvec![ApplicationProtocol::from(&b"resumption"[..])])
-        .with_server_auth(identity)
-        .with_modify_rustls_config(move |mut native| {
-            native.session_storage = store.clone();
-            Ok(native)
-        });
-    let server_config = crate::driver::ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())
-        .expect("the server config is built");
-    let mut endpoint = Endpoint::with_std_socket(
-        EndpointConfig::default(),
-        Some(server_config),
-        UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).unwrap(),
-    )
-    .unwrap();
-    let client_tls = TlsClientConfig::new()
-        .with_alpn(smallvec![ApplicationProtocol::from(&b"resumption"[..])])
-        .try_with_server_trust_anchors([anchor])
-        .expect("the trust anchor is accepted");
-    endpoint.set_default_client_config(
-        ClientConfig::try_from_rama_tls(&client_tls, TlsOptions::default())
-            .expect("the client config is built"),
-    );
-    endpoint
-}
-
-/// One connection to that endpoint, answered, exchanged over and closed. Answers what each end
-/// says about resumption once the exchange is through.
-async fn resumption_reported_by_both_ends(endpoint: &Endpoint) -> (Option<bool>, Option<bool>) {
-    let accepting = {
-        let endpoint = endpoint.clone();
-        tokio::spawn(async move {
-            let connection = endpoint
-                .accept()
-                .await
-                .expect("an attempt arrives")
-                .await
-                .expect("the handshake completes");
-            let mut stream = connection.accept_uni().await.expect("the stream arrives");
-            let read = stream
-                .read_to_end(octets::kib(1))
-                .await
-                .expect("it completes");
-            let mut answer = connection.open_uni().await.expect("a stream of its own");
-            answer
-                .write_all(&read)
-                .await
-                .expect("the answer is written");
-            answer.finish().expect("the answer ends");
-            connection.closed().await;
-            connection
-                .handshake_data()
-                .expect("the handshake settled something")
-                .resumed
-        })
-    };
-    let connection = endpoint
-        .connect(endpoint.local_addr().unwrap(), "localhost")
-        .unwrap()
-        .await
-        .expect("the handshake completes");
-    let mut stream = connection.open_uni().await.expect("a stream");
-    stream.write_all(b"a payload").await.expect("it is written");
-    stream.finish().expect("it ends");
-    let mut answer = connection.accept_uni().await.expect("the answer arrives");
-    let read = answer
-        .read_to_end(octets::kib(1))
-        .await
-        .expect("it completes");
-    assert_eq!(read, b"a payload", "the exchange completed");
-    let client = connection
-        .handshake_data()
-        .expect("the handshake settled something")
-        .resumed;
-    connection.close(0u32.into(), b"done");
-    connection.closed().await;
-    let server = accepting.await.expect("the server task finished");
-    (client, server)
-}
-
-/// A resumed handshake says so on both ends, and the first one says it was not resumed.
-#[tokio::test]
-async fn a_resumed_handshake_is_reported_on_both_ends() {
-    let _guard = subscribe();
-    let store = AskedStore::keeping();
-    let endpoint = endpoint_remembering(store.clone());
-
-    let (client, server) = resumption_reported_by_both_ends(&endpoint).await;
-    assert_eq!(
-        (client, server),
-        (Some(false), Some(false)),
-        "a first handshake resumes nothing"
-    );
-
-    let (client, server) = resumption_reported_by_both_ends(&endpoint).await;
-    assert_eq!(
-        (client, server),
-        (Some(true), Some(true)),
-        "the second takes up the session the first left"
-    );
-    assert!(store.asked() > 0, "and the server looked the session up");
-    endpoint.wait_idle().await;
-}
-
-/// A session found in the store is not a resumption. The store answers every lookup, so the
-/// lookup succeeds and the bytes are still not a session: both ends report a full handshake.
-#[tokio::test]
-async fn a_session_found_is_not_a_resumption() {
-    let _guard = subscribe();
-    let store = AskedStore::finding(b"bytes that are not a session");
-    let endpoint = endpoint_remembering(store.clone());
-
-    let (client, server) = resumption_reported_by_both_ends(&endpoint).await;
-    assert_eq!(
-        (client, server),
-        (Some(false), Some(false)),
-        "a first handshake resumes nothing"
-    );
-
-    let (client, server) = resumption_reported_by_both_ends(&endpoint).await;
-    assert!(
-        store.asked() > 0,
-        "the second attempt offered a ticket and the store answered it"
-    );
-    assert_eq!(
-        (client, server),
-        (Some(false), Some(false)),
-        "and what came back was not a session, so neither end reports a resumption"
-    );
-    endpoint.wait_idle().await;
 }

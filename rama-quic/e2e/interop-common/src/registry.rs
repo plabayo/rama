@@ -1,14 +1,14 @@
 //! The shared cases and the runner that executes them, so a case added here runs in every peer
 //! project without any of them being edited.
 
-use std::{fmt, future::Future};
+use std::{fmt, future::Future, time::Duration};
 
 use rama::utils::octets;
 
 use crate::{
     identity::{Identity, server_identity},
     scenario::{Chunk, StreamScenario},
-    support::Deadline,
+    support::{Deadline, SCENARIO_LIMIT},
 };
 
 /// Which end Rama is in a scenario.
@@ -115,10 +115,22 @@ impl<S> CaseRun<S> {
 ///
 /// The whole callback runs inside the case's deadline, not only the operations that take one:
 /// binding a peer's socket and tearing its tasks down are part of a case's time too.
-pub async fn for_each_case<S, F, Fut>(
+pub async fn for_each_case<S, F, Fut>(peer: &'static str, role: Role, cases: Vec<Case<S>>, body: F)
+where
+    F: FnMut(CaseRun<S>) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    for_each_case_within(peer, role, cases, SCENARIO_LIMIT, body).await;
+}
+
+/// The same, with a limit of the peer's own. A peer whose side is another process needs longer
+/// than one in this one: starting an interpreter is part of its case's time, and several test
+/// binaries run at once.
+pub async fn for_each_case_within<S, F, Fut>(
     peer: &'static str,
     role: Role,
     cases: Vec<Case<S>>,
+    limit: Duration,
     mut body: F,
 ) where
     F: FnMut(CaseRun<S>) -> Fut,
@@ -130,7 +142,7 @@ pub async fn for_each_case<S, F, Fut>(
             what: format!("{peer}/{}/{role}", case.name),
             scenario: case.scenario,
             identity: server_identity(),
-            deadline: Deadline::new(),
+            deadline: Deadline::of(limit),
             role,
         };
         let deadline = run.deadline;

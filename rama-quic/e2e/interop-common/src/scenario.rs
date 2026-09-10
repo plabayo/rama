@@ -353,3 +353,59 @@ async fn take_and_answer(run: &CaseRun<StreamScenario>, conn: &Connection) {
         .expect("the answer is written");
     send.finish().expect("the answer ends");
 }
+
+/// One exchange from the opening side, checked by length and digest on the way back. Every
+/// family that carries traffic to prove a connection still works uses this pair.
+pub async fn exchange(what: &str, deadline: Deadline, connection: &Connection, payload: Chunk) {
+    let (mut send, mut recv) = deadline
+        .wait(what, connection.open_bi())
+        .await
+        .expect("a bi stream");
+    deadline
+        .wait(what, send.write_all(&payload.bytes()))
+        .await
+        .expect("the payload is written");
+    send.finish().expect("the stream ends");
+    let back = deadline
+        .wait(what, recv.read_to_end(READ_CAP))
+        .await
+        .expect("the answer completes");
+    Received::Bytes(back).check(what, "exchange", payload);
+}
+
+/// The same exchange from the answering side.
+pub async fn answer(what: &str, deadline: Deadline, connection: &Connection, payload: Chunk) {
+    let (mut send, mut recv) = deadline
+        .wait(what, connection.accept_bi())
+        .await
+        .expect("the stream arrives");
+    let got = deadline
+        .wait(what, recv.read_to_end(READ_CAP))
+        .await
+        .expect("it completes");
+    Received::Bytes(got.clone()).check(what, "exchange", payload);
+    deadline
+        .wait(what, send.write_all(&got))
+        .await
+        .expect("the answer is written");
+    send.finish().expect("the answer ends");
+}
+
+/// Read one exchange and answer it with the same bytes, whatever it carried, and say what that
+/// was. For a case whose number of exchanges is not fixed in advance.
+pub async fn echo_one(what: &str, deadline: Deadline, connection: &Connection) -> Vec<u8> {
+    let (mut send, mut recv) = deadline
+        .wait(what, connection.accept_bi())
+        .await
+        .expect("the stream arrives");
+    let got = deadline
+        .wait(what, recv.read_to_end(READ_CAP))
+        .await
+        .expect("it completes");
+    deadline
+        .wait(what, send.write_all(&got))
+        .await
+        .expect("the answer is written");
+    send.finish().expect("the answer ends");
+    got
+}

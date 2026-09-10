@@ -6,9 +6,9 @@
 //! about the client's early data.
 //!
 //! What this adapter observes instead is the one event that makes a session resume here:
-//! rustls taking the stored session out of the server's session store. `take` returning it is
-//! the resumption; `take` finding nothing is the full handshake that follows. The store is
-//! rustls's own, wrapped to count what it was asked for.
+//! Rama's own handshake, through `HandshakeSummary::resumed`. The server's session store is
+//! wrapped as well, but only to say what rustls looked for: a lookup that found something is
+//! not a resumption, and the counts are diagnostics.
 //!
 //! Resumption is stateful here and not by ticket, because rustls implements RFC 8446 §8.1 by
 //! allowing early data only with stateful resumption: `server/tls13.rs` reads
@@ -308,8 +308,8 @@ async fn read_one(
 /// case does.
 ///
 /// Quinn's client reports what it was told about its early data, through the verdict
-/// `into_0rtt` hands back; whether the session itself resumed is Rama's own store saying it was
-/// asked for that session and gave it up.
+/// `into_0rtt` hands back; whether the session itself resumed is Rama's own handshake, read
+/// from `HandshakeSummary::resumed` on the server side.
 #[tokio::test]
 async fn resumption_cases_rama_server() {
     for_each_case(
@@ -370,6 +370,9 @@ async fn resumption_cases_rama_server() {
                     (sessions.clone(), true)
                 }
             };
+            // Kept, so the diagnostics come from the store this server actually used and not
+            // from the one the warm-up filled.
+            let active = store.clone();
             let resuming = rama_resuming_server_config(&run.identity, store, early_data);
             let (endpoint, addr, serving) =
                 rama_server_reading(&run, resuming, run.scenario.expected()).await;
@@ -389,7 +392,7 @@ async fn resumption_cases_rama_server() {
                     Reported::Seen,
                 ),
                 received: report.received,
-                detail: Some(sessions.detail()),
+                detail: Some(active.detail()),
             };
             let withheld = observed.check(&run.what, &run.scenario);
             assert_eq!(

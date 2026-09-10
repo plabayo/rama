@@ -261,6 +261,9 @@ async fn resumption_cases_rama_server() {
                     (sessions.clone(), true)
                 }
             };
+            // Kept, so the diagnostics come from the store this server actually used and not
+            // from the one the warm-up filled.
+            let active = store.clone();
             let (endpoint, addr, serving) = rama_server_reading(
                 &run,
                 rama_resuming_server_config(&run.identity, store, early_data),
@@ -275,14 +278,14 @@ async fn resumption_cases_rama_server() {
                 report.resumed,
                 "{}: the client and rama's own handshake agree on the resumption ({})",
                 run.what,
-                sessions.detail()
+                active.detail()
             );
             let observed = ResumptionObservation {
                 rama: report.resumed,
                 resumed: Reported::Seen(resumed),
                 early_data: Reported::Seen(reason == early_data::ACCEPTED),
                 received: report.received,
-                detail: Some(format!("early data reason {reason}, {}", sessions.detail())),
+                detail: Some(format!("early data reason {reason}, {}", active.detail())),
             };
             let withheld = observed.check(&run.what, &run.scenario);
             assert!(

@@ -12,7 +12,7 @@ mod common;
 use common::*;
 use interop_common::{
     Arrival, Expected, RecordingSessions, Reported, ResumptionObservation, ResumptionScenario,
-    Role, Unsupported, Verdict, for_each_case,
+    Role, Unsupported, Verdict, for_each_case_within,
     identity::anchor_of,
     registry::CaseRun,
     resumption::{
@@ -32,10 +32,11 @@ const NO_EARLY_DATA_REFUSAL: &str = "an aioquic server takes the early data of a
 #[tokio::test]
 async fn resumption_cases_rama_client() {
     prepare().await;
-    for_each_case(
+    for_each_case_within(
         PEER,
         Role::RamaClient,
         resumption_cases(),
+        LIMIT,
         |run| async move {
             if run.scenario.verdict == Verdict::EarlyDataRefused {
                 // Visible with `cargo test -- --nocapture`.
@@ -165,16 +166,17 @@ async fn observe(run: &CaseRun<ResumptionScenario>, peer: &mut AioQuic) -> Resum
 /// the case does.
 ///
 /// The child runs both connections, so the ticket the first is given is the one the second
-/// offers. It says what it was told about each handshake, and Rama's own session store says
-/// whether it was asked for that session and gave it up; the two are checked against each
+/// offers. It says what it was told about each handshake, and Rama's own handshake says
+/// whether it resumed, through `HandshakeSummary::resumed`; the two are checked against each
 /// other.
 #[tokio::test]
 async fn resumption_cases_rama_server() {
     prepare().await;
-    for_each_case(
+    for_each_case_within(
         PEER,
         Role::RamaServer,
         resumption_cases(),
+        LIMIT,
         |run| async move {
             // Every case runs in this direction: what refuses the early data here is Rama's own
             // server, so aioquic's server never having a way to is beside the point.
@@ -209,6 +211,9 @@ async fn resumption_cases_rama_server() {
                     (sessions.clone(), true)
                 }
             };
+            // Kept, so the diagnostics come from the store this server actually used and not
+            // from the one the warm-up filled.
+            let active = store.clone();
             let (resuming, resume_addr, serving) = rama_server_reading(
                 &run,
                 rama_resuming_server_config(&run.identity, store, early_data),
@@ -254,7 +259,12 @@ async fn resumption_cases_rama_server() {
                 "{}: the first connection is not a resumption",
                 run.what
             );
-            peer.expect("stream", run.deadline).await;
+            // The echo the child read back, checked rather than counted.
+            peer.expect("stream", run.deadline).await.reported().check(
+                &run.what,
+                "first exchange the child read back",
+                run.scenario.warm,
+            );
             peer.expect("ended", run.deadline).await;
             let warm = warmed.join(&run.what, run.deadline).await;
             assert_eq!(
@@ -303,14 +313,14 @@ async fn resumption_cases_rama_server() {
                 report.resumed,
                 "{}: the child and rama's own handshake agree on the resumption ({})",
                 run.what,
-                sessions.detail()
+                active.detail()
             );
             let observed = ResumptionObservation {
                 rama: report.resumed,
                 resumed: Reported::Seen(second.resumed()),
                 early_data: Reported::Seen(second.early()),
                 received: report.received,
-                detail: Some(sessions.detail()),
+                detail: Some(active.detail()),
             };
             let withheld = observed.check(&run.what, &run.scenario);
             assert!(

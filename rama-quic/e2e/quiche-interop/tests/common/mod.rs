@@ -700,6 +700,16 @@ impl Quiche {
             .map(|error| error.error_code)
     }
 
+    /// Close with an application code and reason of the caller's choosing, and drive until the
+    /// close has been seen through.
+    pub async fn close_with(&mut self, code: u64, reason: &[u8], deadline: Deadline) {
+        let _ = self.connection.close(true, code, reason);
+        self.drive_until("the quiche side closes", deadline, |connection| {
+            connection.is_closed()
+        })
+        .await;
+    }
+
     /// Close, and drive until the close has been seen through.
     pub async fn close(&mut self, deadline: Deadline) {
         let _ = self.connection.close(true, 0, b"done");

@@ -5,8 +5,11 @@
 //! asserts lives here, so every peer is held to the same expectations; what the peer read comes
 //! back through its adapter.
 
+pub mod close;
 pub mod datagram;
 pub mod identity;
+pub mod keys;
+pub mod migration;
 pub mod names;
 pub mod registry;
 pub mod resumption;
@@ -15,16 +18,21 @@ pub mod serving;
 pub mod support;
 pub mod trust;
 
+pub use close::{CloseObservation, CloseScenario, close_cases};
 pub use datagram::{DatagramObservation, DatagramScenario, datagram_cases};
 pub use identity::{
     ALPN, Identity, IssuedIdentities, IssuedIdentity, alpn, path_of, rama_client_config,
     rama_server_config, server_identity,
 };
+pub use keys::{Initiator, KeyObservation, KeyScenario, key_cases};
+pub use migration::{MigrationObservation, MigrationScenario, migration_cases};
 pub use names::{
     MISMATCH_PROBE, Mismatch, NameObservation, NameScenario, ReceivedName, identity_alert,
     mismatch_cases, name_cases,
 };
-pub use registry::{Case, CaseRun, Role, Unsupported, for_each_case, stream_cases};
+pub use registry::{
+    Case, CaseRun, Role, Unsupported, for_each_case, for_each_case_within, stream_cases,
+};
 pub use resumption::{
     Arrival, Expected, RecordingSessions, Reported, ResumptionObservation, ResumptionScenario,
     ServerReport, Verdict, resumption_cases,

@@ -9,7 +9,7 @@ use common::*;
 use interop_common::{
     DatagramObservation, DatagramScenario, Received, Role,
     datagram::{rama_client_side, rama_server_side},
-    datagram_cases, for_each_case,
+    datagram_cases, for_each_case_within,
     scenario::SERVER_NAME,
 };
 use rama::utils::hex;
@@ -37,29 +37,35 @@ fn datagram_arguments(scenario: &DatagramScenario) -> Vec<String> {
 #[tokio::test]
 async fn datagram_cases_rama_client() {
     prepare().await;
-    for_each_case(PEER, Role::RamaClient, datagram_cases(), |run| async move {
-        let identity = Identity::generate(SERVER_NAME);
-        let run = run.with_identity(identity.auth.clone());
-        let mut arguments = vec![
-            "--cert".to_owned(),
-            identity.certificate().to_owned(),
-            "--key".to_owned(),
-            identity.key().to_owned(),
-        ];
-        arguments.extend(datagram_arguments(&run.scenario));
-        let borrowed: Vec<&str> = arguments.iter().map(String::as_str).collect();
-        let mut peer = AioQuic::spawn("server", &borrowed).await;
-        let addr = peer.listening(run.deadline).await;
+    for_each_case_within(
+        PEER,
+        Role::RamaClient,
+        datagram_cases(),
+        LIMIT,
+        |run| async move {
+            let identity = Identity::generate(SERVER_NAME);
+            let run = run.with_identity(identity.auth.clone());
+            let mut arguments = vec![
+                "--cert".to_owned(),
+                identity.certificate().to_owned(),
+                "--key".to_owned(),
+                identity.key().to_owned(),
+            ];
+            arguments.extend(datagram_arguments(&run.scenario));
+            let borrowed: Vec<&str> = arguments.iter().map(String::as_str).collect();
+            let mut peer = AioQuic::spawn("server", &borrowed).await;
+            let addr = peer.listening(run.deadline).await;
 
-        let rama = rama_client_side(&run, addr).await;
-        peer.expect("handshake", run.deadline).await;
-        let reported = peer.expect("datagram", run.deadline).await;
-        rama.close(&run.what, run.deadline).await;
-        peer.expect("ended", run.deadline).await;
-        let observed = observation(&reported);
-        peer.finished(run.deadline).await;
-        observed.check(&run.what, &run.scenario, run.role);
-    })
+            let rama = rama_client_side(&run, addr).await;
+            peer.expect("handshake", run.deadline).await;
+            let reported = peer.expect("datagram", run.deadline).await;
+            rama.close(&run.what, run.deadline).await;
+            peer.expect("ended", run.deadline).await;
+            let observed = observation(&reported);
+            peer.finished(run.deadline).await;
+            observed.check(&run.what, &run.scenario, run.role);
+        },
+    )
     .await;
 }
 
@@ -67,36 +73,42 @@ async fn datagram_cases_rama_client() {
 #[tokio::test]
 async fn datagram_cases_rama_server() {
     prepare().await;
-    for_each_case(PEER, Role::RamaServer, datagram_cases(), |run| async move {
-        let identity = Identity::generate(SERVER_NAME);
-        let run = run.with_identity(identity.auth.clone());
-        let (endpoint, addr, serving) = rama_server_side(&run).await;
+    for_each_case_within(
+        PEER,
+        Role::RamaServer,
+        datagram_cases(),
+        LIMIT,
+        |run| async move {
+            let identity = Identity::generate(SERVER_NAME);
+            let run = run.with_identity(identity.auth.clone());
+            let (endpoint, addr, serving) = rama_server_side(&run).await;
 
-        let mut arguments = vec![
-            "--ca".to_owned(),
-            identity.certificate().to_owned(),
-            "--port".to_owned(),
-            addr.port().to_string(),
-            "--streams".to_owned(),
-            "0".to_owned(),
-            "--datagrams".to_owned(),
-            "1".to_owned(),
-        ];
-        arguments.extend(datagram_arguments(&run.scenario));
-        let borrowed: Vec<&str> = arguments.iter().map(String::as_str).collect();
-        let mut peer = AioQuic::spawn("client", &borrowed).await;
+            let mut arguments = vec![
+                "--ca".to_owned(),
+                identity.certificate().to_owned(),
+                "--port".to_owned(),
+                addr.port().to_string(),
+                "--streams".to_owned(),
+                "0".to_owned(),
+                "--datagrams".to_owned(),
+                "1".to_owned(),
+            ];
+            arguments.extend(datagram_arguments(&run.scenario));
+            let borrowed: Vec<&str> = arguments.iter().map(String::as_str).collect();
+            let mut peer = AioQuic::spawn("client", &borrowed).await;
 
-        peer.expect("handshake", run.deadline).await;
-        peer.expect("connected", run.deadline).await;
-        let reported = peer.expect("datagram", run.deadline).await;
-        peer.expect("ended", run.deadline).await;
-        let observed = observation(&reported);
-        peer.finished(run.deadline).await;
+            peer.expect("handshake", run.deadline).await;
+            peer.expect("connected", run.deadline).await;
+            let reported = peer.expect("datagram", run.deadline).await;
+            peer.expect("ended", run.deadline).await;
+            let observed = observation(&reported);
+            peer.finished(run.deadline).await;
 
-        observed.check(&run.what, &run.scenario, run.role);
-        serving.join(&run.what, run.deadline).await;
-        run.deadline.wait(&run.what, endpoint.wait_idle()).await;
-    })
+            observed.check(&run.what, &run.scenario, run.role);
+            serving.join(&run.what, run.deadline).await;
+            run.deadline.wait(&run.what, endpoint.wait_idle()).await;
+        },
+    )
     .await;
 }
 
