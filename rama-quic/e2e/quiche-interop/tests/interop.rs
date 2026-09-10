@@ -15,6 +15,7 @@ use std::{
 use common::*;
 use rama::{
     quic::{ConnectionError, Endpoint},
+    tls::rustls::dep::rustls::{self, AlertDescription, CertificateError},
     utils::octets,
 };
 use tokio::net::UdpSocket;
@@ -389,7 +390,7 @@ async fn a_cancelled_wait_leaves_the_task_owned() {
 async fn a_rama_client_refuses_a_quiche_server_it_does_not_trust() {
     let deadline = Deadline::new();
     let identity = Identity::generate("localhost");
-    let stranger = Identity::generate("localhost");
+    let stranger = Identity::generate_from_a_stranger("localhost", "Someone Else Entirely");
     let (server_addr, accepting) =
         Quiche::bind_server(quiche_server_config(&identity), deadline).await;
     // The same identity again, for the attempt that follows the refused one on the same socket.
@@ -417,9 +418,9 @@ async fn a_rama_client_refuses_a_quiche_server_it_does_not_trust() {
         let alert = refused
             .ended_on_a_tls_alert()
             .expect("the client's close carries a TLS alert, not a timeout or another reason");
-        // Both identities are self-signed for the same name, so the anchor is found by subject
-        // and the check fails on the signature: alert 51, decrypt_error.
-        assert_eq!(alert, 0x133, "the refusal is the certificate check");
+        // The stranger has an issuer of its own, so no anchor matches and the alert is
+        // unknown_ca (48).
+        assert_eq!(alert, 0x130, "the refusal is the issuer check");
 
         let mut server = Quiche::accept_on(refused.into_socket(), second, deadline).await;
         server
@@ -450,16 +451,25 @@ async fn a_rama_client_refuses_a_quiche_server_it_does_not_trust() {
         )
         .await
         .expect_err("a server it does not trust must not get a connection");
-    // The public error API does not expose a transport error's code, so the kind is matched
-    // structurally and the certificate is read from the text it renders.
-    assert!(
-        matches!(refused, ConnectionError::TransportError(_)),
-        "the attempt ended on a transport error: {refused:?}"
+    let ConnectionError::TransportError(ref error) = refused else {
+        panic!("the attempt ended on a transport error: {refused:?}");
+    };
+    assert_eq!(
+        error.code().tls_alert(),
+        Some(u8::from(AlertDescription::UnknownCA)),
+        "the alert says the issuer is not one it trusts: {}",
+        error.reason()
     );
-    let told = format!("{refused:?}");
     assert!(
-        told.to_lowercase().contains("certificate"),
-        "the refusal names the certificate check: {told}"
+        error
+            .cause()
+            .and_then(|cause| cause.downcast_ref::<rustls::Error>())
+            .is_some_and(|error| matches!(
+                error,
+                rustls::Error::InvalidCertificate(CertificateError::UnknownIssuer)
+            )),
+        "and the cause is the issuer, not something else: {:?}",
+        error.cause()
     );
 
     // The same client, the same server, the right anchor: a connection that carries a payload.

@@ -27,19 +27,25 @@ pub(crate) const PACKET_OVERHEAD: usize = 512;
 /// conservative estimate rather than a measured bound.
 pub(crate) const INCOMING_OVERHEAD: usize = 2048;
 
-/// Occupancy and drop counters of one packet budget.
+/// Occupancy and drop counters of a queue of received packets.
+///
+/// One snapshot of the counters as they stood when it was taken; they keep moving afterwards.
+/// The two peaks are high-water marks since the queue was made and never fall.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct PacketQueueStats {
-    /// Datagrams currently queued.
-    pub(crate) queued_datagrams: usize,
-    /// Bytes currently charged, including [`PACKET_OVERHEAD`] per datagram.
-    pub(crate) queued_bytes: usize,
-    /// Highest simultaneous datagram count observed.
-    pub(crate) peak_datagrams: usize,
-    /// Highest simultaneous byte charge observed.
-    pub(crate) peak_bytes: usize,
-    /// Datagrams refused because either limit was reached.
-    pub(crate) dropped_datagrams: u64,
+#[non_exhaustive]
+pub struct PacketQueueStats {
+    /// Datagrams waiting to be taken.
+    pub queued_datagrams: usize,
+    /// Bytes charged for them: each datagram's payload plus an estimated per-datagram
+    /// overhead, not measured allocation.
+    pub queued_bytes: usize,
+    /// The most datagrams that have waited at once.
+    pub peak_datagrams: usize,
+    /// The largest charge that has stood at once, in bytes.
+    pub peak_bytes: usize,
+    /// Datagrams refused since the queue was made, because taking one would have passed either
+    /// limit.
+    pub dropped_datagrams: u64,
 }
 
 /// A shared, bounded budget of queued packets.

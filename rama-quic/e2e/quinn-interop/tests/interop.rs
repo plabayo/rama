@@ -8,9 +8,10 @@ use std::{sync::Arc, time::Duration};
 use common::*;
 use rama::{
     net::{address::Domain, tls::ApplicationProtocol},
-    quic::Endpoint,
+    quic::{ConnectionError, Endpoint, FrameType},
     utils::octets,
 };
+use rustls::{AlertDescription, CertificateError};
 
 /// Rama opens the connection, Quinn answers it: a unidirectional stream up and a bidirectional
 /// exchange, both verified by digest, both ended with FIN, and a bounded shutdown on each side.
@@ -167,8 +168,8 @@ async fn quinn_client_to_rama_server() {
                 "the protocol both sides agreed on"
             );
             assert_eq!(
-                settled.server_name.as_ref().and_then(|name| name.domain()),
-                Some(&Domain::from_static("localhost")),
+                settled.server_name,
+                Some(Domain::from_static("localhost")),
                 "and the name the client asked for, as a domain"
             );
 
@@ -248,7 +249,7 @@ async fn quinn_client_to_rama_server() {
 async fn a_rama_client_refuses_a_server_it_does_not_trust() {
     let auth = identity();
     let anchor = auth.cert_chain.last().expect("a chain").clone();
-    let stranger = identity();
+    let stranger = identity_from_a_stranger("Someone Else Entirely");
     let wrong_anchor = stranger.cert_chain.last().expect("a chain").clone();
 
     let server = quinn::Endpoint::server(quinn_server_config(&auth), localhost())
@@ -281,11 +282,28 @@ async fn a_rama_client_refuses_a_server_it_does_not_trust() {
     )
     .await
     .expect_err("a server it does not trust must not get a connection");
-    let told = refused.to_string();
-    assert!(
-        told.to_lowercase().contains("certificate") || told.contains("UnknownIssuer"),
-        "the refusal names the certificate check: {refused:?}"
+    let ConnectionError::TransportError(ref error) = refused else {
+        panic!("the attempt ended on a transport error: {refused:?}");
+    };
+    assert_eq!(
+        error.code().tls_alert(),
+        Some(u8::from(AlertDescription::UnknownCA)),
+        "the alert says the issuer is not one it trusts: {}",
+        error.reason()
     );
+    assert!(
+        error
+            .cause()
+            .and_then(|cause| cause.downcast_ref::<rustls::Error>())
+            .is_some_and(|error| matches!(
+                error,
+                rustls::Error::InvalidCertificate(CertificateError::UnknownIssuer)
+            )),
+        "and the cause is the issuer, not something else: {:?}",
+        error.cause()
+    );
+    let frame: Option<FrameType> = error.frame_type();
+    assert_eq!(frame, None, "a certificate refusal names no frame");
 
     // The control: the same client, the same server, the right anchor.
     let accepted = step(
@@ -310,7 +328,7 @@ async fn a_rama_client_refuses_a_server_it_does_not_trust() {
 async fn a_quinn_client_refuses_a_rama_server_it_does_not_trust() {
     let auth = identity();
     let anchor = auth.cert_chain.last().expect("a chain").clone();
-    let stranger = identity();
+    let stranger = identity_from_a_stranger("Someone Else Entirely");
     let wrong_anchor = stranger.cert_chain.last().expect("a chain").clone();
 
     let server = step(
@@ -348,10 +366,15 @@ async fn a_quinn_client_refuses_a_rama_server_it_does_not_trust() {
     )
     .await
     .expect_err("a server it does not trust must not get a connection");
-    let told = refused.to_string();
-    assert!(
-        told.to_lowercase().contains("certificate") || told.contains("UnknownIssuer"),
-        "the refusal names the certificate check: {refused:?}"
+    // The peer's own error type, so this reads quinn's code rather than Rama's.
+    let quinn::ConnectionError::TransportError(ref error) = refused else {
+        panic!("the attempt ended on a transport error: {refused:?}");
+    };
+    assert_eq!(
+        u64::from(error.code),
+        0x100 | u64::from(u8::from(AlertDescription::UnknownCA)),
+        "and on the alert for an issuer it does not trust: {}",
+        error.reason
     );
 
     client.set_default_client_config(quinn_client_config(anchor));

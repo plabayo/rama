@@ -1,5 +1,4 @@
 use std::{
-    any::Any,
     fmt,
     future::Future,
     io,
@@ -547,18 +546,20 @@ enum Switch {
     Never,
 }
 
-/// Counters kept by the asynchronous driver around the protocol engine.
+/// What the driver around the protocol engine has counted for one connection: its sockets and
+/// its packet queue. What the protocol engine counts is [`ConnectionStats`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct DriverStats {
-    /// Datagrams the socket refused for their destination; recovered like any packet loss.
-    pub(crate) send_failures: u64,
-    /// Datagrams the network stack rejected as too large; recovered by loss detection and
-    /// MTU discovery.
-    pub(crate) oversized_sends: u64,
-    /// Occupancy and drops of this connection's received-packet queue.
-    pub(crate) receive_queue: PacketQueueStats,
-    /// Entries the packet queue currently retains storage for (at most the configured limit).
-    pub(crate) receive_queue_capacity: usize,
+#[non_exhaustive]
+pub struct DriverStats {
+    /// Datagrams the socket refused for their destination, recovered like any packet loss.
+    pub send_failures: u64,
+    /// Datagrams the network stack rejected as too large, recovered by loss detection and MTU
+    /// discovery.
+    pub oversized_sends: u64,
+    /// Occupancy and drop counters of this connection's queue of received packets.
+    pub receive_queue: PacketQueueStats,
+    /// Entries that queue currently keeps storage for, at most the configured limit.
+    pub receive_queue_capacity: usize,
 }
 
 /// A future that drives protocol logic for a connection
@@ -1222,8 +1223,11 @@ impl Connection {
             .export_keying_material(output, label, context)
     }
 
-    /// Counters kept by the driver that the protocol engine does not see.
-    pub(crate) fn driver_stats(&self) -> DriverStats {
+    /// What the driver has counted for this connection: its sockets and its packet queue.
+    ///
+    /// What the protocol engine counts is [`Connection::stats`].
+    #[must_use]
+    pub fn driver_stats(&self) -> DriverStats {
         let conn = self.0.state.lock();
         DriverStats {
             send_failures: conn.send_failures,

@@ -9,13 +9,13 @@ use crate::proto::{Dir, Duration, frame::Frame};
 #[non_exhaustive]
 pub struct UdpStats {
     /// The amount of UDP datagrams observed
-    pub(crate) datagrams: u64,
+    pub datagrams: u64,
     /// The total amount of bytes which have been transferred inside UDP datagrams
-    pub(crate) bytes: u64,
+    pub bytes: u64,
     /// The amount of I/O operations executed
     ///
     /// Can be less than `datagrams` when GSO, GRO, and/or batched system calls are in use.
-    pub(crate) ios: u64,
+    pub ios: u64,
 }
 
 impl UdpStats {
@@ -30,32 +30,57 @@ impl UdpStats {
 #[derive(Default, Copy, Clone)]
 #[non_exhaustive]
 pub struct FrameStats {
-    pub(crate) acks: u64,
-    pub(crate) ack_frequency: u64,
-    pub(crate) crypto: u64,
-    pub(crate) connection_close: u64,
-    pub(crate) data_blocked: u64,
-    pub(crate) datagram: u64,
-    pub(crate) handshake_done: u8,
-    pub(crate) immediate_ack: u64,
-    pub(crate) max_data: u64,
-    pub(crate) max_stream_data: u64,
-    pub(crate) max_streams_bidi: u64,
-    pub(crate) max_streams_uni: u64,
-    pub(crate) new_connection_id: u64,
-    pub(crate) new_token: u64,
-    /// NEW_TOKEN frames that were not sent because the token could not be sealed
-    pub(crate) new_token_failed: u64,
-    pub(crate) path_challenge: u64,
-    pub(crate) path_response: u64,
-    pub(crate) ping: u64,
-    pub(crate) reset_stream: u64,
-    pub(crate) retire_connection_id: u64,
-    pub(crate) stream_data_blocked: u64,
-    pub(crate) streams_blocked_bidi: u64,
-    pub(crate) streams_blocked_uni: u64,
-    pub(crate) stop_sending: u64,
-    pub(crate) stream: u64,
+    /// ACK frames (RFC 9000 §19.3).
+    pub acks: u64,
+    /// ACK_FREQUENCY frames, from the ack-frequency extension.
+    pub ack_frequency: u64,
+    /// CRYPTO frames carrying handshake data (§19.6).
+    pub crypto: u64,
+    /// CONNECTION_CLOSE frames of either kind (§19.19).
+    pub connection_close: u64,
+    /// DATA_BLOCKED frames, saying the connection's data limit was reached (§19.12).
+    pub data_blocked: u64,
+    /// DATAGRAM frames, from the unreliable-datagram extension (RFC 9221).
+    pub datagram: u64,
+    /// HANDSHAKE_DONE frames (§19.20). At most one is ever sent or received.
+    pub handshake_done: u8,
+    /// IMMEDIATE_ACK frames, from the ack-frequency extension.
+    pub immediate_ack: u64,
+    /// MAX_DATA frames, raising the connection's data limit (§19.9).
+    pub max_data: u64,
+    /// MAX_STREAM_DATA frames, raising one stream's limit (§19.10).
+    pub max_stream_data: u64,
+    /// MAX_STREAMS frames for bidirectional streams (§19.11).
+    pub max_streams_bidi: u64,
+    /// MAX_STREAMS frames for unidirectional streams (§19.11).
+    pub max_streams_uni: u64,
+    /// NEW_CONNECTION_ID frames offering another identifier (§19.15).
+    pub new_connection_id: u64,
+    /// NEW_TOKEN frames carrying an address-validation token (§19.7).
+    pub new_token: u64,
+    /// NEW_TOKEN frames that were not sent because the token could not be sealed. Never
+    /// received: it counts a local failure.
+    pub new_token_failed: u64,
+    /// PATH_CHALLENGE frames probing a path (§19.17).
+    pub path_challenge: u64,
+    /// PATH_RESPONSE frames answering a probe (§19.18).
+    pub path_response: u64,
+    /// PING frames (§19.2).
+    pub ping: u64,
+    /// RESET_STREAM frames giving up on a stream (§19.4).
+    pub reset_stream: u64,
+    /// RETIRE_CONNECTION_ID frames dropping an identifier (§19.16).
+    pub retire_connection_id: u64,
+    /// STREAM_DATA_BLOCKED frames, saying one stream's limit was reached (§19.13).
+    pub stream_data_blocked: u64,
+    /// STREAMS_BLOCKED frames for bidirectional streams (§19.14).
+    pub streams_blocked_bidi: u64,
+    /// STREAMS_BLOCKED frames for unidirectional streams (§19.14).
+    pub streams_blocked_uni: u64,
+    /// STOP_SENDING frames asking a peer to stop writing a stream (§19.5).
+    pub stop_sending: u64,
+    /// STREAM frames carrying application data (§19.8).
+    pub stream: u64,
 }
 
 impl FrameStats {
@@ -136,35 +161,35 @@ impl std::fmt::Debug for FrameStats {
 #[non_exhaustive]
 pub struct PathStats {
     /// Current best estimate of this connection's latency (round-trip-time)
-    pub(crate) rtt: Duration,
+    pub rtt: Duration,
     /// Minimum RTT seen on this path, ignoring ack delay
-    pub(crate) min_rtt: Duration,
+    pub min_rtt: Duration,
     /// Current congestion window of the connection
-    pub(crate) cwnd: u64,
+    pub cwnd: u64,
     /// Congestion events on the connection
-    pub(crate) congestion_events: u64,
+    pub congestion_events: u64,
     /// The amount of packets lost on this path
-    pub(crate) lost_packets: u64,
+    pub lost_packets: u64,
     /// Peer moves deferred because no unused destination connection ID was available
-    pub(crate) deferred_migrations: u64,
+    pub deferred_migrations: u64,
     /// PATH_CHALLENGE probes transmitted towards a server's preferred address
-    pub(crate) preferred_address_probes: u64,
+    pub preferred_address_probes: u64,
     /// PATH_CHALLENGEs from a path this connection has no connection ID for, so their answers
     /// were dropped rather than sent with an identifier used elsewhere
-    pub(crate) unanswered_off_path_challenges: u64,
+    pub unanswered_off_path_challenges: u64,
     /// The amount of bytes lost on this path
-    pub(crate) lost_bytes: u64,
+    pub lost_bytes: u64,
     /// The amount of packets sent on this path
-    pub(crate) sent_packets: u64,
+    pub sent_packets: u64,
     /// The amount of PLPMTUD probe packets sent on this path (also counted by `sent_packets`)
-    pub(crate) sent_plpmtud_probes: u64,
+    pub sent_plpmtud_probes: u64,
     /// The amount of PLPMTUD probe packets lost on this path (ignored by `lost_packets` and
     /// `lost_bytes`)
-    pub(crate) lost_plpmtud_probes: u64,
+    pub lost_plpmtud_probes: u64,
     /// The number of times a black hole was detected in the path
-    pub(crate) black_holes_detected: u64,
+    pub black_holes_detected: u64,
     /// Largest UDP payload size the path currently supports
-    pub(crate) current_mtu: u16,
+    pub current_mtu: u16,
 }
 
 /// Connection statistics
@@ -172,15 +197,15 @@ pub struct PathStats {
 #[non_exhaustive]
 pub struct ConnectionStats {
     /// Statistics about UDP datagrams transmitted on a connection
-    pub(crate) udp_tx: UdpStats,
+    pub udp_tx: UdpStats,
     /// Statistics about UDP datagrams received on a connection
-    pub(crate) udp_rx: UdpStats,
-    /// Statistics about frames transmitted on a connection
-    pub(crate) frame_tx: FrameStats,
-    /// Statistics about frames received on a connection
-    pub(crate) frame_rx: FrameStats,
+    pub udp_rx: UdpStats,
+    /// How many frames of each kind this connection has sent.
+    pub frame_tx: FrameStats,
+    /// How many frames of each kind it has received.
+    pub frame_rx: FrameStats,
     /// Statistics related to the current transmission path
-    pub(crate) path: PathStats,
+    pub path: PathStats,
     /// How many times this connection's traffic keys were updated (RFC 9001 §6), whether the
     /// update was asked for locally, forced by the usage limit, or started by the peer.
     pub key_updates: u64,

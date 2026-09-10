@@ -1,12 +1,13 @@
 use std::{borrow::Cow, fmt};
 
-use rama_core::error::ArcError;
-
-use rama_core::bytes::{Buf, BufMut};
+use rama_core::{
+    bytes::{Buf, BufMut},
+    error::ArcError,
+};
 
 use crate::proto::{
     coding::{self, BufExt, BufMutExt},
-    frame,
+    frame::FrameType,
 };
 
 /// Transport-level errors occur when a peer violates the protocol specification
@@ -20,7 +21,7 @@ pub struct Error {
     /// Type of error
     pub(crate) code: Code,
     /// Frame type that triggered the error
-    pub(crate) frame: Option<frame::FrameType>,
+    pub(crate) frame: Option<FrameType>,
     /// Human-readable explanation of the reason, which is what goes on the wire in
     /// CONNECTION_CLOSE. A literal is borrowed for the life of the program and costs nothing;
     /// text built at the point of failure is owned. Local diagnostics live in `cause` and never
@@ -49,6 +50,32 @@ impl Error {
             reason: reason.into(),
             cause: None,
         }
+    }
+
+    /// What kind of error this is, as RFC 9000 §20 numbers them.
+    #[must_use]
+    pub fn code(&self) -> Code {
+        self.code
+    }
+
+    /// The frame that caused it, when one did.
+    #[must_use]
+    pub fn frame_type(&self) -> Option<FrameType> {
+        self.frame
+    }
+
+    /// The reason as it goes to the peer, empty when none was given.
+    #[must_use]
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    /// What went wrong locally, when this error came from something that did. It stays local:
+    /// CONNECTION_CLOSE carries [`Self::code`], [`Self::frame_type`] and [`Self::reason`], and
+    /// nothing of this.
+    #[must_use]
+    pub fn cause(&self) -> Option<&ArcError> {
+        self.cause.as_ref()
     }
 }
 
@@ -100,6 +127,19 @@ impl Code {
     /// Create QUIC error code from TLS alert code
     pub(crate) fn crypto(code: u8) -> Self {
         Self(0x100 | u64::from(code))
+    }
+
+    /// The code as it goes on the wire.
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+
+    /// The TLS alert this code carries, when it carries one. RFC 9001 §4.8 gives the handshake
+    /// 0x100 to 0x1ff, one code per alert description.
+    #[must_use]
+    pub fn tls_alert(self) -> Option<u8> {
+        (0x100..0x200).contains(&self.0).then_some(self.0 as u8)
     }
 }
 
@@ -217,6 +257,22 @@ mod tests {
             address,
             "the frame holds the buffer that was built, not a copy of it"
         );
+    }
+
+    /// A failure that names a frame reports it through the public accessors, and the frame
+    /// goes to the peer with the close.
+    #[test]
+    fn a_frame_typed_error_names_the_frame() {
+        let mut error = Error::FRAME_ENCODING_ERROR("an ack frame with no ranges");
+        error.frame = Some(FrameType::ACK);
+        let named = error.frame_type().expect("the frame is named");
+        assert_eq!(named.as_u64(), 0x02, "the ACK type of RFC 9000 §19.3");
+        assert_eq!(
+            error.code().as_u64(),
+            0x7,
+            "and the code is the encoding one"
+        );
+        assert_eq!(ConnectionClose::from(error).frame_type(), Some(named));
     }
 
     /// What the peer is told is the reason, never the local cause or the context around it.

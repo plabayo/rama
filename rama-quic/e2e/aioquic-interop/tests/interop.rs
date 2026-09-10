@@ -15,6 +15,7 @@ use std::{
 use common::*;
 use rama::{
     quic::{ConnectionError, Endpoint, VarInt},
+    tls::rustls::dep::rustls::{self, AlertDescription, CertificateError},
     utils::octets,
 };
 use std::process::Stdio;
@@ -293,7 +294,8 @@ async fn an_aioquic_client_refuses_a_rama_server_it_does_not_trust() {
     )
     .await;
     // aioquic's own exception says only that the connection failed, so what the refusal was is
-    // read from the close it sent: one of the alerts a certificate check ends on.
+    // read from the close it sent. This is the peer's choice of alert, not Rama's, so the test
+    // accepts any a certificate check ends on rather than pinning one.
     let ended = refused.expect("ended", deadline).await;
     let code = ended.code();
     assert!(
@@ -332,7 +334,7 @@ async fn a_rama_client_refuses_an_aioquic_server_it_does_not_trust() {
     prepare().await;
     let deadline = Deadline::new();
     let identity = Identity::generate("localhost");
-    let stranger = Identity::generate("localhost");
+    let stranger = Identity::generate_from_a_stranger("localhost", "Someone Else Entirely");
     let mut peer = AioQuic::spawn(
         "server",
         &[
@@ -364,16 +366,25 @@ async fn a_rama_client_refuses_an_aioquic_server_it_does_not_trust() {
         )
         .await
         .expect_err("a server it does not trust must not get a connection");
-    // The public error API does not expose a transport error's code, so the kind is matched
-    // structurally and the certificate is read from the text it renders.
-    assert!(
-        matches!(refused, ConnectionError::TransportError(_)),
-        "the attempt ended on a transport error: {refused:?}"
+    let ConnectionError::TransportError(ref error) = refused else {
+        panic!("the attempt ended on a transport error: {refused:?}");
+    };
+    assert_eq!(
+        error.code().tls_alert(),
+        Some(u8::from(AlertDescription::UnknownCA)),
+        "the alert says the issuer is not one it trusts: {}",
+        error.reason()
     );
-    let told = format!("{refused:?}");
     assert!(
-        told.to_lowercase().contains("certificate"),
-        "the refusal names the certificate check: {told}"
+        error
+            .cause()
+            .and_then(|cause| cause.downcast_ref::<rustls::Error>())
+            .is_some_and(|error| matches!(
+                error,
+                rustls::Error::InvalidCertificate(CertificateError::UnknownIssuer)
+            )),
+        "and the cause is the issuer, not something else: {:?}",
+        error.cause()
     );
 
     // What reached the peer is the close itself: one of the alerts a certificate check ends on,

@@ -8,7 +8,7 @@
 //! Note that usage of any protocol (version) other than TLS 1.3 does not conform to any
 //! published versions of the specification, and will not be supported in QUIC v1.
 
-use std::{fmt, str, sync::Arc};
+use std::{str, sync::Arc};
 
 use rama_core::bytes::BytesMut;
 use rama_crypto::pki_types::CertificateDer;
@@ -34,49 +34,10 @@ pub struct HandshakeSummary {
     /// The application protocol both sides agreed on (RFC 7301), when ALPN was used.
     pub protocol: Option<ApplicationProtocol>,
     /// The name the client sent in its SNI extension, when it sent one. It is what the peer
-    /// said, not an identity a certificate was verified against. `None` on a client, and on a
-    /// server whose peer sent no SNI, which includes a client connecting to an IP address
-    /// (RFC 6066 §3).
-    pub server_name: Option<ReceivedServerName>,
-}
-
-/// A name a client sent in its SNI extension.
-///
-/// The Rustls backend reports a name it has validated as a DNS name and lowercased, which
-/// [`Domain`] accepts, so [`Self::Domain`] is the usual variant. [`Self::Other`] keeps the text
-/// of a name the backend accepted and this crate could not read as a domain, so a name that was
-/// sent is never reported as no name at all.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReceivedServerName {
-    /// The name, as a domain.
-    Domain(Domain),
-    /// A name the backend accepted that this crate could not read as a domain.
-    Other(Box<str>),
-}
-
-impl ReceivedServerName {
-    /// The name as the backend reports it, which for Rustls is lowercased and so is not
-    /// necessarily byte-for-byte what the peer put on the wire.
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Domain(domain) => domain.as_str(),
-            Self::Other(name) => name,
-        }
-    }
-
-    /// The domain, when the name is one.
-    pub fn domain(&self) -> Option<&Domain> {
-        match self {
-            Self::Domain(domain) => Some(domain),
-            Self::Other(_) => None,
-        }
-    }
-}
-
-impl fmt::Display for ReceivedServerName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
+    /// said, not an identity a certificate was verified against, and the backend may have
+    /// canonicalised its case. `None` on a client, and on a server whose peer sent no SNI,
+    /// which includes a client connecting to an IP address (RFC 6066 §3).
+    pub server_name: Option<Domain>,
 }
 
 /// A cryptographic session (commonly TLS)

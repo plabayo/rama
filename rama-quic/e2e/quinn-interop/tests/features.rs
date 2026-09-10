@@ -7,7 +7,10 @@ mod common;
 use common::*;
 use rama::{
     net::tls::ApplicationProtocol,
-    quic::{Endpoint, SendDatagramError},
+    quic::{
+        ConnectionStats, DriverStats, Endpoint, EndpointStats, FrameStats, PacketQueueStats,
+        SendDatagramError,
+    },
     utils::octets,
 };
 
@@ -449,4 +452,111 @@ async fn a_client_connecting_to_an_address_sends_no_server_name() {
     step("quinn's shutdown", client.wait_idle()).await;
     served.join("the rama peer").await;
     step("rama's shutdown", server.shutdown()).await;
+}
+
+/// The counters a connection publishes, read the way a consumer of the crate reads them: each
+/// snapshot held in the public type that names it, and every field reached by name.
+#[tokio::test]
+async fn a_consumer_reads_the_counters_through_their_public_types() {
+    let auth = identity();
+    let anchor = auth.cert_chain.last().expect("a chain").clone();
+
+    let server = quinn::Endpoint::server(quinn_server_config(&auth), localhost())
+        .expect("the quinn server binds");
+    let server_addr = server.local_addr().expect("its address");
+
+    let up = payload(0x5a, octets::kib(32));
+    let up_hash = digest(&up);
+    let peer = Peer::spawn(async move {
+        let conn = step("the quinn server accepts", server.accept())
+            .await
+            .expect("an attempt arrives")
+            .await
+            .expect("the handshake completes");
+        let mut stream = step("the stream arrives", conn.accept_uni())
+            .await
+            .expect("it opens");
+        let received = step("the payload", stream.read_to_end(octets::mib(1)))
+            .await
+            .expect("it is read whole");
+        assert_eq!(digest(&received), up_hash, "every byte, unchanged");
+        step("the quinn connection closes", conn.closed()).await;
+        step("the quinn server goes idle", server.wait_idle()).await;
+    });
+
+    let client = step("rama binds", Endpoint::client(localhost()))
+        .await
+        .expect("the client binds");
+    let conn = step(
+        "the rama client connects",
+        client
+            .connect_with(rama_client_config(anchor), server_addr, "localhost")
+            .expect("the attempt starts"),
+    )
+    .await
+    .expect("the handshake completes");
+    let mut stream = step("the stream opens", conn.open_uni())
+        .await
+        .expect("it opens");
+    step("the payload is written", stream.write_all(&up))
+        .await
+        .expect("it is written");
+    stream.finish().expect("the stream is finished");
+    step("the peer has it", stream.stopped())
+        .await
+        .expect("the peer did not reset it");
+
+    let stats: ConnectionStats = conn.stats();
+    let sent: FrameStats = stats.frame_tx;
+    let received: FrameStats = stats.frame_rx;
+    assert!(sent.stream > 0, "stream frames were sent for the payload");
+    assert!(sent.crypto > 0, "and crypto frames for the handshake");
+    assert!(received.acks > 0, "the peer acknowledged them");
+    assert!(
+        stats.udp_tx.datagrams > 0 && stats.udp_rx.datagrams > 0,
+        "datagrams crossed in both directions"
+    );
+
+    let driver: DriverStats = conn.driver_stats();
+    let queue: PacketQueueStats = driver.receive_queue;
+    assert_eq!(
+        queue.dropped_datagrams, 0,
+        "nothing was refused for want of room"
+    );
+    assert!(
+        queue.peak_datagrams >= queue.queued_datagrams && queue.peak_bytes >= queue.queued_bytes,
+        "the peaks stand at or above what is held now: {queue:?}"
+    );
+    assert!(
+        queue.peak_datagrams > 0 && queue.peak_bytes > 0,
+        "and the queue did hold something along the way: {queue:?}"
+    );
+    assert!(
+        driver.receive_queue_capacity > 0,
+        "the queue keeps storage for entries"
+    );
+    assert_eq!(
+        driver.send_failures, 0,
+        "the socket took every datagram offered"
+    );
+    assert_eq!(driver.oversized_sends, 0, "and none was too large for it");
+
+    let endpoint: EndpointStats = client.stats();
+    let endpoint_queue: PacketQueueStats = endpoint.receive_queue;
+    assert_eq!(
+        endpoint_queue.dropped_datagrams, 0,
+        "the endpoint-wide budget refused nothing either"
+    );
+    assert!(
+        endpoint_queue.peak_bytes >= endpoint_queue.queued_bytes,
+        "and its peak stands at or above what is held now: {endpoint_queue:?}"
+    );
+    assert_eq!(
+        endpoint.outgoing_handshakes, 1,
+        "one handshake left this endpoint"
+    );
+
+    conn.close(0u32.into(), b"done");
+    step("rama's shutdown", client.wait_idle()).await;
+    peer.join("the quinn peer").await;
 }

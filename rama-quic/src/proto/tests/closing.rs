@@ -76,8 +76,10 @@ fn varint(bytes: &[u8], at: usize) -> Option<(u64, usize)> {
     Some((value, width))
 }
 
-/// How many packets a datagram carries, walking the long headers by the length each declares. A
-/// short header runs to the end of the datagram, so it is the last one.
+/// How many packets a datagram carries, walking the long headers by the length each declares.
+/// A short header runs to the end of the datagram, so it is the last one. Every step is bounds
+/// checked and a declared length that runs past the datagram is a fault, so a malformed one
+/// cannot be counted as another packet.
 fn packets_in(datagram: &[u8]) -> usize {
     let mut at = 0usize;
     let mut packets = 0usize;
@@ -88,20 +90,34 @@ fn packets_in(datagram: &[u8]) -> usize {
             break;
         }
         let kind = (first & 0x30) >> 4;
-        let mut cursor = at + 1 + 4;
-        let dcid_len = usize::from(datagram[cursor]);
-        cursor += 1 + dcid_len;
-        let scid_len = usize::from(datagram[cursor]);
-        cursor += 1 + scid_len;
+        // The long header: one byte of flags, four of version, then each identifier with its
+        // own length byte.
+        let mut cursor = at + 5;
+        for _ in 0..2 {
+            let len = usize::from(*datagram.get(cursor).expect("an identifier length"));
+            cursor = cursor
+                .checked_add(1 + len)
+                .filter(|next| *next <= datagram.len())
+                .expect("an identifier inside the datagram");
+        }
         if kind == 0 {
             let (token, width) = varint(datagram, cursor).expect("a token length");
-            cursor += width + usize::try_from(token).expect("a token that fits");
+            cursor = cursor
+                .checked_add(width)
+                .and_then(|next| next.checked_add(usize::try_from(token).ok()?))
+                .filter(|next| *next <= datagram.len())
+                .expect("a token inside the datagram");
         }
         if kind == 3 {
+            // Retry carries no length and nothing may follow it.
             break;
         }
         let (length, width) = varint(datagram, cursor).expect("a payload length");
-        at = cursor + width + usize::try_from(length).expect("a payload that fits");
+        at = cursor
+            .checked_add(width)
+            .and_then(|next| next.checked_add(usize::try_from(length).ok()?))
+            .filter(|next| *next <= datagram.len())
+            .expect("a payload inside the datagram");
     }
     packets
 }
@@ -495,7 +511,7 @@ fn an_exhausted_key_budget_stops_the_answers() {
 }
 
 /// A close made before the handshake is confirmed is coalesced into one datagram, which RFC
-/// 9000 §10.2.3 asks for, and counts as one answer: the gap doubles once, not once per packet.
+/// 9000 §10.2.3 permits, and counts as one answer: the gap doubles once, not once per packet.
 #[test]
 fn a_coalesced_close_counts_once() {
     let _guard = subscribe();
@@ -529,7 +545,7 @@ fn a_coalesced_close_counts_once() {
     assert!(pair.client_sent.len() > before, "the close went out");
 
     // What went out, as it sits on the wire: more than one packet in the datagram, the first of
-    // them a long header, which is the coalescing RFC 9000 §10.2.3 asks for.
+    // them a long header.
     let datagram = pair
         .server
         .inbound

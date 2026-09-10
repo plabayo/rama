@@ -24,6 +24,12 @@ use arbitrary::Arbitrary;
 pub struct FrameType(u64);
 
 impl FrameType {
+    /// The type's value on the wire, numbered by RFC 9000 §19.
+    #[must_use]
+    pub const fn as_u64(self) -> u64 {
+        self.0
+    }
+
     fn stream(self) -> Option<StreamInfo> {
         if STREAM_TYS.contains(&self.0) {
             Some(StreamInfo(self.0 as u8))
@@ -260,6 +266,26 @@ pub struct ConnectionClose {
     pub(crate) reason: Bytes,
 }
 
+impl ConnectionClose {
+    /// What kind of error ended the connection, as RFC 9000 §20 numbers them.
+    #[must_use]
+    pub fn error_code(&self) -> TransportErrorCode {
+        self.error_code
+    }
+
+    /// The frame that caused it, when one did.
+    #[must_use]
+    pub fn frame_type(&self) -> Option<FrameType> {
+        self.frame_type
+    }
+
+    /// The reason as it came off the wire, empty when none was given.
+    #[must_use]
+    pub fn reason(&self) -> &[u8] {
+        &self.reason
+    }
+}
+
 impl fmt::Display for ConnectionClose {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.error_code.fmt(f)?;
@@ -317,6 +343,21 @@ pub struct ApplicationClose {
     pub(crate) error_code: VarInt,
     /// Human-readable reason for the close
     pub(crate) reason: Bytes,
+}
+
+impl ApplicationClose {
+    /// The code the application gave, which means whatever the two applications agreed.
+    #[must_use]
+    pub fn error_code(&self) -> VarInt {
+        self.error_code
+    }
+
+    /// The reason it gave, as it came off the wire. It is application bytes, not necessarily
+    /// text, and is empty when none was given.
+    #[must_use]
+    pub fn reason(&self) -> &[u8] {
+        &self.reason
+    }
 }
 
 impl fmt::Display for ApplicationClose {

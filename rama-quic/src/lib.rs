@@ -35,10 +35,9 @@ pub use proto::{
     EndpointConfig, ExportKeyingMaterialError, FrameStats, FrameType, HandshakeSummary,
     HashedConnectionIdGenerator, IdleTimeout, InvalidCid, MtuDiscoveryConfig, NoneTokenLog,
     NoneTokenStore, PathStats, PreferredAddressPolicy, RandomConnectionIdGenerator,
-    ReceiveQueueLimits, ReceivedServerName, ServerConfig, Side, StdSystemTime, StreamId,
-    TimeSource, TokenLog, TokenMemoryCache, TokenReuseError, TokenStore, TransportConfig,
-    TransportError, TransportErrorCode, UdpStats, ValidationTokenConfig, VarInt,
-    VarIntBoundsExceeded, Written,
+    ReceiveQueueLimits, ServerConfig, Side, StdSystemTime, StreamId, TimeSource, TokenLog,
+    TokenMemoryCache, TokenReuseError, TokenStore, TransportConfig, TransportError,
+    TransportErrorCode, UdpStats, ValidationTokenConfig, VarInt, VarIntBoundsExceeded, Written,
 };
 
 /// TLS for QUIC: how a connection's identity and application protocol are configured.
@@ -62,10 +61,10 @@ mod driver;
 // The runtime: endpoints, connections, streams and the errors they report. Rama owns these
 // types; the engine that drives them and the TLS provider behind them stay private.
 pub use driver::{
-    Accept, AcceptBi, AcceptUni, Connecting, Connection, Endpoint, EndpointStats, Incoming,
-    IncomingFuture, OpenBi, OpenUni, ReadDatagram, ReadError, ReadExactError, ReadToEndError,
-    RecvStream, ResetError, RetryError, SendDatagram, SendDatagramError, SendStream,
-    ShutdownOutcome, StoppedError, WriteError, ZeroRttAccepted,
+    Accept, AcceptBi, AcceptUni, Connecting, Connection, DriverStats, Endpoint, EndpointStats,
+    Incoming, IncomingFuture, OpenBi, OpenUni, PacketQueueStats, ReadDatagram, ReadError,
+    ReadExactError, ReadToEndError, RecvStream, ResetError, RetryError, SendDatagram,
+    SendDatagramError, SendStream, ShutdownOutcome, StoppedError, WriteError, ZeroRttAccepted,
 };
 
 #[cfg(fuzzing)]

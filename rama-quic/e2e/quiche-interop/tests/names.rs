@@ -9,7 +9,8 @@ use std::net::SocketAddr;
 use common::*;
 use rama::{
     net::address::Domain,
-    quic::{ConnectionError, Endpoint, ReceivedServerName},
+    quic::{ConnectionError, Endpoint},
+    tls::rustls::dep::rustls::{self, AlertDescription, CertificateError, pki_types::ServerName},
     utils::octets,
 };
 
@@ -36,7 +37,7 @@ async fn a_name_the_client_asked_for_is_reported_as_a_domain() {
                 .expect("the handshake settled something");
             assert_eq!(
                 summary.server_name,
-                Some(ReceivedServerName::Domain(Domain::from_static("localhost"))),
+                Some(Domain::from_static("localhost")),
                 "the name the client asked for, as a domain"
             );
             assert_eq!(
@@ -225,16 +226,35 @@ async fn refusing_a_mismatched_identity(certificate_for: &str, asked_for: &str, 
         )
         .await
         .expect_err("a certificate for another identity must not be accepted");
-    assert!(
-        matches!(refused, ConnectionError::TransportError(_)),
-        "the attempt ended on a transport error: {refused:?}"
+    let ConnectionError::TransportError(ref error) = refused else {
+        panic!("the attempt ended on a transport error: {refused:?}");
+    };
+    assert_eq!(
+        error.code().tls_alert(),
+        Some(u8::from(AlertDescription::BadCertificate)),
+        "the alert says the certificate was refused: {}",
+        error.reason()
     );
-    // The code and cause of a transport error are not reachable from outside the crate, so the
-    // rendered error is what names the check. This becomes a typed check once accessors exist.
-    let told = format!("{refused:?}");
+    // The wire carries the code and the reason; what went wrong locally is the cause, and it
+    // names the identity that was asked for and the ones the certificate carried.
+    let cause = error.cause().expect("a local cause");
+    let Some(rustls::Error::InvalidCertificate(CertificateError::NotValidForNameContext {
+        expected,
+        presented,
+    })) = cause.downcast_ref::<rustls::Error>()
+    else {
+        panic!("the certificate did not cover the name it asked for: {cause:?}");
+    };
+    assert_eq!(
+        *expected,
+        ServerName::try_from(asked_for)
+            .expect("the name it asked for")
+            .to_owned(),
+        "the identity it asked for"
+    );
     assert!(
-        told.contains("NotValidForName"),
-        "and the certificate did not cover the name it asked for: {told}"
+        presented.iter().any(|name| name.contains(certificate_for)),
+        "and the certificate carried {certificate_for}, not that: {presented:?}"
     );
 
     deadline.wait("rama's shutdown", client.wait_idle()).await;

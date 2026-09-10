@@ -229,12 +229,11 @@ async fn a_rama_server_follows_a_client_that_moves() {
             let ended = deadline
                 .wait("the connection ends", connection.closed())
                 .await;
-            // The peer's application close. Its code and reason are not reachable from outside
-            // the crate today, so only the kind is required here.
-            assert!(
-                matches!(ended, ConnectionError::ApplicationClosed(_)),
-                "the client closed the connection: {ended:?}"
-            );
+            let ConnectionError::ApplicationClosed(ref close) = ended else {
+                panic!("the client closed the connection: {ended:?}");
+            };
+            assert_eq!(close.error_code(), 0u32.into(), "with the code it gave");
+            assert_eq!(close.reason(), b"done", "and its reason");
         }
     });
 

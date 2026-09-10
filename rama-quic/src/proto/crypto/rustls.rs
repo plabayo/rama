@@ -1,7 +1,6 @@
 use std::{io, str, sync::Arc};
 
 use rama_core::bytes::BytesMut;
-use rama_core::telemetry::tracing::debug;
 #[cfg(all(feature = "aws-lc", not(feature = "ring")))]
 use rama_crypto::dep::aws_lc_rs::aead;
 #[cfg(feature = "ring")]
@@ -18,24 +17,20 @@ use rama_tls_rustls::dep::rustls::{
 use crate::proto::{
     ConnectError, ConnectionId, Side, TransportError, TransportErrorCode,
     crypto::{
-        self, CryptoError, ExportKeyingMaterialError, HeaderKey, KeyPair, Keys, ReceivedServerName,
-        UnsupportedVersion,
+        self, CryptoError, ExportKeyingMaterialError, HeaderKey, KeyPair, Keys, UnsupportedVersion,
     },
     transport_parameters::TransportParameters,
 };
 
-/// A name the backend has already validated as a DNS name, as this crate reads it. A name that
-/// is not a domain keeps its text.
-fn received_server_name(name: &str) -> ReceivedServerName {
-    // Borrowed: validation happens before any allocation, so a name that is not a domain costs
-    // only the boxed text it keeps.
-    match Domain::try_from(name) {
-        Ok(domain) => ReceivedServerName::Domain(domain),
-        Err(error) => {
-            debug!(%error, %name, "a name the backend accepted is not a domain");
-            ReceivedServerName::Other(name.into())
-        }
-    }
+/// The name the backend reports, as a [`Domain`].
+///
+/// Every shape the backend accepts as a DNS name is one `Domain` accepts, so a name that
+/// reached here is not rejected. A disagreement would be between this crate and its backend, so
+/// it ends the connection locally rather than being reported as no name or blamed on the peer.
+fn received_server_name(name: &str) -> Result<Domain, TransportError> {
+    Domain::try_from(name).map_err(|error| {
+        TransportError::INTERNAL_ERROR("received server name is not a domain").with_cause(error)
+    })
 }
 
 impl From<Side> for rama_tls_rustls::dep::rustls::Side {
@@ -55,6 +50,8 @@ pub(crate) struct TlsSession {
     alpn_policy: AlpnPolicy,
     version: Version,
     got_handshake_data: bool,
+    /// The name the peer asked for, converted once when the backend first has it.
+    server_name: Option<Domain>,
     next_secrets: Option<Secrets>,
     inner: Connection,
     suite: Suite,
@@ -85,13 +82,10 @@ impl crypto::Session for TlsSession {
         if !self.got_handshake_data {
             return None;
         }
-        let server_name = match self.inner {
-            Connection::Client(_) => None,
-            Connection::Server(ref session) => session.server_name(),
-        };
         Some(crate::proto::crypto::HandshakeSummary {
+            // Read afresh: the protocol can still be settling when the name is already known.
             protocol: self.inner.alpn_protocol().map(ApplicationProtocol::from),
-            server_name: server_name.map(received_server_name),
+            server_name: self.server_name.clone(),
         })
     }
 
@@ -152,6 +146,11 @@ impl crypto::Session for TlsSession {
                 Connection::Server(ref session) => session.server_name().is_some(),
             };
             if self.inner.alpn_protocol().is_some() || have_server_name || !self.is_handshaking() {
+                if let Connection::Server(ref session) = self.inner
+                    && let Some(name) = session.server_name()
+                {
+                    self.server_name = Some(received_server_name(name)?);
+                }
                 self.got_handshake_data = true;
                 return Ok(true);
             }
@@ -404,6 +403,7 @@ impl crypto::ClientConfig for QuicClientConfig {
             alpn_policy: self.alpn_policy,
             version,
             got_handshake_data: false,
+            server_name: None,
             next_secrets: None,
             inner: rama_tls_rustls::dep::rustls::quic::Connection::Client(
                 rama_tls_rustls::dep::rustls::quic::ClientConnection::new(
@@ -584,6 +584,7 @@ impl crypto::ServerConfig for QuicServerConfig {
             alpn_policy: self.alpn_policy,
             version,
             got_handshake_data: false,
+            server_name: None,
             next_secrets: None,
             inner: rama_tls_rustls::dep::rustls::quic::Connection::Server(
                 rama_tls_rustls::dep::rustls::quic::ServerConnection::new(
@@ -776,11 +777,8 @@ mod tests {
         for name in accepted {
             let validated = DnsName::try_from(name)
                 .unwrap_or_else(|error| panic!("the backend accepts {name:?}: {error}"));
-            let seen = received_server_name(validated.as_ref());
-            assert!(
-                matches!(seen, ReceivedServerName::Domain(_)),
-                "the backend accepts {name:?} but it did not read as a domain: {seen:?}"
-            );
+            let seen = received_server_name(validated.as_ref())
+                .unwrap_or_else(|error| panic!("the backend accepts {name:?}: {error}"));
             assert_eq!(seen.as_str(), validated.as_ref(), "and it keeps its text");
         }
     }
@@ -810,13 +808,17 @@ mod tests {
         }
     }
 
-    /// A name the backend would not accept is not this crate's problem, but if one ever reaches
-    /// the adapter it keeps its text rather than becoming no name at all.
+    /// If this crate and its backend ever disagreed about a name, the connection would end on a
+    /// local error rather than reporting no name at all. The input here is one the backend
+    /// would itself have refused.
     #[test]
-    fn a_name_that_is_not_a_domain_keeps_its_text() {
-        let seen = received_server_name("");
-        assert_eq!(seen, ReceivedServerName::Other("".into()));
-        assert_eq!(seen.domain(), None);
-        assert_eq!(seen.as_str(), "");
+    fn a_name_that_is_not_a_domain_is_a_local_error() {
+        let refused = received_server_name("").expect_err("an empty name is not a domain");
+        assert_eq!(refused.code(), TransportErrorCode::INTERNAL_ERROR);
+        assert_eq!(refused.reason(), "received server name is not a domain");
+        assert!(
+            refused.cause().is_some(),
+            "and it keeps what the conversion said"
+        );
     }
 }

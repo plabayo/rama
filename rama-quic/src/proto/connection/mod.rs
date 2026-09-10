@@ -1027,9 +1027,7 @@ impl Connection {
 
                 // Since there only 64 ACK frames there will always be enough space
                 // to encode the ConnectionClose frame too. However we still have the
-                // check here to prevent crashes if something changes. Nothing reaches the
-                // other side of it today, so a deferred close has no test: the assertion
-                // above is what holds.
+                // check here to prevent crashes if something changes.
                 debug_assert!(
                     buf.len() + frame::ConnectionClose::SIZE_BOUND < builder.max_size,
                     "ACKs should leave space for ConnectionClose"

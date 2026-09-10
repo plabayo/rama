@@ -695,37 +695,37 @@ impl Endpoint {
 #[non_exhaustive]
 #[derive(Debug, Default, Copy, Clone)]
 pub struct EndpointStats {
-    /// Cummulative number of Quic handshakes accepted by this [Endpoint]
-    pub(crate) accepted_handshakes: u64,
-    /// Cummulative number of Quic handshakees sent from this [Endpoint]
-    pub(crate) outgoing_handshakes: u64,
-    /// Cummulative number of Quic handshakes refused on this [Endpoint]
-    pub(crate) refused_handshakes: u64,
-    /// Cummulative number of Quic handshakes ignored on this [Endpoint]
-    pub(crate) ignored_handshakes: u64,
+    /// Cumulative number of Quic handshakes accepted by this [Endpoint]
+    pub accepted_handshakes: u64,
+    /// Cumulative number of Quic handshakees sent from this [Endpoint]
+    pub outgoing_handshakes: u64,
+    /// Cumulative number of Quic handshakes refused on this [Endpoint]
+    pub refused_handshakes: u64,
+    /// Cumulative number of Quic handshakes ignored on this [Endpoint]
+    pub ignored_handshakes: u64,
     /// UDP datagrams passed to the protocol engine, including malformed QUIC packets.
-    pub(crate) received_datagrams: u64,
+    pub received_datagrams: u64,
     /// Entire receive entries discarded because at least one datagram was truncated.
-    pub(crate) truncated_receive_entries: u64,
+    pub truncated_receive_entries: u64,
     /// Receive attempts that failed with a connection-reset error, ignored as attacker-injectable
     /// noise; counted apart from received datagrams.
-    pub(crate) ignored_receive_errors: u64,
+    pub ignored_receive_errors: u64,
     /// Stateless responses dropped at the bounded outgoing queue.
-    pub(crate) dropped_responses: u64,
+    pub dropped_responses: u64,
     /// Stateless responses the socket refused for their destination.
-    pub(crate) failed_responses: u64,
+    pub failed_responses: u64,
     /// Pending incoming handshakes expired before application acceptance.
-    pub(crate) expired_incoming: u64,
+    pub expired_incoming: u64,
     /// Received datagrams dropped because a receive queue was saturated.
-    pub(crate) dropped_packets: u64,
-    /// Occupancy and drops of the endpoint-wide receive queue budget.
-    pub(crate) receive_queue: PacketQueueStats,
+    pub dropped_packets: u64,
+    /// Occupancy and drop counters of the endpoint-wide receive queue budget.
+    pub receive_queue: PacketQueueStats,
     /// Entries the queued-incoming container currently retains storage for.
-    pub(crate) incoming_queue_capacity: usize,
+    pub incoming_queue_capacity: usize,
     /// Sockets currently owned: the active one plus those still serving earlier work.
-    pub(crate) retained_sockets: usize,
+    pub retained_sockets: usize,
     /// Sockets retired so far after their last dependent went away.
-    pub(crate) retired_sockets: u64,
+    pub retired_sockets: u64,
 }
 
 /// A future that drives IO on an endpoint

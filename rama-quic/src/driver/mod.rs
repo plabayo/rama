@@ -64,12 +64,13 @@ pub(crate) use crate::proto::{QlogConfig, QlogStream};
 pub(crate) use std::time::{Duration, Instant};
 
 pub use crate::driver::connection::{
-    AcceptBi, AcceptUni, Connecting, Connection, OpenBi, OpenUni, ReadDatagram, SendDatagram,
-    SendDatagramError, ZeroRttAccepted,
+    AcceptBi, AcceptUni, Connecting, Connection, DriverStats, OpenBi, OpenUni, ReadDatagram,
+    SendDatagram, SendDatagramError, ZeroRttAccepted,
 };
 pub use crate::driver::endpoint::{Accept, Endpoint, EndpointStats};
 pub use crate::driver::incoming::{Incoming, IncomingFuture, RetryError};
 pub use crate::driver::lifecycle::ShutdownOutcome;
+pub use crate::driver::queue::PacketQueueStats;
 pub use crate::driver::recv_stream::{
     ReadError, ReadExactError, ReadToEndError, RecvStream, ResetError,
 };

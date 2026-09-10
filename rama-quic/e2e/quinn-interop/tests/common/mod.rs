@@ -1,5 +1,9 @@
 //! What both interoperability test files need: the identities, the configurations for each
 //! stack, and the bounded waiting that keeps a hang from stalling a run.
+#![allow(
+    dead_code,
+    reason = "shared support for several integration test binaries, each using part of it"
+)]
 
 use std::{
     net::{Ipv4Addr, SocketAddr},
@@ -9,7 +13,7 @@ use std::{
 
 use rama::{
     crypto::{
-        cert::{CertificateIdentity, LeafCertRequest},
+        cert::{CertificateIdentity, CertificateSubject, LeafCertRequest, SelfSignedCaConfig},
         pki_types::CertificateDer,
     },
     net::tls::ApplicationProtocol,
@@ -95,6 +99,22 @@ pub fn payload(seed: u8, len: usize) -> Vec<u8> {
 pub fn identity() -> ServerAuthData {
     ServerAuthData::new_generated(GeneratedServerAuthConfig::default())
         .expect("an identity is generated")
+}
+
+/// An identity issued by a certificate authority of its own name, so a peer that trusts another
+/// anchor finds no issuer for it rather than one whose name happens to match.
+pub fn identity_from_a_stranger(issuer: &str) -> ServerAuthData {
+    ServerAuthData::new_generated(GeneratedServerAuthConfig::GeneratedCa {
+        ca: SelfSignedCaConfig {
+            subject: CertificateSubject {
+                organisation_name: Some(issuer.to_owned()),
+                common_name: Some(issuer.to_owned()),
+            },
+            ..Default::default()
+        },
+        leaf: LeafCertRequest::default(),
+    })
+    .expect("an identity is generated")
 }
 
 /// An identity valid for the loopback address, so a client may name the address it connects to.

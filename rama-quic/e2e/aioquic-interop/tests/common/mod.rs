@@ -29,7 +29,10 @@ use std::{
 
 use parking_lot::Mutex;
 use rama::{
-    crypto::{dep::rcgen, pki_types::PrivatePkcs8KeyDer},
+    crypto::{
+        dep::rcgen,
+        pki_types::{CertificateDer, PrivatePkcs8KeyDer},
+    },
     net::tls::ApplicationProtocol,
     quic::{ClientConfig, Connection, Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
     tls::{
@@ -203,26 +206,61 @@ pub struct Identity {
 }
 
 impl Identity {
+    /// An identity for `name`, signed by an issuer of its own name. A client that trusts one of
+    /// these and meets another does not recognise the issuer, which is what an untrusted server
+    /// looks like.
+    pub fn generate_from_a_stranger(name: &str, issuer: &str) -> Self {
+        let mut params = rcgen::CertificateParams::new([name.to_owned()])
+            .expect("the name is usable in a certificate");
+        let mut distinguished = rcgen::DistinguishedName::new();
+        distinguished.push(rcgen::DnType::OrganizationName, issuer.to_owned());
+        params.distinguished_name = distinguished;
+        let key = rcgen::KeyPair::generate().expect("a key pair");
+        let certificate = params.self_signed(&key).expect("an identity is generated");
+        Self::written(
+            &certificate.pem(),
+            &key.serialize_pem(),
+            certificate.der().clone(),
+            &key,
+        )
+    }
+
     pub fn generate(name: &str) -> Self {
+        let generated = rcgen::generate_simple_self_signed(vec![name.to_owned()])
+            .expect("an identity is generated");
+        Self::written(
+            &generated.cert.pem(),
+            &generated.signing_key.serialize_pem(),
+            generated.cert.der().clone(),
+            &generated.signing_key,
+        )
+    }
+
+    /// Put an identity on disk for a peer that reads PEM files, and keep it in Rama's own types
+    /// for this side.
+    fn written(
+        certificate_pem: &str,
+        key_pem: &str,
+        der: CertificateDer<'static>,
+        key: &rcgen::KeyPair,
+    ) -> Self {
         let directory = tempfile::Builder::new()
             .prefix("rama-aioquic-interop-")
             .tempdir()
             .expect("a directory of our own");
-        let generated = rcgen::generate_simple_self_signed(vec![name.to_owned()])
-            .expect("an identity is generated");
         let certificate = directory.path().join("cert.pem");
-        let key = directory.path().join("key.pem");
-        std::fs::write(&certificate, generated.cert.pem()).expect("the certificate is written");
-        std::fs::write(&key, generated.signing_key.serialize_pem()).expect("the key is written");
+        let key_path = directory.path().join("key.pem");
+        std::fs::write(&certificate, certificate_pem).expect("the certificate is written");
+        std::fs::write(&key_path, key_pem).expect("the key is written");
         // rcgen serialises the key as PKCS#8, so it is named as such rather than guessed at.
         let auth = ServerAuthData::new(
-            vec![generated.cert.der().clone()],
-            PrivatePkcs8KeyDer::from(generated.signing_key.serialize_der()).into(),
+            vec![der],
+            PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
         );
         Self {
             directory,
             certificate,
-            key,
+            key: key_path,
             auth,
         }
     }
