@@ -78,14 +78,16 @@ teardown with a virtual monotonic clock. It covers:
 | Both directional interactions | Opposite-direction activity cannot mask a stalled writer |
 | Three flows, one wedged | Healthy flows progress independently within aggregate accounting |
 | Four seeded fault sequences | Delivered stream remains an exact prefix; bounded timer count after each step |
-| 1 GiB generated stream | Swift retention stays bounded and returns to zero; exact total received |
+| 1 GiB generated stream | Distinct chunks, saturated producer, bounded Swift retention, matching byte count and streaming SHA-256 |
 | ARC cleanup | Flow, connection, writers, and forwarder deallocate after late callbacks retire |
 | Aggregate wait without a write | Independent watchdog still terminates the wait |
 | Empty write | No artificial progress, transport call, charge, or timer |
 
 The 1 GiB case is a synthetic Swift-retention test, **not** a measurement of NE's
-internal buffers or provider RSS. Smaller pattern tests compare every byte; the
-1 GiB test counts bytes without retaining a second gigabyte in the mock.
+internal buffers or provider RSS. It saturates available receives with distinct,
+indexed chunks, bounds pending roots to two chunks, and compares streaming SHA-256
+digests without retaining a second gigabyte in the mock. Smaller pattern tests
+compare every byte directly.
 
 Use the repository's debug, Release, and ThreadSanitizer Swift recipes in
 `ffi/apple/examples/transparent_proxy/justfile`. ThreadSanitizer covers Swift;
@@ -124,7 +126,7 @@ truncated HTTP responses. That is not a real NE soak. No deployed provider PID,
 confirmed promoted test URL, or source digest was supplied for this worktree, so
 the real-provider acceptance criteria remain unverified.
 
-## Recorded validation — 2026-09-10
+## Initial patch validation — 2026-09-10 (`42b4fa7da`)
 
 Environment: macOS 26.5.2 (25F84), arm64, Apple Swift 6.3.1. Worktree started
 from `origin/main` at `efb38a549f078e47746dc8cae2df59129e894138`.
@@ -142,3 +144,6 @@ The Swift tests linked the existing local debug Rust static archive from the
 original checkout. Rust sources were unchanged; that archive was not rebuilt for
 this Swift patch. The reported macOS 26.6.2 environment and an actual NE provider
 soak have not been exercised here.
+
+The subsequent [fresh-context review](BulkTransferReview.md) records independently
+confirmed fixes, stronger validation, and remaining coverage boundaries.

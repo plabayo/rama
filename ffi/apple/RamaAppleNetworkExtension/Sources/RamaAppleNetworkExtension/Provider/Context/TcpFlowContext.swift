@@ -404,7 +404,11 @@ final class TcpFlowContext: @unchecked Sendable {
     /// the sibling writer, and it must observe `.closed` rather than schedule a
     /// kernel write after the transport has been closed.
     func applyWriterTerminal(_ error: Error) {
-        applyFullTeardown(error: error, driveForwarder: true)
+        // A final receive may already have reported a reset while its tail
+        // waits behind this writer. Keep the first source failure even when
+        // the independent write deadline wins the teardown race.
+        let cause = directForwarder?.pendingServerReadError ?? error
+        applyFullTeardown(error: cause, driveForwarder: true)
     }
 
     // MARK: Post-open natural close

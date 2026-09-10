@@ -32,6 +32,7 @@ def main():
     output_lock = threading.Lock()
     stopped = threading.Event()
     monitor_failed = threading.Event()
+    monitor_sampled = threading.Event()
 
     def emit(event, **fields):
         with output_lock:
@@ -47,6 +48,7 @@ def main():
                 if result.returncode != 0 or not rss:
                     raise RuntimeError("provider PID exited or RSS is unavailable")
                 emit("provider_rss", pid=args.provider_pid, rss_bytes=int(rss) * 1024)
+                monitor_sampled.set()
                 stopped.wait(1)
         except Exception as error:
             monitor_failed.set()
@@ -91,6 +93,14 @@ def main():
         actual = digest.hexdigest()
         if count != args.expect_bytes or actual != args.sha256.lower():
             raise RuntimeError(f"stream mismatch: bytes={count}, sha256={actual}")
+        # A sample may still be in flight when the response finishes. Resolve
+        # it before reporting success; finally-only joining can discover an
+        # error after a successful return value has already been selected.
+        stopped.set()
+        if monitor:
+            monitor.join(timeout=6)
+            if monitor.is_alive() or not monitor_sampled.is_set():
+                raise RuntimeError("provider RSS monitoring did not complete a successful sample")
         if monitor_failed.is_set():
             raise RuntimeError("provider RSS monitoring failed; see rss_sampling_failed event")
         emit("passed", bytes=count, sha256=actual)

@@ -159,6 +159,10 @@ final class TcpDirectForwarder: @unchecked Sendable {
     /// `closeClientWrite` so a torn egress isn't presented to the client
     /// app as a clean server EOF.
     private var s2cTerminalError: Error?
+    /// Queue-confined error already observed while draining a server tail.
+    /// A writer watchdog may expire before the original-error backstop; the
+    /// owner must preserve this cause rather than replace it with a timeout.
+    var pendingServerReadError: Error? { s2cTerminalError }
 
     /// Set by `markClientReadDrained` / `markEgressReadDrained`
     /// after the cancelled-for-promote read pump has fired its

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Network
 import NetworkExtension
@@ -47,6 +48,7 @@ private final class BulkFlow: TcpFlowLike, @unchecked Sendable {
     let pending = TestValue<Write?>(nil)
     let delivered = TestValue(Data())
     let deliveredCount = TestValue(0)
+    let deliveredDigest = TestValue(SHA256())
     let retainDelivered = TestValue(true)
     func write(_ data: Data, withCompletionHandler completion: @escaping @Sendable (Error?) -> Void) {
         XCTAssertNil(pending.get(), "NE writes must remain serial")
@@ -59,6 +61,7 @@ private final class BulkFlow: TcpFlowLike, @unchecked Sendable {
         }
         if error == nil {
             deliveredCount.update { $0 += write.data.count }
+            deliveredDigest.update { $0.update(data: write.data) }
             if retainDelivered.get() { delivered.update { $0.append(write.data) } }
         }
         write.completion(error)
@@ -94,7 +97,8 @@ final class PromotedBulkTransferTests: XCTestCase {
         let cap = 64 * 1024
 
         init(timeout: Int = 360_000, dropEdges: Int = 0,
-             budget: WriterMemoryBudget = WriterMemoryBudget()) {
+             budget: WriterMemoryBudget = WriterMemoryBudget(),
+             productionCore: TransparentProxyCore? = nil) {
             self.budget = budget
             let ctx = ctx, clock = clock, terminals = terminals, edges = droppedEdges
             edges.set(dropEdges)
@@ -123,14 +127,24 @@ final class PromotedBulkTransferTests: XCTestCase {
                 retryScheduler: { clock.schedule($0, $1) },
                 stallScheduler: { clock.schedule($0, $1) },
                 now: { clock.now() }, writerMemoryBudget: budget, writePolicy: policy)
-            forwarder = TcpDirectForwarder(
-                flow: flow, connection: connection, clientWritePump: writer,
-                egressWritePump: egress, writerMemoryBudget: budget, queue: queue,
-                logger: { _ in }, drainStallDeadline: .never,
-                onReadError: { [weak ctx] error in ctx?.applyReadHardError(error) },
-                writeChunkLimit: cap,
-                closeClientWrite: { [weak ctx] error in ctx?.closeClientWriteOnce(error) },
-                pauseScheduler: { clock.schedule($0, $1) }, onTerminal: {})
+            if let core = productionCore {
+                let queue = queue, flow = flow, connection = connection
+                let writer = writer, egress = egress
+                forwarder = queue.sync {
+                    core.makePromotedForwarder(
+                        ctx: ctx, flow: flow, connection: connection,
+                        clientWritePump: writer, egressWritePump: egress, flowQueue: queue)
+                }
+            } else {
+                forwarder = TcpDirectForwarder(
+                    flow: flow, connection: connection, clientWritePump: writer,
+                    egressWritePump: egress, writerMemoryBudget: budget, queue: queue,
+                    logger: { _ in }, drainStallDeadline: .never,
+                    onReadError: { [weak ctx] error in ctx?.applyReadHardError(error) },
+                    writeChunkLimit: cap,
+                    closeClientWrite: { [weak ctx] error in ctx?.closeClientWriteOnce(error) },
+                    pauseScheduler: { clock.schedule($0, $1) }, onTerminal: {})
+            }
             forwarderRef.value = forwarder
             ctx.flow = flow
             ctx.flowQueue = queue
@@ -140,6 +154,11 @@ final class PromotedBulkTransferTests: XCTestCase {
             ctx.directForwarder = forwarder
             ctx.mode = .promoted
             ctx.egressReady = true
+            if let core = productionCore {
+                ctx.core = core
+                ctx.flowId = ObjectIdentifier(flow)
+                core.testInsertTcpContext(ObjectIdentifier(flow), ctx)
+            }
             connection.transition(to: .ready)
             writer.markOpened()
             forwarder.markClientReadDrained()
@@ -150,8 +169,8 @@ final class PromotedBulkTransferTests: XCTestCase {
         }
         func drain() { for _ in 0..<8 { queue.sync {} } }
         func advance(_ ms: UInt64) { clock.advance(ms, drain: drain) }
-        func receive(_ data: Data, eof: Bool = false) {
-            XCTAssertTrue(connection.completePendingReceive(data: data, isComplete: eof, error: nil))
+        func receive(_ data: Data, eof: Bool = false, error: NWError? = nil) {
+            XCTAssertTrue(connection.completePendingReceive(data: data, isComplete: eof, error: error))
             drain()
         }
         func complete(_ error: Error? = nil) {
@@ -284,9 +303,13 @@ final class PromotedBulkTransferTests: XCTestCase {
         h.receive(pattern(h.cap))
         // More than the production promoted-idle window has elapsed since any
         // enqueue. Only the successful write completion can revive this clock.
-        let old = DispatchTime.now().uptimeNanoseconds - 2_000_000_000_000
+        let nowNs = DispatchTime.now().uptimeNanoseconds
+        let old = nowNs > 2_000_000_000_000 ? nowNs - 2_000_000_000_000 : 1
         h.ctx.lastActivityAt = DispatchTime(uptimeNanoseconds: old)
         h.complete()
+        // Also prove the edge directly when a freshly booted CI host has not
+        // been up long enough to backdate beyond the full idle timeout.
+        XCTAssertGreaterThan(h.ctx.lastActivityAt.uptimeNanoseconds, old)
         core.testRunPeriodicMaintenance()
         h.drain()
         XCTAssertFalse(h.done)
@@ -361,12 +384,19 @@ final class PromotedBulkTransferTests: XCTestCase {
             var source = Data()
             for index in 0..<200 {
                 rng = rng &* 6364136223846793005 &+ 1
-                let payload = Data(repeating: UInt8(truncatingIfNeeded: rng >> 32),
-                                   count: Int(rng % UInt64(h.cap)) + 1)
+                // Two distinct chunks force a real pause, rather than merely
+                // configuring dropped notifications that can never be emitted.
+                let head = Data(repeating: UInt8(truncatingIfNeeded: index), count: h.cap)
+                var payload = Data(repeating: UInt8(truncatingIfNeeded: rng >> 32),
+                                   count: Int(rng % UInt64(h.cap - 4)) + 4)
+                payload[0] = UInt8(truncatingIfNeeded: index)
+                payload[1] = UInt8(truncatingIfNeeded: index >> 8)
+                source.append(head)
                 source.append(payload)
+                h.receive(head)
                 h.receive(payload, eof: index == 199)
-                // Fault every write independently, with foreign-queue callback
-                // normalization and missing all drain notifications.
+                XCTAssertGreaterThan(h.queue.sync { h.forwarder.testBufferedChunkCount }, 0)
+                XCTAssertEqual(h.connection.pendingReceiveCount, 0)
                 if rng % 3 == 0 {
                     h.complete(NSError(domain: NSPOSIXErrorDomain, code: Int(EAGAIN)))
                     h.advance(1_000)
@@ -374,9 +404,13 @@ final class PromotedBulkTransferTests: XCTestCase {
                 h.advance(rng % 20_000)
                 XCTAssertFalse(h.done)
                 h.complete()
-                let delivered = h.flow.delivered.get()
-                XCTAssertEqual(delivered, Data(source.prefix(delivered.count)), "seed=\(seed)")
-                XCTAssertEqual(delivered.count, source.count)
+                let prefix = h.flow.delivered.get()
+                XCTAssertEqual(prefix, Data(source.prefix(prefix.count)), "seed=\(seed)")
+                XCTAssertNil(h.flow.pending.get(), "dropped drain edge must leave the tail parked")
+                XCTAssertGreaterThan(h.queue.sync { h.forwarder.testBufferedChunkCount }, 0)
+                h.advance(1_000)
+                h.complete()
+                XCTAssertEqual(h.flow.delivered.get(), source, "seed=\(seed)")
                 XCTAssertLessThanOrEqual(h.clock.events.get().count, 2,
                     "short bursts must not accumulate long-lived watchdog closures")
                 XCTAssertEqual(h.budget.snapshot().retainedBytes, 0)
@@ -453,25 +487,63 @@ final class PromotedBulkTransferTests: XCTestCase {
         XCTAssertEqual(h.budget.snapshot().retainedBytes, 0)
     }
 
-    func testProductionPromotionAlignsMaintenanceLingerWithWriterWindow() {
-        let h = Harness()
+    func testProductionEOFWiringSurvivesFiveMinutePausedDrain() {
         let core = TransparentProxyCore()
-        h.queue.sync {
-            _ = core.makePromotedForwarder(
-                ctx: h.ctx, flow: h.flow, connection: h.connection,
-                clientWritePump: h.writer, egressWritePump: h.egress, flowQueue: h.queue)
-        }
+        let h = Harness(productionCore: core)
+        let payload = pattern(h.cap)
+        h.receive(payload)
+        h.receive(Data([0xff]), eof: true)
         XCTAssertEqual(h.ctx.lingerCloseMs, 360_000)
-        let id = ObjectIdentifier(h.flow)
-        core.testInsertTcpContext(id, h.ctx)
-        h.ctx.terminalSignalled = true
-        h.ctx.drainClosePending = true
+        XCTAssertTrue(h.ctx.terminalSignalled, "actual EOF must publish closing state")
+        XCTAssertTrue(h.ctx.drainClosePending, "retained EOF tail must protect the drain")
+        // Pump time is virtual; production maintenance has its real monotonic
+        // clock. Age its observed activity explicitly without sleeping.
+        h.advance(300_000)
+        let nowNs = DispatchTime.now().uptimeNanoseconds
         h.ctx.lastActivityAt = DispatchTime(
-            uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds - 300_000_000_000)
+            uptimeNanoseconds: nowNs > 300_000_000_000 ? nowNs - 300_000_000_000 : 1)
         core.testRunPeriodicMaintenance()
         core.testRunPeriodicMaintenance()
         h.drain()
-        XCTAssertFalse(h.done, "EOF may not turn a five-minute pause into a five-second kill")
+        XCTAssertFalse(h.done)
+        XCTAssertEqual(h.flow.base.closeWriteCallCount, 0)
+        h.complete()
+        h.complete()
+        XCTAssertEqual(h.flow.delivered.get(), payload + Data([0xff]))
+        XCTAssertEqual(h.flow.base.closeWriteCallCount, 1)
+        XCTAssertNil(h.flow.base.lastCloseWriteError)
+        XCTAssertFalse(h.ctx.drainClosePending)
+    }
+
+    func testWriterStallPreservesEarlierServerReset() {
+        let h = Harness(timeout: 30_000)
+        h.receive(pattern(h.cap))
+        h.advance(1_000)
+        h.receive(Data([0xff]), eof: true, error: .posix(.ECONNRESET))
+        h.advance(29_000)
+        h.assertError(Int(ECONNRESET))
+        h.complete(NSError(domain: NSPOSIXErrorDomain, code: Int(ECANCELED)))
+        XCTAssertEqual(h.budget.snapshot().retainedBytes, 0)
+    }
+
+    func testProductionNaturalTerminalClosesAndReleasesBeforeHarnessCleanup() {
+        let core = TransparentProxyCore()
+        let h = Harness(productionCore: core)
+        h.receive(Data([1, 2, 3]), eof: true)
+        h.complete()
+        h.flow.base.completeReadSynchronously(data: nil, error: nil)
+        h.drain()
+        XCTAssertEqual(h.connection.pendingSendCount, 1, "final FIN awaits completion")
+        XCTAssertFalse(h.done)
+        XCTAssertTrue(h.connection.completePendingSend())
+        h.drain()
+        XCTAssertTrue(h.done, "production onTerminal must run without deinit assistance")
+        XCTAssertEqual(h.flow.base.closeReadCallCount, 1)
+        XCTAssertEqual(h.flow.base.closeWriteCallCount, 1)
+        XCTAssertNil(h.flow.base.lastCloseReadError)
+        XCTAssertNil(h.flow.base.lastCloseWriteError)
+        XCTAssertGreaterThan(h.connection.cancelCount, 0)
+        XCTAssertEqual(h.budget.snapshot().retainedBytes, 0)
     }
 
     func testTerminalGraphDeallocatesAfterTransportRetiresLateCallbacks() {
@@ -507,12 +579,27 @@ final class PromotedBulkTransferTests: XCTestCase {
         h.flow.retainDelivered.set(false)
         let payload = pattern(h.cap)
         let chunks = 1024 * 1024 * 1024 / payload.count
-        for i in 0..<chunks {
-            h.receive(payload, eof: i == chunks - 1)
-            XCTAssertLessThanOrEqual(h.budget.snapshot().retainedBytes, h.cap)
-            h.advance(i % 37 == 0 ? 30_000 : 10)
+        var produced = 0
+        var expectedDigest = SHA256()
+        for completed in 0..<chunks {
+            // Saturate every available source receive before allowing one
+            // destination completion. Each chunk has distinct backing and an
+            // index marker, making reordering/duplication visible to the hash.
+            while h.connection.pendingReceiveCount > 0 && produced < chunks {
+                var chunk = payload
+                for byte in 0..<4 {
+                    chunk[byte] = UInt8(truncatingIfNeeded: produced >> (byte * 8))
+                }
+                expectedDigest.update(data: chunk)
+                h.receive(chunk, eof: produced == chunks - 1)
+                produced += 1
+                XCTAssertLessThanOrEqual(h.budget.snapshot().retainedBytes, 2 * h.cap)
+            }
+            h.advance(completed % 37 == 0 ? 30_000 : 10)
             h.complete()
         }
+        XCTAssertEqual(produced, chunks)
+        XCTAssertEqual(Data(h.flow.deliveredDigest.get().finalize()), Data(expectedDigest.finalize()))
         XCTAssertEqual(h.flow.deliveredCount.get(), 1024 * 1024 * 1024)
         XCTAssertEqual(h.budget.snapshot().retainedBytes, 0)
         XCTAssertEqual(h.flow.base.closeWriteCallCount, 1)
