@@ -36,7 +36,7 @@ async fn aioquic_server(
     if orders {
         arguments.push("--orders".to_owned());
     }
-    let deadline = Deadline::new();
+    let deadline = Deadline::of(LIMIT);
     let mut peer = AioQuic::spawn(
         "server",
         &arguments.iter().map(String::as_str).collect::<Vec<_>>(),
@@ -124,7 +124,7 @@ async fn a_rama_client_sends_and_receives_datagrams() {
 async fn a_rama_server_sends_and_receives_datagrams() {
     prepare().await;
     let identity = Identity::generate("localhost");
-    let deadline = Deadline::new();
+    let deadline = Deadline::of(LIMIT);
     let server = deadline
         .wait(
             "the rama server binds",

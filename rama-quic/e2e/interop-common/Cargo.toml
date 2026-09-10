@@ -1,0 +1,14 @@
+# Standalone: not a member of the rama workspace, so the peer projects that use it keep their
+# own resolution. It depends on the umbrella rama and on no QUIC implementation but Rama's.
+[workspace]
+
+[package]
+name = "rama-quic-interop-common"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+rama = { path = "../../..", features = ["quic", "rustls", "ring"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+sha2 = "0.10"

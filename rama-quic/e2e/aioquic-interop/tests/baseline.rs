@@ -1,0 +1,134 @@
+//! The shared stream scenarios, run against aioquic in both roles.
+//!
+//! Every case in `interop_common::cases` runs here: the entry points enumerate the registry
+//! rather than pick entries out of it. The child takes each payload as the two numbers it
+//! follows from and derives the bytes itself, so its parameters come from the same case the
+//! Rama side is given.
+
+mod common;
+
+use common::*;
+use interop_common::{
+    CaseRun, PeerObservation, Received, Role, SERVER_NAME, for_each_case,
+    scenario::{rama_client_side, rama_server_side},
+};
+use rama::utils::hex;
+
+const PEER: &str = "aioquic";
+/// A client's first unidirectional stream, and its first bidirectional one.
+const UNI: u64 = 2;
+const BI: u64 = 0;
+
+/// This case's payloads as the child takes them: a seed and a length each, from the same
+/// scenario the Rama side is running.
+fn scenario_arguments(run: &CaseRun) -> Vec<String> {
+    let scenario = &run.scenario;
+    [
+        ("--up-seed", usize::from(scenario.up.seed)),
+        ("--up-length", scenario.up.len),
+        ("--question-seed", usize::from(scenario.question.seed)),
+        ("--question-length", scenario.question.len),
+        ("--answer-seed", usize::from(scenario.answer.seed)),
+        ("--answer-length", scenario.answer.len),
+    ]
+    .into_iter()
+    .flat_map(|(name, value)| [name.to_owned(), value.to_string()])
+    .collect()
+}
+
+/// Rama opens the connection and aioquic answers it, for every registered case.
+#[tokio::test]
+async fn stream_cases_rama_client() {
+    prepare().await;
+    for_each_case(PEER, Role::RamaClient, |run| async move {
+        let identity = Identity::generate(SERVER_NAME);
+        let run = run.with_identity(identity.auth.clone());
+        let mut arguments = vec![
+            "--cert".to_owned(),
+            identity.certificate().to_owned(),
+            "--key".to_owned(),
+            identity.key().to_owned(),
+        ];
+        arguments.extend(scenario_arguments(&run));
+        let borrowed: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        let mut peer = AioQuic::spawn("server", &borrowed).await;
+        let addr = peer.listening(run.deadline).await;
+
+        let rama = rama_client_side(&run, addr).await;
+
+        // The child's own account, read while the connection is still up: it reports each
+        // stream as it finishes it.
+        let handshake = peer.expect("handshake", run.deadline).await;
+        let reported = peer.streams(2, run.deadline).await;
+        let seen = |id: u64| {
+            reported
+                .iter()
+                .find(|stream| stream.id() == id)
+                .unwrap_or_else(|| panic!("{}: the peer reported stream {id}", run.what))
+        };
+        let (up, question) = (seen(UNI), seen(BI));
+
+        rama.close(&run.what, run.deadline).await;
+        let ended = peer.expect("ended", run.deadline).await;
+        let observed = PeerObservation {
+            protocol: Some(handshake.alpn().as_bytes().to_vec()),
+            up: Some((reported_stream(up), true)),
+            question: Some((reported_stream(question), true)),
+            answer: None,
+            closed: ended.name() == "ended",
+        };
+        peer.finished(run.deadline).await;
+        observed.check(&run.what, &run.scenario, run.role);
+    })
+    .await;
+}
+
+/// aioquic opens the connection and Rama answers it, for every registered case.
+#[tokio::test]
+async fn stream_cases_rama_server() {
+    prepare().await;
+    for_each_case(PEER, Role::RamaServer, |run| async move {
+        let identity = Identity::generate(SERVER_NAME);
+        let run = run.with_identity(identity.auth.clone());
+        let (endpoint, addr, serving) = rama_server_side(&run).await;
+
+        let mut arguments = vec![
+            "--ca".to_owned(),
+            identity.certificate().to_owned(),
+            "--port".to_owned(),
+            addr.port().to_string(),
+        ];
+        arguments.extend(scenario_arguments(&run));
+        let borrowed: Vec<&str> = arguments.iter().map(String::as_str).collect();
+        let mut peer = AioQuic::spawn("client", &borrowed).await;
+
+        let handshake = peer.expect("handshake", run.deadline).await;
+        peer.expect("connected", run.deadline).await;
+        let answer = peer.expect("stream", run.deadline).await;
+        let ended = peer.expect("ended", run.deadline).await;
+        let observed = PeerObservation {
+            protocol: Some(handshake.alpn().as_bytes().to_vec()),
+            up: None,
+            question: None,
+            answer: Some((reported_stream(&answer), true)),
+            closed: ended.name() == "ended",
+        };
+        peer.finished(run.deadline).await;
+
+        observed.check(&run.what, &run.scenario, run.role);
+        serving.join(&run.what, run.deadline).await;
+        run.deadline.wait(&run.what, endpoint.wait_idle()).await;
+    })
+    .await;
+}
+
+/// What the child said about one stream: the digest it computed and the length it read.
+fn reported_stream(event: &Event) -> Received {
+    let mut digest = [0u8; 32];
+    let written = hex::decode_into(event.sha256(), &mut digest).expect("a sha256 digest as text");
+    assert_eq!(written, digest.len(), "a whole sha256 digest");
+    Received::Reported {
+        digest,
+        len: event.len(),
+    }
+}

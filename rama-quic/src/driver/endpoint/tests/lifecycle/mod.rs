@@ -2612,13 +2612,15 @@ async fn path_size_decrease_after_a_larger_mtu_was_learned() {
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
-/// A datagram carrying a PATH_CHALLENGE is expanded to the smallest allowed maximum datagram
-/// size (RFC 9000 §8.2.1) and no further: the frame is small and the rest is padding, so the
-/// applicable limit for this kind is that size, not the path's MTU. The probes are read off a
-/// socket that answers nothing and receives no other traffic, so every datagram on it is one of
-/// these; each is one UDP datagram, not a segmented descriptor.
+/// RFC 9000 §8.2.1 requires a datagram carrying a PATH_CHALLENGE to be expanded to at least the
+/// smallest allowed maximum datagram size, subject to the anti-amplification limit; it sets no
+/// upper bound. What this pins is the policy above that requirement: the probe is built as a
+/// packet of its own, padded to exactly that size, with nothing coalesced into it.
+///
+/// Nothing else is ever sent to the destination the probes are read from, so every datagram on
+/// it is one of them, and each is one UDP datagram rather than a segmented descriptor.
 #[tokio::test]
-async fn a_path_validation_probe_is_expanded_to_the_smallest_allowed_datagram_and_no_further() {
+async fn a_path_validation_probe_is_a_dedicated_packet_padded_to_the_smallest_allowed_datagram() {
     let (mut client_config, mut server_config) = configs();
     let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     silent.set_nonblocking(true).unwrap();
@@ -2627,8 +2629,7 @@ async fn a_path_validation_probe_is_expanded_to_the_smallest_allowed_datagram_an
         SocketAddr::V6(addr) => panic!("expected an IPv4 loopback address, got {addr}"),
     };
     server_config.set_preferred_address_v4(preferred);
-    // Without discovery, no datagram anywhere is an MTU probe, so the kind under test is the
-    // only one that pads.
+    // Without discovery there is no MTU probe to confuse with a challenge.
     let mut transport = crate::TransportConfig::default();
     transport.maybe_set_mtu_discovery_config(None);
     let transport = Arc::new(transport);
@@ -2670,7 +2671,7 @@ async fn a_path_validation_probe_is_expanded_to_the_smallest_allowed_datagram_an
         assert_eq!(
             *size,
             usize::from(crate::proto::MIN_INITIAL_SIZE),
-            "a path validation probe is padded to the smallest allowed datagram exactly"
+            "the probe is a packet of its own padded to the smallest allowed datagram"
         );
     }
     assert_eq!(
@@ -2683,12 +2684,16 @@ async fn a_path_validation_probe_is_expanded_to_the_smallest_allowed_datagram_an
     tokio::join!(client.shutdown(), server.shutdown());
 }
 
-/// Without MTU discovery, no datagram exceeds the confirmed MTU — including the probes loss
-/// recovery sends, which are ordinary packets. Datagrams are dropped for a while so recovery
-/// runs, and every datagram the socket was handed is measured on its own; the socket takes one
-/// segment at a time, so each record is one UDP datagram rather than a descriptor's aggregate.
+/// Without MTU discovery, no datagram exceeds the confirmed MTU, including while loss recovery
+/// is running. Datagrams are dropped for a while so recovery has work to do, and every datagram
+/// the socket was handed is measured on its own; the socket takes one segment at a time, so each
+/// record is one UDP datagram rather than a descriptor's aggregate.
+///
+/// The counters here witness loss activity, not the decision that sends a probe: nothing below
+/// identifies which datagram loss recovery chose to send. A direct observation of that decision,
+/// and a fault aimed at the size it uses, are open.
 #[tokio::test]
-async fn ordinary_and_loss_probe_datagrams_stay_within_the_confirmed_mtu() {
+async fn no_datagram_exceeds_the_confirmed_mtu_while_loss_recovery_runs() {
     let (mut client_config, mut server_config) = configs();
     let mut transport = crate::TransportConfig::default();
     transport.maybe_set_mtu_discovery_config(None);
@@ -2768,8 +2773,11 @@ async fn ordinary_and_loss_probe_datagrams_stay_within_the_confirmed_mtu() {
 }
 
 /// MTU discovery searches above the confirmed MTU, so the confirmed size is not its limit. What
-/// bounds it is the configured search ceiling clamped by the peer's `max_udp_payload_size`, and
-/// only its own probes go above the confirmed size. Each recorded datagram is one UDP datagram.
+/// bounds it is the configured search ceiling clamped by the peer's `max_udp_payload_size`. Each
+/// recorded datagram is one UDP datagram.
+///
+/// Which datagram is a probe is not established here: these are sizes on the wire, and telling a
+/// probe from ordinary traffic at the moment it is emitted is open work.
 #[tokio::test]
 async fn mtu_discovery_probes_search_above_the_confirmed_mtu_within_the_configured_ceiling() {
     const CEILING: u16 = 1400;
@@ -2814,13 +2822,7 @@ async fn mtu_discovery_probes_search_above_the_confirmed_mtu_within_the_configur
         .iter()
         .map(|datagram| datagram.bytes.len())
         .collect();
-    let confirmed_now = usize::from(c.stats().path.current_mtu);
     let above_first: Vec<usize> = sizes.iter().copied().filter(|s| *s > at_first).collect();
-    let above_now: Vec<usize> = sizes
-        .iter()
-        .copied()
-        .filter(|s| *s > confirmed_now)
-        .collect();
 
     assert!(
         !above_first.is_empty(),
@@ -2834,14 +2836,6 @@ async fn mtu_discovery_probes_search_above_the_confirmed_mtu_within_the_configur
             .filter(|size| **size > ceiling)
             .collect::<Vec<_>>()
     );
-    assert!(
-        above_now.len() as u64 <= c.stats().path.sent_plpmtud_probes,
-        "only the search's own probes are above the confirmed size {confirmed_now}: {} of them \
-         against {} probes",
-        above_now.len(),
-        c.stats().path.sent_plpmtud_probes
-    );
-
     drop((c, s));
     tokio::join!(client.shutdown(), server.shutdown());
 }

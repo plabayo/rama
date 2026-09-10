@@ -17,7 +17,7 @@ use rama::{
 
 /// An aioquic server that keeps session tickets, ready for two connections.
 async fn ticketing_server(identity: &Identity) -> (AioQuic, SocketAddr, Deadline) {
-    let deadline = Deadline::new();
+    let deadline = Deadline::of(LIMIT);
     let mut peer = AioQuic::spawn(
         "server",
         &[

@@ -1539,9 +1539,19 @@ version = "0.0.0"
 dependencies = [
  "parking_lot",
  "rama",
+ "rama-quic-interop-common",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "rama-quic-interop-common"
+version = "0.0.0"
+dependencies = [
+ "rama",
+ "sha2 0.10.9",
  "tokio",
 ]
 

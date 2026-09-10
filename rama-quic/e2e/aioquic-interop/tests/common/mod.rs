@@ -33,12 +33,12 @@ use rama::{
         dep::rcgen,
         pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     },
-    net::tls::ApplicationProtocol,
     quic::{ClientConfig, Connection, Endpoint, ServerConfig, TransportConfig, tls::TlsOptions},
     tls::{
         client::TlsClientConfig,
         server::{ServerAuthData, TlsServerConfig},
     },
+    utils::collections::smallvec::smallvec,
     utils::{fmt, octets},
 };
 use serde_json::Value;
@@ -51,7 +51,12 @@ use tokio::{
     time::Instant,
 };
 
-pub const ALPN: &str = "rama-aioquic-interop";
+/// The protocol every scenario negotiates, shared with the other peer projects. The child
+/// takes it as text, so it is spelled here as text.
+pub const ALPN: &str = match str::from_utf8(interop_common::ALPN) {
+    Ok(text) => text,
+    Err(_) => panic!("the shared protocol name is text"),
+};
 /// The interpreter this project pins, matching `.python-version` and `requires-python`.
 pub const PYTHON: &str = "3.12";
 /// The peer library this project pins, matching `pyproject.toml` and `uv.lock`.
@@ -88,44 +93,9 @@ pub const CERTIFICATE_ALERTS: [u64; 7] = [
     0x133, // decrypt_error (51)
 ];
 
-/// The moment a scenario must be finished by. Passed to every operation that waits.
-#[derive(Clone, Copy)]
-pub struct Deadline(Instant);
-
-impl Deadline {
-    pub fn new() -> Self {
-        Self(Instant::now() + LIMIT)
-    }
-
-    /// A deadline of the caller's own length, for a scenario that is about waiting.
-    pub fn of(limit: Duration) -> Self {
-        Self(Instant::now() + limit)
-    }
-
-    /// Wait for one future, or fail saying what was being waited for.
-    pub async fn wait<F: Future>(&self, what: &str, future: F) -> F::Output {
-        match tokio::time::timeout_at(self.0, future).await {
-            Ok(value) => value,
-            Err(_) => panic!("{what}: the scenario's deadline ran out"),
-        }
-    }
-
-    /// Wait for one future, answering `None` rather than failing when the deadline passes.
-    pub async fn try_wait<F: Future>(&self, future: F) -> Option<F::Output> {
-        tokio::time::timeout_at(self.0, future).await.ok()
-    }
-
-    /// The instant this deadline ends, for a wait that needs it directly.
-    pub fn at(&self) -> Instant {
-        self.0
-    }
-}
-
-impl Default for Deadline {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// The deadline every peer project shares. This project's scenarios take longer than the
+/// shared default, so each says so with [`Deadline::of`].
+pub use interop_common::{Deadline, identity::alpn as shared_alpn};
 
 /// A spawned Rama-side task. The guard owns its handle for as long as it exists, including
 /// while a wait on it is in progress, so a wait that is itself cancelled leaves the task with
@@ -153,7 +123,7 @@ impl Task {
     /// would drop it on a timeout, leaving the task detached.
     pub async fn try_join(&mut self, deadline: Deadline) -> Result<(), String> {
         let handle = self.0.as_mut().expect("waited on once");
-        let outcome = match tokio::time::timeout_at(deadline.0, handle).await {
+        let outcome = match tokio::time::timeout_at(deadline.at(), handle).await {
             Ok(Ok(())) => Ok(()),
             Ok(Err(error)) if error.is_panic() => Err(format!("panicked: {error}")),
             Ok(Err(error)) => Err(format!("ended: {error}")),
@@ -202,7 +172,7 @@ pub struct Identity {
     directory: TempDir,
     certificate: PathBuf,
     key: PathBuf,
-    auth: ServerAuthData,
+    pub auth: ServerAuthData,
 }
 
 impl Identity {
@@ -277,13 +247,9 @@ impl Identity {
     }
 }
 
-pub fn alpn() -> impl IntoIterator<Item = ApplicationProtocol> {
-    [ApplicationProtocol::from(ALPN)]
-}
-
 pub fn rama_server_config(identity: &Identity) -> ServerConfig {
     let tls = TlsServerConfig::new()
-        .with_alpn(alpn().into_iter().collect())
+        .with_alpn(smallvec![shared_alpn()])
         .with_server_auth(identity.auth.clone());
     ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())
         .expect("the server config is built")
@@ -301,7 +267,7 @@ pub fn rama_client_config_with_datagram_buffer(identity: &Identity, buffer: usiz
 pub fn rama_client_config_with_early_data(identity: &Identity) -> ClientConfig {
     let anchor = identity.auth.cert_chain.last().expect("a chain").clone();
     let tls = TlsClientConfig::new()
-        .with_alpn(alpn().into_iter().collect())
+        .with_alpn(smallvec![shared_alpn()])
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted");
     ClientConfig::try_from_rama_tls(&tls, TlsOptions::default().with_early_data(true))
@@ -311,7 +277,7 @@ pub fn rama_client_config_with_early_data(identity: &Identity) -> ClientConfig {
 pub fn rama_client_config(identity: &Identity) -> ClientConfig {
     let anchor = identity.auth.cert_chain.last().expect("a chain").clone();
     let tls = TlsClientConfig::new()
-        .with_alpn(alpn().into_iter().collect())
+        .with_alpn(smallvec![shared_alpn()])
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted");
     ClientConfig::try_from_rama_tls(&tls, TlsOptions::default())

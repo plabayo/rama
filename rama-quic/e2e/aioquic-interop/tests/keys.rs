@@ -12,7 +12,7 @@ use rama::{
 };
 
 async fn serving(identity: &Identity) -> (AioQuic, SocketAddr, Deadline) {
-    let deadline = Deadline::new();
+    let deadline = Deadline::of(LIMIT);
     let mut peer = AioQuic::spawn(
         "server",
         &[

@@ -16,16 +16,17 @@ use rama::{
         cert::{CertificateIdentity, CertificateSubject, LeafCertRequest, SelfSignedCaConfig},
         pki_types::CertificateDer,
     },
-    net::tls::ApplicationProtocol,
     quic::{ClientConfig, ServerConfig, tls::TlsOptions},
     tls::{
         client::TlsClientConfig,
         server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
     },
+    utils::collections::smallvec::smallvec,
 };
 use sha2::{Digest, Sha256};
 
-pub const ALPN: &[u8] = b"rama-quinn-interop";
+/// The protocol every scenario negotiates, shared with the other peer projects.
+pub use interop_common::{ALPN, identity::alpn as shared_alpn};
 /// Every await in these tests is bounded: a hang has to fail the test, not stall it.
 pub const LIMIT: Duration = Duration::from_secs(20);
 
@@ -125,13 +126,9 @@ pub fn address_identity() -> ServerAuthData {
     .expect("an identity is generated")
 }
 
-pub fn alpn() -> impl IntoIterator<Item = ApplicationProtocol> {
-    [ApplicationProtocol::from(ALPN)]
-}
-
 pub fn rama_server_config(auth: &ServerAuthData) -> ServerConfig {
     let tls = TlsServerConfig::new()
-        .with_alpn(alpn().into_iter().collect())
+        .with_alpn(smallvec![shared_alpn()])
         .with_server_auth(auth.clone());
     ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())
         .expect("the server config is built")
@@ -139,7 +136,7 @@ pub fn rama_server_config(auth: &ServerAuthData) -> ServerConfig {
 
 pub fn rama_client_config(anchor: CertificateDer<'static>) -> ClientConfig {
     let tls = TlsClientConfig::new()
-        .with_alpn(alpn().into_iter().collect())
+        .with_alpn(smallvec![shared_alpn()])
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted");
     ClientConfig::try_from_rama_tls(&tls, TlsOptions::default())

@@ -1639,11 +1639,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rama-quic-interop-common"
+version = "0.0.0"
+dependencies = [
+ "rama",
+ "sha2 0.10.9",
+ "tokio",
+]
+
+[[package]]
 name = "rama-quic-quinn-interop"
 version = "0.0.0"
 dependencies = [
  "quinn",
  "rama",
+ "rama-quic-interop-common",
  "rustls",
  "serde_json",
  "sha2 0.10.9",

@@ -124,9 +124,15 @@ async def run_server(arguments):
             received = await read_stream(reader)
             say(event="stream", id=stream_id, len=len(received), sha256=digest(received))
             # Bidirectional streams have ids that are multiples of four here, so those are the
-            # ones that can be answered.
+            # ones that can be answered. A shared scenario asks for an answer of its own rather
+            # than an echo, named by the two numbers it follows from.
             if stream_id % 4 == 0:
-                writer.write(received)
+                if arguments.answer_length is not None:
+                    writer.write(
+                        shared_payload(arguments.answer_seed, arguments.answer_length)
+                    )
+                else:
+                    writer.write(received)
                 writer.write_eof()
 
         task = loop.create_task(serve_stream())
@@ -172,6 +178,12 @@ def send_datagram(protocol, data):
     protocol.transmit()
 
 
+def shared_payload(seed, length):
+    """The payload the shared scenarios define: byte `i` is `i` truncated, exclusive-ored with
+    the seed. The Rust side derives the same bytes from the same two numbers."""
+    return bytes(((index & 0xFF) ^ seed) for index in range(length))
+
+
 async def run_client(arguments):
     """Connect, send what the test asked for, and report what came back."""
     payload = bytes((index % 251) ^ arguments.seed for index in range(arguments.length))
@@ -205,13 +217,24 @@ async def run_client(arguments):
         say(event="connected")
 
         if arguments.streams:
+            # A shared scenario names its payloads by seed and length rather than sending the
+            # bytes here, and its question is answered with different bytes than it carried.
+            up = payload
+            question = payload
+            if arguments.up_length is not None:
+                up = shared_payload(arguments.up_seed, arguments.up_length)
+            if arguments.question_length is not None:
+                question = shared_payload(
+                    arguments.question_seed, arguments.question_length
+                )
+
             uni_reader, uni_writer = await client.create_stream(is_unidirectional=True)
             del uni_reader
-            uni_writer.write(payload)
+            uni_writer.write(up)
             uni_writer.write_eof()
 
             reader, writer = await client.create_stream()
-            writer.write(payload)
+            writer.write(question)
             writer.write_eof()
             answered = await read_stream(reader)
             say(
@@ -332,6 +355,15 @@ def main():
     parser.add_argument("--server-name", default="localhost")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--length", type=int, default=0)
+    # A shared scenario's payloads, each named by a seed and a length. Omitted means this peer
+    # is not running one and keeps its own behaviour; a length of zero is a payload of no bytes
+    # and is not the same thing.
+    parser.add_argument("--up-seed", type=int, default=None)
+    parser.add_argument("--up-length", type=int, default=None)
+    parser.add_argument("--question-seed", type=int, default=None)
+    parser.add_argument("--question-length", type=int, default=None)
+    parser.add_argument("--answer-seed", type=int, default=None)
+    parser.add_argument("--answer-length", type=int, default=None)
     parser.add_argument("--idle-timeout", type=float, default=20.0)
     parser.add_argument("--connections", type=int, default=1)
     parser.add_argument("--datagram-frame", type=int, default=0)

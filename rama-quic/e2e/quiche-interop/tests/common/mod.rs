@@ -23,137 +23,32 @@ use rama::{
         dep::rcgen,
         pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     },
-    net::tls::ApplicationProtocol,
     quic::{ClientConfig, Connection, Endpoint, ServerConfig, tls::TlsOptions},
     tls::{
         client::TlsClientConfig,
         server::{ServerAuthData, TlsServerConfig},
     },
+    utils::collections::smallvec::smallvec,
 };
-use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::{net::UdpSocket, time::Instant};
 
-pub const ALPN: &[u8] = b"rama-quiche-interop";
-/// How long a whole scenario may take. Every await inside one shares this deadline, so a stall
-/// anywhere fails the test instead of extending it.
-pub const LIMIT: Duration = Duration::from_secs(20);
-/// Scratch for one datagram. Larger than the path MTU these tests use; a scenario that raises
-/// the MTU has to raise this with it.
+/// The protocol, deadline, task guard and payloads every peer project shares. Each test binary
+/// uses part of this.
+#[allow(
+    unused_imports,
+    reason = "shared surface, used in part by each test binary"
+)]
+pub use interop_common::{
+    ALPN, Deadline, Peer, digest, identity::alpn as shared_alpn, localhost, payload,
+};
+
+/// The largest datagram this driver reads or writes at once. quiche owns no socket, so the
+/// buffer is the harness's.
 const DATAGRAM: usize = 1350;
-
-/// The moment a scenario must be finished by. Passed to every operation that waits.
-#[derive(Clone, Copy)]
-pub struct Deadline(Instant);
-
-impl Deadline {
-    pub fn new() -> Self {
-        Self(Instant::now() + LIMIT)
-    }
-
-    /// A deadline of the caller's own length, for a scenario that is about waiting.
-    pub fn of(limit: Duration) -> Self {
-        Self(Instant::now() + limit)
-    }
-
-    /// Wait for one future, or fail saying what was being waited for.
-    pub async fn wait<F: Future>(&self, what: &str, future: F) -> F::Output {
-        match tokio::time::timeout_at(self.0, future).await {
-            Ok(value) => value,
-            Err(_) => panic!("{what}: the scenario's {LIMIT:?} ran out"),
-        }
-    }
-
-    fn passed(&self) -> bool {
-        Instant::now() >= self.0
-    }
-
-    /// The soonest of this deadline and a timer the connection asked for.
-    fn next_wake(&self, timer: Option<Duration>) -> Instant {
-        match timer {
-            Some(timer) => self
-                .0
-                .min(Instant::now() + timer.max(Duration::from_millis(1))),
-            None => self.0.min(Instant::now() + Duration::from_millis(5)),
-        }
-    }
-
-    fn expect(&self, what: &str) {
-        assert!(!self.passed(), "{what}: the scenario's {LIMIT:?} ran out");
-    }
-}
-
-impl Default for Deadline {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// A spawned peer. The guard owns its handle for as long as it exists, including while a wait on
-/// it is in progress, so a wait that is itself cancelled leaves the task with the guard. Dropping
-/// the guard aborts the task; it does not wait for the task to unwind.
-pub struct Peer(Option<tokio::task::JoinHandle<()>>);
-
-impl Peer {
-    pub fn spawn(task: impl Future<Output = ()> + Send + 'static) -> Self {
-        Self(Some(tokio::spawn(task)))
-    }
-
-    /// Whether the guard still owns the task, which is what keeps a cancelled wait from
-    /// leaving it detached.
-    pub fn owns_it(&self) -> bool {
-        self.0.is_some()
-    }
-
-    pub async fn join(mut self, what: &str, deadline: Deadline) {
-        if let Err(reason) = self.try_join(deadline).await {
-            panic!("{what}: {reason}");
-        }
-    }
-
-    /// Wait for the task, with the handle staying in the guard throughout. Awaiting it by value
-    /// would drop it on a timeout, leaving the task detached; taking it out first would do the
-    /// same if this wait were cancelled.
-    pub async fn try_join(&mut self, deadline: Deadline) -> Result<(), String> {
-        let handle = self.0.as_mut().expect("waited on once");
-        let outcome = match tokio::time::timeout_at(deadline.0, handle).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) if error.is_panic() => Err(format!("panicked: {error}")),
-            Ok(Err(error)) => Err(format!("ended: {error}")),
-            Err(_) => {
-                let handle = self.0.as_mut().expect("still here");
-                handle.abort();
-                let _ = handle.await;
-                Err("the deadline ran out".to_owned())
-            }
-        };
-        self.0 = None;
-        outcome
-    }
-}
-
-impl Drop for Peer {
-    fn drop(&mut self) {
-        if let Some(handle) = self.0.take() {
-            handle.abort();
-        }
-    }
-}
-
-pub fn localhost() -> SocketAddr {
-    SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0)
-}
 
 pub fn localhost_v6() -> SocketAddr {
     SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 0)
-}
-
-pub fn digest(payload: &[u8]) -> [u8; 32] {
-    Sha256::digest(payload).into()
-}
-
-pub fn payload(seed: u8, len: usize) -> Vec<u8> {
-    (0..len).map(|i| (i as u8) ^ seed).collect()
 }
 
 /// An identity both stacks can use: Rama takes it in memory, quiche reads it from files. The
@@ -232,13 +127,9 @@ impl Identity {
     }
 }
 
-pub fn alpn() -> impl IntoIterator<Item = ApplicationProtocol> {
-    [ApplicationProtocol::from(ALPN)]
-}
-
 pub fn rama_server_config(identity: &Identity) -> ServerConfig {
     let tls = TlsServerConfig::new()
-        .with_alpn(alpn().into_iter().collect())
+        .with_alpn(smallvec![shared_alpn()])
         .with_server_auth(identity.auth.clone());
     ServerConfig::try_from_rama_tls(&tls, TlsOptions::default())
         .expect("the server config is built")
@@ -249,7 +140,7 @@ pub fn rama_server_config(identity: &Identity) -> ServerConfig {
 pub fn rama_client_config_with_early_data(identity: &Identity) -> ClientConfig {
     let anchor = identity.auth.cert_chain.last().expect("a chain").clone();
     let tls = TlsClientConfig::new()
-        .with_alpn(alpn().into_iter().collect())
+        .with_alpn(smallvec![shared_alpn()])
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted");
     ClientConfig::try_from_rama_tls(&tls, TlsOptions::default().with_early_data(true))
@@ -259,7 +150,7 @@ pub fn rama_client_config_with_early_data(identity: &Identity) -> ClientConfig {
 pub fn rama_client_config(identity: &Identity) -> ClientConfig {
     let anchor = identity.auth.cert_chain.last().expect("a chain").clone();
     let tls = TlsClientConfig::new()
-        .with_alpn(alpn().into_iter().collect())
+        .with_alpn(smallvec![shared_alpn()])
         .try_with_server_trust_anchors([anchor])
         .expect("the trust anchor is accepted");
     ClientConfig::try_from_rama_tls(&tls, TlsOptions::default())

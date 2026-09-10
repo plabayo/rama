@@ -22,196 +22,15 @@ use std::process::Stdio;
 
 use tokio::{process::Command, time::Instant};
 
-/// Rama opens the connection, aioquic answers it: a unidirectional stream up and a
-/// bidirectional exchange, both checked by digest on both sides, and a bounded close.
-#[tokio::test]
-async fn rama_client_to_aioquic_server() {
-    prepare().await;
-    let deadline = Deadline::new();
-    let identity = Identity::generate("localhost");
-    let mut peer = AioQuic::spawn(
-        "server",
-        &["--cert", identity.certificate(), "--key", identity.key()],
-    )
-    .await;
-    let server_addr = peer.listening(deadline).await;
-
-    let up = payload(0x31, octets::kib(16));
-    let question = payload(0x32, octets::kib(4));
-
-    let client = deadline
-        .wait("rama binds", Endpoint::client(localhost()))
-        .await
-        .expect("the client binds");
-    let connection = deadline
-        .wait(
-            "the rama client connects",
-            client
-                .connect_with(rama_client_config(&identity), server_addr, "localhost")
-                .expect("the attempt starts"),
-        )
-        .await
-        .expect("the handshake completes");
-
-    let handshake = peer.expect("handshake", deadline).await;
-    assert_eq!(
-        handshake.alpn(),
-        ALPN,
-        "the peer negotiated the protocol this test asked for"
-    );
-
-    let mut uni = deadline
-        .wait("a uni stream", connection.open_uni())
-        .await
-        .expect("it opens");
-    deadline
-        .wait("writing the uni payload", uni.write_all(&up))
-        .await
-        .expect("it is written");
-    uni.finish().expect("the uni stream ends");
-
-    let (mut send, mut recv) = deadline
-        .wait("a bi stream", connection.open_bi())
-        .await
-        .expect("it opens");
-    deadline
-        .wait("asking", send.write_all(&question))
-        .await
-        .expect("the question is written");
-    send.finish().expect("the question ends");
-    let heard = deadline
-        .wait("the echo", recv.read_to_end(STREAM_LIMIT))
-        .await
-        .expect("it completes");
-    assert_eq!(
-        digest(&heard),
-        digest(&question),
-        "the echo came back whole"
-    );
-
-    // What the peer says it received, independently of what Rama says it sent. The peer reports
-    // streams as it finishes them, so each is found by its identifier: 2 is the client's first
-    // unidirectional stream and 0 its first bidirectional one.
-    let reported = peer.streams(2, deadline).await;
-    for (id, expected) in [(2, &up), (0, &question)] {
-        let stream = reported
-            .iter()
-            .find(|stream| stream.id() == id)
-            .unwrap_or_else(|| panic!("the peer reported stream {id}"));
-        assert_eq!(
-            stream.len(),
-            expected.len(),
-            "the peer read the whole stream"
-        );
-        assert_eq!(
-            stream.sha256(),
-            hex(&digest(expected)),
-            "and the bytes are the ones that were sent"
-        );
-    }
-
-    connection.close(0u32.into(), b"done");
-    deadline.wait("rama's shutdown", client.wait_idle()).await;
-    peer.expect("ended", deadline).await;
-    peer.finished(deadline).await;
-}
-
-/// aioquic opens the connection, Rama answers it, with the same traffic in the same shapes.
-#[tokio::test]
-async fn aioquic_client_to_rama_server() {
-    prepare().await;
-    let deadline = Deadline::new();
-    let identity = Identity::generate("localhost");
-    let server = deadline
-        .wait(
-            "the rama server binds",
-            Endpoint::server(rama_server_config(&identity), localhost()),
-        )
-        .await
-        .expect("it binds");
-    let server_addr = server.local_addr().expect("its address");
-
-    let sent = payload(0x41, octets::kib(16));
-    let sent_hash = digest(&sent);
-
-    let served = Task::spawn({
-        let server = server.clone();
-        async move {
-            let connection = accept_one("the rama server", &server, deadline).await;
-
-            let mut uni = deadline
-                .wait("the uni stream arrives", connection.accept_uni())
-                .await
-                .expect("it opens");
-            let received = deadline
-                .wait("reading the uni stream", uni.read_to_end(STREAM_LIMIT))
-                .await
-                .expect("it completes");
-            assert_eq!(
-                digest(&received),
-                sent_hash,
-                "the uni payload arrived whole"
-            );
-
-            let (mut send, mut recv) = deadline
-                .wait("the bi stream arrives", connection.accept_bi())
-                .await
-                .expect("it opens");
-            let asked = deadline
-                .wait("reading the question", recv.read_to_end(STREAM_LIMIT))
-                .await
-                .expect("it completes");
-            assert_eq!(digest(&asked), sent_hash, "the question arrived whole");
-            deadline
-                .wait("answering", send.write_all(&asked))
-                .await
-                .expect("the answer is written");
-            send.finish().expect("the answer ends");
-            deadline
-                .wait("the connection ends", connection.closed())
-                .await;
-        }
-    });
-
-    let mut peer = AioQuic::spawn(
-        "client",
-        &[
-            "--port",
-            &server_addr.port().to_string(),
-            "--ca",
-            identity.certificate(),
-            "--seed",
-            "65",
-            "--length",
-            &octets::kib(16).to_string(),
-        ],
-    )
-    .await;
-    assert_eq!(
-        peer.expect("handshake", deadline).await.alpn(),
-        ALPN,
-        "the peer negotiated the protocol this test asked for"
-    );
-    peer.expect("connected", deadline).await;
-    let echoed = peer.expect("stream", deadline).await;
-    assert_eq!(echoed.len(), sent.len(), "the peer read the whole answer");
-    assert_eq!(
-        echoed.sha256(),
-        hex(&sent_hash),
-        "and the bytes are the ones it sent"
-    );
-    peer.expect("ended", deadline).await;
-    peer.expect("done", deadline).await;
-    peer.finished(deadline).await;
-    served.join("the rama peer", deadline).await;
-}
+// The baseline stream scenario in both roles moved to `baseline.rs`, where it runs from the
+// shared `interop-common` definition; what remains here is aioquic-specific.
 
 /// aioquic's client stops on the certificate check when Rama's server presents an identity it
 /// has no anchor for, and the same client with the right anchor completes an exchange.
 #[tokio::test]
 async fn an_aioquic_client_refuses_a_rama_server_it_does_not_trust() {
     prepare().await;
-    let deadline = Deadline::new();
+    let deadline = Deadline::of(LIMIT);
     let identity = Identity::generate("localhost");
     let stranger = Identity::generate("localhost");
     let server = deadline
@@ -332,7 +151,7 @@ async fn an_aioquic_client_refuses_a_rama_server_it_does_not_trust() {
 #[tokio::test]
 async fn a_rama_client_refuses_an_aioquic_server_it_does_not_trust() {
     prepare().await;
-    let deadline = Deadline::new();
+    let deadline = Deadline::of(LIMIT);
     let identity = Identity::generate("localhost");
     let stranger = Identity::generate_from_a_stranger("localhost", "Someone Else Entirely");
     let mut peer = AioQuic::spawn(
@@ -669,7 +488,7 @@ async fn a_line_is_read_only_up_to_its_cap() {
 #[tokio::test]
 async fn a_close_right_after_the_handshake_reaches_the_peer() {
     prepare().await;
-    let deadline = Deadline::new();
+    let deadline = Deadline::of(LIMIT);
     let identity = Identity::generate("localhost");
     let mut peer = AioQuic::spawn(
         "server",
