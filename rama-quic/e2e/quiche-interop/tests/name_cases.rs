@@ -13,13 +13,9 @@ use interop_common::{
 use rama::utils::octets;
 
 const PEER: &str = "quiche";
-/// quiche's client verifies an identity only through `set_host_name`, which installs a host
-/// parameter and the SNI together (`tls/mod.rs:442`). There is no separate address parameter
-/// on the public API, and the custom-context route (`Config::with_boring_ssl_ctx_builder`,
-/// `lib.rs:636`) is behind the `boringssl-boring-crate` feature, which would replace this
-/// project's vendored BoringSSL. So this adapter's no-SNI leg verifies the trust chain and
-/// not the address. Rama's own address verification is exercised in the other role, where
-/// Rama is the client naming the address.
+/// This adapter's no-SNI leg verifies the certificate chain but installs no address identity
+/// parameter, so it does not check that the certificate carries the address. Rama's own
+/// address verification runs in the other role, where Rama is the client.
 const NO_IP_VERIFICATION: &str =
     "quiche's client installs no address identity parameter without also sending SNI";
 const BI: u64 = 0;
@@ -61,11 +57,8 @@ async fn name_cases_rama_server() {
         let served = Identity::generate_for(run.scenario.asked);
         let run = run.with_identity(served.auth.clone());
         let (endpoint, addr, serving) = rama_server_side(&run).await;
-        // RFC 6066 §3: a client naming an address sends no SNI. quiche's `connect` takes
-        // `Option<&str>` and only calls `set_host_name` — which installs both the SNI and the
-        // X509 host parameter — when a name is given. So `None` is genuinely the no-SNI path,
-        // but it installs no identity parameter either: what this leg verifies is the trust
-        // chain, not that the certificate carries the address. See NO_IP_VERIFICATION.
+        // RFC 6066 §3: a client naming an address sends no SNI. Passing no name is that path;
+        // it also installs no identity parameter, which `NO_IP_VERIFICATION` records.
         let mut client = match run.scenario.asked {
             Some(name) => {
                 Quiche::connect(addr, name, quiche_client_config(&served), run.deadline).await

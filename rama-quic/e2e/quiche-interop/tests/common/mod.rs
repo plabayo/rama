@@ -28,9 +28,8 @@ use rama::{
         client::TlsClientConfig,
         server::{ServerAuthData, TlsServerConfig},
     },
-    utils::collections::smallvec::smallvec,
+    utils::{collections::smallvec::smallvec, fs::TempDir},
 };
-use tempfile::TempDir;
 use tokio::{net::UdpSocket, time::Instant};
 
 /// The protocol, deadline, task guard and payloads every peer project shares. Each test binary
@@ -52,8 +51,8 @@ pub fn localhost_v6() -> SocketAddr {
 }
 
 /// An identity both stacks can use: Rama takes it in memory, quiche reads it from files. The
-/// directory is created exclusively by `tempfile` and owned from that moment, so a failure part
-/// way through writing leaves nothing behind.
+/// directory is created exclusively and owned from that moment, so a failure part way through
+/// writing leaves nothing behind.
 pub struct Identity {
     /// Held so the files live as long as the identity does.
     #[expect(dead_code)]
@@ -126,10 +125,8 @@ impl Identity {
         der: CertificateDer<'static>,
         key: &rcgen::KeyPair,
     ) -> Self {
-        let directory = tempfile::Builder::new()
-            .prefix("rama-quiche-interop-")
-            .tempdir()
-            .expect("a directory of our own");
+        let directory =
+            TempDir::with_prefix("rama-quiche-interop-").expect("a directory of our own");
         let certificate = directory.path().join("cert.pem");
         let key_path = directory.path().join("key.pem");
         std::fs::write(&certificate, certificate_pem).expect("the certificate is written");
@@ -271,9 +268,15 @@ pub fn quiche_client_config_that_moves(identity: &Identity) -> quiche::Config {
 
 /// A client configuration that trusts `identity` and nothing else.
 pub fn quiche_client_config(identity: &Identity) -> quiche::Config {
+    quiche_client_config_trusting(&identity.certificate)
+}
+
+/// A client configuration that trusts whatever is in `anchor`, for identities issued by an
+/// authority rather than signed by themselves.
+pub fn quiche_client_config_trusting(anchor: &Path) -> quiche::Config {
     let mut config = quiche_config();
     config
-        .load_verify_locations_from_file(Identity::path(&identity.certificate))
+        .load_verify_locations_from_file(Identity::path(anchor))
         .expect("the trust anchor is loaded");
     config.verify_peer(true);
     config
@@ -304,7 +307,19 @@ impl Quiche {
         config: quiche::Config,
         deadline: Deadline,
     ) -> Self {
-        Self::start(server, None, config, deadline).await
+        Self::start(server, None, config, None, deadline).await
+    }
+
+    /// Start a client that offers a session it was given, so a server that recognises it can
+    /// resume rather than start again.
+    pub async fn connect_resuming(
+        server: SocketAddr,
+        name: &str,
+        config: quiche::Config,
+        session: &[u8],
+        deadline: Deadline,
+    ) -> Self {
+        Self::start(server, Some(name), config, Some(session), deadline).await
     }
 
     /// Start a client and send its first flight.
@@ -314,13 +329,14 @@ impl Quiche {
         config: quiche::Config,
         deadline: Deadline,
     ) -> Self {
-        Self::start(server, Some(name), config, deadline).await
+        Self::start(server, Some(name), config, None, deadline).await
     }
 
     async fn start(
         server: SocketAddr,
         name: Option<&str>,
         mut config: quiche::Config,
+        session: Option<&[u8]>,
         deadline: Deadline,
     ) -> Self {
         // The client's own socket follows the family of the address it is dialling.
@@ -340,6 +356,12 @@ impl Quiche {
             local,
             last_from: None,
         };
+        // Offered before the first flight leaves, so the offer is in it.
+        if let Some(session) = session {
+            peer.connection
+                .set_session(session)
+                .expect("the session is offered");
+        }
         peer.flush(deadline).await;
         peer
     }

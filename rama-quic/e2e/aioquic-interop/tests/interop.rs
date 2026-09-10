@@ -16,7 +16,7 @@ use common::*;
 use rama::{
     quic::{ConnectionError, Endpoint, VarInt},
     tls::rustls::dep::rustls::{self, AlertDescription, CertificateError},
-    utils::octets,
+    utils::{fs::tempdir, octets},
 };
 use std::process::Stdio;
 
@@ -383,7 +383,7 @@ async fn acknowledged(
 #[tokio::test]
 async fn a_setup_command_that_hangs_is_stopped_and_reaped() {
     prepare().await;
-    let scratch = tempfile::tempdir().expect("a directory of our own");
+    let scratch = tempdir().expect("a directory of our own");
 
     let overran = scratch.path().join("overran.pid");
     let mut running = Box::pin(bounded_command(

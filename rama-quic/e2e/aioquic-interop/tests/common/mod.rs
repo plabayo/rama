@@ -38,11 +38,10 @@ use rama::{
         client::TlsClientConfig,
         server::{ServerAuthData, TlsServerConfig},
     },
-    utils::{collections::smallvec::smallvec, fmt, octets},
+    utils::{collections::smallvec::smallvec, fmt, fs::TempDir, hex, octets},
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tempfile::TempDir;
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdout, Command},
@@ -94,7 +93,7 @@ pub const CERTIFICATE_ALERTS: [u64; 7] = [
 
 /// The deadline every peer project shares. This project's scenarios take longer than the
 /// shared default, so each says so with [`Deadline::of`].
-pub use interop_common::{Deadline, identity::alpn as shared_alpn};
+pub use interop_common::{Deadline, Received, identity::alpn as shared_alpn};
 
 /// A spawned Rama-side task. The guard owns its handle for as long as it exists, including
 /// while a wait on it is in progress, so a wait that is itself cancelled leaves the task with
@@ -233,10 +232,8 @@ impl Identity {
         der: CertificateDer<'static>,
         key: &rcgen::KeyPair,
     ) -> Self {
-        let directory = tempfile::Builder::new()
-            .prefix("rama-aioquic-interop-")
-            .tempdir()
-            .expect("a directory of our own");
+        let directory =
+            TempDir::with_prefix("rama-aioquic-interop-").expect("a directory of our own");
         let certificate = directory.path().join("cert.pem");
         let key_path = directory.path().join("key.pem");
         std::fs::write(&certificate, certificate_pem).expect("the certificate is written");
@@ -511,6 +508,23 @@ impl Event {
 
     pub fn early(&self) -> bool {
         self.0["early"].as_bool().expect("an early data verdict")
+    }
+
+    /// What the child said it read on a stream, as the shared scenarios take it: a digest it
+    /// computed itself and the length it read.
+    pub fn reported(&self) -> Received {
+        let mut digest = [0u8; 32];
+        let written = hex::decode_into(self.sha256(), &mut digest).expect("a sha256 as text");
+        assert_eq!(written, digest.len(), "a whole sha256 digest");
+        Received::Reported {
+            digest,
+            len: self.len(),
+        }
+    }
+
+    /// Whether the child was given a session ticket to offer.
+    pub fn present(&self) -> bool {
+        self.0["present"].as_bool().expect("a ticket verdict")
     }
 
     pub fn phase(&self) -> u64 {

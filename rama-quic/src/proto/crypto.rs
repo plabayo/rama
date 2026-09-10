@@ -38,6 +38,11 @@ pub struct HandshakeSummary {
     /// canonicalised its case. `None` on a client, and on a server whose peer sent no SNI,
     /// which includes a client connecting to an IP address (RFC 6066 §3).
     pub server_name: Option<Domain>,
+    /// Whether the handshake resumed a session rather than doing a full one.
+    ///
+    /// `None` until the backend has decided, which can be after the rest of this summary is
+    /// available: the two are read separately. Both ends report it once it is known.
+    pub resumed: Option<bool>,
 }
 
 /// A cryptographic session (commonly TLS)

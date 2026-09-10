@@ -5,7 +5,7 @@
 
 mod common;
 
-use std::{any::Any, net::SocketAddr};
+use std::net::SocketAddr;
 
 use common::{quinn_client_config, quinn_server_config};
 use interop_common::{
@@ -68,7 +68,7 @@ async fn quinn_answers(run: &CaseRun<NameScenario>, server: quinn::Endpoint) -> 
         .await
         .expect("the handshake completes");
     let observed = NameObservation {
-        server_name: ReceivedName::Seen(conn.handshake_data().and_then(received_name)),
+        server_name: ReceivedName::Seen(received_name(what, &conn)),
     };
     let (mut send, mut recv) = deadline
         .wait(what, conn.accept_bi())
@@ -127,9 +127,14 @@ async fn quinn_asks(
     deadline.wait(what, client.wait_idle()).await;
 }
 
-/// The name Quinn's server says the client asked for.
-fn received_name(data: Box<dyn Any>) -> Option<String> {
-    data.downcast::<quinn::crypto::rustls::HandshakeData>()
-        .ok()
-        .and_then(|data| data.server_name)
+/// The name Quinn's server says the client asked for. The handshake data must be there and be
+/// the expected type: a missing or unexpected one is a failure, not an absent name.
+fn received_name(what: &str, conn: &quinn::Connection) -> Option<String> {
+    let data = conn
+        .handshake_data()
+        .unwrap_or_else(|| panic!("{what}: the handshake settled something"));
+    let data = data
+        .downcast::<quinn::crypto::rustls::HandshakeData>()
+        .unwrap_or_else(|_| panic!("{what}: the handshake data is Quinn's rustls type"));
+    data.server_name
 }

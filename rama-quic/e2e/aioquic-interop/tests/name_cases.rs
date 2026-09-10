@@ -15,10 +15,8 @@ use interop_common::{
 };
 use rama::utils::hex;
 
-/// Why the child cannot report the name it received: aioquic's `pull_client_hello` fills
-/// `ClientHello.server_name` and the server uses it, but nothing on the server side keeps it,
-/// so there is no field for the bridge to read. The protocol side works; the observation does
-/// not exist without patching the library.
+/// The child parses and uses the name it receives but does not retain it, so the bridge has
+/// no field to read. The protocol side works; only the observation is missing.
 const UNAVAILABLE: &str = "aioquic's server does not retain the name from the client hello";
 
 const PEER: &str = "aioquic";

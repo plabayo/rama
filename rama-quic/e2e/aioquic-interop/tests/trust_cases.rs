@@ -10,10 +10,8 @@ use common::*;
 use interop_common::{
     CaseRun, Received, Role, TrustObservation, TrustScenario, for_each_case,
     scenario::SERVER_NAME,
-    trust::{
-        ServerOutcome, expect_outcome, rama_client_accepts, rama_client_refuses, rama_server_side,
-        trust_cases,
-    },
+    serving::{ServerOutcome, expect_outcome, rama_probe_server},
+    trust::{rama_client_accepts, rama_client_refuses, trust_cases},
 };
 use rama::utils::hex;
 
@@ -79,7 +77,7 @@ async fn trust_cases_rama_server() {
         let stranger = Identity::generate_from_a_stranger(SERVER_NAME, "Another Authority");
         let run = run.with_identity(served.auth.clone());
 
-        let (endpoint, addr, serving) = rama_server_side(&run, false).await;
+        let (endpoint, addr, serving) = rama_probe_server(&run, run.scenario.probe, false).await;
         let mut refused = AioQuic::spawn(
             "client",
             &[
@@ -113,7 +111,7 @@ async fn trust_cases_rama_server() {
 
         // The control: the same Rama identity, the anchor that matches it, and exactly one
         // bidirectional probe.
-        let (endpoint, addr, serving) = rama_server_side(&run, true).await;
+        let (endpoint, addr, serving) = rama_probe_server(&run, run.scenario.probe, true).await;
         let mut accepted = AioQuic::spawn(
             "client",
             &[

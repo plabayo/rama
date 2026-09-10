@@ -9,17 +9,27 @@ pub mod datagram;
 pub mod identity;
 pub mod names;
 pub mod registry;
+pub mod resumption;
 pub mod scenario;
+pub mod serving;
 pub mod support;
 pub mod trust;
 
 pub use datagram::{DatagramObservation, DatagramScenario, datagram_cases};
-pub use identity::{ALPN, Identity, alpn, rama_client_config, rama_server_config, server_identity};
+pub use identity::{
+    ALPN, Identity, IssuedIdentities, IssuedIdentity, alpn, path_of, rama_client_config,
+    rama_server_config, server_identity,
+};
 pub use names::{
-    MISMATCH_PROBE, Mismatch, NameObservation, NameScenario, ReceivedName, mismatch_cases,
-    name_cases,
+    MISMATCH_PROBE, Mismatch, NameObservation, NameScenario, ReceivedName, identity_alert,
+    mismatch_cases, name_cases,
 };
 pub use registry::{Case, CaseRun, Role, Unsupported, for_each_case, stream_cases};
+pub use resumption::{
+    Arrival, Expected, RecordingSessions, Reported, ResumptionObservation, ResumptionScenario,
+    ServerReport, Verdict, resumption_cases,
+};
 pub use scenario::{Chunk, PeerObservation, Received, SERVER_NAME, StreamScenario};
+pub use serving::{ServerOutcome, expect_outcome, rama_probe_server};
 pub use support::{Deadline, Peer, digest, localhost, payload};
 pub use trust::{TrustObservation, TrustScenario, trust_cases};

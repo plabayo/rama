@@ -11,11 +11,9 @@ use interop_common::{
     Deadline, Peer, Role, TrustObservation, for_each_case,
     identity::anchor_of,
     scenario::SERVER_NAME,
+    serving::{ServerOutcome, expect_outcome, rama_probe_server},
     support::localhost,
-    trust::{
-        ServerOutcome, expect_outcome, rama_client_accepts, rama_client_refuses, rama_server_side,
-        trust_cases, wrong_anchor,
-    },
+    trust::{rama_client_accepts, rama_client_refuses, trust_cases, wrong_anchor},
 };
 use rama::crypto::pki_types::CertificateDer;
 use rustls::AlertDescription;
@@ -92,14 +90,14 @@ async fn trust_cases_rama_client() {
 async fn trust_cases_rama_server() {
     for_each_case(PEER, Role::RamaServer, trust_cases(), |run| async move {
         // One Rama server identity throughout: only the anchor this client trusts changes.
-        let (endpoint, addr, serving) = rama_server_side(&run, false).await;
+        let (endpoint, addr, serving) = rama_probe_server(&run, run.scenario.probe, false).await;
         let observed = quinn_refuses(&run.what, run.deadline, wrong_anchor(), addr).await;
         observed.check(&run.what);
         expect_outcome(serving, &run.what, run.deadline, ServerOutcome::Refused).await;
         run.deadline.wait(&run.what, endpoint.wait_idle()).await;
 
         // The control: the same identity, now with the anchor that matches it.
-        let (endpoint, addr, serving) = rama_server_side(&run, true).await;
+        let (endpoint, addr, serving) = rama_probe_server(&run, run.scenario.probe, true).await;
         let mut client = quinn::Endpoint::client(localhost()).expect("the quinn client binds");
         client.set_default_client_config(quinn_client_config(anchor_of(&run.identity)));
         let conn = run

@@ -9,10 +9,8 @@ use common::{Identity, Quiche, Stopped, quiche_client_config, quiche_server_conf
 use interop_common::{
     Peer, Role, TrustObservation, for_each_case,
     scenario::SERVER_NAME,
-    trust::{
-        ServerOutcome, expect_outcome, rama_client_accepts, rama_client_refuses, rama_server_side,
-        trust_cases,
-    },
+    serving::{ServerOutcome, expect_outcome, rama_probe_server},
+    trust::{rama_client_accepts, rama_client_refuses, trust_cases},
 };
 use rama::{tls::rustls::dep::rustls::AlertDescription, utils::octets};
 
@@ -77,7 +75,7 @@ async fn trust_cases_rama_server() {
         let served = Identity::generate(SERVER_NAME);
         let stranger = Identity::generate_from_a_stranger(SERVER_NAME, "Another Authority");
         let run = run.with_identity(served.auth.clone());
-        let (endpoint, addr, serving) = rama_server_side(&run, false).await;
+        let (endpoint, addr, serving) = rama_probe_server(&run, run.scenario.probe, false).await;
         let mut client = Quiche::connect(
             addr,
             SERVER_NAME,
@@ -115,7 +113,7 @@ async fn trust_cases_rama_server() {
         run.deadline.wait(&run.what, endpoint.wait_idle()).await;
 
         // The control: the same Rama identity, now with the anchor that matches it.
-        let (endpoint, addr, serving) = rama_server_side(&run, true).await;
+        let (endpoint, addr, serving) = rama_probe_server(&run, run.scenario.probe, true).await;
         let mut client = Quiche::connect(
             addr,
             SERVER_NAME,

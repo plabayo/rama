@@ -14,10 +14,10 @@ use rama::{
 };
 
 use crate::{
-    identity::{anchor_of, identity_from_a_stranger, rama_client_config, rama_server_config},
+    identity::{anchor_of, identity_from_a_stranger, rama_client_config},
     registry::{Case, CaseRun},
     scenario::{Chunk, Received, SERVER_NAME},
-    support::{Deadline, Peer, localhost},
+    support::localhost,
 };
 
 /// The exchange the positive control carries, so the control proves a working connection and
@@ -164,90 +164,4 @@ pub async fn rama_client_accepts(run: &CaseRun<TrustScenario>, peer_addr: Socket
     Received::Bytes(back).check(what, "probe", scenario.probe);
     conn.close(0u32.into(), b"done");
     deadline.wait(what, client.wait_idle()).await;
-}
-
-/// What Rama's server made of the attempt against it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ServerOutcome {
-    /// The peer completed the handshake and its probe came back.
-    Probed,
-    /// No connection was established. A refused identity gives this, and so would an
-    /// endpoint closed before any attempt arrived, so it is not on its own proof that an
-    /// attempt was made.
-    Refused,
-    /// Nothing happened before the case ran out of time. Never what a case expects.
-    TimedOut,
-}
-
-/// Rama's server for the other direction, taking whichever identity the case gives it. The
-/// peer's client decides whether it trusts that identity.
-///
-/// The task returns what it saw rather than swallowing it, so a caller that joins it learns
-/// both the outcome and any assertion that failed inside it.
-pub async fn rama_server_side(
-    run: &CaseRun<TrustScenario>,
-    expect_probe: bool,
-) -> (Endpoint, SocketAddr, Peer<ServerOutcome>) {
-    let CaseRun { what, deadline, .. } = run;
-    let server = deadline
-        .wait(
-            what,
-            Endpoint::server(rama_server_config(&run.identity), localhost()),
-        )
-        .await
-        .expect("the rama server binds");
-    let addr = server.local_addr().expect("its address");
-    let serving = Peer::spawn({
-        let run = run.clone();
-        let server = server.clone();
-        async move {
-            // A refused identity may leave nothing to accept at all, so this waits for an
-            // attempt without insisting on one. Running out of time is not a refusal and is
-            // reported as itself.
-            let attempt = match run.deadline.try_wait(server.accept()).await {
-                Some(Some(attempt)) => attempt,
-                Some(None) => return ServerOutcome::Refused,
-                None => return ServerOutcome::TimedOut,
-            };
-            let conn = match run.deadline.try_wait(attempt).await {
-                Some(Ok(conn)) => conn,
-                Some(Err(_)) => return ServerOutcome::Refused,
-                None => return ServerOutcome::TimedOut,
-            };
-            if !expect_probe {
-                return ServerOutcome::Probed;
-            }
-            let (mut send, mut recv) = run
-                .deadline
-                .wait(&run.what, conn.accept_bi())
-                .await
-                .expect("the probe's stream arrives");
-            let received = run
-                .deadline
-                .wait(&run.what, recv.read_to_end(run.scenario.probe.len + 1))
-                .await
-                .expect("the probe completes");
-            Received::Bytes(received).check(&run.what, "probe", run.scenario.probe);
-            run.deadline
-                .wait(&run.what, send.write_all(&run.scenario.probe.bytes()))
-                .await
-                .expect("the probe goes back");
-            send.finish().expect("the answer ends");
-            run.deadline.wait(&run.what, conn.closed()).await;
-            ServerOutcome::Probed
-        }
-    });
-    (server, addr, serving)
-}
-
-/// Join a server task and require the outcome the case expects. A panic inside the task is
-/// propagated rather than passed over.
-pub async fn expect_outcome(
-    serving: Peer<ServerOutcome>,
-    what: &str,
-    deadline: Deadline,
-    expected: ServerOutcome,
-) {
-    let seen = serving.join(what, deadline).await;
-    assert_eq!(seen, expected, "{what}: what the rama server made of it");
 }

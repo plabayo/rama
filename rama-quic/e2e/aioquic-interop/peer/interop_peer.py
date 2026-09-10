@@ -289,6 +289,88 @@ async def run_client(arguments):
     say(event="done")
 
 
+async def run_resuming_client(arguments):
+    """Two connections in one process: the second offers the session ticket the first was
+    given, and where the test asks for it, early data goes out before the handshake finishes.
+
+    The ports are given up front, so a test that wants the second attempt to meet a server
+    that never kept the session can point the two connections at different ones.
+    """
+    ticket = None
+
+    def keep(new_ticket):
+        nonlocal ticket
+        ticket = new_ticket
+
+    class Watched(QuicConnectionProtocol):
+        """A client connection, reporting what it is told about the handshake."""
+
+        def quic_event_received(self, event):
+            if isinstance(event, HandshakeCompleted):
+                say(
+                    event="handshake",
+                    alpn=event.alpn_protocol,
+                    resumed=event.session_resumed,
+                    early=event.early_data_accepted,
+                )
+            elif isinstance(event, ConnectionTerminated):
+                say(event="ended", code=event.error_code, reason=event.reason_phrase)
+            super().quic_event_received(event)
+
+    configuration = client_configuration(arguments)
+    async with connect(
+        arguments.host,
+        arguments.port,
+        configuration=configuration,
+        create_protocol=Watched,
+        session_ticket_handler=keep,
+    ) as client:
+        # The handshake event says the connection is up; nothing else needs saying here.
+        await exchange(client, shared_payload(arguments.warm_seed, arguments.warm_length))
+        client.close()
+        await client.wait_closed()
+    # Whether there is a ticket to offer is its own fact, said before anything is made of it.
+    say(event="ticket", present=ticket is not None)
+
+    configuration.session_ticket = ticket
+    offers_early_data = arguments.early_length is not None
+    async with connect(
+        arguments.host,
+        arguments.second_port,
+        configuration=configuration,
+        create_protocol=Watched,
+        session_ticket_handler=keep,
+        # A client that waits for the handshake has nothing left to send early.
+        wait_connected=not offers_early_data,
+    ) as client:
+        if offers_early_data:
+            early = shared_payload(arguments.early_seed, arguments.early_length)
+            _, writer = await client.create_stream(is_unidirectional=True)
+            writer.write(early)
+            writer.write_eof()
+            await client.wait_connected()
+        await exchange(
+            client, shared_payload(arguments.barrier_seed, arguments.barrier_length)
+        )
+        client.close()
+        await client.wait_closed()
+    say(event="done")
+
+
+async def exchange(client, payload):
+    """One bidirectional exchange, reported by length and digest of what came back."""
+    reader, writer = await client.create_stream()
+    writer.write(payload)
+    writer.write_eof()
+    answered = await read_stream(reader)
+    say(
+        event="stream",
+        id=writer.get_extra_info("stream_id"),
+        len=len(answered),
+        sha256=digest(answered),
+    )
+
+
 async def run_silent(arguments):
     """Hold a bound socket and answer nothing, for the tests about deadlines."""
     held = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -374,7 +456,12 @@ def take_orders(loop, server, stop, serving):
     threading.Thread(target=reading, daemon=True).start()
 
 
-ROLES = {"server": run_server, "client": run_client, "silent": run_silent}
+ROLES = {
+    "server": run_server,
+    "client": run_client,
+    "resuming-client": run_resuming_client,
+    "silent": run_silent,
+}
 
 
 def main():
@@ -404,6 +491,13 @@ def main():
     parser.add_argument("--datagram-out-length", type=int, default=None)
     parser.add_argument("--probe-seed", type=int, default=None)
     parser.add_argument("--probe-length", type=int, default=None)
+    parser.add_argument("--second-port", type=int, default=0)
+    parser.add_argument("--warm-seed", type=int, default=0)
+    parser.add_argument("--warm-length", type=int, default=0)
+    parser.add_argument("--early-seed", type=int, default=None)
+    parser.add_argument("--early-length", type=int, default=None)
+    parser.add_argument("--barrier-seed", type=int, default=0)
+    parser.add_argument("--barrier-length", type=int, default=0)
     parser.add_argument("--idle-timeout", type=float, default=20.0)
     parser.add_argument("--connections", type=int, default=1)
     parser.add_argument("--datagram-frame", type=int, default=0)

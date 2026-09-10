@@ -17,4 +17,3 @@ interop-common = { package = "rama-quic-interop-common", path = "../interop-comm
 quiche = "0.24"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
 sha2 = "0.10"
-tempfile = "3"

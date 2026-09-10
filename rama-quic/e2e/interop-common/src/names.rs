@@ -12,12 +12,15 @@ use rama::{
     crypto::pki_types::ServerName,
     net::address::Domain,
     quic::{Connection, ConnectionError, Endpoint},
-    tls::rustls::dep::rustls::{self, CertificateError},
+    tls::rustls::dep::rustls::{self, AlertDescription, CertificateError},
     utils::octets,
 };
 
 use crate::{
-    identity::{Identity, address_identity, anchor_of, rama_client_config, rama_server_config},
+    identity::{
+        Identity, IssuedIdentities, IssuedIdentity, address_identity, anchor_of,
+        rama_client_config, rama_server_config, server_identity,
+    },
     registry::{Case, CaseRun},
     scenario::{Chunk, Received, SERVER_NAME},
     support::{Peer, localhost},
@@ -40,6 +43,12 @@ pub struct NameScenario {
 /// Both shapes the native tests cover are here, built from the two identities the shared
 /// module already makes: a certificate for the address while a name is asked for, and a
 /// certificate for the name while the address is asked for.
+///
+/// The two directions hold different halves fixed. With Rama's client the certificate stays
+/// the same and the request varies. With a peer's client the request stays the same and the
+/// served identity varies, because for some peers the request decides the verification mode
+/// itself: quiche installs an identity parameter only alongside SNI, so a request that changed
+/// from a name to an address would change what is checked and would be no control at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mismatch {
     /// The certificate carries the loopback address; the client asks for the name.
@@ -58,9 +67,11 @@ impl Mismatch {
         }
     }
 
-    /// What the client asks for, which the certificate is not valid for.
+    /// What the client asks for. The case's own certificate is not valid for it: with Rama's
+    /// client the control asks for something else, and with a peer's client the control serves
+    /// something else.
     #[must_use]
-    pub fn mismatched_request(self, peer: SocketAddr) -> String {
+    pub fn requested(self, peer: SocketAddr) -> String {
         match self {
             Self::CertificateForAddress => SERVER_NAME.to_owned(),
             Self::CertificateForName => peer.ip().to_string(),
@@ -75,6 +86,37 @@ impl Mismatch {
             Self::CertificateForName => SERVER_NAME.to_owned(),
         }
     }
+
+    /// Of an issued pair, the identity a peer-client case serves when the request must not
+    /// match it.
+    #[must_use]
+    pub fn served_by(self, pair: &IssuedIdentities) -> &IssuedIdentity {
+        match self {
+            Self::CertificateForAddress => &pair.for_address,
+            Self::CertificateForName => &pair.for_name,
+        }
+    }
+
+    /// And the one its control serves, which the same request does match. Both come from the
+    /// same authority, so nothing the client trusts changes between them.
+    #[must_use]
+    pub fn matched_by(self, pair: &IssuedIdentities) -> &IssuedIdentity {
+        match self {
+            Self::CertificateForAddress => &pair.for_name,
+            Self::CertificateForName => &pair.for_address,
+        }
+    }
+}
+
+/// The QUIC error a peer's client raises when the certificate carries the wrong identity.
+///
+/// A TLS alert reaches QUIC as CRYPTO_ERROR plus the alert's own number (RFC 9001 §4.8), and
+/// every peer here answers this with bad_certificate: rustls maps `NotValidForName` to it
+/// (`rustls/src/error.rs`), the BoringSSL quiche vendors maps `X509_V_ERR_HOSTNAME_MISMATCH` to
+/// it (`ssl/ssl_x509.cc`), and aioquic raises `AlertBadCertificate` (`aioquic/tls.py`).
+#[must_use]
+pub fn identity_alert() -> u64 {
+    0x100 + u64::from(u8::from(AlertDescription::BadCertificate))
 }
 
 /// The probe the control carries, so acceptance means a working connection and not merely a
@@ -113,7 +155,7 @@ pub async fn rama_client_refuses_the_identity(run: &CaseRun<Mismatch>, peer_addr
         .wait(what, Endpoint::client(localhost()))
         .await
         .expect("the rama client binds");
-    let asked = scenario.mismatched_request(peer_addr);
+    let asked = scenario.requested(peer_addr);
     let refused = deadline
         .wait(
             what,
@@ -266,7 +308,7 @@ impl NameObservation {
 #[must_use]
 pub fn identity_for(scenario: &NameScenario) -> Identity {
     match scenario.asked {
-        Some(_) => crate::identity::server_identity(),
+        Some(_) => server_identity(),
         None => address_identity(),
     }
 }

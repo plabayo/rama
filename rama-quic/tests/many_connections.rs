@@ -20,9 +20,9 @@ use std::{
 use rama_crypto::dep::aws_lc_rs::digest;
 #[cfg(feature = "ring")]
 use rama_crypto::dep::ring::digest;
+use rama_crypto::pki_types::CertificateDer;
 use rama_net::tls::ApplicationProtocol;
-use rama_quic::tls::TlsOptions;
-use rama_quic::{ClientConfig, Endpoint, ServerConfig, TransportConfig};
+use rama_quic::{ClientConfig, Endpoint, ServerConfig, TransportConfig, tls::TlsOptions};
 use rama_tls::{
     client::TlsClientConfig,
     server::{GeneratedServerAuthConfig, ServerAuthData, TlsServerConfig},
@@ -138,7 +138,7 @@ fn alpn() -> ApplicationProtocol {
 }
 
 /// Client configuration trusting the listener's identity, and nothing else.
-fn connector_config(anchor: rama_crypto::pki_types::CertificateDer<'static>) -> ClientConfig {
+fn connector_config(anchor: CertificateDer<'static>) -> ClientConfig {
     let tls = TlsClientConfig::new()
         .with_alpn(smallvec![alpn()])
         .try_with_server_trust_anchors([anchor])

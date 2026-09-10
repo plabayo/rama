@@ -7,7 +7,7 @@ use rama_crypto::dep::aws_lc_rs::aead;
 use rama_crypto::dep::ring::aead;
 use rama_net::{address::Domain, tls::ApplicationProtocol};
 use rama_tls_rustls::dep::rustls::{
-    self,
+    self, HandshakeKind,
     pki_types::ServerName,
     quic::{Connection, HeaderProtectionKey, KeyChange, PacketKey, Secrets, Suite, Version},
 };
@@ -97,6 +97,12 @@ impl crypto::Session for TlsSession {
             // Read afresh: the protocol can still be settling when the name is already known.
             protocol: self.inner.alpn_protocol().map(ApplicationProtocol::from),
             server_name: self.server_name.clone(),
+            // The session's own answer, once it has one. A resumption is the whole handshake
+            // having taken up a session, not a session having been looked up.
+            resumed: self
+                .inner
+                .handshake_kind()
+                .map(|kind| kind == HandshakeKind::Resumed),
         })
     }
 
