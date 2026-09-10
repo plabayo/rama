@@ -1,8 +1,12 @@
-use rama_core::bytes::Bytes;
-use rama_core::telemetry::tracing::{debug, trace, trace_span};
+use rama_core::{
+    bytes::Bytes,
+    telemetry::tracing::{debug, trace, trace_span},
+};
+
 use rand::RngExt;
 
-use super::{Connection, SentFrames, spaces::SentPacket};
+use super::{Connection, spaces::SentPacket};
+
 use crate::proto::{
     ConnectionId, Instant, TransportError, TransportErrorCode,
     connection::ConnectionSide,
@@ -26,6 +30,8 @@ pub(super) struct PacketBuilder {
     pub(super) tag_len: usize,
     pub(super) _span: rama_core::telemetry::tracing::span::EnteredSpan,
 }
+
+use crate::proto::connection::transmit::SentFrames;
 
 impl PacketBuilder {
     /// Write a new packet header to `buffer` and determine the packet's properties

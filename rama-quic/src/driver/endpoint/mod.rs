@@ -220,7 +220,7 @@ impl Endpoint {
 
     /// Construct an endpoint on a bound standard socket.
     ///
-    /// The packet metadata a [`UdpSocketConfig`](rama_udp::UdpSocketConfig) describes is not set
+    /// The packet metadata a [`UdpSocketConfig`] describes is not set
     /// up here; a caller that needs it wraps the socket with that configuration first and uses
     /// [`with_packet_socket`](Self::with_packet_socket).
     pub fn with_std_socket(

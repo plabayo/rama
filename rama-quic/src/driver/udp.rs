@@ -246,7 +246,7 @@ impl Socket {
         ))
     }
 
-    /// Like [`drive_responses`](Self::drive_responses) but drawing on a budget shared with
+    /// Like `drive_responses` but drawing on a budget shared with
     /// other sockets polled in the same pass, and distinguishing a sender that is not ready
     /// (the task's waker is registered; nothing to re-poll for) from a budget that ran out with
     /// runnable responses left.

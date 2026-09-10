@@ -323,7 +323,7 @@ impl crypto::HeaderKey for Box<dyn HeaderProtectionKey> {
 /// A QUIC-compatible TLS client configuration
 ///
 /// A `QuicClientConfig` with reasonable defaults is constructed implicitly within
-/// [`ClientConfig::with_root_certificates()`][root_certs].
+/// `ClientConfig::with_root_certificates()`.
 /// Alternatively, `QuicClientConfig`'s [`TryFrom`] implementation can be used to wrap around a
 /// custom [`rama_tls_rustls::dep::rustls::ClientConfig`], in which case care should be taken around certain points:
 ///
@@ -336,7 +336,6 @@ impl crypto::HeaderKey for Box<dyn HeaderProtectionKey> {
 /// `into_0rtt` to proceed if it recognizes the server name, and defaults to an in-memory cache of
 /// 256 server names.
 ///
-/// [root_certs]: crate::proto::config::ClientConfig::with_root_certificates()
 pub(crate) struct QuicClientConfig {
     alpn_policy: AlpnPolicy,
     pub(crate) inner: Arc<rama_tls_rustls::dep::rustls::ClientConfig>,
@@ -482,7 +481,7 @@ impl std::error::Error for NoInitialCipherSuite {}
 /// A QUIC-compatible TLS server configuration
 ///
 /// A `QuicServerConfig` with reasonable defaults is constructed implicitly within
-/// [`ServerConfig::with_single_cert()`][single]. Alternatively, `QuicServerConfig`'s [`TryFrom`]
+/// `ServerConfig::with_single_cert()`. Alternatively, `QuicServerConfig`'s [`TryFrom`]
 /// implementation or `with_initial` method can be used to wrap around a custom
 /// [`rama_tls_rustls::dep::rustls::ServerConfig`], in which case care should be taken around certain points:
 ///
@@ -490,7 +489,6 @@ impl std::error::Error for NoInitialCipherSuite {}
 ///   incoming 0-RTT data. QUIC prohibits `max_early_data_size` values other than 0 or `u32::MAX`.
 /// - The `rama_tls_rustls::dep::rustls::ServerConfig` must have TLS 1.3 support enabled for conversion to succeed.
 ///
-/// [single]: crate::proto::config::ServerConfig::with_single_cert()
 pub(crate) struct QuicServerConfig {
     alpn_policy: AlpnPolicy,
     inner: Arc<rama_tls_rustls::dep::rustls::ServerConfig>,
